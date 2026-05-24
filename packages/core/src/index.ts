@@ -45,6 +45,14 @@ export {
 } from "./providers/openaiAuth.js";
 
 export {
+  OllamaCloudPool,
+  DEFAULT_OLLAMA_SLOTS,
+  type SlotName,
+  type SlotConfig,
+  type OllamaCloudPoolOptions,
+} from "./providers/ollamaCloud.js";
+
+export {
   parsePatch,
   parsePatchText,
   PatchParseError,

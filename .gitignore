@@ -1,8 +1,47 @@
-﻿node_modules/
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build artifacts
 packages/*/dist/
 packages/*/*.tsbuildinfo
-java/crix-java-worker/build/classes/
-.crix/
 dist/
+*.tsbuildinfo
+*.d.ts.map
+*.js.map
+
+# Crix runtime state
+.crix/
+
+# v1 dead weight (kept ignored even if accidentally restored)
+java/
+
+# Logs
 *.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Windows shortcuts
+*.lnk
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Test artifacts
+coverage/
+*.lcov
+
+# Misc
+*.tgz

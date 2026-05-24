@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:\\\\Users\\\\Clout\\\\Downloads\\\\system-prompts-and-models-of-ai-tools-main\\\\system-prompts-and-models-of-ai-tools-main\")",
+      "Bash(ls \"C:\\\\Users\\\\Clout\\\\Downloads\\\\codex-main\\\\codex-main\")",
+      "Bash(ls \"C:\\\\Users\\\\Clout\\\\Downloads\\\\claude-code-main\\\\claude-code-main\")",
+      "PowerShell(\"----\")"
+    ]
+  }
+}

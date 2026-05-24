@@ -1,0 +1,20 @@
+﻿{
+  "name": "crix",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "description": "TypeScript-first coding-agent harness with Java worker support.",
+  "scripts": {
+    "build": "tsc -b packages/protocol packages/core packages/cli",
+    "check": "tsc -b packages/protocol packages/core packages/cli --pretty false",
+    "test": "pnpm build && node --test tests/*.test.mjs",
+    "crix": "node packages/cli/dist/index.js",
+    "java:build": "powershell -NoProfile -ExecutionPolicy Bypass -File java/crix-java-worker/build.ps1",
+    "verify": "pnpm check && pnpm test && pnpm java:build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

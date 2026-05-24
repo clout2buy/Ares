@@ -1,0 +1,12 @@
+﻿{
+  "name": "@crix/cli",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "crix": "dist/index.js"
+  },
+  "dependencies": {
+    "@crix/core": "workspace:*",
+    "@crix/protocol": "workspace:*"
+  }
+}

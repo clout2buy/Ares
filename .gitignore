@@ -1,0 +1,8 @@
+﻿node_modules/
+packages/*/dist/
+packages/*/*.tsbuildinfo
+java/crix-java-worker/build/classes/
+.crix/
+dist/
+*.log
+.DS_Store

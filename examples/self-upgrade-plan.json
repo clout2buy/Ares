@@ -1,0 +1,29 @@
+﻿{
+  "goal": "prove Crix TypeScript can apply a safe self-upgrade plan",
+  "summary": "Create a marker file and run the TypeScript test suite as proof.",
+  "steps": [
+    {
+      "id": "write-ts-self-upgrade-marker",
+      "title": "Write TypeScript self-upgrade marker",
+      "safety": "workspace-write",
+      "type": "write_file",
+      "path": "SELF_UPGRADE_MARKER_TS.txt",
+      "content": "Crix TypeScript applied a reversible self-upgrade plan.\n"
+    },
+    {
+      "id": "spawn-reviewer",
+      "title": "Ask reviewer subagent for a proof summary",
+      "safety": "read-only",
+      "type": "spawn_agent",
+      "agent": "reviewer",
+      "prompt": "Review the self-upgrade proof path and summarize remaining risks."
+    }
+  ],
+  "verification": [
+    {
+      "program": "pnpm",
+      "args": ["test"],
+      "timeoutMs": 120000
+    }
+  ]
+}

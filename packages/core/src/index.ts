@@ -15,6 +15,7 @@ export {
   type EngineTool,
   type EngineToolResult,
   type ToolCallContext,
+  type ToolPermissionRequest,
   type ToolUseBlock,
   type ToolResultBlock,
   type ContentBlock,
@@ -23,13 +24,19 @@ export {
 
 export { MockEchoProvider } from "./providers/mock.js";
 
-export { Session, type SessionOptions } from "./session.js";
+export {
+  Session,
+  listSessions,
+  loadSessionSnapshot,
+  type SessionOptions,
+  type SessionSummary,
+  type SessionSnapshot,
+  type LoadSessionSnapshotOptions,
+} from "./session.js";
 
 export {
   OpenAIResponsesProvider,
-  fetchModelList,
   type OpenAIResponsesProviderOptions,
-  type ModelListEntry,
 } from "./providers/openaiResponses.js";
 
 export {

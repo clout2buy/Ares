@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pixel Plumber Dash</title>
+<style>
+  :root {
+    --ink: #24160f;
+    --cream: #fff2c7;
+    --red: #d93624;
+    --gold: #ffd447;
+    --sky1: #79d7ff;
+    --sky2: #d8f7ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    color: var(--cream);
+    font-family: "Trebuchet MS", Verdana, sans-serif;
+    background:
+      radial-gradient(circle at 18% 18%, rgba(255,255,255,.65) 0 3%, transparent 3.2%),
+      radial-gradient(circle at 78% 10%, rgba(255,255,255,.55) 0 4%, transparent 4.2%),
+      linear-gradient(180deg, #122458, #17215b 50%, #2c1f4f);
+  }
+  .cabinet {
+    width: min(1120px, 96vw);
+    padding: 18px;
+    border: 6px solid #130b09;
+    border-radius: 24px;
+    background: linear-gradient(145deg, #bb251b, #7d1214 45%, #401018);
+    box-shadow: 0 28px 70px rgba(0,0,0,.55), inset 0 0 0 4px rgba(255,255,255,.08);
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    text-shadow: 3px 3px 0 #140907;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(24px, 4vw, 46px);
+    letter-spacing: 1px;
+  }
+  .hud {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    font-weight: 900;
+    font-size: 18px;
+  }
+  .pill {
+    padding: 8px 12px;
+    border: 3px solid #1c0c08;
+    border-radius: 12px;
+    background: #2b171a;
+    box-shadow: inset 0 -4px 0 rgba(0,0,0,.25), 3px 3px 0 rgba(0,0,0,.25);
+  }
+  #gameWrap {
+    position: relative;
+    border: 6px solid #22100a;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #7bd8ff;
+    box-shadow: inset 0 0 0 5px rgba(255,255,255,.14);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    image-rendering: pixelated;
+    background: linear-gradient(var(--sky1), var(--sky2) 72%, #78c65c 72%);
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .25s ease;
+    background: rgba(20, 12, 22, .45);
+  }
+  .overlay.show { opacity: 1; pointer-events: auto; }
+  .card {
+    max-width: 640px;
+    padding: 24px;
+    text-align: center;
+    color: var(--cream);
+    border: 5px solid #170b06;
+    border-radius: 18px;
+    background: linear-gradient(180deg, #2a1843, #1d1231);
+    box-shadow: 0 14px 0 rgba(0,0,0,.28), inset 0 0 0 4px rgba(255,255,255,.08);
+  }
+  .card h2 { margin: 0 0 8px; font-size: clamp(34px, 7vw, 72px); text-shadow: 4px 4px 0 #000; }
+  .card p { margin: 10px 0; font-size: 20px; line-height: 1.35; }
+  button {
+    margin-top: 14px;
+    padding: 12px 20px;
+    border: 4px solid #130907;
+    border-radius: 12px;
+    color: #311409;
+    background: linear-gradient(#ffe177, #ffac24);
+    font-weight: 900;
+    font-size: 20px;
+    cursor: pointer;
+    box-shadow: 0 6px 0 #7b330b;
+  }
+  button:active { transform: translateY(4px); box-shadow: 0 2px 0 #7b330b; }
+  .help {
+    margin-top: 10px;
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    color: #ffeec4;
+    font-weight: 800;
+    text-shadow: 2px 2px 0 #120707;
+  }
+  kbd {
+    padding: 3px 7px;
+    border: 2px solid #1a0b08;
+    border-radius: 6px;
+    background: #fff2c7;
+    color: #34150b;
+    box-shadow: 0 3px 0 #9c6a31;
+  }
+</style>
+</head>
+<body>
+  <main class="cabinet">
+    <header>
+      <h1>Pixel Plumber Dash</h1>
+      <div class="hud" aria-live="polite">
+        <div class="pill">Score <span id="score">0000</span></div>
+        <div class="pill">Coins <span id="coins">0</span>/<span id="coinTotal">0</span></div>
+        <div class="pill">Lives <span id="lives">3</span></div>
+      </div>
+    </header>
+    <section id="gameWrap">
+      <canvas id="game" width="960" height="540" aria-label="Pixel platformer game"></canvas>
+      <div id="overlay" class="overlay show">
+        <div class="card">
+          <h2 id="stateTitle">Ready?</h2>
+          <p id="stateText">Collect every coin, bop the waddlers, and reach the flag!</p>
+          <p><kbd>←</kbd>/<kbd>→</kbd> or <kbd>A</kbd>/<kbd>D</kbd> move · <kbd>Space</kbd>/<kbd>↑</kbd>/<kbd>W</kbd> jump · <kbd>R</kbd> restart</p>
+          <button id="startBtn">Start Game</button>
+        </div>
+      </div>
+    </section>
+    <div class="help">Original chunky pixel-art-style sprites drawn directly in canvas. No external assets.</div>
+  </main>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const scoreEl = document.getElementById('score');
+  const coinsEl = document.getElementById('coins');
+  const coinTotalEl = document.getElementById('coinTotal');
+  const livesEl = document.getElementById('lives');
+  const overlay = document.getElementById('overlay');
+  const stateTitle = document.getElementById('stateTitle');
+  const stateText = document.getElementById('stateText');
+  const startBtn = document.getElementById('startBtn');
+
+  const W = canvas.width, H = canvas.height, GROUND = 488;
+  const keys = new Set();
+  const gravity = 0.72;
+  let state = 'menu', t = 0, camera = 0, score = 0, coins = 0, lives = 3, invuln = 0;
+
+  const platforms = [
+    {x:0,y:500,w:3300,h:80,type:'grass'},
+    {x:330,y:405,w:180,h:28,type:'brick'}, {x:650,y:345,w:210,h:28,type:'brick'},
+    {x:1010,y:415,w:170,h:28,type:'brick'}, {x:1320,y:355,w:250,h:28,type:'brick'},
+    {x:1710,y:420,w:190,h:28,type:'brick'}, {x:2030,y:330,w:230,h:28,type:'brick'},
+    {x:2380,y:400,w:210,h:28,type:'brick'}, {x:2700,y:350,w:180,h:28,type:'brick'},
+    {x:3050,y:430,w:145,h:70,type:'pipe'}
+  ];
+  const coinsSeed = [
+    [390,365],[455,365],[715,305],[780,305],[1080,375],[1370,315],[1440,315],[1510,315],
+    [1780,380],[2090,290],[2160,290],[2440,360],[2510,360],[2760,310],[3130,390]
+  ];
+  let coinItems = [], enemies = [], particles = [];
+  let player;
+  const flag = {x:3180,y:280,w:24,h:220};
+
+  function reset(full = true) {
+    if (full) { score = 0; coins = 0; lives = 3; }
+    camera = 0; invuln = 0;
+    player = {x:54,y:360,w:34,h:50,vx:0,vy:0,onGround:false,dir:1,frame:0,dead:false};
+    coinItems = coinsSeed.map(([x,y], i) => ({x,y,w:24,h:24,got:false,phase:i*.7}));
+    enemies = [
+      {x:560,y:456,w:34,h:32,vx:-1.15,alive:true,min:360,max:870},
+      {x:1210,y:456,w:34,h:32,vx:1.25,alive:true,min:980,max:1510},
+      {x:1880,y:456,w:34,h:32,vx:-1.35,alive:true,min:1680,max:2250},
+      {x:2590,y:456,w:34,h:32,vx:1.45,alive:true,min:2360,max:2920}
+    ];
+    particles = [];
+    updateHud();
+  }
+
+  function show(title, text, button) {
+    stateTitle.textContent = title; stateText.textContent = text; startBtn.textContent = button;
+    overlay.classList.add('show');
+  }
+  function hide() { overlay.classList.remove('show'); }
+  function updateHud() {
+    scoreEl.textContent = String(score).padStart(4,'0'); coinsEl.textContent = coins; coinTotalEl.textContent = coinsSeed.length; livesEl.textContent = lives;
+  }
+  function rects(a,b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+  function pressed(...names) { return names.some(k => keys.has(k)); }
+
+  function addBurst(x,y,color,n=12) {
+    for (let i=0;i<n;i++) particles.push({x,y,vx:(Math.random()-.5)*5,vy:-Math.random()*5-1,life:35,color});
+  }
+
+  function start() { reset(true); state = 'play'; hide(); }
+  startBtn.addEventListener('click', start);
+  addEventListener('keydown', e => { keys.add(e.key.toLowerCase()); if ([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(e.key.toLowerCase())) e.preventDefault(); if (e.key.toLowerCase()==='r') start(); });
+  addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+  function update() {
+    t++;
+    if (state !== 'play') return;
+    const left = pressed('arrowleft','a'), right = pressed('arrowright','d'), jump = pressed(' ','arrowup','w');
+    player.vx *= .82;
+    if (left) { player.vx -= .72; player.dir = -1; }
+    if (right) { player.vx += .72; player.dir = 1; }
+    player.vx = Math.max(-5.2, Math.min(5.2, player.vx));
+    if (jump && player.onGround) { player.vy = -14.2; player.onGround = false; addBurst(player.x+17, player.y+48, '#fff2c7', 6); }
+    player.vy += gravity;
+    player.x += player.vx;
+    collide('x');
+    player.y += player.vy;
+    player.onGround = false;
+    collide('y');
+    player.x = Math.max(0, Math.min(flag.x + 120, player.x));
+    if (player.y > H + 60) hurt(true);
+
+    coinItems.forEach(c => {
+      if (!c.got && rects(player, c)) { c.got = true; coins++; score += 100; addBurst(c.x+12,c.y+12,'#ffd447',10); updateHud(); }
+    });
+    enemies.forEach(e => {
+      if (!e.alive) return;
+      e.x += e.vx;
+      if (e.x < e.min || e.x + e.w > e.max) e.vx *= -1;
+      if (rects(player, e)) {
+        if (player.vy > 2 && player.y + player.h - e.y < 24) {
+          e.alive = false; player.vy = -9; score += 250; addBurst(e.x+17,e.y+14,'#7b4a27',14); updateHud();
+        } else if (invuln <= 0) hurt(false);
+      }
+    });
+    particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vy += .25; p.life--; });
+    particles = particles.filter(p => p.life > 0);
+    if (invuln > 0) invuln--;
+    if (player.x + player.w > flag.x && coins === coinsSeed.length) win();
+    camera = Math.max(0, Math.min(2380, player.x - 360));
+  }
+
+  function collide(axis) {
+    for (const p of platforms) {
+      if (!rects(player, p)) continue;
+      if (axis === 'x') {
+        if (player.vx > 0) player.x = p.x - player.w;
+        if (player.vx < 0) player.x = p.x + p.w;
+        player.vx = 0;
+      } else {
+        if (player.vy > 0) { player.y = p.y - player.h; player.vy = 0; player.onGround = true; }
+        else if (player.vy < 0) { player.y = p.y + p.h; player.vy = 0; }
+      }
+    }
+  }
+
+  function hurt(fell) {
+    lives--; updateHud(); addBurst(player.x+18, player.y+25, '#d93624', 18);
+    if (lives <= 0) { state = 'lose'; show('Game Over', 'The waddlers win this round. Press Start or R to try again!', 'Try Again'); return; }
+    const keepScore = score, keepCoins = coins, got = coinItems.map(c => c.got);
+    reset(false); score = keepScore; coins = keepCoins; coinItems.forEach((c,i)=>c.got=got[i]); invuln = 110; updateHud();
+  }
+  function win() { state = 'win'; score += 1000 + lives * 500; updateHud(); show('You Win!', 'Every coin sparkles in your pocket and the flag is yours!', 'Play Again'); addBurst(player.x, player.y, '#ffd447', 30); }
+
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+    drawSky();
+    ctx.save(); ctx.translate(-camera,0);
+    platforms.forEach(drawPlatform);
+    coinItems.forEach(drawCoin);
+    enemies.forEach(drawEnemy);
+    drawFlag();
+    particles.forEach(p => { ctx.globalAlpha = Math.max(0,p.life/35); px(p.x,p.y,5,5,p.color); ctx.globalAlpha = 1; });
+    drawPlayer();
+    ctx.restore();
+    if (state === 'menu') drawAttract();
+  }
+  function px(x,y,w,h,c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h)); }
+  function drawSky() {
+    const g = ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#72d3ff'); g.addColorStop(.75,'#d8f7ff'); g.addColorStop(.751,'#70bf56'); g.addColorStop(1,'#3e8d38'); ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    for (let i=0;i<9;i++) { const x = (i*260 - (camera*.25)%260), y = 52 + (i%3)*42; cloud(x,y); }
+    for (let i=0;i<12;i++) { const x = i*230 - (camera*.55)%230; hill(x,500,90 + (i%2)*35); }
+  }
+  function cloud(x,y) { px(x,y,54,22,'rgba(255,255,255,.9)'); px(x+20,y-16,52,34,'rgba(255,255,255,.9)'); px(x+58,y,48,24,'rgba(255,255,255,.9)'); }
+  function hill(x,y,r) { ctx.fillStyle = '#55aa4b'; ctx.beginPath(); ctx.arc(x+r,y,r,Math.PI,0); ctx.fill(); px(x+r-14,y-r+28,10,16,'#92d96c'); px(x+r+28,y-r+44,10,16,'#92d96c'); }
+  function drawPlatform(p) {
+    if (p.type === 'pipe') { px(p.x,p.y,p.w,p.h,'#168f40'); px(p.x-12,p.y,p.w+24,18,'#20bd55'); px(p.x+10,p.y+18,p.w-20,p.h-18,'#0c6f34'); return; }
+    if (p.type === 'grass') { px(p.x,p.y,p.w,p.h,'#6b3f23'); px(p.x,p.y,p.w,18,'#35b64e'); for(let x=p.x;x<p.x+p.w;x+=32) px(x,p.y+18,16,12,'#4c2b18'); return; }
+    px(p.x,p.y,p.w,p.h,'#b85d2b'); for(let x=p.x;x<p.x+p.w;x+=32){ px(x,p.y,3,p.h,'#743419'); px(x,p.y+13,32,3,'#743419'); } px(p.x,p.y,p.w,5,'#e18a43');
+  }
+  function drawCoin(c) { if (c.got) return; const bob = Math.sin(t/10 + c.phase)*5; px(c.x+5,c.y+bob,14,22,'#c98400'); px(c.x+2,c.y+3+bob,20,16,'#ffd447'); px(c.x+9,c.y+5+bob,5,12,'#fff18b'); }
+  function drawEnemy(e) { if (!e.alive) return; const step = Math.sin(t/8)*3; px(e.x,e.y+8,e.w,e.h-8,'#7b4a27'); px(e.x+5,e.y,e.w-10,18,'#a86534'); px(e.x+7,e.y+9,6,6,'#111'); px(e.x+21,e.y+9,6,6,'#111'); px(e.x+4,e.y+30+step,10,5,'#2b170d'); px(e.x+20,e.y+30-step,10,5,'#2b170d'); }
+  function drawFlag() { px(flag.x,flag.y,8,flag.h,'#f3e5a5'); px(flag.x+8,flag.y,82,46, coins===coinsSeed.length ? '#29bd56' : '#d93624'); px(flag.x+16,flag.y+12,42,8,'#fff2c7'); px(flag.x-10,flag.y+flag.h,32,10,'#5d351f'); }
+  function drawPlayer() {
+    if (invuln && Math.floor(t/6)%2) return;
+    const x=player.x, y=player.y, run = Math.abs(player.vx)>.8, bob = player.onGround && run ? Math.sin(t/4)*2 : 0, flip = player.dir < 0;
+    ctx.save(); if (flip) { ctx.translate(x+player.w,0); ctx.scale(-1,1); }
+    const xx = flip ? 0 : x;
+    px(xx+5,y+8+bob,24,20,'#f1b06f'); px(xx+2,y+2+bob,30,12,'#d93624'); px(xx+8,y-4+bob,18,8,'#d93624');
+    px(xx+11,y+12+bob,5,5,'#111'); px(xx+22,y+14+bob,7,4,'#6b321b'); px(xx+4,y+26+bob,26,18,'#2853c7');
+    px(xx+2,y+28+bob,8,16,'#d93624'); px(xx+25,y+28+bob,8,16,'#d93624'); px(xx+9,y+30+bob,6,6,'#ffd447'); px(xx+22,y+30+bob,6,6,'#ffd447');
+    const leg = run ? Math.sin(t/4)*5 : 0; px(xx+7,y+43+bob,9,9+leg/2,'#2b287f'); px(xx+19,y+43+bob,9,9-leg/2,'#2b287f'); px(xx+4,y+50+bob+Math.max(0,leg/2),13,6,'#3d1c11'); px(xx+19,y+50+bob+Math.max(0,-leg/2),13,6,'#3d1c11');
+    ctx.restore();
+  }
+  function drawAttract() { ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(0,0,W,H); }
+  reset(true); show('Ready?', 'Collect every coin, bop the waddlers, and reach the flag!', 'Start Game');
+  function loop() { update(); draw(); requestAnimationFrame(loop); }
+  loop();
+})();
+</script>
+</body>
+</html>

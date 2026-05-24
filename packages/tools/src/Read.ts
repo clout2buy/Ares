@@ -5,11 +5,11 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, zAbsPath } from "./_shared.js";
+import { buildTool, resolveWorkspacePath, zPath } from "./_shared.js";
 
 const inputSchema = z
   .object({
-    file_path: zAbsPath,
+    file_path: zPath,
     offset: z
       .number()
       .int()
@@ -45,11 +45,12 @@ export const ReadTool = buildTool({
   activityDescription: (i) => `Reading ${path.basename(i.file_path)}`,
 
   async call(i, ctx): Promise<{ output: ReadOutput; touchedFiles?: string[]; display?: string }> {
-    const stat = await fs.stat(i.file_path);
+    const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "read");
+    const stat = await fs.stat(filePath);
     if (!stat.isFile()) {
-      throw new Error(`${i.file_path} is not a regular file`);
+      throw new Error(`${filePath} is not a regular file`);
     }
-    const raw = await fs.readFile(i.file_path, "utf8");
+    const raw = await fs.readFile(filePath, "utf8");
     const lines = raw.split("\n");
     const total = lines.length;
     const start = i.offset ?? 0;
@@ -63,18 +64,18 @@ export const ReadTool = buildTool({
       })
       .join("\n");
 
-    ctx.fileReadStamps.set(i.file_path, { mtimeMs: stat.mtimeMs, size: stat.size });
+    ctx.fileReadStamps.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size });
 
     return {
       output: {
-        path: i.file_path,
+        path: filePath,
         totalLines: total,
         startLine: start + 1,
         endLine: end,
         content: formatted,
         truncated: end < total,
       },
-      display: `Read ${i.file_path} (${slice.length}/${total} lines)`,
+      display: `Read ${filePath} (${slice.length}/${total} lines)`,
     };
   },
 });

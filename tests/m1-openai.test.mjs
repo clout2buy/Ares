@@ -25,11 +25,20 @@ function mockFetch(sseBody, status = 200) {
     });
 }
 
+function captureFetch(sseBody, captured, status = 200) {
+  return async (_url, init) => {
+    captured.body = JSON.parse(init.body);
+    return new Response(makeStreamFromString(sseBody), {
+      status,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+}
+
 const auth = {
-  token: "test-key",
-  source: "env:OPENAI_API_KEY",
-  mode: "api-key",
-  endpoint: "openai-platform",
+  token: "test-token",
+  source: "env:CRIX_OPENAI_OAUTH_TOKEN",
+  mode: "chatgpt-oauth",
 };
 
 test("OpenAIResponsesProvider: parses text_delta and message_done", async () => {
@@ -76,21 +85,21 @@ test("OpenAIResponsesProvider: parses streaming function call", async () => {
     `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_2" } })}\n\n`,
     `event: response.output_item.added\ndata: ${JSON.stringify({
       type: "response.output_item.added",
-      item: { type: "function_call", id: "call_abc", name: "Read" },
+      item: { type: "function_call", id: "fc_1", call_id: "call_abc", name: "Read" },
     })}\n\n`,
     `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({
       type: "response.function_call_arguments.delta",
-      item_id: "call_abc",
+      item_id: "fc_1",
       delta: '{"file_p',
     })}\n\n`,
     `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({
       type: "response.function_call_arguments.delta",
-      item_id: "call_abc",
+      item_id: "fc_1",
       delta: 'ath":"/tmp/x.txt"}',
     })}\n\n`,
     `event: response.function_call_arguments.done\ndata: ${JSON.stringify({
       type: "response.function_call_arguments.done",
-      item_id: "call_abc",
+      item_id: "fc_1",
     })}\n\n`,
     `event: response.completed\ndata: ${JSON.stringify({
       type: "response.completed",
@@ -128,6 +137,53 @@ test("OpenAIResponsesProvider: parses streaming function call", async () => {
   assert.deepEqual(toolUse.input, { file_path: "/tmp/x.txt" });
 });
 
+test("OpenAIResponsesProvider: serializes function call outputs as top-level Responses input items", async () => {
+  const sse = [
+    `event: response.completed\ndata: ${JSON.stringify({
+      type: "response.completed",
+      response: { id: "resp_3", status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    })}\n\n`,
+  ].join("");
+  const captured = {};
+  const provider = new OpenAIResponsesProvider({
+    auth,
+    fetchImpl: captureFetch(sse, captured),
+    endpointUrl: "http://x",
+  });
+
+  const events = [];
+  for await (const e of provider.stream({
+    model: "gpt-4o",
+    system: "test",
+    messages: [
+      { id: "u1", role: "user", content: [{ type: "text", text: "read it" }], createdAt: "now" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_read", name: "Read", input: { file_path: "a.txt" } }],
+        createdAt: "now",
+      },
+      {
+        id: "t1",
+        role: "tool",
+        content: [{ type: "tool_result", tool_use_id: "call_read", content: "file contents" }],
+        createdAt: "now",
+      },
+    ],
+    tools: [{ name: "Read", description: "read file", input_schema: { type: "object" } }],
+  })) {
+    events.push(e);
+  }
+
+  assert.equal(events.at(-1).type, "message_done");
+  assert.equal(captured.body.store, false);
+  assert.deepEqual(captured.body.input, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "read it" }] },
+    { type: "function_call", call_id: "call_read", name: "Read", arguments: '{"file_path":"a.txt"}' },
+    { type: "function_call_output", call_id: "call_read", output: "file contents" },
+  ]);
+});
+
 test("OpenAIResponsesProvider: emits error event on HTTP failure", async () => {
   const provider = new OpenAIResponsesProvider({
     auth,
@@ -152,17 +208,15 @@ test("OpenAIResponsesProvider: emits error event on HTTP failure", async () => {
 
 test("OpenAIResponsesProvider: missing auth → no_auth error", async () => {
   const provider = new OpenAIResponsesProvider({ fetchImpl: async () => new Response("never") });
-  // No auth env vars, no file
-  const prevKey = process.env.OPENAI_API_KEY;
+  // No OAuth env var, no file.
   const prevTok = process.env.CRIX_OPENAI_OAUTH_TOKEN;
   const prevHome = process.env.CRIX_HOME;
-  delete process.env.OPENAI_API_KEY;
   delete process.env.CRIX_OPENAI_OAUTH_TOKEN;
   process.env.CRIX_HOME = "/nonexistent/path/crix-test";
   try {
     const events = [];
     for await (const e of provider.stream({
-      model: "gpt-4o",
+      model: "gpt-5.5",
       system: "x",
       messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "x" }], createdAt: "now" }],
       tools: [],
@@ -172,8 +226,8 @@ test("OpenAIResponsesProvider: missing auth → no_auth error", async () => {
     assert.equal(events.length, 1);
     assert.equal(events[0].type, "error");
     assert.equal(events[0].error.code, "no_auth");
+    assert.match(events[0].error.message, /crix login/);
   } finally {
-    if (prevKey) process.env.OPENAI_API_KEY = prevKey;
     if (prevTok) process.env.CRIX_OPENAI_OAUTH_TOKEN = prevTok;
     if (prevHome) process.env.CRIX_HOME = prevHome;
     else delete process.env.CRIX_HOME;

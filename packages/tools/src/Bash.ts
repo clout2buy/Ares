@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import { spawn } from "node:child_process";
-import { buildTool } from "./_shared.js";
+import { buildTool, resolveWorkspacePath } from "./_shared.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -38,20 +38,22 @@ export interface BashOutput {
 export const BashTool = buildTool({
   name: "Bash",
   description:
-    "Run a bash command (foreground). For Windows-native commands use PowerShell. Default timeout 120s, max 600s.",
+    "Run a bash/POSIX command (foreground). On Windows, prefer PowerShell unless POSIX shell syntax is specifically required. Default timeout 120s, max 600s.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => `Running ${i.command.slice(0, 60)}`,
 
   async call(i, ctx): Promise<{ output: BashOutput; display: string }> {
-    const cwd = i.cwd ?? ctx.workspace;
+    const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
     const result = await runShell("bash", ["-lc", i.command], cwd, i.timeout, ctx.signal);
     return {
       output: result,
       display: result.timedOut
         ? `Bash timed out after ${i.timeout}ms`
-        : `Bash exited ${result.exitCode} in ${result.durationMs}ms`,
+        : result.exitCode === 0
+        ? `Bash exited 0 in ${result.durationMs}ms`
+        : `Bash failed with exit ${result.exitCode} in ${result.durationMs}ms`,
     };
   },
 });
@@ -66,8 +68,10 @@ export async function runShell(
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn(program, args, { cwd, signal, windowsHide: true });
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let timedOut = false;
 
     const timer = setTimeout(() => {
@@ -75,18 +79,18 @@ export async function runShell(
       child.kill();
     }, timeoutMs);
 
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      if (stdout.length > MAX_OUTPUT_CHARS * 2) {
-        stdout = stdout.slice(-MAX_OUTPUT_CHARS * 2);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+      stdoutBytes += chunk.length;
+      while (stdoutBytes > MAX_OUTPUT_CHARS * 4 && stdoutChunks.length > 1) {
+        stdoutBytes -= stdoutChunks.shift()?.length ?? 0;
       }
     });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-      if (stderr.length > MAX_OUTPUT_CHARS * 2) {
-        stderr = stderr.slice(-MAX_OUTPUT_CHARS * 2);
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      stderrBytes += chunk.length;
+      while (stderrBytes > MAX_OUTPUT_CHARS * 4 && stderrChunks.length > 1) {
+        stderrBytes -= stderrChunks.shift()?.length ?? 0;
       }
     });
 
@@ -96,6 +100,8 @@ export async function runShell(
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      const stdout = decodeOutput(Buffer.concat(stdoutChunks));
+      const stderr = decodeOutput(Buffer.concat(stderrChunks));
       const truncatedOut = stdout.length > MAX_OUTPUT_CHARS;
       const truncatedErr = stderr.length > MAX_OUTPUT_CHARS;
       resolve({
@@ -109,4 +115,16 @@ export async function runShell(
       });
     });
   });
+}
+
+function decodeOutput(buf: Buffer): string {
+  if (buf.length === 0) return "";
+  let oddNulls = 0;
+  for (let i = 1; i < buf.length; i += 2) {
+    if (buf[i] === 0) oddNulls++;
+  }
+  if (oddNulls > buf.length / 8) {
+    return buf.toString("utf16le");
+  }
+  return buf.toString("utf8");
 }

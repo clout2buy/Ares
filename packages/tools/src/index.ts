@@ -20,12 +20,22 @@ import { BashTool } from "./Bash.js";
 import { PowerShellTool } from "./PowerShell.js";
 
 /** The default tool set wired into a fresh Session. */
-export const DEFAULT_TOOLS = [
-  ReadTool,
-  WriteTool,
-  EditTool,
-  GlobTool,
-  GrepTool,
-  BashTool,
-  PowerShellTool,
-] as const;
+export const DEFAULT_TOOLS = process.platform === "win32"
+  ? [
+      ReadTool,
+      WriteTool,
+      EditTool,
+      GlobTool,
+      GrepTool,
+      PowerShellTool,
+      BashTool,
+    ] as const
+  : [
+      ReadTool,
+      WriteTool,
+      EditTool,
+      GlobTool,
+      GrepTool,
+      BashTool,
+      PowerShellTool,
+    ] as const;

@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string] $Command = "cli",
+    [string] $Command = "chat",
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Rest = @()
@@ -26,66 +26,57 @@ function Ensure-NodeModules {
 function Invoke-CrixTs {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Args)
     Ensure-NodeModules
-    Invoke-Pnpm build
-    & node "packages\cli\dist\index.js" @Args
+    Invoke-Pnpm --silent build
+    & node "packages\cli\dist\entry.js" @Args
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 function Show-Help {
-    Write-Host "Crix TypeScript runner"
+    Ensure-NodeModules
+    Invoke-Pnpm --silent build
+    & node "packages\cli\dist\entry.js" help
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Host ""
-    Write-Host "Use from D:\Crix:"
-    Write-Host "  .\crix.bat            Launch interactive TUI with provider/model picker"
-    Write-Host "  .\launch-crix.bat     Double-click launcher for the interactive TUI"
-    Write-Host "  .\crix.bat help       Show commands"
-    Write-Host "  .\crix.bat dry        Dry-run the sample plan"
-    Write-Host "  .\crix.bat apply      Apply the sample plan"
-    Write-Host "  .\crix.bat test       Run TypeScript tests"
-    Write-Host "  .\crix.bat check      Type-check packages"
-    Write-Host "  .\crix.bat verify     Full TS + Java verification"
-    Write-Host "  .\crix.bat java       Build/probe Java worker"
-    Write-Host "  .\crix.bat login      OpenAI ChatGPT OAuth device-code login"
-    Write-Host "  .\crix.bat ollama use kimi-k2.6:cloud  Pick Ollama Cloud model"
-    Write-Host "  .\crix.bat ollama models               Show Ollama Cloud suggestions"
-    Write-Host "  .\crix.bat upgrade    Run a generic project-improvement goal"
-    Write-Host "  .\crix.bat ask ""text"" Ask GPT from the CLI"
-    Write-Host "  .\crix.bat prompt --summary  Inspect prompt pack"
-    Write-Host "  .\crix.bat tools             Inspect functional tool catalog"
-    Write-Host "  .\crix.bat tool run read_file --path README.md"
-    Write-Host "  .\crix.bat skills --full     Inspect skill processes"
-    Write-Host "  .\crix.bat memory add ""text"" --tag tag"
-    Write-Host "  .\crix.bat doctor     Show runtime/provider status"
+    Write-Host "Launcher examples:"
+    Write-Host "  .\crix.bat"
+    Write-Host "  .\crix.bat doctor"
+    Write-Host "  .\crix.bat login"
+    Write-Host "  .\crix.bat game"
+    Write-Host "  .\crix.bat run --provider openai --model gpt-5.5 --goal ""flex some tools"""
     Write-Host ""
 }
 
+function Open-MarioGame {
+    $Game = Join-Path $Root "demos\mario-game.html"
+    if (!(Test-Path -LiteralPath $Game)) {
+        Write-Error "Mario game not found at $Game"
+        exit 1
+    }
+    Start-Process -FilePath $Game
+    Write-Host "Opened $Game"
+}
+
 switch ($Command.ToLowerInvariant()) {
-    "" { Show-Help }
+    "" { Invoke-CrixTs chat @Rest }
+    "chat" { Invoke-CrixTs chat @Rest }
+    "cli" { Invoke-CrixTs chat @Rest }
+    "shell" { Invoke-CrixTs chat @Rest }
     "help" { Show-Help }
     "h" { Show-Help }
+    "--help" { Show-Help }
+    "-h" { Show-Help }
     "login" { Invoke-CrixTs login @Rest }
-    "logout" { Invoke-CrixTs logout @Rest }
-    "status" { Invoke-CrixTs status @Rest }
-    "upgrade" { Invoke-CrixTs upgrade @Rest }
     "install" { Invoke-Pnpm install }
     "build" { Ensure-NodeModules; Invoke-Pnpm build }
     "check" { Ensure-NodeModules; Invoke-Pnpm check }
     "test" { Ensure-NodeModules; Invoke-Pnpm test }
     "verify" { Ensure-NodeModules; Invoke-Pnpm verify }
-    "java" { Ensure-NodeModules; Invoke-Pnpm "java:build"; Invoke-CrixTs java @Rest }
-    "dry" { Invoke-CrixTs dry @Rest }
-    "apply" { Invoke-CrixTs apply @Rest }
+    "game" { Open-MarioGame }
     "doctor" { Invoke-CrixTs doctor @Rest }
-    "inspect" { Invoke-CrixTs inspect @Rest }
-    "memory" { Invoke-CrixTs memory @Rest }
-    "auth" { Invoke-CrixTs auth @Rest }
-    "ollama" { Invoke-CrixTs ollama @Rest }
-    "ask" { Invoke-CrixTs ask @Rest }
-    "prompt" { Invoke-CrixTs prompt @Rest }
-    "tools" { Invoke-CrixTs tools @Rest }
-    "tool" { Invoke-CrixTs tool @Rest }
-    "skills" { Invoke-CrixTs skills @Rest }
-    "plan" { Invoke-CrixTs plan @Rest }
-    "rollback" { Invoke-CrixTs rollback @Rest }
+    "run" { Invoke-CrixTs run @Rest }
+    "mock" { Invoke-CrixTs run --provider mock --goal (($Rest -join " ").Trim()) }
+    "openai" { Invoke-CrixTs run --provider openai @Rest }
+    "ollama" { Invoke-CrixTs run --provider ollama @Rest }
     "--" { Invoke-CrixTs @Rest }
     default { Invoke-CrixTs $Command @Rest }
 }

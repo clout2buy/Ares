@@ -6,11 +6,11 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, zAbsPath } from "./_shared.js";
+import { buildTool, resolveWorkspacePath, zPath } from "./_shared.js";
 
 const inputSchema = z
   .object({
-    file_path: zAbsPath,
+    file_path: zPath,
     content: z.string().describe("Full file contents to write. Replaces any existing file."),
   })
   .strict();
@@ -31,26 +31,31 @@ export const WriteTool = buildTool({
   activityDescription: (i) => `Writing ${path.basename(i.file_path)}`,
 
   async checkPermissions(i, ctx) {
-    const existed = await fs.stat(i.file_path).then(() => true).catch(() => false);
-    if (existed && !ctx.fileReadStamps.has(i.file_path)) {
+    const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
+    const existed = await fs.stat(filePath).then(() => true).catch(() => false);
+    if (existed && !ctx.fileReadStamps.has(filePath)) {
       return {
         kind: "deny",
-        reason: `${i.file_path} exists; Read it before overwriting so you've seen the current contents.`,
+        reason: `${filePath} exists; Read it before overwriting so you've seen the current contents.`,
       };
     }
     return { kind: "allow" };
   },
 
   async call(i, ctx): Promise<{ output: WriteOutput; touchedFiles: string[]; display: string }> {
-    const existed = await fs.stat(i.file_path).then(() => true).catch(() => false);
-    await fs.mkdir(path.dirname(i.file_path), { recursive: true });
-    await fs.writeFile(i.file_path, i.content, "utf8");
-    const stat = await fs.stat(i.file_path);
-    ctx.fileReadStamps.set(i.file_path, { mtimeMs: stat.mtimeMs, size: stat.size });
+    const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
+    const existed = await fs.stat(filePath).then(() => true).catch(() => false);
+    if (existed && !ctx.fileReadStamps.has(filePath)) {
+      throw new Error(`${filePath} exists; Read it before overwriting so you've seen the current contents.`);
+    }
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, i.content, "utf8");
+    const stat = await fs.stat(filePath);
+    ctx.fileReadStamps.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size });
     return {
-      output: { path: i.file_path, created: !existed, bytesWritten: stat.size },
-      touchedFiles: [i.file_path],
-      display: existed ? `Updated ${i.file_path}` : `Created ${i.file_path}`,
+      output: { path: filePath, created: !existed, bytesWritten: stat.size },
+      touchedFiles: [filePath],
+      display: existed ? `Updated ${filePath}` : `Created ${filePath}`,
     };
   },
 });

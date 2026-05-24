@@ -27,6 +27,16 @@ function mockChat(chunks, status = 200) {
     });
 }
 
+function captureChat(chunks, captured, status = 200) {
+  return async (_url, init) => {
+    captured.body = JSON.parse(init.body);
+    return new Response(ndjsonStream(chunks), {
+      status,
+      headers: { "content-type": "application/x-ndjson" },
+    });
+  };
+}
+
 const slots = {
   reasoner: { model: "qwen3-coder:480b-cloud" },
   apply: { model: "qwen3-coder:30b-cloud" },
@@ -81,6 +91,37 @@ test("OllamaCloudPool: parses text + tool_call from streaming NDJSON", async () 
   assert.deepEqual(done.message.content[1].input, { file_path: "/x" });
   assert.equal(done.usage.inputTokens, 10);
   assert.equal(done.usage.outputTokens, 5);
+});
+
+test("OllamaCloudPool: serializes every tool_result as its own tool message", async () => {
+  const chunks = [
+    { message: { role: "assistant", content: "done" }, done: false },
+    { message: { role: "assistant", content: "" }, done: true, prompt_eval_count: 10, eval_count: 5 },
+  ];
+  const captured = {};
+  const pool = new OllamaCloudPool({ slots, fetchImpl: captureChat(chunks, captured) });
+
+  await consumeAll(pool.stream("reasoner", {
+    ...baseReq,
+    messages: [
+      ...baseReq.messages,
+      {
+        id: "t1",
+        role: "tool",
+        content: [
+          { type: "tool_result", tool_use_id: "call_a", content: "A" },
+          { type: "tool_result", tool_use_id: "call_b", content: "B" },
+        ],
+        createdAt: "now",
+      },
+    ],
+  }));
+
+  const toolMessages = captured.body.messages.filter((m) => m.role === "tool");
+  assert.deepEqual(toolMessages, [
+    { role: "tool", content: "A", tool_call_id: "call_a" },
+    { role: "tool", content: "B", tool_call_id: "call_b" },
+  ]);
 });
 
 // ─── per-slot serialization ────────────────────────────────────────────

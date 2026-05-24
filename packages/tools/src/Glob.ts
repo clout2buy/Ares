@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool } from "./_shared.js";
+import { buildTool, resolveWorkspacePath } from "./_shared.js";
 
 const inputSchema = z
   .object({
@@ -32,7 +32,7 @@ export const GlobTool = buildTool({
   activityDescription: (i) => `Globbing ${i.pattern}`,
 
   async call(i, ctx): Promise<{ output: GlobOutput; display: string }> {
-    const root = i.cwd ?? ctx.workspace;
+    const root = await resolveWorkspacePath(ctx, i.cwd, "cwd", "read");
     const matches = await glob(root, i.pattern, i.max_results + 1);
     const stats = await Promise.all(
       matches.slice(0, i.max_results).map(async (rel) => {

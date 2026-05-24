@@ -1,11 +1,12 @@
-// OpenAI auth — supports ChatGPT OAuth (device code) and API key.
+// ChatGPT OAuth — device-code flow, Codex backend only.
+//
+// Crix does NOT support OPENAI_API_KEY anymore (see CHANGELOG). The
+// canonical path is ChatGPT OAuth, which routes requests through the
+// Codex backend at chatgpt.com.
 //
 // Token storage: %USERPROFILE%/.crix/auth.json (or $CRIX_HOME/auth.json).
-// API key fallback: $OPENAI_API_KEY env var.
-//
-// OAuth flow lifted from the Crix v1 implementation (issuer + client_id are
-// stable). Streamed tokens go to the Codex backend at chatgpt.com; API keys
-// go to api.openai.com.
+// Bypass for tests/CI: $CRIX_OPENAI_OAUTH_TOKEN env var (still an OAuth
+// access token — just sourced from env instead of file).
 
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -15,16 +16,14 @@ const OAUTH_ISSUER = "https://auth.openai.com";
 const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
 
-export type AuthMode = "chatgpt-oauth" | "api-key" | "none";
-export type AuthSource = "env:OPENAI_API_KEY" | "env:CRIX_OPENAI_OAUTH_TOKEN" | "file" | "none";
+export type AuthMode = "chatgpt-oauth" | "none";
+export type AuthSource = "env:CRIX_OPENAI_OAUTH_TOKEN" | "file" | "none";
 
 export interface AuthToken {
   token: string;
   source: Exclude<AuthSource, "none">;
   mode: Exclude<AuthMode, "none">;
   accountId?: string;
-  /** Where requests should go: codex backend vs platform Responses API. */
-  endpoint: "codex-backend" | "openai-platform";
 }
 
 export interface AuthStatus {
@@ -62,22 +61,13 @@ export function authFilePath(): string {
   return path.join(crixHome(), "auth.json");
 }
 
-/** Resolve the strongest available token. Env > file. */
+/** Resolve the ChatGPT OAuth token. Env > file. */
 export async function loadAuthToken(): Promise<AuthToken | null> {
-  if (process.env.OPENAI_API_KEY) {
-    return {
-      token: process.env.OPENAI_API_KEY,
-      source: "env:OPENAI_API_KEY",
-      mode: "api-key",
-      endpoint: "openai-platform",
-    };
-  }
   if (process.env.CRIX_OPENAI_OAUTH_TOKEN) {
     return {
       token: process.env.CRIX_OPENAI_OAUTH_TOKEN,
       source: "env:CRIX_OPENAI_OAUTH_TOKEN",
       mode: "chatgpt-oauth",
-      endpoint: "codex-backend",
     };
   }
   const file = await readAuthFile();
@@ -87,7 +77,6 @@ export async function loadAuthToken(): Promise<AuthToken | null> {
     source: "file",
     mode: "chatgpt-oauth",
     accountId: file.tokens.accountId,
-    endpoint: "codex-backend",
   };
 }
 

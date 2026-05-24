@@ -1,4 +1,12 @@
-// OpenAI Responses API provider — native streaming with function calling.
+// OpenAI Responses provider — ChatGPT OAuth → Codex backend, streaming.
+//
+// Crix only supports ChatGPT OAuth (not OPENAI_API_KEY). Requests always
+// route to the Codex backend at chatgpt.com/backend-api/codex/responses.
+//
+// Input message shape is Anthropic SDK-compatible: tool results arrive
+// as USER-role messages with tool_result content blocks. This provider
+// translates them to the Responses API's function_call_output items at
+// the wire edge.
 //
 // SSE events handled:
 //   response.created
@@ -6,16 +14,9 @@
 //   response.output_text.delta            (text chunk)
 //   response.function_call_arguments.delta (tool args chunk)
 //   response.function_call_arguments.done  (tool args complete)
-//   response.output_item.done             (item complete; finalize)
+//   response.output_item.done             (item complete)
 //   response.completed                    (turn done + usage)
 //   error                                 (terminal)
-//
-// Two routing modes:
-//   - api-key   -> https://api.openai.com/v1/responses
-//   - chatgpt   -> https://chatgpt.com/backend-api/codex/responses
-//
-// Model list fetched lazily from /v1/models with 24h cache at
-// %CRIX_HOME%/models.json. No hardcoded fake `gpt-5.5-codex-spark` list.
 
 import type {
   Message,
@@ -27,9 +28,7 @@ import type {
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { loadAuthToken, type AuthToken } from "./openaiAuth.js";
 
-const PLATFORM_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
-const PLATFORM_MODELS_URL = "https://api.openai.com/v1/models";
 
 export interface OpenAIResponsesProviderOptions {
   /** Override the discovered auth token (tests). */
@@ -59,30 +58,25 @@ export class OpenAIResponsesProvider implements Provider {
         type: "error",
         error: {
           code: "no_auth",
-          message: "No OpenAI auth. Set OPENAI_API_KEY or run `crix login`.",
+          message: "No ChatGPT OAuth token. Run `crix login` to authorize.",
           retriable: false,
         },
       };
       return;
     }
 
-    const url =
-      this.overrideUrl ??
-      (auth.endpoint === "codex-backend" ? CODEX_RESPONSES_URL : PLATFORM_RESPONSES_URL);
-
+    const url = this.overrideUrl ?? CODEX_RESPONSES_URL;
     const body = buildRequestBody(req);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
       Authorization: `Bearer ${auth.token}`,
+      "OpenAI-Beta": "responses=experimental",
+      originator: "crix",
+      "User-Agent": "crix",
+      version: "crix-ts",
     };
-    if (auth.endpoint === "codex-backend") {
-      headers["OpenAI-Beta"] = "responses=experimental";
-      headers.originator = "crix";
-      headers["User-Agent"] = "crix";
-      headers.version = "crix-ts";
-      if (auth.accountId) headers["ChatGPT-Account-ID"] = auth.accountId;
-    }
+    if (auth.accountId) headers["ChatGPT-Account-ID"] = auth.accountId;
 
     let response: Response;
     try {
@@ -135,7 +129,7 @@ export class OpenAIResponsesProvider implements Provider {
 
     // Accumulation state for the in-flight message
     const textParts: string[] = [];
-    const toolUseById = new Map<string, { name: string; argsText: string; completed: boolean }>();
+    const toolUseByItemId = new Map<string, { callId: string; name: string; argsText: string; completed: boolean }>();
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
     let messageId = "";
@@ -165,9 +159,10 @@ export class OpenAIResponsesProvider implements Provider {
           case "response.output_item.added": {
             const item = evt.item;
             if (item?.type === "function_call") {
-              const id = item.id ?? item.call_id ?? `call_${toolUseById.size}`;
-              toolUseById.set(id, { name: item.name ?? "", argsText: "", completed: false });
-              yield { type: "tool_use_start", id, name: item.name ?? "" };
+              const itemId = item.id ?? item.call_id ?? `call_${toolUseByItemId.size}`;
+              const callId = item.call_id ?? itemId;
+              toolUseByItemId.set(itemId, { callId, name: item.name ?? "", argsText: "", completed: false });
+              yield { type: "tool_use_start", id: callId, name: item.name ?? "" };
             }
             continue;
           }
@@ -182,19 +177,19 @@ export class OpenAIResponsesProvider implements Provider {
           }
 
           case "response.function_call_arguments.delta": {
-            const id = evt.item_id ?? evt.id ?? "";
+            const itemId = evt.item_id ?? evt.id ?? "";
             const delta = evt.delta ?? "";
-            const entry = toolUseById.get(id);
+            const entry = toolUseByItemId.get(itemId);
             if (entry && delta) {
               entry.argsText += delta;
-              yield { type: "tool_use_input_delta", id, deltaJson: delta };
+              yield { type: "tool_use_input_delta", id: entry.callId, deltaJson: delta };
             }
             continue;
           }
 
           case "response.function_call_arguments.done": {
-            const id = evt.item_id ?? evt.id ?? "";
-            const entry = toolUseById.get(id);
+            const itemId = evt.item_id ?? evt.id ?? "";
+            const entry = toolUseByItemId.get(itemId);
             if (!entry || entry.completed) continue;
             entry.completed = true;
             let input: unknown;
@@ -203,7 +198,7 @@ export class OpenAIResponsesProvider implements Provider {
             } catch {
               input = { __unparseable_args__: entry.argsText };
             }
-            yield { type: "tool_use_input_done", id, input };
+            yield { type: "tool_use_input_done", id: entry.callId, input };
             continue;
           }
 
@@ -238,14 +233,14 @@ export class OpenAIResponsesProvider implements Provider {
     if (textParts.length > 0) {
       content.push({ type: "text", text: textParts.join("") });
     }
-    for (const [id, entry] of toolUseById) {
+    for (const entry of toolUseByItemId.values()) {
       let input: unknown;
       try {
         input = entry.argsText ? JSON.parse(entry.argsText) : {};
       } catch {
         input = { __unparseable_args__: entry.argsText };
       }
-      content.push({ type: "tool_use", id, name: entry.name, input });
+      content.push({ type: "tool_use", id: entry.callId, name: entry.name, input });
     }
 
     const message: Message = {
@@ -264,7 +259,8 @@ function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
   return {
     model: req.model,
     instructions: req.system,
-    input: req.messages.map(toResponsesInputItem),
+    input: req.messages.flatMap(toResponsesInputItems),
+    store: false,
     tools: req.tools.map((t) => ({
       type: "function",
       name: t.name,
@@ -277,40 +273,47 @@ function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
   };
 }
 
-function toResponsesInputItem(m: Message): Record<string, unknown> {
-  if (m.role === "tool") {
-    // Tool results map to function_call_output items in the Responses API.
-    return {
-      type: "input",
-      content: m.content.map((b) => {
-        if (b.type === "tool_result") {
-          return {
-            type: "function_call_output",
-            call_id: b.tool_use_id,
-            output: typeof b.content === "string" ? b.content : JSON.stringify(b.content),
-          };
-        }
-        return b;
-      }),
-    };
+function toResponsesInputItems(m: Message): Record<string, unknown>[] {
+  // Anthropic-shaped messages: tool_results live as USER-role content
+  // blocks. Translate them to function_call_output items first; the
+  // remaining text/image content (if any) flows through as a normal
+  // input message.
+  const items: Record<string, unknown>[] = [];
+  const messageContent: Record<string, unknown>[] = [];
+
+  for (const b of m.content) {
+    if (b.type === "tool_result") {
+      items.push({
+        type: "function_call_output",
+        call_id: b.tool_use_id,
+        output: typeof b.content === "string" ? b.content : JSON.stringify(b.content),
+      });
+    } else if (b.type === "text") {
+      messageContent.push({
+        type: m.role === "assistant" ? "output_text" : "input_text",
+        text: b.text,
+      });
+    } else if (b.type === "system_reminder") {
+      messageContent.push({ type: "input_text", text: `<system-reminder>${b.text}</system-reminder>` });
+    } else if (b.type === "tool_use") {
+      items.push({
+        type: "function_call",
+        call_id: b.id,
+        name: b.name,
+        arguments: JSON.stringify(b.input),
+      });
+    }
   }
-  // assistant/user/system go through as content blocks
-  return {
-    role: m.role,
-    content: m.content.map((b) => {
-      if (b.type === "text") return { type: m.role === "assistant" ? "output_text" : "input_text", text: b.text };
-      if (b.type === "tool_use") {
-        return {
-          type: "function_call",
-          call_id: b.id,
-          name: b.name,
-          arguments: JSON.stringify(b.input),
-        };
-      }
-      if (b.type === "system_reminder") return { type: "input_text", text: `<system-reminder>${b.text}</system-reminder>` };
-      return b;
-    }),
-  };
+
+  if (messageContent.length > 0) {
+    items.unshift({
+      type: "message",
+      role: m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user",
+      content: messageContent,
+    });
+  }
+
+  return items;
 }
 
 function extractUsage(resp: ResponsesEvent["response"]): Usage | null {
@@ -387,29 +390,5 @@ interface ResponsesEvent {
   error?: { code?: string; message?: string };
 }
 
-// ─── Model discovery ───────────────────────────────────────────────────
-
-export interface ModelListEntry {
-  id: string;
-  ownedBy: string;
-}
-
-/** Fetch the user's model list. Caches to %CRIX_HOME%/models.json for 24h. */
-export async function fetchModelList(
-  fetchImpl: typeof fetch = fetch,
-): Promise<ModelListEntry[]> {
-  const auth = await loadAuthToken();
-  if (!auth || auth.endpoint !== "openai-platform") {
-    // Codex-backend doesn't expose /v1/models; surface a clear message.
-    throw new Error(
-      "Model listing requires an OpenAI API key (OPENAI_API_KEY). " +
-        "ChatGPT OAuth users should select their model via `crix model <id>`.",
-    );
-  }
-  const res = await fetchImpl(PLATFORM_MODELS_URL, {
-    headers: { Authorization: `Bearer ${auth.token}` },
-  });
-  if (!res.ok) throw new Error(`models list failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as { data?: Array<{ id: string; owned_by?: string }> };
-  return (json.data ?? []).map((m) => ({ id: m.id, ownedBy: m.owned_by ?? "openai" }));
-}
+// Model discovery: the Codex backend does not expose /v1/models. The user
+// selects their model explicitly via `crix model <id>` or --model flag.

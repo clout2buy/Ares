@@ -12,7 +12,7 @@
     "test": "pnpm build && node --test tests/*.test.mjs",
     "crix": "node packages/cli/dist/entry.js",
     "verify": "pnpm check && pnpm test",
-    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo"
+    "clean": "node -e \"const fs=require('fs'),p=require('path'); for (const d of fs.readdirSync('packages')) { const dir=p.join('packages',d); fs.rmSync(p.join(dir,'dist'),{recursive:true,force:true}); for (const f of fs.readdirSync(dir)) if (f.endsWith('.tsbuildinfo')) fs.rmSync(p.join(dir,f),{force:true}); }\""
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

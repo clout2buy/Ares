@@ -20,8 +20,12 @@ import {
   type ToolSchema,
   type ToolUseBlock,
   type ToolResultBlock,
+  type PermissionPromptDecision,
+  type PermissionPromptSuggestion,
+  messageText,
   isToolUseBlock,
 } from "@crix/protocol";
+import { randomUUID } from "node:crypto";
 
 // ─── Provider interface (what core asks of providers) ──────────────────
 
@@ -63,6 +67,14 @@ export interface ToolCallContext {
   signal: AbortSignal;
   /** Yield progress events from inside a long-running tool call. */
   emitProgress?(data: unknown): void;
+  requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
+}
+
+export interface ToolPermissionRequest {
+  toolName: string;
+  input: unknown;
+  reason: string;
+  suggestion?: PermissionPromptSuggestion;
 }
 
 export interface EngineToolResult {
@@ -83,6 +95,7 @@ export interface QueryEngineConfig {
   maxTurns?: number;
   /** Optional pending system-reminders to inject at next turn_start. */
   drainSystemReminders?(): Array<{ text: string; source: "verifier" | "compaction" | "hook" | "skill" }>;
+  requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
 }
 
 // ─── Implementation ────────────────────────────────────────────────────
@@ -100,6 +113,11 @@ export class QueryEngine {
   /** Read-only snapshot of the conversation so far. */
   history(): readonly Message[] {
     return this.messages;
+  }
+
+  hydrate(messages: readonly Message[]): void {
+    this.messages.length = 0;
+    this.messages.push(...messages);
   }
 
   appendUserMessage(text: string): Message {
@@ -133,6 +151,7 @@ export class QueryEngine {
     const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
     const maxIters = this.cfg.maxTurns ?? 50;
+    const writeIntent = detectsWriteIntent(messageText(userMessage));
 
     for (let iter = 0; iter < maxIters; iter++) {
       // ─── Stream one assistant turn from the provider ─────────────────
@@ -235,6 +254,30 @@ export class QueryEngine {
           continue;
         }
 
+        const writeBlockReason = blockedByWriteIntentGate(tool, use.input, writeIntent);
+        if (writeBlockReason) {
+          yield { type: "tool_error", id: use.id, error: writeBlockReason, durationMs: 0 };
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: use.id,
+            content: writeBlockReason,
+            is_error: true,
+          });
+          this.messages.push({
+            id: cryptoId(),
+            role: "user", // Anthropic shape: tool_result blocks live in user-role messages
+            content: toolResults,
+            createdAt: new Date().toISOString(),
+          });
+          yield {
+            type: "turn_end",
+            status: "interrupted",
+            usage: totalUsage,
+            durationMs: Date.now() - startedAt,
+          };
+          return;
+        }
+
         yield {
           type: "tool_start",
           id: use.id,
@@ -245,16 +288,34 @@ export class QueryEngine {
         };
 
         const t0 = Date.now();
+        const permissionEvents: TurnEvent[] = [];
         try {
           const ctx: ToolCallContext = {
             workspace: this.cfg.workspace,
             signal: this.cfg.signal ?? new AbortController().signal,
+            requestPermission: this.cfg.requestPermission
+              ? async (request) => {
+                  const id = cryptoId("perm");
+                  permissionEvents.push({
+                    type: "permission_request",
+                    id,
+                    toolName: request.toolName,
+                    input: request.input,
+                    reason: request.reason,
+                    suggestion: request.suggestion,
+                  });
+                  const decision = await this.cfg.requestPermission!(request);
+                  permissionEvents.push({ type: "permission_response", id, decision });
+                  return decision;
+                }
+              : undefined,
             emitProgress: () => {
               /* engine swallows for now; M3 forwards as tool_progress */
             },
           };
           const result = await tool.call(use.input, ctx);
           const durationMs = Date.now() - t0;
+          for (const ev of permissionEvents) yield ev;
           yield {
             type: "tool_end",
             id: use.id,
@@ -271,6 +332,7 @@ export class QueryEngine {
         } catch (err) {
           const durationMs = Date.now() - t0;
           const message = err instanceof Error ? err.message : String(err);
+          for (const ev of permissionEvents) yield ev;
           yield { type: "tool_error", id: use.id, error: message, durationMs };
           toolResults.push({
             type: "tool_result",
@@ -278,13 +340,29 @@ export class QueryEngine {
             content: message,
             is_error: true,
           });
+          if (isPermissionDeniedError(err)) {
+            this.messages.push({
+              id: cryptoId(),
+              role: "user", // Anthropic shape: tool_result blocks live in user-role messages
+              content: toolResults,
+              createdAt: new Date().toISOString(),
+            });
+            yield {
+              type: "turn_end",
+              status: "interrupted",
+              usage: totalUsage,
+              durationMs: Date.now() - startedAt,
+            };
+            return;
+          }
         }
       }
 
-      // Feed all tool results back as one tool-role message.
+      // Feed all tool results back as one user-role message containing
+      // tool_result content blocks (Anthropic SDK shape).
       this.messages.push({
         id: cryptoId(),
-        role: "tool",
+        role: "user",
         content: toolResults,
         createdAt: new Date().toISOString(),
       });
@@ -310,10 +388,49 @@ export class QueryEngine {
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function cryptoId(prefix = "id"): string {
-  // Avoid pulling in crypto.randomUUID's optionality across Node versions.
-  const rand = Math.random().toString(36).slice(2, 10);
-  const time = Date.now().toString(36);
-  return `${prefix}_${time}_${rand}`;
+  return `${prefix}_${randomUUID()}`;
+}
+
+function isPermissionDeniedError(err: unknown): boolean {
+  return err instanceof Error && err.name === "PermissionDeniedError";
+}
+
+function detectsWriteIntent(text: string): boolean {
+  const normalized = text.toLowerCase();
+  if (/\b(read|list|show|grep|search|scan|inspect|explain|review|status|doctor|flex|demo|test grep)\b/.test(normalized)) {
+    if (!/\b(edit|modify|change|update|fix|patch|write|create|add|delete|remove|rename|move|refactor|implement|scaffold|generate|make|upgrade|improve|install|repair|rewrite|replace)\b/.test(normalized)) {
+      return false;
+    }
+  }
+  return /\b(edit|modify|change|update|fix|patch|write|create|add|delete|remove|rename|move|refactor|implement|scaffold|generate|make|upgrade|improve|install|repair|rewrite|replace)\b/.test(normalized)
+    || /\b(go ahead|do it|ship it|start coding|start implementing)\b/.test(normalized);
+}
+
+function blockedByWriteIntentGate(tool: EngineTool, input: unknown, writeIntent: boolean): string | null {
+  if (writeIntent) return null;
+  if (tool.schema.name === "Write" || tool.schema.name === "Edit") {
+    return `${tool.schema.name} blocked: this turn does not contain explicit write intent. Ask to edit, fix, create, or update files before Crix modifies the workspace.`;
+  }
+  if ((tool.schema.name === "Bash" || tool.schema.name === "PowerShell") && shellCommandLooksMutating(input)) {
+    return `${tool.schema.name} blocked: command appears to modify files or external state, but this turn does not contain explicit write intent.`;
+  }
+  return null;
+}
+
+function shellCommandLooksMutating(input: unknown): boolean {
+  if (!input || typeof input !== "object") return false;
+  const command = String((input as Record<string, unknown>).command ?? "").toLowerCase();
+  if (!command) return false;
+  const mutatingPatterns = [
+    /\b(set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item)\b/,
+    /\b(del|erase|rm|rmdir|mkdir|mv|cp|touch|tee)\b/,
+    /\b(git\s+(commit|checkout|reset|clean|rebase|merge|push|pull|apply))\b/,
+    /\b(npm|pnpm|yarn)\s+(install|add|remove|update)\b/,
+    /\b(pip|uv)\s+(install|uninstall)\b/,
+    /\bgradle(w)?\s+.*\b(build|run|publish)\b/,
+    /(^|[^2])>\s*[^&]/,
+  ];
+  return mutatingPatterns.some((pattern) => pattern.test(command));
 }
 
 function addUsageInto(into: Usage, more: Usage): void {

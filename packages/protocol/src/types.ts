@@ -8,9 +8,15 @@
 // Tool implementations live in @crix/tools; this package only defines the
 // SCHEMA shape providers receive. Each tool owns its own zod schema there.
 
-// ─── Messages ───────────────────────────────────────────────────────────
+// ─── Messages (Anthropic SDK shape) ─────────────────────────────────────
+//
+// Roles match @anthropic-ai/sdk: tool results are USER-role messages with
+// tool_result content blocks. We do not use a separate "tool" role. This
+// makes the wire format drop-in compatible with the Anthropic SDK — when
+// we add a direct-Anthropic provider it's a passthrough; OpenAI Codex
+// backend and Ollama Cloud translate the same shape at the provider edge.
 
-export type Role = "system" | "user" | "assistant" | "tool";
+export type Role = "system" | "user" | "assistant";
 
 export interface TextBlock {
   type: "text";
@@ -162,7 +168,7 @@ export type PermissionMode =
   | "bypass"            // allow everything (use with caution)
   | "plan";             // read-only enforced; non-read tools rejected
 
-export type PermissionPromptDecision = "allow_once" | "allow_session" | "deny";
+export type PermissionPromptDecision = "allow_once" | "allow_always" | "deny";
 export type PermissionPromptSuggestion = PermissionPromptDecision;
 
 export type PermissionDecision =

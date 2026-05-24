@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool } from "./_shared.js";
+import { buildTool, resolveWorkspacePath } from "./_shared.js";
 import { runShell } from "./Bash.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -31,7 +31,7 @@ export const PowerShellTool = buildTool({
   activityDescription: (i) => `Running ${i.command.slice(0, 60)}`,
 
   async call(i, ctx) {
-    const cwd = i.cwd ?? ctx.workspace;
+    const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
     const pwsh = (await which("pwsh")) ?? (await which("powershell"));
     if (!pwsh) throw new Error("Neither pwsh nor powershell found on PATH");
     const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", i.command];
@@ -40,7 +40,9 @@ export const PowerShellTool = buildTool({
       output: result,
       display: result.timedOut
         ? `PowerShell timed out after ${i.timeout}ms`
-        : `PowerShell exited ${result.exitCode} in ${result.durationMs}ms`,
+        : result.exitCode === 0
+        ? `PowerShell exited 0 in ${result.durationMs}ms`
+        : `PowerShell failed with exit ${result.exitCode} in ${result.durationMs}ms`,
     };
   },
 });

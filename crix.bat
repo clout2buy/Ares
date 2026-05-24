@@ -9,7 +9,7 @@ if /I "%~1"=="shell" set "CRIX_PAUSE=1"
 where powershell >nul 2>nul
 if errorlevel 1 (
   echo PowerShell is required to launch Crix.
-  echo Install PowerShell or run: node packages\cli\dist\index.js cli
+  echo Install PowerShell or run: pnpm crix -- help
   pause >nul
   exit /b 1
 )

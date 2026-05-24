@@ -1,9 +1,9 @@
-// Tool<I, O> — the per-file tool contract used across @crix/tools.
+// Tool<I, O> is the per-file tool contract used across @crix/tools.
 //
-// Every tool lives in its own file and is built via buildTool(). The shape
-// is structurally compatible with @crix/core's EngineTool (the engine only
-// needs `schema` and `call`), so tools plug straight in.
+// Every tool owns its schema, permission check, execution, and display text.
 
+import path from "node:path";
+import { promises as fs } from "node:fs";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type {
@@ -16,59 +16,44 @@ import type {
 } from "@crix/protocol";
 import type { ToolCallContext, EngineToolResult } from "@crix/core";
 
-// ─── Context exposed to tool implementations ───────────────────────────
-
 export interface FileReadStamp {
   mtimeMs: number;
   size: number;
 }
 
-/**
- * Extended context. EngineTool sees only ToolCallContext; tools that need
- * the richer surface (file stamps, sub-model pool) cast this in their
- * call() implementation. The engine populates it via the harness adapter.
- */
 export interface RichToolContext extends ToolCallContext {
   permissionMode: PermissionMode;
-  /** Files Read this session — used by Edit/Write to enforce read-before-write. */
   fileReadStamps: Map<string, FileReadStamp>;
-  /** Sub-model pool for Apply / Summarize slots (Ollama Cloud). M3+. */
+  pathPermissions?: PathPermissionStore;
   subModel?: SubModelPool;
 }
 
-/** Forward decl for the 3-slot Ollama Cloud pool. Implemented in @crix/core M1.5. */
+export type PathAccess = "read" | "write" | "execute" | "all";
+export type PathGrantScope = "once" | "always";
+
+export interface PathPermissionStore {
+  isAllowed(absPath: string, access: PathAccess): boolean;
+  grant(absPath: string, access: PathAccess, scope: PathGrantScope): Promise<void> | void;
+}
+
 export interface SubModelPool {
   apply(req: { file: string; original: string; instructions: string; sketch: string }): Promise<string>;
   summarize(req: { input: string; instructions?: string }): Promise<string>;
 }
 
-// ─── Tool result ───────────────────────────────────────────────────────
-
 export interface ToolResult<O> extends EngineToolResult {
   output: O;
-  /** Absolute paths touched by this call; the verifier subscribes. */
   touchedFiles?: string[];
-  /** Short human-readable summary for inline rendering. */
   display?: string;
 }
-
-// ─── Tool interface ────────────────────────────────────────────────────
 
 export interface Tool<I extends z.ZodTypeAny = z.ZodTypeAny, O = unknown> {
   readonly schema: ToolSchema;
   readonly inputZod: I;
-
-  /** Validate-then-decide. Called before call(); engine respects ask/deny. */
   checkPermissions(input: z.infer<I>, ctx: RichToolContext): Promise<PermissionDecision>;
-
-  /** Execute the tool. Throw to signal failure; return ToolResult on success. */
   call(input: z.infer<I>, ctx: RichToolContext): Promise<ToolResult<O>>;
-
-  /** Present-continuous label for the TUI spinner ("Reading foo.ts"). */
   activityDescription(input: z.infer<I>): string;
 }
-
-// ─── buildTool() factory ───────────────────────────────────────────────
 
 export interface ToolDef<I extends z.ZodTypeAny, O> {
   name: string;
@@ -84,10 +69,10 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
 }
 
 export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I, O> {
-  const inputJsonSchema = zodToJsonSchema(def.inputZod, {
+  const inputJsonSchema = normalizeProviderJsonSchema(zodToJsonSchema(def.inputZod, {
     target: "openApi3",
     $refStrategy: "none",
-  }) as object;
+  })) as object;
 
   const schema: ToolSchema = {
     name: def.name,
@@ -99,11 +84,14 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     deferLoading: def.deferLoading,
   };
 
-  const checkPermissions =
-    def.checkPermissions ??
-    (async (_input: z.infer<I>, _ctx: RichToolContext): Promise<PermissionDecision> => ({
-      kind: "allow",
-    }));
+  const checkPermissions = async (
+    input: z.infer<I>,
+    ctx: RichToolContext,
+  ): Promise<PermissionDecision> => {
+    const base = defaultPermissionDecision(def, ctx);
+    if (base.kind !== "allow") return base;
+    return def.checkPermissions ? def.checkPermissions(input, ctx) : base;
+  };
 
   return {
     schema,
@@ -113,12 +101,6 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     activityDescription: def.activityDescription,
   };
 }
-
-// ─── Engine adapter ────────────────────────────────────────────────────
-// Tools implement RichToolContext; the engine only knows ToolCallContext.
-// adaptToolForEngine wraps the rich call so the engine can invoke it with
-// just its narrower context. The harness provides the rich fields when
-// constructing the adapter.
 
 export function adaptToolForEngine(
   tool: Tool<z.ZodTypeAny, unknown>,
@@ -133,9 +115,9 @@ export function adaptToolForEngine(
       if (decision.kind === "deny") {
         throw new Error(decision.reason);
       }
-      // 'ask' is handled by the engine's permission flow (M2). For now,
-      // a tool that returns 'ask' will still be executed — M2 wires the
-      // prompt loop. We document this explicitly so it doesn't bite later.
+      if (decision.kind === "ask") {
+        throw new Error(`permission required: ${decision.prompt}`);
+      }
       const result = await tool.call(parsed, rich);
       return {
         output: result.output,
@@ -146,7 +128,121 @@ export function adaptToolForEngine(
   };
 }
 
-// ─── Common zod helpers ────────────────────────────────────────────────
-
 export const zPath = z.string().min(1).describe("Absolute or workspace-relative path.");
-export const zAbsPath = z.string().min(1).describe("Absolute filesystem path.");
+export const zAbsPath = zPath;
+
+function defaultPermissionDecision<I extends z.ZodTypeAny, O>(
+  def: ToolDef<I, O>,
+  ctx: RichToolContext,
+): PermissionDecision {
+  if (def.safety === "read-only") return { kind: "allow" };
+
+  if (ctx.permissionMode === "plan") {
+    return { kind: "deny", reason: `${def.name} is disabled in plan mode.` };
+  }
+
+  if (ctx.permissionMode === "bypass") return { kind: "allow" };
+
+  if (ctx.permissionMode === "workspace-write") {
+    if (def.safety === "workspace-write") return { kind: "allow" };
+    return {
+      kind: "deny",
+      reason: `${def.name} is ${def.safety}; workspace-write mode only allows workspace edits.`,
+    };
+  }
+
+  return {
+    kind: "ask",
+    prompt: `${def.name} wants to perform a ${def.safety} action.`,
+    suggestion: def.safety === "workspace-write" ? "allow_once" : "deny",
+  };
+}
+
+export function workspaceRoot(ctx: Pick<RichToolContext, "workspace">): string {
+  return path.resolve(ctx.workspace);
+}
+
+export async function resolveWorkspacePath(
+  ctx: Pick<RichToolContext, "workspace" | "pathPermissions" | "requestPermission">,
+  inputPath: string | undefined,
+  label = "path",
+  access: PathAccess = "read",
+): Promise<string> {
+  const root = workspaceRoot(ctx);
+  const candidate = path.resolve(root, inputPath ?? ".");
+  if (!isInsideWorkspace(root, candidate) && !ctx.pathPermissions?.isAllowed(candidate, access)) {
+    if (!ctx.requestPermission) {
+      throw permissionDenied(`${label} escapes workspace and no permission prompt is available: ${candidate}`);
+    }
+    const decision = await ctx.requestPermission({
+      toolName: "Filesystem",
+      input: { path: candidate, access },
+      reason: `${label} is outside the workspace: ${candidate}`,
+      suggestion: "allow_once",
+    });
+    if (decision === "deny") {
+      throw permissionDenied(`${label} denied outside workspace: ${candidate}`);
+    }
+    const grantPath = decision === "allow_always" ? await grantRootFor(candidate, access) : candidate;
+    const grantAccess = decision === "allow_always" && access === "execute" ? "all" : access;
+    await ctx.pathPermissions?.grant(grantPath, grantAccess, decision === "allow_always" ? "always" : "once");
+    if (!ctx.pathPermissions?.isAllowed(candidate, access)) {
+      throw permissionDenied(`${label} not granted outside workspace: ${candidate}`);
+    }
+  }
+  return candidate;
+}
+
+async function grantRootFor(candidate: string, access: PathAccess): Promise<string> {
+  const info = await fs.stat(candidate).catch(() => null);
+  if (info?.isDirectory()) return candidate;
+  if (access === "write" || access === "read") return path.dirname(candidate);
+  return candidate;
+}
+
+function permissionDenied(message: string): Error {
+  const err = new Error(message);
+  err.name = "PermissionDeniedError";
+  return err;
+}
+
+export function assertInsideWorkspace(root: string, candidate: string, label = "path"): void {
+  if (isInsideWorkspace(root, candidate)) return;
+  throw new Error(`${label} escapes workspace: ${candidate}`);
+}
+
+function isInsideWorkspace(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeProviderJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeProviderJsonSchema);
+  if (!value || typeof value !== "object") return value;
+
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(input)) {
+    if (key === "default") continue;
+    output[key] = normalizeProviderJsonSchema(child);
+  }
+
+  if (output.exclusiveMinimum === true && typeof output.minimum === "number") {
+    output.exclusiveMinimum = output.minimum;
+    delete output.minimum;
+  } else if (output.exclusiveMinimum === false) {
+    delete output.exclusiveMinimum;
+  }
+
+  if (output.exclusiveMaximum === true && typeof output.maximum === "number") {
+    output.exclusiveMaximum = output.maximum;
+    delete output.maximum;
+  } else if (output.exclusiveMaximum === false) {
+    delete output.exclusiveMaximum;
+  }
+
+  return output;
+}

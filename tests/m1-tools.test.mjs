@@ -17,6 +17,8 @@ import {
   GrepTool,
   BashTool,
   PowerShellTool,
+  adaptToolForEngine,
+  resolveWorkspacePath,
 } from "../packages/tools/dist/index.js";
 
 async function makeTmp() {
@@ -30,6 +32,25 @@ function ctx(workspace) {
     signal: new AbortController().signal,
     permissionMode: "workspace-write",
     fileReadStamps: new Map(),
+  };
+}
+
+function pathStore() {
+  const grants = [];
+  return {
+    grants,
+    isAllowed(absPath, access) {
+      const candidate = path.resolve(absPath);
+      return grants.some((grant) => {
+        const relative = path.relative(grant.path, candidate);
+        const contains = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+        const covers = grant.access === "all" || grant.access === access || (grant.access === "write" && access === "read");
+        return contains && covers;
+      });
+    },
+    grant(absPath, access, scope) {
+      grants.push({ path: path.resolve(absPath), access, scope });
+    },
   };
 }
 
@@ -57,6 +78,100 @@ test("Read: offset/limit slice", async () => {
   assert.equal(r.output.endLine, 15);
   assert.match(r.output.content, /\s+11\tline11/);
   assert.match(r.output.content, /\s+15\tline15/);
+});
+
+test("Read: accepts workspace-relative paths and blocks escapes", async () => {
+  const tmp = await makeTmp();
+  await fs.mkdir(path.join(tmp, "src"), { recursive: true });
+  await fs.writeFile(path.join(tmp, "src", "rel.txt"), "ok", "utf8");
+  const outside = path.join(tmp, "..", `outside-${Date.now()}.txt`);
+  await fs.writeFile(outside, "secret", "utf8");
+  const c = ctx(tmp);
+
+  const r = await ReadTool.call({ file_path: "src/rel.txt" }, c);
+  assert.equal(r.output.path, path.join(tmp, "src", "rel.txt"));
+  assert.ok(c.fileReadStamps.has(path.join(tmp, "src", "rel.txt")));
+
+  await assert.rejects(
+    ReadTool.call({ file_path: outside }, c),
+    /escapes workspace/,
+  );
+  await fs.rm(outside, { force: true });
+});
+
+test("Read: outside workspace can be allowed once by prompt", async () => {
+  const tmp = await makeTmp();
+  const outsideDir = await makeTmp();
+  const outside = path.join(outsideDir, "allowed-once.txt");
+  await fs.writeFile(outside, "outside read allowed once", "utf8");
+  const store = pathStore();
+  let asked = 0;
+  const c = {
+    ...ctx(tmp),
+    pathPermissions: store,
+    requestPermission: async (request) => {
+      asked += 1;
+      assert.equal(request.toolName, "Filesystem");
+      assert.deepEqual(request.input, { path: outside, access: "read" });
+      return "allow_once";
+    },
+  };
+
+  const r = await ReadTool.call({ file_path: outside }, c);
+  assert.match(r.output.content, /outside read allowed once/);
+  assert.equal(asked, 1);
+  assert.deepEqual(store.grants, [{ path: outside, access: "read", scope: "once" }]);
+});
+
+test("Read: outside workspace can be allowed always by prompt", async () => {
+  const tmp = await makeTmp();
+  const outsideDir = await makeTmp();
+  const outside = path.join(outsideDir, "allowed-always.txt");
+  await fs.writeFile(outside, "outside read allowed always", "utf8");
+  const store = pathStore();
+  const c = {
+    ...ctx(tmp),
+    pathPermissions: store,
+    requestPermission: async () => "allow_always",
+  };
+
+  const r = await ReadTool.call({ file_path: outside }, c);
+  assert.match(r.output.content, /outside read allowed always/);
+  assert.deepEqual(store.grants, [{ path: outsideDir, access: "read", scope: "always" }]);
+});
+
+test("Read: outside workspace decline blocks access", async () => {
+  const tmp = await makeTmp();
+  const outsideDir = await makeTmp();
+  const outside = path.join(outsideDir, "declined.txt");
+  await fs.writeFile(outside, "blocked", "utf8");
+  const c = {
+    ...ctx(tmp),
+    pathPermissions: pathStore(),
+    requestPermission: async () => "deny",
+  };
+
+  await assert.rejects(
+    ReadTool.call({ file_path: outside }, c),
+    /denied outside workspace/,
+  );
+});
+
+test("permissions: allow always on outside cwd grants all access under that directory", async () => {
+  const tmp = await makeTmp();
+  const outsideDir = await makeTmp();
+  const store = pathStore();
+  const c = {
+    ...ctx(tmp),
+    pathPermissions: store,
+    requestPermission: async () => "allow_always",
+  };
+
+  const resolved = await resolveWorkspacePath(c, outsideDir, "cwd", "execute");
+  assert.equal(resolved, outsideDir);
+  assert.deepEqual(store.grants, [{ path: outsideDir, access: "all", scope: "always" }]);
+  assert.equal(store.isAllowed(path.join(outsideDir, "child.txt"), "write"), true);
+  assert.equal(store.isAllowed(path.join(outsideDir, "nested", "thing.java"), "read"), true);
 });
 
 // ─── Write ─────────────────────────────────────────────────────────────
@@ -91,6 +206,37 @@ test("Write: overwrite OK after Read", async () => {
   await ReadTool.call({ file_path: file }, c);
   const decision = await WriteTool.checkPermissions({ file_path: file, content: "new" }, c);
   assert.equal(decision.kind, "allow");
+});
+
+test("Write: creates relative files inside workspace and rejects escapes", async () => {
+  const tmp = await makeTmp();
+  const c = ctx(tmp);
+  const r = await WriteTool.call({ file_path: "nested/new.txt", content: "hello" }, c);
+  assert.equal(r.output.path, path.join(tmp, "nested", "new.txt"));
+  assert.equal(await fs.readFile(path.join(tmp, "nested", "new.txt"), "utf8"), "hello");
+
+  await assert.rejects(
+    WriteTool.call({ file_path: "../outside.txt", content: "nope" }, c),
+    /escapes workspace/,
+  );
+});
+
+test("permissions: plan denies writes and ask does not execute headless", async () => {
+  const tmp = await makeTmp();
+  const planCtx = { ...ctx(tmp), permissionMode: "plan" };
+  const planDecision = await WriteTool.checkPermissions({ file_path: "new.txt", content: "x" }, planCtx);
+  assert.equal(planDecision.kind, "deny");
+
+  const askCtx = { ...ctx(tmp), permissionMode: "ask" };
+  const adapted = adaptToolForEngine(WriteTool, () => askCtx);
+  await assert.rejects(
+    adapted.call(
+      { file_path: "new.txt", content: "x" },
+      { workspace: tmp, signal: new AbortController().signal },
+    ),
+    /permission required/,
+  );
+  await assert.rejects(fs.stat(path.join(tmp, "new.txt")), /ENOENT/);
 });
 
 // ─── Edit ──────────────────────────────────────────────────────────────
@@ -218,9 +364,25 @@ test("Grep: content mode returns matching lines", async () => {
   assert.match(r.output.matches[0].text, /^error: bad$/);
 });
 
+test("Grep: ignores Crix session artifacts by default", async () => {
+  const tmp = await makeTmp();
+  await fs.mkdir(path.join(tmp, "src"), { recursive: true });
+  await fs.mkdir(path.join(tmp, ".crix", "sessions", "sess_test"), { recursive: true });
+  await fs.writeFile(path.join(tmp, "src", "real.txt"), "needle from source\n", "utf8");
+  await fs.writeFile(path.join(tmp, ".crix", "sessions", "sess_test", "events.jsonl"), "needle from artifact\n", "utf8");
+  const c = ctx(tmp);
+  const r = await GrepTool.call(
+    { pattern: "needle", output_mode: "files_with_matches", case_insensitive: false, max_results: 50, context_before: 0, context_after: 0 },
+    c,
+  );
+
+  assert.equal(r.output.files.length, 1);
+  assert.match(r.output.files[0], /src[\\/]+real\.txt$/);
+});
+
 // ─── Bash / PowerShell ─────────────────────────────────────────────────
 
-test("Bash: runs echo and returns stdout", async () => {
+test("Bash: runs echo and returns stdout", async (t) => {
   const tmp = await makeTmp();
   const c = ctx(tmp);
   try {
@@ -228,6 +390,16 @@ test("Bash: runs echo and returns stdout", async () => {
       { command: "echo hello", description: "test echo", timeout: 30000 },
       c,
     );
+    if (
+      r.output.exitCode !== 0 &&
+      process.platform === "win32" &&
+      /WSL2|Virtual Machine Platform|not supported|not installed|HCS_E_HYPERV_NOT_INSTALLED/i.test(
+        r.output.stdout + r.output.stderr,
+      )
+    ) {
+      t.skip("bash.exe exists, but WSL is not usable on this Windows host");
+      return;
+    }
     assert.equal(r.output.exitCode, 0);
     assert.match(r.output.stdout, /hello/);
   } catch (err) {
@@ -235,6 +407,18 @@ test("Bash: runs echo and returns stdout", async () => {
     if (err.code === "ENOENT") return;
     throw err;
   }
+});
+
+test("PowerShell: rejects cwd outside workspace before spawning", async () => {
+  const tmp = await makeTmp();
+  const c = ctx(tmp);
+  await assert.rejects(
+    PowerShellTool.call(
+      { command: "Write-Output no", description: "escape cwd", timeout: 30000, cwd: ".." },
+      c,
+    ),
+    /escapes workspace/,
+  );
 });
 
 test("PowerShell: runs Write-Output", async () => {

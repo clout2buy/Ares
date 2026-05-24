@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
     "@crix/core": "workspace:*",

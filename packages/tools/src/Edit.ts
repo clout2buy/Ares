@@ -8,11 +8,11 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, zAbsPath } from "./_shared.js";
+import { buildTool, resolveWorkspacePath, zPath } from "./_shared.js";
 
 const inputSchema = z
   .object({
-    file_path: zAbsPath,
+    file_path: zPath,
     old_string: z.string().describe("Exact text to replace. Must be unique unless replace_all."),
     new_string: z.string().describe("Replacement text. Must differ from old_string."),
     replace_all: z
@@ -37,34 +37,36 @@ export const EditTool = buildTool({
   activityDescription: (i) => `Editing ${path.basename(i.file_path)}`,
 
   async checkPermissions(i, ctx) {
+    const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
     if (i.old_string === i.new_string) {
       return { kind: "deny", reason: "old_string and new_string are identical" };
     }
-    if (!ctx.fileReadStamps.has(i.file_path)) {
-      return { kind: "deny", reason: `Read ${i.file_path} before editing it.` };
+    if (!ctx.fileReadStamps.has(filePath)) {
+      return { kind: "deny", reason: `Read ${filePath} before editing it.` };
     }
     return { kind: "allow" };
   },
 
   async call(i, ctx): Promise<{ output: EditOutput; touchedFiles: string[]; display: string }> {
-    const stamp = ctx.fileReadStamps.get(i.file_path);
-    if (!stamp) throw new Error(`${i.file_path}: missing read stamp`);
+    const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
+    const stamp = ctx.fileReadStamps.get(filePath);
+    if (!stamp) throw new Error(`${filePath}: missing read stamp`);
 
-    const stat = await fs.stat(i.file_path);
+    const stat = await fs.stat(filePath);
     if (stat.mtimeMs > stamp.mtimeMs + 5) {
       throw new Error(
-        `${i.file_path} was modified on disk since the last Read. Re-Read and retry.`,
+        `${filePath} was modified on disk since the last Read. Re-Read and retry.`,
       );
     }
 
-    const content = await fs.readFile(i.file_path, "utf8");
+    const content = await fs.readFile(filePath, "utf8");
     const occurrences = countOccurrences(content, i.old_string);
     if (occurrences === 0) {
-      throw new Error(`old_string not found in ${i.file_path}`);
+      throw new Error(`old_string not found in ${filePath}`);
     }
     if (occurrences > 1 && !i.replace_all) {
       throw new Error(
-        `old_string is not unique in ${i.file_path} (${occurrences} matches). Provide more context or set replace_all to true.`,
+        `old_string is not unique in ${filePath} (${occurrences} matches). Provide more context or set replace_all to true.`,
       );
     }
 
@@ -72,15 +74,15 @@ export const EditTool = buildTool({
       ? content.split(i.old_string).join(i.new_string)
       : content.replace(i.old_string, i.new_string);
 
-    await fs.writeFile(i.file_path, updated, "utf8");
-    const newStat = await fs.stat(i.file_path);
-    ctx.fileReadStamps.set(i.file_path, { mtimeMs: newStat.mtimeMs, size: newStat.size });
+    await fs.writeFile(filePath, updated, "utf8");
+    const newStat = await fs.stat(filePath);
+    ctx.fileReadStamps.set(filePath, { mtimeMs: newStat.mtimeMs, size: newStat.size });
 
     const replacements = i.replace_all ? occurrences : 1;
     return {
-      output: { path: i.file_path, replacements },
-      touchedFiles: [i.file_path],
-      display: `Edited ${i.file_path} (${replacements} replacement${replacements === 1 ? "" : "s"})`,
+      output: { path: filePath, replacements },
+      touchedFiles: [filePath],
+      display: `Edited ${filePath} (${replacements} replacement${replacements === 1 ? "" : "s"})`,
     };
   },
 });

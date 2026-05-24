@@ -194,9 +194,11 @@ export class OllamaCloudPool {
     model: string,
     req: ProviderRequest,
   ): AsyncGenerator<StreamEvent> {
+    const messages = req.messages.flatMap(toOllamaMessages);
+
     const body = {
       model,
-      messages: req.messages.map(toOllamaMessage),
+      messages,
       tools:
         req.tools.length > 0
           ? req.tools.map((t) => ({
@@ -216,7 +218,7 @@ export class OllamaCloudPool {
         ? {
             messages: [
               { role: "system", content: req.system },
-              ...req.messages.map(toOllamaMessage),
+              ...req.messages.flatMap(toOllamaMessages),
             ],
           }
         : {}),
@@ -361,20 +363,24 @@ class OllamaSlotProvider implements Provider {
 
 // ─── helpers ──────────────────────────────────────────────────────────
 
-function toOllamaMessage(m: Message): { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string } {
-  if (m.role === "tool") {
-    // Each tool_result becomes a separate tool message in Ollama.
-    // We collapse for simplicity; in production we'd emit N messages.
-    const first = m.content.find((b) => b.type === "tool_result") as
-      | { type: "tool_result"; tool_use_id: string; content: string | unknown }
-      | undefined;
-    return {
-      role: "tool",
-      content:
-        first && typeof first.content === "string" ? first.content : JSON.stringify(first?.content ?? ""),
-      tool_call_id: first?.tool_use_id,
-    };
+function toOllamaMessages(
+  m: Message,
+): Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }> {
+  // Anthropic-shaped messages: tool_result blocks live inside user-role
+  // messages alongside text. Ollama needs each tool result as its own
+  // tool-role message, so we may emit multiple messages from one input.
+  const out: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }> = [];
+
+  for (const b of m.content) {
+    if (b.type === "tool_result") {
+      out.push({
+        role: "tool",
+        content: typeof b.content === "string" ? b.content : JSON.stringify(b.content),
+        tool_call_id: b.tool_use_id,
+      });
+    }
   }
+
   const text = m.content
     .map((b) => {
       if (b.type === "text") return b.text;
@@ -390,11 +396,16 @@ function toOllamaMessage(m: Message): { role: string; content: string; tool_call
       type: "function",
       function: { name: b.name, arguments: JSON.stringify(b.input) },
     }));
-  return {
-    role: m.role,
-    content: text,
-    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-  };
+
+  if (text.length > 0 || toolCalls.length > 0) {
+    out.push({
+      role: m.role,
+      content: text,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    });
+  }
+
+  return out;
 }
 
 function safeJson(s: string): unknown {

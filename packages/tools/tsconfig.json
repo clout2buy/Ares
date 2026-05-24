@@ -1,4 +1,4 @@
-﻿{
+{
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
@@ -8,8 +8,7 @@
   },
   "references": [
     { "path": "../protocol" },
-    { "path": "../core" },
-    { "path": "../tools" }
+    { "path": "../core" }
   ],
   "include": ["src/**/*.ts"]
 }

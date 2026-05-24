@@ -4,6 +4,7 @@
   "references": [
     { "path": "./packages/protocol" },
     { "path": "./packages/core" },
+    { "path": "./packages/tools" },
     { "path": "./packages/cli" }
   ]
 }

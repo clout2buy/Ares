@@ -1,17 +1,18 @@
-﻿{
+{
   "name": "crix",
-  "version": "0.2.0",
+  "version": "0.3.0-alpha.1",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.33.0",
-  "description": "TypeScript-first coding-agent harness with Java worker support.",
+  "description": "Crix: streaming coding-agent harness for terminal. OpenAI ChatGPT OAuth + Ollama Cloud 3-slot parallel.",
+  "license": "MIT",
   "scripts": {
-    "build": "tsc -b packages/protocol packages/core packages/cli",
-    "check": "tsc -b packages/protocol packages/core packages/cli --pretty false",
+    "build": "tsc -b packages/protocol packages/core packages/tools packages/cli",
+    "check": "tsc -b packages/protocol packages/core packages/tools packages/cli --pretty false",
     "test": "pnpm build && node --test tests/*.test.mjs",
-    "crix": "node packages/cli/dist/index.js",
-    "java:build": "powershell -NoProfile -ExecutionPolicy Bypass -File java/crix-java-worker/build.ps1",
-    "verify": "pnpm check && pnpm test && pnpm java:build"
+    "crix": "node packages/cli/dist/entry.js",
+    "verify": "pnpm check && pnpm test",
+    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

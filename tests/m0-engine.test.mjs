@@ -25,7 +25,7 @@ test("M0: crix help exits 0 with usage on stdout", () => {
 });
 
 test("M0: crix run --goal emits ordered event stream", () => {
-  const r = runCrix(["run", "--goal", "ping"]);
+  const r = runCrix(["run", "--provider", "mock", "--goal", "ping"]);
   assert.equal(r.status, 0, `crix run failed: ${r.stderr}`);
   const lines = r.stdout.trim().split("\n").filter(Boolean);
   assert.ok(lines.length >= 4, `expected >=4 events, got ${lines.length}`);
@@ -58,7 +58,7 @@ test("M0: crix run --goal emits ordered event stream", () => {
 });
 
 test("M0: crix run --goal requires --goal flag", () => {
-  const r = runCrix(["run"]);
+  const r = runCrix(["run", "--provider", "mock"]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /--goal is required/);
 });

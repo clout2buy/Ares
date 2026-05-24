@@ -120,8 +120,8 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
 // just its narrower context. The harness provides the rich fields when
 // constructing the adapter.
 
-export function adaptToolForEngine<I extends z.ZodTypeAny, O>(
-  tool: Tool<I, O>,
+export function adaptToolForEngine(
+  tool: Tool<z.ZodTypeAny, unknown>,
   enrich: (base: ToolCallContext) => RichToolContext,
 ): { schema: ToolSchema; call: (input: unknown, ctx: ToolCallContext) => Promise<EngineToolResult> } {
   return {

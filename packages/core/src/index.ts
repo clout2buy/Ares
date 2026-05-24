@@ -23,6 +23,8 @@ export {
 
 export { MockEchoProvider } from "./providers/mock.js";
 
+export { Session, type SessionOptions } from "./session.js";
+
 export {
   OpenAIResponsesProvider,
   fetchModelList,

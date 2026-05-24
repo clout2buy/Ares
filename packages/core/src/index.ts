@@ -22,3 +22,22 @@ export {
 } from "./queryEngine.js";
 
 export { MockEchoProvider } from "./providers/mock.js";
+
+export {
+  parsePatch,
+  parsePatchText,
+  PatchParseError,
+  type Hunk,
+  type UpdateFileChunk,
+  type ApplyPatchArgs,
+  type ParseMode,
+  BEGIN_PATCH_MARKER,
+  END_PATCH_MARKER,
+  ADD_FILE_MARKER,
+  DELETE_FILE_MARKER,
+  UPDATE_FILE_MARKER,
+  MOVE_TO_MARKER,
+  EOF_MARKER,
+  CHANGE_CONTEXT_MARKER,
+  EMPTY_CHANGE_CONTEXT_MARKER,
+} from "./applyPatch/parser.js";

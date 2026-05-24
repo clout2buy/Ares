@@ -1,3 +1,31 @@
-// @crix/tools — one file per tool. Filled in during M1.
-// Each tool exports a Tool<I, O> built with buildTool() from _shared.ts.
-export {};
+// @crix/tools — one file per tool.
+// Each exports a Tool<I, O> built with buildTool() from _shared.ts.
+
+export * from "./_shared.js";
+
+export { ReadTool } from "./Read.js";
+export { WriteTool } from "./Write.js";
+export { EditTool } from "./Edit.js";
+export { GlobTool } from "./Glob.js";
+export { GrepTool } from "./Grep.js";
+export { BashTool } from "./Bash.js";
+export { PowerShellTool } from "./PowerShell.js";
+
+import { ReadTool } from "./Read.js";
+import { WriteTool } from "./Write.js";
+import { EditTool } from "./Edit.js";
+import { GlobTool } from "./Glob.js";
+import { GrepTool } from "./Grep.js";
+import { BashTool } from "./Bash.js";
+import { PowerShellTool } from "./PowerShell.js";
+
+/** The default tool set wired into a fresh Session. */
+export const DEFAULT_TOOLS = [
+  ReadTool,
+  WriteTool,
+  EditTool,
+  GlobTool,
+  GrepTool,
+  BashTool,
+  PowerShellTool,
+] as const;

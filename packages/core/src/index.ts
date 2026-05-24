@@ -24,6 +24,27 @@ export {
 export { MockEchoProvider } from "./providers/mock.js";
 
 export {
+  OpenAIResponsesProvider,
+  fetchModelList,
+  type OpenAIResponsesProviderOptions,
+  type ModelListEntry,
+} from "./providers/openaiResponses.js";
+
+export {
+  loadAuthToken,
+  authStatus,
+  authFilePath,
+  crixHome,
+  deviceCodeLogin,
+  type AuthToken,
+  type AuthStatus,
+  type AuthMode,
+  type AuthSource,
+  type DeviceCodeChallenge,
+  type DeviceCodeLoginOptions,
+} from "./providers/openaiAuth.js";
+
+export {
   parsePatch,
   parsePatchText,
   PatchParseError,

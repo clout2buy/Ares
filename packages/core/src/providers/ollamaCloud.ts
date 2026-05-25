@@ -36,6 +36,17 @@ export interface OllamaCloudPoolOptions {
   slots: Record<SlotName, SlotConfig>;
   /** Override fetch (tests). */
   fetchImpl?: typeof fetch;
+  /**
+   * When true, hit Ollama Cloud's Anthropic-compatible /v1/messages
+   * endpoint instead of /api/chat. Since Crix's wire protocol is
+   * already Anthropic-shape, this path needs ZERO translation —
+   * messages, content blocks, tools, and tool_use/tool_result all
+   * pass through unchanged. Default toggled by
+   * CRIX_OLLAMA_ANTHROPIC_COMPAT=1.
+   */
+  useAnthropicCompat?: boolean;
+  /** Optional bearer token for direct ollama.com requests. */
+  apiKey?: string;
 }
 
 interface SlotState {
@@ -45,12 +56,29 @@ interface SlotState {
 
 export class OllamaCloudPool {
   readonly host: string;
+  readonly useAnthropicCompat: boolean;
   private readonly slots: Map<SlotName, SlotState>;
   private readonly fetchImpl: typeof fetch;
+  private readonly apiKey?: string;
 
   constructor(opts: OllamaCloudPoolOptions) {
-    this.host = (opts.host ?? "http://127.0.0.1:11434").replace(/\/$/, "");
+    // Anthropic-style env vars take precedence so the standard
+    //   ANTHROPIC_BASE_URL=http://localhost:11434
+    //   ANTHROPIC_AUTH_TOKEN=ollama
+    //   ANTHROPIC_API_KEY=""
+    // setup that Ollama documents for Anthropic-SDK compat "just works".
+    const anthropicBase = process.env.ANTHROPIC_BASE_URL;
+    const anthropicToken =
+      process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || undefined;
+
+    this.host = (opts.host ?? anthropicBase ?? process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434").replace(/\/$/, "");
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.apiKey = opts.apiKey ?? anthropicToken ?? process.env.OLLAMA_API_KEY;
+    // Auto-enable compat when the user has the standard Anthropic env
+    // vars set, OR explicitly asked for it. /v1/messages exists; trust it.
+    this.useAnthropicCompat =
+      opts.useAnthropicCompat ??
+      (process.env.CRIX_OLLAMA_ANTHROPIC_COMPAT === "1" || Boolean(anthropicBase || anthropicToken));
     this.slots = new Map(
       (Object.entries(opts.slots) as Array<[SlotName, SlotConfig]>).map(([name, cfg]) => [
         name,
@@ -178,7 +206,11 @@ export class OllamaCloudPool {
     const self = this;
     const generator = (async function* (): AsyncGenerator<StreamEvent> {
       try {
-        yield* self.callOllamaChat(model, req);
+        if (self.useAnthropicCompat) {
+          yield* self.callAnthropicMessages(model, req);
+        } else {
+          yield* self.callOllamaChat(model, req);
+        }
         resolveDone();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -322,6 +354,236 @@ export class OllamaCloudPool {
     yield { type: "message_done", message, usage, stopReason };
   }
 
+  // ─── Anthropic-compat path: POST /v1/messages ───────────────────────
+  //
+  // Because Crix's wire protocol IS the Anthropic SDK shape, this is a
+  // direct passthrough. The messages, content blocks, tools, and
+  // tool_use/tool_result all serialize as Anthropic expects with no
+  // translation. We only need to parse Anthropic's SSE events back into
+  // our StreamEvent union.
+  //
+  // Triggered by Anthropic-style env vars:
+  //   ANTHROPIC_BASE_URL=http://localhost:11434
+  //   ANTHROPIC_AUTH_TOKEN=ollama
+  //   ANTHROPIC_API_KEY=""
+  // — the canonical Ollama Anthropic-compat setup.
+  private async *callAnthropicMessages(
+    model: string,
+    req: ProviderRequest,
+  ): AsyncGenerator<StreamEvent> {
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: req.maxOutputTokens ?? 8192,
+      stream: true,
+      messages: req.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => ({
+          role: m.role,
+          // system_reminder is a Crix-only block; rewrite to text so the
+          // Anthropic endpoint accepts it. Everything else (text,
+          // tool_use, tool_result, image, thinking) passes through.
+          content: m.content.map((b) =>
+            b.type === "system_reminder"
+              ? { type: "text", text: `<system-reminder>${b.text}</system-reminder>` }
+              : b,
+          ),
+        })),
+    };
+    if (req.system) body.system = req.system;
+    if (req.tools.length > 0) {
+      body.tools = req.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.input_schema,
+      }));
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "anthropic-version": "2023-06-01",
+    };
+    if (this.apiKey) headers["x-api-key"] = this.apiKey;
+
+    const res = await this.fetchImpl(`${this.host}/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: req.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      yield {
+        type: "error",
+        error: {
+          code: `http_${res.status}`,
+          message: `Ollama Anthropic-compat returned ${res.status}: ${text.slice(0, 500)}`,
+          retriable: res.status >= 500 || res.status === 429,
+        },
+      };
+      return;
+    }
+    if (!res.body) {
+      yield { type: "error", error: { code: "no_body", message: "no body", retriable: false } };
+      return;
+    }
+
+    // ─── Parse Anthropic SSE ────────────────────────────────────────
+    // event types: message_start, content_block_start, content_block_delta,
+    // content_block_stop, message_delta, message_stop, ping, error.
+    const decoder = new TextDecoder("utf8");
+    const reader = res.body.getReader();
+    let buffer = "";
+
+    // Per-index accumulators (Anthropic indexes content blocks)
+    interface BlockState {
+      type: "text" | "tool_use" | "thinking";
+      text: string;            // for text blocks
+      thinking: string;        // for thinking blocks
+      toolId?: string;
+      toolName?: string;
+      partialJson: string;     // for tool_use blocks
+    }
+    const blocks = new Map<number, BlockState>();
+    let usage: Usage = { inputTokens: 0, outputTokens: 0 };
+    let stopReason: StopReason = "end_turn";
+    let messageId = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const raw = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const evt = parseAnthropicSSE(raw);
+        if (!evt) continue;
+
+        switch (evt.type) {
+          case "message_start": {
+            messageId = evt.message?.id ?? "";
+            if (evt.message?.usage) {
+              usage = {
+                inputTokens: evt.message.usage.input_tokens ?? 0,
+                outputTokens: evt.message.usage.output_tokens ?? 0,
+              };
+            }
+            continue;
+          }
+          case "content_block_start": {
+            const cb = evt.content_block;
+            if (cb?.type === "text") {
+              blocks.set(evt.index!, { type: "text", text: "", thinking: "", partialJson: "" });
+            } else if (cb?.type === "tool_use") {
+              blocks.set(evt.index!, {
+                type: "tool_use",
+                text: "",
+                thinking: "",
+                partialJson: "",
+                toolId: cb.id,
+                toolName: cb.name,
+              });
+              yield { type: "tool_use_start", id: cb.id!, name: cb.name! };
+            } else if (cb?.type === "thinking") {
+              blocks.set(evt.index!, { type: "thinking", text: "", thinking: "", partialJson: "" });
+            }
+            continue;
+          }
+          case "content_block_delta": {
+            const block = blocks.get(evt.index!);
+            if (!block) continue;
+            const d = evt.delta;
+            if (d?.type === "text_delta" && d.text) {
+              block.text += d.text;
+              yield { type: "text_delta", text: d.text };
+            } else if (d?.type === "input_json_delta" && d.partial_json !== undefined) {
+              block.partialJson += d.partial_json;
+              if (block.toolId) {
+                yield {
+                  type: "tool_use_input_delta",
+                  id: block.toolId,
+                  deltaJson: d.partial_json,
+                };
+              }
+            } else if (d?.type === "thinking_delta" && d.thinking) {
+              block.thinking += d.thinking;
+              yield { type: "thinking_delta", text: d.thinking };
+            }
+            continue;
+          }
+          case "content_block_stop": {
+            const block = blocks.get(evt.index!);
+            if (!block || block.type !== "tool_use" || !block.toolId) continue;
+            let input: unknown;
+            try {
+              input = block.partialJson ? JSON.parse(block.partialJson) : {};
+            } catch {
+              input = { __unparseable_args__: block.partialJson };
+            }
+            yield { type: "tool_use_input_done", id: block.toolId, input };
+            continue;
+          }
+          case "message_delta": {
+            if (evt.usage?.output_tokens !== undefined) {
+              usage = { ...usage, outputTokens: evt.usage.output_tokens };
+            }
+            const sr = evt.delta?.stop_reason;
+            if (sr === "end_turn") stopReason = "end_turn";
+            else if (sr === "tool_use") stopReason = "tool_use";
+            else if (sr === "max_tokens") stopReason = "max_tokens";
+            else if (sr === "stop_sequence") stopReason = "stop_sequence";
+            continue;
+          }
+          case "message_stop":
+          case "ping":
+          case undefined:
+            continue;
+          case "error": {
+            yield {
+              type: "error",
+              error: {
+                code: evt.error?.type ?? "stream_error",
+                message: evt.error?.message ?? "anthropic-compat stream error",
+                retriable: false,
+              },
+            };
+            return;
+          }
+        }
+      }
+    }
+
+    // Build final assistant message
+    const content: ContentBlock[] = [];
+    // Iterate in index order so output mirrors the wire ordering
+    const orderedIndices = [...blocks.keys()].sort((a, b) => a - b);
+    for (const idx of orderedIndices) {
+      const block = blocks.get(idx)!;
+      if (block.type === "text" && block.text) {
+        content.push({ type: "text", text: block.text });
+      } else if (block.type === "thinking" && block.thinking) {
+        content.push({ type: "thinking", text: block.thinking });
+      } else if (block.type === "tool_use" && block.toolId && block.toolName) {
+        let input: unknown;
+        try {
+          input = block.partialJson ? JSON.parse(block.partialJson) : {};
+        } catch {
+          input = { __unparseable_args__: block.partialJson };
+        }
+        content.push({ type: "tool_use", id: block.toolId, name: block.toolName, input });
+      }
+    }
+    const message: Message = {
+      id: messageId || `msg_${Date.now().toString(36)}`,
+      role: "assistant",
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    yield { type: "message_done", message, usage, stopReason };
+  }
+
   private async collectText(
     slot: SlotName,
     system: string,
@@ -429,6 +691,93 @@ interface OllamaChunk {
   done_reason?: string;
   prompt_eval_count?: number;
   eval_count?: number;
+}
+
+// ─── Anthropic SSE event shape (only fields we read) ───────────────────
+
+interface AnthropicSSEEvent {
+  type?:
+    | "message_start"
+    | "content_block_start"
+    | "content_block_delta"
+    | "content_block_stop"
+    | "message_delta"
+    | "message_stop"
+    | "ping"
+    | "error";
+  index?: number;
+  message?: {
+    id?: string;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+  content_block?: { type?: "text" | "tool_use" | "thinking"; id?: string; name?: string };
+  delta?: {
+    type?: "text_delta" | "input_json_delta" | "thinking_delta";
+    text?: string;
+    partial_json?: string;
+    thinking?: string;
+    stop_reason?: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+  };
+  usage?: { output_tokens?: number };
+  error?: { type?: string; message?: string };
+}
+
+function parseAnthropicSSE(raw: string): AnthropicSSEEvent | null {
+  const lines = raw.split("\n");
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (dataLines.length === 0) return null;
+  const data = dataLines.join("\n");
+  if (data === "[DONE]") return null;
+  try {
+    return JSON.parse(data) as AnthropicSSEEvent;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Ollama Cloud model catalog ────────────────────────────────────────
+//
+// Curated list of cloud models the model picker shows. The user can
+// still type any model id Ollama recognizes (or whatever appears in
+// /api/tags) — this is just the discovery shortlist.
+//
+// Source: https://ollama.com/search?c=cloud (verified manually; the
+// web summary occasionally hallucinates names).
+
+export interface OllamaCloudModel {
+  id: string;
+  /** Bucket the picker groups by. */
+  role: "reasoner" | "apply" | "summarize" | "general";
+  /** Short capability hint shown in the picker. */
+  hint: string;
+}
+
+export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
+  // Large reasoners (REASONER slot)
+  { id: "qwen3-coder:480b-cloud",    role: "reasoner",  hint: "Qwen3 Coder 480B — top coder reasoner" },
+  { id: "kimi-k2:cloud",             role: "reasoner",  hint: "Kimi K2 — long-horizon agentic coding" },
+  { id: "kimi-k2.6:cloud",           role: "reasoner",  hint: "Kimi K2.6 — multimodal agentic" },
+  { id: "deepseek-v3.1:cloud",       role: "reasoner",  hint: "DeepSeek V3.1 — strong general reasoner" },
+  { id: "deepseek-v3.2:cloud",       role: "reasoner",  hint: "DeepSeek V3.2 — efficient reasoning" },
+  { id: "glm-4.6:cloud",             role: "reasoner",  hint: "GLM-4.6 — agentic engineering" },
+  { id: "gpt-oss:120b-cloud",        role: "reasoner",  hint: "GPT-OSS 120B — open frontier" },
+
+  // Mid-size apply / fast coders (APPLY slot)
+  { id: "qwen3-coder:30b-cloud",     role: "apply",     hint: "Qwen3 Coder 30B — fast apply-model" },
+  { id: "qwen2.5-coder:32b-cloud",   role: "apply",     hint: "Qwen2.5 Coder 32B — fast apply-model" },
+  { id: "devstral-small:cloud",      role: "apply",     hint: "Devstral Small — tool-use focused" },
+
+  // Tiny summarizers (SUMMARIZE slot)
+  { id: "gpt-oss:20b-cloud",         role: "summarize", hint: "GPT-OSS 20B — quick summaries" },
+  { id: "qwen2.5:7b-cloud",          role: "summarize", hint: "Qwen2.5 7B — fastest" },
+];
+
+/** Sub-list filtered by intended role. */
+export function ollamaCloudModelsFor(role: OllamaCloudModel["role"]): readonly OllamaCloudModel[] {
+  return OLLAMA_CLOUD_MODELS.filter((m) => m.role === role);
 }
 
 // ─── Defaults a fresh CLI uses if the user doesn't override ────────────

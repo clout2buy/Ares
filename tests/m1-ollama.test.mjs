@@ -70,7 +70,7 @@ test("OllamaCloudPool: parses text + tool_call from streaming NDJSON", async () 
     },
     { message: { role: "assistant", content: "" }, done: true, prompt_eval_count: 10, eval_count: 5 },
   ];
-  const pool = new OllamaCloudPool({ slots, fetchImpl: mockChat(chunks) });
+  const pool = new OllamaCloudPool({ slots, fetchImpl: mockChat(chunks) , useAnthropicCompat: false });
 
   const events = [];
   for await (const e of pool.stream("reasoner", baseReq)) events.push(e);
@@ -99,7 +99,7 @@ test("OllamaCloudPool: serializes every tool_result as its own tool message", as
     { message: { role: "assistant", content: "" }, done: true, prompt_eval_count: 10, eval_count: 5 },
   ];
   const captured = {};
-  const pool = new OllamaCloudPool({ slots, fetchImpl: captureChat(chunks, captured) });
+  const pool = new OllamaCloudPool({ slots, fetchImpl: captureChat(chunks, captured) , useAnthropicCompat: false });
 
   await consumeAll(pool.stream("reasoner", {
     ...baseReq,
@@ -141,7 +141,7 @@ test("OllamaCloudPool: per-slot single concurrency (serializes same-slot calls)"
     inFlight--;
     return new Response(body, { status: 200 });
   };
-  const pool = new OllamaCloudPool({ slots, fetchImpl });
+  const pool = new OllamaCloudPool({ slots, fetchImpl , useAnthropicCompat: false });
 
   // Three back-to-back REASONER calls should serialize → maxInFlight = 1.
   await Promise.all([
@@ -168,7 +168,7 @@ test("OllamaCloudPool: different slots run in parallel", async () => {
     inFlight--;
     return new Response(body, { status: 200 });
   };
-  const pool = new OllamaCloudPool({ slots, fetchImpl });
+  const pool = new OllamaCloudPool({ slots, fetchImpl , useAnthropicCompat: false });
 
   // REASONER + APPLY + SUMMARIZE concurrently → maxInFlight should hit 3.
   await Promise.all([
@@ -187,7 +187,7 @@ test("OllamaCloudPool.apply(): returns concatenated text", async () => {
     { message: { content: "content" }, done: false },
     { message: { content: "" }, done: true, prompt_eval_count: 100, eval_count: 2 },
   ];
-  const pool = new OllamaCloudPool({ slots, fetchImpl: mockChat(chunks) });
+  const pool = new OllamaCloudPool({ slots, fetchImpl: mockChat(chunks) , useAnthropicCompat: false });
   const result = await pool.apply({
     file: "src/x.ts",
     original: "old",
@@ -204,7 +204,7 @@ test("OllamaCloudPool.summarize(): returns plain summary", async () => {
     { message: { content: "It says hello." }, done: false },
     { message: { content: "" }, done: true, prompt_eval_count: 200, eval_count: 4 },
   ];
-  const pool = new OllamaCloudPool({ slots, fetchImpl: mockChat(chunks) });
+  const pool = new OllamaCloudPool({ slots, fetchImpl: mockChat(chunks) , useAnthropicCompat: false });
   const result = await pool.summarize({ input: "long blob of text" });
   assert.equal(result, "It says hello.");
 });
@@ -235,7 +235,7 @@ test("OllamaCloudPool.health(): reports present-vs-missing models", async () => 
     }
     return new Response("ok", { status: 200 });
   };
-  const pool = new OllamaCloudPool({ slots, fetchImpl });
+  const pool = new OllamaCloudPool({ slots, fetchImpl , useAnthropicCompat: false });
   const h = await pool.health();
   assert.equal(h.reachable, true);
   const reasoner = h.slots.find((s) => s.name === "reasoner");

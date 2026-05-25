@@ -26,6 +26,10 @@ export interface RichToolContext extends ToolCallContext {
   fileReadStamps: Map<string, FileReadStamp>;
   pathPermissions?: PathPermissionStore;
   subModel?: SubModelPool;
+  /** Optional shell process registry — required for run_in_background. */
+  shellRegistry?: import("./ShellRegistry.js").ShellRegistry;
+  /** Optional todo store — used by TodoWrite. */
+  todoStore?: import("./TodoWrite.js").TodoStore;
 }
 
 export type PathAccess = "read" | "write" | "execute" | "all";

@@ -18,26 +18,58 @@ const inputSchema = z
     description: z.string().describe("5-10 word active-voice summary."),
     timeout: z.number().int().positive().max(MAX_TIMEOUT_MS).default(DEFAULT_TIMEOUT_MS),
     cwd: z.string().optional(),
+    run_in_background: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true, the shell runs in the background and the tool returns a shell_id. Poll output with BashOutput, terminate with KillShell.",
+      ),
   })
   .strict();
 
 export const PowerShellTool = buildTool({
   name: "PowerShell",
   description:
-    "Run a PowerShell command (foreground). Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Default timeout 120s.",
+    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
-  activityDescription: (i) => `Running ${i.command.slice(0, 60)}`,
+  activityDescription: (i) =>
+    `${i.run_in_background ? "Backgrounding" : "Running"} ${i.command.slice(0, 60)}`,
 
   async call(i, ctx) {
     const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
     const pwsh = (await which("pwsh")) ?? (await which("powershell"));
     if (!pwsh) throw new Error("Neither pwsh nor powershell found on PATH");
     const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", i.command];
+
+    if (i.run_in_background) {
+      if (!ctx.shellRegistry) {
+        throw new Error("run_in_background requires a shell registry on the session context");
+      }
+      const snap = ctx.shellRegistry.spawn({
+        program: pwsh,
+        args,
+        cwd,
+        description: i.description,
+      });
+      const output: unknown = {
+        shell_id: snap.id,
+        command: snap.command,
+        status: "running",
+        description: snap.description,
+        cwd: snap.cwd,
+      };
+      return {
+        output,
+        display: `[background] ${snap.id}: ${i.command.slice(0, 50)}`,
+      };
+    }
+
     const result = await runShell(pwsh, args, cwd, i.timeout, ctx.signal);
+    const output: unknown = result;
     return {
-      output: result,
+      output,
       display: result.timedOut
         ? `PowerShell timed out after ${i.timeout}ms`
         : result.exitCode === 0

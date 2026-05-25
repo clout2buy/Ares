@@ -31,6 +31,13 @@ export {
   type CodebaseSearchHit,
   type CodebaseSearchOutput,
 } from "./CodebaseSearch.js";
+export {
+  ShellRegistry,
+  type ShellSnapshot,
+  type ShellLaunchOptions,
+} from "./ShellRegistry.js";
+export { makeBashOutputTool, type BashOutputResult } from "./BashOutput.js";
+export { makeKillShellTool, type KillShellOutput } from "./KillShell.js";
 
 import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";

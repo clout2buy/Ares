@@ -20,8 +20,14 @@ const inputSchema = z
       .positive()
       .max(MAX_TIMEOUT_MS)
       .default(DEFAULT_TIMEOUT_MS)
-      .describe(`Timeout in milliseconds (max ${MAX_TIMEOUT_MS}).`),
+      .describe(`Timeout in milliseconds (max ${MAX_TIMEOUT_MS}, foreground only).`),
     cwd: z.string().optional().describe("Working directory. Defaults to workspace."),
+    run_in_background: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true, the shell runs in the background and the tool returns a shell_id immediately. Poll output with BashOutput, terminate with KillShell. Use for dev servers, watchers, builds you want to monitor.",
+      ),
   })
   .strict();
 
@@ -35,20 +41,54 @@ export interface BashOutput {
   truncated: boolean;
 }
 
+export interface BashBackgroundOutput {
+  shell_id: string;
+  command: string;
+  status: "running";
+  description: string;
+  cwd: string;
+}
+
 export const BashTool = buildTool({
   name: "Bash",
   description:
-    "Run a bash/POSIX command (foreground). On Windows, prefer PowerShell unless POSIX shell syntax is specifically required. Default timeout 120s, max 600s.",
+    "Run a bash/POSIX command. By default runs foreground until completion. Set run_in_background=true to launch it in the background — the tool returns a shell_id immediately; use BashOutput to poll new output and KillShell to terminate. On Windows, prefer PowerShell unless POSIX shell syntax is specifically required.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
-  activityDescription: (i) => `Running ${i.command.slice(0, 60)}`,
+  activityDescription: (i) =>
+    `${i.run_in_background ? "Backgrounding" : "Running"} ${i.command.slice(0, 60)}`,
 
-  async call(i, ctx): Promise<{ output: BashOutput; display: string }> {
+  async call(i, ctx): Promise<{ output: unknown; display: string }> {
     const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
+
+    if (i.run_in_background) {
+      if (!ctx.shellRegistry) {
+        throw new Error("run_in_background requires a shell registry on the session context");
+      }
+      const snap = ctx.shellRegistry.spawn({
+        program: "bash",
+        args: ["-lc", i.command],
+        cwd,
+        description: i.description,
+      });
+      const output: BashOutput | BashBackgroundOutput = {
+        shell_id: snap.id,
+        command: snap.command,
+        status: "running",
+        description: snap.description,
+        cwd: snap.cwd,
+      };
+      return {
+        output,
+        display: `[background] ${snap.id}: ${i.command.slice(0, 50)}`,
+      };
+    }
+
     const result = await runShell("bash", ["-lc", i.command], cwd, i.timeout, ctx.signal);
+    const output: BashOutput | BashBackgroundOutput = result;
     return {
-      output: result,
+      output,
       display: result.timedOut
         ? `Bash timed out after ${i.timeout}ms`
         : result.exitCode === 0

@@ -10,6 +10,7 @@ export { GlobTool } from "./Glob.js";
 export { GrepTool } from "./Grep.js";
 export { BashTool } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
+export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.js";
 
 import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";

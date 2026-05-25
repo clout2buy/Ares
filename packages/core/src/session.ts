@@ -22,6 +22,8 @@ import {
 import { QueryEngine, type EngineTool, type Provider } from "./queryEngine.js";
 import type { ToolPermissionRequest } from "./queryEngine.js";
 import type { PermissionPromptDecision } from "@crix/protocol";
+import type { HookManager } from "./hooks.js";
+import { createWorkspaceCheckpoint } from "./checkpoints.js";
 
 export interface SessionOptions {
   workspace: string;
@@ -37,6 +39,7 @@ export interface SessionOptions {
   initialSeq?: number;
   /** Pending system-reminders to inject at next turn_start. */
   drainSystemReminders?: () => Array<{ text: string; source: "verifier" | "compaction" | "hook" | "skill" }>;
+  hookManager?: HookManager;
   requestPermission?: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision>;
 }
 
@@ -47,6 +50,7 @@ export class Session {
   private readonly eventsPath: string;
   private readonly metaPath: string;
   private metaWritten = false;
+  private lastCheckpointId: string | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     const sessionId = opts.sessionMeta?.id ?? opts.sessionId ?? `sess_${randomUUID()}`;
@@ -69,6 +73,7 @@ export class Session {
         workspace: opts.workspace,
         signal: opts.signal,
         drainSystemReminders: opts.drainSystemReminders,
+        hookManager: opts.hookManager,
         requestPermission: opts.requestPermission,
       },
       sessionId,
@@ -83,14 +88,27 @@ export class Session {
     await this.ensureSessionDir();
     this.engine.appendUserMessage(text);
     for await (const event of this.engine.streamTurn()) {
-      const entry: RolloutEntry = {
-        ts: new Date().toISOString(),
-        seq: this.seq++,
-        event,
-      };
-      // Persist before yielding so replay sees the exact event stream.
-      await appendFile(this.eventsPath, JSON.stringify(entry) + "\n", "utf8");
+      await this.persistEvent(event);
       yield event;
+      if (event.type === "tool_end" && event.touchedFiles && event.touchedFiles.length > 0) {
+        const checkpoint = await createWorkspaceCheckpoint({
+          workspace: this.opts.workspace,
+          sessionId: this.meta.id,
+          turnSeq: this.seq,
+          parentCheckpointId: this.lastCheckpointId,
+          label: `after ${event.id}`,
+        }).catch(() => null);
+        if (checkpoint) {
+          this.lastCheckpointId = checkpoint.id;
+          const checkpointEvent: TurnEvent = {
+            type: "checkpoint_created",
+            checkpointId: checkpoint.id,
+            label: checkpoint.label,
+          };
+          await this.persistEvent(checkpointEvent);
+          yield checkpointEvent;
+        }
+      }
     }
   }
 
@@ -104,6 +122,15 @@ export class Session {
     await mkdir(path.dirname(this.eventsPath), { recursive: true });
     await writeFile(this.metaPath, JSON.stringify(this.meta, null, 2) + "\n", "utf8");
     this.metaWritten = true;
+  }
+
+  private async persistEvent(event: TurnEvent): Promise<void> {
+    const entry: RolloutEntry = {
+      ts: new Date().toISOString(),
+      seq: this.seq++,
+      event,
+    };
+    await appendFile(this.eventsPath, JSON.stringify(entry) + "\n", "utf8");
   }
 }
 

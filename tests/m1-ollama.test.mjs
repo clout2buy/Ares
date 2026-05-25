@@ -39,7 +39,7 @@ function captureChat(chunks, captured, status = 200) {
 
 const slots = {
   reasoner: { model: "qwen3-coder:480b-cloud" },
-  apply: { model: "qwen3-coder:30b-cloud" },
+  apply: { model: "devstral-small-2:24b-cloud" },
   summarize: { model: "gpt-oss:20b-cloud" },
 };
 
@@ -53,6 +53,28 @@ const baseReq = {
 };
 
 // ─── single stream ─────────────────────────────────────────────────────
+
+test("OllamaCloudPool: normalizes bind hosts and missing URL schemes", () => {
+  assert.equal(new OllamaCloudPool({ slots, host: "0.0.0.0" }).host, "http://127.0.0.1:11434");
+  assert.equal(new OllamaCloudPool({ slots, host: "0.0.0.0:11555" }).host, "http://127.0.0.1:11555");
+  assert.equal(new OllamaCloudPool({ slots, host: "localhost:11434" }).host, "http://localhost:11434");
+});
+
+test("OllamaCloudPool: thrown fetch errors become stream error events", async () => {
+  const pool = new OllamaCloudPool({
+    slots,
+    host: "http://127.0.0.1:11434",
+    fetchImpl: async () => {
+      throw new TypeError("bad URL");
+    },
+    useAnthropicCompat: false,
+  });
+  const events = [];
+  for await (const event of pool.stream("reasoner", baseReq)) events.push(event);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "error");
+  assert.match(events[0].error.message, /bad URL/);
+});
 
 test("OllamaCloudPool: parses text + tool_call from streaming NDJSON", async () => {
   const chunks = [
@@ -106,8 +128,17 @@ test("OllamaCloudPool: serializes every tool_result as its own tool message", as
     messages: [
       ...baseReq.messages,
       {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_a", name: "Read", input: { file_path: "/tmp/a" } },
+          { type: "tool_use", id: "call_b", name: "Glob", input: { pattern: "*" } },
+        ],
+        createdAt: "now",
+      },
+      {
         id: "t1",
-        role: "tool",
+        role: "user",
         content: [
           { type: "tool_result", tool_use_id: "call_a", content: "A" },
           { type: "tool_result", tool_use_id: "call_b", content: "B" },
@@ -117,10 +148,21 @@ test("OllamaCloudPool: serializes every tool_result as its own tool message", as
     ],
   }));
 
+  const assistantMessages = captured.body.messages.filter((m) => m.role === "assistant");
+  assert.deepEqual(assistantMessages[0].tool_calls, [
+    {
+      type: "function",
+      function: { index: 0, name: "Read", arguments: { file_path: "/tmp/a" } },
+    },
+    {
+      type: "function",
+      function: { index: 1, name: "Glob", arguments: { pattern: "*" } },
+    },
+  ]);
   const toolMessages = captured.body.messages.filter((m) => m.role === "tool");
   assert.deepEqual(toolMessages, [
-    { role: "tool", content: "A", tool_call_id: "call_a" },
-    { role: "tool", content: "B", tool_call_id: "call_b" },
+    { role: "tool", tool_name: "Read", content: "A" },
+    { role: "tool", tool_name: "Glob", content: "B" },
   ]);
 });
 

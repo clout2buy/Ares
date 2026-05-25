@@ -26,6 +26,7 @@ import {
   isToolUseBlock,
 } from "@crix/protocol";
 import { randomUUID } from "node:crypto";
+import type { HookManager } from "./hooks.js";
 
 // ─── Provider interface (what core asks of providers) ──────────────────
 
@@ -95,6 +96,7 @@ export interface QueryEngineConfig {
   maxTurns?: number;
   /** Optional pending system-reminders to inject at next turn_start. */
   drainSystemReminders?(): Array<{ text: string; source: "verifier" | "compaction" | "hook" | "skill" }>;
+  hookManager?: HookManager;
   requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
 }
 
@@ -278,6 +280,21 @@ export class QueryEngine {
           return;
         }
 
+        const preHook = this.cfg.hookManager
+          ? await this.cfg.hookManager.run({
+              event: "PreToolUse",
+              toolName: use.name,
+              input: use.input,
+              workspace: this.cfg.workspace,
+            })
+          : null;
+        if (preHook?.blocked) {
+          const msg = preHook.reminders[0] ?? `PreToolUse hook blocked ${use.name}`;
+          yield { type: "tool_error", id: use.id, error: msg, durationMs: 0 };
+          toolResults.push({ type: "tool_result", tool_use_id: use.id, content: msg, is_error: true });
+          continue;
+        }
+
         yield {
           type: "tool_start",
           id: use.id,
@@ -324,6 +341,18 @@ export class QueryEngine {
             durationMs,
             display: result.display,
           };
+          if (use.name === "TodoWrite" && isTodoOutput(result.output)) {
+            yield { type: "todo_updated", todos: result.output.todos };
+          }
+          if (this.cfg.hookManager) {
+            await this.cfg.hookManager.run({
+              event: "PostToolUse",
+              toolName: use.name,
+              input: use.input,
+              output: result.output,
+              workspace: this.cfg.workspace,
+            });
+          }
           toolResults.push({
             type: "tool_result",
             tool_use_id: use.id,
@@ -334,6 +363,15 @@ export class QueryEngine {
           const message = err instanceof Error ? err.message : String(err);
           for (const ev of permissionEvents) yield ev;
           yield { type: "tool_error", id: use.id, error: message, durationMs };
+          if (this.cfg.hookManager) {
+            await this.cfg.hookManager.run({
+              event: "PostToolUse",
+              toolName: use.name,
+              input: use.input,
+              output: { error: message },
+              workspace: this.cfg.workspace,
+            });
+          }
           toolResults.push({
             type: "tool_result",
             tool_use_id: use.id,
@@ -463,6 +501,14 @@ function describeActivity(toolName: string, input: unknown): string {
     if (typeof i.query === "string") return `${toolName} ${i.query.slice(0, 50)}`;
   }
   return toolName;
+}
+
+function isTodoOutput(output: unknown): output is { todos: import("@crix/protocol").Todo[] } {
+  return Boolean(
+    output &&
+      typeof output === "object" &&
+      Array.isArray((output as { todos?: unknown }).todos),
+  );
 }
 
 // Re-export the ToolUseBlock type for downstream consumers that build messages.

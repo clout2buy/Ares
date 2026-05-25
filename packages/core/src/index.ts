@@ -46,6 +46,14 @@ export {
 } from "./verifier.js";
 
 export {
+  HookManager,
+  type HookConfigEntry,
+  type HookEvent,
+  type HookRunInput,
+  type HookRunResult,
+} from "./hooks.js";
+
+export {
   Session,
   listSessions,
   loadSessionSnapshot,
@@ -54,6 +62,15 @@ export {
   type SessionSnapshot,
   type LoadSessionSnapshotOptions,
 } from "./session.js";
+
+export {
+  createWorkspaceCheckpoint,
+  listWorkspaceCheckpoints,
+  loadWorkspaceCheckpoint,
+  diffWorkspaceCheckpoint,
+  restoreWorkspaceCheckpoint,
+  type CreateCheckpointOptions,
+} from "./checkpoints.js";
 
 export {
   OpenAIResponsesProvider,
@@ -84,6 +101,8 @@ export {
   type OllamaCloudPoolOptions,
   type OllamaCloudModel,
 } from "./providers/ollamaCloud.js";
+
+export { buildPromptCacheKey, type PromptCacheKey } from "./promptCache.js";
 
 export {
   parsePatch,

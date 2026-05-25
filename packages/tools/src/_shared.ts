@@ -25,6 +25,7 @@ export interface RichToolContext extends ToolCallContext {
   permissionMode: PermissionMode;
   fileReadStamps: Map<string, FileReadStamp>;
   pathPermissions?: PathPermissionStore;
+  commandPermissions?: CommandPermissionStore;
   subModel?: SubModelPool;
   /** Optional shell process registry — required for run_in_background. */
   shellRegistry?: import("./ShellRegistry.js").ShellRegistry;
@@ -38,6 +39,10 @@ export type PathGrantScope = "once" | "always";
 export interface PathPermissionStore {
   isAllowed(absPath: string, access: PathAccess): boolean;
   grant(absPath: string, access: PathAccess, scope: PathGrantScope): Promise<void> | void;
+}
+
+export interface CommandPermissionStore {
+  decide(toolName: string, command: string): PermissionDecision | null;
 }
 
 export interface SubModelPool {
@@ -120,7 +125,20 @@ export function adaptToolForEngine(
         throw new Error(decision.reason);
       }
       if (decision.kind === "ask") {
-        throw new Error(`permission required: ${decision.prompt}`);
+        if (!ctx.requestPermission) {
+          throw new Error(`permission required: ${decision.prompt}`);
+        }
+        const answer = await ctx.requestPermission({
+          toolName: tool.schema.name,
+          input: parsed,
+          reason: decision.prompt,
+          suggestion: decision.suggestion,
+        });
+        if (answer === "deny") {
+          const err = new Error(`permission denied: ${tool.schema.name}`);
+          err.name = "PermissionDeniedError";
+          throw err;
+        }
       }
       const result = await tool.call(parsed, rich);
       return {
@@ -149,9 +167,25 @@ function defaultPermissionDecision<I extends z.ZodTypeAny, O>(
 
   if (ctx.permissionMode === "workspace-write") {
     if (def.safety === "workspace-write") return { kind: "allow" };
+    if (def.safety === "external-state" || def.safety === "destructive") {
+      return {
+        kind: "ask",
+        prompt: `${def.name} wants to perform a ${def.safety} action.`,
+        suggestion: def.safety === "external-state" ? "allow_once" : "deny",
+      };
+    }
     return {
       kind: "deny",
       reason: `${def.name} is ${def.safety}; workspace-write mode only allows workspace edits.`,
+    };
+  }
+
+  if (ctx.permissionMode === "auto-safe") {
+    if (def.safety === "workspace-write") return { kind: "allow" };
+    return {
+      kind: "ask",
+      prompt: `${def.name} wants to perform a ${def.safety} action.`,
+      suggestion: def.safety === "external-state" ? "allow_once" : "deny",
     };
   }
 

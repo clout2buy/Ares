@@ -27,7 +27,7 @@ function sseStream(events) {
 
 const slots = {
   reasoner: { model: "qwen3-coder:480b-cloud" },
-  apply: { model: "qwen3-coder:30b-cloud" },
+  apply: { model: "devstral-small-2:24b-cloud" },
   summarize: { model: "gpt-oss:20b-cloud" },
 };
 

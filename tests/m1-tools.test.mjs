@@ -382,31 +382,15 @@ test("Grep: ignores Crix session artifacts by default", async () => {
 
 // ─── Bash / PowerShell ─────────────────────────────────────────────────
 
-test("Bash: runs echo and returns stdout", async (t) => {
+test("Bash: runs echo and returns stdout", async () => {
   const tmp = await makeTmp();
   const c = ctx(tmp);
-  try {
-    const r = await BashTool.call(
-      { command: "echo hello", description: "test echo", timeout: 30000 },
-      c,
-    );
-    if (
-      r.output.exitCode !== 0 &&
-      process.platform === "win32" &&
-      /WSL2|Virtual Machine Platform|not supported|not installed|HCS_E_HYPERV_NOT_INSTALLED/i.test(
-        r.output.stdout + r.output.stderr,
-      )
-    ) {
-      t.skip("bash.exe exists, but WSL is not usable on this Windows host");
-      return;
-    }
-    assert.equal(r.output.exitCode, 0);
-    assert.match(r.output.stdout, /hello/);
-  } catch (err) {
-    // Bash not installed on this Windows runner — skip
-    if (err.code === "ENOENT") return;
-    throw err;
-  }
+  const r = await BashTool.call(
+    { command: "echo hello", description: "test echo", timeout: 30000 },
+    c,
+  );
+  assert.equal(r.output.exitCode, 0, r.output.stderr || r.output.stdout);
+  assert.match(r.output.stdout, /hello/);
 });
 
 test("PowerShell: rejects cwd outside workspace before spawning", async () => {

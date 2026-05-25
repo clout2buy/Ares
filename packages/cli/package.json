@@ -16,6 +16,8 @@
   "dependencies": {
     "@crix/core": "workspace:*",
     "@crix/protocol": "workspace:*",
-    "@crix/tools": "workspace:*"
+    "@crix/tools": "workspace:*",
+    "ink": "^7.0.4",
+    "react": "^19.2.6"
   }
 }

@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ToolPermissionRequest } from "@crix/core";
 import type { TurnEvent } from "@crix/protocol";
+import type { PermissionMode } from "@crix/protocol";
 
 type Tone = "info" | "success" | "warn" | "error" | "muted";
 type Layout = "bar" | "panel" | "matrix" | "pro";
@@ -13,7 +14,8 @@ export type ThemeName =
   | "split"
   | "professional"
   | "amber"
-  | "dashboard";
+  | "dashboard"
+  | "light";
 
 interface Theme {
   name: ThemeName;
@@ -151,6 +153,20 @@ const THEMES: Record<ThemeName, Theme> = {
     error: ANSI.brightRed,
     prompt: "▷",
   },
+  light: {
+    name: "light",
+    title: "Clean Light",
+    layout: "pro",
+    primary: ANSI.blue,
+    accent: ANSI.cyan,
+    model: ANSI.blue,
+    border: ANSI.gray,
+    muted: ANSI.gray,
+    success: ANSI.green,
+    warn: ANSI.yellow,
+    error: ANSI.red,
+    prompt: ">",
+  },
   dashboard: {
     name: "dashboard",
     title: "Dashboard",
@@ -202,16 +218,20 @@ function normalizeThemeName(name: string | undefined): ThemeName | null {
     boxed: "professional",
     pro: "professional",
     mono: "professional",
+    modern: "amber",
+    "modern-dark": "amber",
     yellow: "amber",
     dark: "amber",
     dash: "dashboard",
+    clean: "light",
+    white: "light",
   };
   const candidate = aliases[raw] ?? raw;
   return candidate in THEMES ? (candidate as ThemeName) : null;
 }
 
 function theme(): Theme {
-  const selected = activeThemeName ?? normalizeThemeName(process.env.CRIX_THEME) ?? "cyberpunk";
+  const selected = activeThemeName ?? normalizeThemeName(process.env.CRIX_THEME) ?? "amber";
   return THEMES[selected];
 }
 
@@ -350,7 +370,7 @@ function barHeader(input: { workspace: string }, folder: string, provider: strin
   return [
     `${paint("CRIX", t.primary)} ${paint(provider, t.model)} ${dim(folder)} ${chip(t.title, t.border)}`,
     `${dim("workspace")} ${input.workspace}`,
-    `${dim("commands")} /help  /themes  /theme <name>  /sessions  /resume last  /workspace <path>  /doctor  /exit`,
+    `${dim("commands")} /help  /plan  /code  /danger  /sessions  /checkpoints  /resume last  /workspace <path>  /exit`,
     rule(88),
   ].join("\n") + "\n";
 }
@@ -365,7 +385,7 @@ function panelHeader(input: { workspace: string }, folder: string, provider: str
     paint(sym.tl + sym.h, t.border) +
     paint(title, t.primary) +
     paint(sym.h.repeat(Math.max(0, width - visibleLength(title) - 3)) + sym.tr, t.border);
-  const commands = "/help  /themes  /sessions  /resume last  /workspace <path>  /exit";
+  const commands = "/help  /plan  /code  /danger  /sessions  /checkpoints  /resume last  /exit";
   const bodyLine = (text: string) =>
     `${paint(sym.v, t.border)} ${padRight(truncate(text, inner), inner)} ${paint(sym.v, t.border)}`;
   const footerText = ` ${truncate(commands, width - 6)} `;
@@ -385,7 +405,7 @@ function matrixHeader(input: { workspace: string }, _folder: string, provider: s
   return [
     paint(title, t.primary),
     paint(`workspace ${input.workspace}`, t.accent),
-    paint("[ /help ] [ /themes ] [ /sessions ] [ /resume last ] [ /workspace <path> ] [ /exit ]", t.accent),
+    paint("[ /help ] [ /plan ] [ /code ] [ /danger ] [ /sessions ] [ /checkpoints ] [ /resume last ] [ /exit ]", t.accent),
     rule(92),
   ].join("\n") + "\n";
 }
@@ -395,21 +415,23 @@ function proHeader(input: { workspace: string }, folder: string, provider: strin
   return [
     `${paint("CRIX", t.primary)} ${chip(provider, t.border)} ${chip(folder, t.accent)} ${chip(t.title, t.primary)}`,
     `${dim("workspace")} ${input.workspace}`,
-    `${dim("menu     ")} /help  /themes  /theme <name>  /sessions  /resume last  /doctor  /exit`,
+    `${dim("menu     ")} /help  /plan  /code  /danger  /sessions  /checkpoints  /resume last  /doctor  /exit`,
     rule(90),
   ].join("\n") + "\n";
 }
 
-export function promptLabel(model: string, workspace: string): string {
+export function promptLabel(model: string, workspace: string, mode: PermissionMode = "workspace-write"): string {
   const t = theme();
   const folder = path.basename(workspace) || workspace;
+  const modeTag = mode === "plan" ? " [PLAN]" : mode === "bypass" ? " [BYPASS]" : "";
+  const modeColor = mode === "plan" || mode === "bypass" ? t.warn : t.model;
   if (t.layout === "matrix") {
-    return `${paint("[crix]", t.primary)} ${paint(model, t.model)} ${paint(folder, t.accent)} ${paint(t.prompt, t.primary)} `;
+    return `${paint("[crix]", t.primary)} ${paint(model + modeTag, modeColor)} ${paint(folder, t.accent)} ${paint(t.prompt, t.primary)} `;
   }
   if (t.layout === "pro") {
-    return `${paint("crix", t.primary)} ${chip(model, t.model)} ${dim(folder)} ${paint(t.prompt, t.primary)} `;
+    return `${paint("crix", t.primary)} ${chip(model + modeTag, modeColor)} ${dim(folder)} ${paint(t.prompt, t.primary)} `;
   }
-  return `${paint("crix", t.primary)} ${paint(model, t.model)} ${dim(folder)} ${paint(t.prompt, t.accent)} `;
+  return `${paint("crix", t.primary)} ${paint(model + modeTag, modeColor)} ${dim(folder)} ${paint(t.prompt, t.accent)} `;
 }
 
 export function interactiveHelp(): string {
@@ -421,6 +443,12 @@ export function interactiveHelp(): string {
       "/themes                Show installed UI themes.",
       "/theme <name>          Switch theme without restarting.",
       "/sessions              List saved .crix sessions for this workspace.",
+      "/plan                  Enter read-only planning mode.",
+      "/code                  Exit planning mode and allow workspace writes.",
+      "/danger                Toggle bypass mode for tool prompts.",
+      "/checkpoints           List local workspace checkpoints.",
+      "/checkpoint-diff <id>  Compare current workspace to a checkpoint.",
+      "/rollback <id>         Restore a checkpoint snapshot.",
       "/resume [id|last]      Replay a saved session into model context.",
       "/workspace <path>      Switch the active workspace for tool calls.",
       "/exit                  Close Crix.",

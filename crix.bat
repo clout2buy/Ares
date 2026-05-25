@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions
+set "CRIX_CALLER_CWD=%CD%"
 cd /d "%~dp0"
-title Crix Coding Harness
+title Crix Provider Launcher
 set "CRIX_PAUSE="
 if "%~1"=="" set "CRIX_PAUSE=1"
 if /I "%~1"=="cli" set "CRIX_PAUSE=1"

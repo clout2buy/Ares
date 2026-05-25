@@ -1,0 +1,914 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
+import type { PermissionMode, Todo, TurnEvent, Usage } from "@crix/protocol";
+import { currentThemeName, type ThemeName } from "./terminalUi.js";
+
+export interface InkChatSnapshot {
+  provider: string;
+  model: string;
+  workspace: string;
+  mode: PermissionMode;
+}
+
+export interface InkCommandResult {
+  kind: "handled" | "not-handled" | "exit";
+  lines?: string[];
+  snapshot?: InkChatSnapshot;
+}
+
+export interface InkChatOptions {
+  snapshot(): InkChatSnapshot;
+  resumedLines?: string[];
+  sendMessage(goal: string, onEvent: (event: TurnEvent) => void): Promise<void>;
+  handleCommand(line: string): Promise<InkCommandResult>;
+}
+
+interface LogLine {
+  id: number;
+  tone: "user" | "assistant" | "tool" | "error" | "notice" | "muted";
+  text: string;
+  meta?: string;
+}
+
+interface RuntimeStats {
+  turns: number;
+  tools: number;
+  errors: number;
+  checkpoints: number;
+  usage: Usage;
+}
+
+interface DeckTheme {
+  title: string;
+  borderStyle: "single" | "round" | "bold" | "double" | "classic";
+  frame: string;
+  accent: string;
+  accent2: string;
+  accent3: string;
+  text: string;
+  dim: string;
+  panel: string;
+  input: string;
+  user: string;
+  assistant: string;
+  tool: string;
+  error: string;
+  success: string;
+  warn: string;
+}
+
+const h = React.createElement;
+
+const DECK_THEMES: Record<ThemeName, DeckTheme> = {
+  cyberpunk: {
+    title: "CYBERPUNK",
+    borderStyle: "round",
+    frame: "magenta",
+    accent: "magenta",
+    accent2: "cyan",
+    accent3: "blue",
+    text: "white",
+    dim: "gray",
+    panel: "magenta",
+    input: "magenta",
+    user: "cyan",
+    assistant: "white",
+    tool: "magenta",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  minimal: {
+    title: "MINIMALIST",
+    borderStyle: "single",
+    frame: "gray",
+    accent: "cyan",
+    accent2: "white",
+    accent3: "blue",
+    text: "white",
+    dim: "gray",
+    panel: "gray",
+    input: "blue",
+    user: "cyan",
+    assistant: "white",
+    tool: "blue",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  matrix: {
+    title: "HACKER TERMINAL",
+    borderStyle: "classic",
+    frame: "green",
+    accent: "green",
+    accent2: "green",
+    accent3: "yellow",
+    text: "green",
+    dim: "gray",
+    panel: "green",
+    input: "green",
+    user: "green",
+    assistant: "white",
+    tool: "green",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  neon: {
+    title: "NEON BLUE",
+    borderStyle: "round",
+    frame: "blue",
+    accent: "blue",
+    accent2: "cyan",
+    accent3: "magenta",
+    text: "white",
+    dim: "gray",
+    panel: "blue",
+    input: "cyan",
+    user: "cyan",
+    assistant: "white",
+    tool: "blue",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  split: {
+    title: "SPLIT PANEL",
+    borderStyle: "round",
+    frame: "magenta",
+    accent: "magenta",
+    accent2: "blue",
+    accent3: "cyan",
+    text: "white",
+    dim: "gray",
+    panel: "magenta",
+    input: "magenta",
+    user: "magenta",
+    assistant: "white",
+    tool: "blue",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  professional: {
+    title: "BOXED PROFESSIONAL",
+    borderStyle: "single",
+    frame: "white",
+    accent: "white",
+    accent2: "gray",
+    accent3: "green",
+    text: "white",
+    dim: "gray",
+    panel: "gray",
+    input: "white",
+    user: "white",
+    assistant: "white",
+    tool: "gray",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  amber: {
+    title: "MODERN DARK",
+    borderStyle: "round",
+    frame: "yellow",
+    accent: "yellow",
+    accent2: "white",
+    accent3: "cyan",
+    text: "white",
+    dim: "gray",
+    panel: "yellow",
+    input: "yellow",
+    user: "yellow",
+    assistant: "white",
+    tool: "cyan",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  dashboard: {
+    title: "DASHBOARD",
+    borderStyle: "round",
+    frame: "cyan",
+    accent: "cyan",
+    accent2: "blue",
+    accent3: "magenta",
+    text: "white",
+    dim: "gray",
+    panel: "cyan",
+    input: "cyan",
+    user: "cyan",
+    assistant: "white",
+    tool: "blue",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+  light: {
+    title: "CLEAN LIGHT",
+    borderStyle: "round",
+    frame: "blue",
+    accent: "blue",
+    accent2: "cyan",
+    accent3: "green",
+    text: "black",
+    dim: "gray",
+    panel: "blue",
+    input: "blue",
+    user: "blue",
+    assistant: "black",
+    tool: "cyan",
+    error: "red",
+    success: "green",
+    warn: "yellow",
+  },
+};
+
+const TOOL_RAIL = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Edit",
+  "Bash",
+  "PowerShell",
+  "Task",
+  "TodoWrite",
+  "WebFetch",
+  "CodeMode",
+];
+
+export async function runInkChat(options: InkChatOptions): Promise<number> {
+  process.stdout.write("\u001b[?1049l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
+  const instance = render(h(CrixInkApp, { options }), {
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    alternateScreen: false,
+    exitOnCtrlC: true,
+  });
+  const result = await instance.waitUntilExit();
+  return typeof result === "number" ? result : 0;
+}
+
+function CrixInkApp({ options }: { options: InkChatOptions }) {
+  const app = useApp();
+  const { rows, columns } = useWindowSize();
+  const theme = deckTheme();
+  const [snapshot, setSnapshot] = useState(options.snapshot());
+  const [lines, setLines] = useState<LogLine[]>(() =>
+    (options.resumedLines ?? []).map((text, index) => ({ id: index + 1, tone: "notice", text })),
+  );
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [assistantDraft, setAssistantDraft] = useState("");
+  const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [stats, setStats] = useState<RuntimeStats>({
+    turns: 0,
+    tools: 0,
+    errors: 0,
+    checkpoints: 0,
+    usage: { inputTokens: 0, outputTokens: 0 },
+  });
+  const assistantRef = useRef("");
+  const lineId = useRef((options.resumedLines?.length ?? 0) + 1);
+  const history = useRef<string[]>([]);
+  const historyIndex = useRef<number | null>(null);
+
+  const layout = useMemo(() => {
+    const screenWidth = Math.max(64, columns - 2);
+    const screenHeight = Math.max(18, rows - 1);
+    const showRail = screenWidth >= 92;
+    const showStatus = screenWidth >= 118;
+    const railWidth = showRail ? 20 : 0;
+    const statusWidth = showStatus ? 28 : 0;
+    const gutter = (showRail ? 1 : 0) + (showStatus ? 1 : 0);
+    const mainWidth = Math.max(42, screenWidth - railWidth - statusWidth - gutter);
+    const mainHeight = Math.max(7, screenHeight - 12);
+    return { showRail, showStatus, railWidth, statusWidth, mainWidth, mainHeight, screenWidth, screenHeight };
+  }, [columns, rows]);
+
+  const visibleLogRows = Math.max(5, layout.mainHeight - 3);
+  const maxScrollOffset = Math.max(0, lines.length + (assistantDraft ? 1 : 0) - visibleLogRows);
+  const scrollUp = useCallback((amount = visibleLogRows) => {
+    setScrollOffset((prev) => Math.min(maxScrollOffset, prev + amount));
+  }, [maxScrollOffset, visibleLogRows]);
+  const scrollDown = useCallback((amount = visibleLogRows) => {
+    setScrollOffset((prev) => Math.max(0, prev - amount));
+  }, [visibleLogRows]);
+
+  useTerminalMouseMode();
+  const handleMouseEvent = useCallback((event: MouseEvent) => {
+    if (event.button === 64) scrollUp(Math.max(3, Math.floor(visibleLogRows / 2)));
+    if (event.button === 65) scrollDown(Math.max(3, Math.floor(visibleLogRows / 2)));
+  }, [scrollDown, scrollUp, visibleLogRows]);
+
+  const append = useCallback((tone: LogLine["tone"], text: string, meta?: string) => {
+    const chunks = text.split(/\r?\n/).filter((line) => line.length > 0);
+    setLines((prev) => {
+      const next = [...prev];
+      for (const chunk of chunks.length > 0 ? chunks : [text]) {
+        next.push({ id: lineId.current++, tone, text: chunk, meta });
+      }
+      return next.slice(-600);
+    });
+  }, []);
+
+  const flushAssistant = useCallback(() => {
+    const text = assistantRef.current.trimEnd();
+    if (!text) return;
+    assistantRef.current = "";
+    setAssistantDraft("");
+    append("assistant", text, "reply");
+  }, [append]);
+
+  const handleEvent = useCallback(
+    (event: TurnEvent) => {
+      if (event.type === "text_delta") {
+        assistantRef.current += event.text;
+        setAssistantDraft(assistantRef.current);
+        return;
+      }
+      if (event.type === "thinking_delta") return;
+      if (event.type === "tool_start") {
+        flushAssistant();
+        setActiveTool(event.name);
+        append("tool", event.activityDescription, event.name);
+        return;
+      }
+      if (event.type === "tool_end") {
+        setActiveTool(null);
+        setStats((prev) => ({ ...prev, tools: prev.tools + 1 }));
+        append("tool", event.display ?? `completed in ${event.durationMs}ms`, "ok");
+        return;
+      }
+      if (event.type === "tool_error") {
+        setActiveTool(null);
+        setStats((prev) => ({ ...prev, errors: prev.errors + 1 }));
+        append("error", event.error, "tool");
+        return;
+      }
+      if (event.type === "todo_updated") {
+        setTodos(event.todos);
+        return;
+      }
+      if (event.type === "checkpoint_created") {
+        setStats((prev) => ({ ...prev, checkpoints: prev.checkpoints + 1 }));
+        append("muted", `${event.checkpointId}${event.label ? ` ${event.label}` : ""}`, "checkpoint");
+        return;
+      }
+      if (event.type === "system_reminder_injected") {
+        append("error", event.text, event.source);
+        return;
+      }
+      if (event.type === "error") {
+        setStats((prev) => ({ ...prev, errors: prev.errors + 1 }));
+        append("error", event.error.message, event.error.code);
+        return;
+      }
+      if (event.type === "turn_end") {
+        flushAssistant();
+        setStats((prev) => ({
+          ...prev,
+          turns: prev.turns + 1,
+          usage: {
+            inputTokens: prev.usage.inputTokens + event.usage.inputTokens,
+            outputTokens: prev.usage.outputTokens + event.usage.outputTokens,
+            cacheReadTokens: (prev.usage.cacheReadTokens ?? 0) + (event.usage.cacheReadTokens ?? 0),
+            cacheWriteTokens: (prev.usage.cacheWriteTokens ?? 0) + (event.usage.cacheWriteTokens ?? 0),
+            reasoningTokens: (prev.usage.reasoningTokens ?? 0) + (event.usage.reasoningTokens ?? 0),
+          },
+        }));
+      }
+    },
+    [append, flushAssistant],
+  );
+
+  const submit = useCallback(
+    async (raw: string) => {
+      const line = raw.trim();
+      if (!line || busy) return;
+      setInput("");
+      setScrollOffset(0);
+      history.current.push(line);
+      historyIndex.current = null;
+      append("user", line, "send");
+      setBusy(true);
+      try {
+        if (line.startsWith("/")) {
+          const result = await options.handleCommand(line);
+          if (result.snapshot) setSnapshot(result.snapshot);
+          if (result.kind === "exit") {
+            app.exit(0);
+            return;
+          }
+          if (result.kind === "handled") {
+            for (const output of result.lines ?? []) append("notice", output, "command");
+            return;
+          }
+          append("error", `Unknown command: ${line}`, "command");
+          return;
+        }
+
+        await options.sendMessage(line, handleEvent);
+        setSnapshot(options.snapshot());
+      } catch (err) {
+        append("error", err instanceof Error ? err.message : String(err), "runtime");
+      } finally {
+        flushAssistant();
+        setBusy(false);
+        setActiveTool(null);
+      }
+    },
+    [append, app, busy, flushAssistant, handleEvent, options],
+  );
+
+  useInput((value, key) => {
+    const mouseEvents = parseMouseEvents(value);
+    if (mouseEvents.length > 0 || looksLikeMouseFragment(value)) {
+      for (const event of mouseEvents) handleMouseEvent(event);
+      return;
+    }
+    if (value.includes("\u001b[<")) return;
+    if (key.ctrl && value === "c") {
+      app.exit(130);
+      return;
+    }
+    if (key.ctrl && value === "l") {
+      setLines([]);
+      setScrollOffset(0);
+      return;
+    }
+    if (key.pageUp) {
+      scrollUp();
+      return;
+    }
+    if (key.pageDown) {
+      scrollDown();
+      return;
+    }
+    if (key.home) {
+      setScrollOffset(maxScrollOffset);
+      return;
+    }
+    if (key.end) {
+      setScrollOffset(0);
+      return;
+    }
+    if (value === "!") {
+      void submit("/danger");
+      return;
+    }
+    if (!input && value === "[") {
+      scrollUp(Math.max(3, Math.floor(visibleLogRows / 2)));
+      return;
+    }
+    if (!input && value === "]") {
+      scrollDown(Math.max(3, Math.floor(visibleLogRows / 2)));
+      return;
+    }
+    if (busy) return;
+    if (key.return) {
+      void submit(input);
+      return;
+    }
+    if (key.backspace || key.delete) {
+      setInput((prev) => prev.slice(0, -1));
+      return;
+    }
+    if (key.ctrl && value === "u") {
+      setInput("");
+      return;
+    }
+    if (key.upArrow) {
+      if (history.current.length === 0) return;
+      const next = historyIndex.current === null ? history.current.length - 1 : Math.max(0, historyIndex.current - 1);
+      historyIndex.current = next;
+      setInput(history.current[next] ?? "");
+      return;
+    }
+    if (key.downArrow) {
+      if (historyIndex.current === null) return;
+      const next = historyIndex.current + 1;
+      if (next >= history.current.length) {
+        historyIndex.current = null;
+        setInput("");
+      } else {
+        historyIndex.current = next;
+        setInput(history.current[next] ?? "");
+      }
+      return;
+    }
+    if (key.escape) {
+      setInput("");
+      return;
+    }
+    if (value && !key.ctrl && !key.meta) {
+      setInput((prev) => prev + value.replace(/\r?\n/g, ""));
+    }
+  });
+
+  const displayLines = assistantDraft
+    ? [...lines, { id: -1, tone: "assistant" as const, text: assistantDraft, meta: "stream" }]
+    : lines;
+  const bottom = Math.max(0, displayLines.length - scrollOffset);
+  const start = Math.max(0, bottom - visibleLogRows);
+  const visibleLines = displayLines.slice(start, bottom);
+
+  return h(
+    Box,
+    { flexDirection: "column", width: layout.screenWidth, height: layout.screenHeight },
+    h(Header, { snapshot, stats, theme, width: layout.screenWidth }),
+    h(
+      Box,
+      { flexDirection: "row", width: layout.screenWidth, height: layout.mainHeight },
+      layout.showRail
+        ? h(ToolRail, { theme, activeTool, width: layout.railWidth })
+        : null,
+      h(LogPanel, {
+        theme,
+        lines: visibleLines,
+        totalLines: displayLines.length,
+        start,
+        scrollOffset,
+        width: layout.mainWidth,
+        height: layout.mainHeight,
+      }),
+      layout.showStatus
+        ? h(StatusPanel, {
+            theme,
+            snapshot,
+            stats,
+            todos,
+            activeTool,
+            width: layout.statusWidth,
+          })
+        : null,
+    ),
+    !layout.showStatus && todos.length > 0 ? h(TodosStrip, { theme, todos }) : null,
+    h(InputDeck, { theme, snapshot, busy, input, width: layout.screenWidth }),
+    h(Footer, { theme, snapshot, stats, width: layout.screenWidth }),
+  );
+}
+
+function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; stats: RuntimeStats; theme: DeckTheme; width: number }) {
+  const model = compactModel(snapshot.model, 34);
+  const modeColor = snapshot.mode === "plan" ? theme.warn : snapshot.mode === "bypass" ? theme.error : theme.success;
+  return h(
+    Box,
+    {
+      flexDirection: "column",
+      width,
+      borderStyle: theme.borderStyle,
+      borderColor: theme.frame,
+      paddingX: 1,
+    },
+    h(
+      Box,
+      { justifyContent: "space-between" },
+      h(
+        Box,
+        { gap: 1 },
+        h(Text, { bold: true, color: theme.accent }, "CRIX"),
+        h(Text, { color: theme.dim }, "coding harness"),
+        h(Text, { color: theme.accent2 }, theme.title),
+      ),
+      h(Text, { color: modeColor, bold: snapshot.mode === "bypass" }, snapshot.mode),
+    ),
+    h(
+      Box,
+      { gap: 1 },
+      h(Chip, { theme, label: "MODEL", value: model, color: theme.accent }),
+      h(Chip, { theme, label: "TOOLS", value: String(stats.tools), color: theme.tool }),
+      h(Chip, { theme, label: "TURNS", value: String(stats.turns), color: theme.accent2 }),
+      h(Chip, { theme, label: "TOKENS", value: compactNumber(stats.usage.inputTokens + stats.usage.outputTokens), color: theme.accent3 }),
+      h(Chip, { theme, label: "MODE", value: snapshot.mode, color: modeColor }),
+    ),
+    h(Text, { color: theme.dim, wrap: "truncate" }, snapshot.workspace),
+  );
+}
+
+function ToolRail({ theme, activeTool, width }: { theme: DeckTheme; activeTool: string | null; width: number }) {
+  return h(
+    Box,
+    {
+      flexDirection: "column",
+      width,
+      height: "100%",
+      flexShrink: 0,
+      borderStyle: theme.borderStyle,
+      borderColor: theme.panel,
+      paddingX: 1,
+      marginRight: 1,
+    },
+    h(Text, { bold: true, color: theme.accent }, "TOOLS"),
+    h(Text, { color: theme.dim }, "deck-ready"),
+    h(Text, { color: theme.dim }, ""),
+    ...TOOL_RAIL.map((tool, index) => {
+      const active = activeTool === tool;
+      return h(
+        Text,
+        { key: tool, color: active ? theme.warn : theme.text, bold: active, wrap: "truncate" },
+        `${String(index + 1).padStart(2, "0")} ${active ? ">" : "-"} ${tool}`,
+      );
+    }),
+  );
+}
+
+function LogPanel({
+  theme,
+  lines,
+  totalLines,
+  start,
+  scrollOffset,
+  width,
+  height,
+}: {
+  theme: DeckTheme;
+  lines: LogLine[];
+  totalLines: number;
+  start: number;
+  scrollOffset: number;
+  width: number;
+  height: number;
+}) {
+  const range = totalLines > 0 ? `${start + 1}-${start + lines.length} / ${totalLines}` : "idle";
+  return h(
+    Box,
+    {
+      flexDirection: "column",
+      width,
+      height,
+      flexShrink: 1,
+      borderStyle: theme.borderStyle,
+      borderColor: theme.panel,
+      paddingX: 1,
+    },
+    h(
+      Box,
+      { justifyContent: "space-between" },
+      h(Text, { bold: true, color: theme.accent }, "OUTPUT / LOGS"),
+      h(Text, { color: scrollOffset > 0 ? theme.warn : theme.dim }, scrollOffset > 0 ? `${range} scrolled` : range),
+    ),
+    lines.length === 0
+      ? h(EmptyState, { theme })
+      : lines.map((line) => h(LogText, { key: line.id, line, theme })),
+  );
+}
+
+function EmptyState({ theme }: { theme: DeckTheme }) {
+  return h(
+    Box,
+    { flexDirection: "column", marginTop: 1 },
+    h(Text, { color: theme.dim }, "> Harness initialized."),
+    h(Text, { color: theme.dim }, "> Agent ready."),
+    h(Text, { color: theme.dim }, "> Awaiting instruction..."),
+  );
+}
+
+function StatusPanel({
+  theme,
+  snapshot,
+  stats,
+  todos,
+  activeTool,
+  width,
+}: {
+  theme: DeckTheme;
+  snapshot: InkChatSnapshot;
+  stats: RuntimeStats;
+  todos: Todo[];
+  activeTool: string | null;
+  width: number;
+}) {
+  return h(
+    Box,
+    {
+      flexDirection: "column",
+      width,
+      height: "100%",
+      flexShrink: 0,
+      borderStyle: theme.borderStyle,
+      borderColor: theme.frame,
+      paddingX: 1,
+      marginLeft: 1,
+    },
+    h(Text, { bold: true, color: theme.accent }, "STATUS"),
+    h(StatusRow, { theme, label: "STATE", value: activeTool ? "working" : "active", color: activeTool ? theme.warn : theme.success }),
+    h(StatusRow, { theme, label: "MODE", value: snapshot.mode, color: snapshot.mode === "plan" ? theme.warn : snapshot.mode === "bypass" ? theme.error : theme.success }),
+    h(ProgressMetric, { theme, label: "CONTEXT", value: Math.min(100, Math.round((stats.usage.inputTokens / 32000) * 100)) }),
+    h(StatusRow, { theme, label: "TOKENS", value: compactNumber(stats.usage.inputTokens + stats.usage.outputTokens), color: theme.accent3 }),
+    h(StatusRow, { theme, label: "ERRORS", value: String(stats.errors), color: stats.errors > 0 ? theme.error : theme.dim }),
+    h(Text, { color: theme.dim }, ""),
+    h(Text, { bold: true, color: theme.accent }, "TODOS"),
+    todos.length === 0
+      ? h(Text, { color: theme.dim }, "- none active")
+      : todos.slice(0, 7).map((todo) => h(TodoLine, { key: todo.id, todo, theme })),
+  );
+}
+
+function InputDeck({
+  theme,
+  snapshot,
+  busy,
+  input,
+  width,
+}: {
+  theme: DeckTheme;
+  snapshot: InkChatSnapshot;
+  busy: boolean;
+  input: string;
+  width: number;
+}) {
+  const prompt = `${snapshot.mode === "plan" ? "[PLAN] " : ""}${busy ? "running" : "crix"} > `;
+  const inputText = input.length > 0 ? input : "Enter your instruction...";
+  return h(
+    Box,
+    {
+      flexDirection: "column",
+      width,
+      height: 4,
+      borderStyle: theme.borderStyle,
+      borderColor: busy ? theme.warn : theme.input,
+      paddingX: 1,
+      marginTop: 1,
+    },
+    h(
+      Box,
+      { justifyContent: "space-between" },
+      h(Text, { color: busy ? theme.warn : theme.accent, bold: true }, busy ? "RUNNING" : "COMMAND"),
+      h(Text, { color: theme.dim }, "enter send | pgup/pgdn scroll | ! bypass | ctrl+l clear"),
+    ),
+    h(
+      Box,
+      null,
+      h(Text, { color: busy ? theme.warn : theme.accent2 }, prompt),
+      h(Text, { color: input.length > 0 ? theme.text : theme.dim, wrap: "truncate" }, inputText),
+    ),
+  );
+}
+
+function Footer({ theme, snapshot, stats, width }: { theme: DeckTheme; snapshot: InkChatSnapshot; stats: RuntimeStats; width: number }) {
+  return h(
+    Box,
+    { width, justifyContent: "space-between" },
+    h(Text, { color: theme.dim }, "/help  /theme modern  /themes  /plan  /code  /danger  /doctor  /exit"),
+    h(Text, { color: theme.dim }, `${compactModel(snapshot.provider, 18)} | checkpoints ${stats.checkpoints}`),
+  );
+}
+
+function Chip({ theme, label, value, color }: { theme: DeckTheme; label: string; value: string; color: string }) {
+  return h(
+    Box,
+    { borderStyle: "single", borderColor: color, paddingX: 1 },
+    h(Text, { color: theme.dim }, `${label} `),
+    h(Text, { color, bold: true }, value),
+  );
+}
+
+function StatusRow({ theme, label, value, color }: { theme: DeckTheme; label: string; value: string; color: string }) {
+  return h(
+    Box,
+    { justifyContent: "space-between" },
+    h(Text, { color: theme.dim }, label),
+    h(Text, { color, wrap: "truncate" }, value),
+  );
+}
+
+function ProgressMetric({ theme, label, value }: { theme: DeckTheme; label: string; value: number }) {
+  return h(
+    Box,
+    { flexDirection: "column", marginY: 1 },
+    h(StatusRow, { theme, label, value: `${value}%`, color: theme.accent2 }),
+    h(Text, { color: theme.accent2 }, `[${bar(value, 14)}]`),
+  );
+}
+
+function LogText({ line, theme }: { line: LogLine; theme: DeckTheme }) {
+  const color = toneColor(line.tone, theme);
+  const badge = toneBadge(line.tone);
+  const meta = line.meta ? ` ${line.meta}` : "";
+  if (line.tone === "tool") {
+    const ok = line.meta === "ok";
+    return h(
+      Box,
+      {
+        flexDirection: "row",
+      },
+      h(Text, { color: ok ? theme.success : theme.tool, bold: true }, `${badge} `),
+      h(Text, { color: theme.dim, wrap: "truncate" }, ` ${meta.trim() || "run"} `.padEnd(11).slice(0, 11)),
+      h(Text, { color: theme.text, wrap: "truncate" }, line.text),
+    );
+  }
+  return h(
+    Box,
+    { flexDirection: "row" },
+    h(Text, { color, bold: line.tone !== "assistant" }, badge.padEnd(5)),
+    h(Text, { color: theme.dim, wrap: "truncate" }, meta.padEnd(10).slice(0, 10)),
+    h(Text, { color, wrap: "truncate" }, line.text),
+  );
+}
+
+function TodosStrip({ theme, todos }: { theme: DeckTheme; todos: Todo[] }) {
+  return h(
+    Box,
+    {
+      borderStyle: theme.borderStyle,
+      borderColor: theme.frame,
+      paddingX: 1,
+      marginTop: 1,
+    },
+    h(Text, { color: theme.accent, bold: true }, "TODOS "),
+    ...todos.slice(0, 3).map((todo) => h(Text, { key: todo.id, color: todo.status === "completed" ? theme.success : theme.warn }, `${todoMarker(todo)} ${todo.status === "in_progress" ? todo.activeForm : todo.content}  `)),
+  );
+}
+
+function TodoLine({ todo, theme }: { todo: Todo; theme: DeckTheme }) {
+  const color = todo.status === "completed" ? theme.success : todo.status === "in_progress" ? theme.warn : theme.dim;
+  return h(Text, { color, wrap: "truncate" }, `${todoMarker(todo)} ${todo.status === "in_progress" ? todo.activeForm : todo.content}`);
+}
+
+function deckTheme(): DeckTheme {
+  return DECK_THEMES[currentThemeName()] ?? DECK_THEMES.cyberpunk;
+}
+
+function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
+  if (tone === "user") return theme.user;
+  if (tone === "assistant") return theme.assistant;
+  if (tone === "tool") return theme.tool;
+  if (tone === "error") return theme.error;
+  if (tone === "notice") return theme.accent2;
+  return theme.dim;
+}
+
+function toneBadge(tone: LogLine["tone"]): string {
+  if (tone === "user") return "YOU";
+  if (tone === "assistant") return "CRIX";
+  if (tone === "tool") return "TOOL";
+  if (tone === "error") return "ERR";
+  if (tone === "notice") return "INFO";
+  return "SYS";
+}
+
+function todoMarker(todo: Todo): string {
+  if (todo.status === "completed") return "[x]";
+  if (todo.status === "in_progress") return "[>]";
+  return "[ ]";
+}
+
+function compactModel(model: string, max: number): string {
+  if (model.length <= max) return model;
+  return `${model.slice(0, Math.max(0, max - 4))}...`;
+}
+
+function compactNumber(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+function bar(value: number, width: number): string {
+  const filled = Math.max(0, Math.min(width, Math.round((value / 100) * width)));
+  return "#".repeat(filled) + "-".repeat(width - filled);
+}
+
+interface MouseEvent {
+  button: number;
+  x: number;
+  y: number;
+  release: boolean;
+}
+
+function useTerminalMouseMode(): void {
+  useEffect(() => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+    const stdinStream = process.stdin as typeof process.stdin & {
+      setRawMode?: (mode: boolean) => void;
+    };
+    process.stdout.write("\u001b[?1000h\u001b[?1006h");
+    stdinStream.setRawMode?.(true);
+    return () => {
+      process.stdout.write("\u001b[?1006l\u001b[?1000l");
+    };
+  }, []);
+}
+
+function parseMouseEvents(text: string): MouseEvent[] {
+  const events: MouseEvent[] = [];
+  const pattern = /(?:\u001b\[|\[)?<(\d+);(\d+);(\d+)([mM])/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    events.push({
+      button: Number(match[1]),
+      x: Number(match[2]),
+      y: Number(match[3]),
+      release: match[4] === "m",
+    });
+  }
+  return events;
+}
+
+function looksLikeMouseFragment(text: string): boolean {
+  return /(?:\u001b\[|\[)?<\d*(?:;\d*){0,2}[mM]?/.test(text);
+}

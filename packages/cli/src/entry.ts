@@ -16,6 +16,13 @@ import {
   OpenAIResponsesProvider,
   OllamaCloudPool,
   DEFAULT_OLLAMA_SLOTS,
+  CrixSubagentRunner,
+  SubagentRegistry,
+  ContinuousVerifier,
+  HookManager,
+  listWorkspaceCheckpoints,
+  diffWorkspaceCheckpoint,
+  restoreWorkspaceCheckpoint,
   authStatus,
   deviceCodeLogin,
   listSessions,
@@ -34,13 +41,25 @@ import { stdin, stdout, stderr } from "node:process";
 import {
   DEFAULT_TOOLS,
   adaptToolForEngine,
+  makeTodoWriteTool,
+  makeTaskTool,
+  makeWebFetchTool,
+  makeWebSearchTool,
+  makeBashOutputTool,
+  makeKillShellTool,
+  makeEnterPlanModeTool,
+  makeExitPlanModeTool,
+  TodoStore,
+  ShellRegistry,
   type RichToolContext,
   type FileReadStamp,
   type PathAccess,
   type PathGrantScope,
   type PathPermissionStore,
+  type CommandPermissionStore,
+  type SubModelPool,
 } from "@crix/tools";
-import type { PermissionPromptDecision } from "@crix/protocol";
+import type { PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@crix/protocol";
 import type { ToolPermissionRequest } from "@crix/core";
 import {
   chatHeader,
@@ -58,7 +77,11 @@ import {
   toolEnd,
   toolError,
   toolStart,
+  type ThemeName,
 } from "./terminalUi.js";
+import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTui.js";
+import { runInkLauncher } from "./inkLauncher.js";
+import { loadUiSettings, updateUiSettings } from "./uiSettings.js";
 
 interface ParsedArgs {
   command: string;
@@ -67,7 +90,7 @@ interface ParsedArgs {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  let command = "chat";
+  let command = "launcher";
   let rest = argv;
   if (argv[0] && !argv[0].startsWith("--")) {
     command = argv[0];
@@ -99,9 +122,11 @@ function printHelp(): void {
       "crix v0.3.0-alpha.1 — streaming coding-agent harness",
       "",
       "Commands:",
+      "  crix launcher                                Open the provider/model launch deck.",
       "  crix chat [--provider openai|ollama|mock] [--model X]",
       "                              Open an interactive terminal prompt.",
       "  crix sessions               List saved workspace sessions.",
+      "  crix checkpoints            List workspace checkpoints.",
       "  crix resume [session-id]     Resume a saved session (defaults to latest).",
       "  crix themes                 List terminal UI themes.",
       "  crix run --goal \"<text>\" [--provider openai|ollama|mock] [--model X]",
@@ -116,10 +141,11 @@ function printHelp(): void {
       "                              Override Ollama Cloud slot models.",
       "  CRIX_HOME                   Override auth/config dir (default ~/.crix).",
       "  CRIX_RESUME_MESSAGES        Max replay messages before compaction (default 80, 0=all).",
-      "  CRIX_THEME                  UI theme: cyberpunk, minimal, matrix, neon, split, professional, amber, dashboard.",
+      "  CRIX_THEME                  UI theme: cyberpunk, minimal, matrix, neon, split, professional, amber, dashboard, light.",
       "",
       "Flags:",
       "  --theme NAME                Use a UI theme for this run.",
+      "  --workspace PATH            Run Crix against a specific workspace.",
       "",
       "Double-click crix.bat or run `crix chat` for the interactive prompt.",
       "",
@@ -133,6 +159,7 @@ interface ProviderSelection {
   provider: Provider;
   model: string;
   source: string;
+  subModel?: SubModelPool;
 }
 
 interface ResumedSessionInfo {
@@ -147,15 +174,26 @@ interface ResumedSessionInfo {
 interface LiveSession {
   session: Session;
   selection: ProviderSelection;
+  runtime: CrixRuntimeState;
+  verifier: ContinuousVerifier;
+  hooks: HookManager;
+  shellRegistry: ShellRegistry;
+  todoStore: TodoStore;
   resumed?: ResumedSessionInfo;
+}
+
+interface CrixRuntimeState {
+  permissionMode: PermissionMode;
 }
 
 async function selectProvider(flags: Map<string, string>): Promise<ProviderSelection> {
   const explicit = flags.get("provider");
   const requestedModel = flags.get("model");
   const auth = await loadAuthToken();
+  const settings = await loadUiSettings();
+  const preferred = explicit ?? settings.lastProvider;
 
-  if (explicit === "mock") {
+  if (preferred === "mock") {
     return {
       provider: new MockEchoProvider(),
       model: requestedModel ?? "mock-echo",
@@ -163,25 +201,33 @@ async function selectProvider(flags: Map<string, string>): Promise<ProviderSelec
     };
   }
 
-  if (explicit === "openai" || (!explicit && auth)) {
+  if (preferred === "openai" || (!preferred && auth)) {
     const provider = new OpenAIResponsesProvider();
     return {
       provider,
-      model: requestedModel ?? process.env.CRIX_OPENAI_MODEL ?? "gpt-5.5",
-      source: explicit ? "explicit:openai" : "auto:openai",
+      model: requestedModel ?? process.env.CRIX_OPENAI_MODEL ?? settings.lastOpenAIModel ?? "gpt-5.5",
+      source: explicit ? "explicit:openai" : preferred ? "settings:openai" : "auto:openai",
     };
   }
 
-  if (explicit === "ollama" || !explicit) {
-    const pool = new OllamaCloudPool({ slots: DEFAULT_OLLAMA_SLOTS });
+  if (preferred === "ollama" || !preferred) {
+    const slots = {
+      ...DEFAULT_OLLAMA_SLOTS,
+      reasoner: { model: requestedModel ?? settings.lastOllamaModel ?? DEFAULT_OLLAMA_SLOTS.reasoner.model },
+    };
+    const pool = new OllamaCloudPool({ slots });
     return {
       provider: pool.provider("reasoner"),
-      model: requestedModel ?? DEFAULT_OLLAMA_SLOTS.reasoner.model,
-      source: explicit ? "explicit:ollama" : "auto:ollama",
+      model: slots.reasoner.model,
+      source: explicit ? "explicit:ollama" : preferred ? "settings:ollama" : "auto:ollama",
+      subModel: {
+        apply: (req) => pool.apply(req),
+        summarize: (req) => pool.summarize(req),
+      },
     };
   }
 
-  throw new Error(`unknown provider: ${explicit}`);
+  throw new Error(`unknown provider: ${preferred}`);
 }
 
 // ─── tool wiring ───────────────────────────────────────────────────────
@@ -236,6 +282,53 @@ class CrixPathPermissionStore implements PathPermissionStore {
   }
 }
 
+interface StoredCommandPermissions {
+  rules?: Array<{
+    pattern: string;
+    effect: PermissionRuleEffect;
+  }>;
+}
+
+class CrixCommandPermissionStore implements CommandPermissionStore {
+  private constructor(private readonly rules: PermissionRule[]) {}
+
+  static async load(workspace: string): Promise<CrixCommandPermissionStore> {
+    const files = [
+      path.join(crixHome(), "command-permissions.json"),
+      path.join(workspace, ".crix", "command-permissions.json"),
+    ];
+    const rules: PermissionRule[] = [];
+    for (const file of files) {
+      try {
+        const json = JSON.parse(await readFile(file, "utf8")) as StoredCommandPermissions;
+        for (const rule of json.rules ?? []) {
+          rules.push({
+            pattern: rule.pattern,
+            effect: rule.effect,
+            source: file.startsWith(path.join(workspace, ".crix")) ? "project" : "user-global",
+          });
+        }
+      } catch {
+        // No command rules configured.
+      }
+    }
+    return new CrixCommandPermissionStore(rules);
+  }
+
+  decide(toolName: string, command: string) {
+    const target = `${toolName}(${command})`;
+    const rule = [...this.rules].reverse().find((r) => wildcardToRegExp(r.pattern).test(target));
+    if (!rule) return null;
+    if (rule.effect === "allow") return { kind: "allow" as const, reason: `matched ${rule.pattern}` };
+    if (rule.effect === "deny") return { kind: "deny" as const, reason: `${toolName} denied by rule ${rule.pattern}` };
+    return {
+      kind: "ask" as const,
+      prompt: `${toolName} matched command permission rule ${rule.pattern}`,
+      suggestion: "allow_once" as const,
+    };
+  }
+}
+
 function accessCovers(granted: PathAccess, requested: PathAccess): boolean {
   if (granted === "all") return true;
   if (granted === requested) return true;
@@ -246,6 +339,14 @@ function pathContains(rootPath: string, candidate: string): boolean {
   const root = path.resolve(rootPath);
   const relative = path.relative(root, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function wildcardToRegExp(pattern: string): RegExp {
+  return new RegExp("^" + pattern.split("*").map(escapeRegExp).join(".*") + "$", "i");
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function promptPermission(request: ToolPermissionRequest): Promise<PermissionPromptDecision> {
@@ -306,18 +407,54 @@ async function readPermissionLine(): Promise<"1" | "2" | "3"> {
   }
 }
 
-async function buildEngineTools(pathPermissions: PathPermissionStore): Promise<EngineTool[]> {
+async function buildEngineTools(
+  pathPermissions: PathPermissionStore,
+  commandPermissions: CommandPermissionStore,
+  selection: ProviderSelection,
+  runtime: CrixRuntimeState,
+  shellRegistry: ShellRegistry,
+  todoStore: TodoStore,
+): Promise<EngineTool[]> {
   // Shared per-session state populated by the tool harness.
   const fileReadStamps = new Map<string, FileReadStamp>();
-  return DEFAULT_TOOLS.map((tool) => {
+  const enrich = (base: ToolCallContext): RichToolContext => ({
+    ...base,
+    permissionMode: runtime.permissionMode,
+    fileReadStamps,
+    pathPermissions,
+    commandPermissions,
+    shellRegistry,
+    todoStore,
+    subModel: selection.subModel,
+  });
+
+  const baseToolDefs = [
+    ...DEFAULT_TOOLS,
+    makeTodoWriteTool(todoStore),
+    makeWebSearchTool(),
+    makeWebFetchTool(selection.subModel),
+    makeBashOutputTool(shellRegistry),
+    makeKillShellTool(shellRegistry),
+    makeEnterPlanModeTool(runtime),
+    makeExitPlanModeTool(runtime),
+  ];
+
+  const baseTools = baseToolDefs.map((tool) => {
     const adapted = adaptToolForEngine(tool, (base: ToolCallContext): RichToolContext => ({
-      ...base,
-      permissionMode: "workspace-write",
-      fileReadStamps,
-      pathPermissions,
+      ...enrich(base),
     }));
     return adapted as EngineTool;
   });
+
+  const runner = new CrixSubagentRunner({
+    registry: new SubagentRegistry(),
+    provider: selection.provider,
+    model: selection.model,
+    parentTools: baseTools,
+    baseSystemPrompt: buildSystemPrompt(runtime.permissionMode),
+  });
+  const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
+  return [...baseTools, taskTool];
 }
 
 async function createSession(
@@ -334,6 +471,31 @@ async function createSessionWithSelection(
   resumeSessionId?: string,
 ): Promise<LiveSession> {
   const pathPermissions = await CrixPathPermissionStore.load();
+  const commandPermissions = await CrixCommandPermissionStore.load(process.cwd());
+  const settings = await loadUiSettings();
+  const runtime: CrixRuntimeState = { permissionMode: settings.dangerousBypass ? "bypass" : "workspace-write" };
+  const shellRegistry = new ShellRegistry();
+  const todoStore = new TodoStore();
+  const verifier = new ContinuousVerifier({
+    workspace: process.cwd(),
+    onEvent: (event) => {
+      void event;
+    },
+  });
+  const hooks = await HookManager.load(process.cwd());
+  await hooks.run({ event: "SessionStart", workspace: process.cwd() });
+  const drainSystemReminders = () => [
+    ...verifier.drainReminders(),
+    ...hooks.drainReminders(),
+  ];
+  const tools = await buildEngineTools(
+    pathPermissions,
+    commandPermissions,
+    selection,
+    runtime,
+    shellRegistry,
+    todoStore,
+  );
   if (resumeSessionId) {
     const snapshot = await loadSessionSnapshot(process.cwd(), resumeSessionId, {
       maxMessages: resumeMessageLimit(),
@@ -342,9 +504,11 @@ async function createSessionWithSelection(
       workspace: process.cwd(),
       provider: selection.provider,
       model: selection.model,
-      systemPrompt: buildSystemPrompt(),
-      tools: await buildEngineTools(pathPermissions),
+      systemPrompt: buildSystemPrompt(runtime.permissionMode),
+      tools,
       requestPermission: promptPermission,
+      drainSystemReminders,
+      hookManager: hooks,
       sessionMeta: snapshot.meta,
       initialMessages: snapshot.messages,
       initialSeq: snapshot.nextSeq,
@@ -360,17 +524,24 @@ async function createSessionWithSelection(
         omittedMessageCount: snapshot.omittedMessageCount,
         compacted: snapshot.compacted,
       },
+      runtime,
+      verifier,
+      hooks,
+      shellRegistry,
+      todoStore,
     };
   }
   const session = new Session({
     workspace: process.cwd(),
     provider: selection.provider,
     model: selection.model,
-    systemPrompt: buildSystemPrompt(),
-    tools: await buildEngineTools(pathPermissions),
+    systemPrompt: buildSystemPrompt(runtime.permissionMode),
+    tools,
     requestPermission: promptPermission,
+    drainSystemReminders,
+    hookManager: hooks,
   });
-  return { session, selection };
+  return { session, selection, runtime, verifier, hooks, shellRegistry, todoStore };
 }
 
 async function resolveResumeSessionId(target?: string): Promise<string | undefined> {
@@ -416,6 +587,105 @@ function printResumed(resumed: ResumedSessionInfo): void {
   process.stdout.write(notice("Resumed Session", lines, "success"));
 }
 
+function resumedLines(resumed: ResumedSessionInfo): string[] {
+  const lines = [
+    `Resumed ${resumed.id}`,
+    `${resumed.eventCount} replayed event(s)`,
+    `${resumed.replayedMessageCount} message(s) hydrated into model context`,
+  ];
+  if (resumed.compacted) lines.push(`${resumed.omittedMessageCount} older message(s) compacted into a replay summary`);
+  if (resumed.preview) lines.push(`last user message: ${resumed.preview}`);
+  return lines;
+}
+
+function inkHelpLines(): string[] {
+  return [
+    "/help                  Show this help.",
+    "/doctor                Provider and runtime status.",
+    "/themes                Show installed UI themes.",
+    "/theme <name>          Switch theme without restarting.",
+    "/sessions              List saved .crix sessions for this workspace.",
+    "/plan                  Enter read-only planning mode.",
+    "/code                  Exit planning mode and allow workspace writes.",
+    "/danger                Toggle bypass mode for tool prompts.",
+    "/checkpoints           List local workspace checkpoints.",
+    "/checkpoint-diff <id>  Compare current workspace to a checkpoint.",
+    "/rollback <id>         Restore a checkpoint snapshot.",
+    "/resume [id|last]      Replay a saved session into model context.",
+    "/workspace <path>      Switch the active workspace for tool calls.",
+    "/exit                  Close Crix.",
+  ];
+}
+
+function themeLines(): string[] {
+  return availableThemes().map((name) => `${name}${name === currentThemeNameSafe() ? " (active)" : ""}`);
+}
+
+function currentThemeNameSafe(): string {
+  try {
+    return process.env.CRIX_THEME ?? "amber";
+  } catch {
+    return "amber";
+  }
+}
+
+async function sessionsLines(limit = 20): Promise<string[]> {
+  const sessions = await listSessions(process.cwd(), limit);
+  if (sessions.length === 0) return ["No saved sessions in this workspace yet."];
+  return sessions.map(sessionSummaryLine);
+}
+
+async function doctorSummaryLines(): Promise<string[]> {
+  const auth = await authStatus();
+  const pool = new OllamaCloudPool({ slots: DEFAULT_OLLAMA_SLOTS });
+  const health = await pool.health();
+  return [
+    `OpenAI auth configured: ${auth.configured ? "yes" : "no"}`,
+    `OpenAI auth mode: ${auth.mode}`,
+    `OpenAI auth source: ${auth.source}`,
+    ...(auth.email ? [`OpenAI email: ${auth.email}`] : []),
+    `Ollama host: ${health.host}`,
+    `Ollama reachable: ${health.reachable ? "yes" : "no"}`,
+    `Ollama available models: ${health.availableModels.length}`,
+    ...health.slots.map((slot) => `${slot.name}: ${slot.model} ${slot.present ? "[present]" : "[missing]"}`),
+  ];
+}
+
+async function checkpointLines(): Promise<string[]> {
+  const checkpoints = await listWorkspaceCheckpoints(process.cwd());
+  if (checkpoints.length === 0) return ["No checkpoints in this workspace yet."];
+  return checkpoints
+    .slice(0, 20)
+    .map((cp) => `${cp.id}  ${cp.createdAt}  ${cp.fileManifest.length} files${cp.label ? `  ${cp.label}` : ""}`);
+}
+
+async function checkpointDiffLines(id: string): Promise<string[]> {
+  if (!id) return ["Usage: /checkpoint-diff <id>"];
+  try {
+    const diff = await diffWorkspaceCheckpoint(process.cwd(), id);
+    return [
+      `added: ${diff.added.length}`,
+      ...diff.added.slice(0, 20).map((f) => `+ ${f}`),
+      `modified: ${diff.modified.length}`,
+      ...diff.modified.slice(0, 20).map((f) => `~ ${f}`),
+      `deleted: ${diff.deleted.length}`,
+      ...diff.deleted.slice(0, 20).map((f) => `- ${f}`),
+    ];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
+}
+
+async function rollbackLines(id: string): Promise<string[]> {
+  if (!id) return ["Usage: /rollback <checkpoint-id>"];
+  try {
+    const result = await restoreWorkspaceCheckpoint(process.cwd(), id);
+    return [`restored ${result.restored} file(s)`, `deleted ${result.deleted} file(s)`];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
+}
+
 function resumeMessageLimit(): number | undefined {
   const raw = process.env.CRIX_RESUME_MESSAGES;
   if (!raw) return 80;
@@ -426,22 +696,12 @@ function resumeMessageLimit(): number | undefined {
 }
 
 async function loadSavedTheme(): Promise<void> {
-  try {
-    const settings = JSON.parse(await readFile(uiSettingsPath(), "utf8")) as { theme?: string };
-    if (settings.theme) setTheme(settings.theme);
-  } catch {
-    // First run or old config.
-  }
+  const settings = await loadUiSettings();
+  if (settings.theme) setTheme(settings.theme);
 }
 
 async function saveTheme(name: string): Promise<void> {
-  const filePath = uiSettingsPath();
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify({ theme: name }, null, 2) + "\n", "utf8");
-}
-
-function uiSettingsPath(): string {
-  return path.join(crixHome(), "ui.json");
+  await updateUiSettings({ theme: name as ThemeName });
 }
 
 // ─── commands ──────────────────────────────────────────────────────────
@@ -466,6 +726,9 @@ async function runCommand(args: ParsedArgs): Promise<number> {
   );
 
   for await (const event of live.session.send(goal)) {
+    if (event.type === "tool_end" && event.touchedFiles?.length) {
+      live.verifier.scheduleFor(event.touchedFiles);
+    }
     process.stdout.write(JSON.stringify(event) + "\n");
   }
   return 0;
@@ -474,6 +737,60 @@ async function runCommand(args: ParsedArgs): Promise<number> {
 async function sessionsCommand(): Promise<number> {
   await printSessions();
   return 0;
+}
+
+async function checkpointsCommand(): Promise<number> {
+  const checkpoints = await listWorkspaceCheckpoints(process.cwd());
+  if (checkpoints.length === 0) {
+    process.stdout.write(notice("Checkpoints", ["No checkpoints in this workspace yet."], "warn"));
+    return 0;
+  }
+  process.stdout.write(
+    notice(
+      "Checkpoints",
+      checkpoints.slice(0, 20).map((cp) => `${cp.id}  ${cp.createdAt}  ${cp.fileManifest.length} files${cp.label ? `  ${cp.label}` : ""}`),
+      "info",
+    ),
+  );
+  return 0;
+}
+
+async function checkpointDiffCommand(id: string): Promise<number> {
+  if (!id) {
+    process.stderr.write(notice("Checkpoint Diff", ["Usage: /checkpoint-diff <id>"], "error"));
+    return 2;
+  }
+  try {
+    const diff = await diffWorkspaceCheckpoint(process.cwd(), id);
+    const lines = [
+      `added: ${diff.added.length}`,
+      ...diff.added.slice(0, 20).map((f) => `+ ${f}`),
+      `modified: ${diff.modified.length}`,
+      ...diff.modified.slice(0, 20).map((f) => `~ ${f}`),
+      `deleted: ${diff.deleted.length}`,
+      ...diff.deleted.slice(0, 20).map((f) => `- ${f}`),
+    ];
+    process.stdout.write(notice("Checkpoint Diff", lines, "info"));
+    return 0;
+  } catch (err) {
+    process.stderr.write(notice("Checkpoint Diff", [err instanceof Error ? err.message : String(err)], "error"));
+    return 1;
+  }
+}
+
+async function rollbackCommand(id: string): Promise<number> {
+  if (!id) {
+    process.stderr.write(notice("Rollback", ["Usage: /rollback <checkpoint-id>"], "error"));
+    return 2;
+  }
+  try {
+    const result = await restoreWorkspaceCheckpoint(process.cwd(), id);
+    process.stdout.write(notice("Rollback", [`restored ${result.restored} file(s)`, `deleted ${result.deleted} file(s)`], "success"));
+    return 0;
+  } catch (err) {
+    process.stderr.write(notice("Rollback", [err instanceof Error ? err.message : String(err)], "error"));
+    return 1;
+  }
 }
 
 function themesCommand(): number {
@@ -493,6 +810,46 @@ async function resumeCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
+async function launcherCommand(args: ParsedArgs): Promise<number> {
+  const settings = await loadUiSettings();
+  const action = await runInkLauncher({
+    workspace: process.cwd(),
+    settings,
+    onSettingsChange: (patch) => {
+      void updateUiSettings(patch);
+    },
+  });
+  if (action.kind === "quit") return 0;
+  if (action.kind === "login") return loginCommand();
+  if (action.kind === "doctor") return doctorCommand();
+  if (action.kind === "help") {
+    printHelp();
+    return 0;
+  }
+
+  if (action.workspace) {
+    const info = await stat(action.workspace).catch(() => null);
+    if (!info?.isDirectory()) {
+      process.stderr.write(`error: workspace is not a directory: ${action.workspace}\n`);
+      return 2;
+    }
+    process.chdir(action.workspace);
+  }
+  setTheme(action.theme);
+  await updateUiSettings({
+    theme: action.theme,
+    lastProvider: action.provider,
+    lastOpenAIModel: action.provider === "openai" ? action.model : settings.lastOpenAIModel,
+    lastOllamaModel: action.provider === "ollama" ? action.model : settings.lastOllamaModel,
+    favoriteOllamaModels: action.favoriteOllamaModels,
+    favoriteOpenAIModels: action.favoriteOpenAIModels,
+  });
+  args.flags.set("provider", action.provider);
+  args.flags.set("model", action.model);
+  args.flags.set("theme", action.theme);
+  return chatCommand(args);
+}
+
 async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<number> {
   let live: LiveSession;
   try {
@@ -503,6 +860,90 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     return 2;
   }
 
+  if (stdin.isTTY && stdout.isTTY && process.env.CRIX_LEGACY_TUI !== "1") {
+    const snapshot = (): InkChatSnapshot => ({
+      provider: live.selection.provider.name,
+      model: live.selection.model,
+      workspace: process.cwd(),
+      mode: live.runtime.permissionMode,
+    });
+    return await runInkChat({
+      snapshot,
+      resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
+      sendMessage: async (goal, onEvent) => {
+        for await (const event of live.session.send(goal)) {
+          if (event.type === "tool_end" && event.touchedFiles?.length) {
+            live.verifier.scheduleFor(event.touchedFiles);
+          }
+          onEvent(event);
+        }
+      },
+      handleCommand: async (line): Promise<InkCommandResult> => {
+        if (line === "/exit" || line === "/quit") return { kind: "exit" };
+        if (line === "/help") return { kind: "handled", lines: inkHelpLines(), snapshot: snapshot() };
+        if (line === "/doctor") return { kind: "handled", lines: await doctorSummaryLines(), snapshot: snapshot() };
+        if (line === "/themes") return { kind: "handled", lines: themeLines(), snapshot: snapshot() };
+        if (line === "/sessions") return { kind: "handled", lines: await sessionsLines(), snapshot: snapshot() };
+        if (line === "/plan") {
+          live.runtime.permissionMode = "plan";
+          await updateUiSettings({ dangerousBypass: false });
+          return { kind: "handled", lines: ["Plan mode enabled. Writes are blocked."], snapshot: snapshot() };
+        }
+        if (line === "/code" || line === "/exitplan") {
+          live.runtime.permissionMode = "workspace-write";
+          await updateUiSettings({ dangerousBypass: false });
+          return { kind: "handled", lines: ["Workspace-write mode restored."], snapshot: snapshot() };
+        }
+        if (line === "/danger" || line === "/bypass") {
+          live.runtime.permissionMode = live.runtime.permissionMode === "bypass" ? "workspace-write" : "bypass";
+          await updateUiSettings({ dangerousBypass: live.runtime.permissionMode === "bypass" });
+          return {
+            kind: "handled",
+            lines: [
+              live.runtime.permissionMode === "bypass"
+                ? "Dangerous bypass enabled. Tool prompts are auto-allowed until you toggle it off."
+                : "Dangerous bypass disabled. Workspace-write mode restored.",
+            ],
+            snapshot: snapshot(),
+          };
+        }
+        if (line === "/checkpoints") return { kind: "handled", lines: await checkpointLines(), snapshot: snapshot() };
+        if (line.startsWith("/checkpoint-diff ")) {
+          return { kind: "handled", lines: await checkpointDiffLines(line.slice("/checkpoint-diff ".length).trim()), snapshot: snapshot() };
+        }
+        if (line.startsWith("/rollback ")) {
+          return { kind: "handled", lines: await rollbackLines(line.slice("/rollback ".length).trim()), snapshot: snapshot() };
+        }
+        if (line === "/theme" || line.startsWith("/theme ")) {
+          const requested = line.split(/\s+/, 2)[1];
+          if (!requested) return { kind: "handled", lines: themeLines(), snapshot: snapshot() };
+          const selected = setTheme(requested);
+          if (!selected) {
+            return { kind: "handled", lines: [`Unknown theme: ${requested}`, `Available: ${availableThemes().join(", ")}`], snapshot: snapshot() };
+          }
+          await saveTheme(selected);
+          return { kind: "handled", lines: [`Theme active: ${selected}`], snapshot: snapshot() };
+        }
+        if (line === "/resume" || line.startsWith("/resume ")) {
+          const target = line.split(/\s+/, 2)[1] ?? "last";
+          const sessionId = await requireResumeSessionId(target);
+          live = await createSessionWithSelection(args, live.selection, sessionId);
+          return { kind: "handled", lines: live.resumed ? resumedLines(live.resumed) : [`Resumed ${sessionId}`], snapshot: snapshot() };
+        }
+        if (line.startsWith("/workspace ")) {
+          const target = line.slice("/workspace ".length).trim();
+          const next = path.resolve(process.cwd(), target);
+          const info = await stat(next).catch(() => null);
+          if (!info?.isDirectory()) return { kind: "handled", lines: [`Not a directory: ${next}`], snapshot: snapshot() };
+          process.chdir(next);
+          live = await createSessionWithSelection(args, live.selection);
+          return { kind: "handled", lines: [`Active workspace is now ${process.cwd()}`], snapshot: snapshot() };
+        }
+        return { kind: "not-handled" };
+      },
+    });
+  }
+
   process.stdout.write("\n" + chatHeader({
     provider: live.selection.provider.name,
     model: live.selection.model,
@@ -511,7 +952,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
   if (live.resumed) printResumed(live.resumed);
 
   while (true) {
-    const line = (await askLine(promptLabel(live.selection.model, process.cwd()))).trim();
+    const line = (await askLine(promptLabel(live.selection.model, process.cwd(), live.runtime.permissionMode))).trim();
     if (!line) continue;
     if (line === "/exit" || line === "exit" || line === "/quit" || line === "quit") {
       process.stdout.write("bye\n");
@@ -553,6 +994,46 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       await printSessions();
       continue;
     }
+    if (line === "/plan") {
+      live.runtime.permissionMode = "plan";
+      await updateUiSettings({ dangerousBypass: false });
+      process.stdout.write(notice("Plan Mode", ["Writes are blocked. Use /code to return to workspace-write mode."], "warn"));
+      continue;
+    }
+    if (line === "/code" || line === "/exitplan") {
+      live.runtime.permissionMode = "workspace-write";
+      await updateUiSettings({ dangerousBypass: false });
+      process.stdout.write(notice("Plan Mode", ["Workspace-write mode restored."], "success"));
+      continue;
+    }
+    if (line === "/danger" || line === "/bypass") {
+      live.runtime.permissionMode = live.runtime.permissionMode === "bypass" ? "workspace-write" : "bypass";
+      await updateUiSettings({ dangerousBypass: live.runtime.permissionMode === "bypass" });
+      process.stdout.write(
+        notice(
+          "Danger",
+          [
+            live.runtime.permissionMode === "bypass"
+              ? "Dangerous bypass enabled. Tool prompts are auto-allowed until toggled off."
+              : "Dangerous bypass disabled. Workspace-write mode restored.",
+          ],
+          live.runtime.permissionMode === "bypass" ? "warn" : "success",
+        ),
+      );
+      continue;
+    }
+    if (line === "/checkpoints") {
+      await checkpointsCommand();
+      continue;
+    }
+    if (line.startsWith("/checkpoint-diff ")) {
+      await checkpointDiffCommand(line.slice("/checkpoint-diff ".length).trim());
+      continue;
+    }
+    if (line.startsWith("/rollback ")) {
+      await rollbackCommand(line.slice("/rollback ".length).trim());
+      continue;
+    }
     if (line === "/resume" || line.startsWith("/resume ")) {
       const target = line.split(/\s+/, 2)[1] ?? "last";
       try {
@@ -570,7 +1051,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       continue;
     }
 
-    await renderTurn(live.session, line);
+    await renderTurn(live, line);
   }
 }
 
@@ -600,10 +1081,10 @@ async function switchWorkspace(
   return live;
 }
 
-async function renderTurn(session: Session, goal: string): Promise<void> {
+async function renderTurn(live: LiveSession, goal: string): Promise<void> {
   let wroteText = false;
   let wroteThinking = false;
-  for await (const event of session.send(goal)) {
+  for await (const event of live.session.send(goal)) {
     if (event.type === "text_delta") {
       if (wroteThinking) {
         process.stderr.write("\n");
@@ -630,7 +1111,16 @@ async function renderTurn(session: Session, goal: string): Promise<void> {
       continue;
     }
     if (event.type === "tool_end") {
+      if (event.touchedFiles?.length) live.verifier.scheduleFor(event.touchedFiles);
       process.stderr.write(toolEnd(event));
+      continue;
+    }
+    if (event.type === "todo_updated") {
+      process.stderr.write(notice("Todos", event.todos.map((todo) => `${todo.status.padEnd(11)} ${todo.status === "in_progress" ? todo.activeForm : todo.content}`), "info"));
+      continue;
+    }
+    if (event.type === "checkpoint_created") {
+      process.stderr.write(notice("Checkpoint", [`${event.checkpointId}${event.label ? ` ${event.label}` : ""}`], "muted"));
       continue;
     }
     if (event.type === "tool_error") {
@@ -713,7 +1203,7 @@ async function doctorCommand(): Promise<number> {
 
 // ─── system prompt ─────────────────────────────────────────────────────
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(permissionMode: PermissionMode = "workspace-write"): string {
   const platform = process.platform === "win32" ? "Windows (PowerShell first)" : process.platform;
   const cwd = process.cwd();
   const today = new Date().toISOString().slice(0, 10);
@@ -794,9 +1284,18 @@ For software engineering work the typical flow is:
 1. Use **TodoWrite** to plan if 3+ steps
 2. Use **CodebaseSearch** for "where is X handled" questions (semantic), **Grep** for exact strings, **Glob** for filename patterns
 3. **Read** files before editing them — the Edit tool will refuse otherwise
-4. Edit with **Edit** for single replacements (unique match required), **ApplyIntent** for large multi-line changes (cheaper), **MultiEdit** for batched single-file edits, **Write** to create new files
+4. Edit with **Edit** for single replacements (unique match required), **ApplyIntent** for large multi-line changes (cheaper), **FindAndEdit** for mechanical multi-file regex refactors, **Write** to create new files
 5. Verify with **Bash**/**PowerShell** — the continuous verifier also runs typecheck/lint on touched files automatically
 6. If the verifier injects a \`<system-reminder>\` about failures, address them before claiming done
+
+## Specialized tools
+
+- **LSP**: use go_to_definition, go_to_references, and hover before risky refactors.
+- **WebSearch/WebFetch**: use for current docs, API changes, and user-provided URLs. WebFetch with a prompt summarizes through the SUMMARIZE slot when available.
+- **Bash run_in_background + BashOutput + KillShell**: use for dev servers, watch tasks, and long-running builds.
+- **McpListTools/McpCallTool**: use only when the user configured MCP servers in \`.crix/mcp.json\` or \`~/.crix/mcp.json\`.
+- **SkillsList/SkillRead**: use when a reusable local workflow clearly applies.
+- **CodeMode**: use for read-heavy batch repo analysis that would otherwise require many repetitive file/tool calls.
 
 ## Proof discipline
 
@@ -814,7 +1313,7 @@ The user may configure shell hooks (PreToolUse, PostToolUse, SessionStart) in \`
 
 ## Plan mode
 
-If you're in plan mode (the prompt shows \`[PLAN]\`), all write tools are blocked. Use this turn to inspect, plan, and present the proposed changes. Call **ExitPlanMode** with a markdown plan when ready — the user can then accept or refine.
+If you're in plan mode (current mode: \`${permissionMode}\`; the prompt shows \`[PLAN]\`), all write tools are blocked. Use this turn to inspect, plan, and present the proposed changes. Call **ExitPlanMode** with a markdown plan when ready — the user can then accept or refine.
 
 ## Hard rules
 
@@ -830,6 +1329,7 @@ If you're in plan mode (the prompt shows \`[PLAN]\`), all write tools are blocke
 - Working directory: ${cwd}
 - Platform: ${platform}
 - Today's date: ${today}
+- Permission mode: ${permissionMode}
 - You can call multiple tools in one assistant turn — batch independent reads/searches for speed.
 
 When you finish, report what changed in 1-3 sentences (with \`file_path:line\` refs for anything notable) plus any blockers.`;
@@ -849,7 +1349,12 @@ async function main(): Promise<void> {
   } else {
     await loadSavedTheme();
   }
+  await applyWorkspaceFlag(args.flags);
   switch (args.command) {
+    case "launcher":
+    case "menu":
+      process.exit(await launcherCommand(args));
+      return;
     case "chat":
     case "cli":
     case "shell":
@@ -860,6 +1365,9 @@ async function main(): Promise<void> {
       return;
     case "sessions":
       process.exit(await sessionsCommand());
+      return;
+    case "checkpoints":
+      process.exit(await checkpointsCommand());
       return;
     case "themes":
       process.exit(themesCommand());
@@ -892,6 +1400,18 @@ async function main(): Promise<void> {
       process.stderr.write(`error: unknown command "${args.command}". Run \`crix help\`.\n`);
       process.exit(2);
   }
+}
+
+async function applyWorkspaceFlag(flags: Map<string, string>): Promise<void> {
+  const requested = flags.get("workspace") ?? flags.get("cwd");
+  if (!requested) return;
+  const target = path.resolve(process.cwd(), requested);
+  const info = await stat(target).catch(() => null);
+  if (!info?.isDirectory()) {
+    process.stderr.write(`error: workspace is not a directory: ${target}\n`);
+    process.exit(2);
+  }
+  process.chdir(target);
 }
 
 main().catch((err) => {

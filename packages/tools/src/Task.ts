@@ -70,11 +70,14 @@ export function makeTaskTool(runner: SubagentRunner) {
   return buildTool({
     name: "Task",
     description: buildTaskDescription(runner),
-    safety: "workspace-write", // subagents may write; permission is per-tool inside
+    // The Task wrapper itself is read-only from the parent's perspective.
+    // Child tool calls still enforce their own permissions through the
+    // scoped QueryEngine, including plan-mode write blocking.
+    safety: "read-only",
     concurrency: "exclusive",
     inputZod: inputSchema,
     activityDescription: (i) => `Task[${i.subagent_type}] ${i.description}`,
-    async checkPermissions(i) {
+    async checkPermissions(i, ctx) {
       if (!runner.has(i.subagent_type)) {
         return {
           kind: "deny",
@@ -82,6 +85,12 @@ export function makeTaskTool(runner: SubagentRunner) {
             .listTypes()
             .map((t) => t.name)
             .join(", ")}`,
+        };
+      }
+      if (ctx.permissionMode === "plan" && i.subagent_type === "general-purpose") {
+        return {
+          kind: "deny",
+          reason: "general-purpose subagents are disabled in plan mode; use researcher or code-reviewer.",
         };
       }
       return { kind: "allow" };

@@ -36,6 +36,9 @@ export const PowerShellTool = buildTool({
   inputZod: inputSchema,
   activityDescription: (i) =>
     `${i.run_in_background ? "Backgrounding" : "Running"} ${i.command.slice(0, 60)}`,
+  async checkPermissions(i, ctx) {
+    return ctx.commandPermissions?.decide("PowerShell", i.command) ?? { kind: "allow" };
+  },
 
   async call(i, ctx) {
     const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");

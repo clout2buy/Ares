@@ -27,6 +27,7 @@ import type {
 } from "@crix/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { loadAuthToken, type AuthToken } from "./openaiAuth.js";
+import { buildPromptCacheKey } from "../promptCache.js";
 
 const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -256,11 +257,13 @@ export class OpenAIResponsesProvider implements Provider {
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
+  const cache = buildPromptCacheKey(req);
   return {
     model: req.model,
     instructions: req.system,
     input: req.messages.flatMap(toResponsesInputItems),
     store: false,
+    prompt_cache_key: cache.key,
     tools: req.tools.map((t) => ({
       type: "function",
       name: t.name,

@@ -71,7 +71,7 @@ export class OllamaCloudPool {
     const anthropicToken =
       process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || undefined;
 
-    this.host = (opts.host ?? anthropicBase ?? process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434").replace(/\/$/, "");
+    this.host = normalizeOllamaHost(opts.host ?? anthropicBase ?? process.env.OLLAMA_HOST);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.apiKey = opts.apiKey ?? anthropicToken ?? process.env.OLLAMA_API_KEY;
     // Auto-enable compat when the user has the standard Anthropic env
@@ -197,10 +197,8 @@ export class OllamaCloudPool {
     generator: AsyncGenerator<StreamEvent>;
   } {
     let resolveDone!: () => void;
-    let rejectDone!: (err: Error) => void;
-    const promise = new Promise<void>((resolve, reject) => {
+    const promise = new Promise<void>((resolve) => {
       resolveDone = resolve;
-      rejectDone = reject;
     });
 
     const self = this;
@@ -215,7 +213,7 @@ export class OllamaCloudPool {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         yield { type: "error", error: { code: "ollama_throw", message, retriable: true } };
-        rejectDone(err instanceof Error ? err : new Error(message));
+        resolveDone();
       }
     })();
 
@@ -226,7 +224,7 @@ export class OllamaCloudPool {
     model: string,
     req: ProviderRequest,
   ): AsyncGenerator<StreamEvent> {
-    const messages = req.messages.flatMap(toOllamaMessages);
+    const messages = toOllamaMessages(req.messages);
 
     const body = {
       model,
@@ -250,7 +248,7 @@ export class OllamaCloudPool {
         ? {
             messages: [
               { role: "system", content: req.system },
-              ...req.messages.flatMap(toOllamaMessages),
+              ...messages,
             ],
           }
         : {}),
@@ -625,46 +623,65 @@ class OllamaSlotProvider implements Provider {
 
 // ─── helpers ──────────────────────────────────────────────────────────
 
-function toOllamaMessages(
-  m: Message,
-): Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }> {
-  // Anthropic-shaped messages: tool_result blocks live inside user-role
-  // messages alongside text. Ollama needs each tool result as its own
-  // tool-role message, so we may emit multiple messages from one input.
-  const out: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }> = [];
+interface OllamaMessage {
+  role: string;
+  content?: string;
+  tool_calls?: Array<{
+    type: "function";
+    function: {
+      index: number;
+      name: string;
+      arguments: unknown;
+    };
+  }>;
+  tool_name?: string;
+}
 
-  for (const b of m.content) {
-    if (b.type === "tool_result") {
+function toOllamaMessages(messages: readonly Message[]): OllamaMessage[] {
+  // Anthropic-shaped messages: tool_result blocks live inside user-role
+  // messages alongside text. Ollama native /api/chat wants separate
+  // tool-role messages and identifies the target function by tool_name,
+  // not by tool_call_id.
+  const out: OllamaMessage[] = [];
+  const toolNameById = new Map<string, string>();
+
+  for (const m of messages) {
+    const text = m.content
+      .map((b) => {
+        if (b.type === "text") return b.text;
+        if (b.type === "system_reminder") return `<system-reminder>${b.text}</system-reminder>`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+
+    const toolUses = m.content.filter(
+      (b): b is { type: "tool_use"; id: string; name: string; input: unknown } => b.type === "tool_use",
+    );
+    const toolCalls = toolUses.map((b, index) => {
+      toolNameById.set(b.id, b.name);
+      return {
+        type: "function" as const,
+        function: { index, name: b.name, arguments: b.input },
+      };
+    });
+
+    if (text.length > 0 || toolCalls.length > 0) {
       out.push({
-        role: "tool",
-        content: typeof b.content === "string" ? b.content : JSON.stringify(b.content),
-        tool_call_id: b.tool_use_id,
+        role: m.role,
+        ...(text.length > 0 ? { content: text } : {}),
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
     }
-  }
 
-  const text = m.content
-    .map((b) => {
-      if (b.type === "text") return b.text;
-      if (b.type === "system_reminder") return `<system-reminder>${b.text}</system-reminder>`;
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
-  const toolCalls = m.content
-    .filter((b): b is { type: "tool_use"; id: string; name: string; input: unknown } => b.type === "tool_use")
-    .map((b) => ({
-      id: b.id,
-      type: "function",
-      function: { name: b.name, arguments: JSON.stringify(b.input) },
-    }));
-
-  if (text.length > 0 || toolCalls.length > 0) {
-    out.push({
-      role: m.role,
-      content: text,
-      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-    });
+    for (const b of m.content) {
+      if (b.type !== "tool_result") continue;
+      out.push({
+        role: "tool",
+        tool_name: toolNameById.get(b.tool_use_id) ?? b.tool_use_id,
+        content: typeof b.content === "string" ? b.content : JSON.stringify(b.content),
+      });
+    }
   }
 
   return out;
@@ -747,6 +764,32 @@ function parseAnthropicSSE(raw: string): AnthropicSSEEvent | null {
 // Source: https://ollama.com/search?c=cloud (verified manually; the
 // web summary occasionally hallucinates names).
 
+function normalizeOllamaHost(raw?: string): string {
+  const fallback = "http://127.0.0.1:11434";
+  const input = (raw ?? fallback).trim();
+  let value = input.length > 0 ? input : fallback;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    value = `http://${value}`;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return fallback;
+  }
+
+  const bindHosts = new Set(["0.0.0.0", "::", "[::]"]);
+  const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+  if (bindHosts.has(url.hostname)) {
+    url.hostname = "127.0.0.1";
+  }
+  if (!url.port && (bindHosts.has(url.hostname) || localHosts.has(url.hostname))) {
+    url.port = "11434";
+  }
+  return url.toString().replace(/\/$/, "");
+}
+
 export interface OllamaCloudModel {
   id: string;
   /** Bucket the picker groups by. */
@@ -756,23 +799,53 @@ export interface OllamaCloudModel {
 }
 
 export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
-  // Large reasoners (REASONER slot)
-  { id: "qwen3-coder:480b-cloud",    role: "reasoner",  hint: "Qwen3 Coder 480B — top coder reasoner" },
-  { id: "kimi-k2:cloud",             role: "reasoner",  hint: "Kimi K2 — long-horizon agentic coding" },
-  { id: "kimi-k2.6:cloud",           role: "reasoner",  hint: "Kimi K2.6 — multimodal agentic" },
-  { id: "deepseek-v3.1:cloud",       role: "reasoner",  hint: "DeepSeek V3.1 — strong general reasoner" },
-  { id: "deepseek-v3.2:cloud",       role: "reasoner",  hint: "DeepSeek V3.2 — efficient reasoning" },
-  { id: "glm-4.6:cloud",             role: "reasoner",  hint: "GLM-4.6 — agentic engineering" },
-  { id: "gpt-oss:120b-cloud",        role: "reasoner",  hint: "GPT-OSS 120B — open frontier" },
+  // Engineering / agentic reasoners.
+  { id: "qwen3-coder:480b-cloud",              role: "reasoner",  hint: "Qwen3 Coder 480B - top coding reasoner" },
+  { id: "qwen3-coder-next:cloud",              role: "reasoner",  hint: "Qwen3 Coder Next - agentic coding" },
+  { id: "qwen3.5:397b-cloud",                  role: "reasoner",  hint: "Qwen3.5 397B - large multimodal reasoner" },
+  { id: "qwen3.5:cloud",                       role: "reasoner",  hint: "Qwen3.5 - cloud default" },
+  { id: "qwen3-next:80b-cloud",                role: "reasoner",  hint: "Qwen3 Next 80B - efficient thinking" },
+  { id: "deepseek-v4-pro:cloud",               role: "reasoner",  hint: "DeepSeek V4 Pro - frontier reasoning" },
+  { id: "deepseek-v4-flash:cloud",             role: "reasoner",  hint: "DeepSeek V4 Flash - fast long-context reasoning" },
+  { id: "deepseek-v3.2:cloud",                 role: "reasoner",  hint: "DeepSeek V3.2 - efficient reasoning" },
+  { id: "deepseek-v3.1:671b-cloud",            role: "reasoner",  hint: "DeepSeek V3.1 671B - hybrid thinking" },
+  { id: "glm-5.1:cloud",                       role: "reasoner",  hint: "GLM-5.1 - flagship agentic engineering" },
+  { id: "glm-5:cloud",                         role: "reasoner",  hint: "GLM-5 - complex systems engineering" },
+  { id: "glm-4.7:cloud",                       role: "reasoner",  hint: "GLM-4.7 - coding capability" },
+  { id: "glm-4.6:cloud",                       role: "reasoner",  hint: "GLM-4.6 - agentic coding" },
+  { id: "kimi-k2.6:cloud",                     role: "reasoner",  hint: "Kimi K2.6 - multimodal agentic coding" },
+  { id: "kimi-k2.5:cloud",                     role: "reasoner",  hint: "Kimi K2.5 - multimodal agentic" },
+  { id: "kimi-k2:1t-cloud",                    role: "reasoner",  hint: "Kimi K2 1T - long-horizon coding" },
+  { id: "kimi-k2-thinking:cloud",              role: "reasoner",  hint: "Kimi K2 Thinking - thinking model" },
+  { id: "minimax-m2.7:cloud",                  role: "reasoner",  hint: "MiniMax M2.7 - coding and productivity" },
+  { id: "minimax-m2.5:cloud",                  role: "reasoner",  hint: "MiniMax M2.5 - productivity coding" },
+  { id: "minimax-m2.1:cloud",                  role: "reasoner",  hint: "MiniMax M2.1 - multilingual coding" },
+  { id: "minimax-m2:cloud",                    role: "reasoner",  hint: "MiniMax M2 - efficient agentic workflows" },
+  { id: "gpt-oss:120b-cloud",                  role: "reasoner",  hint: "GPT-OSS 120B - open reasoning" },
+  { id: "devstral-2:123b-cloud",               role: "reasoner",  hint: "Devstral 2 123B - codebase agents" },
+  { id: "mistral-large-3:675b-cloud",          role: "reasoner",  hint: "Mistral Large 3 675B - enterprise multimodal" },
+  { id: "nemotron-3-super:cloud",              role: "reasoner",  hint: "Nemotron 3 Super - multi-agent reasoning" },
+  { id: "cogito-2.1:671b-cloud",               role: "reasoner",  hint: "Cogito 2.1 671B - general reasoning" },
 
-  // Mid-size apply / fast coders (APPLY slot)
-  { id: "qwen3-coder:30b-cloud",     role: "apply",     hint: "Qwen3 Coder 30B — fast apply-model" },
-  { id: "qwen2.5-coder:32b-cloud",   role: "apply",     hint: "Qwen2.5 Coder 32B — fast apply-model" },
-  { id: "devstral-small:cloud",      role: "apply",     hint: "Devstral Small — tool-use focused" },
+  // Fast apply / edit models.
+  { id: "devstral-small-2:24b-cloud",          role: "apply",     hint: "Devstral Small 2 24B - codebase editing" },
+  { id: "nemotron-3-nano:30b-cloud",           role: "apply",     hint: "Nemotron 3 Nano 30B - efficient agentic work" },
+  { id: "qwen3-vl:235b-instruct-cloud",        role: "apply",     hint: "Qwen3-VL 235B Instruct - multimodal instruction" },
+  { id: "rnj-1:8b-cloud",                      role: "apply",     hint: "RNJ-1 8B - code and STEM utility" },
 
-  // Tiny summarizers (SUMMARIZE slot)
-  { id: "gpt-oss:20b-cloud",         role: "summarize", hint: "GPT-OSS 20B — quick summaries" },
-  { id: "qwen2.5:7b-cloud",          role: "summarize", hint: "Qwen2.5 7B — fastest" },
+  // Summarizers / compact utility models.
+  { id: "gpt-oss:20b-cloud",                   role: "summarize", hint: "GPT-OSS 20B - quick summaries" },
+  { id: "gemma3:4b-cloud",                     role: "summarize", hint: "Gemma 3 4B - compact vision utility" },
+  { id: "ministral-3:3b-cloud",                role: "summarize", hint: "Ministral 3 3B - small utility" },
+
+  // Multimodal / general cloud choices.
+  { id: "gemini-3-flash-preview:cloud",        role: "general",   hint: "Gemini 3 Flash Preview - fast multimodal" },
+  { id: "gemma4:31b-cloud",                    role: "general",   hint: "Gemma 4 31B - multimodal reasoning" },
+  { id: "gemma3:27b-cloud",                    role: "general",   hint: "Gemma 3 27B - capable vision model" },
+  { id: "gemma3:12b-cloud",                    role: "general",   hint: "Gemma 3 12B - balanced vision model" },
+  { id: "qwen3-vl:235b-cloud",                 role: "general",   hint: "Qwen3-VL 235B - vision-language reasoning" },
+  { id: "ministral-3:14b-cloud",               role: "general",   hint: "Ministral 3 14B - edge-capable multimodal" },
+  { id: "ministral-3:8b-cloud",                role: "general",   hint: "Ministral 3 8B - small multimodal" },
 ];
 
 /** Sub-list filtered by intended role. */
@@ -784,6 +857,6 @@ export function ollamaCloudModelsFor(role: OllamaCloudModel["role"]): readonly O
 
 export const DEFAULT_OLLAMA_SLOTS: Record<SlotName, SlotConfig> = {
   reasoner: { model: process.env.CRIX_REASONER ?? "qwen3-coder:480b-cloud" },
-  apply: { model: process.env.CRIX_APPLY ?? "qwen3-coder:30b-cloud" },
+  apply: { model: process.env.CRIX_APPLY ?? "devstral-small-2:24b-cloud" },
   summarize: { model: process.env.CRIX_SUMMARIZE ?? "gpt-oss:20b-cloud" },
 };

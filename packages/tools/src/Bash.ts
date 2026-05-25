@@ -1,9 +1,9 @@
-// Bash — execute a shell command with timeout.
-//
-// Foreground only in M1; background + BashOutput/KillShell ship in M3.
+// Bash — execute a shell command with timeout or as a background process.
 
 import { z } from "zod";
 import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { buildTool, resolveWorkspacePath } from "./_shared.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -58,16 +58,20 @@ export const BashTool = buildTool({
   inputZod: inputSchema,
   activityDescription: (i) =>
     `${i.run_in_background ? "Backgrounding" : "Running"} ${i.command.slice(0, 60)}`,
+  async checkPermissions(i, ctx) {
+    return ctx.commandPermissions?.decide("Bash", i.command) ?? { kind: "allow" };
+  },
 
   async call(i, ctx): Promise<{ output: unknown; display: string }> {
     const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
+    const bash = await resolveBashProgram();
 
     if (i.run_in_background) {
       if (!ctx.shellRegistry) {
         throw new Error("run_in_background requires a shell registry on the session context");
       }
       const snap = ctx.shellRegistry.spawn({
-        program: "bash",
+        program: bash,
         args: ["-lc", i.command],
         cwd,
         description: i.description,
@@ -85,7 +89,7 @@ export const BashTool = buildTool({
       };
     }
 
-    const result = await runShell("bash", ["-lc", i.command], cwd, i.timeout, ctx.signal);
+    const result = await runShell(bash, ["-lc", i.command], cwd, i.timeout, ctx.signal);
     const output: BashOutput | BashBackgroundOutput = result;
     return {
       output,
@@ -155,6 +159,62 @@ export async function runShell(
       });
     });
   });
+}
+
+let cachedBashProgram: Promise<string> | null = null;
+
+export function resolveBashProgram(): Promise<string> {
+  cachedBashProgram ??= resolveBashProgramUncached();
+  return cachedBashProgram;
+}
+
+async function resolveBashProgramUncached(): Promise<string> {
+  if (process.env.CRIX_BASH) return process.env.CRIX_BASH;
+  if (process.platform !== "win32") return "bash";
+
+  const candidates = unique([
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe",
+    ...pathCandidates("bash.exe"),
+    ...pathCandidates("bash"),
+  ]);
+
+  for (const candidate of candidates) {
+    if (isWindowsWslLauncher(candidate)) continue;
+    if (!(await exists(candidate))) continue;
+    if (await bashWorks(candidate)) return candidate;
+  }
+
+  // Last resort: let spawn surface the real failure. This keeps non-Git
+  // Windows hosts honest instead of silently pretending PowerShell is Bash.
+  return "bash";
+}
+
+function pathCandidates(bin: string): string[] {
+  return (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((dir) => path.join(dir, bin));
+}
+
+function isWindowsWslLauncher(candidate: string): boolean {
+  const normalized = candidate.toLowerCase();
+  return normalized.includes("\\windows\\system32\\bash.exe") || normalized.includes("\\windowsapps\\bash.exe");
+}
+
+async function exists(candidate: string): Promise<boolean> {
+  return fs.access(candidate).then(() => true).catch(() => false);
+}
+
+async function bashWorks(candidate: string): Promise<boolean> {
+  const probe = await runShell(candidate, ["-lc", "printf __crix_bash_probe__"], process.cwd(), 5000, new AbortController().signal).catch(() => null);
+  return probe?.exitCode === 0 && probe.stdout.includes("__crix_bash_probe__");
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function decodeOutput(buf: Buffer): string {

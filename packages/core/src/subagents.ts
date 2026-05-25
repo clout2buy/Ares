@@ -151,7 +151,7 @@ export const BUILT_IN_SUBAGENT_TYPES: SubagentTypeDef[] = [
     name: "code-reviewer",
     description:
       "Read + diagnostics subagent for reviewing pending changes. Returns structured findings (blockers / concerns / nits / verdict).",
-    toolWhitelist: ["Read", "Glob", "Grep", "CodebaseSearch", "Lints", "Bash", "PowerShell"],
+    toolWhitelist: ["Read", "Glob", "Grep", "CodebaseSearch", "LSP", "Bash", "PowerShell"],
     systemPrompt: CODE_REVIEWER_PROMPT,
     maxTurns: 20,
   },

@@ -11,6 +11,7 @@ export { GrepTool } from "./Grep.js";
 export { BashTool } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
 export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.js";
+export { makeTaskTool, type SubagentRunner, type TaskOutput } from "./Task.js";
 
 import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";

@@ -25,6 +25,17 @@ export {
 export { MockEchoProvider } from "./providers/mock.js";
 
 export {
+  SubagentRegistry,
+  CrixSubagentRunner,
+  BUILT_IN_SUBAGENT_TYPES,
+  type SubagentRunner,
+  type SubagentRunnerOptions,
+  type SubagentTypeDef,
+  type SubagentRunRequest,
+  type SubagentRunResult,
+} from "./subagents.js";
+
+export {
   Session,
   listSessions,
   loadSessionSnapshot,

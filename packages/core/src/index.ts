@@ -36,6 +36,16 @@ export {
 } from "./subagents.js";
 
 export {
+  ContinuousVerifier,
+  deriveNarrowVerify,
+  type VerifierOptions,
+  type VerifyCommand,
+  type VerifyResult,
+  type VerifyEvent,
+  type WorkspaceSetup,
+} from "./verifier.js";
+
+export {
   Session,
   listSessions,
   loadSessionSnapshot,

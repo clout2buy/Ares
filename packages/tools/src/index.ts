@@ -12,6 +12,25 @@ export { BashTool } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
 export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.js";
 export { makeTaskTool, type SubagentRunner, type TaskOutput } from "./Task.js";
+export {
+  makeWebFetchTool,
+  htmlToText,
+  type WebFetchOutput,
+  type Summarizer,
+} from "./WebFetch.js";
+export {
+  makeWebSearchTool,
+  duckDuckGoLite,
+  parseDuckDuckGoLite,
+  type WebSearchResult,
+  type WebSearchOutput,
+  type SearchBackend,
+} from "./WebSearch.js";
+export {
+  CodebaseSearchTool,
+  type CodebaseSearchHit,
+  type CodebaseSearchOutput,
+} from "./CodebaseSearch.js";
 
 import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";

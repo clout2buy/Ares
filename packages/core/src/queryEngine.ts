@@ -27,6 +27,7 @@ import {
   isToolUseBlock,
 } from "@crix/protocol";
 import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import type { HookManager } from "./hooks.js";
 
 // ─── Provider interface (what core asks of providers) ──────────────────
@@ -297,7 +298,7 @@ export class QueryEngine {
       }
 
       let interruptedByTool = false;
-      for (const batch of chunkToolUsesByConcurrency(runnable)) {
+      for (const batch of buildDepAwareBatches(runnable, this.cfg.workspace)) {
         const outcomes = yield* this.runToolBatch(batch);
         for (const outcome of outcomes) {
           resultByToolUseId.set(outcome.toolUseId, outcome.result);
@@ -553,28 +554,112 @@ class AsyncEventQueue<T> {
   }
 }
 
-function chunkToolUsesByConcurrency(uses: readonly ResolvedToolUse[]): ResolvedToolUse[][] {
-  const chunks: ResolvedToolUse[][] = [];
-  let parallel: ResolvedToolUse[] = [];
+/**
+ * Tools whose side effects we cannot analyze from input alone (shell commands,
+ * sandboxed JS, agent dispatch) — must run solo so they can't race adjacent work.
+ */
+const SOLO_TOOL_NAMES = new Set([
+  "Bash",
+  "PowerShell",
+  "CodeMode",
+  "Task",
+  "KillShell",
+  "ApplyIntent",
+  "FindAndEdit",
+  "Memory",
+  "EnterPlanMode",
+  "ExitPlanMode",
+]);
+
+interface ToolDeps {
+  /** Resolved absolute target path, if the tool acts on a single file. */
+  target: string | null;
+  /** Tool writes to its target (workspace-write or destructive safety). */
+  isWrite: boolean;
+  /** Tool must run alone — unknowable side effects. */
+  solo: boolean;
+}
+
+function analyzeToolDeps(use: ResolvedToolUse, workspace: string): ToolDeps {
+  const name = use.tool.schema.name;
+  const safety = use.tool.schema.safety;
+  const isWriteSafety = safety === "workspace-write" || safety === "destructive";
+
+  if (SOLO_TOOL_NAMES.has(name)) {
+    return { target: null, isWrite: isWriteSafety, solo: true };
+  }
+
+  const input = (use.input ?? {}) as Record<string, unknown>;
+  const rawPath =
+    typeof input.file_path === "string"
+      ? input.file_path
+      : typeof input.path === "string"
+        ? input.path
+        : null;
+  const target = rawPath ? path.resolve(workspace, rawPath) : null;
+
+  // Single-file write tool with no resolvable target → solo for safety.
+  if (isWriteSafety && !target) {
+    return { target: null, isWrite: true, solo: true };
+  }
+
+  return { target, isWrite: isWriteSafety, solo: false };
+}
+
+/**
+ * Dependency-aware batcher. Within a batch, every tool may run in parallel.
+ * A use joins the current batch unless any of these hold:
+ *   - it is solo (and the batch is non-empty), or the batch already contains a solo
+ *   - it writes a target another batch member already touches (read or write)
+ *   - it reads a target another batch member writes
+ *
+ * Order across batches is preserved — never reorder model-emitted tool_use blocks.
+ *
+ * This is the OP upgrade over plain concurrency chunking: three Edits to
+ * disjoint files now run in one batch (3× speedup) while Edit(a) + Read(a)
+ * still serializes correctly.
+ */
+function buildDepAwareBatches(
+  uses: readonly ResolvedToolUse[],
+  workspace: string,
+): ResolvedToolUse[][] {
+  if (uses.length === 0) return [];
+
+  const analyzed = uses.map((use) => ({ use, deps: analyzeToolDeps(use, workspace) }));
+  const batches: ResolvedToolUse[][] = [];
+  let current: typeof analyzed = [];
+
+  const conflicts = (cand: (typeof analyzed)[number]): boolean => {
+    if (current.length === 0) return false;
+    if (cand.deps.solo) return true;
+    if (current.some((m) => m.deps.solo)) return true;
+    if (!cand.deps.target) return false;
+    for (const member of current) {
+      if (!member.deps.target) continue;
+      if (member.deps.target !== cand.deps.target) continue;
+      if (member.deps.isWrite || cand.deps.isWrite) return true;
+    }
+    return false;
+  };
 
   const flush = () => {
-    if (parallel.length > 0) {
-      chunks.push(parallel);
-      parallel = [];
+    if (current.length > 0) {
+      batches.push(current.map((x) => x.use));
+      current = [];
     }
   };
 
-  for (const use of uses) {
-    if (use.tool.schema.concurrency === "parallel-safe") {
-      parallel.push(use);
-      continue;
-    }
-    flush();
-    chunks.push([use]);
+  for (const item of analyzed) {
+    if (conflicts(item)) flush();
+    current.push(item);
+    if (item.deps.solo) flush();
   }
   flush();
-  return chunks;
+  return batches;
 }
+
+// Exported for unit tests in tests/v3-parallel-deps.test.mjs.
+export const __internal = { analyzeToolDeps, buildDepAwareBatches };
 
 function orderedToolResults(
   uses: ReadonlyArray<{ id: string }>,

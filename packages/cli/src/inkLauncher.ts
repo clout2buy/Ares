@@ -52,6 +52,10 @@ const LAUNCHER_THEMES: Record<ThemeName, LauncherTheme> = {
   amber: { frame: "yellow", accent: "yellow", accent2: "white", accent3: "cyan", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
   dashboard: { frame: "cyan", accent: "cyan", accent2: "blue", accent3: "magenta", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
   light: { frame: "blue", accent: "blue", accent2: "cyan", accent3: "green", text: "black", dim: "gray", success: "green", warn: "yellow", error: "red" },
+  midnight: { frame: "blue", accent: "blueBright", accent2: "magentaBright", accent3: "cyanBright", text: "white", dim: "gray", success: "greenBright", warn: "yellowBright", error: "redBright" },
+  "mono-pro": { frame: "gray", accent: "whiteBright", accent2: "white", accent3: "whiteBright", text: "white", dim: "gray", success: "white", warn: "yellowBright", error: "redBright" },
+  solarized: { frame: "yellow", accent: "yellowBright", accent2: "cyanBright", accent3: "blueBright", text: "white", dim: "gray", success: "greenBright", warn: "yellow", error: "redBright" },
+  synthwave: { frame: "magentaBright", accent: "magentaBright", accent2: "cyanBright", accent3: "blueBright", text: "white", dim: "blueBright", success: "greenBright", warn: "yellowBright", error: "redBright" },
 };
 
 export async function runInkLauncher(options: LauncherOptions): Promise<LauncherAction> {

@@ -223,6 +223,78 @@ const DECK_THEMES: Record<ThemeName, DeckTheme> = {
     success: "green",
     warn: "yellow",
   },
+  midnight: {
+    title: "MIDNIGHT",
+    borderStyle: "round",
+    frame: "blue",
+    accent: "blueBright",
+    accent2: "magentaBright",
+    accent3: "cyanBright",
+    text: "white",
+    dim: "gray",
+    panel: "blue",
+    input: "blueBright",
+    user: "cyanBright",
+    assistant: "white",
+    tool: "magentaBright",
+    error: "redBright",
+    success: "greenBright",
+    warn: "yellowBright",
+  },
+  "mono-pro": {
+    title: "MONO PRO",
+    borderStyle: "single",
+    frame: "gray",
+    accent: "whiteBright",
+    accent2: "white",
+    accent3: "whiteBright",
+    text: "white",
+    dim: "gray",
+    panel: "gray",
+    input: "whiteBright",
+    user: "whiteBright",
+    assistant: "white",
+    tool: "white",
+    error: "redBright",
+    success: "white",
+    warn: "yellowBright",
+  },
+  solarized: {
+    title: "SOLARIZED",
+    borderStyle: "round",
+    frame: "yellow",
+    accent: "yellowBright",
+    accent2: "cyanBright",
+    accent3: "blueBright",
+    text: "white",
+    dim: "gray",
+    panel: "yellow",
+    input: "yellowBright",
+    user: "cyanBright",
+    assistant: "white",
+    tool: "blueBright",
+    error: "redBright",
+    success: "greenBright",
+    warn: "yellow",
+  },
+  synthwave: {
+    title: "SYNTHWAVE",
+    borderStyle: "double",
+    frame: "magentaBright",
+    accent: "magentaBright",
+    accent2: "cyanBright",
+    accent3: "blueBright",
+    text: "white",
+    dim: "blueBright",
+    panel: "magenta",
+    input: "magentaBright",
+    user: "cyanBright",
+    assistant: "white",
+    tool: "magentaBright",
+    error: "redBright",
+    success: "greenBright",
+    warn: "yellowBright",
+  },
 };
 
 const TOOL_RAIL = [
@@ -287,7 +359,7 @@ function CrixInkApp({ options }: { options: InkChatOptions }) {
     const statusWidth = showStatus ? 28 : 0;
     const gutter = (showRail ? 1 : 0) + (showStatus ? 1 : 0);
     const mainWidth = Math.max(42, screenWidth - railWidth - statusWidth - gutter);
-    const mainHeight = Math.max(7, screenHeight - 12);
+    const mainHeight = Math.max(7, screenHeight - 13);
     return { showRail, showStatus, railWidth, statusWidth, mainWidth, mainHeight, screenWidth, screenHeight };
   }, [columns, rows]);
 
@@ -596,7 +668,6 @@ function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; 
       h(Chip, { theme, label: "TURNS", value: String(stats.turns), color: theme.accent2 }),
       h(Chip, { theme, label: "TOKENS", value: compactNumber(stats.usage.inputTokens + stats.usage.outputTokens), color: theme.accent3 }),
       h(Chip, { theme, label: "CACHE", value: cachePercent(stats.usage), color: theme.success }),
-      h(Chip, { theme, label: "MODE", value: snapshot.mode, color: modeColor }),
     ),
     h(Text, { color: theme.dim, wrap: "truncate" }, snapshot.workspace),
   );
@@ -616,14 +687,12 @@ function ToolRail({ theme, activeTool, width }: { theme: DeckTheme; activeTool: 
       marginRight: 1,
     },
     h(Text, { bold: true, color: theme.accent }, "TOOLS"),
-    h(Text, { color: theme.dim }, "deck-ready"),
-    h(Text, { color: theme.dim }, ""),
-    ...TOOL_RAIL.map((tool, index) => {
+    ...TOOL_RAIL.map((tool) => {
       const active = activeTool === tool;
       return h(
         Text,
         { key: tool, color: active ? theme.warn : theme.text, bold: active, wrap: "truncate" },
-        `${String(index + 1).padStart(2, "0")} ${active ? ">" : "-"} ${tool}`,
+        `${active ? "▸" : " "} ${tool}`,
       );
     }),
   );
@@ -763,12 +832,33 @@ function InputDeck({
 }
 
 function Footer({ theme, snapshot, stats, width }: { theme: DeckTheme; snapshot: InkChatSnapshot; stats: RuntimeStats; width: number }) {
-  const meter = `${formatCost(stats.usage)} / ${Math.round(stats.durationMs / 1000)}s / ${stats.tools} tools / ${cachePercent(stats.usage)} cached`;
+  const cost = formatCost(stats.usage);
+  const elapsed = `${Math.round(stats.durationMs / 1000)}s`;
+  const cache = cachePercent(stats.usage);
   return h(
     Box,
-    { width, justifyContent: "space-between" },
-    h(Text, { color: theme.dim }, "/help  /undo  /theme modern  /plan  /code  /danger  /doctor  /exit"),
-    h(Text, { color: theme.dim }, `${meter} | ${compactModel(snapshot.provider, 18)} | checkpoints ${stats.checkpoints}`),
+    { flexDirection: "column", width },
+    h(
+      Box,
+      { width, justifyContent: "space-between" },
+      h(
+        Box,
+        { gap: 1 },
+        h(Text, { color: theme.success, bold: true }, cost),
+        h(Text, { color: theme.dim }, "·"),
+        h(Text, { color: theme.accent2 }, elapsed),
+        h(Text, { color: theme.dim }, "·"),
+        h(Text, { color: theme.tool }, `${stats.tools} tools`),
+        h(Text, { color: theme.dim }, "·"),
+        h(Text, { color: theme.success }, `${cache} cached`),
+      ),
+      h(Text, { color: theme.dim }, `${compactModel(snapshot.provider, 18)} · ckpt ${stats.checkpoints}`),
+    ),
+    h(
+      Text,
+      { color: theme.dim, wrap: "truncate" },
+      "/help  /undo  /themes  /plan  /code  /danger  /doctor  /exit",
+    ),
   );
 }
 
@@ -860,9 +950,8 @@ function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
 }
 
 function toneBadge(tone: LogLine["tone"]): string {
-  if (tone === "diff-add") return "DIFF";
-  if (tone === "diff-del") return "DIFF";
   if (tone === "diff-meta") return "DIFF";
+  if (tone === "diff-add" || tone === "diff-del") return "    ";
   if (tone === "user") return "YOU";
   if (tone === "assistant") return "CRIX";
   if (tone === "tool") return "TOOL";

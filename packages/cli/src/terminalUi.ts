@@ -15,7 +15,11 @@ export type ThemeName =
   | "professional"
   | "amber"
   | "dashboard"
-  | "light";
+  | "light"
+  | "midnight"
+  | "mono-pro"
+  | "solarized"
+  | "synthwave";
 
 interface Theme {
   name: ThemeName;
@@ -181,6 +185,62 @@ const THEMES: Record<ThemeName, Theme> = {
     error: ANSI.brightRed,
     prompt: "➜",
   },
+  midnight: {
+    name: "midnight",
+    title: "Midnight",
+    layout: "panel",
+    primary: ANSI.brightBlue,
+    accent: ANSI.brightMagenta,
+    model: ANSI.brightCyan,
+    border: ANSI.blue,
+    muted: ANSI.gray,
+    success: ANSI.brightGreen,
+    warn: ANSI.brightYellow,
+    error: ANSI.brightRed,
+    prompt: "❯",
+  },
+  "mono-pro": {
+    name: "mono-pro",
+    title: "Mono Pro",
+    layout: "pro",
+    primary: ANSI.brightWhite,
+    accent: ANSI.white,
+    model: ANSI.brightWhite,
+    border: ANSI.gray,
+    muted: ANSI.gray,
+    success: ANSI.white,
+    warn: ANSI.brightYellow,
+    error: ANSI.brightRed,
+    prompt: "›",
+  },
+  solarized: {
+    name: "solarized",
+    title: "Solarized",
+    layout: "panel",
+    primary: ANSI.brightYellow,
+    accent: ANSI.brightCyan,
+    model: ANSI.brightBlue,
+    border: ANSI.yellow,
+    muted: ANSI.gray,
+    success: ANSI.brightGreen,
+    warn: ANSI.yellow,
+    error: ANSI.brightRed,
+    prompt: "◆",
+  },
+  synthwave: {
+    name: "synthwave",
+    title: "Synthwave",
+    layout: "panel",
+    primary: ANSI.brightMagenta,
+    accent: ANSI.brightCyan,
+    model: ANSI.brightMagenta,
+    border: ANSI.magenta,
+    muted: ANSI.brightBlue,
+    success: ANSI.brightGreen,
+    warn: ANSI.brightYellow,
+    error: ANSI.brightRed,
+    prompt: "▶",
+  },
 };
 
 let activeThemeName: ThemeName | undefined;
@@ -225,6 +285,16 @@ function normalizeThemeName(name: string | undefined): ThemeName | null {
     dash: "dashboard",
     clean: "light",
     white: "light",
+    night: "midnight",
+    dark2: "midnight",
+    bw: "mono-pro",
+    monochrome: "mono-pro",
+    "mono-dark": "mono-pro",
+    sol: "solarized",
+    solarised: "solarized",
+    synth: "synthwave",
+    "synth-wave": "synthwave",
+    retrowave: "synthwave",
   };
   const candidate = aliases[raw] ?? raw;
   return candidate in THEMES ? (candidate as ThemeName) : null;

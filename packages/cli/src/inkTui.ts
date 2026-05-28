@@ -2,6 +2,22 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 import type { PermissionMode, Todo, TurnEvent, Usage } from "@crix/protocol";
 import { currentThemeName, type ThemeName } from "./terminalUi.js";
+import { onLifecycle, type LifecycleEvent } from "@crix/agent";
+
+// Weirdcore score popup. Every evolution event emits a gain { target, delta }.
+// The TUI shows the last few as floating +N TARGET cards that fade out.
+interface Pulse {
+  id: number;
+  type: LifecycleEvent["type"];
+  target: string;
+  delta: number;
+  kind?: string;
+  createdAt: number;
+}
+
+function shouldSurfacePulse(event: LifecycleEvent): event is LifecycleEvent & { gain: { target: string; delta: number; kind?: string } } {
+  return "gain" in event && typeof (event as { gain?: unknown }).gain === "object" && (event as { gain?: { target?: string } }).gain?.target != null;
+}
 
 export interface InkChatSnapshot {
   provider: string;
@@ -295,6 +311,42 @@ const DECK_THEMES: Record<ThemeName, DeckTheme> = {
     success: "greenBright",
     warn: "yellowBright",
   },
+  graphite: {
+    title: "GRAPHITE",
+    borderStyle: "single",
+    frame: "gray",
+    accent: "whiteBright",
+    accent2: "cyanBright",
+    accent3: "greenBright",
+    text: "white",
+    dim: "gray",
+    panel: "gray",
+    input: "cyanBright",
+    user: "cyanBright",
+    assistant: "white",
+    tool: "greenBright",
+    error: "redBright",
+    success: "greenBright",
+    warn: "yellowBright",
+  },
+  oxide: {
+    title: "OXIDE",
+    borderStyle: "round",
+    frame: "red",
+    accent: "redBright",
+    accent2: "yellowBright",
+    accent3: "cyanBright",
+    text: "white",
+    dim: "gray",
+    panel: "red",
+    input: "yellowBright",
+    user: "yellowBright",
+    assistant: "white",
+    tool: "cyanBright",
+    error: "redBright",
+    success: "greenBright",
+    warn: "yellowBright",
+  },
 };
 
 const TOOL_RAIL = [
@@ -349,6 +401,36 @@ function CrixInkApp({ options }: { options: InkChatOptions }) {
   const lineId = useRef((options.resumedLines?.length ?? 0) + 1);
   const history = useRef<string[]>([]);
   const historyIndex = useRef<number | null>(null);
+
+  // ─── Evolution pulses — weirdcore +N score popups ────────────────────
+  const [pulses, setPulses] = useState<Pulse[]>([]);
+  const pulseId = useRef(1);
+  const [frameTick, setFrameTick] = useState(0);
+  useEffect(() => {
+    const unsubscribe = onLifecycle((event) => {
+      if (!shouldSurfacePulse(event)) return;
+      const gain = event.gain;
+      const id = pulseId.current++;
+      setPulses((prev) => [...prev.slice(-3), {
+        id,
+        type: event.type,
+        target: gain.target,
+        delta: gain.delta,
+        kind: gain.kind,
+        createdAt: Date.now(),
+      }]);
+    });
+    return unsubscribe;
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFrameTick((t) => t + 1);
+      const now = Date.now();
+      setPulses((prev) => prev.filter((p) => now - p.createdAt < 9_000));
+    }, 250);
+    return () => clearInterval(timer);
+  }, []);
+  void frameTick;
 
   const layout = useMemo(() => {
     const screenWidth = Math.max(64, columns - 2);
@@ -631,6 +713,7 @@ function CrixInkApp({ options }: { options: InkChatOptions }) {
         : null,
     ),
     !layout.showStatus && todos.length > 0 ? h(TodosStrip, { theme, todos }) : null,
+    pulses.length > 0 ? h(EvolutionPulses, { theme, pulses, width: layout.screenWidth }) : null,
     h(InputDeck, { theme, snapshot, busy, input, width: layout.screenWidth }),
     h(Footer, { theme, snapshot, stats, width: layout.screenWidth }),
   );
@@ -934,7 +1017,7 @@ function TodoLine({ todo, theme }: { todo: Todo; theme: DeckTheme }) {
 }
 
 function deckTheme(): DeckTheme {
-  return DECK_THEMES[currentThemeName()] ?? DECK_THEMES.cyberpunk;
+  return DECK_THEMES[currentThemeName()] ?? DECK_THEMES.graphite;
 }
 
 function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
@@ -1001,6 +1084,52 @@ function compactNumber(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(value);
+}
+
+function EvolutionPulses({ theme, pulses, width }: { theme: DeckTheme; pulses: Pulse[]; width: number }) {
+  // Weirdcore card row. Each pulse renders as "+N TARGET" with a bracketed
+  // kind tag if present. Older pulses dim out as they age.
+  const now = Date.now();
+  return h(
+    Box,
+    {
+      flexDirection: "row",
+      width,
+      gap: 1,
+      paddingX: 1,
+      marginTop: 1,
+    },
+    ...pulses.map((p) => {
+      const age = now - p.createdAt;
+      const dimming = age > 5_000;
+      const fading = age > 7_500;
+      const color = pulseColor(p, theme);
+      const label = `+${p.delta} ${p.target}`;
+      const tag = p.kind ? `[${p.kind}]` : "";
+      return h(
+        Box,
+        {
+          key: p.id,
+          borderStyle: "round",
+          borderColor: fading ? theme.dim : color,
+          paddingX: 1,
+        },
+        h(Text, { color: fading ? theme.dim : dimming ? theme.text : color, bold: !fading }, label),
+        tag ? h(Text, { color: theme.dim }, ` ${tag}`) : null,
+      );
+    }),
+  );
+}
+
+function pulseColor(p: Pulse, theme: DeckTheme): string {
+  if (p.type === "bootstrap_complete") return theme.success;
+  if (p.type === "self_evolve") return theme.accent;
+  if (p.type === "capture_detected") return theme.accent2;
+  if (p.type === "recall_surfaced") return theme.accent3;
+  if (p.type === "skill_crafted") return theme.warn;
+  if (p.type === "capability_changed") return theme.tool;
+  if (p.type === "dream_phase_ended") return theme.accent3;
+  return theme.text;
 }
 
 function cachePercent(usage: Usage): string {

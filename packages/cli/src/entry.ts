@@ -93,6 +93,26 @@ import {
 import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTui.js";
 import { runInkLauncher } from "./inkLauncher.js";
 import { loadUiSettings, updateUiSettings } from "./uiSettings.js";
+import {
+  BootstrapTool,
+  CrixAgentRuntime,
+  SelfEvolveTool,
+  SkillCraftTool,
+  completeBootstrap,
+  createMemoryStore,
+  crixAgentHome,
+  ensureAgentScaffold,
+  exportHome,
+  importHome,
+  listSnapshots,
+  loadAgentConfig,
+  onLifecycle,
+  prepareCrixAgent,
+  restoreSnapshot,
+  runDeepDream,
+  runRemDream,
+  snapshotBrain,
+} from "@crix/agent";
 
 interface ParsedArgs {
   command: string;
@@ -142,6 +162,9 @@ function printHelp(): void {
       "  crix themes                 List terminal UI themes.",
       "  crix run --goal \"<text>\" [--provider openai|ollama|mock] [--model X]",
       "                              Run one turn, streaming TurnEvents as NDJSON.",
+      "  crix daemon --json          Run NDJSON daemon mode for companion UIs.",
+      "  crix agent bootstrap        Create or complete the v4 mind scaffold.",
+      "  crix agent doctor           Show agent memory/backend status.",
       "  crix eval                  Run the built-in harness regression eval suite.",
       "  crix login                  ChatGPT OAuth device-code flow.",
       "  crix doctor                 Show provider auth + Ollama Cloud health.",
@@ -191,13 +214,24 @@ interface LiveSession {
   hooks: HookManager;
   shellRegistry: ShellRegistry;
   todoStore: TodoStore;
-  queueSystemReminder(text: string, source?: "undo" | "hook" | "memory" | "instructions"): void;
+  agentRuntime?: CrixAgentRuntime;
+  queueSystemReminder(text: string, source?: ManualReminderSource): void;
   resumed?: ResumedSessionInfo;
 }
 
 interface CrixRuntimeState {
   permissionMode: PermissionMode;
 }
+
+type ManualReminderSource =
+  | "undo"
+  | "hook"
+  | "memory"
+  | "instructions"
+  | "heartbeat"
+  | "dream"
+  | "recall"
+  | "self-revise";
 
 async function selectProvider(flags: Map<string, string>): Promise<ProviderSelection> {
   const explicit = flags.get("provider");
@@ -450,6 +484,9 @@ async function buildEngineTools(
     makeKillShellTool(shellRegistry),
     makeEnterPlanModeTool(runtime),
     makeExitPlanModeTool(runtime),
+    BootstrapTool,
+    SelfEvolveTool,
+    SkillCraftTool,
   ];
 
   const baseTools = baseToolDefs.map((tool) => {
@@ -498,8 +535,17 @@ async function createSessionWithSelection(
   const hooks = await HookManager.load(process.cwd());
   await hooks.run({ event: "SessionStart", workspace: process.cwd() });
   const startupReminders = await loadStartupReminders(process.cwd());
-  const manualReminders: Array<{ text: string; source: "undo" | "hook" | "memory" | "instructions" }> = [];
-  const queueSystemReminder = (text: string, source: "undo" | "hook" | "memory" | "instructions" = "hook") => {
+  const isMockProvider = selection.provider.name === "mock" || selection.provider.name.startsWith("mock-");
+  const agentEnabled =
+    process.env.CRIX_AGENT_ENABLED === "1" ||
+    (!isMockProvider && process.env.CRIX_AGENT_ENABLED !== "0");
+  const agent = await prepareCrixAgent({
+    workspace: process.cwd(),
+    enabled: agentEnabled,
+  });
+  startupReminders.push(...agent.startupReminders);
+  const manualReminders: Array<{ text: string; source: ManualReminderSource }> = [];
+  const queueSystemReminder = (text: string, source: ManualReminderSource = "hook") => {
     manualReminders.push({ text, source });
   };
   const drainSystemReminders = () => [
@@ -516,6 +562,7 @@ async function createSessionWithSelection(
     shellRegistry,
     todoStore,
   );
+  const systemPrompt = agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode));
   if (resumeSessionId) {
     const snapshot = await loadSessionSnapshot(process.cwd(), resumeSessionId, {
       maxMessages: resumeMessageLimit(),
@@ -524,7 +571,7 @@ async function createSessionWithSelection(
       workspace: process.cwd(),
       provider: selection.provider,
       model: selection.model,
-      systemPrompt: buildSystemPrompt(runtime.permissionMode),
+      systemPrompt,
       tools,
       requestPermission: promptPermission,
       drainSystemReminders,
@@ -532,8 +579,9 @@ async function createSessionWithSelection(
       sessionMeta: snapshot.meta,
       initialMessages: snapshot.messages,
       initialSeq: snapshot.nextSeq,
+      selfTerritoryRoots: [crixAgentHome()],
     });
-    return {
+    const live: LiveSession = {
       session,
       selection,
       resumed: {
@@ -551,18 +599,33 @@ async function createSessionWithSelection(
       todoStore,
       queueSystemReminder,
     };
+    live.agentRuntime = new CrixAgentRuntime(agent, {
+      workspace: process.cwd(),
+      sessionId: session.meta.id,
+      queueReminder: (text, source) => queueSystemReminder(text, source),
+    });
+    live.agentRuntime.start();
+    return live;
   }
   const session = new Session({
     workspace: process.cwd(),
     provider: selection.provider,
     model: selection.model,
-    systemPrompt: buildSystemPrompt(runtime.permissionMode),
+    systemPrompt,
     tools,
     requestPermission: promptPermission,
     drainSystemReminders,
     hookManager: hooks,
+    selfTerritoryRoots: [crixAgentHome()],
   });
-  return { session, selection, runtime, verifier, hooks, shellRegistry, todoStore, queueSystemReminder };
+  const live: LiveSession = { session, selection, runtime, verifier, hooks, shellRegistry, todoStore, queueSystemReminder };
+  live.agentRuntime = new CrixAgentRuntime(agent, {
+    workspace: process.cwd(),
+    sessionId: session.meta.id,
+    queueReminder: (text, source) => queueSystemReminder(text, source),
+  });
+  live.agentRuntime.start();
+  return live;
 }
 
 async function resolveResumeSessionId(target?: string): Promise<string | undefined> {
@@ -855,13 +918,200 @@ async function runCommand(args: ParsedArgs): Promise<number> {
     `crix: provider=${live.selection.provider.name} model=${live.selection.model} source=${live.selection.source} session=${live.session.meta.id}\n`,
   );
 
+  const unsubLifecycle = onLifecycle((event) => {
+    try {
+      process.stdout.write(JSON.stringify({ type: "lifecycle", event }) + "\n");
+    } catch {
+      // ignore
+    }
+  });
+  await live.agentRuntime?.beforeTurn(goal);
+  let finalStatus: "completed" | "interrupted" | "failed" = "completed";
   for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
     if (event.type === "tool_end" && event.touchedFiles?.length) {
       live.verifier.scheduleFor(event.touchedFiles);
     }
+    if (event.type === "turn_end") finalStatus = event.status;
     process.stdout.write(JSON.stringify(event) + "\n");
   }
+  // Keep turn_end as the final NDJSON line for downstream consumers — unsubscribe
+  // before the post-turn / session-end hooks fire any additional lifecycle events.
+  unsubLifecycle();
+  await live.agentRuntime?.afterTurn(finalStatus);
+  await live.agentRuntime?.sessionEnded();
+  live.agentRuntime?.stop();
   return 0;
+}
+
+async function daemonCommand(args: ParsedArgs): Promise<number> {
+  if (args.flags.get("json") !== "true" && !args.flags.has("json")) {
+    process.stderr.write("error: daemon currently requires --json\n");
+    return 2;
+  }
+  let live: LiveSession;
+  try {
+    live = await createSession(args);
+  } catch (err) {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
+  process.stdout.write(JSON.stringify({ type: "daemon_ready", sessionId: live.session.meta.id }) + "\n");
+
+  // Bridge lifecycle events (Bootstrap, SelfEvolve, capture, recall, dream,
+  // skill_crafted, etc.) out as NDJSON so the Tauri shell can render +N
+  // score popups and entity-status indicators. These are separate from the
+  // per-turn TurnEvent stream — they're agent-evolution telemetry.
+  const unsubscribeLifecycle = onLifecycle((event) => {
+    try {
+      process.stdout.write(JSON.stringify({ type: "lifecycle", event }) + "\n");
+    } catch {
+      // never let lifecycle bridging crash the daemon
+    }
+  });
+  const rl = createInterface({ input: stdin, output: stderr, terminal: false });
+  try {
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      let command: { type?: string; goal?: string; command?: string };
+      try {
+        command = JSON.parse(line) as { type?: string; goal?: string; command?: string };
+      } catch {
+        process.stdout.write(JSON.stringify({ type: "daemon_error", error: "invalid JSON command" }) + "\n");
+        continue;
+      }
+      if (command.type === "exit") break;
+      if (command.type !== "send" || !command.goal) {
+        process.stdout.write(JSON.stringify({ type: "daemon_error", error: "expected {type:\"send\", goal:string}" }) + "\n");
+        continue;
+      }
+      await live.agentRuntime?.beforeTurn(command.goal);
+      let finalStatus: "completed" | "interrupted" | "failed" = "completed";
+      for await (const event of live.session.sendContent(await contentFromUserInput(command.goal, process.cwd()))) {
+        if (event.type === "turn_end") finalStatus = event.status;
+        process.stdout.write(JSON.stringify(event) + "\n");
+      }
+      await live.agentRuntime?.afterTurn(finalStatus);
+    }
+  } finally {
+    unsubscribeLifecycle();
+    await live.agentRuntime?.sessionEnded();
+    live.agentRuntime?.stop();
+    rl.close();
+  }
+  return 0;
+}
+
+async function agentCommand(args: ParsedArgs): Promise<number> {
+  const subcommand = args.positionals[0] ?? "doctor";
+  const home = args.flags.get("home") ?? process.env.CRIX_HOME;
+  if (subcommand === "bootstrap") {
+    const shouldComplete = args.flags.has("user") || args.flags.has("name");
+    if (!shouldComplete) {
+      const state = await ensureAgentScaffold({ home, workspace: process.cwd() });
+      process.stdout.write(notice("Agent Bootstrap", [state.message, `home ${state.home}`], state.required ? "warn" : "success"));
+      return 0;
+    }
+    const state = await completeBootstrap(
+      {
+        userName: args.flags.get("user") ?? os.userInfo().username,
+        userTimezone: args.flags.get("timezone") ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+        languages: args.flags.get("languages") ?? "TypeScript",
+        style: args.flags.get("style") ?? "direct, pragmatic, verify before claiming done",
+        conventions: args.flags.get("conventions") ?? "follow project-local patterns",
+        agentName: args.flags.get("name") ?? "Crix",
+        creature: args.flags.get("creature") ?? "coding agent",
+        vibe: args.flags.get("vibe") ?? "direct",
+        emoji: args.flags.get("emoji") ?? "*",
+      },
+      { home, workspace: process.cwd() },
+    );
+    process.stdout.write(notice("Agent Bootstrap", [state.message, `home ${state.home}`], "success"));
+    return 0;
+  }
+  if (subcommand === "doctor") {
+    const config = await loadAgentConfig(home);
+    const store = await createMemoryStore(config, home ?? crixHome());
+    const status = store.status();
+    process.stdout.write(notice("Agent Doctor", [
+      `home ${home ?? crixHome()}`,
+      `memory backend ${status.backend}`,
+      `sqlite-vec loaded ${status.vectorEnabled ? "yes" : "no"}`,
+      `store ${status.path}`,
+      ...(status.warning ? [status.warning] : []),
+    ], status.warning ? "warn" : "success"));
+    return 0;
+  }
+  if (subcommand === "dream") {
+    const phase = args.positionals[1] ?? "deep";
+    const config = await loadAgentConfig(home);
+    const result = phase === "rem"
+      ? await runRemDream({ home, config })
+      : await runDeepDream({ home, workspace: process.cwd(), config });
+    process.stdout.write(notice("Agent Dream", [result.report], "success"));
+    return 0;
+  }
+  if (subcommand === "snapshot") {
+    const snap = await snapshotBrain({ home, id: args.flags.get("id") });
+    if (!snap) {
+      process.stdout.write(notice("Agent Snapshot", ["No brain files yet — bootstrap first."], "warn"));
+      return 0;
+    }
+    process.stdout.write(notice("Agent Snapshot", [
+      `id ${snap.id}`,
+      `dir ${snap.dir}`,
+      `${snap.files.length} file(s) / ${snap.totalBytes} bytes`,
+    ], "success"));
+    return 0;
+  }
+  if (subcommand === "snapshots") {
+    const list = await listSnapshots(home);
+    if (list.length === 0) {
+      process.stdout.write(notice("Agent Snapshots", ["No snapshots yet."], "warn"));
+      return 0;
+    }
+    process.stdout.write(notice("Agent Snapshots", list.slice(0, 20).map((s) =>
+      `${s.id}  ${s.createdAt}  ${s.files.length} files / ${s.totalBytes}b`,
+    ), "info"));
+    return 0;
+  }
+  if (subcommand === "restore") {
+    const id = args.positionals[1] ?? args.flags.get("id");
+    if (!id) {
+      process.stderr.write("error: crix agent restore <snapshot-id>\n");
+      return 2;
+    }
+    const result = await restoreSnapshot({ home, id });
+    process.stdout.write(notice("Agent Restore", [
+      `restored ${result.restored.length} file(s) to ${result.dest}`,
+      ...result.restored.map((f) => `  ${f}`),
+    ], "success"));
+    return 0;
+  }
+  if (subcommand === "backup") {
+    const dest = args.flags.get("dest") ?? args.positionals[1] ?? path.join(process.cwd(), `crix-agent-backup-${Date.now()}.json`);
+    const result = await exportHome({ home, dest });
+    process.stdout.write(notice("Agent Backup", [
+      `wrote ${result.files} file(s) / ${result.bytes} bytes`,
+      `→ ${result.dest}`,
+    ], "success"));
+    return 0;
+  }
+  if (subcommand === "import") {
+    const source = args.flags.get("source") ?? args.positionals[1];
+    if (!source) {
+      process.stderr.write("error: crix agent import <backup.json> [--overwrite]\n");
+      return 2;
+    }
+    const overwrite = args.flags.get("overwrite") === "true" || args.flags.has("overwrite");
+    const result = await importHome({ home, source, overwrite });
+    process.stdout.write(notice("Agent Import", [
+      `wrote ${result.files} file(s); skipped ${result.skipped} (already present)`,
+      overwrite ? "overwrite mode: on" : "overwrite mode: off (pass --overwrite to replace existing files)",
+    ], "success"));
+    return 0;
+  }
+  process.stderr.write("error: usage: crix agent <bootstrap|doctor|dream|snapshot|snapshots|restore|backup|import>\n");
+  return 2;
 }
 
 interface EvalTask {
@@ -1150,15 +1400,23 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       snapshot,
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
       sendMessage: async (goal, onEvent) => {
+        await live.agentRuntime?.beforeTurn(goal);
+        let finalStatus: "completed" | "interrupted" | "failed" = "completed";
         for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
           if (event.type === "tool_end" && event.touchedFiles?.length) {
             live.verifier.scheduleFor(event.touchedFiles);
           }
+          if (event.type === "turn_end") finalStatus = event.status;
           onEvent(event);
         }
+        await live.agentRuntime?.afterTurn(finalStatus);
       },
       handleCommand: async (line): Promise<InkCommandResult> => {
-        if (line === "/exit" || line === "/quit") return { kind: "exit" };
+        if (line === "/exit" || line === "/quit") {
+          await live.agentRuntime?.sessionEnded();
+          live.agentRuntime?.stop();
+          return { kind: "exit" };
+        }
         if (line === "/help") return { kind: "handled", lines: inkHelpLines(), snapshot: snapshot() };
         if (line === "/doctor") return { kind: "handled", lines: await doctorSummaryLines(), snapshot: snapshot() };
         if (line === "/themes") return { kind: "handled", lines: themeLines(), snapshot: snapshot() };
@@ -1209,6 +1467,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
         if (line === "/resume" || line.startsWith("/resume ")) {
           const target = line.split(/\s+/, 2)[1] ?? "last";
           const sessionId = await requireResumeSessionId(target);
+          live.agentRuntime?.stop();
           live = await createSessionWithSelection(args, live.selection, sessionId);
           return { kind: "handled", lines: live.resumed ? resumedLines(live.resumed) : [`Resumed ${sessionId}`], snapshot: snapshot() };
         }
@@ -1217,6 +1476,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
           const next = path.resolve(process.cwd(), target);
           const info = await stat(next).catch(() => null);
           if (!info?.isDirectory()) return { kind: "handled", lines: [`Not a directory: ${next}`], snapshot: snapshot() };
+          live.agentRuntime?.stop();
           process.chdir(next);
           live = await createSessionWithSelection(args, live.selection);
           return { kind: "handled", lines: [`Active workspace is now ${process.cwd()}`], snapshot: snapshot() };
@@ -1237,6 +1497,8 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     const line = (await askLine(promptLabel(live.selection.model, process.cwd(), live.runtime.permissionMode))).trim();
     if (!line) continue;
     if (line === "/exit" || line === "exit" || line === "/quit" || line === "quit") {
+      await live.agentRuntime?.sessionEnded();
+      live.agentRuntime?.stop();
       process.stdout.write("bye\n");
       return 0;
     }
@@ -1324,6 +1586,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       const target = line.split(/\s+/, 2)[1] ?? "last";
       try {
         const sessionId = await requireResumeSessionId(target);
+        live.agentRuntime?.stop();
         live = await createSessionWithSelection(args, live.selection, sessionId);
         if (live.resumed) printResumed(live.resumed);
       } catch (err) {
@@ -1333,6 +1596,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     }
     if (line.startsWith("/workspace ")) {
       const target = line.slice("/workspace ".length).trim();
+      live.agentRuntime?.stop();
       live = await switchWorkspace(args, live.selection, target);
       continue;
     }
@@ -1368,8 +1632,10 @@ async function switchWorkspace(
 }
 
 async function renderTurn(live: LiveSession, goal: string): Promise<void> {
+  await live.agentRuntime?.beforeTurn(goal);
   let wroteText = false;
   let wroteThinking = false;
+  let finalStatus: "completed" | "interrupted" | "failed" = "completed";
   for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
     if (event.type === "text_delta") {
       if (wroteThinking) {
@@ -1427,16 +1693,19 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
       continue;
     }
     if (event.type === "turn_end") {
+      finalStatus = event.status;
       if (wroteThinking) process.stderr.write("\n");
       if (wroteText) process.stdout.write("\n");
       if (event.status !== "completed") {
         process.stderr.write(notice("Turn", [`status ${event.status}`], "warn"));
       }
       process.stderr.write(dim(usageMeter(event.usage, event.durationMs)) + "\n");
+      await live.agentRuntime?.afterTurn(finalStatus);
       return;
     }
     void event;
   }
+  await live.agentRuntime?.afterTurn(finalStatus);
 }
 
 async function loginCommand(): Promise<number> {
@@ -1658,6 +1927,12 @@ async function main(): Promise<void> {
       return;
     case "run":
       process.exit(await runCommand(args));
+      return;
+    case "daemon":
+      process.exit(await daemonCommand(args));
+      return;
+    case "agent":
+      process.exit(await agentCommand(args));
       return;
     case "eval":
       process.exit(await evalCommand());

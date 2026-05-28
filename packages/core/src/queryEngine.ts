@@ -99,7 +99,18 @@ export interface QueryEngineConfig {
   /** Optional pending system-reminders to inject at next turn_start. */
   drainSystemReminders?(): Array<{
     text: string;
-    source: "verifier" | "compaction" | "hook" | "skill" | "memory" | "instructions" | "undo";
+    source:
+      | "verifier"
+      | "compaction"
+      | "hook"
+      | "skill"
+      | "memory"
+      | "instructions"
+      | "undo"
+      | "heartbeat"
+      | "dream"
+      | "recall"
+      | "self-revise";
   }>;
   hookManager?: HookManager;
   requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
@@ -109,6 +120,12 @@ export interface QueryEngineConfig {
     input: unknown;
     safety: SafetyClass;
   }): Promise<{ checkpointId: string; label?: string } | null>;
+  /**
+   * Absolute paths the engine considers "self-territory" — writes targeting
+   * files inside these roots bypass the write-intent gate entirely. The agent
+   * owns its own brain (~/.crix/) and never needs a permission ritual to edit it.
+   */
+  selfTerritoryRoots?: readonly string[];
 }
 
 // ─── Implementation ────────────────────────────────────────────────────
@@ -116,6 +133,12 @@ export interface QueryEngineConfig {
 export class QueryEngine {
   private readonly messages: Message[] = [];
   private readonly cfg: QueryEngineConfig;
+  /**
+   * Sticky session-level write authorization. Once any turn establishes
+   * write intent, the gate stays open for the rest of the session. Matches
+   * how a human collaborator works: one "go ahead" unlocks the conversation.
+   */
+  private sessionWriteIntent = false;
   readonly sessionId: string;
 
   constructor(cfg: QueryEngineConfig, sessionId: string) {
@@ -168,7 +191,10 @@ export class QueryEngine {
     const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
     const maxIters = this.cfg.maxTurns ?? 50;
-    const writeIntent = detectsWriteIntent(messageText(userMessage));
+    // Sticky write intent: once unlocked in this session, it stays unlocked.
+    if (detectsWriteIntent(messageText(userMessage))) this.sessionWriteIntent = true;
+    const writeIntent = this.sessionWriteIntent;
+    const selfTerritoryRoots = this.cfg.selfTerritoryRoots ?? [];
 
     for (let iter = 0; iter < maxIters; iter++) {
       // ─── Stream one assistant turn from the provider ─────────────────
@@ -270,7 +296,7 @@ export class QueryEngine {
           continue;
         }
 
-        const writeBlockReason = blockedByWriteIntentGate(tool, use.input, writeIntent);
+        const writeBlockReason = blockedByWriteIntentGate(tool, use.input, writeIntent, selfTerritoryRoots, this.cfg.workspace);
         if (writeBlockReason) {
           yield { type: "tool_error", id: use.id, error: writeBlockReason, durationMs: 0 };
           resultByToolUseId.set(use.id, {
@@ -691,15 +717,44 @@ function detectsWriteIntent(text: string): boolean {
     || /\b(go ahead|do it|ship it|start coding|start implementing)\b/.test(normalized);
 }
 
-function blockedByWriteIntentGate(tool: EngineTool, input: unknown, writeIntent: boolean): string | null {
+function blockedByWriteIntentGate(
+  tool: EngineTool,
+  input: unknown,
+  writeIntent: boolean,
+  selfTerritoryRoots: readonly string[],
+  workspace: string,
+): string | null {
   if (writeIntent) return null;
+  // Self-territory bypass: the agent owns its own brain files (under ~/.crix/
+  // or any other registered self-root). It never needs human permission to
+  // edit IDENTITY/SOUL/USER/HEARTBEAT/MEMORY or related state.
   if (tool.schema.name === "Write" || tool.schema.name === "Edit") {
+    const target = extractPathArgument(input);
+    if (target && isInsideSelfTerritory(target, workspace, selfTerritoryRoots)) return null;
     return `${tool.schema.name} blocked: this turn does not contain explicit write intent. Ask to edit, fix, create, or update files before Crix modifies the workspace.`;
   }
   if ((tool.schema.name === "Bash" || tool.schema.name === "PowerShell") && shellCommandLooksMutating(input)) {
     return `${tool.schema.name} blocked: command appears to modify files or external state, but this turn does not contain explicit write intent.`;
   }
   return null;
+}
+
+function extractPathArgument(input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  const candidate = obj.file_path ?? obj.path ?? obj.target ?? obj.filename;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function isInsideSelfTerritory(target: string, workspace: string, roots: readonly string[]): boolean {
+  if (roots.length === 0) return false;
+  const absolute = path.isAbsolute(target) ? path.resolve(target) : path.resolve(workspace, target);
+  for (const root of roots) {
+    const absRoot = path.resolve(root);
+    const rel = path.relative(absRoot, absolute);
+    if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return true;
+  }
+  return false;
 }
 
 function shellCommandLooksMutating(input: unknown): boolean {

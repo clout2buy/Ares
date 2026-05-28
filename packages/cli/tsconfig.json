@@ -9,7 +9,8 @@
   "references": [
     { "path": "../protocol" },
     { "path": "../core" },
-    { "path": "../tools" }
+    { "path": "../tools" },
+    { "path": "../agent" }
   ],
   "include": ["src/**/*.ts"]
 }

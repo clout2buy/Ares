@@ -19,7 +19,9 @@ export type ThemeName =
   | "midnight"
   | "mono-pro"
   | "solarized"
-  | "synthwave";
+  | "synthwave"
+  | "graphite"
+  | "oxide";
 
 interface Theme {
   name: ThemeName;
@@ -241,6 +243,34 @@ const THEMES: Record<ThemeName, Theme> = {
     error: ANSI.brightRed,
     prompt: "▶",
   },
+  graphite: {
+    name: "graphite",
+    title: "Graphite",
+    layout: "pro",
+    primary: ANSI.brightWhite,
+    accent: ANSI.brightCyan,
+    model: ANSI.brightGreen,
+    border: ANSI.gray,
+    muted: ANSI.gray,
+    success: ANSI.brightGreen,
+    warn: ANSI.brightYellow,
+    error: ANSI.brightRed,
+    prompt: ">",
+  },
+  oxide: {
+    name: "oxide",
+    title: "Oxide",
+    layout: "panel",
+    primary: ANSI.brightRed,
+    accent: ANSI.brightYellow,
+    model: ANSI.brightCyan,
+    border: ANSI.red,
+    muted: ANSI.gray,
+    success: ANSI.brightGreen,
+    warn: ANSI.brightYellow,
+    error: ANSI.brightRed,
+    prompt: ">",
+  },
 };
 
 let activeThemeName: ThemeName | undefined;
@@ -295,13 +325,18 @@ function normalizeThemeName(name: string | undefined): ThemeName | null {
     synth: "synthwave",
     "synth-wave": "synthwave",
     retrowave: "synthwave",
+    gray: "graphite",
+    grey: "graphite",
+    clean2: "graphite",
+    rust: "oxide",
+    red: "oxide",
   };
   const candidate = aliases[raw] ?? raw;
   return candidate in THEMES ? (candidate as ThemeName) : null;
 }
 
 function theme(): Theme {
-  const selected = activeThemeName ?? normalizeThemeName(process.env.CRIX_THEME) ?? "amber";
+  const selected = activeThemeName ?? normalizeThemeName(process.env.CRIX_THEME) ?? "graphite";
   return THEMES[selected];
 }
 

@@ -43,5 +43,13 @@ Thumbs.db
 coverage/
 *.lcov
 
+# Tauri build outputs
+tauri/src-tauri/target/
+tauri/src-tauri/gen/
+tauri/dist/
+
+# Local research/scratch
+.scan-openclaw/
+
 # Misc
 *.tgz

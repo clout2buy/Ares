@@ -26,7 +26,18 @@ import type { PermissionPromptDecision } from "@crix/protocol";
 import type { HookManager } from "./hooks.js";
 import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified } from "./checkpoints.js";
 
-type ReminderSource = "verifier" | "compaction" | "hook" | "skill" | "memory" | "instructions" | "undo";
+type ReminderSource =
+  | "verifier"
+  | "compaction"
+  | "hook"
+  | "skill"
+  | "memory"
+  | "instructions"
+  | "undo"
+  | "heartbeat"
+  | "dream"
+  | "recall"
+  | "self-revise";
 
 export interface SessionOptions {
   workspace: string;
@@ -44,6 +55,12 @@ export interface SessionOptions {
   drainSystemReminders?: () => Array<{ text: string; source: ReminderSource }>;
   hookManager?: HookManager;
   requestPermission?: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision>;
+  /**
+   * Absolute paths the engine treats as "self-territory" — writes inside
+   * these roots bypass the write-intent gate. Used to give the agent
+   * unrestricted authority over its own brain (~/.crix/).
+   */
+  selfTerritoryRoots?: readonly string[];
 }
 
 export class Session {
@@ -78,6 +95,7 @@ export class Session {
         drainSystemReminders: opts.drainSystemReminders,
         hookManager: opts.hookManager,
         requestPermission: opts.requestPermission,
+        selfTerritoryRoots: opts.selfTerritoryRoots,
         beforeToolUseCheckpoint: async ({ toolUseId, toolName }) => {
           const checkpoint = await createWorkspaceCheckpoint({
             workspace: this.opts.workspace,

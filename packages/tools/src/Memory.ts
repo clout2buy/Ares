@@ -7,13 +7,13 @@ import { buildTool } from "./_shared.js";
 
 const inputSchema = z
   .object({
-    action: z.enum(["add", "update", "search", "forget", "list"]),
+    action: z.enum(["add", "update", "search", "recall", "forget", "list"]),
     scope: z.enum(["user", "project"]).default("project"),
     id: z.string().optional().describe("Memory id for update/forget."),
     category: z.string().default("General").describe("Section name, e.g. Preferences, Project, Commands."),
     content: z.string().optional().describe("Memory body for add/update."),
     tags: z.array(z.string()).default([]),
-    query: z.string().optional().describe("Search query for search/list filtering."),
+    query: z.string().optional().describe("Search query for search/recall/list filtering."),
     limit: z.number().int().positive().max(100).default(20),
   })
   .strict();
@@ -82,10 +82,14 @@ export const MemoryTool = buildTool({
       changed = true;
       message = `forgot ${id}`;
     } else {
-      message = i.action === "search" ? `searched ${i.query ?? ""}` : "listed memory";
+      message = i.action === "recall"
+        ? `recalled ${i.query ?? ""}`
+        : i.action === "search"
+          ? `searched ${i.query ?? ""}`
+          : "listed memory";
     }
 
-    const items = filterItems(doc.items, i.query).slice(0, i.limit);
+    const items = (i.action === "recall" ? recallItems(doc.items, i.query) : filterItems(doc.items, i.query)).slice(0, i.limit);
     return {
       output: { scope: i.scope, path: file, items, changed, message },
       touchedFiles: changed ? [file] : undefined,
@@ -169,6 +173,33 @@ function filterItems(items: readonly MemoryItem[], query?: string): MemoryItem[]
   return items.filter((item) =>
     [item.id, item.category, item.content, ...item.tags].some((part) => part.toLowerCase().includes(q)),
   );
+}
+
+function recallItems(items: readonly MemoryItem[], query?: string): MemoryItem[] {
+  const q = query?.trim().toLowerCase();
+  if (!q) return [...items];
+  const queryTokens = tokens(q);
+  return [...items]
+    .map((item) => ({ item, score: scoreItem(item, queryTokens) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || b.item.updatedAt.localeCompare(a.item.updatedAt))
+    .map((entry) => entry.item);
+}
+
+function scoreItem(item: MemoryItem, queryTokens: Set<string>): number {
+  const haystack = tokens([item.id, item.category, item.content, ...item.tags].join(" "));
+  let score = 0;
+  for (const token of queryTokens) {
+    if (haystack.has(token)) score += 2;
+    for (const candidate of haystack) {
+      if (candidate.includes(token) || token.includes(candidate)) score += 0.25;
+    }
+  }
+  return score;
+}
+
+function tokens(text: string): Set<string> {
+  return new Set(text.toLowerCase().match(/[a-z0-9_:-]+/g) ?? []);
 }
 
 function requireId(id: string | undefined, action: string): string {

@@ -126,8 +126,26 @@ export type TurnEvent =
   | {
       type: "system_reminder_injected";
       text: string;
-      source: "verifier" | "compaction" | "hook" | "skill" | "memory" | "instructions" | "undo";
+      source:
+        | "verifier"
+        | "compaction"
+        | "hook"
+        | "skill"
+        | "memory"
+        | "instructions"
+        | "undo"
+        | "heartbeat"
+        | "dream"
+        | "recall"
+        | "self-revise";
     }
+  | { type: "self_revise"; attempt: number; reason: string }
+  | { type: "heartbeat_tick"; reason: string; surfaced?: string }
+  | { type: "dream_phase_started"; phase: "light" | "deep" | "rem" }
+  | { type: "dream_phase_ended"; phase: "light" | "deep" | "rem"; promoted: number; pruned: number }
+  | { type: "skill_proposed"; name: string; pendingApproval: boolean }
+  | { type: "memory_recall_emitted"; count: number; topCategory: MemoryCategory }
+  | { type: "soul_rule_promoted"; ruleText: string; sourceMemoryId: number }
   | { type: "todo_updated"; todos: Todo[] }
   | { type: "checkpoint_created"; checkpointId: string; label?: string; toolUseId?: string; reason?: "manual" | "pre_tool" | "post_tool" }
   | { type: "workspace_diff"; checkpointId: string; toolUseId?: string; files: string[]; diff: string; truncated: boolean }
@@ -244,6 +262,7 @@ export interface CheckpointMeta {
 
 export type MemoryScope = "user" | "project";
 export type MemorySource = "user" | "agent" | "imported";
+export type MemoryCategory = "SELF" | "USER" | "PROJECT" | "DECISION" | "FEEDBACK";
 
 export interface MemoryRecord {
   id: string;

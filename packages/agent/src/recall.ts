@@ -1,0 +1,44 @@
+import type { CrixAgentConfig } from "./config.js";
+import { crixAgentHome } from "./paths.js";
+import { createMemoryStore, formatRecallReminder } from "./memory/vectorStore.js";
+import { embedText, lexicalEmbedding } from "./memory/embed.js";
+import type { MemoryCategory, RecallResult } from "./memory/types.js";
+
+export interface RecallOptions {
+  home?: string;
+  workspace: string;
+  query: string;
+  category?: MemoryCategory;
+  config: CrixAgentConfig;
+  useOllama?: boolean;
+}
+
+export async function recallForTurn(opts: RecallOptions): Promise<{ results: RecallResult[]; reminder: string; usedEmbedding: "ollama" | "lexical" }> {
+  const home = crixAgentHome(opts.home);
+  let embedding: number[];
+  let usedEmbedding: "ollama" | "lexical" = "lexical";
+  if (opts.useOllama) {
+    try {
+      embedding = await embedText(opts.query, {
+        host: opts.config.slots.embed.host,
+        model: opts.config.memory.embedModel,
+        dimensions: opts.config.memory.dimensions,
+      });
+      usedEmbedding = "ollama";
+    } catch {
+      embedding = lexicalEmbedding(opts.query, opts.config.memory.dimensions);
+    }
+  } else {
+    embedding = lexicalEmbedding(opts.query, opts.config.memory.dimensions);
+  }
+  const store = await createMemoryStore(opts.config, home);
+  const results = await store.recall({
+    query: opts.query,
+    embedding,
+    workspace: opts.workspace,
+    category: opts.category,
+    limit: opts.config.memory.maxResults,
+  });
+  return { results, reminder: formatRecallReminder(results), usedEmbedding };
+}
+

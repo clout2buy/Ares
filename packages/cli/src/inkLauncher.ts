@@ -56,6 +56,8 @@ const LAUNCHER_THEMES: Record<ThemeName, LauncherTheme> = {
   "mono-pro": { frame: "gray", accent: "whiteBright", accent2: "white", accent3: "whiteBright", text: "white", dim: "gray", success: "white", warn: "yellowBright", error: "redBright" },
   solarized: { frame: "yellow", accent: "yellowBright", accent2: "cyanBright", accent3: "blueBright", text: "white", dim: "gray", success: "greenBright", warn: "yellow", error: "redBright" },
   synthwave: { frame: "magentaBright", accent: "magentaBright", accent2: "cyanBright", accent3: "blueBright", text: "white", dim: "blueBright", success: "greenBright", warn: "yellowBright", error: "redBright" },
+  graphite: { frame: "gray", accent: "whiteBright", accent2: "cyanBright", accent3: "greenBright", text: "white", dim: "gray", success: "greenBright", warn: "yellowBright", error: "redBright" },
+  oxide: { frame: "red", accent: "redBright", accent2: "yellowBright", accent3: "cyanBright", text: "white", dim: "gray", success: "greenBright", warn: "yellowBright", error: "redBright" },
 };
 
 export async function runInkLauncher(options: LauncherOptions): Promise<LauncherAction> {
@@ -102,7 +104,7 @@ function CrixLauncherApp({
   const [workspace, setWorkspace] = useState(options.workspace);
   const [workspaceDraft, setWorkspaceDraft] = useState(options.workspace);
   const previousPhase = useRef<LauncherPhase>("provider");
-  const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.amber;
+  const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.graphite;
   const openAIModels = useMemo(() => openAIModelList(options.settings), [options.settings]);
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama]);
   const selectedModel = models[Math.min(selectedOllama, Math.max(0, models.length - 1))] ?? models[0];

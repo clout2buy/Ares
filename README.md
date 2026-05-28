@@ -16,6 +16,9 @@ Main commands:
 ```powershell
 .\crix.bat           # launch interactive TUI (provider/model picker, then chat)
 .\crix.bat run --goal "fix failing tests in auth module"  # coding task run
+.\crix.bat agent bootstrap # create/complete the v4 mind scaffold
+.\crix.bat agent doctor    # inspect identity/memory backend status
+.\crix.bat daemon --json   # NDJSON protocol for companion UIs
 .\crix.bat dry       # safe dry-run (sample plan), writes proof only
 .\crix.bat apply     # applies sample plan through policy/checkpoints
 .\crix.bat test      # runs TypeScript tests
@@ -70,6 +73,10 @@ Memory:
 
 ## What It Does Now
 
+- Adds a v4 agent layer in `packages/agent/`: bootstrap, IDENTITY/SOUL/USER/HEARTBEAT/MEMORY files, local recall, heartbeat, dreaming, self-revision signals, and skill proposals.
+- Keeps the harness boundary clean: `packages/core` and `packages/tools` do not import the agent package.
+- Supports local memory with Ollama embeddings plus sqlite/json fallback storage; see `docs/AGENT.md`.
+- Includes cleaner `graphite` and `oxide` terminal themes plus an opt-in Tauri companion scaffold under `tauri/`.
 - Builds context from repo files and durable memory.
 - Uses a strong Claude-Code-style prompt discipline for coding-agent behavior.
 - Uses an original layered prompt pack with tool catalog, skill processes, subagent rules, memory rules, and proof discipline.

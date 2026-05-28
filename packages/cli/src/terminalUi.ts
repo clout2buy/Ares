@@ -448,6 +448,7 @@ export function interactiveHelp(): string {
       "/danger                Toggle bypass mode for tool prompts.",
       "/checkpoints           List local workspace checkpoints.",
       "/checkpoint-diff <id>  Compare current workspace to a checkpoint.",
+      "/undo [N]              Restore the latest pre-write checkpoint.",
       "/rollback <id>         Restore a checkpoint snapshot.",
       "/resume [id|last]      Replay a saved session into model context.",
       "/workspace <path>      Switch the active workspace for tool calls.",

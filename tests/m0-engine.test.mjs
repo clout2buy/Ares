@@ -314,3 +314,64 @@ test("M0: explicit write intent allows workspace-write tools", async () => {
   assert.equal(toolCalls, 1);
   assert.ok(events.some((event) => event.type === "tool_end"));
 });
+
+test("M3: parallel-safe tools execute concurrently and forward progress", async () => {
+  const provider = {
+    name: "parallel-provider",
+    async *stream() {
+      for (const id of ["a", "b"]) {
+        yield { type: "tool_use_start", id, name: "SlowRead" };
+        yield { type: "tool_use_input_done", id, input: { id } };
+      }
+      yield {
+        type: "message_done",
+        message: {
+          id: "assistant_parallel",
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "a", name: "SlowRead", input: { id: "a" } },
+            { type: "tool_use", id: "b", name: "SlowRead", input: { id: "b" } },
+          ],
+          createdAt: new Date().toISOString(),
+        },
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: "tool_use",
+      };
+    },
+  };
+  const tool = {
+    schema: {
+      name: "SlowRead",
+      description: "Slow parallel-safe test tool",
+      inputJsonSchema: { type: "object", properties: {} },
+      safety: "read-only",
+      concurrency: "parallel-safe",
+    },
+    async call(input, ctx) {
+      ctx.emitProgress?.({ kind: "slow", id: input.id });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return { output: input.id };
+    },
+  };
+  const engine = new QueryEngine(
+    {
+      provider,
+      model: "test",
+      systemPrompt: "test",
+      tools: [tool],
+      workspace: "D:\\Crix",
+      maxTurns: 1,
+    },
+    "sess_test_parallel",
+  );
+
+  engine.appendUserMessage("read both");
+  const started = Date.now();
+  const events = [];
+  for await (const event of engine.streamTurn()) events.push(event);
+  const duration = Date.now() - started;
+
+  assert.ok(duration < 260, `expected concurrent runtime, got ${duration}ms`);
+  assert.equal(events.filter((event) => event.type === "tool_end").length, 2);
+  assert.equal(events.filter((event) => event.type === "tool_progress").length, 2);
+});

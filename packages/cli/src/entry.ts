@@ -20,9 +20,12 @@ import {
   SubagentRegistry,
   ContinuousVerifier,
   HookManager,
+  createWorkspaceCheckpoint,
   listWorkspaceCheckpoints,
   diffWorkspaceCheckpoint,
   restoreWorkspaceCheckpoint,
+  loadStartupReminders,
+  buildPromptCacheKey,
   authStatus,
   deviceCodeLogin,
   listSessions,
@@ -34,8 +37,9 @@ import {
   type SessionSummary,
   crixHome,
 } from "@crix/core";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import {
@@ -49,6 +53,13 @@ import {
   makeKillShellTool,
   makeEnterPlanModeTool,
   makeExitPlanModeTool,
+  ReadTool,
+  GlobTool,
+  GrepTool,
+  EditTool,
+  WriteTool,
+  ApplyIntentTool,
+  MemoryTool,
   TodoStore,
   ShellRegistry,
   type RichToolContext,
@@ -59,7 +70,7 @@ import {
   type CommandPermissionStore,
   type SubModelPool,
 } from "@crix/tools";
-import type { PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@crix/protocol";
+import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@crix/protocol";
 import type { ToolPermissionRequest } from "@crix/core";
 import {
   chatHeader,
@@ -131,6 +142,7 @@ function printHelp(): void {
       "  crix themes                 List terminal UI themes.",
       "  crix run --goal \"<text>\" [--provider openai|ollama|mock] [--model X]",
       "                              Run one turn, streaming TurnEvents as NDJSON.",
+      "  crix eval                  Run the built-in harness regression eval suite.",
       "  crix login                  ChatGPT OAuth device-code flow.",
       "  crix doctor                 Show provider auth + Ollama Cloud health.",
       "  crix help                   Print this help.",
@@ -179,6 +191,7 @@ interface LiveSession {
   hooks: HookManager;
   shellRegistry: ShellRegistry;
   todoStore: TodoStore;
+  queueSystemReminder(text: string, source?: "undo" | "hook" | "memory" | "instructions"): void;
   resumed?: ResumedSessionInfo;
 }
 
@@ -484,7 +497,14 @@ async function createSessionWithSelection(
   });
   const hooks = await HookManager.load(process.cwd());
   await hooks.run({ event: "SessionStart", workspace: process.cwd() });
+  const startupReminders = await loadStartupReminders(process.cwd());
+  const manualReminders: Array<{ text: string; source: "undo" | "hook" | "memory" | "instructions" }> = [];
+  const queueSystemReminder = (text: string, source: "undo" | "hook" | "memory" | "instructions" = "hook") => {
+    manualReminders.push({ text, source });
+  };
   const drainSystemReminders = () => [
+    ...startupReminders.splice(0),
+    ...manualReminders.splice(0),
     ...verifier.drainReminders(),
     ...hooks.drainReminders(),
   ];
@@ -529,6 +549,7 @@ async function createSessionWithSelection(
       hooks,
       shellRegistry,
       todoStore,
+      queueSystemReminder,
     };
   }
   const session = new Session({
@@ -541,7 +562,7 @@ async function createSessionWithSelection(
     drainSystemReminders,
     hookManager: hooks,
   });
-  return { session, selection, runtime, verifier, hooks, shellRegistry, todoStore };
+  return { session, selection, runtime, verifier, hooks, shellRegistry, todoStore, queueSystemReminder };
 }
 
 async function resolveResumeSessionId(target?: string): Promise<string | undefined> {
@@ -610,6 +631,7 @@ function inkHelpLines(): string[] {
     "/danger                Toggle bypass mode for tool prompts.",
     "/checkpoints           List local workspace checkpoints.",
     "/checkpoint-diff <id>  Compare current workspace to a checkpoint.",
+    "/undo [N]              Restore the latest pre-write checkpoint.",
     "/rollback <id>         Restore a checkpoint snapshot.",
     "/resume [id|last]      Replay a saved session into model context.",
     "/workspace <path>      Switch the active workspace for tool calls.",
@@ -686,6 +708,28 @@ async function rollbackLines(id: string): Promise<string[]> {
   }
 }
 
+async function undoLines(live: LiveSession, rawDepth = ""): Promise<string[]> {
+  const depth = rawDepth.trim() ? Number(rawDepth.trim()) : 1;
+  if (!Number.isInteger(depth) || depth < 1) return ["Usage: /undo [N]"];
+  const checkpoints = await listWorkspaceCheckpoints(process.cwd());
+  const target = checkpoints[depth - 1];
+  if (!target) return [`No checkpoint ${depth} step(s) back.`];
+  try {
+    const result = await restoreWorkspaceCheckpoint(process.cwd(), target.id);
+    live.queueSystemReminder(
+      `User invoked /undo ${depth}. Restored workspace to checkpoint ${target.id}. Re-read affected files before editing again.`,
+      "undo",
+    );
+    return [
+      `undid to ${target.id}`,
+      `restored ${result.restored} file(s)`,
+      `deleted ${result.deleted} file(s)`,
+    ];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
+}
+
 function resumeMessageLimit(): number | undefined {
   const raw = process.env.CRIX_RESUME_MESSAGES;
   if (!raw) return 80;
@@ -702,6 +746,92 @@ async function loadSavedTheme(): Promise<void> {
 
 async function saveTheme(name: string): Promise<void> {
   await updateUiSettings({ theme: name as ThemeName });
+}
+
+async function contentFromUserInput(text: string, workspace: string): Promise<ContentBlock[]> {
+  const content: ContentBlock[] = [];
+  const seen = new Set<string>();
+  const dataUrlRe = /data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=]+)/gi;
+  for (const match of text.matchAll(dataUrlRe)) {
+    const key = match[0].slice(0, 80);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    content.push({ type: "image", source: { kind: "base64", mediaType: match[1].toLowerCase(), data: match[2] } });
+  }
+
+  for (const candidate of imagePathCandidates(text)) {
+    const resolved = path.resolve(workspace, candidate);
+    if (seen.has(resolved)) continue;
+    const info = await stat(resolved).catch(() => null);
+    if (!info?.isFile() || info.size > 15 * 1024 * 1024) continue;
+    const mediaType = mediaTypeForPath(resolved);
+    if (!mediaType) continue;
+    const bytes = await readFile(resolved);
+    seen.add(resolved);
+    content.push({ type: "image", source: { kind: "base64", mediaType, data: bytes.toString("base64") } });
+  }
+
+  const stripped = text.replace(dataUrlRe, "[attached image]").trim();
+  content.unshift({ type: "text", text: stripped || "Please inspect the attached image." });
+  return content;
+}
+
+function imagePathCandidates(text: string): string[] {
+  const out: string[] = [];
+  const quoted = /["']([^"']+\.(?:png|jpe?g|webp|gif))["']/gi;
+  for (const match of text.matchAll(quoted)) out.push(match[1]);
+  const bare = /(?:^|\s)(@?(?:[A-Za-z]:\\|\.{1,2}[\\/]|[A-Za-z0-9_.-]+[\\/])[^"'<>|?*\s]+\.(?:png|jpe?g|webp|gif))/gi;
+  for (const match of text.matchAll(bare)) out.push(match[1].replace(/^@/, ""));
+  return out;
+}
+
+function mediaTypeForPath(file: string): string | null {
+  const ext = path.extname(file).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  return null;
+}
+
+function legacyProgressText(data: unknown): string | null {
+  if (!data || typeof data !== "object") return typeof data === "string" ? data : null;
+  const obj = data as Record<string, unknown>;
+  if (obj.kind === "shell_output") {
+    const text = String(obj.text ?? "").trimEnd();
+    return text ? `${obj.stream ?? "stdout"} ${text}`.slice(0, 240) : null;
+  }
+  if (obj.kind === "grep_match") return `grep ${obj.total ?? "?"} match(es)`;
+  if (obj.kind === "lsp_init") return `starting ${obj.server ?? "LSP"}`;
+  if (obj.kind === "lsp_ready") return `${obj.server ?? "LSP"} ready`;
+  return JSON.stringify(obj).slice(0, 240);
+}
+
+function colorUnifiedDiff(diff: string): string {
+  const color = process.env.NO_COLOR ? false : Boolean(process.stderr.isTTY);
+  const paint = (code: string, text: string) => (color ? `${code}${text}\x1b[0m` : text);
+  return diff
+    .split(/\r?\n/)
+    .map((line) => {
+      if (line.startsWith("+") && !line.startsWith("+++")) return paint("\x1b[32m", line);
+      if (line.startsWith("-") && !line.startsWith("---")) return paint("\x1b[31m", line);
+      if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) return paint("\x1b[36m", line);
+      return dim(line);
+    })
+    .join("\n") + "\n";
+}
+
+function usageMeter(usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number }, durationMs: number): string {
+  const cached = usage.cacheReadTokens ?? 0;
+  const denom = usage.inputTokens + cached;
+  const cachePct = denom > 0 ? Math.round((cached / denom) * 100) : 0;
+  const inputPerM = Number(process.env.CRIX_COST_INPUT_PER_MTOK ?? 0);
+  const outputPerM = Number(process.env.CRIX_COST_OUTPUT_PER_MTOK ?? 0);
+  const cost =
+    Number.isFinite(inputPerM) && Number.isFinite(outputPerM) && (inputPerM > 0 || outputPerM > 0)
+      ? `$${(((Math.max(0, usage.inputTokens - cached) / 1_000_000) * inputPerM) + ((usage.outputTokens / 1_000_000) * outputPerM)).toFixed(4)}`
+      : "$n/a";
+  return `${cost} / ${Math.round(durationMs / 1000)}s / ${usage.inputTokens + usage.outputTokens} tokens / ${cachePct}% cached`;
 }
 
 // ─── commands ──────────────────────────────────────────────────────────
@@ -725,13 +855,162 @@ async function runCommand(args: ParsedArgs): Promise<number> {
     `crix: provider=${live.selection.provider.name} model=${live.selection.model} source=${live.selection.source} session=${live.session.meta.id}\n`,
   );
 
-  for await (const event of live.session.send(goal)) {
+  for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
     if (event.type === "tool_end" && event.touchedFiles?.length) {
       live.verifier.scheduleFor(event.touchedFiles);
     }
     process.stdout.write(JSON.stringify(event) + "\n");
   }
   return 0;
+}
+
+interface EvalTask {
+  name: string;
+  run(workspace: string): Promise<void>;
+}
+
+async function evalCommand(): Promise<number> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "crix-eval-"));
+  const tasks = builtInEvalTasks();
+  const failures: string[] = [];
+  process.stdout.write(`crix eval: ${tasks.length} task(s)\n`);
+  try {
+    for (const task of tasks) {
+      try {
+        await task.run(root);
+        process.stdout.write(`ok  ${task.name}\n`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failures.push(`${task.name}: ${message}`);
+        process.stdout.write(`fail ${task.name}: ${message}\n`);
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  if (failures.length > 0) {
+    process.stdout.write(`\n${failures.length}/${tasks.length} eval task(s) failed.\n`);
+    return 1;
+  }
+  process.stdout.write(`\n${tasks.length}/${tasks.length} eval task(s) passed.\n`);
+  return 0;
+}
+
+function builtInEvalTasks(): EvalTask[] {
+  return [
+    {
+      name: "Read returns numbered content",
+      async run(workspace) {
+        await writeEvalFile(workspace, "src/a.ts", "export const a = 1;\n");
+        const result = await ReadTool.call({ file_path: "src/a.ts" }, evalToolCtx(workspace));
+        assertEval(result.output.content.includes("1\texport const a = 1;"), "missing numbered line");
+      },
+    },
+    {
+      name: "Glob finds TypeScript files",
+      async run(workspace) {
+        await writeEvalFile(workspace, "src/b.ts", "export const b = 2;\n");
+        const result = await GlobTool.call({ pattern: "src/*.ts", max_results: 50 }, evalToolCtx(workspace));
+        assertEval(result.output.matches.some((m) => m.path.endsWith("b.ts")), "b.ts not matched");
+      },
+    },
+    {
+      name: "Grep finds regex matches",
+      async run(workspace) {
+        await writeEvalFile(workspace, "src/c.ts", "function target() {}\n");
+        const result = await GrepTool.call({
+          pattern: "target",
+          path: "src",
+          output_mode: "content",
+          max_results: 50,
+          case_insensitive: false,
+          context_before: 0,
+          context_after: 0,
+        }, evalToolCtx(workspace));
+        assertEval(result.output.totalMatches >= 1, "target not found");
+      },
+    },
+    {
+      name: "Write creates files",
+      async run(workspace) {
+        const result = await WriteTool.call({ file_path: "src/write.txt", content: "created\n" }, evalToolCtx(workspace));
+        assertEval(result.output.created === true, "file was not created");
+      },
+    },
+    {
+      name: "Edit updates previously read files",
+      async run(workspace) {
+        const ctx = evalToolCtx(workspace);
+        await writeEvalFile(workspace, "src/edit.txt", "old\n");
+        await ReadTool.call({ file_path: "src/edit.txt" }, ctx);
+        await EditTool.call({ file_path: "src/edit.txt", old_string: "old", new_string: "new", replace_all: false }, ctx);
+        assertEval((await readFile(path.join(workspace, "src", "edit.txt"), "utf8")) === "new\n", "edit failed");
+      },
+    },
+    {
+      name: "ApplyIntent materializes full-file sketches",
+      async run(workspace) {
+        const ctx = evalToolCtx(workspace);
+        await writeEvalFile(workspace, "src/apply.ts", "export const value = 1;\n");
+        await ReadTool.call({ file_path: "src/apply.ts" }, ctx);
+        await ApplyIntentTool.call({ file_path: "src/apply.ts", instructions: "change value", sketch: "export const value = 2;\n" }, ctx);
+        assertEval((await readFile(path.join(workspace, "src", "apply.ts"), "utf8")).includes("2"), "apply failed");
+      },
+    },
+    {
+      name: "Checkpoints restore workspace state",
+      async run(workspace) {
+        await writeEvalFile(workspace, "src/check.txt", "before\n");
+        const checkpoint = await createWorkspaceCheckpoint({ workspace, sessionId: "eval", turnSeq: 1 });
+        await writeEvalFile(workspace, "src/check.txt", "after\n");
+        await restoreWorkspaceCheckpoint(workspace, checkpoint.id);
+        assertEval((await readFile(path.join(workspace, "src", "check.txt"), "utf8")) === "before\n", "restore failed");
+      },
+    },
+    {
+      name: "Memory add and search persist facts",
+      async run(workspace) {
+        const ctx = evalToolCtx(workspace);
+        await MemoryTool.call({ action: "add", scope: "project", category: "Preferences", content: "Use pnpm for scripts.", tags: ["tooling"], limit: 20 }, ctx);
+        const found = await MemoryTool.call({ action: "search", scope: "project", category: "General", query: "pnpm", tags: [], limit: 20 }, ctx);
+        assertEval(found.output.items.length === 1, "memory search missed item");
+      },
+    },
+    {
+      name: "Startup context loads CRIX.md",
+      async run(workspace) {
+        await writeEvalFile(workspace, "CRIX.md", "Project rule: use tabs.\n");
+        const reminders = await loadStartupReminders(workspace);
+        assertEval(reminders.some((r) => r.source === "instructions" && r.text.includes("use tabs")), "CRIX.md not loaded");
+      },
+    },
+    {
+      name: "Prompt cache key is stable",
+      async run() {
+        const req = { system: "same", tools: [{ name: "Read", description: "read", input_schema: { type: "object" } }] };
+        assertEval(buildPromptCacheKey(req).key === buildPromptCacheKey(req).key, "cache key unstable");
+      },
+    },
+  ];
+}
+
+function evalToolCtx(workspace: string): RichToolContext {
+  return {
+    workspace,
+    signal: new AbortController().signal,
+    permissionMode: "workspace-write",
+    fileReadStamps: new Map<string, FileReadStamp>(),
+  };
+}
+
+async function writeEvalFile(workspace: string, rel: string, content: string): Promise<void> {
+  const file = path.join(workspace, rel);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, content, "utf8");
+}
+
+function assertEval(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
 }
 
 async function sessionsCommand(): Promise<number> {
@@ -871,7 +1150,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       snapshot,
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
       sendMessage: async (goal, onEvent) => {
-        for await (const event of live.session.send(goal)) {
+        for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
           if (event.type === "tool_end" && event.touchedFiles?.length) {
             live.verifier.scheduleFor(event.touchedFiles);
           }
@@ -910,6 +1189,9 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
         if (line === "/checkpoints") return { kind: "handled", lines: await checkpointLines(), snapshot: snapshot() };
         if (line.startsWith("/checkpoint-diff ")) {
           return { kind: "handled", lines: await checkpointDiffLines(line.slice("/checkpoint-diff ".length).trim()), snapshot: snapshot() };
+        }
+        if (line === "/undo" || line.startsWith("/undo ")) {
+          return { kind: "handled", lines: await undoLines(live, line.slice("/undo".length)), snapshot: snapshot() };
         }
         if (line.startsWith("/rollback ")) {
           return { kind: "handled", lines: await rollbackLines(line.slice("/rollback ".length).trim()), snapshot: snapshot() };
@@ -1030,6 +1312,10 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       await checkpointDiffCommand(line.slice("/checkpoint-diff ".length).trim());
       continue;
     }
+    if (line === "/undo" || line.startsWith("/undo ")) {
+      process.stdout.write(notice("Undo", await undoLines(live, line.slice("/undo".length)), "success"));
+      continue;
+    }
     if (line.startsWith("/rollback ")) {
       await rollbackCommand(line.slice("/rollback ".length).trim());
       continue;
@@ -1084,7 +1370,7 @@ async function switchWorkspace(
 async function renderTurn(live: LiveSession, goal: string): Promise<void> {
   let wroteText = false;
   let wroteThinking = false;
-  for await (const event of live.session.send(goal)) {
+  for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
     if (event.type === "text_delta") {
       if (wroteThinking) {
         process.stderr.write("\n");
@@ -1115,6 +1401,15 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
       process.stderr.write(toolEnd(event));
       continue;
     }
+    if (event.type === "tool_progress") {
+      const text = legacyProgressText(event.data);
+      if (text) process.stderr.write(dim(text) + "\n");
+      continue;
+    }
+    if (event.type === "workspace_diff") {
+      process.stderr.write(colorUnifiedDiff(event.diff));
+      continue;
+    }
     if (event.type === "todo_updated") {
       process.stderr.write(notice("Todos", event.todos.map((todo) => `${todo.status.padEnd(11)} ${todo.status === "in_progress" ? todo.activeForm : todo.content}`), "info"));
       continue;
@@ -1137,6 +1432,7 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
       if (event.status !== "completed") {
         process.stderr.write(notice("Turn", [`status ${event.status}`], "warn"));
       }
+      process.stderr.write(dim(usageMeter(event.usage, event.durationMs)) + "\n");
       return;
     }
     void event;
@@ -1362,6 +1658,9 @@ async function main(): Promise<void> {
       return;
     case "run":
       process.exit(await runCommand(args));
+      return;
+    case "eval":
+      process.exit(await evalCommand());
       return;
     case "sessions":
       process.exit(await sessionsCommand());

@@ -184,6 +184,47 @@ test("OpenAIResponsesProvider: serializes function call outputs as top-level Res
   ]);
 });
 
+test("OpenAIResponsesProvider: sends prompt_cache_key and image blocks", async () => {
+  const sse = [
+    `event: response.completed\ndata: ${JSON.stringify({
+      type: "response.completed",
+      response: { id: "resp_img", status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    })}\n\n`,
+  ].join("");
+  const captured = {};
+  const provider = new OpenAIResponsesProvider({
+    auth,
+    fetchImpl: captureFetch(sse, captured),
+    endpointUrl: "http://x",
+  });
+
+  const req = {
+    model: "gpt-4o",
+    system: "test",
+    messages: [
+      {
+        id: "u1",
+        role: "user",
+        content: [
+          { type: "text", text: "inspect" },
+          { type: "image", source: { kind: "base64", mediaType: "image/png", data: "AAAA" } },
+        ],
+        createdAt: "now",
+      },
+    ],
+    tools: [{ name: "Read", description: "read file", input_schema: { type: "object" } }],
+  };
+  const events = [];
+  for await (const e of provider.stream(req)) events.push(e);
+
+  assert.equal(events.at(-1).type, "message_done");
+  assert.match(captured.body.prompt_cache_key, /^crix:/);
+  assert.deepEqual(captured.body.input[0].content, [
+    { type: "input_text", text: "inspect" },
+    { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+  ]);
+});
+
 test("OpenAIResponsesProvider: emits error event on HTTP failure", async () => {
   const provider = new OpenAIResponsesProvider({
     auth,

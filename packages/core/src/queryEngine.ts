@@ -17,6 +17,7 @@ import {
   type TurnEvent,
   type Usage,
   type StopReason,
+  type SafetyClass,
   type ToolSchema,
   type ToolUseBlock,
   type ToolResultBlock,
@@ -95,9 +96,18 @@ export interface QueryEngineConfig {
   signal?: AbortSignal;
   maxTurns?: number;
   /** Optional pending system-reminders to inject at next turn_start. */
-  drainSystemReminders?(): Array<{ text: string; source: "verifier" | "compaction" | "hook" | "skill" }>;
+  drainSystemReminders?(): Array<{
+    text: string;
+    source: "verifier" | "compaction" | "hook" | "skill" | "memory" | "instructions" | "undo";
+  }>;
   hookManager?: HookManager;
   requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
+  beforeToolUseCheckpoint?(request: {
+    toolUseId: string;
+    toolName: string;
+    input: unknown;
+    safety: SafetyClass;
+  }): Promise<{ checkpointId: string; label?: string } | null>;
 }
 
 // ─── Implementation ────────────────────────────────────────────────────
@@ -123,10 +133,14 @@ export class QueryEngine {
   }
 
   appendUserMessage(text: string): Message {
+    return this.appendUserMessageContent([{ type: "text", text }]);
+  }
+
+  appendUserMessageContent(content: ContentBlock[]): Message {
     const message: Message = {
       id: cryptoId(),
       role: "user",
-      content: [{ type: "text", text }],
+      content,
       createdAt: new Date().toISOString(),
     };
     this.messages.push(message);
@@ -244,22 +258,21 @@ export class QueryEngine {
         return;
       }
 
-      // Partition: parallel-safe tools run concurrently; exclusive tools serial.
-      // For M0 we just run sequentially; concurrency comes in M3.
-      const toolResults: ToolResultBlock[] = [];
+      const resultByToolUseId = new Map<string, ToolResultBlock>();
+      const runnable: Array<{ id: string; name: string; input: unknown; tool: EngineTool }> = [];
       for (const use of pendingToolUses) {
         const tool = this.cfg.tools.find((t) => t.schema.name === use.name);
         if (!tool) {
           const msg = `unknown tool: ${use.name}`;
           yield { type: "tool_error", id: use.id, error: msg, durationMs: 0 };
-          toolResults.push({ type: "tool_result", tool_use_id: use.id, content: msg, is_error: true });
+          resultByToolUseId.set(use.id, { type: "tool_result", tool_use_id: use.id, content: msg, is_error: true });
           continue;
         }
 
         const writeBlockReason = blockedByWriteIntentGate(tool, use.input, writeIntent);
         if (writeBlockReason) {
           yield { type: "tool_error", id: use.id, error: writeBlockReason, durationMs: 0 };
-          toolResults.push({
+          resultByToolUseId.set(use.id, {
             type: "tool_result",
             tool_use_id: use.id,
             content: writeBlockReason,
@@ -268,7 +281,7 @@ export class QueryEngine {
           this.messages.push({
             id: cryptoId(),
             role: "user", // Anthropic shape: tool_result blocks live in user-role messages
-            content: toolResults,
+            content: orderedToolResults(pendingToolUses, resultByToolUseId),
             createdAt: new Date().toISOString(),
           });
           yield {
@@ -280,119 +293,30 @@ export class QueryEngine {
           return;
         }
 
-        const preHook = this.cfg.hookManager
-          ? await this.cfg.hookManager.run({
-              event: "PreToolUse",
-              toolName: use.name,
-              input: use.input,
-              workspace: this.cfg.workspace,
-            })
-          : null;
-        if (preHook?.blocked) {
-          const msg = preHook.reminders[0] ?? `PreToolUse hook blocked ${use.name}`;
-          yield { type: "tool_error", id: use.id, error: msg, durationMs: 0 };
-          toolResults.push({ type: "tool_result", tool_use_id: use.id, content: msg, is_error: true });
-          continue;
+        runnable.push({ ...use, tool });
+      }
+
+      let interruptedByTool = false;
+      for (const batch of chunkToolUsesByConcurrency(runnable)) {
+        const outcomes = yield* this.runToolBatch(batch);
+        for (const outcome of outcomes) {
+          resultByToolUseId.set(outcome.toolUseId, outcome.result);
+          interruptedByTool ||= outcome.interrupted === true;
         }
-
-        yield {
-          type: "tool_start",
-          id: use.id,
-          name: use.name,
-          input: use.input,
-          providerHint: tool.schema.providerHint,
-          activityDescription: describeActivity(use.name, use.input),
-        };
-
-        const t0 = Date.now();
-        const permissionEvents: TurnEvent[] = [];
-        try {
-          const ctx: ToolCallContext = {
-            workspace: this.cfg.workspace,
-            signal: this.cfg.signal ?? new AbortController().signal,
-            requestPermission: this.cfg.requestPermission
-              ? async (request) => {
-                  const id = cryptoId("perm");
-                  permissionEvents.push({
-                    type: "permission_request",
-                    id,
-                    toolName: request.toolName,
-                    input: request.input,
-                    reason: request.reason,
-                    suggestion: request.suggestion,
-                  });
-                  const decision = await this.cfg.requestPermission!(request);
-                  permissionEvents.push({ type: "permission_response", id, decision });
-                  return decision;
-                }
-              : undefined,
-            emitProgress: () => {
-              /* engine swallows for now; M3 forwards as tool_progress */
-            },
-          };
-          const result = await tool.call(use.input, ctx);
-          const durationMs = Date.now() - t0;
-          for (const ev of permissionEvents) yield ev;
+        if (interruptedByTool) {
+          this.messages.push({
+            id: cryptoId(),
+            role: "user", // Anthropic shape: tool_result blocks live in user-role messages
+            content: orderedToolResults(pendingToolUses, resultByToolUseId),
+            createdAt: new Date().toISOString(),
+          });
           yield {
-            type: "tool_end",
-            id: use.id,
-            output: result.output,
-            touchedFiles: result.touchedFiles,
-            durationMs,
-            display: result.display,
+            type: "turn_end",
+            status: "interrupted",
+            usage: totalUsage,
+            durationMs: Date.now() - startedAt,
           };
-          if (use.name === "TodoWrite" && isTodoOutput(result.output)) {
-            yield { type: "todo_updated", todos: result.output.todos };
-          }
-          if (this.cfg.hookManager) {
-            await this.cfg.hookManager.run({
-              event: "PostToolUse",
-              toolName: use.name,
-              input: use.input,
-              output: result.output,
-              workspace: this.cfg.workspace,
-            });
-          }
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: use.id,
-            content: stringifyToolOutput(result.output),
-          });
-        } catch (err) {
-          const durationMs = Date.now() - t0;
-          const message = err instanceof Error ? err.message : String(err);
-          for (const ev of permissionEvents) yield ev;
-          yield { type: "tool_error", id: use.id, error: message, durationMs };
-          if (this.cfg.hookManager) {
-            await this.cfg.hookManager.run({
-              event: "PostToolUse",
-              toolName: use.name,
-              input: use.input,
-              output: { error: message },
-              workspace: this.cfg.workspace,
-            });
-          }
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: use.id,
-            content: message,
-            is_error: true,
-          });
-          if (isPermissionDeniedError(err)) {
-            this.messages.push({
-              id: cryptoId(),
-              role: "user", // Anthropic shape: tool_result blocks live in user-role messages
-              content: toolResults,
-              createdAt: new Date().toISOString(),
-            });
-            yield {
-              type: "turn_end",
-              status: "interrupted",
-              usage: totalUsage,
-              durationMs: Date.now() - startedAt,
-            };
-            return;
-          }
+          return;
         }
       }
 
@@ -401,7 +325,7 @@ export class QueryEngine {
       this.messages.push({
         id: cryptoId(),
         role: "user",
-        content: toolResults,
+        content: orderedToolResults(pendingToolUses, resultByToolUseId),
         createdAt: new Date().toISOString(),
       });
 
@@ -421,9 +345,247 @@ export class QueryEngine {
       durationMs: Date.now() - startedAt,
     };
   }
+
+  private async *runToolBatch(
+    uses: readonly ResolvedToolUse[],
+  ): AsyncGenerator<TurnEvent, ToolExecutionOutcome[], void> {
+    if (uses.length === 0) return [];
+
+    const queue = new AsyncEventQueue<TurnEvent>();
+    const outcomes: Array<ToolExecutionOutcome | undefined> = new Array(uses.length);
+    let finished = 0;
+
+    const tasks = uses.map((use, index) =>
+      this.executeToolUse(use, (event) => queue.push(event))
+        .then((outcome) => {
+          outcomes[index] = outcome;
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          queue.push({ type: "tool_error", id: use.id, error: message, durationMs: 0 });
+          outcomes[index] = {
+            toolUseId: use.id,
+            interrupted: isPermissionDeniedError(err),
+            result: { type: "tool_result", tool_use_id: use.id, content: message, is_error: true },
+          };
+        })
+        .finally(() => {
+          finished++;
+          queue.wake();
+        }),
+    );
+
+    while (finished < uses.length || queue.length > 0) {
+      const event = await queue.shift();
+      if (event) yield event;
+    }
+
+    await Promise.all(tasks);
+    return outcomes.filter((outcome): outcome is ToolExecutionOutcome => outcome !== undefined);
+  }
+
+  private async executeToolUse(
+    use: ResolvedToolUse,
+    emit: (event: TurnEvent) => void,
+  ): Promise<ToolExecutionOutcome> {
+    const preHook = this.cfg.hookManager
+      ? await this.cfg.hookManager.run({
+          event: "PreToolUse",
+          toolName: use.name,
+          input: use.input,
+          workspace: this.cfg.workspace,
+        })
+      : null;
+    if (preHook?.blocked) {
+      const msg = preHook.reminders[0] ?? `PreToolUse hook blocked ${use.name}`;
+      emit({ type: "tool_error", id: use.id, error: msg, durationMs: 0 });
+      return {
+        toolUseId: use.id,
+        result: { type: "tool_result", tool_use_id: use.id, content: msg, is_error: true },
+      };
+    }
+
+    if (shouldCheckpointBeforeTool(use.tool) && this.cfg.beforeToolUseCheckpoint) {
+      const checkpoint = await this.cfg.beforeToolUseCheckpoint({
+        toolUseId: use.id,
+        toolName: use.name,
+        input: use.input,
+        safety: use.tool.schema.safety,
+      });
+      if (checkpoint) {
+        emit({
+          type: "checkpoint_created",
+          checkpointId: checkpoint.checkpointId,
+          label: checkpoint.label,
+          toolUseId: use.id,
+          reason: "pre_tool",
+        });
+      }
+    }
+
+    emit({
+      type: "tool_start",
+      id: use.id,
+      name: use.name,
+      input: use.input,
+      providerHint: use.tool.schema.providerHint,
+      activityDescription: describeActivity(use.name, use.input),
+    });
+
+    const t0 = Date.now();
+    try {
+      const ctx: ToolCallContext = {
+        workspace: this.cfg.workspace,
+        signal: this.cfg.signal ?? new AbortController().signal,
+        requestPermission: this.cfg.requestPermission
+          ? async (request) => {
+              const id = cryptoId("perm");
+              emit({
+                type: "permission_request",
+                id,
+                toolName: request.toolName,
+                input: request.input,
+                reason: request.reason,
+                suggestion: request.suggestion,
+              });
+              const decision = await this.cfg.requestPermission!(request);
+              emit({ type: "permission_response", id, decision });
+              return decision;
+            }
+          : undefined,
+        emitProgress: (data) => emit({ type: "tool_progress", id: use.id, data }),
+      };
+      const result = await use.tool.call(use.input, ctx);
+      const durationMs = Date.now() - t0;
+      emit({
+        type: "tool_end",
+        id: use.id,
+        output: result.output,
+        touchedFiles: result.touchedFiles,
+        durationMs,
+        display: result.display,
+      });
+      if (use.name === "TodoWrite" && isTodoOutput(result.output)) {
+        emit({ type: "todo_updated", todos: result.output.todos });
+      }
+      if (this.cfg.hookManager) {
+        await this.cfg.hookManager.run({
+          event: "PostToolUse",
+          toolName: use.name,
+          input: use.input,
+          output: result.output,
+          workspace: this.cfg.workspace,
+        });
+      }
+      return {
+        toolUseId: use.id,
+        result: {
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: stringifyToolOutput(result.output),
+        },
+      };
+    } catch (err) {
+      const durationMs = Date.now() - t0;
+      const message = err instanceof Error ? err.message : String(err);
+      emit({ type: "tool_error", id: use.id, error: message, durationMs });
+      if (this.cfg.hookManager) {
+        await this.cfg.hookManager.run({
+          event: "PostToolUse",
+          toolName: use.name,
+          input: use.input,
+          output: { error: message },
+          workspace: this.cfg.workspace,
+        });
+      }
+      return {
+        toolUseId: use.id,
+        interrupted: isPermissionDeniedError(err),
+        result: {
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: message,
+          is_error: true,
+        },
+      };
+    }
+  }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────
+
+interface ResolvedToolUse {
+  id: string;
+  name: string;
+  input: unknown;
+  tool: EngineTool;
+}
+
+interface ToolExecutionOutcome {
+  toolUseId: string;
+  result: ToolResultBlock;
+  interrupted?: boolean;
+}
+
+class AsyncEventQueue<T> {
+  private readonly items: T[] = [];
+  private waiters: Array<() => void> = [];
+
+  get length(): number {
+    return this.items.length;
+  }
+
+  push(item: T): void {
+    this.items.push(item);
+    this.wake();
+  }
+
+  wake(): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const wake of waiters) wake();
+  }
+
+  async shift(): Promise<T | undefined> {
+    if (this.items.length > 0) return this.items.shift();
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    return this.items.shift();
+  }
+}
+
+function chunkToolUsesByConcurrency(uses: readonly ResolvedToolUse[]): ResolvedToolUse[][] {
+  const chunks: ResolvedToolUse[][] = [];
+  let parallel: ResolvedToolUse[] = [];
+
+  const flush = () => {
+    if (parallel.length > 0) {
+      chunks.push(parallel);
+      parallel = [];
+    }
+  };
+
+  for (const use of uses) {
+    if (use.tool.schema.concurrency === "parallel-safe") {
+      parallel.push(use);
+      continue;
+    }
+    flush();
+    chunks.push([use]);
+  }
+  flush();
+  return chunks;
+}
+
+function orderedToolResults(
+  uses: ReadonlyArray<{ id: string }>,
+  results: ReadonlyMap<string, ToolResultBlock>,
+): ToolResultBlock[] {
+  return uses.map((use) => results.get(use.id)).filter((result): result is ToolResultBlock => result !== undefined);
+}
+
+function shouldCheckpointBeforeTool(tool: EngineTool): boolean {
+  return tool.schema.safety === "workspace-write" || tool.schema.safety === "destructive";
+}
 
 function cryptoId(prefix = "id"): string {
   return `${prefix}_${randomUUID()}`;

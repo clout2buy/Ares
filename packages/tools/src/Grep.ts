@@ -69,8 +69,8 @@ export const GrepTool = buildTool({
 
   async call(i, ctx): Promise<{ output: GrepOutput; display: string }> {
     const roots = await resolveSearchPaths(ctx, i.path);
-    const ripgrep = await tryRipgrep(i, roots, ctx.signal);
-    const output: GrepOutput = ripgrep ?? (await nativeGrep(i, roots));
+    const ripgrep = await tryRipgrep(i, roots, ctx.signal, (data) => ctx.emitProgress?.(data));
+    const output: GrepOutput = ripgrep ?? (await nativeGrep(i, roots, (data) => ctx.emitProgress?.(data)));
     const summary =
       output.mode === "files_with_matches"
         ? `${output.files?.length ?? 0} file(s) matched /${i.pattern}/`
@@ -87,6 +87,7 @@ async function tryRipgrep(
   i: z.infer<typeof inputSchema>,
   roots: string[],
   signal: AbortSignal,
+  emitProgress?: (data: unknown) => void,
 ): Promise<GrepOutput | null> {
   const rgPath = await which("rg");
   if (!rgPath) return null;
@@ -132,6 +133,9 @@ async function tryRipgrep(
           files.add(p);
           counts[p] = (counts[p] ?? 0) + 1;
           total++;
+          if (total === 1 || total % 25 === 0) {
+            emitProgress?.({ kind: "grep_match", file: p, line: lineNum, total });
+          }
           if (i.output_mode === "content" && matches.length < i.max_results) {
             matches.push({ path: p, line: lineNum, text: text.replace(/\n$/, "") });
           }
@@ -168,6 +172,7 @@ async function which(bin: string): Promise<string | null> {
 async function nativeGrep(
   i: z.infer<typeof inputSchema>,
   roots: string[],
+  emitProgress?: (data: unknown) => void,
 ): Promise<GrepOutput> {
   const flags = i.case_insensitive ? "i" : "";
   const regex = new RegExp(i.pattern, flags);
@@ -211,6 +216,9 @@ async function nativeGrep(
             files.add(abs);
             counts[abs] = (counts[abs] ?? 0) + 1;
             total++;
+            if (total === 1 || total % 25 === 0) {
+              emitProgress?.({ kind: "grep_match", file: abs, line: lineIdx + 1, total });
+            }
             if (i.output_mode === "content" && matches.length < i.max_results) {
               matches.push({ path: abs, line: lineIdx + 1, text: lines[lineIdx] });
             }
@@ -231,6 +239,9 @@ async function nativeGrep(
           files.add(root);
           counts[root] = (counts[root] ?? 0) + 1;
           total++;
+          if (total === 1 || total % 25 === 0) {
+            emitProgress?.({ kind: "grep_match", file: root, line: lineIdx + 1, total });
+          }
           if (i.output_mode === "content" && matches.length < i.max_results) {
             matches.push({ path: root, line: lineIdx + 1, text: lines[lineIdx] });
           }

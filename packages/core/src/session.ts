@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   messageText,
+  type ContentBlock,
   type TurnEvent,
   type SessionMeta,
   type RolloutEntry,
@@ -23,7 +24,9 @@ import { QueryEngine, type EngineTool, type Provider } from "./queryEngine.js";
 import type { ToolPermissionRequest } from "./queryEngine.js";
 import type { PermissionPromptDecision } from "@crix/protocol";
 import type { HookManager } from "./hooks.js";
-import { createWorkspaceCheckpoint } from "./checkpoints.js";
+import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified } from "./checkpoints.js";
+
+type ReminderSource = "verifier" | "compaction" | "hook" | "skill" | "memory" | "instructions" | "undo";
 
 export interface SessionOptions {
   workspace: string;
@@ -38,7 +41,7 @@ export interface SessionOptions {
   initialMessages?: readonly Message[];
   initialSeq?: number;
   /** Pending system-reminders to inject at next turn_start. */
-  drainSystemReminders?: () => Array<{ text: string; source: "verifier" | "compaction" | "hook" | "skill" }>;
+  drainSystemReminders?: () => Array<{ text: string; source: ReminderSource }>;
   hookManager?: HookManager;
   requestPermission?: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision>;
 }
@@ -75,6 +78,17 @@ export class Session {
         drainSystemReminders: opts.drainSystemReminders,
         hookManager: opts.hookManager,
         requestPermission: opts.requestPermission,
+        beforeToolUseCheckpoint: async ({ toolUseId, toolName }) => {
+          const checkpoint = await createWorkspaceCheckpoint({
+            workspace: this.opts.workspace,
+            sessionId: this.meta.id,
+            turnSeq: this.seq,
+            parentCheckpointId: this.lastCheckpointId,
+            label: `before ${toolName} ${toolUseId}`,
+          });
+          this.lastCheckpointId = checkpoint.id;
+          return { checkpointId: checkpoint.id, label: checkpoint.label };
+        },
       },
       sessionId,
     );
@@ -85,29 +99,35 @@ export class Session {
 
   /** Append a user message and stream the turn. Events persist to rollout. */
   async *send(text: string): AsyncGenerator<TurnEvent> {
+    yield* this.sendContent([{ type: "text", text }]);
+  }
+
+  /** Append arbitrary user content (text + image blocks) and stream the turn. */
+  async *sendContent(content: ContentBlock[]): AsyncGenerator<TurnEvent> {
     await this.ensureSessionDir();
-    this.engine.appendUserMessage(text);
+    this.engine.appendUserMessageContent(content);
+    const preToolCheckpoints = new Map<string, string>();
     for await (const event of this.engine.streamTurn()) {
       await this.persistEvent(event);
       yield event;
+      if (event.type === "checkpoint_created" && event.toolUseId && event.reason === "pre_tool") {
+        preToolCheckpoints.set(event.toolUseId, event.checkpointId);
+      }
       if (event.type === "tool_end" && event.touchedFiles && event.touchedFiles.length > 0) {
-        const checkpoint = await createWorkspaceCheckpoint({
-          workspace: this.opts.workspace,
-          sessionId: this.meta.id,
-          turnSeq: this.seq,
-          parentCheckpointId: this.lastCheckpointId,
-          label: `after ${event.id}`,
-        }).catch(() => null);
-        if (checkpoint) {
-          this.lastCheckpointId = checkpoint.id;
-          const checkpointEvent: TurnEvent = {
-            type: "checkpoint_created",
-            checkpointId: checkpoint.id,
-            label: checkpoint.label,
-          };
-          await this.persistEvent(checkpointEvent);
-          yield checkpointEvent;
-        }
+        const checkpointId = preToolCheckpoints.get(event.id);
+        if (!checkpointId) continue;
+        const diff = await diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId, event.touchedFiles).catch(() => null);
+        if (!diff || !diff.diff) continue;
+        const diffEvent: TurnEvent = {
+          type: "workspace_diff",
+          checkpointId,
+          toolUseId: event.id,
+          files: diff.files,
+          diff: diff.diff,
+          truncated: diff.truncated,
+        };
+        await this.persistEvent(diffEvent);
+        yield diffEvent;
       }
     }
   }

@@ -68,6 +68,7 @@ export {
   listWorkspaceCheckpoints,
   loadWorkspaceCheckpoint,
   diffWorkspaceCheckpoint,
+  diffWorkspaceCheckpointUnified,
   restoreWorkspaceCheckpoint,
   type CreateCheckpointOptions,
 } from "./checkpoints.js";
@@ -103,6 +104,14 @@ export {
 } from "./providers/ollamaCloud.js";
 
 export { buildPromptCacheKey, type PromptCacheKey } from "./promptCache.js";
+
+export {
+  loadStartupReminders,
+  loadMemoryReminders,
+  loadInstructionReminders,
+  type StartupReminder,
+  type StartupReminderSource,
+} from "./startupContext.js";
 
 export {
   parsePatch,

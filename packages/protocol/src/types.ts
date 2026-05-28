@@ -123,9 +123,14 @@ export type TurnEvent =
   | { type: "permission_response"; id: string; decision: PermissionPromptDecision }
   | { type: "verify_scheduled"; files: string[] }
   | { type: "verify_finished"; ok: boolean; output: string; durationMs: number }
-  | { type: "system_reminder_injected"; text: string; source: "verifier" | "compaction" | "hook" | "skill" }
+  | {
+      type: "system_reminder_injected";
+      text: string;
+      source: "verifier" | "compaction" | "hook" | "skill" | "memory" | "instructions" | "undo";
+    }
   | { type: "todo_updated"; todos: Todo[] }
-  | { type: "checkpoint_created"; checkpointId: string; label?: string }
+  | { type: "checkpoint_created"; checkpointId: string; label?: string; toolUseId?: string; reason?: "manual" | "pre_tool" | "post_tool" }
+  | { type: "workspace_diff"; checkpointId: string; toolUseId?: string; files: string[]; diff: string; truncated: boolean }
   | { type: "subagent_start"; id: string; name: string; description: string }
   | { type: "subagent_end"; id: string; status: "completed" | "failed" | "cancelled"; summary: string }
   | { type: "turn_end"; status: TurnEndStatus; usage: Usage; durationMs: number };

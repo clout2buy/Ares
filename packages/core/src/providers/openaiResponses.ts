@@ -298,6 +298,8 @@ function toResponsesInputItems(m: Message): Record<string, unknown>[] {
       });
     } else if (b.type === "system_reminder") {
       messageContent.push({ type: "input_text", text: `<system-reminder>${b.text}</system-reminder>` });
+    } else if (b.type === "image") {
+      messageContent.push(toResponsesImage(b));
     } else if (b.type === "tool_use") {
       items.push({
         type: "function_call",
@@ -317,6 +319,16 @@ function toResponsesInputItems(m: Message): Record<string, unknown>[] {
   }
 
   return items;
+}
+
+function toResponsesImage(block: Extract<ContentBlock, { type: "image" }>): Record<string, unknown> {
+  if (block.source.kind === "url") {
+    return { type: "input_image", image_url: block.source.url };
+  }
+  return {
+    type: "input_image",
+    image_url: `data:${block.source.mediaType};base64,${block.source.data}`,
+  };
 }
 
 function extractUsage(resp: ResponsesEvent["response"]): Usage | null {

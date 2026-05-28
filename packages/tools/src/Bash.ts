@@ -89,7 +89,9 @@ export const BashTool = buildTool({
       };
     }
 
-    const result = await runShell(bash, ["-lc", i.command], cwd, i.timeout, ctx.signal);
+    const result = await runShell(bash, ["-lc", i.command], cwd, i.timeout, ctx.signal, (stream, text) => {
+      ctx.emitProgress?.({ kind: "shell_output", stream, text });
+    });
     const output: BashOutput | BashBackgroundOutput = result;
     return {
       output,
@@ -108,6 +110,7 @@ export async function runShell(
   cwd: string,
   timeoutMs: number,
   signal: AbortSignal,
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void,
 ): Promise<BashOutput> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -126,6 +129,7 @@ export async function runShell(
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutChunks.push(chunk);
       stdoutBytes += chunk.length;
+      onOutput?.("stdout", decodeOutput(chunk));
       while (stdoutBytes > MAX_OUTPUT_CHARS * 4 && stdoutChunks.length > 1) {
         stdoutBytes -= stdoutChunks.shift()?.length ?? 0;
       }
@@ -133,6 +137,7 @@ export async function runShell(
     child.stderr.on("data", (chunk: Buffer) => {
       stderrChunks.push(chunk);
       stderrBytes += chunk.length;
+      onOutput?.("stderr", decodeOutput(chunk));
       while (stderrBytes > MAX_OUTPUT_CHARS * 4 && stderrChunks.length > 1) {
         stderrBytes -= stderrChunks.shift()?.length ?? 0;
       }

@@ -369,32 +369,7 @@ export class OllamaCloudPool {
     model: string,
     req: ProviderRequest,
   ): AsyncGenerator<StreamEvent> {
-    const body: Record<string, unknown> = {
-      model,
-      max_tokens: req.maxOutputTokens ?? 8192,
-      stream: true,
-      messages: req.messages
-        .filter((m) => m.role !== "system")
-        .map((m) => ({
-          role: m.role,
-          // system_reminder is a Crix-only block; rewrite to text so the
-          // Anthropic endpoint accepts it. Everything else (text,
-          // tool_use, tool_result, image, thinking) passes through.
-          content: m.content.map((b) =>
-            b.type === "system_reminder"
-              ? { type: "text", text: `<system-reminder>${b.text}</system-reminder>` }
-              : b,
-          ),
-        })),
-    };
-    if (req.system) body.system = req.system;
-    if (req.tools.length > 0) {
-      body.tools = req.tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.input_schema,
-      }));
-    }
+    let body = buildAnthropicMessagesBody(model, req, true);
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -403,12 +378,49 @@ export class OllamaCloudPool {
     };
     if (this.apiKey) headers["x-api-key"] = this.apiKey;
 
-    const res = await this.fetchImpl(`${this.host}/v1/messages`, {
+    let res = await this.fetchImpl(`${this.host}/v1/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: req.signal,
     });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      if (hasCacheControl(body) && cacheControlMayBeUnsupported(res.status, text)) {
+        body = buildAnthropicMessagesBody(model, req, false);
+        res = await this.fetchImpl(`${this.host}/v1/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: req.signal,
+        });
+        if (res.ok) {
+          // Continue into the normal streaming parser below with the retried response.
+        } else {
+          const retryText = await res.text().catch(() => "");
+          yield {
+            type: "error",
+            error: {
+              code: `http_${res.status}`,
+              message: `Ollama Anthropic-compat returned ${res.status}: ${retryText.slice(0, 500)}`,
+              retriable: res.status >= 500 || res.status === 429,
+            },
+          };
+          return;
+        }
+      } else {
+        yield {
+          type: "error",
+          error: {
+            code: `http_${res.status}`,
+            message: `Ollama Anthropic-compat returned ${res.status}: ${text.slice(0, 500)}`,
+            retriable: res.status >= 500 || res.status === 429,
+          },
+        };
+        return;
+      }
+    }
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -466,6 +478,8 @@ export class OllamaCloudPool {
               usage = {
                 inputTokens: evt.message.usage.input_tokens ?? 0,
                 outputTokens: evt.message.usage.output_tokens ?? 0,
+                cacheReadTokens: evt.message.usage.cache_read_input_tokens,
+                cacheWriteTokens: evt.message.usage.cache_creation_input_tokens,
               };
             }
             continue;
@@ -623,9 +637,73 @@ class OllamaSlotProvider implements Provider {
 
 // ─── helpers ──────────────────────────────────────────────────────────
 
+function buildAnthropicMessagesBody(
+  model: string,
+  req: ProviderRequest,
+  withCacheControl: boolean,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model,
+    max_tokens: req.maxOutputTokens ?? 8192,
+    stream: true,
+    messages: req.messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role,
+        content: m.content.map((b) => toAnthropicContentBlock(b)),
+      })),
+  };
+
+  if (req.system) {
+    body.system = withCacheControl
+      ? [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }]
+      : req.system;
+  }
+  if (req.tools.length > 0) {
+    body.tools = req.tools.map((t, index) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema,
+      ...(withCacheControl && index === req.tools.length - 1
+        ? { cache_control: { type: "ephemeral" } }
+        : {}),
+    }));
+  }
+  return body;
+}
+
+function toAnthropicContentBlock(block: ContentBlock): Record<string, unknown> {
+  if (block.type === "system_reminder") {
+    return { type: "text", text: `<system-reminder>${block.text}</system-reminder>` };
+  }
+  if (block.type === "image") {
+    if (block.source.kind === "url") {
+      return { type: "image", source: { type: "url", url: block.source.url } };
+    }
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: block.source.mediaType,
+        data: block.source.data,
+      },
+    };
+  }
+  return block as unknown as Record<string, unknown>;
+}
+
+function hasCacheControl(body: Record<string, unknown>): boolean {
+  return JSON.stringify(body).includes("\"cache_control\"");
+}
+
+function cacheControlMayBeUnsupported(status: number, text: string): boolean {
+  return status === 400 && /cache_control|extra|unknown|invalid/i.test(text);
+}
+
 interface OllamaMessage {
   role: string;
   content?: string;
+  images?: string[];
   tool_calls?: Array<{
     type: "function";
     function: {
@@ -646,10 +724,14 @@ function toOllamaMessages(messages: readonly Message[]): OllamaMessage[] {
   const toolNameById = new Map<string, string>();
 
   for (const m of messages) {
+    const images = m.content.flatMap((b) =>
+      b.type === "image" && b.source.kind === "base64" ? [b.source.data] : [],
+    );
     const text = m.content
       .map((b) => {
         if (b.type === "text") return b.text;
         if (b.type === "system_reminder") return `<system-reminder>${b.text}</system-reminder>`;
+        if (b.type === "image" && b.source.kind === "url") return `[image: ${b.source.url}]`;
         return "";
       })
       .filter(Boolean)
@@ -666,10 +748,11 @@ function toOllamaMessages(messages: readonly Message[]): OllamaMessage[] {
       };
     });
 
-    if (text.length > 0 || toolCalls.length > 0) {
+    if (text.length > 0 || toolCalls.length > 0 || images.length > 0) {
       out.push({
         role: m.role,
         ...(text.length > 0 ? { content: text } : {}),
+        ...(images.length > 0 ? { images } : {}),
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
     }
@@ -725,7 +808,12 @@ interface AnthropicSSEEvent {
   index?: number;
   message?: {
     id?: string;
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
   content_block?: { type?: "text" | "tool_use" | "thinking"; id?: string; name?: string };
   delta?: {

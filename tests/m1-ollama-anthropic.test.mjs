@@ -170,6 +170,48 @@ test("Anthropic compat: parses streaming tool_use with input_json_delta", async 
   assert.equal(final.stopReason, "tool_use");
 });
 
+test("Anthropic compat: sends cache_control breakpoints and image blocks", async () => {
+  const events = [
+    { type: "message_start", message: { id: "msg_img", usage: { input_tokens: 5, output_tokens: 0, cache_read_input_tokens: 3 } } },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+    { type: "message_stop" },
+  ];
+  const captured = {};
+  const pool = new OllamaCloudPool({
+    slots,
+    fetchImpl: async (_url, init) => {
+      captured.body = JSON.parse(init.body);
+      return new Response(sseStream(events), { status: 200 });
+    },
+    useAnthropicCompat: true,
+    apiKey: "ollama",
+  });
+  const got = [];
+  for await (const e of pool.stream("reasoner", {
+    ...baseReq,
+    messages: [
+      {
+        id: "u1",
+        role: "user",
+        content: [
+          { type: "text", text: "inspect" },
+          { type: "image", source: { kind: "base64", mediaType: "image/png", data: "AAAA" } },
+        ],
+        createdAt: "now",
+      },
+    ],
+    tools: [{ name: "Read", description: "read", input_schema: { type: "object" } }],
+  })) got.push(e);
+
+  assert.deepEqual(captured.body.system[0].cache_control, { type: "ephemeral" });
+  assert.deepEqual(captured.body.tools[0].cache_control, { type: "ephemeral" });
+  assert.deepEqual(captured.body.messages[0].content[1], {
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data: "AAAA" },
+  });
+  assert.equal(got.at(-1).usage.cacheReadTokens, 3);
+});
+
 test("Anthropic compat: HTTP error surfaces as retriable on 429/5xx", async () => {
   const pool = new OllamaCloudPool({
     slots,

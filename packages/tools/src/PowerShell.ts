@@ -69,7 +69,9 @@ export const PowerShellTool = buildTool({
       };
     }
 
-    const result = await runShell(pwsh, args, cwd, i.timeout, ctx.signal);
+    const result = await runShell(pwsh, args, cwd, i.timeout, ctx.signal, (stream, text) => {
+      ctx.emitProgress?.({ kind: "shell_output", stream, text });
+    });
     const output: unknown = result;
     return {
       output,

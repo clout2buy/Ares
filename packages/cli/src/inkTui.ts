@@ -25,7 +25,7 @@ export interface InkChatOptions {
 
 interface LogLine {
   id: number;
-  tone: "user" | "assistant" | "tool" | "error" | "notice" | "muted";
+  tone: "user" | "assistant" | "tool" | "error" | "notice" | "muted" | "diff-add" | "diff-del" | "diff-meta";
   text: string;
   meta?: string;
 }
@@ -35,6 +35,7 @@ interface RuntimeStats {
   tools: number;
   errors: number;
   checkpoints: number;
+  durationMs: number;
   usage: Usage;
 }
 
@@ -269,6 +270,7 @@ function CrixInkApp({ options }: { options: InkChatOptions }) {
     tools: 0,
     errors: 0,
     checkpoints: 0,
+    durationMs: 0,
     usage: { inputTokens: 0, outputTokens: 0 },
   });
   const assistantRef = useRef("");
@@ -343,6 +345,15 @@ function CrixInkApp({ options }: { options: InkChatOptions }) {
         append("tool", event.display ?? `completed in ${event.durationMs}ms`, "ok");
         return;
       }
+      if (event.type === "tool_progress") {
+        const text = progressText(event.data);
+        if (text) append("muted", text, "progress");
+        return;
+      }
+      if (event.type === "workspace_diff") {
+        appendDiff(event.diff, append);
+        return;
+      }
       if (event.type === "tool_error") {
         setActiveTool(null);
         setStats((prev) => ({ ...prev, errors: prev.errors + 1 }));
@@ -372,6 +383,7 @@ function CrixInkApp({ options }: { options: InkChatOptions }) {
         setStats((prev) => ({
           ...prev,
           turns: prev.turns + 1,
+          durationMs: prev.durationMs + event.durationMs,
           usage: {
             inputTokens: prev.usage.inputTokens + event.usage.inputTokens,
             outputTokens: prev.usage.outputTokens + event.usage.outputTokens,
@@ -583,6 +595,7 @@ function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; 
       h(Chip, { theme, label: "TOOLS", value: String(stats.tools), color: theme.tool }),
       h(Chip, { theme, label: "TURNS", value: String(stats.turns), color: theme.accent2 }),
       h(Chip, { theme, label: "TOKENS", value: compactNumber(stats.usage.inputTokens + stats.usage.outputTokens), color: theme.accent3 }),
+      h(Chip, { theme, label: "CACHE", value: cachePercent(stats.usage), color: theme.success }),
       h(Chip, { theme, label: "MODE", value: snapshot.mode, color: modeColor }),
     ),
     h(Text, { color: theme.dim, wrap: "truncate" }, snapshot.workspace),
@@ -750,11 +763,12 @@ function InputDeck({
 }
 
 function Footer({ theme, snapshot, stats, width }: { theme: DeckTheme; snapshot: InkChatSnapshot; stats: RuntimeStats; width: number }) {
+  const meter = `${formatCost(stats.usage)} / ${Math.round(stats.durationMs / 1000)}s / ${stats.tools} tools / ${cachePercent(stats.usage)} cached`;
   return h(
     Box,
     { width, justifyContent: "space-between" },
-    h(Text, { color: theme.dim }, "/help  /theme modern  /themes  /plan  /code  /danger  /doctor  /exit"),
-    h(Text, { color: theme.dim }, `${compactModel(snapshot.provider, 18)} | checkpoints ${stats.checkpoints}`),
+    h(Text, { color: theme.dim }, "/help  /undo  /theme modern  /plan  /code  /danger  /doctor  /exit"),
+    h(Text, { color: theme.dim }, `${meter} | ${compactModel(snapshot.provider, 18)} | checkpoints ${stats.checkpoints}`),
   );
 }
 
@@ -834,6 +848,9 @@ function deckTheme(): DeckTheme {
 }
 
 function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
+  if (tone === "diff-add") return theme.success;
+  if (tone === "diff-del") return theme.error;
+  if (tone === "diff-meta") return theme.accent2;
   if (tone === "user") return theme.user;
   if (tone === "assistant") return theme.assistant;
   if (tone === "tool") return theme.tool;
@@ -843,12 +860,41 @@ function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
 }
 
 function toneBadge(tone: LogLine["tone"]): string {
+  if (tone === "diff-add") return "DIFF";
+  if (tone === "diff-del") return "DIFF";
+  if (tone === "diff-meta") return "DIFF";
   if (tone === "user") return "YOU";
   if (tone === "assistant") return "CRIX";
   if (tone === "tool") return "TOOL";
   if (tone === "error") return "ERR";
   if (tone === "notice") return "INFO";
   return "SYS";
+}
+
+function appendDiff(diff: string, append: (tone: LogLine["tone"], text: string, meta?: string) => void): void {
+  for (const line of diff.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith("+") && !line.startsWith("+++")) append("diff-add", line, "diff");
+    else if (line.startsWith("-") && !line.startsWith("---")) append("diff-del", line, "diff");
+    else if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) append("diff-meta", line, "diff");
+    else append("muted", line, "diff");
+  }
+}
+
+function progressText(data: unknown): string | null {
+  if (!data || typeof data !== "object") return typeof data === "string" ? data : null;
+  const obj = data as Record<string, unknown>;
+  if (obj.kind === "shell_output") {
+    const text = String(obj.text ?? "").trimEnd();
+    if (!text) return null;
+    return `${obj.stream ?? "stdout"} ${text}`.slice(0, 240);
+  }
+  if (obj.kind === "grep_match") {
+    return `grep ${obj.total ?? "?"} match(es)${obj.file ? ` ${obj.file}:${obj.line ?? ""}` : ""}`;
+  }
+  if (obj.kind === "lsp_init") return `starting ${obj.server ?? "LSP"}`;
+  if (obj.kind === "lsp_ready") return `${obj.server ?? "LSP"} ready`;
+  return JSON.stringify(obj).slice(0, 240);
 }
 
 function todoMarker(todo: Todo): string {
@@ -866,6 +912,28 @@ function compactNumber(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(value);
+}
+
+function cachePercent(usage: Usage): string {
+  const cached = usage.cacheReadTokens ?? 0;
+  const denom = usage.inputTokens + cached;
+  if (denom <= 0) return "0%";
+  return `${Math.round((cached / denom) * 100)}%`;
+}
+
+function formatCost(usage: Usage): string {
+  const inputPerM = Number(process.env.CRIX_COST_INPUT_PER_MTOK ?? 0);
+  const outputPerM = Number(process.env.CRIX_COST_OUTPUT_PER_MTOK ?? 0);
+  const cacheReadPerM = Number(process.env.CRIX_COST_CACHE_READ_PER_MTOK ?? inputPerM);
+  if (!Number.isFinite(inputPerM) || !Number.isFinite(outputPerM) || (inputPerM <= 0 && outputPerM <= 0)) {
+    return "$n/a";
+  }
+  const uncachedInput = Math.max(0, usage.inputTokens - (usage.cacheReadTokens ?? 0));
+  const cost =
+    (uncachedInput / 1_000_000) * inputPerM +
+    ((usage.cacheReadTokens ?? 0) / 1_000_000) * cacheReadPerM +
+    (usage.outputTokens / 1_000_000) * outputPerM;
+  return `$${cost.toFixed(4)}`;
 }
 
 function bar(value: number, width: number): string {

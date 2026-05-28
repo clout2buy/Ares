@@ -13,13 +13,16 @@ import {
   CodeModeTool,
   SkillsListTool,
   SkillReadTool,
+  MemoryTool,
 } from "../packages/tools/dist/index.js";
 import {
   HookManager,
   createWorkspaceCheckpoint,
   diffWorkspaceCheckpoint,
+  diffWorkspaceCheckpointUnified,
   restoreWorkspaceCheckpoint,
   buildPromptCacheKey,
+  loadStartupReminders,
 } from "../packages/core/dist/index.js";
 
 async function makeTmp() {
@@ -176,6 +179,56 @@ test("checkpoints: create, diff, and restore workspace snapshot", async () => {
   assert.equal(restored.restored, 1);
   assert.equal(await fs.readFile(file, "utf8"), "one\n");
   await assert.rejects(fs.stat(path.join(tmp, "new.txt")), /ENOENT/);
+});
+
+test("checkpoints: unified diff shows changed lines", async () => {
+  const tmp = await makeTmp();
+  const file = path.join(tmp, "app.txt");
+  await fs.writeFile(file, "one\ntwo\nthree\n", "utf8");
+  const checkpoint = await createWorkspaceCheckpoint({ workspace: tmp, sessionId: "sess_test", turnSeq: 1 });
+  await fs.writeFile(file, "one\nTWO\nthree\n", "utf8");
+
+  const diff = await diffWorkspaceCheckpointUnified(tmp, checkpoint.id, [file]);
+  assert.equal(diff.truncated, false);
+  assert.deepEqual(diff.files, ["app.txt"]);
+  assert.match(diff.diff, /-two/);
+  assert.match(diff.diff, /\+TWO/);
+});
+
+test("Memory: add and search persists project memory", async () => {
+  const tmp = await makeTmp();
+  const c = ctx(tmp);
+  await MemoryTool.call(
+    {
+      action: "add",
+      scope: "project",
+      category: "Preferences",
+      content: "Use pnpm for scripts.",
+      tags: ["tooling"],
+      limit: 20,
+    },
+    c,
+  );
+  const result = await MemoryTool.call(
+    {
+      action: "search",
+      scope: "project",
+      category: "General",
+      query: "pnpm",
+      tags: [],
+      limit: 20,
+    },
+    c,
+  );
+  assert.equal(result.output.items.length, 1);
+  assert.match(await fs.readFile(path.join(tmp, ".crix", "memory.md"), "utf8"), /Use pnpm/);
+});
+
+test("startup context loads CRIX.md as instructions", async () => {
+  const tmp = await makeTmp();
+  await fs.writeFile(path.join(tmp, "CRIX.md"), "Project rule: use biome.\n", "utf8");
+  const reminders = await loadStartupReminders(tmp);
+  assert.ok(reminders.some((r) => r.source === "instructions" && r.text.includes("use biome")));
 });
 
 test("prompt cache key is stable for identical system + tool schemas", () => {

@@ -44,6 +44,7 @@ export { makeBashOutputTool, type BashOutputResult } from "./BashOutput.js";
 export { makeKillShellTool, type KillShellOutput } from "./KillShell.js";
 export { McpListToolsTool, McpCallTool, type McpListOutput, type McpCallOutput } from "./Mcp.js";
 export { SkillsListTool, SkillReadTool, type SkillsListOutput, type SkillReadOutput, type SkillSummary } from "./Skills.js";
+export { MemoryTool, type MemoryOutput, type MemoryItem } from "./Memory.js";
 export { makeEnterPlanModeTool, makeExitPlanModeTool, type PlanModeState } from "./PlanMode.js";
 
 import { ReadTool } from "./Read.js";
@@ -60,6 +61,7 @@ import { FindAndEditTool } from "./FindAndEdit.js";
 import { CodeModeTool } from "./CodeMode.js";
 import { McpListToolsTool, McpCallTool } from "./Mcp.js";
 import { SkillsListTool, SkillReadTool } from "./Skills.js";
+import { MemoryTool } from "./Memory.js";
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -80,6 +82,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       McpCallTool,
       SkillsListTool,
       SkillReadTool,
+      MemoryTool,
     ] as const
   : [
       ReadTool,
@@ -98,4 +101,5 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       McpCallTool,
       SkillsListTool,
       SkillReadTool,
+      MemoryTool,
     ] as const;

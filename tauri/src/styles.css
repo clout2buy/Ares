@@ -4789,3 +4789,93 @@ body,
     transform: translate3d(16%, 120vh, 0) rotate(7deg);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   v6 motion overhaul — a distinct ambient motion language per theme.
+   Additive and decorative only (the .fx* layers are pointer-events:none),
+   scoped to the three active themes, and fully off under reduced-motion.
+   Round 1 — tune intensities from screenshots.
+   ══════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: no-preference) {
+  /* FROST (signal) — calm aurora drift, a slowly floating, breathing orb. */
+  .crix-app[data-theme="signal"] .fxPulse {
+    animation: v6OrbFloat 8.5s ease-in-out infinite;
+  }
+  .crix-app[data-theme="signal"] .fxVignette {
+    animation: fxBreath 5.5s ease-in-out infinite, v6Aurora 20s ease-in-out infinite;
+  }
+  .crix-app[data-theme="signal"] .fxGrid {
+    animation: fxGridDrift 20s linear infinite;
+  }
+
+  /* STORM — electric and turbulent: faster breath, a flickering orb, live grid. */
+  .crix-app[data-theme="storm"] .fxPulse {
+    animation: v6OrbFloat 6.5s ease-in-out infinite, v6Flicker 7s steps(1, end) infinite;
+  }
+  .crix-app[data-theme="storm"] .fxVignette {
+    animation: fxBreath 3.6s ease-in-out infinite, v6Aurora 11s ease-in-out infinite;
+  }
+  .crix-app[data-theme="storm"] .fxGrid {
+    animation: fxGridDrift 9s linear infinite;
+  }
+
+  /* MATRIX — scanlines rain down, the grid races, the orb floats hot. */
+  .crix-app[data-theme="matrix"] .fxScanline {
+    opacity: 0.34;
+    animation: v6Scan 5s linear infinite;
+  }
+  .crix-app[data-theme="matrix"] .fxGrid {
+    animation: fxGridDrift 6s linear infinite;
+  }
+  .crix-app[data-theme="matrix"] .fxPulse {
+    filter: saturate(1.4);
+    animation: v6OrbFloat 7s ease-in-out infinite;
+  }
+}
+
+@keyframes v6OrbFloat {
+  0%, 100% {
+    transform: translate3d(-1.5%, 0, 0) scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: translate3d(1.5%, -2.5%, 0) scale(1.07);
+    filter: brightness(1.16);
+  }
+}
+
+@keyframes v6Aurora {
+  0%, 100% {
+    filter: hue-rotate(0deg) saturate(1);
+  }
+  50% {
+    filter: hue-rotate(20deg) saturate(1.18);
+  }
+}
+
+@keyframes v6Flicker {
+  0%, 92%, 100% {
+    opacity: 1;
+  }
+  93% {
+    opacity: 0.5;
+  }
+  95% {
+    opacity: 1;
+  }
+  96% {
+    opacity: 0.72;
+  }
+  97% {
+    opacity: 1;
+  }
+}
+
+@keyframes v6Scan {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 80px;
+  }
+}

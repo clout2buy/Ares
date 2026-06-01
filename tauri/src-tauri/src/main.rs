@@ -23,7 +23,7 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 use windows_sys::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE,
 };
 
 #[cfg(windows)]
@@ -429,13 +429,19 @@ fn main() {
 fn hide_windows_accent_border(window: &tauri::WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {
         let color = DWMWA_COLOR_NONE;
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd.0 as _,
-                DWMWA_BORDER_COLOR as u32,
-                &color as *const _ as *const core::ffi::c_void,
-                std::mem::size_of_val(&color) as u32,
-            );
+        // Suppress BOTH the window border and the top caption edge. On Win11 a
+        // frameless + transparent window otherwise bleeds the system accent
+        // colour as a line across the very top — clearing only the border
+        // leaves that top sliver, so we clear the caption colour too.
+        for attr in [DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR] {
+            unsafe {
+                let _ = DwmSetWindowAttribute(
+                    hwnd.0 as _,
+                    attr as u32,
+                    &color as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of_val(&color) as u32,
+                );
+            }
         }
     }
 }

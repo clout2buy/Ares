@@ -45,6 +45,7 @@ import { stdin, stdout, stderr } from "node:process";
 import {
   DEFAULT_TOOLS,
   adaptToolForEngine,
+  buildTool,
   makeTodoWriteTool,
   makeTaskTool,
   makeWebFetchTool,
@@ -72,6 +73,7 @@ import {
 } from "@crix/tools";
 import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@crix/protocol";
 import type { ToolPermissionRequest } from "@crix/core";
+import { z } from "zod";
 import {
   chatHeader,
   availableThemes,
@@ -118,8 +120,10 @@ import {
 } from "@crix/agent";
 import {
   QueryEngineDispatcher,
+  acquireCapability,
   createGoal,
   listGoals,
+  listAcquisitions,
   listCapabilities,
   newGoalId,
   novelDeltaCurve,
@@ -128,8 +132,19 @@ import {
   saveGoal,
   type Goal,
   type CapabilityNode,
+  type AcquisitionKind,
+  type VerificationSpec,
 } from "@crix/operator";
 import { MemoryStore, mindPaths, type MemoryKind } from "@crix/mind";
+import {
+  Filmstrip,
+  clickEffect,
+  createPlaywrightBrowser,
+  fillEffect,
+  navigateEffect,
+  type BrowserConnector,
+} from "@crix/connectors";
+import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect } from "@crix/effects";
 
 interface ParsedArgs {
   command: string;
@@ -183,6 +198,8 @@ function printHelp(): void {
       "  crix agent bootstrap        Create or complete the v4 mind scaffold.",
       "  crix agent doctor           Show agent memory/backend status.",
       "  crix operator add --goal \"<text>\"    Create a durable long-horizon goal.",
+      "  crix operator acquire --capability \"email connector\" [--kind connector] [--ticks N]",
+      "                              Register a missing capability and create its self-build goal.",
       "  crix operator list | status [id]     Inspect Operator goals.",
       "  crix operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
       "                              Drive active goals via ephemeral QueryEngine workers.",
@@ -535,7 +552,486 @@ async function buildEngineTools(
     baseSystemPrompt: buildSystemPrompt(runtime.permissionMode),
   });
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
-  return [...baseTools, taskTool];
+  const workerTools = [...baseTools, taskTool];
+  const livingMindTool = adaptToolForEngine(makeLivingMindTool(), enrich) as EngineTool;
+  const browserTool = adaptToolForEngine(makeBrowserTool(), enrich) as EngineTool;
+  const operatorWorkerTools = [...workerTools, livingMindTool, browserTool];
+  const operatorTool = adaptToolForEngine(
+    makeOperatorChatTool({
+      selection,
+      runtime,
+      workerTools: operatorWorkerTools,
+    }),
+    enrich,
+  ) as EngineTool;
+  return [...workerTools, livingMindTool, operatorTool, browserTool];
+}
+
+const livingMindInput = z
+  .object({
+    action: z
+      .enum(["remember", "recall", "list", "consolidate", "status"])
+      .describe("Memory operation to perform."),
+    cue: z.string().optional().describe("Recall cue for associative lookup."),
+    content: z.string().optional().describe("Memory content to store."),
+    kind: z.enum(["episodic", "semantic", "procedural"]).optional().describe("Kind of memory to store."),
+    limit: z.number().int().min(1).max(30).optional().describe("Maximum memories/results to return."),
+  })
+  .strict();
+
+interface LivingMindOutput {
+  action: string;
+  home: string;
+  count?: number;
+  result?: unknown;
+}
+
+function makeLivingMindTool() {
+  return buildTool({
+    name: "LivingMind",
+    description:
+      "Use Crix's V6 Living Memory naturally, with no keyword needed: remember durable facts, recall by association, inspect the mind, and consolidate recurring experiences into semantic knowledge.",
+    safety: "workspace-write",
+    concurrency: "exclusive",
+    inputZod: livingMindInput,
+    activityDescription: (i) => `LivingMind ${i.action}`,
+
+    async call(i): Promise<{ output: LivingMindOutput; display: string }> {
+      const home = crixAgentHome();
+      const store = await MemoryStore.open(mindPaths(home).memoryFile);
+      const limit = i.limit ?? 8;
+
+      if (i.action === "remember") {
+        const content = i.content?.trim();
+        if (!content) throw new Error("LivingMind remember requires content");
+        const node = await store.add({ kind: i.kind ?? "episodic", content, tags: ["chat-tool"] });
+        return {
+          output: { action: i.action, home, count: store.count(), result: node },
+          display: `remembered ${node.kind}: ${compactLine(node.content, 140)}`,
+        };
+      }
+
+      if (i.action === "recall") {
+        const cue = (i.cue ?? i.content)?.trim();
+        if (!cue) throw new Error("LivingMind recall requires cue");
+        const result = await store.remember(cue, { limit });
+        return {
+          output: { action: i.action, home, count: store.count(), result },
+          display: result.length
+            ? `recalled ${result.length}: ${compactLine(result[0].node.content, 140)}`
+            : "nothing came to mind",
+        };
+      }
+
+      if (i.action === "consolidate") {
+        const result = await store.consolidate();
+        return {
+          output: { action: i.action, home, count: store.count(), result },
+          display: `consolidated: pruned ${result.pruned}, promoted ${result.promoted.length}, kept ${result.kept}`,
+        };
+      }
+
+      if (i.action === "status") {
+        return {
+          output: { action: i.action, home, count: store.count(), result: { memoryFile: mindPaths(home).memoryFile } },
+          display: `LivingMind: ${store.count()} memories`,
+        };
+      }
+
+      const result = store.all().slice(-limit).reverse();
+      return {
+        output: { action: i.action, home, count: store.count(), result },
+        display: `listed ${result.length}/${store.count()} memories`,
+      };
+    },
+  });
+}
+
+const verificationInput = z
+  .object({
+    kind: z.enum(["always", "file", "command", "http"]),
+    met: z.boolean().optional(),
+    summary: z.string().optional(),
+    path: z.string().optional(),
+    contains: z.string().optional(),
+    cmd: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    cwd: z.string().optional(),
+    expectExit: z.number().int().optional(),
+    url: z.string().optional(),
+    expectStatus: z.number().int().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const operatorChatInput = z
+  .object({
+    action: z
+      .enum(["create", "run", "acquire", "list", "status", "caps", "stats", "acquisitions"])
+      .describe("Operator operation: create/run durable goals, acquire a missing capability, or inspect the competence graph."),
+    goal: z.string().optional().describe("Goal statement for create/run."),
+    capability: z.string().optional().describe("Missing capability to acquire, e.g. email connector, Shopify connector, Stripe test-mode integration."),
+    kind: z.enum(["skill", "connector", "tool", "mcp", "script"]).optional().describe("What kind of surface to build for the missing capability."),
+    requires: z.array(z.string()).optional().describe("Reusable subskills this capability composes from."),
+    targetFiles: z.array(z.string()).optional().describe("Expected files/skill paths the worker should create or edit."),
+    id: z.string().optional().describe("Goal id for status/run."),
+    ticks: z.number().int().min(0).max(20).optional().describe("Maximum ticks to run now. For acquire, defaults to 1 so Crix starts building immediately; pass 0 to only queue."),
+    verification: verificationInput.optional().describe("Reality probe that decides whether the goal is truly met."),
+  })
+  .strict();
+
+interface OperatorChatOutput {
+  action: string;
+  home: string;
+  result: unknown;
+}
+
+function makeOperatorChatTool(opts: {
+  selection: ProviderSelection;
+  runtime: CrixRuntimeState;
+  workerTools: readonly EngineTool[];
+}) {
+  return buildTool({
+    name: "Operator",
+    description:
+      "Crix's durable will and self-acquisition loop. Use it for long-horizon goals that should survive turns, and when a capability is missing use action=acquire to create the build packet, graph node, verification probe, and start a fresh Worker building it.",
+    safety: "workspace-write",
+    concurrency: "exclusive",
+    inputZod: operatorChatInput,
+    activityDescription: (i) => `Operator ${i.action}`,
+
+    async call(i, ctx): Promise<{ output: OperatorChatOutput; display: string }> {
+      const home = crixAgentHome();
+
+      if (i.action === "create") {
+        const statement = i.goal?.trim();
+        if (!statement) throw new Error("Operator create requires goal");
+        const goal = createGoal({
+          id: i.id ?? newGoalId(),
+          statement,
+          verification: i.verification ? toVerificationSpec(i.verification) : undefined,
+        });
+        await saveGoal(home, goal);
+        return {
+          output: { action: i.action, home, result: goal },
+          display: `created durable goal ${goal.id}`,
+        };
+      }
+
+      if (i.action === "acquire") {
+        const capabilityName = (i.capability ?? i.goal)?.trim();
+        if (!capabilityName) throw new Error("Operator acquire requires capability or goal");
+        const acquired = await acquireCapability({
+          home,
+          capabilityName,
+          kind: i.kind as AcquisitionKind | undefined,
+          requires: i.requires,
+          targetFiles: i.targetFiles,
+          verification: i.verification ? toVerificationSpec(i.verification) : undefined,
+        });
+        const ticks = i.ticks ?? 1;
+        let final: Goal | null = null;
+        if (ticks > 0) {
+          const dispatcher = new QueryEngineDispatcher({
+            provider: opts.selection.provider,
+            model: opts.selection.model,
+            workspace: ctx.workspace,
+            tools: opts.workerTools,
+            systemPrompt: buildSystemPrompt(opts.runtime.permissionMode),
+          });
+          final = await runGoalToCompletion(
+            {
+              home,
+              dispatcher,
+              workspace: ctx.workspace,
+              signal: ctx.signal,
+            },
+            acquired.goal.id,
+            { maxTicks: ticks },
+          );
+        }
+        return {
+          output: { action: i.action, home, result: { ...acquired, final } },
+          display: final
+            ? `acquiring ${capabilityName}: ${acquired.goal.id} -> ${final.status} (${final.progress}/${final.stepLog.length})`
+            : `queued acquisition ${acquired.acquisition.id} for ${capabilityName}`,
+        };
+      }
+
+      if (i.action === "run") {
+        let targetId = i.id;
+        if (!targetId && i.goal?.trim()) {
+          const goal = createGoal({
+            id: newGoalId(),
+            statement: i.goal.trim(),
+            verification: i.verification ? toVerificationSpec(i.verification) : undefined,
+          });
+          await saveGoal(home, goal);
+          targetId = goal.id;
+        }
+        const active = (await listGoals(home)).filter((g) => g.status === "active");
+        const targets = targetId ? active.filter((g) => g.id === targetId) : active;
+        if (targets.length === 0) {
+          return {
+            output: { action: i.action, home, result: [] },
+            display: "no active Operator goals matched",
+          };
+        }
+        const dispatcher = new QueryEngineDispatcher({
+          provider: opts.selection.provider,
+          model: opts.selection.model,
+          workspace: ctx.workspace,
+          tools: opts.workerTools,
+          systemPrompt: buildSystemPrompt(opts.runtime.permissionMode),
+        });
+        const result: Goal[] = [];
+        for (const goal of targets) {
+          result.push(
+            await runGoalToCompletion(
+              {
+                home,
+                dispatcher,
+                workspace: ctx.workspace,
+                signal: ctx.signal,
+              },
+              goal.id,
+              { maxTicks: i.ticks ?? 1 },
+            ),
+          );
+        }
+        return {
+          output: { action: i.action, home, result },
+          display: result.map((g) => `${g.id} -> ${g.status} (${g.progress}/${g.stepLog.length})`).join("; "),
+        };
+      }
+
+      if (i.action === "status") {
+        const goals = await listGoals(home);
+        const result = i.id ? goals.find((g) => g.id === i.id) ?? null : goals[0] ?? null;
+        return {
+          output: { action: i.action, home, result },
+          display: result ? `${result.id}: ${result.status} - ${compactLine(result.statement, 120)}` : "no goals found",
+        };
+      }
+
+      if (i.action === "list") {
+        const result = await listGoals(home);
+        return {
+          output: { action: i.action, home, result },
+          display: `listed ${result.length} Operator goals`,
+        };
+      }
+
+      if (i.action === "acquisitions") {
+        const result = await listAcquisitions(home);
+        return {
+          output: { action: i.action, home, result },
+          display: `listed ${result.length} acquisition packet(s)`,
+        };
+      }
+
+      if (i.action === "caps") {
+        const caps = await listCapabilities(home);
+        const result = caps.map((c) => ({
+          ...c,
+          reliability: reliabilityOf(c),
+        }));
+        return {
+          output: { action: i.action, home, result },
+          display: `listed ${result.length} learned capabilities`,
+        };
+      }
+
+      const caps = await listCapabilities(home);
+      const mastered = caps.filter((c) => c.status === "mastered").length;
+      const result = { total: caps.length, mastered, curve: novelDeltaCurve(caps) };
+      return {
+        output: { action: i.action, home, result },
+        display: `${caps.length} capabilities, ${mastered} mastered`,
+      };
+    },
+  });
+}
+
+type VerificationInput = z.infer<typeof verificationInput>;
+
+function toVerificationSpec(input: VerificationInput): VerificationSpec {
+  if (input.kind === "always") {
+    return { kind: "always", met: input.met ?? false, summary: input.summary };
+  }
+  if (input.kind === "file") {
+    if (!input.path) throw new Error("file verification requires path");
+    return { kind: "file", path: input.path, contains: input.contains };
+  }
+  if (input.kind === "command") {
+    if (!input.cmd) throw new Error("command verification requires cmd");
+    return {
+      kind: "command",
+      cmd: input.cmd,
+      args: input.args,
+      cwd: input.cwd,
+      expectExit: input.expectExit,
+      timeoutMs: input.timeoutMs,
+    };
+  }
+  if (!input.url) throw new Error("http verification requires url");
+  return {
+    kind: "http",
+    url: input.url,
+    expectStatus: input.expectStatus,
+    contains: input.contains,
+    timeoutMs: input.timeoutMs,
+  };
+}
+
+const browserInput = z
+  .object({
+    action: z
+      .enum(["open", "tree", "screenshot", "fill", "click", "state", "close", "filmstrip"])
+      .describe("Browser action to perform through the DOM-first connector."),
+    url: z.string().optional().describe("URL for open."),
+    label: z.string().optional().describe("Accessible label for fill."),
+    value: z.string().optional().describe("Value for fill."),
+    role: z.string().optional().describe("ARIA role for click."),
+    name: z.string().optional().describe("Accessible name for click."),
+    headless: z.boolean().optional().describe("Use headless Playwright when launching. Default true."),
+    note: z.string().optional().describe("Optional note attached to screenshot frames."),
+    limit: z.number().int().min(1).max(100).optional().describe("Maximum tree/filmstrip entries returned."),
+  })
+  .strict();
+
+interface BrowserToolOutput {
+  action: string;
+  status: string;
+  result?: unknown;
+  filmstripDir: string;
+}
+
+function makeBrowserTool() {
+  let browser: BrowserConnector | null = null;
+  let filmstrip: Filmstrip | null = null;
+  let sequence = 0;
+
+  const ensureBrowser = async (headless?: boolean): Promise<BrowserConnector> => {
+    if (!browser) browser = await createPlaywrightBrowser({ headless: headless ?? true });
+    return browser;
+  };
+
+  const ensureFilmstrip = (): Filmstrip => {
+    if (!filmstrip) {
+      const dir = path.join(crixAgentHome(), "operator", "browser", "filmstrip", `${new Date().toISOString().slice(0, 10)}-${process.pid}`);
+      filmstrip = new Filmstrip(dir);
+    }
+    return filmstrip;
+  };
+
+  return buildTool({
+    name: "Browser",
+    description:
+      "Crix's DOM-first eyes and hands for the web. Use APIs/MCP/CLI first when better, then this browser connector to open pages, inspect the accessibility tree, fill forms, click controls, screenshot, and record visual proof.",
+    safety: "workspace-write",
+    concurrency: "exclusive",
+    inputZod: browserInput,
+    activityDescription: (i) => `Browser ${i.action}${i.url ? ` ${i.url}` : ""}`,
+
+    async call(i): Promise<{ output: BrowserToolOutput; display: string }> {
+      const strip = ensureFilmstrip();
+
+      if (i.action === "filmstrip") {
+        const result = (await strip.load()).slice(-(i.limit ?? 20));
+        return {
+          output: { action: i.action, status: "ok", result, filmstripDir: filmstripDir(strip) },
+          display: `filmstrip ${result.length} frame(s)`,
+        };
+      }
+
+      if (i.action === "close") {
+        if (browser) await browser.close();
+        browser = null;
+        return {
+          output: { action: i.action, status: "closed", filmstripDir: filmstripDir(strip) },
+          display: "browser closed",
+        };
+      }
+
+      const br = await ensureBrowser(i.headless);
+
+      if (i.action === "tree") {
+        const result = (await br.accessibilityTree()).slice(0, i.limit ?? 80);
+        return {
+          output: { action: i.action, status: "ok", result, filmstripDir: filmstripDir(strip) },
+          display: `accessibility tree: ${result.length} node(s)`,
+        };
+      }
+
+      if (i.action === "state") {
+        const result = await br.state();
+        return {
+          output: { action: i.action, status: "ok", result, filmstripDir: filmstripDir(strip) },
+          display: `${result.title ?? "(untitled)"} ${result.url}`,
+        };
+      }
+
+      if (i.action === "screenshot") {
+        const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
+        const frame = await strip.record({ action: "manual screenshot", url: state.url, screenshot: shot, note: i.note });
+        return {
+          output: { action: i.action, status: "ok", result: frame, filmstripDir: filmstripDir(strip) },
+          display: `screenshot frame ${frame.frame}`,
+        };
+      }
+
+      const rails = await browserRailsContext();
+      const idemPrefix = `browser:${process.pid}:${Date.now()}:${sequence++}`;
+      if (i.action === "open") {
+        if (!i.url) throw new Error("Browser open requires url");
+        const effect = navigateEffect(br, i.url, { filmstrip: strip, idemPrefix });
+        const result = await runEffect(effect, rails);
+        return {
+          output: { action: i.action, status: result.status, result, filmstripDir: filmstripDir(strip) },
+          display: `open ${i.url}: ${result.status}`,
+        };
+      }
+
+      if (i.action === "fill") {
+        if (!i.label) throw new Error("Browser fill requires label");
+        if (i.value === undefined) throw new Error("Browser fill requires value");
+        const effect = fillEffect(br, i.label, i.value, { filmstrip: strip, idemPrefix });
+        const result = await runEffect(effect, rails);
+        return {
+          output: { action: i.action, status: result.status, result, filmstripDir: filmstripDir(strip) },
+          display: `fill ${i.label}: ${result.status}`,
+        };
+      }
+
+      if (!i.role || !i.name) throw new Error("Browser click requires role and name");
+      const effect = clickEffect(br, i.role, i.name, { filmstrip: strip, idemPrefix });
+      const result = await runEffect(effect, rails);
+      return {
+        output: { action: i.action, status: result.status, result, filmstripDir: filmstripDir(strip) },
+        display: `click ${i.role}:${i.name}: ${result.status}`,
+      };
+    },
+  });
+}
+
+async function browserRailsContext() {
+  const paths = effectsPaths(crixAgentHome());
+  return {
+    ledger: await Ledger.open(paths.ledgerFile),
+    budget: new Budget(),
+    killSwitch: new KillSwitch(paths.killSwitchFile),
+    leashOf: ownerLeash(),
+  };
+}
+
+function filmstripDir(strip: Filmstrip): string {
+  return (strip as unknown as { dir?: string }).dir ?? "filmstrip";
+}
+
+function compactLine(text: string, limit: number): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= limit ? one : `${one.slice(0, Math.max(0, limit - 1))}…`;
 }
 
 async function createSession(
@@ -593,7 +1089,8 @@ async function createSessionWithSelection(
     shellRegistry,
     todoStore,
   );
-  const systemPrompt = agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode));
+  const systemPrompt =
+    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode)) + (await loadLiveMindContext(crixAgentHome()));
   if (resumeSessionId) {
     const snapshot = await loadSessionSnapshot(process.cwd(), resumeSessionId, {
       maxMessages: resumeMessageLimit(),
@@ -1019,6 +1516,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       }
       lifecycleOpen = true;
       await live.agentRuntime?.beforeTurn(command.goal);
+      await mindBeforeTurn(live, command.goal);
       let finalStatus: "completed" | "interrupted" | "failed" = "completed";
       for await (const event of live.session.sendContent(await contentFromUserInput(command.goal, process.cwd()))) {
         if (event.type === "turn_end") finalStatus = event.status;
@@ -1031,6 +1529,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     lifecycleOpen = false;
     unsubscribeLifecycle();
     await live.agentRuntime?.sessionEnded();
+    await mindSessionEnded();
     live.agentRuntime?.stop();
     rl.close();
   }
@@ -1437,6 +1936,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
       sendMessage: async (goal, onEvent) => {
         await live.agentRuntime?.beforeTurn(goal);
+        await mindBeforeTurn(live, goal);
         let finalStatus: "completed" | "interrupted" | "failed" = "completed";
         for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
           if (event.type === "tool_end" && event.touchedFiles?.length) {
@@ -1450,6 +1950,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       handleCommand: async (line): Promise<InkCommandResult> => {
         if (line === "/exit" || line === "/quit") {
           await live.agentRuntime?.sessionEnded();
+          await mindSessionEnded();
           live.agentRuntime?.stop();
           return { kind: "exit" };
         }
@@ -1804,6 +2305,72 @@ async function doctorCommand(): Promise<number> {
 
 // ─── system prompt ─────────────────────────────────────────────────────
 
+// ─── live Mind bridge (v6) — wires Living Memory + learned capabilities into
+// the ACTUAL conversation, so Crix recalls, captures, and knows itself instead
+// of behaving like a fresh chatbot every turn. Read-only/best-effort: the Mind
+// must never break a turn.
+async function loadLiveMindContext(home: string): Promise<string> {
+  try {
+    const store = await MemoryStore.open(mindPaths(home).memoryFile);
+    const caps = await listCapabilities(home);
+    const learned = caps.filter((c) => c.status === "mastered" || c.status === "have");
+    const known = store
+      .all()
+      .filter((n) => n.kind === "semantic")
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 8);
+    if (learned.length === 0 && known.length === 0) return "";
+    const lines: string[] = [
+      "",
+      "# Your living memory & learned capabilities",
+      "This is continuous you — not a fresh assistant booting from zero. The items below are things you actually know and can do, accumulated over time. Draw on them naturally; never announce that you're 'checking memory'.",
+    ];
+    if (known.length) {
+      lines.push("", "What you know:");
+      for (const n of known) lines.push(`- ${n.content}`);
+    }
+    if (learned.length) {
+      lines.push("", "Capabilities you've learned (runnable as skills):");
+      for (const c of learned) lines.push(`- ${c.name}${c.skillRef ? ` (skill: ${c.skillRef})` : ""}`);
+    }
+    return lines.join("\n") + "\n";
+  } catch {
+    return "";
+  }
+}
+
+async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<void> {
+  const text = userMessage.trim();
+  if (!text) return;
+  try {
+    const store = await MemoryStore.open(mindPaths(crixAgentHome()).memoryFile);
+    // Recall a constellation relevant to this message and surface it to the model.
+    const recalled = await store.remember(text, { limit: 5 });
+    if (recalled.length > 0) {
+      const block = recalled.map((r) => `- ${r.viaAssociation ? "↝ " : ""}${r.node.content}`).join("\n");
+      live.queueSystemReminder(
+        `Recalled from your living memory for this message — weave in what's relevant, don't recite it:\n${block}`,
+        "memory",
+      );
+    }
+    // Capture the user's message as an episodic memory — this is how Crix learns over time.
+    if (text.length > 8) {
+      await store.add({ kind: "episodic", content: text.slice(0, 400), source: live.session.meta.id });
+    }
+  } catch {
+    // never break a turn over memory
+  }
+}
+
+async function mindSessionEnded(): Promise<void> {
+  try {
+    const store = await MemoryStore.open(mindPaths(crixAgentHome()).memoryFile);
+    await store.consolidate(); // sleep: forget the trivial, crystallize recurring themes
+  } catch {
+    // never fatal
+  }
+}
+
 function buildSystemPrompt(permissionMode: PermissionMode = "workspace-write"): string {
   const platform = process.platform === "win32" ? "Windows (PowerShell first)" : process.platform;
   const cwd = process.cwd();
@@ -1961,6 +2528,49 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
+  if (subcommand === "acquire") {
+    const capabilityName = args.flags.get("capability") ?? args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
+    if (!capabilityName) {
+      process.stderr.write('error: usage: crix operator acquire --capability "<name>" [--kind skill|connector|tool|mcp|script]\n');
+      return 2;
+    }
+    const result = await acquireCapability({
+      home,
+      capabilityName,
+      kind: parseAcquisitionKind(args.flags.get("kind")),
+      requires: csvFlag(args.flags.get("requires")),
+      targetFiles: csvFlag(args.flags.get("target-files") ?? args.flags.get("targets")),
+    });
+    const ticks = Number(args.flags.get("ticks") ?? "0") || 0;
+    let final: Goal | null = null;
+    if (ticks > 0) {
+      const selection = await selectProvider(args.flags);
+      const dispatcher = new QueryEngineDispatcher({
+        provider: selection.provider,
+        model: selection.model,
+        workspace: process.cwd(),
+      });
+      final = await runGoalToCompletion({ home, dispatcher, workspace: process.cwd() }, result.goal.id, { maxTicks: ticks });
+    }
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify({ ...result, final }, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(
+      notice(
+        "Operator Acquire",
+        [
+          `capability ${result.capability.name} [${result.capability.status}]`,
+          `packet ${result.acquisition.packetFile}`,
+          `goal ${result.goal.id}`,
+          final ? `ran ${ticks} tick(s): ${final.status} (${final.progress}/${final.stepLog.length})` : "queued (pass --ticks N to start workers now)",
+        ],
+        "success",
+      ),
+    );
+    return 0;
+  }
+
   if (subcommand === "list") {
     const goals = await listGoals(home);
     if (goals.length === 0) {
@@ -2051,6 +2661,26 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
+  if (subcommand === "acquisitions") {
+    const acquisitions = await listAcquisitions(home);
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(acquisitions, null, 2) + "\n");
+      return 0;
+    }
+    if (acquisitions.length === 0) {
+      process.stdout.write(notice("Acquisitions", ["No acquisition packets yet."], "warn"));
+      return 0;
+    }
+    process.stdout.write(
+      notice(
+        "Acquisitions",
+        acquisitions.map((a) => `${a.id} [${a.status}] ${a.capabilityName} -> goal ${a.goalId}`),
+        "info",
+      ),
+    );
+    return 0;
+  }
+
   if (subcommand === "stats") {
     const caps = await listCapabilities(home);
     const curve = novelDeltaCurve(caps);
@@ -2079,8 +2709,19 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | list | status | run | caps | stats\n`);
+  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | acquire | list | status | run | caps | stats | acquisitions\n`);
   return 2;
+}
+
+function parseAcquisitionKind(value: string | undefined): AcquisitionKind | undefined {
+  if (value === "skill" || value === "connector" || value === "tool" || value === "mcp" || value === "script") return value;
+  return undefined;
+}
+
+function csvFlag(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const parts = value.split(",").map((v) => v.trim()).filter(Boolean);
+  return parts.length ? parts : undefined;
 }
 
 // ─── mind command (Crix v6 — Living Memory feed for the UI + you) ───────

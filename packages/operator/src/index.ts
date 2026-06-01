@@ -45,6 +45,42 @@ export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";
 
 export { WorldModel, type WorldSource, type WorldSnapshot } from "./worldModel.js";
 
+// ── O4: the compounding capability graph ──────────────────────────────────
+export {
+  createCapability,
+  beginLearning,
+  recordOutcome,
+  reliabilityOf,
+  canCrystallize,
+  crystallize,
+  markRotted,
+  markForbidden,
+  isReusable,
+  DEFAULT_MASTERY_SUCCESSES,
+  type CapabilityNode,
+  type CapabilityStatus,
+  type CapabilityOutcomes,
+} from "./capability.js";
+
+export { novelDelta, reusedSubskills, factor, novelDeltaCurve } from "./graph.js";
+
+export {
+  slugify,
+  saveCapability,
+  loadCapability,
+  listCapabilities,
+  writeCrystallizedSkill,
+} from "./graphStore.js";
+
+export {
+  driveLearning,
+  nextLearningPhase,
+  type LearningPhase,
+  type LearnDeps,
+  type LearnAttemptResult,
+  type LearnEvent,
+} from "./learn.js";
+
 export type {
   Goal,
   GoalStatus,

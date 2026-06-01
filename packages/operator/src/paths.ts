@@ -9,6 +9,7 @@ export interface OperatorPaths {
   home: string;
   operatorDir: string;
   goalsDir: string;
+  graphDir: string;
 }
 
 export function operatorPaths(explicit?: string): OperatorPaths {
@@ -18,5 +19,6 @@ export function operatorPaths(explicit?: string): OperatorPaths {
     home,
     operatorDir,
     goalsDir: path.join(operatorDir, "goals"),
+    graphDir: path.join(operatorDir, "graph"),
   };
 }

@@ -120,10 +120,14 @@ import {
   QueryEngineDispatcher,
   createGoal,
   listGoals,
+  listCapabilities,
   newGoalId,
+  novelDeltaCurve,
+  reliabilityOf,
   runGoalToCompletion,
   saveGoal,
   type Goal,
+  type CapabilityNode,
 } from "@crix/operator";
 
 interface ParsedArgs {
@@ -181,6 +185,7 @@ function printHelp(): void {
       "  crix operator list | status [id]     Inspect Operator goals.",
       "  crix operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
       "                              Drive active goals via ephemeral QueryEngine workers.",
+      "  crix operator caps | stats          Inspect learned capabilities + the novel-delta curve.",
       "  crix eval                  Run the built-in harness regression eval suite.",
       "  crix login                  ChatGPT OAuth device-code flow.",
       "  crix doctor                 Show provider auth + Ollama Cloud health.",
@@ -2018,8 +2023,71 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | list | status | run\n`);
+  if (subcommand === "caps") {
+    const caps = await listCapabilities(home);
+    if (caps.length === 0) {
+      process.stdout.write(notice("Capabilities", ["No capabilities learned yet. They accrue as Crix masters things."], "warn"));
+      return 0;
+    }
+    process.stdout.write(
+      notice(
+        "Capabilities",
+        caps.map((c) => {
+          const rel = reliabilityOf(c);
+          const relStr = rel === null ? "untested" : `${Math.round(rel * 100)}% (${c.outcomes.ok}/${c.outcomes.ok + c.outcomes.fail})`;
+          return `${capGlyph(c.status)} ${c.name} [${c.status}] ${relStr}${c.skillRef ? ` · skill:${c.skillRef}` : ""}${c.requires.length ? ` · composes ${c.requires.length}` : ""}`;
+        }),
+        "info",
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "stats") {
+    const caps = await listCapabilities(home);
+    const curve = novelDeltaCurve(caps);
+    const mastered = caps.filter((c) => c.status === "mastered").length;
+    const lines = [`${caps.length} capabilities · ${mastered} mastered`];
+    if (curve.length === 0) {
+      lines.push("novel-delta curve: no data yet — learn a capability to start the curve.");
+    } else {
+      lines.push("novel-delta curve (new sub-skills to learn per capability, oldest → newest):");
+      for (const point of curve) {
+        lines.push(`  ${String(point.delta).padStart(2)}  ${"#".repeat(Math.min(point.delta, 40)) || "·"}  ${point.name}`);
+      }
+      const first = curve[0].delta;
+      const last = curve[curve.length - 1].delta;
+      lines.push(
+        curve.length > 1
+          ? `trend: ${first} → ${last} ${last < first ? "↓ getting smarter" : last > first ? "↑" : "flat"}`
+          : "trend: need ≥2 capabilities to see the curve move",
+      );
+    }
+    process.stdout.write(notice("Operator Stats", lines, "info"));
+    return 0;
+  }
+
+  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | list | status | run | caps | stats\n`);
   return 2;
+}
+
+function capGlyph(status: CapabilityNode["status"]): string {
+  switch (status) {
+    case "mastered":
+      return "★";
+    case "have":
+      return "✓";
+    case "learning":
+      return "…";
+    case "want":
+      return "?";
+    case "rotted":
+      return "⚠";
+    case "forbidden":
+      return "⛔";
+    default:
+      return "•";
+  }
 }
 
 function statusGlyph(status: Goal["status"]): string {

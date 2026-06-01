@@ -89,6 +89,12 @@ importers:
         specifier: workspace:*
         version: link:../agent
 
+  packages/mind:
+    dependencies:
+      '@crix/agent':
+        specifier: workspace:*
+        version: link:../agent
+
   packages/operator:
     dependencies:
       '@crix/agent':

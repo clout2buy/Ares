@@ -9,6 +9,7 @@
     { "path": "./packages/operator" },
     { "path": "./packages/effects" },
     { "path": "./packages/connectors" },
+    { "path": "./packages/mind" },
     { "path": "./packages/cli" }
   ]
 }

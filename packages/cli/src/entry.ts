@@ -129,6 +129,7 @@ import {
   type Goal,
   type CapabilityNode,
 } from "@crix/operator";
+import { MemoryStore, mindPaths, type MemoryKind } from "@crix/mind";
 
 interface ParsedArgs {
   command: string;
@@ -185,7 +186,10 @@ function printHelp(): void {
       "  crix operator list | status [id]     Inspect Operator goals.",
       "  crix operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
       "                              Drive active goals via ephemeral QueryEngine workers.",
-      "  crix operator caps | stats          Inspect learned capabilities + the novel-delta curve.",
+      "  crix operator caps | stats [--json] Inspect learned capabilities + the novel-delta curve.",
+      "  crix mind recall \"<cue>\" [--json]   Spreading-activation recall from Living Memory.",
+      "  crix mind add --content \"<text>\" [--kind episodic|semantic|procedural]",
+      "  crix mind list | consolidate [--json]   Inspect / sleep-consolidate memory.",
       "  crix eval                  Run the built-in harness regression eval suite.",
       "  crix login                  ChatGPT OAuth device-code flow.",
       "  crix doctor                 Show provider auth + Ollama Cloud health.",
@@ -2025,6 +2029,10 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
 
   if (subcommand === "caps") {
     const caps = await listCapabilities(home);
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(caps, null, 2) + "\n");
+      return 0;
+    }
     if (caps.length === 0) {
       process.stdout.write(notice("Capabilities", ["No capabilities learned yet. They accrue as Crix masters things."], "warn"));
       return 0;
@@ -2047,6 +2055,10 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     const caps = await listCapabilities(home);
     const curve = novelDeltaCurve(caps);
     const mastered = caps.filter((c) => c.status === "mastered").length;
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify({ total: caps.length, mastered, curve }, null, 2) + "\n");
+      return 0;
+    }
     const lines = [`${caps.length} capabilities · ${mastered} mastered`];
     if (curve.length === 0) {
       lines.push("novel-delta curve: no data yet — learn a capability to start the curve.");
@@ -2069,6 +2081,91 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
 
   process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | list | status | run | caps | stats\n`);
   return 2;
+}
+
+// ─── mind command (Crix v6 — Living Memory feed for the UI + you) ───────
+async function mindCommand(args: ParsedArgs): Promise<number> {
+  const subcommand = args.positionals[0] ?? "list";
+  const home = crixAgentHome(args.flags.get("home") ?? process.env.CRIX_HOME);
+  const store = await MemoryStore.open(args.flags.get("root") ?? mindPaths(home).memoryFile);
+  const json = args.flags.has("json");
+
+  if (subcommand === "add") {
+    const content = args.flags.get("content") ?? args.positionals.slice(1).join(" ").trim();
+    if (!content) {
+      process.stderr.write('error: usage: crix mind add --content "<text>" [--kind episodic|semantic|procedural]\n');
+      return 2;
+    }
+    const raw = args.flags.get("kind") ?? "episodic";
+    const kind: MemoryKind = raw === "semantic" || raw === "procedural" ? raw : "episodic";
+    const node = await store.add({ kind, content });
+    if (json) {
+      process.stdout.write(JSON.stringify(node, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(notice("Mind", [`remembered (${node.kind}): ${node.content}`], "success"));
+    return 0;
+  }
+
+  if (subcommand === "recall") {
+    const cue = args.flags.get("cue") ?? args.positionals.slice(1).join(" ").trim();
+    if (!cue) {
+      process.stderr.write('error: usage: crix mind recall "<cue>"\n');
+      return 2;
+    }
+    const results = await store.remember(cue);
+    if (json) {
+      process.stdout.write(JSON.stringify(results, null, 2) + "\n");
+      return 0;
+    }
+    if (results.length === 0) {
+      process.stdout.write(notice("Recall", ["Nothing comes to mind."], "warn"));
+      return 0;
+    }
+    process.stdout.write(
+      notice(
+        "Recall",
+        results.map((r) => `${r.viaAssociation ? "↝" : "•"} [${r.node.kind}] ${r.node.content}`),
+        "info",
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "consolidate") {
+    const report = await store.consolidate();
+    if (json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(
+      notice(
+        "Mind · consolidated",
+        [`forgot ${report.pruned} trivial · crystallized ${report.promoted.length} theme(s)${report.promoted.length ? ` (${report.promoted.join(", ")})` : ""} · ${report.kept} kept`],
+        "success",
+      ),
+    );
+    return 0;
+  }
+
+  // list (default)
+  const all = store.all();
+  if (json) {
+    process.stdout.write(JSON.stringify(all, null, 2) + "\n");
+    return 0;
+  }
+  if (all.length === 0) {
+    process.stdout.write(notice("Mind", ["Memory is empty."], "warn"));
+    return 0;
+  }
+  process.stdout.write(
+    notice(
+      `Mind · ${all.length} memories`,
+      all.slice(0, 40).map((n) => `[${n.kind}] ${n.content}${n.links.length ? ` · ${n.links.length} links` : ""}`),
+      "info",
+    ),
+  );
+  return 0;
 }
 
 function capGlyph(status: CapabilityNode["status"]): string {
@@ -2137,6 +2234,9 @@ async function main(): Promise<void> {
       return;
     case "operator":
       process.exit(await operatorCommand(args));
+      return;
+    case "mind":
+      process.exit(await mindCommand(args));
       return;
     case "eval":
       process.exit(await evalCommand());

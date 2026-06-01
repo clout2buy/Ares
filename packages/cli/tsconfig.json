@@ -11,7 +11,8 @@
     { "path": "../core" },
     { "path": "../tools" },
     { "path": "../agent" },
-    { "path": "../operator" }
+    { "path": "../operator" },
+    { "path": "../mind" }
   ],
   "include": ["src/**/*.ts"]
 }

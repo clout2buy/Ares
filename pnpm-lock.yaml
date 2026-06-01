@@ -48,6 +48,9 @@ importers:
       '@crix/core':
         specifier: workspace:*
         version: link:../core
+      '@crix/mind':
+        specifier: workspace:*
+        version: link:../mind
       '@crix/operator':
         specifier: workspace:*
         version: link:../operator

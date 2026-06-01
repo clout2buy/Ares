@@ -8,6 +8,7 @@
     { "path": "./packages/agent" },
     { "path": "./packages/operator" },
     { "path": "./packages/effects" },
+    { "path": "./packages/connectors" },
     { "path": "./packages/cli" }
   ]
 }

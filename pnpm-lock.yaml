@@ -48,6 +48,9 @@ importers:
       '@crix/core':
         specifier: workspace:*
         version: link:../core
+      '@crix/operator':
+        specifier: workspace:*
+        version: link:../operator
       '@crix/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -63,6 +66,18 @@ importers:
 
   packages/core:
     dependencies:
+      '@crix/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
+  packages/operator:
+    dependencies:
+      '@crix/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@crix/core':
+        specifier: workspace:*
+        version: link:../core
       '@crix/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -104,6 +119,9 @@ importers:
       react-dom:
         specifier: ^19.2.6
         version: 19.2.6(react@19.2.6)
+      three:
+        specifier: ^0.184.0
+        version: 0.184.0
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.0.0
@@ -1057,6 +1075,9 @@ packages:
   terminal-size@4.0.1:
     resolution: {integrity: sha512-avMLDQpUI9I5XFrklECw1ZEUPJhqzcwSWsyyI8blhRLT+8N1jLJWLWWYQpB2q2xthq8xDvjZPISVh53T/+CLYQ==}
     engines: {node: '>=18'}
+
+  three@0.184.0:
+    resolution: {integrity: sha512-wtTRjG92pM5eUg/KuUnHsqSAlPM296brTOcLgMRqEeylYTh/CdtvKUvCyyCQTzFuStieWxvZb8mVTMvdPyUpxg==}
 
   tinyglobby@0.2.16:
     resolution: {integrity: sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==}
@@ -2017,6 +2038,8 @@ snapshots:
     optional: true
 
   terminal-size@4.0.1: {}
+
+  three@0.184.0: {}
 
   tinyglobby@0.2.16:
     dependencies:

@@ -16,6 +16,7 @@
   "dependencies": {
     "@crix/agent": "workspace:*",
     "@crix/core": "workspace:*",
+    "@crix/operator": "workspace:*",
     "@crix/protocol": "workspace:*",
     "@crix/tools": "workspace:*",
     "ink": "^7.0.4",

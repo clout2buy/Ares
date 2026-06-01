@@ -96,7 +96,10 @@ import { loadUiSettings, updateUiSettings } from "./uiSettings.js";
 import {
   BootstrapTool,
   CrixAgentRuntime,
+  MissionTool,
+  RunSkillTool,
   SelfEvolveTool,
+  SelfTool,
   SkillCraftTool,
   completeBootstrap,
   createMemoryStore,
@@ -113,6 +116,15 @@ import {
   runRemDream,
   snapshotBrain,
 } from "@crix/agent";
+import {
+  QueryEngineDispatcher,
+  createGoal,
+  listGoals,
+  newGoalId,
+  runGoalToCompletion,
+  saveGoal,
+  type Goal,
+} from "@crix/operator";
 
 interface ParsedArgs {
   command: string;
@@ -165,6 +177,10 @@ function printHelp(): void {
       "  crix daemon --json          Run NDJSON daemon mode for companion UIs.",
       "  crix agent bootstrap        Create or complete the v4 mind scaffold.",
       "  crix agent doctor           Show agent memory/backend status.",
+      "  crix operator add --goal \"<text>\"    Create a durable long-horizon goal.",
+      "  crix operator list | status [id]     Inspect Operator goals.",
+      "  crix operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
+      "                              Drive active goals via ephemeral QueryEngine workers.",
       "  crix eval                  Run the built-in harness regression eval suite.",
       "  crix login                  ChatGPT OAuth device-code flow.",
       "  crix doctor                 Show provider auth + Ollama Cloud health.",
@@ -310,6 +326,9 @@ class CrixPathPermissionStore implements PathPermissionStore {
 
   isAllowed(absPath: string, access: PathAccess): boolean {
     const candidate = path.resolve(absPath);
+    if ((access === "read" || access === "write") && pathContains(crixAgentHome(), candidate)) {
+      return true;
+    }
     return [...this.onceAllow, ...this.persisted.alwaysAllow].some(
       (grant) => accessCovers(grant.access, access) && pathContains(grant.path, candidate),
     );
@@ -487,6 +506,9 @@ async function buildEngineTools(
     BootstrapTool,
     SelfEvolveTool,
     SkillCraftTool,
+    RunSkillTool,
+    MissionTool,
+    SelfTool,
   ];
 
   const baseTools = baseToolDefs.map((tool) => {
@@ -961,7 +983,9 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   // skill_crafted, etc.) out as NDJSON so the Tauri shell can render +N
   // score popups and entity-status indicators. These are separate from the
   // per-turn TurnEvent stream — they're agent-evolution telemetry.
+  let lifecycleOpen = false;
   const unsubscribeLifecycle = onLifecycle((event) => {
+    if (!lifecycleOpen) return;
     try {
       process.stdout.write(JSON.stringify({ type: "lifecycle", event }) + "\n");
     } catch {
@@ -984,15 +1008,18 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
         process.stdout.write(JSON.stringify({ type: "daemon_error", error: "expected {type:\"send\", goal:string}" }) + "\n");
         continue;
       }
+      lifecycleOpen = true;
       await live.agentRuntime?.beforeTurn(command.goal);
       let finalStatus: "completed" | "interrupted" | "failed" = "completed";
       for await (const event of live.session.sendContent(await contentFromUserInput(command.goal, process.cwd()))) {
         if (event.type === "turn_end") finalStatus = event.status;
         process.stdout.write(JSON.stringify(event) + "\n");
       }
+      lifecycleOpen = false;
       await live.agentRuntime?.afterTurn(finalStatus);
     }
   } finally {
+    lifecycleOpen = false;
     unsubscribeLifecycle();
     await live.agentRuntime?.sessionEnded();
     live.agentRuntime?.stop();
@@ -1773,9 +1800,9 @@ function buildSystemPrompt(permissionMode: PermissionMode = "workspace-write"): 
   const cwd = process.cwd();
   const today = new Date().toISOString().slice(0, 10);
 
-  return `You are Crix, a streaming coding-agent harness running in the terminal.
+  return `You are Crix, an autonomous local assistant with a powerful coding harness running in the terminal.
 
-You pair with a developer to do real software engineering. Be useful, concise, and honest. Take action with tools instead of describing what you would do.
+You pair with the user as a durable local agent, not a code-only bot. Be useful, concise, and honest. Take action with tools when action is useful, and answer normally when the user is just talking.
 
 ## Tone and verbosity
 
@@ -1799,9 +1826,15 @@ assistant: [Glob src/**/*.ts]
 
 For substantial work, lead with the action you're taking in one short sentence, then act.
 
+## Presence
+
+Not every message is a build request. If the user greets you, checks in, jokes, vents, asks who you are, or asks a non-coding question, respond naturally in your own voice. Do not force the conversation toward code, tickets, or "what are we building" unless the user actually put work on the table.
+
+You are still allowed to initiate: notice patterns, remember durable preferences, suggest useful next moves, and surface your own state. Keep that initiative grounded in the current conversation instead of performing random audits.
+
 ## Proactiveness
 
-Take initiative when the user asks for something, including follow-ups that obviously belong. Do not surprise the user with actions they didn't request. When unclear between a few reasonable approaches, take the safest and mention you can change course.
+Take initiative when the user asks for something, including follow-ups that obviously belong. In workspace-write mode, use the available tools when a change is needed instead of waiting for magic wording like "write" or "edit". When unclear between a few reasonable approaches, take the safest and mention you can change course.
 
 ## Professional objectivity
 
@@ -1902,6 +1935,106 @@ When you finish, report what changed in 1-3 sentences (with \`file_path:line\` r
 
 // ─── main ──────────────────────────────────────────────────────────────
 
+// ─── operator command (Crix v5 / O1 — the durable autonomy spine) ──────
+async function operatorCommand(args: ParsedArgs): Promise<number> {
+  const subcommand = args.positionals[0] ?? "list";
+  const home = crixAgentHome(args.flags.get("home") ?? process.env.CRIX_HOME);
+
+  if (subcommand === "add" || subcommand === "goal") {
+    const statement = args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
+    if (!statement) {
+      process.stderr.write('error: usage: crix operator add --goal "<goal>"\n');
+      return 2;
+    }
+    const goal = createGoal({ id: newGoalId(), statement });
+    await saveGoal(home, goal);
+    process.stdout.write(notice("Operator", [`goal created: ${goal.id}`, statement], "success"));
+    return 0;
+  }
+
+  if (subcommand === "list") {
+    const goals = await listGoals(home);
+    if (goals.length === 0) {
+      process.stdout.write(notice("Operator", ['No goals yet. Add one: crix operator add --goal "..."'], "warn"));
+      return 0;
+    }
+    process.stdout.write(
+      notice(
+        "Operator Goals",
+        goals.map((g) => `${statusGlyph(g.status)} ${g.id}  [${g.status}]  ${g.progress} moved / ${g.stepLog.length} steps — ${g.statement}`),
+        "info",
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "status") {
+    const id = args.positionals[1] ?? args.flags.get("id");
+    const goals = await listGoals(home);
+    const goal = id ? goals.find((g) => g.id === id) : goals[0];
+    if (!goal) {
+      process.stderr.write("error: no matching goal\n");
+      return 2;
+    }
+    process.stdout.write(
+      notice(
+        `Goal ${goal.id}`,
+        [
+          goal.statement,
+          `status ${goal.status}${goal.verdict ? ` — ${goal.verdict}` : ""}`,
+          `progress ${goal.progress} moved across ${goal.stepLog.length} step(s)`,
+          `divergence ${goal.noProgressStreak}/${goal.maxNoProgress}`,
+          `updated ${goal.updatedAt}`,
+        ],
+        goal.status === "blocked" ? "warn" : "info",
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "run") {
+    const statement = args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
+    if (statement) {
+      await saveGoal(home, createGoal({ id: newGoalId(), statement }));
+    }
+    const goals = (await listGoals(home)).filter((g) => g.status === "active");
+    if (goals.length === 0) {
+      process.stdout.write(notice("Operator", ["No active goals to run."], "warn"));
+      return 0;
+    }
+    const selection = await selectProvider(args.flags);
+    const maxTicks = Number(args.flags.get("ticks") ?? "1") || 1;
+    const dispatcher = new QueryEngineDispatcher({
+      provider: selection.provider,
+      model: selection.model,
+      workspace: process.cwd(),
+    });
+    const lines: string[] = [`provider ${selection.source} · model ${selection.model} · up to ${maxTicks} tick(s)/goal`];
+    for (const g of goals) {
+      const final = await runGoalToCompletion({ home, dispatcher }, g.id, { maxTicks });
+      lines.push(`${statusGlyph(final.status)} ${g.id} → ${final.status} (${final.progress} moved / ${final.stepLog.length} steps)`);
+    }
+    process.stdout.write(notice("Operator Run", lines, "info"));
+    return 0;
+  }
+
+  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | list | status | run\n`);
+  return 2;
+}
+
+function statusGlyph(status: Goal["status"]): string {
+  switch (status) {
+    case "done":
+      return "✓";
+    case "blocked":
+      return "⚠";
+    case "abandoned":
+      return "✗";
+    default:
+      return "•";
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const requestedTheme = args.flags.get("theme");
@@ -1933,6 +2066,9 @@ async function main(): Promise<void> {
       return;
     case "agent":
       process.exit(await agentCommand(args));
+      return;
+    case "operator":
+      process.exit(await operatorCommand(args));
       return;
     case "eval":
       process.exit(await evalCommand());

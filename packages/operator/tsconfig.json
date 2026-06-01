@@ -1,4 +1,4 @@
-﻿{
+{
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
@@ -9,9 +9,7 @@
   "references": [
     { "path": "../protocol" },
     { "path": "../core" },
-    { "path": "../tools" },
-    { "path": "../agent" },
-    { "path": "../operator" }
+    { "path": "../agent" }
   ],
   "include": ["src/**/*.ts"]
 }

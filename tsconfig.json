@@ -6,6 +6,7 @@
     { "path": "./packages/core" },
     { "path": "./packages/tools" },
     { "path": "./packages/agent" },
+    { "path": "./packages/operator" },
     { "path": "./packages/cli" }
   ]
 }

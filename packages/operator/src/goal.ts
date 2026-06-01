@@ -5,7 +5,7 @@
 // logic: a step that moves the gap resets the divergence streak; a run of
 // no-progress steps trips divergence and blocks the goal for escalation.
 
-import type { Goal, GoalStatus, GoalStepRecord, StepVerdict } from "./types.js";
+import type { Goal, GoalStatus, GoalStepRecord, StepVerdict, VerificationSpec } from "./types.js";
 
 const DEFAULT_MAX_NO_PROGRESS = 3;
 
@@ -14,6 +14,7 @@ export function createGoal(input: {
   statement: string;
   missionIds?: string[];
   maxNoProgress?: number;
+  verification?: VerificationSpec;
   now?: Date;
 }): Goal {
   const at = (input.now ?? new Date()).toISOString();
@@ -27,10 +28,20 @@ export function createGoal(input: {
     progress: 0,
     noProgressStreak: 0,
     maxNoProgress: clampThreshold(input.maxNoProgress),
+    verification: input.verification,
     stepLog: [],
     createdAt: at,
     updatedAt: at,
   };
+}
+
+/**
+ * Mark a goal done because REALITY already satisfies it — no step required.
+ * Used by the control loop's SENSE phase when a goal's probe is already green.
+ */
+export function completeGoal(goal: Goal, evidence: string, now = new Date()): Goal {
+  if (goal.status !== "active") return goal;
+  return { ...goal, status: "done", verdict: evidence.trim() || "goal met", inFlightStep: undefined, updatedAt: now.toISOString() };
 }
 
 export function isActive(goal: Goal): boolean {

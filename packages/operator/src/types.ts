@@ -23,12 +23,27 @@ export interface GoalStepRecord {
   prediction?: { outcome: string; p: number };
 }
 
+/**
+ * How a goal's success is measured against REALITY (O3). Serializable so a goal
+ * carries its own verification spec on disk. If a goal has no spec, the control
+ * loop falls back to trusting the Worker's claim (O1 behavior).
+ */
+export type VerificationSpec =
+  | { kind: "always"; met: boolean; summary?: string }
+  | { kind: "file"; path: string; contains?: string }
+  | { kind: "command"; cmd: string; args?: string[]; cwd?: string; expectExit?: number; timeoutMs?: number }
+  | { kind: "http"; url: string; expectStatus?: number; contains?: string; timeoutMs?: number };
+
 export interface Goal {
   id: string;
   statement: string;
   status: GoalStatus;
   /** Sub-missions (reuses @crix/agent mission model). Empty in O1. */
   missionIds: string[];
+  /** How reality is measured (O3). Absent → trust the Worker's claim (O1). */
+  verification?: VerificationSpec;
+  /** Last reality fingerprint seen — lets the loop tell if a step changed the world. */
+  lastFingerprint?: string;
   /** Count of steps that moved the gap — the convergence signal. */
   progress: number;
   /** Consecutive no-progress steps; hits maxNoProgress → divergence. */

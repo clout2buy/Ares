@@ -14,6 +14,7 @@
 export {
   createGoal,
   applyVerdict,
+  completeGoal,
   markInFlight,
   abandonGoal,
   isActive,
@@ -40,11 +41,16 @@ export { Scheduler, type SchedulerOptions } from "./scheduler.js";
 
 export { operatorPaths, type OperatorPaths } from "./paths.js";
 
+export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";
+
+export { WorldModel, type WorldSource, type WorldSnapshot } from "./worldModel.js";
+
 export type {
   Goal,
   GoalStatus,
   GoalStepRecord,
   StepVerdict,
+  VerificationSpec,
   Dispatcher,
   DispatchContext,
   OperatorEvent,

@@ -56,10 +56,13 @@ export {
   markRotted,
   markForbidden,
   isReusable,
+  addMethod,
   DEFAULT_MASTERY_SUCCESSES,
   type CapabilityNode,
   type CapabilityStatus,
   type CapabilityOutcomes,
+  type MethodKind,
+  type MethodRung,
 } from "./capability.js";
 
 export { novelDelta, reusedSubskills, factor, novelDeltaCurve } from "./graph.js";
@@ -80,6 +83,20 @@ export {
   type LearnAttemptResult,
   type LearnEvent,
 } from "./learn.js";
+
+// ── O5: the two ladders (method + perception) ─────────────────────────────
+export {
+  resolveMethod,
+  acquireMethod,
+  isAvailable,
+  METHOD_RANK,
+  type MethodEnvironment,
+  type MethodResolution,
+  type AcquireDeps,
+  type AcquireResult,
+} from "./method.js";
+
+export { routePerception, PERCEPTION_RANK, type PerceptionRung, type PerceptionNeed } from "./perception.js";
 
 export type {
   Goal,

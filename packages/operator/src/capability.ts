@@ -17,6 +17,16 @@ export type CapabilityStatus =
   | "rotted" // was working, now failing its health check (O13)
   | "forbidden"; // not allowed (ToS/KYC/policy) — distinct from "can't yet"
 
+/** A way to satisfy a capability (O5). api > mcp > cli > skill > browser. */
+export type MethodKind = "api" | "mcp" | "cli" | "skill" | "browser";
+
+export interface MethodRung {
+  kind: MethodKind;
+  ref: string; // "stripe", "shopify-mcp", "gh", "make-email", "playwright"
+  reliability?: number; // earned over time (O7)
+  lastCheckedAt?: string;
+}
+
 export interface CapabilityOutcomes {
   ok: number;
   fail: number;
@@ -34,6 +44,8 @@ export interface CapabilityNode {
   skillRef?: string;
   /** Crystallized judgment (a playbook in durable memory). */
   playbookRef?: string;
+  /** Ranked ways to do this capability — the method ladder (O5). */
+  methods?: MethodRung[];
   outcomes: CapabilityOutcomes;
   /** Novel sub-skills at first encounter — the data point for the shrink curve. */
   novelDeltaAtBirth?: number;
@@ -140,4 +152,13 @@ export function markForbidden(node: CapabilityNode, reason: string, now = new Da
 /** Present and reusable as a building block for other capabilities. */
 export function isReusable(node: CapabilityNode): boolean {
   return node.status === "have" || node.status === "mastered";
+}
+
+/** Attach (or refresh) a method rung on the capability's ladder, deduped by kind+ref. */
+export function addMethod(node: CapabilityNode, rung: MethodRung, now = new Date()): CapabilityNode {
+  const methods = [
+    ...(node.methods ?? []).filter((m) => !(m.kind === rung.kind && m.ref === rung.ref)),
+    rung,
+  ];
+  return { ...node, methods, updatedAt: now.toISOString() };
 }

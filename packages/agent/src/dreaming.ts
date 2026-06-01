@@ -6,6 +6,9 @@ import type { CrixAgentConfig } from "./config.js";
 import { createMemoryStore } from "./memory/vectorStore.js";
 import type { MemoryCategory } from "./memory/types.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
+import { loadSelfModel } from "./self/store.js";
+import { reflect } from "./self/reflect.js";
+import { gainForTarget } from "./voice.js";
 
 export interface DreamResult {
   phase: "light" | "deep" | "rem";
@@ -66,8 +69,12 @@ export async function runDeepDream(opts: {
     await writeFileAtomic(paths.memory, lines.join("\n") + "\n");
   }
   const soulPromoted = await promoteSoulRules(paths.soul, promoted, opts.config.dreaming.soulRewriteThreshold);
-  const report = `DEEP promoted ${promoted.length} memory candidate(s), ${soulPromoted} SOUL rule(s).`;
-  await appendDreamDiary(paths.dreamsDiary, opts.now ?? new Date(), report);
+  const now = opts.now ?? new Date();
+  // Real reflection: reason over the self-model and record what to fix, acquire,
+  // or prune. This is the "why did I fail / what should I become" layer.
+  const selfDirectives = await reflectSelfModel(home, paths.dreamsDiary, now);
+  const report = `DEEP promoted ${promoted.length} memory candidate(s), ${soulPromoted} SOUL rule(s), ${selfDirectives} self-directive(s).`;
+  await appendDreamDiary(paths.dreamsDiary, now, report);
   emitLifecycle({ type: "dream_phase_ended", phase: "deep", promoted: promoted.length, pruned: 0 });
   return { phase: "deep", promoted: promoted.length, pruned: 0, report };
 }
@@ -85,6 +92,24 @@ export async function runRemDream(opts: {
   await appendDreamDiary(paths.dreamsDiary, opts.now ?? new Date(), report);
   emitLifecycle({ type: "dream_phase_ended", phase: "rem", promoted: 0, pruned: 0 });
   return { phase: "rem", promoted: 0, pruned: 0, report };
+}
+
+async function reflectSelfModel(home: string, dreamsDiary: string, now: Date): Promise<number> {
+  try {
+    const directives = reflect(await loadSelfModel(home));
+    if (directives.length === 0) return 0;
+    const lines = directives.slice(0, 8).map((d) => `- [${d.kind}] ${d.capabilityName}: ${d.reason}`);
+    await appendFile(dreamsDiary, `\n### Self-reflection (${now.toISOString()})\n\n${lines.join("\n")}\n`, "utf8");
+    emitLifecycle({
+      type: "self_reflected",
+      directives: directives.length,
+      topKind: directives[0].kind,
+      gain: gainForTarget("SELF", directives.length, "reflected"),
+    });
+    return directives.length;
+  } catch {
+    return 0;
+  }
 }
 
 function extractSessionSignals(eventsJsonl: string): string[] {

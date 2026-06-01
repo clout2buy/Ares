@@ -14,6 +14,9 @@ export interface RecallOptions {
 }
 
 export async function recallForTurn(opts: RecallOptions): Promise<{ results: RecallResult[]; reminder: string; usedEmbedding: "ollama" | "lexical" }> {
+  if (isLowSignalRecallQuery(opts.query)) {
+    return { results: [], reminder: "", usedEmbedding: "lexical" };
+  }
   const home = crixAgentHome(opts.home);
   let embedding: number[];
   let usedEmbedding: "ollama" | "lexical" = "lexical";
@@ -42,3 +45,8 @@ export async function recallForTurn(opts: RecallOptions): Promise<{ results: Rec
   return { results, reminder: formatRecallReminder(results), usedEmbedding };
 }
 
+function isLowSignalRecallQuery(query: string): boolean {
+  const normalized = query.trim().toLowerCase().replace(/[.!?]+$/u, "").replace(/\s+/gu, " ");
+  if (!normalized) return true;
+  return /^(hi|hey|hello|yo|sup|hiya|howdy|hey there|hey homie|good morning|good afternoon|good evening|what's up|whats up)$/u.test(normalized);
+}

@@ -287,7 +287,9 @@ export class OllamaCloudPool {
     let buffer = "";
 
     const textParts: string[] = [];
+    const thinkingParts: string[] = [];
     const toolCalls: Array<{ id: string; name: string; input: unknown }> = [];
+    const thinkingState: ThinkingTagState = { inThinking: false, buffer: "" };
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
 
@@ -307,10 +309,22 @@ export class OllamaCloudPool {
           continue;
         }
 
+        if (chunk.message?.thinking) {
+          const delta = chunk.message.thinking;
+          thinkingParts.push(delta);
+          yield { type: "thinking_delta", text: delta };
+        }
+
         if (chunk.message?.content) {
-          const delta = chunk.message.content;
-          textParts.push(delta);
-          yield { type: "text_delta", text: delta };
+          for (const part of splitThinkingDelta(chunk.message.content, thinkingState)) {
+            if (part.type === "thinking") {
+              thinkingParts.push(part.text);
+              yield { type: "thinking_delta", text: part.text };
+            } else {
+              textParts.push(part.text);
+              yield { type: "text_delta", text: part.text };
+            }
+          }
         }
 
         if (chunk.message?.tool_calls) {
@@ -337,7 +351,18 @@ export class OllamaCloudPool {
       }
     }
 
+    for (const part of flushThinkingState(thinkingState)) {
+      if (part.type === "thinking") {
+        thinkingParts.push(part.text);
+        yield { type: "thinking_delta", text: part.text };
+      } else {
+        textParts.push(part.text);
+        yield { type: "text_delta", text: part.text };
+      }
+    }
+
     const content: ContentBlock[] = [];
+    if (thinkingParts.length > 0) content.push({ type: "thinking", text: thinkingParts.join("") });
     if (textParts.length > 0) content.push({ type: "text", text: textParts.join("") });
     for (const tc of toolCalls) {
       content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
@@ -782,6 +807,7 @@ interface OllamaChunk {
   message?: {
     role: string;
     content?: string;
+    thinking?: string;
     tool_calls?: Array<{
       id?: string;
       function?: { name?: string; arguments?: string | Record<string, unknown> };
@@ -794,6 +820,70 @@ interface OllamaChunk {
 }
 
 // ─── Anthropic SSE event shape (only fields we read) ───────────────────
+
+interface ThinkingTagState {
+  inThinking: boolean;
+  buffer: string;
+}
+
+type ThinkingSplitPart = { type: "text" | "thinking"; text: string };
+
+function splitThinkingDelta(delta: string, state: ThinkingTagState): ThinkingSplitPart[] {
+  state.buffer += delta;
+  const out: ThinkingSplitPart[] = [];
+  while (state.buffer.length > 0) {
+    if (state.inThinking) {
+      const close = state.buffer.indexOf("</think>");
+      if (close === -1) {
+        const keep = partialTagSuffixLength(state.buffer, "</think>");
+        const emitLength = state.buffer.length - keep;
+        if (emitLength > 0) {
+          out.push({ type: "thinking", text: state.buffer.slice(0, emitLength) });
+          state.buffer = state.buffer.slice(emitLength);
+        }
+        break;
+      }
+      if (close > 0) out.push({ type: "thinking", text: state.buffer.slice(0, close) });
+      state.buffer = state.buffer.slice(close + "</think>".length);
+      state.inThinking = false;
+      continue;
+    }
+
+    const open = state.buffer.indexOf("<think>");
+    if (open === -1) {
+      const keep = partialTagSuffixLength(state.buffer, "<think>");
+      const emitLength = state.buffer.length - keep;
+      if (emitLength > 0) {
+        out.push({ type: "text", text: state.buffer.slice(0, emitLength) });
+        state.buffer = state.buffer.slice(emitLength);
+      }
+      break;
+    }
+    if (open > 0) out.push({ type: "text", text: state.buffer.slice(0, open) });
+    state.buffer = state.buffer.slice(open + "<think>".length);
+    state.inThinking = true;
+  }
+  return out.filter((part) => part.text.length > 0);
+}
+
+function flushThinkingState(state: ThinkingTagState): ThinkingSplitPart[] {
+  if (!state.buffer) return [];
+  const part: ThinkingSplitPart = {
+    type: state.inThinking ? "thinking" : "text",
+    text: state.buffer,
+  };
+  state.buffer = "";
+  state.inThinking = false;
+  return part.text.length > 0 ? [part] : [];
+}
+
+function partialTagSuffixLength(buffer: string, tag: string): number {
+  const max = Math.min(buffer.length, tag.length - 1);
+  for (let length = max; length > 0; length--) {
+    if (tag.startsWith(buffer.slice(-length))) return length;
+  }
+  return 0;
+}
 
 interface AnthropicSSEEvent {
   type?:

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "crix-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:vite", "--prefix", "tauri"],
+      "port": 1420
+    }
+  ]
+}

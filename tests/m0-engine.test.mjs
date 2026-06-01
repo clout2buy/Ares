@@ -7,8 +7,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 
 import { QueryEngine, Session, MockEchoProvider, loadSessionSnapshot } from "../packages/core/dist/index.js";
@@ -16,9 +18,14 @@ import { QueryEngine, Session, MockEchoProvider, loadSessionSnapshot } from "../
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.join(__dirname, "..");
 const cliEntry = path.join(__dirname, "..", "packages", "cli", "dist", "entry.js");
+const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-m0-"));
 
 function runCrix(args) {
-  return spawnSync(process.execPath, [cliEntry, ...args], { encoding: "utf8", windowsHide: true });
+  return spawnSync(process.execPath, [cliEntry, ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+  });
 }
 
 test("M0: crix help exits 0 with usage on stdout", () => {
@@ -193,6 +200,7 @@ test("M0: permission denial stops the turn instead of re-querying provider", asy
       systemPrompt: "test",
       tools: [tool],
       workspace: "D:\\Crix",
+      maxTurns: 1,
     },
     "sess_test_denial",
   );
@@ -208,7 +216,79 @@ test("M0: permission denial stops the turn instead of re-querying provider", asy
   assert.equal(events.some((event) => event.type === "text_delta"), false);
 });
 
-test("M0: write tools are blocked when the user only asked to flex/read tools", async () => {
+test("M0: interrupted multi-tool turns record output for every pending tool call", async () => {
+  const provider = {
+    name: "multi-denial-provider",
+    async *stream() {
+      yield { type: "tool_use_start", id: "edit_1", name: "Edit" };
+      yield { type: "tool_use_input_done", id: "edit_1", input: { file_path: "x.ts" } };
+      yield { type: "tool_use_start", id: "write_1", name: "Write" };
+      yield { type: "tool_use_input_done", id: "write_1", input: { file_path: "x.ts" } };
+      yield {
+        type: "message_done",
+        message: {
+          id: "assistant_tools",
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "edit_1", name: "Edit", input: { file_path: "x.ts" } },
+            { type: "tool_use", id: "write_1", name: "Write", input: { file_path: "x.ts" } },
+          ],
+          createdAt: new Date().toISOString(),
+        },
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: "tool_use",
+      };
+    },
+  };
+  const editTool = {
+    schema: {
+      name: "Edit",
+      description: "denying edit",
+      inputJsonSchema: { type: "object", properties: {} },
+      safety: "workspace-write",
+      concurrency: "exclusive",
+    },
+    async call() {
+      const err = new Error("permission denied: Edit");
+      err.name = "PermissionDeniedError";
+      throw err;
+    },
+  };
+  const writeTool = {
+    schema: {
+      name: "Write",
+      description: "skipped write",
+      inputJsonSchema: { type: "object", properties: {} },
+      safety: "workspace-write",
+      concurrency: "exclusive",
+    },
+    async call() {
+      return { output: "should not run" };
+    },
+  };
+  const engine = new QueryEngine(
+    {
+      provider,
+      model: "test",
+      systemPrompt: "test",
+      tools: [editTool, writeTool],
+      workspace: "D:\\Crix",
+      maxTurns: 1,
+    },
+    "sess_test_multi_denial",
+  );
+
+  engine.appendUserMessage("use tools");
+  const events = [];
+  for await (const event of engine.streamTurn()) events.push(event);
+
+  assert.equal(events.at(-1).status, "interrupted");
+  const toolResultMessage = engine.history().at(-1);
+  assert.equal(toolResultMessage.role, "user");
+  assert.equal(toolResultMessage.content.filter((block) => block.type === "tool_result").length, 2);
+});
+
+test("M0: workspace-write tools can run without magic write wording", async () => {
   let toolCalls = 0;
   const provider = {
     name: "write-gate-provider",
@@ -248,6 +328,7 @@ test("M0: write tools are blocked when the user only asked to flex/read tools", 
       systemPrompt: "test",
       tools: [tool],
       workspace: "D:\\Crix",
+      maxTurns: 1,
     },
     "sess_test_write_gate",
   );
@@ -256,10 +337,8 @@ test("M0: write tools are blocked when the user only asked to flex/read tools", 
   const events = [];
   for await (const event of engine.streamTurn()) events.push(event);
 
-  assert.equal(toolCalls, 0);
-  assert.equal(events.at(-1).type, "turn_end");
-  assert.equal(events.at(-1).status, "interrupted");
-  assert.ok(events.some((event) => event.type === "tool_error" && /explicit write intent/.test(event.error)));
+  assert.equal(toolCalls, 1);
+  assert.ok(events.some((event) => event.type === "tool_end"));
 });
 
 test("M0: explicit write intent allows workspace-write tools", async () => {

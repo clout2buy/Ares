@@ -25,6 +25,65 @@ export { prepareCrixAgent, CrixAgentRuntime, type PreparedAgent } from "./runtim
 export { BootstrapTool, type BootstrapToolOutput } from "./tools/Bootstrap.js";
 export { SelfEvolveTool, type SelfEvolveOutput } from "./tools/SelfEvolve.js";
 export { SkillCraftTool, type SkillCraftOutput } from "./tools/SkillCraft.js";
+export { RunSkillTool, type RunSkillOutput } from "./tools/RunSkill.js";
+export { runSkill, type RunSkillOptions, type SkillRunResult } from "./skills/runtime.js";
+export {
+  emptyModel,
+  loadSelfModel,
+  saveSelfModel,
+  getCapability,
+  upsertCapability,
+  dropCapability,
+  recordOutcome,
+  summarizeSelf,
+  type UpsertCapabilityInput,
+  type RecordOutcomeInput,
+} from "./self/store.js";
+export {
+  reliabilityOf,
+  type Capability,
+  type CapabilityKind,
+  type CapabilityStatus,
+  type CapabilityOutcomes,
+  type CapabilityReliability,
+  type SelfModel,
+  type SelfSummary,
+} from "./self/types.js";
+export { reflect, type SelfDirective, type DirectiveKind, type ReflectOptions } from "./self/reflect.js";
+export { SelfTool, type SelfToolOutput } from "./tools/Self.js";
+export { MissionTool, type MissionToolOutput } from "./tools/Mission.js";
+export {
+  createMission,
+  planMission,
+  startNextStep,
+  completeStep,
+  failStep,
+  verifyMission,
+  abandonMission,
+  noteMission,
+  nextDirective,
+  statusLabel,
+} from "./mission/loop.js";
+export {
+  saveMission,
+  loadMission,
+  listMissions,
+  activeMission,
+  resolveMission,
+  newMissionId,
+} from "./mission/store.js";
+export {
+  isTerminal as isMissionTerminal,
+  summarize as summarizeMission,
+  type Mission,
+  type MissionStep,
+  type MissionStatus,
+  type StepStatus,
+  type MissionDirective,
+  type MissionPhase,
+  type MissionSummary,
+  type MissionLogEntry,
+} from "./mission/types.js";
 export { captureUserMessage, detectCaptures, type CaptureMatch, type CaptureResult } from "./capture.js";
 export { countAppendedItems, gainForTarget } from "./voice.js";
 export type { EvolutionGain } from "./lifecycle/bus.js";

@@ -22,7 +22,7 @@ const PATTERNS: ReadonlyArray<{ kind: CaptureMatch["kind"]; pattern: RegExp; lab
   // Corrections — user pushing back on agent behavior
   { kind: "correction", pattern: /\b(?:no(?:t)? (?:don'?t|stop|wait|like that)|actually|wrong|don'?t (?:do|use|add|put|include|say)|never (?:do|say|use)|stop (?:doing|using|saying)|please (?:stop|don'?t))\b/i, label: "user-correction" },
   // Preferences — durable stylistic / working choices
-  { kind: "preference", pattern: /\b(?:i (?:prefer|like|want|need|use|hate|love|always|never)|i'?m (?:into|not into)|prefer(?:ence)? (?:is|to be))\b/i, label: "user-preference" },
+  { kind: "preference", pattern: /\b(?:i (?:prefer|like|want|need|use|hate|love|always|never)|i'?m (?:into|not into)|prefer(?:ence)? (?:is|to be)|remember this|save this|keep (?:this|that) in mind|note (?:this|that)|don'?t forget)\b/i, label: "user-preference" },
   // Identity statements about the agent (what you are, how you should be)
   { kind: "identity", pattern: /\b(?:you(?:'?re| are) (?:not |going to be |becoming |suppose(?:d)? to|gonna be |meant to)|i (?:see|treat) you as|your (?:job|role|purpose) is|be (?:more|less) )/i, label: "agent-identity" },
   // Decisions — joint architectural / scope calls

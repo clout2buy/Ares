@@ -27,7 +27,13 @@ export type LifecycleEvent =
   | { type: "capture_detected"; kinds: string[]; excerpt: string; gain?: EvolutionGain }
   | { type: "recall_surfaced"; count: number; gain?: EvolutionGain }
   | { type: "skill_crafted"; name: string; action: "created" | "updated" | "removed"; gain?: EvolutionGain }
-  | { type: "capability_changed"; capability: string; gain?: EvolutionGain };
+  | { type: "skill_ran"; name: string; ok: boolean; durationMs: number; gain?: EvolutionGain }
+  | { type: "self_reflected"; directives: number; topKind?: string; gain?: EvolutionGain }
+  | { type: "capability_changed"; capability: string; gain?: EvolutionGain }
+  | { type: "mission_started"; missionId: string; goal: string; gain?: EvolutionGain }
+  | { type: "mission_step_completed"; missionId: string; step: string; remaining: number; gain?: EvolutionGain }
+  | { type: "mission_verified"; missionId: string; passed: boolean; iteration: number; gain?: EvolutionGain }
+  | { type: "mission_completed"; missionId: string; goal: string; steps: number; gain?: EvolutionGain };
 
 const listeners = new Set<(event: LifecycleEvent) => void>();
 

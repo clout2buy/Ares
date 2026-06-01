@@ -19,6 +19,9 @@ export interface AgentPaths {
   dreamsDir: string;
   dreamsDiary: string;
   heartbeatState: string;
+  missionsDir: string;
+  selfDir: string;
+  selfModel: string;
 }
 
 export function crixAgentHome(explicit?: string): string {
@@ -44,6 +47,9 @@ export function agentPaths(home = crixAgentHome()): AgentPaths {
     dreamsDir: path.join(home, ".dreams"),
     dreamsDiary: path.join(home, "DREAMS.md"),
     heartbeatState: path.join(home, "memory", "heartbeat-state.json"),
+    missionsDir: path.join(home, "missions"),
+    selfDir: path.join(home, "self"),
+    selfModel: path.join(home, "self", "model.json"),
   };
 }
 

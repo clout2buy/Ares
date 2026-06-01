@@ -1,7 +1,7 @@
 // SelfEvolve — the agent's hands on its own mind.
 //
 // Lets the agent read, rewrite, append, or patch the global brain files
-// (SOUL.md, HEARTBEAT.md, USER.md, MEMORY.md, IDENTITY.md) and append to
+// (SOUL.md, HEARTBEAT.md, USER.md, MEMORY.md, IDENTITY.md, CAPABILITIES.md) and append to
 // today's raw daily memory log — all without invoking the workspace Write
 // tool. Self-territory; no permission ritual. Every change is logged to the
 // daily memory as a `self_evolve` entry so the agent can introspect later.
@@ -15,14 +15,14 @@ import { exists, writeFileAtomic } from "../files.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { countAppendedItems, gainForTarget } from "../voice.js";
 
-const TARGETS = ["soul", "heartbeat", "user", "memory", "identity", "daily"] as const;
+const TARGETS = ["soul", "heartbeat", "user", "memory", "identity", "capabilities", "daily"] as const;
 type Target = (typeof TARGETS)[number];
 
 const inputSchema = z
   .object({
     target: z
       .enum(TARGETS)
-      .describe("Which mind file to edit: soul, heartbeat, user, memory, identity, or daily (today's raw log)."),
+      .describe("Which mind file to edit: soul, heartbeat, user, memory, identity, capabilities, or daily (today's raw log)."),
     action: z
       .enum(["read", "append", "replace_section", "replace_file", "note"])
       .describe(
@@ -56,7 +56,7 @@ export interface SelfEvolveOutput {
 export const SelfEvolveTool = buildTool({
   name: "SelfEvolve",
   description:
-    "Rewrite the agent's own mind files (SOUL/HEARTBEAT/USER/MEMORY/IDENTITY) or append to today's daily memory log. Self-territory under ~/.crix/ — no permission ritual needed. Prefer this over Write/Edit for any personal-evolution change so the daily log captures the why. Actions: read, append, replace_section, replace_file, note.",
+    "Rewrite the agent's own mind files (SOUL/HEARTBEAT/USER/MEMORY/IDENTITY/CAPABILITIES) or append to today's daily memory log. Self-territory under ~/.crix/ — no permission ritual needed. Prefer this over Write/Edit for any personal-evolution change so the daily log captures the why. Actions: read, append, replace_section, replace_file, note.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
@@ -165,6 +165,7 @@ function resolveTargetPath(target: Target, paths: ReturnType<typeof agentPaths>)
     case "user": return paths.user;
     case "memory": return paths.memory;
     case "identity": return paths.identity;
+    case "capabilities": return paths.capabilities;
     case "daily": return path.join(paths.memoryDir, `${todayIso()}.md`);
   }
 }

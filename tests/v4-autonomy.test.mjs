@@ -63,6 +63,9 @@ test("detectCaptures recognizes preference / correction / identity / decision si
   const prefs = detectCaptures("honestly i prefer terse commits with no fluff");
   assert.ok(prefs.some((m) => m.kind === "preference"), "should detect preference");
 
+  const explicitMemory = detectCaptures("remember this: I want image attachments in the app");
+  assert.ok(explicitMemory.some((m) => m.kind === "preference"), "should detect explicit memory request");
+
   const identity = detectCaptures("i see you as more than a chatbot, you're becoming something new");
   assert.ok(identity.some((m) => m.kind === "identity"), "should detect identity statement");
 

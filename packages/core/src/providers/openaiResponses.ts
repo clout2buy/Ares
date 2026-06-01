@@ -130,6 +130,7 @@ export class OpenAIResponsesProvider implements Provider {
 
     // Accumulation state for the in-flight message
     const textParts: string[] = [];
+    const thinkingParts: string[] = [];
     const toolUseByItemId = new Map<string, { callId: string; name: string; argsText: string; completed: boolean }>();
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
@@ -150,6 +151,15 @@ export class OpenAIResponsesProvider implements Provider {
 
         const evt = event.data as ResponsesEvent | null;
         if (!evt || !evt.type) continue;
+
+        if (isReasoningDeltaEvent(evt)) {
+          const delta = evt.delta ?? evt.text ?? "";
+          if (delta) {
+            thinkingParts.push(delta);
+            yield { type: "thinking_delta", text: delta };
+          }
+          continue;
+        }
 
         switch (evt.type) {
           case "response.created":
@@ -231,6 +241,9 @@ export class OpenAIResponsesProvider implements Provider {
 
     // Build the final assistant Message.
     const content: ContentBlock[] = [];
+    if (thinkingParts.length > 0) {
+      content.push({ type: "thinking", text: thinkingParts.join("") });
+    }
     if (textParts.length > 0) {
       content.push({ type: "text", text: textParts.join("") });
     }
@@ -391,6 +404,7 @@ interface ResponsesEvent {
   item_id?: string;
   id?: string;
   delta?: string;
+  text?: string;
   response?: {
     id?: string;
     status?: "completed" | "incomplete" | "failed" | "in_progress";
@@ -403,6 +417,10 @@ interface ResponsesEvent {
     };
   };
   error?: { code?: string; message?: string };
+}
+
+function isReasoningDeltaEvent(evt: ResponsesEvent): boolean {
+  return /reasoning|thinking/u.test(evt.type) && /delta/u.test(evt.type);
 }
 
 // Model discovery: the Codex backend does not expose /v1/models. The user

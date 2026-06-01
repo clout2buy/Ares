@@ -16,6 +16,7 @@ import { agentPaths, crixAgentHome } from "../paths.js";
 import { exists, writeFileAtomic } from "../files.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
+import { dropCapability, upsertCapability } from "../self/store.js";
 
 const SKILL_NAME = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 
@@ -87,6 +88,11 @@ export const SkillCraftTool = buildTool({
 
     if (input.action === "remove") {
       await fs.rm(skillDir, { recursive: true, force: true });
+      try {
+        await dropCapability(home, `skill/${input.name}`);
+      } catch {
+        // self-model is best-effort
+      }
       const gain = gainForTarget("SKILL", -1, "removed");
       emitLifecycle({ type: "skill_crafted", name: input.name, action: "removed", gain });
       return {
@@ -126,6 +132,22 @@ export const SkillCraftTool = buildTool({
 
     // Auto-log to capabilities ledger so the agent's body of work is visible.
     await appendCapability(paths.capabilities, input.name, input.description ?? "(no description)", input.action);
+
+    // Register the skill as a node in the machine-readable self-model so the
+    // growth engine can track and reason over it. Best-effort.
+    try {
+      await upsertCapability(home, {
+        id: `skill/${input.name}`,
+        kind: "skill",
+        name: input.name,
+        status: "have",
+        provenance: "SkillCraft",
+        description: input.description,
+        tags: input.handler_js !== undefined ? ["runnable"] : undefined,
+      });
+    } catch {
+      // self-model is best-effort
+    }
 
     const gain = gainForTarget("SKILL", 1, input.action);
     const lifecycleAction = input.action === "create" ? "created" : "updated";

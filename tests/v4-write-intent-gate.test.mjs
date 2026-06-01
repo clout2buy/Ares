@@ -1,6 +1,6 @@
-// Verifies the smartened write-intent gate:
-//   1. Self-territory writes (under selfTerritoryRoots) bypass the gate.
-//   2. Sticky intent: once a turn unlocks writes, later turns stay unlocked.
+// Verifies workspace-write autonomy:
+//   1. Self-territory writes (under selfTerritoryRoots) are allowed.
+//   2. Ordinary workspace writes are also allowed in workspace-write mode.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -73,7 +73,7 @@ function singleEditProvider(filePath) {
   };
 }
 
-test("self-territory writes bypass the write-intent gate", async () => {
+test("self-territory writes are allowed without magic wording", async () => {
   const home = await makeTmp("crix-self-");
   const workspace = await makeTmp("crix-ws-");
   const editState = { calls: 0, lastInput: null };
@@ -102,7 +102,7 @@ test("self-territory writes bypass the write-intent gate", async () => {
   );
 });
 
-test("self-territory bypass does not extend to arbitrary workspace files", async () => {
+test("workspace-write mode allows ordinary workspace files without magic wording", async () => {
   const home = await makeTmp("crix-self-");
   const workspace = await makeTmp("crix-ws-");
   const editState = { calls: 0, lastInput: null };
@@ -122,11 +122,11 @@ test("self-territory bypass does not extend to arbitrary workspace files", async
   const events = [];
   for await (const event of engine.streamTurn()) events.push(event);
 
-  assert.equal(editState.calls, 0, "workspace Edit must still be blocked when intent is absent");
-  assert.ok(events.some((event) => event.type === "tool_error" && /explicit write intent/.test(event.error)));
+  assert.equal(editState.calls, 1, "workspace Edit should run when the session is in workspace-write mode");
+  assert.ok(events.some((event) => event.type === "tool_end"));
 });
 
-test("sticky write intent: once unlocked, later turns stay unlocked", async () => {
+test("workspace-write mode remains open across turns", async () => {
   const workspace = await makeTmp("crix-ws-");
   const editState = { calls: 0, lastInput: null };
   const provider = singleEditProvider(path.join(workspace, "src", "x.ts"));
@@ -141,7 +141,6 @@ test("sticky write intent: once unlocked, later turns stay unlocked", async () =
     "sess_sticky",
   );
 
-  // First turn unlocks intent.
   engine.appendUserMessage("go ahead and edit x.ts");
   for await (const _event of engine.streamTurn()) { void _event; }
   assert.equal(editState.calls, 1);
@@ -149,8 +148,8 @@ test("sticky write intent: once unlocked, later turns stay unlocked", async () =
   // Reset provider state so it offers the tool again on the next user turn.
   provider.resetCalls();
 
-  // Second turn: no intent words. Should still be allowed because intent is sticky.
+  // Second turn: no intent words. Should still be allowed.
   engine.appendUserMessage("ok cool");
   for await (const _event of engine.streamTurn()) { void _event; }
-  assert.equal(editState.calls, 2, "sticky intent should let the second turn through");
+  assert.equal(editState.calls, 2, "workspace-write mode should let the second turn through");
 });

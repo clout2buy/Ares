@@ -6,6 +6,9 @@ import { agentPaths, crixAgentHome } from "./paths.js";
 import { nonCommentLines, readTextIfExists, writeFileAtomic } from "./files.js";
 import type { CrixAgentConfig } from "./config.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
+import { loadSelfModel } from "./self/store.js";
+import { reflect } from "./self/reflect.js";
+import { gainForTarget } from "./voice.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,8 +30,8 @@ export async function runHeartbeatTick(opts: {
   emitLifecycle({ type: "heartbeat_tick", reason: opts.reason ?? "interval" });
   const text = await readTextIfExists(paths.heartbeat);
   const tasks = text ? nonCommentLines(text) : [];
-  if (tasks.length === 0) return { status: "skipped", text: "HEARTBEAT_OK", tasks };
-  if (!withinActiveHours(opts.now ?? new Date(), opts.config.heartbeat.activeHours)) {
+  const now = opts.now ?? new Date();
+  if (!withinActiveHours(now, opts.config.heartbeat.activeHours)) {
     return { status: "skipped", text: "HEARTBEAT_OK outside active hours", tasks };
   }
 
@@ -37,8 +40,12 @@ export async function runHeartbeatTick(opts: {
     const finding = await evaluateHeartbeatTask(task, opts.workspace);
     if (finding) findings.push(finding);
   }
-  await writeHeartbeatState(paths.heartbeatState, opts.now ?? new Date(), tasks);
-  if (findings.length === 0) return { status: "ok", text: "HEARTBEAT_OK", tasks };
+  // Autonomous self-reflection: no HEARTBEAT.md required. An idle tick that
+  // finds a broken or failing capability surfaces it as an alert.
+  findings.push(...(await reflectHeartbeat(home)));
+
+  if (tasks.length > 0) await writeHeartbeatState(paths.heartbeatState, now, tasks);
+  if (findings.length === 0) return { status: tasks.length > 0 ? "ok" : "skipped", text: "HEARTBEAT_OK", tasks };
   return { status: "alert", text: findings.join("\n").slice(0, opts.config.heartbeat.ackMaxChars), tasks };
 }
 
@@ -58,6 +65,27 @@ export function startHeartbeatLoop(opts: {
   }, everyMs);
   timer.unref?.();
   return () => clearInterval(timer);
+}
+
+async function reflectHeartbeat(home: string): Promise<string[]> {
+  try {
+    const directives = reflect(await loadSelfModel(home));
+    if (directives.length === 0) return [];
+    emitLifecycle({
+      type: "self_reflected",
+      directives: directives.length,
+      topKind: directives[0].kind,
+      gain: gainForTarget("SELF", directives.length, "reflected"),
+    });
+    // Only urgent directives (failing/broken capabilities) interrupt as alerts;
+    // acquire/stale hints wait for the agent to call Self reflect deliberately.
+    return directives
+      .filter((d) => d.severity >= 50)
+      .slice(0, 3)
+      .map((d) => `Self-directive [${d.kind}] ${d.capabilityName}: ${d.reason} -> ${d.suggestion}`);
+  } catch {
+    return [];
+  }
 }
 
 async function evaluateHeartbeatTask(task: string, workspace: string): Promise<string | null> {

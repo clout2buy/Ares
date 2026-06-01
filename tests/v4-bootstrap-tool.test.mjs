@@ -131,3 +131,24 @@ test("SelfEvolve note action appends a timestamped daily entry", async () => {
     delete process.env.CRIX_HOME;
   }
 });
+
+test("SelfEvolve can update CAPABILITIES.md", async () => {
+  const home = await makeTmp();
+  const workspace = await makeTmp("crix-v4-workspace-");
+  process.env.CRIX_HOME = home;
+  try {
+    await BootstrapTool.call(
+      { user_name: "MrDoing", agent_name: "Rook", creature: "familiar", vibe: "direct", emoji: "*" },
+      ctx(workspace),
+    );
+    const paths = agentPaths(home);
+    const result = await SelfEvolveTool.call(
+      { target: "capabilities", action: "append", text: "- can update its own capabilities ledger" },
+      ctx(workspace),
+    );
+    assert.equal(result.output.target, "capabilities");
+    assert.match(await fs.readFile(paths.capabilities, "utf8"), /capabilities ledger/);
+  } finally {
+    delete process.env.CRIX_HOME;
+  }
+});

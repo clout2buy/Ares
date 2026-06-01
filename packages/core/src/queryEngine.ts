@@ -23,7 +23,6 @@ import {
   type ToolResultBlock,
   type PermissionPromptDecision,
   type PermissionPromptSuggestion,
-  messageText,
   isToolUseBlock,
 } from "@crix/protocol";
 import { randomUUID } from "node:crypto";
@@ -133,12 +132,6 @@ export interface QueryEngineConfig {
 export class QueryEngine {
   private readonly messages: Message[] = [];
   private readonly cfg: QueryEngineConfig;
-  /**
-   * Sticky session-level write authorization. Once any turn establishes
-   * write intent, the gate stays open for the rest of the session. Matches
-   * how a human collaborator works: one "go ahead" unlocks the conversation.
-   */
-  private sessionWriteIntent = false;
   readonly sessionId: string;
 
   constructor(cfg: QueryEngineConfig, sessionId: string) {
@@ -191,10 +184,6 @@ export class QueryEngine {
     const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
     const maxIters = this.cfg.maxTurns ?? 50;
-    // Sticky write intent: once unlocked in this session, it stays unlocked.
-    if (detectsWriteIntent(messageText(userMessage))) this.sessionWriteIntent = true;
-    const writeIntent = this.sessionWriteIntent;
-    const selfTerritoryRoots = this.cfg.selfTerritoryRoots ?? [];
 
     for (let iter = 0; iter < maxIters; iter++) {
       // ─── Stream one assistant turn from the provider ─────────────────
@@ -296,30 +285,6 @@ export class QueryEngine {
           continue;
         }
 
-        const writeBlockReason = blockedByWriteIntentGate(tool, use.input, writeIntent, selfTerritoryRoots, this.cfg.workspace);
-        if (writeBlockReason) {
-          yield { type: "tool_error", id: use.id, error: writeBlockReason, durationMs: 0 };
-          resultByToolUseId.set(use.id, {
-            type: "tool_result",
-            tool_use_id: use.id,
-            content: writeBlockReason,
-            is_error: true,
-          });
-          this.messages.push({
-            id: cryptoId(),
-            role: "user", // Anthropic shape: tool_result blocks live in user-role messages
-            content: orderedToolResults(pendingToolUses, resultByToolUseId),
-            createdAt: new Date().toISOString(),
-          });
-          yield {
-            type: "turn_end",
-            status: "interrupted",
-            usage: totalUsage,
-            durationMs: Date.now() - startedAt,
-          };
-          return;
-        }
-
         runnable.push({ ...use, tool });
       }
 
@@ -331,6 +296,7 @@ export class QueryEngine {
           interruptedByTool ||= outcome.interrupted === true;
         }
         if (interruptedByTool) {
+          fillMissingToolResults(pendingToolUses, resultByToolUseId, "tool skipped after permission interruption");
           this.messages.push({
             id: cryptoId(),
             role: "user", // Anthropic shape: tool_result blocks live in user-role messages
@@ -694,6 +660,22 @@ function orderedToolResults(
   return uses.map((use) => results.get(use.id)).filter((result): result is ToolResultBlock => result !== undefined);
 }
 
+function fillMissingToolResults(
+  uses: ReadonlyArray<{ id: string }>,
+  results: Map<string, ToolResultBlock>,
+  message: string,
+): void {
+  for (const use of uses) {
+    if (results.has(use.id)) continue;
+    results.set(use.id, {
+      type: "tool_result",
+      tool_use_id: use.id,
+      content: message,
+      is_error: true,
+    });
+  }
+}
+
 function shouldCheckpointBeforeTool(tool: EngineTool): boolean {
   return tool.schema.safety === "workspace-write" || tool.schema.safety === "destructive";
 }
@@ -704,73 +686,6 @@ function cryptoId(prefix = "id"): string {
 
 function isPermissionDeniedError(err: unknown): boolean {
   return err instanceof Error && err.name === "PermissionDeniedError";
-}
-
-function detectsWriteIntent(text: string): boolean {
-  const normalized = text.toLowerCase();
-  if (/\b(read|list|show|grep|search|scan|inspect|explain|review|status|doctor|flex|demo|test grep)\b/.test(normalized)) {
-    if (!/\b(edit|modify|change|update|fix|patch|write|create|add|delete|remove|rename|move|refactor|implement|scaffold|generate|make|upgrade|improve|install|repair|rewrite|replace)\b/.test(normalized)) {
-      return false;
-    }
-  }
-  return /\b(edit|modify|change|update|fix|patch|write|create|add|delete|remove|rename|move|refactor|implement|scaffold|generate|make|upgrade|improve|install|repair|rewrite|replace)\b/.test(normalized)
-    || /\b(go ahead|do it|ship it|start coding|start implementing)\b/.test(normalized);
-}
-
-function blockedByWriteIntentGate(
-  tool: EngineTool,
-  input: unknown,
-  writeIntent: boolean,
-  selfTerritoryRoots: readonly string[],
-  workspace: string,
-): string | null {
-  if (writeIntent) return null;
-  // Self-territory bypass: the agent owns its own brain files (under ~/.crix/
-  // or any other registered self-root). It never needs human permission to
-  // edit IDENTITY/SOUL/USER/HEARTBEAT/MEMORY or related state.
-  if (tool.schema.name === "Write" || tool.schema.name === "Edit") {
-    const target = extractPathArgument(input);
-    if (target && isInsideSelfTerritory(target, workspace, selfTerritoryRoots)) return null;
-    return `${tool.schema.name} blocked: this turn does not contain explicit write intent. Ask to edit, fix, create, or update files before Crix modifies the workspace.`;
-  }
-  if ((tool.schema.name === "Bash" || tool.schema.name === "PowerShell") && shellCommandLooksMutating(input)) {
-    return `${tool.schema.name} blocked: command appears to modify files or external state, but this turn does not contain explicit write intent.`;
-  }
-  return null;
-}
-
-function extractPathArgument(input: unknown): string | null {
-  if (!input || typeof input !== "object") return null;
-  const obj = input as Record<string, unknown>;
-  const candidate = obj.file_path ?? obj.path ?? obj.target ?? obj.filename;
-  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
-}
-
-function isInsideSelfTerritory(target: string, workspace: string, roots: readonly string[]): boolean {
-  if (roots.length === 0) return false;
-  const absolute = path.isAbsolute(target) ? path.resolve(target) : path.resolve(workspace, target);
-  for (const root of roots) {
-    const absRoot = path.resolve(root);
-    const rel = path.relative(absRoot, absolute);
-    if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return true;
-  }
-  return false;
-}
-
-function shellCommandLooksMutating(input: unknown): boolean {
-  if (!input || typeof input !== "object") return false;
-  const command = String((input as Record<string, unknown>).command ?? "").toLowerCase();
-  if (!command) return false;
-  const mutatingPatterns = [
-    /\b(set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item)\b/,
-    /\b(del|erase|rm|rmdir|mkdir|mv|cp|touch|tee)\b/,
-    /\b(git\s+(commit|checkout|reset|clean|rebase|merge|push|pull|apply))\b/,
-    /\b(npm|pnpm|yarn)\s+(install|add|remove|update)\b/,
-    /\b(pip|uv)\s+(install|uninstall)\b/,
-    /\bgradle(w)?\s+.*\b(build|run|publish)\b/,
-    /(^|[^2])>\s*[^&]/,
-  ];
-  return mutatingPatterns.some((pattern) => pattern.test(command));
 }
 
 function addUsageInto(into: Usage, more: Usage): void {

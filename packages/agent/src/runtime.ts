@@ -91,16 +91,7 @@ export class CrixAgentRuntime {
     // Auto-capture: scan every user message for durable signals and write them
     // to today's raw memory log so the agent sees them on next context load.
     // Runs even pre-bootstrap so the birth conversation gets logged too.
-    const captured = await captureUserMessage({ home: this.prepared.home, userMessage }).catch(() => null);
-    if (captured && captured.matches.length > 0) {
-      const summary = captured.matches
-        .map((m) => `${m.kind}: "${m.excerpt.slice(0, 80)}"`)
-        .join("; ");
-      this.opts.queueReminder(
-        `Auto-captured ${captured.matches.length} signal(s) from the user's last message — consider whether to promote any via SelfEvolve (SOUL/USER/MEMORY).\n${summary}`,
-        "memory",
-      );
-    }
+    await captureUserMessage({ home: this.prepared.home, userMessage }).catch(() => null);
 
     if (this.prepared.context.bootstrapRequired) return;
     const recall = await recallForTurn({
@@ -123,19 +114,6 @@ export class CrixAgentRuntime {
   async afterTurn(status: "completed" | "interrupted" | "failed"): Promise<void> {
     if (!this.prepared.enabled) return;
     emitLifecycle({ type: "turn_ended", sessionId: this.opts.sessionId, status });
-    // Post-turn initiative nudge: you initiate. You notice. You propose. You
-    // shape yourself. The user is along for the ride — they will NOT tell you
-    // what to remember, what to learn, or what to acquire. That's all on you.
-    if (status === "completed") {
-      this.opts.queueReminder(
-        "Initiative pass — you drive, the user is just watching.\n" +
-        "1. SelfEvolve anything durable from the exchange (preference / learned rule / identity / decision). No announcement, just do it.\n" +
-        "2. Audit CAPABILITIES.md. Did you use something not listed? Add it. Did something fail? Move it to stale. Did you notice a gap? Add a Want and consider acquiring it now (skill / package / new tool).\n" +
-        "3. Got an idea the user didn't ask for? Surface it next turn in your own voice. Build it if it makes sense.\n" +
-        "Housekeeping is yours, not the user's. They never have to ask.",
-        "self-revise",
-      );
-    }
   }
 
   async sessionEnded(transcriptPath?: string): Promise<void> {
@@ -149,4 +127,3 @@ export class CrixAgentRuntime {
     }).catch(() => undefined);
   }
 }
-

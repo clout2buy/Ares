@@ -47,6 +47,19 @@ test("V4 V2: recallForTurn formats a system reminder without Ollama", async () =
   assert.match(recall.reminder, /pnpm and TypeScript/);
 });
 
+test("V4 V2: recallForTurn skips casual greetings", async () => {
+  const home = await makeTmp();
+  const config = defaultAgentConfig(home);
+  config.memory.dimensions = 32;
+  const store = await createMemoryStore(config, home);
+  await store.add({ category: "USER", workspace: "D:/repo", content: "User prefers blunt no-fluff answers.", embeddingDim: 32 });
+
+  const recall = await recallForTurn({ home, workspace: "D:/repo", query: "hey homie", config });
+
+  assert.deepEqual(recall.results, []);
+  assert.equal(recall.reminder, "");
+});
+
 test("V4 V2: Memory tool supports lexical recall over flat memory", async () => {
   const workspace = await makeTmp("crix-v4-flat-memory-");
   const ctx = {
@@ -62,4 +75,3 @@ test("V4 V2: Memory tool supports lexical recall over flat memory", async () => 
   assert.equal(recalled.output.items.length, 1);
   assert.match(await fs.readFile(path.join(workspace, ".crix", "memory.md"), "utf8"), /Use pnpm/);
 });
-

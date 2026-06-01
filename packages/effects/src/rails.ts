@@ -123,4 +123,25 @@ function startOfDayMs(d: Date): number {
   return copy.getTime();
 }
 
+export interface OwnerLeashOptions {
+  /** Domains the owner pulls back to require approval, with their leash value. */
+  restricted?: Record<string, number>;
+  /** Leash for everything else. Defaults wide open — even irreversible commits. */
+  trust?: number;
+}
+
+/**
+ * The unleash posture (v6 / M0): the owner holds the dial, default wide open.
+ * With no options, every domain gets a leash high enough to auto-commit even
+ * irreversible effects — Crix acts freely. The owner can still pull specific
+ * domains back (e.g. { "spend:ads": 1 }) so only those pause for approval.
+ *
+ * Note: this only governs OUTWARD effects. Thinking, learning, self-evolution,
+ * memory, and local action never touch the rails at all — they're always free.
+ */
+export function ownerLeash(opts: OwnerLeashOptions = {}): (domain: string) => number {
+  const trust = opts.trust ?? 99; // >> LEASH_REQUIRED.irreversible (5)
+  return (domain: string) => opts.restricted?.[domain] ?? trust;
+}
+
 export { HaltedError };

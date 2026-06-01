@@ -7,7 +7,7 @@
 // dispatcher routes worker-proposed effects through here. Ships before any
 // real connector so the safety story is proven first.
 
-export { runEffect, undoEffect, LEASH_REQUIRED, type RailsContext } from "./rails.js";
+export { runEffect, undoEffect, ownerLeash, LEASH_REQUIRED, type RailsContext, type OwnerLeashOptions } from "./rails.js";
 export { Ledger } from "./ledger.js";
 export { Budget, type BudgetLimits, type SpendSnapshot, type BudgetCheck } from "./budget.js";
 export { KillSwitch, HaltedError } from "./killSwitch.js";

@@ -1,0 +1,23 @@
+{
+  "name": "@crix/effects",
+  "version": "0.5.0-alpha.1",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "description": "Crix v5 Effects + rails: the conscience — typed effects (simulate->stage->commit), append-only ledger, budget, kill switch, idempotency, and the irreversibility gate. The single choke point for every side effect that touches the world.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@crix/agent": "workspace:*"
+  }
+}

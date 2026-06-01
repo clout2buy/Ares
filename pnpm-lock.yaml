@@ -70,6 +70,12 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
+  packages/effects:
+    dependencies:
+      '@crix/agent':
+        specifier: workspace:*
+        version: link:../agent
+
   packages/operator:
     dependencies:
       '@crix/agent':

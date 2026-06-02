@@ -20,6 +20,7 @@ import type {
   Usage,
   StopReason,
 } from "@crix/protocol";
+import { thinkingBudgetTokens } from "@crix/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 
 export type SlotName = "reasoner" | "apply" | "summarize";
@@ -241,7 +242,7 @@ export class OllamaCloudPool {
             }))
           : undefined,
       stream: true,
-      options: { num_ctx: 32_768, temperature: 0.2 },
+      options: { num_ctx: ollamaNumCtx(), temperature: 0.2 },
       // Inject the system prompt as a leading system message — Ollama
       // doesn't have a separate `system` field at the chat-level API.
       ...(req.system
@@ -667,9 +668,10 @@ function buildAnthropicMessagesBody(
   req: ProviderRequest,
   withCacheControl: boolean,
 ): Record<string, unknown> {
+  const outputAllowance = req.maxOutputTokens ?? 8192;
   const body: Record<string, unknown> = {
     model,
-    max_tokens: req.maxOutputTokens ?? 8192,
+    max_tokens: outputAllowance,
     stream: true,
     messages: req.messages
       .filter((m) => m.role !== "system")
@@ -678,6 +680,14 @@ function buildAnthropicMessagesBody(
         content: m.content.map((b) => toAnthropicContentBlock(b)),
       })),
   };
+
+  // Reasoning dial → extended thinking. Anthropic requires max_tokens to exceed
+  // the thinking budget, so grow the ceiling to leave room for the visible reply.
+  if (req.reasoningLevel) {
+    const budget = thinkingBudgetTokens(req.reasoningLevel);
+    body.thinking = { type: "enabled", budget_tokens: budget };
+    body.max_tokens = budget + outputAllowance;
+  }
 
   if (req.system) {
     body.system = withCacheControl
@@ -695,6 +705,12 @@ function buildAnthropicMessagesBody(
     }));
   }
   return body;
+}
+
+function ollamaNumCtx(): number {
+  const raw = Number(process.env.CRIX_OLLAMA_NUM_CTX);
+  if (Number.isFinite(raw) && raw >= 8_192) return Math.floor(raw);
+  return 65_536;
 }
 
 function toAnthropicContentBlock(block: ContentBlock): Record<string, unknown> {

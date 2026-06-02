@@ -20,12 +20,6 @@ importers:
 
   packages/agent:
     dependencies:
-      '@crix/core':
-        specifier: workspace:*
-        version: link:../core
-      '@crix/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       '@crix/tools':
         specifier: workspace:*
         version: link:../tools
@@ -45,9 +39,15 @@ importers:
       '@crix/agent':
         specifier: workspace:*
         version: link:../agent
+      '@crix/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@crix/core':
         specifier: workspace:*
         version: link:../core
+      '@crix/effects':
+        specifier: workspace:*
+        version: link:../effects
       '@crix/mind':
         specifier: workspace:*
         version: link:../mind
@@ -69,9 +69,6 @@ importers:
 
   packages/connectors:
     dependencies:
-      '@crix/agent':
-        specifier: workspace:*
-        version: link:../agent
       '@crix/effects':
         specifier: workspace:*
         version: link:../effects
@@ -92,11 +89,7 @@ importers:
         specifier: workspace:*
         version: link:../agent
 
-  packages/mind:
-    dependencies:
-      '@crix/agent':
-        specifier: workspace:*
-        version: link:../agent
+  packages/mind: {}
 
   packages/operator:
     dependencies:
@@ -106,9 +99,6 @@ importers:
       '@crix/core':
         specifier: workspace:*
         version: link:../core
-      '@crix/protocol':
-        specifier: workspace:*
-        version: link:../protocol
 
   packages/protocol: {}
 

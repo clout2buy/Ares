@@ -25,6 +25,7 @@ import type {
   StopReason,
   ContentBlock,
 } from "@crix/protocol";
+import { openAIReasoningEffort } from "@crix/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { loadAuthToken, type AuthToken } from "./openaiAuth.js";
 import { buildPromptCacheKey } from "../promptCache.js";
@@ -284,8 +285,7 @@ function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
       parameters: t.input_schema,
     })),
     stream: true,
-    ...(req.reasoningEffort ? { reasoning: { effort: req.reasoningEffort } } : {}),
-    ...(req.maxOutputTokens ? { max_output_tokens: req.maxOutputTokens } : {}),
+    ...(req.reasoningLevel ? { reasoning: { effort: openAIReasoningEffort(req.reasoningLevel) } } : {}),
   };
 }
 

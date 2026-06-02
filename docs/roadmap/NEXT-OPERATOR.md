@@ -3,8 +3,8 @@
 This is the executable spec to take Crix from "a coding agent with a mind" to **an entity that acts in the world over long horizons, teaches itself new capabilities, and earns the right to act unsupervised.**
 
 The lineage:
-- **v3 (NEXT.md)** gave Crix a **body** — parallel tools, LSP, checkpoints, diffs, slot routing.
-- **v4 (NEXT-AGENT.md)** gave that body a **mind** — identity, memory, heartbeat, dreaming, self-revision.
+- **v3 (`docs/roadmap/NEXT.md`)** gave Crix a **body** — parallel tools, LSP, checkpoints, diffs, slot routing.
+- **v4 (`docs/roadmap/NEXT-AGENT.md`)** gave that body a **mind** — identity, memory, heartbeat, dreaming, self-revision.
 - **v5 (this doc)** gives the mind a **will** — a durable spine that survives the terminal closing, drives itself toward goals, reaches into the real world through audited effects, and compounds competence so it gets measurably smarter every week.
 
 Read this entire file before writing a line. Then ship **O1–O14 in order**, tests-first, `pnpm verify` green before every commit, per-task commit format `On: <short title>`. Add `tests/v5-<short>.test.mjs` per task. Target **300+ tests** when O14 ships (currently 173).

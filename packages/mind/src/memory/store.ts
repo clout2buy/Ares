@@ -13,7 +13,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { writeFileAtomic } from "@crix/agent";
+import { writeFileAtomic } from "../io.js";
 import { mindPaths } from "../paths.js";
 import { currentStrength, reinforce } from "./strength.js";
 import { recall, type RecallOptions, type RecallResult } from "./recall.js";
@@ -21,12 +21,22 @@ import type { MemoryKind, MemoryNode } from "./types.js";
 
 export interface ConsolidationReport {
   pruned: number;
+  deduped: number;
   promoted: string[];
   kept: number;
 }
 
 const PRUNE_FLOOR = 0.05;
 const MIN_RECURRENCE = 3;
+const MAX_MEMORY_CONTENT_CHARS = 2_000;
+const THEME_STOPWORDS = new Set([
+  "about", "after", "again", "also", "always", "before", "being", "built", "check",
+  "clean", "could", "crix", "data", "directly", "doing", "done", "error", "files",
+  "follows", "found", "have", "homie", "inspect", "issue", "just", "lmao", "look",
+  "memory", "model", "noticed", "output", "right", "self", "some", "state", "still",
+  "system", "there", "thing", "think", "this", "threw", "turn", "using", "which",
+  "with", "work", "would",
+]);
 
 function resolveFile(root: string): string {
   return root.endsWith(".jsonl") ? root : path.join(root, "memory.jsonl");
@@ -35,7 +45,7 @@ function resolveFile(root: string): string {
 function salientTokens(content: string): string[] {
   const seen = new Set<string>();
   for (const t of content.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
-    if (t.length >= 4) seen.add(t);
+    if (isThemeToken(t)) seen.add(t);
   }
   return [...seen];
 }
@@ -50,13 +60,16 @@ export class MemoryStore {
   static async open(root?: string): Promise<MemoryStore> {
     const file = root ? resolveFile(root) : mindPaths().memoryFile;
     const nodes = new Map<string, MemoryNode>();
+    let repaired = false;
     try {
       const raw = await fs.readFile(file, "utf8");
       for (const line of raw.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const node = JSON.parse(trimmed) as MemoryNode;
+          const parsed = JSON.parse(trimmed) as MemoryNode;
+          const node = sanitizeNode(parsed);
+          repaired ||= node.content !== parsed.content;
           nodes.set(node.id, node);
         } catch {
           // skip corrupt line
@@ -65,7 +78,17 @@ export class MemoryStore {
     } catch {
       // no memory yet
     }
-    return new MemoryStore(file, nodes);
+    const ids = new Set(nodes.keys());
+    for (const [id, node] of nodes) {
+      const links = [...new Set(node.links)].filter((link) => link !== id && ids.has(link));
+      if (links.length !== node.links.length) {
+        nodes.set(id, { ...node, links });
+        repaired = true;
+      }
+    }
+    const store = new MemoryStore(file, nodes);
+    if (repaired) await store.persist();
+    return store;
   }
 
   /** In-memory store (no file) — for tests and ephemeral runs. */
@@ -97,7 +120,7 @@ export class MemoryStore {
     const node: MemoryNode = {
       id: `mem_${randomUUID().slice(0, 8)}`,
       kind: input.kind,
-      content: input.content.trim(),
+      content: trimMemoryContent(input.content),
       at,
       strength: input.strength ?? 1,
       activations: 0,
@@ -125,6 +148,15 @@ export class MemoryStore {
     if (!b.links.includes(aId)) this.nodes.set(bId, { ...b, links: [...b.links, aId] });
   }
 
+  private deleteNode(id: string): void {
+    if (!this.nodes.delete(id)) return;
+    for (const node of this.all()) {
+      if (node.links.includes(id)) {
+        this.nodes.set(node.id, { ...node, links: node.links.filter((link) => link !== id) });
+      }
+    }
+  }
+
   /**
    * Recall a constellation of memories AND strengthen them. Surfacing a memory
    * reinforces it (so what's used stays vivid), and the top co-activated pair is
@@ -146,20 +178,30 @@ export class MemoryStore {
   async consolidate(opts: { now?: Date } = {}): Promise<ConsolidationReport> {
     const now = opts.now ?? new Date();
     let pruned = 0;
+    let deduped = 0;
     const promoted: string[] = [];
 
-    // 1. Forget faded one-off episodes (keep semantic knowledge + procedural skills).
+    // 1. Forget faded one-off episodes and stale filler "theme" semantics.
     for (const node of this.all()) {
       if (node.kind === "episodic" && currentStrength(node, now) < PRUNE_FLOOR) {
-        this.nodes.delete(node.id);
+        this.deleteNode(node.id);
+        pruned++;
+        continue;
+      }
+      if (isNoiseThemeSemantic(node)) {
+        this.deleteNode(node.id);
         pruned++;
       }
     }
 
-    // 2. Promote recurring episodic themes into durable semantic knowledge.
+    // 2. Merge exact duplicates into one stronger node and redirect links.
+    deduped += this.mergeDuplicateContent(now);
+
+    // 3. Promote recurring episodic themes into durable semantic knowledge.
     const byToken = new Map<string, MemoryNode[]>();
     for (const node of this.all()) {
       if (node.kind !== "episodic") continue;
+      if (!isThemeEligibleEpisode(node)) continue;
       for (const token of salientTokens(node.content)) {
         let bucket = byToken.get(token);
         if (!bucket) {
@@ -185,7 +227,7 @@ export class MemoryStore {
     }
 
     await this.persist();
-    return { pruned, promoted, kept: this.nodes.size };
+    return { pruned, deduped, promoted, kept: this.nodes.size };
   }
 
   private async persist(): Promise<void> {
@@ -193,4 +235,99 @@ export class MemoryStore {
     const body = this.all().map((n) => JSON.stringify(n)).join("\n");
     await writeFileAtomic(this.file, body.length ? body + "\n" : "");
   }
+
+  private mergeDuplicateContent(now: Date): number {
+    const byContent = new Map<string, MemoryNode[]>();
+    for (const node of this.all()) {
+      const key = normalizeForDedup(node.content);
+      if (!key) continue;
+      const bucket = byContent.get(key) ?? [];
+      bucket.push(node);
+      byContent.set(key, bucket);
+    }
+
+    let merged = 0;
+    for (const group of byContent.values()) {
+      if (group.length < 2) continue;
+      const sorted = [...group].sort((a, b) => {
+        const strengthDelta = currentStrength(b, now) - currentStrength(a, now);
+        if (strengthDelta !== 0) return strengthDelta;
+        return b.activations - a.activations;
+      });
+      const keeper = sorted[0];
+      const duplicates = sorted.slice(1);
+      const duplicateIds = new Set(duplicates.map((node) => node.id));
+      const allGroupIds = new Set(group.map((node) => node.id));
+      const links = new Set<string>();
+      const tags = new Set<string>();
+      let activations = 0;
+      let strength = 0;
+      let lastActivatedAt = keeper.lastActivatedAt;
+
+      for (const node of group) {
+        activations += node.activations;
+        strength += node.strength;
+        if (node.lastActivatedAt > lastActivatedAt) lastActivatedAt = node.lastActivatedAt;
+        for (const link of node.links) {
+          if (!allGroupIds.has(link)) links.add(link);
+        }
+        for (const tag of node.tags ?? []) tags.add(tag);
+      }
+
+      this.nodes.set(keeper.id, {
+        ...keeper,
+        strength: Math.min(50, strength),
+        activations,
+        lastActivatedAt,
+        links: [...links],
+        tags: tags.size ? [...tags] : keeper.tags,
+      });
+
+      for (const duplicate of duplicates) this.nodes.delete(duplicate.id);
+      for (const node of this.all()) {
+        if (node.id === keeper.id) continue;
+        const redirected = [...new Set(node.links.map((link) => (duplicateIds.has(link) ? keeper.id : link)))]
+          .filter((link) => link !== node.id);
+        if (redirected.length !== node.links.length || redirected.some((link, i) => link !== node.links[i])) {
+          this.nodes.set(node.id, { ...node, links: redirected });
+        }
+      }
+      merged += duplicates.length;
+    }
+    return merged;
+  }
+}
+
+function sanitizeNode(node: MemoryNode): MemoryNode {
+  const content = trimMemoryContent(node.content);
+  return content === node.content ? node : { ...node, content };
+}
+
+function trimMemoryContent(content: string): string {
+  const trimmed = content.trim();
+  if (trimmed.length <= MAX_MEMORY_CONTENT_CHARS) return trimmed;
+  return `${trimmed.slice(0, MAX_MEMORY_CONTENT_CHARS)}\n[truncated memory: ${trimmed.length - MAX_MEMORY_CONTENT_CHARS} chars omitted]`;
+}
+
+function normalizeForDedup(content: string): string {
+  return content.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isThemeToken(token: string): boolean {
+  return token.length >= 5 && !THEME_STOPWORDS.has(token);
+}
+
+function isThemeEligibleEpisode(node: MemoryNode): boolean {
+  const content = node.content.toLowerCase();
+  if (/^(hi|hey|hello|yo|sup)\b/.test(content)) return false;
+  if (/^(lol|lmao|haha|bet|ok|okay|cool|nice|word|true|facts|nun much|nothing much)\b/.test(content)) return false;
+  if (/^decided to answer the user by using the strongest available tools\b/.test(content)) return false;
+  return salientTokens(content).length >= 2;
+}
+
+function isNoiseThemeSemantic(node: MemoryNode): boolean {
+  if (node.kind !== "semantic") return false;
+  const tag = node.tags?.find((t) => t.startsWith("theme:"));
+  const token = tag?.slice("theme:".length) ?? node.content.match(/^Recurring theme "([^"]+)"/)?.[1];
+  return Boolean(token && !isThemeToken(token.toLowerCase()));
 }

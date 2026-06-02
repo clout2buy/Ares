@@ -58,6 +58,22 @@ test("cognition: no viable option → no intention, and an honest doubt", async 
   assert.ok(deliberation.thoughts.some((t) => t.kind === "doubt"), "it admits it needs to research or ask");
 });
 
+test("cognition: decision memories distill huge working situations", async () => {
+  const memory = MemoryStore.memory();
+  const hugeSituation = `fix context handling ${"raw transcript ".repeat(5_000)}`;
+  const deliberation = await consider(hugeSituation, {
+    memory,
+    propose: () => [{ action: `ship bounded memory ${"details ".repeat(2_000)}`, pro: "prevents prompt bloat", score: 0.95 }],
+  });
+
+  assert.ok(deliberation.intention);
+  assert.ok(deliberation.intention.goal.length < 540, `intention goal too large: ${deliberation.intention.goal.length}`);
+  const stored = memory.all().find((node) => node.kind === "episodic" && /Decided to ship bounded memory/.test(node.content));
+  assert.ok(stored, "decision should be remembered");
+  assert.ok(stored.content.length < 1_400, `decision memory too large: ${stored.content.length}`);
+  assert.match(stored.content, /truncated/);
+});
+
 // ── 5. drives / curiosity ────────────────────────────────────────────────────
 
 test("cognition: capabilities flagged 'want' become intentions to pursue", () => {

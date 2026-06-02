@@ -27,14 +27,14 @@ export async function loadAgentSystemContext(opts: {
   const includeMemory = opts.includeMemory ?? true;
   const bootstrapRequired = !(await readTextIfExists(paths.identity, 8_000));
 
-  await pushBlock(blocks, "identity", paths.identity);
-  await pushBlock(blocks, "soul", paths.soul);
-  await pushBlock(blocks, "user", paths.user);
-  await pushBlock(blocks, "capabilities", path.join(paths.home, "CAPABILITIES.md"));
-  if (includeMemory) await pushBlock(blocks, "curated memory", paths.memory);
-  await pushBlock(blocks, "workspace tools", workspaceToolsPath(opts.workspace));
-  await pushBlock(blocks, "today raw memory", path.join(paths.memoryDir, `${isoDate(opts.today ?? new Date())}.md`));
-  await pushBlock(blocks, "yesterday raw memory", path.join(paths.memoryDir, `${isoDate(addDays(opts.today ?? new Date(), -1))}.md`));
+  await pushBlock(blocks, "identity", paths.identity, 6_000);
+  await pushBlock(blocks, "soul", paths.soul, 8_000);
+  await pushBlock(blocks, "user", paths.user, 6_000);
+  await pushBlock(blocks, "capabilities", path.join(paths.home, "CAPABILITIES.md"), 8_000);
+  if (includeMemory) await pushBlock(blocks, "curated memory", paths.memory, 10_000);
+  await pushBlock(blocks, "workspace tools", workspaceToolsPath(opts.workspace), 6_000);
+  await pushBlock(blocks, "today raw memory", path.join(paths.memoryDir, `${isoDate(opts.today ?? new Date())}.md`), 2_000);
+  await pushBlock(blocks, "yesterday raw memory", path.join(paths.memoryDir, `${isoDate(addDays(opts.today ?? new Date(), -1))}.md`), 1_200);
 
   return {
     home,
@@ -217,8 +217,8 @@ IDENTITY.md does not exist yet. Your first job is to finish the birth ritual.
 - Do NOT use Write/Edit for the bootstrap. Bootstrap is the only correct path.
 - After Bootstrap returns, future sessions auto-load the identity files.`;
 
-async function pushBlock(blocks: AgentContextBlock[], label: string, file: string): Promise<void> {
-  const text = await readTextIfExists(file);
+async function pushBlock(blocks: AgentContextBlock[], label: string, file: string, maxChars: number): Promise<void> {
+  const text = await readTextIfExists(file, maxChars);
   if (!text) return;
   blocks.push({ label, file, text });
 }

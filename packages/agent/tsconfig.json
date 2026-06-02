@@ -7,8 +7,6 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "references": [
-    { "path": "../protocol" },
-    { "path": "../core" },
     { "path": "../tools" }
   ],
   "include": ["src/**/*.ts"]

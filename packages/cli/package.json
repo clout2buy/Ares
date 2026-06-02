@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "@crix/agent": "workspace:*",
+    "@crix/connectors": "workspace:*",
     "@crix/core": "workspace:*",
+    "@crix/effects": "workspace:*",
     "@crix/mind": "workspace:*",
     "@crix/operator": "workspace:*",
     "@crix/protocol": "workspace:*",

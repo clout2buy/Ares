@@ -39,6 +39,25 @@ export {
 
 export { Scheduler, type SchedulerOptions } from "./scheduler.js";
 
+export {
+  decideAttention,
+  rankAttentionItem,
+  attentionItemsFromGoals,
+  attentionItemsFromCapabilities,
+  type AttentionDecision,
+  type AttentionItem,
+  type AttentionItemKind,
+  type RankedAttentionItem,
+} from "./attention.js";
+
+export {
+  OperatorBackgroundLoop,
+  type OperatorBackgroundLoopOptions,
+  type OperatorBackgroundTick,
+  type OperatorBackgroundEvent,
+  type OperatorWakeReason,
+} from "./backgroundLoop.js";
+
 export { operatorPaths, type OperatorPaths } from "./paths.js";
 
 export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";
@@ -66,6 +85,23 @@ export {
 } from "./capability.js";
 
 export { novelDelta, reusedSubskills, factor, novelDeltaCurve } from "./graph.js";
+
+export {
+  seedNativeCapabilities,
+  NATIVE_CAPABILITY_SEEDS,
+  type NativeCapabilitySeed,
+  type SeedNativeCapabilitiesReport,
+} from "./seed.js";
+
+export {
+  acquireCapability,
+  listAcquisitions,
+  type Acquisition,
+  type AcquisitionKind,
+  type AcquisitionStatus,
+  type AcquisitionResult,
+  type AcquireCapabilityInput,
+} from "./acquisition.js";
 
 export {
   slugify,

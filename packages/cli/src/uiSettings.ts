@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { crixHome } from "@crix/core";
+import type { ReasoningLevel } from "@crix/protocol";
 import type { ThemeName } from "./terminalUi.js";
 
 export interface UiSettings {
@@ -11,6 +12,8 @@ export interface UiSettings {
   favoriteOllamaModels?: string[];
   favoriteOpenAIModels?: string[];
   dangerousBypass?: boolean;
+  /** Owner-selected reasoning dial (low→max). Applies across providers. */
+  reasoningLevel?: ReasoningLevel;
 }
 
 export function uiSettingsPath(): string {

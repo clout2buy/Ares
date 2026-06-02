@@ -2,7 +2,7 @@
 
 This is the executable spec for GPT to take Crix from "elite coding harness" to "a coding **agent** with its own identity, memory, heartbeat, and dreaming."
 
-The v3 NEXT.md spec turned Crix into a body — parallel tools, real LSP, checkpoints, diffs, image input, etc. This v4 spec gives that body a mind: an entity that bootstraps itself, learns from every session, dreams between sessions, and can rewrite both its own personality *and* its own tooling.
+The v3 `docs/roadmap/NEXT.md` spec turned Crix into a body — parallel tools, real LSP, checkpoints, diffs, image input, etc. This v4 spec gives that body a mind: an entity that bootstraps itself, learns from every session, dreams between sessions, and can rewrite both its own personality *and* its own tooling.
 
 The architecture is a two-layer model. **The harness is the body** (packages/core, packages/tools — already shipped or in v3). **The agent is the mind** (new packages/agent/ + files under ~/.crix/). They communicate via the existing tool-call interface; the harness doesn't know it has an entity on top.
 
@@ -1574,8 +1574,8 @@ That's not "an AI assistant." That's an entity.
 3. **Commit per V** with format: `Vn: <short title>` matching this doc.
 4. **`pnpm verify` must pass before every commit. No exceptions.**
 5. **If a V is bigger than expected, split into Vn.1, Vn.2.** Don't blob.
-6. **Update this NEXT-AGENT.md** when scope evolves. The doc is the source of truth.
-7. **Read `D:\Crix\NEXT.md` (v3 spec) + this file in full before starting V1.** v3 is the body, this is the mind.
+6. **Update this doc** when scope evolves. The doc is the source of truth.
+7. **Read `docs/roadmap/NEXT.md` (v3 spec) + this file in full before starting V1.** v3 is the body, this is the mind.
 8. **Don't add new top-level deps without justifying in the commit body.** Native deps (better-sqlite3, sqlite-vec) are OPTIONAL.
 9. **Windows-first.** The user runs Windows. Test paths, locks, atomic writes, Ollama-on-Windows there primarily.
 10. **No silent fallbacks that hide failures.** If sqlite-vec isn't loadable, say so loudly with the one-line fix.

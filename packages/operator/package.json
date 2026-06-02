@@ -19,7 +19,6 @@
   },
   "dependencies": {
     "@crix/core": "workspace:*",
-    "@crix/protocol": "workspace:*",
     "@crix/agent": "workspace:*"
   }
 }

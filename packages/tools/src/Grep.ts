@@ -256,7 +256,7 @@ async function nativeGrep(
 }
 
 async function resolveSearchPaths(
-  ctx: Pick<RichToolContext, "workspace" | "pathPermissions" | "requestPermission">,
+  ctx: Pick<RichToolContext, "workspace" | "pathPermissions" | "requestPermission" | "permissionMode">,
   inputPath: z.infer<typeof inputSchema>["path"],
 ): Promise<string[]> {
   const requested = toArray(inputPath);

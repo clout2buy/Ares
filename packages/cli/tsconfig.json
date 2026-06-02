@@ -12,6 +12,8 @@
     { "path": "../tools" },
     { "path": "../agent" },
     { "path": "../operator" },
+    { "path": "../effects" },
+    { "path": "../connectors" },
     { "path": "../mind" }
   ],
   "include": ["src/**/*.ts"]

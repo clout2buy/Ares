@@ -8,6 +8,8 @@
 
 export {
   QueryEngine,
+  budgetMessages,
+  stringifyModelToolOutput,
   type QueryEngineConfig,
   type Provider,
   type ProviderRequest,

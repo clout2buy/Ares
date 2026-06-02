@@ -113,19 +113,8 @@ function Show-Help {
     Write-Host "  .\crix.bat chat --provider ollama --model qwen3-coder:480b-cloud"
     Write-Host "  .\crix.bat doctor"
     Write-Host "  .\crix.bat login"
-    Write-Host "  .\crix.bat game"
     Write-Host "  .\crix.bat run --provider openai --model gpt-5.5 --goal ""flex some tools"""
     Write-Host ""
-}
-
-function Open-MarioGame {
-    $Game = Join-Path $Root "demos\mario-game.html"
-    if (!(Test-Path -LiteralPath $Game)) {
-        Write-Error "Mario game not found at $Game"
-        exit 1
-    }
-    Start-Process -FilePath $Game
-    Write-Host "Opened $Game"
 }
 
 function Read-MenuChoice {
@@ -409,7 +398,6 @@ switch ($Command.ToLowerInvariant()) {
     "check" { Ensure-NodeModules; Invoke-Pnpm check }
     "test" { Ensure-NodeModules; Invoke-Pnpm test }
     "verify" { Ensure-NodeModules; Invoke-Pnpm verify }
-    "game" { Open-MarioGame }
     "doctor" { Invoke-CrixWorkspace doctor $Rest }
     "run" { Invoke-CrixWorkspace run $Rest }
     "mock" { $WithWorkspace = Add-WorkspaceArg @("--goal", (($Rest -join " ").Trim())); Invoke-CrixTs run --provider mock @WithWorkspace }

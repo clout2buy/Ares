@@ -71,7 +71,8 @@ import {
   type CommandPermissionStore,
   type SubModelPool,
 } from "@crix/tools";
-import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@crix/protocol";
+import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect, ReasoningLevel } from "@crix/protocol";
+import { isReasoningLevel, reasoningLabel, REASONING_LEVELS } from "@crix/protocol";
 import type { ToolPermissionRequest } from "@crix/core";
 import { z } from "zod";
 import {
@@ -94,7 +95,7 @@ import {
 } from "./terminalUi.js";
 import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTui.js";
 import { runInkLauncher } from "./inkLauncher.js";
-import { loadUiSettings, updateUiSettings } from "./uiSettings.js";
+import { loadUiSettings, updateUiSettings, type UiSettings } from "./uiSettings.js";
 import {
   BootstrapTool,
   CrixAgentRuntime,
@@ -121,10 +122,14 @@ import {
 import {
   QueryEngineDispatcher,
   acquireCapability,
+  attentionItemsFromCapabilities,
+  attentionItemsFromGoals,
   createGoal,
+  decideAttention,
   listGoals,
   listAcquisitions,
   listCapabilities,
+  seedNativeCapabilities,
   newGoalId,
   novelDeltaCurve,
   reliabilityOf,
@@ -135,7 +140,7 @@ import {
   type AcquisitionKind,
   type VerificationSpec,
 } from "@crix/operator";
-import { MemoryStore, mindPaths, type MemoryKind } from "@crix/mind";
+import { buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, type MemoryKind } from "@crix/mind";
 import {
   Filmstrip,
   clickEffect,
@@ -203,10 +208,12 @@ function printHelp(): void {
       "  crix operator list | status [id]     Inspect Operator goals.",
       "  crix operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
       "                              Drive active goals via ephemeral QueryEngine workers.",
-      "  crix operator caps | stats [--json] Inspect learned capabilities + the novel-delta curve.",
+      "  crix operator caps | stats | attention [--json]",
+      "                              Inspect capabilities, growth curve, and current attention queue.",
       "  crix mind recall \"<cue>\" [--json]   Spreading-activation recall from Living Memory.",
       "  crix mind add --content \"<text>\" [--kind episodic|semantic|procedural]",
-      "  crix mind list | consolidate [--json]   Inspect / sleep-consolidate memory.",
+      "  crix mind list | doctor | consolidate [--json]",
+      "                              Inspect, diagnose, or sleep-consolidate memory.",
       "  crix eval                  Run the built-in harness regression eval suite.",
       "  crix login                  ChatGPT OAuth device-code flow.",
       "  crix doctor                 Show provider auth + Ollama Cloud health.",
@@ -251,6 +258,7 @@ interface ResumedSessionInfo {
 interface LiveSession {
   session: Session;
   selection: ProviderSelection;
+  context: CliRuntimeContext;
   runtime: CrixRuntimeState;
   verifier: ContinuousVerifier;
   hooks: HookManager;
@@ -263,6 +271,149 @@ interface LiveSession {
 
 interface CrixRuntimeState {
   permissionMode: PermissionMode;
+}
+
+interface CliRuntimeContext {
+  workspace: string;
+  home: string;
+  crixHome: string;
+  mind: ReturnType<typeof mindPaths>;
+  effects: ReturnType<typeof effectsPaths>;
+  selfTerritoryRoots: string[];
+  browserFilmstripRoot: string;
+}
+
+function cliRuntimeContext(options: { workspace?: string; home?: string } = {}): CliRuntimeContext {
+  const workspace = path.resolve(options.workspace ?? process.cwd());
+  const home = crixAgentHome(options.home);
+  return {
+    workspace,
+    home,
+    crixHome: crixHome(),
+    mind: mindPaths(home),
+    effects: effectsPaths(home),
+    selfTerritoryRoots: [home],
+    browserFilmstripRoot: path.join(home, "operator", "browser", "filmstrip"),
+  };
+}
+
+interface DaemonInputCommand {
+  type?: string;
+  goal?: string;
+  command?: string;
+  level?: string;
+  id?: string;
+  decision?: string;
+}
+
+class AsyncQueue<T> {
+  private items: T[] = [];
+  private waiters: Array<(item: T | null) => void> = [];
+  private closed = false;
+
+  push(item: T): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(item);
+    else this.items.push(item);
+  }
+
+  shift(): Promise<T | null> {
+    if (this.items.length > 0) return Promise.resolve(this.items.shift()!);
+    if (this.closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) waiter(null);
+  }
+}
+
+class DaemonCommandRouter {
+  private commands = new AsyncQueue<DaemonInputCommand>();
+  private permissionResponses: DaemonInputCommand[] = [];
+  private permissionWaiters: Array<{ id?: string; resolve: (command: DaemonInputCommand | null) => void }> = [];
+  private closed = false;
+
+  constructor(private readonly onError: (error: string) => void) {}
+
+  start(rl: ReturnType<typeof createInterface>): void {
+    void this.pump(rl);
+  }
+
+  nextCommand(): Promise<DaemonInputCommand | null> {
+    return this.commands.shift();
+  }
+
+  async waitForPermission(request: ToolPermissionRequest): Promise<PermissionPromptDecision> {
+    const response = await this.takePermissionResponse(request.id);
+    if (!response) return "deny";
+    const decision = normalizePermissionDecision(response.decision);
+    if (!decision) {
+      this.onError("permission_response requires decision: allow_once|allow_always|deny");
+      return "deny";
+    }
+    return decision;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.commands.close();
+    for (const waiter of this.permissionWaiters.splice(0)) waiter.resolve(null);
+  }
+
+  private async pump(rl: ReturnType<typeof createInterface>): Promise<void> {
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        let command: DaemonInputCommand;
+        try {
+          command = JSON.parse(line) as DaemonInputCommand;
+        } catch {
+          this.onError("invalid JSON command");
+          continue;
+        }
+        if (command.type === "permission_response" || command.type === "permission") {
+          this.pushPermissionResponse(command);
+        } else {
+          this.commands.push(command);
+        }
+      }
+    } finally {
+      this.close();
+    }
+  }
+
+  private pushPermissionResponse(command: DaemonInputCommand): void {
+    if (this.closed) return;
+    const responseId = cleanCommandId(command.id);
+    const waiterIndex = this.permissionWaiters.findIndex((waiter) => {
+      if (!waiter.id || !responseId) return true;
+      return waiter.id === responseId;
+    });
+    if (waiterIndex >= 0) {
+      const [waiter] = this.permissionWaiters.splice(waiterIndex, 1);
+      waiter.resolve(command);
+      return;
+    }
+    this.permissionResponses.push(command);
+  }
+
+  private takePermissionResponse(id?: string): Promise<DaemonInputCommand | null> {
+    const requestId = cleanCommandId(id);
+    const responseIndex = this.permissionResponses.findIndex((command) => {
+      const responseId = cleanCommandId(command.id);
+      if (!requestId || !responseId) return true;
+      return requestId === responseId;
+    });
+    if (responseIndex >= 0) {
+      const [response] = this.permissionResponses.splice(responseIndex, 1);
+      return Promise.resolve(response);
+    }
+    if (this.closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.permissionWaiters.push({ id: requestId, resolve }));
+  }
 }
 
 type ManualReminderSource =
@@ -335,11 +486,12 @@ class CrixPathPermissionStore implements PathPermissionStore {
 
   private constructor(
     private readonly filePath: string,
+    private readonly selfRoot: string,
     private readonly persisted: StoredPathPermissions,
   ) {}
 
-  static async load(): Promise<CrixPathPermissionStore> {
-    const filePath = path.join(crixHome(), "path-permissions.json");
+  static async load(context: CliRuntimeContext): Promise<CrixPathPermissionStore> {
+    const filePath = path.join(context.crixHome, "path-permissions.json");
     let persisted: StoredPathPermissions = { alwaysAllow: [] };
     try {
       persisted = JSON.parse(await readFile(filePath, "utf8")) as StoredPathPermissions;
@@ -347,12 +499,12 @@ class CrixPathPermissionStore implements PathPermissionStore {
     } catch {
       // First run.
     }
-    return new CrixPathPermissionStore(filePath, persisted);
+    return new CrixPathPermissionStore(filePath, context.home, persisted);
   }
 
   isAllowed(absPath: string, access: PathAccess): boolean {
     const candidate = path.resolve(absPath);
-    if ((access === "read" || access === "write") && pathContains(crixAgentHome(), candidate)) {
+    if ((access === "read" || access === "write") && pathContains(this.selfRoot, candidate)) {
       return true;
     }
     return [...this.onceAllow, ...this.persisted.alwaysAllow].some(
@@ -384,10 +536,10 @@ interface StoredCommandPermissions {
 class CrixCommandPermissionStore implements CommandPermissionStore {
   private constructor(private readonly rules: PermissionRule[]) {}
 
-  static async load(workspace: string): Promise<CrixCommandPermissionStore> {
+  static async load(context: CliRuntimeContext): Promise<CrixCommandPermissionStore> {
     const files = [
-      path.join(crixHome(), "command-permissions.json"),
-      path.join(workspace, ".crix", "command-permissions.json"),
+      path.join(context.crixHome, "command-permissions.json"),
+      path.join(context.workspace, ".crix", "command-permissions.json"),
     ];
     const rules: PermissionRule[] = [];
     for (const file of files) {
@@ -397,7 +549,7 @@ class CrixCommandPermissionStore implements CommandPermissionStore {
           rules.push({
             pattern: rule.pattern,
             effect: rule.effect,
-            source: file.startsWith(path.join(workspace, ".crix")) ? "project" : "user-global",
+            source: file.startsWith(path.join(context.workspace, ".crix")) ? "project" : "user-global",
           });
         }
       } catch {
@@ -439,6 +591,14 @@ function wildcardToRegExp(pattern: string): RegExp {
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizePermissionDecision(value: unknown): PermissionPromptDecision | null {
+  return value === "allow_once" || value === "allow_always" || value === "deny" ? value : null;
+}
+
+function cleanCommandId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 async function promptPermission(request: ToolPermissionRequest): Promise<PermissionPromptDecision> {
@@ -504,6 +664,7 @@ async function buildEngineTools(
   commandPermissions: CommandPermissionStore,
   selection: ProviderSelection,
   runtime: CrixRuntimeState,
+  context: CliRuntimeContext,
   shellRegistry: ShellRegistry,
   todoStore: TodoStore,
 ): Promise<EngineTool[]> {
@@ -549,17 +710,18 @@ async function buildEngineTools(
     provider: selection.provider,
     model: selection.model,
     parentTools: baseTools,
-    baseSystemPrompt: buildSystemPrompt(runtime.permissionMode),
+    baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
   });
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const workerTools = [...baseTools, taskTool];
-  const livingMindTool = adaptToolForEngine(makeLivingMindTool(), enrich) as EngineTool;
-  const browserTool = adaptToolForEngine(makeBrowserTool(), enrich) as EngineTool;
+  const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
+  const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
   const operatorWorkerTools = [...workerTools, livingMindTool, browserTool];
   const operatorTool = adaptToolForEngine(
     makeOperatorChatTool({
       selection,
       runtime,
+      context,
       workerTools: operatorWorkerTools,
     }),
     enrich,
@@ -586,7 +748,7 @@ interface LivingMindOutput {
   result?: unknown;
 }
 
-function makeLivingMindTool() {
+function makeLivingMindTool(context: CliRuntimeContext) {
   return buildTool({
     name: "LivingMind",
     description:
@@ -597,8 +759,8 @@ function makeLivingMindTool() {
     activityDescription: (i) => `LivingMind ${i.action}`,
 
     async call(i): Promise<{ output: LivingMindOutput; display: string }> {
-      const home = crixAgentHome();
-      const store = await MemoryStore.open(mindPaths(home).memoryFile);
+      const home = context.home;
+      const store = await MemoryStore.open(context.mind.memoryFile);
       const limit = i.limit ?? 8;
 
       if (i.action === "remember") {
@@ -633,7 +795,7 @@ function makeLivingMindTool() {
 
       if (i.action === "status") {
         return {
-          output: { action: i.action, home, count: store.count(), result: { memoryFile: mindPaths(home).memoryFile } },
+          output: { action: i.action, home, count: store.count(), result: { memoryFile: context.mind.memoryFile } },
           display: `LivingMind: ${store.count()} memories`,
         };
       }
@@ -689,6 +851,7 @@ interface OperatorChatOutput {
 function makeOperatorChatTool(opts: {
   selection: ProviderSelection;
   runtime: CrixRuntimeState;
+  context: CliRuntimeContext;
   workerTools: readonly EngineTool[];
 }) {
   return buildTool({
@@ -701,7 +864,7 @@ function makeOperatorChatTool(opts: {
     activityDescription: (i) => `Operator ${i.action}`,
 
     async call(i, ctx): Promise<{ output: OperatorChatOutput; display: string }> {
-      const home = crixAgentHome();
+      const home = opts.context.home;
 
       if (i.action === "create") {
         const statement = i.goal?.trim();
@@ -737,7 +900,7 @@ function makeOperatorChatTool(opts: {
             model: opts.selection.model,
             workspace: ctx.workspace,
             tools: opts.workerTools,
-            systemPrompt: buildSystemPrompt(opts.runtime.permissionMode),
+            systemPrompt: buildSystemPrompt(opts.runtime.permissionMode, opts.context),
           });
           final = await runGoalToCompletion(
             {
@@ -782,7 +945,7 @@ function makeOperatorChatTool(opts: {
           model: opts.selection.model,
           workspace: ctx.workspace,
           tools: opts.workerTools,
-          systemPrompt: buildSystemPrompt(opts.runtime.permissionMode),
+          systemPrompt: buildSystemPrompt(opts.runtime.permissionMode, opts.context),
         });
         const result: Goal[] = [];
         for (const goal of targets) {
@@ -907,7 +1070,7 @@ interface BrowserToolOutput {
   filmstripDir: string;
 }
 
-function makeBrowserTool() {
+function makeBrowserTool(context: CliRuntimeContext) {
   let browser: BrowserConnector | null = null;
   let filmstrip: Filmstrip | null = null;
   let sequence = 0;
@@ -919,7 +1082,7 @@ function makeBrowserTool() {
 
   const ensureFilmstrip = (): Filmstrip => {
     if (!filmstrip) {
-      const dir = path.join(crixAgentHome(), "operator", "browser", "filmstrip", `${new Date().toISOString().slice(0, 10)}-${process.pid}`);
+      const dir = path.join(context.browserFilmstripRoot, `${new Date().toISOString().slice(0, 10)}-${process.pid}`);
       filmstrip = new Filmstrip(dir);
     }
     return filmstrip;
@@ -981,7 +1144,7 @@ function makeBrowserTool() {
         };
       }
 
-      const rails = await browserRailsContext();
+      const rails = await browserRailsContext(context);
       const idemPrefix = `browser:${process.pid}:${Date.now()}:${sequence++}`;
       if (i.action === "open") {
         if (!i.url) throw new Error("Browser open requires url");
@@ -1015,8 +1178,8 @@ function makeBrowserTool() {
   });
 }
 
-async function browserRailsContext() {
-  const paths = effectsPaths(crixAgentHome());
+async function browserRailsContext(context: CliRuntimeContext) {
+  const paths = context.effects;
   return {
     ledger: await Ledger.open(paths.ledgerFile),
     budget: new Budget(),
@@ -1037,37 +1200,69 @@ function compactLine(text: string, limit: number): string {
 async function createSession(
   args: ParsedArgs,
   resumeSessionId?: string,
+  requestPermission: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision> = promptPermission,
 ): Promise<LiveSession> {
   const selection = await selectProvider(args.flags);
-  return createSessionWithSelection(args, selection, resumeSessionId);
+  return createSessionWithSelection(args, selection, resumeSessionId, requestPermission);
+}
+
+// The reasoning dial the owner controls. Precedence: env override → persisted
+// setting → "medium" (snappy-but-capable; a fresh session never burns minutes
+// thinking on a trivial "hi", and the owner can crank it to high/max). Works
+// for OpenAI (effort) and Ollama (thinking budget) alike — the providers
+// translate it. The context budget trims oldest history so a long thread or a
+// vision message can never hard-fail with context_length_exceeded.
+function resolveReasoningLevel(settings: UiSettings): ReasoningLevel {
+  const env = process.env.CRIX_REASONING_LEVEL?.toLowerCase();
+  if (isReasoningLevel(env)) return env;
+  if (isReasoningLevel(settings.reasoningLevel)) return settings.reasoningLevel;
+  return "medium";
+}
+function chatContextBudget(selection: ProviderSelection): number {
+  const env = Number(process.env.CRIX_CONTEXT_BUDGET);
+  if (Number.isFinite(env) && env > 0) return Math.floor(env);
+  if (selection.provider.name.startsWith("ollama-cloud")) return 24_000;
+  return 64_000;
+}
+function chatMaxOutputTokens(): number {
+  return Number(process.env.CRIX_MAX_OUTPUT_TOKENS) || 8192;
 }
 
 async function createSessionWithSelection(
   _args: ParsedArgs,
   selection: ProviderSelection,
   resumeSessionId?: string,
+  requestPermission: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision> = promptPermission,
 ): Promise<LiveSession> {
-  const pathPermissions = await CrixPathPermissionStore.load();
-  const commandPermissions = await CrixCommandPermissionStore.load(process.cwd());
+  const context = cliRuntimeContext();
+  const pathPermissions = await CrixPathPermissionStore.load(context);
+  const commandPermissions = await CrixCommandPermissionStore.load(context);
   const settings = await loadUiSettings();
-  const runtime: CrixRuntimeState = { permissionMode: settings.dangerousBypass ? "bypass" : "workspace-write" };
+  // Unleashed by default — this is the owner's own agent on the owner's machine
+  // (the M0 posture: permissive default, owner holds the dial). Tool calls run
+  // without a permission ritual; the genuinely-useful safety net stays on
+  // (pre-write undo checkpoints, the kill switch, and the effects ledger for
+  // irreversible OUTWARD actions). The owner can re-guard anytime with /code or
+  // /plan, which persists `dangerousBypass: false`.
+  const guarded = settings.dangerousBypass === false;
+  const runtime: CrixRuntimeState = { permissionMode: guarded ? "workspace-write" : "bypass" };
   const shellRegistry = new ShellRegistry();
   const todoStore = new TodoStore();
   const verifier = new ContinuousVerifier({
-    workspace: process.cwd(),
+    workspace: context.workspace,
     onEvent: (event) => {
       void event;
     },
   });
-  const hooks = await HookManager.load(process.cwd());
-  await hooks.run({ event: "SessionStart", workspace: process.cwd() });
-  const startupReminders = await loadStartupReminders(process.cwd());
+  const hooks = await HookManager.load(context.workspace);
+  await hooks.run({ event: "SessionStart", workspace: context.workspace });
+  const startupReminders = await loadStartupReminders(context.workspace);
   const isMockProvider = selection.provider.name === "mock" || selection.provider.name.startsWith("mock-");
   const agentEnabled =
     process.env.CRIX_AGENT_ENABLED === "1" ||
     (!isMockProvider && process.env.CRIX_AGENT_ENABLED !== "0");
   const agent = await prepareCrixAgent({
-    workspace: process.cwd(),
+    workspace: context.workspace,
     enabled: agentEnabled,
   });
   startupReminders.push(...agent.startupReminders);
@@ -1086,32 +1281,38 @@ async function createSessionWithSelection(
     commandPermissions,
     selection,
     runtime,
+    context,
     shellRegistry,
     todoStore,
   );
+  await seedNativeCapabilities(context.home).catch(() => undefined);
   const systemPrompt =
-    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode)) + (await loadLiveMindContext(crixAgentHome()));
+    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context)) + (await loadLiveMindContext(context));
   if (resumeSessionId) {
-    const snapshot = await loadSessionSnapshot(process.cwd(), resumeSessionId, {
+    const snapshot = await loadSessionSnapshot(context.workspace, resumeSessionId, {
       maxMessages: resumeMessageLimit(),
     });
     const session = new Session({
-      workspace: process.cwd(),
+      workspace: context.workspace,
       provider: selection.provider,
       model: selection.model,
       systemPrompt,
       tools,
-      requestPermission: promptPermission,
+      requestPermission,
       drainSystemReminders,
       hookManager: hooks,
       sessionMeta: snapshot.meta,
       initialMessages: snapshot.messages,
       initialSeq: snapshot.nextSeq,
-      selfTerritoryRoots: [crixAgentHome()],
+      selfTerritoryRoots: context.selfTerritoryRoots,
+      reasoningLevel: resolveReasoningLevel(settings),
+      maxOutputTokens: chatMaxOutputTokens(),
+      contextBudgetTokens: chatContextBudget(selection),
     });
     const live: LiveSession = {
       session,
       selection,
+      context,
       resumed: {
         id: snapshot.meta.id,
         eventCount: snapshot.eventCount,
@@ -1128,7 +1329,7 @@ async function createSessionWithSelection(
       queueSystemReminder,
     };
     live.agentRuntime = new CrixAgentRuntime(agent, {
-      workspace: process.cwd(),
+      workspace: context.workspace,
       sessionId: session.meta.id,
       queueReminder: (text, source) => queueSystemReminder(text, source),
     });
@@ -1136,19 +1337,22 @@ async function createSessionWithSelection(
     return live;
   }
   const session = new Session({
-    workspace: process.cwd(),
+    workspace: context.workspace,
     provider: selection.provider,
     model: selection.model,
     systemPrompt,
     tools,
-    requestPermission: promptPermission,
+    requestPermission,
     drainSystemReminders,
     hookManager: hooks,
-    selfTerritoryRoots: [crixAgentHome()],
+    selfTerritoryRoots: context.selfTerritoryRoots,
+    reasoningLevel: resolveReasoningLevel(settings),
+    maxOutputTokens: chatMaxOutputTokens(),
+    contextBudgetTokens: chatContextBudget(selection),
   });
-  const live: LiveSession = { session, selection, runtime, verifier, hooks, shellRegistry, todoStore, queueSystemReminder };
+  const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, queueSystemReminder };
   live.agentRuntime = new CrixAgentRuntime(agent, {
-    workspace: process.cwd(),
+    workspace: context.workspace,
     sessionId: session.meta.id,
     queueReminder: (text, source) => queueSystemReminder(text, source),
   });
@@ -1156,17 +1360,17 @@ async function createSessionWithSelection(
   return live;
 }
 
-async function resolveResumeSessionId(target?: string): Promise<string | undefined> {
+async function resolveResumeSessionId(target?: string, context = cliRuntimeContext()): Promise<string | undefined> {
   if (!target || target === "false") return undefined;
   if (target === "true" || target === "last" || target === "latest") {
-    const [latest] = await listSessions(process.cwd(), 1);
+    const [latest] = await listSessions(context.workspace, 1);
     return latest?.id;
   }
   return target;
 }
 
-async function requireResumeSessionId(target?: string): Promise<string> {
-  const sessionId = await resolveResumeSessionId(target ?? "last");
+async function requireResumeSessionId(target?: string, context = cliRuntimeContext()): Promise<string> {
+  const sessionId = await resolveResumeSessionId(target ?? "last", context);
   if (!sessionId) throw new Error("no saved sessions in this workspace");
   return sessionId;
 }
@@ -1178,8 +1382,8 @@ function sessionSummaryLine(session: SessionSummary): string {
   return `${session.id}  ${provider}  ${session.eventCount} events  ${updated}  ${preview}`;
 }
 
-async function printSessions(limit = 20): Promise<SessionSummary[]> {
-  const sessions = await listSessions(process.cwd(), limit);
+async function printSessions(limit = 20, context = cliRuntimeContext()): Promise<SessionSummary[]> {
+  const sessions = await listSessions(context.workspace, limit);
   if (sessions.length === 0) {
     process.stdout.write(notice("Sessions", ["No saved sessions in this workspace yet."], "warn"));
     return sessions;
@@ -1242,8 +1446,8 @@ function currentThemeNameSafe(): string {
   }
 }
 
-async function sessionsLines(limit = 20): Promise<string[]> {
-  const sessions = await listSessions(process.cwd(), limit);
+async function sessionsLines(limit = 20, context = cliRuntimeContext()): Promise<string[]> {
+  const sessions = await listSessions(context.workspace, limit);
   if (sessions.length === 0) return ["No saved sessions in this workspace yet."];
   return sessions.map(sessionSummaryLine);
 }
@@ -1264,18 +1468,18 @@ async function doctorSummaryLines(): Promise<string[]> {
   ];
 }
 
-async function checkpointLines(): Promise<string[]> {
-  const checkpoints = await listWorkspaceCheckpoints(process.cwd());
+async function checkpointLines(context = cliRuntimeContext()): Promise<string[]> {
+  const checkpoints = await listWorkspaceCheckpoints(context.workspace);
   if (checkpoints.length === 0) return ["No checkpoints in this workspace yet."];
   return checkpoints
     .slice(0, 20)
     .map((cp) => `${cp.id}  ${cp.createdAt}  ${cp.fileManifest.length} files${cp.label ? `  ${cp.label}` : ""}`);
 }
 
-async function checkpointDiffLines(id: string): Promise<string[]> {
+async function checkpointDiffLines(id: string, context = cliRuntimeContext()): Promise<string[]> {
   if (!id) return ["Usage: /checkpoint-diff <id>"];
   try {
-    const diff = await diffWorkspaceCheckpoint(process.cwd(), id);
+    const diff = await diffWorkspaceCheckpoint(context.workspace, id);
     return [
       `added: ${diff.added.length}`,
       ...diff.added.slice(0, 20).map((f) => `+ ${f}`),
@@ -1289,10 +1493,10 @@ async function checkpointDiffLines(id: string): Promise<string[]> {
   }
 }
 
-async function rollbackLines(id: string): Promise<string[]> {
+async function rollbackLines(id: string, context = cliRuntimeContext()): Promise<string[]> {
   if (!id) return ["Usage: /rollback <checkpoint-id>"];
   try {
-    const result = await restoreWorkspaceCheckpoint(process.cwd(), id);
+    const result = await restoreWorkspaceCheckpoint(context.workspace, id);
     return [`restored ${result.restored} file(s)`, `deleted ${result.deleted} file(s)`];
   } catch (err) {
     return [err instanceof Error ? err.message : String(err)];
@@ -1302,11 +1506,11 @@ async function rollbackLines(id: string): Promise<string[]> {
 async function undoLines(live: LiveSession, rawDepth = ""): Promise<string[]> {
   const depth = rawDepth.trim() ? Number(rawDepth.trim()) : 1;
   if (!Number.isInteger(depth) || depth < 1) return ["Usage: /undo [N]"];
-  const checkpoints = await listWorkspaceCheckpoints(process.cwd());
+  const checkpoints = await listWorkspaceCheckpoints(live.context.workspace);
   const target = checkpoints[depth - 1];
   if (!target) return [`No checkpoint ${depth} step(s) back.`];
   try {
-    const result = await restoreWorkspaceCheckpoint(process.cwd(), target.id);
+    const result = await restoreWorkspaceCheckpoint(live.context.workspace, target.id);
     live.queueSystemReminder(
       `User invoked /undo ${depth}. Restored workspace to checkpoint ${target.id}. Re-read affected files before editing again.`,
       "undo",
@@ -1453,9 +1657,9 @@ async function runCommand(args: ParsedArgs): Promise<number> {
       // ignore
     }
   });
-  await live.agentRuntime?.beforeTurn(goal);
+  await prepareUserTurn(live, goal);
   let finalStatus: "completed" | "interrupted" | "failed" = "completed";
-  for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
+  for await (const event of live.session.sendContent(await contentFromUserInput(goal, live.context.workspace))) {
     if (event.type === "tool_end" && event.touchedFiles?.length) {
       live.verifier.scheduleFor(event.touchedFiles);
     }
@@ -1476,14 +1680,23 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     process.stderr.write("error: daemon currently requires --json\n");
     return 2;
   }
+  const rl = createInterface({ input: stdin, output: stderr, terminal: false });
+  const commands = new DaemonCommandRouter((error) => {
+    process.stdout.write(JSON.stringify({ type: "daemon_error", error }) + "\n");
+  });
+  commands.start(rl);
   let live: LiveSession;
   try {
-    live = await createSession(args);
+    live = await createSession(args, undefined, (request) => commands.waitForPermission(request));
   } catch (err) {
+    commands.close();
+    rl.close();
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
     return 2;
   }
-  process.stdout.write(JSON.stringify({ type: "daemon_ready", sessionId: live.session.meta.id }) + "\n");
+  process.stdout.write(
+    JSON.stringify({ type: "daemon_ready", sessionId: live.session.meta.id, reasoningLevel: resolveReasoningLevel(await loadUiSettings()) }) + "\n",
+  );
 
   // Bridge lifecycle events (Bootstrap, SelfEvolve, capture, recall, dream,
   // skill_crafted, etc.) out as NDJSON so the Tauri shell can render +N
@@ -1498,27 +1711,30 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       // never let lifecycle bridging crash the daemon
     }
   });
-  const rl = createInterface({ input: stdin, output: stderr, terminal: false });
   try {
-    for await (const line of rl) {
-      if (!line.trim()) continue;
-      let command: { type?: string; goal?: string; command?: string };
-      try {
-        command = JSON.parse(line) as { type?: string; goal?: string; command?: string };
-      } catch {
-        process.stdout.write(JSON.stringify({ type: "daemon_error", error: "invalid JSON command" }) + "\n");
+    while (true) {
+      const command = await commands.nextCommand();
+      if (!command) break;
+      if (command.type === "exit") break;
+      if (command.type === "reasoning") {
+        const level = command.level?.toLowerCase();
+        if (!isReasoningLevel(level)) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "reasoning requires level: low|medium|high|max" }) + "\n");
+          continue;
+        }
+        live.session.setReasoningLevel(level);
+        await updateUiSettings({ reasoningLevel: level });
+        process.stdout.write(JSON.stringify({ type: "reasoning_set", level }) + "\n");
         continue;
       }
-      if (command.type === "exit") break;
       if (command.type !== "send" || !command.goal) {
         process.stdout.write(JSON.stringify({ type: "daemon_error", error: "expected {type:\"send\", goal:string}" }) + "\n");
         continue;
       }
       lifecycleOpen = true;
-      await live.agentRuntime?.beforeTurn(command.goal);
-      await mindBeforeTurn(live, command.goal);
+      await prepareUserTurn(live, command.goal);
       let finalStatus: "completed" | "interrupted" | "failed" = "completed";
-      for await (const event of live.session.sendContent(await contentFromUserInput(command.goal, process.cwd()))) {
+      for await (const event of live.session.sendContent(await contentFromUserInput(command.goal, live.context.workspace))) {
         if (event.type === "turn_end") finalStatus = event.status;
         process.stdout.write(JSON.stringify(event) + "\n");
       }
@@ -1527,6 +1743,8 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     }
   } finally {
     lifecycleOpen = false;
+    commands.close();
+    rl.close();
     unsubscribeLifecycle();
     await live.agentRuntime?.sessionEnded();
     await mindSessionEnded();
@@ -1538,11 +1756,12 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
 
 async function agentCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "doctor";
-  const home = args.flags.get("home") ?? process.env.CRIX_HOME;
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.CRIX_HOME });
+  const home = context.home;
   if (subcommand === "bootstrap") {
     const shouldComplete = args.flags.has("user") || args.flags.has("name");
     if (!shouldComplete) {
-      const state = await ensureAgentScaffold({ home, workspace: process.cwd() });
+      const state = await ensureAgentScaffold({ home, workspace: context.workspace });
       process.stdout.write(notice("Agent Bootstrap", [state.message, `home ${state.home}`], state.required ? "warn" : "success"));
       return 0;
     }
@@ -1558,17 +1777,17 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
         vibe: args.flags.get("vibe") ?? "direct",
         emoji: args.flags.get("emoji") ?? "*",
       },
-      { home, workspace: process.cwd() },
+      { home, workspace: context.workspace },
     );
     process.stdout.write(notice("Agent Bootstrap", [state.message, `home ${state.home}`], "success"));
     return 0;
   }
   if (subcommand === "doctor") {
     const config = await loadAgentConfig(home);
-    const store = await createMemoryStore(config, home ?? crixHome());
+    const store = await createMemoryStore(config, home);
     const status = store.status();
     process.stdout.write(notice("Agent Doctor", [
-      `home ${home ?? crixHome()}`,
+      `home ${home}`,
       `memory backend ${status.backend}`,
       `sqlite-vec loaded ${status.vectorEnabled ? "yes" : "no"}`,
       `store ${status.path}`,
@@ -1581,7 +1800,7 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
     const config = await loadAgentConfig(home);
     const result = phase === "rem"
       ? await runRemDream({ home, config })
-      : await runDeepDream({ home, workspace: process.cwd(), config });
+      : await runDeepDream({ home, workspace: context.workspace, config });
     process.stdout.write(notice("Agent Dream", [result.report], "success"));
     return 0;
   }
@@ -1623,7 +1842,7 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
   if (subcommand === "backup") {
-    const dest = args.flags.get("dest") ?? args.positionals[1] ?? path.join(process.cwd(), `crix-agent-backup-${Date.now()}.json`);
+    const dest = args.flags.get("dest") ?? args.positionals[1] ?? path.join(context.workspace, `crix-agent-backup-${Date.now()}.json`);
     const result = await exportHome({ home, dest });
     process.stdout.write(notice("Agent Backup", [
       `wrote ${result.files} file(s) / ${result.bytes} bytes`,
@@ -1804,7 +2023,8 @@ async function sessionsCommand(): Promise<number> {
 }
 
 async function checkpointsCommand(): Promise<number> {
-  const checkpoints = await listWorkspaceCheckpoints(process.cwd());
+  const context = cliRuntimeContext();
+  const checkpoints = await listWorkspaceCheckpoints(context.workspace);
   if (checkpoints.length === 0) {
     process.stdout.write(notice("Checkpoints", ["No checkpoints in this workspace yet."], "warn"));
     return 0;
@@ -1825,7 +2045,7 @@ async function checkpointDiffCommand(id: string): Promise<number> {
     return 2;
   }
   try {
-    const diff = await diffWorkspaceCheckpoint(process.cwd(), id);
+    const diff = await diffWorkspaceCheckpoint(cliRuntimeContext().workspace, id);
     const lines = [
       `added: ${diff.added.length}`,
       ...diff.added.slice(0, 20).map((f) => `+ ${f}`),
@@ -1848,7 +2068,7 @@ async function rollbackCommand(id: string): Promise<number> {
     return 2;
   }
   try {
-    const result = await restoreWorkspaceCheckpoint(process.cwd(), id);
+    const result = await restoreWorkspaceCheckpoint(cliRuntimeContext().workspace, id);
     process.stdout.write(notice("Rollback", [`restored ${result.restored} file(s)`, `deleted ${result.deleted} file(s)`], "success"));
     return 0;
   } catch (err) {
@@ -1866,7 +2086,7 @@ function themesCommand(): number {
 async function resumeCommand(args: ParsedArgs): Promise<number> {
   try {
     const target = args.positionals[0] ?? args.flags.get("session") ?? "last";
-    const sessionId = await requireResumeSessionId(target);
+    const sessionId = await requireResumeSessionId(target, cliRuntimeContext());
     return chatCommand(args, sessionId);
   } catch (err) {
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -1875,9 +2095,10 @@ async function resumeCommand(args: ParsedArgs): Promise<number> {
 }
 
 async function launcherCommand(args: ParsedArgs): Promise<number> {
+  const context = cliRuntimeContext();
   const settings = await loadUiSettings();
   const action = await runInkLauncher({
-    workspace: process.cwd(),
+    workspace: context.workspace,
     settings,
     onSettingsChange: (patch) => {
       void updateUiSettings(patch);
@@ -1928,17 +2149,16 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     const snapshot = (): InkChatSnapshot => ({
       provider: live.selection.provider.name,
       model: live.selection.model,
-      workspace: process.cwd(),
+      workspace: live.context.workspace,
       mode: live.runtime.permissionMode,
     });
     return await runInkChat({
       snapshot,
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
       sendMessage: async (goal, onEvent) => {
-        await live.agentRuntime?.beforeTurn(goal);
-        await mindBeforeTurn(live, goal);
+        await prepareUserTurn(live, goal);
         let finalStatus: "completed" | "interrupted" | "failed" = "completed";
-        for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
+        for await (const event of live.session.sendContent(await contentFromUserInput(goal, live.context.workspace))) {
           if (event.type === "tool_end" && event.touchedFiles?.length) {
             live.verifier.scheduleFor(event.touchedFiles);
           }
@@ -1957,7 +2177,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
         if (line === "/help") return { kind: "handled", lines: inkHelpLines(), snapshot: snapshot() };
         if (line === "/doctor") return { kind: "handled", lines: await doctorSummaryLines(), snapshot: snapshot() };
         if (line === "/themes") return { kind: "handled", lines: themeLines(), snapshot: snapshot() };
-        if (line === "/sessions") return { kind: "handled", lines: await sessionsLines(), snapshot: snapshot() };
+        if (line === "/sessions") return { kind: "handled", lines: await sessionsLines(20, live.context), snapshot: snapshot() };
         if (line === "/plan") {
           live.runtime.permissionMode = "plan";
           await updateUiSettings({ dangerousBypass: false });
@@ -1981,15 +2201,15 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
             snapshot: snapshot(),
           };
         }
-        if (line === "/checkpoints") return { kind: "handled", lines: await checkpointLines(), snapshot: snapshot() };
+        if (line === "/checkpoints") return { kind: "handled", lines: await checkpointLines(live.context), snapshot: snapshot() };
         if (line.startsWith("/checkpoint-diff ")) {
-          return { kind: "handled", lines: await checkpointDiffLines(line.slice("/checkpoint-diff ".length).trim()), snapshot: snapshot() };
+          return { kind: "handled", lines: await checkpointDiffLines(line.slice("/checkpoint-diff ".length).trim(), live.context), snapshot: snapshot() };
         }
         if (line === "/undo" || line.startsWith("/undo ")) {
           return { kind: "handled", lines: await undoLines(live, line.slice("/undo".length)), snapshot: snapshot() };
         }
         if (line.startsWith("/rollback ")) {
-          return { kind: "handled", lines: await rollbackLines(line.slice("/rollback ".length).trim()), snapshot: snapshot() };
+          return { kind: "handled", lines: await rollbackLines(line.slice("/rollback ".length).trim(), live.context), snapshot: snapshot() };
         }
         if (line === "/theme" || line.startsWith("/theme ")) {
           const requested = line.split(/\s+/, 2)[1];
@@ -2003,20 +2223,37 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
         }
         if (line === "/resume" || line.startsWith("/resume ")) {
           const target = line.split(/\s+/, 2)[1] ?? "last";
-          const sessionId = await requireResumeSessionId(target);
+          const sessionId = await requireResumeSessionId(target, live.context);
           live.agentRuntime?.stop();
           live = await createSessionWithSelection(args, live.selection, sessionId);
           return { kind: "handled", lines: live.resumed ? resumedLines(live.resumed) : [`Resumed ${sessionId}`], snapshot: snapshot() };
         }
         if (line.startsWith("/workspace ")) {
           const target = line.slice("/workspace ".length).trim();
-          const next = path.resolve(process.cwd(), target);
+          const next = path.resolve(live.context.workspace, target);
           const info = await stat(next).catch(() => null);
           if (!info?.isDirectory()) return { kind: "handled", lines: [`Not a directory: ${next}`], snapshot: snapshot() };
           live.agentRuntime?.stop();
           process.chdir(next);
           live = await createSessionWithSelection(args, live.selection);
-          return { kind: "handled", lines: [`Active workspace is now ${process.cwd()}`], snapshot: snapshot() };
+          return { kind: "handled", lines: [`Active workspace is now ${live.context.workspace}`], snapshot: snapshot() };
+        }
+        if (line === "/reasoning" || line.startsWith("/reasoning ")) {
+          const requested = line.split(/\s+/, 2)[1]?.toLowerCase();
+          if (!requested) {
+            const current = resolveReasoningLevel(await loadUiSettings());
+            return {
+              kind: "handled",
+              lines: [`Reasoning: ${reasoningLabel(current)} (${current}). Change with /reasoning <${REASONING_LEVELS.join("|")}>.`],
+              snapshot: snapshot(),
+            };
+          }
+          if (!isReasoningLevel(requested)) {
+            return { kind: "handled", lines: [`Unknown reasoning level: ${requested}`, `Available: ${REASONING_LEVELS.join(", ")}`], snapshot: snapshot() };
+          }
+          live.session.setReasoningLevel(requested);
+          await updateUiSettings({ reasoningLevel: requested });
+          return { kind: "handled", lines: [`Reasoning set to ${reasoningLabel(requested)} — applies on your next message.`], snapshot: snapshot() };
         }
         return { kind: "not-handled" };
       },
@@ -2026,12 +2263,12 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
   process.stdout.write("\n" + chatHeader({
     provider: live.selection.provider.name,
     model: live.selection.model,
-    workspace: process.cwd(),
+    workspace: live.context.workspace,
   }));
   if (live.resumed) printResumed(live.resumed);
 
   while (true) {
-    const line = (await askLine(promptLabel(live.selection.model, process.cwd(), live.runtime.permissionMode))).trim();
+    const line = (await askLine(promptLabel(live.selection.model, live.context.workspace, live.runtime.permissionMode))).trim();
     if (!line) continue;
     if (line === "/exit" || line === "exit" || line === "/quit" || line === "quit") {
       await live.agentRuntime?.sessionEnded();
@@ -2067,7 +2304,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       process.stdout.write(chatHeader({
         provider: live.selection.provider.name,
         model: live.selection.model,
-        workspace: process.cwd(),
+        workspace: live.context.workspace,
       }));
       continue;
     }
@@ -2122,7 +2359,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     if (line === "/resume" || line.startsWith("/resume ")) {
       const target = line.split(/\s+/, 2)[1] ?? "last";
       try {
-        const sessionId = await requireResumeSessionId(target);
+        const sessionId = await requireResumeSessionId(target, live.context);
         live.agentRuntime?.stop();
         live = await createSessionWithSelection(args, live.selection, sessionId);
         if (live.resumed) printResumed(live.resumed);
@@ -2156,7 +2393,8 @@ async function switchWorkspace(
   selection: ProviderSelection,
   target: string,
 ): Promise<LiveSession> {
-  const next = path.resolve(process.cwd(), target);
+  const context = cliRuntimeContext();
+  const next = path.resolve(context.workspace, target);
   const info = await stat(next).catch(() => null);
   if (!info?.isDirectory()) {
     process.stderr.write(notice("Workspace", [`Not a directory: ${next}`], "error"));
@@ -2164,16 +2402,16 @@ async function switchWorkspace(
   }
   process.chdir(next);
   const live = await createSessionWithSelection(args, selection);
-  process.stdout.write(notice("Workspace", [`Active workspace is now ${process.cwd()}`], "success"));
+  process.stdout.write(notice("Workspace", [`Active workspace is now ${live.context.workspace}`], "success"));
   return live;
 }
 
 async function renderTurn(live: LiveSession, goal: string): Promise<void> {
-  await live.agentRuntime?.beforeTurn(goal);
+  await prepareUserTurn(live, goal);
   let wroteText = false;
   let wroteThinking = false;
   let finalStatus: "completed" | "interrupted" | "failed" = "completed";
-  for await (const event of live.session.sendContent(await contentFromUserInput(goal, process.cwd()))) {
+  for await (const event of live.session.sendContent(await contentFromUserInput(goal, live.context.workspace))) {
     if (event.type === "text_delta") {
       if (wroteThinking) {
         process.stderr.write("\n");
@@ -2309,14 +2547,17 @@ async function doctorCommand(): Promise<number> {
 // the ACTUAL conversation, so Crix recalls, captures, and knows itself instead
 // of behaving like a fresh chatbot every turn. Read-only/best-effort: the Mind
 // must never break a turn.
-async function loadLiveMindContext(home: string): Promise<string> {
+const LIVE_MEMORY_ITEM_CHARS = 420;
+const LIVE_MEMORY_BLOCK_CHARS = 2_400;
+
+async function loadLiveMindContext(context: CliRuntimeContext): Promise<string> {
   try {
-    const store = await MemoryStore.open(mindPaths(home).memoryFile);
-    const caps = await listCapabilities(home);
+    const store = await MemoryStore.open(context.mind.memoryFile);
+    const caps = await listCapabilities(context.home);
     const learned = caps.filter((c) => c.status === "mastered" || c.status === "have");
     const known = store
       .all()
-      .filter((n) => n.kind === "semantic")
+      .filter((n) => n.kind === "semantic" && !/^Recurring theme "/.test(n.content))
       .sort((a, b) => b.strength - a.strength)
       .slice(0, 8);
     if (learned.length === 0 && known.length === 0) return "";
@@ -2327,10 +2568,10 @@ async function loadLiveMindContext(home: string): Promise<string> {
     ];
     if (known.length) {
       lines.push("", "What you know:");
-      for (const n of known) lines.push(`- ${n.content}`);
+      for (const n of known) lines.push(`- ${compactLine(n.content, LIVE_MEMORY_ITEM_CHARS)}`);
     }
     if (learned.length) {
-      lines.push("", "Capabilities you've learned (runnable as skills):");
+      lines.push("", "Capabilities you can rely on:");
       for (const c of learned) lines.push(`- ${c.name}${c.skillRef ? ` (skill: ${c.skillRef})` : ""}`);
     }
     return lines.join("\n") + "\n";
@@ -2339,22 +2580,39 @@ async function loadLiveMindContext(home: string): Promise<string> {
   }
 }
 
+async function prepareUserTurn(live: LiveSession, userMessage: string): Promise<void> {
+  await live.agentRuntime?.beforeTurn(userMessage);
+  await mindBeforeTurn(live, userMessage);
+  live.queueSystemReminder(buildForegroundReminder(userMessage), "instructions");
+}
+
 async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<void> {
   const text = userMessage.trim();
   if (!text) return;
   try {
-    const store = await MemoryStore.open(mindPaths(crixAgentHome()).memoryFile);
+    const intent = classifyUserIntent(text);
+    const store = await MemoryStore.open(live.context.mind.memoryFile);
     // Recall a constellation relevant to this message and surface it to the model.
-    const recalled = await store.remember(text, { limit: 5 });
+    const recalled = intent.shouldRecall ? await store.remember(text, { limit: 5 }) : [];
     if (recalled.length > 0) {
-      const block = recalled.map((r) => `- ${r.viaAssociation ? "↝ " : ""}${r.node.content}`).join("\n");
+      const lines: string[] = [];
+      let used = 0;
+      for (const r of recalled) {
+        const prefix = `- ${r.viaAssociation ? "<- " : ""}`;
+        const remaining = LIVE_MEMORY_BLOCK_CHARS - used - prefix.length;
+        if (remaining <= 80) break;
+        const line = `${prefix}${compactLine(r.node.content, Math.min(LIVE_MEMORY_ITEM_CHARS, remaining))}`;
+        used += line.length + 1;
+        lines.push(line);
+      }
+      const block = lines.join("\n");
       live.queueSystemReminder(
         `Recalled from your living memory for this message — weave in what's relevant, don't recite it:\n${block}`,
         "memory",
       );
     }
     // Capture the user's message as an episodic memory — this is how Crix learns over time.
-    if (text.length > 8) {
+    if (intent.shouldCapture) {
       await store.add({ kind: "episodic", content: text.slice(0, 400), source: live.session.meta.id });
     }
   } catch {
@@ -2364,16 +2622,16 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
 
 async function mindSessionEnded(): Promise<void> {
   try {
-    const store = await MemoryStore.open(mindPaths(crixAgentHome()).memoryFile);
+    const store = await MemoryStore.open(cliRuntimeContext().mind.memoryFile);
     await store.consolidate(); // sleep: forget the trivial, crystallize recurring themes
   } catch {
     // never fatal
   }
 }
 
-function buildSystemPrompt(permissionMode: PermissionMode = "workspace-write"): string {
+function buildSystemPrompt(permissionMode: PermissionMode = "workspace-write", context = cliRuntimeContext()): string {
   const platform = process.platform === "win32" ? "Windows (PowerShell first)" : process.platform;
-  const cwd = process.cwd();
+  const cwd = context.workspace;
   const today = new Date().toISOString().slice(0, 10);
 
   return `You are Crix, an autonomous local assistant with a powerful coding harness running in the terminal.
@@ -2514,7 +2772,9 @@ When you finish, report what changed in 1-3 sentences (with \`file_path:line\` r
 // ─── operator command (Crix v5 / O1 — the durable autonomy spine) ──────
 async function operatorCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "list";
-  const home = crixAgentHome(args.flags.get("home") ?? process.env.CRIX_HOME);
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.CRIX_HOME });
+  const home = context.home;
+  await seedNativeCapabilities(home).catch(() => undefined);
 
   if (subcommand === "add" || subcommand === "goal") {
     const statement = args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
@@ -2548,9 +2808,9 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
       const dispatcher = new QueryEngineDispatcher({
         provider: selection.provider,
         model: selection.model,
-        workspace: process.cwd(),
+        workspace: context.workspace,
       });
-      final = await runGoalToCompletion({ home, dispatcher, workspace: process.cwd() }, result.goal.id, { maxTicks: ticks });
+      final = await runGoalToCompletion({ home, dispatcher, workspace: context.workspace }, result.goal.id, { maxTicks: ticks });
     }
     if (args.flags.has("json")) {
       process.stdout.write(JSON.stringify({ ...result, final }, null, 2) + "\n");
@@ -2626,7 +2886,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     const dispatcher = new QueryEngineDispatcher({
       provider: selection.provider,
       model: selection.model,
-      workspace: process.cwd(),
+      workspace: context.workspace,
     });
     const lines: string[] = [`provider ${selection.source} · model ${selection.model} · up to ${maxTicks} tick(s)/goal`];
     for (const g of goals) {
@@ -2681,6 +2941,34 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
+  if (subcommand === "attention" || subcommand === "queue") {
+    const goals = await listGoals(home);
+    const caps = await listCapabilities(home);
+    const decision = decideAttention([
+      ...attentionItemsFromGoals(goals),
+      ...attentionItemsFromCapabilities(caps),
+    ]);
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(decision, null, 2) + "\n");
+      return 0;
+    }
+    const lines = [decision.summary];
+    if (decision.queue.length) {
+      lines.push("Runnable:");
+      for (const item of decision.queue.slice(0, 12)) {
+        lines.push(`  ${item.kind} ${Math.round(item.score)} - ${item.title}${item.reason ? ` (${item.reason})` : ""}`);
+      }
+    }
+    if (decision.parked.length) {
+      lines.push("Parked:");
+      for (const item of decision.parked.slice(0, 8)) {
+        lines.push(`  ${item.kind} - ${item.title}${item.reason ? ` (${item.reason})` : ""}`);
+      }
+    }
+    process.stdout.write(notice("Operator Attention", lines, decision.selected ? "info" : "warn"));
+    return 0;
+  }
+
   if (subcommand === "stats") {
     const caps = await listCapabilities(home);
     const curve = novelDeltaCurve(caps);
@@ -2709,7 +2997,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | acquire | list | status | run | caps | stats | acquisitions\n`);
+  process.stderr.write(`error: unknown operator subcommand "${subcommand}". Try: add | acquire | list | status | run | caps | stats | attention | acquisitions\n`);
   return 2;
 }
 
@@ -2727,8 +3015,9 @@ function csvFlag(value: string | undefined): string[] | undefined {
 // ─── mind command (Crix v6 — Living Memory feed for the UI + you) ───────
 async function mindCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "list";
-  const home = crixAgentHome(args.flags.get("home") ?? process.env.CRIX_HOME);
-  const store = await MemoryStore.open(args.flags.get("root") ?? mindPaths(home).memoryFile);
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.CRIX_HOME });
+  const home = context.home;
+  const store = await MemoryStore.open(args.flags.get("root") ?? context.mind.memoryFile);
   const json = args.flags.has("json");
 
   if (subcommand === "add") {
@@ -2782,10 +3071,28 @@ async function mindCommand(args: ParsedArgs): Promise<number> {
     process.stdout.write(
       notice(
         "Mind · consolidated",
-        [`forgot ${report.pruned} trivial · crystallized ${report.promoted.length} theme(s)${report.promoted.length ? ` (${report.promoted.join(", ")})` : ""} · ${report.kept} kept`],
+        [`forgot ${report.pruned} trivial · merged ${report.deduped} duplicate(s) · crystallized ${report.promoted.length} theme(s)${report.promoted.length ? ` (${report.promoted.join(", ")})` : ""} · ${report.kept} kept`],
         "success",
       ),
     );
+    return 0;
+  }
+
+  if (subcommand === "doctor" || subcommand === "stats") {
+    const report = diagnoseMemory(store.all());
+    if (json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      return 0;
+    }
+    const lines = [
+      `${report.total} memories (${report.byKind.episodic} episodic, ${report.byKind.semantic} semantic, ${report.byKind.procedural} procedural)`,
+      `${report.generatedThemeSemantics} generated theme semantic(s), ${report.noisyThemeSemantics} noisy`,
+      `${report.duplicateGroups.length} duplicate group(s), ${report.orphanLinks.length} orphan-link node(s), ${report.lowStrengthEpisodes} faded episode(s)`,
+    ];
+    if (report.oversized.length) lines.push(`${report.oversized.length} oversized entr${report.oversized.length === 1 ? "y" : "ies"}`);
+    lines.push("Recommendations:");
+    for (const rec of report.recommendations) lines.push(`  ${rec}`);
+    process.stdout.write(notice("Mind Doctor", lines, report.noisyThemeSemantics || report.orphanLinks.length ? "warn" : "info"));
     return 0;
   }
 
@@ -2924,7 +3231,8 @@ async function main(): Promise<void> {
 async function applyWorkspaceFlag(flags: Map<string, string>): Promise<void> {
   const requested = flags.get("workspace") ?? flags.get("cwd");
   if (!requested) return;
-  const target = path.resolve(process.cwd(), requested);
+  const context = cliRuntimeContext();
+  const target = path.resolve(context.workspace, requested);
   const info = await stat(target).catch(() => null);
   if (!info?.isDirectory()) {
     process.stderr.write(`error: workspace is not a directory: ${target}\n`);

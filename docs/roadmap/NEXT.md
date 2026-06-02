@@ -1214,7 +1214,7 @@ That's not "cool." That's legendary.
 3. **Commit per T** with format: `Tn: <short title>` matching this doc.
 4. **`pnpm verify` must pass before every commit. No exceptions.**
 5. **If a T is bigger than expected, split into Tn.1, Tn.2.** Don't blob.
-6. **Update this NEXT.md** when scope evolves. The doc is the source of truth.
+6. **Update this doc** when scope evolves. The doc is the source of truth.
 7. **Read `D:\Crix\packages\cli\src\entry.ts` and `packages/core/src/queryEngine.ts` in full before starting T1.** They're the spinal cord.
 8. **Don't add new top-level deps without justifying in the commit body.** Native deps (sharp, better-sqlite3, playwright-core) must be OPTIONAL.
 9. **Windows-first.** The user runs Windows. Test paths, shells, clipboard there primarily.

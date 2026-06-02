@@ -35,21 +35,22 @@ function clamp01(n: number): number {
 
 export async function consider(situation: string, deps: ConsiderDeps): Promise<Deliberation> {
   const now = deps.now ?? (() => new Date());
+  const compactSituation = compactForMemory(situation, 800);
   const thoughts: Thought[] = [];
   const think = (kind: ThoughtKind, text: string): void => {
-    const thought: Thought = { kind, text, at: now().toISOString() };
+    const thought: Thought = { kind, text: compactForMemory(text, 1_000), at: now().toISOString() };
     thoughts.push(thought);
     deps.emit?.(thought);
   };
 
-  think("observe", `Considering: ${situation}`);
+  think("observe", `Considering: ${compactSituation}`);
 
   // RECALL — think with memory first (the M1 × M2 integration).
   let recalled: RecallResult[] = [];
   if (deps.memory) {
-    recalled = await deps.memory.remember(situation, { now: now() });
+    recalled = await deps.memory.remember(compactSituation, { now: now() });
     if (recalled.length > 0) {
-      think("recall", `This reminds me of: ${recalled.slice(0, 3).map((r) => r.node.content).join("; ")}`);
+      think("recall", `This reminds me of: ${recalled.slice(0, 3).map((r) => compactForMemory(r.node.content, 240)).join("; ")}`);
     } else {
       think("recall", "Nothing in memory bears on this yet.");
     }
@@ -68,20 +69,28 @@ export async function consider(situation: string, deps: ConsiderDeps): Promise<D
 
   // DECIDE — commit to the best and form an intention.
   const best = [...options].sort((a, b) => b.score - a.score)[0];
-  think("decide", `Going with: ${best.action}`);
-  const intention: Intention = { goal: best.action, rationale: best.pro, confidence: clamp01(best.score) };
-  think("intend", `Intention: ${best.action} (confidence ${Math.round(intention.confidence * 100)}%)`);
+  const bestAction = compactForMemory(best.action, 500);
+  const bestRationale = compactForMemory(best.pro, 500);
+  think("decide", `Going with: ${bestAction}`);
+  const intention: Intention = { goal: bestAction, rationale: bestRationale, confidence: clamp01(best.score) };
+  think("intend", `Intention: ${bestAction} (confidence ${Math.round(intention.confidence * 100)}%)`);
 
   // REMEMBER the decision so future deliberation is wiser.
   if (deps.memory) {
     await deps.memory.add({
       kind: "episodic",
-      content: `Decided to ${best.action} when considering "${situation}"`,
+      content: `Decided to ${bestAction} when considering "${compactSituation}"`,
       at: now(),
     });
   }
 
   return { thoughts, intention };
+}
+
+function compactForMemory(text: string, maxChars: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, Math.max(0, maxChars - 32)).trimEnd()} [truncated]`;
 }
 
 /** Curiosity: gaps the agent flagged in itself become intentions to pursue. */

@@ -33,6 +33,26 @@ test("V4 V2: memory store inserts and recalls with deterministic local embedding
   assert.match(formatRecallReminder(results), /USER#1/);
 });
 
+test("V4 V2: vector memory stores and recalls bounded atomic entries", async () => {
+  const home = await makeTmp();
+  const config = defaultAgentConfig(home);
+  config.memory.dimensions = 32;
+  const store = await createMemoryStore(config, home);
+  await store.add({
+    category: "PROJECT",
+    workspace: "D:/repo",
+    content: `Use pnpm verify. ${"huge ".repeat(2_000)}`,
+    embeddingDim: 32,
+  });
+
+  const [stored] = await store.list();
+  assert.ok(stored.content.length < 1_250, `stored memory too large: ${stored.content.length}`);
+  const results = await store.recall({ query: "pnpm verify", embedding: lexicalEmbedding("pnpm verify", 32), workspace: "D:/repo" });
+  const reminder = formatRecallReminder(results);
+  assert.ok(reminder.length < 650, `recall reminder too large: ${reminder.length}`);
+  assert.match(reminder, /truncated/);
+});
+
 test("V4 V2: recallForTurn formats a system reminder without Ollama", async () => {
   const home = await makeTmp();
   const config = defaultAgentConfig(home);

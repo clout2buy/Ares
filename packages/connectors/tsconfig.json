@@ -7,8 +7,6 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "references": [
-    { "path": "../protocol" },
-    { "path": "../agent" },
     { "path": "../effects" }
   ],
   "include": ["src/**/*.ts"]

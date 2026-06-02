@@ -10,6 +10,9 @@ import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
 
+const DREAM_MEMORY_ITEM_CHARS = 420;
+const DREAM_MEMORY_MAX_ITEMS = 120;
+
 export interface DreamResult {
   phase: "light" | "deep" | "rem";
   promoted: number;
@@ -63,8 +66,8 @@ export async function runDeepDream(opts: {
   );
   if (promoted.length > 0) {
     const lines = ["# Memory", "", "_(Curated long-term memory. Only DEEP dreaming writes here.)_", ""];
-    for (const memory of promoted.slice(-200)) {
-      lines.push(`- [${memory.category}#${memory.id}] ${memory.content}`);
+    for (const memory of promoted.slice(-DREAM_MEMORY_MAX_ITEMS)) {
+      lines.push(`- [${memory.category}#${memory.id}] ${compact(memory.content, DREAM_MEMORY_ITEM_CHARS)}`);
     }
     await writeFileAtomic(paths.memory, lines.join("\n") + "\n");
   }
@@ -151,9 +154,9 @@ function messageText(message: any): string {
   return message.content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("");
 }
 
-function compact(text: string): string {
+function compact(text: string, limit = 220): string {
   const clean = text.replace(/\s+/g, " ").trim();
-  return clean.length > 220 ? `${clean.slice(0, 217)}...` : clean;
+  return clean.length > limit ? `${clean.slice(0, Math.max(0, limit - 3))}...` : clean;
 }
 
 async function promoteSoulRules(soulPath: string, memories: readonly { id: number; category: string; content: string; hits: number }[], threshold: number): Promise<number> {
@@ -163,7 +166,7 @@ async function promoteSoulRules(soulPath: string, memories: readonly { id: numbe
   const lines = [current.trimEnd(), ""];
   let added = 0;
   for (const memory of candidates) {
-    const rule = `- ${memory.content} (source memory #${memory.id})`;
+    const rule = `- ${compact(memory.content, DREAM_MEMORY_ITEM_CHARS)} (source memory #${memory.id})`;
     if (current.includes(rule)) continue;
     lines.push(rule);
     added += 1;

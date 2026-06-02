@@ -10,13 +10,14 @@
   "description": "Crix: streaming coding-agent harness for terminal. OpenAI ChatGPT OAuth + Ollama Cloud 3-slot parallel.",
   "license": "MIT",
   "scripts": {
-    "build": "tsc -b packages/protocol packages/core packages/tools packages/agent packages/operator packages/effects packages/connectors packages/mind packages/cli",
-    "check": "tsc -b packages/protocol packages/core packages/tools packages/agent packages/operator packages/effects packages/connectors packages/mind packages/cli --pretty false",
+    "build": "tsc -b",
+    "check": "tsc -b --pretty false",
+    "lint": "pnpm check",
     "test": "pnpm build && node --test tests/*.test.mjs",
     "crix": "node packages/cli/dist/entry.js",
     "link:cli": "pnpm build && pnpm link --global",
-    "verify": "pnpm check && pnpm test",
-    "clean": "node -e \"const fs=require('fs'),p=require('path'); for (const d of fs.readdirSync('packages')) { const dir=p.join('packages',d); fs.rmSync(p.join(dir,'dist'),{recursive:true,force:true}); for (const f of fs.readdirSync(dir)) if (f.endsWith('.tsbuildinfo')) fs.rmSync(p.join(dir,f),{force:true}); }\""
+    "verify": "pnpm lint && pnpm test",
+    "clean": "node scripts/clean.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

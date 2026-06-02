@@ -284,11 +284,42 @@ fn crix_send(goal: String, state: State<DaemonState>) -> Result<(), String> {
         return Err("message is empty".to_string());
     }
 
+    write_daemon_command(state.inner(), json!({ "type": "send", "goal": trimmed }))
+}
+
+#[tauri::command]
+fn crix_set_reasoning(level: String, state: State<DaemonState>) -> Result<(), String> {
+    let level = level.trim().to_ascii_lowercase();
+    if !matches!(level.as_str(), "low" | "medium" | "high" | "max") {
+        return Err("reasoning level must be low, medium, high, or max".to_string());
+    }
+
+    write_daemon_command(state.inner(), json!({ "type": "reasoning", "level": level }))
+}
+
+#[tauri::command]
+fn crix_permission_response(
+    id: Option<String>,
+    decision: String,
+    state: State<DaemonState>,
+) -> Result<(), String> {
+    let decision = decision.trim();
+    if !matches!(decision, "allow_once" | "allow_always" | "deny") {
+        return Err("permission decision must be allow_once, allow_always, or deny".to_string());
+    }
+
+    write_daemon_command(
+        state.inner(),
+        json!({ "type": "permission_response", "id": id, "decision": decision }),
+    )
+}
+
+fn write_daemon_command(state: &DaemonState, command: Value) -> Result<(), String> {
     let mut stdin_state = state.stdin.lock().map_err(|_| "daemon stdin lock failed")?;
     let stdin = stdin_state
         .as_mut()
         .ok_or_else(|| "Crix daemon is not running".to_string())?;
-    let line = json!({ "type": "send", "goal": trimmed }).to_string();
+    let line = command.to_string();
     stdin
         .write_all(line.as_bytes())
         .and_then(|_| stdin.write_all(b"\n"))
@@ -416,6 +447,8 @@ fn main() {
             crix_start_daemon,
             crix_restart_daemon,
             crix_send,
+            crix_set_reasoning,
+            crix_permission_response,
             crix_stop_daemon,
             crix_window_minimize,
             crix_window_toggle_maximize,
@@ -484,16 +517,18 @@ fn push_event_parts(
     event: Value,
 ) {
     let seq = next_event_seq.fetch_add(1, Ordering::SeqCst);
+    let buffered = BufferedEvent {
+        seq,
+        event: event.clone(),
+    };
     if let Ok(mut buffer) = events.lock() {
-        buffer.push(BufferedEvent {
-            seq,
-            event: event.clone(),
-        });
+        buffer.push(buffered.clone());
         let extra = buffer.len().saturating_sub(1200);
         if extra > 0 {
             buffer.drain(0..extra);
         }
     }
+    let _ = app.emit("crix:event-buffered", buffered);
     let _ = app.emit("crix:event", event);
 }
 

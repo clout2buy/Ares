@@ -23,6 +23,7 @@ import {
   type ToolResultBlock,
   type PermissionPromptDecision,
   type PermissionPromptSuggestion,
+  type ReasoningLevel,
   isToolUseBlock,
 } from "@crix/protocol";
 import { randomUUID } from "node:crypto";
@@ -37,7 +38,8 @@ export interface ProviderRequest {
   messages: Message[];
   tools: ProviderToolDescriptor[];
   signal?: AbortSignal;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  /** Unified reasoning dial; each provider translates it (effort vs budget). */
+  reasoningLevel?: ReasoningLevel;
   maxOutputTokens?: number;
 }
 
@@ -73,6 +75,7 @@ export interface ToolCallContext {
 }
 
 export interface ToolPermissionRequest {
+  id?: string;
   toolName: string;
   input: unknown;
   reason: string;
@@ -95,6 +98,16 @@ export interface QueryEngineConfig {
   workspace: string;
   signal?: AbortSignal;
   maxTurns?: number;
+  /** Reasoning dial for reasoning-capable models. Owner-selectable (low→max);
+   *  translated per provider (OpenAI effort, Ollama/Anthropic thinking budget). */
+  reasoningLevel?: ReasoningLevel;
+  /** Cap on output tokens per provider call. */
+  maxOutputTokens?: number;
+  /** If > 0, the engine trims the OLDEST conversation history to keep the
+   *  estimated input (system + tools + messages) under this many tokens, so a
+   *  long thread can never hard-fail with context_length_exceeded. The pending
+   *  user message and recent context are always kept. */
+  contextBudgetTokens?: number;
   /** Optional pending system-reminders to inject at next turn_start. */
   drainSystemReminders?(): Array<{
     text: string;
@@ -127,6 +140,78 @@ export interface QueryEngineConfig {
   selfTerritoryRoots?: readonly string[];
 }
 
+// ─── Context budgeting ─────────────────────────────────────────────────
+//
+// No tokenizer dependency: a ~4-chars/token heuristic plus a flat per-image
+// cost. Good enough to keep a runaway thread from blowing the model's window —
+// the goal is "never hard-fail with context_length_exceeded," not exactness.
+
+const CHARS_PER_TOKEN = 4;
+const IMAGE_TOKEN_ESTIMATE = 1024; // a high-detail image's rough tile cost
+
+function estimateTextTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+function estimateMessageTokens(m: Message): number {
+  let t = 8; // per-message role/framing overhead
+  for (const b of m.content) {
+    switch (b.type) {
+      case "text":
+      case "thinking":
+        t += estimateTextTokens(b.text);
+        break;
+      case "system_reminder":
+        t += estimateTextTokens(b.text) + 8;
+        break;
+      case "tool_result":
+        t += estimateTextTokens(typeof b.content === "string" ? b.content : JSON.stringify(b.content));
+        break;
+      case "tool_use":
+        t += estimateTextTokens(b.name) + estimateTextTokens(JSON.stringify(b.input));
+        break;
+      case "image":
+        t += IMAGE_TOKEN_ESTIMATE;
+        break;
+    }
+  }
+  return t;
+}
+
+/** A user message whose first block is a tool_result — would orphan into a
+ *  function_call_output with no preceding call if it led the kept window. */
+function leadsWithToolResult(m: Message): boolean {
+  return m.role === "user" && m.content[0]?.type === "tool_result";
+}
+
+/**
+ * Trim the OLDEST messages until the estimated total fits the budget. Always
+ * keeps the final (pending) message and never leaves a leading orphan
+ * tool_result. Returns the original array untouched when already within budget
+ * or when budgeting is disabled.
+ */
+export function budgetMessages(
+  messages: readonly Message[],
+  budgetTokens: number,
+  overheadTokens: number,
+): { messages: Message[]; trimmed: number } {
+  if (budgetTokens <= 0 || messages.length <= 1) return { messages: [...messages], trimmed: 0 };
+  let total = overheadTokens + messages.reduce((s, m) => s + estimateMessageTokens(m), 0);
+  if (total <= budgetTokens) return { messages: [...messages], trimmed: 0 };
+
+  const kept = [...messages];
+  let trimmed = 0;
+  while (total > budgetTokens && kept.length > 1) {
+    total -= estimateMessageTokens(kept.shift()!);
+    trimmed++;
+  }
+  while (kept.length > 1 && leadsWithToolResult(kept[0])) {
+    total -= estimateMessageTokens(kept.shift()!);
+    trimmed++;
+  }
+  return { messages: kept, trimmed };
+}
+
 // ─── Implementation ────────────────────────────────────────────────────
 
 export class QueryEngine {
@@ -142,6 +227,11 @@ export class QueryEngine {
   /** Read-only snapshot of the conversation so far. */
   history(): readonly Message[] {
     return this.messages;
+  }
+
+  /** Change the reasoning dial mid-session — applies to the next turn. */
+  setReasoningLevel(level: ReasoningLevel): void {
+    this.cfg.reasoningLevel = level;
   }
 
   hydrate(messages: readonly Message[]): void {
@@ -172,14 +262,18 @@ export class QueryEngine {
       throw new Error("streamTurn() requires a pending user message; call appendUserMessage() first");
     }
 
-    // Inject pending system-reminders into the user message before yielding turn_start.
+    // Inject pending system-reminders into the user message before yielding
+    // turn_start. The turn_start event remains first for stable rollout/daemon
+    // consumers, and reminder telemetry follows immediately after.
     const reminders = this.cfg.drainSystemReminders?.() ?? [];
     for (const r of reminders) {
       userMessage.content.unshift({ type: "system_reminder", text: r.text });
-      yield { type: "system_reminder_injected", text: r.text, source: r.source };
     }
 
     yield { type: "turn_start", turnId, sessionId: this.sessionId, userMessage };
+    for (const r of reminders) {
+      yield { type: "system_reminder_injected", text: r.text, source: r.source };
+    }
 
     const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
@@ -193,37 +287,83 @@ export class QueryEngine {
       let streamError: { code: string; message: string; retriable: boolean } | null = null;
 
       try {
-        const stream = this.cfg.provider.stream({
-          model: this.cfg.model,
-          system: this.cfg.systemPrompt,
-          messages: this.messages,
-          tools: this.cfg.tools.map((t) => ({
-            name: t.schema.name,
-            description: t.schema.description,
-            input_schema: t.schema.inputJsonSchema,
-          })),
-          signal: this.cfg.signal,
-        });
+        const toolDescriptors = this.cfg.tools.map((t) => ({
+          name: t.schema.name,
+          description: t.schema.description,
+          input_schema: t.schema.inputJsonSchema,
+        }));
+        const overheadTokens =
+          estimateTextTokens(this.cfg.systemPrompt) +
+          toolDescriptors.reduce(
+            (s, t) => s + estimateTextTokens(t.name) + estimateTextTokens(t.description) + estimateTextTokens(JSON.stringify(t.input_schema)) + 8,
+            0,
+          );
 
-        for await (const ev of stream) {
-          // Forward every stream event to the consumer.
-          yield ev;
+        const budgetAttempts = contextBudgetAttempts(this.cfg.contextBudgetTokens ?? 0);
+        for (let attempt = 0; attempt < budgetAttempts.length; attempt++) {
+          pendingToolUses.length = 0;
+          toolNameById.clear();
+          assistantMessage = null;
+          streamError = null;
 
-          if (ev.type === "tool_use_start") {
-            toolNameById.set(ev.id, ev.name);
+          const budgeted = budgetMessages(this.messages, budgetAttempts[attempt], overheadTokens);
+          const stream = this.cfg.provider.stream({
+            model: this.cfg.model,
+            system: this.cfg.systemPrompt,
+            messages: budgeted.messages,
+            tools: toolDescriptors,
+            signal: this.cfg.signal,
+            reasoningLevel: this.cfg.reasoningLevel,
+            maxOutputTokens: this.cfg.maxOutputTokens,
+          });
+
+          let modelStarted = false;
+          for await (const ev of stream) {
+            if (
+              ev.type === "error" &&
+              isContextLimitError(ev.error) &&
+              !modelStarted &&
+              attempt < budgetAttempts.length - 1
+            ) {
+              streamError = ev.error;
+              break;
+            }
+
+            // Forward every stream event to the consumer.
+            yield ev;
+
+            if (isModelOutputEvent(ev)) modelStarted = true;
+            if (ev.type === "tool_use_start") {
+              toolNameById.set(ev.id, ev.name);
+            }
+            if (ev.type === "tool_use_input_done") {
+              const name = toolNameById.get(ev.id);
+              if (name) pendingToolUses.push({ id: ev.id, name, input: ev.input });
+            }
+            if (ev.type === "message_done") {
+              assistantMessage = ev.message;
+              addUsageInto(totalUsage, ev.usage);
+              stopReason = ev.stopReason;
+            }
+            if (ev.type === "error") {
+              streamError = ev.error;
+            }
           }
-          if (ev.type === "tool_use_input_done") {
-            const name = toolNameById.get(ev.id);
-            if (name) pendingToolUses.push({ id: ev.id, name, input: ev.input });
+
+          if (
+            streamError &&
+            isContextLimitError(streamError) &&
+            !modelStarted &&
+            attempt < budgetAttempts.length - 1
+          ) {
+            yield {
+              type: "system_reminder_injected",
+              text: `Provider rejected the prompt as too large; retrying with a smaller recent-history window (${budgetAttempts[attempt + 1].toLocaleString()} tokens).`,
+              source: "compaction",
+            };
+            continue;
           }
-          if (ev.type === "message_done") {
-            assistantMessage = ev.message;
-            addUsageInto(totalUsage, ev.usage);
-            stopReason = ev.stopReason;
-          }
-          if (ev.type === "error") {
-            streamError = ev.error;
-          }
+          break;
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -433,6 +573,7 @@ export class QueryEngine {
         requestPermission: this.cfg.requestPermission
           ? async (request) => {
               const id = cryptoId("perm");
+              const requestWithId = { ...request, id };
               emit({
                 type: "permission_request",
                 id,
@@ -441,7 +582,7 @@ export class QueryEngine {
                 reason: request.reason,
                 suggestion: request.suggestion,
               });
-              const decision = await this.cfg.requestPermission!(request);
+              const decision = await this.cfg.requestPermission!(requestWithId);
               emit({ type: "permission_response", id, decision });
               return decision;
             }
@@ -475,7 +616,7 @@ export class QueryEngine {
         result: {
           type: "tool_result",
           tool_use_id: use.id,
-          content: stringifyToolOutput(result.output),
+          content: stringifyModelToolOutput(result.output),
         },
       };
     } catch (err) {
@@ -696,6 +837,13 @@ function addUsageInto(into: Usage, more: Usage): void {
   if (more.reasoningTokens) into.reasoningTokens = (into.reasoningTokens ?? 0) + more.reasoningTokens;
 }
 
+export function stringifyModelToolOutput(output: unknown): string {
+  const text = stringifyToolOutput(output);
+  const maxChars = toolResultCharBudget();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n\n[tool result truncated for model: ${text.length - maxChars} chars omitted; ask to read a narrower range if needed]`;
+}
+
 function stringifyToolOutput(output: unknown): string {
   if (typeof output === "string") return output;
   try {
@@ -703,6 +851,58 @@ function stringifyToolOutput(output: unknown): string {
   } catch {
     return String(output);
   }
+}
+
+function toolResultCharBudget(): number {
+  const raw = Number(process.env.CRIX_TOOL_RESULT_CHARS);
+  if (Number.isFinite(raw) && raw > 1_000) return Math.floor(raw);
+  return 24_000;
+}
+
+function contextBudgetAttempts(configuredBudgetTokens: number): number[] {
+  if (configuredBudgetTokens <= 0) return [0, 32_000, 16_000, 8_000, 4_000];
+  const candidates = [
+    configuredBudgetTokens,
+    Math.floor(configuredBudgetTokens * 0.5),
+    Math.floor(configuredBudgetTokens * 0.25),
+    8_000,
+    4_000,
+  ];
+  const seen = new Set<number>();
+  return candidates
+    .filter((budget) => budget > 0 && budget <= configuredBudgetTokens)
+    .map((budget) => Math.floor(budget))
+    .sort((a, b) => b - a)
+    .filter((budget) => {
+      if (seen.has(budget)) return false;
+      seen.add(budget);
+      return true;
+    });
+}
+
+function isContextLimitError(error: { code: string; message: string }): boolean {
+  const text = `${error.code} ${error.message}`.toLowerCase();
+  return (
+    text.includes("context_length_exceeded") ||
+    text.includes("prompt too long") ||
+    text.includes("max context") ||
+    text.includes("context window") ||
+    text.includes("maximum context") ||
+    text.includes("input length") ||
+    text.includes("too many tokens") ||
+    text.includes("exceeded max context")
+  );
+}
+
+function isModelOutputEvent(ev: StreamEvent): boolean {
+  return (
+    ev.type === "text_delta" ||
+    ev.type === "thinking_delta" ||
+    ev.type === "tool_use_start" ||
+    ev.type === "tool_use_input_delta" ||
+    ev.type === "tool_use_input_done" ||
+    ev.type === "message_done"
+  );
 }
 
 function describeActivity(toolName: string, input: unknown): string {

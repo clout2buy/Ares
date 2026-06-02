@@ -97,3 +97,102 @@ test("memory: a file-backed store persists and reopens from its home", async () 
 
   await fs.rm(home, { recursive: true, force: true });
 });
+
+test("memory: oversized entries are bounded on write and repaired on reopen", async () => {
+  const home = await makeDir();
+  const store = await MemoryStore.open(home);
+  const node = await store.add({ kind: "episodic", content: "a".repeat(20_000) });
+  assert.ok(node.content.length < 2_100, "new memories should not store giant raw blobs");
+
+  const memoryFile = path.join(home, "memory.jsonl");
+  await fs.writeFile(
+    memoryFile,
+    JSON.stringify({
+      id: "manual_huge",
+      kind: "episodic",
+      content: "b".repeat(20_000),
+      at: new Date().toISOString(),
+      strength: 1,
+      activations: 0,
+      lastActivatedAt: new Date().toISOString(),
+      links: [],
+    }) + "\n",
+    "utf8",
+  );
+
+  const reopened = await MemoryStore.open(home);
+  const repaired = reopened.get("manual_huge");
+  assert.ok(repaired, "manual memory should still load");
+  assert.ok(repaired.content.length < 2_100, "reopened memories should be repaired before recall");
+  assert.ok((await fs.readFile(memoryFile, "utf8")).length < 2_400, "repair should persist back to disk");
+
+  await fs.rm(home, { recursive: true, force: true });
+});
+
+test("memory: reopen repairs orphan and self links", async () => {
+  const home = await makeDir();
+  const memoryFile = path.join(home, "memory.jsonl");
+  const now = new Date().toISOString();
+  await fs.writeFile(
+    memoryFile,
+    [
+      JSON.stringify({
+        id: "a",
+        kind: "episodic",
+        content: "linked memory",
+        at: now,
+        strength: 1,
+        activations: 0,
+        lastActivatedAt: now,
+        links: ["a", "b", "missing", "b"],
+      }),
+      JSON.stringify({
+        id: "b",
+        kind: "semantic",
+        content: "real neighbor",
+        at: now,
+        strength: 1,
+        activations: 0,
+        lastActivatedAt: now,
+        links: ["a"],
+      }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const reopened = await MemoryStore.open(home);
+  assert.deepEqual(reopened.get("a").links, ["b"]);
+  assert.ok(!(await fs.readFile(memoryFile, "utf8")).includes("missing"), "repair should persist to disk");
+
+  await fs.rm(home, { recursive: true, force: true });
+});
+
+test("memory: consolidation merges exact duplicate memories and redirects links", async () => {
+  const store = MemoryStore.memory();
+  const keeper = await store.add({ kind: "episodic", content: "User prefers TypeScript", strength: 2 });
+  const duplicate = await store.add({ kind: "episodic", content: "user prefers typescript", strength: 1 });
+  const neighbor = await store.add({ kind: "semantic", content: "Crix is TypeScript-first" });
+  await store.link(duplicate.id, neighbor.id);
+
+  const report = await store.consolidate();
+  assert.equal(report.deduped, 1);
+  assert.equal(store.all().filter((n) => n.content.toLowerCase() === "user prefers typescript").length, 1);
+  assert.equal(neighbor.links.includes(duplicate.id), false, "links should not point at removed duplicate ids");
+  assert.equal(store.get(keeper.id).links.includes(neighbor.id), true, "keeper should inherit duplicate links");
+});
+
+test("memory: consolidation prunes filler theme semantics and refuses new filler themes", async () => {
+  const store = MemoryStore.memory();
+  await store.add({ kind: "semantic", content: 'Recurring theme "lmao" observed across 5 episodes.', tags: ["theme:lmao"], strength: 1.5 });
+  await store.add({ kind: "episodic", content: "hey homie u working lmao?" });
+  await store.add({ kind: "episodic", content: "tried to fix ur memory as i was hitting context limits lmao" });
+  await store.add({ kind: "episodic", content: "should all be good tho codex did lmao" });
+  await store.add({ kind: "episodic", content: "Researched shopify product trends" });
+  await store.add({ kind: "episodic", content: "Posted a shopify listing" });
+  await store.add({ kind: "episodic", content: "Checked shopify revenue dashboard" });
+
+  const report = await store.consolidate();
+  assert.ok(report.pruned >= 1, "existing filler semantic should be removed");
+  assert.equal(store.all().some((n) => n.tags?.includes("theme:lmao")), false, "lmao should never become semantic knowledge");
+  assert.ok(report.promoted.includes("shopify"), "meaningful repeated concepts still crystallize");
+});

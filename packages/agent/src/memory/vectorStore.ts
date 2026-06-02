@@ -7,6 +7,8 @@ import type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, Re
 
 type DynamicImport = (specifier: string) => Promise<any>;
 const dynamicImport = new Function("specifier", "return import(specifier)") as DynamicImport;
+const MAX_MEMORY_CONTENT_CHARS = 1_200;
+const MAX_RECALL_ITEM_CHARS = 420;
 
 export interface MemoryStore {
   status(): MemoryStoreStatus;
@@ -63,18 +65,19 @@ class JsonMemoryStore implements MemoryStore {
   async add(input: AddMemoryInput): Promise<MemoryEntry> {
     const entries = await this.read();
     const now = Date.now();
+    const content = trimMemoryContent(input.content);
     const entry: MemoryEntry = {
       id: nextId(entries),
       category: input.category,
       workspace: input.workspace ?? null,
-      content: input.content.trim(),
+      content,
       source: input.source ?? "manual",
       score: input.score ?? 1,
       hits: 0,
       contradicts: 0,
       embeddingModel: input.embeddingModel ?? this.config.memory.embedModel,
       embeddingDim: input.embeddingDim ?? this.config.memory.dimensions,
-      embedding: input.embedding ?? lexicalEmbedding(input.content, this.config.memory.dimensions),
+      embedding: input.embedding ?? lexicalEmbedding(content, this.config.memory.dimensions),
       createdAt: now,
       updatedAt: now,
       promotedToSoul: false,
@@ -109,9 +112,10 @@ class JsonMemoryStore implements MemoryStore {
 
   async update(entry: MemoryEntry): Promise<void> {
     const entries = await this.read();
+    const next = sanitizeEntry(entry);
     const index = entries.findIndex((candidate) => candidate.id === entry.id);
-    if (index >= 0) entries[index] = entry;
-    else entries.push(entry);
+    if (index >= 0) entries[index] = next;
+    else entries.push(next);
     await this.write(entries);
   }
 
@@ -176,14 +180,15 @@ class SqliteMemoryStore implements MemoryStore {
 
   async add(input: AddMemoryInput): Promise<MemoryEntry> {
     const now = Date.now();
-    const embedding = input.embedding ?? lexicalEmbedding(input.content, this.config.memory.dimensions);
+    const content = trimMemoryContent(input.content);
+    const embedding = input.embedding ?? lexicalEmbedding(content, this.config.memory.dimensions);
     const info = this.db.prepare(`
       INSERT INTO memories(category, workspace, content, source, score, hits, contradicts, embedding_model, embedding_dim, embedding_json, created_at, updated_at, promoted_to_soul)
       VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, 0)
     `).run(
       input.category,
       input.workspace ?? null,
-      input.content.trim(),
+      content,
       input.source ?? "manual",
       input.score ?? 1,
       input.embeddingModel ?? this.config.memory.embedModel,
@@ -212,26 +217,27 @@ class SqliteMemoryStore implements MemoryStore {
   }
 
   async update(entry: MemoryEntry): Promise<void> {
+    const next = sanitizeEntry(entry);
     this.db.prepare(`
       UPDATE memories
       SET category = ?, workspace = ?, content = ?, source = ?, score = ?, hits = ?, contradicts = ?,
           embedding_model = ?, embedding_dim = ?, embedding_json = ?, updated_at = ?, last_recalled_at = ?, promoted_to_soul = ?
       WHERE id = ?
     `).run(
-      entry.category,
-      entry.workspace,
-      entry.content,
-      entry.source,
-      entry.score,
-      entry.hits,
-      entry.contradicts,
-      entry.embeddingModel,
-      entry.embeddingDim,
-      JSON.stringify(entry.embedding),
+      next.category,
+      next.workspace,
+      next.content,
+      next.source,
+      next.score,
+      next.hits,
+      next.contradicts,
+      next.embeddingModel,
+      next.embeddingDim,
+      JSON.stringify(next.embedding),
       Date.now(),
-      entry.lastRecalledAt ?? null,
-      entry.promotedToSoul ? 1 : 0,
-      entry.id,
+      next.lastRecalledAt ?? null,
+      next.promotedToSoul ? 1 : 0,
+      next.id,
     );
   }
 
@@ -266,13 +272,13 @@ function nextId(entries: readonly MemoryEntry[]): number {
 
 function normalizeEntry(entry: MemoryEntry): MemoryEntry | null {
   if (!entry || typeof entry !== "object" || !entry.content) return null;
-  return {
+  return sanitizeEntry({
     ...entry,
     category: normalizeCategory(entry.category),
     workspace: entry.workspace ?? null,
     embedding: Array.isArray(entry.embedding) ? entry.embedding.map(Number) : [],
     promotedToSoul: Boolean(entry.promotedToSoul),
-  };
+  });
 }
 
 function rowToEntry(row: any): MemoryEntry {
@@ -280,7 +286,7 @@ function rowToEntry(row: any): MemoryEntry {
     id: Number(row.id),
     category: normalizeCategory(row.category),
     workspace: row.workspace ?? null,
-    content: String(row.content),
+    content: trimMemoryContent(String(row.content)),
     source: row.source ?? "manual",
     score: Number(row.score ?? 1),
     hits: Number(row.hits ?? 0),
@@ -306,8 +312,23 @@ export function formatRecallReminder(results: readonly RecallResult[]): string {
   if (results.length === 0) return "";
   const lines = ["Recall surfaced these Crix memories:"];
   for (const result of results) {
-    lines.push(`- [${result.memory.category}#${result.memory.id}] ${result.memory.content}`);
+    lines.push(`- [${result.memory.category}#${result.memory.id}] ${compactMemoryText(result.memory.content, MAX_RECALL_ITEM_CHARS)}`);
   }
   return lines.join("\n");
 }
 
+function sanitizeEntry(entry: MemoryEntry): MemoryEntry {
+  const content = trimMemoryContent(entry.content);
+  return content === entry.content ? entry : { ...entry, content };
+}
+
+function trimMemoryContent(content: string): string {
+  const clean = content.replace(/\s+/g, " ").trim();
+  return compactMemoryText(clean, MAX_MEMORY_CONTENT_CHARS);
+}
+
+function compactMemoryText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const visible = Math.max(0, maxChars - 48);
+  return `${text.slice(0, visible).trimEnd()} [truncated ${text.length - maxChars} chars]`;
+}

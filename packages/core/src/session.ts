@@ -20,9 +20,9 @@ import {
   type Message,
   type ToolResultBlock,
 } from "@crix/protocol";
-import { QueryEngine, type EngineTool, type Provider } from "./queryEngine.js";
+import { QueryEngine, stringifyModelToolOutput, type EngineTool, type Provider } from "./queryEngine.js";
 import type { ToolPermissionRequest } from "./queryEngine.js";
-import type { PermissionPromptDecision } from "@crix/protocol";
+import type { PermissionPromptDecision, ReasoningLevel } from "@crix/protocol";
 import type { HookManager } from "./hooks.js";
 import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified } from "./checkpoints.js";
 
@@ -61,6 +61,12 @@ export interface SessionOptions {
    * unrestricted authority over its own brain (~/.crix/).
    */
   selfTerritoryRoots?: readonly string[];
+  /** Reasoning dial for reasoning-capable models (owner-selectable, low→max). */
+  reasoningLevel?: ReasoningLevel;
+  /** Output-token cap per provider call. */
+  maxOutputTokens?: number;
+  /** Trim oldest history to keep estimated input under this many tokens. */
+  contextBudgetTokens?: number;
 }
 
 export class Session {
@@ -96,6 +102,9 @@ export class Session {
         hookManager: opts.hookManager,
         requestPermission: opts.requestPermission,
         selfTerritoryRoots: opts.selfTerritoryRoots,
+        reasoningLevel: opts.reasoningLevel,
+        maxOutputTokens: opts.maxOutputTokens,
+        contextBudgetTokens: opts.contextBudgetTokens,
         beforeToolUseCheckpoint: async ({ toolUseId, toolName }) => {
           const checkpoint = await createWorkspaceCheckpoint({
             workspace: this.opts.workspace,
@@ -113,6 +122,11 @@ export class Session {
     if (opts.initialMessages) this.engine.hydrate(opts.initialMessages);
     if (opts.initialSeq) this.seq = opts.initialSeq;
     if (opts.sessionMeta) this.metaWritten = true;
+  }
+
+  /** Change the reasoning dial mid-session — applies to the next turn. */
+  setReasoningLevel(level: ReasoningLevel): void {
+    this.engine.setReasoningLevel(level);
   }
 
   /** Append a user message and stream the turn. Events persist to rollout. */
@@ -326,12 +340,7 @@ function messagesFromRollout(entries: readonly RolloutEntry[]): Message[] {
 }
 
 function stringifyReplayOutput(output: unknown): string {
-  if (typeof output === "string") return output;
-  try {
-    return JSON.stringify(output);
-  } catch {
-    return String(output);
-  }
+  return stringifyModelToolOutput(output);
 }
 
 function compactReplayMessages(

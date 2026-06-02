@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import * as THREE from "three";
 import {
@@ -60,14 +61,23 @@ interface CrixEvent {
   id?: string;
   text?: string;
   name?: string;
+  toolName?: string;
   status?: string;
   source?: string;
   phase?: string;
   root?: string;
+  reason?: string;
+  suggestion?: string;
+  decision?: string;
+  level?: string;
+  reasoningLevel?: string;
   error?: unknown;
   provider?: string;
   model?: string;
   durationMs?: number;
+  receivedAt?: number;
+  startedAt?: number;
+  updatedAt?: number;
   activityDescription?: string;
   display?: string;
   output?: unknown;
@@ -358,6 +368,30 @@ const DEV_MODELS: ProviderModel[] = [
   model("mock-echo", "No network, no auth", "local", "dev"),
 ];
 
+// Reasoning dial — one control, translated per provider by the daemon (OpenAI
+// reasoning.effort, Ollama/Anthropic thinking.budget_tokens). "Extra High" = max.
+type ReasoningLevel = "low" | "medium" | "high" | "max";
+type ReasoningSync = "idle" | "syncing" | "applied" | "error";
+type PermissionDecision = "allow_once" | "allow_always" | "deny";
+
+interface LiveActivity {
+  title: string;
+  detail: string;
+  tone: "idle" | "active" | "warn" | "bad";
+  startedAt?: number;
+  updatedAt?: number;
+}
+
+const REASONING_OPTIONS: { id: ReasoningLevel; label: string }[] = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Extra High" },
+];
+function isReasoningLevel(value: unknown): value is ReasoningLevel {
+  return value === "low" || value === "medium" || value === "high" || value === "max";
+}
+
 const PROVIDERS: ProviderOption[] = buildProviderOptions(false, []);
 
 function buildProviderOptions(devMode: boolean, localOllamaModels: ProviderModel[]): ProviderOption[] {
@@ -430,6 +464,9 @@ function App() {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [webSearchMode, setWebSearchMode] = useState(false);
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>("medium");
+  const [reasoningSync, setReasoningSync] = useState<ReasoningSync>("idle");
+  const [clockNow, setClockNow] = useState(() => Date.now());
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingSessionName, setRenamingSessionName] = useState("");
   const [devMode, setDevMode] = useState(() => UI_DEV_MODE);
@@ -445,6 +482,8 @@ function App() {
   const activeSessionIdRef = useRef(activeSessionId);
   const selectionRef = useRef(selection);
   const lastEventSeqRef = useRef(0);
+  const reasoningSyncTimerRef = useRef<number | null>(null);
+  const reasoningSyncRef = useRef(reasoningSync);
 
   // Weirdcore +N TARGET pulses — agent evolution telemetry the daemon
   // forwards to us as { type: "lifecycle", event: { type, gain, ... } }.
@@ -475,6 +514,18 @@ function App() {
   const visibleModels = provider.models;
   const running = daemon === "running";
   const stats = useMemo(() => collectStats(events), [events]);
+  const activeSelection = useMemo(
+    () => ({
+      provider: draftSelection.provider,
+      model: draftSelection.model === "__custom" ? customModel : draftSelection.model,
+    }),
+    [customModel, draftSelection.model, draftSelection.provider],
+  );
+  const modelSelectionChanged = activeSelection.provider !== selection.provider || activeSelection.model !== selection.model;
+  const liveActivity = useMemo(
+    () => currentLiveActivity(events, daemon, status, clockNow),
+    [clockNow, daemon, events, status],
+  );
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -483,6 +534,23 @@ function App() {
   useEffect(() => {
     selectionRef.current = selection;
   }, [selection]);
+
+  useEffect(() => {
+    reasoningSyncRef.current = reasoningSync;
+  }, [reasoningSync]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (reasoningSyncTimerRef.current !== null) {
+        window.clearTimeout(reasoningSyncTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     saveDesktopSettings({ theme, selection, appearance });
@@ -557,6 +625,8 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+    let poller: number | null = null;
+    let unlistenBuffered: (() => void) | null = null;
 
     if (!hasNativeBridge()) {
       setDaemon("stopped");
@@ -567,25 +637,18 @@ function App() {
       };
     }
 
-    invoke<DaemonStatus>("crix_start_daemon", initial.selection)
-      .then((state) => {
-        if (!mounted) return;
-        applyDaemonStatus(state);
-      })
-      .catch((error: unknown) => {
-        if (!mounted) return;
-        setDaemon("error");
-        setStatus("error");
-        appendToActiveSession({ type: "desktop_error", text: String(error) });
-      });
+    const acceptBufferedEvent = (item: BufferedEvent) => {
+      if (item.seq <= lastEventSeqRef.current) return;
+      lastEventSeqRef.current = Math.max(lastEventSeqRef.current, item.seq);
+      handleDaemonEvent(item.event);
+    };
 
     const poll = async () => {
       try {
         const events = await invoke<BufferedEvent[]>("crix_drain_events", { after: lastEventSeqRef.current });
         if (!mounted) return;
         for (const item of events) {
-          lastEventSeqRef.current = Math.max(lastEventSeqRef.current, item.seq);
-          handleDaemonEvent(item.event);
+          acceptBufferedEvent(item);
         }
       } catch {
         if (mounted && lastEventSeqRef.current === 0) {
@@ -594,12 +657,44 @@ function App() {
         }
       }
     };
-    void poll();
-    const poller = window.setInterval(() => void poll(), 180);
+
+    const boot = async () => {
+      try {
+        const stopListening = await listen<BufferedEvent>("crix:event-buffered", (event) => {
+          if (!mounted) return;
+          acceptBufferedEvent(event.payload);
+        });
+        if (!mounted) {
+          stopListening();
+          return;
+        }
+        unlistenBuffered = stopListening;
+      } catch {
+        // Polling below is the compatibility path for browser preview and older shells.
+      }
+      if (!mounted) return;
+
+      invoke<DaemonStatus>("crix_start_daemon", daemonSelectionArgs(initial.selection))
+        .then((state) => {
+          if (!mounted) return;
+          applyDaemonStatus(state);
+        })
+        .catch((error: unknown) => {
+          if (!mounted) return;
+          setDaemon("error");
+          setStatus("error");
+          appendToActiveSession({ type: "desktop_error", text: String(error) });
+        });
+
+      void poll();
+      poller = window.setInterval(() => void poll(), 1000);
+    };
+    void boot();
 
     return () => {
       mounted = false;
-      window.clearInterval(poller);
+      if (poller !== null) window.clearInterval(poller);
+      unlistenBuffered?.();
     };
   }, []);
 
@@ -614,15 +709,16 @@ function App() {
 
   function appendToActiveSession(event: CrixEvent) {
     const targetSessionId = activeSessionIdRef.current;
+    const stamped = { ...event, receivedAt: event.receivedAt ?? Date.now() };
     setSessions((current) =>
       current.map((session) => {
         if (session.id !== targetSessionId) return session;
-        const nextEvents = appendEvent(session.events, event).slice(-SESSION_LIMIT);
+        const nextEvents = appendEvent(session.events, stamped).slice(-SESSION_LIMIT);
         return {
           ...session,
           events: nextEvents,
           updatedAt: Date.now(),
-          name: session.name === "New session" && event.type === "user_send" && event.text ? titleFromPrompt(event.text) : session.name,
+          name: session.name === "New session" && stamped.type === "user_send" && stamped.text ? titleFromPrompt(stamped.text) : session.name,
         };
       }),
     );
@@ -654,10 +750,20 @@ function App() {
       setCustomModel(detail.model);
     }
     if (detail.type === "daemon_ready" || detail.type === "desktop_daemon_started") setDaemon("running");
+    const maybeLevel = detail.type === "reasoning_set" ? detail.level : detail.reasoningLevel;
+    if (isReasoningLevel(maybeLevel)) {
+      setReasoningLevel(maybeLevel);
+      if (detail.type === "reasoning_set") markReasoningSync("applied");
+    }
     if (detail.type === "desktop_daemon_restarting") setDaemon("starting");
     if (detail.type === "desktop_daemon_stopped") setDaemon("stopped");
-    if (detail.type === "daemon_error" || detail.type === "daemon_stderr" || detail.type === "error") setStatus("error");
-    if (detail.type === "tool_start" || detail.type === "thinking_delta") setStatus("active");
+    if (detail.type === "daemon_error" || detail.type === "daemon_stderr" || detail.type === "error") {
+      setStatus("error");
+      if (reasoningSyncRef.current === "syncing") markReasoningSync("error");
+    }
+    if (detail.type === "turn_start" || detail.type === "tool_start" || detail.type === "thinking_delta" || detail.type === "text_delta") setStatus("active");
+    if (detail.type === "permission_request") setStatus("alert");
+    if (detail.type === "permission_response" && detail.decision !== "deny") setStatus("active");
     if (detail.type === "turn_end") setStatus(detail.status === "failed" ? "error" : "idle");
     if (detail.type === "turn_end" && detail.usage) recordModelUsage(selectionRef.current, detail.usage);
     if (detail.type === "heartbeat_tick") setStatus(detail.text || detail.reason ? "alert" : "idle");
@@ -725,11 +831,56 @@ function App() {
     setAttachments((current) => current.filter((attachment) => attachment.id !== id));
   }
 
+  function markReasoningSync(next: ReasoningSync) {
+    if (reasoningSyncTimerRef.current !== null) {
+      window.clearTimeout(reasoningSyncTimerRef.current);
+      reasoningSyncTimerRef.current = null;
+    }
+    setReasoningSync(next);
+    reasoningSyncRef.current = next;
+    if (next === "applied") {
+      reasoningSyncTimerRef.current = window.setTimeout(() => {
+        setReasoningSync("idle");
+        reasoningSyncRef.current = "idle";
+        reasoningSyncTimerRef.current = null;
+      }, 1600);
+    }
+    if (next === "syncing") {
+      reasoningSyncTimerRef.current = window.setTimeout(() => {
+        if (reasoningSyncRef.current !== "syncing") return;
+        setReasoningSync("error");
+        reasoningSyncRef.current = "error";
+        reasoningSyncTimerRef.current = null;
+      }, 3000);
+    }
+  }
+
+  function changeReasoning(level: ReasoningLevel) {
+    setReasoningLevel(level);
+    if (!hasNativeBridge()) {
+      markReasoningSync("applied");
+      return;
+    }
+    markReasoningSync("syncing");
+    void invoke("crix_set_reasoning", { level }).catch((error: unknown) => {
+      markReasoningSync("error");
+      appendToActiveSession({ type: "desktop_error", text: `Reasoning update failed: ${String(error)}` });
+    });
+  }
+
+  function respondToPermission(id: string | undefined, decision: PermissionDecision) {
+    if (!id || !hasNativeBridge()) return;
+    void invoke("crix_permission_response", { id, decision }).catch((error: unknown) => {
+      setStatus("error");
+      appendToActiveSession({ type: "desktop_error", text: `Permission response failed: ${String(error)}` });
+    });
+  }
+
   async function restartWith(nextSelection = selection) {
     setDaemon("starting");
     setStatus("active");
     try {
-      const state = await invoke<DaemonStatus>("crix_restart_daemon", nextSelection);
+      const state = await invoke<DaemonStatus>("crix_restart_daemon", daemonSelectionArgs(nextSelection));
       setSelection(nextSelection);
       setDraftSelection(nextSelection);
       setCustomModel(nextSelection.model);
@@ -944,9 +1095,23 @@ function App() {
               </select>
               <ChevronDown size={14} />
             </label>
-            <button className="primaryAction" type="button" onClick={() => restartWith({ ...draftSelection, model: draftSelection.model === "__custom" ? customModel : draftSelection.model })}>
-              <Play size={15} />
-              Apply
+            <label className={`reasoningDial sync-${reasoningSync}`} title="Reasoning depth updates the live daemon immediately and affects the next model call">
+              <span>Reasoning <small>{reasoningSyncLabel(reasoningSync)}</small></span>
+              <select value={reasoningLevel} onChange={(event) => changeReasoning(event.target.value as ReasoningLevel)}>
+                {REASONING_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>{opt.label}</option>
+                ))}
+              </select>
+              <ChevronDown size={14} />
+            </label>
+            <button
+              className="iconAction modelRestartAction"
+              disabled={!modelSelectionChanged}
+              title={modelSelectionChanged ? "Restart with selected provider/model" : "Current provider/model is already running"}
+              type="button"
+              onClick={() => restartWith(activeSelection)}
+            >
+              <RefreshCw size={16} />
             </button>
             <button className="iconAction" title={running ? "Stop daemon" : "Start daemon"} type="button" onClick={running ? stopDaemon : () => restartWith(selection)}>
               {running ? <Power size={16} /> : <Play size={16} />}
@@ -979,6 +1144,7 @@ function App() {
             ) : activeView === "mind" ? (
               <MindView
                 appearance={appearance}
+                events={events}
                 onAppearance={setAppearance}
                 onTheme={setTheme}
                 status={status}
@@ -997,11 +1163,13 @@ function App() {
                 onAttachmentFiles={(files) => void addAttachmentFiles(files)}
                 onAttachmentRemove={removeAttachment}
                 onMessage={setMessage}
+                onPermissionDecision={respondToPermission}
                 onSend={sendMessage}
                 onWebSearchMode={setWebSearchMode}
                 refEl={transcriptRef}
                 running={running}
                 stats={stats}
+                liveActivity={liveActivity}
                 webSearchMode={webSearchMode}
               />
             )}
@@ -1451,11 +1619,13 @@ function ChatView({
   onAttachmentFiles,
   onAttachmentRemove,
   onMessage,
+  onPermissionDecision,
   onSend,
   onWebSearchMode,
   refEl,
   running,
   stats,
+  liveActivity,
   webSearchMode,
 }: {
   attachments: ChatAttachment[];
@@ -1466,11 +1636,13 @@ function ChatView({
   onAttachmentFiles: (files: FileList | File[]) => void;
   onAttachmentRemove: (id: string) => void;
   onMessage: (value: string) => void;
+  onPermissionDecision: (id: string | undefined, decision: PermissionDecision) => void;
   onSend: (event: React.FormEvent) => void;
   onWebSearchMode: (value: boolean) => void;
   refEl: React.RefObject<HTMLDivElement | null>;
   running: boolean;
   stats: ReturnType<typeof collectStats>;
+  liveActivity: LiveActivity;
   webSearchMode: boolean;
 }) {
   const chatEvents = events.filter(isChatVisibleEvent);
@@ -1488,7 +1660,13 @@ function ChatView({
         ) : (
           <>
             {clippedCount > 0 ? <div className="transcriptClipNotice">{clippedCount} older event{clippedCount === 1 ? "" : "s"} kept in session memory</div> : null}
-            {visibleEvents.map((event, index) => <EventCard event={event} key={`${event.id ?? event.type}-${chatEvents.length - visibleEvents.length + index}`} />)}
+            {visibleEvents.map((event, index) => (
+              <EventCard
+                event={event}
+                key={`${event.id ?? event.type}-${chatEvents.length - visibleEvents.length + index}`}
+                onPermissionDecision={onPermissionDecision}
+              />
+            ))}
           </>
         )}
       </div>
@@ -1504,6 +1682,7 @@ function ChatView({
         {attachments.length > 0 ? (
           <AttachmentTray attachments={attachments} onRemove={onAttachmentRemove} />
         ) : null}
+        <LiveActivityStrip activity={liveActivity} />
         <div className="composerInput">
           <div className="composerIconCluster">
             <input
@@ -1953,6 +2132,36 @@ function MindView({
   );
 }
 
+function GrowthPanel({ events }: { events: CrixEvent[] }) {
+  const gains = events
+    .flatMap((event) => {
+      const inner = event.type === "lifecycle" ? event.event : event;
+      return inner?.gain ? [{ type: inner.type, gain: inner.gain, at: inner.receivedAt ?? event.receivedAt ?? 0 }] : [];
+    })
+    .filter((item) => item.gain.target && typeof item.gain.delta === "number")
+    .slice(-6)
+    .reverse();
+
+  return (
+    <section className="surfacePanel wide growthPanel">
+      <header><span><BarChart3 size={16} /> Growth Feed</span></header>
+      {gains.length > 0 ? (
+        <div className="growthList">
+          {gains.map((item, index) => (
+            <div className="growthItem" key={`${item.type}-${item.gain.target}-${index}`}>
+              <span>{humanizeSource(item.type)}</span>
+              <strong>{prettyPulseTarget(item.gain.target, item.gain.kind)}</strong>
+              <em>+{item.gain.delta}</em>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p>No growth telemetry in this visible session yet.</p>
+      )}
+    </section>
+  );
+}
+
 function AppearancePanel({
   appearance,
   onAppearance,
@@ -2039,7 +2248,15 @@ function ToolsView({ events }: { events: CrixEvent[] }) {
   );
 }
 
-function EventCard({ event, compact = false }: { event: CrixEvent; compact?: boolean }) {
+function EventCard({
+  event,
+  compact = false,
+  onPermissionDecision,
+}: {
+  event: CrixEvent;
+  compact?: boolean;
+  onPermissionDecision?: (id: string | undefined, decision: PermissionDecision) => void;
+}) {
   if (event.type === "thinking_stream") return <ThinkingTrace event={event} compact={compact} />;
   const kind = eventKind(event);
   const title = eventTitle(event);
@@ -2060,7 +2277,9 @@ function EventCard({ event, compact = false }: { event: CrixEvent; compact?: boo
           <strong>{title}</strong>
           <time>{event.type === "tool_call" ? event.status : event.type}</time>
         </header>
-        {event.type === "tool_call" ? (
+        {event.type === "permission_gate" ? (
+          <PermissionGate event={event} onDecision={onPermissionDecision} />
+        ) : event.type === "tool_call" ? (
           <ToolCallShow event={event} text={text} />
         ) : event.type === "assistant_stream" && text ? (
           <StreamingText text={text} />
@@ -2076,6 +2295,61 @@ function EventCard({ event, compact = false }: { event: CrixEvent; compact?: boo
         ) : null}
       </div>
     </motion.article>
+  );
+}
+
+function PermissionGate({
+  event,
+  onDecision,
+}: {
+  event: CrixEvent;
+  onDecision?: (id: string | undefined, decision: PermissionDecision) => void;
+}) {
+  const waiting = event.status === "waiting";
+  const decision = normalizeDecision(event.decision);
+  return (
+    <div className="permissionGate">
+      <div className="permissionReason">
+        <ShieldCheck size={14} />
+        <span>{event.reason || "Tool permission required"}</span>
+      </div>
+      {event.input !== undefined ? <pre className="permissionInput">{previewValue(event.input)}</pre> : null}
+      {waiting ? (
+        <div className="permissionActions">
+          <button type="button" onClick={() => onDecision?.(event.id, "allow_once")}>
+            <Check size={14} />
+            Allow once
+          </button>
+          <button type="button" onClick={() => onDecision?.(event.id, "allow_always")}>
+            <ShieldCheck size={14} />
+            Always
+          </button>
+          <button className="deny" type="button" onClick={() => onDecision?.(event.id, "deny")}>
+            <X size={14} />
+            Deny
+          </button>
+        </div>
+      ) : (
+        <div className={`permissionResult ${decision === "deny" ? "deny" : "allow"}`}>
+          {decision === "deny" ? <X size={14} /> : <Check size={14} />}
+          {decision ? permissionDecisionLabel(decision) : "Answered"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveActivityStrip({ activity }: { activity: LiveActivity }) {
+  const elapsed = activity.startedAt ? formatElapsed(Date.now() - activity.startedAt) : "";
+  const stale = activity.updatedAt && activity.tone === "active" ? formatElapsed(Date.now() - activity.updatedAt) : "";
+  return (
+    <div className={`liveActivityStrip ${activity.tone}`}>
+      <span className="liveActivityDot" />
+      <strong>{activity.title}</strong>
+      <span>{activity.detail}</span>
+      {elapsed ? <em>{elapsed}</em> : null}
+      {stale && stale !== elapsed ? <small>last {stale}</small> : null}
+    </div>
   );
 }
 
@@ -2254,26 +2528,30 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 
 function appendEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
   if (event.type === "tool_use_input_delta") return events;
+  if (isPermissionEvent(event)) return upsertPermissionEvent(events, event);
   if (isToolEvent(event)) return upsertToolEvent(events, event);
   if (event.type === "turn_start") {
-    return [...events, { type: "thinking_stream", text: "" }];
+    const now = event.receivedAt ?? Date.now();
+    return [...events, { type: "thinking_stream", text: "", startedAt: now, updatedAt: now, receivedAt: now }];
   }
   if (event.type === "text_delta") {
     const last = events[events.length - 1];
+    const now = event.receivedAt ?? Date.now();
     if (last?.type === "thinking_stream" && !last.text) {
-      return [...events.slice(0, -1), { type: "assistant_stream", text: event.text ?? "" }];
+      return [...events.slice(0, -1), { type: "assistant_stream", text: event.text ?? "", startedAt: last.startedAt ?? now, updatedAt: now, receivedAt: now }];
     }
     if (last?.type === "assistant_stream") {
-      return [...events.slice(0, -1), { ...last, text: `${last.text ?? ""}${event.text ?? ""}` }];
+      return [...events.slice(0, -1), { ...last, text: `${last.text ?? ""}${event.text ?? ""}`, updatedAt: now, receivedAt: now }];
     }
-    return [...events, { type: "assistant_stream", text: event.text ?? "" }];
+    return [...events, { type: "assistant_stream", text: event.text ?? "", startedAt: now, updatedAt: now, receivedAt: now }];
   }
   if (event.type === "thinking_delta") {
     const last = events[events.length - 1];
+    const now = event.receivedAt ?? Date.now();
     if (last?.type === "thinking_stream") {
-      return [...events.slice(0, -1), { ...last, text: `${last.text ?? ""}${event.text ?? ""}` }];
+      return [...events.slice(0, -1), { ...last, text: `${last.text ?? ""}${event.text ?? ""}`, updatedAt: now, receivedAt: now }];
     }
-    return [...events, { type: "thinking_stream", text: event.text ?? "" }];
+    return [...events, { type: "thinking_stream", text: event.text ?? "", startedAt: now, updatedAt: now, receivedAt: now }];
   }
   if (event.type === "message_done") return events;
   return [...events, event];
@@ -2290,6 +2568,55 @@ function isToolEvent(event: CrixEvent): boolean {
   ].includes(event.type);
 }
 
+function isPermissionEvent(event: CrixEvent): boolean {
+  return event.type === "permission_request" || event.type === "permission_response";
+}
+
+function upsertPermissionEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
+  const id = event.id;
+  if (!id) return [...events, event];
+  const index = events.findIndex((item) => item.type === "permission_gate" && item.id === id);
+  const previous = index >= 0 ? events[index] : undefined;
+  const merged = mergePermissionEvent(previous, event);
+  if (index === -1) return [...events, merged];
+  return [...events.slice(0, index), merged, ...events.slice(index + 1)];
+}
+
+function mergePermissionEvent(previous: CrixEvent | undefined, event: CrixEvent): CrixEvent {
+  const now = event.receivedAt ?? Date.now();
+  const base: CrixEvent = previous ?? {
+    type: "permission_gate",
+    id: event.id,
+    toolName: event.toolName,
+    status: "waiting",
+    startedAt: now,
+    updatedAt: now,
+    receivedAt: now,
+  };
+  if (event.type === "permission_request") {
+    return {
+      ...base,
+      id: event.id,
+      toolName: event.toolName ?? base.toolName,
+      input: event.input ?? base.input,
+      reason: event.reason ?? base.reason,
+      suggestion: event.suggestion ?? base.suggestion,
+      status: "waiting",
+      updatedAt: now,
+      receivedAt: now,
+    };
+  }
+  const decision = normalizeDecision(event.decision);
+  return {
+    ...base,
+    id: event.id,
+    decision: decision ?? event.decision,
+    status: decision === "deny" ? "denied" : "allowed",
+    updatedAt: now,
+    receivedAt: now,
+  };
+}
+
 function upsertToolEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
   const id = event.id;
   if (!id) return [...events, event];
@@ -2301,17 +2628,21 @@ function upsertToolEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
 }
 
 function mergeToolEvent(previous: CrixEvent | undefined, event: CrixEvent): CrixEvent {
+  const now = event.receivedAt ?? Date.now();
   const base: CrixEvent = previous ?? {
     type: "tool_call",
     id: event.id,
     name: event.name,
     status: "queued",
+    startedAt: now,
+    updatedAt: now,
+    receivedAt: now,
   };
   if (event.type === "tool_use_start") {
-    return { ...base, id: event.id, name: event.name ?? base.name, status: "planning" };
+    return { ...base, id: event.id, name: event.name ?? base.name, status: "planning", updatedAt: now, receivedAt: now };
   }
   if (event.type === "tool_use_input_done") {
-    return { ...base, id: event.id, input: event.input, status: base.status === "running" ? "running" : "ready" };
+    return { ...base, id: event.id, input: event.input, status: base.status === "running" ? "running" : "ready", updatedAt: now, receivedAt: now };
   }
   if (event.type === "tool_start") {
     return {
@@ -2321,10 +2652,12 @@ function mergeToolEvent(previous: CrixEvent | undefined, event: CrixEvent): Crix
       input: event.input ?? base.input,
       activityDescription: event.activityDescription,
       status: "running",
+      updatedAt: now,
+      receivedAt: now,
     };
   }
   if (event.type === "tool_progress") {
-    return { ...base, id: event.id, data: event.data, status: "running" };
+    return { ...base, id: event.id, data: event.data, status: "running", updatedAt: now, receivedAt: now };
   }
   if (event.type === "tool_end") {
     return {
@@ -2335,10 +2668,12 @@ function mergeToolEvent(previous: CrixEvent | undefined, event: CrixEvent): Crix
       durationMs: event.durationMs,
       display: event.display,
       status: "completed",
+      updatedAt: now,
+      receivedAt: now,
     };
   }
   if (event.type === "tool_error") {
-    return { ...base, id: event.id, error: event.error, durationMs: event.durationMs, status: "failed" };
+    return { ...base, id: event.id, error: event.error, durationMs: event.durationMs, status: "failed", updatedAt: now, receivedAt: now };
   }
   return { ...base, ...event };
 }
@@ -2364,8 +2699,9 @@ function collectStats(events: CrixEvent[]) {
 function isChatVisibleEvent(event: CrixEvent): boolean {
   if (event.type === "user_send" || event.type === "assistant_stream" || event.type === "thinking_stream") return true;
   if (event.type === "tool_call") return true;
+  if (event.type === "permission_gate") return true;
   if (event.type === "desktop_preview" || event.type === "desktop_error" || event.type === "desktop_model_applied") return true;
-  if (event.type === "permission_request" || event.type === "permission_response") return true;
+  if (event.type === "reasoning_set") return true;
   if (event.type === "error" || event.type === "daemon_error") return true;
   return false;
 }
@@ -2374,6 +2710,7 @@ function eventKind(event: CrixEvent): string {
   if (event.type === "user_send") return "user";
   if (event.type === "assistant_stream") return "assistant";
   if (event.type === "thinking_stream") return "thinking";
+  if (event.type === "permission_gate") return event.status === "denied" ? "bad" : "tool";
   if (event.type.includes("error") || event.status === "failed") return "bad";
   if (event.type === "tool_call" || event.type.startsWith("tool_")) return "tool";
   if (event.type.includes("daemon")) return "daemon";
@@ -2385,6 +2722,7 @@ function eventIcon(event: CrixEvent) {
   if (event.type === "user_send") return MessageSquare;
   if (event.type === "assistant_stream") return Bot;
   if (event.type === "thinking_stream") return Brain;
+  if (event.type === "permission_gate") return ShieldCheck;
   if (event.type === "tool_call" || event.type.startsWith("tool_")) return Wrench;
   if (event.type.includes("daemon")) return TerminalSquare;
   if (event.type.includes("dream") || event.type.includes("memory") || event.type.includes("soul")) return Brain;
@@ -2395,11 +2733,13 @@ function eventTitle(event: CrixEvent): string {
   if (event.type === "user_send") return "You";
   if (event.type === "assistant_stream") return "Crix";
   if (event.type === "thinking_stream") return "Thinking";
+  if (event.type === "permission_gate") return event.toolName ? `Permission: ${event.toolName}` : "Permission";
   if (event.type === "tool_call") return event.name ? `Tool: ${event.name}` : "Tool";
   if (event.type === "tool_start") return event.name ? `Tool: ${event.name}` : "Tool started";
   if (event.type === "tool_end") return event.name ? `Tool finished: ${event.name}` : "Tool finished";
   if (event.type === "turn_end") return `Turn ${event.status ?? "ended"}`;
   if (event.type === "desktop_model_applied") return "Model applied";
+  if (event.type === "reasoning_set") return "Reasoning updated";
   return humanize(event.type);
 }
 
@@ -2409,11 +2749,14 @@ function eventText(event: CrixEvent): string {
       return [event.display, event.output !== undefined ? previewValue(event.output) : ""].filter(Boolean).join("\n");
     }
     if (event.status === "failed") return event.error ? (typeof event.error === "string" ? event.error : previewValue(event.error)) : "failed";
+    if (event.status === "running" && event.data !== undefined) return progressText(event.data) ?? previewValue(event.data);
     if (event.activityDescription) return event.activityDescription;
     if (event.input !== undefined) return previewValue(event.input);
     if (event.data !== undefined) return previewValue(event.data);
     return event.status ?? "";
   }
+  if (event.type === "permission_gate") return event.reason ?? "";
+  if (event.type === "reasoning_set") return isReasoningLevel(event.level) ? `Reasoning is now ${reasoningLabel(event.level)}.` : "";
   if (event.text) return event.text;
   if (event.error) return typeof event.error === "string" ? event.error : previewValue(event.error);
   if (event.activityDescription) return event.activityDescription;
@@ -2429,6 +2772,82 @@ function eventText(event: CrixEvent): string {
 
 function providerById(id: ProviderId, providers: ProviderOption[] = PROVIDERS): ProviderOption {
   return providers.find((provider) => provider.id === id) ?? providers[0] ?? PROVIDERS[0];
+}
+
+function currentLiveActivity(events: CrixEvent[], daemon: DaemonState, status: HeartbeatStatus, now: number): LiveActivity {
+  if (daemon !== "running") {
+    return {
+      title: daemon === "starting" ? "Starting daemon" : daemon === "error" ? "Daemon error" : "Daemon stopped",
+      detail: daemon === "error" ? "check the latest error card" : "native bridge is not ready",
+      tone: daemon === "error" ? "bad" : "warn",
+      updatedAt: now,
+    };
+  }
+
+  const waitingPermission = [...events].reverse().find((event) => event.type === "permission_gate" && event.status === "waiting");
+  if (waitingPermission) {
+    return {
+      title: "Waiting for approval",
+      detail: waitingPermission.toolName || waitingPermission.reason || "tool permission",
+      tone: "warn",
+      startedAt: waitingPermission.startedAt,
+      updatedAt: waitingPermission.updatedAt,
+    };
+  }
+
+  const runningTool = [...events].reverse().find((event) => event.type === "tool_call" && ["planning", "ready", "running"].includes(event.status ?? ""));
+  if (runningTool) {
+    return {
+      title: runningTool.name ? `Running ${runningTool.name}` : "Running tool",
+      detail: progressText(runningTool.data) ?? runningTool.activityDescription ?? eventText(runningTool) ?? "waiting for tool output",
+      tone: "active",
+      startedAt: runningTool.startedAt,
+      updatedAt: runningTool.updatedAt,
+    };
+  }
+
+  const latest = [...events].reverse().find((event) => event.type === "thinking_stream" || event.type === "assistant_stream" || event.type === "user_send");
+  if (status === "active" && latest?.type === "assistant_stream") {
+    return {
+      title: "Streaming answer",
+      detail: `${formatNumber((latest.text ?? "").length)} chars received`,
+      tone: "active",
+      startedAt: latest.startedAt,
+      updatedAt: latest.updatedAt,
+    };
+  }
+  if (status === "active" && latest?.type === "thinking_stream") {
+    const chars = (latest.text ?? "").length;
+    return {
+      title: chars > 0 ? "Thinking live" : "Waiting for first token",
+      detail: chars > 0 ? `${formatNumber(chars)} reasoning chars streamed` : "provider accepted the turn; no token yet",
+      tone: "active",
+      startedAt: latest.startedAt,
+      updatedAt: latest.updatedAt,
+    };
+  }
+  if (status === "alert") {
+    return {
+      title: "Needs attention",
+      detail: "latest event is waiting on you",
+      tone: "warn",
+      updatedAt: now,
+    };
+  }
+  if (status === "error") {
+    return {
+      title: "Stopped on error",
+      detail: "open the latest error card",
+      tone: "bad",
+      updatedAt: now,
+    };
+  }
+  return {
+    title: "Ready",
+    detail: "daemon linked; send the next message",
+    tone: "idle",
+    updatedAt: now,
+  };
 }
 
 function modelForProvider(id: ProviderId, providers: ProviderOption[] = PROVIDERS): string {
@@ -2473,6 +2892,13 @@ function sourceLabel(item: ProviderModel): string {
 
 function usageKey(selection: Selection): string {
   return `${selection.provider}/${selection.model}`;
+}
+
+function daemonSelectionArgs(selection: Selection): Record<string, string> {
+  return {
+    provider: selection.provider,
+    model: selection.model,
+  };
 }
 
 function emptyUsage(): ModelUsage {
@@ -2552,6 +2978,49 @@ function cleanModelName(id: string): string {
 
 function humanize(value: string): string {
   return value.replace(/_/gu, " ").replace(/\b\w/gu, (letter) => letter.toUpperCase());
+}
+
+function reasoningLabel(level: ReasoningLevel): string {
+  return REASONING_OPTIONS.find((option) => option.id === level)?.label ?? level;
+}
+
+function reasoningSyncLabel(sync: ReasoningSync): string {
+  if (sync === "syncing") return "syncing";
+  if (sync === "applied") return "live";
+  if (sync === "error") return "error";
+  return "live";
+}
+
+function normalizeDecision(value: unknown): PermissionDecision | null {
+  return value === "allow_once" || value === "allow_always" || value === "deny" ? value : null;
+}
+
+function permissionDecisionLabel(decision: PermissionDecision): string {
+  if (decision === "allow_always") return "Allowed always";
+  if (decision === "allow_once") return "Allowed once";
+  return "Denied";
+}
+
+function progressText(data: unknown): string | null {
+  if (!data || typeof data !== "object") return typeof data === "string" ? data : null;
+  const obj = data as Record<string, unknown>;
+  if (obj.kind === "shell_output") {
+    const text = String(obj.text ?? "").trimEnd();
+    return text ? `${obj.stream ?? "stdout"} ${text}`.slice(0, 320) : null;
+  }
+  if (obj.kind === "grep_match") {
+    const file = typeof obj.file === "string" ? shortPath(obj.file) : "files";
+    return `grep ${obj.total ?? "?"} match(es) · ${file}${obj.line ? `:${obj.line}` : ""}`;
+  }
+  if (obj.kind === "lsp_init") return `starting ${obj.server ?? "LSP"}`;
+  if (obj.kind === "lsp_ready") return `${obj.server ?? "LSP"} ready`;
+  return previewValue(obj);
+}
+
+function shortPath(value: string): string {
+  const normalized = value.replace(/\\/gu, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.slice(-3).join("/");
 }
 
 function previewValue(value: unknown): string {
@@ -2639,6 +3108,17 @@ function formatBytes(value: number): string {
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${value} B`;
+}
+
+function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const minuteRest = minutes % 60;
+  return minuteRest ? `${hours}h ${minuteRest}m` : `${hours}h`;
 }
 
 function formatContext(value: number): string {

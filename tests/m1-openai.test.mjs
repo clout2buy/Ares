@@ -225,6 +225,37 @@ test("OpenAIResponsesProvider: sends prompt_cache_key and image blocks", async (
   ]);
 });
 
+test("OpenAIResponsesProvider: sends reasoning effort but not unsupported output cap", async () => {
+  const sse = [
+    `event: response.completed\ndata: ${JSON.stringify({
+      type: "response.completed",
+      response: { id: "resp_effort", status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    })}\n\n`,
+  ].join("");
+  const captured = {};
+  const provider = new OpenAIResponsesProvider({
+    auth,
+    fetchImpl: captureFetch(sse, captured),
+    endpointUrl: "http://x",
+  });
+
+  const events = [];
+  for await (const e of provider.stream({
+    model: "gpt-5.5",
+    system: "test",
+    messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: "now" }],
+    tools: [],
+    reasoningLevel: "max",
+    maxOutputTokens: 1234,
+  })) {
+    events.push(e);
+  }
+
+  assert.equal(events.at(-1).type, "message_done");
+  assert.deepEqual(captured.body.reasoning, { effort: "xhigh" });
+  assert.equal(Object.hasOwn(captured.body, "max_output_tokens"), false);
+});
+
 test("OpenAIResponsesProvider: emits error event on HTTP failure", async () => {
   const provider = new OpenAIResponsesProvider({
     auth,

@@ -13,9 +13,6 @@ dist/
 # Crix runtime state
 .crix/
 
-# v1 dead weight (kept ignored even if accidentally restored)
-java/
-
 # Logs
 *.log
 npm-debug.log*
@@ -42,6 +39,7 @@ Thumbs.db
 # Test artifacts
 coverage/
 *.lcov
+tauri/target-*.png
 
 # Tauri build outputs
 tauri/src-tauri/target/
@@ -50,6 +48,7 @@ tauri/dist/
 
 # Local research/scratch
 .scan-openclaw/
+.claude/
 
 # Misc
 *.tgz

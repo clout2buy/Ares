@@ -76,3 +76,33 @@ test("V4 V1: agent context loads identity-first mind files without core importin
   assert.match(context.systemText, /Loaded identity/);
 });
 
+test("V4 V1: agent context bounds raw and curated memory blocks", async () => {
+  const home = await makeTmp();
+  const workspace = await makeTmp("crix-v4-workspace-");
+  await completeBootstrap(
+    {
+      userName: "Clout",
+      agentName: "Crix",
+      creature: "coding daemon",
+      vibe: "careful",
+      emoji: "*",
+    },
+    { home, workspace },
+  );
+  await fs.mkdir(path.join(home, "memory"), { recursive: true });
+  await fs.writeFile(path.join(home, "MEMORY.md"), `# Memory\n\n${"m".repeat(80_000)}`, "utf8");
+  await fs.writeFile(path.join(home, "memory", "2026-06-02.md"), `# raw\n\n${"t".repeat(80_000)}`, "utf8");
+  await fs.writeFile(path.join(home, "memory", "2026-06-01.md"), `# raw\n\n${"y".repeat(80_000)}`, "utf8");
+
+  const context = await loadAgentSystemContext({
+    home,
+    workspace,
+    includeMemory: true,
+    today: new Date("2026-06-02T12:00:00.000Z"),
+  });
+
+  assert.ok(context.systemText.length < 60_000, `agent context too large: ${context.systemText.length}`);
+  assert.ok(context.blocks.find((block) => block.label === "curated memory")?.text.length < 10_100);
+  assert.ok(context.blocks.find((block) => block.label === "today raw memory")?.text.length < 2_100);
+  assert.ok(context.blocks.find((block) => block.label === "yesterday raw memory")?.text.length < 1_300);
+});

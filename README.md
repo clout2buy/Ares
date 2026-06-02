@@ -1,143 +1,77 @@
-﻿# Crix
+# Crix
 
-Crix is a TypeScript-first coding-agent harness with a Java worker bridge. The codebase is intentionally TypeScript + Java only.
+Crix is a TypeScript-first coding-agent harness. It combines a streaming CLI, tool runtime, persistent agent identity, living memory, durable goals, browser connectors, and audited effect rails.
 
-## Simple Run
+The repository is a pnpm workspace. Source lives under `packages/`; the optional desktop companion lives under `tauri/`.
 
-Open PowerShell:
+## Quick Start
 
 ```powershell
 cd D:\Crix
+pnpm install
+pnpm build
 .\crix.bat help
 ```
 
-Main commands:
+Common commands:
 
 ```powershell
-.\crix.bat           # launch interactive TUI (provider/model picker, then chat)
-.\crix.bat run --goal "fix failing tests in auth module"  # coding task run
-.\crix.bat agent bootstrap # create/complete the v4 mind scaffold
-.\crix.bat agent doctor    # inspect identity/memory backend status
-.\crix.bat daemon --json   # NDJSON protocol for companion UIs
-.\crix.bat dry       # safe dry-run (sample plan), writes proof only
-.\crix.bat apply     # applies sample plan through policy/checkpoints
-.\crix.bat test      # runs TypeScript tests
-.\crix.bat verify    # TS check + tests + Java worker build
-.\crix.bat doctor    # runtime/provider status
-.\crix.bat java      # build and probe Java worker
-.\crix.bat login      # OpenAI ChatGPT OAuth device-code login
-.\crix.bat ollama use kimi-k2.6:cloud # save preferred Ollama Cloud model
-.\crix.bat ollama models # show Ollama Cloud suggestions
-.\crix.bat upgrade    # alias for run with harness-improvement default goal
-.\crix.bat ask "What should we build next?"
-.\crix.bat prompt --summary # inspect prompt pack
-.\crix.bat sessions       # list recent Crix run sessions
-.\crix.bat sessions show latest # inspect latest run events/proof
-.\crix.bat sessions history latest # inspect rehydrated events + turn items
-.\crix.bat sessions compact latest # write a compact resume summary
-.\crix.bat sessions fork latest # fork a prior session directory
-.\crix.bat turns          # list structured tool/agent turn artifacts
-.\crix.bat turns show latest # inspect latest turn items
-.\crix.bat tools       # inspect functional tool catalog
-.\crix.bat tool run read_file --path README.md # execute one tool directly
-.\crix.bat skills --full    # inspect skill processes
+.\crix.bat                         # provider/model launcher
+.\crix.bat chat --provider mock     # interactive terminal chat
+.\crix.bat run --goal "fix failing tests"
+.\crix.bat doctor                  # provider/runtime health
+.\crix.bat agent doctor            # identity and agent runtime health
+.\crix.bat mind doctor             # living-memory integrity report
+.\crix.bat mind consolidate        # prune, dedupe, and crystallize memory
+.\crix.bat operator attention      # inspect current Operator work queue
+.\crix.bat operator add --goal "ship a feature"
+.\crix.bat operator run --ticks 1
 ```
 
-Inside the TUI:
+## Packages
+
+- `@crix/protocol`: shared event, provider, reasoning, and tool-call shapes.
+- `@crix/core`: sessions, query engine, providers, checkpoints, subagents, verifier, hooks.
+- `@crix/tools`: local tool catalog and executors.
+- `@crix/agent`: identity files, bootstrap, recall, heartbeat, dreaming, skills, self-reflection.
+- `@crix/mind`: living memory, cognition, intent classification, memory diagnostics.
+- `@crix/operator`: durable goals, control loop, capability graph, acquisition, attention, background loop.
+- `@crix/effects`: budgets, ledger, kill switch, and side-effect rails.
+- `@crix/connectors`: browser connector, browser effects, filmstrip proof.
+- `@crix/cli`: command-line and terminal UI entrypoint.
+
+## Repository Layout
 
 ```text
-/provider openai      # switch provider without restart
-/model 2              # switch selected model by number
-/model list           # show model choices for active provider
-/agents               # show available subagent roles
-/agents notifications # show durable subagent completion notifications
-/agent researcher inspect current harness # run one visible subagent
-/tools run            # execute ToolRuntime calls with inputs, timing, proof
-inspect the tool runtime # natural chat trigger for live tool execution
-inspect agent orchestration # natural chat trigger for visible agent runs
-make me an html then open it # runs a toolcard task, writes HTML, opens browser
-learn this repo D:\Repo and pitch improvements # read-only repo scout
-D:\Repo is u!        # set active TUI workspace
-inspect              # scout the active workspace read-only
-learn it             # scout the active workspace read-only
-deep scan it         # bounded read-only deep scan of active workspace
-/status               # show active provider/model/auth state
+docs/                 Project docs and roadmap specs
+packages/             Workspace packages
+tauri/                Optional desktop companion
+tests/                Node test suite
+crix.bat, crix.ps1    Windows launchers
 ```
 
-Memory:
+Runtime state belongs outside source control. The default durable home is `%USERPROFILE%\.crix`; repo-local `.crix/`, package `dist/`, Tauri build output, and smoke screenshots are ignored.
+
+Interactive sessions are owner-local by default: Crix starts in bypass mode unless `dangerousBypass: false` is set in the UI settings file. See `docs/DEVELOPMENT.md` for the permission modes and verification workflow.
+
+## Development
 
 ```powershell
-.\crix.bat memory add "Prefer TypeScript for the main Crix harness" --tag architecture
-.\crix.bat memory search architecture
+pnpm lint     # TypeScript project check
+pnpm test     # build + node --test
+pnpm verify   # check + test
+pnpm clean    # remove generated build/log artifacts
 ```
 
-## What It Does Now
+The main quality rule is simple: changes should be backed by focused tests and reality checks. Build success is not enough for user-facing behavior; verify commands, files, HTTP probes, browser state, or logs as appropriate.
 
-- Adds a v4 agent layer in `packages/agent/`: bootstrap, IDENTITY/SOUL/USER/HEARTBEAT/MEMORY files, local recall, heartbeat, dreaming, self-revision signals, and skill proposals.
-- Keeps the harness boundary clean: `packages/core` and `packages/tools` do not import the agent package.
-- Supports local memory with Ollama embeddings plus sqlite/json fallback storage; see `docs/AGENT.md`.
-- Includes cleaner `graphite` and `oxide` terminal themes plus an opt-in Tauri companion scaffold under `tauri/`.
-- Builds context from repo files and durable memory.
-- Uses a strong Claude-Code-style prompt discipline for coding-agent behavior.
-- Uses an original layered prompt pack with tool catalog, skill processes, subagent rules, memory rules, and proof discipline.
-- Provides live slash-style TUI controls for provider, model, agents, tool runs, and status.
-- Runs local tool and agent turns through the core `TurnEngine`, including call inputs, timing, output previews, queued interventions, and a proof artifact.
-- Routes supported task requests through compact visible toolcards instead of letting the chat model merely describe intended actions.
-- Queues messages typed during active local work, records them as `user_intervention` turn items, and processes queued commands after the current turn reaches a safe checkpoint.
-- Records provider chat turns as structured `assistant_message` artifacts, and provider chat can run bounded Crix tool-use rounds before the final answer.
-- Records one-shot `ask` provider calls as structured turn artifacts too, without changing the simple answer-only command output.
-- Records model-planned `run` executions as structured turn artifacts too: plan creation, policy decisions, file changes, command executions, agent calls, and proof.
-- Derives effective step safety from the actual step type before applying policy, so mislabeled write steps are still blocked in read-only modes.
-- Persists subagent transcripts under `.crix/agents`, including scoped tools, interventions, completion, failure, or cancellation state.
-- Writes durable subagent completion notifications under `.crix/agents/notifications.jsonl`, visible through `/agents notifications` and the `agent_notifications` tool.
-- Runs visible TUI subagents through the active provider when `/provider openai` or `/provider ollama` is selected, falling back to mock only when no live provider is selected/configured.
-- Propagates provider abort signals for cancellable subagent runs.
-- Supports bounded provider planning and chat tool calls, so GPT can request read-only Crix context tools before returning the final answer or `UpgradePlan`.
-- Supports session compaction, forking, resume markers, and full thread-history rehydration through `crix sessions compact|fork|resume|history`.
-- Supports read-only repo scout requests for local paths, producing grounded findings and an improvement pitch without edits.
-- Keeps provider-chat tool use visible as assistant/tool/result events in the TUI; simple direct OpenAI/Ollama stream parsers remain available in core.
-- Supports provider routing boundaries for mock, plan-file, OpenAI OAuth, and Ollama Cloud through local Ollama.
-- Supports natural subagent roles: architect, coder, reviewer, researcher, toolsmith, and qa.
-- Tracks a Crix tool catalog backed by runtime executors. External/destructive tools are functional but policy-gated.
-- Applies plan steps through policy, checkpoints, verification, and proof reports.
-- Lets you pass interventions with `--intervention "new instruction"` during model-directed runs.
-- Uses Java as a worker bridge for future static-analysis/scoring capabilities.
+## Docs
 
-Core operating loop:
-- Inspect context
-- Plan scoped patch
-- Apply reversible edits
-- Run focused verification
-- Summarize with proof
-
-## Provider Status
-
-OpenAI ChatGPT OAuth is wired through a device-code login flow:
-
-```powershell
-.\crix.bat login
-.\crix.bat status
-.\crix.bat ask "hello"
-.\crix.bat run --goal "make Crix better"
-```
-
-OAuth tokens are stored outside the repo at `%USERPROFILE%\.crix\auth.json` unless `CRIX_HOME` is set. ChatGPT OAuth routes through the Codex backend; `OPENAI_API_KEY` routes through the OpenAI Platform Responses API.
-
-Ollama Cloud is routed through your local Ollama app/server at `http://127.0.0.1:11434` by default:
-
-```powershell
-.\crix.bat ollama status
-.\crix.bat ollama list
-.\crix.bat ollama use kimi-k2.6:cloud
-.\crix.bat ollama ask kimi-k2.6:cloud "hello"
-.\crix.bat run --provider ollama --model kimi-k2.6:cloud --goal "fix the parser bug"
-```
-
-Crix does not perform Ollama login. It sends selected Ollama Cloud model IDs to the local Ollama API. Preferred model and host settings are stored outside the repo at `%USERPROFILE%\.crix\ollama.json` unless `CRIX_HOME` is set.
-
-## Reference Boundary
-
-The friend-authored TypeScript repo and local OpenAI Codex repo are references. This TypeScript implementation is original work that ports the architecture ideas without copying wholesale.
-
-Prompt archive content is used only as pattern inspiration. Do not copy external prompt text directly into Crix. See `docs\PROMPT_PACK.md`.
-
+- `docs/ARCHITECTURE.md`: current package architecture and runtime flow.
+- `docs/DEVELOPMENT.md`: setup, scripts, generated output, and verification policy.
+- `docs/PACKAGE_BOUNDARIES.md`: intended package dependency direction and known boundary debt.
+- `docs/AGENT.md`: agent layer and identity scaffold.
+- `docs/BLUEPRINT.md`: original architecture blueprint.
+- `docs/CODEX_BUILD_SPEC.md`: implementation reference.
+- `docs/CLEANUP.md`: cleanup and move/removal log.
+- `docs/roadmap/`: historical NEXT specs and future-roadmap notes.

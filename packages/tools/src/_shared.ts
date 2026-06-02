@@ -201,7 +201,7 @@ export function workspaceRoot(ctx: Pick<RichToolContext, "workspace">): string {
 }
 
 export async function resolveWorkspacePath(
-  ctx: Pick<RichToolContext, "workspace" | "pathPermissions" | "requestPermission">,
+  ctx: Pick<RichToolContext, "workspace" | "pathPermissions" | "requestPermission" | "permissionMode">,
   inputPath: string | undefined,
   label = "path",
   access: PathAccess = "read",
@@ -209,6 +209,12 @@ export async function resolveWorkspacePath(
   const root = workspaceRoot(ctx);
   const candidate = path.resolve(root, inputPath ?? ".");
   if (!isInsideWorkspace(root, candidate) && !ctx.pathPermissions?.isAllowed(candidate, access)) {
+    // Unleashed (bypass): the owner runs Crix on their own machine and points it
+    // wherever they like (their Desktop, home dir, another repo). No
+    // out-of-workspace permission ritual — that's exactly the friction the owner
+    // posture drops. Pre-write undo checkpoints + the effects ledger still record
+    // every write, so it stays reversible.
+    if (ctx.permissionMode === "bypass") return candidate;
     if (!ctx.requestPermission) {
       throw permissionDenied(`${label} escapes workspace and no permission prompt is available: ${candidate}`);
     }

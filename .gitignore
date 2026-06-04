@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build artifacts
+packages/*/dist/
+packages/*/*.tsbuildinfo
+dist/
+.vite/
+*.tsbuildinfo
+*.d.ts.map
+*.js.map
+
+# Crix runtime state
+.crix/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Windows shortcuts
+*.lnk
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Test artifacts
+coverage/
+*.lcov
+*-screenshot.png
+tauri/target-*.png
+
+# Tauri build outputs
+tauri/src-tauri/target/
+tauri/src-tauri/gen/
+tauri/dist/
+
+# Local research/scratch
+.scan-openclaw/
+.claude/
+
+# Misc
+*.tgz

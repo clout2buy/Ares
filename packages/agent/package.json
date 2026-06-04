@@ -1,0 +1,29 @@
+{
+  "name": "@crix/agent",
+  "version": "0.4.0-alpha.1",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "description": "Crix v4 mind layer: bootstrap, identity, memory recall, heartbeat, dreaming, self-revision, and skill growth.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@crix/mind": "workspace:*",
+    "@crix/tools": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.8.1",
+    "sqlite-vec": "^0.1.7"
+  }
+}

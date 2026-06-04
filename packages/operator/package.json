@@ -1,0 +1,25 @@
+{
+  "name": "@crix/operator",
+  "version": "0.5.0-alpha.1",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "description": "Crix v5 Operator: the durable autonomy spine — goal store, scheduler, control loop, and a dispatcher that drives ephemeral QueryEngine workers headlessly.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@crix/core": "workspace:*",
+    "@crix/agent": "workspace:*",
+    "@crix/mind": "workspace:*"
+  }
+}

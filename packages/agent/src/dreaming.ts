@@ -1,0 +1,182 @@
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import { agentPaths, crixAgentHome } from "./paths.js";
+import { readTextIfExists, writeFileAtomic } from "./files.js";
+import type { CrixAgentConfig } from "./config.js";
+import { createMemoryStore } from "./memory/vectorStore.js";
+import type { MemoryCategory } from "./memory/types.js";
+import { emitLifecycle } from "./lifecycle/bus.js";
+import { loadSelfModel } from "./self/store.js";
+import { reflect } from "./self/reflect.js";
+import { gainForTarget } from "./voice.js";
+
+const DREAM_MEMORY_ITEM_CHARS = 420;
+const DREAM_MEMORY_MAX_ITEMS = 120;
+
+export interface DreamResult {
+  phase: "light" | "deep" | "rem";
+  promoted: number;
+  pruned: number;
+  report: string;
+}
+
+export async function runLightDream(opts: {
+  home?: string;
+  workspace: string;
+  sessionId: string;
+  transcriptPath?: string;
+  config: CrixAgentConfig;
+  now?: Date;
+}): Promise<DreamResult> {
+  const home = crixAgentHome(opts.home);
+  const paths = agentPaths(home);
+  emitLifecycle({ type: "dream_phase_started", phase: "light" });
+  const now = opts.now ?? new Date();
+  const events = opts.transcriptPath ? await readTextIfExists(opts.transcriptPath, 2_000_000) : "";
+  const snippets = extractSessionSignals(events ?? "").slice(0, 5);
+  const daily = path.join(paths.memoryDir, `${now.toISOString().slice(0, 10)}.md`);
+  await mkdir(path.dirname(daily), { recursive: true });
+  if (snippets.length > 0) {
+    await appendFile(daily, [`\n## Session ${opts.sessionId}`, ...snippets.map((s) => `- ${s}`), ""].join("\n"), "utf8");
+    const store = await createMemoryStore(opts.config, home);
+    for (const snippet of snippets) {
+      await store.add({ category: classifySignal(snippet), workspace: opts.workspace, content: snippet, source: "light-dreaming", score: 0.55 });
+    }
+  }
+  const report = snippets.length > 0 ? `LIGHT staged ${snippets.length} memory candidate(s).` : "LIGHT found no durable memory candidates.";
+  await appendDreamDiary(paths.dreamsDiary, now, report);
+  emitLifecycle({ type: "dream_phase_ended", phase: "light", promoted: snippets.length, pruned: 0 });
+  return { phase: "light", promoted: snippets.length, pruned: 0, report };
+}
+
+export async function runDeepDream(opts: {
+  home?: string;
+  workspace?: string;
+  config: CrixAgentConfig;
+  now?: Date;
+}): Promise<DreamResult> {
+  const home = crixAgentHome(opts.home);
+  const paths = agentPaths(home);
+  emitLifecycle({ type: "dream_phase_started", phase: "deep" });
+  const store = await createMemoryStore(opts.config, home);
+  const memories = await store.list();
+  const promoted = memories.filter((memory) =>
+    memory.score >= opts.config.dreaming.minScore &&
+    (memory.hits >= opts.config.dreaming.minRecallCount || memory.source === "light-dreaming")
+  );
+  if (promoted.length > 0) {
+    const lines = ["# Memory", "", "_(Curated long-term memory. Only DEEP dreaming writes here.)_", ""];
+    for (const memory of promoted.slice(-DREAM_MEMORY_MAX_ITEMS)) {
+      lines.push(`- [${memory.category}#${memory.id}] ${compact(memory.content, DREAM_MEMORY_ITEM_CHARS)}`);
+    }
+    await writeFileAtomic(paths.memory, lines.join("\n") + "\n");
+  }
+  const soulPromoted = await promoteSoulRules(paths.soul, promoted, opts.config.dreaming.soulRewriteThreshold);
+  const now = opts.now ?? new Date();
+  // Real reflection: reason over the self-model and record what to fix, acquire,
+  // or prune. This is the "why did I fail / what should I become" layer.
+  const selfDirectives = await reflectSelfModel(home, paths.dreamsDiary, now);
+  const report = `DEEP promoted ${promoted.length} memory candidate(s), ${soulPromoted} SOUL rule(s), ${selfDirectives} self-directive(s).`;
+  await appendDreamDiary(paths.dreamsDiary, now, report);
+  emitLifecycle({ type: "dream_phase_ended", phase: "deep", promoted: promoted.length, pruned: 0 });
+  return { phase: "deep", promoted: promoted.length, pruned: 0, report };
+}
+
+export async function runRemDream(opts: {
+  home?: string;
+  config: CrixAgentConfig;
+  now?: Date;
+}): Promise<DreamResult> {
+  const home = crixAgentHome(opts.home);
+  const paths = agentPaths(home);
+  emitLifecycle({ type: "dream_phase_started", phase: "rem" });
+  const files = await readdir(paths.memoryDir).catch(() => []);
+  const report = `REM scanned ${files.filter((file) => file.endsWith(".md")).length} daily memory file(s) for cross-workspace patterns.`;
+  await appendDreamDiary(paths.dreamsDiary, opts.now ?? new Date(), report);
+  emitLifecycle({ type: "dream_phase_ended", phase: "rem", promoted: 0, pruned: 0 });
+  return { phase: "rem", promoted: 0, pruned: 0, report };
+}
+
+async function reflectSelfModel(home: string, dreamsDiary: string, now: Date): Promise<number> {
+  try {
+    const directives = reflect(await loadSelfModel(home));
+    if (directives.length === 0) return 0;
+    const lines = directives.slice(0, 8).map((d) => `- [${d.kind}] ${d.capabilityName}: ${d.reason}`);
+    await appendFile(dreamsDiary, `\n### Self-reflection (${now.toISOString()})\n\n${lines.join("\n")}\n`, "utf8");
+    emitLifecycle({
+      type: "self_reflected",
+      directives: directives.length,
+      topKind: directives[0].kind,
+      gain: gainForTarget("SELF", directives.length, "reflected"),
+    });
+    return directives.length;
+  } catch {
+    return 0;
+  }
+}
+
+function extractSessionSignals(eventsJsonl: string): string[] {
+  const signals = new Set<string>();
+  for (const line of eventsJsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as { event?: { type?: string; userMessage?: unknown; message?: unknown; error?: string } };
+      const event = entry.event;
+      if (!event) continue;
+      if (event.type === "turn_start") {
+        const text = messageText((event as any).userMessage);
+        if (durable(text)) signals.add(`User asked: ${compact(text)}`);
+      }
+      if (event.type === "tool_error" && event.error) {
+        signals.add(`Tool error observed: ${compact(event.error)}`);
+      }
+    } catch {
+      // Ignore torn JSONL tails.
+    }
+  }
+  return [...signals];
+}
+
+function durable(text: string): boolean {
+  return /\b(prefer|always|never|remember|use|architecture|decision|style|tool|commit|test|verify)\b/i.test(text);
+}
+
+function classifySignal(text: string): MemoryCategory {
+  if (/\b(user|prefer|style)\b/i.test(text)) return "USER";
+  if (/\b(soul|voice|emoji|commit)\b/i.test(text)) return "SELF";
+  if (/\b(decision|architecture)\b/i.test(text)) return "DECISION";
+  if (/\b(error|correction|pushed back)\b/i.test(text)) return "FEEDBACK";
+  return "PROJECT";
+}
+
+function messageText(message: any): string {
+  if (!message || !Array.isArray(message.content)) return "";
+  return message.content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("");
+}
+
+function compact(text: string, limit = 220): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > limit ? `${clean.slice(0, Math.max(0, limit - 3))}...` : clean;
+}
+
+async function promoteSoulRules(soulPath: string, memories: readonly { id: number; category: string; content: string; hits: number }[], threshold: number): Promise<number> {
+  const candidates = memories.filter((memory) => memory.category === "SELF" && memory.hits >= threshold);
+  if (candidates.length === 0) return 0;
+  const current = (await readTextIfExists(soulPath, 1_000_000)) ?? "# SOUL.md - Who I Am\n\n## Learned Rules\n";
+  const lines = [current.trimEnd(), ""];
+  let added = 0;
+  for (const memory of candidates) {
+    const rule = `- ${compact(memory.content, DREAM_MEMORY_ITEM_CHARS)} (source memory #${memory.id})`;
+    if (current.includes(rule)) continue;
+    lines.push(rule);
+    added += 1;
+  }
+  if (added > 0) await writeFileAtomic(soulPath, lines.join("\n") + "\n");
+  return added;
+}
+
+async function appendDreamDiary(file: string, now: Date, report: string): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await appendFile(file, `\n## ${now.toISOString()}\n\n${report}\n`, "utf8");
+}
+

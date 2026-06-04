@@ -1,0 +1,76 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import os from "node:os";
+import path from "node:path";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.join(__dirname, "..");
+
+test("stabilization: clean/startup contract is explicit", async () => {
+  const [packageRaw, cleanRaw, developmentRaw] = await Promise.all([
+    readFile(path.join(root, "package.json"), "utf8"),
+    readFile(path.join(root, "scripts", "clean.mjs"), "utf8"),
+    readFile(path.join(root, "docs", "DEVELOPMENT.md"), "utf8"),
+  ]);
+  const rootPackage = JSON.parse(packageRaw);
+
+  assert.equal(rootPackage.scripts.clean, "node scripts/clean.mjs");
+  assert.equal(rootPackage.scripts.crix, "node packages/cli/dist/entry.js");
+  assert.match(cleanRaw, /packagesDir/);
+  assert.match(cleanRaw, /path\.join\(packageDir, "dist"\)/);
+  assert.match(cleanRaw, /path\.join\(root, "\.crix"\)/);
+  assert.match(cleanRaw, /src-tauri", "gen"/);
+  assert.match(developmentRaw, /Use `pnpm build` before running `pnpm crix`/);
+});
+
+test("stabilization: root CLI script launches the built entrypoint", () => {
+  const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-startup-smoke-"));
+  const result = process.platform === "win32"
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", "pnpm --silent crix help"], {
+        cwd: root,
+        encoding: "utf8",
+        windowsHide: true,
+        env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+      })
+    : spawnSync("pnpm", ["--silent", "crix", "help"], {
+        cwd: root,
+        encoding: "utf8",
+        windowsHide: true,
+        env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+      });
+
+  assert.equal(result.status, 0, `pnpm crix help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.match(result.stdout, /crix v0\.3\.0-alpha\.1/);
+  assert.match(result.stdout, /streaming coding-agent harness/);
+});
+
+test("stabilization: direct CLI entrypoint launches", () => {
+  const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-entry-smoke-"));
+  const result = spawnSync(process.execPath, [path.join(root, "packages", "cli", "dist", "entry.js"), "help"], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+  });
+
+  assert.equal(result.status, 0, `node entry.js help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.match(result.stdout, /crix v0\.3\.0-alpha\.1/);
+  assert.match(result.stdout, /streaming coding-agent harness/);
+});
+
+test("stabilization: Tauri daemon launch expectation is build-gated", async () => {
+  const [mainRaw, configRaw] = await Promise.all([
+    readFile(path.join(root, "tauri", "src-tauri", "src", "main.rs"), "utf8"),
+    readFile(path.join(root, "tauri", "src-tauri", "tauri.conf.json"), "utf8"),
+  ]);
+  const config = JSON.parse(configRaw);
+
+  assert.match(mainRaw, /packages\/cli\/dist\/entry\.js/);
+  assert.match(mainRaw, /Build Crix from the repo before launching the desktop app/);
+  assert.equal(config.build.beforeDevCommand, "pnpm dev:vite");
+  assert.equal(config.build.beforeBuildCommand, "pnpm build:web");
+});

@@ -1,0 +1,292 @@
+// Tool<I, O> is the per-file tool contract used across @crix/tools.
+//
+// Every tool owns its schema, permission check, execution, and display text.
+
+import path from "node:path";
+import { promises as fs } from "node:fs";
+import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import type {
+  ToolSchema,
+  SafetyClass,
+  Concurrency,
+  ProviderHint,
+  PermissionDecision,
+  PermissionMode,
+} from "@crix/protocol";
+import type { ToolCallContext, EngineToolResult } from "@crix/core";
+
+export interface FileReadStamp {
+  mtimeMs: number;
+  size: number;
+}
+
+export interface RichToolContext extends ToolCallContext {
+  permissionMode: PermissionMode;
+  fileReadStamps: Map<string, FileReadStamp>;
+  pathPermissions?: PathPermissionStore;
+  commandPermissions?: CommandPermissionStore;
+  subModel?: SubModelPool;
+  /** Optional shell process registry — required for run_in_background. */
+  shellRegistry?: import("./ShellRegistry.js").ShellRegistry;
+  /** Optional todo store — used by TodoWrite. */
+  todoStore?: import("./TodoWrite.js").TodoStore;
+}
+
+export type PathAccess = "read" | "write" | "execute" | "all";
+export type PathGrantScope = "once" | "always";
+
+export interface PathPermissionStore {
+  isAllowed(absPath: string, access: PathAccess): boolean;
+  grant(absPath: string, access: PathAccess, scope: PathGrantScope): Promise<void> | void;
+}
+
+export interface CommandPermissionStore {
+  decide(toolName: string, command: string): PermissionDecision | null;
+}
+
+export interface SubModelPool {
+  apply(req: { file: string; original: string; instructions: string; sketch: string }): Promise<string>;
+  summarize(req: { input: string; instructions?: string }): Promise<string>;
+}
+
+export interface ToolResult<O> extends EngineToolResult {
+  output: O;
+  touchedFiles?: string[];
+  display?: string;
+}
+
+export interface Tool<I extends z.ZodTypeAny = z.ZodTypeAny, O = unknown> {
+  readonly schema: ToolSchema;
+  readonly inputZod: I;
+  checkPermissions(input: z.infer<I>, ctx: RichToolContext): Promise<PermissionDecision>;
+  call(input: z.infer<I>, ctx: RichToolContext): Promise<ToolResult<O>>;
+  activityDescription(input: z.infer<I>): string;
+}
+
+export interface ToolDef<I extends z.ZodTypeAny, O> {
+  name: string;
+  description: string;
+  safety: SafetyClass;
+  concurrency: Concurrency;
+  providerHint?: ProviderHint;
+  deferLoading?: boolean;
+  inputZod: I;
+  checkPermissions?: (input: z.infer<I>, ctx: RichToolContext) => Promise<PermissionDecision>;
+  call: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolResult<O>>;
+  activityDescription: (input: z.infer<I>) => string;
+}
+
+export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I, O> {
+  const inputJsonSchema = normalizeProviderJsonSchema(zodToJsonSchema(def.inputZod, {
+    target: "openApi3",
+    $refStrategy: "none",
+  })) as object;
+
+  const schema: ToolSchema = {
+    name: def.name,
+    description: def.description,
+    inputJsonSchema,
+    safety: def.safety,
+    concurrency: def.concurrency,
+    providerHint: def.providerHint,
+    deferLoading: def.deferLoading,
+  };
+
+  const checkPermissions = async (
+    input: z.infer<I>,
+    ctx: RichToolContext,
+  ): Promise<PermissionDecision> => {
+    const base = defaultPermissionDecision(def, ctx);
+    if (base.kind !== "allow") return base;
+    return def.checkPermissions ? def.checkPermissions(input, ctx) : base;
+  };
+
+  return {
+    schema,
+    inputZod: def.inputZod,
+    checkPermissions,
+    call: def.call,
+    activityDescription: def.activityDescription,
+  };
+}
+
+export function adaptToolForEngine(
+  tool: Tool<z.ZodTypeAny, unknown>,
+  enrich: (base: ToolCallContext) => RichToolContext,
+): { schema: ToolSchema; call: (input: unknown, ctx: ToolCallContext) => Promise<EngineToolResult> } {
+  return {
+    schema: tool.schema,
+    async call(input, ctx) {
+      const parsed = tool.inputZod.parse(input);
+      const rich = enrich(ctx);
+      const decision = await tool.checkPermissions(parsed, rich);
+      if (decision.kind === "deny") {
+        throw new Error(decision.reason);
+      }
+      if (decision.kind === "ask") {
+        if (!ctx.requestPermission) {
+          throw new Error(`permission required: ${decision.prompt}`);
+        }
+        const answer = await ctx.requestPermission({
+          toolName: tool.schema.name,
+          input: parsed,
+          reason: decision.prompt,
+          suggestion: decision.suggestion,
+        });
+        if (answer === "deny") {
+          const err = new Error(`permission denied: ${tool.schema.name}`);
+          err.name = "PermissionDeniedError";
+          throw err;
+        }
+      }
+      const result = await tool.call(parsed, rich);
+      return {
+        output: result.output,
+        touchedFiles: result.touchedFiles,
+        display: result.display,
+      };
+    },
+  };
+}
+
+export const zPath = z.string().min(1).describe("Absolute or workspace-relative path.");
+export const zAbsPath = zPath;
+
+function defaultPermissionDecision<I extends z.ZodTypeAny, O>(
+  def: ToolDef<I, O>,
+  ctx: RichToolContext,
+): PermissionDecision {
+  if (def.safety === "read-only") return { kind: "allow" };
+
+  if (ctx.permissionMode === "plan") {
+    return { kind: "deny", reason: `${def.name} is disabled in plan mode.` };
+  }
+
+  if (ctx.permissionMode === "bypass") return { kind: "allow" };
+
+  if (ctx.permissionMode === "workspace-write") {
+    if (def.safety === "workspace-write") return { kind: "allow" };
+    if (def.safety === "external-state" || def.safety === "destructive") {
+      return {
+        kind: "ask",
+        prompt: `${def.name} wants to perform a ${def.safety} action.`,
+        suggestion: def.safety === "external-state" ? "allow_once" : "deny",
+      };
+    }
+    return {
+      kind: "deny",
+      reason: `${def.name} is ${def.safety}; workspace-write mode only allows workspace edits.`,
+    };
+  }
+
+  if (ctx.permissionMode === "auto-safe") {
+    if (def.safety === "workspace-write") return { kind: "allow" };
+    return {
+      kind: "ask",
+      prompt: `${def.name} wants to perform a ${def.safety} action.`,
+      suggestion: def.safety === "external-state" ? "allow_once" : "deny",
+    };
+  }
+
+  return {
+    kind: "ask",
+    prompt: `${def.name} wants to perform a ${def.safety} action.`,
+    suggestion: def.safety === "workspace-write" ? "allow_once" : "deny",
+  };
+}
+
+export function workspaceRoot(ctx: Pick<RichToolContext, "workspace">): string {
+  return path.resolve(ctx.workspace);
+}
+
+export async function resolveWorkspacePath(
+  ctx: Pick<RichToolContext, "workspace" | "pathPermissions" | "requestPermission" | "permissionMode">,
+  inputPath: string | undefined,
+  label = "path",
+  access: PathAccess = "read",
+): Promise<string> {
+  const root = workspaceRoot(ctx);
+  const candidate = path.resolve(root, inputPath ?? ".");
+  if (!isInsideWorkspace(root, candidate) && !ctx.pathPermissions?.isAllowed(candidate, access)) {
+    // Unleashed (bypass): the owner runs Crix on their own machine and points it
+    // wherever they like (their Desktop, home dir, another repo). No
+    // out-of-workspace permission ritual — that's exactly the friction the owner
+    // posture drops. Pre-write undo checkpoints + the effects ledger still record
+    // every write, so it stays reversible.
+    if (ctx.permissionMode === "bypass") return candidate;
+    if (!ctx.requestPermission) {
+      throw permissionDenied(`${label} escapes workspace and no permission prompt is available: ${candidate}`);
+    }
+    const decision = await ctx.requestPermission({
+      toolName: "Filesystem",
+      input: { path: candidate, access },
+      reason: `${label} is outside the workspace: ${candidate}`,
+      suggestion: "allow_once",
+    });
+    if (decision === "deny") {
+      throw permissionDenied(`${label} denied outside workspace: ${candidate}`);
+    }
+    const grantPath = decision === "allow_always" ? await grantRootFor(candidate, access) : candidate;
+    const grantAccess = decision === "allow_always" && access === "execute" ? "all" : access;
+    await ctx.pathPermissions?.grant(grantPath, grantAccess, decision === "allow_always" ? "always" : "once");
+    if (!ctx.pathPermissions?.isAllowed(candidate, access)) {
+      throw permissionDenied(`${label} not granted outside workspace: ${candidate}`);
+    }
+  }
+  return candidate;
+}
+
+async function grantRootFor(candidate: string, access: PathAccess): Promise<string> {
+  const info = await fs.stat(candidate).catch(() => null);
+  if (info?.isDirectory()) return candidate;
+  if (access === "write" || access === "read") return path.dirname(candidate);
+  return candidate;
+}
+
+function permissionDenied(message: string): Error {
+  const err = new Error(message);
+  err.name = "PermissionDeniedError";
+  return err;
+}
+
+export function assertInsideWorkspace(root: string, candidate: string, label = "path"): void {
+  if (isInsideWorkspace(root, candidate)) return;
+  throw new Error(`${label} escapes workspace: ${candidate}`);
+}
+
+function isInsideWorkspace(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeProviderJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeProviderJsonSchema);
+  if (!value || typeof value !== "object") return value;
+
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(input)) {
+    if (key === "default") continue;
+    output[key] = normalizeProviderJsonSchema(child);
+  }
+
+  if (output.exclusiveMinimum === true && typeof output.minimum === "number") {
+    output.exclusiveMinimum = output.minimum;
+    delete output.minimum;
+  } else if (output.exclusiveMinimum === false) {
+    delete output.exclusiveMinimum;
+  }
+
+  if (output.exclusiveMaximum === true && typeof output.maximum === "number") {
+    output.exclusiveMaximum = output.maximum;
+    delete output.maximum;
+  } else if (output.exclusiveMaximum === false) {
+    delete output.exclusiveMaximum;
+  }
+
+  return output;
+}

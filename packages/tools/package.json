@@ -1,0 +1,26 @@
+{
+  "name": "@crix/tools",
+  "version": "0.3.0-alpha.1",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "description": "Crix v2 tool library. One file per tool; each owns its zod schema, permission check, execution, and display.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@crix/protocol": "workspace:*",
+    "@crix/core": "workspace:*",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.24.1"
+  }
+}

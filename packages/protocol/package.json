@@ -1,0 +1,20 @@
+﻿{
+  "name": "@crix/protocol",
+  "version": "0.3.0-alpha.1",
+  "description": "Wire protocol types for Crix v2 — streaming events, content blocks, tool schemas, permissions, todos, sessions.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  }
+}

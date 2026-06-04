@@ -1,0 +1,15 @@
+﻿{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./packages/protocol" },
+    { "path": "./packages/core" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/agent" },
+    { "path": "./packages/operator" },
+    { "path": "./packages/effects" },
+    { "path": "./packages/connectors" },
+    { "path": "./packages/mind" },
+    { "path": "./packages/cli" }
+  ]
+}

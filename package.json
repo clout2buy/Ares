@@ -1,0 +1,27 @@
+{
+  "name": "crix",
+  "version": "0.3.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "crix": "packages/cli/dist/entry.js"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "description": "Crix: streaming coding-agent harness for terminal. OpenAI ChatGPT OAuth + Ollama Cloud 3-slot parallel.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -b",
+    "check": "tsc -b --pretty false",
+    "lint": "pnpm check",
+    "test": "pnpm build && node --test tests/*.test.mjs",
+    "crix": "node packages/cli/dist/entry.js",
+    "link:cli": "pnpm build && pnpm link --global",
+    "verify": "pnpm lint && pnpm test",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.15",
+    "typescript": "^5.7.0"
+  }
+}

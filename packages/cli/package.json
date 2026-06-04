@@ -1,0 +1,29 @@
+{
+  "name": "@crix/cli",
+  "version": "0.3.0-alpha.1",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "description": "Crix v2 CLI: the `crix` binary. Ink-based TUI, slash commands, session DAG navigation.",
+  "main": "dist/entry.js",
+  "bin": {
+    "crix": "dist/entry.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@crix/agent": "workspace:*",
+    "@crix/connectors": "workspace:*",
+    "@crix/core": "workspace:*",
+    "@crix/effects": "workspace:*",
+    "@crix/mind": "workspace:*",
+    "@crix/operator": "workspace:*",
+    "@crix/protocol": "workspace:*",
+    "@crix/tools": "workspace:*",
+    "ink": "^7.0.4",
+    "react": "^19.2.6",
+    "zod": "^3.23.8"
+  }
+}

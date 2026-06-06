@@ -18,6 +18,7 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@crix/agent": "workspace:*"
+    "@crix/agent": "workspace:*",
+    "@crix/protocol": "workspace:*"
   }
 }

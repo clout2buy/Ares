@@ -94,6 +94,9 @@ importers:
       '@crix/agent':
         specifier: workspace:*
         version: link:../agent
+      '@crix/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/mind: {}
 

@@ -12,6 +12,22 @@ export { Ledger } from "./ledger.js";
 export { Budget, type BudgetLimits, type SpendSnapshot, type BudgetCheck } from "./budget.js";
 export { KillSwitch, HaltedError } from "./killSwitch.js";
 export { effectsPaths, type EffectsPaths } from "./paths.js";
+export {
+  evaluateAction,
+  classifyAction,
+  permissionModeFor,
+  safetyClassToIrreversibility,
+  permits,
+  type ActionMode,
+  type EffectiveMode,
+  type ActionPolicy,
+  type ActionCategory,
+  type BlastRadius,
+  type PolicyDecision,
+  type RiskAssessment,
+  type ActionDescriptor,
+  type PolicyEvaluation,
+} from "./policy.js";
 export type {
   EffectSpec,
   EffectCost,

@@ -6,7 +6,20 @@
 // effect actually emit an ApprovalRequest and resume on an ApprovalDecision.
 
 import type { ActionCategory, RiskAssessment } from "./policy.js";
-import type { EffectCost } from "./types.js";
+import type { EffectCost, Irreversibility } from "./types.js";
+
+/** What the rails hand to a requestApproval callback when an effect is staged. */
+export interface StagedApproval {
+  /** The effect's idempotency key — stable id for this pending approval. */
+  id: string;
+  kind: string;
+  domain: string;
+  irreversibility: Irreversibility;
+  cost?: EffectCost;
+  reason: string;
+  /** simulate() output — the "what would happen" preview. */
+  preview?: unknown;
+}
 
 /** Mirrors protocol's PermissionPromptDecision so the existing card/transport is reused. */
 export type ApprovalVerb = "allow_once" | "allow_always" | "deny";

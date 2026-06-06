@@ -12,6 +12,7 @@ import type { Budget } from "./budget.js";
 import type { Ledger } from "./ledger.js";
 import { HaltedError, type KillSwitch } from "./killSwitch.js";
 import type { EffectSpec, GateDecision, Irreversibility, LedgerEntry, RailsResult } from "./types.js";
+import type { ApprovalDecision, StagedApproval } from "./approval.js";
 
 /** Minimum leash required to auto-commit each irreversibility tier. */
 export const LEASH_REQUIRED: Record<Irreversibility, number> = {
@@ -26,6 +27,13 @@ export interface RailsContext {
   killSwitch: KillSwitch;
   /** Earned autonomy per domain (O7 TrustGovernor). Defaults to 1 (ask). */
   leashOf?: (domain: string) => number;
+  /**
+   * Human-in-the-loop approver. When provided, a STAGED effect pauses here and
+   * resumes (commit) on allow_* or refuses (rejected) on deny. When ABSENT, a
+   * staged effect keeps the legacy behavior — held, never committed — so nothing
+   * that doesn't opt in changes.
+   */
+  requestApproval?: (staged: StagedApproval) => Promise<ApprovalDecision>;
   now?: () => Date;
 }
 
@@ -45,8 +53,9 @@ export async function runEffect<R>(effect: EffectSpec<R>, ctx: RailsContext): Pr
 
   await ctx.ledger.append(entry(effect, "proposed", now()));
 
-  // Dry-run. simulate() must have no side effect.
-  await effect.simulate();
+  // Dry-run. simulate() must have no side effect. Its output is captured as the
+  // approval preview — the "what would happen" the owner reviews.
+  const preview = await effect.simulate();
   await ctx.ledger.append(entry(effect, "simulated", now()));
 
   // GATE.
@@ -57,7 +66,26 @@ export async function runEffect<R>(effect: EffectSpec<R>, ctx: RailsContext): Pr
   }
   if (decision.kind === "stage") {
     await ctx.ledger.append(entry(effect, "staged", now(), decision.reason));
-    return { status: "staged", reason: decision.reason };
+    // No approver wired → legacy behavior: hold the effect, never commit.
+    if (!ctx.requestApproval) {
+      return { status: "staged", reason: decision.reason };
+    }
+    // Approver wired → pause for a human decision, then resume or refuse.
+    const verdict = await ctx.requestApproval({
+      id: effect.idempotencyKey,
+      kind: effect.kind,
+      domain: effect.domain,
+      irreversibility: effect.irreversibility,
+      cost: effect.cost,
+      reason: decision.reason,
+      preview,
+    });
+    if (verdict.verb === "deny") {
+      await ctx.ledger.append({ ...entry(effect, "rejected", now(), verdict.note), approvalId: verdict.id, approver: verdict.approver });
+      return { status: "denied", reason: verdict.note ?? "approval denied" };
+    }
+    await ctx.ledger.append({ ...entry(effect, "approved", now()), approvalId: verdict.id, approver: verdict.approver });
+    // approved → fall through to the commit path (with a fresh kill-switch recheck)
   }
 
   // Re-check the kill switch right before the irreversible moment (race window).

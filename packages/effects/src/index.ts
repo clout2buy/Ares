@@ -38,6 +38,7 @@ export {
   type ApprovalRequest,
   type ApprovalDecision,
   type ProofCard,
+  type StagedApproval,
 } from "./approval.js";
 export type {
   EffectSpec,

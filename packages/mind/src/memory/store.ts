@@ -17,6 +17,8 @@ import { writeFileAtomic } from "../io.js";
 import { mindPaths } from "../paths.js";
 import { currentStrength, reinforce } from "./strength.js";
 import { recall, type RecallOptions, type RecallResult } from "./recall.js";
+import { buildIdf } from "./idf.js";
+import { clusterByConcept, detectRecurringFailures, type Phraser } from "./synthesis.js";
 import { MEMORY_SCHEMA_VERSION, type MemoryKind, type MemoryNode } from "./types.js";
 
 export interface ConsolidationReport {
@@ -24,6 +26,15 @@ export interface ConsolidationReport {
   deduped: number;
   promoted: string[];
   kept: number;
+}
+
+export interface SynthesisReport {
+  /** New insight (recurring-pattern) nodes written. */
+  insights: number;
+  /** New belief (recurring-failure) nodes written. */
+  beliefs: number;
+  /** Existing synthesis nodes reinforced/extended instead of duplicated. */
+  updated: number;
 }
 
 const PRUNE_FLOOR = 0.05;
@@ -212,6 +223,8 @@ export class MemoryStore {
 
     // 1. Forget faded one-off episodes and stale filler "theme" semantics.
     for (const node of this.all()) {
+      // Never prune crystallized insight/belief nodes the deep dream synthesized.
+      if (node.source === "synthesis") continue;
       if (node.kind === "episodic" && currentStrength(node, now) < PRUNE_FLOOR) {
         this.deleteNode(node.id);
         pruned++;
@@ -257,6 +270,68 @@ export class MemoryStore {
 
     await this.persist();
     return { pruned, deduped, promoted, kept: this.nodes.size };
+  }
+
+  /**
+   * Dreaming synthesis: cluster recurring episodes into durable "insight" nodes
+   * and recurring failure signatures into "belief" nodes — the real "what should
+   * I believe now" pass. Idempotent by tag (re-running reinforces, never dupes),
+   * provider-free by default; an optional injected phraser writes richer prose
+   * without coupling @crix/mind to any model.
+   */
+  async synthesize(opts: { now?: Date; synthesizer?: Phraser; minMembers?: number } = {}): Promise<SynthesisReport> {
+    const now = opts.now ?? new Date();
+    // Synthesize over raw memory only — exclude prior synthesis output so its own
+    // content can never perturb the IDF corpus or shift a cluster key (which would
+    // break idempotency: the same recurring set must always map to the same tag).
+    const nodes = this.all().filter((n) => n.source !== "synthesis");
+    const idf = buildIdf(nodes);
+    const candidates = [
+      ...clusterByConcept(nodes, idf, { minMembers: opts.minMembers }),
+      ...detectRecurringFailures(nodes, idf),
+    ];
+    let insights = 0;
+    let beliefs = 0;
+    let updated = 0;
+    for (const c of candidates) {
+      const tag = `${c.kind}:${c.key}`;
+      const members = c.members
+        .map((id) => this.nodes.get(id))
+        .filter((n): n is MemoryNode => Boolean(n));
+      if (members.length === 0) continue;
+      const phrased = opts.synthesizer ? await opts.synthesizer(c, members).catch(() => null) : null;
+      const content = phrased ?? c.defaultText;
+      const existing = this.all().find((n) => n.kind === "semantic" && n.tags?.includes(tag));
+      if (existing) {
+        this.nodes.set(existing.id, {
+          ...existing,
+          content,
+          confidence: Math.min(1, (existing.confidence ?? 0.5) + 0.1),
+          derivedFrom: [...new Set([...(existing.derivedFrom ?? []), ...c.members])],
+          strength: existing.strength + 0.5,
+        });
+        for (const m of members) this.linkPair(existing.id, m.id);
+        updated++;
+        continue;
+      }
+      const node = await this.add({
+        kind: "semantic",
+        content,
+        tags: [tag],
+        source: "synthesis",
+        strength: 1.5 + Math.min(2, c.salience * 0.1),
+        at: now,
+      });
+      const created = this.nodes.get(node.id);
+      if (created) {
+        this.nodes.set(node.id, { ...created, confidence: c.kind === "belief" ? 0.6 : 0.5, derivedFrom: c.members });
+      }
+      for (const m of members) this.linkPair(node.id, m.id);
+      if (c.kind === "belief") beliefs++;
+      else insights++;
+    }
+    await this.persist();
+    return { insights, beliefs, updated };
   }
 
   private async persist(): Promise<void> {

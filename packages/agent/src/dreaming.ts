@@ -9,6 +9,7 @@ import { emitLifecycle } from "./lifecycle/bus.js";
 import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
+import { MemoryStore as LivingMemoryStore, mindPaths } from "@crix/mind";
 
 const DREAM_MEMORY_ITEM_CHARS = 420;
 const DREAM_MEMORY_MAX_ITEMS = 120;
@@ -76,7 +77,11 @@ export async function runDeepDream(opts: {
   // Real reflection: reason over the self-model and record what to fix, acquire,
   // or prune. This is the "why did I fail / what should I become" layer.
   const selfDirectives = await reflectSelfModel(home, paths.dreamsDiary, now);
-  const report = `DEEP promoted ${promoted.length} memory candidate(s), ${soulPromoted} SOUL rule(s), ${selfDirectives} self-directive(s).`;
+  // Real synthesis over the v6 living memory: crystallize recurring episodes into
+  // insight nodes and recurring failures into belief nodes — the "what should I
+  // believe now" pass that turns raw episodes into durable knowledge.
+  const synthesized = await synthesizeLivingMemory(home, now);
+  const report = `DEEP promoted ${promoted.length} memory candidate(s), ${soulPromoted} SOUL rule(s), ${selfDirectives} self-directive(s)${synthesized ? `, ${synthesized}` : ""}.`;
   await appendDreamDiary(paths.dreamsDiary, now, report);
   emitLifecycle({ type: "dream_phase_ended", phase: "deep", promoted: promoted.length, pruned: 0 });
   return { phase: "deep", promoted: promoted.length, pruned: 0, report };
@@ -95,6 +100,28 @@ export async function runRemDream(opts: {
   await appendDreamDiary(paths.dreamsDiary, opts.now ?? new Date(), report);
   emitLifecycle({ type: "dream_phase_ended", phase: "rem", promoted: 0, pruned: 0 });
   return { phase: "rem", promoted: 0, pruned: 0, report };
+}
+
+/**
+ * Synthesize durable insight/belief nodes from the v6 living memory — best-effort,
+ * never throws, so a dream can never be broken by it. Opens the SAME living store
+ * the live turn reads/writes (mindPaths(home).memoryFile) so insights surface in
+ * future recall.
+ */
+async function synthesizeLivingMemory(home: string, now: Date): Promise<string> {
+  try {
+    const store = await LivingMemoryStore.open(mindPaths(home).memoryFile);
+    const report = await store.synthesize({ now });
+    if (report.insights + report.beliefs + report.updated === 0) return "";
+    emitLifecycle({
+      type: "thought",
+      kind: "reflect",
+      text: `Crystallized ${report.insights} insight(s) and ${report.beliefs} belief(s) from recurring memory.`,
+    });
+    return `${report.insights} insight(s) + ${report.beliefs} belief(s) crystallized`;
+  } catch {
+    return "";
+  }
 }
 
 async function reflectSelfModel(home: string, dreamsDiary: string, now: Date): Promise<number> {

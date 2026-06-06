@@ -17,7 +17,11 @@ export type MemoryKind = "episodic" | "semantic" | "procedural";
  * record missing `v` to version 1 (the pre-versioned shape) and quarantines —
  * never deletes — records written by a *newer* version it doesn't understand.
  */
-export const MEMORY_SCHEMA_VERSION = 1;
+// v2 (additive, forward+backward safe): added optional `confidence` and
+// `derivedFrom` for synthesized belief/insight nodes the deep dream crystallizes.
+// Older binaries quarantine v2 nodes (never destroy them); same-version round-trip
+// is unaffected because the new fields are optional.
+export const MEMORY_SCHEMA_VERSION = 2;
 
 export interface MemoryNode {
   /** Schema version this record was written with. See {@link MEMORY_SCHEMA_VERSION}. */
@@ -36,4 +40,8 @@ export interface MemoryNode {
   tags?: string[];
   /** Origin: a session/mission/skill id, etc. */
   source?: string;
+  /** Confidence (0..1) for a synthesized belief/insight. Absent on raw episodes. */
+  confidence?: number;
+  /** Provenance: member node ids a synthesis was distilled from. */
+  derivedFrom?: string[];
 }

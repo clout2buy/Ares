@@ -7,9 +7,17 @@
 //
 // M2 Cognition (the thought process) lands on top of this.
 
-export { MemoryStore, type ConsolidationReport } from "./memory/store.js";
+export { MemoryStore, type ConsolidationReport, type SynthesisReport } from "./memory/store.js";
 export { diagnoseMemory, type MemoryDoctorReport, type DuplicateMemoryGroup } from "./memory/doctor.js";
 export { recall, type RecallResult, type RecallOptions } from "./memory/recall.js";
+export { buildIdf, idfWeight, jaccard, tokenizeSalient, type IdfMap } from "./memory/idf.js";
+export {
+  clusterByConcept,
+  detectRecurringFailures,
+  synthesizeCandidates,
+  type InsightCandidate,
+  type Phraser,
+} from "./memory/synthesis.js";
 export { currentStrength, reinforce, HALF_LIFE_MS } from "./memory/strength.js";
 export { mindPaths, type MindPaths } from "./paths.js";
 export { MEMORY_SCHEMA_VERSION } from "./memory/types.js";

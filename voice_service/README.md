@@ -20,11 +20,12 @@ pip install -r voice_service\requirements.txt
 ## Run
 
 ```powershell
-pnpm voice:tts -- --device cuda:1 --voice af_heart
+pnpm voice:tts -- --voice af_heart
 ```
 
-On this machine, PyTorch reports `cuda:0` as the RTX 4060 and `cuda:1` as the
-RTX 5060 Ti. Kokoro is tiny, so either GPU (or even `--device cpu`) is fine.
+Kokoro is tiny, so it runs comfortably on any modern CUDA GPU (`--device cuda:0`,
+the default) or on CPU (`--device cpu`). If you have multiple GPUs, pass the
+`cuda:N` index that matches the card you want to use.
 
 The desktop app connects to:
 

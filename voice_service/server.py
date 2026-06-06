@@ -20,9 +20,12 @@ app = FastAPI(title="Crix Voice Service", version="0.1.0")
 
 # Allow the standalone audition page (file:// / localhost) and the Tauri webview
 # (tauri://localhost) to call /voices and open the /tts socket.
+# Loopback-only service: allow the Tauri webview, localhost, and the file://
+# audition page (which reports a "null" origin) — but not arbitrary web pages.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["null"],
+    allow_origin_regex=r"(tauri|https?)://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?",
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )

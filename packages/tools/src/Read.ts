@@ -50,6 +50,28 @@ export const ReadTool = buildTool({
     if (!stat.isFile()) {
       throw new Error(`${filePath} is not a regular file`);
     }
+
+    // Re-read guard: a whole-file Read of something already in context this
+    // session, unchanged on disk, returns a pointer instead of a second full
+    // dump — the single biggest source of context bloat / tool spam. Range reads
+    // (offset/limit) always pass through, and any real edit changes mtime/size
+    // so a legitimately-changed file is always re-read.
+    const prior = ctx.fileReadStamps.get(filePath);
+    const wholeFile = i.offset === undefined && i.limit === undefined;
+    if (prior && wholeFile && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) {
+      return {
+        output: {
+          path: filePath,
+          totalLines: 0,
+          startLine: 0,
+          endLine: 0,
+          content: "",
+          truncated: false,
+        },
+        display: `Skipped re-read of ${path.basename(filePath)} — already in context this session, unchanged. Work from what you already have, or pass offset/limit to fetch a specific range.`,
+      };
+    }
+
     const raw = await fs.readFile(filePath, "utf8");
     const lines = raw.split("\n");
     const total = lines.length;

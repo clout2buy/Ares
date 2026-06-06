@@ -22,6 +22,8 @@ export interface UserIntent {
   lowSignal: boolean;
   shouldRecall: boolean;
   shouldCapture: boolean;
+  /** Drives how much tactical scaffolding the turn earns. */
+  complexity: "trivial" | "standard" | "substantial";
 }
 
 const LOW_SIGNAL_PATTERNS = [
@@ -38,6 +40,22 @@ const SELF_ARCH_RE = /\b(crix|rook|yourself|your self|your memory|livingmind|ope
 const CODING_RE = /\b(code|repo|file|fix|bug|build|edit|implement|upgrade|refactor|test|verify|typescript|package|cli|tool|browser|connector|operator|memory|source)\b/i;
 const PREF_RE = /\b(i (prefer|like|want|need|hate|love|always|never)|remember this|save this|keep this in mind|don'?t forget|stop doing|don'?t do|you should|you shouldn'?t)\b/i;
 const QUESTION_RE = /(^|\s)(what|how|why|where|when|who|which|can|could|should|would|do|does|did|is|are)\b|[?]\s*$/i;
+const MULTISTEP_RE = /\b(and then|then|also|after that|refactor|migrate|implement|rewrite|wire up|end[- ]to[- ]end)\b|\b\d+\.\s/i;
+const SUBSTANTIAL_KINDS = new Set<UserIntentKind>([
+  "coding_task",
+  "self_architecture",
+  "autonomous_mission",
+  "external_action",
+]);
+
+/** How much tactical scaffolding a turn earns — keeps "hi" instant, gives real work a plan. */
+function inferComplexity(text: string, kind: UserIntentKind, lowSignal: boolean): UserIntent["complexity"] {
+  if (lowSignal || kind === "greeting" || kind === "status_check" || kind === "conversation") return "trivial";
+  const words = text.trim().split(/\s+/u).length;
+  if (kind === "question" && words <= 8 && !CODING_RE.test(text)) return "trivial";
+  if (SUBSTANTIAL_KINDS.has(kind) || MULTISTEP_RE.test(text)) return "substantial";
+  return "standard";
+}
 
 export function classifyUserIntent(input: string): UserIntent {
   const text = compact(input, 700);
@@ -52,15 +70,35 @@ export function classifyUserIntent(input: string): UserIntent {
       kind === "durable_preference" ||
       kind === "autonomous_mission" ||
       kind === "external_action");
-  return { kind, text, lowSignal, shouldRecall, shouldCapture };
+  const complexity = inferComplexity(text, kind, lowSignal);
+  return { kind, text, lowSignal, shouldRecall, shouldCapture, complexity };
 }
 
 export function buildForegroundReminder(input: string): string {
   const intent = classifyUserIntent(input);
-  return [
+  const base = [
     `Foreground request (${intent.kind}): ${intent.text}`,
     "This is the highest-priority task for the turn. Use memory, identity, self-checks, dreams, and Operator state only as support context.",
     "Do not replace this request with self-diagnostics or memory housekeeping. Answer or act on the user's message first.",
+  ].join("\n");
+  const tactics = tacticsDirective(intent);
+  return tactics ? `${base}\n\n${tactics}` : base;
+}
+
+/**
+ * Tactical scaffolding for the live turn — empty for trivial/standard turns so
+ * "hi" stays instant; substantial coding/self/mission turns earn a plan-first,
+ * batch-reads, surgical-edit directive that makes Crix precise instead of spammy.
+ */
+export function tacticsDirective(intent: UserIntent): string {
+  if (intent.complexity !== "substantial") return "";
+  return [
+    "Tactics for this turn (you act through code — be precise, not spammy):",
+    "1. PLAN FIRST: before any edit, state the change in one line and name the exact files. For 3+ steps, open a TodoWrite plan. Do not start editing blind.",
+    "2. BATCH READS: gather everything you need in ONE parallel step — emit all the independent Read/Grep/Glob calls together, not one-at-a-time. Then act.",
+    "3. NEVER re-read a file already in context this session; work from what you already have.",
+    "4. EDIT SURGICALLY: prefer Edit/ApplyIntent on the exact lines over rewriting a whole file with Write. Touch the minimum.",
+    "5. Fewer, higher-signal calls beat many shallow ones — every tool call should move the task forward.",
   ].join("\n");
 }
 

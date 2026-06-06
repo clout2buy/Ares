@@ -108,6 +108,19 @@ export {
 } from "./continuity.js";
 
 export {
+  assembleWorldGraph,
+  CRIX_SUBSYSTEMS,
+  type WorldGraph,
+  type WorldEntity,
+  type WorldRelation,
+  type WorldEntityKind,
+  type WorldRelationKind,
+  type WorldSubsystemInput,
+  type WorldMemoryInput,
+  type AssembleWorldGraphInput,
+} from "./worldGraph.js";
+
+export {
   LEARNING_CARD_SCHEMA_VERSION,
   distillMissionCard,
   learningCardId,

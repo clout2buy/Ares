@@ -154,6 +154,9 @@ import {
   seedNativeCapabilities,
   summarizeContinuity,
   type ContinuitySummary,
+  assembleWorldGraph,
+  CRIX_SUBSYSTEMS,
+  type WorldGraph,
   newGoalId,
   novelDeltaCurve,
   saveCapability,
@@ -2309,6 +2312,86 @@ async function recapCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
+// ─── World Graph (Nexus Phase 1) — crix world / /world ───────────────────────
+
+async function buildWorldGraph(context = cliRuntimeContext()): Promise<WorldGraph> {
+  const [contracts, goals, lessons] = await Promise.all([
+    listMissionContracts(context.home).catch(() => []),
+    listGoals(context.home).catch(() => []),
+    listLearningCards(context.home).catch(() => []),
+  ]);
+  // Crystallized memories only (synthesis insight/belief nodes) — read-only.
+  let memory: { id: string; kind: string; content: string; tags?: string[]; source?: string }[] = [];
+  try {
+    const store = await MemoryStore.open(context.mind.memoryFile);
+    memory = store
+      .all()
+      .filter((n) => n.source === "synthesis" || (n.tags ?? []).some((t) => t.startsWith("insight:") || t.startsWith("belief:")))
+      .map((n) => ({ id: n.id, kind: n.kind, content: n.content, tags: n.tags, source: n.source }));
+  } catch {
+    // memory is optional — the graph still maps missions/lessons/subsystems
+  }
+  return assembleWorldGraph({ projectName: "Crix", contracts, goals, lessons, memory, subsystems: CRIX_SUBSYSTEMS });
+}
+
+function worldGraphLines(graph: WorldGraph): string[] {
+  const lines: string[] = [];
+  const c = graph.counts;
+  lines.push(`${c.subsystem} subsystems · ${c.mission} missions · ${c.goal} goals · ${c.lesson} lessons · ${c.memory} memories · ${graph.relations.length} links`);
+  const byId = new Map(graph.entities.map((e) => [e.id, e] as const));
+  const linkedSubs = (fromId: string): string[] =>
+    graph.relations.filter((r) => r.from === fromId && r.kind === "relates-to").map((r) => byId.get(r.to)?.ref ?? "").filter(Boolean);
+
+  const missions = graph.entities.filter((e) => e.kind === "mission");
+  if (missions.length) {
+    lines.push("", "Missions:");
+    for (const m of missions) {
+      const pct = typeof m.meta?.percent === "number" ? ` ${m.meta.percent}%` : "";
+      const serves = graph.relations.find((r) => r.from === m.id && r.kind === "serves");
+      const goalLabel = serves ? byId.get(serves.to)?.label : undefined;
+      const subs = linkedSubs(m.id);
+      lines.push(`  • ${compactLine(m.label, 64)} [${m.status ?? "?"}${pct}]${subs.length ? `  → ${subs.join(", ")}` : ""}${goalLabel ? `  ⇒ ${compactLine(goalLabel, 40)}` : ""}`);
+    }
+  }
+
+  const memories = graph.entities.filter((e) => e.kind === "memory");
+  if (memories.length) {
+    lines.push("", "Crystallized memory:");
+    for (const mem of memories.slice(0, 8)) {
+      const subs = linkedSubs(mem.id);
+      lines.push(`  ~ ${mem.label}${subs.length ? `  → ${subs.join(", ")}` : ""}`);
+    }
+  }
+
+  lines.push("", "Subsystems (most connected first):");
+  const subsystems = graph.entities.filter((e) => e.kind === "subsystem");
+  const inboundLinks = (id: string): number => graph.relations.filter((r) => r.to === id && r.kind === "relates-to").length;
+  for (const s of [...subsystems].sort((a, b) => inboundLinks(b.id) - inboundLinks(a.id))) {
+    const n = inboundLinks(s.id);
+    lines.push(`  ${s.ref}${n ? ` · ${n} link${n === 1 ? "" : "s"}` : ""}`);
+  }
+
+  if (c.mission === 0 && c.lesson === 0) {
+    lines.push("", "No missions or lessons yet — the map fills in as you run missions (crix operator add).");
+  }
+  return lines;
+}
+
+async function worldCommand(args: ParsedArgs): Promise<number> {
+  try {
+    const graph = await buildWorldGraph();
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(graph, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(notice("World Graph", worldGraphLines(graph), "info"));
+    return 0;
+  } catch (err) {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
+}
+
 // ─── Mission Learning Cards (Phase B v1) — crix mission learn/lessons/lesson ──
 
 function lessonLine(card: LearningCard): string {
@@ -2693,6 +2776,11 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     if (line === "/whathappened" || line === "/recap") {
       const summary = await buildContinuitySummary(live.context);
       process.stdout.write(notice("Ghost Continue", continuityLines(summary), summary.blocked.length ? "warn" : "info"));
+      continue;
+    }
+    if (line === "/world") {
+      const graph = await buildWorldGraph(live.context);
+      process.stdout.write(notice("World Graph", worldGraphLines(graph), "info"));
       continue;
     }
     if (line.startsWith("/workspace ")) {
@@ -3905,6 +3993,9 @@ async function main(): Promise<void> {
     case "recap":
     case "whathappened":
       process.exit(await recapCommand(args));
+      return;
+    case "world":
+      process.exit(await worldCommand(args));
       return;
     case "mission":
       process.exit(await missionCommand(args));

@@ -108,6 +108,26 @@ export {
 export { buildPromptCacheKey, type PromptCacheKey } from "./promptCache.js";
 
 export {
+  routeModel,
+  taskDefaults,
+  DEFAULT_PROVIDER_PROFILES,
+  type ModelTask,
+  type ModelTaskKind,
+  type ModelRoute,
+  type ModelRouteDecision,
+  type ModelRoutingPolicy,
+  type ModelProviderProfile,
+  type ModelCapability,
+  type RiskLevel,
+  type PrivacyPosture,
+  type QualityNeed,
+  type CostPreference,
+  type LatencyPreference,
+  type Locality,
+  type ModelTouch,
+} from "./modelRouter.js";
+
+export {
   loadStartupReminders,
   loadMemoryReminders,
   loadInstructionReminders,

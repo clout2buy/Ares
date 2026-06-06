@@ -36,6 +36,17 @@ import {
   type Provider,
   type SessionSummary,
   crixHome,
+  routeModel,
+  DEFAULT_PROVIDER_PROFILES,
+  type ModelTask,
+  type ModelTaskKind,
+  type ModelRouteDecision,
+  type RiskLevel,
+  type PrivacyPosture,
+  type QualityNeed,
+  type CostPreference,
+  type LatencyPreference,
+  type ModelTouch,
 } from "@crix/core";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -2451,6 +2462,74 @@ async function todayCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
+// ─── Model Router foundation (Nexus Phase 1) — crix models route ─────────────
+
+const MODEL_TASK_KINDS = ["chat", "code", "planning", "summarization", "memory", "review", "vision", "workshop", "tool-output-summary"];
+
+function modelTaskFromFlags(flags: Map<string, string>): ModelTask {
+  const rawKind = (flags.get("task") ?? "chat").trim();
+  const kind = (MODEL_TASK_KINDS.includes(rawKind) ? rawKind : "chat") as ModelTaskKind;
+  const task: ModelTask = { kind };
+  const pick = <T extends string>(name: string, allowed: readonly string[]): T | undefined => {
+    const v = flags.get(name)?.trim();
+    return v && allowed.includes(v) ? (v as T) : undefined;
+  };
+  task.risk = pick<RiskLevel>("risk", ["low", "medium", "high"]);
+  task.privacy = pick<PrivacyPosture>("privacy", ["local-required", "local-preferred", "cloud-ok", "cloud-required"]);
+  task.quality = pick<QualityNeed>("quality", ["fast", "balanced", "best"]);
+  task.cost = pick<CostPreference>("cost", ["cheap", "balanced", "premium-ok"]);
+  task.latency = pick<LatencyPreference>("latency", ["low", "normal", "patient"]);
+  const ctx = Number(flags.get("context"));
+  if (Number.isFinite(ctx) && ctx > 0) task.contextTokens = ctx;
+  const touches = flags.get("touches");
+  if (touches) task.touches = touches.split(",").map((s) => s.trim()).filter(Boolean) as ModelTouch[];
+  return task;
+}
+
+function routeDecisionLines(d: ModelRouteDecision): string[] {
+  const lines: string[] = [];
+  lines.push(`task: ${d.task.kind} · risk ${d.task.risk} · privacy ${d.task.privacy} · quality ${d.task.quality} · cost ${d.task.cost} · latency ${d.task.latency}`);
+  if (d.selected) {
+    lines.push("", `→ ${d.selected.family} (${d.selected.locality})${d.selected.modelClass ? ` · ${d.selected.modelClass}` : ""}`);
+    if (d.fallback) lines.push(`  fallback: ${d.fallback.family} (${d.fallback.locality})`);
+    lines.push(`  confidence ${Math.round(d.confidence * 100)}% · ${d.executable ? "executable" : "advisory only"}`);
+  } else {
+    lines.push("", "→ no route available for these constraints");
+  }
+  if (d.reasons.length) {
+    lines.push("", "why:");
+    for (const r of d.reasons) lines.push(`  - ${r}`);
+  }
+  if (d.warnings.length) {
+    lines.push("", "warnings:");
+    for (const w of d.warnings) lines.push(`  ! ${w}`);
+  }
+  return lines;
+}
+
+async function modelsCommand(args: ParsedArgs): Promise<number> {
+  const sub = args.positionals[0] ?? "route";
+  if (sub !== "route") {
+    process.stderr.write(
+      `unknown models subcommand: ${sub}\n` +
+        "usage: crix models route --task <kind> [--risk low|medium|high] [--privacy local-preferred|cloud-ok|…] [--quality fast|balanced|best] [--cost cheap|balanced|premium-ok] [--latency low|normal|patient] [--context N] [--touches a,b] [--json]\n",
+    );
+    return 2;
+  }
+  try {
+    const decision = routeModel(modelTaskFromFlags(args.flags), { profiles: DEFAULT_PROVIDER_PROFILES });
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(decision, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(notice("Model Route", routeDecisionLines(decision), decision.warnings.length ? "warn" : "info"));
+    return 0;
+  } catch (err) {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
+}
+
 // ─── Mission Learning Cards (Phase B v1) — crix mission learn/lessons/lesson ──
 
 function lessonLine(card: LearningCard): string {
@@ -4064,6 +4143,9 @@ async function main(): Promise<void> {
     case "today":
     case "briefing":
       process.exit(await todayCommand(args));
+      return;
+    case "models":
+      process.exit(await modelsCommand(args));
       return;
     case "mission":
       process.exit(await missionCommand(args));

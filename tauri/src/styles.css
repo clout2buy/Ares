@@ -2188,6 +2188,17 @@ body {
   padding: 14px 16px;
 }
 
+/* Secondary raw tool-name chip beside the topical activity title. */
+.eventBody header .eventToolName {
+  font-family: var(--font-mono, ui-monospace, "SF Mono", monospace);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  border-radius: 6px;
+  color: var(--faint, #8a8f98);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
 .eventBody::after,
 .modelInspector::before,
 .modelTile::before,
@@ -2462,14 +2473,14 @@ body {
 
 @keyframes glassSweep {
   0%,
-  45% {
+  52% {
     opacity: 0;
     transform: translateX(-130%);
   }
-  58% {
-    opacity: 0.7;
+  64% {
+    opacity: 0.42;
   }
-  76%,
+  80%,
   100% {
     opacity: 0;
     transform: translateX(130%);
@@ -2984,6 +2995,17 @@ body {
   font-family: "Segoe UI Variable", "Aptos", "Segoe UI", system-ui, sans-serif;
 }
 
+:root {
+  /* One motion language — crisp decel for entrances, sharp for control flips. */
+  --ease-out: cubic-bezier(0.16, 0.84, 0.24, 1);
+  --ease-out-strong: cubic-bezier(0.12, 0.9, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.5, 0, 0.2, 1);
+  --dur-1: 120ms;
+  --dur-2: 190ms;
+  --dur-3: 320ms;
+  --dur-4: 560ms;
+}
+
 .crix-app,
 .crix-app[data-theme="signal"],
 .crix-app[data-theme="graphite"],
@@ -2995,19 +3017,19 @@ body {
   --panel-3: rgba(255, 255, 255, 0.56);
   --glass: rgba(255, 255, 255, 0.26);
   --glass-strong: rgba(255, 255, 255, 0.66);
-  --line: rgba(255, 255, 255, 0.58);
-  --line-soft: rgba(255, 255, 255, 0.34);
-  --text: #152135;
-  --muted: rgba(29, 42, 62, 0.66);
-  --faint: rgba(29, 42, 62, 0.42);
-  --accent: #2677ff;
-  --accent-strong: #2f7dff;
-  --accent-2: #009d80;
-  --accent-3: #ff9f2d;
-  --warn: #a36a00;
-  --bad: #cf3450;
-  --shadow: 0 28px 90px rgba(39, 64, 96, 0.20);
-  --shadow-soft: 0 16px 50px rgba(39, 64, 96, 0.14);
+  --line: rgba(120, 150, 190, 0.42);
+  --line-soft: rgba(120, 150, 190, 0.24);
+  --text: #0d1828;
+  --muted: rgba(20, 34, 56, 0.70);
+  --faint: rgba(20, 34, 56, 0.44);
+  --accent: #1567ff;
+  --accent-strong: #0f5cf5;
+  --accent-2: #008268;
+  --accent-3: #f5860c;
+  --warn: #9a6300;
+  --bad: #d12b48;
+  --shadow: 0 28px 90px rgba(28, 52, 88, 0.22);
+  --shadow-soft: 0 16px 50px rgba(28, 52, 88, 0.14);
   --blur: blur(46px) saturate(1.78);
   display: grid;
   grid-template-columns: 292px minmax(0, 1fr);
@@ -4232,6 +4254,10 @@ body,
   padding-left: 4px;
 }
 
+.composerIconCluster.voiceCluster {
+  grid-template-columns: repeat(2, 38px);
+}
+
 .composerIconCluster input {
   display: none;
 }
@@ -4261,6 +4287,25 @@ body,
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.86),
     0 10px 26px rgba(38, 119, 255, 0.16);
+}
+
+.composerIconButton.voice-speaking {
+  color: var(--accent-2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 0 0 3px color-mix(in srgb, var(--accent-2) 20%, transparent),
+    0 10px 26px color-mix(in srgb, var(--accent-2) 18%, transparent);
+}
+
+.composerIconButton.voice-error {
+  color: var(--bad);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent);
+}
+
+.voiceStopButton {
+  color: rgba(21, 33, 53, 0.72);
 }
 
 .attachmentTray {
@@ -4547,6 +4592,10 @@ body,
     padding: 0;
   }
 
+  .composerIconCluster.voiceCluster {
+    grid-template-columns: none;
+  }
+
   .modelHero {
     grid-template-columns: 64px minmax(0, 1fr);
   }
@@ -4615,8 +4664,35 @@ body,
 .crix-app[data-corners="square"] .sessionItem,
 .crix-app[data-corners="square"] .composerInput,
 .crix-app[data-corners="square"] .composerInput textarea,
+.crix-app[data-corners="square"] .chatShell,
+.crix-app[data-corners="square"] .statusPill,
 .crix-app[data-corners="square"] .sendButton {
-  border-radius: 10px;
+  border-radius: 4px;
+}
+
+/* Square = intentional edges: hairline crisp borders, no soft float, tighter shadow. */
+.crix-app[data-corners="square"] :is(
+  .titlebar, .sidebar, .workspace, .composerBar, .eventBody,
+  .thinkingPanel, .modelInspector, .surfacePanel, .providerRail,
+  .providerTile, .modelTile, .modeTabs
+) {
+  border-width: 1px;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--line) 60%, transparent),
+    0 14px 40px rgba(0, 0, 0, 0.2);
+}
+
+.crix-app[data-corners="square"] .workspace,
+.crix-app[data-corners="square"] .sidebar,
+.crix-app[data-corners="square"] .titlebar {
+  animation: none;
+}
+
+.crix-app[data-corners="square"] .pulseCard,
+.crix-app[data-corners="square"] .attachmentChip,
+.crix-app[data-corners="square"] .discoveryBar,
+.crix-app[data-corners="square"] .toolStateRail {
+  border-radius: 4px;
 }
 
 .crix-app :is(
@@ -4745,17 +4821,19 @@ body,
 }
 
 .crix-app[data-theme="matrix"] {
-  --text: #f2e8ff;
-  --muted: rgba(232, 214, 255, 0.70);
-  --faint: rgba(232, 214, 255, 0.42);
-  --accent: #b965ff;
-  --accent-strong: #8d37ff;
-  --accent-2: #39ffba;
-  --accent-3: #e3ff6a;
-  --warn: #e3ff6a;
-  --bad: #ff4f99;
-  --shadow-soft: 0 18px 70px rgba(129, 49, 255, 0.22);
-  --shadow: 0 28px 90px rgba(30, 0, 54, 0.36);
+  --text: #f4ecff;
+  --muted: rgba(228, 210, 255, 0.72);
+  --faint: rgba(228, 210, 255, 0.40);
+  --accent: #c46bff;
+  --accent-strong: #9b3bff;
+  --accent-2: #2dffb0;
+  --accent-3: #d7ff4a;
+  --warn: #d7ff4a;
+  --bad: #ff4d8f;
+  --shadow-soft: 0 16px 60px rgba(124, 44, 255, 0.26);
+  --shadow: 0 26px 84px rgba(22, 0, 44, 0.46);
+  --line: rgba(196, 107, 255, 0.40);
+  --line-soft: rgba(196, 107, 255, 0.22);
 }
 
 .crix-app[data-theme="matrix"] .threeScene {
@@ -4800,13 +4878,14 @@ body,
   .thinkingPanel,
   .pulseCard
 ) {
-  border-color: rgba(202, 128, 255, 0.48);
+  border-color: var(--line);
   background:
-    linear-gradient(145deg, rgba(42, 0, 72, calc(var(--glass-opacity, 0.72) * 0.88)), rgba(13, 0, 28, calc(var(--glass-opacity, 0.72) * 0.38))),
-    rgba(8, 0, 18, calc(var(--glass-opacity, 0.72) * 0.46));
+    linear-gradient(150deg, rgba(28, 0, 52, calc(var(--glass-opacity, 0.72) * 0.92)), rgba(6, 0, 16, calc(var(--glass-opacity, 0.72) * 0.62))),
+    rgba(4, 0, 12, calc(var(--glass-opacity, 0.72) * 0.70));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 18px 60px rgba(126, 48, 255, 0.20);
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 16px 56px rgba(120, 44, 255, 0.18);
 }
 
 .crix-app[data-theme="matrix"] :is(
@@ -4856,17 +4935,19 @@ body,
 }
 
 .crix-app[data-theme="storm"] {
-  --text: #eef8ff;
-  --muted: rgba(222, 238, 255, 0.72);
-  --faint: rgba(222, 238, 255, 0.42);
-  --accent: #78c7ff;
-  --accent-strong: #2f7dff;
-  --accent-2: #fff06a;
-  --accent-3: #62f5ff;
-  --warn: #fff06a;
-  --bad: #ff657d;
-  --shadow-soft: 0 18px 70px rgba(47, 125, 255, 0.22);
-  --shadow: 0 28px 90px rgba(0, 20, 70, 0.40);
+  --text: #f1faff;
+  --muted: rgba(214, 234, 255, 0.74);
+  --faint: rgba(214, 234, 255, 0.42);
+  --accent: #5bbcff;
+  --accent-strong: #1f74ff;
+  --accent-2: #ffe94f;
+  --accent-3: #4ff0ff;
+  --warn: #ffe94f;
+  --bad: #ff5c74;
+  --shadow-soft: 0 16px 60px rgba(31, 116, 255, 0.26);
+  --shadow: 0 26px 84px rgba(0, 16, 60, 0.50);
+  --line: rgba(91, 188, 255, 0.46);
+  --line-soft: rgba(91, 188, 255, 0.24);
 }
 
 .crix-app[data-theme="storm"] .threeScene {
@@ -4910,13 +4991,14 @@ body,
   .thinkingPanel,
   .pulseCard
 ) {
-  border-color: rgba(164, 219, 255, 0.54);
+  border-color: var(--line);
   background:
-    linear-gradient(145deg, rgba(18, 52, 106, calc(var(--glass-opacity, 0.72) * 0.78)), rgba(255, 255, 255, calc(var(--glass-opacity, 0.72) * 0.18))),
-    rgba(8, 20, 52, calc(var(--glass-opacity, 0.72) * 0.40));
+    linear-gradient(150deg, rgba(14, 40, 92, calc(var(--glass-opacity, 0.72) * 0.84)), rgba(255, 255, 255, calc(var(--glass-opacity, 0.72) * 0.10))),
+    rgba(4, 14, 40, calc(var(--glass-opacity, 0.72) * 0.62));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.30),
-    0 20px 64px rgba(47, 125, 255, 0.20);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 18px 60px rgba(31, 116, 255, 0.18);
 }
 
 .crix-app[data-theme="storm"] :is(
@@ -5292,7 +5374,216 @@ body,
 }
 
 .chatShell .eventCard {
-  animation: chatCardArrive 320ms cubic-bezier(0.2, 0.85, 0.2, 1) both;
+  animation: chatCardArrive var(--dur-3, 320ms) var(--ease-out, cubic-bezier(0.16, 0.84, 0.24, 1)) both;
+}
+
+/* Token-driven control transitions — one consistent, crisp feel across the shell. */
+.navButton,
+.newSession,
+.sessionItem,
+.providerTile,
+.modelTile,
+.primaryAction,
+.iconAction,
+.sendButton,
+.composerIconButton,
+.statusPill {
+  transition:
+    transform var(--dur-1, 120ms) var(--ease-out-strong, cubic-bezier(0.12, 0.9, 0.2, 1)),
+    border-color var(--dur-2, 190ms) ease,
+    background var(--dur-2, 190ms) ease,
+    box-shadow var(--dur-2, 190ms) ease,
+    color var(--dur-2, 190ms) ease;
+}
+
+/* ── The live "Thinking" panel — watch the inner monologue stream ─────────── */
+.mindPanel {
+  position: fixed;
+  left: 320px;
+  bottom: 104px;
+  z-index: 40;
+  max-width: 400px;
+  min-width: 260px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, transparent), rgba(255, 255, 255, 0.02)),
+    var(--panel);
+  backdrop-filter: var(--blur);
+  padding: 10px 13px;
+  box-shadow: var(--shadow-soft), inset 0 0 26px color-mix(in srgb, var(--accent) 8%, transparent);
+  pointer-events: none;
+}
+.crix-app[data-corners="square"] .mindPanel {
+  border-radius: 4px;
+}
+.mindPanelHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 7px;
+}
+.mindPanelHint {
+  color: var(--faint);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  margin-left: auto;
+}
+.mindBeats {
+  display: grid;
+  gap: 5px;
+}
+.mindBeat {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  opacity: 0.78;
+  animation: mindBeatIn var(--dur-2, 190ms) var(--ease-out, cubic-bezier(0.16, 0.84, 0.24, 1));
+}
+.mindBeat.live {
+  color: var(--text);
+  opacity: 1;
+}
+.mindGlyph {
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+}
+.mindText {
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mindBeat.decide .mindText,
+.mindBeat.intend .mindText {
+  color: var(--accent-2);
+  font-weight: 700;
+}
+.mindBeat.doubt .mindText {
+  color: var(--warn);
+  font-style: italic;
+}
+.mindConf {
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--accent-2);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 40%, transparent);
+}
+.mindBeat.live .mindText::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: toolBlink 900ms steps(2, end) infinite;
+}
+@keyframes mindBeatIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: inherit;
+    transform: none;
+  }
+}
+
+/* ── Voice picker — choose + preview your entity's voice ──────────────────── */
+.voicePicker {
+  margin-top: 18px;
+  border-top: 1px solid var(--line-soft, rgba(255, 255, 255, 0.08));
+  padding-top: 16px;
+}
+.voicePickerHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.voicePickerHead > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+}
+.voiceSpeedControl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.voiceSpeedControl input {
+  width: 120px;
+}
+.voiceGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 8px;
+}
+.voiceChip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  background: var(--glass, rgba(255, 255, 255, 0.03));
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--dur-2, 190ms) ease,
+    background var(--dur-2, 190ms) ease,
+    box-shadow var(--dur-2, 190ms) ease;
+}
+.crix-app[data-corners="square"] .voiceChip {
+  border-radius: 4px;
+}
+.voiceChip:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.voiceChip.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.voiceChipName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.voiceChipMeta {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.voiceChipPreview {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 8px;
+  opacity: 0.65;
+  color: var(--accent);
+}
+.voiceChipPreview:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .chatShell .eventAvatar {
@@ -5521,8 +5812,8 @@ body,
 @keyframes chatCardArrive {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.988);
-    filter: blur(4px);
+    transform: translateY(6px) scale(0.992);
+    filter: blur(2px);
   }
   to {
     opacity: 1;

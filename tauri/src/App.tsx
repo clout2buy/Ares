@@ -36,6 +36,9 @@ import {
   Target,
   TerminalSquare,
   Trash2,
+  Volume2,
+  VolumeX,
+  Play,
   Wallet,
   Wrench,
   X,
@@ -49,6 +52,7 @@ type ThemeName = "signal" | "graphite" | "oxide" | "matrix" | "storm";
 type CornerMode = "rounded" | "square";
 type HeartbeatStatus = "idle" | "active" | "alert" | "dreaming" | "error";
 type DaemonState = "starting" | "running" | "stopped" | "error";
+type VoiceStatus = "off" | "connecting" | "ready" | "speaking" | "error";
 
 interface EvolutionGain {
   target: string;
@@ -194,9 +198,81 @@ interface ChatAttachment {
   size: number;
 }
 
+interface VoiceServerEvent {
+  type?: string;
+  id?: string;
+  audio?: string;
+  mime?: string;
+  message?: string;
+}
+
+interface MindBeat {
+  id: string;
+  kind: string;
+  text: string;
+  confidence?: number;
+}
+
+// Glyphs mirror @crix/mind cognition/stream.ts so the rendered monologue reads
+// like a mind at work, not a log.
+const MIND_GLYPH: Record<string, string> = {
+  observe: "\u{1F441}",
+  recall: "\u{1F4AD}",
+  question: "?",
+  idea: "\u{1F4A1}",
+  doubt: "\u{1F914}",
+  decide: "✓",
+  intend: "→",
+  reflect: "↻",
+};
+
+// The "watch it think" surface — advisory cognition beats streamed live, typed in
+// with their glyph; decide/intend carry a confidence chip. Non-binding by design.
+function MindPanel({ beats }: { beats: MindBeat[] }) {
+  const latestId = beats[beats.length - 1]?.id;
+  return (
+    <motion.div
+      className="mindPanel"
+      initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      exit={{ opacity: 0, y: 8, filter: "blur(4px)" }}
+      transition={{ duration: 0.26, ease: [0.16, 0.84, 0.24, 1] }}
+    >
+      <div className="mindPanelHead">
+        <Brain size={13} />
+        <strong>Thinking</strong>
+        <span className="mindPanelHint">advisory · not acted on</span>
+      </div>
+      <div className="mindBeats">
+        {beats.map((b) => (
+          <div className={`mindBeat ${b.kind}${b.id === latestId ? " live" : ""}`} key={b.id}>
+            <span className="mindGlyph">{MIND_GLYPH[b.kind] ?? "·"}</span>
+            <span className="mindText">{b.text}</span>
+            {typeof b.confidence === "number" ? (
+              <span className="mindConf">{Math.round(b.confidence * 100)}%</span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
 interface AppearanceSettings {
   opacity: number;
   corners: CornerMode;
+  voiceId: string;
+  voiceSpeed: number;
+}
+
+interface VoiceOption {
+  id: string;
+  label: string;
+  gender: "female" | "male";
+  lang: string;
+  accent: string;
+  tier: string;
+  character: string;
 }
 
 const SETTINGS_KEY = "crix.desktop.settings.v2";
@@ -444,9 +520,20 @@ const DEFAULT_SELECTION: Selection = {
 };
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   opacity: 0.72,
-  corners: "rounded",
+  corners: "square",
+  voiceId: "af_heart",
+  voiceSpeed: 1.15,
 };
 const UI_DEV_MODE = import.meta.env.VITE_CRIX_DEV === "1";
+const VOICE_TTS_ENDPOINT = "ws://127.0.0.1:8765/tts";
+const VOICE_HTTP_ENDPOINT = "http://127.0.0.1:8765/voices";
+const VOICE_PREVIEW_TEXT = "Systems online. I am Crix — your entity, ready when you are.";
+// Flush speech in small, natural units so it is spoken as it streams rather than
+// in one block at the end. A clause (comma/clause break) is enough to start; a
+// sentence end always flushes. MIN keeps fragments from being absurdly short.
+const VOICE_MIN_CHUNK_CHARS = 16;
+const VOICE_SOFT_FLUSH_CHARS = 48;
+const VOICE_HARD_FLUSH_CHARS = 100;
 
 function App() {
   const initial = loadDesktopSettings();
@@ -464,6 +551,8 @@ function App() {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [webSearchMode, setWebSearchMode] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("off");
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>("medium");
   const [reasoningSync, setReasoningSync] = useState<ReasoningSync>("idle");
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -484,6 +573,18 @@ function App() {
   const lastEventSeqRef = useRef(0);
   const reasoningSyncTimerRef = useRef<number | null>(null);
   const reasoningSyncRef = useRef(reasoningSync);
+  const voiceEnabledRef = useRef(voiceEnabled);
+  const voiceSocketRef = useRef<WebSocket | null>(null);
+  const voicePhraseBufferRef = useRef("");
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+  const voiceAudioQueueRef = useRef<string[]>([]);
+  const voiceChunkIdRef = useRef(1);
+  const voiceConnectTimerRef = useRef<number | null>(null);
+  const voiceReconnectTimerRef = useRef<number | null>(null);
+  const [voiceCatalog, setVoiceCatalog] = useState<VoiceOption[]>([]);
+  // The WS callbacks close over this ref so chunks always ship the LATEST chosen
+  // voice/speed, even though the socket was opened earlier.
+  const voiceSettingsRef = useRef({ voice: appearance.voiceId, speed: appearance.voiceSpeed });
 
   // Weirdcore +N TARGET pulses — agent evolution telemetry the daemon
   // forwards to us as { type: "lifecycle", event: { type, gain, ... } }.
@@ -496,6 +597,21 @@ function App() {
     }, 400);
     return () => window.clearInterval(timer);
   }, []);
+
+  // Live inner monologue — advisory cognition beats forwarded by the daemon as
+  // { type: "lifecycle", event: { type: "thought", kind, text, confidence } }.
+  const [mindThoughts, setMindThoughts] = useState<MindBeat[]>([]);
+  const mindBeatSeqRef = useRef(0);
+  const mindIdleClearRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (mindThoughts.length === 0) return;
+    if (mindIdleClearRef.current !== null) window.clearTimeout(mindIdleClearRef.current);
+    mindIdleClearRef.current = window.setTimeout(() => setMindThoughts([]), 7000);
+    return () => {
+      if (mindIdleClearRef.current !== null) window.clearTimeout(mindIdleClearRef.current);
+    };
+  }, [mindThoughts]);
+
   function pushPulse(sourceType: string, gain: EvolutionGain) {
     const id = pulseIdRef.current++;
     setPulses((prev) => [...prev.slice(-4), {
@@ -540,6 +656,24 @@ function App() {
   }, [reasoningSync]);
 
   useEffect(() => {
+    voiceEnabledRef.current = voiceEnabled;
+    if (voiceEnabled) {
+      openVoiceSocket();
+      void fetchVoiceCatalog();
+    } else {
+      closeVoiceSocket();
+    }
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    voiceSettingsRef.current = { voice: appearance.voiceId, speed: appearance.voiceSpeed };
+  }, [appearance.voiceId, appearance.voiceSpeed]);
+
+  useEffect(() => {
+    void fetchVoiceCatalog();
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -549,6 +683,7 @@ function App() {
       if (reasoningSyncTimerRef.current !== null) {
         window.clearTimeout(reasoningSyncTimerRef.current);
       }
+      closeVoiceSocket();
     };
   }, []);
 
@@ -707,6 +842,235 @@ function App() {
     return () => window.cancelAnimationFrame(frame);
   }, [events.length, activeSessionId]);
 
+  function toggleVoiceReplies() {
+    setVoiceEnabled((enabled) => !enabled);
+  }
+
+  function openVoiceSocket() {
+    const current = voiceSocketRef.current;
+    if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return;
+
+    clearVoiceReconnectTimer();
+    clearVoiceConnectTimer();
+    setVoiceStatus("connecting");
+    const socket = new WebSocket(VOICE_TTS_ENDPOINT);
+    voiceSocketRef.current = socket;
+    voiceConnectTimerRef.current = window.setTimeout(() => {
+      if (voiceSocketRef.current !== socket || socket.readyState !== WebSocket.CONNECTING) return;
+      setVoiceStatus("error");
+      socket.close();
+    }, 2500);
+
+    socket.onopen = () => {
+      if (voiceSocketRef.current !== socket) return;
+      clearVoiceConnectTimer();
+      setVoiceStatus(voiceAudioRef.current ? "speaking" : "ready");
+      flushVoiceBuffer(false);
+    };
+
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      handleVoiceSocketMessage(event.data);
+    };
+
+    socket.onerror = () => {
+      if (voiceSocketRef.current !== socket) return;
+      clearVoiceConnectTimer();
+      setVoiceStatus("error");
+    };
+
+    socket.onclose = () => {
+      if (voiceSocketRef.current !== socket) return;
+      clearVoiceConnectTimer();
+      voiceSocketRef.current = null;
+      if (voiceEnabledRef.current) {
+        setVoiceStatus("error");
+        scheduleVoiceReconnect();
+      } else {
+        setVoiceStatus("off");
+      }
+    };
+  }
+
+  function closeVoiceSocket() {
+    clearVoiceReconnectTimer();
+    clearVoiceConnectTimer();
+    const socket = voiceSocketRef.current;
+    voiceSocketRef.current = null;
+    voicePhraseBufferRef.current = "";
+    stopVoicePlayback(false);
+    if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
+      socket.close();
+    }
+    setVoiceStatus("off");
+  }
+
+  function scheduleVoiceReconnect() {
+    if (!voiceEnabledRef.current || voiceReconnectTimerRef.current !== null) return;
+    voiceReconnectTimerRef.current = window.setTimeout(() => {
+      voiceReconnectTimerRef.current = null;
+      if (voiceEnabledRef.current) openVoiceSocket();
+    }, 1800);
+  }
+
+  function clearVoiceConnectTimer() {
+    if (voiceConnectTimerRef.current === null) return;
+    window.clearTimeout(voiceConnectTimerRef.current);
+    voiceConnectTimerRef.current = null;
+  }
+
+  function clearVoiceReconnectTimer() {
+    if (voiceReconnectTimerRef.current === null) return;
+    window.clearTimeout(voiceReconnectTimerRef.current);
+    voiceReconnectTimerRef.current = null;
+  }
+
+  function handleVoiceSocketMessage(data: string) {
+    let payload: VoiceServerEvent;
+    try {
+      payload = JSON.parse(data) as VoiceServerEvent;
+    } catch {
+      setVoiceStatus("error");
+      return;
+    }
+
+    if (payload.type === "ready") {
+      setVoiceStatus(voiceAudioRef.current ? "speaking" : "ready");
+      flushVoiceBuffer(false);
+      return;
+    }
+
+    if (payload.type === "audio" && payload.audio) {
+      enqueueVoiceAudio(audioUrlFromBase64(payload.audio, payload.mime ?? "audio/wav"));
+      return;
+    }
+
+    if (payload.type === "error") {
+      setVoiceStatus("error");
+    }
+  }
+
+  function feedVoiceText(text: string | undefined) {
+    if (!voiceEnabledRef.current || !text) return;
+    voicePhraseBufferRef.current += text;
+    flushVoiceBuffer(false);
+  }
+
+  function flushVoiceBuffer(force: boolean) {
+    const socket = voiceSocketRef.current;
+    if (!voiceEnabledRef.current || !socket || socket.readyState !== WebSocket.OPEN) return;
+
+    for (let index = 0; index < 8; index += 1) {
+      const next = takeVoiceChunk(voicePhraseBufferRef.current, force);
+      if (!next) return;
+      voicePhraseBufferRef.current = next.rest;
+      sendVoiceChunk(next.chunk);
+    }
+  }
+
+  function sendVoiceChunk(text: string) {
+    const socket = voiceSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const clean = prepareVoiceText(text);
+    if (!clean) return;
+    const { voice, speed } = voiceSettingsRef.current;
+    socket.send(JSON.stringify({
+      type: "speak",
+      id: `tts-${voiceChunkIdRef.current++}`,
+      text: clean,
+      voice,
+      speed,
+    }));
+  }
+
+  async function fetchVoiceCatalog() {
+    try {
+      const res = await fetch(VOICE_HTTP_ENDPOINT);
+      if (!res.ok) return;
+      const data = (await res.json()) as { voices?: VoiceOption[] };
+      if (Array.isArray(data.voices) && data.voices.length) setVoiceCatalog(data.voices);
+    } catch {
+      // sidecar not up yet; the picker still works on reconnect.
+    }
+  }
+
+  // Preview a voice without disturbing the chat: speak a fixed sample line. Uses
+  // the live socket if open, else opens a throwaway one just for the audition.
+  function previewVoice(voiceId: string) {
+    const speed = voiceSettingsRef.current.speed;
+    const payload = JSON.stringify({ type: "speak", id: `preview-${voiceChunkIdRef.current++}`, text: VOICE_PREVIEW_TEXT, voice: voiceId, speed });
+    const socket = voiceSocketRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      stopVoicePlayback();
+      socket.send(payload);
+      return;
+    }
+    const preview = new WebSocket(VOICE_TTS_ENDPOINT);
+    preview.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      const message = JSON.parse(event.data) as VoiceServerEvent;
+      if (message.type === "audio" && message.audio) {
+        const audio = new Audio(audioUrlFromBase64(message.audio, message.mime ?? "audio/wav"));
+        void audio.play().catch(() => null);
+      }
+      if (message.type === "done") preview.close();
+    };
+    preview.onopen = () => preview.send(payload);
+    window.setTimeout(() => preview.readyState === WebSocket.OPEN && preview.close(), 12000);
+  }
+
+  function enqueueVoiceAudio(url: string) {
+    voiceAudioQueueRef.current.push(url);
+    playNextVoiceAudio();
+  }
+
+  function playNextVoiceAudio() {
+    if (voiceAudioRef.current) return;
+    const next = voiceAudioQueueRef.current.shift();
+    if (!next) {
+      setVoiceStatus(voiceEnabledRef.current && voiceSocketRef.current?.readyState === WebSocket.OPEN ? "ready" : voiceEnabledRef.current ? "connecting" : "off");
+      return;
+    }
+
+    const audio = new Audio(next);
+    voiceAudioRef.current = audio;
+    setVoiceStatus("speaking");
+
+    const cleanup = () => {
+      if (voiceAudioRef.current === audio) voiceAudioRef.current = null;
+      URL.revokeObjectURL(next);
+      playNextVoiceAudio();
+    };
+
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+    void audio.play().catch(() => {
+      setVoiceStatus("error");
+      cleanup();
+    });
+  }
+
+  function stopVoicePlayback(sendCancel = true) {
+    voicePhraseBufferRef.current = "";
+    for (const url of voiceAudioQueueRef.current) URL.revokeObjectURL(url);
+    voiceAudioQueueRef.current = [];
+
+    const audio = voiceAudioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      URL.revokeObjectURL(audio.src);
+      voiceAudioRef.current = null;
+    }
+
+    const socket = voiceSocketRef.current;
+    if (sendCancel && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "cancel" }));
+    }
+    setVoiceStatus(voiceEnabledRef.current && socket?.readyState === WebSocket.OPEN ? "ready" : voiceEnabledRef.current ? "connecting" : "off");
+  }
+
   function appendToActiveSession(event: CrixEvent) {
     const targetSessionId = activeSessionIdRef.current;
     const stamped = { ...event, receivedAt: event.receivedAt ?? Date.now() };
@@ -734,6 +1098,16 @@ function App() {
       }
       if (inner.type === "dream_phase_started") setStatus("dreaming");
       if (inner.type === "dream_phase_ended") setStatus("idle");
+      if (inner.type === "thought") {
+        const t = inner as { kind?: string; text?: string; phase?: string; confidence?: number };
+        const beat: MindBeat = {
+          id: `mb-${mindBeatSeqRef.current++}`,
+          kind: t.kind ?? "observe",
+          text: t.text ?? "",
+          confidence: typeof t.confidence === "number" ? t.confidence : undefined,
+        };
+        setMindThoughts((prev) => (t.phase === "open" ? [beat] : [...prev, beat].slice(-10)));
+      }
       return;
     }
     if (detail.gain && detail.gain.target && typeof detail.gain.delta === "number") {
@@ -749,6 +1123,12 @@ function App() {
       setDraftSelection((current) => ({ ...current, model: detail.model || current.model }));
       setCustomModel(detail.model);
     }
+    if (detail.type === "turn_start") {
+      stopVoicePlayback();
+      setMindThoughts([]);
+    }
+    if (detail.type === "text_delta") feedVoiceText(detail.text);
+    if (detail.type === "turn_end") flushVoiceBuffer(true);
     if (detail.type === "daemon_ready" || detail.type === "desktop_daemon_started") setDaemon("running");
     const maybeLevel = detail.type === "reasoning_set" ? detail.level : detail.reasoningLevel;
     if (isReasoningLevel(maybeLevel)) {
@@ -811,6 +1191,7 @@ function App() {
     const goal = buildOutgoingGoal(displayText, attachments, webSearchMode);
     setMessage("");
     setAttachments([]);
+    if (voiceEnabledRef.current) stopVoicePlayback();
     appendToActiveSession({ type: "user_send", text: displayText, attachments, webSearch: webSearchMode });
     try {
       await invoke("crix_send", { goal });
@@ -965,13 +1346,16 @@ function App() {
       data-native={hasNativeBridge() ? "1" : "0"}
       style={{
         "--glass-opacity": appearance.opacity,
-        "--shell-radius": appearance.corners === "rounded" ? "38px" : "10px",
+        "--shell-radius": appearance.corners === "rounded" ? "38px" : "0px",
       } as React.CSSProperties}
     >
       <ThreeScene running={running} status={status} theme={theme} />
       <FxLayer status={status} running={running} />
       <div className="commandHud" data-active={status === "active" ? "1" : "0"} aria-hidden="true" />
       <EvolutionPulseDeck pulses={pulses} />
+      <AnimatePresence>
+        {mindThoughts.length > 0 ? <MindPanel beats={mindThoughts} /> : null}
+      </AnimatePresence>
       <Titlebar identity={agentIdentity} />
       <aside className="sidebar">
         <div className="brandBlock">
@@ -1124,10 +1508,10 @@ function App() {
           <motion.div
             animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
             className="viewFrame"
-            exit={{ opacity: 0, y: -8, filter: "blur(6px)" }}
-            initial={{ opacity: 0, y: 10, filter: "blur(6px)" }}
+            exit={{ opacity: 0, y: -6, filter: "blur(3px)" }}
+            initial={{ opacity: 0, y: 7, filter: "blur(3px)" }}
             key={activeView}
-            transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+            transition={{ duration: 0.24, ease: [0.16, 0.84, 0.24, 1] }}
           >
             {activeView === "providers" ? (
               <ProvidersView
@@ -1147,10 +1531,12 @@ function App() {
                 appearance={appearance}
                 events={events}
                 onAppearance={setAppearance}
+                onPreviewVoice={previewVoice}
                 onTheme={setTheme}
                 status={status}
                 stats={stats}
                 theme={theme}
+                voiceCatalog={voiceCatalog}
               />
             ) : activeView === "tools" ? (
               <ToolsView events={events} />
@@ -1166,12 +1552,16 @@ function App() {
                 onMessage={setMessage}
                 onPermissionDecision={respondToPermission}
                 onSend={sendMessage}
+                onVoiceStop={() => stopVoicePlayback()}
+                onVoiceToggle={toggleVoiceReplies}
                 onWebSearchMode={setWebSearchMode}
                 refEl={transcriptRef}
                 running={running}
                 stats={stats}
                 status={status}
                 liveActivity={liveActivity}
+                voiceEnabled={voiceEnabled}
+                voiceStatus={voiceStatus}
                 webSearchMode={webSearchMode}
               />
             )}
@@ -1232,7 +1622,7 @@ function EvolutionPulseDeck({ pulses }: { pulses: EvolutionPulse[] }) {
               initial={{ opacity: 0, x: 48, scale: 0.7 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 14, scale: 0.9, transition: { duration: 0.3 } }}
-              transition={{ type: "spring", stiffness: 480, damping: 24, mass: 0.7 }}
+              transition={{ type: "spring", stiffness: 560, damping: 30, mass: 0.6 }}
             >
               <span className="pulseIcon"><Icon size={15} strokeWidth={2.4} /></span>
               <span className="pulseBody">
@@ -1271,15 +1661,15 @@ interface ScenePalette {
 function scenePalette(mode: SceneMode): ScenePalette {
   switch (mode) {
     case "matrix":
-      return { key: 0xbb66ff, rim: 0x00ffbb, fog: 0x12061f, glass: 0xb67cff, emissive: 0x6a00a8, accent: 0x00ffbb, core: 0x9bffe6, dust: 0x9b7bff };
+      return { key: 0xc46bff, rim: 0x2dffb0, fog: 0x0c0018, glass: 0xc88cff, emissive: 0x6a00b0, accent: 0x2dffb0, core: 0xbfffe8, dust: 0xa97bff };
     case "storm":
-      return { key: 0x99c9ff, rim: 0xaed8ff, fog: 0x06101f, glass: 0xcfe6ff, emissive: 0x2486ff, accent: 0xf2f8ff, core: 0xeaf4ff, dust: 0xaeccff };
+      return { key: 0x8fc6ff, rim: 0x4ff0ff, fog: 0x040e28, glass: 0xd6ecff, emissive: 0x1f74ff, accent: 0xffe94f, core: 0xf2faff, dust: 0x9cc8ff };
     case "graphite":
-      return { key: 0xdfe8ff, rim: 0x7fa8d8, fog: 0x090b10, glass: 0xcdd6e4, emissive: 0x3a4a78, accent: 0x8fb6ff, core: 0xeaf0ff, dust: 0xaab8d0 };
+      return { key: 0xe4ecff, rim: 0x7fa8d8, fog: 0x070910, glass: 0xcdd6e4, emissive: 0x3a4a78, accent: 0x8fb6ff, core: 0xeaf0ff, dust: 0xaab8d0 };
     case "oxide":
-      return { key: 0xffd9a8, rim: 0xff8a4c, fog: 0x140a06, glass: 0xffc59a, emissive: 0x9a3a0c, accent: 0xff7a3c, core: 0xfff0d8, dust: 0xffb070 };
-    default: // signal
-      return { key: 0xffffff, rim: 0x5ea8ff, fog: 0x0a1626, glass: 0xbfe0ff, emissive: 0x1c54a0, accent: 0xffb27a, core: 0xeafff7, dust: 0x8fd0ff };
+      return { key: 0xffd9a8, rim: 0xff8a4c, fog: 0x120804, glass: 0xffc59a, emissive: 0x9a3a0c, accent: 0xff7a3c, core: 0xfff0d8, dust: 0xffb070 };
+    default: // signal / Frost — clean cool world, warm-amber accent for contrast
+      return { key: 0xffffff, rim: 0x5ea8ff, fog: 0x08131f, glass: 0xcfe8ff, emissive: 0x1556c4, accent: 0xff9d3c, core: 0xeafff9, dust: 0x8fd0ff };
   }
 }
 
@@ -1351,7 +1741,7 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
     renderer.toneMappingExposure = 1.22;
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(palette.fog, 0.03);
+    scene.fog = new THREE.FogExp2(palette.fog, 0.022);
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
     camera.position.set(0, 0, 9);
 
@@ -1400,12 +1790,21 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
     let raf = 0;
     let leanX = 0;
     let leanY = 0;
-    let energy = runningRef.current ? 0.72 : 0.42;
+    // Per-theme motion mood — Frost calm, Storm turbulent, Matrix fast-scroll.
+    const moodByMode: Record<string, { idle: number; spin: number; grid: number; sway: number }> = {
+      signal: { idle: 0.40, spin: 0.0030, grid: 0.42, sway: 0.10 },
+      storm: { idle: 0.50, spin: 0.0052, grid: 0.78, sway: 0.18 },
+      matrix: { idle: 0.46, spin: 0.0046, grid: 0.95, sway: 0.13 },
+      graphite: { idle: 0.42, spin: 0.0040, grid: 0.50, sway: 0.11 },
+      oxide: { idle: 0.44, spin: 0.0042, grid: 0.58, sway: 0.12 },
+    };
+    const mood = moodByMode[mode] ?? moodByMode.signal;
+    let energy = runningRef.current ? 0.72 : mood.idle;
     const animate = () => {
       // Energy ramps smoothly toward its target, so the scene SURGES when Crix
       // starts thinking/streaming and settles when it goes idle — never snaps.
       const active = statusRef.current === "active";
-      const targetEnergy = runningRef.current ? (active ? 1.0 : 0.72) : active ? 0.62 : 0.42;
+      const targetEnergy = runningRef.current ? (active ? 1.0 : 0.72) : active ? 0.62 : mood.idle;
       energy += (targetEnergy - energy) * 0.04;
       frame += 0.006 + energy * 0.01;
 
@@ -1419,8 +1818,8 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
       const beat = 0.5 + 0.5 * Math.sin(frame * 2.1);
       const shimmer = 0.5 + 0.5 * Math.sin(frame * 5.3);
 
-      root.rotation.y += 0.0035 + energy * 0.006;
-      root.rotation.x = leanY * 0.7 + Math.sin(frame * 0.6) * 0.07;
+      root.rotation.y += mood.spin + energy * 0.006;
+      root.rotation.x = leanY * 0.7 + Math.sin(frame * 0.6) * (0.07 * (mood.sway / 0.1));
       root.rotation.z = Math.sin(frame * 0.4) * 0.05;
       root.position.x = baseX + leanX * 0.6;
       root.position.y = baseY + Math.sin(frame) * 0.12;
@@ -1454,7 +1853,7 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
       starMat.opacity = 0.35 + 0.45 * shimmer;
 
       // Hologram grids scroll past in opposite directions — depth + motion floor.
-      const gridScroll = (frame * 0.5) % 1;
+      const gridScroll = (frame * 0.5 * mood.grid) % 1;
       grids[0].position.z = gridScroll;
       grids[1].position.z = -gridScroll;
 
@@ -1499,7 +1898,7 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
 // A soft shell of drifting motes around the hero object. Additive blending
 // makes them read as floating light, which is what sells "depth" over "decal".
 function buildParticleField(color: number): THREE.Points {
-  const count = 1100;
+  const count = 760;
   const positions = new Float32Array(count * 3);
   for (let i = 0; i < count; i += 1) {
     const radius = 4.5 + Math.random() * 10;
@@ -1526,7 +1925,7 @@ function buildParticleField(color: number): THREE.Points {
 // A far, slow starfield behind everything — gives the scene real parallax depth
 // and a horizon that twinkles independently of the near dust.
 function buildStarfield(color: number): THREE.Points {
-  const count = 700;
+  const count = 520;
   const positions = new Float32Array(count * 3);
   for (let i = 0; i < count; i += 1) {
     const radius = 16 + Math.random() * 24;
@@ -1823,12 +2222,16 @@ function ChatView({
   onMessage,
   onPermissionDecision,
   onSend,
+  onVoiceStop,
+  onVoiceToggle,
   onWebSearchMode,
   refEl,
   running,
   stats,
   status,
   liveActivity,
+  voiceEnabled,
+  voiceStatus,
   webSearchMode,
 }: {
   attachments: ChatAttachment[];
@@ -1841,12 +2244,16 @@ function ChatView({
   onMessage: (value: string) => void;
   onPermissionDecision: (id: string | undefined, decision: PermissionDecision) => void;
   onSend: (event: React.FormEvent) => void;
+  onVoiceStop: () => void;
+  onVoiceToggle: () => void;
   onWebSearchMode: (value: boolean) => void;
   refEl: React.RefObject<HTMLDivElement | null>;
   running: boolean;
   stats: ReturnType<typeof collectStats>;
   status: HeartbeatStatus;
   liveActivity: LiveActivity;
+  voiceEnabled: boolean;
+  voiceStatus: VoiceStatus;
   webSearchMode: boolean;
 }) {
   const chatEvents = events.filter(isChatVisibleEvent);
@@ -1889,6 +2296,13 @@ function ChatView({
           <StatusPill label="Tools" value={String(stats.tools)} />
           <StatusPill label="Tokens" value={formatNumber(stats.tokens)} />
           {webSearchMode ? <StatusPill label="Web" value="on" tone="ok" /> : null}
+          {voiceEnabled ? (
+            <StatusPill
+              label="Voice"
+              value={voiceStatusLabel(voiceStatus)}
+              tone={voiceStatus === "error" ? "bad" : voiceStatus === "ready" || voiceStatus === "speaking" ? "ok" : "warn"}
+            />
+          ) : null}
           {attachments.length > 0 ? <StatusPill label="Images" value={String(attachments.length)} tone="ok" /> : null}
         </div>
         {attachments.length > 0 ? (
@@ -1896,7 +2310,7 @@ function ChatView({
         ) : null}
         <LiveActivityStrip activity={liveActivity} />
         <div className="composerInput">
-          <div className="composerIconCluster">
+          <div className={voiceEnabled ? "composerIconCluster voiceCluster" : "composerIconCluster"}>
             <input
               ref={fileInputRef}
               accept="image/png,image/jpeg,image/webp,image/gif"
@@ -1926,6 +2340,26 @@ function ChatView({
             >
               <Globe2 size={18} />
             </button>
+            <button
+              aria-pressed={voiceEnabled}
+              className={voiceEnabled ? `composerIconButton active voice-${voiceStatus}` : "composerIconButton"}
+              onClick={onVoiceToggle}
+              title={voiceEnabled ? "Disable spoken replies" : "Enable spoken replies"}
+              type="button"
+            >
+              {voiceEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
+            </button>
+            {voiceEnabled ? (
+              <button
+                className="composerIconButton voiceStopButton"
+                disabled={voiceStatus === "off"}
+                onClick={onVoiceStop}
+                title="Stop spoken reply"
+                type="button"
+              >
+                <Square size={14} />
+              </button>
+            ) : null}
           </div>
           <textarea
             value={message}
@@ -2292,18 +2726,22 @@ function MindView({
   appearance,
   events,
   onAppearance,
+  onPreviewVoice,
   onTheme,
   status,
   stats,
   theme,
+  voiceCatalog,
 }: {
   appearance: AppearanceSettings;
   events: CrixEvent[];
   onAppearance: (value: AppearanceSettings) => void;
+  onPreviewVoice: (id: string) => void;
   onTheme: (value: ThemeName) => void;
   status: HeartbeatStatus;
   stats: ReturnType<typeof collectStats>;
   theme: ThemeName;
+  voiceCatalog: VoiceOption[];
 }) {
   const cards = [
     ["Identity", "Loaded from ~/.crix/IDENTITY.md and SOUL.md"],
@@ -2318,8 +2756,10 @@ function MindView({
       <AppearancePanel
         appearance={appearance}
         onAppearance={onAppearance}
+        onPreviewVoice={onPreviewVoice}
         onTheme={onTheme}
         theme={theme}
+        voiceCatalog={voiceCatalog}
       />
       <section className="surfacePanel wide">
         <header>
@@ -2377,13 +2817,17 @@ function GrowthPanel({ events }: { events: CrixEvent[] }) {
 function AppearancePanel({
   appearance,
   onAppearance,
+  onPreviewVoice,
   onTheme,
   theme,
+  voiceCatalog,
 }: {
   appearance: AppearanceSettings;
   onAppearance: (value: AppearanceSettings) => void;
+  onPreviewVoice: (id: string) => void;
   onTheme: (value: ThemeName) => void;
   theme: ThemeName;
+  voiceCatalog: VoiceOption[];
 }) {
   return (
     <section className="surfacePanel wide appearancePanel">
@@ -2433,7 +2877,69 @@ function AppearancePanel({
           </button>
         </div>
       </div>
+      <VoicePicker
+        catalog={voiceCatalog}
+        onPreview={onPreviewVoice}
+        onSpeed={(speed) => onAppearance({ ...appearance, voiceSpeed: speed })}
+        onVoice={(id) => onAppearance({ ...appearance, voiceId: id })}
+        voiceId={appearance.voiceId}
+        voiceSpeed={appearance.voiceSpeed}
+      />
     </section>
+  );
+}
+
+function VoicePicker({
+  catalog,
+  onPreview,
+  onSpeed,
+  onVoice,
+  voiceId,
+  voiceSpeed,
+}: {
+  catalog: VoiceOption[];
+  onPreview: (id: string) => void;
+  onSpeed: (speed: number) => void;
+  onVoice: (id: string) => void;
+  voiceId: string;
+  voiceSpeed: number;
+}) {
+  const list = catalog.length
+    ? catalog
+    : [{ id: voiceId, label: voiceId, gender: "female", lang: "a", accent: "", tier: "", character: "Enable voice replies to load the full catalog." } as VoiceOption];
+  return (
+    <div className="voicePicker">
+      <div className="voicePickerHead">
+        <span><Volume2 size={15} /> Voice</span>
+        <label className="voiceSpeedControl">
+          <span>Speed <strong>{voiceSpeed.toFixed(2)}x</strong></span>
+          <input max="1.5" min="0.7" step="0.05" type="range" value={voiceSpeed} onChange={(event) => onSpeed(Number(event.target.value))} />
+        </label>
+      </div>
+      <div className="voiceGrid">
+        {list.map((voice) => (
+          <button
+            className={voice.id === voiceId ? "voiceChip active" : "voiceChip"}
+            key={voice.id}
+            onClick={() => onVoice(voice.id)}
+            title={voice.character}
+            type="button"
+          >
+            <span className="voiceChipName">{voice.label}</span>
+            <span className="voiceChipMeta">{voice.accent} {voice.gender === "male" ? "M" : "F"}{voice.tier ? ` · ${voice.tier}` : ""}</span>
+            <span
+              aria-label={`Preview ${voice.label}`}
+              className="voiceChipPreview"
+              onClick={(event) => { event.stopPropagation(); onPreview(voice.id); }}
+              role="button"
+              tabIndex={-1}
+            >
+              <Play size={13} />
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2487,6 +2993,7 @@ function EventCard({
       <div className="eventBody">
         <header>
           <strong>{title}</strong>
+          {event.type === "tool_call" && event.name ? <small className="eventToolName">{event.name}</small> : null}
           <time>{event.type === "tool_call" ? event.status : event.type}</time>
         </header>
         {event.type === "permission_gate" ? (
@@ -2729,6 +3236,72 @@ function StatusPill({ label, value, tone = "neutral" }: { label: string; value: 
   );
 }
 
+function voiceStatusLabel(status: VoiceStatus): string {
+  if (status === "connecting") return "linking";
+  if (status === "ready") return "ready";
+  if (status === "speaking") return "speaking";
+  if (status === "error") return "offline";
+  return "off";
+}
+
+function takeVoiceChunk(buffer: string, force: boolean): { chunk: string; rest: string } | null {
+  const text = buffer.trimStart();
+  if (!text) return null;
+
+  // A sentence end is always a clean break, at any length.
+  const sentenceMatch = /[.!?…](?:\s|$)/.exec(text);
+  if (sentenceMatch?.index !== undefined) {
+    return splitVoiceChunk(text, sentenceMatch.index + sentenceMatch[0].length);
+  }
+
+  // Once we have a phrase's worth of text, speak it at the next clause break
+  // (comma / semicolon / colon / dash) so audio keeps pace with generation.
+  if (text.length >= VOICE_MIN_CHUNK_CHARS) {
+    const clauseMatch = /[,;:—–](?:\s|$)/.exec(text.slice(VOICE_MIN_CHUNK_CHARS));
+    if (clauseMatch?.index !== undefined) {
+      return splitVoiceChunk(text, VOICE_MIN_CHUNK_CHARS + clauseMatch.index + clauseMatch[0].length);
+    }
+  }
+
+  // No punctuation but the buffer is getting long — break at a word boundary.
+  if (text.length >= VOICE_SOFT_FLUSH_CHARS) {
+    const whitespace = text.lastIndexOf(" ", VOICE_HARD_FLUSH_CHARS);
+    const end = whitespace > VOICE_MIN_CHUNK_CHARS ? whitespace : Math.min(text.length, VOICE_HARD_FLUSH_CHARS);
+    return splitVoiceChunk(text, end);
+  }
+
+  if (force) return { chunk: text.trim(), rest: "" };
+  return null;
+}
+
+function splitVoiceChunk(text: string, end: number): { chunk: string; rest: string } {
+  return {
+    chunk: text.slice(0, end).trim(),
+    rest: text.slice(end),
+  };
+}
+
+function prepareVoiceText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " code omitted. ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    // Don't read emojis aloud — strip pictographs + their modifiers/joiners.
+    .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}️‍⃣]/gu, "")
+    .replace(/[#*_>~|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function audioUrlFromBase64(base64: string, mime: string): string {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="metricCard">
@@ -2946,9 +3519,9 @@ function eventTitle(event: CrixEvent): string {
   if (event.type === "assistant_stream") return "Crix";
   if (event.type === "thinking_stream") return "Thinking";
   if (event.type === "permission_gate") return event.toolName ? `Permission: ${event.toolName}` : "Permission";
-  if (event.type === "tool_call") return event.name ? `Tool: ${event.name}` : "Tool";
-  if (event.type === "tool_start") return event.name ? `Tool: ${event.name}` : "Tool started";
-  if (event.type === "tool_end") return event.name ? `Tool finished: ${event.name}` : "Tool finished";
+  if (event.type === "tool_call") return event.activityDescription || (event.name ? `Tool: ${event.name}` : "Tool");
+  if (event.type === "tool_start") return event.activityDescription || (event.name ? `Tool: ${event.name}` : "Tool started");
+  if (event.type === "tool_end") return event.activityDescription || (event.name ? `Tool finished: ${event.name}` : "Tool finished");
   if (event.type === "turn_end") return `Turn ${event.status ?? "ended"}`;
   if (event.type === "desktop_model_applied") return "Model applied";
   if (event.type === "reasoning_set") return "Reasoning updated";
@@ -3010,7 +3583,7 @@ function currentLiveActivity(events: CrixEvent[], daemon: DaemonState, status: H
   const runningTool = [...events].reverse().find((event) => event.type === "tool_call" && ["planning", "ready", "running"].includes(event.status ?? ""));
   if (runningTool) {
     return {
-      title: runningTool.name ? `Running ${runningTool.name}` : "Running tool",
+      title: runningTool.activityDescription || (runningTool.name ? `Running ${runningTool.name}` : "Running tool"),
       detail: progressText(runningTool.data) ?? runningTool.activityDescription ?? eventText(runningTool) ?? "waiting for tool output",
       tone: "active",
       startedAt: runningTool.startedAt,
@@ -3376,9 +3949,12 @@ function normalizeTheme(value?: string): ThemeName {
 }
 
 function normalizeAppearance(value?: Partial<AppearanceSettings>): AppearanceSettings {
+  const speed = Number(value?.voiceSpeed ?? DEFAULT_APPEARANCE.voiceSpeed);
   return {
     opacity: clampOpacity(Number(value?.opacity ?? DEFAULT_APPEARANCE.opacity)),
-    corners: value?.corners === "square" ? "square" : "rounded",
+    corners: value?.corners === "rounded" ? "rounded" : "square",
+    voiceId: typeof value?.voiceId === "string" && value.voiceId.trim() ? value.voiceId.trim() : DEFAULT_APPEARANCE.voiceId,
+    voiceSpeed: Number.isFinite(speed) ? Math.min(1.5, Math.max(0.7, speed)) : DEFAULT_APPEARANCE.voiceSpeed,
   };
 }
 

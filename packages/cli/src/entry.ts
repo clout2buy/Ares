@@ -1143,7 +1143,24 @@ function makeBrowserTool(context: CliRuntimeContext) {
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: browserInput,
-    activityDescription: (i) => `Browser ${i.action}${i.url ? ` ${i.url}` : ""}`,
+    activityDescription: (i) => {
+      const host = (u?: string) => {
+        if (!u) return "a page";
+        try {
+          return new URL(u.includes("://") ? u : `https://${u}`).host.replace(/^www\./, "");
+        } catch {
+          return u;
+        }
+      };
+      if (i.action === "open") return `Opening ${host(i.url)}`;
+      if (i.action === "tree") return "Reading the page";
+      if (i.action === "screenshot" || i.action === "filmstrip") return "Capturing the screen";
+      if (i.action === "fill") return i.label ? `Filling “${i.label}”` : "Filling a field";
+      if (i.action === "click") return i.name ? `Clicking “${i.name}”` : "Clicking a control";
+      if (i.action === "state") return "Checking the page state";
+      if (i.action === "close") return "Closing the browser";
+      return "Browsing the web";
+    },
 
     async call(i): Promise<{ output: BrowserToolOutput; display: string }> {
       const strip = ensureFilmstrip();

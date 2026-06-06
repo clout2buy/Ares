@@ -153,6 +153,28 @@ export function adaptToolForEngine(
 export const zPath = z.string().min(1).describe("Absolute or workspace-relative path.");
 export const zAbsPath = zPath;
 
+/**
+ * Topic-first narration for a shell command ("Switching to main", "Running
+ * tests", "Committing changes"). Mirrors the engine's narrator so the CLI strip
+ * and the desktop card read identically. Shared by Bash + PowerShell.
+ */
+export function describeShellActivity(rawCommand: string, background: boolean): string {
+  const cmd = rawCommand.trim().replace(/\s+/g, " ");
+  const lead = (verb: string) => (background ? `${verb} in the background` : verb);
+  const branch = /git\s+(?:checkout|switch)\s+(?:-b\s+)?([^\s&|;]+)/.exec(cmd);
+  if (branch) return lead(`Switching to ${branch[1]}`);
+  if (/git\s+commit/i.test(cmd)) return lead("Committing changes");
+  if (/git\s+push/i.test(cmd)) return lead("Pushing to remote");
+  if (/git\s+pull/i.test(cmd)) return lead("Pulling from remote");
+  if (/git\s+status/i.test(cmd)) return lead("Checking git status");
+  if (/git\s+(diff|log|show)/i.test(cmd)) return lead("Inspecting git history");
+  if (/(pnpm|npm|yarn).*(test|vitest|jest)|node --test|\bpytest\b|cargo test/i.test(cmd)) return lead("Running tests");
+  if (/(pnpm|npm|yarn).*(build|lint|tsc)|cargo build|vite build/i.test(cmd)) return lead("Building the project");
+  if (/(pnpm|npm|yarn)\s+(install|i|add)|cargo add/i.test(cmd)) return lead("Installing dependencies");
+  const program = cmd.split(" ")[0]?.split(/[\\/]/).pop() || "command";
+  return lead(`Running ${program}`);
+}
+
 function defaultPermissionDecision<I extends z.ZodTypeAny, O>(
   def: ToolDef<I, O>,
   ctx: RichToolContext,

@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, resolveWorkspacePath } from "./_shared.js";
+import { buildTool, describeShellActivity, resolveWorkspacePath } from "./_shared.js";
 import { runShell } from "./Bash.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -34,8 +34,7 @@ export const PowerShellTool = buildTool({
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
-  activityDescription: (i) =>
-    `${i.run_in_background ? "Backgrounding" : "Running"} ${i.command.slice(0, 60)}`,
+  activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   async checkPermissions(i, ctx) {
     return ctx.commandPermissions?.decide("PowerShell", i.command) ?? { kind: "allow" };
   },

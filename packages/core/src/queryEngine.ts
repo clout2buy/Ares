@@ -905,18 +905,197 @@ function isModelOutputEvent(ev: StreamEvent): boolean {
   );
 }
 
-function describeActivity(toolName: string, input: unknown): string {
-  // Generic fallback. Tools that need better UX override via their own
-  // activityDescription in @crix/tools/_shared.ts; the engine only sees
-  // the schema layer, so we keep this generic here.
-  if (typeof input === "object" && input !== null) {
-    const i = input as Record<string, unknown>;
-    if (typeof i.path === "string") return `${toolName} ${i.path}`;
-    if (typeof i.file_path === "string") return `${toolName} ${i.file_path}`;
-    if (typeof i.command === "string") return `${toolName} ${i.command.slice(0, 50)}`;
-    if (typeof i.pattern === "string") return `${toolName} ${i.pattern}`;
-    if (typeof i.query === "string") return `${toolName} ${i.query.slice(0, 50)}`;
+function basenameOf(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/, "");
+  return path.basename(trimmed) || trimmed || p;
+}
+
+function hostOf(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl.includes("://") ? rawUrl : `https://${rawUrl}`);
+    return u.host.replace(/^www\./, "") || rawUrl;
+  } catch {
+    return rawUrl.replace(/^https?:\/\//, "").split(/[/?#]/)[0] || rawUrl;
   }
+}
+
+function summarizeShellCommand(raw: string, background: boolean): string {
+  const cmd = raw.trim().replace(/\s+/g, " ");
+  const lower = cmd.toLowerCase();
+  const lead = (verb: string) => (background ? `${verb} in the background` : verb);
+  // Git intents — narrate the topic, not the flags.
+  const branch = /git\s+(?:checkout|switch)\s+(?:-b\s+)?([^\s&|;]+)/.exec(cmd);
+  if (branch) return lead(`Switching to ${branch[1]}`);
+  if (/git\s+commit/.test(lower)) return lead("Committing changes");
+  if (/git\s+push/.test(lower)) return lead("Pushing to remote");
+  if (/git\s+pull/.test(lower)) return lead("Pulling from remote");
+  if (/git\s+status/.test(lower)) return lead("Checking git status");
+  if (/git\s+(diff|log|show)/.test(lower)) return lead("Inspecting git history");
+  if (/\bgit\b/.test(lower)) return lead("Running git");
+  // Build / test / install intents.
+  if (/(pnpm|npm|yarn).*(test|vitest|jest)|node --test|\bpytest\b|cargo test/.test(lower)) return lead("Running tests");
+  if (/(pnpm|npm|yarn).*(build|lint|tsc)|cargo build|vite build/.test(lower)) return lead("Building the project");
+  if (/(pnpm|npm|yarn)\s+(install|i|add)|cargo add/.test(lower)) return lead("Installing dependencies");
+  // Generic: lead with the program name.
+  const program = cmd.split(" ")[0]?.split(/[\\/]/).pop() || "command";
+  return lead(`Running ${program}`);
+}
+
+// Topic-first narration of a tool run for the live UI ("Reading App.tsx",
+// "Searching for useState", "Opening github.com", "Switching to main"). This is
+// the SOLE producer the desktop/CLI activity surfaces read, so it carries the
+// warmth — keyed on the real tool name + its actual arguments.
+function describeActivity(toolName: string, input: unknown): string {
+  const i = typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
+  const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+  const bg = i.run_in_background === true;
+
+  switch (toolName) {
+    case "Read": {
+      const f = str(i.file_path);
+      return f ? `Reading ${basenameOf(f)}` : "Reading a file";
+    }
+    case "Write": {
+      const f = str(i.file_path);
+      return f ? `Writing ${basenameOf(f)}` : "Writing a file";
+    }
+    case "Edit":
+    case "ApplyIntent": {
+      const f = str(i.file_path);
+      return f ? `Editing ${basenameOf(f)}` : "Editing a file";
+    }
+    case "FindAndEdit": {
+      const glob = str(i.file_glob);
+      const pat = str(i.pattern);
+      const verb = i.dry_run ? "Previewing edits" : "Replacing";
+      if (pat && glob) return `${verb} ${pat} in ${glob}`;
+      return glob ? `${verb} in ${glob}` : "Editing files";
+    }
+    case "Grep": {
+      const pat = str(i.pattern);
+      return pat ? `Searching for ${pat}` : "Searching the code";
+    }
+    case "Glob": {
+      const pat = str(i.pattern);
+      return pat ? `Finding ${pat}` : "Finding files";
+    }
+    case "CodebaseSearch": {
+      const q = str(i.query);
+      return q ? `Searching the codebase for ${q.slice(0, 60)}` : "Searching the codebase";
+    }
+    case "Bash":
+    case "PowerShell": {
+      const c = str(i.command);
+      return c ? summarizeShellCommand(c, bg) : "Running a command";
+    }
+    case "BashOutput":
+      return "Reading shell output";
+    case "KillShell":
+      return "Stopping a background shell";
+    case "WebFetch": {
+      const u = str(i.url);
+      return u ? `Fetching ${hostOf(u)}` : "Fetching a page";
+    }
+    case "WebSearch": {
+      const q = str(i.query);
+      return q ? `Searching the web for ${q.slice(0, 60)}` : "Searching the web";
+    }
+    case "Browser": {
+      const action = str(i.action);
+      const u = str(i.url);
+      if (action === "open") return u ? `Opening ${hostOf(u)}` : "Opening a page";
+      if (action === "tree") return "Reading the page";
+      if (action === "screenshot" || action === "filmstrip") return "Capturing the screen";
+      if (action === "fill") return str(i.label) ? `Filling “${str(i.label)}”` : "Filling a field";
+      if (action === "click") return str(i.name) ? `Clicking “${str(i.name)}”` : "Clicking a control";
+      if (action === "state") return "Checking the page state";
+      if (action === "close") return "Closing the browser";
+      return "Browsing the web";
+    }
+    case "Task": {
+      const d = str(i.description);
+      return d ? `Delegating: ${d.slice(0, 50)}` : "Delegating a subtask";
+    }
+    case "TodoWrite": {
+      const todos = Array.isArray(i.todos) ? i.todos.length : 0;
+      return todos ? `Updating ${todos} todo${todos === 1 ? "" : "s"}` : "Updating the plan";
+    }
+    case "Memory": {
+      const action = str(i.action);
+      if (action === "read") return "Recalling from memory";
+      if (action === "append" || action === "write") return "Saving to memory";
+      return "Working with memory";
+    }
+    case "LSP": {
+      const f = str(i.file_path);
+      const action = str(i.action) ?? "inspect";
+      return f ? `Inspecting ${basenameOf(f)} (${action})` : "Inspecting code";
+    }
+    case "McpList":
+    case "Mcp": {
+      const server = str(i.server);
+      const tool = str(i.tool);
+      if (server && tool) return `Calling ${server}/${tool}`;
+      if (server) return `Listing ${server} tools`;
+      return "Listing MCP servers";
+    }
+    case "SkillsList":
+    case "Skills": {
+      const q = str(i.query);
+      return q ? `Looking for skills like ${q}` : "Browsing skills";
+    }
+    case "SkillRead":
+    case "RunSkill": {
+      const n = str(i.name);
+      return n ? `Running the ${n} skill` : "Running a skill";
+    }
+    case "CodeMode":
+      return "Running a code batch";
+    case "PlanMode":
+      return "Entering plan mode";
+    case "ExitPlanMode":
+      return "Leaving plan mode";
+    case "LivingMind": {
+      const action = str(i.action);
+      return action ? `Living memory: ${action}` : "Tending living memory";
+    }
+    case "Operator": {
+      const action = str(i.action);
+      return action ? `Operator: ${action}` : "Consulting the operator";
+    }
+    case "Mission": {
+      const action = str(i.action);
+      const goal = str(i.goal);
+      if (goal) return `Mission — ${goal.slice(0, 48)}`;
+      return action ? `Mission: ${action}` : "Working on a mission";
+    }
+    case "Self": {
+      const action = str(i.action);
+      return action ? `Self: ${action}` : "Reflecting on self";
+    }
+    case "SelfEvolve": {
+      const target = str(i.target);
+      return target ? `Evolving ${target}` : "Evolving itself";
+    }
+    case "SkillCraft": {
+      const n = str(i.name);
+      return n ? `Crafting the ${n} skill` : "Crafting a skill";
+    }
+    case "Bootstrap": {
+      const agent = str(i.agent_name);
+      return agent ? `Bootstrapping ${agent}` : "Bootstrapping the entity";
+    }
+    default:
+      break;
+  }
+
+  // Generic fallback — still warmer than a bare tool name.
+  const f = str(i.file_path) ?? str(i.path);
+  if (f) return `${toolName} · ${basenameOf(f)}`;
+  const c = str(i.command);
+  if (c) return `${toolName} · ${c.slice(0, 50)}`;
+  const q = str(i.pattern) ?? str(i.query);
+  if (q) return `${toolName} · ${q.slice(0, 50)}`;
   return toolName;
 }
 

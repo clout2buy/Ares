@@ -38,7 +38,7 @@ export function makeWebSearchTool(backend: SearchBackend = duckDuckGoLite()) {
     safety: "external-state",
     concurrency: "parallel-safe",
     inputZod: inputSchema,
-    activityDescription: (i) => `Searching ${truncate(i.query, 50)}`,
+    activityDescription: (i) => `Searching the web for ${truncate(i.query, 60)}`,
 
     async call(i, ctx): Promise<{ output: WebSearchOutput; display: string }> {
       const all = await backend.search(i.query, ctx.signal);

@@ -138,7 +138,7 @@ Pair CodebaseSearch with Task(researcher) when the investigation needs many foll
   safety: "read-only",
   concurrency: "parallel-safe",
   inputZod: inputSchema,
-  activityDescription: (i) => `CodebaseSearch ${truncate(i.query, 50)}`,
+  activityDescription: (i) => `Searching the codebase for ${truncate(i.query, 60)}`,
 
   async call(i, ctx): Promise<{ output: CodebaseSearchOutput; display: string }> {
     const t0 = Date.now();

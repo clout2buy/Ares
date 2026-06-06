@@ -4,7 +4,7 @@ import { z } from "zod";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, resolveWorkspacePath } from "./_shared.js";
+import { buildTool, describeShellActivity, resolveWorkspacePath } from "./_shared.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -56,8 +56,7 @@ export const BashTool = buildTool({
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
-  activityDescription: (i) =>
-    `${i.run_in_background ? "Backgrounding" : "Running"} ${i.command.slice(0, 60)}`,
+  activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   async checkPermissions(i, ctx) {
     return ctx.commandPermissions?.decide("Bash", i.command) ?? { kind: "allow" };
   },

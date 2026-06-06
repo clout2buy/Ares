@@ -26,6 +26,7 @@ Common commands:
 .\crix.bat operator attention      # inspect current Operator work queue
 .\crix.bat operator add --goal "ship a feature"
 .\crix.bat operator run --ticks 1
+pnpm voice:tts                     # start the local Kokoro-82M voice sidecar
 ```
 
 ## Packages
@@ -75,3 +76,4 @@ The main quality rule is simple: changes should be backed by focused tests and r
 - `docs/CODEX_BUILD_SPEC.md`: implementation reference.
 - `docs/CLEANUP.md`: cleanup and move/removal log.
 - `docs/roadmap/`: historical NEXT specs and future-roadmap notes.
+- `voice_service/`: optional local Kokoro-82M WebSocket sidecar for spoken replies.

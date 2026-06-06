@@ -1,0 +1,6 @@
+# Engine: Kokoro-82M (real-time local TTS, RTF ~0.03 on GPU)
+kokoro>=0.9
+soundfile>=0.12
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=1.26

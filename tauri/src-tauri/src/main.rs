@@ -39,6 +39,12 @@ struct DaemonState {
     next_event_seq: Arc<AtomicU64>,
 }
 
+/// The local Kokoro voice sidecar (voice_service/server.py) — auto-started with
+/// the app so spoken replies "just work", and killed on close.
+struct VoiceState {
+    child: Mutex<Option<Child>>,
+}
+
 #[derive(Serialize)]
 struct DaemonStatus {
     running: bool,
@@ -403,6 +409,76 @@ fn stop_existing_daemon(state: &DaemonState) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn voice_python(root: &Path) -> std::ffi::OsString {
+    let venv = root
+        .join(".crix")
+        .join("voice-venv")
+        .join("Scripts")
+        .join("python.exe");
+    if venv.exists() {
+        venv.into_os_string()
+    } else {
+        std::ffi::OsString::from("python")
+    }
+}
+
+#[cfg(not(windows))]
+fn voice_python(root: &Path) -> std::ffi::OsString {
+    let venv = root
+        .join(".crix")
+        .join("voice-venv")
+        .join("bin")
+        .join("python");
+    if venv.exists() {
+        venv.into_os_string()
+    } else {
+        std::ffi::OsString::from("python3")
+    }
+}
+
+/// Spawn voice_service/server.py headlessly. Best-effort: if Python / the venv /
+/// the script is missing, or the port is already taken by a manual sidecar, the
+/// child simply exits and chat is unaffected.
+fn start_voice_sidecar(state: &VoiceState) {
+    if let Ok(guard) = state.child.lock() {
+        if guard.is_some() {
+            return;
+        }
+    }
+    let Some((root, _)) = resolve_crix_cli() else {
+        return;
+    };
+    let script = root.join("voice_service").join("server.py");
+    if !script.exists() {
+        return;
+    }
+    let mut command = Command::new(voice_python(&root));
+    command.arg(&script).current_dir(&root);
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Ok(child) = command.spawn() {
+        if let Ok(mut guard) = state.child.lock() {
+            *guard = Some(child);
+        }
+    }
+}
+
+fn stop_voice_sidecar(state: &VoiceState) {
+    if let Ok(mut guard) = state.child.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(DaemonState {
@@ -414,11 +490,18 @@ fn main() {
             events: Arc::new(Mutex::new(Vec::new())),
             next_event_seq: Arc::new(AtomicU64::new(1)),
         })
+        .manage(VoiceState {
+            child: Mutex::new(None),
+        })
         .setup(|app| {
             let handle = app.handle().clone();
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
                 hide_windows_accent_border(&window);
+            }
+            // Auto-start the local voice sidecar so spoken replies work out of the box.
+            if let Some(voice) = app.try_state::<VoiceState>() {
+                start_voice_sidecar(voice.inner());
             }
             app.listen("tauri://close-requested", move |_| {
                 if let Some(state) = handle.try_state::<DaemonState>() {
@@ -432,6 +515,9 @@ fn main() {
                             let _ = child.wait();
                         }
                     }
+                }
+                if let Some(voice) = handle.try_state::<VoiceState>() {
+                    stop_voice_sidecar(voice.inner());
                 }
             });
             Ok(())

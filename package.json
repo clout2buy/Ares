@@ -17,7 +17,8 @@
     "crix": "node packages/cli/dist/entry.js",
     "link:cli": "pnpm build && pnpm link --global",
     "verify": "pnpm lint && pnpm test",
-    "clean": "node scripts/clean.mjs"
+    "clean": "node scripts/clean.mjs",
+    "voice:tts": "powershell -ExecutionPolicy Bypass -File scripts/voice-tts.ps1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

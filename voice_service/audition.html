@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Crix Voice Audition</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 28px; background: #0a0b10; color: #e6e9f2; }
+  h1 { font-weight: 600; letter-spacing: .02em; margin: 0 0 4px; }
+  .sub { opacity: .6; margin-bottom: 20px; }
+  .bar { display: flex; gap: 16px; align-items: center; margin: 16px 0 24px; flex-wrap: wrap; }
+  input[type=text] { flex: 1; min-width: 280px; padding: 9px 12px; border-radius: 10px; border: 1px solid #2a2e3c; background: #11131b; color: inherit; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .card { border: 1px solid #232838; border-radius: 14px; padding: 14px; background: #12141d; display: flex; flex-direction: column; gap: 6px; }
+  .name { font-weight: 600; font-size: 15px; }
+  .meta { font-size: 12px; opacity: .55; }
+  .char { font-size: 12px; opacity: .82; min-height: 34px; }
+  button { cursor: pointer; border: 1px solid #2f6df6; background: #1b2740; color: #cfe0ff; border-radius: 9px; padding: 8px 10px; font: inherit; font-weight: 600; }
+  button:hover { background: #223152; }
+  button:active { transform: translateY(1px); }
+  .err { color: #ff8585; }
+</style>
+</head>
+<body>
+<h1>Crix Voice Audition</h1>
+<div class="sub">Pick your entity's voice. Start the sidecar first: <code>pnpm voice:tts</code></div>
+<div class="bar">
+  <label>Speed <input id="speed" type="range" min="0.7" max="1.5" step="0.05" value="1.15" /> <span id="speedv">1.15x</span></label>
+  <input id="text" type="text" value="Systems online. I am Crix, your entity, ready when you are." />
+</div>
+<div id="status" class="meta"></div>
+<div id="grid" class="grid"></div>
+<script>
+const HTTP = "http://127.0.0.1:8765/voices";
+const WS = "ws://127.0.0.1:8765/tts";
+const speed = document.getElementById("speed");
+const speedv = document.getElementById("speedv");
+speed.oninput = () => (speedv.textContent = Number(speed.value).toFixed(2) + "x");
+
+function b64ToUrl(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime || "audio/wav" }));
+}
+
+function speak(voiceId) {
+  const text = document.getElementById("text").value;
+  const ws = new WebSocket(WS);
+  const queue = [];
+  let playing = false;
+  function next() {
+    if (playing) return;
+    const url = queue.shift();
+    if (!url) return;
+    playing = true;
+    const a = new Audio(url);
+    a.onended = a.onerror = () => { URL.revokeObjectURL(url); playing = false; next(); };
+    a.play();
+  }
+  ws.onopen = () => ws.send(JSON.stringify({ type: "speak", id: "a", text, voice: voiceId, speed: Number(speed.value) }));
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === "audio" && m.audio) { queue.push(b64ToUrl(m.audio, m.mime)); next(); }
+    if (m.type === "done") ws.close();
+    if (m.type === "error") document.getElementById("status").innerHTML = '<span class=err>' + m.message + "</span>";
+  };
+}
+
+fetch(HTTP)
+  .then((r) => r.json())
+  .then((d) => {
+    const grid = document.getElementById("grid");
+    (d.voices || []).forEach((v) => {
+      const c = document.createElement("div");
+      c.className = "card";
+      c.innerHTML =
+        '<div class="name">' + v.label + "</div>" +
+        '<div class="meta">' + v.id + " · " + v.accent + " " + v.gender + " · tier " + v.tier + "</div>" +
+        '<div class="char">' + v.character + "</div>";
+      const b = document.createElement("button");
+      b.textContent = "▶ Speak";
+      b.onclick = () => speak(v.id);
+      c.appendChild(b);
+      grid.appendChild(c);
+    });
+    document.getElementById("status").textContent = (d.voices || []).length + " voices · default " + d.default;
+  })
+  .catch(() => {
+    document.getElementById("status").innerHTML =
+      '<span class=err>Voice sidecar not reachable on 127.0.0.1:8765 — run: pnpm voice:tts</span>';
+  });
+</script>
+</body>
+</html>

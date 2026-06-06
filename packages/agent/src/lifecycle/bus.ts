@@ -26,7 +26,7 @@ export type LifecycleEvent =
   | { type: "self_evolve"; target: string; action: string; bytesBefore: number; bytesAfter: number; gain?: EvolutionGain }
   | { type: "capture_detected"; kinds: string[]; excerpt: string; gain?: EvolutionGain }
   | { type: "recall_surfaced"; count: number; gain?: EvolutionGain }
-  | { type: "thought"; kind: string; text: string; gain?: EvolutionGain }
+  | { type: "thought"; kind: string; text: string; phase?: "open" | "beat" | "close"; deliberationId?: string; confidence?: number; gain?: EvolutionGain }
   | { type: "skill_crafted"; name: string; action: "created" | "updated" | "removed"; gain?: EvolutionGain }
   | { type: "skill_ran"; name: string; ok: boolean; durationMs: number; gain?: EvolutionGain }
   | { type: "self_reflected"; directives: number; topKind?: string; gain?: EvolutionGain }

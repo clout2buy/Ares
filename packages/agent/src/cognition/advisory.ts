@@ -38,6 +38,12 @@ export interface DeliberateOptions {
   shouldDeliberate: boolean;
   /** Override the reasoner (tests inject a spy / fake). Defaults to the heuristic. */
   propose?: (situation: string, recalled: RecalledMemory[]) => Promise<ReasonOption[]> | ReasonOption[];
+  /**
+   * Optional flag-gated LLM micro-pass. When provided it BECOMES the reasoner
+   * (takes precedence over `propose`); on any empty/failed result it degrades to
+   * the memory-grounded heuristic, so it can never hollow out a useful turn.
+   */
+  reason?: (situation: string, recalled: RecalledMemory[]) => Promise<ReasonOption[]>;
   /** Receives each thought as it forms — wire to a lifecycle/UI stream. */
   emit?: (thought: Thought) => void;
   now?: () => Date;
@@ -52,10 +58,20 @@ export async function deliberateForTurn(opts: DeliberateOptions): Promise<Adviso
   if (!opts.shouldDeliberate) return EMPTY;
   if (opts.recalled.length === 0) return EMPTY;
 
+  // The LLM reasoner wins when present, but always degrades to the heuristic so
+  // the deliberation can never come back empty on a turn that recalled memory.
+  // When `reason` is undefined this is byte-identical to the previous behavior.
+  const propose = opts.reason
+    ? async (s: string, r: RecalledMemory[]) => {
+        const out = await opts.reason!(s, r);
+        return out.length > 0 ? out : memoryGroundedPropose(s, r);
+      }
+    : (opts.propose ?? memoryGroundedPropose);
+
   const deliberation = await consider(opts.situation, {
     recalled: opts.recalled, // reuse the unified recall — no second store query
     commitDecision: false, // advisory: never write a decision the model may not act on
-    propose: opts.propose ?? memoryGroundedPropose,
+    propose,
     emit: opts.emit,
     now: opts.now,
   });

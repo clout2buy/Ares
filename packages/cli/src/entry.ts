@@ -157,6 +157,8 @@ import {
   assembleWorldGraph,
   CRIX_SUBSYSTEMS,
   type WorldGraph,
+  rankBriefing,
+  type DailyBriefing,
   newGoalId,
   novelDeltaCurve,
   saveCapability,
@@ -2392,6 +2394,63 @@ async function worldCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
+// ─── Proactive Daily Briefing (Nexus Phase 1) — crix today / briefing / /today ─
+
+async function buildBriefing(context = cliRuntimeContext()): Promise<DailyBriefing> {
+  // Reuse the continuity summary (mission buckets + read-only advisory) and the
+  // World Graph — no new store-reading logic, no mutation.
+  const [summary, worldGraph, lessons] = await Promise.all([
+    buildContinuitySummary(context),
+    buildWorldGraph(context),
+    listLearningCards(context.home).catch(() => []),
+  ]);
+  return rankBriefing({ summary, worldGraph, lessons, now: new Date().toISOString() });
+}
+
+function briefingLines(b: DailyBriefing): string[] {
+  const lines: string[] = [b.headline];
+  if (b.focus.length) {
+    lines.push("", "Focus:");
+    for (const f of b.focus) {
+      lines.push(`  • ${compactLine(f.intent, 60)} [${f.status} ${f.percent}%]${f.relatedSubsystems.length ? `  → ${f.relatedSubsystems.join(", ")}` : ""}`);
+      lines.push(`     ${f.reasons.join(" · ")}`);
+      if (f.lesson) lines.push(`     ${f.lesson}`);
+    }
+  }
+  if (b.decisionsNeeded.length) {
+    lines.push("", "Decisions needed (blocked):");
+    for (const d of b.decisionsNeeded) lines.push(`  ! ${compactLine(d.intent, 60)} — ${compactLine(d.detail, 80)}`);
+  }
+  if (b.reviveOrDrop.length) {
+    lines.push("", "Revive or drop (stale):");
+    for (const d of b.reviveOrDrop) lines.push(`  · ${compactLine(d.intent, 60)} — ${d.detail}`);
+  }
+  if (b.recentlyShipped.length) {
+    lines.push("", "Recently shipped:");
+    for (const s of b.recentlyShipped) lines.push(`  ✓ ${compactLine(s.intent, 70)}`);
+  }
+  if (b.suggestion) {
+    lines.push("", `Suggested (advisory, not a command): ${compactLine(b.suggestion.goal, 80)}`);
+    lines.push(`  why: ${compactLine(b.suggestion.rationale, 90)} (${Math.round(b.suggestion.confidence * 100)}%)`);
+  }
+  return lines;
+}
+
+async function todayCommand(args: ParsedArgs): Promise<number> {
+  try {
+    const briefing = await buildBriefing();
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(briefing, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(notice("Today", briefingLines(briefing), briefing.decisionsNeeded.length ? "warn" : "info"));
+    return 0;
+  } catch (err) {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
+}
+
 // ─── Mission Learning Cards (Phase B v1) — crix mission learn/lessons/lesson ──
 
 function lessonLine(card: LearningCard): string {
@@ -2781,6 +2840,11 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     if (line === "/world") {
       const graph = await buildWorldGraph(live.context);
       process.stdout.write(notice("World Graph", worldGraphLines(graph), "info"));
+      continue;
+    }
+    if (line === "/today" || line === "/briefing") {
+      const briefing = await buildBriefing(live.context);
+      process.stdout.write(notice("Today", briefingLines(briefing), briefing.decisionsNeeded.length ? "warn" : "info"));
       continue;
     }
     if (line.startsWith("/workspace ")) {
@@ -3996,6 +4060,10 @@ async function main(): Promise<void> {
       return;
     case "world":
       process.exit(await worldCommand(args));
+      return;
+    case "today":
+    case "briefing":
+      process.exit(await todayCommand(args));
       return;
     case "mission":
       process.exit(await missionCommand(args));

@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import * as THREE from "three";
@@ -5613,6 +5613,7 @@ function hasNativeBridge(): boolean {
   // __TAURI_INTERNALS__ with no working invoke, which made the guard pass and the
   // daemon calls throw "Cannot read properties of undefined (reading 'invoke')".
   if (typeof window === "undefined") return false;
+  if (isTauri()) return true;
   const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__;
   return typeof internals?.invoke === "function";
 }

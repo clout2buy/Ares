@@ -320,14 +320,20 @@ fn crix_set_reasoning(level: String, state: State<DaemonState>) -> Result<(), St
         return Err("reasoning level must be low, medium, high, or max".to_string());
     }
 
-    write_daemon_command(state.inner(), json!({ "type": "reasoning", "level": level }))
+    write_daemon_command(
+        state.inner(),
+        json!({ "type": "reasoning", "level": level }),
+    )
 }
 
 #[tauri::command]
 fn crix_set_routing(routing: Value, state: State<DaemonState>) -> Result<(), String> {
     // The owner's per-lane model assignments. Passed through verbatim; the
     // daemon resolves it against @crix/core resolveRoute() on the live turn.
-    write_daemon_command(state.inner(), json!({ "type": "routing", "routing": routing }))
+    write_daemon_command(
+        state.inner(),
+        json!({ "type": "routing", "routing": routing }),
+    )
 }
 
 #[tauri::command]
@@ -1266,14 +1272,40 @@ fn resolve_crix_runtime(app: Option<&tauri::AppHandle>) -> Option<CrixRuntime> {
 }
 
 fn bundled_runtime(app: &tauri::AppHandle) -> Option<CrixRuntime> {
-    let root = app.path().resource_dir().ok()?.join("runtime");
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_runtime_candidates(&mut candidates, resource_dir);
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            push_runtime_candidates(&mut candidates, parent.to_path_buf());
+        }
+    }
+
+    let mut seen = HashSet::new();
+    for root in candidates {
+        if seen.insert(root.clone()) {
+            if let Some(runtime) = runtime_at(&root) {
+                return Some(runtime);
+            }
+        }
+    }
+    None
+}
+
+fn push_runtime_candidates(candidates: &mut Vec<PathBuf>, root: PathBuf) {
+    candidates.push(root.join("runtime"));
+    candidates.push(root);
+}
+
+fn runtime_at(root: &Path) -> Option<CrixRuntime> {
     let cli = root.join("cli").join("crix-cli.mjs");
     let node = root
         .join("bin")
         .join(if cfg!(windows) { "node.exe" } else { "node" });
     if cli.exists() && node.exists() {
         return Some(CrixRuntime {
-            app_root: root,
+            app_root: root.to_path_buf(),
             cli_entry: cli,
             node,
             workspace: desktop_workspace_dir(),

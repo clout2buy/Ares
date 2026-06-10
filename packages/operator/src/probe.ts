@@ -67,9 +67,13 @@ async function probeCommand(spec: Extract<VerificationSpec, { kind: "command" }>
   const expect = spec.expectExit ?? 0;
   const cwd = spec.cwd ?? ctx.workspace ?? process.cwd();
   const { code, out } = await runCommand(spec.cmd, spec.args ?? [], cwd, spec.timeoutMs ?? 30_000, ctx.signal);
+  const exitOk = code === expect;
+  const containsOk = spec.contains === undefined || out.includes(spec.contains);
   return {
-    met: code === expect,
-    summary: `${spec.cmd} exited ${code} (expected ${expect})`,
+    met: exitOk && containsOk,
+    summary: containsOk
+      ? `${spec.cmd} exited ${code} (expected ${expect})`
+      : `${spec.cmd} exited ${code} but output is missing "${spec.contains}"`,
     fingerprint: `${code}:${out.slice(0, 48)}`,
   };
 }

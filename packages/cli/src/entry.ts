@@ -198,6 +198,7 @@ import {
   promoteCapability,
   rejectCapabilityDraft,
   verificationSpecSummary,
+  runCrucibleTrials,
   type Goal,
   type CapabilityNode,
   type CapabilityEvidence,
@@ -4109,6 +4110,10 @@ function csvFlag(value: string | undefined): string[] | undefined {
 }
 
 // ─── mind command (Ares v6 — Living Memory feed for the UI + you) ───────
+function glyphFor(action: "promoted" | "archived" | "demoted" | "held"): string {
+  return action === "promoted" ? "+" : action === "archived" ? "x" : action === "demoted" ? "v" : "~";
+}
+
 async function mindCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "list";
   const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
@@ -4155,6 +4160,23 @@ async function mindCommand(args: ParsedArgs): Promise<number> {
         "info",
       ),
     );
+    return 0;
+  }
+
+  if (subcommand === "crucible") {
+    // V7 — the trial. Candidates face their checks and records; confirmed
+    // knowledge is tenure-audited. Deterministic; probes run against reality.
+    const report = await runCrucibleTrials({ store, workspace: context.workspace });
+    if (json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      return 0;
+    }
+    const lines =
+      report.verdicts.length === 0
+        ? ["no candidates awaiting trial"]
+        : report.verdicts.map((v) => `${glyphFor(v.action)} [${v.action}] ${v.claim} — ${v.reason}`);
+    lines.push(`reviewed ${report.reviewed} · promoted ${report.promoted} · archived ${report.archived} · demoted ${report.demoted} · held ${report.held}`);
+    process.stdout.write(notice("Crucible · trial", lines, report.archived + report.demoted > 0 ? "warn" : "success"));
     return 0;
   }
 

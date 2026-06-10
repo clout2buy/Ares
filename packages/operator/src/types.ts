@@ -31,7 +31,7 @@ export interface GoalStepRecord {
 export type VerificationSpec =
   | { kind: "always"; met: boolean; summary?: string }
   | { kind: "file"; path: string; contains?: string }
-  | { kind: "command"; cmd: string; args?: string[]; cwd?: string; expectExit?: number; timeoutMs?: number }
+  | { kind: "command"; cmd: string; args?: string[]; cwd?: string; expectExit?: number; contains?: string; timeoutMs?: number }
   | { kind: "http"; url: string; expectStatus?: number; contains?: string; timeoutMs?: number };
 
 export interface Goal {

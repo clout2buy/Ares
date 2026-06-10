@@ -273,3 +273,22 @@ export type {
   DispatchContext,
   OperatorEvent,
 } from "./types.js";
+export {
+  runCrucibleTrials,
+  checkToSpec,
+  recordOf,
+  type TrialAction,
+  type TrialReport,
+  type TrialStore,
+  type TrialVerdict,
+  type CrucibleTrialOptions,
+} from "./crucible.js";
+export {
+  TrustGovernor,
+  deriveLeash,
+  domainOf,
+  type LeashBasis,
+  type LeashChange,
+  type LeashAppender,
+  type TrustGovernorOptions,
+} from "./leash.js";

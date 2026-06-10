@@ -112,3 +112,14 @@ export {
   type SnapshotInfo,
 } from "./persistence.js";
 
+export {
+  runWitness,
+  vetCandidate,
+  WITNESS_SYSTEM_PROMPT,
+  type WitnessAsk,
+  type WitnessCandidate,
+  type WitnessKind,
+  type WitnessOptions,
+  type WitnessReport,
+  type WitnessStore,
+} from "./crucible/witness.js";

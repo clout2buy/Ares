@@ -48,6 +48,7 @@ import {
   type CostPreference,
   type LatencyPreference,
   type ModelTouch,
+  sideQueryJson,
 } from "@ares/core";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -84,7 +85,7 @@ import {
   type SubModelPool,
 } from "@ares/tools";
 import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect, ReasoningLevel } from "@ares/protocol";
-import { isReasoningLevel, reasoningLabel, REASONING_LEVELS } from "@ares/protocol";
+import { isReasoningLevel, reasoningLabel, REASONING_LEVELS, messageText } from "@ares/protocol";
 import type { ToolPermissionRequest, RouteAssignments } from "@ares/core";
 import { z } from "zod";
 import {
@@ -145,6 +146,7 @@ import {
   runRemDream,
   snapshotBrain,
   unifiedRecallForTurn,
+  runWitness,
 } from "@ares/agent";
 import {
   QueryEngineDispatcher,
@@ -342,6 +344,10 @@ interface LiveSession {
   agentRuntime?: AresAgentRuntime;
   queueSystemReminder(text: string, source?: ManualReminderSource): void;
   resumed?: ResumedSessionInfo;
+  /** V6: living-memory ids injected into the current turn — settled at turn end. */
+  lastRecallIds?: string[];
+  /** V5: the user message of the current turn, for the Witness snapshot. */
+  lastUserMessage?: string;
 }
 
 interface AresRuntimeState {
@@ -1811,7 +1817,7 @@ async function runCommand(args: ParsedArgs): Promise<number> {
   // Keep turn_end as the final NDJSON line for downstream consumers — unsubscribe
   // before the post-turn / session-end hooks fire any additional lifecycle events.
   unsubLifecycle();
-  await live.agentRuntime?.afterTurn(finalStatus);
+  await finishTurn(live, finalStatus);
   await live.agentRuntime?.sessionEnded();
   live.agentRuntime?.stop();
   return 0;
@@ -1906,7 +1912,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
         process.stdout.write(JSON.stringify(event) + "\n");
       }
       lifecycleOpen = false;
-      await live.agentRuntime?.afterTurn(finalStatus);
+      await finishTurn(live, finalStatus);
     }
   } finally {
     lifecycleOpen = false;
@@ -2794,7 +2800,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
           if (event.type === "turn_end") finalStatus = event.status;
           onEvent(event);
         }
-        await live.agentRuntime?.afterTurn(finalStatus);
+        await finishTurn(live, finalStatus);
       },
       handleCommand: async (line): Promise<InkCommandResult> => {
         if (line === "/exit" || line === "/quit") {
@@ -3119,12 +3125,12 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
         process.stderr.write(notice("Turn", [`status ${event.status}`], "warn"));
       }
       process.stderr.write(dim(usageMeter(event.usage, event.durationMs)) + "\n");
-      await live.agentRuntime?.afterTurn(finalStatus);
+      await finishTurn(live, finalStatus);
       return;
     }
     void event;
   }
-  await live.agentRuntime?.afterTurn(finalStatus);
+  await finishTurn(live, finalStatus);
 }
 
 async function loginCommand(): Promise<number> {
@@ -3251,6 +3257,8 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
         ? { config: prepared.config, home: prepared.home, useOllama: process.env.ARES_AGENT_OLLAMA_RECALL === "1" }
         : undefined,
     });
+    live.lastRecallIds = recall.livingIds;
+    live.lastUserMessage = text;
     if (recall.reminder) {
       live.queueSystemReminder(recall.reminder, "memory");
       const count = recall.items.length;
@@ -3275,6 +3283,78 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
     }
   } catch {
     // never break a turn over memory
+  }
+}
+
+/**
+ * Turn epilogue (ARES V5+V6). Three steps, all best-effort:
+ *   1. the agent runtime's own afterTurn lifecycle;
+ *   2. V6 consequence settling — every living memory injected into this turn
+ *      gets the outcome recorded (win on completed, loss otherwise) so strength
+ *      tracks usefulness, not recall popularity;
+ *   3. V5 Witness — a cheap sideQuery fork reviews the finished turn and may
+ *      write candidate hypotheses into living memory.
+ * Nothing here may break the session loop.
+ */
+async function finishTurn(
+  live: LiveSession,
+  finalStatus: "completed" | "interrupted" | "failed",
+): Promise<void> {
+  await live.agentRuntime?.afterTurn(finalStatus);
+
+  // V6 — settle the artifacts that were in play.
+  const ids = live.lastRecallIds ?? [];
+  live.lastRecallIds = undefined;
+  if (ids.length > 0) {
+    try {
+      const store = await MemoryStore.open(live.context.mind.memoryFile);
+      await store.recordOutcome(ids, {
+        won: finalStatus === "completed",
+        note: `in play for a turn that ${finalStatus}`,
+      });
+    } catch {
+      // consequence settling never breaks the loop
+    }
+  }
+
+  // V5 — the Witness reviews substantive turns. Interrupted turns teach nothing
+  // reliable; failed turns are reviewed (failures carry feedback/belief signal).
+  const userMessage = live.lastUserMessage;
+  live.lastUserMessage = undefined;
+  if (!userMessage || finalStatus === "interrupted") return;
+  if (process.env.ARES_WITNESS === "0" || !live.agentRuntime?.prepared.enabled) return;
+  try {
+    const intent = classifyUserIntent(userMessage);
+    if (intent.lowSignal || !intent.shouldCapture) return;
+    const history = live.session.engine.history();
+    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+    const assistantText = lastAssistant ? messageText(lastAssistant) : "";
+    if (!assistantText) return;
+    const store = await MemoryStore.open(live.context.mind.memoryFile);
+    const report = await runWitness({
+      conversation: { user: userMessage, assistant: assistantText, status: finalStatus },
+      store,
+      source: live.session.meta.id,
+      ask: ({ system, user, schemaHint, signal }) =>
+        sideQueryJson({
+          provider: live.selection.provider,
+          model: live.selection.model,
+          system,
+          user,
+          schemaHint,
+          signal,
+        }),
+    });
+    if (report.accepted.length > 0) {
+      emitLifecycle({
+        type: "capture_detected",
+        kinds: report.accepted.map((n) => n.tags?.find((t) => t.startsWith("crucible:")) ?? "candidate"),
+        excerpt: report.accepted[0].content.slice(0, 120),
+        gain: gainForTarget("MEMORY", report.accepted.length, "hypotheses"),
+      });
+    }
+  } catch {
+    // the Witness is opportunistic — a failed review costs nothing
   }
 }
 

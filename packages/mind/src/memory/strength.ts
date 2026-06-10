@@ -27,3 +27,22 @@ export function reinforce(node: MemoryNode, now: Date, amount = 0.5): MemoryNode
     lastActivatedAt: now.toISOString(),
   };
 }
+
+/**
+ * An outcome went AGAINST this memory: debit its strength (floored, never
+ * negative) and reset the clock so the loss is felt now. The deliberate
+ * asymmetry with reinforce(): losses do not bump activations — being wrong
+ * is not "use".
+ */
+export function weaken(node: MemoryNode, now: Date, factor = 0.6): MemoryNode {
+  // Multiplicative, not additive: a loss must out-debit the additive bump a
+  // recall gives (+0.5), or a popular-but-wrong memory could stay strong by
+  // being recalled often — exactly the failure mode V6 exists to kill. With
+  // x0.6-0.05, three recall+loss cycles land a node ~30% below where it
+  // started; a single loss is felt but never catastrophic.
+  return {
+    ...node,
+    strength: Math.max(0.05, node.strength * factor - 0.05),
+    lastActivatedAt: now.toISOString(),
+  };
+}

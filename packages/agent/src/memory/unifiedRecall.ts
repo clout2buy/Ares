@@ -27,6 +27,8 @@ export interface UnifiedRecallItem {
   origin: UnifiedRecallOrigin;
   /** v6 only: surfaced by spreading activation from an associated memory. */
   viaAssociation?: boolean;
+  /** Living-memory node id — present so V6 consequence wiring can credit/debit it. */
+  id?: string;
 }
 
 export interface UnifiedRecallResult {
@@ -41,6 +43,11 @@ export interface UnifiedRecallResult {
    * never re-querying the store (preserves the single recall path).
    */
   living: RecalledMemory[];
+  /**
+   * Ids of the living-memory nodes that were injected into this turn — the
+   * "artifacts in play" V6 consequence wiring settles when the outcome lands.
+   */
+  livingIds: string[];
 }
 
 /** Legacy v4 vector-store recall — optional, so v6 works standalone. */
@@ -55,12 +62,12 @@ export interface LivingRecaller {
   remember(
     cue: string,
     opts?: { limit?: number },
-  ): Promise<Array<{ node: { content: string; kind?: string }; viaAssociation?: boolean }>>;
+  ): Promise<Array<{ node: { content: string; kind?: string; id?: string }; viaAssociation?: boolean }>>;
   /** Read-only recall (no reinforce/persist). Used when `reinforce: false`. */
   peek?(
     cue: string,
     opts?: { limit?: number },
-  ): Array<{ node: { content: string; kind?: string }; viaAssociation?: boolean }> | Promise<Array<{ node: { content: string; kind?: string }; viaAssociation?: boolean }>>;
+  ): Array<{ node: { content: string; kind?: string; id?: string }; viaAssociation?: boolean }> | Promise<Array<{ node: { content: string; kind?: string; id?: string }; viaAssociation?: boolean }>>;
 }
 
 // Live turns recall DISTILLED knowledge, never raw episodic replay. Episodic
@@ -99,7 +106,7 @@ const DEFAULT_LIMIT = 5;
 const DEFAULT_ITEM_CHARS = 420;
 const DEFAULT_BLOCK_CHARS = 2_400;
 
-const EMPTY: UnifiedRecallResult = { items: [], reminder: "", sources: { living: 0, vector: 0 }, living: [] };
+const EMPTY: UnifiedRecallResult = { items: [], reminder: "", sources: { living: 0, vector: 0 }, living: [], livingIds: [] };
 
 export async function unifiedRecallForTurn(opts: UnifiedRecallOptions): Promise<UnifiedRecallResult> {
   if (opts.shouldRecall === false) return EMPTY;
@@ -128,7 +135,7 @@ export async function unifiedRecallForTurn(opts: UnifiedRecallOptions): Promise<
         const key = normalize(r.node.content);
         if (!key || seen.has(key)) continue;
         seen.add(key);
-        items.push({ content: r.node.content, origin: "living", viaAssociation: r.viaAssociation });
+        items.push({ content: r.node.content, origin: "living", viaAssociation: r.viaAssociation, id: r.node.id });
         living.push({ node: { content: r.node.content }, viaAssociation: r.viaAssociation });
       }
     } catch {
@@ -164,6 +171,8 @@ export async function unifiedRecallForTurn(opts: UnifiedRecallOptions): Promise<
     reminder: formatReminder(merged, opts.itemChars ?? DEFAULT_ITEM_CHARS, opts.blockChars ?? DEFAULT_BLOCK_CHARS),
     sources: { living: countOrigin(merged, "living"), vector: countOrigin(merged, "vector") },
     living,
+    // Only what actually made it into the injected window counts as "in play".
+    livingIds: merged.filter((it) => it.origin === "living" && it.id).map((it) => it.id as string),
   };
 }
 

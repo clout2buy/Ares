@@ -15,12 +15,12 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { writeFileAtomic } from "../io.js";
 import { mindPaths } from "../paths.js";
-import { currentStrength, reinforce } from "./strength.js";
+import { currentStrength, reinforce, weaken } from "./strength.js";
 import { recall, type RecallOptions, type RecallResult } from "./recall.js";
 import { contentHash, type EmbedIndex, type Embedder } from "./embedIndex.js";
 import { buildIdf } from "./idf.js";
 import { clusterByConcept, detectRecurringFailures, type Phraser } from "./synthesis.js";
-import { MEMORY_SCHEMA_VERSION, type MemoryKind, type MemoryNode } from "./types.js";
+import { MEMORY_SCHEMA_VERSION, type CrucibleCheck, type HypothesisStatus, type MemoryKind, type MemoryNode } from "./types.js";
 
 export interface ConsolidationReport {
   pruned: number;
@@ -39,6 +39,7 @@ export interface SynthesisReport {
 }
 
 const PRUNE_FLOOR = 0.05;
+const EVIDENCE_CAP = 20;
 const MIN_RECURRENCE = 3;
 const MAX_MEMORY_CONTENT_CHARS = 2_000;
 /** Hard ceiling on how long remember() will wait for a cue embedding. */
@@ -155,6 +156,8 @@ export class MemoryStore {
     source?: string;
     strength?: number;
     at?: Date;
+    status?: HypothesisStatus;
+    check?: CrucibleCheck;
   }): Promise<MemoryNode> {
     const at = (input.at ?? new Date()).toISOString();
     const node: MemoryNode = {
@@ -169,6 +172,8 @@ export class MemoryStore {
       links: [],
       tags: input.tags,
       source: input.source,
+      status: input.status,
+      check: input.check,
     };
     this.nodes.set(node.id, node);
     await this.persist();
@@ -277,6 +282,63 @@ export class MemoryStore {
     const cueVector = await this.embedCue(cue);
     if (!cueVector) return opts; // lexical fallback — the V4 invariant
     return { ...opts, vectors: { get: (id) => index.get(id), cueVector } };
+  }
+
+  /** Crucible hypotheses awaiting trial. */
+  candidates(): MemoryNode[] {
+    return this.all().filter((n) => n.status === "candidate");
+  }
+
+  /**
+   * V6 consequence wiring — the part no shipped agent has. An outcome landed
+   * (probe verdict, verifier result, turn status); every memory that was IN
+   * PLAY for that outcome gets the evidence appended and its strength moved by
+   * the result, not by recall popularity: wins reinforce, losses weaken. The
+   * caller decides what "in play" means (recall-injected ids, a skill used,
+   * a belief acted on).
+   */
+  async recordOutcome(
+    ids: readonly string[],
+    outcome: { won: boolean; note: string; fingerprint?: string; now?: Date },
+  ): Promise<number> {
+    const now = outcome.now ?? new Date();
+    let touched = 0;
+    for (const id of ids) {
+      const node = this.nodes.get(id);
+      if (!node) continue;
+      const entry = {
+        at: now.toISOString(),
+        won: outcome.won,
+        note: outcome.note.slice(0, 240),
+        ...(outcome.fingerprint !== undefined ? { fingerprint: outcome.fingerprint } : {}),
+      };
+      const evidence = [...(node.evidence ?? []), entry].slice(-EVIDENCE_CAP);
+      const adjusted = outcome.won ? reinforce(node, now, 0.4) : weaken(node, now);
+      this.nodes.set(id, { ...adjusted, evidence });
+      touched++;
+    }
+    if (touched > 0) await this.persist();
+    return touched;
+  }
+
+  /** Crucible lifecycle transition (V7 trial verdicts). Records the reason as evidence. */
+  async setStatus(
+    id: string,
+    status: HypothesisStatus,
+    note: string,
+    opts: { now?: Date } = {},
+  ): Promise<MemoryNode | undefined> {
+    const node = this.nodes.get(id);
+    if (!node) return undefined;
+    const now = opts.now ?? new Date();
+    const evidence = [
+      ...(node.evidence ?? []),
+      { at: now.toISOString(), won: status === "confirmed", note: note.slice(0, 240) },
+    ].slice(-EVIDENCE_CAP);
+    const next = { ...node, status, evidence };
+    this.nodes.set(id, next);
+    await this.persist();
+    return next;
   }
 
   async link(aId: string, bId: string): Promise<void> {

@@ -21,7 +21,33 @@ export type MemoryKind = "episodic" | "semantic" | "procedural";
 // `derivedFrom` for synthesized belief/insight nodes the deep dream crystallizes.
 // Older binaries quarantine v2 nodes (never destroy them); same-version round-trip
 // is unaffected because the new fields are optional.
-export const MEMORY_SCHEMA_VERSION = 2;
+// v3 (additive): the Crucible — optional `status` (hypothesis lifecycle),
+// `check` (a falsifiable probe spec the trial can run), and `evidence`
+// (win/loss outcome records). A node with no status is an ordinary memory.
+export const MEMORY_SCHEMA_VERSION = 3;
+
+/** Hypothesis lifecycle. Absent status = ordinary memory outside the Crucible. */
+export type HypothesisStatus = "candidate" | "confirmed" | "archived";
+
+/** A falsifiable check the Crucible trial can run deterministically. */
+export interface CrucibleCheck {
+  type: "command" | "file_exists";
+  /** For "command": a read-only shell command whose success/expect decides the trial. */
+  cmd?: string;
+  /** For "file_exists": path (workspace-relative or absolute). */
+  path?: string;
+  /** Optional substring the command output must contain. */
+  expect?: string;
+}
+
+/** One outcome record: was this memory in play when reality moved (or didn't)? */
+export interface EvidenceEntry {
+  at: string;
+  won: boolean;
+  note: string;
+  /** Probe fingerprint when the outcome came from a reality probe. */
+  fingerprint?: string;
+}
 
 export interface MemoryNode {
   /** Schema version this record was written with. See {@link MEMORY_SCHEMA_VERSION}. */
@@ -44,4 +70,10 @@ export interface MemoryNode {
   confidence?: number;
   /** Provenance: member node ids a synthesis was distilled from. */
   derivedFrom?: string[];
+  /** Crucible lifecycle. Absent = ordinary memory. */
+  status?: HypothesisStatus;
+  /** Falsifiable check for the trial (V7). */
+  check?: CrucibleCheck;
+  /** Outcome win/loss records (V6 consequence wiring). Capped, newest last. */
+  evidence?: EvidenceEntry[];
 }

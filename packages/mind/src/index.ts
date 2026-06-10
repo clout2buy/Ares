@@ -27,7 +27,7 @@ export {
   type InsightCandidate,
   type Phraser,
 } from "./memory/synthesis.js";
-export { currentStrength, reinforce, HALF_LIFE_MS } from "./memory/strength.js";
+export { currentStrength, reinforce, weaken, HALF_LIFE_MS } from "./memory/strength.js";
 export {
   mindPaths,
   aresHome,
@@ -37,7 +37,7 @@ export {
   type MindPaths,
 } from "./paths.js";
 export { MEMORY_SCHEMA_VERSION } from "./memory/types.js";
-export type { MemoryNode, MemoryKind } from "./memory/types.js";
+export type { MemoryNode, MemoryKind, HypothesisStatus, CrucibleCheck, EvidenceEntry } from "./memory/types.js";
 
 // ── M2: Cognition (the thought process) ───────────────────────────────────
 export { consider, detectDrives, type ConsiderDeps, type ReasonOption, type CapabilityGap } from "./cognition/cognition.js";

@@ -1,4 +1,4 @@
-// Salience + forgetting — what makes memory alive (Crix v6 / M1).
+// Salience + forgetting — what makes memory alive (Ares v6 / M1).
 //
 // A memory's effective strength decays over time since it was last used, and
 // jumps back up when it's used again. So important/recurring memories stay

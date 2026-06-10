@@ -4,12 +4,12 @@
 // structured capability graph: read what you are and how reliably you perform
 // (status), get concrete self-improvement directives (reflect), declare a
 // capability you want but don't have yet (want), or retire one (drop). This is
-// how Crix answers "what am I good at, what do I keep failing, what should I
+// how Ares answers "what am I good at, what do I keep failing, what should I
 // become next" with data instead of vibes.
 
 import { z } from "zod";
-import { buildTool } from "@crix/tools";
-import { crixAgentHome } from "../paths.js";
+import { buildTool } from "@ares/tools";
+import { aresAgentHome } from "../paths.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
 import {
@@ -50,14 +50,14 @@ export interface SelfToolOutput {
 export const SelfTool = buildTool({
   name: "Self",
   description:
-    "Inspect and steer your own machine-readable self-model. status = what you are + how reliably you perform; reflect = outcome-grounded directives for what to fix, acquire, or prune; want = flag a capability gap to close; drop = retire a capability. Self-territory under ~/.crix/self/ — no permission ritual. Read your status at the start of a session and reflect when idle.",
+    "Inspect and steer your own machine-readable self-model. status = what you are + how reliably you perform; reflect = outcome-grounded directives for what to fix, acquire, or prune; want = flag a capability gap to close; drop = retire a capability. Self-territory under ~/.ares/self/ — no permission ritual. Read your status at the start of a session and reflect when idle.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => `Self ${i.action}${i.name ? ` ${i.name}` : ""}`,
 
   async call(input): Promise<{ output: SelfToolOutput; display: string }> {
-    const home = crixAgentHome(process.env.CRIX_HOME);
+    const home = aresAgentHome(process.env.ARES_HOME);
     const model = await loadSelfModel(home);
 
     switch (input.action) {

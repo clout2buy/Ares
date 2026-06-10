@@ -10,7 +10,7 @@ import path from "node:path";
 
 import { QueryEngine } from "../packages/core/dist/index.js";
 
-async function makeTmp(prefix = "crix-gate-") {
+async function makeTmp(prefix = "ares-gate-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
@@ -74,8 +74,8 @@ function singleEditProvider(filePath) {
 }
 
 test("self-territory writes are allowed without magic wording", async () => {
-  const home = await makeTmp("crix-self-");
-  const workspace = await makeTmp("crix-ws-");
+  const home = await makeTmp("ares-self-");
+  const workspace = await makeTmp("ares-ws-");
   const editState = { calls: 0, lastInput: null };
   const targetFile = path.join(home, "SOUL.md");
   const engine = new QueryEngine(
@@ -103,8 +103,8 @@ test("self-territory writes are allowed without magic wording", async () => {
 });
 
 test("workspace-write mode allows ordinary workspace files without magic wording", async () => {
-  const home = await makeTmp("crix-self-");
-  const workspace = await makeTmp("crix-ws-");
+  const home = await makeTmp("ares-self-");
+  const workspace = await makeTmp("ares-ws-");
   const editState = { calls: 0, lastInput: null };
   const engine = new QueryEngine(
     {
@@ -127,7 +127,7 @@ test("workspace-write mode allows ordinary workspace files without magic wording
 });
 
 test("workspace-write mode remains open across turns", async () => {
-  const workspace = await makeTmp("crix-ws-");
+  const workspace = await makeTmp("ares-ws-");
   const editState = { calls: 0, lastInput: null };
   const provider = singleEditProvider(path.join(workspace, "src", "x.ts"));
   const engine = new QueryEngine(

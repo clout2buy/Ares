@@ -37,7 +37,7 @@ function captureFetch(sseBody, captured, status = 200) {
 
 const auth = {
   token: "test-token",
-  source: "env:CRIX_OPENAI_OAUTH_TOKEN",
+  source: "env:ARES_OPENAI_OAUTH_TOKEN",
   mode: "chatgpt-oauth",
 };
 
@@ -218,7 +218,7 @@ test("OpenAIResponsesProvider: sends prompt_cache_key and image blocks", async (
   for await (const e of provider.stream(req)) events.push(e);
 
   assert.equal(events.at(-1).type, "message_done");
-  assert.match(captured.body.prompt_cache_key, /^crix:/);
+  assert.match(captured.body.prompt_cache_key, /^ares:/);
   assert.deepEqual(captured.body.input[0].content, [
     { type: "input_text", text: "inspect" },
     { type: "input_image", image_url: "data:image/png;base64,AAAA" },
@@ -281,10 +281,10 @@ test("OpenAIResponsesProvider: emits error event on HTTP failure", async () => {
 test("OpenAIResponsesProvider: missing auth → no_auth error", async () => {
   const provider = new OpenAIResponsesProvider({ fetchImpl: async () => new Response("never") });
   // No OAuth env var, no file.
-  const prevTok = process.env.CRIX_OPENAI_OAUTH_TOKEN;
-  const prevHome = process.env.CRIX_HOME;
-  delete process.env.CRIX_OPENAI_OAUTH_TOKEN;
-  process.env.CRIX_HOME = "/nonexistent/path/crix-test";
+  const prevTok = process.env.ARES_OPENAI_OAUTH_TOKEN;
+  const prevHome = process.env.ARES_HOME;
+  delete process.env.ARES_OPENAI_OAUTH_TOKEN;
+  process.env.ARES_HOME = "/nonexistent/path/ares-test";
   try {
     const events = [];
     for await (const e of provider.stream({
@@ -298,10 +298,10 @@ test("OpenAIResponsesProvider: missing auth → no_auth error", async () => {
     assert.equal(events.length, 1);
     assert.equal(events[0].type, "error");
     assert.equal(events[0].error.code, "no_auth");
-    assert.match(events[0].error.message, /crix login/);
+    assert.match(events[0].error.message, /ares login/);
   } finally {
-    if (prevTok) process.env.CRIX_OPENAI_OAUTH_TOKEN = prevTok;
-    if (prevHome) process.env.CRIX_HOME = prevHome;
-    else delete process.env.CRIX_HOME;
+    if (prevTok) process.env.ARES_OPENAI_OAUTH_TOKEN = prevTok;
+    if (prevHome) process.env.ARES_HOME = prevHome;
+    else delete process.env.ARES_HOME;
   }
 });

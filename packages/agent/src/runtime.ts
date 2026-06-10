@@ -1,7 +1,7 @@
 import path from "node:path";
-import { crixAgentHome } from "./paths.js";
+import { aresAgentHome } from "./paths.js";
 import { ensureAgentScaffold, bootstrapReminder } from "./bootstrap/bootstrap.js";
-import { loadAgentConfig, type CrixAgentConfig } from "./config.js";
+import { loadAgentConfig, type AresAgentConfig } from "./config.js";
 import { composeAgentSystemPrompt, loadAgentSystemContext, type AgentSystemContext } from "./identity/context.js";
 import { runLightDream } from "./dreaming.js";
 import { startHeartbeatLoop } from "./heartbeat.js";
@@ -12,20 +12,20 @@ import { snapshotBrain } from "./persistence.js";
 export interface PreparedAgent {
   enabled: boolean;
   home: string;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   context: AgentSystemContext;
   startupReminders: Array<{ text: string; source: "memory" | "instructions" }>;
   composeSystemPrompt(base: string): string;
 }
 
-export async function prepareCrixAgent(opts: {
+export async function prepareAresAgent(opts: {
   home?: string;
   workspace: string;
   includeMemory?: boolean;
   enabled?: boolean;
 }): Promise<PreparedAgent> {
-  const enabled = opts.enabled ?? process.env.CRIX_AGENT_ENABLED !== "0";
-  const home = crixAgentHome(opts.home);
+  const enabled = opts.enabled ?? process.env.ARES_AGENT_ENABLED !== "0";
+  const home = aresAgentHome(opts.home);
   const config = await loadAgentConfig(home);
   if (!enabled) {
     const context = await loadAgentSystemContext({ home, workspace: opts.workspace, includeMemory: false });
@@ -49,7 +49,7 @@ export async function prepareCrixAgent(opts: {
   };
 }
 
-export class CrixAgentRuntime {
+export class AresAgentRuntime {
   private stopHeartbeat: (() => void) | undefined;
 
   constructor(
@@ -114,7 +114,7 @@ export class CrixAgentRuntime {
       home: this.prepared.home,
       workspace: this.opts.workspace,
       sessionId: this.opts.sessionId,
-      transcriptPath: transcriptPath ?? path.join(this.opts.workspace, ".crix", "sessions", this.opts.sessionId, "events.jsonl"),
+      transcriptPath: transcriptPath ?? path.join(this.opts.workspace, ".ares", "sessions", this.opts.sessionId, "events.jsonl"),
       config: this.prepared.config,
     }).catch(() => undefined);
   }

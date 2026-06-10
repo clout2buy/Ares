@@ -2,7 +2,7 @@
 //
 // One Session per conversation. Each turn:
 //   1. session.send(text) returns AsyncGenerator<TurnEvent>
-//   2. Every event is appended to <workspace>/.crix/sessions/<id>/events.jsonl
+//   2. Every event is appended to <workspace>/.ares/sessions/<id>/events.jsonl
 //   3. Caller (CLI or TUI) consumes the same stream for display
 //
 // Full DAG fork/diff/rollback come in M4; M1 provides linear rollout.
@@ -19,10 +19,10 @@ import {
   type ProviderInfo,
   type Message,
   type ToolResultBlock,
-} from "@crix/protocol";
+} from "@ares/protocol";
 import { QueryEngine, stringifyModelToolOutput, type EngineTool, type Provider } from "./queryEngine.js";
 import type { ToolPermissionRequest } from "./queryEngine.js";
-import type { PermissionPromptDecision, ReasoningLevel } from "@crix/protocol";
+import type { PermissionPromptDecision, ReasoningLevel } from "@ares/protocol";
 import type { HookManager } from "./hooks.js";
 import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified } from "./checkpoints.js";
 
@@ -58,7 +58,7 @@ export interface SessionOptions {
   /**
    * Absolute paths the engine treats as "self-territory" — writes inside
    * these roots bypass the write-intent gate. Used to give the agent
-   * unrestricted authority over its own brain (~/.crix/).
+   * unrestricted authority over its own brain (~/.ares/).
    */
   selfTerritoryRoots?: readonly string[];
   /** Reasoning dial for reasoning-capable models (owner-selectable, low→max). */
@@ -87,7 +87,7 @@ export class Session {
       provider: providerInfo,
       createdAt: new Date().toISOString(),
     };
-    const sessionDir = path.join(opts.workspace, ".crix", "sessions", sessionId);
+    const sessionDir = path.join(opts.workspace, ".ares", "sessions", sessionId);
     this.eventsPath = path.join(sessionDir, "events.jsonl");
     this.metaPath = path.join(sessionDir, "meta.json");
     this.engine = new QueryEngine(
@@ -212,7 +212,7 @@ export interface LoadSessionSnapshotOptions {
 }
 
 export async function listSessions(workspace: string, limit = 20): Promise<SessionSummary[]> {
-  const root = path.join(workspace, ".crix", "sessions");
+  const root = path.join(workspace, ".ares", "sessions");
   const dirs = await readdir(root, { withFileTypes: true }).catch(() => []);
   const summaries = await Promise.all(
     dirs
@@ -248,7 +248,7 @@ export async function loadSessionSnapshot(
   sessionId: string,
   opts: LoadSessionSnapshotOptions = {},
 ): Promise<SessionSnapshot> {
-  const sessionDir = path.join(workspace, ".crix", "sessions", sessionId);
+  const sessionDir = path.join(workspace, ".ares", "sessions", sessionId);
   const meta = await readSessionMeta(sessionDir);
   if (!meta) throw new Error(`session not found: ${sessionId}`);
   const eventsPath = path.join(sessionDir, "events.jsonl");
@@ -391,7 +391,7 @@ function buildReplaySummary(sessionId: string, omitted: readonly Message[]): str
     .slice(-5);
 
   const lines = [
-    `Previous Crix session ${sessionId} was compacted before resume.`,
+    `Previous Ares session ${sessionId} was compacted before resume.`,
     `Older replay omitted ${omitted.length} message(s): user=${roleCounts.user ?? 0}, assistant=${roleCounts.assistant ?? 0}, tool=${roleCounts.tool ?? 0}.`,
     `Omitted tool result blocks: ${toolResults.length}, errors: ${errorCount}.`,
   ];
@@ -403,7 +403,7 @@ function buildReplaySummary(sessionId: string, omitted: readonly Message[]): str
     lines.push("Recent omitted assistant replies:");
     for (const text of recentAssistants) lines.push(`- ${truncateSummaryText(text)}`);
   }
-  lines.push("The exact event log remains on disk under .crix/sessions if a tool needs to inspect it.");
+  lines.push("The exact event log remains on disk under .ares/sessions if a tool needs to inspect it.");
   return lines.join("\n");
 }
 

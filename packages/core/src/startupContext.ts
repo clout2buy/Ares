@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { crixHome } from "./providers/openaiAuth.js";
+import { aresHome } from "./providers/openaiAuth.js";
 
 export type StartupReminderSource = "memory" | "instructions";
 
@@ -9,7 +9,7 @@ export interface StartupReminder {
   source: StartupReminderSource;
 }
 
-const INSTRUCTION_FILES = ["CRIX.md", "AGENTS.md", "CLAUDE.md"] as const;
+const INSTRUCTION_FILES = ["ARES.md", "CRIX.md", "AGENTS.md", "CLAUDE.md"] as const;
 const MAX_CONTEXT_CHARS = 24_000;
 
 export async function loadStartupReminders(workspace: string): Promise<StartupReminder[]> {
@@ -21,8 +21,8 @@ export async function loadStartupReminders(workspace: string): Promise<StartupRe
 
 export async function loadMemoryReminders(workspace: string): Promise<StartupReminder[]> {
   const files = [
-    { label: "global memory", file: path.join(crixHome(), "memory.md") },
-    { label: "project memory", file: path.join(workspace, ".crix", "memory.md") },
+    { label: "global memory", file: path.join(aresHome(), "memory.md") },
+    { label: "project memory", file: path.join(workspace, ".ares", "memory.md") },
   ];
   const reminders: StartupReminder[] = [];
   for (const entry of files) {

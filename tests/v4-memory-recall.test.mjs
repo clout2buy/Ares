@@ -13,7 +13,7 @@ import {
 } from "../packages/agent/dist/index.js";
 import { MemoryTool } from "../packages/tools/dist/index.js";
 
-async function makeTmp(prefix = "crix-v4-memory-") {
+async function makeTmp(prefix = "ares-v4-memory-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
@@ -81,7 +81,7 @@ test("V4 V2: recallForTurn skips casual greetings", async () => {
 });
 
 test("V4 V2: Memory tool supports lexical recall over flat memory", async () => {
-  const workspace = await makeTmp("crix-v4-flat-memory-");
+  const workspace = await makeTmp("ares-v4-flat-memory-");
   const ctx = {
     workspace,
     signal: new AbortController().signal,
@@ -93,5 +93,5 @@ test("V4 V2: Memory tool supports lexical recall over flat memory", async () => 
   const recalled = await MemoryTool.call({ action: "recall", scope: "project", category: "General", query: "package scripts", tags: [], limit: 20 }, ctx);
 
   assert.equal(recalled.output.items.length, 1);
-  assert.match(await fs.readFile(path.join(workspace, ".crix", "memory.md"), "utf8"), /Use pnpm/);
+  assert.match(await fs.readFile(path.join(workspace, ".ares", "memory.md"), "utf8"), /Use pnpm/);
 });

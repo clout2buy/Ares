@@ -1,9 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { agentPaths, crixAgentHome } from "./paths.js";
+import { agentPaths, aresAgentHome } from "./paths.js";
 import { readTextIfExists, writeFileAtomic } from "./files.js";
 
-export interface CrixAgentConfig {
+export interface AresAgentConfig {
   slots: {
     reasoner: SlotConfig;
     apply: SlotConfig;
@@ -42,7 +42,7 @@ export interface SlotConfig {
   host?: string;
 }
 
-export function defaultAgentConfig(home = crixAgentHome()): CrixAgentConfig {
+export function defaultAgentConfig(home = aresAgentHome()): AresAgentConfig {
   const paths = agentPaths(home);
   return {
     slots: {
@@ -78,7 +78,7 @@ export function defaultAgentConfig(home = crixAgentHome()): CrixAgentConfig {
   };
 }
 
-export async function loadAgentConfig(home = crixAgentHome()): Promise<CrixAgentConfig> {
+export async function loadAgentConfig(home = aresAgentHome()): Promise<AresAgentConfig> {
   const defaults = defaultAgentConfig(home);
   const paths = agentPaths(home);
   const raw = await readTextIfExists(paths.config, 1_000_000);
@@ -88,14 +88,14 @@ export async function loadAgentConfig(home = crixAgentHome()): Promise<CrixAgent
     return defaults;
   }
   try {
-    const parsed = JSON.parse(raw) as Partial<CrixAgentConfig>;
+    const parsed = JSON.parse(raw) as Partial<AresAgentConfig>;
     return mergeConfig(defaults, parsed);
   } catch {
     return defaults;
   }
 }
 
-function mergeConfig(defaults: CrixAgentConfig, parsed: Partial<CrixAgentConfig>): CrixAgentConfig {
+function mergeConfig(defaults: AresAgentConfig, parsed: Partial<AresAgentConfig>): AresAgentConfig {
   return {
     ...defaults,
     ...parsed,
@@ -117,8 +117,8 @@ function mergeConfig(defaults: CrixAgentConfig, parsed: Partial<CrixAgentConfig>
   };
 }
 
-export function expandHomePath(file: string, home = crixAgentHome()): string {
-  if (file.startsWith("~/.crix")) return path.join(home, file.slice("~/.crix".length));
+export function expandHomePath(file: string, home = aresAgentHome()): string {
+  if (file.startsWith("~/.ares")) return path.join(home, file.slice("~/.ares".length));
   return file.replace(/^~(?=$|[\\/])/, path.dirname(home));
 }
 

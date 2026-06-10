@@ -1,10 +1,10 @@
 {
-  "name": "@crix/agent",
+  "name": "@ares/agent",
   "version": "0.4.0-alpha.1",
   "type": "module",
   "private": true,
   "license": "MIT",
-  "description": "Crix v4 mind layer: bootstrap, identity, memory recall, heartbeat, dreaming, self-revision, and skill growth.",
+  "description": "Ares v4 mind layer: bootstrap, identity, memory recall, heartbeat, dreaming, self-revision, and skill growth.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -18,8 +18,8 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@crix/mind": "workspace:*",
-    "@crix/tools": "workspace:*",
+    "@ares/mind": "workspace:*",
+    "@ares/tools": "workspace:*",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {

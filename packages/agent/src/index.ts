@@ -1,7 +1,7 @@
-export { crixAgentHome, agentPaths, workspaceToolsPath, type AgentPaths } from "./paths.js";
+export { aresAgentHome, agentPaths, workspaceToolsPath, type AgentPaths } from "./paths.js";
 export { exists, readTextIfExists, writeFileAtomic, renderTemplate, nonCommentLines } from "./files.js";
 export { readTemplate, type AgentTemplateName } from "./templates.js";
-export { defaultAgentConfig, loadAgentConfig, expandHomePath, type CrixAgentConfig, type SlotConfig } from "./config.js";
+export { defaultAgentConfig, loadAgentConfig, expandHomePath, type AresAgentConfig, type SlotConfig } from "./config.js";
 export {
   ensureAgentScaffold,
   completeBootstrap,
@@ -37,7 +37,7 @@ export {
 export { recordCardMemoryOnce, type CardMemoryInput } from "./memory/cardMemory.js";
 export { beforeAgentFinalizeSignal, type ReviseSignal } from "./revise.js";
 export { recordToolPattern, proposeSkills, type ToolPatternObservation, type SkillProposal } from "./skills.js";
-export { prepareCrixAgent, CrixAgentRuntime, type PreparedAgent } from "./runtime.js";
+export { prepareAresAgent, AresAgentRuntime, type PreparedAgent } from "./runtime.js";
 export { BootstrapTool, type BootstrapToolOutput } from "./tools/Bootstrap.js";
 export { SelfEvolveTool, type SelfEvolveOutput } from "./tools/SelfEvolve.js";
 export { SkillCraftTool, type SkillCraftOutput } from "./tools/SkillCraft.js";

@@ -48,7 +48,7 @@ const KIND_WEIGHT: Record<AttentionItemKind, number> = {
 };
 
 /**
- * Pick what Crix should pay attention to right now.
+ * Pick what Ares should pay attention to right now.
  *
  * This is intentionally deterministic and model-free. The model can propose
  * work, but the Operator owns scheduling so foreground user intent cannot be

@@ -1,7 +1,7 @@
-// The one canonical recall interface (Crix Phase 2C — "Live Brain Wiring").
+// The one canonical recall interface (Ares Phase 2C — "Live Brain Wiring").
 //
-// Crix has two memory substrates:
-//   • v6 "living memory" (@crix/mind MemoryStore) — episodic/semantic/procedural,
+// Ares has two memory substrates:
+//   • v6 "living memory" (@ares/mind MemoryStore) — episodic/semantic/procedural,
 //     strength-weighted, self-associating. This is the SOURCE OF TRUTH.
 //   • v4 vector store (sqlite/embeddings, this package) — legacy, still fed by
 //     the offline dreaming pipeline.
@@ -16,8 +16,8 @@
 // behavior) and v4 only bumps recall hit-counts — exactly as each did before.
 // Neither store is migrated or rewritten here.
 
-import { MemoryStore as LivingMemoryStore, type RecalledMemory } from "@crix/mind";
-import type { CrixAgentConfig } from "../config.js";
+import { MemoryStore as LivingMemoryStore, type RecalledMemory } from "@ares/mind";
+import type { AresAgentConfig } from "../config.js";
 import { recallForTurn } from "../recall.js";
 
 export type UnifiedRecallOrigin = "living" | "vector";
@@ -45,7 +45,7 @@ export interface UnifiedRecallResult {
 
 /** Legacy v4 vector-store recall — optional, so v6 works standalone. */
 export interface VectorRecallConfig {
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   home?: string;
   useOllama?: boolean;
 }

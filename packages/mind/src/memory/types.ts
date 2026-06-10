@@ -1,4 +1,4 @@
-// Living Memory types (Crix v6 / M1).
+// Living Memory types (Ares v6 / M1).
 //
 // One substrate, three kinds of memory (like a brain):
 //   episodic   — what happened (sessions, missions, decisions, frames)

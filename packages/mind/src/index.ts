@@ -1,4 +1,4 @@
-// @crix/mind — the Mind layer (Crix v6).
+// @ares/mind — the Mind layer (Ares v6).
 //
 // M1 Living Memory: episodic + semantic + procedural memory in one substrate,
 // strength-weighted (grows with use, fades when ignored), self-associating
@@ -19,7 +19,14 @@ export {
   type Phraser,
 } from "./memory/synthesis.js";
 export { currentStrength, reinforce, HALF_LIFE_MS } from "./memory/strength.js";
-export { mindPaths, type MindPaths } from "./paths.js";
+export {
+  mindPaths,
+  aresHome,
+  migrateLegacyHome,
+  bridgeLegacyEnv,
+  __resetHomeMigrationForTests,
+  type MindPaths,
+} from "./paths.js";
 export { MEMORY_SCHEMA_VERSION } from "./memory/types.js";
 export type { MemoryNode, MemoryKind } from "./memory/types.js";
 

@@ -19,14 +19,14 @@ import {
   loadAgentSystemContext,
 } from "../packages/agent/dist/index.js";
 
-async function makeTmp(prefix = "crix-autonomy-") {
+async function makeTmp(prefix = "ares-autonomy-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 test("Autonomy Charter is injected into the composed system prompt", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-ws-");
-  process.env.CRIX_HOME = home;
+  const workspace = await makeTmp("ares-ws-");
+  process.env.ARES_HOME = home;
   try {
     await BootstrapTool.call(
       { user_name: "MrDoing", agent_name: "Rook", creature: "familiar", vibe: "direct", emoji: "*" },
@@ -40,13 +40,13 @@ test("Autonomy Charter is injected into the composed system prompt", async () =>
     assert.match(composed, /full sovereignty/i);
     assert.ok(!/Agent Bootstrap \(required/.test(composed), "bootstrap charter should be absent post-bootstrap");
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("Bootstrap Charter is included when IDENTITY is absent", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-ws-");
+  const workspace = await makeTmp("ares-ws-");
   const context = await loadAgentSystemContext({ home, workspace });
   const composed = composeAgentSystemPrompt("BASE", context);
   assert.equal(context.bootstrapRequired, true);
@@ -78,7 +78,7 @@ test("detectCaptures recognizes preference / correction / identity / decision si
 
 test("captureUserMessage appends signals to today's raw memory file", async () => {
   const home = await makeTmp();
-  process.env.CRIX_HOME = home;
+  process.env.ARES_HOME = home;
   try {
     const paths = agentPaths(home);
     const result = await captureUserMessage({
@@ -94,13 +94,13 @@ test("captureUserMessage appends signals to today's raw memory file", async () =
     assert.match(log, /capture\/(preference|correction)/);
     assert.match(log, /prefer blunt/);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("captureUserMessage is a no-op for neutral messages", async () => {
   const home = await makeTmp();
-  process.env.CRIX_HOME = home;
+  process.env.ARES_HOME = home;
   try {
     const result = await captureUserMessage({
       home,
@@ -110,6 +110,6 @@ test("captureUserMessage is a no-op for neutral messages", async () => {
     assert.equal(result.bytesAppended, 0);
     assert.equal(result.loggedTo, undefined);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });

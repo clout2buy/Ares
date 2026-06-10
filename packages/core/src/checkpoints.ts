@@ -1,15 +1,15 @@
 // Workspace checkpoints — lightweight DAG snapshots for sessions.
 //
-// Stores content blobs under .crix/checkpoints/blobs and checkpoint
-// metadata under .crix/checkpoints/meta. This is intentionally local and
+// Stores content blobs under .ares/checkpoints/blobs and checkpoint
+// metadata under .ares/checkpoints/meta. This is intentionally local and
 // VCS-agnostic: it can checkpoint untracked files too.
 
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { BlobRef, CheckpointMeta } from "@crix/protocol";
+import type { BlobRef, CheckpointMeta } from "@ares/protocol";
 
-const IGNORED_DIRS = new Set([".git", ".crix", "node_modules", "dist", "build", "target", ".next", "coverage"]);
+const IGNORED_DIRS = new Set([".git", ".ares", "node_modules", "dist", "build", "target", ".next", "coverage"]);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
 export interface CreateCheckpointOptions {
@@ -233,11 +233,11 @@ async function writeBlob(workspace: string, hash: string, bytes: Buffer): Promis
 }
 
 function blobPath(workspace: string, hash: string): string {
-  return path.join(workspace, ".crix", "checkpoints", "blobs", hash.slice(0, 2), hash);
+  return path.join(workspace, ".ares", "checkpoints", "blobs", hash.slice(0, 2), hash);
 }
 
 function metaDir(workspace: string): string {
-  return path.join(workspace, ".crix", "checkpoints", "meta");
+  return path.join(workspace, ".ares", "checkpoints", "meta");
 }
 
 function sha256(input: string | Buffer): string {

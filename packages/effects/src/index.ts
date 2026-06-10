@@ -1,4 +1,4 @@
-// @crix/effects — the conscience layer (Crix v5 / O2).
+// @ares/effects — the conscience layer (Ares v5 / O2).
 //
 // Every side effect that touches the world flows through one choke point:
 // runEffect() applies the kill switch, idempotency, dry-run simulation, the

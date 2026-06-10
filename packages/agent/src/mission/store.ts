@@ -1,4 +1,4 @@
-// Mission persistence — one JSON file per mission under ~/.crix/missions/.
+// Mission persistence — one JSON file per mission under ~/.ares/missions/.
 //
 // Missions outlive sessions so the agent can resume a goal it set days ago.
 // Reads are tolerant (a corrupt file is skipped, never fatal); writes are
@@ -7,7 +7,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { agentPaths, crixAgentHome } from "../paths.js";
+import { agentPaths, aresAgentHome } from "../paths.js";
 import { writeFileAtomic } from "../files.js";
 import type { Mission, MissionSummary } from "./types.js";
 import { isTerminal, summarize } from "./types.js";
@@ -87,8 +87,8 @@ export async function activeMission(home: string): Promise<Mission | null> {
 }
 
 export async function resolveMission(home: string, id?: string): Promise<Mission | null> {
-  if (id) return loadMission(crixAgentHome(home), id);
-  return activeMission(crixAgentHome(home));
+  if (id) return loadMission(aresAgentHome(home), id);
+  return activeMission(aresAgentHome(home));
 }
 
 function sanitizeId(id: string): string {

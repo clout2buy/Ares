@@ -23,7 +23,7 @@ import {
 const ctx = { workspace: process.cwd(), signal: new AbortController().signal };
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-skillrt-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-skillrt-"));
 }
 
 async function writeSkill(home, name, handlerJs) {
@@ -83,7 +83,7 @@ test("runtime: writes skills/package.json so handlers resolve as ESM", async () 
 
 test("tool: RunSkill runs a SkillCraft-crafted skill and emits skill_ran", async () => {
   const home = await makeHome();
-  process.env.CRIX_HOME = home;
+  process.env.ARES_HOME = home;
   const seen = [];
   const off = onLifecycle((e) => {
     if (e.type === "skill_ran") seen.push(e);
@@ -108,6 +108,6 @@ test("tool: RunSkill runs a SkillCraft-crafted skill and emits skill_ran", async
     assert.ok(seen[0].gain && seen[0].gain.target === "SKILL");
   } finally {
     off();
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });

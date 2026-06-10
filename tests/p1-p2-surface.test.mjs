@@ -26,7 +26,7 @@ import {
 } from "../packages/core/dist/index.js";
 
 async function makeTmp() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-p1p2-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-p1p2-"));
 }
 
 function ctx(workspace) {
@@ -118,7 +118,7 @@ test("CodeMode: batches read/glob work and returns compact JSON", async () => {
 
   const result = await CodeModeTool.call(
     {
-      code: "const files = await crix.glob('src/*.txt'); return { count: files.length, first: await crix.read(files[0]) };",
+      code: "const files = await ares.glob('src/*.txt'); return { count: files.length, first: await ares.read(files[0]) };",
       timeout_ms: 5000,
       allow_writes: false,
     },
@@ -131,7 +131,7 @@ test("CodeMode: batches read/glob work and returns compact JSON", async () => {
 
 test("SkillsList/SkillRead: discovers project skills", async () => {
   const tmp = await makeTmp();
-  const skillDir = path.join(tmp, ".crix", "skills", "ship-it");
+  const skillDir = path.join(tmp, ".ares", "skills", "ship-it");
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(
     path.join(skillDir, "SKILL.md"),
@@ -149,9 +149,9 @@ test("SkillsList/SkillRead: discovers project skills", async () => {
 
 test("HookManager: failing PreToolUse blocks execution and queues reminder", async () => {
   const tmp = await makeTmp();
-  await fs.mkdir(path.join(tmp, ".crix"), { recursive: true });
+  await fs.mkdir(path.join(tmp, ".ares"), { recursive: true });
   await fs.writeFile(
-    path.join(tmp, ".crix", "hooks.json"),
+    path.join(tmp, ".ares", "hooks.json"),
     JSON.stringify({
       hooks: [{ event: "PreToolUse", matcher: "Bash(git *)", command: "node -e \"process.exit(2)\"" }],
     }),
@@ -221,7 +221,7 @@ test("Memory: add and search persists project memory", async () => {
     c,
   );
   assert.equal(result.output.items.length, 1);
-  assert.match(await fs.readFile(path.join(tmp, ".crix", "memory.md"), "utf8"), /Use pnpm/);
+  assert.match(await fs.readFile(path.join(tmp, ".ares", "memory.md"), "utf8"), /Use pnpm/);
 });
 
 test("startup context loads CRIX.md as instructions", async () => {

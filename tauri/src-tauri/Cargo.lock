@@ -400,7 +400,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "crix-tauri"
+name = "ares-tauri"
 version = "0.4.0-alpha.2"
 dependencies = [
  "serde",

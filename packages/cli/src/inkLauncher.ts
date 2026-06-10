@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
-import { OLLAMA_CLOUD_MODELS, type OllamaCloudModel } from "@crix/core";
+import { OLLAMA_CLOUD_MODELS, type OllamaCloudModel } from "@ares/core";
 import { availableThemes, currentThemeName, setTheme, type ThemeName } from "./terminalUi.js";
 import type { UiSettings } from "./uiSettings.js";
 
@@ -64,7 +64,7 @@ export async function runInkLauncher(options: LauncherOptions): Promise<Launcher
   let action: LauncherAction = { kind: "quit" };
   process.stdout.write("\u001b[2J\u001b[3J\u001b[H");
   const instance = render(
-    h(CrixLauncherApp, {
+    h(AresLauncherApp, {
       options,
       onDone: (next: LauncherAction) => {
         action = next;
@@ -82,7 +82,7 @@ export async function runInkLauncher(options: LauncherOptions): Promise<Launcher
   return action;
 }
 
-function CrixLauncherApp({
+function AresLauncherApp({
   options,
   onDone,
 }: {
@@ -392,7 +392,7 @@ function LauncherHeader({
     h(
       Box,
       { justifyContent: "space-between" },
-      h(Box, { gap: 1 }, h(Text, { color: theme.accent, bold: true }, "CRIX"), h(Text, { color: theme.dim }, "launch deck"), h(Text, { color: theme.accent2 }, phase)),
+      h(Box, { gap: 1 }, h(Text, { color: theme.accent, bold: true }, "ARES"), h(Text, { color: theme.dim }, "launch deck"), h(Text, { color: theme.accent2 }, phase)),
       h(Box, { gap: 1 }, h(Text, { color: theme.dim }, "theme"), h(Text, { color: theme.accent, bold: true }, selectedTheme)),
     ),
     h(Text, { color: theme.dim, wrap: "truncate" }, workspace),
@@ -643,7 +643,7 @@ function openAIModelList(settings: UiSettings): string[] {
   return unique([
     ...(settings.favoriteOpenAIModels ?? []),
     settings.lastOpenAIModel,
-    process.env.CRIX_OPENAI_MODEL,
+    process.env.ARES_OPENAI_MODEL,
     "gpt-5.5",
     "gpt-5.1-codex",
     "gpt-5.1",

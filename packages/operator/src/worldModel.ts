@@ -1,4 +1,4 @@
-// The WorldModel — reality, re-derived (Crix v5 / O3 / concept C1 rule #2).
+// The WorldModel — reality, re-derived (Ares v5 / O3 / concept C1 rule #2).
 //
 // "Trust reality, never your memory of acting on it." The WorldModel holds a
 // set of named sources (each a probe) and, on every refresh(), re-runs them to

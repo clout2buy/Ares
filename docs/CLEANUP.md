@@ -29,7 +29,7 @@ Reason: local tool settings, throwaway demo artifacts, launchers for deleted dem
 
 ### Removed From Local Working Folder
 
-- `.crix/`
+- `.ares/`
 - `.scan-openclaw/`
 - `packages/*/dist/`
 - `packages/*/*.tsbuildinfo`
@@ -44,8 +44,8 @@ Reason: ignored runtime state, local research checkout, and generated build/test
 
 - `README.md`: replaced stale command/reference list with a concise current project overview.
 - `package.json`: added `lint` and expanded `clean` to remove generated output consistently.
-- `packages/cli/package.json`: declared direct CLI dependencies on `@crix/connectors` and `@crix/effects`.
-- `crix.ps1`: removed stale demo/game launcher path.
+- `packages/cli/package.json`: declared direct CLI dependencies on `@ares/connectors` and `@ares/effects`.
+- `ares.ps1`: removed stale demo/game launcher path.
 - `packages/mind/src/memory/store.ts`: repaired memory graph integrity and duplicate consolidation.
 - `packages/mind/src/memory/doctor.ts`: added memory-health reporting.
 - `packages/operator/src/attention.ts`: added deterministic attention selection.
@@ -75,8 +75,8 @@ Reason: current architecture, development flow, package dependency rules, and cl
 
 ### Removed Dependencies
 
-- `@crix/protocol` from `packages/agent/package.json`
-- `@crix/protocol` from `packages/operator/package.json`
+- `@ares/protocol` from `packages/agent/package.json`
+- `@ares/protocol` from `packages/operator/package.json`
 
 Reason: source import scan found no usage in either package.
 
@@ -84,9 +84,9 @@ Reason: source import scan found no usage in either package.
 
 ### Optimized
 
-- Aligned workspace package manifests and TypeScript references with actual `@crix/*` imports.
+- Aligned workspace package manifests and TypeScript references with actual `@ares/*` imports.
 - Documented the default owner-operated permission posture, including persisted bypass mode.
-- Confirmed `pnpm clean` as the generated-output baseline, including repo-local `.crix/`, and documented that durable Crix home data is not deleted by cleanup.
+- Confirmed `pnpm clean` as the generated-output baseline, including repo-local `.ares/`, and documented that durable Ares home data is not deleted by cleanup.
 
 ### Added
 

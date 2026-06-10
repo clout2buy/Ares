@@ -1,4 +1,4 @@
-// Playwright adapter — the real engine, opt-in (Crix v5 / O6).
+// Playwright adapter — the real engine, opt-in (Ares v5 / O6).
 //
 // Headless, sandboxable, daemon-capable — the only browser stack that works
 // when the terminal is closed (which the Chrome MCP, being interactively

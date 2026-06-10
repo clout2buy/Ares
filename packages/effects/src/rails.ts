@@ -161,7 +161,7 @@ export interface OwnerLeashOptions {
 /**
  * The unleash posture (v6 / M0): the owner holds the dial, default wide open.
  * With no options, every domain gets a leash high enough to auto-commit even
- * irreversible effects — Crix acts freely. The owner can still pull specific
+ * irreversible effects — Ares acts freely. The owner can still pull specific
  * domains back (e.g. { "spend:ads": 1 }) so only those pause for approval.
  *
  * Note: this only governs OUTWARD effects. Thinking, learning, self-evolution,

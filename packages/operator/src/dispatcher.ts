@@ -12,7 +12,7 @@
 // done." The Dispatcher contract does not change when that lands.
 
 import { randomUUID } from "node:crypto";
-import { QueryEngine, type EngineTool, type Provider } from "@crix/core";
+import { QueryEngine, type EngineTool, type Provider } from "@ares/core";
 import type { DispatchContext, Dispatcher, Goal, StepVerdict } from "./types.js";
 
 export interface QueryEngineDispatcherOptions {
@@ -54,7 +54,7 @@ export class QueryEngineDispatcher implements Dispatcher {
   }
 }
 
-const DEFAULT_WORKER_PROMPT = `You are a Crix Operator Worker. You are handed ONE goal and the progress so far.
+const DEFAULT_WORKER_PROMPT = `You are a Ares Operator Worker. You are handed ONE goal and the progress so far.
 Do the single most useful next concrete step toward the goal — no more. Then state plainly what you did and whether the goal is now fully met. Be honest: only claim the goal is met when it truly is.`;
 
 function buildStepPrompt(goal: Goal): string {

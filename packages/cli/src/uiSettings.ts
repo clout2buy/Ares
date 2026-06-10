@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { crixHome } from "@crix/core";
-import type { ReasoningLevel } from "@crix/protocol";
-import type { RouteAssignments } from "@crix/core";
+import { aresHome } from "@ares/core";
+import type { ReasoningLevel } from "@ares/protocol";
+import type { RouteAssignments } from "@ares/core";
 import type { ThemeName } from "./terminalUi.js";
 
 export interface UiSettings {
@@ -24,7 +24,7 @@ export interface UiSettings {
 }
 
 export function uiSettingsPath(): string {
-  return path.join(crixHome(), "ui.json");
+  return path.join(aresHome(), "ui.json");
 }
 
 export async function loadUiSettings(): Promise<UiSettings> {

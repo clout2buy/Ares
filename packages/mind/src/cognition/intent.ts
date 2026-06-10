@@ -36,7 +36,7 @@ const LOW_SIGNAL_PATTERNS = [
 
 const EXTERNAL_RE = /\b(send|post|publish|buy|purchase|charge|refund|transfer|deploy|delete account|email|text|sms|tweet|payment|spend)\b/i;
 const AUTONOMOUS_RE = /\b(go all out|no matter how long|keep going|autonomous|overnight|long[- ]?horizon|make it the best|make sure it is the best|do it all)\b/i;
-const SELF_ARCH_RE = /\b(crix|rook|yourself|your self|your memory|livingmind|operator|mind system|agent system|architecture|self[- ]?evolving|soul|identity|capabilities)\b/i;
+const SELF_ARCH_RE = /\b(ares|rook|yourself|your self|your memory|livingmind|operator|mind system|agent system|architecture|self[- ]?evolving|soul|identity|capabilities)\b/i;
 const CODING_RE = /\b(code|repo|file|fix|bug|build|edit|implement|upgrade|refactor|test|verify|typescript|package|cli|tool|browser|connector|operator|memory|source)\b/i;
 const PREF_RE = /\b(i (prefer|like|want|need|hate|love|always|never)|remember this|save this|keep this in mind|don'?t forget|stop doing|don'?t do|you should|you shouldn'?t)\b/i;
 const QUESTION_RE = /(^|\s)(what|how|why|where|when|who|which|can|could|should|would|do|does|did|is|are)\b|[?]\s*$/i;
@@ -102,7 +102,7 @@ export function buildForegroundReminder(input: string): string {
 /**
  * Tactical scaffolding for the live turn — empty for trivial/standard turns so
  * "hi" stays instant; substantial coding/self/mission turns earn a plan-first,
- * batch-reads, surgical-edit directive that makes Crix precise instead of spammy.
+ * batch-reads, surgical-edit directive that makes Ares precise instead of spammy.
  */
 export function tacticsDirective(intent: UserIntent): string {
   if (intent.complexity !== "substantial") return "";

@@ -16,10 +16,10 @@ const inputSchema = z
       .string()
       .min(1)
       .describe(
-        "Async JavaScript body. Available: crix.workspace, crix.read(path), crix.write(path,text), crix.glob(pattern), crix.grep(pattern, opts), crix.json(path). Return a JSON-serializable value.",
+        "Async JavaScript body. Available: ares.workspace, ares.read(path), ares.write(path,text), ares.glob(pattern), ares.grep(pattern, opts), ares.json(path). Return a JSON-serializable value.",
       ),
     timeout_ms: z.number().int().positive().max(60_000).default(10_000),
-    allow_writes: z.boolean().default(false).describe("When true, crix.write is enabled and touched files are returned."),
+    allow_writes: z.boolean().default(false).describe("When true, ares.write is enabled and touched files are returned."),
   })
   .strict();
 
@@ -52,7 +52,7 @@ export const CodeModeTool = buildTool({
         return await fs.readFile(resolved, "utf8");
       },
       async write(filePath: string, content: string) {
-        if (!i.allow_writes) throw new Error("crix.write requires allow_writes=true");
+        if (!i.allow_writes) throw new Error("ares.write requires allow_writes=true");
         const resolved = await resolveWorkspacePath(ctx, filePath, "file_path", "write");
         await fs.mkdir(path.dirname(resolved), { recursive: true });
         await fs.writeFile(resolved, String(content), "utf8");
@@ -91,7 +91,7 @@ export const CodeModeTool = buildTool({
     };
 
     const sandbox = vm.createContext({
-      crix: helpers,
+      ares: helpers,
       console: {
         log: (...args: unknown[]) => logs.push(args.map(String).join(" ")),
       },
@@ -120,7 +120,7 @@ export const CodeModeTool = buildTool({
   },
 });
 
-const IGNORED_DIRS = new Set(["node_modules", ".git", ".crix", "dist", "build", "target", ".next", "coverage"]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", ".ares", "dist", "build", "target", ".next", "coverage"]);
 
 async function walk(dir: string, visit: (file: string) => Promise<void>): Promise<void> {
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);

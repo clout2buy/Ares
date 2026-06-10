@@ -21,12 +21,12 @@ import {
 const ctx = { workspace: process.cwd(), signal: new AbortController().signal };
 
 async function withHome(fn) {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "crix-fb-"));
-  process.env.CRIX_HOME = home;
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "ares-fb-"));
+  process.env.ARES_HOME = home;
   try {
     await fn(home);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 }
 

@@ -153,7 +153,7 @@ test("rails: undoEffect runs undo() and records an 'undone' ledger entry", async
 // ── 8. file-backed persistence across reopen ────────────────────────────────
 
 test("ledger: a file-backed ledger persists committed keys across a reopen (resume)", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crix-effects-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ares-effects-"));
   const file = path.join(dir, "ledger.jsonl");
 
   const ledger1 = await Ledger.open(file);

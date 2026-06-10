@@ -1,4 +1,4 @@
-// @crix/connectors — the reach into the world (Crix v5 / O6+).
+// @ares/connectors — the reach into the world (Ares v5 / O6+).
 //
 // A vendor-neutral BrowserConnector (DOM-first + screenshot), browser actions
 // as audited Effects (they flow through the O2 rails), and the screenshot

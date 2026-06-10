@@ -1,8 +1,8 @@
-// Corpus salience for recall + clustering (Crix v6 / M1).
+// Corpus salience for recall + clustering (Ares v6 / M1).
 //
 // Inverse-document-frequency weighting so recall keys on rare, meaningful tokens
 // instead of common filler — a cue word seen in 1 of 50 memories outweighs one
-// seen in 40 of 50. Pure, zero-dependency, no I/O: fits @crix/mind's leaf rule.
+// seen in 40 of 50. Pure, zero-dependency, no I/O: fits @ares/mind's leaf rule.
 
 import type { MemoryNode } from "./types.js";
 

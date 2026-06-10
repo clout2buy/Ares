@@ -26,7 +26,7 @@ import {
 } from "../packages/operator/dist/index.js";
 
 async function makeDir() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-o3-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-o3-"));
 }
 
 // ── 1. probes measure reality ───────────────────────────────────────────────

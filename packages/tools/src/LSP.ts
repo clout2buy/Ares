@@ -17,7 +17,7 @@ const inputSchema = z
     symbol: z
       .string()
       .optional()
-      .describe("Optional explicit symbol. If omitted, Crix reads the word at file_path:line:character."),
+      .describe("Optional explicit symbol. If omitted, Ares reads the word at file_path:line:character."),
     max_results: z.number().int().positive().max(100).default(25),
   })
   .strict();
@@ -57,7 +57,7 @@ const SOURCE_EXTENSIONS = new Set([
   ".hpp",
 ]);
 
-const IGNORED_DIRS = new Set(["node_modules", ".git", ".crix", "dist", "build", "target", ".next", "coverage"]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", ".ares", "dist", "build", "target", ".next", "coverage"]);
 const lspClients = new Map<string, Promise<TsLanguageServerClient | null>>();
 
 export const LspTool = buildTool({

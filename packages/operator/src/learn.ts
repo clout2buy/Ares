@@ -1,4 +1,4 @@
-// The learning loop — how Crix teaches itself (Crix v5 / O4 / concept C4).
+// The learning loop — how Ares teaches itself (Ares v5 / O4 / concept C4).
 //
 //   ENCOUNTER → RESEARCH → ATTEMPT → DRILL → CRYSTALLIZE → (FACTOR) → done
 //

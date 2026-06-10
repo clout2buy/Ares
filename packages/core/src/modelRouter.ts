@@ -1,4 +1,4 @@
-// Model Router foundation (Nexus Phase 1) — judgment over Crix's own brain usage.
+// Model Router foundation (Nexus Phase 1) — judgment over Ares's own brain usage.
 //
 // A PURE, explainable policy layer: given a task (kind + risk + privacy + quality
 // + cost + latency + what it touches) and a set of provider profiles, decide
@@ -258,7 +258,7 @@ function clamp01(n: number): number {
 //
 // The heuristic above is the FALLBACK. When the owner has explicitly assigned a
 // provider+model to a task lane (chat / coding / research / tool-use), that
-// choice wins outright — Crix uses exactly what was picked. This is what the
+// choice wins outright — Ares uses exactly what was picked. This is what the
 // labeled routing "pill" in the UI writes, and what the live turn reads. Still
 // pure + offline: assignment resolution is a deterministic lookup, and any lane
 // left unassigned falls through to routeModel().
@@ -326,7 +326,7 @@ export interface ResolvedRoute {
 }
 
 /**
- * Resolve the route Crix will actually USE for a task. Owner assignment wins;
+ * Resolve the route Ares will actually USE for a task. Owner assignment wins;
  * otherwise defer to the heuristic routeModel(). Pure + deterministic.
  */
 export function resolveRoute(

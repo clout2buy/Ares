@@ -1,4 +1,4 @@
-// Goal persistence — one JSON file per goal under ~/.crix/operator/goals/.
+// Goal persistence — one JSON file per goal under ~/.ares/operator/goals/.
 //
 // Goals outlive the process. Writes are atomic (shared writeFileAtomic); reads
 // are tolerant (a corrupt file is skipped, never fatal). This is what makes the
@@ -8,7 +8,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { writeFileAtomic } from "@crix/agent";
+import { writeFileAtomic } from "@ares/agent";
 import { operatorPaths } from "./paths.js";
 import type { Goal } from "./types.js";
 

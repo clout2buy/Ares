@@ -1,4 +1,4 @@
-import type { CrixAgentConfig } from "../config.js";
+import type { AresAgentConfig } from "../config.js";
 
 export interface EmbedOptions {
   host?: string;
@@ -29,7 +29,7 @@ export async function embedText(text: string, opts: EmbedOptions = {}): Promise<
   return vector;
 }
 
-export function embedOptionsFromConfig(config: CrixAgentConfig): EmbedOptions {
+export function embedOptionsFromConfig(config: AresAgentConfig): EmbedOptions {
   return {
     host: config.slots.embed.host,
     model: config.slots.embed.model,

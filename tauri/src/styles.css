@@ -38,7 +38,7 @@ textarea:disabled {
   opacity: 0.48;
 }
 
-.crix-app {
+.ares-app {
   --bg: #1f1f1e;
   --bg-deep: #181817;
   --panel: rgba(40, 40, 38, 0.72);
@@ -168,7 +168,7 @@ textarea:disabled {
   animation-delay: 620ms;
 }
 
-.crix-app[data-theme="graphite"] {
+.ares-app[data-theme="graphite"] {
   --bg: #17191c;
   --bg-deep: #111317;
   --panel: #202329;
@@ -183,7 +183,7 @@ textarea:disabled {
   --accent-3: #f0c674;
 }
 
-.crix-app[data-theme="oxide"] {
+.ares-app[data-theme="oxide"] {
   --bg: #201b19;
   --bg-deep: #161210;
   --panel: #2a2320;
@@ -1583,7 +1583,7 @@ textarea:disabled {
 }
 
 @media (max-width: 1120px) {
-  .crix-app {
+  .ares-app {
     grid-template-columns: 268px minmax(0, 1fr);
   }
 
@@ -1878,7 +1878,7 @@ body {
   background: transparent;
 }
 
-.crix-app {
+.ares-app {
   --bg: transparent;
   --bg-deep: rgba(13, 16, 22, 0.36);
   --panel: rgba(255, 255, 255, 0.105);
@@ -1907,8 +1907,8 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
-.crix-app[data-theme="graphite"],
-.crix-app[data-theme="oxide"] {
+.ares-app[data-theme="graphite"],
+.ares-app[data-theme="oxide"] {
   --panel: rgba(255, 255, 255, 0.105);
   --panel-2: rgba(255, 255, 255, 0.15);
   --panel-3: rgba(255, 255, 255, 0.2);
@@ -2565,7 +2565,7 @@ body {
   background: transparent;
 }
 
-.crix-app {
+.ares-app {
   --bg: transparent;
   --bg-deep: rgba(255, 255, 255, 0.16);
   --panel: rgba(255, 255, 255, 0.34);
@@ -2596,9 +2596,9 @@ body {
     inset 0 -1px 0 rgba(255, 255, 255, 0.18);
 }
 
-.crix-app[data-theme="signal"],
-.crix-app[data-theme="graphite"],
-.crix-app[data-theme="oxide"] {
+.ares-app[data-theme="signal"],
+.ares-app[data-theme="graphite"],
+.ares-app[data-theme="oxide"] {
   --bg: transparent;
   --bg-deep: rgba(255, 255, 255, 0.16);
   --panel: rgba(255, 255, 255, 0.34);
@@ -2979,7 +2979,7 @@ body {
 }
 
 @media (prefers-color-scheme: dark) {
-  .crix-app {
+  .ares-app {
     color-scheme: light;
   }
 }
@@ -3006,10 +3006,10 @@ body {
   --dur-4: 560ms;
 }
 
-.crix-app,
-.crix-app[data-theme="signal"],
-.crix-app[data-theme="graphite"],
-.crix-app[data-theme="oxide"] {
+.ares-app,
+.ares-app[data-theme="signal"],
+.ares-app[data-theme="graphite"],
+.ares-app[data-theme="oxide"] {
   --bg: transparent;
   --bg-deep: rgba(255, 255, 255, 0.16);
   --panel: rgba(255, 255, 255, 0.30);
@@ -3045,7 +3045,7 @@ body {
   color: var(--text);
 }
 
-.crix-app::before {
+.ares-app::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -3058,12 +3058,12 @@ body {
   -webkit-backdrop-filter: blur(10px) saturate(1.18);
 }
 
-.crix-app[data-native="1"] .fxWallpaper {
+.ares-app[data-native="1"] .fxWallpaper {
   background: transparent;
   opacity: 0;
 }
 
-.crix-app[data-native="0"] .fxWallpaper {
+.ares-app[data-native="0"] .fxWallpaper {
   background:
     linear-gradient(135deg, rgba(203, 236, 255, 0.96), rgba(234, 255, 250, 0.74) 38%, rgba(255, 233, 201, 0.76) 72%, rgba(218, 227, 255, 0.90)),
     radial-gradient(ellipse at 10% 8%, rgba(79, 156, 255, 0.50), transparent 38%),
@@ -3763,7 +3763,7 @@ body {
 }
 
 @media (max-width: 1120px) {
-  .crix-app {
+  .ares-app {
     grid-template-columns: 250px minmax(0, 1fr);
     padding: 10px;
     gap: 10px;
@@ -3811,11 +3811,11 @@ body {
   }
 }
 
-/* Crix entity polish: custom glyph, live thinking tray, cleaner sessions, softer native corners. */
-.crix-app,
-.crix-app[data-theme="signal"],
-.crix-app[data-theme="graphite"],
-.crix-app[data-theme="oxide"] {
+/* Ares entity polish: custom glyph, live thinking tray, cleaner sessions, softer native corners. */
+.ares-app,
+.ares-app[data-theme="signal"],
+.ares-app[data-theme="graphite"],
+.ares-app[data-theme="oxide"] {
   border-radius: 34px;
   overflow: hidden;
 }
@@ -3824,7 +3824,7 @@ body {
   border-radius: inherit;
 }
 
-.crix-app::before {
+.ares-app::before {
   border-radius: inherit;
 }
 
@@ -3875,20 +3875,20 @@ body {
   border-radius: 15px;
 }
 
-.crixAvatarImage,
-.crixAvatarText {
+.aresAvatarImage,
+.aresAvatarText {
   display: block;
   width: 100%;
   height: 100%;
   border-radius: inherit;
 }
 
-.crixAvatarImage {
+.aresAvatarImage {
   object-fit: cover;
   filter: saturate(1.08) contrast(1.04);
 }
 
-.crixAvatarText {
+.aresAvatarText {
   display: grid;
   place-items: center;
   color: #12213a;
@@ -3902,23 +3902,23 @@ body {
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.56);
 }
 
-.crixGlyph {
+.aresGlyph {
   display: block;
   width: 100%;
   height: 100%;
   filter: drop-shadow(0 8px 18px rgba(42, 119, 255, 0.20));
 }
 
-.crixGlyphCore {
-  fill: url("#crixGlyphMain");
+.aresGlyphCore {
+  fill: url("#aresGlyphMain");
   opacity: 0.95;
 }
 
-.crixGlyphGlass {
-  fill: url("#crixGlyphGlass");
+.aresGlyphGlass {
+  fill: url("#aresGlyphGlass");
 }
 
-.crixGlyphTrace {
+.aresGlyphTrace {
   fill: none;
   stroke: rgba(21, 33, 53, 0.72);
   stroke-width: 4.4;
@@ -3928,23 +3928,23 @@ body {
   animation: glyphTrace 3.8s ease-in-out infinite;
 }
 
-.crixGlyphTrace.secondary {
+.aresGlyphTrace.secondary {
   stroke-width: 3.8;
   animation-delay: 420ms;
 }
 
-.crixGlyphDot {
+.aresGlyphDot {
   fill: #152135;
   transform-origin: center;
   animation: glyphBlink 4.8s steps(1, end) infinite;
 }
 
-.brandMark[data-hot="1"] .crixGlyph {
+.brandMark[data-hot="1"] .aresGlyph {
   animation: glyphBreath 2.8s ease-in-out infinite;
 }
 
-.brandMark[data-hot="1"] .crixAvatarImage,
-.brandMark[data-hot="1"] .crixAvatarText {
+.brandMark[data-hot="1"] .aresAvatarImage,
+.brandMark[data-hot="1"] .aresAvatarText {
   animation: glyphBreath 2.8s ease-in-out infinite;
 }
 
@@ -4199,7 +4199,7 @@ body {
 /* Shell base: the OS window is square + opaque (no transparency), so the root
    containers are square edge-to-edge — no rounded clip can leave a corner
    showing the desktop behind a transparent window. The optional "rounded"
-   appearance still rounds the inner .crix-app via --shell-radius below; the
+   appearance still rounds the inner .ares-app via --shell-radius below; the
    square corners around it simply read as the opaque window backstop. */
 html,
 body,
@@ -4209,10 +4209,10 @@ body,
   background: #05060b;
 }
 
-.crix-app,
-.crix-app[data-theme="signal"],
-.crix-app[data-theme="graphite"],
-.crix-app[data-theme="oxide"] {
+.ares-app,
+.ares-app[data-theme="signal"],
+.ares-app[data-theme="graphite"],
+.ares-app[data-theme="oxide"] {
   isolation: isolate;
 }
 
@@ -4349,10 +4349,10 @@ body,
 }
 
 /* Reduced-motion / low-power: freeze all looping animation + transitions. */
-.crix-app[data-fx="off"],
-.crix-app[data-fx="off"] *,
-.crix-app[data-fx="off"] *::before,
-.crix-app[data-fx="off"] *::after {
+.ares-app[data-fx="off"],
+.ares-app[data-fx="off"] *,
+.ares-app[data-fx="off"] *::before,
+.ares-app[data-fx="off"] *::after {
   animation: none !important;
   transition: none !important;
 }
@@ -5005,7 +5005,7 @@ body,
   mix-blend-mode: screen;
 }
 
-.crix-app::after {
+.ares-app::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -5023,12 +5023,12 @@ body,
    never rounded (a rounded outer shell would expose the dark window backstop in
    the corners, the "pretend rounded" artifact). Inner panels keep their own
    radii for the soft look. */
-.crix-app,
-.crix-app[data-theme="signal"],
-.crix-app[data-theme="graphite"],
-.crix-app[data-theme="oxide"],
-.crix-app[data-theme="matrix"],
-.crix-app[data-theme="storm"] {
+.ares-app,
+.ares-app[data-theme="signal"],
+.ares-app[data-theme="graphite"],
+.ares-app[data-theme="oxide"],
+.ares-app[data-theme="matrix"],
+.ares-app[data-theme="storm"] {
   border-radius: 0;
   clip-path: none;
   outline: 0;
@@ -5038,31 +5038,31 @@ body,
   clip-path: none;
 }
 
-.crix-app[data-corners="square"] .titlebar,
-.crix-app[data-corners="square"] .sidebar,
-.crix-app[data-corners="square"] .workspace,
-.crix-app[data-corners="square"] .composerBar,
-.crix-app[data-corners="square"] .eventBody,
-.crix-app[data-corners="square"] .thinkingPanel,
-.crix-app[data-corners="square"] .modelInspector,
-.crix-app[data-corners="square"] .surfacePanel,
-.crix-app[data-corners="square"] .providerRail,
-.crix-app[data-corners="square"] .providerTile,
-.crix-app[data-corners="square"] .modelTile,
-.crix-app[data-corners="square"] .modeTabs,
-.crix-app[data-corners="square"] .navButton,
-.crix-app[data-corners="square"] .newSession,
-.crix-app[data-corners="square"] .sessionItem,
-.crix-app[data-corners="square"] .composerInput,
-.crix-app[data-corners="square"] .composerInput textarea,
-.crix-app[data-corners="square"] .chatShell,
-.crix-app[data-corners="square"] .statusPill,
-.crix-app[data-corners="square"] .sendButton {
+.ares-app[data-corners="square"] .titlebar,
+.ares-app[data-corners="square"] .sidebar,
+.ares-app[data-corners="square"] .workspace,
+.ares-app[data-corners="square"] .composerBar,
+.ares-app[data-corners="square"] .eventBody,
+.ares-app[data-corners="square"] .thinkingPanel,
+.ares-app[data-corners="square"] .modelInspector,
+.ares-app[data-corners="square"] .surfacePanel,
+.ares-app[data-corners="square"] .providerRail,
+.ares-app[data-corners="square"] .providerTile,
+.ares-app[data-corners="square"] .modelTile,
+.ares-app[data-corners="square"] .modeTabs,
+.ares-app[data-corners="square"] .navButton,
+.ares-app[data-corners="square"] .newSession,
+.ares-app[data-corners="square"] .sessionItem,
+.ares-app[data-corners="square"] .composerInput,
+.ares-app[data-corners="square"] .composerInput textarea,
+.ares-app[data-corners="square"] .chatShell,
+.ares-app[data-corners="square"] .statusPill,
+.ares-app[data-corners="square"] .sendButton {
   border-radius: 4px;
 }
 
 /* Square = intentional edges: hairline crisp borders, no soft float, tighter shadow. */
-.crix-app[data-corners="square"] :is(
+.ares-app[data-corners="square"] :is(
   .titlebar, .sidebar, .workspace, .composerBar, .eventBody,
   .thinkingPanel, .modelInspector, .surfacePanel, .providerRail,
   .providerTile, .modelTile, .modeTabs
@@ -5073,20 +5073,20 @@ body,
     0 14px 40px rgba(0, 0, 0, 0.2);
 }
 
-.crix-app[data-corners="square"] .workspace,
-.crix-app[data-corners="square"] .sidebar,
-.crix-app[data-corners="square"] .titlebar {
+.ares-app[data-corners="square"] .workspace,
+.ares-app[data-corners="square"] .sidebar,
+.ares-app[data-corners="square"] .titlebar {
   animation: none;
 }
 
-.crix-app[data-corners="square"] .pulseCard,
-.crix-app[data-corners="square"] .attachmentChip,
-.crix-app[data-corners="square"] .discoveryBar,
-.crix-app[data-corners="square"] .toolStateRail {
+.ares-app[data-corners="square"] .pulseCard,
+.ares-app[data-corners="square"] .attachmentChip,
+.ares-app[data-corners="square"] .discoveryBar,
+.ares-app[data-corners="square"] .toolStateRail {
   border-radius: 4px;
 }
 
-.crix-app :is(
+.ares-app :is(
   .titlebar,
   .sidebar,
   .workspace,
@@ -5211,7 +5211,7 @@ body,
   font-weight: 850;
 }
 
-.crix-app[data-theme="matrix"] {
+.ares-app[data-theme="matrix"] {
   --text: #f4ecff;
   --muted: rgba(228, 210, 255, 0.72);
   --faint: rgba(228, 210, 255, 0.40);
@@ -5227,32 +5227,32 @@ body,
   --line-soft: rgba(196, 107, 255, 0.22);
 }
 
-.crix-app[data-theme="matrix"] .threeScene {
+.ares-app[data-theme="matrix"] .threeScene {
   opacity: 0.94;
 }
 
-.crix-app[data-theme="matrix"] .fxWallpaper {
+.ares-app[data-theme="matrix"] .fxWallpaper {
   background:
     radial-gradient(ellipse at 50% 45%, rgba(141, 55, 255, 0.36), transparent 42%),
     linear-gradient(135deg, rgba(9, 0, 24, 0.92), rgba(25, 0, 42, 0.74) 46%, rgba(0, 35, 28, 0.76));
   opacity: 1;
 }
 
-.crix-app[data-theme="matrix"] .fxBackdropBlur {
+.ares-app[data-theme="matrix"] .fxBackdropBlur {
   opacity: 0.58;
   background:
     repeating-linear-gradient(90deg, rgba(185, 101, 255, 0.16) 0 1px, transparent 1px 68px),
     repeating-linear-gradient(180deg, rgba(57, 255, 186, 0.08) 0 1px, transparent 1px 28px);
 }
 
-.crix-app[data-theme="matrix"] .fxGlyphs {
+.ares-app[data-theme="matrix"] .fxGlyphs {
   opacity: 0.26;
   color: #39ffba;
   text-shadow: 0 0 18px currentColor;
   animation: matrixRain 7s linear infinite;
 }
 
-.crix-app[data-theme="matrix"] :is(
+.ares-app[data-theme="matrix"] :is(
   .titlebar,
   .sidebar,
   .workspace,
@@ -5279,7 +5279,7 @@ body,
     0 16px 56px rgba(120, 44, 255, 0.18);
 }
 
-.crix-app[data-theme="matrix"] :is(
+.ares-app[data-theme="matrix"] :is(
   .workspaceTop h1,
   .brandBlock strong,
   .titlebarName,
@@ -5298,7 +5298,7 @@ body,
   color: var(--text);
 }
 
-.crix-app[data-theme="matrix"] :is(
+.ares-app[data-theme="matrix"] :is(
   .workspaceTop p,
   .brandBlock span,
   .eventCard time,
@@ -5313,10 +5313,10 @@ body,
   color: var(--muted);
 }
 
-.crix-app[data-theme="matrix"] .primaryAction,
-.crix-app[data-theme="matrix"] .sendButton,
-.crix-app[data-theme="matrix"] .themeChoice.active,
-.crix-app[data-theme="matrix"] .cornerControl button.active {
+.ares-app[data-theme="matrix"] .primaryAction,
+.ares-app[data-theme="matrix"] .sendButton,
+.ares-app[data-theme="matrix"] .themeChoice.active,
+.ares-app[data-theme="matrix"] .cornerControl button.active {
   background:
     linear-gradient(180deg, rgba(185, 101, 255, 0.96), rgba(110, 32, 255, 0.82)),
     rgba(57, 255, 186, 0.10);
@@ -5325,7 +5325,7 @@ body,
     0 0 38px rgba(185, 101, 255, 0.30);
 }
 
-.crix-app[data-theme="storm"] {
+.ares-app[data-theme="storm"] {
   --text: #f1faff;
   --muted: rgba(214, 234, 255, 0.74);
   --faint: rgba(214, 234, 255, 0.42);
@@ -5341,11 +5341,11 @@ body,
   --line-soft: rgba(91, 188, 255, 0.24);
 }
 
-.crix-app[data-theme="storm"] .threeScene {
+.ares-app[data-theme="storm"] .threeScene {
   opacity: 0.95;
 }
 
-.crix-app[data-theme="storm"] .fxWallpaper {
+.ares-app[data-theme="storm"] .fxWallpaper {
   background:
     radial-gradient(ellipse at 72% 34%, rgba(255, 240, 106, 0.24), transparent 34%),
     radial-gradient(ellipse at 32% 72%, rgba(98, 245, 255, 0.28), transparent 38%),
@@ -5353,19 +5353,19 @@ body,
   opacity: 1;
 }
 
-.crix-app[data-theme="storm"] .fxSweep {
+.ares-app[data-theme="storm"] .fxSweep {
   opacity: 0.58;
   animation: stormSweep 2.6s cubic-bezier(0.2, 0.9, 0.22, 1) infinite;
 }
 
-.crix-app[data-theme="storm"] .fxGlassRibbons {
+.ares-app[data-theme="storm"] .fxGlassRibbons {
   opacity: 0.74;
   background:
     linear-gradient(118deg, transparent 0 34%, rgba(255, 240, 106, 0.34) 42%, transparent 50%),
     linear-gradient(294deg, transparent 0 50%, rgba(98, 245, 255, 0.28) 58%, transparent 68%);
 }
 
-.crix-app[data-theme="storm"] :is(
+.ares-app[data-theme="storm"] :is(
   .titlebar,
   .sidebar,
   .workspace,
@@ -5392,7 +5392,7 @@ body,
     0 18px 60px rgba(31, 116, 255, 0.18);
 }
 
-.crix-app[data-theme="storm"] :is(
+.ares-app[data-theme="storm"] :is(
   .workspaceTop h1,
   .brandBlock strong,
   .titlebarName,
@@ -5411,7 +5411,7 @@ body,
   color: var(--text);
 }
 
-.crix-app[data-theme="storm"] :is(
+.ares-app[data-theme="storm"] :is(
   .workspaceTop p,
   .brandBlock span,
   .eventCard time,
@@ -5426,10 +5426,10 @@ body,
   color: var(--muted);
 }
 
-.crix-app[data-theme="storm"] .primaryAction,
-.crix-app[data-theme="storm"] .sendButton,
-.crix-app[data-theme="storm"] .themeChoice.active,
-.crix-app[data-theme="storm"] .cornerControl button.active {
+.ares-app[data-theme="storm"] .primaryAction,
+.ares-app[data-theme="storm"] .sendButton,
+.ares-app[data-theme="storm"] .themeChoice.active,
+.ares-app[data-theme="storm"] .cornerControl button.active {
   background:
     linear-gradient(180deg, rgba(120, 199, 255, 0.96), rgba(47, 125, 255, 0.82)),
     rgba(255, 240, 106, 0.14);
@@ -5471,36 +5471,36 @@ body,
    ══════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: no-preference) {
   /* FROST (signal) — calm aurora drift, a slowly floating, breathing orb. */
-  .crix-app[data-theme="signal"] .fxPulse {
+  .ares-app[data-theme="signal"] .fxPulse {
     animation: v6OrbFloat 8.5s ease-in-out infinite;
   }
-  .crix-app[data-theme="signal"] .fxVignette {
+  .ares-app[data-theme="signal"] .fxVignette {
     animation: fxBreath 5.5s ease-in-out infinite, v6Aurora 20s ease-in-out infinite;
   }
-  .crix-app[data-theme="signal"] .fxGrid {
+  .ares-app[data-theme="signal"] .fxGrid {
     animation: fxGridDrift 20s linear infinite;
   }
 
   /* STORM — electric and turbulent: faster breath, a flickering orb, live grid. */
-  .crix-app[data-theme="storm"] .fxPulse {
+  .ares-app[data-theme="storm"] .fxPulse {
     animation: v6OrbFloat 6.5s ease-in-out infinite, v6Flicker 7s steps(1, end) infinite;
   }
-  .crix-app[data-theme="storm"] .fxVignette {
+  .ares-app[data-theme="storm"] .fxVignette {
     animation: fxBreath 3.6s ease-in-out infinite, v6Aurora 11s ease-in-out infinite;
   }
-  .crix-app[data-theme="storm"] .fxGrid {
+  .ares-app[data-theme="storm"] .fxGrid {
     animation: fxGridDrift 9s linear infinite;
   }
 
   /* MATRIX — scanlines rain down, the grid races, the orb floats hot. */
-  .crix-app[data-theme="matrix"] .fxScanline {
+  .ares-app[data-theme="matrix"] .fxScanline {
     opacity: 0.34;
     animation: v6Scan 5s linear infinite;
   }
-  .crix-app[data-theme="matrix"] .fxGrid {
+  .ares-app[data-theme="matrix"] .fxGrid {
     animation: fxGridDrift 6s linear infinite;
   }
-  .crix-app[data-theme="matrix"] .fxPulse {
+  .ares-app[data-theme="matrix"] .fxPulse {
     filter: saturate(1.4);
     animation: v6OrbFloat 7s ease-in-out infinite;
   }
@@ -5553,7 +5553,7 @@ body,
   }
 }
 
-/* ── Command-center HUD overlay (Crix v6 UI) ──────────────────────────────────
+/* ── Command-center HUD overlay (Ares v6 UI) ──────────────────────────────────
    A cosmetic, pointer-events-free layer over everything: faint hologram
    scanlines, an edge vignette, and a slow accent sweep tinted by the active
    theme. It never intercepts clicks and fully disables under reduced motion. */
@@ -5577,10 +5577,10 @@ body,
   height: 32%;
   background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent, #7aa7ff) 12%, transparent), transparent);
   filter: blur(2px);
-  animation: crixHudScan 8s linear infinite;
+  animation: aresHudScan 8s linear infinite;
 }
 
-/* When Crix is actively thinking/streaming, the HUD brightens and sweeps faster. */
+/* When Ares is actively thinking/streaming, the HUD brightens and sweeps faster. */
 .commandHud[data-active="1"] {
   opacity: 0.85;
 }
@@ -5588,7 +5588,7 @@ body,
   animation-duration: 3.4s;
 }
 
-@keyframes crixHudScan {
+@keyframes aresHudScan {
   0% {
     transform: translateY(-50%);
     opacity: 0;
@@ -5805,7 +5805,7 @@ body,
   box-shadow: var(--shadow-soft), inset 0 0 26px color-mix(in srgb, var(--accent) 8%, transparent);
   pointer-events: none;
 }
-.crix-app[data-corners="square"] .mindPanel {
+.ares-app[data-corners="square"] .mindPanel {
   border-radius: 4px;
 }
 .mindPanelHead {
@@ -5943,7 +5943,7 @@ body,
     background var(--dur-2, 190ms) ease,
     box-shadow var(--dur-2, 190ms) ease;
 }
-.crix-app[data-corners="square"] .voiceChip {
+.ares-app[data-corners="square"] .voiceChip {
   border-radius: 4px;
 }
 .voiceChip:hover {
@@ -6018,7 +6018,7 @@ body,
     inset 0 1px 0 rgba(255, 255, 255, 0.82);
   padding: 12px 14px;
 }
-.crix-app[data-corners="square"] .corePanel {
+.ares-app[data-corners="square"] .corePanel {
   border-radius: 4px;
 }
 .corePanel.done {
@@ -6165,20 +6165,20 @@ body,
   box-shadow: 0 0 28px color-mix(in srgb, var(--accent-2) 18%, transparent);
 }
 
-.crix-app[data-theme="signal"] .chatAtmosphere {
+.ares-app[data-theme="signal"] .chatAtmosphere {
   --chat-a: #7db7ff;
   --chat-b: #75ffca;
   --chat-c: #f5d678;
 }
 
-.crix-app[data-theme="matrix"] .chatAtmosphere {
+.ares-app[data-theme="matrix"] .chatAtmosphere {
   --chat-a: #b965ff;
   --chat-b: #39ffba;
   --chat-c: #e3ff6a;
   --chat-grid: 0.50;
 }
 
-.crix-app[data-theme="matrix"] .chatParticleField {
+.ares-app[data-theme="matrix"] .chatParticleField {
   background:
     repeating-linear-gradient(90deg, transparent 0 35px, color-mix(in srgb, var(--chat-a) 16%, transparent) 35px 36px, transparent 36px 74px),
     repeating-linear-gradient(180deg, transparent 0 10px, color-mix(in srgb, var(--chat-b) 12%, transparent) 10px 11px, transparent 11px 26px),
@@ -6187,21 +6187,21 @@ body,
   animation: chatMatrixRain calc(3.2s * var(--chat-speed)) linear infinite;
 }
 
-.crix-app[data-theme="matrix"] .chatSignalSweep {
+.ares-app[data-theme="matrix"] .chatSignalSweep {
   background:
     linear-gradient(90deg, transparent, color-mix(in srgb, var(--chat-b) 22%, transparent), transparent),
     linear-gradient(180deg, transparent 0 26%, color-mix(in srgb, var(--chat-a) 24%, transparent) 27%, transparent 30% 100%);
   animation: chatCodeSweep calc(4.4s * var(--chat-speed)) linear infinite;
 }
 
-.crix-app[data-theme="storm"] .chatAtmosphere {
+.ares-app[data-theme="storm"] .chatAtmosphere {
   --chat-a: #6cc7ff;
   --chat-b: #ffffff;
   --chat-c: #9b6cff;
   --chat-energy: 0.48;
 }
 
-.crix-app[data-theme="storm"] .chatNebula {
+.ares-app[data-theme="storm"] .chatNebula {
   background:
     linear-gradient(124deg, transparent 0 39%, color-mix(in srgb, var(--chat-b) 42%, transparent) 40% 41%, transparent 42%),
     linear-gradient(116deg, transparent 0 50%, color-mix(in srgb, var(--chat-a) 36%, transparent) 51% 52%, transparent 54%),
@@ -6209,38 +6209,38 @@ body,
   animation: chatStormCrackle calc(2.8s * var(--chat-speed)) steps(2, end) infinite;
 }
 
-.crix-app[data-theme="storm"] .chatSignalSweep {
+.ares-app[data-theme="storm"] .chatSignalSweep {
   filter: blur(0) drop-shadow(0 0 18px color-mix(in srgb, var(--chat-b) 56%, transparent));
   animation: chatStormBolt calc(3.4s * var(--chat-speed)) cubic-bezier(0.22, 0.9, 0.28, 1) infinite;
 }
 
-.crix-app[data-theme="graphite"] .chatAtmosphere {
+.ares-app[data-theme="graphite"] .chatAtmosphere {
   --chat-a: #d8dee9;
   --chat-b: #8ce3be;
   --chat-c: #8fb3ff;
   --chat-grid: 0.40;
 }
 
-.crix-app[data-theme="graphite"] .chatNebula {
+.ares-app[data-theme="graphite"] .chatNebula {
   background:
     conic-gradient(from 40deg at 50% 50%, transparent, color-mix(in srgb, var(--chat-a) 18%, transparent), transparent 22%, color-mix(in srgb, var(--chat-c) 20%, transparent), transparent 56%, color-mix(in srgb, var(--chat-b) 16%, transparent), transparent),
     repeating-linear-gradient(112deg, transparent 0 36px, rgba(255, 255, 255, 0.055) 36px 37px, transparent 37px 72px);
   animation: chatGyroSweep calc(12s * var(--chat-speed)) linear infinite;
 }
 
-.crix-app[data-theme="graphite"] .chatOrbitRings {
+.ares-app[data-theme="graphite"] .chatOrbitRings {
   filter: drop-shadow(0 0 16px rgba(216, 222, 233, 0.20)) contrast(1.18);
   transform: rotateX(68deg) rotateZ(18deg) scale(1.08);
 }
 
-.crix-app[data-theme="oxide"] .chatAtmosphere {
+.ares-app[data-theme="oxide"] .chatAtmosphere {
   --chat-a: #ffad6f;
   --chat-b: #f3c969;
   --chat-c: #ff6f57;
   --chat-energy: 0.46;
 }
 
-.crix-app[data-theme="oxide"] .chatParticleField {
+.ares-app[data-theme="oxide"] .chatParticleField {
   background:
     radial-gradient(circle, color-mix(in srgb, var(--chat-b) 80%, white) 0 1.4px, transparent 2px) 0 0 / 98px 82px,
     radial-gradient(circle, color-mix(in srgb, var(--chat-c) 80%, white) 0 1px, transparent 1.7px) 36px 22px / 144px 112px,
@@ -6248,14 +6248,14 @@ body,
   animation: chatEmberRise calc(7.2s * var(--chat-speed)) linear infinite;
 }
 
-.crix-app[data-theme="oxide"] .chatHoloGrid {
+.ares-app[data-theme="oxide"] .chatHoloGrid {
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--chat-c) 26%, transparent) 1px, transparent 1px),
     linear-gradient(0deg, color-mix(in srgb, var(--chat-b) 20%, transparent) 1px, transparent 1px);
   mask-image: linear-gradient(0deg, rgba(0, 0, 0, 0.95), transparent 68%);
 }
 
-.crix-app[data-theme="oxide"] .chatNebula {
+.ares-app[data-theme="oxide"] .chatNebula {
   background:
     radial-gradient(ellipse at 50% 78%, color-mix(in srgb, var(--chat-c) 28%, transparent), transparent 42%),
     radial-gradient(ellipse at 36% 40%, color-mix(in srgb, var(--chat-b) 18%, transparent), transparent 36%),
@@ -6633,7 +6633,7 @@ body,
   50% { transform: scaleX(0.7); opacity: 0.28; }
 }
 
-/* --- Sidebar brand: stop "Crix" doubling / bleeding out of its panel --- */
+/* --- Sidebar brand: stop "Ares" doubling / bleeding out of its panel --- */
 .brandBlock {
   min-width: 0;
   overflow: hidden;
@@ -7091,8 +7091,8 @@ body,
 }
 .lightboxClose:hover { background: rgba(255, 255, 255, 0.2); }
 
-/* ── Cleaner chat bubbles (you / Crix) — light + minimal, matching the flow ──
-   Per-theme rules (.crix-app[data-theme=...] .eventCard.user .eventBody) outrank
+/* ── Cleaner chat bubbles (you / Ares) — light + minimal, matching the flow ──
+   Per-theme rules (.ares-app[data-theme=...] .eventCard.user .eventBody) outrank
    plain selectors, so these use !important to win uniformly across every theme. */
 .chatShell .eventCard .eventBody {
   background: color-mix(in srgb, var(--text, #fff) 5%, transparent) !important;

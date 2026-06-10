@@ -2,7 +2,7 @@
 //
 // A Mission is a goal the agent drives to completion through an explicit
 // goal -> plan -> execute -> self-verify -> loop state machine. Missions are
-// persisted under ~/.crix/missions/ so they survive across sessions and the
+// persisted under ~/.ares/missions/ so they survive across sessions and the
 // agent (or, later, a background executor) can resume them autonomously.
 
 export type MissionStatus =

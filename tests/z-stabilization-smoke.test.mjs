@@ -19,46 +19,46 @@ test("stabilization: clean/startup contract is explicit", async () => {
   const rootPackage = JSON.parse(packageRaw);
 
   assert.equal(rootPackage.scripts.clean, "node scripts/clean.mjs");
-  assert.equal(rootPackage.scripts.crix, "node packages/cli/dist/entry.js");
+  assert.equal(rootPackage.scripts.ares, "node packages/cli/dist/entry.js");
   assert.match(cleanRaw, /packagesDir/);
   assert.match(cleanRaw, /path\.join\(packageDir, "dist"\)/);
-  assert.match(cleanRaw, /path\.join\(root, "\.crix"\)/);
+  assert.match(cleanRaw, /path\.join\(root, "\.ares"\)/);
   assert.match(cleanRaw, /src-tauri", "gen"/);
-  assert.match(developmentRaw, /Use `pnpm build` before running `pnpm crix`/);
+  assert.match(developmentRaw, /Use `pnpm build` before running `pnpm ares`/);
 });
 
 test("stabilization: root CLI script launches the built entrypoint", () => {
-  const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-startup-smoke-"));
+  const testHome = mkdtempSync(path.join(os.tmpdir(), "ares-startup-smoke-"));
   const result = process.platform === "win32"
-    ? spawnSync("cmd.exe", ["/d", "/s", "/c", "pnpm --silent crix help"], {
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", "pnpm --silent ares help"], {
         cwd: root,
         encoding: "utf8",
         windowsHide: true,
-        env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+        env: { ...process.env, ARES_HOME: testHome, ARES_AGENT_ENABLED: "0" },
       })
-    : spawnSync("pnpm", ["--silent", "crix", "help"], {
+    : spawnSync("pnpm", ["--silent", "ares", "help"], {
         cwd: root,
         encoding: "utf8",
         windowsHide: true,
-        env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+        env: { ...process.env, ARES_HOME: testHome, ARES_AGENT_ENABLED: "0" },
       });
 
-  assert.equal(result.status, 0, `pnpm crix help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /crix v0\.3\.0-alpha\.1/);
+  assert.equal(result.status, 0, `pnpm ares help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.match(result.stdout, /ares v0\.3\.0-alpha\.1/);
   assert.match(result.stdout, /streaming coding-agent harness/);
 });
 
 test("stabilization: direct CLI entrypoint launches", () => {
-  const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-entry-smoke-"));
+  const testHome = mkdtempSync(path.join(os.tmpdir(), "ares-entry-smoke-"));
   const result = spawnSync(process.execPath, [path.join(root, "packages", "cli", "dist", "entry.js"), "help"], {
     cwd: root,
     encoding: "utf8",
     windowsHide: true,
-    env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+    env: { ...process.env, ARES_HOME: testHome, ARES_AGENT_ENABLED: "0" },
   });
 
   assert.equal(result.status, 0, `node entry.js help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /crix v0\.3\.0-alpha\.1/);
+  assert.match(result.stdout, /ares v0\.3\.0-alpha\.1/);
   assert.match(result.stdout, /streaming coding-agent harness/);
 });
 
@@ -69,8 +69,10 @@ test("stabilization: Tauri daemon launch expectation is build-gated", async () =
   ]);
   const config = JSON.parse(configRaw);
 
-  assert.match(mainRaw, /packages\/cli\/dist\/entry\.js/);
-  assert.match(mainRaw, /Build Crix from the repo before launching the desktop app/);
+  // The CLI entry path is assembled via join("packages")...join("entry.js")
+  // since the alpha.2 runtime-resolution rework — assert the chain, not a literal.
+  assert.match(mainRaw, /join\("packages"\)[\s\S]*?join\("cli"\)[\s\S]*?join\("dist"\)[\s\S]*?join\("entry\.js"\)/);
+  assert.match(mainRaw, /Could not find Ares runtime\. Rebuild the desktop runtime before launching the app\./);
   assert.equal(config.build.beforeDevCommand, "pnpm dev:vite");
   assert.equal(config.build.beforeBuildCommand, "pnpm build:web");
 });

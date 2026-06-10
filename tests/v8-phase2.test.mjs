@@ -27,11 +27,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-phase2-home-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-phase2-home-"));
 }
 
 async function makeWorkspace() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-phase2-workspace-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-phase2-workspace-"));
 }
 
 test("mission-aware loop: attaches contract, records probes, and gates completion on real verification", async () => {
@@ -171,7 +171,7 @@ test("cli operator review: returns read-only JSON status for a capability", asyn
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
 
@@ -205,7 +205,7 @@ test("cli operator add: explicit criteria and constraints create an authored mis
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
 
@@ -241,7 +241,7 @@ test("cli operator add: explicit file probe creates goal and mission verificatio
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
 
@@ -279,7 +279,7 @@ test("cli operator missions: JSON lists inspectable mission shape", async () => 
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
   assert.equal(add.status, 0, `operator add failed\nstdout:\n${add.stdout}\nstderr:\n${add.stderr}`);
@@ -291,7 +291,7 @@ test("cli operator missions: JSON lists inspectable mission shape", async () => 
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
 
@@ -330,7 +330,7 @@ test("cli operator mission status: text output shows mission sections", async ()
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
   assert.equal(add.status, 0, `operator add failed\nstdout:\n${add.stdout}\nstderr:\n${add.stderr}`);
@@ -343,7 +343,7 @@ test("cli operator mission status: text output shows mission sections", async ()
       cwd: root,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
 
@@ -386,7 +386,7 @@ test("cli operator run: blocked completion output names unmet criteria and probe
       cwd: workspace,
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+      env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     },
   );
 

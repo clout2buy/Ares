@@ -1,4 +1,4 @@
-// Skills — discover markdown workflows from .crix/skills and ~/.crix/skills.
+// Skills — discover markdown workflows from .ares/skills and ~/.ares/skills.
 
 import { z } from "zod";
 import { promises as fs } from "node:fs";
@@ -36,7 +36,7 @@ export interface SkillReadOutput extends SkillSummary {
 export const SkillsListTool = buildTool({
   name: "SkillsList",
   description:
-    "List project/user skills. Skills are markdown workflow files named SKILL.md under .crix/skills/<name>/ or ~/.crix/skills/<name>/. Use when the user mentions a skill or asks for a reusable workflow.",
+    "List project/user skills. Skills are markdown workflow files named SKILL.md under .ares/skills/<name>/ or ~/.ares/skills/<name>/. Use when the user mentions a skill or asks for a reusable workflow.",
   safety: "read-only",
   concurrency: "parallel-safe",
   inputZod: listInputSchema,
@@ -77,8 +77,8 @@ export const SkillReadTool = buildTool({
 });
 
 function skillRoots(workspace: string): string[] {
-  const home = process.env.CRIX_HOME || path.join(os.homedir(), ".crix");
-  return [path.join(home, "skills"), path.join(workspace, ".crix", "skills")];
+  const home = process.env.ARES_HOME || path.join(os.homedir(), ".ares");
+  return [path.join(home, "skills"), path.join(workspace, ".ares", "skills")];
 }
 
 async function scanRoot(root: string): Promise<SkillSummary[]> {

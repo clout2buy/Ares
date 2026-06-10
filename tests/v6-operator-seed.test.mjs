@@ -7,7 +7,7 @@ import path from "node:path";
 import { listCapabilities, seedNativeCapabilities } from "../packages/operator/dist/index.js";
 
 async function makeDir() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-op-seed-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-op-seed-"));
 }
 
 test("operator: native capability seed gives a fresh graph a truthful body", async () => {

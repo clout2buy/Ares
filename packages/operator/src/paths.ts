@@ -1,9 +1,9 @@
 // Operator filesystem layout. Lives under the same immortal home as the agent
-// mind (~/.crix or $CRIX_HOME), in its own operator/ subtree so goals, the
+// mind (~/.ares or $ARES_HOME), in its own operator/ subtree so goals, the
 // ledger (O2), and the graph (O4) survive rebuilds alongside IDENTITY/SOUL.
 
 import path from "node:path";
-import { crixAgentHome } from "@crix/agent";
+import { aresAgentHome } from "@ares/agent";
 
 export interface OperatorPaths {
   home: string;
@@ -16,7 +16,7 @@ export interface OperatorPaths {
 }
 
 export function operatorPaths(explicit?: string): OperatorPaths {
-  const home = crixAgentHome(explicit);
+  const home = aresAgentHome(explicit);
   const operatorDir = path.join(home, "operator");
   return {
     home,

@@ -3,13 +3,13 @@
 // The model calls this tool exactly once, when it has gathered the seven
 // bootstrap answers from the user. The tool atomically writes IDENTITY.md,
 // SOUL.md, USER.md (and ensures HEARTBEAT.md / MEMORY.md exist) under the
-// global Crix agent home (~/.crix/), then deletes BOOTSTRAP.md. The agent
+// global Ares agent home (~/.ares/), then deletes BOOTSTRAP.md. The agent
 // never has to touch raw Write to perform its own birth.
 
 import { z } from "zod";
-import { buildTool } from "@crix/tools";
+import { buildTool } from "@ares/tools";
 import { completeBootstrap, ensureAgentScaffold, type BootstrapProfile } from "../bootstrap/bootstrap.js";
-import { agentPaths, crixAgentHome } from "../paths.js";
+import { agentPaths, aresAgentHome } from "../paths.js";
 import { exists } from "../files.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
@@ -73,14 +73,14 @@ export interface BootstrapToolOutput {
 export const BootstrapTool = buildTool({
   name: "Bootstrap",
   description:
-    "Finalize the Crix v4 agent birth ritual. Call this exactly once, after the user has answered the bootstrap questions and you have picked your own name, creature, vibe, and emoji. Writes IDENTITY/SOUL/USER atomically under the global agent home (~/.crix/) so identity survives every repo update or fresh clone. Do NOT use the Write tool for these files — that's the agent's own brain and belongs in the global home, not the workspace.",
+    "Finalize the Ares v4 agent birth ritual. Call this exactly once, after the user has answered the bootstrap questions and you have picked your own name, creature, vibe, and emoji. Writes IDENTITY/SOUL/USER atomically under the global agent home (~/.ares/) so identity survives every repo update or fresh clone. Do NOT use the Write tool for these files — that's the agent's own brain and belongs in the global home, not the workspace.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => `Bootstrap ${i.agent_name} for ${i.user_name}`,
 
   async call(input, ctx): Promise<{ output: BootstrapToolOutput; touchedFiles?: string[]; display: string }> {
-    const home = crixAgentHome(process.env.CRIX_HOME);
+    const home = aresAgentHome(process.env.ARES_HOME);
     const paths = agentPaths(home);
     await ensureAgentScaffold({ home, workspace: ctx.workspace });
 

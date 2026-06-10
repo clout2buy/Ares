@@ -22,7 +22,7 @@ export interface MemoryDoctorReport {
 const MAX_EXPECTED_MEMORY_CHARS = 2_100;
 const LOW_STRENGTH_FLOOR = 0.05;
 const NOISE_THEME_TOKENS = new Set([
-  "about", "again", "check", "clean", "crix", "files", "found", "homie", "issue",
+  "about", "again", "check", "clean", "ares", "files", "found", "homie", "issue",
   "just", "lmao", "memory", "model", "right", "self", "state", "still", "thing",
   "think", "using", "work",
 ]);
@@ -100,7 +100,7 @@ function buildRecommendations(report: {
 }): string[] {
   const out: string[] = [];
   if (report.total === 0) out.push("Memory is empty; bootstrap identity and capture durable user preferences first.");
-  if (report.noisyThemeSemantics > 0 || report.lowStrengthEpisodes > 0) out.push("Run `crix mind consolidate` to prune faded episodes and filler recurring themes.");
+  if (report.noisyThemeSemantics > 0 || report.lowStrengthEpisodes > 0) out.push("Run `ares mind consolidate` to prune faded episodes and filler recurring themes.");
   if (report.duplicateGroups.length > 0) out.push("Review duplicate memory groups; repeated exact content should usually be one stronger node, not many weak copies.");
   if (report.orphanLinks.length > 0) out.push("Repair orphan links by reopening the store and consolidating, or by pruning corrupt entries.");
   if (report.oversized.length > 0) out.push("Oversized entries should be summarized before they enter memory.");

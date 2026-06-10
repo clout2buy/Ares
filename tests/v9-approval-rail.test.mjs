@@ -14,7 +14,7 @@ test("approval: redactPreview strips obvious secrets and flags it", () => {
 });
 
 test("approval: redactPreview leaves clean payloads untouched", () => {
-  const clean = { kind: "url", summary: "open github", payload: "https://github.com/clout2buy/Crix", redacted: false };
+  const clean = { kind: "url", summary: "open github", payload: "https://github.com/clout2buy/Ares", redacted: false };
   const out = redactPreview(clean);
   assert.equal(out.payload, clean.payload);
   assert.equal(out.redacted, false);

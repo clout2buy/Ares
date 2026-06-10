@@ -1,4 +1,4 @@
-// Reality probes (Crix v5 / O3 / concept C1).
+// Reality probes (Ares v5 / O3 / concept C1).
 //
 // A probe answers one question against REALITY, not against the agent's memory
 // of acting: "is this true right now?" The control loop uses a goal's probe to

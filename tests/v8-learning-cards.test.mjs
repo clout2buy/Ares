@@ -1,6 +1,6 @@
 // Mission Learning Cards — Phase B v1 (pure distiller, option 1).
 //
-// Proves Crix turns mission logs into durable lessons:
+// Proves Ares turns mission logs into durable lessons:
 //   1. a satisfied mission distills a SUCCESS card (worked / procedure / confidence)
 //   2. a failed/blocked mission distills what-FAILED from criteria + blockers
 //   3. saving is idempotent — re-distilling the same mission yields one card
@@ -28,7 +28,7 @@ import {
 import { MemoryStore } from "../packages/mind/dist/index.js";
 import { recordCardMemoryOnce } from "../packages/agent/dist/index.js";
 
-const makeHome = () => fs.mkdtemp(path.join(os.tmpdir(), "crix-lesson-"));
+const makeHome = () => fs.mkdtemp(path.join(os.tmpdir(), "ares-lesson-"));
 const NOW = new Date("2026-06-02T00:00:00.000Z");
 
 function contract(over = {}) {

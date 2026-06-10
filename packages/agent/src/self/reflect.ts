@@ -1,5 +1,5 @@
 // Reflection — the growth engine's brain. Pure logic over the self-model:
-// given what Crix is and how reliably it performs, what should it *do* about
+// given what Ares is and how reliably it performs, what should it *do* about
 // itself? This is the upgrade from regex/threshold "dreaming" to real,
 // outcome-grounded self-direction. It emits concrete, actionable directives;
 // the agent (or heartbeat/dream) decides whether to act on them.

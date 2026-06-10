@@ -1,12 +1,12 @@
 // Self-model persistence + the outcome-feedback write path.
 //
-// One JSON document at ~/.crix/self/model.json. Reads are tolerant (a corrupt
+// One JSON document at ~/.ares/self/model.json. Reads are tolerant (a corrupt
 // or missing file yields an empty model, never a throw); writes are atomic.
 // recordOutcome is the feedback signal: every skill/mission run flows through
 // here so the model always reflects reality, not intention.
 
 import { promises as fs } from "node:fs";
-import { agentPaths, crixAgentHome } from "../paths.js";
+import { agentPaths, aresAgentHome } from "../paths.js";
 import { writeFileAtomic } from "../files.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
@@ -26,7 +26,7 @@ export function emptyModel(now = new Date()): SelfModel {
   return { version: 1, updatedAt: now.toISOString(), capabilities: {} };
 }
 
-export async function loadSelfModel(home = crixAgentHome()): Promise<SelfModel> {
+export async function loadSelfModel(home = aresAgentHome()): Promise<SelfModel> {
   const file = agentPaths(home).selfModel;
   try {
     const raw = await fs.readFile(file, "utf8");

@@ -19,8 +19,8 @@ import type {
   StreamEvent,
   Usage,
   StopReason,
-} from "@crix/protocol";
-import { thinkingBudgetTokens } from "@crix/protocol";
+} from "@ares/protocol";
+import { thinkingBudgetTokens } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 
 export type SlotName = "reasoner" | "apply" | "summarize";
@@ -39,11 +39,11 @@ export interface OllamaCloudPoolOptions {
   fetchImpl?: typeof fetch;
   /**
    * When true, hit Ollama Cloud's Anthropic-compatible /v1/messages
-   * endpoint instead of /api/chat. Since Crix's wire protocol is
+   * endpoint instead of /api/chat. Since Ares's wire protocol is
    * already Anthropic-shape, this path needs ZERO translation —
    * messages, content blocks, tools, and tool_use/tool_result all
    * pass through unchanged. Default toggled by
-   * CRIX_OLLAMA_ANTHROPIC_COMPAT=1.
+   * ARES_OLLAMA_ANTHROPIC_COMPAT=1.
    */
   useAnthropicCompat?: boolean;
   /** Optional bearer token for direct ollama.com requests. */
@@ -79,7 +79,7 @@ export class OllamaCloudPool {
     // vars set, OR explicitly asked for it. /v1/messages exists; trust it.
     this.useAnthropicCompat =
       opts.useAnthropicCompat ??
-      (process.env.CRIX_OLLAMA_ANTHROPIC_COMPAT === "1" || Boolean(anthropicBase || anthropicToken));
+      (process.env.ARES_OLLAMA_ANTHROPIC_COMPAT === "1" || Boolean(anthropicBase || anthropicToken));
     this.slots = new Map(
       (Object.entries(opts.slots) as Array<[SlotName, SlotConfig]>).map(([name, cfg]) => [
         name,
@@ -166,7 +166,7 @@ export class OllamaCloudPool {
     }
   }
 
-  /** Probe reachable + slot-models present. Used by `crix doctor`. */
+  /** Probe reachable + slot-models present. Used by `ares doctor`. */
   async health(): Promise<{
     reachable: boolean;
     host: string;
@@ -386,7 +386,7 @@ export class OllamaCloudPool {
 
   // ─── Anthropic-compat path: POST /v1/messages ───────────────────────
   //
-  // Because Crix's wire protocol IS the Anthropic SDK shape, this is a
+  // Because Ares's wire protocol IS the Anthropic SDK shape, this is a
   // direct passthrough. The messages, content blocks, tools, and
   // tool_use/tool_result all serialize as Anthropic expects with no
   // translation. We only need to parse Anthropic's SSE events back into
@@ -714,7 +714,7 @@ function buildAnthropicMessagesBody(
 }
 
 function ollamaNumCtx(): number {
-  const raw = Number(process.env.CRIX_OLLAMA_NUM_CTX);
+  const raw = Number(process.env.ARES_OLLAMA_NUM_CTX);
   if (Number.isFinite(raw) && raw >= 8_192) return Math.floor(raw);
   return 65_536;
 }
@@ -1068,7 +1068,7 @@ export function ollamaCloudModelsFor(role: OllamaCloudModel["role"]): readonly O
 // ─── Defaults a fresh CLI uses if the user doesn't override ────────────
 
 export const DEFAULT_OLLAMA_SLOTS: Record<SlotName, SlotConfig> = {
-  reasoner: { model: process.env.CRIX_REASONER ?? "qwen3-coder:480b-cloud" },
-  apply: { model: process.env.CRIX_APPLY ?? "devstral-small-2:24b-cloud" },
-  summarize: { model: process.env.CRIX_SUMMARIZE ?? "gpt-oss:20b-cloud" },
+  reasoner: { model: process.env.ARES_REASONER ?? "qwen3-coder:480b-cloud" },
+  apply: { model: process.env.ARES_APPLY ?? "devstral-small-2:24b-cloud" },
+  summarize: { model: process.env.ARES_SUMMARIZE ?? "gpt-oss:20b-cloud" },
 };

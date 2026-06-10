@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { expandHomePath, type CrixAgentConfig } from "../config.js";
+import { expandHomePath, type AresAgentConfig } from "../config.js";
 import { readTextIfExists, writeFileAtomic } from "../files.js";
 import { lexicalEmbedding } from "./embed.js";
 import type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult } from "./types.js";
@@ -18,7 +18,7 @@ export interface MemoryStore {
   update(entry: MemoryEntry): Promise<void>;
 }
 
-export async function createMemoryStore(config: CrixAgentConfig, home: string): Promise<MemoryStore> {
+export async function createMemoryStore(config: AresAgentConfig, home: string): Promise<MemoryStore> {
   const dbPath = expandHomePath(config.memory.dbPath, home);
   const jsonPath = expandHomePath(config.memory.jsonFallbackPath, home);
   const sqlite = await tryCreateSqliteStore(dbPath, config);
@@ -26,7 +26,7 @@ export async function createMemoryStore(config: CrixAgentConfig, home: string): 
   return new JsonMemoryStore(jsonPath, config);
 }
 
-async function tryCreateSqliteStore(file: string, config: CrixAgentConfig): Promise<MemoryStore | null> {
+async function tryCreateSqliteStore(file: string, config: AresAgentConfig): Promise<MemoryStore | null> {
   try {
     const mod = await dynamicImport("better-sqlite3");
     const Database = mod.default ?? mod;
@@ -50,7 +50,7 @@ async function tryCreateSqliteStore(file: string, config: CrixAgentConfig): Prom
 class JsonMemoryStore implements MemoryStore {
   constructor(
     private readonly file: string,
-    private readonly config: CrixAgentConfig,
+    private readonly config: AresAgentConfig,
   ) {}
 
   status(): MemoryStoreStatus {
@@ -140,7 +140,7 @@ class SqliteMemoryStore implements MemoryStore {
   constructor(
     private readonly file: string,
     private readonly db: any,
-    private readonly config: CrixAgentConfig,
+    private readonly config: AresAgentConfig,
     private readonly vectorEnabled: boolean,
   ) {
     this.db.exec(`
@@ -310,7 +310,7 @@ function normalizeCategory(category: string): MemoryCategory {
 
 export function formatRecallReminder(results: readonly RecallResult[]): string {
   if (results.length === 0) return "";
-  const lines = ["Recall surfaced these Crix memories:"];
+  const lines = ["Recall surfaced these Ares memories:"];
   for (const result of results) {
     lines.push(`- [${result.memory.category}#${result.memory.id}] ${compactMemoryText(result.memory.content, MAX_RECALL_ITEM_CHARS)}`);
   }

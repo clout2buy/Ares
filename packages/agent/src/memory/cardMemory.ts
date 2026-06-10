@@ -3,9 +3,9 @@
 // When a lesson is distilled, its summary becomes a `procedural` memory so the
 // unified recall can surface it on future turns ("you've hit this before").
 // Idempotency is keyed on the card id via the memory `source`: re-running
-// `crix mission learn` on the same mission never plants a duplicate lesson.
+// `ares mission learn` on the same mission never plants a duplicate lesson.
 
-import type { MemoryStore } from "@crix/mind";
+import type { MemoryStore } from "@ares/mind";
 
 export interface CardMemoryInput {
   /** The learning card id — stored as the memory `source` for dedup. */

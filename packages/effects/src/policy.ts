@@ -5,17 +5,17 @@
 // — allow / ask (stage for approval) / deny / preview-only / log-only — with
 // cited reasons and warnings. No I/O, no mutation, no runtime wiring yet.
 //
-// This bridges the two risk vocabularies Crix already has: protocol's
+// This bridges the two risk vocabularies Ares already has: protocol's
 // SafetyClass (read-only/workspace-write/destructive/external-state) and the
 // effects layer's Irreversibility (reversible/recoverable/irreversible).
 //
 // NAMING / POSTURE: when NO ActionPolicy is configured, the evaluator preserves
-// Crix's CURRENT behavior (permit) — but this is treated and labeled as
+// Ares's CURRENT behavior (permit) — but this is treated and labeled as
 // "legacy / current behavior preserved for compatibility", NOT as the
 // recommended long-term default. The recommended posture is Assist or Act.
 // Explicit Bypass remains a loud, audited power-user mode.
 
-import type { PermissionMode, SafetyClass } from "@crix/protocol";
+import type { PermissionMode, SafetyClass } from "@ares/protocol";
 import type { Irreversibility } from "./types.js";
 
 /** The four explicit owner-chosen postures. "legacy" is the unset/compat state. */
@@ -143,7 +143,7 @@ export function safetyClassToIrreversibility(safetyClass: SafetyClass): Irrevers
   }
 }
 
-/** Map an ActionMode (or unset → legacy) onto Crix's existing PermissionMode. */
+/** Map an ActionMode (or unset → legacy) onto Ares's existing PermissionMode. */
 export function permissionModeFor(mode: EffectiveMode): PermissionMode {
   switch (mode) {
     case "observe":

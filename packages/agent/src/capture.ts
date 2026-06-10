@@ -8,7 +8,7 @@
 
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { agentPaths, crixAgentHome } from "./paths.js";
+import { agentPaths, aresAgentHome } from "./paths.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { gainForTarget } from "./voice.js";
 
@@ -61,7 +61,7 @@ export async function captureUserMessage(opts: {
   const matches = detectCaptures(opts.userMessage);
   if (matches.length === 0) return { matches: [], bytesAppended: 0 };
 
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   await fs.mkdir(paths.memoryDir, { recursive: true });
   const today = (opts.now ?? new Date()).toISOString().slice(0, 10);

@@ -1,6 +1,6 @@
-// World Graph — Crix's map of its own universe (Nexus / Phase 1 keystone).
+// World Graph — Ares's map of its own universe (Nexus / Phase 1 keystone).
 //
-// A lightweight, READ-ONLY entity graph that links the things Crix already
+// A lightweight, READ-ONLY entity graph that links the things Ares already
 // knows about — itself, the project, its subsystems, missions, goals, lessons,
 // and crystallized memories — into one navigable map. This is the connective
 // tissue that turns "a pile of stores" into "an entity that understands its
@@ -14,15 +14,15 @@
 // The CLI does the loading and hands durable truth to this shaper, exactly like
 // continuity.ts. Nothing here writes anything.
 
-import { tokenizeSalient } from "@crix/mind";
+import { tokenizeSalient } from "@ares/mind";
 import type { LearningCard } from "./learningCard.js";
 import type { MissionContract } from "./missionContract.js";
 import type { Goal } from "./types.js";
 
-export type WorldEntityKind = "crix" | "project" | "subsystem" | "mission" | "goal" | "lesson" | "memory";
+export type WorldEntityKind = "ares" | "project" | "subsystem" | "mission" | "goal" | "lesson" | "memory";
 
 export type WorldRelationKind =
-  | "embodies" // crix → project
+  | "embodies" // ares → project
   | "part-of" // subsystem → project
   | "serves" // mission → goal
   | "distilled-from" // lesson → mission
@@ -62,7 +62,7 @@ export interface WorldGraph {
   counts: Record<WorldEntityKind, number>;
 }
 
-/** A Crix subsystem the graph can link missions/memories to (curated self-knowledge). */
+/** A Ares subsystem the graph can link missions/memories to (curated self-knowledge). */
 export interface WorldSubsystemInput {
   name: string;
   label: string;
@@ -71,7 +71,7 @@ export interface WorldSubsystemInput {
   keywords: string[];
 }
 
-/** Minimal memory shape the graph needs — decoupled from @crix/mind's MemoryNode. */
+/** Minimal memory shape the graph needs — decoupled from @ares/mind's MemoryNode. */
 export interface WorldMemoryInput {
   id: string;
   kind: string;
@@ -91,19 +91,19 @@ export interface AssembleWorldGraphInput {
 }
 
 /**
- * Crix's own subsystems — honest self-knowledge of its architecture. Keywords
+ * Ares's own subsystems — honest self-knowledge of its architecture. Keywords
  * are what mission/memory text is matched against to wire the connective edges.
  */
-export const CRIX_SUBSYSTEMS: WorldSubsystemInput[] = [
-  { name: "protocol", label: "@crix/protocol", summary: "Shared event/provider/tool shapes", keywords: ["protocol", "event", "schema", "tool"] },
-  { name: "core", label: "@crix/core", summary: "Sessions, query engine, providers, reasoning", keywords: ["core", "queryengine", "provider", "session", "reasoning", "checkpoint", "verifier", "model"] },
-  { name: "tools", label: "@crix/tools", summary: "Local tool catalog + executors", keywords: ["tools", "read", "write", "edit", "bash", "grep", "glob", "narration"] },
-  { name: "agent", label: "@crix/agent", summary: "Identity, dreaming, skills, self-model", keywords: ["agent", "identity", "charter", "dreaming", "skill", "heartbeat", "bootstrap", "self", "soul"] },
-  { name: "mind", label: "@crix/mind", summary: "Living memory, synthesis, cognition", keywords: ["mind", "memory", "recall", "synthesis", "cognition", "intent", "belief", "insight", "dream"] },
-  { name: "operator", label: "@crix/operator", summary: "Missions, goals, lessons, continuity", keywords: ["operator", "mission", "goal", "lesson", "continuity", "capability", "attention", "recap", "briefing"] },
-  { name: "effects", label: "@crix/effects", summary: "Budgets, ledger, kill-switch, rails", keywords: ["effects", "budget", "ledger", "rails", "approval", "killswitch", "proof"] },
-  { name: "connectors", label: "@crix/connectors", summary: "Browser connector + proof", keywords: ["connectors", "browser", "filmstrip", "web"] },
-  { name: "cli", label: "@crix/cli", summary: "Command-line + terminal UI", keywords: ["cli", "command", "terminal", "daemon", "chat"] },
+export const ARES_SUBSYSTEMS: WorldSubsystemInput[] = [
+  { name: "protocol", label: "@ares/protocol", summary: "Shared event/provider/tool shapes", keywords: ["protocol", "event", "schema", "tool"] },
+  { name: "core", label: "@ares/core", summary: "Sessions, query engine, providers, reasoning", keywords: ["core", "queryengine", "provider", "session", "reasoning", "checkpoint", "verifier", "model"] },
+  { name: "tools", label: "@ares/tools", summary: "Local tool catalog + executors", keywords: ["tools", "read", "write", "edit", "bash", "grep", "glob", "narration"] },
+  { name: "agent", label: "@ares/agent", summary: "Identity, dreaming, skills, self-model", keywords: ["agent", "identity", "charter", "dreaming", "skill", "heartbeat", "bootstrap", "self", "soul"] },
+  { name: "mind", label: "@ares/mind", summary: "Living memory, synthesis, cognition", keywords: ["mind", "memory", "recall", "synthesis", "cognition", "intent", "belief", "insight", "dream"] },
+  { name: "operator", label: "@ares/operator", summary: "Missions, goals, lessons, continuity", keywords: ["operator", "mission", "goal", "lesson", "continuity", "capability", "attention", "recap", "briefing"] },
+  { name: "effects", label: "@ares/effects", summary: "Budgets, ledger, kill-switch, rails", keywords: ["effects", "budget", "ledger", "rails", "approval", "killswitch", "proof"] },
+  { name: "connectors", label: "@ares/connectors", summary: "Browser connector + proof", keywords: ["connectors", "browser", "filmstrip", "web"] },
+  { name: "cli", label: "@ares/cli", summary: "Command-line + terminal UI", keywords: ["cli", "command", "terminal", "daemon", "chat"] },
   { name: "tauri", label: "Tauri desktop shell", summary: "Desktop UI, themes, mind panel, composer", keywords: ["tauri", "desktop", "theme", "panel", "mindpanel", "composer", "window", "animation"] },
   { name: "voice", label: "Voice (TTS + STT)", summary: "Kokoro TTS + Whisper STT sidecar", keywords: ["voice", "tts", "stt", "kokoro", "whisper", "speech", "audio", "mic", "talk"] },
 ];
@@ -140,12 +140,12 @@ export function assembleWorldGraph(input: AssembleWorldGraphInput): WorldGraph {
     relations.push({ from, to, kind, weight, reason });
   };
 
-  // Root: Crix and the project it is embodied in.
-  const projectName = input.projectName?.trim() || "Crix";
-  add({ id: "crix:self", kind: "crix", label: "Crix", summary: "The entity", source: "self", ref: "self" });
+  // Root: Ares and the project it is embodied in.
+  const projectName = input.projectName?.trim() || "Ares";
+  add({ id: "ares:self", kind: "ares", label: "Ares", summary: "The entity", source: "self", ref: "self" });
   const projectId = `project:${projectName.toLowerCase()}`;
-  add({ id: projectId, kind: "project", label: projectName, summary: "The codebase Crix is built from", source: "repo:project", ref: projectName });
-  relate("crix:self", projectId, "embodies", 1, "Crix is this project");
+  add({ id: projectId, kind: "project", label: projectName, summary: "The codebase Ares is built from", source: "repo:project", ref: projectName });
+  relate("ares:self", projectId, "embodies", 1, "Ares is this project");
 
   // Subsystems (curated self-knowledge), each part-of the project.
   for (const sub of input.subsystems) {
@@ -217,7 +217,7 @@ export function assembleWorldGraph(input: AssembleWorldGraphInput): WorldGraph {
     }
   }
 
-  const counts = { crix: 0, project: 0, subsystem: 0, mission: 0, goal: 0, lesson: 0, memory: 0 } as Record<WorldEntityKind, number>;
+  const counts = { ares: 0, project: 0, subsystem: 0, mission: 0, goal: 0, lesson: 0, memory: 0 } as Record<WorldEntityKind, number>;
   for (const e of entities) counts[e.kind] += 1;
 
   return { entities, relations, counts };

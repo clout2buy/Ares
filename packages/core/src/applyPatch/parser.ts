@@ -1,8 +1,8 @@
-// Crix v2 apply-patch parser.
+// Ares v2 apply-patch parser.
 //
 // Ported from codex-main/codex-rs/apply-patch/src/parser.rs (Apache-2.0).
 // Original copyright: OpenAI, 2025. See NOTICE for attribution.
-// Adapted to TypeScript and Crix's tool interface.
+// Adapted to TypeScript and Ares's tool interface.
 //
 // Grammar:
 //   start         : begin_patch environment_id? hunk+ end_patch

@@ -7,8 +7,8 @@
 //
 // Never produces tool_use blocks (so QueryEngine exits after one iteration).
 
-import type { Message, StreamEvent } from "@crix/protocol";
-import { messageText } from "@crix/protocol";
+import type { Message, StreamEvent } from "@ares/protocol";
+import { messageText } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 
 export class MockEchoProvider implements Provider {

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$venvPython = Join-Path $root ".crix\voice-venv\Scripts\python.exe"
+$venvPython = Join-Path $root ".ares\voice-venv\Scripts\python.exe"
 $python = if (Test-Path $venvPython) { $venvPython } else { "python" }
 
 Push-Location $root

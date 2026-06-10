@@ -1,5 +1,5 @@
 import path from "node:path";
-import { agentPaths, crixAgentHome } from "./paths.js";
+import { agentPaths, aresAgentHome } from "./paths.js";
 import { readTextIfExists, writeFileAtomic } from "./files.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 
@@ -22,7 +22,7 @@ export async function recordToolPattern(opts: {
   description: string;
   now?: Date;
 }): Promise<void> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   const file = path.join(paths.dreamsDir, "tool-patterns.json");
   const state = await readPatterns(file);
@@ -36,7 +36,7 @@ export async function proposeSkills(opts: {
   windowDays?: number;
   now?: Date;
 } = {}): Promise<SkillProposal[]> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   const file = path.join(paths.dreamsDir, "tool-patterns.json");
   const state = await readPatterns(file);
@@ -57,7 +57,7 @@ export async function proposeSkills(opts: {
     const skillPath = path.join(skillDir, "SKILL.md");
     const content = [
       "---",
-      `description: Learned Crix workflow for ${key}`,
+      `description: Learned Ares workflow for ${key}`,
       "status: proposed",
       "version: 1",
       "---",

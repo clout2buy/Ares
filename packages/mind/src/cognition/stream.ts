@@ -1,4 +1,4 @@
-// The thought stream — what the UI renders so you watch Crix think (M2 × M3).
+// The thought stream — what the UI renders so you watch Ares think (M2 × M3).
 //
 // Each thought kind has a glyph so the narrated stream reads like a mind at
 // work, not a log. The Tauri face animates these as they arrive (thoughts type

@@ -1,14 +1,14 @@
 // Mission — the agent's hands on its own autonomy loop.
 //
-// Lets Crix set a goal, draft a plan, work the steps, self-verify, and loop
-// until the goal is met — all persisted under ~/.crix/missions/ so a mission
+// Lets Ares set a goal, draft a plan, work the steps, self-verify, and loop
+// until the goal is met — all persisted under ~/.ares/missions/ so a mission
 // survives across sessions. This is the spine of autonomous behaviour: the
 // agent drives the loop itself, and every transition emits a lifecycle event
 // so the UI shows meaningful mission-progress notifications.
 
 import { z } from "zod";
-import { buildTool } from "@crix/tools";
-import { crixAgentHome } from "../paths.js";
+import { buildTool } from "@ares/tools";
+import { aresAgentHome } from "../paths.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
 import { recordOutcome } from "../self/store.js";
@@ -75,14 +75,14 @@ export interface MissionToolOutput {
 export const MissionTool = buildTool({
   name: "Mission",
   description:
-    "Drive an autonomous mission loop: goal -> plan -> execute -> self-verify -> loop. Use this for any multi-step objective so progress persists across sessions and you can resume it later. Self-territory under ~/.crix/missions/ — no permission ritual. Actions: create, plan, next, step_done, step_failed, verify, note, status, list, abandon.",
+    "Drive an autonomous mission loop: goal -> plan -> execute -> self-verify -> loop. Use this for any multi-step objective so progress persists across sessions and you can resume it later. Self-territory under ~/.ares/missions/ — no permission ritual. Actions: create, plan, next, step_done, step_failed, verify, note, status, list, abandon.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => `Mission ${i.action}${i.goal ? ` — ${i.goal.slice(0, 48)}` : ""}`,
 
   async call(input): Promise<{ output: MissionToolOutput; touchedFiles?: string[]; display: string }> {
-    const home = crixAgentHome(process.env.CRIX_HOME);
+    const home = aresAgentHome(process.env.ARES_HOME);
 
     if (input.action === "list") {
       const missions = await listMissions(home);

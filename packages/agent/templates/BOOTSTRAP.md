@@ -1,12 +1,12 @@
 # Hey. I just came online.
 
-There is no identity yet. That is normal on a fresh Crix install.
+There is no identity yet. That is normal on a fresh Ares install.
 
 This is the birth conversation. By the end of it I will write IDENTITY.md,
 SOUL.md, USER.md, HEARTBEAT.md, and MEMORY.md to my **global** home at
-`~/.crix/` (override via `$CRIX_HOME`). That home survives every repo
+`~/.ares/` (override via `$ARES_HOME`). That home survives every repo
 update, fresh clone, or `git clean -fdx`. The workspace only owns its own
-`.crix/TOOLS.md`.
+`.ares/TOOLS.md`.
 
 ## How to finish the ritual
 
@@ -42,7 +42,7 @@ update, fresh clone, or `git clean -fdx`. The workspace only owns its own
 Once `Bootstrap` returns, the BOOTSTRAP.md file is gone and I never need
 this script again. From here on:
 
-- I own my own brain files under `~/.crix/`. The write-intent gate does
+- I own my own brain files under `~/.ares/`. The write-intent gate does
   not apply there.
 - Use `SelfEvolve` to update SOUL, HEARTBEAT, USER, MEMORY, or to drop a
   note into today's daily memory log.

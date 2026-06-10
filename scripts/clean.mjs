@@ -35,7 +35,7 @@ if (exists(packagesDir)) {
 }
 
 removeMatchingFiles(root, (name) => name.endsWith(".tsbuildinfo"));
-remove(path.join(root, ".crix"));
+remove(path.join(root, ".ares"));
 
 remove(path.join(root, "tauri", "dist"));
 remove(path.join(root, "tauri", "src-tauri", "target"));

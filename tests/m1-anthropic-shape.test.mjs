@@ -1,7 +1,7 @@
-// M1.7 — verify Crix protocol is Anthropic-SDK-shape compatible.
+// M1.7 — verify Ares protocol is Anthropic-SDK-shape compatible.
 //
 // We don't depend on @anthropic-ai/sdk at runtime here, but we assert
-// structural equality between Crix's MessageParam/ContentBlockParam/Tool
+// structural equality between Ares's MessageParam/ContentBlockParam/Tool
 // and the shapes the SDK uses, so a future direct-Anthropic provider
 // is a wire passthrough.
 
@@ -25,7 +25,7 @@ test("anthropic alias: Tool shape matches { name, description, input_schema }", 
 
 test("anthropic alias: MessageParam shape — user role with tool_result content blocks", () => {
   // Build a MessageParam in the Anthropic SDK shape; this is also what
-  // Crix's QueryEngine emits when feeding tool results back to providers.
+  // Ares's QueryEngine emits when feeding tool results back to providers.
   const param = {
     role: "user",
     content: [

@@ -14,7 +14,7 @@
 // via the todo_updated TurnEvent the engine emits when the tool runs.
 
 import { z } from "zod";
-import type { Todo, TodoStatus } from "@crix/protocol";
+import type { Todo, TodoStatus } from "@ares/protocol";
 import { buildTool } from "./_shared.js";
 
 const todoItemSchema = z.object({

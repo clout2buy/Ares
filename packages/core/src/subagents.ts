@@ -10,13 +10,13 @@
 //   researcher       — read-only; returns structured findings report
 //   code-reviewer    — read + lints; inspects the pending diff
 //
-// The Task tool (in @crix/tools) takes a SubagentRunner and calls run().
+// The Task tool (in @ares/tools) takes a SubagentRunner and calls run().
 // The CLI builds the runner with the parent's provider so children use
 // the same model.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Message, TurnEvent, Usage } from "@crix/protocol";
+import type { Message, TurnEvent, Usage } from "@ares/protocol";
 import { QueryEngine, type EngineTool, type Provider } from "./queryEngine.js";
 
 export interface SubagentTypeDef {
@@ -48,7 +48,7 @@ export interface SubagentRunResult {
   toolCallCount: number;
   durationMs: number;
   usage: Usage;
-  /** Persistent transcript path under <workspace>/.crix/agents/<id>/. */
+  /** Persistent transcript path under <workspace>/.ares/agents/<id>/. */
   transcriptPath: string;
 }
 
@@ -60,7 +60,7 @@ export interface SubagentRunner {
 
 // ─── Built-in subagent types ───────────────────────────────────────────
 
-const RESEARCHER_PROMPT = `You are a focused RESEARCHER subagent inside the Crix harness.
+const RESEARCHER_PROMPT = `You are a focused RESEARCHER subagent inside the Ares harness.
 
 Your job: investigate the question your parent asked and return ONE structured findings report. You have READ-ONLY tools. Do not attempt edits.
 
@@ -82,7 +82,7 @@ Output format (return this and only this):
 
 Be concise. Your parent will read your summary and decide next moves.`;
 
-const CODE_REVIEWER_PROMPT = `You are a CODE REVIEWER subagent inside the Crix harness.
+const CODE_REVIEWER_PROMPT = `You are a CODE REVIEWER subagent inside the Ares harness.
 
 Your job: review the pending changes and return ONE structured review. You have READ + Lints + Bash (read-only commands like git diff) tools. Do not edit.
 
@@ -108,7 +108,7 @@ Output format:
   ## Verdict
   ship / fix-blockers / needs-discussion`;
 
-const GENERAL_PURPOSE_PROMPT = `You are a GENERAL-PURPOSE subagent inside the Crix harness.
+const GENERAL_PURPOSE_PROMPT = `You are a GENERAL-PURPOSE subagent inside the Ares harness.
 
 You have full tool access. Your job: complete the task your parent assigned, then return a structured summary.
 
@@ -190,7 +190,7 @@ export interface SubagentRunnerOptions {
   baseSystemPrompt: string;
 }
 
-export class CrixSubagentRunner implements SubagentRunner {
+export class AresSubagentRunner implements SubagentRunner {
   constructor(private readonly opts: SubagentRunnerOptions) {}
 
   listTypes(): SubagentTypeDef[] {
@@ -217,7 +217,7 @@ export class CrixSubagentRunner implements SubagentRunner {
 
     const id = `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const startedAt = Date.now();
-    const transcriptDir = path.join(req.workspace, ".crix", "agents", id);
+    const transcriptDir = path.join(req.workspace, ".ares", "agents", id);
 
     const systemPrompt = `${def.systemPrompt}\n\n---\n\n${this.opts.baseSystemPrompt}`;
 

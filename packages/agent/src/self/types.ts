@@ -1,6 +1,6 @@
-// The self-model — Crix's structured, machine-readable picture of itself.
+// The self-model — Ares's structured, machine-readable picture of itself.
 //
-// Until now Crix could *act* on itself (SelfEvolve, SkillCraft, RunSkill,
+// Until now Ares could *act* on itself (SelfEvolve, SkillCraft, RunSkill,
 // Mission) but could not *know* itself: CAPABILITIES.md was freeform prose it
 // could not reason over. This model turns "what can I do, how well, and what
 // should I become next" from a vibe into queryable data. Every capability the

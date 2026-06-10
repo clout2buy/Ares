@@ -23,10 +23,10 @@ importers:
 
   packages/agent:
     dependencies:
-      '@crix/mind':
+      '@ares/mind':
         specifier: workspace:*
         version: link:../mind
-      '@crix/tools':
+      '@ares/tools':
         specifier: workspace:*
         version: link:../tools
       zod:
@@ -42,28 +42,28 @@ importers:
 
   packages/cli:
     dependencies:
-      '@crix/agent':
+      '@ares/agent':
         specifier: workspace:*
         version: link:../agent
-      '@crix/connectors':
+      '@ares/connectors':
         specifier: workspace:*
         version: link:../connectors
-      '@crix/core':
+      '@ares/core':
         specifier: workspace:*
         version: link:../core
-      '@crix/effects':
+      '@ares/effects':
         specifier: workspace:*
         version: link:../effects
-      '@crix/mind':
+      '@ares/mind':
         specifier: workspace:*
         version: link:../mind
-      '@crix/operator':
+      '@ares/operator':
         specifier: workspace:*
         version: link:../operator
-      '@crix/protocol':
+      '@ares/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@crix/tools':
+      '@ares/tools':
         specifier: workspace:*
         version: link:../tools
       ink:
@@ -78,7 +78,7 @@ importers:
 
   packages/connectors:
     dependencies:
-      '@crix/effects':
+      '@ares/effects':
         specifier: workspace:*
         version: link:../effects
     optionalDependencies:
@@ -88,16 +88,16 @@ importers:
 
   packages/core:
     dependencies:
-      '@crix/protocol':
+      '@ares/protocol':
         specifier: workspace:*
         version: link:../protocol
 
   packages/effects:
     dependencies:
-      '@crix/agent':
+      '@ares/agent':
         specifier: workspace:*
         version: link:../agent
-      '@crix/protocol':
+      '@ares/protocol':
         specifier: workspace:*
         version: link:../protocol
 
@@ -105,13 +105,13 @@ importers:
 
   packages/operator:
     dependencies:
-      '@crix/agent':
+      '@ares/agent':
         specifier: workspace:*
         version: link:../agent
-      '@crix/core':
+      '@ares/core':
         specifier: workspace:*
         version: link:../core
-      '@crix/mind':
+      '@ares/mind':
         specifier: workspace:*
         version: link:../mind
 
@@ -119,10 +119,10 @@ importers:
 
   packages/tools:
     dependencies:
-      '@crix/core':
+      '@ares/core':
         specifier: workspace:*
         version: link:../core
-      '@crix/protocol':
+      '@ares/protocol':
         specifier: workspace:*
         version: link:../protocol
       zod:

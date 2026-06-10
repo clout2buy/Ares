@@ -66,7 +66,7 @@ test("chat tuning: reasoningLevel + maxOutputTokens reach the provider", async (
       };
     },
   };
-  const workspace = mkdtempSync(path.join(os.tmpdir(), "crix-budget-"));
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-budget-"));
   const session = new Session({
     workspace,
     provider,
@@ -99,7 +99,7 @@ test("chat tuning: setReasoningLevel updates the dial live", async () => {
       };
     },
   };
-  const workspace = mkdtempSync(path.join(os.tmpdir(), "crix-reason-"));
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-reason-"));
   const session = new Session({ workspace, provider, model: "m", systemPrompt: "s", tools: [], reasoningLevel: "low", contextBudgetTokens: 0 });
   for await (const _e of session.send("one")) void _e;
   session.setReasoningLevel("max");
@@ -128,7 +128,7 @@ test("chat tuning: context-limit errors retry with a smaller recent-history wind
       };
     },
   };
-  const workspace = mkdtempSync(path.join(os.tmpdir(), "crix-context-retry-"));
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-context-retry-"));
   const oldMessages = Array.from({ length: 10 }, (_, i) => textMsg(i % 2 ? "assistant" : "user", 20_000, `old_${i}`));
   const session = new Session({
     workspace,

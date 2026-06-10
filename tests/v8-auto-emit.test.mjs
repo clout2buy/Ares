@@ -22,7 +22,7 @@ import {
 } from "../packages/operator/dist/index.js";
 import { MemoryStore, mindPaths } from "../packages/mind/dist/index.js";
 
-const makeHome = () => fs.mkdtemp(path.join(os.tmpdir(), "crix-emit-"));
+const makeHome = () => fs.mkdtemp(path.join(os.tmpdir(), "ares-emit-"));
 const NOW = new Date("2026-06-02T00:00:00.000Z");
 
 function fullContract(over = {}) {

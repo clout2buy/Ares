@@ -1,6 +1,6 @@
-// Ghost Continue v1 — the continuity summarizer (Crix v6 / Phase A).
+// Ghost Continue v1 — the continuity summarizer (Ares v6 / Phase A).
 //
-// "Crix, what were we doing?" — answered from durable mission state alone.
+// "Ares, what were we doing?" — answered from durable mission state alone.
 // This is a PURE function over MissionContracts (+ Goals for human-readable
 // statements): no I/O, no mutation, no new storage. The CLI does the reading
 // and the optional enrichment (unified recall + advisory cognition); this just

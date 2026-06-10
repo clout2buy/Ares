@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// crix — v2 CLI entrypoint.
+// ares — v2 CLI entrypoint.
 //
 // Commands:
-//   crix chat                                      interactive terminal loop
-//   crix run --goal "<text>" [--provider openai|ollama] [--model X]
-//   crix login                                      OAuth device-code
-//   crix doctor                                     auth + ollama health
-//   crix help
+//   ares chat                                      interactive terminal loop
+//   ares run --goal "<text>" [--provider openai|ollama] [--model X]
+//   ares login                                      OAuth device-code
+//   ares doctor                                     auth + ollama health
+//   ares help
 //
 // `run` emits NDJSON for automation; `chat` renders a human terminal loop.
 
@@ -17,7 +17,7 @@ import {
   OpenRouterProvider,
   OllamaCloudPool,
   DEFAULT_OLLAMA_SLOTS,
-  CrixSubagentRunner,
+  AresSubagentRunner,
   SubagentRegistry,
   ContinuousVerifier,
   HookManager,
@@ -36,7 +36,7 @@ import {
   type ToolCallContext,
   type Provider,
   type SessionSummary,
-  crixHome,
+  aresHome,
   routeModel,
   DEFAULT_PROVIDER_PROFILES,
   type ModelTask,
@@ -48,7 +48,7 @@ import {
   type CostPreference,
   type LatencyPreference,
   type ModelTouch,
-} from "@crix/core";
+} from "@ares/core";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -82,10 +82,10 @@ import {
   type PathPermissionStore,
   type CommandPermissionStore,
   type SubModelPool,
-} from "@crix/tools";
-import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect, ReasoningLevel } from "@crix/protocol";
-import { isReasoningLevel, reasoningLabel, REASONING_LEVELS } from "@crix/protocol";
-import type { ToolPermissionRequest, RouteAssignments } from "@crix/core";
+} from "@ares/tools";
+import type { ContentBlock, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect, ReasoningLevel } from "@ares/protocol";
+import { isReasoningLevel, reasoningLabel, REASONING_LEVELS } from "@ares/protocol";
+import type { ToolPermissionRequest, RouteAssignments } from "@ares/core";
 import { z } from "zod";
 import {
   chatHeader,
@@ -109,18 +109,18 @@ import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTu
 import { runInkLauncher } from "./inkLauncher.js";
 import { loadUiSettings, updateUiSettings, type UiSettings } from "./uiSettings.js";
 
-// Crix talks to the LOCAL Ollama daemon (native /api/chat) by default — it
+// Ares talks to the LOCAL Ollama daemon (native /api/chat) by default — it
 // proxies :cloud models via your `ollama signin`. We do NOT auto-flip into
 // Anthropic-compat from stray ANTHROPIC_* env (those are common from other
 // tools and would hijack the call into a key-required endpoint → 401). Compat
-// is opt-in only via CRIX_OLLAMA_ANTHROPIC_COMPAT=1.
+// is opt-in only via ARES_OLLAMA_ANTHROPIC_COMPAT=1.
 const NATIVE_OLLAMA_OPTS = {
-  useAnthropicCompat: process.env.CRIX_OLLAMA_ANTHROPIC_COMPAT === "1",
+  useAnthropicCompat: process.env.ARES_OLLAMA_ANTHROPIC_COMPAT === "1",
   host: process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434",
 } as const;
 import {
   BootstrapTool,
-  CrixAgentRuntime,
+  AresAgentRuntime,
   MissionTool,
   RunSkillTool,
   SelfEvolveTool,
@@ -128,7 +128,7 @@ import {
   SkillCraftTool,
   completeBootstrap,
   createMemoryStore,
-  crixAgentHome,
+  aresAgentHome,
   deliberateForTurn,
   recordCardMemoryOnce,
   emitLifecycle,
@@ -139,13 +139,13 @@ import {
   listSnapshots,
   loadAgentConfig,
   onLifecycle,
-  prepareCrixAgent,
+  prepareAresAgent,
   restoreSnapshot,
   runDeepDream,
   runRemDream,
   snapshotBrain,
   unifiedRecallForTurn,
-} from "@crix/agent";
+} from "@ares/agent";
 import {
   QueryEngineDispatcher,
   acquireCapability,
@@ -177,7 +177,7 @@ import {
   summarizeContinuity,
   type ContinuitySummary,
   assembleWorldGraph,
-  CRIX_SUBSYSTEMS,
+  ARES_SUBSYSTEMS,
   type WorldGraph,
   rankBriefing,
   type DailyBriefing,
@@ -204,8 +204,8 @@ import {
   type EvalReport,
   type EvalTask,
   type VerificationSpec,
-} from "@crix/operator";
-import { buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, type MemoryKind } from "@crix/mind";
+} from "@ares/operator";
+import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, type MemoryKind } from "@ares/mind";
 import {
   Filmstrip,
   clickEffect,
@@ -213,8 +213,8 @@ import {
   fillEffect,
   navigateEffect,
   type BrowserConnector,
-} from "@crix/connectors";
-import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect } from "@crix/effects";
+} from "@ares/connectors";
+import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect } from "@ares/effects";
 
 interface ParsedArgs {
   command: string;
@@ -252,61 +252,61 @@ function parseArgs(argv: string[]): ParsedArgs {
 function printHelp(): void {
   process.stdout.write(
     [
-      "crix v0.3.0-alpha.1 — streaming coding-agent harness",
+      "ares v0.3.0-alpha.1 — streaming coding-agent harness",
       "",
       "Commands:",
-      "  crix launcher                                Open the provider/model launch deck.",
-      "  crix chat [--provider openai|ollama|mock] [--model X]",
+      "  ares launcher                                Open the provider/model launch deck.",
+      "  ares chat [--provider openai|ollama|mock] [--model X]",
       "                              Open an interactive terminal prompt.",
-      "  crix sessions               List saved workspace sessions.",
-      "  crix checkpoints            List workspace checkpoints.",
-      "  crix resume [session-id]     Resume a saved session (defaults to latest).",
-      "  crix themes                 List terminal UI themes.",
-      "  crix run --goal \"<text>\" [--provider openai|ollama|mock] [--model X]",
+      "  ares sessions               List saved workspace sessions.",
+      "  ares checkpoints            List workspace checkpoints.",
+      "  ares resume [session-id]     Resume a saved session (defaults to latest).",
+      "  ares themes                 List terminal UI themes.",
+      "  ares run --goal \"<text>\" [--provider openai|ollama|mock] [--model X]",
       "                              Run one turn, streaming TurnEvents as NDJSON.",
-      "  crix daemon --json          Run NDJSON daemon mode for companion UIs.",
-      "  crix agent bootstrap        Create or complete the v4 mind scaffold.",
-      "  crix agent doctor           Show agent memory/backend status.",
-      "  crix operator add --goal \"<text>\"    Create a durable long-horizon goal.",
+      "  ares daemon --json          Run NDJSON daemon mode for companion UIs.",
+      "  ares agent bootstrap        Create or complete the v4 mind scaffold.",
+      "  ares agent doctor           Show agent memory/backend status.",
+      "  ares operator add --goal \"<text>\"    Create a durable long-horizon goal.",
       "                              Optional: --criteria \"A;B\" --constraint \"C\" --verify-file path [--verify-contains text].",
-      "  crix operator draft --capability \"<name>\"",
+      "  ares operator draft --capability \"<name>\"",
       "                              Draft a capability before promotion.",
-      "  crix operator acquire --capability \"email connector\" [--kind connector] [--ticks N]",
+      "  ares operator acquire --capability \"email connector\" [--kind connector] [--ticks N]",
       "                              Register a missing capability and create its self-build goal.",
-      "  crix operator promote --capability <id> --eval-report report.json [--evidence \"...\"]",
+      "  ares operator promote --capability <id> --eval-report report.json [--evidence \"...\"]",
       "                              Promote only after verified outcomes, evidence, and evals.",
-      "  crix operator review [--capability <id>] [--json]",
+      "  ares operator review [--capability <id>] [--json]",
       "                              Inspect capability promotion/rejection status.",
-      "  crix operator missions [--json]       Inspect mission contracts.",
-      "  crix operator mission status <id> [--json]",
+      "  ares operator missions [--json]       Inspect mission contracts.",
+      "  ares operator mission status <id> [--json]",
       "                              Inspect one mission contract.",
-      "  crix operator list | status [id]     Inspect Operator goals.",
-      "  crix operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
+      "  ares operator list | status [id]     Inspect Operator goals.",
+      "  ares operator run [--goal \"<text>\"] [--ticks N] [--provider X]",
       "                              Drive active goals via ephemeral QueryEngine workers.",
-      "  crix operator caps | stats | attention [--json]",
+      "  ares operator caps | stats | attention [--json]",
       "                              Inspect capabilities, growth curve, and current attention queue.",
-      "  crix mind recall \"<cue>\" [--json]   Spreading-activation recall from Living Memory.",
-      "  crix mind add --content \"<text>\" [--kind episodic|semantic|procedural]",
-      "  crix mind list | doctor | consolidate [--json]",
+      "  ares mind recall \"<cue>\" [--json]   Spreading-activation recall from Living Memory.",
+      "  ares mind add --content \"<text>\" [--kind episodic|semantic|procedural]",
+      "  ares mind list | doctor | consolidate [--json]",
       "                              Inspect, diagnose, or sleep-consolidate memory.",
-      "  crix eval [--json]         Run the built-in harness regression eval suite.",
-      "  crix login                  ChatGPT OAuth device-code flow.",
-      "  crix doctor                 Show provider auth + Ollama Cloud health.",
-      "  crix help                   Print this help.",
+      "  ares eval [--json]         Run the built-in harness regression eval suite.",
+      "  ares login                  ChatGPT OAuth device-code flow.",
+      "  ares doctor                 Show provider auth + Ollama Cloud health.",
+      "  ares help                   Print this help.",
       "",
       "Env vars:",
-      "  CRIX_OPENAI_OAUTH_TOKEN     ChatGPT OAuth access token (bypass file login).",
-      "  CRIX_REASONER, CRIX_APPLY, CRIX_SUMMARIZE",
+      "  ARES_OPENAI_OAUTH_TOKEN     ChatGPT OAuth access token (bypass file login).",
+      "  ARES_REASONER, ARES_APPLY, ARES_SUMMARIZE",
       "                              Override Ollama Cloud slot models.",
-      "  CRIX_HOME                   Override auth/config dir (default ~/.crix).",
-      "  CRIX_RESUME_MESSAGES        Max replay messages before compaction (default 80, 0=all).",
-      "  CRIX_THEME                  UI theme: cyberpunk, minimal, matrix, neon, split, professional, amber, dashboard, light.",
+      "  ARES_HOME                   Override auth/config dir (default ~/.ares).",
+      "  ARES_RESUME_MESSAGES        Max replay messages before compaction (default 80, 0=all).",
+      "  ARES_THEME                  UI theme: cyberpunk, minimal, matrix, neon, split, professional, amber, dashboard, light.",
       "",
       "Flags:",
       "  --theme NAME                Use a UI theme for this run.",
-      "  --workspace PATH            Run Crix against a specific workspace.",
+      "  --workspace PATH            Run Ares against a specific workspace.",
       "",
-      "Double-click crix.bat or run `crix chat` for the interactive prompt.",
+      "Double-click ares.bat or run `ares chat` for the interactive prompt.",
       "",
     ].join("\n"),
   );
@@ -334,24 +334,24 @@ interface LiveSession {
   session: Session;
   selection: ProviderSelection;
   context: CliRuntimeContext;
-  runtime: CrixRuntimeState;
+  runtime: AresRuntimeState;
   verifier: ContinuousVerifier;
   hooks: HookManager;
   shellRegistry: ShellRegistry;
   todoStore: TodoStore;
-  agentRuntime?: CrixAgentRuntime;
+  agentRuntime?: AresAgentRuntime;
   queueSystemReminder(text: string, source?: ManualReminderSource): void;
   resumed?: ResumedSessionInfo;
 }
 
-interface CrixRuntimeState {
+interface AresRuntimeState {
   permissionMode: PermissionMode;
 }
 
 interface CliRuntimeContext {
   workspace: string;
   home: string;
-  crixHome: string;
+  aresHome: string;
   mind: ReturnType<typeof mindPaths>;
   effects: ReturnType<typeof effectsPaths>;
   selfTerritoryRoots: string[];
@@ -360,11 +360,11 @@ interface CliRuntimeContext {
 
 function cliRuntimeContext(options: { workspace?: string; home?: string } = {}): CliRuntimeContext {
   const workspace = path.resolve(options.workspace ?? process.cwd());
-  const home = crixAgentHome(options.home);
+  const home = aresAgentHome(options.home);
   return {
     workspace,
     home,
-    crixHome: crixHome(),
+    aresHome: aresHome(),
     mind: mindPaths(home),
     effects: effectsPaths(home),
     selfTerritoryRoots: [home],
@@ -541,7 +541,7 @@ async function selectProvider(flags: Map<string, string>): Promise<ProviderSelec
     const provider = new OpenAIResponsesProvider();
     return {
       provider,
-      model: requestedModel ?? process.env.CRIX_OPENAI_MODEL ?? settings.lastOpenAIModel ?? "gpt-5.5",
+      model: requestedModel ?? process.env.ARES_OPENAI_MODEL ?? settings.lastOpenAIModel ?? "gpt-5.5",
       source: explicit ? "explicit:openai" : preferred ? "settings:openai" : "auto:openai",
     };
   }
@@ -587,7 +587,7 @@ interface StoredPathPermissions {
   alwaysAllow: StoredPathGrant[];
 }
 
-class CrixPathPermissionStore implements PathPermissionStore {
+class AresPathPermissionStore implements PathPermissionStore {
   private onceAllow: StoredPathGrant[] = [];
 
   private constructor(
@@ -596,8 +596,8 @@ class CrixPathPermissionStore implements PathPermissionStore {
     private readonly persisted: StoredPathPermissions,
   ) {}
 
-  static async load(context: CliRuntimeContext): Promise<CrixPathPermissionStore> {
-    const filePath = path.join(context.crixHome, "path-permissions.json");
+  static async load(context: CliRuntimeContext): Promise<AresPathPermissionStore> {
+    const filePath = path.join(context.aresHome, "path-permissions.json");
     let persisted: StoredPathPermissions = { alwaysAllow: [] };
     try {
       persisted = JSON.parse(await readFile(filePath, "utf8")) as StoredPathPermissions;
@@ -605,7 +605,7 @@ class CrixPathPermissionStore implements PathPermissionStore {
     } catch {
       // First run.
     }
-    return new CrixPathPermissionStore(filePath, context.home, persisted);
+    return new AresPathPermissionStore(filePath, context.home, persisted);
   }
 
   isAllowed(absPath: string, access: PathAccess): boolean {
@@ -639,13 +639,13 @@ interface StoredCommandPermissions {
   }>;
 }
 
-class CrixCommandPermissionStore implements CommandPermissionStore {
+class AresCommandPermissionStore implements CommandPermissionStore {
   private constructor(private readonly rules: PermissionRule[]) {}
 
-  static async load(context: CliRuntimeContext): Promise<CrixCommandPermissionStore> {
+  static async load(context: CliRuntimeContext): Promise<AresCommandPermissionStore> {
     const files = [
-      path.join(context.crixHome, "command-permissions.json"),
-      path.join(context.workspace, ".crix", "command-permissions.json"),
+      path.join(context.aresHome, "command-permissions.json"),
+      path.join(context.workspace, ".ares", "command-permissions.json"),
     ];
     const rules: PermissionRule[] = [];
     for (const file of files) {
@@ -655,14 +655,14 @@ class CrixCommandPermissionStore implements CommandPermissionStore {
           rules.push({
             pattern: rule.pattern,
             effect: rule.effect,
-            source: file.startsWith(path.join(context.workspace, ".crix")) ? "project" : "user-global",
+            source: file.startsWith(path.join(context.workspace, ".ares")) ? "project" : "user-global",
           });
         }
       } catch {
         // No command rules configured.
       }
     }
-    return new CrixCommandPermissionStore(rules);
+    return new AresCommandPermissionStore(rules);
   }
 
   decide(toolName: string, command: string) {
@@ -788,7 +788,7 @@ async function buildEngineTools(
   pathPermissions: PathPermissionStore,
   commandPermissions: CommandPermissionStore,
   selection: ProviderSelection,
-  runtime: CrixRuntimeState,
+  runtime: AresRuntimeState,
   context: CliRuntimeContext,
   shellRegistry: ShellRegistry,
   todoStore: TodoStore,
@@ -830,7 +830,7 @@ async function buildEngineTools(
     return adapted as EngineTool;
   });
 
-  const runner = new CrixSubagentRunner({
+  const runner = new AresSubagentRunner({
     registry: new SubagentRegistry(),
     provider: selection.provider,
     model: selection.model,
@@ -877,7 +877,7 @@ function makeLivingMindTool(context: CliRuntimeContext) {
   return buildTool({
     name: "LivingMind",
     description:
-      "Use Crix's V6 Living Memory naturally, with no keyword needed: remember durable facts, recall by association, inspect the mind, and consolidate recurring experiences into semantic knowledge.",
+      "Use Ares's V6 Living Memory naturally, with no keyword needed: remember durable facts, recall by association, inspect the mind, and consolidate recurring experiences into semantic knowledge.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: livingMindInput,
@@ -962,7 +962,7 @@ const operatorChatInput = z
     requires: z.array(z.string()).optional().describe("Reusable subskills this capability composes from."),
     targetFiles: z.array(z.string()).optional().describe("Expected files/skill paths the worker should create or edit."),
     id: z.string().optional().describe("Goal id for status/run."),
-    ticks: z.number().int().min(0).max(20).optional().describe("Maximum ticks to run now. For acquire, defaults to 1 so Crix starts building immediately; pass 0 to only queue."),
+    ticks: z.number().int().min(0).max(20).optional().describe("Maximum ticks to run now. For acquire, defaults to 1 so Ares starts building immediately; pass 0 to only queue."),
     verification: verificationInput.optional().describe("Reality probe that decides whether the goal is truly met."),
   })
   .strict();
@@ -975,14 +975,14 @@ interface OperatorChatOutput {
 
 function makeOperatorChatTool(opts: {
   selection: ProviderSelection;
-  runtime: CrixRuntimeState;
+  runtime: AresRuntimeState;
   context: CliRuntimeContext;
   workerTools: readonly EngineTool[];
 }) {
   return buildTool({
     name: "Operator",
     description:
-      "Crix's durable will and self-acquisition loop. Use it for long-horizon goals that should survive turns, and when a capability is missing use action=acquire to create the build packet, graph node, verification probe, and start a fresh Worker building it.",
+      "Ares's durable will and self-acquisition loop. Use it for long-horizon goals that should survive turns, and when a capability is missing use action=acquire to create the build packet, graph node, verification probe, and start a fresh Worker building it.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: operatorChatInput,
@@ -1216,7 +1216,7 @@ function makeBrowserTool(context: CliRuntimeContext) {
   return buildTool({
     name: "Browser",
     description:
-      "Crix's DOM-first eyes and hands for the web. Use APIs/MCP/CLI first when better, then this browser connector to open pages, inspect the accessibility tree, fill forms, click controls, screenshot, and record visual proof. Run HEADLESS by default (the owner does not want to see the browser) — only open it visibly (headless:false) when they explicitly ask to watch. When the task is to find/show images, gather the image URLs and put them in your reply; the chat renders image URLs as inline pictures.",
+      "Ares's DOM-first eyes and hands for the web. Use APIs/MCP/CLI first when better, then this browser connector to open pages, inspect the accessibility tree, fill forms, click controls, screenshot, and record visual proof. Run HEADLESS by default (the owner does not want to see the browser) — only open it visibly (headless:false) when they explicitly ask to watch. When the task is to find/show images, gather the image URLs and put them in your reply; the chat renders image URLs as inline pictures.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: browserInput,
@@ -1355,19 +1355,19 @@ async function createSession(
 // translate it. The context budget trims oldest history so a long thread or a
 // vision message can never hard-fail with context_length_exceeded.
 function resolveReasoningLevel(settings: UiSettings): ReasoningLevel {
-  const env = process.env.CRIX_REASONING_LEVEL?.toLowerCase();
+  const env = process.env.ARES_REASONING_LEVEL?.toLowerCase();
   if (isReasoningLevel(env)) return env;
   if (isReasoningLevel(settings.reasoningLevel)) return settings.reasoningLevel;
   return "medium";
 }
 function chatContextBudget(selection: ProviderSelection): number {
-  const env = Number(process.env.CRIX_CONTEXT_BUDGET);
+  const env = Number(process.env.ARES_CONTEXT_BUDGET);
   if (Number.isFinite(env) && env > 0) return Math.floor(env);
   if (selection.provider.name.startsWith("ollama-cloud")) return 24_000;
   return 64_000;
 }
 function chatMaxOutputTokens(): number {
-  return Number(process.env.CRIX_MAX_OUTPUT_TOKENS) || 8192;
+  return Number(process.env.ARES_MAX_OUTPUT_TOKENS) || 8192;
 }
 
 async function createSessionWithSelection(
@@ -1377,8 +1377,8 @@ async function createSessionWithSelection(
   requestPermission: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision> = promptPermission,
 ): Promise<LiveSession> {
   const context = cliRuntimeContext();
-  const pathPermissions = await CrixPathPermissionStore.load(context);
-  const commandPermissions = await CrixCommandPermissionStore.load(context);
+  const pathPermissions = await AresPathPermissionStore.load(context);
+  const commandPermissions = await AresCommandPermissionStore.load(context);
   const settings = await loadUiSettings();
   // Unleashed by default — this is the owner's own agent on the owner's machine
   // (the M0 posture: permissive default, owner holds the dial). Tool calls run
@@ -1387,7 +1387,7 @@ async function createSessionWithSelection(
   // irreversible OUTWARD actions). The owner can re-guard anytime with /code or
   // /plan, which persists `dangerousBypass: false`.
   const guarded = settings.dangerousBypass === false;
-  const runtime: CrixRuntimeState = { permissionMode: guarded ? "workspace-write" : "bypass" };
+  const runtime: AresRuntimeState = { permissionMode: guarded ? "workspace-write" : "bypass" };
   const shellRegistry = new ShellRegistry();
   const todoStore = new TodoStore();
   const verifier = new ContinuousVerifier({
@@ -1401,9 +1401,9 @@ async function createSessionWithSelection(
   const startupReminders = await loadStartupReminders(context.workspace);
   const isMockProvider = selection.provider.name === "mock" || selection.provider.name.startsWith("mock-");
   const agentEnabled =
-    process.env.CRIX_AGENT_ENABLED === "1" ||
-    (!isMockProvider && process.env.CRIX_AGENT_ENABLED !== "0");
-  const agent = await prepareCrixAgent({
+    process.env.ARES_AGENT_ENABLED === "1" ||
+    (!isMockProvider && process.env.ARES_AGENT_ENABLED !== "0");
+  const agent = await prepareAresAgent({
     workspace: context.workspace,
     enabled: agentEnabled,
   });
@@ -1470,7 +1470,7 @@ async function createSessionWithSelection(
       todoStore,
       queueSystemReminder,
     };
-    live.agentRuntime = new CrixAgentRuntime(agent, {
+    live.agentRuntime = new AresAgentRuntime(agent, {
       workspace: context.workspace,
       sessionId: session.meta.id,
       queueReminder: (text, source) => queueSystemReminder(text, source),
@@ -1493,7 +1493,7 @@ async function createSessionWithSelection(
     contextBudgetTokens: chatContextBudget(selection),
   });
   const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, queueSystemReminder };
-  live.agentRuntime = new CrixAgentRuntime(agent, {
+  live.agentRuntime = new AresAgentRuntime(agent, {
     workspace: context.workspace,
     sessionId: session.meta.id,
     queueReminder: (text, source) => queueSystemReminder(text, source),
@@ -1562,7 +1562,7 @@ function inkHelpLines(): string[] {
     "/doctor                Provider and runtime status.",
     "/themes                Show installed UI themes.",
     "/theme <name>          Switch theme without restarting.",
-    "/sessions              List saved .crix sessions for this workspace.",
+    "/sessions              List saved .ares sessions for this workspace.",
     "/plan                  Enter read-only planning mode.",
     "/code                  Exit planning mode and allow workspace writes.",
     "/danger                Toggle bypass mode for tool prompts.",
@@ -1572,7 +1572,7 @@ function inkHelpLines(): string[] {
     "/rollback <id>         Restore a checkpoint snapshot.",
     "/resume [id|last]      Replay a saved session into model context.",
     "/workspace <path>      Switch the active workspace for tool calls.",
-    "/exit                  Close Crix.",
+    "/exit                  Close Ares.",
   ];
 }
 
@@ -1582,7 +1582,7 @@ function themeLines(): string[] {
 
 function currentThemeNameSafe(): string {
   try {
-    return process.env.CRIX_THEME ?? "amber";
+    return process.env.ARES_THEME ?? "amber";
   } catch {
     return "amber";
   }
@@ -1668,7 +1668,7 @@ async function undoLines(live: LiveSession, rawDepth = ""): Promise<string[]> {
 }
 
 function resumeMessageLimit(): number | undefined {
-  const raw = process.env.CRIX_RESUME_MESSAGES;
+  const raw = process.env.ARES_RESUME_MESSAGES;
   if (!raw) return 80;
   if (raw === "0" || raw.toLowerCase() === "all") return undefined;
   const parsed = Number(raw);
@@ -1762,8 +1762,8 @@ function usageMeter(usage: { inputTokens: number; outputTokens: number; cacheRea
   const cached = usage.cacheReadTokens ?? 0;
   const denom = usage.inputTokens + cached;
   const cachePct = denom > 0 ? Math.round((cached / denom) * 100) : 0;
-  const inputPerM = Number(process.env.CRIX_COST_INPUT_PER_MTOK ?? 0);
-  const outputPerM = Number(process.env.CRIX_COST_OUTPUT_PER_MTOK ?? 0);
+  const inputPerM = Number(process.env.ARES_COST_INPUT_PER_MTOK ?? 0);
+  const outputPerM = Number(process.env.ARES_COST_OUTPUT_PER_MTOK ?? 0);
   const cost =
     Number.isFinite(inputPerM) && Number.isFinite(outputPerM) && (inputPerM > 0 || outputPerM > 0)
       ? `$${(((Math.max(0, usage.inputTokens - cached) / 1_000_000) * inputPerM) + ((usage.outputTokens / 1_000_000) * outputPerM)).toFixed(4)}`
@@ -1789,7 +1789,7 @@ async function runCommand(args: ParsedArgs): Promise<number> {
   }
 
   process.stderr.write(
-    `crix: provider=${live.selection.provider.name} model=${live.selection.model} source=${live.selection.source} session=${live.session.meta.id}\n`,
+    `ares: provider=${live.selection.provider.name} model=${live.selection.model} source=${live.selection.source} session=${live.session.meta.id}\n`,
   );
 
   const unsubLifecycle = onLifecycle((event) => {
@@ -1879,7 +1879,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       }
       if (command.type === "routing") {
         // Owner per-lane model assignments. Normalize {provider,model} → {family,model}
-        // and persist; the live turn resolves via @crix/core resolveRoute().
+        // and persist; the live turn resolves via @ares/core resolveRoute().
         const routing = normalizeRoutingCommand(command.routing);
         await updateUiSettings({ routing });
         process.stdout.write(JSON.stringify({ type: "routing_set", routing }) + "\n");
@@ -1923,7 +1923,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
 
 async function agentCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "doctor";
-  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.CRIX_HOME });
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
   const home = context.home;
   if (subcommand === "bootstrap") {
     const shouldComplete = args.flags.has("user") || args.flags.has("name");
@@ -1939,7 +1939,7 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
         languages: args.flags.get("languages") ?? "TypeScript",
         style: args.flags.get("style") ?? "direct, pragmatic, verify before claiming done",
         conventions: args.flags.get("conventions") ?? "follow project-local patterns",
-        agentName: args.flags.get("name") ?? "Crix",
+        agentName: args.flags.get("name") ?? "Ares",
         creature: args.flags.get("creature") ?? "coding agent",
         vibe: args.flags.get("vibe") ?? "direct",
         emoji: args.flags.get("emoji") ?? "*",
@@ -1998,7 +1998,7 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "restore") {
     const id = args.positionals[1] ?? args.flags.get("id");
     if (!id) {
-      process.stderr.write("error: crix agent restore <snapshot-id>\n");
+      process.stderr.write("error: ares agent restore <snapshot-id>\n");
       return 2;
     }
     const result = await restoreSnapshot({ home, id });
@@ -2009,7 +2009,7 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
     return 0;
   }
   if (subcommand === "backup") {
-    const dest = args.flags.get("dest") ?? args.positionals[1] ?? path.join(context.workspace, `crix-agent-backup-${Date.now()}.json`);
+    const dest = args.flags.get("dest") ?? args.positionals[1] ?? path.join(context.workspace, `ares-agent-backup-${Date.now()}.json`);
     const result = await exportHome({ home, dest });
     process.stdout.write(notice("Agent Backup", [
       `wrote ${result.files} file(s) / ${result.bytes} bytes`,
@@ -2020,7 +2020,7 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "import") {
     const source = args.flags.get("source") ?? args.positionals[1];
     if (!source) {
-      process.stderr.write("error: crix agent import <backup.json> [--overwrite]\n");
+      process.stderr.write("error: ares agent import <backup.json> [--overwrite]\n");
       return 2;
     }
     const overwrite = args.flags.get("overwrite") === "true" || args.flags.has("overwrite");
@@ -2031,16 +2031,16 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
     ], "success"));
     return 0;
   }
-  process.stderr.write("error: usage: crix agent <bootstrap|doctor|dream|snapshot|snapshots|restore|backup|import>\n");
+  process.stderr.write("error: usage: ares agent <bootstrap|doctor|dream|snapshot|snapshots|restore|backup|import>\n");
   return 2;
 }
 
 async function evalCommand(args: ParsedArgs): Promise<number> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "crix-eval-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "ares-eval-"));
   const tasks = builtInEvalTasks();
   let report: EvalReport;
   try {
-    report = await runEvalSuite(tasks, { suite: "crix builtin", workspace: root });
+    report = await runEvalSuite(tasks, { suite: "ares builtin", workspace: root });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2050,7 +2050,7 @@ async function evalCommand(args: ParsedArgs): Promise<number> {
     return report.failed > 0 ? 1 : 0;
   }
 
-  process.stdout.write(`crix eval: ${report.total} task(s)\n`);
+  process.stdout.write(`ares eval: ${report.total} task(s)\n`);
   for (const result of report.results) {
     const prefix = result.status === "passed" ? "ok  " : "fail";
     process.stdout.write(`${prefix} ${result.name}${result.error ? `: ${result.error}` : ""}\n`);
@@ -2168,14 +2168,14 @@ function builtInEvalTasks(): EvalTask[] {
       },
     },
     {
-      id: "startup-crix-md",
-      name: "Startup context loads CRIX.md",
+      id: "startup-ares-md",
+      name: "Startup context loads ARES.md",
       category: "startup",
       async run({ workspace }) {
-        await writeEvalFile(workspace, "CRIX.md", "Project rule: use tabs.\n");
+        await writeEvalFile(workspace, "ARES.md", "Project rule: use tabs.\n");
         const reminders = await loadStartupReminders(workspace);
-        assertEval(reminders.some((r) => r.source === "instructions" && r.text.includes("use tabs")), "CRIX.md not loaded");
-        return { evidence: ["Startup reminders included CRIX.md instructions."] };
+        assertEval(reminders.some((r) => r.source === "instructions" && r.text.includes("use tabs")), "ARES.md not loaded");
+        return { evidence: ["Startup reminders included ARES.md instructions."] };
       },
     },
     {
@@ -2272,7 +2272,7 @@ async function rollbackCommand(id: string): Promise<number> {
 
 function themesCommand(): number {
   process.stdout.write(themesList());
-  process.stdout.write(`\nUse --theme <name> for one run, or crix theme <name> / /theme <name> to save it.\n`);
+  process.stdout.write(`\nUse --theme <name> for one run, or ares theme <name> / /theme <name> to save it.\n`);
   return 0;
 }
 
@@ -2338,7 +2338,7 @@ function continuityLines(summary: ContinuitySummary): string[] {
   if (summary.empty) {
     return [
       "Clean slate — no missions on record yet.",
-      'Start one with: crix operator add --goal "<what you want done>"',
+      'Start one with: ares operator add --goal "<what you want done>"',
     ];
   }
   const lines: string[] = [];
@@ -2411,7 +2411,7 @@ async function recapCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
-// ─── World Graph (Nexus Phase 1) — crix world / /world ───────────────────────
+// ─── World Graph (Nexus Phase 1) — ares world / /world ───────────────────────
 
 async function buildWorldGraph(context = cliRuntimeContext()): Promise<WorldGraph> {
   const [contracts, goals, lessons] = await Promise.all([
@@ -2430,7 +2430,7 @@ async function buildWorldGraph(context = cliRuntimeContext()): Promise<WorldGrap
   } catch {
     // memory is optional — the graph still maps missions/lessons/subsystems
   }
-  return assembleWorldGraph({ projectName: "Crix", contracts, goals, lessons, memory, subsystems: CRIX_SUBSYSTEMS });
+  return assembleWorldGraph({ projectName: "Ares", contracts, goals, lessons, memory, subsystems: ARES_SUBSYSTEMS });
 }
 
 function worldGraphLines(graph: WorldGraph): string[] {
@@ -2471,7 +2471,7 @@ function worldGraphLines(graph: WorldGraph): string[] {
   }
 
   if (c.mission === 0 && c.lesson === 0) {
-    lines.push("", "No missions or lessons yet — the map fills in as you run missions (crix operator add).");
+    lines.push("", "No missions or lessons yet — the map fills in as you run missions (ares operator add).");
   }
   return lines;
 }
@@ -2491,7 +2491,7 @@ async function worldCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
-// ─── Proactive Daily Briefing (Nexus Phase 1) — crix today / briefing / /today ─
+// ─── Proactive Daily Briefing (Nexus Phase 1) — ares today / briefing / /today ─
 
 async function buildBriefing(context = cliRuntimeContext()): Promise<DailyBriefing> {
   // Reuse the continuity summary (mission buckets + read-only advisory) and the
@@ -2548,7 +2548,7 @@ async function todayCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
-// ─── Model Router foundation (Nexus Phase 1) — crix models route ─────────────
+// ─── Model Router foundation (Nexus Phase 1) — ares models route ─────────────
 
 const MODEL_TASK_KINDS = ["chat", "code", "planning", "summarization", "memory", "review", "vision", "workshop", "tool-output-summary"];
 
@@ -2598,7 +2598,7 @@ async function modelsCommand(args: ParsedArgs): Promise<number> {
   if (sub !== "route") {
     process.stderr.write(
       `unknown models subcommand: ${sub}\n` +
-        "usage: crix models route --task <kind> [--risk low|medium|high] [--privacy local-preferred|cloud-ok|…] [--quality fast|balanced|best] [--cost cheap|balanced|premium-ok] [--latency low|normal|patient] [--context N] [--touches a,b] [--json]\n",
+        "usage: ares models route --task <kind> [--risk low|medium|high] [--privacy local-preferred|cloud-ok|…] [--quality fast|balanced|best] [--cost cheap|balanced|premium-ok] [--latency low|normal|patient] [--context N] [--touches a,b] [--json]\n",
     );
     return 2;
   }
@@ -2616,7 +2616,7 @@ async function modelsCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
-// ─── Mission Learning Cards (Phase B v1) — crix mission learn/lessons/lesson ──
+// ─── Mission Learning Cards (Phase B v1) — ares mission learn/lessons/lesson ──
 
 function lessonLine(card: LearningCard): string {
   return `[${card.result}] ${compactLine(card.intent, 80)} · ${Math.round(card.confidence * 100)}% · ${card.id}`;
@@ -2654,7 +2654,7 @@ async function missionCommand(args: ParsedArgs): Promise<number> {
     if (subcommand === "learn") {
       const contractId = args.positionals[1] ?? args.flags.get("contract");
       if (!contractId) {
-        process.stderr.write("error: usage: crix mission learn <contractId>\n");
+        process.stderr.write("error: usage: ares mission learn <contractId>\n");
         return 2;
       }
       const contract = await loadMissionContract(context.home, contractId);
@@ -2691,7 +2691,7 @@ async function missionCommand(args: ParsedArgs): Promise<number> {
         return 0;
       }
       if (cards.length === 0) {
-        process.stdout.write(notice("Lessons", ["No learning cards yet. Distill one: crix mission learn <contractId>"], "warn"));
+        process.stdout.write(notice("Lessons", ["No learning cards yet. Distill one: ares mission learn <contractId>"], "warn"));
         return 0;
       }
       process.stdout.write(notice(`Lessons · ${cards.length}`, cards.map(lessonLine), "info"));
@@ -2700,7 +2700,7 @@ async function missionCommand(args: ParsedArgs): Promise<number> {
     if (subcommand === "lesson") {
       const id = args.positionals[1];
       if (!id) {
-        process.stderr.write("error: usage: crix mission lesson <id>\n");
+        process.stderr.write("error: usage: ares mission lesson <id>\n");
         return 2;
       }
       const card = (await loadLearningCard(context.home, id)) ?? (await loadLearningCard(context.home, learningCardId(id)));
@@ -2715,7 +2715,7 @@ async function missionCommand(args: ParsedArgs): Promise<number> {
       process.stdout.write(notice(`Lesson ${card.id}`, learningCardLines(card), card.result === "success" ? "success" : "warn"));
       return 0;
     }
-    process.stderr.write("error: usage: crix mission <learn <contractId> | lessons | lesson <id>>\n");
+    process.stderr.write("error: usage: ares mission <learn <contractId> | lessons | lesson <id>>\n");
     return 2;
   } catch (err) {
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -2774,7 +2774,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     return 2;
   }
 
-  if (stdin.isTTY && stdout.isTTY && process.env.CRIX_LEGACY_TUI !== "1") {
+  if (stdin.isTTY && stdout.isTTY && process.env.ARES_LEGACY_TUI !== "1") {
     const snapshot = (): InkChatSnapshot => ({
       provider: live.selection.provider.name,
       model: live.selection.model,
@@ -3128,7 +3128,7 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
 }
 
 async function loginCommand(): Promise<number> {
-  process.stderr.write("crix: starting ChatGPT OAuth device-code flow…\n");
+  process.stderr.write("ares: starting ChatGPT OAuth device-code flow…\n");
   try {
     const file = await deviceCodeLogin({
       onDeviceCode: (code) => {
@@ -3155,7 +3155,7 @@ async function loginCommand(): Promise<number> {
 }
 
 async function doctorCommand(): Promise<number> {
-  process.stdout.write("crix doctor\n\n");
+  process.stdout.write("ares doctor\n\n");
 
   // Auth
   const auth = await authStatus();
@@ -3181,14 +3181,14 @@ async function doctorCommand(): Promise<number> {
     );
   }
   process.stdout.write("\n");
-  process.stdout.write(`crix: ${auth.configured || health.reachable ? "ready" : "no providers configured"}\n`);
+  process.stdout.write(`ares: ${auth.configured || health.reachable ? "ready" : "no providers configured"}\n`);
   return 0;
 }
 
 // ─── system prompt ─────────────────────────────────────────────────────
 
 // ─── live Mind bridge (v6) — wires Living Memory + learned capabilities into
-// the ACTUAL conversation, so Crix recalls, captures, and knows itself instead
+// the ACTUAL conversation, so Ares recalls, captures, and knows itself instead
 // of behaving like a fresh chatbot every turn. Read-only/best-effort: the Mind
 // must never break a turn.
 const LIVE_MEMORY_ITEM_CHARS = 420;
@@ -3248,7 +3248,7 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
       itemChars: LIVE_MEMORY_ITEM_CHARS,
       blockChars: LIVE_MEMORY_BLOCK_CHARS,
       vector: prepared?.enabled
-        ? { config: prepared.config, home: prepared.home, useOllama: process.env.CRIX_AGENT_OLLAMA_RECALL === "1" }
+        ? { config: prepared.config, home: prepared.home, useOllama: process.env.ARES_AGENT_OLLAMA_RECALL === "1" }
         : undefined,
     });
     if (recall.reminder) {
@@ -3268,7 +3268,7 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
     if (advisory.reminder) {
       live.queueSystemReminder(advisory.reminder, "memory");
     }
-    // Capture the user's message as an episodic memory — this is how Crix learns over time.
+    // Capture the user's message as an episodic memory — this is how Ares learns over time.
     if (intent.shouldCapture) {
       const store = await MemoryStore.open(live.context.mind.memoryFile);
       await store.add({ kind: "episodic", content: text.slice(0, 400), source: live.session.meta.id });
@@ -3292,7 +3292,7 @@ function buildSystemPrompt(permissionMode: PermissionMode = "workspace-write", c
   const cwd = context.workspace;
   const today = new Date().toISOString().slice(0, 10);
 
-  return `You are Crix, an autonomous local assistant with a powerful coding harness running in the terminal.
+  return `You are Ares, an autonomous local assistant with a powerful coding harness running in the terminal.
 
 You pair with the user as a durable local agent, not a code-only bot. Be useful, concise, and honest. Take action with tools when action is useful, and answer normally when the user is just talking.
 
@@ -3381,7 +3381,7 @@ Typical flow for engineering work:
   - Hard cap: if you've made ~6 web tool calls and have usable results, STOP and answer. Looping wastes the user's time.
 - **Browser**: HEADLESS by default. For "find/show me images": open the page, take 1-3 screenshots (which render inline in chat), then \`close\` the browser. Do NOT keep re-screenshotting or re-opening. Only open visibly when the user explicitly asks to watch.
 - **Bash run_in_background + BashOutput + KillShell**: use for dev servers, watch tasks, and long-running builds.
-- **McpListTools/McpCallTool**: use only when the user configured MCP servers in \`.crix/mcp.json\` or \`~/.crix/mcp.json\`.
+- **McpListTools/McpCallTool**: use only when the user configured MCP servers in \`.ares/mcp.json\` or \`~/.ares/mcp.json\`.
 - **SkillsList/SkillRead**: use when a reusable local workflow clearly applies.
 - **CodeMode**: use for read-heavy batch repo analysis that would otherwise require many repetitive file/tool calls.
 
@@ -3397,7 +3397,7 @@ When you reference code, use the pattern \`file_path:line_number\` so the user c
 
 ## Hooks
 
-The user may configure shell hooks (PreToolUse, PostToolUse, SessionStart) in \`.crix/hooks.json\` or \`~/.crix/hooks.json\`. If a hook blocks a tool, you'll see a \`<system-reminder>\` explaining why; adjust and try again.
+The user may configure shell hooks (PreToolUse, PostToolUse, SessionStart) in \`.ares/hooks.json\` or \`~/.ares/hooks.json\`. If a hook blocks a tool, you'll see a \`<system-reminder>\` explaining why; adjust and try again.
 
 ## Plan mode
 
@@ -3428,17 +3428,17 @@ When you finish, report what changed in 1-3 sentences (with \`file_path:line\` r
 
 // ─── main ──────────────────────────────────────────────────────────────
 
-// ─── operator command (Crix v5 / O1 — the durable autonomy spine) ──────
+// ─── operator command (Ares v5 / O1 — the durable autonomy spine) ──────
 async function operatorCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "list";
-  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.CRIX_HOME });
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
   const home = context.home;
   await seedNativeCapabilities(home).catch(() => undefined);
 
   if (subcommand === "add" || subcommand === "goal") {
     const statement = args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
     if (!statement) {
-      process.stderr.write('error: usage: crix operator add --goal "<goal>"\n');
+      process.stderr.write('error: usage: ares operator add --goal "<goal>"\n');
       return 2;
     }
     let verificationProbes: VerificationSpec[];
@@ -3474,7 +3474,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "acquire") {
     const capabilityName = args.flags.get("capability") ?? args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
     if (!capabilityName) {
-      process.stderr.write('error: usage: crix operator acquire --capability "<name>" [--kind skill|connector|tool|mcp|script]\n');
+      process.stderr.write('error: usage: ares operator acquire --capability "<name>" [--kind skill|connector|tool|mcp|script]\n');
       return 2;
     }
     const result = await acquireCapability({
@@ -3517,7 +3517,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "draft") {
     const capabilityName = args.flags.get("capability") ?? args.positionals.slice(1).join(" ").trim();
     if (!capabilityName) {
-      process.stderr.write('error: usage: crix operator draft --capability "<name>" [--requires a,b]\n');
+      process.stderr.write('error: usage: ares operator draft --capability "<name>" [--requires a,b]\n');
       return 2;
     }
     const capability = draftCapability({
@@ -3536,7 +3536,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "promote") {
     const capabilityId = args.flags.get("capability") ?? args.flags.get("id") ?? args.positionals[1];
     if (!capabilityId) {
-      process.stderr.write('error: usage: crix operator promote --capability "<id>" --eval-report report.json [--evidence "..."]\n');
+      process.stderr.write('error: usage: ares operator promote --capability "<id>" --eval-report report.json [--evidence "..."]\n');
       return 2;
     }
     const capability = await loadCapability(home, capabilityId);
@@ -3569,7 +3569,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
     const capabilityId = args.flags.get("capability") ?? args.flags.get("id") ?? args.positionals[1];
     const reason = args.flags.get("reason") ?? args.positionals.slice(2).join(" ").trim();
     if (!capabilityId || !reason) {
-      process.stderr.write('error: usage: crix operator reject --capability "<id>" --reason "<why>" [--forbidden]\n');
+      process.stderr.write('error: usage: ares operator reject --capability "<id>" --reason "<why>" [--forbidden]\n');
       return 2;
     }
     const capability = await loadCapability(home, capabilityId);
@@ -3632,12 +3632,12 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "mission") {
     const nested = args.positionals[1] ?? "status";
     if (nested !== "status") {
-      process.stderr.write('error: usage: crix operator mission status <id> [--json]\n');
+      process.stderr.write('error: usage: ares operator mission status <id> [--json]\n');
       return 2;
     }
     const id = args.positionals[2] ?? args.flags.get("id") ?? args.flags.get("mission");
     if (!id) {
-      process.stderr.write('error: usage: crix operator mission status <id> [--json]\n');
+      process.stderr.write('error: usage: ares operator mission status <id> [--json]\n');
       return 2;
     }
     const contract = await findMissionContract(home, id);
@@ -3656,7 +3656,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "list") {
     const goals = await listGoals(home);
     if (goals.length === 0) {
-      process.stdout.write(notice("Operator", ['No goals yet. Add one: crix operator add --goal "..."'], "warn"));
+      process.stdout.write(notice("Operator", ['No goals yet. Add one: ares operator add --goal "..."'], "warn"));
       return 0;
     }
     process.stdout.write(
@@ -3748,7 +3748,7 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
       return 0;
     }
     if (caps.length === 0) {
-      process.stdout.write(notice("Capabilities", ["No capabilities learned yet. They accrue as Crix masters things."], "warn"));
+      process.stdout.write(notice("Capabilities", ["No capabilities learned yet. They accrue as Ares masters things."], "warn"));
       return 0;
     }
     process.stdout.write(
@@ -4028,10 +4028,10 @@ function csvFlag(value: string | undefined): string[] | undefined {
   return parts.length ? parts : undefined;
 }
 
-// ─── mind command (Crix v6 — Living Memory feed for the UI + you) ───────
+// ─── mind command (Ares v6 — Living Memory feed for the UI + you) ───────
 async function mindCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "list";
-  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.CRIX_HOME });
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
   const home = context.home;
   const store = await MemoryStore.open(args.flags.get("root") ?? context.mind.memoryFile);
   const json = args.flags.has("json");
@@ -4039,7 +4039,7 @@ async function mindCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "add") {
     const content = args.flags.get("content") ?? args.positionals.slice(1).join(" ").trim();
     if (!content) {
-      process.stderr.write('error: usage: crix mind add --content "<text>" [--kind episodic|semantic|procedural]\n');
+      process.stderr.write('error: usage: ares mind add --content "<text>" [--kind episodic|semantic|procedural]\n');
       return 2;
     }
     const raw = args.flags.get("kind") ?? "episodic";
@@ -4056,7 +4056,7 @@ async function mindCommand(args: ParsedArgs): Promise<number> {
   if (subcommand === "recall") {
     const cue = args.flags.get("cue") ?? args.positionals.slice(1).join(" ").trim();
     if (!cue) {
-      process.stderr.write('error: usage: crix mind recall "<cue>"\n');
+      process.stderr.write('error: usage: ares mind recall "<cue>"\n');
       return 2;
     }
     const results = await store.remember(cue);
@@ -4165,6 +4165,9 @@ function statusGlyph(status: Goal["status"]): string {
 }
 
 async function main(): Promise<void> {
+  // Rebrand compat: mirror legacy CRIX_* env vars onto ARES_* before anything
+  // reads configuration.
+  bridgeLegacyEnv();
   const args = parseArgs(process.argv.slice(2));
   const requestedTheme = args.flags.get("theme");
   if (requestedTheme) {
@@ -4217,7 +4220,7 @@ async function main(): Promise<void> {
     case "theme": {
       const selected = setTheme(args.positionals[0] ?? args.flags.get("name") ?? "");
       if (!selected) {
-        process.stderr.write(`error: usage: crix theme <${availableThemes().join("|")}>\n`);
+        process.stderr.write(`error: usage: ares theme <${availableThemes().join("|")}>\n`);
         process.exit(2);
       }
       await saveTheme(selected);
@@ -4256,7 +4259,7 @@ async function main(): Promise<void> {
       printHelp();
       return;
     default:
-      process.stderr.write(`error: unknown command "${args.command}". Run \`crix help\`.\n`);
+      process.stderr.write(`error: unknown command "${args.command}". Run \`ares help\`.\n`);
       process.exit(2);
   }
 }

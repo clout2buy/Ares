@@ -1,4 +1,4 @@
-// @crix/tools — one file per tool.
+// @ares/tools — one file per tool.
 // Each exports a Tool<I, O> built with buildTool() from _shared.ts.
 
 export * from "./_shared.js";

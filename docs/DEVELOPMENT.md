@@ -1,9 +1,9 @@
-# Crix Development
+# Ares Development
 
 ## Setup
 
 ```powershell
-cd D:\Crix
+cd D:\Ares
 pnpm install
 pnpm build
 ```
@@ -21,11 +21,11 @@ pnpm verify   # lint, build, and test through the standard scripts
 pnpm clean    # remove generated build, Tauri, log, and smoke-test output
 ```
 
-The CLI entrypoint is built to `packages/cli/dist/entry.js`. Use `pnpm build` before running `pnpm crix` or before launching the desktop companion after a clean.
+The CLI entrypoint is built to `packages/cli/dist/entry.js`. Use `pnpm build` before running `pnpm ares` or before launching the desktop companion after a clean.
 
 ## Permission Posture
 
-Crix is currently tuned as a local owner-operated agent. Interactive CLI sessions start in `bypass` mode unless `%USERPROFILE%\.crix\ui.json` or `$CRIX_HOME\ui.json` contains `dangerousBypass: false`.
+Ares is currently tuned as a local owner-operated agent. Interactive CLI sessions start in `bypass` mode unless `%USERPROFILE%\.ares\ui.json` or `$ARES_HOME\ui.json` contains `dangerousBypass: false`.
 
 Permission modes:
 
@@ -33,19 +33,19 @@ Permission modes:
 - `workspace-write`: normal guarded editing mode. Workspace writes are allowed through the permission engine; external or risky operations still need explicit handling.
 - `plan`: write tools are blocked so the agent can inspect and propose changes without modifying files.
 
-Use `/plan` or `/code` to return to guarded modes. Use `/danger` or `/bypass` to toggle bypass mode. The toggle persists through `dangerousBypass` in the Crix UI settings file.
+Use `/plan` or `/code` to return to guarded modes. Use `/danger` or `/bypass` to toggle bypass mode. The toggle persists through `dangerousBypass` in the Ares UI settings file.
 
 ## Runtime State
 
-Do not store runtime state in the repository. The default durable Crix home is:
+Do not store runtime state in the repository. The default durable Ares home is:
 
 ```text
-%USERPROFILE%\.crix
+%USERPROFILE%\.ares
 ```
 
 Ignored generated output includes package `dist/`, TypeScript build-info files, Tauri build output, Tauri generated schemas, logs, and smoke-test screenshots.
 
-`pnpm clean` removes generated repository outputs, including repo-local `.crix/` session artifacts created by tests or local runs. It intentionally does not delete the durable Crix home because that can contain user memory, permissions, and identity state.
+`pnpm clean` removes generated repository outputs, including repo-local `.ares/` session artifacts created by tests or local runs. It intentionally does not delete the durable Ares home because that can contain user memory, permissions, and identity state.
 
 ## Verification Policy
 
@@ -58,4 +58,4 @@ pnpm test
 pnpm clean
 ```
 
-For user-facing CLI behavior, also run the relevant `.\crix.bat ...` command or an equivalent smoke test. For desktop UI changes, take screenshots before and after the change.
+For user-facing CLI behavior, also run the relevant `.\ares.bat ...` command or an equivalent smoke test. For desktop UI changes, take screenshots before and after the change.

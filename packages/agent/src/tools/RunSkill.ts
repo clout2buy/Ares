@@ -10,8 +10,8 @@
 // mode) the same way an outward-facing action would.
 
 import { z } from "zod";
-import { buildTool } from "@crix/tools";
-import { crixAgentHome } from "../paths.js";
+import { buildTool } from "@ares/tools";
+import { aresAgentHome } from "../paths.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
 import { runSkill } from "../skills/runtime.js";
@@ -21,7 +21,7 @@ const inputSchema = z
   .object({
     name: z
       .string()
-      .describe("Name of the skill to run (the directory under ~/.crix/skills/). Must have a handler.js."),
+      .describe("Name of the skill to run (the directory under ~/.ares/skills/). Must have a handler.js."),
     input: z
       .unknown()
       .optional()
@@ -56,7 +56,7 @@ export const RunSkillTool = buildTool({
   activityDescription: (i) => `RunSkill ${i.name}`,
 
   async call(input, ctx): Promise<{ output: RunSkillOutput; display: string }> {
-    const home = crixAgentHome(process.env.CRIX_HOME);
+    const home = aresAgentHome(process.env.ARES_HOME);
     const run = await runSkill({
       home,
       name: input.name,

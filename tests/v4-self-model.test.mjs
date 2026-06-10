@@ -1,11 +1,11 @@
-// Verifies the self-model store — the substrate that lets Crix know itself:
+// Verifies the self-model store — the substrate that lets Ares know itself:
 //   1. Empty/missing model loads as empty, never throws.
 //   2. recordOutcome upserts a new capability and folds run stats.
 //   3. Repeated outcomes accumulate runs/ok/fail + rolling avgMs.
 //   4. upsertCapability sets status; want -> have on first real outcome.
 //   5. dropCapability removes a node.
 //   6. summarizeSelf reports reliability, top + flaky lists.
-//   7. Persisted to ~/.crix/self/model.json and reloads identically.
+//   7. Persisted to ~/.ares/self/model.json and reloads identically.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -23,7 +23,7 @@ import {
 } from "../packages/agent/dist/index.js";
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-self-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-self-"));
 }
 
 test("empty model loads when nothing on disk", async () => {
@@ -95,7 +95,7 @@ test("summarizeSelf reports reliability, top + flaky", async () => {
   assert.equal(s.flaky[0].id, "skill/flak");
 });
 
-test("model persists to ~/.crix/self/model.json", async () => {
+test("model persists to ~/.ares/self/model.json", async () => {
   const home = await makeHome();
   await recordOutcome(home, { id: "skill/p", kind: "skill", ok: true, ms: 5 });
   const onDisk = JSON.parse(await fs.readFile(path.join(home, "self", "model.json"), "utf8"));

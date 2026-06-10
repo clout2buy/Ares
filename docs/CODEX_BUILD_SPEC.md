@@ -1,7 +1,7 @@
-# Crix v2 — Codex Build Spec
+# Ares v2 — Codex Build Spec
 
 > **You are GPT-5.5 running in Codex.**
-> Your job is to build Crix v2 inside `D:\Crix` from this spec.
+> Your job is to build Ares v2 inside `D:\Ares` from this spec.
 > Read `docs/BLUEPRINT.md` first for design context; this doc is the *executable* plan.
 > Work in tight commits. Verify after every step. Do not invent scope.
 
@@ -15,9 +15,9 @@
 |---|---|---|
 | **Claude Code source** | `C:\Users\Clout\Downloads\claude-code-main\claude-code-main\src` | Patterns: streaming query, per-tool files, permission flow, Ink TUI, hooks |
 | **Codex source (Rust)** | `C:\Users\Clout\Downloads\codex-main\codex-main\codex-rs` | **Vendor-with-attribution**: `apply-patch/`, `code-mode/`. Patterns: rollouts, sandbox, app-server split |
-| **System-prompt archive** | `C:\Users\Clout\Downloads\system-prompts-and-models-of-ai-tools-main\system-prompts-and-models-of-ai-tools-main` | Pattern reference for tool schemas and prompt behavior. **Never copy verbatim prose into Crix.** |
+| **System-prompt archive** | `C:\Users\Clout\Downloads\system-prompts-and-models-of-ai-tools-main\system-prompts-and-models-of-ai-tools-main` | Pattern reference for tool schemas and prompt behavior. **Never copy verbatim prose into Ares.** |
 
-**Rule:** before designing a subsystem, Read the equivalent file in the reference. Cite the path in the commit message (e.g. `// ported from claude-code-main/src/Tool.ts buildTool() pattern`). This keeps Crix grounded.
+**Rule:** before designing a subsystem, Read the equivalent file in the reference. Cite the path in the commit message (e.g. `// ported from claude-code-main/src/Tool.ts buildTool() pattern`). This keeps Ares grounded.
 
 ### 0.2 The platform
 
@@ -62,9 +62,9 @@ If any fails, fix before committing. If you can't fix, stop and ask.
 ### 1.1 Initialize git (CRITICAL — repo is currently un-versioned)
 
 ```powershell
-cd D:\Crix
+cd D:\Ares
 git init
-git config user.name "Crix Builder"
+git config user.name "Ares Builder"
 git config user.email "clout2buy@gmail.com"
 ```
 
@@ -74,7 +74,7 @@ Add comprehensive `.gitignore`:
 node_modules/
 dist/
 *.tsbuildinfo
-.crix/
+.ares/
 java/
 *.log
 .DS_Store
@@ -88,7 +88,7 @@ Stage current state for posterity:
 
 ```powershell
 git add -A
-git commit -m "snapshot: Crix v1 before v2 rebuild"
+git commit -m "snapshot: Ares v1 before v2 rebuild"
 git tag v1-archive
 ```
 
@@ -96,8 +96,8 @@ git tag v1-archive
 
 ```powershell
 Remove-Item -Recurse -Force java
-Remove-Item "crix.bat - Shortcut.lnk"
-Remove-Item -Recurse -Force .crix      # 86 stale sessions + 100 checkpoints
+Remove-Item "ares.bat - Shortcut.lnk"
+Remove-Item -Recurse -Force .ares      # 86 stale sessions + 100 checkpoints
 Remove-Item -Recurse -Force packages\core\src\kernel.ts, `
                             packages\core\src\turnEngine.ts, `
                             packages\core\src\turnIntent.ts, `
@@ -321,7 +321,7 @@ Create `packages/tools/package.json`:
 
 ```json
 {
-  "name": "@crix/tools",
+  "name": "@ares/tools",
   "version": "0.3.0-alpha.1",
   "private": true,
   "type": "module",
@@ -329,8 +329,8 @@ Create `packages/tools/package.json`:
   "types": "dist/index.d.ts",
   "scripts": { "build": "tsc -b" },
   "dependencies": {
-    "@crix/protocol": "workspace:*",
-    "@crix/core": "workspace:*",
+    "@ares/protocol": "workspace:*",
+    "@ares/core": "workspace:*",
     "zod": "^3.23.0"
   }
 }
@@ -340,7 +340,7 @@ Update root `package.json`:
 
 ```json
 {
-  "name": "crix",
+  "name": "ares",
   "version": "0.3.0-alpha.1",
   "private": true,
   "type": "module",
@@ -349,7 +349,7 @@ Update root `package.json`:
     "build": "tsc -b packages/protocol packages/core packages/tools packages/cli",
     "check": "tsc -b packages/protocol packages/core packages/tools packages/cli --pretty false",
     "test": "pnpm build && node --test tests/*.test.mjs",
-    "crix": "node packages/cli/dist/entry.js",
+    "ares": "node packages/cli/dist/entry.js",
     "verify": "pnpm check && pnpm test"
   }
 }
@@ -360,7 +360,7 @@ pnpm install
 pnpm verify   # protocol-only build; should pass
 
 git add -A
-git commit -m "M0: add @crix/tools package, drop java verify step"
+git commit -m "M0: add @ares/tools package, drop java verify step"
 ```
 
 ### 1.5 Stub the QueryEngine + mock provider
@@ -368,7 +368,7 @@ git commit -m "M0: add @crix/tools package, drop java verify step"
 Create `packages/core/src/queryEngine.ts`:
 
 ```ts
-import type { StreamEvent, TurnEvent, Message, Usage } from "@crix/protocol";
+import type { StreamEvent, TurnEvent, Message, Usage } from "@ares/protocol";
 
 export interface Provider {
   name: string;
@@ -495,7 +495,7 @@ Create `packages/core/src/providers/mock.ts`:
 
 ```ts
 import type { Provider, ProviderRequest } from "../queryEngine.js";
-import type { StreamEvent, Message } from "@crix/protocol";
+import type { StreamEvent, Message } from "@ares/protocol";
 
 /** Deterministic mock for tests. Emits a single text response then ends. */
 export class MockEchoProvider implements Provider {
@@ -530,7 +530,7 @@ Create `packages/cli/src/entry.ts` (~50 lines):
 
 ```ts
 #!/usr/bin/env node
-import { QueryEngine, MockEchoProvider } from "@crix/core";
+import { QueryEngine, MockEchoProvider } from "@ares/core";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -539,7 +539,7 @@ if (cmd === "run") {
   const goalIdx = args.indexOf("--goal");
   const goal = goalIdx >= 0 ? args[goalIdx + 1] : "hello";
   const engine = new QueryEngine(
-    { provider: new MockEchoProvider(), model: "mock", systemPrompt: "You are Crix.", tools: [] },
+    { provider: new MockEchoProvider(), model: "mock", systemPrompt: "You are Ares.", tools: [] },
     crypto.randomUUID(),
   );
   engine.appendUserMessage(goal);
@@ -547,7 +547,7 @@ if (cmd === "run") {
     process.stdout.write(JSON.stringify(ev) + "\n");
   }
 } else {
-  process.stderr.write("usage: crix run --goal \"<text>\"\n");
+  process.stderr.write("usage: ares run --goal \"<text>\"\n");
   process.exit(2);
 }
 ```
@@ -556,16 +556,16 @@ Add `packages/cli/package.json`:
 
 ```json
 {
-  "name": "@crix/cli",
+  "name": "@ares/cli",
   "version": "0.3.0-alpha.1",
   "private": true,
   "type": "module",
   "main": "dist/entry.js",
-  "bin": { "crix": "dist/entry.js" },
+  "bin": { "ares": "dist/entry.js" },
   "scripts": { "build": "tsc -b" },
   "dependencies": {
-    "@crix/protocol": "workspace:*",
-    "@crix/core": "workspace:*"
+    "@ares/protocol": "workspace:*",
+    "@ares/core": "workspace:*"
   }
 }
 ```
@@ -577,7 +577,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-test("M0: crix run emits turn_start, text_delta, message_done, turn_end", () => {
+test("M0: ares run emits turn_start, text_delta, message_done, turn_end", () => {
   const r = spawnSync("node", ["packages/cli/dist/entry.js", "run", "--goal", "ping"], { encoding: "utf8" });
   assert.equal(r.status, 0);
   const events = r.stdout.trim().split("\n").map(JSON.parse);
@@ -592,7 +592,7 @@ test("M0: crix run emits turn_start, text_delta, message_done, turn_end", () => 
 ```powershell
 pnpm verify
 git add -A
-git commit -m "M0: stub QueryEngine + mock provider + crix run NDJSON output
+git commit -m "M0: stub QueryEngine + mock provider + ares run NDJSON output
 
 - Streaming loop yields TurnEvent union (turn_start, text_delta, message_done, turn_end)
 - Mock provider proves the loop shape without network
@@ -680,16 +680,16 @@ Create `packages/tools/src/_shared.ts`:
 
 ```ts
 import { z } from "zod";
-import type { SafetyClass, Concurrency, ProviderHint, PermissionDecision, ToolSchema } from "@crix/protocol";
+import type { SafetyClass, Concurrency, ProviderHint, PermissionDecision, ToolSchema } from "@ares/protocol";
 
 export interface ToolContext {
   workspace: string;
   signal: AbortSignal;
-  permissionMode: import("@crix/protocol").PermissionMode;
+  permissionMode: import("@ares/protocol").PermissionMode;
   /** Per-tool callbacks. */
   fileReadStamps: Map<string, { mtimeMs: number; size: number }>;
   /** Provider pool, for tools that need a sub-model call. */
-  subModel: import("@crix/core").OllamaCloudPool;
+  subModel: import("@ares/core").OllamaCloudPool;
 }
 
 export interface ToolResult<O> {
@@ -824,7 +824,7 @@ Refactor `packages/core/src/openaiResponses.ts` to expose a `Provider` interface
 - Pass tools as `tools: [{ type: "function", name, description, parameters }]`
 - Translate Responses API SSE events to `StreamEvent` events
 - Support `reasoning: { effort }` for o-series-and-up models
-- Source model list from `GET /v1/models` at startup; cache 24h in `~/.crix/models.json`
+- Source model list from `GET /v1/models` at startup; cache 24h in `~/.ares/models.json`
 
 Refactor `packages/core/src/ollamaCloud.ts` to expose `OllamaCloudPool` per Blueprint §8.2. Three slots: reasoner / apply / summarize. Each call awaits its slot's `inFlight` promise to respect the 3-concurrent cap.
 
@@ -853,7 +853,7 @@ export class Session {
 }
 ```
 
-Create `packages/core/src/rollout.ts`: append-only JSONL at `<workspace>/.crix/sessions/<id>/events.jsonl`.
+Create `packages/core/src/rollout.ts`: append-only JSONL at `<workspace>/.ares/sessions/<id>/events.jsonl`.
 
 Wire `packages/cli/src/entry.ts` to a real flow:
 
@@ -870,11 +870,11 @@ for await (const ev of session.send(goal)) {
 ### 2.6 M1 ship criteria
 
 ```powershell
-crix login                                              # device-code OAuth completes
-crix run --goal "find all TODO comments and write them to TODOS.md"
+ares login                                              # device-code OAuth completes
+ares run --goal "find all TODO comments and write them to TODOS.md"
 # Output: NDJSON stream showing Glob, Grep, Write tool calls. TODOS.md exists at end.
 
-crix run --provider ollama-cloud --model qwen3-coder:480b-cloud --goal "list all .ts files in packages/core"
+ares run --provider ollama-cloud --model qwen3-coder:480b-cloud --goal "list all .ts files in packages/core"
 # Output: NDJSON with Glob tool call result.
 ```
 
@@ -888,7 +888,7 @@ git commit -m "M1: ship streaming agent with 6 tools, OpenAI + Ollama Cloud prov
 - Tools: Read, Write, Edit, Bash, PowerShell, Glob, Grep (one file each, zod schemas)
 - OpenAI Responses API native function calling
 - Ollama Cloud 3-slot pool (reasoner/apply/summarize)
-- Sessions persist to .crix/sessions/<id>/events.jsonl
+- Sessions persist to .ares/sessions/<id>/events.jsonl
 - Real model lists fetched from provider APIs at startup"
 ```
 
@@ -901,8 +901,8 @@ Stop. Confirm M1 with the user.
 ### 3.1 Install Ink
 
 ```powershell
-pnpm add ink react @types/react -F @crix/cli
-pnpm add -D @types/node -F @crix/cli
+pnpm add ink react @types/react -F @ares/cli
+pnpm add -D @types/node -F @ares/cli
 ```
 
 Use Ink 5.x. Module type: ESM. JSX runtime: React 18 automatic.
@@ -914,7 +914,7 @@ Use Ink 5.x. Module type: ESM. JSX runtime: React 18 automatic.
 ```tsx
 import React, { useState, useEffect } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import { Session, type TurnEvent } from "@crix/core";
+import { Session, type TurnEvent } from "@ares/core";
 
 export const App: React.FC<{ session: Session }> = ({ session }) => {
   const [events, setEvents] = useState<TurnEvent[]>([]);
@@ -976,7 +976,7 @@ Create `packages/core/src/permissions/`:
 permissions/
 ├── engine.ts        # Match input against rules, return PermissionDecision
 ├── rules.ts         # Pattern parsing: "Bash(git *)", "Edit(packages/**)"
-├── store.ts         # Load/save ~/.crix/permissions.json + project override
+├── store.ts         # Load/save ~/.ares/permissions.json + project override
 └── promptFlow.ts    # Bridge between tool's checkPermissions and TUI dialog
 ```
 
@@ -996,14 +996,14 @@ Read `claude-code-main/src/hooks/` for pattern. Implement:
 ```ts
 // packages/core/src/permissions/hooks.ts
 export interface Hook { event: "PreToolUse" | "PostToolUse" | "SessionStart"; match?: string; command: string; }
-// Load from `<workspace>/.crix/hooks.json` and `~/.crix/hooks.json`
-// Run with env: { CRIX_TOOL_NAME, CRIX_TOOL_INPUT (JSON), CRIX_TOOL_PATH, CRIX_SESSION_ID }
+// Load from `<workspace>/.ares/hooks.json` and `~/.ares/hooks.json`
+// Run with env: { ARES_TOOL_NAME, ARES_TOOL_INPUT (JSON), ARES_TOOL_PATH, ARES_SESSION_ID }
 // Non-zero exit on PreToolUse blocks the tool. Block messages surface to model as system_reminder.
 ```
 
 ### 3.5 M2 ship criteria
 
-- `crix` (no args) launches the TUI REPL
+- `ares` (no args) launches the TUI REPL
 - Type a goal, hit enter, see streaming output
 - Run a Bash command — get a permission dialog
 - `[a]llow once`, `[s]` for session, `[d]eny` all work
@@ -1026,7 +1026,7 @@ Match Claude Code's signature exactly (content + activeForm). Render in a side p
 
 ### 4.2 Task (subagent)
 
-Pattern: `claude-code-main/src/tools/AgentTool/`. Scoped tool whitelist. Isolated `QueryEngine` instance. Persist transcript to `<workspace>/.crix/agents/<id>/`. Use the REASONER slot (or cheaper, configurable).
+Pattern: `claude-code-main/src/tools/AgentTool/`. Scoped tool whitelist. Isolated `QueryEngine` instance. Persist transcript to `<workspace>/.ares/agents/<id>/`. Use the REASONER slot (or cheaper, configurable).
 
 ### 4.3 ApplyIntent (★)
 
@@ -1071,7 +1071,7 @@ Validate the output: must be longer than 50% of original (or have explicit Add m
 
 ### 4.4 CodebaseSearch (★)
 
-Build an embedding index of the workspace. Use Ollama Cloud's embedding model (`nomic-embed-text` is widely available). Persist to `<workspace>/.crix/index/` as:
+Build an embedding index of the workspace. Use Ollama Cloud's embedding model (`nomic-embed-text` is widely available). Persist to `<workspace>/.ares/index/` as:
 - `embeddings.f32` — fp32 flat array
 - `chunks.jsonl` — { path, startLine, endLine, hash, text } per row
 - `meta.json` — { embedModel, dim, totalChunks }
@@ -1219,7 +1219,7 @@ return reads.filter(r => r.content.includes("TODO")).map(r => r.path);
 Switch rollout storage to content-addressed:
 
 ```
-~/.crix/sessions/                  (global session index)
+~/.ares/sessions/                  (global session index)
   └── <session-id>/
       ├── meta.json                 (SessionMeta)
       ├── events.jsonl              (TurnEvent stream, append-only)
@@ -1228,18 +1228,18 @@ Switch rollout storage to content-addressed:
       │   └── ...
       └── parents.json              (optional: parent session/checkpoint refs)
 
-~/.crix/blobs/                      (content-addressed blob store, shared across sessions)
+~/.ares/blobs/                      (content-addressed blob store, shared across sessions)
   └── ab/cd/<blake3-hash>           (file blob content)
 ```
 
 Commands:
 
 ```
-crix session log                # current branch as text tree
-crix session log --graph        # full DAG
-crix session fork --from <ckpt> # new session branching off
-crix session diff <a> <b>       # file-by-file diff between checkpoints
-crix session rollback <ckpt>    # restore workspace files
+ares session log                # current branch as text tree
+ares session log --graph        # full DAG
+ares session fork --from <ckpt> # new session branching off
+ares session diff <a> <b>       # file-by-file diff between checkpoints
+ares session rollback <ckpt>    # restore workspace files
 ```
 
 ### 5.4 Plan Mode
@@ -1254,8 +1254,8 @@ When `Edit` / `Write` / `ApplyIntent` runs in `ask` mode, instead of binary allo
 
 - One `FindAndEdit({pattern: "console\\.log\\(", instructions: "Replace with logger.debug()"})` call edits 30+ files in one tool invocation
 - `exec({code: "..."})` runs JS with `await tools.Read(...)`; isolated; permissions enforced
-- `crix session log --graph` shows multiple branches with current highlighted
-- `crix session fork` creates a new branch; `crix session diff` shows file deltas
+- `ares session log --graph` shows multiple branches with current highlighted
+- `ares session fork` creates a new branch; `ares session diff` shows file deltas
 - Plan mode banner appears; non-read tools are denied with helpful messages
 
 ```
@@ -1271,12 +1271,12 @@ git commit -m "M4: FindAndEdit + CodeMode + DAG rollouts + Plan mode + hunk-acce
 Pattern: `claude-code-main/src/skills/` and the system-prompt archive's Kiro/Augment skill docs.
 
 ```
-~/.crix/skills/<name>/
+~/.ares/skills/<name>/
 ├── skill.json       { name, description, trigger_hints, tools_required, version }
 └── SKILL.md         markdown the model reads when invoked
 ```
 
-Bundled with `@crix/cli`:
+Bundled with `@ares/cli`:
 - `git-commit`
 - `git-pr`
 - `code-review`
@@ -1288,7 +1288,7 @@ Model invokes via `Skill({name: "git-commit"})`. Harness loads `SKILL.md` as a `
 
 ### 6.2 MCP
 
-Use `@modelcontextprotocol/sdk` for the client. Load from `~/.crix/mcp.json`:
+Use `@modelcontextprotocol/sdk` for the client. Load from `~/.ares/mcp.json`:
 
 ```json
 {
@@ -1329,10 +1329,10 @@ inputZod: z.object({
 
 Returns the deferred tools' full schemas. Becomes callable for the rest of the session.
 
-### 6.5 `crix doctor`
+### 6.5 `ares doctor`
 
 ```
-crix doctor
+ares doctor
 ─ Provider auth
    OpenAI ChatGPT OAuth: ✓ token valid (expires 2026-06-15)
    Ollama Cloud: ✓ reachable at http://127.0.0.1:11434 (3 cloud models available)
@@ -1341,7 +1341,7 @@ crix doctor
    APPLY:      qwen3-coder:30b-cloud   ✓ ready
    SUMMARIZE:  gpt-oss:20b-cloud       ✓ ready
 ─ Workspace
-   .crix/: ✓ writable
+   .ares/: ✓ writable
    Workspace size: 14,328 files (~120MB) — embedding index ready
    Index status: ✓ warm (last updated 3min ago)
 ─ LSP
@@ -1353,13 +1353,13 @@ crix doctor
 
 ### 6.6 M5 ship criteria
 
-- `crix run --goal "open a PR for these changes" --skill git-pr` creates a real branch + PR
-- `~/.crix/mcp.json` with a github server makes `mcp__github__*` tools appear
-- `crix doctor` returns 0 with green checks on a freshly-set-up box
+- `ares run --goal "open a PR for these changes" --skill git-pr` creates a real branch + PR
+- `~/.ares/mcp.json` with a github server makes `mcp__github__*` tools appear
+- `ares doctor` returns 0 with green checks on a freshly-set-up box
 - `ToolSearch({query: "notebook"})` reveals deferred notebook tools
 
 ```
-git commit -m "M5: skills + MCP + Windows sandbox + ToolSearch + crix doctor"
+git commit -m "M5: skills + MCP + Windows sandbox + ToolSearch + ares doctor"
 ```
 
 ---
@@ -1389,7 +1389,7 @@ Move the build spec + blueprint to `docs/internal/`.
 - `refactor-rename.json` — rename a symbol across 20 files
 - `find-bug.json` — locate a bug given a stack trace
 
-Run each task with Claude Code, Cursor agent, Codex, and Crix. Report tokens, wall time, and pass/fail per agent. **Publish results in the README.**
+Run each task with Claude Code, Cursor agent, Codex, and Ares. Report tokens, wall time, and pass/fail per agent. **Publish results in the README.**
 
 ### 7.3 Distribution
 
@@ -1397,11 +1397,11 @@ Run each task with Claude Code, Cursor agent, Codex, and Crix. Report tokens, wa
 // packages/cli/package.json
 {
   "files": ["dist/", "bin/", "skills/"],
-  "bin": { "crix": "bin/crix.mjs" }
+  "bin": { "ares": "bin/ares.mjs" }
 }
 ```
 
-`bin/crix.mjs`:
+`bin/ares.mjs`:
 
 ```js
 #!/usr/bin/env node
@@ -1411,21 +1411,21 @@ import("../dist/entry.js");
 Publish:
 
 ```powershell
-pnpm -F @crix/cli publish --access public
+pnpm -F @ares/cli publish --access public
 ```
 
-Also produce a single-file `crix.exe` via `pkg` or `node --experimental-sea-config` for users without Node.
+Also produce a single-file `ares.exe` via `pkg` or `node --experimental-sea-config` for users without Node.
 
 ### 7.4 Telemetry (opt-in)
 
-Anonymous tool-use counts only. POST to a stats endpoint. **Off by default.** Enable via `~/.crix/config.json: { telemetry: true }`.
+Anonymous tool-use counts only. POST to a stats endpoint. **Off by default.** Enable via `~/.ares/config.json: { telemetry: true }`.
 
 ### 7.5 M6 ship criteria
 
-- `npm i -g @crix/cli` → `crix login` → `crix` → working REPL on a clean Windows box
+- `npm i -g @ares/cli` → `ares login` → `ares` → working REPL on a clean Windows box
 - README has a 30-second quickstart that *actually works* when followed verbatim
-- Benchmark results published with at least one task where Crix wins on cost AND wall time
-- Public GitHub repo at `crix-cli/crix` with releases page
+- Benchmark results published with at least one task where Ares wins on cost AND wall time
+- Public GitHub repo at `ares-cli/ares` with releases page
 
 ```
 git commit -m "M6: README, benchmarks, npm publish, single-file binary"
@@ -1439,7 +1439,7 @@ git push --tags
 
 ### From `codex-main` (Apache-2.0 — vendor-OK)
 
-| Crix file | Codex source | What to port |
+| Ares file | Codex source | What to port |
 |---|---|---|
 | `packages/core/src/applyPatch/parser.ts` | `codex-rs/apply-patch/src/parser.rs` | Whole parser: `*** Begin Patch` grammar, lenient mode for GPT-4.1 heredoc bug |
 | `packages/core/src/applyPatch/apply.ts` | `codex-rs/apply-patch/src/lib.rs` | Hunk application logic with fuzzy context matching |
@@ -1453,7 +1453,7 @@ git push --tags
 ```ts
 // Ported from codex-main/codex-rs/<path> (Apache-2.0).
 // Original copyright: OpenAI, 2025.
-// Adapted for TypeScript and Crix's tool interface.
+// Adapted for TypeScript and Ares's tool interface.
 ```
 
 Also add a `NOTICE` file at repo root crediting Codex.
@@ -1491,8 +1491,8 @@ Hard list. If you find yourself about to do any of these, stop.
 4. **Don't hardcode model names like `gpt-5.5`.** Fetch from API.
 5. **Don't add a Java worker.** It's gone, leave it gone.
 6. **Don't write a 12KB `promptPack.ts`.** The system prompt is ~2KB + per-tool descriptions.
-7. **Don't write a `crix.bat - Shortcut.lnk`.** No desktop refugee artifacts.
-8. **Don't create files in `.crix/` without GC.** Every persistent dir needs a `clean` strategy.
+7. **Don't write a `ares.bat - Shortcut.lnk`.** No desktop refugee artifacts.
+8. **Don't create files in `.ares/` without GC.** Every persistent dir needs a `clean` strategy.
 9. **Don't add subagents that share the parent's tool context.** Subagents get a scoped whitelist.
 10. **Don't make permission decisions in `policy.ts`.** Per-tool `checkPermissions`.
 11. **Don't write a 100-line system prompt that says "be good."** Use system-reminders, tool descriptions, and example-driven sections.
@@ -1526,14 +1526,14 @@ A new user on a fresh Windows 11 box:
 winget install OpenJS.NodeJS.LTS pnpm Ollama.Ollama
 ollama signin
 ollama pull qwen3-coder:480b-cloud
-npm install -g @crix/cli
-crix login              # device-code OAuth in 30 seconds
-crix                    # opens REPL
+npm install -g @ares/cli
+ares login              # device-code OAuth in 30 seconds
+ares                    # opens REPL
 ```
 
 Then they ask: *"refactor the auth middleware in `src/middleware/auth.ts` to use the new sessions API in `src/sessions/`, run the tests, and open a PR."*
 
-Crix:
+Ares:
 1. Reads both files (REASONER streaming, visible in TUI).
 2. Drafts a TodoWrite (3 items).
 3. Calls `FindAndEdit` to update call sites (APPLY slot, parallel).

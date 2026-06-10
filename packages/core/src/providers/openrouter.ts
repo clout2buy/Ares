@@ -2,7 +2,7 @@
 //
 // OpenRouter (https://openrouter.ai) is an OpenAI-compatible gateway to many
 // models. Auth is a Bearer API key the OWNER pastes in-app (never hard-coded).
-// We translate Crix's Anthropic-shaped messages (tool_result as USER content,
+// We translate Ares's Anthropic-shaped messages (tool_result as USER content,
 // tool_use as ASSISTANT content) into OpenAI chat messages at the wire edge.
 //
 // SSE: each `data:` line is a chat.completion.chunk with choices[0].delta
@@ -16,8 +16,8 @@ import type {
   Usage,
   StopReason,
   ContentBlock,
-} from "@crix/protocol";
-import { openAIReasoningEffort } from "@crix/protocol";
+} from "@ares/protocol";
+import { openAIReasoningEffort } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
@@ -59,8 +59,8 @@ export class OpenRouterProvider implements Provider {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
       Authorization: `Bearer ${this.apiKey}`,
-      "HTTP-Referer": "https://crix.dev",
-      "X-Title": "Crix",
+      "HTTP-Referer": "https://ares.dev",
+      "X-Title": "Ares",
     };
 
     let response: Response;

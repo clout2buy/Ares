@@ -1,4 +1,4 @@
-# Crix v2 — Blueprint
+# Ares v2 — Blueprint
 
 > "Don't build a harness that *describes* tools.
 > Build a harness that *runs* them."
@@ -9,7 +9,7 @@ This document replaces `HARNESS_TARGET.md`, `ARCHITECTURE.md`, `PROMPT_PACK.md`,
 
 ## 1. North Star
 
-**Crix is a streaming coding-agent harness that beats Claude Code on cost, Codex on UX, and Cursor on extensibility — in a TypeScript codebase a single dev can hold in their head.**
+**Ares is a streaming coding-agent harness that beats Claude Code on cost, Codex on UX, and Cursor on extensibility — in a TypeScript codebase a single dev can hold in their head.**
 
 It runs natively on Windows PowerShell, ships OpenAI ChatGPT OAuth + Ollama out of the box, and lets you bring your own model and your own tools without touching the core.
 
@@ -21,7 +21,7 @@ Three non-negotiables:
 
 ---
 
-## 2. Crix v1 Was the Wrong Shape
+## 2. Ares v1 Was the Wrong Shape
 
 Roasted in detail elsewhere. The five fatal mistakes:
 
@@ -170,7 +170,7 @@ packages/
 │   │   ├── narrow.ts              # File-touched → minimal verify command
 │   │   └── reminder.ts            # Inject failures as system-reminder
 │   ├── memory/
-│   │   ├── store.ts               # ~/.crix/memory/ file-based
+│   │   ├── store.ts               # ~/.ares/memory/ file-based
 │   │   └── search.ts              # Tag + simple full-text
 │   ├── providers/
 │   │   ├── provider.ts            # Provider interface (stream-only)
@@ -187,7 +187,7 @@ packages/
 │   │   ├── checkpoint.ts          # Reversible writes via content-addressed store
 │   │   └── apply.ts               # Apply intent / apply patch / multi-edit
 │   ├── skills/
-│   │   ├── loader.ts              # ~/.crix/skills/ + project-local
+│   │   ├── loader.ts              # ~/.ares/skills/ + project-local
 │   │   └── runtime.ts             # Skill invocation contract
 │   └── lsp/
 │       ├── client.ts              # tree-sitter + LSP-as-a-library
@@ -230,14 +230,14 @@ packages/
 │   └── ToolSearch.ts              # Deferred-tool loader (cost win)
 │
 ├── cli/
-│   ├── entry.ts                   # `crix` binary
+│   ├── entry.ts                   # `ares` binary
 │   ├── commands/
-│   │   ├── run.ts                 # `crix run`
-│   │   ├── login.ts               # `crix login`
-│   │   ├── memory.ts              # `crix memory`
-│   │   ├── sessions.ts            # `crix sessions ...`
-│   │   ├── doctor.ts              # `crix doctor`
-│   │   └── verify.ts              # `crix verify`
+│   │   ├── run.ts                 # `ares run`
+│   │   ├── login.ts               # `ares login`
+│   │   ├── memory.ts              # `ares memory`
+│   │   ├── sessions.ts            # `ares sessions ...`
+│   │   ├── doctor.ts              # `ares doctor`
+│   │   └── verify.ts              # `ares verify`
 │   └── tui/                        # Ink-based.
 │       ├── App.tsx                # Root REPL
 │       ├── components/
@@ -294,11 +294,11 @@ No `agentRuntime.ts`, no `kernel.ts`, no `turnEngine.ts`, no `providerToolLoop.t
 | `Verify` | verification | read-only | exclusive | narrow verify on touched files |
 | `Checkpoint` / `Rollback` | safety | workspace-write | exclusive | DAG node + restore |
 | `Notify` / `Ask` | comms | read-only | parallel | non-blocking + blocking user msg |
-| `Browser` | browser | external-state | exclusive | Playwright with `crixid` attrs |
+| `Browser` | browser | external-state | exclusive | Playwright with `aresid` attrs |
 | `ReportEnvIssue` | comms | read-only | parallel | structured "your env is broken" |
 | `ToolSearch` | meta | read-only | parallel | load deferred tools by query |
 
-Tools marked **★** are Crix's differentiators (see §7).
+Tools marked **★** are Ares's differentiators (see §7).
 
 ---
 
@@ -317,13 +317,13 @@ inputSchema: z.object({
 })
 ```
 
-In Crix we use a small Ollama model (`qwen3-coder` or `qwen2.5-coder:7b`) locally for the apply step. **Zero cloud cost.** First-token-latency under 200ms. Net effect: edits cost the same as reads.
+In Ares we use a small Ollama model (`qwen3-coder` or `qwen2.5-coder:7b`) locally for the apply step. **Zero cloud cost.** First-token-latency under 200ms. Net effect: edits cost the same as reads.
 
 Fallback: if apply-model fails or diff is ambiguous, fall back to `Edit` with a forced re-read.
 
 ### 7.2 FindAndEdit — Regex → Per-Location LLM
 
-**Pattern from Devin.** Refactors that touch 30 files become one tool call. Model gives a regex and a single-paragraph instruction. Crix matches the regex repo-wide, dispatches each match location to a cheap apply-model with the surrounding context, and reports a manifest.
+**Pattern from Devin.** Refactors that touch 30 files become one tool call. Model gives a regex and a single-paragraph instruction. Ares matches the regex repo-wide, dispatches each match location to a cheap apply-model with the surrounding context, and reports a manifest.
 
 ```ts
 // tools/FindAndEdit.ts
@@ -352,7 +352,7 @@ const matches = results.filter(r => r.content.includes("deprecated"));
 return matches.map(m => m.path);
 ```
 
-Crix evaluates this in a hardened Deno/V8 isolate with the tool API injected as globals. Each tool call inside the snippet **still goes through `checkPermissions`** — the sandbox just removes the per-call streaming overhead.
+Ares evaluates this in a hardened Deno/V8 isolate with the tool API injected as globals. Each tool call inside the snippet **still goes through `checkPermissions`** — the sandbox just removes the per-call streaming overhead.
 
 When to use: tool calls with cardinality > 3, or any branching/aggregation logic.
 
@@ -382,7 +382,7 @@ The relevant change was:
 
 The model literally cannot claim "done" while red. The harness enforces it.
 
-No competitor does this. Claude Code requires manual `npm test`; Codex requires you to ask. Crix makes it the default.
+No competitor does this. Claude Code requires manual `npm test`; Codex requires you to ask. Ares makes it the default.
 
 ### 7.5 Conversation as a DAG (rollouts with branches)
 
@@ -398,11 +398,11 @@ session-root
 Commands:
 
 ```powershell
-crix session log                       # show DAG (current branch highlighted)
-crix session fork --from chk-B         # branch off an old checkpoint
-crix session diff chk-D chk-B          # diff proofs/files between nodes
-crix session compact                   # collapse linear runs, keep DAG shape
-crix session rollback chk-C            # restore workspace to a node
+ares session log                       # show DAG (current branch highlighted)
+ares session fork --from chk-B         # branch off an old checkpoint
+ares session diff chk-D chk-B          # diff proofs/files between nodes
+ares session compact                   # collapse linear runs, keep DAG shape
+ares session rollback chk-C            # restore workspace to a node
 ```
 
 Storage: content-addressed (blake3). Same file content across forks shares storage. A 500-turn session with 50 branches is ~80MB instead of 5GB.
@@ -415,7 +415,7 @@ Codex has rollouts (linear). Claude Code has compaction (linear). Nobody has the
 
 ### 8.1 OpenAI ChatGPT OAuth + Responses API
 
-Keep the device-code OAuth flow Crix v1 has — that part actually worked. Rip out the JSON-envelope wrappers and use **native streaming function calling** via the Responses API.
+Keep the device-code OAuth flow Ares v1 has — that part actually worked. Rip out the JSON-envelope wrappers and use **native streaming function calling** via the Responses API.
 
 ```ts
 // packages/core/src/providers/openaiResponses.ts
@@ -440,7 +440,7 @@ async *stream(req: ProviderRequest): AsyncGenerator<ProviderBlock> {
 
 Model list — **real models only.** Drop the fake `gpt-5.x-codex-spark` lineup. Source the actual list from the Responses API `/models` endpoint at startup and cache for 24h. If the list ships, it ships; we don't hallucinate it.
 
-Token storage: `%USERPROFILE%\.crix\auth.json` (per v1). Refresh on 401.
+Token storage: `%USERPROFILE%\.ares\auth.json` (per v1). Refresh on 401.
 
 ### 8.2 Ollama Cloud (the 3-slot architecture)
 
@@ -458,9 +458,9 @@ export class OllamaCloudPool {
   private slots = new Map<SlotName, { model: string; inFlight: Promise<unknown> | null }>();
 
   constructor(host = "http://127.0.0.1:11434") {
-    this.slots.set("reasoner", { model: env.CRIX_REASONER, inFlight: null });
-    this.slots.set("apply",    { model: env.CRIX_APPLY    ?? "qwen3-coder:30b-cloud", inFlight: null });
-    this.slots.set("summarize",{ model: env.CRIX_SUMMARIZE ?? "gpt-oss:20b-cloud",     inFlight: null });
+    this.slots.set("reasoner", { model: env.ARES_REASONER, inFlight: null });
+    this.slots.set("apply",    { model: env.ARES_APPLY    ?? "qwen3-coder:30b-cloud", inFlight: null });
+    this.slots.set("summarize",{ model: env.ARES_SUMMARIZE ?? "gpt-oss:20b-cloud",     inFlight: null });
   }
 
   async *stream(slot: SlotName, req: ProviderRequest): AsyncGenerator<ProviderBlock> {
@@ -565,13 +565,13 @@ After verify fails:
 |---|---|---|
 | `ask` | Interactive REPL | Every workspace-write or external-state tool prompts |
 | `auto-safe` | After 3 successful asks of same pattern | Auto-approve matching tools, ask for novel ones |
-| `workspace-write` | `crix run --auto` non-interactive | Allow workspace-write without ask; deny external |
+| `workspace-write` | `ares run --auto` non-interactive | Allow workspace-write without ask; deny external |
 | `bypass` | Explicit `--bypass` flag | Allow everything in current workspace, no prompts |
 | `plan` | Inside EnterPlanMode | Reject any non-read tool |
 
 ### 10.2 Rules
 
-Pattern-based, JSON, persisted to `~/.crix/permissions.json` and `<workspace>/.crix/permissions.json` (project override).
+Pattern-based, JSON, persisted to `~/.ares/permissions.json` and `<workspace>/.ares/permissions.json` (project override).
 
 ```jsonc
 {
@@ -596,7 +596,7 @@ Match order: deny > ask > allow > mode default.
 
 ### 10.3 Hooks
 
-Shell commands triggered on tool events. From `.crix/hooks.json`:
+Shell commands triggered on tool events. From `.ares/hooks.json`:
 
 ```jsonc
 {
@@ -604,7 +604,7 @@ Shell commands triggered on tool events. From `.crix/hooks.json`:
     { "match": "Bash(git commit*)", "command": "npm run lint" }
   ],
   "PostToolUse": [
-    { "match": "Edit(**)", "command": "npm run format -- $CRIX_TOOL_PATH" }
+    { "match": "Edit(**)", "command": "npm run format -- $ARES_TOOL_PATH" }
   ],
   "SessionStart": [
     { "command": "git fetch origin" }
@@ -628,10 +628,10 @@ Sandboxing is on by default for `Bash`/`PowerShell` in `workspace-write` mode an
 
 ### 11.1 Skills
 
-A skill is a discoverable workflow the model can invoke by name. Located in `~/.crix/skills/<name>/` or `<workspace>/.crix/skills/<name>/`.
+A skill is a discoverable workflow the model can invoke by name. Located in `~/.ares/skills/<name>/` or `<workspace>/.ares/skills/<name>/`.
 
 ```
-~/.crix/skills/
+~/.ares/skills/
 ├── git-commit/
 │   ├── skill.json           # { name, description, trigger_hint, tools_required }
 │   └── SKILL.md             # the actual instructions the model reads
@@ -660,7 +660,7 @@ See §10.3. Same shape as Claude Code's hooks — intentional, so users with `.c
 `Tool` interface accepts MCP servers as tool sources. Each MCP tool becomes a `Tool<>` with the MCP `inputSchema` translated to zod via `json-schema-to-zod`.
 
 ```jsonc
-// ~/.crix/mcp.json
+// ~/.ares/mcp.json
 {
   "servers": {
     "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
@@ -692,11 +692,11 @@ MCP tools are added to the catalog at session start. They count toward the `defe
 | `UpgradePlan` type | Replaced by streaming tool-call loop |
 | `JsonRecord` everywhere | Replaced by per-tool zod types |
 | `OPENAI_CHAT_MODELS` hardcoded fake lineup | Fetched from API at startup |
-| `.crix/sessions/` UUID-named with no GC | Replaced by content-addressed rollouts with auto-compact |
-| `.crix/tool-checkpoints/` per-write folders | Replaced by single content-addressed checkpoint store |
-| `crix.bat - Shortcut.lnk` | Remove from repo |
+| `.ares/sessions/` UUID-named with no GC | Replaced by content-addressed rollouts with auto-compact |
+| `.ares/tool-checkpoints/` per-write folders | Replaced by single content-addressed checkpoint store |
+| `ares.bat - Shortcut.lnk` | Remove from repo |
 
-Net code: Crix v1 is **~340KB of source** across `packages/`. v2 target: **~120KB** with more functionality.
+Net code: Ares v1 is **~340KB of source** across `packages/`. v2 target: **~120KB** with more functionality.
 
 ---
 
@@ -709,9 +709,9 @@ Six milestones. Each one ships a real working binary.
 - Delete `java/`, `packages/core/src/{kernel,turnEngine,agentRuntime,providerToolLoop,providerResponse,providerNativeTools,promptPack,skillProcesses,toolCatalog,toolRuntime}.ts`, `packages/cli/src/index.ts`
 - Move `protocol/` to the new event/tool/permission types
 - Stub `queryEngine.ts` with a synchronous echo provider — proves the loop shape compiles
-- New `crix run --goal "x"` headless command that prints stream events as JSON
+- New `ares run --goal "x"` headless command that prints stream events as JSON
 
-**Ship criteria:** `crix run --goal "list files"` echoes events; `pnpm verify` green.
+**Ship criteria:** `ares run --goal "list files"` echoes events; `pnpm verify` green.
 
 ### M1 — Real Provider + Five Tools (Day 3-7)
 
@@ -719,15 +719,15 @@ Six milestones. Each one ships a real working binary.
 - `ollama.ts` streaming
 - Tools: `Read`, `Write`, `Edit`, `Bash`/`PowerShell`, `Glob`, `Grep`
 - Per-tool zod schemas, `Tool<I,O>` interface, `buildTool()` helper
-- `crix login` device-code OAuth (port from v1)
+- `ares login` device-code OAuth (port from v1)
 
-**Ship criteria:** `crix run --goal "find all TODO comments and write them to TODOS.md"` works end-to-end against GPT and Ollama.
+**Ship criteria:** `ares run --goal "find all TODO comments and write them to TODOS.md"` works end-to-end against GPT and Ollama.
 
 ### M2 — Ink TUI + Permissions (Day 8-12)
 
 - Ink REPL with streaming text + tool rows
 - `checkPermissions` flow with prompt dialog
-- Rule engine + `~/.crix/permissions.json`
+- Rule engine + `~/.ares/permissions.json`
 - `Ctrl+C` interrupt, queue-during-active-turn
 - Spinner-per-tool with present-continuous descriptions
 
@@ -748,7 +748,7 @@ Six milestones. Each one ships a real working binary.
 
 - `FindAndEdit` with per-location apply-model dispatch
 - `CodeMode` with Deno-isolate JS execution
-- DAG rollouts with `crix session fork|diff|rollback`
+- DAG rollouts with `ares session fork|diff|rollback`
 - Hooks engine (PreToolUse, PostToolUse, SessionStart)
 - Plan mode (EnterPlanMode/ExitPlanMode) with yellow banner
 - Diff view with hunk-accept
@@ -761,9 +761,9 @@ Six milestones. Each one ships a real working binary.
 - MCP client integration
 - Windows JobObject sandbox + bwrap on Linux + sandbox-exec on macOS
 - `ToolSearch` deferred loading
-- `crix doctor` polish
+- `ares doctor` polish
 
-**Ship criteria:** Run `crix run --goal "open a PR" --skill git-pr` end-to-end. MCP servers from `~/.crix/mcp.json` appear as tools. Bash inside sandbox cannot escape workspace.
+**Ship criteria:** Run `ares run --goal "open a PR" --skill git-pr` end-to-end. MCP servers from `~/.ares/mcp.json` appear as tools. Bash inside sandbox cannot escape workspace.
 
 ### M6 — Polish + Public 0.3.0 (Day 35-40)
 
@@ -772,24 +772,24 @@ Six milestones. Each one ships a real working binary.
 - Benchmark suite vs Claude Code + Codex on a fixed task set
 - Marketing site / README rewrite
 
-**Ship criteria:** A first-time user pastes `npm i -g @crix/cli && crix login && crix` and is productive in 30 seconds.
+**Ship criteria:** A first-time user pastes `npm i -g @ares/cli && ares login && ares` and is productive in 30 seconds.
 
 ---
 
 ## 14. First Day of Work — Concrete First Commits
 
-1. `git init` (Crix isn't even a git repo right now — fix that).
+1. `git init` (Ares isn't even a git repo right now — fix that).
 2. Delete the dead weight in one commit:
    ```
    rm -r java/ packages/core/src/{kernel,turnEngine,agentRuntime,providerToolLoop,providerResponse,providerNativeTools,promptPack,skillProcesses,toolCatalog,toolRuntime}.ts
    rm packages/cli/src/index.ts
-   rm "crix.bat - Shortcut.lnk"
+   rm "ares.bat - Shortcut.lnk"
    rm docs/{HARNESS_TARGET,ARCHITECTURE,PROMPT_PACK,REFERENCE_INSIGHTS,SELF_UPGRADE_LOOP,REFERENCE_BOUNDARIES,PROVIDERS,PROVIDER_INTEGRATION,AGENTS,TYPESCRIPT_ARCHITECTURE}.md
    ```
 3. Replace `packages/protocol/src/types.ts` with the new event/tool/permission types per §5.
 4. Write `packages/core/src/queryEngine.ts` with the echo provider per §4.
 5. Write `packages/core/src/providers/mock.ts` returning a fixed event stream.
-6. Write `packages/cli/src/entry.ts` (~40 lines) wiring `crix run --goal "x"` to the engine and printing events as NDJSON.
+6. Write `packages/cli/src/entry.ts` (~40 lines) wiring `ares run --goal "x"` to the engine and printing events as NDJSON.
 7. `pnpm verify` should pass with these three files.
 
 That's day one. Real tools and the real provider start day three. By day 40 we ship 0.3.0 to the world.
@@ -798,18 +798,18 @@ That's day one. Real tools and the real provider start day three. By day 40 we s
 
 ## 15. Naming, Versioning, Repo
 
-- Project: **Crix** (keep).
-- Binary: `crix` (single command, subcommands via Commander or `clipanion`).
+- Project: **Ares** (keep).
+- Binary: `ares` (single command, subcommands via Commander or `clipanion`).
 - Versioning: SemVer; v1 ends at `0.2.x`. v2 starts at `0.3.0-alpha.1`. Public 0.3.0 at M6.
 - License: **MIT** (was unstated in v1; pick now).
-- Repo: GitHub `crix-cli/crix` (recommend) — make it public at M2 when there's something demoable.
-- Distribution: npm `@crix/cli` + a `crix` GitHub Release artifact (Node 22 bundled via `esbuild` + `pkg`).
+- Repo: GitHub `ares-cli/ares` (recommend) — make it public at M2 when there's something demoable.
+- Distribution: npm `@ares/cli` + a `ares` GitHub Release artifact (Node 22 bundled via `esbuild` + `pkg`).
 
 ---
 
 ## 16. The One-Line Pitch
 
-> *"Crix: a coding agent that runs your edits cheap, verifies them automatically, and lets you branch your conversation like git."*
+> *"Ares: a coding agent that runs your edits cheap, verifies them automatically, and lets you branch your conversation like git."*
 
 Three things, all real. No fake models. No Java worker. No 116KB monoliths.
 

@@ -96,7 +96,7 @@ export async function runEvalSuite(tasks: readonly EvalTask[], opts: RunEvalSuit
     : Number((results.reduce((sum, result) => sum + result.score, 0) / results.length).toFixed(4));
   return {
     schemaVersion: EVAL_REPORT_SCHEMA_VERSION,
-    suite: opts.suite ?? "crix",
+    suite: opts.suite ?? "ares",
     startedAt: started.toISOString(),
     finishedAt: finished.toISOString(),
     durationMs: Math.max(0, finished.getTime() - started.getTime()),

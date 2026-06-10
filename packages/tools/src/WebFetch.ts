@@ -70,7 +70,7 @@ export function makeWebFetchTool(summarizer?: Summarizer) {
         const res = await fetch(upgraded, {
           redirect: "follow",
           signal: controller.signal,
-          headers: { "user-agent": "Crix/0.3 (+https://crix.dev)" },
+          headers: { "user-agent": "Ares/0.3 (+https://ares.dev)" },
         });
         clearTimeout(timeout);
         ctx.signal.removeEventListener("abort", onAbort);

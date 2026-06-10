@@ -1,10 +1,10 @@
 // The KillSwitch — one durable flag that halts every commit. When engaged,
 // runEffect throws HaltedError before any side effect, and in-flight callers
-// can cancel. File-backed so `crix operator halt` from another process (or a
+// can cancel. File-backed so `ares operator halt` from another process (or a
 // crash-recovery script) stops the running Operator immediately.
 
 import { promises as fs } from "node:fs";
-import { exists, writeFileAtomic } from "@crix/agent";
+import { exists, writeFileAtomic } from "@ares/agent";
 
 export class HaltedError extends Error {
   constructor(message = "operator halted: kill switch engaged") {

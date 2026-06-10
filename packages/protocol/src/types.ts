@@ -1,11 +1,11 @@
-// Crix v2 wire protocol. Zero runtime dependencies. Pure types.
+// Ares v2 wire protocol. Zero runtime dependencies. Pure types.
 //
 // Three layers:
 //   1. ContentBlock / Message — what the model sees and emits.
 //   2. StreamEvent — what providers yield as they stream.
 //   3. TurnEvent — what QueryEngine yields to CLI/TUI (superset of StreamEvent).
 //
-// Tool implementations live in @crix/tools; this package only defines the
+// Tool implementations live in @ares/tools; this package only defines the
 // SCHEMA shape providers receive. Each tool owns its own zod schema there.
 
 // ─── Messages (Anthropic SDK shape) ─────────────────────────────────────
@@ -155,7 +155,7 @@ export type TurnEvent =
 
 export type TurnEndStatus = "completed" | "interrupted" | "failed";
 
-// ─── Tools (schema-side; implementation lives in @crix/tools) ───────────
+// ─── Tools (schema-side; implementation lives in @ares/tools) ───────────
 
 export type SafetyClass =
   | "read-only"        // file reads, grep, glob, list, web search

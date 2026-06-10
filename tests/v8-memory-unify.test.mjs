@@ -19,7 +19,7 @@ import { MemoryStore, MEMORY_SCHEMA_VERSION } from "../packages/mind/dist/index.
 import { unifiedRecallForTurn } from "../packages/agent/dist/index.js";
 
 async function makeDir() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-unify-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-unify-"));
 }
 
 // ── 1. v6 still reads/writes, and records are schema-versioned ────────────────
@@ -28,7 +28,7 @@ test("v6: memory writes carry the schema version and round-trip on disk", async 
   const dir = await makeDir();
   const file = path.join(dir, "memory.jsonl");
   const store = await MemoryStore.open(file);
-  const node = await store.add({ kind: "semantic", content: "The user prefers TypeScript for Crix" });
+  const node = await store.add({ kind: "semantic", content: "The user prefers TypeScript for Ares" });
   assert.equal(node.v, MEMORY_SCHEMA_VERSION, "new nodes are stamped with the current schema version");
 
   const reopened = await MemoryStore.open(file);
@@ -86,10 +86,10 @@ test("unified recall works from living memory alone when no v4 store is given", 
   const dir = await makeDir();
   const file = path.join(dir, "memory.jsonl");
   const store = await MemoryStore.open(file);
-  await store.add({ kind: "semantic", content: "Crix runs missions, not just turns" });
+  await store.add({ kind: "semantic", content: "Ares runs missions, not just turns" });
 
   const out = await unifiedRecallForTurn({
-    query: "what does crix run",
+    query: "what does ares run",
     workspace: dir,
     livingMemoryFile: file,
   });
@@ -118,7 +118,7 @@ test("v6 load skips corrupt and unknown-version records without destroying them"
   const file = path.join(dir, "memory.jsonl");
 
   const valid = { v: 1, id: "mem_keep01", kind: "semantic", content: "keep me", at: new Date().toISOString(), strength: 2, activations: 0, lastActivatedAt: new Date().toISOString(), links: [] };
-  const future = { v: 999, id: "mem_future1", kind: "semantic", content: "from a newer Crix", at: new Date().toISOString(), strength: 5, activations: 3, lastActivatedAt: new Date().toISOString(), links: [] };
+  const future = { v: 999, id: "mem_future1", kind: "semantic", content: "from a newer Ares", at: new Date().toISOString(), strength: 5, activations: 3, lastActivatedAt: new Date().toISOString(), links: [] };
   await fs.writeFile(file, [JSON.stringify(valid), JSON.stringify(future), "{ this is not json"].join("\n") + "\n");
 
   const store = await MemoryStore.open(file);
@@ -161,7 +161,7 @@ test("unified recall: reinforce:false surfaces memory without strengthening it",
 
   const before = (await MemoryStore.open(file)).all()[0];
 
-  // Read-only recall (what `crix recap` / `/whathappened` use).
+  // Read-only recall (what `ares recap` / `/whathappened` use).
   const ro = await unifiedRecallForTurn({ query: "launcher packaging", workspace: dir, livingMemoryFile: file, reinforce: false });
   assert.ok(ro.items.length >= 1, "still surfaces the memory");
   const afterPeek = (await MemoryStore.open(file)).all()[0];

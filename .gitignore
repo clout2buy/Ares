@@ -11,7 +11,8 @@ dist/
 *.d.ts.map
 *.js.map
 
-# Crix runtime state
+# Ares runtime state (and legacy Crix)
+.ares/
 .crix/
 
 # Python (voice sidecar)

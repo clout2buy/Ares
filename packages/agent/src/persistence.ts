@@ -1,18 +1,18 @@
 // Persistence guarantees.
 //
-// ~/.crix/ (or $CRIX_HOME) is the agent's immortal home — it lives outside
+// ~/.ares/ (or $ARES_HOME) is the agent's immortal home — it lives outside
 // any source repo, so `git clean`, `pnpm install`, full rebuilds, even
-// nuking and re-cloning the Crix sources cannot touch it. The agent's
+// nuking and re-cloning the Ares sources cannot touch it. The agent's
 // evolution accumulates here forever.
 //
 // To be extra safe against drift, file corruption, or user accidents, we
-// snapshot the brain files into ~/.crix/snapshots/<sessionId>/ at the
+// snapshot the brain files into ~/.ares/snapshots/<sessionId>/ at the
 // start of every session. Snapshots are cheap (a few KB), keep the last
 // 20 by default, and let the agent (or the human) restore.
 
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { agentPaths, crixAgentHome } from "./paths.js";
+import { agentPaths, aresAgentHome } from "./paths.js";
 import { exists } from "./files.js";
 
 const SNAPSHOT_LIMIT = 20;
@@ -28,11 +28,11 @@ export interface SnapshotInfo {
 const BRAIN_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "CAPABILITIES.md"] as const;
 
 /**
- * Snapshot the agent's brain files into ~/.crix/snapshots/<id>/.
+ * Snapshot the agent's brain files into ~/.ares/snapshots/<id>/.
  * Idempotent. Skips if no brain files exist yet (pre-bootstrap).
  */
 export async function snapshotBrain(opts: { home?: string; id?: string; now?: Date }): Promise<SnapshotInfo | null> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   const now = opts.now ?? new Date();
   const id = opts.id ?? `snap_${now.toISOString().replace(/[^0-9]/g, "").slice(0, 14)}`;
@@ -94,7 +94,7 @@ export async function snapshotBrain(opts: { home?: string; id?: string; now?: Da
 }
 
 export async function listSnapshots(home?: string): Promise<SnapshotInfo[]> {
-  const dir = path.join(crixAgentHome(home), "snapshots");
+  const dir = path.join(aresAgentHome(home), "snapshots");
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -116,7 +116,7 @@ export async function listSnapshots(home?: string): Promise<SnapshotInfo[]> {
 }
 
 export async function restoreSnapshot(opts: { home?: string; id: string }): Promise<{ restored: string[]; dest: string }> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const dir = path.join(home, "snapshots", opts.id);
   const manifestPath = path.join(dir, "manifest.json");
   if (!(await exists(manifestPath))) throw new Error(`snapshot not found: ${opts.id}`);
@@ -151,7 +151,7 @@ export async function restoreSnapshot(opts: { home?: string; id: string }): Prom
  * it on import.
  */
 export async function exportHome(opts: { home?: string; dest: string }): Promise<{ dest: string; files: number; bytes: number }> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const bundle: Record<string, string> = {};
   let bytes = 0;
   for (const name of BRAIN_FILES) {
@@ -176,7 +176,7 @@ export async function exportHome(opts: { home?: string; dest: string }): Promise
 }
 
 export async function importHome(opts: { home?: string; source: string; overwrite?: boolean }): Promise<{ files: number; skipped: number }> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const raw = await fs.readFile(opts.source, "utf8");
   const parsed = JSON.parse(raw) as { bundle: Record<string, string> };
   let files = 0;

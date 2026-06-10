@@ -2,7 +2,7 @@
 //
 // Different backends express "think harder" differently: OpenAI's Responses API
 // takes reasoning.effort (a string); Anthropic-shaped reasoners (Ollama Cloud)
-// take thinking.budget_tokens (a number). Crix exposes ONE concept — a level —
+// take thinking.budget_tokens (a number). Ares exposes ONE concept — a level —
 // and each provider translates it at the wire edge, so the same setting works on
 // OpenAI and Ollama alike.
 

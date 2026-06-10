@@ -1,6 +1,6 @@
-// Cognition types (Crix v6 / M2) — the shape of a thought.
+// Cognition types (Ares v6 / M2) — the shape of a thought.
 //
-// What makes Crix feel like a mind instead of a chatbot is a visible inner life:
+// What makes Ares feel like a mind instead of a chatbot is a visible inner life:
 // it observes, recalls, has ideas, doubts them, decides, and forms intentions —
 // and you watch the stream. These are the beats of that monologue.
 

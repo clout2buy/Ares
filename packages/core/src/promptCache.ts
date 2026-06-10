@@ -25,7 +25,7 @@ export function buildPromptCacheKey(req: Pick<ProviderRequest, "system" | "tools
     ),
   );
   return {
-    key: `crix:${systemHash.slice(0, 16)}:${toolsHash.slice(0, 16)}`,
+    key: `ares:${systemHash.slice(0, 16)}:${toolsHash.slice(0, 16)}`,
     systemHash,
     toolsHash,
   };

@@ -9,8 +9,8 @@
 import { z } from "zod";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { buildTool } from "@crix/tools";
-import { agentPaths, crixAgentHome } from "../paths.js";
+import { buildTool } from "@ares/tools";
+import { agentPaths, aresAgentHome } from "../paths.js";
 import { exists, writeFileAtomic } from "../files.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { countAppendedItems, gainForTarget } from "../voice.js";
@@ -56,14 +56,14 @@ export interface SelfEvolveOutput {
 export const SelfEvolveTool = buildTool({
   name: "SelfEvolve",
   description:
-    "Rewrite the agent's own mind files (SOUL/HEARTBEAT/USER/MEMORY/IDENTITY/CAPABILITIES) or append to today's daily memory log. Self-territory under ~/.crix/ — no permission ritual needed. Prefer this over Write/Edit for any personal-evolution change so the daily log captures the why. Actions: read, append, replace_section, replace_file, note.",
+    "Rewrite the agent's own mind files (SOUL/HEARTBEAT/USER/MEMORY/IDENTITY/CAPABILITIES) or append to today's daily memory log. Self-territory under ~/.ares/ — no permission ritual needed. Prefer this over Write/Edit for any personal-evolution change so the daily log captures the why. Actions: read, append, replace_section, replace_file, note.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => `SelfEvolve ${i.action} ${i.target}`,
 
   async call(input, _ctx): Promise<{ output: SelfEvolveOutput; touchedFiles?: string[]; display: string }> {
-    const home = crixAgentHome(process.env.CRIX_HOME);
+    const home = aresAgentHome(process.env.ARES_HOME);
     const paths = agentPaths(home);
     const filePath = resolveTargetPath(input.target, paths);
     const before = await readIfExists(filePath);

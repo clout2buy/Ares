@@ -1,7 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { agentPaths, crixAgentHome, workspaceToolsPath } from "../paths.js";
+import { agentPaths, aresAgentHome, workspaceToolsPath } from "../paths.js";
 import { exists, readTextIfExists, renderTemplate, writeFileAtomic } from "../files.js";
 import { readTemplate } from "../templates.js";
 import { loadAgentConfig } from "../config.js";
@@ -30,7 +30,7 @@ export interface BootstrapState {
 }
 
 export async function ensureAgentScaffold(opts: { home?: string; workspace?: string } = {}): Promise<BootstrapState> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   await mkdir(paths.home, { recursive: true });
   await mkdir(paths.memoryDir, { recursive: true });
@@ -60,13 +60,13 @@ export async function ensureAgentScaffold(opts: { home?: string; workspace?: str
 }
 
 export async function completeBootstrap(profile: BootstrapProfile, opts: { home?: string; workspace?: string } = {}): Promise<BootstrapState> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   await mkdir(paths.home, { recursive: true });
   const born = (profile.bornAt ?? new Date()).toISOString();
   const vibe = profile.vibe.trim() || "direct";
   const values = {
-    NAME: clean(profile.agentName, "Crix"),
+    NAME: clean(profile.agentName, "Ares"),
     CREATURE: clean(profile.creature, "coding agent"),
     VIBE: vibe,
     EMOJI: clean(profile.emoji, "*"),
@@ -108,12 +108,12 @@ export async function ensureWorkspaceTools(workspace: string): Promise<string> {
   return file;
 }
 
-export async function bootstrapReminder(home = crixAgentHome()): Promise<string | null> {
+export async function bootstrapReminder(home = aresAgentHome()): Promise<string | null> {
   const paths = agentPaths(home);
   if (await exists(paths.identity)) return null;
   const text = await readTextIfExists(paths.bootstrap);
   if (!text) return null;
-  return `Crix agent bootstrap is required. Use this script to run the birth conversation:\n\n${text}`;
+  return `Ares agent bootstrap is required. Use this script to run the birth conversation:\n\n${text}`;
 }
 
 async function detectWorkspaceTools(workspace: string): Promise<Record<string, string>> {

@@ -1,6 +1,6 @@
 // Proactive Daily Briefing (Nexus Phase 1) — "what should I work on today?"
 //
-// A PURE ranking/framing layer over the things Crix already assembled: the
+// A PURE ranking/framing layer over the things Ares already assembled: the
 // continuity summary (mission buckets + read-only advisory), the World Graph
 // (which subsystems each mission touches), and the learning cards (prior
 // lessons). It reads nothing and mutates nothing — the CLI loads, this shapes.
@@ -129,7 +129,7 @@ export function rankBriefing(input: RankBriefingInput): DailyBriefing {
 
   if (summary.empty) {
     return {
-      headline: "Clean slate — no active missions. Start one with `crix operator add`.",
+      headline: "Clean slate — no active missions. Start one with `ares operator add`.",
       focus: [],
       decisionsNeeded: [],
       reviveOrDrop: [],

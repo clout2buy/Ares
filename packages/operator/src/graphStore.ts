@@ -1,12 +1,12 @@
 // Capability graph persistence — one JSON file per node under
-// ~/.crix/operator/graph/, plus the writer that turns a crystallized capability
-// into a REAL skill on disk (~/.crix/skills/<name>/), so mastery produces an
+// ~/.ares/operator/graph/, plus the writer that turns a crystallized capability
+// into a REAL skill on disk (~/.ares/skills/<name>/), so mastery produces an
 // executable artifact the existing skill runtime (agent/skills) can run — not
 // just a database row. Atomic writes, tolerant reads.
 
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { agentPaths, writeFileAtomic } from "@crix/agent";
+import { agentPaths, writeFileAtomic } from "@ares/agent";
 import { operatorPaths } from "./paths.js";
 import type { CapabilityNode } from "./capability.js";
 
@@ -61,7 +61,7 @@ export async function listCapabilities(home: string): Promise<CapabilityNode[]> 
 }
 
 /**
- * Write a crystallized capability as a runnable skill under ~/.crix/skills/.
+ * Write a crystallized capability as a runnable skill under ~/.ares/skills/.
  * This is the line between "documented" and "executable" — the skill runtime
  * can now run what the learning loop just learned.
  */
@@ -76,7 +76,7 @@ export async function writeCrystallizedSkill(
   await writeFileAtomic(path.join(dir, "handler.js"), handler);
   await writeFileAtomic(
     path.join(dir, "SKILL.md"),
-    doc ?? `# ${name}\n\nCrystallized by the Crix learning loop after repeated, reality-verified success.\n`,
+    doc ?? `# ${name}\n\nCrystallized by the Ares learning loop after repeated, reality-verified success.\n`,
   );
   return dir;
 }

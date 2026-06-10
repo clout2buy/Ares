@@ -24,7 +24,7 @@ import {
   onLifecycle,
 } from "../packages/agent/dist/index.js";
 
-async function makeTmp(prefix = "crix-mission-") {
+async function makeTmp(prefix = "ares-mission-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
@@ -91,7 +91,7 @@ test("engine: planMission preserves completed steps", () => {
 
 test("tool: mission persists across calls and emits lifecycle gains", async () => {
   const home = await makeTmp();
-  process.env.CRIX_HOME = home;
+  process.env.ARES_HOME = home;
   const seen = [];
   const off = onLifecycle((e) => {
     if (e.type.startsWith("mission_")) seen.push(e.type);
@@ -104,7 +104,7 @@ test("tool: mission persists across calls and emits lifecycle gains", async () =
 
     // Persisted to disk
     const onDisk = await loadMission(home, id);
-    assert.ok(onDisk, "mission written to ~/.crix/missions");
+    assert.ok(onDisk, "mission written to ~/.ares/missions");
     assert.equal(onDisk.goal, "automate the report");
 
     // Advance + complete both steps (defaults to active mission, no id needed)
@@ -127,18 +127,18 @@ test("tool: mission persists across calls and emits lifecycle gains", async () =
     assert.equal(all[0].status, "completed");
   } finally {
     off();
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("tool: list is empty with no missions, create requires a goal", async () => {
   const home = await makeTmp();
-  process.env.CRIX_HOME = home;
+  process.env.ARES_HOME = home;
   try {
     const empty = await MissionTool.call({ action: "list" }, ctx);
     assert.equal(empty.output.missions.length, 0);
     await assert.rejects(() => MissionTool.call({ action: "create" }, ctx), /requires a goal/);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });

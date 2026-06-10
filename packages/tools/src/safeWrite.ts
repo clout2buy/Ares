@@ -18,7 +18,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 export interface SafeOverwriteOptions {
-  /** Workspace root — backups land under `<workspace>/.crix/backups`. */
+  /** Workspace root — backups land under `<workspace>/.ares/backups`. */
   workspace: string;
   /** Absolute path being written. May be outside the workspace. */
   absPath: string;
@@ -113,7 +113,7 @@ function shrinkRefusal(label: string, absPath: string, v: ShrinkVerdict): string
 }
 
 /**
- * Copy prior file contents into `<workspace>/.crix/backups/` and append a line
+ * Copy prior file contents into `<workspace>/.ares/backups/` and append a line
  * to the backup index. Returns the absolute backup path. Backups are kept for
  * out-of-workspace targets too — that's the case the checkpoint system misses.
  */
@@ -123,7 +123,7 @@ async function backupFile(
   contents: string,
   label: string,
 ): Promise<string> {
-  const dir = path.join(path.resolve(workspace), ".crix", "backups");
+  const dir = path.join(path.resolve(workspace), ".ares", "backups");
   await fs.mkdir(dir, { recursive: true });
 
   const key = sha1(absPath).slice(0, 12);

@@ -23,7 +23,7 @@ import {
 const ctx = { workspace: process.cwd(), signal: new AbortController().signal };
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-reflect-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-reflect-"));
 }
 
 test("reflect flags a failing skill as fix", async () => {
@@ -77,7 +77,7 @@ test("prune (always-fail) outranks fix in severity ordering", async () => {
 
 test("Self tool: status, want, and reflect emit a lifecycle event", async () => {
   const home = await makeHome();
-  process.env.CRIX_HOME = home;
+  process.env.ARES_HOME = home;
   const seen = [];
   const off = onLifecycle((e) => {
     if (e.type === "self_reflected") seen.push(e);
@@ -101,6 +101,6 @@ test("Self tool: status, want, and reflect emit a lifecycle event", async () => 
     assert.equal(seen[0].directives, refl.output.directives.length);
   } finally {
     off();
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });

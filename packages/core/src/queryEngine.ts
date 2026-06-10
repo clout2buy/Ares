@@ -25,7 +25,7 @@ import {
   type PermissionPromptSuggestion,
   type ReasoningLevel,
   isToolUseBlock,
-} from "@crix/protocol";
+} from "@ares/protocol";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { HookManager } from "./hooks.js";
@@ -57,8 +57,8 @@ export interface Provider {
 
 // ─── Tool implementation interface (what the engine asks of tools) ─────
 //
-// We re-declare a minimal Tool shape here so @crix/core doesn't depend on
-// @crix/tools. The real Tool<I, O> definition lives in @crix/tools/_shared.ts
+// We re-declare a minimal Tool shape here so @ares/core doesn't depend on
+// @ares/tools. The real Tool<I, O> definition lives in @ares/tools/_shared.ts
 // and is structurally compatible with this.
 
 export interface EngineTool {
@@ -135,7 +135,7 @@ export interface QueryEngineConfig {
   /**
    * Absolute paths the engine considers "self-territory" — writes targeting
    * files inside these roots bypass the write-intent gate entirely. The agent
-   * owns its own brain (~/.crix/) and never needs a permission ritual to edit it.
+   * owns its own brain (~/.ares/) and never needs a permission ritual to edit it.
    */
   selfTerritoryRoots?: readonly string[];
 }
@@ -871,7 +871,7 @@ function stringifyToolOutput(output: unknown): string {
 }
 
 function toolResultCharBudget(): number {
-  const raw = Number(process.env.CRIX_TOOL_RESULT_CHARS);
+  const raw = Number(process.env.ARES_TOOL_RESULT_CHARS);
   if (Number.isFinite(raw) && raw > 1_000) return Math.floor(raw);
   return 24_000;
 }
@@ -1116,7 +1116,7 @@ function describeActivity(toolName: string, input: unknown): string {
   return toolName;
 }
 
-function isTodoOutput(output: unknown): output is { todos: import("@crix/protocol").Todo[] } {
+function isTodoOutput(output: unknown): output is { todos: import("@ares/protocol").Todo[] } {
   return Boolean(
     output &&
       typeof output === "object" &&

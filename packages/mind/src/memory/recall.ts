@@ -1,4 +1,4 @@
-// Spreading-activation recall (Crix v6 / M1) — the part no shipped agent does.
+// Spreading-activation recall (Ares v6 / M1) — the part no shipped agent does.
 //
 // A cue doesn't fetch one chunk. It lights up the most relevant, strongest
 // memories (the seeds), then ACTIVATION SPREADS along association links to pull

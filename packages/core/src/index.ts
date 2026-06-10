@@ -1,4 +1,4 @@
-// @crix/core — runtime kernel for Crix v2.
+// @ares/core — runtime kernel for Ares v2.
 //
 // Public surface:
 //   - QueryEngine: the streaming agent loop.
@@ -28,7 +28,7 @@ export { MockEchoProvider } from "./providers/mock.js";
 
 export {
   SubagentRegistry,
-  CrixSubagentRunner,
+  AresSubagentRunner,
   BUILT_IN_SUBAGENT_TYPES,
   type SubagentRunner,
   type SubagentRunnerOptions,
@@ -84,7 +84,7 @@ export {
   loadAuthToken,
   authStatus,
   authFilePath,
-  crixHome,
+  aresHome,
   deviceCodeLogin,
   type AuthToken,
   type AuthStatus,

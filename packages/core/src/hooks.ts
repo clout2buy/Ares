@@ -1,8 +1,8 @@
-// Hooks — shell extension points for Crix sessions and tool calls.
+// Hooks — shell extension points for Ares sessions and tool calls.
 //
 // Config files:
-//   ~/.crix/hooks.json
-//   <workspace>/.crix/hooks.json
+//   ~/.ares/hooks.json
+//   <workspace>/.ares/hooks.json
 //
 // Shape:
 // {
@@ -46,8 +46,8 @@ export class HookManager {
   constructor(private readonly hooks: HookConfigEntry[]) {}
 
   static async load(workspace: string): Promise<HookManager> {
-    const home = process.env.CRIX_HOME || path.join(os.homedir(), ".crix");
-    const files = [path.join(home, "hooks.json"), path.join(workspace, ".crix", "hooks.json")];
+    const home = process.env.ARES_HOME || path.join(os.homedir(), ".ares");
+    const files = [path.join(home, "hooks.json"), path.join(workspace, ".ares", "hooks.json")];
     const hooks: HookConfigEntry[] = [];
     for (const file of files) {
       try {
@@ -114,10 +114,10 @@ async function runHookCommand(
       windowsHide: true,
       env: {
         ...process.env,
-        CRIX_HOOK_EVENT: input.event,
-        CRIX_HOOK_TOOL: input.toolName ?? "",
-        CRIX_HOOK_INPUT: safeJson(input.input),
-        CRIX_HOOK_OUTPUT: safeJson(input.output),
+        ARES_HOOK_EVENT: input.event,
+        ARES_HOOK_TOOL: input.toolName ?? "",
+        ARES_HOOK_INPUT: safeJson(input.input),
+        ARES_HOOK_OUTPUT: safeJson(input.output),
       },
     });
     let output = "";

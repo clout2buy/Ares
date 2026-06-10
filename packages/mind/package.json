@@ -1,10 +1,10 @@
 {
-  "name": "@crix/mind",
+  "name": "@ares/mind",
   "version": "0.6.0-alpha.1",
   "type": "module",
   "private": true,
   "license": "MIT",
-  "description": "Crix v6 Mind: Living Memory (episodic + semantic + procedural, strength-weighted, self-associating, self-consolidating) and Cognition (a real thought process). The layer that makes Crix an entity.",
+  "description": "Ares v6 Mind: Living Memory (episodic + semantic + procedural, strength-weighted, self-associating, self-consolidating) and Cognition (a real thought process). The layer that makes Ares an entity.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

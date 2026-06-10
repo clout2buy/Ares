@@ -28,8 +28,8 @@ test("V4 V10: daemon --json emits ready event for companion UI protocol", () => 
 });
 
 test("V4 V10: daemon permission_response unblocks a pending tool", async () => {
-  const home = mkdtempSync(path.join(os.tmpdir(), "crix-daemon-perm-home-"));
-  const outside = mkdtempSync(path.join(os.tmpdir(), "crix-daemon-perm-outside-"));
+  const home = mkdtempSync(path.join(os.tmpdir(), "ares-daemon-perm-home-"));
+  const outside = mkdtempSync(path.join(os.tmpdir(), "ares-daemon-perm-outside-"));
   const outsideFile = path.join(outside, "outside.txt");
   mkdirSync(home, { recursive: true });
   writeFileSync(path.join(home, "ui.json"), JSON.stringify({ dangerousBypass: false }, null, 2) + "\n", "utf8");
@@ -37,7 +37,7 @@ test("V4 V10: daemon permission_response unblocks a pending tool", async () => {
 
   const child = spawn(process.execPath, [cliEntry, "daemon", "--json", "--provider", "mock"], {
     cwd: workspaceRoot,
-    env: { ...process.env, CRIX_HOME: home, CRIX_AGENT_ENABLED: "0" },
+    env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0" },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -112,18 +112,18 @@ test("V4 V10: daemon permission_response unblocks a pending tool", async () => {
 });
 
 test("V4 V10: daemon fresh sessions pass context budget and chat tuning", async () => {
-  const home = mkdtempSync(path.join(os.tmpdir(), "crix-daemon-budget-home-"));
+  const home = mkdtempSync(path.join(os.tmpdir(), "ares-daemon-budget-home-"));
   mkdirSync(home, { recursive: true });
 
   const child = spawn(process.execPath, [cliEntry, "daemon", "--json", "--provider", "mock"], {
     cwd: workspaceRoot,
     env: {
       ...process.env,
-      CRIX_HOME: home,
-      CRIX_AGENT_ENABLED: "0",
-      CRIX_CONTEXT_BUDGET: "900",
-      CRIX_MAX_OUTPUT_TOKENS: "123",
-      CRIX_REASONING_LEVEL: "low",
+      ARES_HOME: home,
+      ARES_AGENT_ENABLED: "0",
+      ARES_CONTEXT_BUDGET: "900",
+      ARES_MAX_OUTPUT_TOKENS: "123",
+      ARES_REASONING_LEVEL: "low",
     },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,

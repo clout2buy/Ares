@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const port = Number(process.env.CRIX_WEB_BRIDGE_PORT || 1421);
+const port = Number(process.env.ARES_WEB_BRIDGE_PORT || 1421);
 const ollamaHost = process.env.OLLAMA_HOST || "http://127.0.0.1:11434";
 
 let child = null;
@@ -42,7 +42,7 @@ function startDaemon(args = {}) {
 
   const cli = path.join(root, "packages", "cli", "dist", "entry.js");
   if (!existsSync(cli)) {
-    throw new Error("Could not find packages/cli/dist/entry.js. Build Crix before launching the preview bridge.");
+    throw new Error("Could not find packages/cli/dist/entry.js. Build Ares before launching the preview bridge.");
   }
 
   const commandArgs = [cli, "daemon", "--json"];
@@ -51,7 +51,7 @@ function startDaemon(args = {}) {
 
   const daemon = spawn("node", commandArgs, {
     cwd: root,
-    env: { ...process.env, CRIX_AGENT_ENABLED: "1" },
+    env: { ...process.env, ARES_AGENT_ENABLED: "1" },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -94,7 +94,7 @@ function stopDaemon() {
 }
 
 function writeDaemon(command) {
-  if (!childStdin) throw new Error("Crix daemon is not running");
+  if (!childStdin) throw new Error("Ares daemon is not running");
   childStdin.write(`${JSON.stringify(command)}\n`);
 }
 
@@ -131,48 +131,48 @@ async function invoke(cmd, args = {}) {
       return 0;
     case "plugin:event|unlisten":
       return null;
-    case "crix_set_theme":
+    case "ares_set_theme":
       return args.name ?? null;
-    case "crix_dev_mode":
+    case "ares_dev_mode":
       return true;
-    case "crix_ollama_models":
+    case "ares_ollama_models":
       return discoverOllamaModels();
-    case "crix_agent_identity":
+    case "ares_agent_identity":
       return loadAgentIdentity();
-    case "crix_self_model":
+    case "ares_self_model":
       return loadSelfModel();
-    case "crix_daemon_status":
+    case "ares_daemon_status":
       return status();
-    case "crix_drain_events":
+    case "ares_drain_events":
       return events.filter((event) => event.seq > Number(args.after ?? 0));
-    case "crix_start_daemon":
+    case "ares_start_daemon":
       return startDaemon(args);
-    case "crix_restart_daemon":
+    case "ares_restart_daemon":
       stopDaemon();
       push({ type: "desktop_daemon_restarting" });
       return startDaemon(args);
-    case "crix_send":
+    case "ares_send":
       writeDaemon({ type: "send", goal: String(args.goal ?? "") });
       return null;
-    case "crix_set_reasoning":
+    case "ares_set_reasoning":
       writeDaemon({ type: "reasoning", level: String(args.level ?? "") });
       return null;
-    case "crix_set_routing":
+    case "ares_set_routing":
       writeDaemon({ type: "routing", routing: args.routing ?? {} });
       return null;
-    case "crix_set_openrouter_key":
+    case "ares_set_openrouter_key":
       writeDaemon({ type: "openrouter_key", key: String(args.key ?? ""), model: clean(args.model) });
       return null;
-    case "crix_permission_response":
+    case "ares_permission_response":
       writeDaemon({ type: "permission_response", id: clean(args.id), decision: String(args.decision ?? "") });
       return null;
-    case "crix_stop_daemon":
+    case "ares_stop_daemon":
       stopDaemon();
       push({ type: "desktop_daemon_stopped" });
       return null;
-    case "crix_window_minimize":
-    case "crix_window_toggle_maximize":
-    case "crix_window_close":
+    case "ares_window_minimize":
+    case "ares_window_toggle_maximize":
+    case "ares_window_close":
       return null;
     default:
       throw new Error(`Unsupported preview bridge command: ${cmd}`);
@@ -209,8 +209,8 @@ async function discoverOllamaModels() {
 async function loadAgentIdentity() {
   const candidates = [
     path.join(root, "IDENTITY.md"),
-    path.join(root, ".crix", "IDENTITY.md"),
-    path.join(process.env.USERPROFILE || process.env.HOME || "", ".crix", "IDENTITY.md"),
+    path.join(root, ".ares", "IDENTITY.md"),
+    path.join(process.env.USERPROFILE || process.env.HOME || "", ".ares", "IDENTITY.md"),
   ];
   for (const file of candidates) {
     if (!file || !existsSync(file)) continue;
@@ -226,8 +226,8 @@ async function loadAgentIdentity() {
 
 async function loadSelfModel() {
   const candidates = [
-    path.join(root, ".crix", "self", "model.json"),
-    path.join(process.env.USERPROFILE || process.env.HOME || "", ".crix", "self", "model.json"),
+    path.join(root, ".ares", "self", "model.json"),
+    path.join(process.env.USERPROFILE || process.env.HOME || "", ".ares", "self", "model.json"),
   ];
   for (const file of candidates) {
     if (!file || !existsSync(file)) continue;
@@ -316,7 +316,7 @@ function readBody(req) {
 }
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`Crix web preview bridge listening on http://127.0.0.1:${port}`);
+  console.log(`Ares web preview bridge listening on http://127.0.0.1:${port}`);
 });
 
 process.on("SIGINT", () => {

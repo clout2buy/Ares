@@ -1,7 +1,7 @@
 ﻿{
-  "name": "@crix/protocol",
+  "name": "@ares/protocol",
   "version": "0.3.0-alpha.1",
-  "description": "Wire protocol types for Crix v2 — streaming events, content blocks, tool schemas, permissions, todos, sessions.",
+  "description": "Wire protocol types for Ares v2 — streaming events, content blocks, tool schemas, permissions, todos, sessions.",
   "license": "MIT",
   "private": true,
   "scripts": {

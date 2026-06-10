@@ -12,7 +12,7 @@
 //      cannot claim "done" while CI is red.
 //
 // No other harness does this automatically. Claude Code requires hooks;
-// Codex requires you to ask. Crix makes it the default.
+// Codex requires you to ask. Ares makes it the default.
 
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";

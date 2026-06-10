@@ -36,7 +36,7 @@ export interface FindAndEditOutput {
   changes: FindAndEditChange[];
 }
 
-const IGNORED_DIRS = new Set(["node_modules", ".git", ".crix", "dist", "build", "target", ".next", "coverage"]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", ".ares", "dist", "build", "target", ".next", "coverage"]);
 const TEXT_EXTENSIONS = new Set([
   ".ts",
   ".tsx",

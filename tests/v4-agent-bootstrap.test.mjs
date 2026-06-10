@@ -11,13 +11,13 @@ import {
   workspaceToolsPath,
 } from "../packages/agent/dist/index.js";
 
-async function makeTmp(prefix = "crix-v4-bootstrap-") {
+async function makeTmp(prefix = "ares-v4-bootstrap-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 test("V4 V1: ensureAgentScaffold creates bootstrap and workspace TOOLS.md without identity", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
+  const workspace = await makeTmp("ares-v4-workspace-");
   await fs.writeFile(path.join(workspace, "package.json"), JSON.stringify({ scripts: { build: "tsc", verify: "tsc --noEmit" } }), "utf8");
   await fs.writeFile(path.join(workspace, "pnpm-lock.yaml"), "", "utf8");
 
@@ -30,7 +30,7 @@ test("V4 V1: ensureAgentScaffold creates bootstrap and workspace TOOLS.md withou
 
 test("V4 V1: completeBootstrap writes identity files atomically and deletes BOOTSTRAP.md", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
+  const workspace = await makeTmp("ares-v4-workspace-");
   await ensureAgentScaffold({ home, workspace });
 
   const state = await completeBootstrap(
@@ -40,7 +40,7 @@ test("V4 V1: completeBootstrap writes identity files atomically and deletes BOOT
       languages: "TypeScript",
       style: "direct",
       conventions: "pnpm, verify",
-      agentName: "Crix",
+      agentName: "Ares",
       creature: "coding daemon",
       vibe: "direct",
       emoji: "*",
@@ -51,18 +51,18 @@ test("V4 V1: completeBootstrap writes identity files atomically and deletes BOOT
 
   assert.equal(state.required, false);
   await assert.rejects(fs.stat(path.join(home, "BOOTSTRAP.md")), /ENOENT/);
-  assert.match(await fs.readFile(path.join(home, "IDENTITY.md"), "utf8"), /Name: Crix/);
+  assert.match(await fs.readFile(path.join(home, "IDENTITY.md"), "utf8"), /Name: Ares/);
   assert.match(await fs.readFile(path.join(home, "SOUL.md"), "utf8"), /Skip filler words/);
   assert.match(await fs.readFile(path.join(home, "USER.md"), "utf8"), /Clout/);
 });
 
 test("V4 V1: agent context loads identity-first mind files without core importing agent", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
+  const workspace = await makeTmp("ares-v4-workspace-");
   await completeBootstrap(
     {
       userName: "Clout",
-      agentName: "Crix",
+      agentName: "Ares",
       creature: "coding daemon",
       vibe: "careful",
       emoji: "*",
@@ -78,11 +78,11 @@ test("V4 V1: agent context loads identity-first mind files without core importin
 
 test("V4 V1: agent context bounds raw and curated memory blocks", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
+  const workspace = await makeTmp("ares-v4-workspace-");
   await completeBootstrap(
     {
       userName: "Clout",
-      agentName: "Crix",
+      agentName: "Ares",
       creature: "coding daemon",
       vibe: "careful",
       emoji: "*",

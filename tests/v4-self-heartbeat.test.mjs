@@ -16,7 +16,7 @@ import {
   defaultAgentConfig,
 } from "../packages/agent/dist/index.js";
 
-async function makeTmp(prefix = "crix-hb-") {
+async function makeTmp(prefix = "ares-hb-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
@@ -24,7 +24,7 @@ const NOON = new Date("2026-05-28T12:00:00");
 
 test("heartbeat alerts on a broken skill even with no HEARTBEAT.md tasks", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-hb-ws-");
+  const workspace = await makeTmp("ares-hb-ws-");
   const config = defaultAgentConfig(home);
   // an always-fail skill -> prune directive (severity high)
   for (let i = 0; i < 3; i++) await recordOutcome(home, { id: "skill/bad", kind: "skill", name: "bad", ok: false, error: "explodes" });
@@ -37,7 +37,7 @@ test("heartbeat alerts on a broken skill even with no HEARTBEAT.md tasks", async
 
 test("heartbeat stays skipped when self is healthy and no tasks", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-hb-ws-");
+  const workspace = await makeTmp("ares-hb-ws-");
   const config = defaultAgentConfig(home);
   for (let i = 0; i < 3; i++) await recordOutcome(home, { id: "skill/good", kind: "skill", name: "good", ok: true, ms: 5 });
 
@@ -47,7 +47,7 @@ test("heartbeat stays skipped when self is healthy and no tasks", async () => {
 
 test("DEEP dream surfaces self-directives in its report", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-hb-ws-");
+  const workspace = await makeTmp("ares-hb-ws-");
   const config = defaultAgentConfig(home);
   for (let i = 0; i < 3; i++) await recordOutcome(home, { id: "skill/leak", kind: "skill", name: "leak", ok: false, error: "drip" });
 

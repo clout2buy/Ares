@@ -1,5 +1,5 @@
-import type { CrixAgentConfig } from "./config.js";
-import { crixAgentHome } from "./paths.js";
+import type { AresAgentConfig } from "./config.js";
+import { aresAgentHome } from "./paths.js";
 import { createMemoryStore, formatRecallReminder } from "./memory/vectorStore.js";
 import { embedText, lexicalEmbedding } from "./memory/embed.js";
 import type { MemoryCategory, RecallResult } from "./memory/types.js";
@@ -9,7 +9,7 @@ export interface RecallOptions {
   workspace: string;
   query: string;
   category?: MemoryCategory;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   useOllama?: boolean;
 }
 
@@ -17,7 +17,7 @@ export async function recallForTurn(opts: RecallOptions): Promise<{ results: Rec
   if (isLowSignalRecallQuery(opts.query)) {
     return { results: [], reminder: "", usedEmbedding: "lexical" };
   }
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   let embedding: number[];
   let usedEmbedding: "ollama" | "lexical" = "lexical";
   if (opts.useOllama) {

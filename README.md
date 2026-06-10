@@ -1,45 +1,45 @@
-# Crix
+# Ares
 
-Crix is a TypeScript-first coding-agent harness. It combines a streaming CLI, tool runtime, persistent agent identity, living memory, durable goals, browser connectors, and audited effect rails.
+Ares (formerly Crix) is a TypeScript-first agent entity — *the battle-tested agent: it proves what it learns*. It combines a streaming engine, tool runtime, persistent identity, living memory, durable goals, browser connectors, and audited effect rails. The active directive is the ARES rebirth (`docs/roadmap/NEXT-ARES.md`): an always-on Garrison daemon, thin clients, and the Crucible empirical learning loop.
 
 The repository is a pnpm workspace. Source lives under `packages/`; the optional desktop companion lives under `tauri/`.
 
 ## Quick Start
 
 ```powershell
-cd D:\Crix
+cd D:\Ares
 pnpm install
 pnpm build
-.\crix.bat help
+.\ares.bat help
 ```
 
 Common commands:
 
 ```powershell
-.\crix.bat                         # provider/model launcher
-.\crix.bat chat --provider mock     # interactive terminal chat
-.\crix.bat run --goal "fix failing tests"
-.\crix.bat doctor                  # provider/runtime health
-.\crix.bat agent doctor            # identity and agent runtime health
-.\crix.bat mind doctor             # living-memory integrity report
-.\crix.bat mind consolidate        # prune, dedupe, and crystallize memory
-.\crix.bat operator attention      # inspect current Operator work queue
-.\crix.bat operator add --goal "ship a feature"
-.\crix.bat operator run --ticks 1
+.\ares.bat                         # provider/model launcher
+.\ares.bat chat --provider mock     # interactive terminal chat
+.\ares.bat run --goal "fix failing tests"
+.\ares.bat doctor                  # provider/runtime health
+.\ares.bat agent doctor            # identity and agent runtime health
+.\ares.bat mind doctor             # living-memory integrity report
+.\ares.bat mind consolidate        # prune, dedupe, and crystallize memory
+.\ares.bat operator attention      # inspect current Operator work queue
+.\ares.bat operator add --goal "ship a feature"
+.\ares.bat operator run --ticks 1
 pnpm voice:tts                     # start the local Kokoro-82M voice sidecar
 ```
 
 ## Packages
 
-- `@crix/protocol`: shared event, provider, reasoning, and tool-call shapes.
-- `@crix/core`: sessions, query engine, providers, checkpoints, subagents, verifier, hooks.
-- `@crix/tools`: local tool catalog and executors.
-- `@crix/agent`: identity files, bootstrap, recall, heartbeat, dreaming, skills, self-reflection.
-- `@crix/mind`: living memory, cognition, intent classification, memory diagnostics.
-- `@crix/operator`: durable goals, control loop, capability graph, acquisition, attention, background loop.
-- `@crix/effects`: budgets, ledger, kill switch, and side-effect rails.
-- `@crix/connectors`: browser connector, browser effects, filmstrip proof.
-- `@crix/cli`: command-line and terminal UI entrypoint.
+- `@ares/protocol`: shared event, provider, reasoning, and tool-call shapes.
+- `@ares/core`: sessions, query engine, providers, checkpoints, subagents, verifier, hooks.
+- `@ares/tools`: local tool catalog and executors.
+- `@ares/agent`: identity files, bootstrap, recall, heartbeat, dreaming, skills, self-reflection.
+- `@ares/mind`: living memory, cognition, intent classification, memory diagnostics.
+- `@ares/operator`: durable goals, control loop, capability graph, acquisition, attention, background loop.
+- `@ares/effects`: budgets, ledger, kill switch, and side-effect rails.
+- `@ares/connectors`: browser connector, browser effects, filmstrip proof.
+- `@ares/cli`: command-line and terminal UI entrypoint.
 
 ## Repository Layout
 
@@ -48,12 +48,12 @@ docs/                 Project docs and roadmap specs
 packages/             Workspace packages
 tauri/                Optional desktop companion
 tests/                Node test suite
-crix.bat, crix.ps1    Windows launchers
+ares.bat, ares.ps1    Windows launchers
 ```
 
-Runtime state belongs outside source control. The default durable home is `%USERPROFILE%\.crix`; repo-local `.crix/`, package `dist/`, Tauri build output, and smoke screenshots are ignored.
+Runtime state belongs outside source control. The default durable home is `%USERPROFILE%\.ares`; repo-local `.ares/`, package `dist/`, Tauri build output, and smoke screenshots are ignored.
 
-Interactive sessions are owner-local by default: Crix starts in bypass mode unless `dangerousBypass: false` is set in the UI settings file. See `docs/DEVELOPMENT.md` for the permission modes and verification workflow.
+Interactive sessions are owner-local by default: Ares starts in bypass mode unless `dangerousBypass: false` is set in the UI settings file. See `docs/DEVELOPMENT.md` for the permission modes and verification workflow.
 
 ## Development
 

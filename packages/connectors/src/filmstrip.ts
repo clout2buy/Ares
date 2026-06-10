@@ -1,7 +1,7 @@
-// The filmstrip — visual proof + audit trail (Crix v5 / O6 / concept C12).
+// The filmstrip — visual proof + audit trail (Ares v5 / O6 / concept C12).
 //
 // Every browser action records a screenshot frame. The ordered sequence is a
-// replayable film of exactly what Crix did — the thing that makes overnight
+// replayable film of exactly what Ares did — the thing that makes overnight
 // autonomy legible ("show me what you did") and that, paired with the ledger's
 // decision traces, earns the trust to extend a leash. Frames are real PNG files
 // on disk; manifest.jsonl is the append-only index.

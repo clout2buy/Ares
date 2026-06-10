@@ -23,7 +23,7 @@ import { runEffect, Ledger, Budget, KillSwitch } from "../packages/effects/dist/
 import { exists } from "../packages/agent/dist/index.js";
 
 async function makeDir() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-o6-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-o6-"));
 }
 
 // ── 1. DOM-first flow ────────────────────────────────────────────────────────
@@ -44,8 +44,8 @@ test("browser: mock connector drives a DOM-first form flow", async () => {
   const tree = await browser.accessibilityTree();
   assert.ok(tree.some((n) => n.role === "textbox" && n.name === "Email"), "found the field by structure, not pixels");
 
-  await browser.fillByLabel("Email", "crix@example.com");
-  assert.deepEqual(browser.filled[0], { label: "Email", value: "crix@example.com" });
+  await browser.fillByLabel("Email", "ares@example.com");
+  assert.deepEqual(browser.filled[0], { label: "Email", value: "ares@example.com" });
 
   const shot = await browser.screenshot();
   assert.equal(shot.format, "png");

@@ -1,7 +1,7 @@
 // M1.1 — apply-patch parser tests.
 //
 // Ported test cases from codex-rs/apply-patch/src/parser.rs#tests plus
-// Crix-specific cases for lenient heredoc, multi-chunk updates, and move.
+// Ares-specific cases for lenient heredoc, multi-chunk updates, and move.
 
 import test from "node:test";
 import assert from "node:assert/strict";

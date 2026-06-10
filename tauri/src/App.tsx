@@ -62,7 +62,7 @@ interface EvolutionGain {
   kind?: string;
 }
 
-interface CrixEvent {
+interface AresEvent {
   type: string;
   id?: string;
   text?: string;
@@ -94,7 +94,7 @@ interface CrixEvent {
   webSearch?: boolean;
   gain?: EvolutionGain;
   // For wrapped lifecycle events: { type: "lifecycle", event: { type, gain, ... } }
-  event?: CrixEvent;
+  event?: AresEvent;
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -122,7 +122,7 @@ interface DaemonStatus {
 
 interface BufferedEvent {
   seq: number;
-  event: CrixEvent;
+  event: AresEvent;
 }
 
 interface ProviderModel {
@@ -160,7 +160,7 @@ interface Selection {
   model: string;
 }
 
-interface CrixIdentity {
+interface AresIdentity {
   name?: string | null;
   avatar?: string | null;
   mark?: string | null;
@@ -187,7 +187,7 @@ interface ModelUsage {
 interface SessionRecord {
   id: string;
   name: string;
-  events: CrixEvent[];
+  events: AresEvent[];
   createdAt: number;
   updatedAt: number;
 }
@@ -215,7 +215,7 @@ interface MindBeat {
   confidence?: number;
 }
 
-// Glyphs mirror @crix/mind cognition/stream.ts so the rendered monologue reads
+// Glyphs mirror @ares/mind cognition/stream.ts so the rendered monologue reads
 // like a mind at work, not a log.
 const MIND_GLYPH: Record<string, string> = {
   observe: "\u{1F441}",
@@ -312,8 +312,8 @@ interface AppearanceSettings {
 }
 
 // Owner-assigned model routing — the "pill" lets the user pin a provider+model
-// to each task lane. Mirrors @crix/core's RouteLane / RouteAssignments. A lane
-// left null falls back to Crix's heuristic router.
+// to each task lane. Mirrors @ares/core's RouteLane / RouteAssignments. A lane
+// left null falls back to Ares's heuristic router.
 type RouteLane = "chat" | "coding" | "research" | "tool-use";
 const ROUTE_LANES: readonly RouteLane[] = ["chat", "coding", "research", "tool-use"] as const;
 const ROUTE_LANE_LABELS: Record<RouteLane, string> = {
@@ -336,7 +336,7 @@ interface RouteTarget {
 
 type RoutingTable = Partial<Record<RouteLane, RouteTarget>>;
 
-// Mirror of @crix/core classifyLane — the Tauri app is a standalone bundle, so
+// Mirror of @ares/core classifyLane — the Tauri app is a standalone bundle, so
 // the heuristic is duplicated here. Keep in sync with packages/core/modelRouter.
 function classifyLaneUI(goal: string): RouteLane {
   const g = ` ${goal.toLowerCase()} `;
@@ -366,8 +366,8 @@ interface VoiceOption {
   character: string;
 }
 
-const SETTINGS_KEY = "crix.desktop.settings.v2";
-const USAGE_KEY = "crix.desktop.modelUsage.v1";
+const SETTINGS_KEY = "ares.desktop.settings.v2";
+const USAGE_KEY = "ares.desktop.modelUsage.v1";
 const SESSION_LIMIT = 220;
 
 const OLLAMA_CLOUD_MODELS: ProviderModel[] = [
@@ -526,7 +526,7 @@ const OLLAMA_CLOUD_MODELS: ProviderModel[] = [
 ];
 
 const OPENAI_MODELS: ProviderModel[] = [
-  model("gpt-5.5", "Default frontier model", "frontier", "cloud", { capabilities: ["tools", "thinking"], description: "Frontier model through Crix's OpenAI Responses path." }),
+  model("gpt-5.5", "Default frontier model", "frontier", "cloud", { capabilities: ["tools", "thinking"], description: "Frontier model through Ares's OpenAI Responses path." }),
   model("gpt-5.1-codex", "Coding-specialized", "frontier", "cloud", { capabilities: ["tools"], description: "Coding-specialized OpenAI model for repo work and patch-heavy turns." }),
   model("gpt-5.1", "General reasoning", "frontier", "cloud", { capabilities: ["thinking"], description: "General OpenAI reasoning model for planning, analysis, and mixed tasks." }),
 ];
@@ -566,13 +566,13 @@ function buildProviderOptions(devMode: boolean, localOllamaModels: ProviderModel
   {
     id: "ollama",
     label: "Ollama",
-    note: "Local daemon discovery plus cloud-capable model ids and Crix slot routing.",
+    note: "Local daemon discovery plus cloud-capable model ids and Ares slot routing.",
     models: [...localOllamaModels, ...OLLAMA_CLOUD_MODELS],
   },
   {
     id: "openai",
     label: "OpenAI",
-    note: "OpenAI Responses through the existing Crix auth path.",
+    note: "OpenAI Responses through the existing Ares auth path.",
     models: OPENAI_MODELS,
   },
   {
@@ -621,13 +621,13 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
   voiceId: "af_heart",
   voiceSpeed: 1.15,
 };
-// Empty by default → every lane uses Crix's heuristic router until the owner pins one.
+// Empty by default → every lane uses Ares's heuristic router until the owner pins one.
 const DEFAULT_ROUTING: RoutingTable = {};
-const UI_DEV_MODE = import.meta.env.VITE_CRIX_DEV === "1";
+const UI_DEV_MODE = import.meta.env.VITE_ARES_DEV === "1";
 const VOICE_TTS_ENDPOINT = "ws://127.0.0.1:8765/tts";
 const VOICE_HTTP_ENDPOINT = "http://127.0.0.1:8765/voices";
 const STT_ENDPOINT = "ws://127.0.0.1:8765/stt";
-const WEB_PREVIEW_BRIDGE_URL = import.meta.env.VITE_CRIX_WEB_BRIDGE_URL ?? "http://127.0.0.1:1421";
+const WEB_PREVIEW_BRIDGE_URL = import.meta.env.VITE_ARES_WEB_BRIDGE_URL ?? "http://127.0.0.1:1421";
 const VOICE_PREVIEW_TEXT = "Systems online. Your new entity is ready when you are.";
 // Flush speech in small, natural units so it is spoken as it streams rather than
 // in one block at the end. A clause (comma/clause break) is enough to start; a
@@ -702,12 +702,12 @@ function App() {
   const [routing, setRouting] = useState<RoutingTable>(initial.routing);
   const [pendingRoute, setPendingRoute] = useState<PendingRoute | null>(null);
   // Reduced-motion / low-power mode: stills all looping animation + the WebGL
-  // scene. Driven by the OS preference or a "crix.nofx" flag (also lets headless
+  // scene. Driven by the OS preference or a "ares.nofx" flag (also lets headless
   // preview capture an idle frame).
   const reducedMotion = useMemo(
     () =>
       typeof window !== "undefined" &&
-      (window.localStorage.getItem("crix.nofx") === "1" ||
+      (window.localStorage.getItem("ares.nofx") === "1" ||
         window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true),
     [],
   );
@@ -737,7 +737,7 @@ function App() {
     reachable: false,
     models: [],
   });
-  const [agentIdentity, setAgentIdentity] = useState<CrixIdentity>({});
+  const [agentIdentity, setAgentIdentity] = useState<AresIdentity>({});
   const [usageByModel, setUsageByModel] = useState<Record<string, ModelUsage>>(loadModelUsage);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -902,12 +902,12 @@ function App() {
 
   useEffect(() => {
     saveDesktopSettings({ theme, selection, appearance, routing });
-    if (hasNativeBridge()) void invoke("crix_set_theme", { name: theme }).catch(() => null);
+    if (hasNativeBridge()) void invoke("ares_set_theme", { name: theme }).catch(() => null);
   }, [theme, selection, appearance, routing]);
 
   // Push the owner's routing table to the daemon so the live turn uses it.
   useEffect(() => {
-    if (hasNativeBridge()) void invoke("crix_set_routing", { routing }).catch(() => null);
+    if (hasNativeBridge()) void invoke("ares_set_routing", { routing }).catch(() => null);
   }, [routing]);
 
   useEffect(() => {
@@ -930,8 +930,8 @@ function App() {
       }
       try {
         const [nextDevMode, discovery] = await Promise.all([
-          invoke<boolean>("crix_dev_mode").catch(() => UI_DEV_MODE),
-          invoke<OllamaDiscovery>("crix_ollama_models").catch((error: unknown) => ({
+          invoke<boolean>("ares_dev_mode").catch(() => UI_DEV_MODE),
+          invoke<OllamaDiscovery>("ares_ollama_models").catch((error: unknown) => ({
             host: "http://localhost:11434",
             reachable: false,
             models: [],
@@ -957,7 +957,7 @@ function App() {
     if (!hasNativeBridge()) return;
     let mounted = true;
     const refresh = async () => {
-      const identity = await invoke<CrixIdentity>("crix_agent_identity").catch(() => ({}));
+      const identity = await invoke<AresIdentity>("ares_agent_identity").catch(() => ({}));
       if (mounted) setAgentIdentity(identity);
     };
     void refresh();
@@ -998,7 +998,7 @@ function App() {
 
     const poll = async () => {
       try {
-        const events = await invoke<BufferedEvent[]>("crix_drain_events", { after: lastEventSeqRef.current });
+        const events = await invoke<BufferedEvent[]>("ares_drain_events", { after: lastEventSeqRef.current });
         if (!mounted) return;
         for (const item of events) {
           acceptBufferedEvent(item);
@@ -1013,7 +1013,7 @@ function App() {
 
     const boot = async () => {
       try {
-        const stopListening = await listen<BufferedEvent>("crix:event-buffered", (event) => {
+        const stopListening = await listen<BufferedEvent>("ares:event-buffered", (event) => {
           if (!mounted) return;
           acceptBufferedEvent(event.payload);
         });
@@ -1027,7 +1027,7 @@ function App() {
       }
       if (!mounted) return;
 
-      invoke<DaemonStatus>("crix_start_daemon", daemonSelectionArgs(initial.selection))
+      invoke<DaemonStatus>("ares_start_daemon", daemonSelectionArgs(initial.selection))
         .then((state) => {
           if (!mounted) return;
           applyDaemonStatus(state);
@@ -1364,7 +1364,7 @@ function App() {
     setVoiceStatus(voiceEnabledRef.current && socket?.readyState === WebSocket.OPEN ? "ready" : voiceEnabledRef.current ? "connecting" : "off");
   }
 
-  function appendToActiveSession(event: CrixEvent) {
+  function appendToActiveSession(event: AresEvent) {
     const targetSessionId = activeSessionIdRef.current;
     const stamped = { ...event, receivedAt: event.receivedAt ?? Date.now() };
     setSessions((current) =>
@@ -1381,7 +1381,7 @@ function App() {
     );
   }
 
-  function handleDaemonEvent(detail: CrixEvent) {
+  function handleDaemonEvent(detail: AresEvent) {
     if (!detail) return;
     // Lifecycle envelopes drive pulses/status only. They are not chat lines.
     if (detail.type === "lifecycle" && detail.event) {
@@ -1464,7 +1464,7 @@ function App() {
     appendToActiveSession(detail);
   }
 
-  function recordModelUsage(usedSelection: Selection, usage: NonNullable<CrixEvent["usage"]>) {
+  function recordModelUsage(usedSelection: Selection, usage: NonNullable<AresEvent["usage"]>) {
     const key = usageKey(usedSelection);
     setUsageByModel((current) => {
       const previous = current[key] ?? emptyUsage();
@@ -1498,7 +1498,7 @@ function App() {
     if (voiceEnabledRef.current) stopVoicePlayback();
     appendToActiveSession({ type: "user_send", text: displayText, attachments: atts, webSearch });
     try {
-      await invoke("crix_send", { goal });
+      await invoke("ares_send", { goal });
     } catch (error) {
       setStatus("error");
       appendToActiveSession({ type: "desktop_error", text: String(error) });
@@ -1585,7 +1585,7 @@ function App() {
       return;
     }
     markReasoningSync("syncing");
-    void invoke("crix_set_reasoning", { level }).catch((error: unknown) => {
+    void invoke("ares_set_reasoning", { level }).catch((error: unknown) => {
       markReasoningSync("error");
       appendToActiveSession({ type: "desktop_error", text: `Reasoning update failed: ${String(error)}` });
     });
@@ -1593,7 +1593,7 @@ function App() {
 
   function respondToPermission(id: string | undefined, decision: PermissionDecision) {
     if (!id || !hasNativeBridge()) return;
-    void invoke("crix_permission_response", { id, decision }).catch((error: unknown) => {
+    void invoke("ares_permission_response", { id, decision }).catch((error: unknown) => {
       setStatus("error");
       appendToActiveSession({ type: "desktop_error", text: `Permission response failed: ${String(error)}` });
     });
@@ -1603,7 +1603,7 @@ function App() {
     setDaemon("starting");
     setStatus("active");
     try {
-      const state = await invoke<DaemonStatus>("crix_restart_daemon", daemonSelectionArgs(nextSelection));
+      const state = await invoke<DaemonStatus>("ares_restart_daemon", daemonSelectionArgs(nextSelection));
       setSelection(nextSelection);
       setDraftSelection(nextSelection);
       setCustomModel(nextSelection.model);
@@ -1617,7 +1617,7 @@ function App() {
   }
 
   async function stopDaemon() {
-    await invoke("crix_stop_daemon");
+    await invoke("ares_stop_daemon");
     setDaemon("stopped");
   }
 
@@ -1682,7 +1682,7 @@ function App() {
 
   return (
     <main
-      className="crix-app"
+      className="ares-app"
       data-corners={appearance.corners}
       data-theme={theme}
       data-fx={reducedMotion ? "off" : "on"}
@@ -1706,7 +1706,7 @@ function App() {
       <Titlebar identity={agentIdentity} />
       <aside className="sidebar">
         <div className="brandBlock">
-          <div className="brandMark" data-hot={running ? "1" : "0"}><CrixAvatar identity={agentIdentity} /></div>
+          <div className="brandMark" data-hot={running ? "1" : "0"}><AresAvatar identity={agentIdentity} /></div>
           <div>
             <strong>{cleanIdentityValue(agentIdentity.name) ?? "New entity"}</strong>
             <span>{running ? "daemon linked" : daemon}</span>
@@ -1797,7 +1797,7 @@ function App() {
 
         <div className="sidebarFooter">
           <span className={running ? "connectionDot online" : "connectionDot"} />
-          <span>{root || "Desktop\\Crix Workspace"}</span>
+          <span>{root || "Desktop\\Ares Workspace"}</span>
         </div>
       </aside>
 
@@ -2051,7 +2051,7 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
   const pointerRef = useRef({ x: 0, y: 0 });
   // Live signals read by the render loop WITHOUT rebuilding the scene: the scene
   // only re-creates on a theme change, but it reacts every frame to whether the
-  // daemon is running and whether Crix is actively thinking/streaming/tooling.
+  // daemon is running and whether Ares is actively thinking/streaming/tooling.
   const runningRef = useRef(running);
   const statusRef = useRef(status);
   useEffect(() => {
@@ -2082,7 +2082,7 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
     // readback from a live render loop).
     const fxDisabled =
       typeof window !== "undefined" &&
-      (window.localStorage.getItem("crix.nofx") === "1" ||
+      (window.localStorage.getItem("ares.nofx") === "1" ||
         window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
     if (fxDisabled) return;
     const mode: SceneMode = theme;
@@ -2165,7 +2165,7 @@ function ThreeScene({ running, status, theme }: { running: boolean; status: stri
         raf = window.requestAnimationFrame(animate);
         return;
       }
-      // Energy ramps smoothly toward its target, so the scene SURGES when Crix
+      // Energy ramps smoothly toward its target, so the scene SURGES when Ares
       // starts thinking/streaming and settles when it goes idle — never snaps.
       const active = statusRef.current === "active";
       const targetEnergy = runningRef.current ? (active ? 1.0 : 0.72) : active ? 0.62 : mood.idle;
@@ -2481,15 +2481,15 @@ function buildSceneObject(root: THREE.Group, mode: SceneMode, palette: ScenePale
   };
 }
 
-function CrixAvatar({ identity }: { identity?: CrixIdentity }) {
+function AresAvatar({ identity }: { identity?: AresIdentity }) {
   const avatar = cleanIdentityValue(identity?.avatar);
   if (avatar && isImageAvatar(avatar)) {
-    return <img alt="" className="crixAvatarImage" src={avatarToSrc(avatar)} />;
+    return <img alt="" className="aresAvatarImage" src={avatarToSrc(avatar)} />;
   }
   if (avatar && isTextAvatar(avatar)) {
-    return <span className="crixAvatarText">{avatar}</span>;
+    return <span className="aresAvatarText">{avatar}</span>;
   }
-  return <CrixGlyph />;
+  return <AresGlyph />;
 }
 
 function cleanIdentityValue(value?: string | null) {
@@ -2513,26 +2513,26 @@ function avatarToSrc(value: string) {
   return looksLikeLocalImagePath(value) ? convertFileSrc(value) : value;
 }
 
-function CrixGlyph() {
+function AresGlyph() {
   return (
-    <svg className="crixGlyph" viewBox="0 0 64 64" aria-hidden="true">
+    <svg className="aresGlyph" viewBox="0 0 64 64" aria-hidden="true">
       <defs>
-        <linearGradient id="crixGlyphMain" x1="14" x2="52" y1="10" y2="56" gradientUnits="userSpaceOnUse">
+        <linearGradient id="aresGlyphMain" x1="14" x2="52" y1="10" y2="56" gradientUnits="userSpaceOnUse">
           <stop stopColor="#5EA8FF" />
           <stop offset="0.46" stopColor="#70F0D2" />
           <stop offset="1" stopColor="#FFD07A" />
         </linearGradient>
-        <linearGradient id="crixGlyphGlass" x1="12" x2="48" y1="8" y2="42" gradientUnits="userSpaceOnUse">
+        <linearGradient id="aresGlyphGlass" x1="12" x2="48" y1="8" y2="42" gradientUnits="userSpaceOnUse">
           <stop stopColor="#FFFFFF" stopOpacity="0.95" />
           <stop offset="1" stopColor="#FFFFFF" stopOpacity="0.18" />
         </linearGradient>
       </defs>
-      <path className="crixGlyphCore" d="M15 19.5C15 13.7 19.7 9 25.5 9h13C49.3 9 58 17.7 58 28.5S49.3 48 38.5 48H26.8l-9.4 7.4c-1.3 1-3.2.1-3.2-1.5v-8.2C9.2 42.5 6 36.9 6 30.5C6 24.4 9.9 19.5 15 19.5Z" />
-      <path className="crixGlyphGlass" d="M17 21.5C17 15.9 21.5 11.4 27.1 11.4h10.5c9.6 0 17.4 7.8 17.4 17.4S47.2 46.2 37.6 46.2H27.4l-7.7 6v-8.4l-1-.6C13.6 40.4 10.4 35.2 10.4 29.4c0-4.5 2.8-7.9 6.6-7.9Z" />
-      <path className="crixGlyphTrace" d="M22 29.3c1.4-6.5 7.2-10.8 14.1-10.2 6.8.6 11.7 5.7 12.2 12.2" />
-      <path className="crixGlyphTrace secondary" d="M41.7 37.4c-2.2 2.1-5.2 3.3-8.7 3.1-5.2-.2-9.5-3.4-11.1-7.9" />
-      <circle className="crixGlyphDot" cx="25" cy="31" r="2.4" />
-      <circle className="crixGlyphDot" cx="39" cy="31" r="2.4" />
+      <path className="aresGlyphCore" d="M15 19.5C15 13.7 19.7 9 25.5 9h13C49.3 9 58 17.7 58 28.5S49.3 48 38.5 48H26.8l-9.4 7.4c-1.3 1-3.2.1-3.2-1.5v-8.2C9.2 42.5 6 36.9 6 30.5C6 24.4 9.9 19.5 15 19.5Z" />
+      <path className="aresGlyphGlass" d="M17 21.5C17 15.9 21.5 11.4 27.1 11.4h10.5c9.6 0 17.4 7.8 17.4 17.4S47.2 46.2 37.6 46.2H27.4l-7.7 6v-8.4l-1-.6C13.6 40.4 10.4 35.2 10.4 29.4c0-4.5 2.8-7.9 6.6-7.9Z" />
+      <path className="aresGlyphTrace" d="M22 29.3c1.4-6.5 7.2-10.8 14.1-10.2 6.8.6 11.7 5.7 12.2 12.2" />
+      <path className="aresGlyphTrace secondary" d="M41.7 37.4c-2.2 2.1-5.2 3.3-8.7 3.1-5.2-.2-9.5-3.4-11.1-7.9" />
+      <circle className="aresGlyphDot" cx="25" cy="31" r="2.4" />
+      <circle className="aresGlyphDot" cx="39" cy="31" r="2.4" />
     </svg>
   );
 }
@@ -2554,17 +2554,17 @@ function FxLayer({ running, status }: { running: boolean; status: HeartbeatStatu
   );
 }
 
-function Titlebar({ identity }: { identity: CrixIdentity }) {
+function Titlebar({ identity }: { identity: AresIdentity }) {
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebarBrand" data-tauri-drag-region>
-        <span className="titlebarSigil"><CrixAvatar identity={identity} /></span>
-        <span className="titlebarName">Crix</span>
+        <span className="titlebarSigil"><AresAvatar identity={identity} /></span>
+        <span className="titlebarName">Ares</span>
       </div>
       <div className="windowButtons">
-        <button title="Minimize" type="button" onMouseDown={stopDragEvent} onClick={runWindowCommand("crix_window_minimize")}><Minus size={14} /></button>
-        <button title="Maximize" type="button" onMouseDown={stopDragEvent} onClick={runWindowCommand("crix_window_toggle_maximize")}><Square size={12} /></button>
-        <button title="Close" type="button" onMouseDown={stopDragEvent} onClick={runWindowCommand("crix_window_close")}><X size={15} /></button>
+        <button title="Minimize" type="button" onMouseDown={stopDragEvent} onClick={runWindowCommand("ares_window_minimize")}><Minus size={14} /></button>
+        <button title="Maximize" type="button" onMouseDown={stopDragEvent} onClick={runWindowCommand("ares_window_toggle_maximize")}><Square size={12} /></button>
+        <button title="Close" type="button" onMouseDown={stopDragEvent} onClick={runWindowCommand("ares_window_close")}><X size={15} /></button>
       </div>
     </div>
   );
@@ -2581,7 +2581,7 @@ type RunnerPose = "idle" | "run" | "jump" | "flip" | "roll" | "slide" | "punch" 
 type RunnerMode = "idle" | "wander" | "trick" | "roll" | "chase" | "grab" | "held" | "fall" | "sit" | "work";
 
 const FLOOR = 1; // y of the header floor (0 = top ledge)
-const ENTITY_KEY = "crix.entity.v1";
+const ENTITY_KEY = "ares.entity.v1";
 
 // ── Sprite-sheet engine config ──────────────────────────────────────────────
 // Drop a sheet at tauri/public/entity.png and set the grid below. Until then,
@@ -2977,7 +2977,7 @@ function ChatView({
 }: {
   attachments: ChatAttachment[];
   daemon: DaemonState;
-  events: CrixEvent[];
+  events: AresEvent[];
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   message: string;
   onAttachmentFiles: (files: FileList | File[]) => void;
@@ -3271,7 +3271,7 @@ function OpenRouterPanel({
   const saveKey = async () => {
     const trimmed = key.trim();
     try {
-      if (hasNativeBridge()) await invoke("crix_set_openrouter_key", { key: trimmed, model: draftSelection.model });
+      if (hasNativeBridge()) await invoke("ares_set_openrouter_key", { key: trimmed, model: draftSelection.model });
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
       void loadModels(trimmed || undefined);
@@ -3341,7 +3341,7 @@ function OpenRouterPanel({
 // The owner-facing routing pills: one labeled pill per task lane. Each shows
 // its current target (or "Auto" → heuristic router) and expands to assign a
 // provider + model. Writing here flows to localStorage + the daemon, and the
-// live turn resolves the route via @crix/core resolveRoute().
+// live turn resolves the route via @ares/core resolveRoute().
 function RoutingPills({
   routing,
   providers,
@@ -4119,7 +4119,7 @@ function ModelInspector({
         <p className="modelFootnote">
           {model.source === "local"
             ? `Local source: ${model.storagePath ?? localRoot ?? "Ollama model store"}`
-            : "Cloud usage is tracked from Crix turn token reports so you can see which Ollama model is burning plan budget inside this app."}
+            : "Cloud usage is tracked from Ares turn token reports so you can see which Ollama model is burning plan budget inside this app."}
           {model.websiteUrl ? <> <a href={model.websiteUrl} rel="noreferrer" target="_blank">Open Ollama page</a></> : null}
         </p>
       ) : null}
@@ -4159,7 +4159,7 @@ function MindView({
   voiceCatalog,
 }: {
   appearance: AppearanceSettings;
-  events: CrixEvent[];
+  events: AresEvent[];
   onAppearance: (value: AppearanceSettings) => void;
   onPreviewVoice: (id: string) => void;
   onTheme: (value: ThemeName) => void;
@@ -4169,7 +4169,7 @@ function MindView({
   voiceCatalog: VoiceOption[];
 }) {
   const cards = [
-    ["Identity", "Loaded from ~/.crix/IDENTITY.md and SOUL.md"],
+    ["Identity", "Loaded from ~/.ares/IDENTITY.md and SOUL.md"],
     ["Autonomy", "SelfEvolve can rewrite mind files without workspace write prompts"],
     ["Memory", "Capture hook writes preferences, corrections, and decisions into daily raw memory"],
     ["Recall", "Vector memory surfaces relevant context before meaningful turns"],
@@ -4209,7 +4209,7 @@ function MindView({
   );
 }
 
-function GrowthPanel({ events }: { events: CrixEvent[] }) {
+function GrowthPanel({ events }: { events: AresEvent[] }) {
   const gains = events
     .flatMap((event) => {
       const inner = event.type === "lifecycle" ? event.event : event;
@@ -4374,7 +4374,7 @@ function ThemeGlyph({ theme }: { theme: ThemeName }) {
   return <Sparkles size={18} />;
 }
 
-function ToolsView({ events }: { events: CrixEvent[] }) {
+function ToolsView({ events }: { events: AresEvent[] }) {
   const toolEvents = events.filter((event) => event.type === "tool_call" || event.type.startsWith("tool_")).slice(-36).reverse();
   return (
     <main className="surfaceGrid toolsGrid">
@@ -4422,7 +4422,7 @@ function collectToolImagePaths(output: unknown, acc: string[] = [], depth = 0): 
   return acc;
 }
 
-function ToolFlowRow({ event }: { event: CrixEvent }) {
+function ToolFlowRow({ event }: { event: AresEvent }) {
   const [open, setOpen] = useState(false);
   const status = event.status ?? "running";
   const Icon = flowIcon(event.name, event.activityDescription);
@@ -4474,7 +4474,7 @@ const EventCard = memo(function EventCard({
   compact = false,
   onPermissionDecision,
 }: {
-  event: CrixEvent;
+  event: AresEvent;
   compact?: boolean;
   onPermissionDecision?: (id: string | undefined, decision: PermissionDecision) => void;
 }) {
@@ -4525,7 +4525,7 @@ function PermissionFlow({
   event,
   onDecision,
 }: {
-  event: CrixEvent;
+  event: AresEvent;
   onDecision?: (id: string | undefined, decision: PermissionDecision) => void;
 }) {
   const [showInput, setShowInput] = useState(false);
@@ -4571,7 +4571,7 @@ function PermissionGate({
   event,
   onDecision,
 }: {
-  event: CrixEvent;
+  event: AresEvent;
   onDecision?: (id: string | undefined, decision: PermissionDecision) => void;
 }) {
   const waiting = event.status === "waiting";
@@ -4661,7 +4661,7 @@ function AttachmentStrip({ attachments }: { attachments: ChatAttachment[] }) {
   );
 }
 
-function ThinkingTrace({ event, compact = false }: { event: CrixEvent; compact?: boolean }) {
+function ThinkingTrace({ event, compact = false }: { event: AresEvent; compact?: boolean }) {
   const [open, setOpen] = useState(true);
   const text = eventText(event);
   const meta = text.length > 0 ? `${formatNumber(text.length)} chars` : "";
@@ -4705,7 +4705,7 @@ function extractImageUrls(text: string): string[] {
 // Open the full-screen lightbox for an image. Decoupled via a window event so
 // deeply-nested (memoized) image components don't need a callback prop.
 function openLightbox(src: string) {
-  window.dispatchEvent(new CustomEvent("crix:lightbox", { detail: { src } }));
+  window.dispatchEvent(new CustomEvent("ares:lightbox", { detail: { src } }));
 }
 
 function ChatImageThumb({ src }: { src: string }) {
@@ -4735,9 +4735,9 @@ function ImageLightbox() {
   useEffect(() => {
     const onOpen = (e: Event) => setSrc((e as CustomEvent<{ src: string }>).detail?.src ?? null);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSrc(null); };
-    window.addEventListener("crix:lightbox", onOpen as EventListener);
+    window.addEventListener("ares:lightbox", onOpen as EventListener);
     window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("crix:lightbox", onOpen as EventListener); window.removeEventListener("keydown", onKey); };
+    return () => { window.removeEventListener("ares:lightbox", onOpen as EventListener); window.removeEventListener("keydown", onKey); };
   }, []);
   return (
     <AnimatePresence>
@@ -4771,7 +4771,7 @@ function StreamingText({ text }: { text: string }) {
   return <pre className="streamingText">{text}</pre>;
 }
 
-function ToolCallShow({ event, text }: { event: CrixEvent; text: string }) {
+function ToolCallShow({ event, text }: { event: AresEvent; text: string }) {
   const stages = ["planned", "args", "run", "done"];
   const index = toolStageIndex(event.status);
   return (
@@ -4790,7 +4790,7 @@ function ToolCallShow({ event, text }: { event: CrixEvent; text: string }) {
   );
 }
 
-function ToolStateRail({ event }: { event: CrixEvent }) {
+function ToolStateRail({ event }: { event: AresEvent }) {
   const filePulse = event.touchedFiles?.length ? `+${event.touchedFiles.length} file${event.touchedFiles.length === 1 ? "" : "s"}` : "done";
   return (
     <div className="toolStateRail">
@@ -4915,7 +4915,7 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function appendEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
+function appendEvent(events: AresEvent[], event: AresEvent): AresEvent[] {
   if (event.type === "tool_use_input_delta") return events;
   if (isPermissionEvent(event)) return upsertPermissionEvent(events, event);
   if (isToolEvent(event)) return upsertToolEvent(events, event);
@@ -4946,7 +4946,7 @@ function appendEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
   return [...events, event];
 }
 
-function isToolEvent(event: CrixEvent): boolean {
+function isToolEvent(event: AresEvent): boolean {
   return [
     "tool_use_start",
     "tool_use_input_done",
@@ -4957,11 +4957,11 @@ function isToolEvent(event: CrixEvent): boolean {
   ].includes(event.type);
 }
 
-function isPermissionEvent(event: CrixEvent): boolean {
+function isPermissionEvent(event: AresEvent): boolean {
   return event.type === "permission_request" || event.type === "permission_response";
 }
 
-function upsertPermissionEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
+function upsertPermissionEvent(events: AresEvent[], event: AresEvent): AresEvent[] {
   const id = event.id;
   if (!id) return [...events, event];
   const index = events.findIndex((item) => item.type === "permission_gate" && item.id === id);
@@ -4971,9 +4971,9 @@ function upsertPermissionEvent(events: CrixEvent[], event: CrixEvent): CrixEvent
   return [...events.slice(0, index), merged, ...events.slice(index + 1)];
 }
 
-function mergePermissionEvent(previous: CrixEvent | undefined, event: CrixEvent): CrixEvent {
+function mergePermissionEvent(previous: AresEvent | undefined, event: AresEvent): AresEvent {
   const now = event.receivedAt ?? Date.now();
-  const base: CrixEvent = previous ?? {
+  const base: AresEvent = previous ?? {
     type: "permission_gate",
     id: event.id,
     toolName: event.toolName,
@@ -5006,7 +5006,7 @@ function mergePermissionEvent(previous: CrixEvent | undefined, event: CrixEvent)
   };
 }
 
-function upsertToolEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
+function upsertToolEvent(events: AresEvent[], event: AresEvent): AresEvent[] {
   const id = event.id;
   if (!id) return [...events, event];
   const index = events.findIndex((item) => item.type === "tool_call" && item.id === id);
@@ -5016,9 +5016,9 @@ function upsertToolEvent(events: CrixEvent[], event: CrixEvent): CrixEvent[] {
   return [...events.slice(0, index), merged, ...events.slice(index + 1)];
 }
 
-function mergeToolEvent(previous: CrixEvent | undefined, event: CrixEvent): CrixEvent {
+function mergeToolEvent(previous: AresEvent | undefined, event: AresEvent): AresEvent {
   const now = event.receivedAt ?? Date.now();
-  const base: CrixEvent = previous ?? {
+  const base: AresEvent = previous ?? {
     type: "tool_call",
     id: event.id,
     name: event.name,
@@ -5067,7 +5067,7 @@ function mergeToolEvent(previous: CrixEvent | undefined, event: CrixEvent): Crix
   return { ...base, ...event };
 }
 
-function collectStats(events: CrixEvent[]) {
+function collectStats(events: AresEvent[]) {
   let tokens = 0;
   let turns = 0;
   let tools = 0;
@@ -5089,11 +5089,11 @@ function collectStats(events: CrixEvent[]) {
 // creation-time startedAt that is preserved across delta updates (the spread in
 // appendEvent keeps it). Using these instead of the visible-window index avoids
 // remounting every card once the transcript clips past 90 (a real perf cliff).
-function eventKey(event: CrixEvent, index: number): string {
+function eventKey(event: AresEvent, index: number): string {
   return `${event.type}-${event.id ?? event.startedAt ?? index}`;
 }
 
-function isChatVisibleEvent(event: CrixEvent): boolean {
+function isChatVisibleEvent(event: AresEvent): boolean {
   if (event.type === "user_send" || event.type === "assistant_stream" || event.type === "thinking_stream") return true;
   if (event.type === "tool_call") return true;
   if (event.type === "permission_gate") return true;
@@ -5103,7 +5103,7 @@ function isChatVisibleEvent(event: CrixEvent): boolean {
   return false;
 }
 
-function eventKind(event: CrixEvent): string {
+function eventKind(event: AresEvent): string {
   if (event.type === "user_send") return "user";
   if (event.type === "assistant_stream") return "assistant";
   if (event.type === "thinking_stream") return "thinking";
@@ -5115,7 +5115,7 @@ function eventKind(event: CrixEvent): string {
   return "system";
 }
 
-function eventIcon(event: CrixEvent) {
+function eventIcon(event: AresEvent) {
   if (event.type === "user_send") return MessageSquare;
   if (event.type === "assistant_stream") return Bot;
   if (event.type === "thinking_stream") return Brain;
@@ -5126,9 +5126,9 @@ function eventIcon(event: CrixEvent) {
   return Sparkles;
 }
 
-function eventTitle(event: CrixEvent): string {
+function eventTitle(event: AresEvent): string {
   if (event.type === "user_send") return "You";
-  if (event.type === "assistant_stream") return "Crix";
+  if (event.type === "assistant_stream") return "Ares";
   if (event.type === "thinking_stream") return "Thinking";
   if (event.type === "permission_gate") return event.toolName ? `Permission: ${event.toolName}` : "Permission";
   if (event.type === "tool_call") return event.activityDescription || (event.name ? `Tool: ${event.name}` : "Tool");
@@ -5140,7 +5140,7 @@ function eventTitle(event: CrixEvent): string {
   return humanize(event.type);
 }
 
-function eventText(event: CrixEvent): string {
+function eventText(event: AresEvent): string {
   if (event.type === "tool_call") {
     if (event.status === "completed") {
       return [event.display, event.output !== undefined ? previewValue(event.output) : ""].filter(Boolean).join("\n");
@@ -5171,7 +5171,7 @@ function providerById(id: ProviderId, providers: ProviderOption[] = PROVIDERS): 
   return providers.find((provider) => provider.id === id) ?? providers[0] ?? PROVIDERS[0];
 }
 
-function currentLiveActivity(events: CrixEvent[], daemon: DaemonState, status: HeartbeatStatus, now: number): LiveActivity {
+function currentLiveActivity(events: AresEvent[], daemon: DaemonState, status: HeartbeatStatus, now: number): LiveActivity {
   if (daemon !== "running") {
     return {
       title: daemon === "starting" ? "Starting daemon" : daemon === "error" ? "Daemon error" : "Daemon stopped",
@@ -5435,7 +5435,7 @@ function buildOutgoingGoal(text: string, attachments: ChatAttachment[], webSearc
     parts.push(
       [
         "",
-        "[Crix desktop web mode is ON for this message.]",
+        "[Ares desktop web mode is ON for this message.]",
         "Use WebSearch and WebFetch when current web context would improve the answer. Cite or summarize what you used instead of guessing.",
       ].join("\n"),
     );
@@ -5527,7 +5527,7 @@ function formatContext(value: number): string {
 function loadDesktopSettings(): { theme: ThemeName; selection: Selection; appearance: AppearanceSettings; routing: RoutingTable } {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<{ theme: ThemeName; selection: Selection; appearance: Partial<AppearanceSettings>; routing: unknown }>;
-    const allowMock = Boolean(import.meta.env.DEV) || window.localStorage.getItem("crix.dev") === "1";
+    const allowMock = Boolean(import.meta.env.DEV) || window.localStorage.getItem("ares.dev") === "1";
     const parsedProvider = parsed.selection?.provider;
     const provider =
       parsedProvider && isProviderId(parsedProvider) && (parsedProvider !== "mock" || allowMock)
@@ -5600,7 +5600,7 @@ function stopDragEvent(event: React.MouseEvent<HTMLButtonElement>) {
   event.stopPropagation();
 }
 
-function runWindowCommand(command: "crix_window_minimize" | "crix_window_toggle_maximize" | "crix_window_close") {
+function runWindowCommand(command: "ares_window_minimize" | "ares_window_toggle_maximize" | "ares_window_close") {
   return (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -5621,6 +5621,6 @@ function hasNativeBridge(): boolean {
 // Create the React root once and reuse it across HMR updates. Calling
 // createRoot() again on the same container spawns overlapping React trees that
 // fight over one DOM node (stale/frozen state, duplicate effects).
-const container = document.getElementById("root")! as HTMLElement & { __crixRoot?: ReturnType<typeof createRoot> };
-const root = container.__crixRoot ?? (container.__crixRoot = createRoot(container));
+const container = document.getElementById("root")! as HTMLElement & { __aresRoot?: ReturnType<typeof createRoot> };
+const root = container.__aresRoot ?? (container.__aresRoot = createRoot(container));
 root.render(<App />);

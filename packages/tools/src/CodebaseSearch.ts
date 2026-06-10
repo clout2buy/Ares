@@ -55,7 +55,7 @@ const IGNORED_DIRS = new Set([
   "target",
   ".next",
   ".pnpm-store",
-  ".crix",
+  ".ares",
   "coverage",
   ".turbo",
   ".cache",

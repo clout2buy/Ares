@@ -49,7 +49,7 @@ test("deriveNarrowVerify: no touched files → no commands", () => {
 // (node --test on Windows has cold-spawn timing variance.)
 
 test("ContinuousVerifier: schedules a run, stashes a reminder on failure", async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crix-verify-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ares-verify-"));
   const brokenJs = path.join(tmp, "broken.js");
   await fs.writeFile(brokenJs, "this is not ( valid javascript", "utf8");
 
@@ -63,7 +63,7 @@ test("ContinuousVerifier: schedules a run, stashes a reminder on failure", async
 });
 
 test("ContinuousVerifier: passing run leaves no reminder", async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crix-verify-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ares-verify-"));
   const okJs = path.join(tmp, "ok.js");
   await fs.writeFile(okJs, "const x = 1;\nconsole.log(x);\n", "utf8");
   const verifier = new ContinuousVerifier({ workspace: tmp, debounceMs: 50 });
@@ -73,7 +73,7 @@ test("ContinuousVerifier: passing run leaves no reminder", async () => {
 });
 
 test("ContinuousVerifier: drainReminders returns then clears", async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "crix-verify-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ares-verify-"));
   const brokenJs = path.join(tmp, "again.js");
   await fs.writeFile(brokenJs, "function ( {", "utf8");
   const v = new ContinuousVerifier({ workspace: tmp, debounceMs: 50 });

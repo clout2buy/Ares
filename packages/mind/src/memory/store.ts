@@ -1,4 +1,4 @@
-// The Living Memory store (Crix v6 / M1).
+// The Living Memory store (Ares v6 / M1).
 //
 // Durable, pluggable-home memory with the behaviors no filing-cabinet store has:
 //   remember()    — spreading-activation recall that ALSO strengthens what it
@@ -8,7 +8,7 @@
 //                   themes into lasting semantic knowledge.
 //
 // The store is just a path away from living anywhere — point `open()` at a
-// flashdrive and Crix's whole memory lives there.
+// flashdrive and Ares's whole memory lives there.
 
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -42,7 +42,7 @@ const MIN_RECURRENCE = 3;
 const MAX_MEMORY_CONTENT_CHARS = 2_000;
 const THEME_STOPWORDS = new Set([
   "about", "after", "again", "also", "always", "before", "being", "built", "check",
-  "clean", "could", "crix", "data", "directly", "doing", "done", "error", "files",
+  "clean", "could", "ares", "data", "directly", "doing", "done", "error", "files",
   "follows", "found", "have", "homie", "inspect", "issue", "just", "lmao", "look",
   "memory", "model", "noticed", "output", "right", "self", "some", "state", "still",
   "system", "there", "thing", "think", "this", "threw", "turn", "using", "which",
@@ -68,7 +68,7 @@ export class MemoryStore {
     /**
      * Raw JSONL lines from a *newer* schema version this binary doesn't
      * understand. Held verbatim and re-written on every persist() so an older
-     * Crix can never silently destroy memory a newer one wrote.
+     * Ares can never silently destroy memory a newer one wrote.
      */
     private readonly quarantined: string[] = [],
   ) {}
@@ -277,7 +277,7 @@ export class MemoryStore {
    * and recurring failure signatures into "belief" nodes — the real "what should
    * I believe now" pass. Idempotent by tag (re-running reinforces, never dupes),
    * provider-free by default; an optional injected phraser writes richer prose
-   * without coupling @crix/mind to any model.
+   * without coupling @ares/mind to any model.
    */
   async synthesize(opts: { now?: Date; synthesizer?: Phraser; minMembers?: number } = {}): Promise<SynthesisReport> {
     const now = opts.now ?? new Date();

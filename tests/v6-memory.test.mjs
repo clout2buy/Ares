@@ -17,7 +17,7 @@ import path from "node:path";
 import { MemoryStore, currentStrength, reinforce } from "../packages/mind/dist/index.js";
 
 async function makeDir() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-mem-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-mem-"));
 }
 
 const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
@@ -26,10 +26,10 @@ const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 
 test("memory: remember surfaces relevant memories and strengthens them", async () => {
   const store = MemoryStore.memory();
-  await store.add({ kind: "semantic", content: "The user prefers TypeScript for the Crix harness" });
+  await store.add({ kind: "semantic", content: "The user prefers TypeScript for the Ares harness" });
   await store.add({ kind: "episodic", content: "Cooked pasta for dinner" });
 
-  const results = await store.remember("what language does the user prefer for crix");
+  const results = await store.remember("what language does the user prefer for ares");
   assert.ok(results.length >= 1);
   assert.match(results[0].node.content, /TypeScript/);
   assert.equal(results[0].node.activations, 1, "recalling reinforced it (activation recorded)");
@@ -171,7 +171,7 @@ test("memory: consolidation merges exact duplicate memories and redirects links"
   const store = MemoryStore.memory();
   const keeper = await store.add({ kind: "episodic", content: "User prefers TypeScript", strength: 2 });
   const duplicate = await store.add({ kind: "episodic", content: "user prefers typescript", strength: 1 });
-  const neighbor = await store.add({ kind: "semantic", content: "Crix is TypeScript-first" });
+  const neighbor = await store.add({ kind: "semantic", content: "Ares is TypeScript-first" });
   await store.link(duplicate.id, neighbor.id);
 
   const report = await store.consolidate();

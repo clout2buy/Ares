@@ -1,4 +1,4 @@
-// Capability graph math — the compounding engine (Crix v5 / O4 / C3).
+// Capability graph math — the compounding engine (Ares v5 / O4 / C3).
 //
 // The graph is a DAG: capabilities point at the sub-skills they require. The
 // two functions that matter:

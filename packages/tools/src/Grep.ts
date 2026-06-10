@@ -11,7 +11,7 @@ import { buildTool, resolveWorkspacePath, type RichToolContext } from "./_shared
 
 const DEFAULT_IGNORE_GLOBS = [
   "**/.git/**",
-  "**/.crix/**",
+  "**/.ares/**",
   "**/node_modules/**",
   "**/dist/**",
   "**/build/**",

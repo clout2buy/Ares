@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import { buildTool } from "./_shared.js";
-import type { PermissionMode } from "@crix/protocol";
+import type { PermissionMode } from "@ares/protocol";
 
 export interface PlanModeState {
   permissionMode: PermissionMode;
@@ -24,7 +24,7 @@ export function makeEnterPlanModeTool(state: PlanModeState) {
   return buildTool({
     name: "EnterPlanMode",
     description:
-      "Switch Crix into plan mode. In plan mode, write tools are blocked and the UI shows [PLAN]. Use when the user asks to plan before coding.",
+      "Switch Ares into plan mode. In plan mode, write tools are blocked and the UI shows [PLAN]. Use when the user asks to plan before coding.",
     safety: "read-only",
     concurrency: "exclusive",
     inputZod: enterSchema,

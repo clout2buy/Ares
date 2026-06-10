@@ -1,6 +1,6 @@
-// Acquisition — turning "I can't do X yet" into a durable build job (Crix v5 / O4–O5).
+// Acquisition — turning "I can't do X yet" into a durable build job (Ares v5 / O4–O5).
 //
-// When Crix hits a capability it doesn't have, it doesn't shrug or ask for magic
+// When Ares hits a capability it doesn't have, it doesn't shrug or ask for magic
 // words: it ACQUIRES. acquireCapability() mints three durable artifacts that
 // survive the process dying, then hands them to the Operator's Worker loop:
 //
@@ -15,7 +15,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { writeFileAtomic } from "@crix/agent";
+import { writeFileAtomic } from "@ares/agent";
 import { operatorPaths } from "./paths.js";
 import { createGoal } from "./goal.js";
 import { newGoalId, saveGoal } from "./store.js";
@@ -23,7 +23,7 @@ import { createCapability, type CapabilityNode } from "./capability.js";
 import { saveCapability, slugify } from "./graphStore.js";
 import type { Goal, VerificationSpec } from "./types.js";
 
-/** How Crix intends to satisfy the capability — the method ladder, cheapest first. */
+/** How Ares intends to satisfy the capability — the method ladder, cheapest first. */
 export type AcquisitionKind = "skill" | "connector" | "tool" | "mcp" | "script";
 
 export type AcquisitionStatus = "queued" | "building" | "acquired" | "blocked";
@@ -71,7 +71,7 @@ function newAcquisitionId(): string {
 }
 
 /**
- * Acquire a capability Crix doesn't have yet: mint the graph node, a verifiable
+ * Acquire a capability Ares doesn't have yet: mint the graph node, a verifiable
  * goal, and a build packet, then persist all three. Pass the result's goal to a
  * QueryEngineDispatcher (via runGoalToCompletion) to actually build it.
  */
@@ -180,7 +180,7 @@ grounded method that works, escalating only if it must:
 
 1. **Reuse** — can existing sub-capabilities (${p.requires.join(", ") || "none registered"}) already compose this?
 2. **CLI / API** — is there a tool already on PATH or an API with creds present?
-3. **Skill** — write a \`handler.js\` skill under \`~/.crix/skills/\` and run it.
+3. **Skill** — write a \`handler.js\` skill under \`~/.ares/skills/\` and run it.
 4. **Tool / connector** — only if a new primitive in \`packages/\` is truly required.
 
 Build the smallest version that works, then **verify against reality** — run it,

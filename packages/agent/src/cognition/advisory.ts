@@ -1,6 +1,6 @@
-// Advisory cognition for the live turn (Crix v6 / M2, Phase 2C step 3).
+// Advisory cognition for the live turn (Ares v6 / M2, Phase 2C step 3).
 //
-// After the single unified recall runs, Crix takes a beat to *think* about the
+// After the single unified recall runs, Ares takes a beat to *think* about the
 // request WITH what it just recalled — and offers itself a suggestion. The key
 // word is advisory: this whispers in the model's ear, it never grabs the
 // keyboard. The deliberation:
@@ -15,7 +15,7 @@
 // without touching this wiring. We deliberately avoid an LLM round-trip here —
 // that would be an always-on cost on every substantive turn.
 
-import { consider, type Intention, type ReasonOption, type RecalledMemory, type Thought } from "@crix/mind";
+import { consider, type Intention, type ReasonOption, type RecalledMemory, type Thought } from "@ares/mind";
 
 export interface AdvisoryResult {
   /** The non-binding suggestion, or null when nothing useful surfaced. */

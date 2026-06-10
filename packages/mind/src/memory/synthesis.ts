@@ -1,10 +1,10 @@
-// Dreaming synthesis core (Crix v6 / M1).
+// Dreaming synthesis core (Ares v6 / M1).
 //
 // The real "what should I believe now" pass: cluster recurring episodics into
 // durable insight candidates, and recurring failure signatures into belief
 // candidates the store crystallizes as semantic nodes. Pure, offline,
 // deterministic — the optional LLM phrasing is INJECTED (a function type), never
-// imported, so @crix/mind stays dependency-free.
+// imported, so @ares/mind stays dependency-free.
 
 import { buildIdf, tokenizeSalient, type IdfMap } from "./idf.js";
 import type { MemoryNode } from "./types.js";

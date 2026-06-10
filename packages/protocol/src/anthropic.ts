@@ -1,10 +1,10 @@
 // Anthropic SDK alias layer.
 //
-// Crix's wire format is structurally identical to @anthropic-ai/sdk's
-// message shape. This file re-exports Crix protocol types under the
+// Ares's wire format is structurally identical to @anthropic-ai/sdk's
+// message shape. This file re-exports Ares protocol types under the
 // names the Anthropic SDK uses, so:
 //
-//   import type { MessageParam, ContentBlockParam } from "@crix/protocol/anthropic";
+//   import type { MessageParam, ContentBlockParam } from "@ares/protocol/anthropic";
 //
 // gives you the same types you'd import from `@anthropic-ai/sdk`. When
 // we add a direct-Anthropic provider later, the wire layer is a
@@ -27,7 +27,7 @@ import type {
   ToolSchema,
 } from "./types.js";
 
-// ─── Anthropic SDK names → Crix types ──────────────────────────────────
+// ─── Anthropic SDK names → Ares types ──────────────────────────────────
 
 /** Anthropic SDK: `MessageParam` (input to messages.create). */
 export type MessageParam = {
@@ -65,7 +65,7 @@ export type AnthropicUsage = Usage;
 /** Anthropic SDK: `StopReason`. */
 export type AnthropicStopReason = StopReason;
 
-/** Re-export the Crix content block union under the Anthropic name. */
+/** Re-export the Ares content block union under the Anthropic name. */
 export type { ContentBlock } from "./types.js";
 
 /** Convenience: build a Tool schema entry from a ToolSchema. */

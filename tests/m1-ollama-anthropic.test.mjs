@@ -1,7 +1,7 @@
 // M1.8 — verify Ollama Cloud Anthropic-compat path.
 //
 // Setup: ANTHROPIC_BASE_URL=http://localhost:11434 + ANTHROPIC_AUTH_TOKEN=ollama
-// makes Crix auto-route through Ollama's /v1/messages endpoint with
+// makes Ares auto-route through Ollama's /v1/messages endpoint with
 // Anthropic-shape messages (zero translation since our protocol IS that shape).
 
 import test from "node:test";

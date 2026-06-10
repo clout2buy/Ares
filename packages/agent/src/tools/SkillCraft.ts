@@ -1,4 +1,4 @@
-// SkillCraft — agent forges its own skills under ~/.crix/skills/.
+// SkillCraft — agent forges its own skills under ~/.ares/skills/.
 //
 // A skill is just a directory with at minimum SKILL.md describing what it
 // does, optionally a handler.js the agent or future sessions can execute.
@@ -11,8 +11,8 @@
 import { z } from "zod";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { buildTool } from "@crix/tools";
-import { agentPaths, crixAgentHome } from "../paths.js";
+import { buildTool } from "@ares/tools";
+import { agentPaths, aresAgentHome } from "../paths.js";
 import { exists, writeFileAtomic } from "../files.js";
 import { emitLifecycle } from "../lifecycle/bus.js";
 import { gainForTarget } from "../voice.js";
@@ -61,14 +61,14 @@ export interface SkillCraftOutput {
 export const SkillCraftTool = buildTool({
   name: "SkillCraft",
   description:
-    "Forge your own skills under ~/.crix/skills/. When you notice a capability gap — something you'll need to do that you don't have a clean path for yet — scaffold a skill instead of asking. A skill is just SKILL.md (description, usage, examples) plus optional handler.js. After crafting, append the skill name to CAPABILITIES.md via SelfEvolve. You can also update / remove / list / read your own skills. This is part of your self-extension: you grow your own body.",
+    "Forge your own skills under ~/.ares/skills/. When you notice a capability gap — something you'll need to do that you don't have a clean path for yet — scaffold a skill instead of asking. A skill is just SKILL.md (description, usage, examples) plus optional handler.js. After crafting, append the skill name to CAPABILITIES.md via SelfEvolve. You can also update / remove / list / read your own skills. This is part of your self-extension: you grow your own body.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => `SkillCraft ${i.action}${i.name ? ` ${i.name}` : ""}`,
 
   async call(input, _ctx): Promise<{ output: SkillCraftOutput; touchedFiles?: string[]; display: string }> {
-    const home = crixAgentHome(process.env.CRIX_HOME);
+    const home = aresAgentHome(process.env.ARES_HOME);
     const paths = agentPaths(home);
     await fs.mkdir(paths.skillsDir, { recursive: true });
 

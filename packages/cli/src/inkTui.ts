@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
-import type { PermissionMode, Todo, TurnEvent, Usage } from "@crix/protocol";
+import type { PermissionMode, Todo, TurnEvent, Usage } from "@ares/protocol";
 import { currentThemeName, type ThemeName } from "./terminalUi.js";
-import { onLifecycle, type LifecycleEvent } from "@crix/agent";
+import { onLifecycle, type LifecycleEvent } from "@ares/agent";
 
 // Weirdcore score popup. Every evolution event emits a gain { target, delta }.
 // The TUI shows the last few as floating +N TARGET cards that fade out.
@@ -364,7 +364,7 @@ const TOOL_RAIL = [
 
 export async function runInkChat(options: InkChatOptions): Promise<number> {
   process.stdout.write("\u001b[?1049l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
-  const instance = render(h(CrixInkApp, { options }), {
+  const instance = render(h(AresInkApp, { options }), {
     stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,
@@ -375,7 +375,7 @@ export async function runInkChat(options: InkChatOptions): Promise<number> {
   return typeof result === "number" ? result : 0;
 }
 
-function CrixInkApp({ options }: { options: InkChatOptions }) {
+function AresInkApp({ options }: { options: InkChatOptions }) {
   const app = useApp();
   const { rows, columns } = useWindowSize();
   const theme = deckTheme();
@@ -737,7 +737,7 @@ function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; 
       h(
         Box,
         { gap: 1 },
-        h(Text, { bold: true, color: theme.accent }, "CRIX"),
+        h(Text, { bold: true, color: theme.accent }, "ARES"),
         h(Text, { color: theme.dim }, "coding harness"),
         h(Text, { color: theme.accent2 }, theme.title),
       ),
@@ -886,7 +886,7 @@ function InputDeck({
   input: string;
   width: number;
 }) {
-  const prompt = `${snapshot.mode === "plan" ? "[PLAN] " : ""}${busy ? "running" : "crix"} > `;
+  const prompt = `${snapshot.mode === "plan" ? "[PLAN] " : ""}${busy ? "running" : "ares"} > `;
   const inputText = input.length > 0 ? input : "Enter your instruction...";
   return h(
     Box,
@@ -1036,7 +1036,7 @@ function toneBadge(tone: LogLine["tone"]): string {
   if (tone === "diff-meta") return "DIFF";
   if (tone === "diff-add" || tone === "diff-del") return "    ";
   if (tone === "user") return "YOU";
-  if (tone === "assistant") return "CRIX";
+  if (tone === "assistant") return "ARES";
   if (tone === "tool") return "TOOL";
   if (tone === "error") return "ERR";
   if (tone === "notice") return "INFO";
@@ -1140,9 +1140,9 @@ function cachePercent(usage: Usage): string {
 }
 
 function formatCost(usage: Usage): string {
-  const inputPerM = Number(process.env.CRIX_COST_INPUT_PER_MTOK ?? 0);
-  const outputPerM = Number(process.env.CRIX_COST_OUTPUT_PER_MTOK ?? 0);
-  const cacheReadPerM = Number(process.env.CRIX_COST_CACHE_READ_PER_MTOK ?? inputPerM);
+  const inputPerM = Number(process.env.ARES_COST_INPUT_PER_MTOK ?? 0);
+  const outputPerM = Number(process.env.ARES_COST_OUTPUT_PER_MTOK ?? 0);
+  const cacheReadPerM = Number(process.env.ARES_COST_CACHE_READ_PER_MTOK ?? inputPerM);
   if (!Number.isFinite(inputPerM) || !Number.isFinite(outputPerM) || (inputPerM <= 0 && outputPerM <= 0)) {
     return "$n/a";
   }

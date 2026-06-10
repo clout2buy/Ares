@@ -1,19 +1,19 @@
-// Mission Learning Cards (Crix v6 / Phase B v1 — option 1: pure distiller).
+// Mission Learning Cards (Ares v6 / Phase B v1 — option 1: pure distiller).
 //
 // Ghost Continue tells you WHERE you left off. A Learning Card tells you WHAT
-// Crix learned: when a mission reaches a terminal state, its contract already
+// Ares learned: when a mission reaches a terminal state, its contract already
 // holds the raw material (met/failed criteria, verification results, blockers,
 // decision evidence). `distillMissionCard` turns that into a durable lesson —
 // what worked, what failed, the reusable procedure, and a confidence — WITHOUT
 // an LLM and WITHOUT touching the execution path. Distillation is on-demand
-// (`crix mission learn <id>`); auto-emit on completion is a deliberate later step.
+// (`ares mission learn <id>`); auto-emit on completion is a deliberate later step.
 //
 // The card id is derived from the contract id, so re-distilling the same mission
 // overwrites rather than duplicates (idempotent).
 
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { writeFileAtomic } from "@crix/agent";
+import { writeFileAtomic } from "@ares/agent";
 import { operatorPaths } from "./paths.js";
 import type { MissionContract } from "./missionContract.js";
 import type { Goal } from "./types.js";
@@ -43,7 +43,7 @@ export interface LearningCard {
 
 const STOPWORDS = new Set([
   "the", "and", "for", "with", "that", "this", "from", "into", "your", "you",
-  "build", "make", "add", "fix", "use", "using", "crix", "mission", "goal",
+  "build", "make", "add", "fix", "use", "using", "ares", "mission", "goal",
   "should", "would", "could", "have", "has", "are", "was", "will", "can",
 ]);
 

@@ -18,7 +18,7 @@ import {
   runRemDream,
 } from "../packages/agent/dist/index.js";
 
-async function makeTmp(prefix = "crix-v4-life-") {
+async function makeTmp(prefix = "ares-v4-life-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
@@ -35,7 +35,7 @@ test("V4 V3: lifecycle bus emits heartbeat and dream events", () => {
 
 test("V4 V3: heartbeat skips empty HEARTBEAT.md and alerts on configured task", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-heartbeat-workspace-");
+  const workspace = await makeTmp("ares-v4-heartbeat-workspace-");
   const config = defaultAgentConfig(home);
   await fs.writeFile(path.join(home, "HEARTBEAT.md"), "# empty\n", "utf8");
   const skipped = await runHeartbeatTick({ home, workspace, config, now: new Date("2026-05-28T14:00:00Z") });
@@ -49,7 +49,7 @@ test("V4 V3: heartbeat skips empty HEARTBEAT.md and alerts on configured task", 
 
 test("V4 V4: LIGHT dreaming stages durable session signals", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-dream-workspace-");
+  const workspace = await makeTmp("ares-v4-dream-workspace-");
   const config = defaultAgentConfig(home);
   config.memory.dimensions = 32;
   const transcript = path.join(workspace, "events.jsonl");
@@ -79,7 +79,7 @@ test("V4 V6: self-revise signal fires when tools errored", () => {
 
 test("V4 V7: DEEP dreaming promotes memories and reinforced SELF rules into SOUL.md", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-deep-workspace-");
+  const workspace = await makeTmp("ares-v4-deep-workspace-");
   const config = defaultAgentConfig(home);
   config.memory.dimensions = 32;
   config.dreaming.minRecallCount = 2;

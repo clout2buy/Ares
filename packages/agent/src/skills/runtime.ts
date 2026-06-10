@@ -2,7 +2,7 @@
 // into running code. This is the line between an agent that writes about
 // capabilities and one that grows its own body.
 //
-// A skill lives at ~/.crix/skills/<name>/ with a SKILL.md and an optional
+// A skill lives at ~/.ares/skills/<name>/ with a SKILL.md and an optional
 // handler.js whose default export is `async (input, ctx) => result`. This
 // runtime runs that handler in an isolated child Node process:
 //   - input is passed via a temp JSON file (no arg-size / escaping limits),
@@ -19,7 +19,7 @@ import os from "node:os";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { agentPaths, crixAgentHome } from "../paths.js";
+import { agentPaths, aresAgentHome } from "../paths.js";
 import { exists, writeFileAtomic } from "../files.js";
 
 export interface RunSkillOptions {
@@ -55,16 +55,16 @@ const SKILLS_PACKAGE_JSON = JSON.stringify({ type: "module", private: true }, nu
 const RUNNER_SOURCE = `import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
-const handlerPath = process.env.CRIX_SKILL_HANDLER;
-const inputFile = process.env.CRIX_SKILL_INPUT_FILE;
-const outputFile = process.env.CRIX_SKILL_OUTPUT_FILE;
+const handlerPath = process.env.ARES_SKILL_HANDLER;
+const inputFile = process.env.ARES_SKILL_INPUT_FILE;
+const outputFile = process.env.ARES_SKILL_OUTPUT_FILE;
 
 async function writeOut(payload) {
   try {
     await writeFile(outputFile, JSON.stringify(payload), "utf8");
   } catch {
     // last resort — surface on stderr so the parent still sees something
-    process.stderr.write("crix-skill-runner: failed to write output file\\n");
+    process.stderr.write("ares-skill-runner: failed to write output file\\n");
   }
 }
 
@@ -82,7 +82,7 @@ async function main() {
   if (typeof handler !== "function") {
     throw new Error("skill handler.js must export a default async function (input, ctx) => result");
   }
-  const ctx = { home: process.env.CRIX_HOME, name: process.env.CRIX_SKILL_NAME };
+  const ctx = { home: process.env.ARES_HOME, name: process.env.ARES_SKILL_NAME };
   const result = await handler(input, ctx);
   await writeOut({ ok: true, result: result === undefined ? null : result });
 }
@@ -101,7 +101,7 @@ async function ensureSkillsModuleType(skillsDir: string): Promise<void> {
 }
 
 async function ensureRunner(): Promise<string> {
-  const runner = path.join(os.tmpdir(), "crix-skill-runner.mjs");
+  const runner = path.join(os.tmpdir(), "ares-skill-runner.mjs");
   let current: string | null = null;
   try {
     current = await fs.readFile(runner, "utf8");
@@ -117,7 +117,7 @@ function clampLog(text: string): string {
 }
 
 export async function runSkill(opts: RunSkillOptions): Promise<SkillRunResult> {
-  const home = crixAgentHome(opts.home ?? process.env.CRIX_HOME);
+  const home = aresAgentHome(opts.home ?? process.env.ARES_HOME);
   const paths = agentPaths(home);
   const skillDir = path.join(paths.skillsDir, opts.name);
   const handlerPath = path.join(skillDir, "handler.js");
@@ -131,8 +131,8 @@ export async function runSkill(opts: RunSkillOptions): Promise<SkillRunResult> {
   const runner = await ensureRunner();
 
   const id = randomUUID();
-  const inputFile = path.join(os.tmpdir(), `crix-skill-${id}-in.json`);
-  const outputFile = path.join(os.tmpdir(), `crix-skill-${id}-out.json`);
+  const inputFile = path.join(os.tmpdir(), `ares-skill-${id}-in.json`);
+  const outputFile = path.join(os.tmpdir(), `ares-skill-${id}-out.json`);
   await writeFileAtomic(inputFile, JSON.stringify(opts.input ?? null));
 
   const startedAt = Date.now();
@@ -142,11 +142,11 @@ export async function runSkill(opts: RunSkillOptions): Promise<SkillRunResult> {
       windowsHide: true,
       env: {
         ...process.env,
-        CRIX_HOME: home,
-        CRIX_SKILL_NAME: opts.name,
-        CRIX_SKILL_HANDLER: handlerPath,
-        CRIX_SKILL_INPUT_FILE: inputFile,
-        CRIX_SKILL_OUTPUT_FILE: outputFile,
+        ARES_HOME: home,
+        ARES_SKILL_NAME: opts.name,
+        ARES_SKILL_HANDLER: handlerPath,
+        ARES_SKILL_INPUT_FILE: inputFile,
+        ARES_SKILL_OUTPUT_FILE: outputFile,
       },
     });
 

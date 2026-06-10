@@ -1,6 +1,6 @@
 // M0 smoke test — proves the streaming loop wires end-to-end.
 //
-// Runs `crix run --goal "ping"` against the mock provider and verifies the
+// Runs `ares run --goal "ping"` against the mock provider and verifies the
 // NDJSON event stream contains turn_start → text_delta(s) → message_done →
 // turn_end in order.
 
@@ -18,26 +18,26 @@ import { QueryEngine, Session, MockEchoProvider, loadSessionSnapshot } from "../
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.join(__dirname, "..");
 const cliEntry = path.join(__dirname, "..", "packages", "cli", "dist", "entry.js");
-const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-m0-"));
+const testHome = mkdtempSync(path.join(os.tmpdir(), "ares-m0-"));
 
-function runCrix(args) {
+function runAres(args) {
   return spawnSync(process.execPath, [cliEntry, ...args], {
     encoding: "utf8",
     windowsHide: true,
-    env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+    env: { ...process.env, ARES_HOME: testHome, ARES_AGENT_ENABLED: "0" },
   });
 }
 
-test("M0: crix help exits 0 with usage on stdout", () => {
-  const r = runCrix(["help"]);
+test("M0: ares help exits 0 with usage on stdout", () => {
+  const r = runAres(["help"]);
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /crix v0\.3\.0-alpha\.1/);
+  assert.match(r.stdout, /ares v0\.3\.0-alpha\.1/);
   assert.match(r.stdout, /streaming coding-agent harness/);
 });
 
-test("M0: crix run --goal emits ordered event stream", () => {
-  const r = runCrix(["run", "--provider", "mock", "--goal", "ping"]);
-  assert.equal(r.status, 0, `crix run failed: ${r.stderr}`);
+test("M0: ares run --goal emits ordered event stream", () => {
+  const r = runAres(["run", "--provider", "mock", "--goal", "ping"]);
+  assert.equal(r.status, 0, `ares run failed: ${r.stderr}`);
   const lines = r.stdout.trim().split("\n").filter(Boolean);
   assert.ok(lines.length >= 4, `expected >=4 events, got ${lines.length}`);
 
@@ -68,14 +68,14 @@ test("M0: crix run --goal emits ordered event stream", () => {
   assert.equal(joined, "echo: ping");
 });
 
-test("M0: crix run persists the same ordered rollout stream", async () => {
-  const r = runCrix(["run", "--provider", "mock", "--goal", "persist me"]);
-  assert.equal(r.status, 0, `crix run failed: ${r.stderr}`);
+test("M0: ares run persists the same ordered rollout stream", async () => {
+  const r = runAres(["run", "--provider", "mock", "--goal", "persist me"]);
+  assert.equal(r.status, 0, `ares run failed: ${r.stderr}`);
   const sessionId = r.stderr.match(/session=(sess_[^\s]+)/)?.[1];
   assert.ok(sessionId, `missing session id in stderr: ${r.stderr}`);
 
   const events = r.stdout.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  const eventsPath = path.join(workspaceRoot, ".crix", "sessions", sessionId, "events.jsonl");
+  const eventsPath = path.join(workspaceRoot, ".ares", "sessions", sessionId, "events.jsonl");
   const persisted = (await readFile(eventsPath, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
 
   assert.equal(persisted.length, events.length);
@@ -84,8 +84,8 @@ test("M0: crix run persists the same ordered rollout stream", async () => {
 });
 
 test("M0: saved sessions can be listed and replayed into messages", async () => {
-  const r = runCrix(["run", "--provider", "mock", "--goal", "remember this session"]);
-  assert.equal(r.status, 0, `crix run failed: ${r.stderr}`);
+  const r = runAres(["run", "--provider", "mock", "--goal", "remember this session"]);
+  assert.equal(r.status, 0, `ares run failed: ${r.stderr}`);
   const sessionId = r.stderr.match(/session=(sess_[^\s]+)/)?.[1];
   assert.ok(sessionId, `missing session id in stderr: ${r.stderr}`);
 
@@ -98,8 +98,8 @@ test("M0: saved sessions can be listed and replayed into messages", async () => 
   assert.deepEqual(snapshot.messages.map((message) => message.role), ["user", "assistant"]);
   assert.match(snapshot.preview, /remember this session/);
 
-  const listed = runCrix(["sessions"]);
-  assert.equal(listed.status, 0, `crix sessions failed: ${listed.stderr}`);
+  const listed = runAres(["sessions"]);
+  assert.equal(listed.status, 0, `ares sessions failed: ${listed.stderr}`);
   assert.match(listed.stdout, /Sessions/);
   assert.ok(listed.stdout.includes(sessionId), `session list did not include ${sessionId}`);
 });
@@ -115,7 +115,7 @@ test("M0: long session replay compacts older messages", async () => {
 
   for (let i = 0; i < 6; i++) {
     for await (const _event of session.send(`turn ${i}`)) {
-      // Drain the stream so it persists to .crix.
+      // Drain the stream so it persists to .ares.
     }
   }
 
@@ -130,14 +130,14 @@ test("M0: long session replay compacts older messages", async () => {
   assert.ok(compacted.omittedMessageCount > 0);
 });
 
-test("M0: crix run --goal requires --goal flag", () => {
-  const r = runCrix(["run", "--provider", "mock"]);
+test("M0: ares run --goal requires --goal flag", () => {
+  const r = runAres(["run", "--provider", "mock"]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /--goal is required/);
 });
 
-test("M0: crix unknown command returns 2", () => {
-  const r = runCrix(["nope"]);
+test("M0: ares unknown command returns 2", () => {
+  const r = runAres(["nope"]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /unknown command/);
 });
@@ -199,7 +199,7 @@ test("M0: permission denial stops the turn instead of re-querying provider", asy
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Crix",
+      workspace: "D:\\Ares",
       maxTurns: 1,
     },
     "sess_test_denial",
@@ -272,7 +272,7 @@ test("M0: interrupted multi-tool turns record output for every pending tool call
       model: "test",
       systemPrompt: "test",
       tools: [editTool, writeTool],
-      workspace: "D:\\Crix",
+      workspace: "D:\\Ares",
       maxTurns: 1,
     },
     "sess_test_multi_denial",
@@ -327,7 +327,7 @@ test("M0: workspace-write tools can run without magic write wording", async () =
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Crix",
+      workspace: "D:\\Ares",
       maxTurns: 1,
     },
     "sess_test_write_gate",
@@ -380,7 +380,7 @@ test("M0: explicit write intent allows workspace-write tools", async () => {
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Crix",
+      workspace: "D:\\Ares",
       maxTurns: 1,
     },
     "sess_test_write_allow",
@@ -438,7 +438,7 @@ test("M3: parallel-safe tools execute concurrently and forward progress", async 
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Crix",
+      workspace: "D:\\Ares",
       maxTurns: 1,
     },
     "sess_test_parallel",

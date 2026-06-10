@@ -2,7 +2,7 @@
 //   1. THE HEADLINE: novel delta SHRINKS as sub-skills are reused. Mastering
 //      "make-email" factors out its sub-skills, so "make-shopify" only has to
 //      learn the one genuinely new piece. That shrinking curve is the literal
-//      proof that a 500-session Crix beats a fresh one on the same model.
+//      proof that a 500-session Ares beats a fresh one on the same model.
 //   2. Crystallization requires N verified successes, never a single lucky run.
 //   3. factor() only creates sub-skills that don't already exist.
 //   4. driveLearning walks the loop to mastery and writes a REAL runnable skill.
@@ -32,7 +32,7 @@ import {
 import { exists } from "../packages/agent/dist/index.js";
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-o4-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-o4-"));
 }
 
 const SUCCESS_HANDLER = "export default async () => ({ ok: true });\n";
@@ -71,7 +71,7 @@ test("graph: novel delta shrinks as sub-skills are reused (the smarter-over-time
   const reqB = ["research", "browser-form-fill", "credential-vault", "verification-link", "shopify-specifics"];
   const deltaB = novelDelta(reqB, await listCapabilities(home));
   assert.equal(deltaB, 1, "only the genuinely new sub-skill is novel");
-  assert.ok(deltaB < deltaA, `the novel-delta curve trends DOWN (${deltaA} → ${deltaB}) — Crix got smarter`);
+  assert.ok(deltaB < deltaA, `the novel-delta curve trends DOWN (${deltaA} → ${deltaB}) — Ares got smarter`);
 });
 
 // ── 2. crystallization needs repeated success ────────────────────────────────

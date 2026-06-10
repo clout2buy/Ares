@@ -1,4 +1,4 @@
-// @crix/operator — the durable autonomy spine (Crix v5).
+// @ares/operator — the durable autonomy spine (Ares v5).
 //
 // The Operator is the WILL: a small, boring, always-on supervisor that holds
 // long-horizon goals and drives them to reality-verified completion through
@@ -8,7 +8,7 @@
 // + Dispatcher. Effects/rails (O2), reality verification (O3), and the
 // compounding capability graph (O4) bolt on above this without changing it.
 //
-// Boundary: like @crix/agent, nothing in @crix/core or @crix/tools imports
+// Boundary: like @ares/agent, nothing in @ares/core or @ares/tools imports
 // this package — the will sits on top of the hands, never the reverse.
 
 export {
@@ -109,7 +109,7 @@ export {
 
 export {
   assembleWorldGraph,
-  CRIX_SUBSYSTEMS,
+  ARES_SUBSYSTEMS,
   type WorldGraph,
   type WorldEntity,
   type WorldRelation,

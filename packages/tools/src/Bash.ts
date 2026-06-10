@@ -173,7 +173,7 @@ export function resolveBashProgram(): Promise<string> {
 }
 
 async function resolveBashProgramUncached(): Promise<string> {
-  if (process.env.CRIX_BASH) return process.env.CRIX_BASH;
+  if (process.env.ARES_BASH) return process.env.ARES_BASH;
   if (process.platform !== "win32") return "bash";
 
   const candidates = unique([
@@ -213,8 +213,8 @@ async function exists(candidate: string): Promise<boolean> {
 }
 
 async function bashWorks(candidate: string): Promise<boolean> {
-  const probe = await runShell(candidate, ["-lc", "printf __crix_bash_probe__"], process.cwd(), 5000, new AbortController().signal).catch(() => null);
-  return probe?.exitCode === 0 && probe.stdout.includes("__crix_bash_probe__");
+  const probe = await runShell(candidate, ["-lc", "printf __ares_bash_probe__"], process.cwd(), 5000, new AbortController().signal).catch(() => null);
+  return probe?.exitCode === 0 && probe.stdout.includes("__ares_bash_probe__");
 }
 
 function unique(values: string[]): string[] {

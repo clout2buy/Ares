@@ -37,7 +37,7 @@ export interface MemoryOutput {
 export const MemoryTool = buildTool({
   name: "Memory",
   description:
-    "Read or update persistent Crix memory. Use add/update for stable preferences, project conventions, commands, or decisions worth remembering across sessions. Use search/list before writing if unsure.",
+    "Read or update persistent Ares memory. Use add/update for stable preferences, project conventions, commands, or decisions worth remembering across sessions. Use search/list before writing if unsure.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
@@ -100,9 +100,9 @@ export const MemoryTool = buildTool({
 
 function memoryPath(scope: "user" | "project", workspace: string): string {
   if (scope === "user") {
-    return path.join(process.env.CRIX_HOME || path.join(os.homedir(), ".crix"), "memory.md");
+    return path.join(process.env.ARES_HOME || path.join(os.homedir(), ".ares"), "memory.md");
   }
-  return path.join(workspace, ".crix", "memory.md");
+  return path.join(workspace, ".ares", "memory.md");
 }
 
 async function readMemoryFile(file: string): Promise<{ items: MemoryItem[] }> {
@@ -130,7 +130,7 @@ async function writeMemoryFile(file: string, items: readonly MemoryItem[]): Prom
     grouped.set(category, list);
   }
 
-  const lines = ["# Crix Memory", ""];
+  const lines = ["# Ares Memory", ""];
   for (const [category, categoryItems] of grouped) {
     lines.push(`## ${category}`);
     for (const item of categoryItems) {

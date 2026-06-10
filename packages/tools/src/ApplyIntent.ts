@@ -2,7 +2,7 @@
 //
 // The model describes the intended change and supplies a sketch. When a
 // sub-model is available, the APPLY slot converts that into final file
-// content. Without a sub-model, Crix still supports full-file sketches so
+// content. Without a sub-model, Ares still supports full-file sketches so
 // tests and offline use remain deterministic.
 
 import { z } from "zod";
@@ -44,7 +44,7 @@ export interface ApplyIntentOutput {
 export const ApplyIntentTool = buildTool({
   name: "ApplyIntent",
   description:
-    "Materialize a large or multi-line edit from intent + sketch. Requires prior Read. Prefer this over huge Edit payloads: pass concise instructions plus a sketch. If the sketch uses `... existing code ...`, Crix routes through the APPLY slot; full-file sketches work offline.",
+    "Materialize a large or multi-line edit from intent + sketch. Requires prior Read. Prefer this over huge Edit payloads: pass concise instructions plus a sketch. If the sketch uses `... existing code ...`, Ares routes through the APPLY slot; full-file sketches work offline.",
   safety: "workspace-write",
   concurrency: "exclusive",
   providerHint: "apply",

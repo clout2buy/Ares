@@ -1,4 +1,4 @@
-// Effects + rails domain types (Crix v5 / O2 / concept C8).
+// Effects + rails domain types (Ares v5 / O2 / concept C8).
 //
 // An Effect is the unit of touching the world. Workers never call the world
 // directly — they propose Effects, which flow through one choke point

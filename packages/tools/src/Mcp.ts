@@ -1,6 +1,6 @@
 // MCP — minimal stdio client tools.
 //
-// Loads servers from .crix/mcp.json and ~/.crix/mcp.json. The config shape
+// Loads servers from .ares/mcp.json and ~/.ares/mcp.json. The config shape
 // mirrors common MCP clients:
 // { "servers": { "name": { "command": "node", "args": ["server.js"], "env": {} } } }
 
@@ -53,7 +53,7 @@ export interface McpCallOutput {
 export const McpListToolsTool = buildTool({
   name: "McpListTools",
   description:
-    "List MCP servers and their exposed tools from .crix/mcp.json and ~/.crix/mcp.json. Use before McpCallTool when the user configured MCP servers.",
+    "List MCP servers and their exposed tools from .ares/mcp.json and ~/.ares/mcp.json. Use before McpCallTool when the user configured MCP servers.",
   safety: "external-state",
   concurrency: "parallel-safe",
   inputZod: listInputSchema,
@@ -108,8 +108,8 @@ export const McpCallTool = buildTool({
 });
 
 async function loadMcpConfig(workspace: string): Promise<{ servers: Record<string, McpServerConfig>; configFiles: string[] }> {
-  const home = process.env.CRIX_HOME || path.join(os.homedir(), ".crix");
-  const candidates = [path.join(home, "mcp.json"), path.join(workspace, ".crix", "mcp.json")];
+  const home = process.env.ARES_HOME || path.join(os.homedir(), ".ares");
+  const candidates = [path.join(home, "mcp.json"), path.join(workspace, ".ares", "mcp.json")];
   const servers: Record<string, McpServerConfig> = {};
   const configFiles: string[] = [];
   for (const file of candidates) {
@@ -144,7 +144,7 @@ class StdioMcpClient {
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "crix", version: "0.3.0-alpha.1" },
+      clientInfo: { name: "ares", version: "0.3.0-alpha.1" },
     });
     this.notify("notifications/initialized", {});
   }

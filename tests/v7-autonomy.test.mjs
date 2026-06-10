@@ -17,7 +17,7 @@ import {
 import { diagnoseMemory } from "../packages/mind/dist/index.js";
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-v7-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-v7-"));
 }
 
 test("attention: foreground work outranks stale background goals", () => {

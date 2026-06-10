@@ -1,11 +1,11 @@
 // ChatGPT OAuth — device-code flow, Codex backend only.
 //
-// Crix does NOT support OPENAI_API_KEY anymore (see CHANGELOG). The
+// Ares does NOT support OPENAI_API_KEY anymore (see CHANGELOG). The
 // canonical path is ChatGPT OAuth, which routes requests through the
 // Codex backend at chatgpt.com.
 //
-// Token storage: %USERPROFILE%/.crix/auth.json (or $CRIX_HOME/auth.json).
-// Bypass for tests/CI: $CRIX_OPENAI_OAUTH_TOKEN env var (still an OAuth
+// Token storage: %USERPROFILE%/.ares/auth.json (or $ARES_HOME/auth.json).
+// Bypass for tests/CI: $ARES_OPENAI_OAUTH_TOKEN env var (still an OAuth
 // access token — just sourced from env instead of file).
 
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -17,7 +17,7 @@ const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
 
 export type AuthMode = "chatgpt-oauth" | "none";
-export type AuthSource = "env:CRIX_OPENAI_OAUTH_TOKEN" | "file" | "none";
+export type AuthSource = "env:ARES_OPENAI_OAUTH_TOKEN" | "file" | "none";
 
 export interface AuthToken {
   token: string;
@@ -53,20 +53,20 @@ interface AuthFile {
   lastRefresh: string;
 }
 
-export function crixHome(): string {
-  return process.env.CRIX_HOME ?? path.join(os.homedir(), ".crix");
+export function aresHome(): string {
+  return process.env.ARES_HOME ?? path.join(os.homedir(), ".ares");
 }
 
 export function authFilePath(): string {
-  return path.join(crixHome(), "auth.json");
+  return path.join(aresHome(), "auth.json");
 }
 
 /** Resolve the ChatGPT OAuth token. Env > file. */
 export async function loadAuthToken(): Promise<AuthToken | null> {
-  if (process.env.CRIX_OPENAI_OAUTH_TOKEN) {
+  if (process.env.ARES_OPENAI_OAUTH_TOKEN) {
     return {
-      token: process.env.CRIX_OPENAI_OAUTH_TOKEN,
-      source: "env:CRIX_OPENAI_OAUTH_TOKEN",
+      token: process.env.ARES_OPENAI_OAUTH_TOKEN,
+      source: "env:ARES_OPENAI_OAUTH_TOKEN",
       mode: "chatgpt-oauth",
     };
   }
@@ -109,7 +109,7 @@ async function readAuthFile(): Promise<AuthFile | null> {
 }
 
 async function writeAuthFile(file: AuthFile): Promise<void> {
-  const dir = crixHome();
+  const dir = aresHome();
   await mkdir(dir, { recursive: true });
   const path_ = authFilePath();
   await writeFile(path_, JSON.stringify(file, null, 2) + "\n", "utf8");

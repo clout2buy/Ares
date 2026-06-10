@@ -1,4 +1,4 @@
-// Tool<I, O> is the per-file tool contract used across @crix/tools.
+// Tool<I, O> is the per-file tool contract used across @ares/tools.
 //
 // Every tool owns its schema, permission check, execution, and display text.
 
@@ -13,8 +13,8 @@ import type {
   ProviderHint,
   PermissionDecision,
   PermissionMode,
-} from "@crix/protocol";
-import type { ToolCallContext, EngineToolResult } from "@crix/core";
+} from "@ares/protocol";
+import type { ToolCallContext, EngineToolResult } from "@ares/core";
 
 export interface FileReadStamp {
   mtimeMs: number;
@@ -231,12 +231,12 @@ export async function resolveWorkspacePath(
   const root = workspaceRoot(ctx);
   const candidate = path.resolve(root, inputPath ?? ".");
   if (!isInsideWorkspace(root, candidate) && !ctx.pathPermissions?.isAllowed(candidate, access)) {
-    // Unleashed (bypass): the owner runs Crix on their own machine and points it
+    // Unleashed (bypass): the owner runs Ares on their own machine and points it
     // wherever they like (their Desktop, home dir, another repo). No
     // out-of-workspace permission ritual — that's exactly the friction the owner
     // posture drops. Workspace checkpoints only cover files under the workspace,
     // so out-of-workspace targets rely on safeOverwrite's per-file pre-write
-    // backup (.crix/backups) to stay reversible — plus the effects ledger.
+    // backup (.ares/backups) to stay reversible — plus the effects ledger.
     if (ctx.permissionMode === "bypass") return candidate;
     if (!ctx.requestPermission) {
       throw permissionDenied(`${label} escapes workspace and no permission prompt is available: ${candidate}`);

@@ -13,7 +13,7 @@ import path from "node:path";
 import { ApplyIntentTool, WriteTool, assessShrink } from "../packages/tools/dist/index.js";
 
 async function makeTmp() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-safewrite-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-safewrite-"));
 }
 
 function ctx(workspace) {
@@ -110,7 +110,7 @@ test("Write: backs up prior contents before overwriting an existing file", async
   assert.equal(await fs.readFile(result.output.backupPath, "utf8"), original);
 
   // Backup index records the overwrite.
-  const index = await fs.readFile(path.join(tmp, ".crix", "backups", "index.jsonl"), "utf8");
+  const index = await fs.readFile(path.join(tmp, ".ares", "backups", "index.jsonl"), "utf8");
   const entry = JSON.parse(index.trim().split("\n").pop());
   assert.equal(entry.tool, "Write");
   assert.equal(entry.original, file);
@@ -142,6 +142,6 @@ test("Write: backup survives even for an out-of-workspace target", async () => {
     c,
   );
 
-  assert.ok(result.output.backupPath?.startsWith(path.join(workspace, ".crix", "backups")));
+  assert.ok(result.output.backupPath?.startsWith(path.join(workspace, ".ares", "backups")));
   assert.equal(await fs.readFile(result.output.backupPath, "utf8"), original);
 });

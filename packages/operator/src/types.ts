@@ -1,4 +1,4 @@
-// Operator domain types — the durable autonomy spine (Crix v5 / O1).
+// Operator domain types — the durable autonomy spine (Ares v5 / O1).
 //
 // A Goal is the long-horizon setpoint the Operator drives toward. The control
 // loop runs one bounded step per tick through an ephemeral Worker, records the
@@ -38,7 +38,7 @@ export interface Goal {
   id: string;
   statement: string;
   status: GoalStatus;
-  /** Sub-missions (reuses @crix/agent mission model). Empty in O1. */
+  /** Sub-missions (reuses @ares/agent mission model). Empty in O1. */
   missionIds: string[];
   /** How reality is measured (O3). Absent → trust the Worker's claim (O1). */
   verification?: VerificationSpec;

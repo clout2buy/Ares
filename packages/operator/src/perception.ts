@@ -1,4 +1,4 @@
-// The perception ladder — Crix's eyes (Crix v5 / O5 / concept C6).
+// The perception ladder — Ares's eyes (Ares v5 / O5 / concept C6).
 //
 // Same shape as the method ladder: most-grounded-and-cheap first, most-general-
 // and-fragile last.

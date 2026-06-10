@@ -61,7 +61,7 @@ export function duckDuckGoLite(): SearchBackend {
       const res = await fetch(url, {
         signal,
         headers: {
-          "user-agent": "Mozilla/5.0 (compatible; Crix/0.3)",
+          "user-agent": "Mozilla/5.0 (compatible; Ares/0.3)",
           accept: "text/html",
         },
       });

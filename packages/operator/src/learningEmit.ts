@@ -1,17 +1,17 @@
-// Auto-emit Mission Learning Cards on completion (Crix v6 / Phase B follow-up).
+// Auto-emit Mission Learning Cards on completion (Ares v6 / Phase B follow-up).
 //
-// Phase B v1 distilled lessons on demand (`crix mission learn`). This wires the
+// Phase B v1 distilled lessons on demand (`ares mission learn`). This wires the
 // reflex: when a mission contract reaches a TERMINAL state (satisfied/abandoned),
 // the lesson is distilled, saved, and fed into living memory automatically — so
-// every real mission teaches Crix without anyone asking.
+// every real mission teaches Ares without anyone asking.
 //
 // It does NOT change the distiller, add LLM prose, or touch the control logic.
 // It is best-effort (never throws, never blocks the loop) and idempotent: the
 // card id is derived from the contract id (re-completion overwrites, never
 // duplicates), and the memory feed dedups by source.
 
-import { recordCardMemoryOnce } from "@crix/agent";
-import { MemoryStore, mindPaths } from "@crix/mind";
+import { recordCardMemoryOnce } from "@ares/agent";
+import { MemoryStore, mindPaths } from "@ares/mind";
 import { distillMissionCard, learningCardMemoryText, saveLearningCard, type LearningCard } from "./learningCard.js";
 import type { MissionContract } from "./missionContract.js";
 import { loadGoal } from "./store.js";

@@ -32,7 +32,7 @@ import {
 import { MockEchoProvider } from "../packages/core/dist/index.js";
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-operator-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-operator-"));
 }
 
 // ── 1. Pure transitions ───────────────────────────────────────────────────

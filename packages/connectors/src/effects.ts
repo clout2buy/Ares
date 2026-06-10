@@ -1,4 +1,4 @@
-// Browser actions as Effects (Crix v5 / O6 × O2).
+// Browser actions as Effects (Ares v5 / O6 × O2).
 //
 // Every browser action is an EffectSpec, so it flows through the same rails as
 // everything else: audited in the ledger, gated by irreversibility + leash,
@@ -7,7 +7,7 @@
 // STAGED for approval rather than fired blindly. Each committed action records
 // a filmstrip frame for visual proof.
 
-import type { EffectSpec, Irreversibility } from "@crix/effects";
+import type { EffectSpec, Irreversibility } from "@ares/effects";
 import type { BrowserConnector, BrowserState } from "./types.js";
 import type { Filmstrip } from "./filmstrip.js";
 

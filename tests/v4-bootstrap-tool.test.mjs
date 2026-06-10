@@ -11,7 +11,7 @@ import {
   agentPaths,
 } from "../packages/agent/dist/index.js";
 
-async function makeTmp(prefix = "crix-v4-bootstrap-tool-") {
+async function makeTmp(prefix = "ares-v4-bootstrap-tool-") {
   return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
@@ -19,10 +19,10 @@ function ctx(workspace) {
   return { workspace, signal: new AbortController().signal };
 }
 
-test("Bootstrap tool writes IDENTITY/SOUL/USER to ~/.crix and deletes BOOTSTRAP.md", async () => {
+test("Bootstrap tool writes IDENTITY/SOUL/USER to ~/.ares and deletes BOOTSTRAP.md", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
-  process.env.CRIX_HOME = home;
+  const workspace = await makeTmp("ares-v4-workspace-");
+  process.env.ARES_HOME = home;
   try {
     await ensureAgentScaffold({ home, workspace });
     const paths = agentPaths(home);
@@ -48,14 +48,14 @@ test("Bootstrap tool writes IDENTITY/SOUL/USER to ~/.crix and deletes BOOTSTRAP.
     assert.match(await fs.readFile(paths.user, "utf8"), /MrDoing/);
     await assert.rejects(fs.stat(paths.bootstrap), /ENOENT/);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("SelfEvolve append writes to a brain file and logs the change to daily memory", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
-  process.env.CRIX_HOME = home;
+  const workspace = await makeTmp("ares-v4-workspace-");
+  process.env.ARES_HOME = home;
   try {
     await BootstrapTool.call(
       { user_name: "MrDoing", agent_name: "Rook", creature: "familiar", vibe: "direct", emoji: "*" },
@@ -76,14 +76,14 @@ test("SelfEvolve append writes to a brain file and logs the change to daily memo
     assert.ok(evolved.output.loggedTo, "daily log path returned");
     assert.match(await fs.readFile(evolved.output.loggedTo, "utf8"), /self_evolve append soul/);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("SelfEvolve replace_section rewrites a named heading and creates it if missing", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
-  process.env.CRIX_HOME = home;
+  const workspace = await makeTmp("ares-v4-workspace-");
+  process.env.ARES_HOME = home;
   try {
     await BootstrapTool.call(
       { user_name: "MrDoing", agent_name: "Rook", creature: "familiar", vibe: "direct", emoji: "*" },
@@ -107,14 +107,14 @@ test("SelfEvolve replace_section rewrites a named heading and creates it if miss
     assert.match(withNew, /## Brand New Section/);
     assert.match(withNew, /freshly minted\./);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("SelfEvolve note action appends a timestamped daily entry", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
-  process.env.CRIX_HOME = home;
+  const workspace = await makeTmp("ares-v4-workspace-");
+  process.env.ARES_HOME = home;
   try {
     await BootstrapTool.call(
       { user_name: "MrDoing", agent_name: "Rook", creature: "familiar", vibe: "direct", emoji: "*" },
@@ -128,14 +128,14 @@ test("SelfEvolve note action appends a timestamped daily entry", async () => {
     assert.match(log, /Spotted a flaky test/);
     assert.match(log, /T\d{2}:\d{2}/);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });
 
 test("SelfEvolve can update CAPABILITIES.md", async () => {
   const home = await makeTmp();
-  const workspace = await makeTmp("crix-v4-workspace-");
-  process.env.CRIX_HOME = home;
+  const workspace = await makeTmp("ares-v4-workspace-");
+  process.env.ARES_HOME = home;
   try {
     await BootstrapTool.call(
       { user_name: "MrDoing", agent_name: "Rook", creature: "familiar", vibe: "direct", emoji: "*" },
@@ -149,6 +149,6 @@ test("SelfEvolve can update CAPABILITIES.md", async () => {
     assert.equal(result.output.target, "capabilities");
     assert.match(await fs.readFile(paths.capabilities, "utf8"), /capabilities ledger/);
   } finally {
-    delete process.env.CRIX_HOME;
+    delete process.env.ARES_HOME;
   }
 });

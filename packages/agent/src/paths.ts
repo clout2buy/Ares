@@ -1,5 +1,6 @@
-import os from "node:os";
+import fs from "node:fs";
 import path from "node:path";
+import { aresHome } from "@ares/mind";
 
 export interface AgentPaths {
   home: string;
@@ -24,11 +25,13 @@ export interface AgentPaths {
   selfModel: string;
 }
 
-export function crixAgentHome(explicit?: string): string {
-  return path.resolve(explicit ?? process.env.CRIX_HOME ?? path.join(os.homedir(), ".crix"));
+/** Resolve the agent home — delegates to the mind layer's resolution so the
+ *  whole entity shares one home (incl. legacy $CRIX_HOME + ~/.crix migration). */
+export function aresAgentHome(explicit?: string): string {
+  return aresHome(explicit);
 }
 
-export function agentPaths(home = crixAgentHome()): AgentPaths {
+export function agentPaths(home = aresAgentHome()): AgentPaths {
   return {
     home,
     identity: path.join(home, "IDENTITY.md"),
@@ -54,6 +57,12 @@ export function agentPaths(home = crixAgentHome()): AgentPaths {
 }
 
 export function workspaceToolsPath(workspace: string): string {
-  return path.join(path.resolve(workspace), ".crix", "TOOLS.md");
+  const preferred = path.join(path.resolve(workspace), ".ares", "TOOLS.md");
+  if (fs.existsSync(preferred)) return preferred;
+  // Legacy workspace dir from before the rebrand — keep reading it until the
+  // workspace adopts .ares/.
+  const legacy = path.join(path.resolve(workspace), ".crix", "TOOLS.md");
+  if (fs.existsSync(legacy)) return legacy;
+  return preferred;
 }
 

@@ -1,10 +1,10 @@
-// Capability nodes — the units of compounding competence (Crix v5 / O4 / C3).
+// Capability nodes — the units of compounding competence (Ares v5 / O4 / C3).
 //
-// A capability is something Crix can do, composed from reusable sub-skills.
+// A capability is something Ares can do, composed from reusable sub-skills.
 // Mastering a capability factors it into those sub-skills (graph.ts), so the
 // NEXT capability mostly reuses what already exists and only has to learn the
 // novel delta. The shrinking novel-delta curve is the literal proof that a
-// 500-session Crix beats a fresh one on the same model — competence is an asset
+// 500-session Ares beats a fresh one on the same model — competence is an asset
 // that compounds, and it lives here in the durable graph, not in the model.
 //
 // Pure transitions only (mirrors agent/mission/loop.ts and operator/goal.ts).
@@ -40,7 +40,7 @@ export interface CapabilityNode {
   status: CapabilityStatus;
   /** Sub-skill ids this capability composes from — the DAG edges. */
   requires: string[];
-  /** Crystallized executable skill name (under ~/.crix/skills/<skillRef>/). */
+  /** Crystallized executable skill name (under ~/.ares/skills/<skillRef>/). */
   skillRef?: string;
   /** Crystallized judgment (a playbook in durable memory). */
   playbookRef?: string;

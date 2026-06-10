@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { writeFileAtomic } from "@crix/agent";
+import { writeFileAtomic } from "@ares/agent";
 import { operatorPaths } from "./paths.js";
 import type { Goal, VerificationSpec } from "./types.js";
 

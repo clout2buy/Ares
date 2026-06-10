@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = path.join(root, "tauri", "src-tauri", "runtime");
-const cliOut = path.join(runtime, "cli", "crix-cli.mjs");
+const cliOut = path.join(runtime, "cli", "ares-cli.mjs");
 const templatesOut = path.join(runtime, "templates");
 const binOut = path.join(runtime, "bin");
 const nodeName = process.platform === "win32" ? "node.exe" : "node";
@@ -26,8 +26,8 @@ await build({
   external: ["better-sqlite3", "playwright", "react-devtools-core", "sqlite-vec"],
   banner: {
     js: [
-      'import { createRequire as __crixCreateRequire } from "node:module";',
-      "const require = __crixCreateRequire(import.meta.url);",
+      'import { createRequire as __aresCreateRequire } from "node:module";',
+      "const require = __aresCreateRequire(import.meta.url);",
     ].join("\n"),
   },
   define: {
@@ -39,11 +39,11 @@ await build({
       setup(pluginBuild) {
         pluginBuild.onResolve({ filter: /^\.\/devtools\.js$/ }, (args) => {
           if (args.importer.includes(`${path.sep}ink${path.sep}build${path.sep}reconciler.js`)) {
-            return { path: "ink-devtools-shim", namespace: "crix-shim" };
+            return { path: "ink-devtools-shim", namespace: "ares-shim" };
           }
           return null;
         });
-        pluginBuild.onLoad({ filter: /^ink-devtools-shim$/, namespace: "crix-shim" }, () => ({
+        pluginBuild.onLoad({ filter: /^ink-devtools-shim$/, namespace: "ares-shim" }, () => ({
           contents: "export {};",
           loader: "js",
         }));

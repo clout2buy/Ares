@@ -1,4 +1,4 @@
-// The thought process (Crix v6 / M2).
+// The thought process (Ares v6 / M2).
 //
 // Above the Operator's mechanical control loop sits a real deliberation:
 //   OBSERVE → RECALL (think WITH memory) → weigh options → DECIDE → INTEND →

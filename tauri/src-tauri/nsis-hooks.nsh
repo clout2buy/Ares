@@ -1,9 +1,9 @@
 !macro NSIS_HOOK_POSTINSTALL
   SetShellVarContext current
-  CreateShortCut "$DESKTOP\Crix.lnk" "$INSTDIR\Crix.exe"
+  CreateShortCut "$DESKTOP\Ares.lnk" "$INSTDIR\Ares.exe"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
   SetShellVarContext current
-  Delete "$DESKTOP\Crix.lnk"
+  Delete "$DESKTOP\Ares.lnk"
 !macroend

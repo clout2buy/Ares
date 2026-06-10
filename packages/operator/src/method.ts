@@ -1,12 +1,12 @@
-// The method ladder — "knowing how to do shit" (Crix v5 / O5 / concept C6).
+// The method ladder — "knowing how to do shit" (Ares v5 / O5 / concept C6).
 //
 // Every capability can be satisfied by multiple METHODS, ranked best→worst:
 //   api → mcp → cli → skill → browser → (acquire)
-// Crix never asks "should I use an MCP?" — it asks "what's the highest rung on
+// Ares never asks "should I use an MCP?" — it asks "what's the highest rung on
 // this capability's ladder that's AVAILABLE right now?" and climbs down until
 // one works. If nothing is available, it ACQUIRES a new rung (research →
 // install an MCP / write a skill / scaffold a tool) and retries. MCP is not
-// special; it's one rung. This is what makes Crix figure things out instead of
+// special; it's one rung. This is what makes Ares figure things out instead of
 // following hardcoded paths.
 
 import type { CapabilityNode, MethodKind, MethodRung } from "./capability.js";

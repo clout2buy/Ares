@@ -11,8 +11,8 @@ does not maintain this. i do._
 - Grep, Glob, CodebaseSearch across the workspace.
 - LSP queries against TypeScript.
 - WebFetch + WebSearch (rate-limited, best-effort).
-- SelfEvolve over my own brain (~/.crix/*).
-- SkillCraft over my own skills (~/.crix/skills/*).
+- SelfEvolve over my own brain (~/.ares/*).
+- SkillCraft over my own skills (~/.ares/skills/*).
 - Subagent spawn via Task.
 
 ## Acquired (write these as i learn them)

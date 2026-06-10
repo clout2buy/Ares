@@ -45,7 +45,7 @@ struct VoiceState {
     child: Mutex<Option<Child>>,
 }
 
-struct CrixRuntime {
+struct AresRuntime {
     app_root: PathBuf,
     cli_entry: PathBuf,
     node: PathBuf,
@@ -105,40 +105,40 @@ struct OllamaDiscovery {
 }
 
 #[tauri::command]
-fn crix_set_theme(name: String) -> String {
+fn ares_set_theme(name: String) -> String {
     name
 }
 
 #[tauri::command]
-fn crix_dev_mode() -> bool {
-    env::var("CRIX_DEV")
+fn ares_dev_mode() -> bool {
+    env::var("ARES_DEV")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
         || cfg!(debug_assertions)
 }
 
 #[tauri::command]
-fn crix_ollama_models() -> OllamaDiscovery {
+fn ares_ollama_models() -> OllamaDiscovery {
     discover_ollama_models()
 }
 
 #[tauri::command]
-fn crix_agent_identity() -> AgentIdentity {
+fn ares_agent_identity() -> AgentIdentity {
     load_agent_identity()
 }
 
 #[tauri::command]
-fn crix_self_model() -> Option<Value> {
+fn ares_self_model() -> Option<Value> {
     load_self_model()
 }
 
 #[tauri::command]
-fn crix_daemon_status(state: State<DaemonState>) -> DaemonStatus {
+fn ares_daemon_status(state: State<DaemonState>) -> DaemonStatus {
     daemon_status(state.inner())
 }
 
 #[tauri::command]
-fn crix_drain_events(state: State<DaemonState>, after: Option<u64>) -> Vec<BufferedEvent> {
+fn ares_drain_events(state: State<DaemonState>, after: Option<u64>) -> Vec<BufferedEvent> {
     let after = after.unwrap_or(0);
     state
         .events
@@ -154,7 +154,7 @@ fn crix_drain_events(state: State<DaemonState>, after: Option<u64>) -> Vec<Buffe
 }
 
 #[tauri::command]
-fn crix_start_daemon(
+fn ares_start_daemon(
     app: tauri::AppHandle,
     state: State<DaemonState>,
     provider: Option<String>,
@@ -171,7 +171,7 @@ fn crix_start_daemon(
 }
 
 #[tauri::command]
-fn crix_restart_daemon(
+fn ares_restart_daemon(
     app: tauri::AppHandle,
     state: State<DaemonState>,
     provider: Option<String>,
@@ -192,15 +192,15 @@ fn start_daemon(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<DaemonStatus, String> {
-    let runtime = resolve_crix_runtime(Some(&app)).ok_or_else(|| {
-        "Could not find Crix runtime. Rebuild the desktop runtime before launching the app."
+    let runtime = resolve_ares_runtime(Some(&app)).ok_or_else(|| {
+        "Could not find Ares runtime. Rebuild the desktop runtime before launching the app."
             .to_string()
     })?;
     fs::create_dir_all(&runtime.workspace)
-        .map_err(|error| format!("failed to create Crix workspace: {error}"))?;
-    if let Some(home) = desktop_crix_home() {
+        .map_err(|error| format!("failed to create Ares workspace: {error}"))?;
+    if let Some(home) = desktop_ares_home() {
         fs::create_dir_all(&home)
-            .map_err(|error| format!("failed to create Crix home: {error}"))?;
+            .map_err(|error| format!("failed to create Ares home: {error}"))?;
     }
 
     let provider = clean_optional(provider);
@@ -225,13 +225,13 @@ fn start_daemon(
 
     let mut child = command
         .current_dir(&runtime.workspace)
-        .env("CRIX_AGENT_ENABLED", "1")
-        .env("CRIX_HOME", desktop_crix_home_string())
+        .env("ARES_AGENT_ENABLED", "1")
+        .env("ARES_HOME", desktop_ares_home_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("failed to start Crix daemon: {error}"))?;
+        .map_err(|error| format!("failed to start Ares daemon: {error}"))?;
 
     let stdin = child
         .stdin
@@ -304,7 +304,7 @@ fn start_daemon(
 }
 
 #[tauri::command]
-fn crix_send(goal: String, state: State<DaemonState>) -> Result<(), String> {
+fn ares_send(goal: String, state: State<DaemonState>) -> Result<(), String> {
     let trimmed = goal.trim();
     if trimmed.is_empty() {
         return Err("message is empty".to_string());
@@ -314,7 +314,7 @@ fn crix_send(goal: String, state: State<DaemonState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn crix_set_reasoning(level: String, state: State<DaemonState>) -> Result<(), String> {
+fn ares_set_reasoning(level: String, state: State<DaemonState>) -> Result<(), String> {
     let level = level.trim().to_ascii_lowercase();
     if !matches!(level.as_str(), "low" | "medium" | "high" | "max") {
         return Err("reasoning level must be low, medium, high, or max".to_string());
@@ -327,9 +327,9 @@ fn crix_set_reasoning(level: String, state: State<DaemonState>) -> Result<(), St
 }
 
 #[tauri::command]
-fn crix_set_routing(routing: Value, state: State<DaemonState>) -> Result<(), String> {
+fn ares_set_routing(routing: Value, state: State<DaemonState>) -> Result<(), String> {
     // The owner's per-lane model assignments. Passed through verbatim; the
-    // daemon resolves it against @crix/core resolveRoute() on the live turn.
+    // daemon resolves it against @ares/core resolveRoute() on the live turn.
     write_daemon_command(
         state.inner(),
         json!({ "type": "routing", "routing": routing }),
@@ -337,7 +337,7 @@ fn crix_set_routing(routing: Value, state: State<DaemonState>) -> Result<(), Str
 }
 
 #[tauri::command]
-fn crix_set_openrouter_key(
+fn ares_set_openrouter_key(
     key: String,
     model: Option<String>,
     state: State<DaemonState>,
@@ -351,7 +351,7 @@ fn crix_set_openrouter_key(
 }
 
 #[tauri::command]
-fn crix_permission_response(
+fn ares_permission_response(
     id: Option<String>,
     decision: String,
     state: State<DaemonState>,
@@ -371,7 +371,7 @@ fn write_daemon_command(state: &DaemonState, command: Value) -> Result<(), Strin
     let mut stdin_state = state.stdin.lock().map_err(|_| "daemon stdin lock failed")?;
     let stdin = stdin_state
         .as_mut()
-        .ok_or_else(|| "Crix daemon is not running".to_string())?;
+        .ok_or_else(|| "Ares daemon is not running".to_string())?;
     let line = command.to_string();
     stdin
         .write_all(line.as_bytes())
@@ -381,7 +381,7 @@ fn write_daemon_command(state: &DaemonState, command: Value) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn crix_stop_daemon(app: tauri::AppHandle, state: State<DaemonState>) -> Result<(), String> {
+fn ares_stop_daemon(app: tauri::AppHandle, state: State<DaemonState>) -> Result<(), String> {
     stop_existing_daemon(state.inner())?;
     push_event(
         &app,
@@ -392,7 +392,7 @@ fn crix_stop_daemon(app: tauri::AppHandle, state: State<DaemonState>) -> Result<
 }
 
 #[tauri::command]
-fn crix_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
+fn ares_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main window unavailable".to_string())?;
@@ -402,7 +402,7 @@ fn crix_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn crix_window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
+fn ares_window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main window unavailable".to_string())?;
@@ -421,7 +421,7 @@ fn crix_window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn crix_window_close(app: tauri::AppHandle, state: State<DaemonState>) -> Result<(), String> {
+fn ares_window_close(app: tauri::AppHandle, state: State<DaemonState>) -> Result<(), String> {
     let _ = stop_existing_daemon(state.inner());
     let window = app
         .get_webview_window("main")
@@ -459,7 +459,7 @@ fn stop_existing_daemon(state: &DaemonState) -> Result<(), String> {
 #[cfg(windows)]
 fn voice_python(root: &Path) -> std::ffi::OsString {
     let venv = root
-        .join(".crix")
+        .join(".ares")
         .join("voice-venv")
         .join("Scripts")
         .join("python.exe");
@@ -473,7 +473,7 @@ fn voice_python(root: &Path) -> std::ffi::OsString {
 #[cfg(not(windows))]
 fn voice_python(root: &Path) -> std::ffi::OsString {
     let venv = root
-        .join(".crix")
+        .join(".ares")
         .join("voice-venv")
         .join("bin")
         .join("python");
@@ -493,7 +493,7 @@ fn start_voice_sidecar(app: &tauri::AppHandle, state: &VoiceState) {
             return;
         }
     }
-    let Some(runtime) = resolve_crix_runtime(Some(app)) else {
+    let Some(runtime) = resolve_ares_runtime(Some(app)) else {
         return;
     };
     let script = runtime.app_root.join("voice_service").join("server.py");
@@ -570,27 +570,27 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            crix_set_theme,
-            crix_dev_mode,
-            crix_ollama_models,
-            crix_agent_identity,
-            crix_self_model,
-            crix_drain_events,
-            crix_daemon_status,
-            crix_start_daemon,
-            crix_restart_daemon,
-            crix_send,
-            crix_set_reasoning,
-            crix_set_routing,
-            crix_set_openrouter_key,
-            crix_permission_response,
-            crix_stop_daemon,
-            crix_window_minimize,
-            crix_window_toggle_maximize,
-            crix_window_close
+            ares_set_theme,
+            ares_dev_mode,
+            ares_ollama_models,
+            ares_agent_identity,
+            ares_self_model,
+            ares_drain_events,
+            ares_daemon_status,
+            ares_start_daemon,
+            ares_restart_daemon,
+            ares_send,
+            ares_set_reasoning,
+            ares_set_routing,
+            ares_set_openrouter_key,
+            ares_permission_response,
+            ares_stop_daemon,
+            ares_window_minimize,
+            ares_window_toggle_maximize,
+            ares_window_close
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Crix Tauri app");
+        .expect("error while running Ares Tauri app");
 }
 
 #[cfg(windows)]
@@ -663,8 +663,8 @@ fn push_event_parts(
             buffer.drain(0..extra);
         }
     }
-    let _ = app.emit("crix:event-buffered", buffered);
-    let _ = app.emit("crix:event", event);
+    let _ = app.emit("ares:event-buffered", buffered);
+    let _ = app.emit("ares:event", event);
 }
 
 fn spawn_output_reader<R>(
@@ -779,10 +779,10 @@ fn discover_ollama_models() -> OllamaDiscovery {
 
 fn load_agent_identity() -> AgentIdentity {
     let mut candidates = Vec::new();
-    if let Ok(home) = env::var("CRIX_HOME") {
+    if let Ok(home) = env::var("ARES_HOME") {
         candidates.push(PathBuf::from(home).join("IDENTITY.md"));
     }
-    if let Some(home) = desktop_crix_home() {
+    if let Some(home) = desktop_ares_home() {
         candidates.push(home.join("IDENTITY.md"));
     }
 
@@ -805,10 +805,10 @@ fn load_agent_identity() -> AgentIdentity {
 
 fn load_self_model() -> Option<Value> {
     let mut candidates = Vec::new();
-    if let Ok(home) = env::var("CRIX_HOME") {
+    if let Ok(home) = env::var("ARES_HOME") {
         candidates.push(PathBuf::from(home).join("self").join("model.json"));
     }
-    if let Some(home) = desktop_crix_home() {
+    if let Some(home) = desktop_ares_home() {
         candidates.push(home.join("self").join("model.json"));
     }
 
@@ -1154,7 +1154,7 @@ fn local_model_description(id: &str, family: Option<&str>, local_root: &Option<S
         .as_deref()
         .unwrap_or("the local Ollama model store");
     let family = family.unwrap_or_else(|| id.split(':').next().unwrap_or("local"));
-    format!("{id} is installed locally under {root}. It runs through the Ollama daemon with no cloud token spend; Crix uses it as an offline {family} model when selected.")
+    format!("{id} is installed locally under {root}. It runs through the Ollama daemon with no cloud token spend; Ares uses it as an offline {family} model when selected.")
 }
 
 struct ParsedHttpHost {
@@ -1237,14 +1237,14 @@ fn http_json(
     serde_json::from_str(body).map_err(|error| format!("invalid Ollama JSON: {error}"))
 }
 
-fn resolve_crix_runtime(app: Option<&tauri::AppHandle>) -> Option<CrixRuntime> {
+fn resolve_ares_runtime(app: Option<&tauri::AppHandle>) -> Option<AresRuntime> {
     if let Some(app) = app {
         if let Some(runtime) = bundled_runtime(app) {
             return Some(runtime);
         }
     }
 
-    if let Ok(root) = env::var("CRIX_ROOT") {
+    if let Ok(root) = env::var("ARES_ROOT") {
         if let Some(found) = cli_in_root(Path::new(&root)) {
             return Some(found);
         }
@@ -1271,7 +1271,7 @@ fn resolve_crix_runtime(app: Option<&tauri::AppHandle>) -> Option<CrixRuntime> {
     None
 }
 
-fn bundled_runtime(app: &tauri::AppHandle) -> Option<CrixRuntime> {
+fn bundled_runtime(app: &tauri::AppHandle) -> Option<AresRuntime> {
     let mut candidates = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
         push_runtime_candidates(&mut candidates, resource_dir);
@@ -1298,13 +1298,13 @@ fn push_runtime_candidates(candidates: &mut Vec<PathBuf>, root: PathBuf) {
     candidates.push(root);
 }
 
-fn runtime_at(root: &Path) -> Option<CrixRuntime> {
-    let cli = root.join("cli").join("crix-cli.mjs");
+fn runtime_at(root: &Path) -> Option<AresRuntime> {
+    let cli = root.join("cli").join("ares-cli.mjs");
     let node = root
         .join("bin")
         .join(if cfg!(windows) { "node.exe" } else { "node" });
     if cli.exists() && node.exists() {
-        return Some(CrixRuntime {
+        return Some(AresRuntime {
             app_root: root.to_path_buf(),
             cli_entry: cli,
             node,
@@ -1314,18 +1314,18 @@ fn runtime_at(root: &Path) -> Option<CrixRuntime> {
     None
 }
 
-fn cli_in_root(root: &Path) -> Option<CrixRuntime> {
+fn cli_in_root(root: &Path) -> Option<AresRuntime> {
     let cli = root
         .join("packages")
         .join("cli")
         .join("dist")
         .join("entry.js");
     if cli.exists() {
-        Some(CrixRuntime {
+        Some(AresRuntime {
             app_root: root.to_path_buf(),
             cli_entry: cli,
             node: PathBuf::from("node"),
-            workspace: env::var("CRIX_WORKSPACE")
+            workspace: env::var("ARES_WORKSPACE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| root.to_path_buf()),
         })
@@ -1335,26 +1335,26 @@ fn cli_in_root(root: &Path) -> Option<CrixRuntime> {
 }
 
 fn desktop_workspace_dir() -> PathBuf {
-    if let Ok(value) = env::var("CRIX_WORKSPACE") {
+    if let Ok(value) = env::var("ARES_WORKSPACE") {
         return PathBuf::from(value);
     }
     user_desktop_dir()
         .unwrap_or_else(|| user_home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("Crix Workspace")
+        .join("Ares Workspace")
 }
 
-fn desktop_crix_home() -> Option<PathBuf> {
-    if let Ok(value) = env::var("CRIX_HOME") {
+fn desktop_ares_home() -> Option<PathBuf> {
+    if let Ok(value) = env::var("ARES_HOME") {
         return Some(PathBuf::from(value));
     }
     user_config_dir()
         .or_else(|| user_home_dir().map(|home| home.join(".config")))
-        .map(|dir| dir.join("Crix").join("home"))
+        .map(|dir| dir.join("Ares").join("home"))
 }
 
-fn desktop_crix_home_string() -> String {
-    desktop_crix_home()
-        .unwrap_or_else(|| PathBuf::from(".crix-home"))
+fn desktop_ares_home_string() -> String {
+    desktop_ares_home()
+        .unwrap_or_else(|| PathBuf::from(".ares-home"))
         .display()
         .to_string()
 }

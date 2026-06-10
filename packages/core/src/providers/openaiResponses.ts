@@ -1,6 +1,6 @@
 // OpenAI Responses provider — ChatGPT OAuth → Codex backend, streaming.
 //
-// Crix only supports ChatGPT OAuth (not OPENAI_API_KEY). Requests always
+// Ares only supports ChatGPT OAuth (not OPENAI_API_KEY). Requests always
 // route to the Codex backend at chatgpt.com/backend-api/codex/responses.
 //
 // Input message shape is Anthropic SDK-compatible: tool results arrive
@@ -24,8 +24,8 @@ import type {
   Usage,
   StopReason,
   ContentBlock,
-} from "@crix/protocol";
-import { openAIReasoningEffort } from "@crix/protocol";
+} from "@ares/protocol";
+import { openAIReasoningEffort } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { loadAuthToken, type AuthToken } from "./openaiAuth.js";
 import { buildPromptCacheKey } from "../promptCache.js";
@@ -60,7 +60,7 @@ export class OpenAIResponsesProvider implements Provider {
         type: "error",
         error: {
           code: "no_auth",
-          message: "No ChatGPT OAuth token. Run `crix login` to authorize.",
+          message: "No ChatGPT OAuth token. Run `ares login` to authorize.",
           retriable: false,
         },
       };
@@ -74,9 +74,9 @@ export class OpenAIResponsesProvider implements Provider {
       Accept: "text/event-stream",
       Authorization: `Bearer ${auth.token}`,
       "OpenAI-Beta": "responses=experimental",
-      originator: "crix",
-      "User-Agent": "crix",
-      version: "crix-ts",
+      originator: "ares",
+      "User-Agent": "ares",
+      version: "ares-ts",
     };
     if (auth.accountId) headers["ChatGPT-Account-ID"] = auth.accountId;
 
@@ -424,4 +424,4 @@ function isReasoningDeltaEvent(evt: ResponsesEvent): boolean {
 }
 
 // Model discovery: the Codex backend does not expose /v1/models. The user
-// selects their model explicitly via `crix model <id>` or --model flag.
+// selects their model explicitly via `ares model <id>` or --model flag.

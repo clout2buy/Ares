@@ -1,6 +1,6 @@
-# Crix Agent Layer
+# Ares Agent Layer
 
-Crix v4 adds a mind package on top of the existing harness.
+Ares v4 adds a mind package on top of the existing harness.
 
 ## Boundary
 
@@ -13,39 +13,39 @@ Crix v4 adds a mind package on top of the existing harness.
 Run:
 
 ```bash
-crix agent bootstrap
+ares agent bootstrap
 ```
 
-That creates the `~/.crix` scaffold and `BOOTSTRAP.md` if identity does not exist yet.
+That creates the `~/.ares` scaffold and `BOOTSTRAP.md` if identity does not exist yet.
 
 To complete bootstrap non-interactively:
 
 ```bash
-crix agent bootstrap --user Clout --name Crix --creature "coding daemon" --vibe direct --emoji "*"
+ares agent bootstrap --user Clout --name Ares --creature "coding daemon" --vibe direct --emoji "*"
 ```
 
 This writes:
 
-- `~/.crix/IDENTITY.md`
-- `~/.crix/SOUL.md`
-- `~/.crix/USER.md`
-- `~/.crix/HEARTBEAT.md`
-- `~/.crix/MEMORY.md`
-- `<workspace>/.crix/TOOLS.md`
+- `~/.ares/IDENTITY.md`
+- `~/.ares/SOUL.md`
+- `~/.ares/USER.md`
+- `~/.ares/HEARTBEAT.md`
+- `~/.ares/MEMORY.md`
+- `<workspace>/.ares/TOOLS.md`
 
 ## Memory
 
-Default memory configuration is written to `~/.crix/config.json`.
+Default memory configuration is written to `~/.ares/config.json`.
 
 The preferred stack is:
 
 - embeddings: Ollama `bge-m3`
 - store: `better-sqlite3` with optional `sqlite-vec`
 
-If native sqlite dependencies are unavailable, Crix uses an explicit JSON vector fallback and reports that in:
+If native sqlite dependencies are unavailable, Ares uses an explicit JSON vector fallback and reports that in:
 
 ```bash
-crix agent doctor
+ares agent doctor
 ```
 
 ## Lifecycle
@@ -54,8 +54,8 @@ The agent layer exposes:
 
 - heartbeat: `runHeartbeatTick`
 - LIGHT dreaming: `runLightDream`
-- DEEP dreaming: `crix agent dream deep`
-- REM dreaming: `crix agent dream rem`
+- DEEP dreaming: `ares agent dream deep`
+- REM dreaming: `ares agent dream rem`
 - recall injection: `recallForTurn`
 - self-revise signal: `beforeAgentFinalizeSignal`
 - skill proposals: `proposeSkills`
@@ -65,14 +65,14 @@ The agent layer exposes:
 The default TUI includes the cleaner `graphite` and `oxide` themes:
 
 ```bash
-crix theme graphite
-crix theme oxide
+ares theme graphite
+ares theme oxide
 ```
 
 The optional Tauri companion scaffold lives in `tauri/` and talks to:
 
 ```bash
-crix daemon --json
+ares daemon --json
 ```
 
 The default CLI install remains slim; Tauri is opt-in.

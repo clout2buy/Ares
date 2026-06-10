@@ -1,15 +1,15 @@
 import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { agentPaths, crixAgentHome } from "./paths.js";
+import { agentPaths, aresAgentHome } from "./paths.js";
 import { readTextIfExists, writeFileAtomic } from "./files.js";
-import type { CrixAgentConfig } from "./config.js";
+import type { AresAgentConfig } from "./config.js";
 import { createMemoryStore } from "./memory/vectorStore.js";
 import type { MemoryCategory } from "./memory/types.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
-import { MemoryStore as LivingMemoryStore, mindPaths } from "@crix/mind";
+import { MemoryStore as LivingMemoryStore, mindPaths } from "@ares/mind";
 
 const DREAM_MEMORY_ITEM_CHARS = 420;
 const DREAM_MEMORY_MAX_ITEMS = 120;
@@ -26,10 +26,10 @@ export async function runLightDream(opts: {
   workspace: string;
   sessionId: string;
   transcriptPath?: string;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   now?: Date;
 }): Promise<DreamResult> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   emitLifecycle({ type: "dream_phase_started", phase: "light" });
   const now = opts.now ?? new Date();
@@ -53,10 +53,10 @@ export async function runLightDream(opts: {
 export async function runDeepDream(opts: {
   home?: string;
   workspace?: string;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   now?: Date;
 }): Promise<DreamResult> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   emitLifecycle({ type: "dream_phase_started", phase: "deep" });
   const store = await createMemoryStore(opts.config, home);
@@ -89,10 +89,10 @@ export async function runDeepDream(opts: {
 
 export async function runRemDream(opts: {
   home?: string;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   now?: Date;
 }): Promise<DreamResult> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   emitLifecycle({ type: "dream_phase_started", phase: "rem" });
   const files = await readdir(paths.memoryDir).catch(() => []);

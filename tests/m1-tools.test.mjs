@@ -22,7 +22,7 @@ import {
 } from "../packages/tools/dist/index.js";
 
 async function makeTmp() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crix-m1-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ares-m1-"));
   return dir;
 }
 
@@ -364,12 +364,12 @@ test("Grep: content mode returns matching lines", async () => {
   assert.match(r.output.matches[0].text, /^error: bad$/);
 });
 
-test("Grep: ignores Crix session artifacts by default", async () => {
+test("Grep: ignores Ares session artifacts by default", async () => {
   const tmp = await makeTmp();
   await fs.mkdir(path.join(tmp, "src"), { recursive: true });
-  await fs.mkdir(path.join(tmp, ".crix", "sessions", "sess_test"), { recursive: true });
+  await fs.mkdir(path.join(tmp, ".ares", "sessions", "sess_test"), { recursive: true });
   await fs.writeFile(path.join(tmp, "src", "real.txt"), "needle from source\n", "utf8");
-  await fs.writeFile(path.join(tmp, ".crix", "sessions", "sess_test", "events.jsonl"), "needle from artifact\n", "utf8");
+  await fs.writeFile(path.join(tmp, ".ares", "sessions", "sess_test", "events.jsonl"), "needle from artifact\n", "utf8");
   const c = ctx(tmp);
   const r = await GrepTool.call(
     { pattern: "needle", output_mode: "files_with_matches", case_insensitive: false, max_results: 50, context_before: 0, context_after: 0 },

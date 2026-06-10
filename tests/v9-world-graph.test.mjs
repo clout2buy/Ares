@@ -1,11 +1,11 @@
 // Verifies the World Graph seed (Nexus Phase 1) — the pure entity-graph
-// assembler that links Crix's universe: itself, the project, subsystems,
+// assembler that links Ares's universe: itself, the project, subsystems,
 // missions, goals, lessons, and crystallized memories.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { assembleWorldGraph, CRIX_SUBSYSTEMS } from "../packages/operator/dist/index.js";
+import { assembleWorldGraph, ARES_SUBSYSTEMS } from "../packages/operator/dist/index.js";
 
 const mission = (id, intent, extra = {}) => ({
   id,
@@ -21,13 +21,13 @@ const memNode = (id, content, tags = []) => ({ id, kind: "semantic", content, ta
 const findEntity = (g, kind, ref) => g.entities.find((e) => e.kind === kind && e.ref === ref);
 const hasRel = (g, from, to, kind) => g.relations.some((r) => r.from === from && r.to === to && r.kind === kind);
 
-test("world graph: crix embodies the project; every subsystem is part-of it", () => {
-  const g = assembleWorldGraph({ contracts: [], goals: [], lessons: [], memory: [], subsystems: CRIX_SUBSYSTEMS });
-  assert.ok(findEntity(g, "crix", "self"));
+test("world graph: ares embodies the project; every subsystem is part-of it", () => {
+  const g = assembleWorldGraph({ contracts: [], goals: [], lessons: [], memory: [], subsystems: ARES_SUBSYSTEMS });
+  assert.ok(findEntity(g, "ares", "self"));
   const project = g.entities.find((e) => e.kind === "project");
   assert.ok(project, "a project entity exists");
-  assert.ok(hasRel(g, "crix:self", project.id, "embodies"));
-  assert.equal(g.counts.subsystem, CRIX_SUBSYSTEMS.length);
+  assert.ok(hasRel(g, "ares:self", project.id, "embodies"));
+  assert.equal(g.counts.subsystem, ARES_SUBSYSTEMS.length);
   for (const s of g.entities.filter((e) => e.kind === "subsystem")) {
     assert.ok(hasRel(g, s.id, project.id, "part-of"), `${s.ref} is part-of the project`);
   }
@@ -36,10 +36,10 @@ test("world graph: crix embodies the project; every subsystem is part-of it", ()
 test("world graph: missions serve goals, lessons distil from their mission", () => {
   const g = assembleWorldGraph({
     contracts: [mission("m1", "ship the thing", { goalId: "g1" })],
-    goals: [goal("g1", "Ship Crix Nexus")],
+    goals: [goal("g1", "Ship Ares Nexus")],
     lessons: [lesson("m1", "ship the thing")],
     memory: [],
-    subsystems: CRIX_SUBSYSTEMS,
+    subsystems: ARES_SUBSYSTEMS,
   });
   assert.ok(hasRel(g, "mission:m1", "goal:g1", "serves"));
   assert.ok(hasRel(g, "lesson:lc_m1", "mission:m1", "distilled-from"));
@@ -54,7 +54,7 @@ test("world graph: a voice mission links to the voice subsystem", () => {
     goals: [],
     lessons: [],
     memory: [],
-    subsystems: CRIX_SUBSYSTEMS,
+    subsystems: ARES_SUBSYSTEMS,
   });
   assert.ok(hasRel(g, "mission:m2", "subsystem:voice", "relates-to"), "voice mission relates to the voice subsystem");
 });
@@ -65,25 +65,25 @@ test("world graph: crystallized memory becomes an entity and links by domain", (
     goals: [],
     lessons: [],
     memory: [memNode("mem1", "Recurring failure mode (recall, memory): verify before claiming done", ["belief:recall+memory"])],
-    subsystems: CRIX_SUBSYSTEMS,
+    subsystems: ARES_SUBSYSTEMS,
   });
   assert.ok(findEntity(g, "memory", "mem1"), "memory entity created");
   assert.ok(hasRel(g, "memory:mem1", "subsystem:mind", "relates-to"), "memory links to the mind subsystem");
   assert.ok(hasRel(g, "memory:mem1", "mission:m3", "about"), "memory is about the recall mission");
 });
 
-test("world graph: empty world still maps crix + project + subsystems", () => {
-  const g = assembleWorldGraph({ contracts: [], goals: [], lessons: [], memory: [], subsystems: CRIX_SUBSYSTEMS });
+test("world graph: empty world still maps ares + project + subsystems", () => {
+  const g = assembleWorldGraph({ contracts: [], goals: [], lessons: [], memory: [], subsystems: ARES_SUBSYSTEMS });
   assert.equal(g.counts.mission, 0);
   assert.equal(g.counts.lesson, 0);
-  assert.equal(g.counts.crix, 1);
+  assert.equal(g.counts.ares, 1);
   assert.equal(g.counts.project, 1);
   assert.ok(g.counts.subsystem > 0);
 });
 
 test("world graph: pure — same input yields identical output, inputs untouched", () => {
   const contracts = [mission("m1", "voice input")];
-  const input = { contracts, goals: [], lessons: [], memory: [], subsystems: CRIX_SUBSYSTEMS };
+  const input = { contracts, goals: [], lessons: [], memory: [], subsystems: ARES_SUBSYSTEMS };
   const a = assembleWorldGraph(input);
   const b = assembleWorldGraph(input);
   assert.deepEqual(a, b);

@@ -2,9 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { agentPaths, crixAgentHome } from "./paths.js";
+import { agentPaths, aresAgentHome } from "./paths.js";
 import { nonCommentLines, readTextIfExists, writeFileAtomic } from "./files.js";
-import type { CrixAgentConfig } from "./config.js";
+import type { AresAgentConfig } from "./config.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
@@ -21,11 +21,11 @@ export interface HeartbeatResult {
 export async function runHeartbeatTick(opts: {
   home?: string;
   workspace: string;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   reason?: string;
   now?: Date;
 }): Promise<HeartbeatResult> {
-  const home = crixAgentHome(opts.home);
+  const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
   emitLifecycle({ type: "heartbeat_tick", reason: opts.reason ?? "interval" });
   const text = await readTextIfExists(paths.heartbeat);
@@ -52,7 +52,7 @@ export async function runHeartbeatTick(opts: {
 export function startHeartbeatLoop(opts: {
   home?: string;
   workspace: string;
-  config: CrixAgentConfig;
+  config: AresAgentConfig;
   onAlert: (text: string) => void;
 }): () => void {
   const everyMs = parseDurationMs(opts.config.heartbeat.every, 30 * 60_000);
@@ -112,7 +112,7 @@ async function scanTodos(workspace: string): Promise<string | null> {
     const fs = await import("node:fs/promises");
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".crix") continue;
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".ares") continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(full);
       else if (entry.isFile() && found.length < 5) {

@@ -1,4 +1,4 @@
-// The control loop — the convergent spine (Crix v5 / O1 / concept C1).
+// The control loop — the convergent spine (Ares v5 / O1 / concept C1).
 //
 // One tick = SENSE → ORIENT → DECIDE → ACT → VERIFY → LEARN → PERSIST. The
 // loop is DETERMINISTIC: it never calls an LLM to decide policy. It reloads

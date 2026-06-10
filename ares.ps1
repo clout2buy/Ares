@@ -9,12 +9,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$CallerCwd = if ($env:CRIX_CALLER_CWD) { $env:CRIX_CALLER_CWD } else { (Get-Location).Path }
+$CallerCwd = if ($env:ARES_CALLER_CWD) { $env:ARES_CALLER_CWD } else { (Get-Location).Path }
 Set-Location $Root
 
 try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    [Console]::Title = "Crix Provider Launcher"
+    [Console]::Title = "Ares Provider Launcher"
 } catch {
     # Host does not expose a real console. Keep going.
 }
@@ -43,12 +43,12 @@ function Write-Rule {
     Write-Host (Color ("-" * (Terminal-Width)) $Code)
 }
 
-function Write-CrixBanner {
+function Write-AresBanner {
     Clear-Host
     $folder = Split-Path -Leaf $Root
-    $themeName = if ($env:CRIX_THEME) { $env:CRIX_THEME } else { "amber" }
+    $themeName = if ($env:ARES_THEME) { $env:ARES_THEME } else { "amber" }
     Write-Host ""
-    Write-Host (Color "  CRIX" "96") -NoNewline
+    Write-Host (Color "  ARES" "96") -NoNewline
     Write-Host (Color "  provider launch deck" "97")
     Write-Host (Color "  GPT OAuth + Ollama Cloud model picker" "90")
     Write-Host (Color "  workspace: $Root" "90")
@@ -75,7 +75,7 @@ function Ensure-NodeModules {
     }
 }
 
-function Invoke-CrixTs {
+function Invoke-AresTs {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Args)
     Ensure-NodeModules
     Invoke-Pnpm --silent build
@@ -91,13 +91,13 @@ function Add-WorkspaceArg {
     return @("--workspace", $CallerCwd) + $Args
 }
 
-function Invoke-CrixWorkspace {
+function Invoke-AresWorkspace {
     param(
         [string] $Subcommand,
         [string[]] $Args = @()
     )
     $WithWorkspace = Add-WorkspaceArg $Args
-    Invoke-CrixTs $Subcommand @WithWorkspace
+    Invoke-AresTs $Subcommand @WithWorkspace
 }
 
 function Show-Help {
@@ -107,13 +107,13 @@ function Show-Help {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Host ""
     Write-Host "Launcher examples:"
-    Write-Host "  .\crix.bat"
-    Write-Host "  .\crix.bat launcher"
-    Write-Host "  .\crix.bat chat --provider openai --model gpt-5.5"
-    Write-Host "  .\crix.bat chat --provider ollama --model qwen3-coder:480b-cloud"
-    Write-Host "  .\crix.bat doctor"
-    Write-Host "  .\crix.bat login"
-    Write-Host "  .\crix.bat run --provider openai --model gpt-5.5 --goal ""flex some tools"""
+    Write-Host "  .\ares.bat"
+    Write-Host "  .\ares.bat launcher"
+    Write-Host "  .\ares.bat chat --provider openai --model gpt-5.5"
+    Write-Host "  .\ares.bat chat --provider ollama --model qwen3-coder:480b-cloud"
+    Write-Host "  .\ares.bat doctor"
+    Write-Host "  .\ares.bat login"
+    Write-Host "  .\ares.bat run --provider openai --model gpt-5.5 --goal ""flex some tools"""
     Write-Host ""
 }
 
@@ -230,29 +230,29 @@ function Get-OllamaCloudModels {
     return $models
 }
 
-function Start-CrixChat {
+function Start-AresChat {
     param(
         [string] $Provider,
         [string] $Model
     )
-    if (-not $env:CRIX_THEME) {
-        $env:CRIX_THEME = "amber"
+    if (-not $env:ARES_THEME) {
+        $env:ARES_THEME = "amber"
     }
     Clear-Host
-    Write-Host (Color "Starting Crix" "96") -NoNewline
+    Write-Host (Color "Starting Ares" "96") -NoNewline
     Write-Host " with " -NoNewline
     Write-Host (Color $Provider "97") -NoNewline
     Write-Host " / " -NoNewline
     Write-Host (Color $Model "92")
     Write-Host (Color "Building once, then opening the terminal UI..." "90")
     Write-Host ""
-    Invoke-CrixTs chat --provider $Provider --model $Model --theme $env:CRIX_THEME
+    Invoke-AresTs chat --provider $Provider --model $Model --theme $env:ARES_THEME
 }
 
 function Show-GptPicker {
     while ($true) {
-        Write-CrixBanner
-        $defaultModel = if ($env:CRIX_OPENAI_MODEL) { $env:CRIX_OPENAI_MODEL } else { "gpt-5.5" }
+        Write-AresBanner
+        $defaultModel = if ($env:ARES_OPENAI_MODEL) { $env:ARES_OPENAI_MODEL } else { "gpt-5.5" }
         $models = @($defaultModel, "gpt-5.5") | Select-Object -Unique
         Write-Host (Color "GPT OAuth" "95")
         Write-Host (Color "Uses your ChatGPT OAuth login through the OpenAI Responses backend." "90")
@@ -279,12 +279,12 @@ function Show-GptPicker {
         if ([int]$choice -eq $customChoice) {
             $custom = (Read-Host "$(Color "Model id" "96")").Trim()
             if ($custom) {
-                Start-CrixChat "openai" $custom
+                Start-AresChat "openai" $custom
                 return
             }
             continue
         }
-        Start-CrixChat "openai" $models[[int]$choice - 1]
+        Start-AresChat "openai" $models[[int]$choice - 1]
         return
     }
 }
@@ -292,9 +292,9 @@ function Show-GptPicker {
 function Show-OllamaPicker {
     $models = Get-OllamaCloudModels
     while ($true) {
-        Write-CrixBanner
+        Write-AresBanner
         Write-Host (Color "Ollama Cloud" "92")
-        Write-Host (Color "Clean names shown here; Crix launches the full cloud tag under the hood." "90")
+        Write-Host (Color "Clean names shown here; Ares launches the full cloud tag under the hood." "90")
         Write-Host ""
 
         $indexed = @()
@@ -325,22 +325,22 @@ function Show-OllamaPicker {
         if ($choice -eq "c") {
             $custom = (Read-Host "$(Color "Ollama model id" "96")").Trim()
             if ($custom) {
-                Start-CrixChat "ollama" $custom
+                Start-AresChat "ollama" $custom
                 return
             }
             continue
         }
         $selected = $indexed | Where-Object { $_.Key -eq $choice } | Select-Object -First 1
         if ($selected) {
-            Start-CrixChat "ollama" $selected.Model.Id
+            Start-AresChat "ollama" $selected.Model.Id
             return
         }
     }
 }
 
-function Show-CrixLauncher {
+function Show-AresLauncher {
     while ($true) {
-        Write-CrixBanner
+        Write-AresBanner
         Write-Host "  [1] " -NoNewline
         Write-Host (Color "GPT OAuth" "95") -NoNewline
         Write-Host "       ChatGPT OAuth provider, OpenAI Responses backend"
@@ -362,8 +362,8 @@ function Show-CrixLauncher {
         switch ($choice) {
             "1" { Show-GptPicker }
             "2" { Show-OllamaPicker }
-            "3" { Invoke-CrixTs login; Read-Host "Press Enter to return" | Out-Null }
-            "4" { Invoke-CrixTs doctor; Read-Host "Press Enter to return" | Out-Null }
+            "3" { Invoke-AresTs login; Read-Host "Press Enter to return" | Out-Null }
+            "4" { Invoke-AresTs doctor; Read-Host "Press Enter to return" | Out-Null }
             "5" { Show-Help; Read-Host "Press Enter to return" | Out-Null }
             "q" { return }
         }
@@ -376,33 +376,33 @@ function Has-ProviderFlags {
 }
 
 switch ($Command.ToLowerInvariant()) {
-    "" { Invoke-CrixWorkspace launcher $Rest }
-    "launcher" { Invoke-CrixWorkspace launcher $Rest }
-    "menu" { Invoke-CrixWorkspace launcher $Rest }
+    "" { Invoke-AresWorkspace launcher $Rest }
+    "launcher" { Invoke-AresWorkspace launcher $Rest }
+    "menu" { Invoke-AresWorkspace launcher $Rest }
     "chat" {
-        if (Has-ProviderFlags $Rest) { Invoke-CrixWorkspace chat $Rest } else { Invoke-CrixWorkspace launcher $Rest }
+        if (Has-ProviderFlags $Rest) { Invoke-AresWorkspace chat $Rest } else { Invoke-AresWorkspace launcher $Rest }
     }
     "cli" {
-        if (Has-ProviderFlags $Rest) { Invoke-CrixWorkspace chat $Rest } else { Invoke-CrixWorkspace launcher $Rest }
+        if (Has-ProviderFlags $Rest) { Invoke-AresWorkspace chat $Rest } else { Invoke-AresWorkspace launcher $Rest }
     }
     "shell" {
-        if (Has-ProviderFlags $Rest) { Invoke-CrixWorkspace chat $Rest } else { Invoke-CrixWorkspace launcher $Rest }
+        if (Has-ProviderFlags $Rest) { Invoke-AresWorkspace chat $Rest } else { Invoke-AresWorkspace launcher $Rest }
     }
     "help" { Show-Help }
     "h" { Show-Help }
     "--help" { Show-Help }
     "-h" { Show-Help }
-    "login" { Invoke-CrixTs login @Rest }
+    "login" { Invoke-AresTs login @Rest }
     "install" { Invoke-Pnpm install }
     "build" { Ensure-NodeModules; Invoke-Pnpm build }
     "check" { Ensure-NodeModules; Invoke-Pnpm check }
     "test" { Ensure-NodeModules; Invoke-Pnpm test }
     "verify" { Ensure-NodeModules; Invoke-Pnpm verify }
-    "doctor" { Invoke-CrixWorkspace doctor $Rest }
-    "run" { Invoke-CrixWorkspace run $Rest }
-    "mock" { $WithWorkspace = Add-WorkspaceArg @("--goal", (($Rest -join " ").Trim())); Invoke-CrixTs run --provider mock @WithWorkspace }
-    "openai" { $WithWorkspace = Add-WorkspaceArg $Rest; Invoke-CrixTs run --provider openai @WithWorkspace }
-    "ollama" { $WithWorkspace = Add-WorkspaceArg $Rest; Invoke-CrixTs run --provider ollama @WithWorkspace }
-    "--" { Invoke-CrixTs @Rest }
-    default { Invoke-CrixWorkspace $Command $Rest }
+    "doctor" { Invoke-AresWorkspace doctor $Rest }
+    "run" { Invoke-AresWorkspace run $Rest }
+    "mock" { $WithWorkspace = Add-WorkspaceArg @("--goal", (($Rest -join " ").Trim())); Invoke-AresTs run --provider mock @WithWorkspace }
+    "openai" { $WithWorkspace = Add-WorkspaceArg $Rest; Invoke-AresTs run --provider openai @WithWorkspace }
+    "ollama" { $WithWorkspace = Add-WorkspaceArg $Rest; Invoke-AresTs run --provider ollama @WithWorkspace }
+    "--" { Invoke-AresTs @Rest }
+    default { Invoke-AresWorkspace $Command $Rest }
 }

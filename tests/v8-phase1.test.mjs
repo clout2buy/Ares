@@ -31,7 +31,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 
 async function makeHome() {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "crix-v8-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "ares-v8-"));
 }
 
 test("mission contract: tracks intent, criteria, blockers, next action, and proof log", async () => {
@@ -63,12 +63,12 @@ test("mission contract: tracks intent, criteria, blockers, next action, and proo
   assert.equal(contract.progress.status, "blocked");
   assert.match(missionContractSummary(contract), /blocker/);
 
-  contract = resolveMissionBlocker(contract, contract.blockers[0].id, "clean now removes repo-local .crix");
+  contract = resolveMissionBlocker(contract, contract.blockers[0].id, "clean now removes repo-local .ares");
   assert.equal(contract.progress.status, "active");
 
   contract = addMissionEvidence(contract, {
     kind: "verification",
-    summary: "pnpm clean removed generated package dist and .crix",
+    summary: "pnpm clean removed generated package dist and .ares",
     passed: true,
     criterionIds: ["ac_2"],
   });
@@ -96,7 +96,7 @@ test("mission contract: creates standalone contracts with probes and constraints
 });
 
 test("eval harness: returns regression-friendly pass/fail report with score", async () => {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "crix-eval-harness-"));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "ares-eval-harness-"));
   const report = await runEvalSuite(
     [
       {
@@ -265,7 +265,7 @@ test("mission contract: unknown criterionId evidence is rejected", () => {
 });
 
 test("eval harness: empty suite is valid and scores as complete", async () => {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "crix-empty-eval-"));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "ares-empty-eval-"));
   const report = await runEvalSuite([], { suite: "empty", workspace });
 
   assert.equal(report.schemaVersion, 1);
@@ -303,17 +303,17 @@ test("capability promotion: failed drafts can be rejected or forbidden", () => {
 });
 
 test("cli eval: --json returns a parseable eval report", () => {
-  const testHome = mkdtempSync(path.join(os.tmpdir(), "crix-v8-cli-"));
+  const testHome = mkdtempSync(path.join(os.tmpdir(), "ares-v8-cli-"));
   const result = spawnSync(process.execPath, [path.join(root, "packages", "cli", "dist", "entry.js"), "eval", "--json"], {
     cwd: root,
     encoding: "utf8",
     windowsHide: true,
-    env: { ...process.env, CRIX_HOME: testHome, CRIX_AGENT_ENABLED: "0" },
+    env: { ...process.env, ARES_HOME: testHome, ARES_AGENT_ENABLED: "0" },
   });
 
-  assert.equal(result.status, 0, `crix eval --json failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.equal(result.status, 0, `ares eval --json failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   const report = JSON.parse(result.stdout);
-  assert.equal(report.suite, "crix builtin");
+  assert.equal(report.suite, "ares builtin");
   assert.equal(report.failed, 0);
   assert.equal(report.passed, report.total);
   assert.ok(report.results.every((item) => item.id && item.status === "passed"));

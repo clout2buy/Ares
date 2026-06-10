@@ -27,6 +27,20 @@ export {
 export { MockEchoProvider } from "./providers/mock.js";
 
 export {
+  AnthropicProvider,
+  ANTHROPIC_MESSAGES_URL,
+  DEFAULT_ANTHROPIC_MODEL,
+  type AnthropicProviderOptions,
+} from "./providers/anthropic.js";
+
+export {
+  sideQuery,
+  sideQueryJson,
+  type SideQueryOptions,
+  type SideQueryJsonOptions,
+} from "./sideQuery.js";
+
+export {
   SubagentRegistry,
   AresSubagentRunner,
   BUILT_IN_SUBAGENT_TYPES,

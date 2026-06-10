@@ -902,6 +902,7 @@ function isContextLimitError(error: { code: string; message: string }): boolean 
   return (
     text.includes("context_length_exceeded") ||
     text.includes("prompt too long") ||
+    text.includes("prompt is too long") ||
     text.includes("max context") ||
     text.includes("context window") ||
     text.includes("maximum context") ||

@@ -49,7 +49,7 @@ import "./styles.css";
 
 type View = "chat" | "providers" | "mind" | "tools";
 type ProviderId = "ollama" | "openai" | "openrouter" | "mock";
-type ThemeName = "signal" | "graphite" | "oxide" | "matrix" | "storm";
+type ThemeName = "warroom" | "signal" | "graphite" | "oxide" | "matrix" | "storm";
 type CornerMode = "rounded" | "square";
 type HeartbeatStatus = "idle" | "active" | "alert" | "dreaming" | "error";
 type DaemonState = "starting" | "running" | "stopped" | "error";
@@ -594,6 +594,7 @@ function buildProviderOptions(devMode: boolean, localOllamaModels: ProviderModel
 }
 
 const THEME_LABELS: Record<ThemeName, string> = {
+  warroom: "War Room",
   signal: "Frost",
   matrix: "Matrix",
   storm: "Storm",
@@ -601,7 +602,7 @@ const THEME_LABELS: Record<ThemeName, string> = {
   oxide: "Oxide",
 };
 
-const THEME_CHOICES: ThemeName[] = ["signal", "matrix", "storm"];
+const THEME_CHOICES: ThemeName[] = ["warroom", "signal", "matrix", "storm"];
 
 const STATUS_LABELS: Record<HeartbeatStatus, string> = {
   idle: "Ready",
@@ -2010,6 +2011,8 @@ interface ScenePalette {
 
 function scenePalette(mode: SceneMode): ScenePalette {
   switch (mode) {
+    case "warroom": // bronze-on-obsidian — the Ares identity world
+      return { key: 0xe3b86a, rim: 0xc79a4e, fog: 0x0e0b08, glass: 0xd8b47a, emissive: 0x7a4f12, accent: 0xb03a3a, core: 0xf4e3c2, dust: 0xc9a35c };
     case "matrix":
       return { key: 0xc46bff, rim: 0x2dffb0, fog: 0x0c0018, glass: 0xc88cff, emissive: 0x6a00b0, accent: 0x2dffb0, core: 0xbfffe8, dust: 0xa97bff };
     case "storm":
@@ -2544,11 +2547,12 @@ function FxLayer({ running, status }: { running: boolean; status: HeartbeatStatu
       <div className="fxBackdropBlur" />
       <div className="fxGlassRibbons" />
       <div className="fxLens" />
+      <div className="fxAresRelief" />
       <div className="fxVignette" />
       <div className="fxGrid" />
       <div className="fxPulse" />
       <div className="fxGlyphs">
-        {Array.from({ length: 12 }, (_, index) => <span key={index}>{index % 3 === 0 ? "01" : index % 3 === 1 ? "CR" : "IX"}</span>)}
+        {Array.from({ length: 12 }, (_, index) => <span key={index}>{index % 3 === 0 ? "01" : index % 3 === 1 ? "ΑΡ" : "ΗΣ"}</span>)}
       </div>
     </div>
   );
@@ -5573,8 +5577,8 @@ function saveDesktopSettings(settings: { theme: ThemeName; selection: Selection;
 }
 
 function normalizeTheme(value?: string): ThemeName {
-  if (value === "matrix" || value === "storm" || value === "signal" || value === "graphite" || value === "oxide") return value;
-  return "signal";
+  if (value === "warroom" || value === "matrix" || value === "storm" || value === "signal" || value === "graphite" || value === "oxide") return value;
+  return "warroom";
 }
 
 function normalizeAppearance(value?: Partial<AppearanceSettings>): AppearanceSettings {

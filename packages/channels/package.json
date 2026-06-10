@@ -1,0 +1,27 @@
+{
+  "name": "@ares/channels",
+  "version": "0.3.0-alpha.1",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "description": "Ares channels — chat surfaces as pure Garrison gateway clients. First: Telegram (DM ↔ session, the Gate as inline keyboards).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@ares/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
+  }
+}

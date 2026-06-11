@@ -214,6 +214,7 @@ import {
 } from "@ares/operator";
 import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, type MemoryKind } from "@ares/mind";
 import { SessionManager, GarrisonServer, Scheduler, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
+import { buildHolotableHtml } from "./holotable.js";
 import {
   Filmstrip,
   clickEffect,
@@ -4219,6 +4220,25 @@ function csvFlag(value: string | undefined): string[] | undefined {
 // RUNS THE CRUCIBLE TRIAL — dreams become the trial, literally.
 // `ares attach` is the first thin client over the wire protocol.
 
+/**
+ * The Holotable — `ares holo [model.glb] [--out file] [--title text]`.
+ * Emits a self-contained hologram-style 3D viewer (bronze wireframe + glow,
+ * exploded-view slider, orbit controls). No model -> the procedural mech.
+ */
+async function holoCommand(args: ParsedArgs): Promise<number> {
+  const model = args.positionals[0];
+  const out = path.resolve(args.flags.get("out") ?? "holo.html");
+  const html = buildHolotableHtml({
+    title: args.flags.get("title") ?? (model ? `ARES // HOLOTABLE — ${path.basename(model)}` : undefined),
+    modelUrl: model,
+  });
+  await writeFile(out, html, "utf8");
+  process.stdout.write(
+    notice("Holotable", [`forged ${out}`, "open it in a browser — drag to rotate, slider to disassemble"], "success"),
+  );
+  return 0;
+}
+
 async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const sub = args.positionals[0] ?? "serve";
   if (sub !== "serve") {
@@ -4635,6 +4655,9 @@ async function main(): Promise<void> {
       return;
     case "attach":
       process.exit(await attachCommand(args));
+      return;
+    case "holo":
+      process.exit(await holoCommand(args));
       return;
     case "eval":
       process.exit(await evalCommand(args));

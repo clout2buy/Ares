@@ -5520,7 +5520,26 @@ body,
 }
 
 .ares-app[data-theme="warroom"] .fxAresRelief {
-  opacity: 0.05;
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 1000' fill='none' stroke='%23c79a4e' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke-width='2.5' stroke-opacity='0.55'%3E%3Ccircle cx='215' cy='600' r='205'/%3E%3Ccircle cx='215' cy='600' r='162'/%3E%3Ccircle cx='215' cy='600' r='34'/%3E%3Cpath d='M215 438 L215 470 M215 730 L215 762 M53 600 L85 600 M345 600 L377 600'/%3E%3C/g%3E%3Cg stroke-width='3' stroke-opacity='0.8'%3E%3Cpath d='M150 952 L618 118'/%3E%3Cpath d='M618 118 C 596 154, 590 176, 596 206 C 616 186, 632 168, 640 138 C 638 126, 630 118, 618 118 Z'/%3E%3Cpath d='M150 952 L136 978'/%3E%3C/g%3E%3Cg stroke-width='3'%3E%3Cpath d='M330 96 C 420 22, 560 30, 640 132 C 588 106, 528 98, 470 112'/%3E%3Cpath d='M362 120 C 430 70, 530 72, 596 138'/%3E%3Cpath d='M396 146 C 448 110, 516 112, 564 158'/%3E%3C/g%3E%3Cg transform='translate(168,118) scale(1.42)' stroke-width='2.6'%3E%3Cpath d='M200 28 C 116 28 64 96 60 178 C 57 236 70 284 78 330 C 86 376 88 420 84 470 C 120 448 142 436 152 410 L 162 348 C 165 330 162 318 150 306 C 138 292 132 272 132 252 L 132 216'/%3E%3Cpath d='M200 28 C 284 28 336 96 340 178 C 343 236 330 284 322 330 C 314 376 312 420 316 470 C 280 448 258 436 248 410 L 238 348 C 235 330 238 318 250 306 C 262 292 268 272 268 252 L 268 216'/%3E%3Cpath d='M132 216 C 152 204 172 198 188 198 L 188 300 C 188 318 192 330 200 340 C 208 330 212 318 212 300 L 212 198 C 228 198 248 204 268 216'/%3E%3Cpath d='M142 238 C 154 230 168 226 180 228 C 176 244 166 254 150 256 C 144 252 142 246 142 238 Z'/%3E%3Cpath d='M258 238 C 246 230 232 226 220 228 C 224 244 234 254 250 256 C 256 252 258 246 258 238 Z'/%3E%3C/g%3E%3Cg stroke-width='2.6' stroke-opacity='0.85'%3E%3Cpath d='M286 822 C 352 770, 540 770, 606 822'/%3E%3Cpath d='M250 880 C 270 844, 296 826, 326 818 M 642 880 C 622 844, 596 826, 566 818'/%3E%3Cpath d='M330 866 C 390 838, 502 838, 562 866'/%3E%3Cpath d='M446 778 L 446 712'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4% center;
+  background-size: auto 86%;
+  opacity: 0;
+  filter: drop-shadow(0 0 30px rgba(199, 154, 78, 0.2));
+  transition: opacity 600ms ease;
+}
+
+@keyframes aresBreathe {
+  0%, 100% { opacity: 0.045; }
+  50% { opacity: 0.07; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ares-app[data-theme="warroom"][data-fx="on"] .fxAresRelief {
+    animation: aresBreathe 9s ease-in-out infinite;
+  }
 }
 
 .ares-app[data-theme="warroom"] :is(
@@ -7440,3 +7459,76 @@ body,
 }
 /* image grids inside flow rows sit tight under the row */
 .flowImages { margin: 6px 0 8px 30px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+
+/* ── boot overlay: the Garrison takes post ───────────────────────────── */
+
+.bootOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(199, 154, 78, 0.08), transparent 52%),
+    #0c0a0b;
+}
+
+.bootInner { display: grid; justify-items: center; gap: 18px; }
+
+.bootEmblem {
+  width: 190px;
+  height: 238px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 1000' fill='none' stroke='%23c79a4e' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke-width='2.5' stroke-opacity='0.55'%3E%3Ccircle cx='215' cy='600' r='205'/%3E%3Ccircle cx='215' cy='600' r='162'/%3E%3Ccircle cx='215' cy='600' r='34'/%3E%3Cpath d='M215 438 L215 470 M215 730 L215 762 M53 600 L85 600 M345 600 L377 600'/%3E%3C/g%3E%3Cg stroke-width='3' stroke-opacity='0.8'%3E%3Cpath d='M150 952 L618 118'/%3E%3Cpath d='M618 118 C 596 154, 590 176, 596 206 C 616 186, 632 168, 640 138 C 638 126, 630 118, 618 118 Z'/%3E%3Cpath d='M150 952 L136 978'/%3E%3C/g%3E%3Cg stroke-width='3'%3E%3Cpath d='M330 96 C 420 22, 560 30, 640 132 C 588 106, 528 98, 470 112'/%3E%3Cpath d='M362 120 C 430 70, 530 72, 596 138'/%3E%3Cpath d='M396 146 C 448 110, 516 112, 564 158'/%3E%3C/g%3E%3Cg transform='translate(168,118) scale(1.42)' stroke-width='2.6'%3E%3Cpath d='M200 28 C 116 28 64 96 60 178 C 57 236 70 284 78 330 C 86 376 88 420 84 470 C 120 448 142 436 152 410 L 162 348 C 165 330 162 318 150 306 C 138 292 132 272 132 252 L 132 216'/%3E%3Cpath d='M200 28 C 284 28 336 96 340 178 C 343 236 330 284 322 330 C 314 376 312 420 316 470 C 280 448 258 436 248 410 L 238 348 C 235 330 238 318 250 306 C 262 292 268 272 268 252 L 268 216'/%3E%3Cpath d='M132 216 C 152 204 172 198 188 198 L 188 300 C 188 318 192 330 200 340 C 208 330 212 318 212 300 L 212 198 C 228 198 248 204 268 216'/%3E%3Cpath d='M142 238 C 154 230 168 226 180 228 C 176 244 166 254 150 256 C 144 252 142 246 142 238 Z'/%3E%3Cpath d='M258 238 C 246 230 232 226 220 228 C 224 244 234 254 250 256 C 256 252 258 246 258 238 Z'/%3E%3C/g%3E%3Cg stroke-width='2.6' stroke-opacity='0.85'%3E%3Cpath d='M286 822 C 352 770, 540 770, 606 822'/%3E%3Cpath d='M250 880 C 270 844, 296 826, 326 818 M 642 880 C 622 844, 596 826, 566 818'/%3E%3Cpath d='M330 866 C 390 838, 502 838, 562 866'/%3E%3Cpath d='M446 778 L 446 712'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  opacity: 0.5;
+  filter: drop-shadow(0 0 26px rgba(199, 154, 78, 0.35));
+  animation: bootEmblemPulse 2.4s ease-in-out infinite;
+}
+
+.bootTitle {
+  color: #e3b86a;
+  font: 700 26px/1 "Cascadia Code", ui-monospace, Consolas, monospace;
+  letter-spacing: 0.55em;
+  text-indent: 0.55em;
+  text-shadow: 0 0 22px rgba(227, 184, 106, 0.4);
+}
+
+.bootSub {
+  color: #8a7d6b;
+  font: 500 10px/1 "Cascadia Code", ui-monospace, Consolas, monospace;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+}
+
+.bootLine {
+  width: 220px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #c79a4e, transparent);
+  position: relative;
+  overflow: visible;
+}
+
+.bootLine::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: #e3b86a;
+  box-shadow: 0 0 14px rgba(227, 184, 106, 0.8);
+  animation: bootSweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+@keyframes bootEmblemPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.62; }
+}
+
+@keyframes bootSweep {
+  from { left: 0; }
+  to { left: 184px; }
+}

@@ -1695,6 +1695,9 @@ function App() {
     >
       <ThreeScene running={running} status={status} theme={theme} />
       <FxLayer status={status} running={running} />
+      <AnimatePresence>
+        {daemon === "starting" && hasNativeBridge() ? <BootOverlay /> : null}
+      </AnimatePresence>
       <ImageLightbox />
       <div className="commandHud" data-active={status === "active" ? "1" : "0"} aria-hidden="true" />
       <EvolutionPulseDeck pulses={pulses} />
@@ -2555,6 +2558,24 @@ function FxLayer({ running, status }: { running: boolean; status: HeartbeatStatu
         {Array.from({ length: 12 }, (_, index) => <span key={index}>{index % 3 === 0 ? "01" : index % 3 === 1 ? "ΑΡ" : "ΗΣ"}</span>)}
       </div>
     </div>
+  );
+}
+
+function BootOverlay() {
+  return (
+    <motion.div
+      className="bootOverlay"
+      initial={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: 0.7, ease: "easeOut" } }}
+      aria-hidden="true"
+    >
+      <div className="bootInner">
+        <div className="bootEmblem" />
+        <div className="bootTitle">ARES</div>
+        <div className="bootLine" />
+        <div className="bootSub">GARRISON · STANDING WATCH</div>
+      </div>
+    </motion.div>
   );
 }
 

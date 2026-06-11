@@ -67,4 +67,22 @@ surface, not an infinite retry.
 
 ---
 
+## The measurement budget (the anti-explosion law)
+
+The stack now measures a lot: probes, verifier, witness, crucible, gauntlet,
+evidence trails, repair traces, trust records. The failure mode is waking up
+as 40% learning / 40% measuring / 20% coding. Three standing rules:
+
+1. **Two sinks, never three.** Every measurement producer writes into either
+   memory-node evidence or the effects ledger. A subsystem that wants its own
+   store is a noun wearing a fake mustache — reject it.
+2. **Measurement runs on idle time.** Turn-time costs are capped at: one
+   sideQuery (Witness), one O(ids) append (consequence), debounced diagnostics
+   (C1). Trials, gauntlets, and curation run at dream time. If turn latency
+   grows because of measurement, that is a regression, full stop.
+3. **Every new subsystem names its metric before it lands.** "Which gauntlet
+   number improves, by roughly how much?" No answer → no merge. The gauntlet
+   (C6) is the referee for the harness; the harness is the referee for
+   everything else.
+
 Definition of done: pick a mid-tier model, point Ares at a real repo, and watch it ship a multi-file feature with green tests — then read the gauntlet scoreboard proving the harness, not the model, did the carrying.

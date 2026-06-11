@@ -292,3 +292,13 @@ export {
   type LeashAppender,
   type TrustGovernorOptions,
 } from "./leash.js";
+export {
+  runGauntlet,
+  CODING_GAUNTLET,
+  GAUNTLET_SCHEMA_VERSION,
+  type GauntletTask,
+  type GauntletTaskResult,
+  type GauntletReport,
+  type GauntletOptions,
+  type GauntletProbeOutcome,
+} from "./gauntlet.js";

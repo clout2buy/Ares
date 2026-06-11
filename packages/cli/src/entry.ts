@@ -202,6 +202,7 @@ import {
   verificationSpecSummary,
   runCrucibleTrials,
   TrustGovernor,
+  runGauntlet,
   type Goal,
   type CapabilityNode,
   type CapabilityEvidence,
@@ -2089,7 +2090,61 @@ async function agentCommand(args: ParsedArgs): Promise<number> {
   return 2;
 }
 
+/**
+ * C6 — `ares eval coding`: run the coding gauntlet against the selected
+ * provider/model with the REAL tool harness, persist the report under
+ * ~/.ares/gauntlet/, and print the scoreboard. The number every C-phase
+ * change must move.
+ */
+async function gauntletCommand(args: ParsedArgs): Promise<number> {
+  const selection = await selectProvider(args.flags);
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
+  const pathPermissions = await AresPathPermissionStore.load(context);
+  const commandPermissions = await AresCommandPermissionStore.load(context);
+  const runtime: AresRuntimeState = { permissionMode: "bypass" };
+
+  const report = await runGauntlet({
+    provider: selection.provider,
+    model: selection.model,
+    keepWorkspaces: args.flags.has("keep"),
+    tools: async () => {
+      // Fresh harness per workspace — gauntlet runs must not share shell or
+      // todo state across tasks.
+      const shellRegistry = new ShellRegistry();
+      const todoStore = new TodoStore();
+      return buildEngineTools(pathPermissions, commandPermissions, selection, runtime, context, shellRegistry, todoStore);
+    },
+  });
+
+  // Persist: one report per run, plus an append-only scoreboard for trends.
+  const dir = path.join(context.home, "gauntlet");
+  await mkdir(dir, { recursive: true });
+  const stamp = report.startedAt.replace(/[:.]/g, "-");
+  const reportFile = path.join(dir, `${stamp}-${report.model.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`);
+  await writeFile(reportFile, JSON.stringify(report, null, 2) + "\n", "utf8");
+  await appendFile(
+    path.join(dir, "scoreboard.jsonl"),
+    JSON.stringify({ at: report.startedAt, provider: report.provider, model: report.model, total: report.total, tasks: report.tasks.map((t) => ({ id: t.id, score: t.score })) }) + "\n",
+    "utf8",
+  );
+
+  if (args.flags.has("json")) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return report.total >= 1 ? 0 : 1;
+  }
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  const lines = report.tasks.map((t) => {
+    const bar = t.probes.map((p) => (p.met ? "+" : "-")).join("");
+    return `${t.score === 1 ? "ok  " : t.score > 0 ? "part" : "FAIL"} ${pct(t.score).padStart(4)} [${bar}] ${t.title}${t.error ? ` — ${compactLine(t.error, 80)}` : ""}`;
+  });
+  lines.push("", `TOTAL ${pct(report.total)} — ${report.model} via ${report.provider} (${Math.round(report.durationMs / 1000)}s)`);
+  lines.push(`report: ${reportFile}`);
+  process.stdout.write(notice("Gauntlet · coding-v1", lines, report.total >= 0.75 ? "success" : "warn"));
+  return report.total >= 0.5 ? 0 : 1;
+}
+
 async function evalCommand(args: ParsedArgs): Promise<number> {
+  if (args.positionals[0] === "coding") return gauntletCommand(args);
   const root = await mkdtemp(path.join(os.tmpdir(), "ares-eval-"));
   const tasks = builtInEvalTasks();
   let report: EvalReport;

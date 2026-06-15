@@ -228,7 +228,7 @@ import {
   type VerificationSpec,
 } from "@ares/operator";
 import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, type MemoryKind } from "@ares/mind";
-import { SessionManager, GarrisonServer, Scheduler, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
+import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { TelegramApi, TelegramBridge } from "@ares/channels";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "./holotable.js";
 import {
@@ -239,7 +239,7 @@ import {
   navigateEffect,
   type BrowserConnector,
 } from "@ares/connectors";
-import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect } from "@ares/effects";
+import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect, type RailsContext } from "@ares/effects";
 import { gateToolPermission } from "./policyGate.js";
 
 interface ParsedArgs {
@@ -389,6 +389,12 @@ interface CliRuntimeContext {
   effects: ReturnType<typeof effectsPaths>;
   selfTerritoryRoots: string[];
   browserFilmstripRoot: string;
+  /**
+   * Owner-approval hook for staged outward effects. Set by `garrison serve` so a
+   * staged effect surfaces on the gateway and pauses for the owner. Unset on the
+   * plain stdio paths → rails keep the legacy "hold, never commit" behavior.
+   */
+  approvals?: { requestApproval: RailsContext["requestApproval"] };
 }
 
 function cliRuntimeContext(options: { workspace?: string; home?: string } = {}): CliRuntimeContext {
@@ -1746,13 +1752,16 @@ async function resolveLeash(context: CliRuntimeContext): Promise<(domain: string
   }
 }
 
-async function browserRailsContext(context: CliRuntimeContext) {
+async function browserRailsContext(context: CliRuntimeContext): Promise<RailsContext> {
   const paths = context.effects;
   return {
     ledger: await Ledger.open(paths.ledgerFile),
     budget: new Budget(),
     killSwitch: new KillSwitch(paths.killSwitchFile),
     leashOf: await resolveLeash(context),
+    // When the gateway is up, a staged effect pauses for the owner instead of
+    // being silently held. Absent it, the rails keep legacy hold-never-commit.
+    requestApproval: context.approvals?.requestApproval,
   };
 }
 
@@ -5525,7 +5534,16 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
         );
 
   const requestedPort = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
-  const server = new GarrisonServer({ home: context.home, sessions, scheduler, port: requestedPort });
+  // The approval surface: staged outward effects (a browser submit, any
+  // irreversible connector effect over its leash) pause here and broadcast to
+  // every attached client as approval.pending; the owner's approval.respond
+  // resumes or refuses them. Wired into the rails via context.approvals so
+  // runEffect actually consults it. ARES_APPROVAL_TIMEOUT_MS auto-denies a
+  // forgotten prompt (default: wait for the owner).
+  const approvalTimeoutMs = Number(process.env.ARES_APPROVAL_TIMEOUT_MS) || undefined;
+  const approvals = new ApprovalQueue({ approver: "owner", timeoutMs: approvalTimeoutMs });
+  context.approvals = { requestApproval: approvals.requestApproval };
+  const server = new GarrisonServer({ home: context.home, sessions, scheduler, approvals, port: requestedPort });
   const bound = await server.start();
   scheduler.start();
   operatorLoop?.start();
@@ -5549,6 +5567,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
       process.stdout.write("\ngarrison: standing down…\n");
       scheduler.stop();
       operatorLoop?.stop();
+      approvals.dispose();
       void sessions.flush().finally(() => server.close().finally(() => resolve(0)));
     };
     process.once("SIGINT", shutdown);

@@ -42,3 +42,5 @@ export {
   type ApprovalBridge,
   type ApprovalResponse,
 } from "./server.js";
+
+export { ApprovalQueue, type ApprovalQueueOptions } from "./approvals.js";

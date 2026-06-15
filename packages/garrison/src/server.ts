@@ -47,6 +47,8 @@ export interface ApprovalBridge {
   subscribe(cb: (staged: StagedApproval) => void): () => void;
   /** Route an owner decision back to the approval queue. Optional until the Gate is wired. */
   respond?(decision: ApprovalResponse): void | Promise<void>;
+  /** Outstanding staged effects — replayed to a client that connects mid-stage. */
+  pending?(): StagedApproval[];
 }
 
 // ─── Server ──────────────────────────────────────────────────────────────
@@ -231,6 +233,12 @@ export class GarrisonServer {
     client.authed = true;
     client.name = typeof frame.client === "string" && frame.client ? frame.client : "client";
     this.enqueueFrame(client, { type: "welcome", sessions: this.opts.sessions.list() });
+    // Replay any approvals already waiting so a client that joins mid-stage sees
+    // the pending decision instead of silence.
+    const pending = this.opts.approvals?.pending?.() ?? [];
+    for (const staged of pending) {
+      this.enqueueFrame(client, { type: "approval.pending", staged });
+    }
   }
 
   private route(client: ClientConn, frame: GatewayClientFrame): void {
@@ -329,9 +337,15 @@ export class GarrisonServer {
           this.enqueueError(client, "approval.respond requires approvalId");
           return;
         }
-        Promise.resolve(
-          bridge.respond({ approvalId: frame.approvalId, verb: frame.verb, note: frame.note }),
-        ).catch((err) => this.enqueueError(client, errorMessage(err)));
+        // respond() may throw synchronously (unknown id) OR reject — catch both
+        // so either way the client gets an error frame, never an unhandled throw.
+        try {
+          Promise.resolve(
+            bridge.respond({ approvalId: frame.approvalId, verb: frame.verb, note: frame.note }),
+          ).catch((err) => this.enqueueError(client, errorMessage(err)));
+        } catch (err) {
+          this.enqueueError(client, errorMessage(err));
+        }
         return;
       }
       default: {

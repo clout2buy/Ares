@@ -240,6 +240,7 @@ import {
   type BrowserConnector,
 } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect } from "@ares/effects";
+import { gateToolPermission } from "./policyGate.js";
 
 interface ParsedArgs {
   command: string;
@@ -2477,6 +2478,17 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   // auto-approve; only genuinely sensitive ones (credentials, payments,
   // sending email, external accounts, destructive wipes) still ask the owner.
   const requestPermission = (request: ToolPermissionRequest): Promise<PermissionPromptDecision> => {
+    // The owner is present at the desktop, so this is the ATTENDED gate: a
+    // hard-blocked or staged action escalates to the owner rather than being
+    // denied outright. The policy gate can only make things STRICTER than the
+    // legacy regex (a structured risky category is upgraded to ask/deny); when it
+    // has no opinion ("defer") we fall back to the existing auto decision so the
+    // freedom posture for ordinary tools is untouched.
+    const gate = gateToolPermission(request, { attended: true });
+    if (gate.kind === "deny") return Promise.resolve("deny");
+    if (gate.kind === "ask") {
+      return commands.waitForPermission({ ...request, reason: gate.reason ?? request.reason });
+    }
     const auto = autoPermissionDecision(request);
     return auto ? Promise.resolve(auto) : commands.waitForPermission(request);
   };
@@ -2580,6 +2592,13 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
           workspace: live.context.workspace,
           tools: live.tools,
           systemPrompt: buildSystemPrompt("workspace-write", live.context),
+          // UNATTENDED gate: the owner isn't watching a background mission tick, so
+          // anything that needs a human (payment, credential, send-mail, destructive
+          // shell, computer-use) is hard-denied; only safe local work flows.
+          requestPermission: async (request) => {
+            const gate = gateToolPermission(request, { attended: false });
+            return gate.kind === "allow" ? "allow_once" : "deny";
+          },
         });
         const result = await runGoalToCompletion(
           { home: live.context.home, dispatcher, workspace: live.context.workspace },

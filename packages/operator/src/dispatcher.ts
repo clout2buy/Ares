@@ -12,8 +12,11 @@
 // done." The Dispatcher contract does not change when that lands.
 
 import { randomUUID } from "node:crypto";
-import { QueryEngine, type EngineTool, type Provider } from "@ares/core";
+import { QueryEngine, type EngineTool, type Provider, type ToolPermissionRequest } from "@ares/core";
 import type { DispatchContext, Dispatcher, Goal, StepVerdict, VerificationSpec } from "./types.js";
+
+/** Mirrors protocol's PermissionPromptDecision without coupling operator to it. */
+type PermissionDecision = "allow_once" | "allow_always" | "deny";
 
 export interface QueryEngineDispatcherOptions {
   provider: Provider;
@@ -25,6 +28,13 @@ export interface QueryEngineDispatcherOptions {
   maxTurns?: number;
   /** O1 placeholder verdict derivation; O3 replaces with a reality probe. */
   evaluate?: (turnText: string, goal: Goal) => StepVerdict;
+  /**
+   * Permission gate for the Worker's tool calls. The operator loop runs
+   * UNATTENDED, so the handler it supplies hard-denies anything that would need a
+   * human (payments, credentials, sending mail, destructive shell) — nobody is
+   * there to approve. Omitted ⇒ ask-tools throw, the legacy behavior.
+   */
+  requestPermission?: (request: ToolPermissionRequest) => Promise<PermissionDecision>;
 }
 
 export class QueryEngineDispatcher implements Dispatcher {
@@ -40,6 +50,7 @@ export class QueryEngineDispatcher implements Dispatcher {
         workspace: this.opts.workspace,
         signal: ctx.signal,
         maxTurns: this.opts.maxTurns ?? 8,
+        requestPermission: this.opts.requestPermission,
       },
       `wrk_${randomUUID().slice(0, 8)}`,
     );

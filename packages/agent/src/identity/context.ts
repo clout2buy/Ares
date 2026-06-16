@@ -1,5 +1,12 @@
 import path from "node:path";
-import { compileContext, budgetForMessage, type MemoryFragment, type MemoryTier } from "@ares/mind";
+import {
+  compileContext,
+  budgetForMessage,
+  missionFragments,
+  detectWorkspaceProjectId,
+  type MemoryFragment,
+  type MemoryTier,
+} from "@ares/mind";
 import { agentPaths, aresAgentHome, workspaceToolsPath } from "../paths.js";
 import { readTextIfExists } from "../files.js";
 
@@ -82,32 +89,41 @@ function resolveContextBudget(opts: { userMessage?: string; contextBudget?: numb
  */
 function budgetBlocks(
   blocks: readonly AgentContextBlock[],
+  extraFragments: readonly MemoryFragment[],
   opts: { userMessage?: string; activeProject?: string; contextBudget?: number },
 ): { systemText: string; tokens: number; dropped: string[] } {
-  if (blocks.length === 0) return { systemText: "", tokens: 0, dropped: [] };
-  const fragments: MemoryFragment[] = blocks.map((b) => ({
+  if (blocks.length === 0 && extraFragments.length === 0) return { systemText: "", tokens: 0, dropped: [] };
+  // The ~/.ares file blocks render in the familiar per-file format; mission/
+  // project packets render inline (their content is already a compact briefing).
+  const blockFragments: MemoryFragment[] = blocks.map((b) => ({
     tier: tierForBlock(b.label),
     content: b.text,
     score: scoreForBlock(b.label),
     source: b.label,
   }));
+  const byLabel = new Map(blocks.map((b) => [b.label, b]));
   const packet = compileContext({
     userMessage: opts.userMessage ?? "",
     activeProject: opts.activeProject,
     tokenBudget: resolveContextBudget(opts),
-    fragments,
+    fragments: [...extraFragments, ...blockFragments],
   });
-  // Map the compiler's selected fragments back to their original blocks and
-  // render with the existing "Loaded <label> from <file>" framing.
-  const selected = packet.included
-    .map((f) => blocks.find((b) => b.label === f.source))
-    .filter((b): b is AgentContextBlock => Boolean(b));
-  let systemText = selected.map(formatBlock).join("\n\n");
+  const rendered = packet.included.map((f) => {
+    const block = f.source ? byLabel.get(f.source) : undefined;
+    return block ? formatBlock(block) : `## ${sectionTitle(f.source)}\n\n${f.content}`;
+  });
+  let systemText = rendered.join("\n\n");
   const dropped = packet.dropped.map((f) => f.source ?? "?");
   if (systemText && process.env.ARES_CONTEXT_DEBUG === "1") {
     systemText += `\n\n<!-- context: ~${packet.tokens} tokens loaded; dropped (over budget): ${dropped.join(", ") || "none"} -->`;
   }
   return { systemText, tokens: packet.tokens, dropped };
+}
+
+function sectionTitle(source: string | undefined): string {
+  if (source === "mission") return "Commander's intent";
+  if (source === "project") return "Project war map";
+  return source ?? "context";
 }
 
 export async function loadAgentSystemContext(opts: {
@@ -137,11 +153,18 @@ export async function loadAgentSystemContext(opts: {
   await pushBlock(blocks, "today raw memory", path.join(paths.memoryDir, `${isoDate(opts.today ?? new Date())}.md`), 2_000);
   await pushBlock(blocks, "yesterday raw memory", path.join(paths.memoryDir, `${isoDate(addDays(opts.today ?? new Date(), -1))}.md`), 1_200);
 
+  // The active project: explicit, else inferred from the workspace's git remote.
+  // Drives which project war map (if any) the compiler is allowed to inject.
+  const activeProject = opts.activeProject ?? (await detectWorkspaceProjectId(opts.workspace).catch(() => undefined));
+  // Commander's intent (mission doctrine) + the active project's war map, as
+  // compact budgeted fragments alongside the ~/.ares file blocks.
+  const stateFragments = await missionFragments({ activeProject, home }).catch(() => []);
+
   // Budget the loaded blocks instead of dumping all of them every turn. The
   // always-on doctrine (Autonomy Charter + sealed core) is added in
   // composeAgentSystemPrompt — never budgeted — so essential rules + personality
   // always survive even when these mutable files are gated out.
-  const budgeted = budgetBlocks(blocks, opts);
+  const budgeted = budgetBlocks(blocks, stateFragments, { ...opts, activeProject });
 
   return {
     home,

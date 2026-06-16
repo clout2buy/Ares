@@ -39,6 +39,25 @@ export {
   type CompiledFragment,
 } from "./memory/contextCompiler.js";
 export {
+  loadMissionState,
+  saveMissionState,
+  loadProjectState,
+  saveProjectState,
+  missionFragments,
+  renderMissionFragment,
+  renderProjectFragment,
+  inferProjectId,
+  detectWorkspaceProjectId,
+  safeProjectId,
+  stateDir,
+  defaultAresMission,
+  defaultAresProject,
+  MISSION_STATE_SCHEMA,
+  PROJECT_STATE_SCHEMA,
+  type MissionState,
+  type ProjectState,
+} from "./memory/missionState.js";
+export {
   mindPaths,
   aresHome,
   migrateLegacyHome,

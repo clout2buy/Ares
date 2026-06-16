@@ -59,6 +59,13 @@ export {
   type OperatorWakeReason,
 } from "./backgroundLoop.js";
 
+export {
+  readOperatorControl,
+  setOperatorControl,
+  isOperatorPaused,
+  type OperatorControl,
+} from "./control.js";
+
 export { operatorPaths, type OperatorPaths } from "./paths.js";
 
 export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";

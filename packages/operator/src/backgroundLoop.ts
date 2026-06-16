@@ -31,6 +31,8 @@ export interface OperatorBackgroundLoopOptions {
    * into a 3 AM chaos goblin.
    */
   nextActions?: () => readonly string[] | Promise<readonly string[]>;
+  /** Pause gate: when this returns true, a tick is skipped (remote /pause). */
+  paused?: () => boolean | Promise<boolean>;
 }
 
 /**
@@ -109,6 +111,11 @@ export class OperatorBackgroundLoop {
     if (this.ticking) return { reason, decision: decideAttention([]), ran: [] };
     this.ticking = true;
     try {
+      // Remote pause: skip the tick entirely, but stay alive (a /resume reactivates).
+      if (await this.isPaused()) {
+        this.emit({ type: "operator_idle", reason, summary: "paused", suggestions: [] });
+        return { reason, decision: decideAttention([]), ran: [] };
+      }
       const goals = await activeGoals(this.ctx.home);
       const decision = decideAttention(attentionItemsFromGoals(goals));
 
@@ -136,6 +143,15 @@ export class OperatorBackgroundLoop {
       }
     } finally {
       this.ticking = false;
+    }
+  }
+
+  private async isPaused(): Promise<boolean> {
+    if (!this.opts.paused) return false;
+    try {
+      return (await this.opts.paused()) === true;
+    } catch {
+      return false;
     }
   }
 

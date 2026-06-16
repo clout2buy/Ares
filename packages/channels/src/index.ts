@@ -34,6 +34,14 @@ export type {
   WarMapBriefing,
 } from "./telegram/operatorReport.js";
 
+export { parseTelegramCommand, handleTelegramCommand } from "./telegram/commands.js";
+export type {
+  TelegramCommandKind,
+  TelegramCommandState,
+  TelegramCommandDeps,
+  TelegramCommandResult,
+} from "./telegram/commands.js";
+
 export type {
   ClientFrame,
   ServerFrame,

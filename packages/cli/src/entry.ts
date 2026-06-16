@@ -168,6 +168,8 @@ import {
   QueryEngineDispatcher,
   OperatorBackgroundLoop,
   operatorLoopEnabled,
+  isOperatorPaused,
+  setOperatorControl,
   acquireCapability,
   attentionItemsFromCapabilities,
   attentionItemsFromGoals,
@@ -5653,6 +5655,8 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
             const project = projectId ? await loadProjectState(projectId, context.home).catch(() => null) : null;
             return project?.nextActions ?? [];
           },
+          // Remote /pause from Telegram (cross-process control flag) parks ticks.
+          paused: () => isOperatorPaused(context.home),
           emit: (event) => {
             process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n");
             void telegramReporter?.report(event).catch(() => {});
@@ -5861,6 +5865,36 @@ async function telegramCommand(args: ParsedArgs): Promise<number> {
     gateway: { url: gatewayUrl, token: gatewayToken },
     allowedChatIds,
     log: (line: string) => process.stdout.write(`telegram: ${line}\n`),
+    // Remote command deps: read the war map straight from ~/.ares (same machine),
+    // and control the operator via the cross-process flag. No risky actions here —
+    // /run_next is dry-run; anything outward still goes through the approval gate.
+    commands: {
+      state: async () => {
+        const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
+        const [mission, project, paused] = await Promise.all([
+          loadMissionState(context.home).catch(() => null),
+          projectId ? loadProjectState(projectId, context.home).catch(() => null) : Promise.resolve(null),
+          isOperatorPaused(context.home).catch(() => false),
+        ]);
+        return {
+          project: project?.name ?? projectId,
+          campaign: mission?.currentCampaign,
+          nextActions: project?.nextActions ?? mission?.nextStrategicMoves,
+          lastGate: project?.lastGate,
+          recentWins: project?.recentWins,
+          operatorPaused: paused,
+        };
+      },
+      control: async (action) => {
+        if (action === "resume") await setOperatorControl({ paused: false }, context.home);
+        else await setOperatorControl({ paused: true }, context.home); // pause + stop both park the loop
+      },
+      runNextDryRun: async () => {
+        const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
+        const project = projectId ? await loadProjectState(projectId, context.home).catch(() => null) : null;
+        return { action: project?.nextActions?.[0] ?? "(no next action queued)", why: "top of the project war map's nextActions" };
+      },
+    },
   });
   bridge.start();
 

@@ -18,6 +18,7 @@ import type {
   WebSocketLike,
 } from "../types.js";
 import type { InlineKeyboardMarkup, SendMessageOptions, TgCallbackQuery, TgMessage, TgUpdate } from "./api.js";
+import { parseTelegramCommand, handleTelegramCommand, type TelegramCommandDeps } from "./commands.js";
 
 /** The api surface the bridge needs — TelegramApi satisfies it; fakes are trivial. */
 export interface TelegramApiLike {
@@ -46,6 +47,12 @@ export interface TelegramBridgeOptions {
   /** hello.client identifier. Default "telegram". */
   clientName?: string;
   log?: (line: string) => void;
+  /**
+   * Remote-command deps (state/control/dry-run). When set, recognized slash /
+   * one-word commands are handled locally; everything else still routes to a
+   * garrison chat session. Absent → all text is chat (the original behavior).
+   */
+  commands?: TelegramCommandDeps;
 }
 
 const RECONNECT_MIN_MS = 1_000;
@@ -94,6 +101,7 @@ export class TelegramBridge {
   private readonly pollTimeoutS: number;
   private readonly clientName: string;
   private readonly log: (line: string) => void;
+  private readonly commands?: TelegramCommandDeps;
 
   private running = false;
   private abort = new AbortController();
@@ -133,6 +141,7 @@ export class TelegramBridge {
     this.pollTimeoutS = opts.pollTimeoutS ?? 25;
     this.clientName = opts.clientName ?? "telegram";
     this.log = opts.log ?? (() => undefined);
+    this.commands = opts.commands;
   }
 
   start(): void {
@@ -218,6 +227,15 @@ export class TelegramBridge {
   }
 
   private onChatText(chatId: number, text: string): void {
+    // Remote commands are handled locally; everything else falls through to a
+    // garrison chat session (the original behavior, unchanged when no deps set).
+    if (this.commands) {
+      const command = parseTelegramCommand(text);
+      if (command) {
+        this.runCommand(chatId, command);
+        return;
+      }
+    }
     const sessionId = this.chatToSession.get(chatId);
     if (sessionId !== undefined && this.connected) {
       this.sendFrame({ type: "session.send", sessionId, text });
@@ -227,6 +245,27 @@ export class TelegramBridge {
     if (queue) queue.push(text);
     else this.pendingTexts.set(chatId, [text]);
     if (this.connected) this.requestSession(chatId);
+  }
+
+  private runCommand(chatId: number, command: ReturnType<typeof parseTelegramCommand> & string): void {
+    this.enqueueSend(chatId, async () => {
+      let result;
+      try {
+        result = await handleTelegramCommand(command, this.commands);
+      } catch (err) {
+        this.log(`command ${command} failed: ${errText(err)}`);
+        await this.api.sendMessage(chatId, "Command failed.");
+        return;
+      }
+      if (result.control && this.commands?.control) {
+        try {
+          await this.commands.control(result.control);
+        } catch (err) {
+          this.log(`control ${result.control} failed: ${errText(err)}`);
+        }
+      }
+      await this.api.sendMessage(chatId, result.text);
+    });
   }
 
   private requestSession(chatId: number): void {

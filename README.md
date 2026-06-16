@@ -31,7 +31,18 @@ pnpm build
 pnpm test          # build + node --test
 ```
 
-Run the CLI (cross-platform via the workspace `ares` script; on Windows you can also use `.\ares.bat`):
+Install `ares` as a global command so it works from any terminal:
+
+```powershell
+pnpm install:cli   # Windows: builds, adds `ares` to your user PATH (open a new shell)
+```
+
+Then `ares` launches the agent anywhere — say **"connect telegram"** and it walks you
+through setup conversationally (no env vars). The desktop `.exe` installer registers the
+same `ares` command automatically using its bundled runtime, so the terminal and UI are
+the same agent over the same encrypted `~/.ares` vault.
+
+Or run the CLI straight from the workspace (no install; on Windows you can also use `.\ares.bat`):
 
 ```bash
 pnpm ares help                          # list commands
@@ -48,7 +59,8 @@ Desktop shell (optional):
 
 ```bash
 pnpm --filter ares-tauri dev            # run the Tauri app in dev
-pnpm desktop:installer                  # build the desktop installer
+pnpm desktop:installer                  # build the .exe (bundles a self-contained
+                                        # runtime + registers the `ares` CLI on PATH)
 ```
 
 ## Safety & secrets

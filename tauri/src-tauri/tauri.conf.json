@@ -16,7 +16,9 @@
       "nsis"
     ],
     "resources": {
-      "runtime/": "runtime/"
+      "runtime/": "runtime/",
+      "installer/register-cli.ps1": "register-cli.ps1",
+      "installer/unregister-cli.ps1": "unregister-cli.ps1"
     },
     "windows": {
       "webviewInstallMode": {

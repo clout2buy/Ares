@@ -14,6 +14,7 @@ const SECRET_FIELDS = [
   "tavilyKey",
   "deepSeekKey",
   "ollamaApiKey",
+  "telegramBotToken",
 ] as const;
 
 async function decryptSecretFields(settings: UiSettings): Promise<UiSettings> {
@@ -68,6 +69,14 @@ export interface UiSettings {
   engine?: EngineConfig;
   /** Skills the owner has disabled (by name). Absent = all enabled. */
   disabledSkills?: string[];
+  /** Telegram bot token (from @BotFather) — encrypted at rest. */
+  telegramBotToken?: string;
+  /** Allowlisted Telegram chat ids (comma-separated). Only these can command Ares. */
+  telegramAllowedChats?: string;
+  /** Default chat id for outbound reports / briefings. */
+  telegramDefaultChatId?: string;
+  /** Whether the Telegram bridge should auto-start with the daemon. */
+  telegramEnabled?: boolean;
 }
 
 /** Advanced run-tuning knobs. All optional; absent → engine defaults. */

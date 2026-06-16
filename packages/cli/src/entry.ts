@@ -124,6 +124,8 @@ import {
 import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTui.js";
 import { runInkLauncher } from "./inkLauncher.js";
 import { loadUiSettings, updateUiSettings, type UiSettings } from "./uiSettings.js";
+import { makeTelegramSetupTool } from "./telegramSetupTool.js";
+import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig } from "./telegramConfig.js";
 
 // Ares talks to the LOCAL Ollama daemon (native /api/chat) by default — it
 // proxies :cloud models via your `ollama signin`. We do NOT auto-flip into
@@ -1230,6 +1232,7 @@ async function buildEngineTools(
     RunSkillTool,
     MissionTool,
     SelfTool,
+    makeTelegramSetupTool(),
   ];
 
   const baseTools = baseToolDefs.map((tool) => {
@@ -4444,20 +4447,91 @@ async function gatherGitRunFacts(workspace: string): Promise<{ sha: string; subj
   return { sha, subject, changedFiles };
 }
 
-/** Build the operator→Telegram reporter from env, or null when disabled/unset. */
-function buildOperatorReporter(): OperatorTelegramReporter | null {
-  if (process.env.ARES_TELEGRAM !== "1") return null; // disabled by default
-  const token = (process.env.ARES_TELEGRAM_BOT_TOKEN ?? "").trim();
-  const chatRaw = process.env.ARES_TELEGRAM_CHAT_ID ?? process.env.ARES_TELEGRAM_ALLOWED_CHATS ?? "";
-  const chatIds = chatRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n !== 0);
-  if (!token || chatIds.length === 0) {
-    process.stderr.write(
-      "warning: ARES_TELEGRAM=1 but ARES_TELEGRAM_BOT_TOKEN / ARES_TELEGRAM_CHAT_ID is missing — operator reports off.\n",
-    );
-    return null;
-  }
+/** The Telegram remote-command deps (state/control/orchestration) shared by the
+ *  `telegram serve` verb and the garrison auto-start. Reads the war map straight
+ *  from ~/.ares; controls the operator via the cross-process flag; /run_next is
+ *  dry-run, approve queues an operator goal — never direct tool execution. */
+function telegramCommandDeps(context: CliRuntimeContext) {
+  return {
+    state: async () => {
+      const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
+      const [mission, project, paused] = await Promise.all([
+        loadMissionState(context.home).catch(() => null),
+        projectId ? loadProjectState(projectId, context.home).catch(() => null) : Promise.resolve(null),
+        isOperatorPaused(context.home).catch(() => false),
+      ]);
+      return {
+        project: project?.name ?? projectId,
+        campaign: mission?.currentCampaign,
+        nextActions: project?.nextActions ?? mission?.nextStrategicMoves,
+        lastGate: project?.lastGate,
+        recentWins: project?.recentWins,
+        operatorPaused: paused,
+      };
+    },
+    control: async (action: "pause" | "resume" | "stop") => {
+      await setOperatorControl({ paused: action !== "resume" }, context.home);
+    },
+    proposeNext: async () => {
+      const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
+      const project = projectId ? await loadProjectState(projectId, context.home).catch(() => null) : null;
+      const action = project?.nextActions?.[0] ?? "(no next action queued)";
+      const { planningOnly } = classifyMissionAction(action);
+      return { id: `tg-${stableHash(`${projectId ?? ""}:${action}`)}`, action, why: "top of the project war map's nextActions", planningOnly };
+    },
+    authorizeMission: async (p: { id: string; action: string; planningOnly: boolean }) => {
+      const existing = await loadGoal(context.home, p.id).catch(() => null);
+      if (existing) return { id: p.id, created: false };
+      const statement = p.planningOnly
+        ? `Plan ONLY — do NOT execute. Investigate and propose changes for the owner's approval: ${p.action}`
+        : p.action;
+      await saveGoal(context.home, createGoal({ id: p.id, statement }));
+      return { id: p.id, created: true };
+    },
+    listMissions: async () => {
+      const goals = await listGoals(context.home).catch(() => []);
+      return goals.slice(0, 20).map((g) => ({ id: g.id, statement: g.statement, status: g.status, progress: g.progress }));
+    },
+    getMission: async (id: string) => {
+      const g = await loadGoal(context.home, id).catch(() => null);
+      return g ? { id: g.id, statement: g.statement, status: g.status, progress: g.progress } : null;
+    },
+    cancelMission: async (id: string) => {
+      const g = await loadGoal(context.home, id).catch(() => null);
+      if (!g || g.status === "done" || g.status === "abandoned") return false;
+      await saveGoal(context.home, { ...g, status: "abandoned", updatedAt: new Date().toISOString() });
+      return true;
+    },
+  };
+}
+
+/** Start the Telegram bridge in-process when configured (garrison auto-start) —
+ *  no second terminal. Best-effort: a Telegram failure never touches the daemon.
+ *  Returns the bridge (to stop on shutdown) or null when not configured. */
+async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string): Promise<TelegramBridge | null> {
+  if (!(await telegramConfigured().catch(() => false))) return null;
+  const cfg = await loadTelegramConfig();
+  if (!cfg.botToken || cfg.allowedChats.length === 0) return null;
+  const bridge = new TelegramBridge({
+    api: new TelegramApi(cfg.botToken),
+    gateway: { url: gatewayUrl, token: gatewayToken },
+    allowedChatIds: cfg.allowedChats,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "telegram", line } }) + "\n"),
+    commands: telegramCommandDeps(context),
+  });
+  bridge.start();
+  return bridge;
+}
+
+/** Build the operator→Telegram reporter from the vault config (env overrides),
+ *  or null when disabled/unconfigured. */
+async function buildOperatorReporter(): Promise<OperatorTelegramReporter | null> {
+  const cfg = await loadTelegramConfig().catch(() => null);
+  if (!cfg || !cfg.enabled || !cfg.botToken) return null;
+  const chatIds = cfg.defaultChatId ? [cfg.defaultChatId] : cfg.allowedChats;
+  if (chatIds.length === 0) return null;
   return new OperatorTelegramReporter({
-    api: new TelegramApi(token),
+    api: new TelegramApi(cfg.botToken),
     chatIds,
     debug: process.env.ARES_TELEGRAM_DEBUG === "1",
     log: (line) => process.stderr.write(line + "\n"),
@@ -5622,7 +5696,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // Telegram reports: a voice outside the app. When ARES_TELEGRAM=1 + a bot token
   // + chat id are set, the operator loop's events become compact mission updates
   // on your phone. Best-effort — a Telegram outage never touches the loop.
-  const telegramReporter = buildOperatorReporter();
+  const telegramReporter = await buildOperatorReporter();
 
   // Always-on autonomy: advance durable Operator goals unattended, attention-
   // ranked (not naive active[0]), fed the active project's war map. OPT-IN only —
@@ -5680,6 +5754,12 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   scheduler.start();
   operatorLoop?.start();
   if (telegramReporter) void sendWarMapBriefing(telegramReporter, context).catch(() => {});
+  // Auto-start the Telegram bridge in-process when configured — no second
+  // terminal. Connects to this gateway; best-effort, never blocks the daemon.
+  const gatewayToken = await readFile(tokenPath(context.home), "utf8").then((t) => t.trim()).catch(() => "");
+  const telegramBridge = gatewayToken
+    ? await startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken).catch(() => null)
+    : null;
 
   process.stdout.write(
     notice(
@@ -5688,6 +5768,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
         `gateway   ws://${bound.host}:${bound.port}  (health: http://${bound.host}:${bound.port}/health)`,
         `provider  ${selection.provider.name} · ${selection.model}`,
         `sessions  ${restored.length} rehydrated`,
+        `telegram  ${telegramBridge ? "bridge online" : "off (run: ask Ares to connect telegram)"}`,
         `token     ${tokenPath(context.home)}`,
         `attach    ares attach${bound.port === DEFAULT_GARRISON_PORT ? "" : ` --port ${bound.port}`}`,
       ],
@@ -5700,6 +5781,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
       process.stdout.write("\ngarrison: standing down…\n");
       scheduler.stop();
       operatorLoop?.stop();
+      void telegramBridge?.stop().catch(() => {});
       approvals.dispose();
       void sessions.flush().finally(() => server.close().finally(() => resolve(0)));
     };
@@ -5830,22 +5912,49 @@ async function attachCommand(args: ParsedArgs): Promise<number> {
 // found fully implemented but never constructed — now it has a launch verb.
 async function telegramCommand(args: ParsedArgs): Promise<number> {
   const sub = args.positionals[0] ?? "serve";
-  if (sub !== "serve") {
-    process.stderr.write("error: usage: ares telegram serve [--port N]\n");
-    return 2;
-  }
   const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
-  const botToken = process.env.ARES_TELEGRAM_BOT_TOKEN ?? args.flags.get("bot-token");
-  if (!botToken) {
-    process.stderr.write("error: set ARES_TELEGRAM_BOT_TOKEN (from @BotFather) to run the Telegram channel.\n");
+
+  // Setup/management subcommands — no token needed to inspect or tear down.
+  if (sub === "status") {
+    const c = await loadTelegramConfig();
+    const configured = Boolean(c.botToken && c.allowedChats.length > 0);
+    process.stdout.write(
+      notice("Telegram", [
+        `state    ${configured ? (c.enabled ? "configured + enabled" : "configured (disabled)") : "not configured"}`,
+        `chats    ${c.allowedChats.length ? c.allowedChats.join(", ") : "—"}`,
+        `token    ${c.botToken ? "set (hidden)" : "—"}`,
+        configured ? "" : "Tip: open Ares and say \"connect telegram\" — it'll walk you through it.",
+      ].filter(Boolean), configured ? "success" : "info"),
+    );
+    return 0;
+  }
+  if (sub === "disable") {
+    await saveTelegramConfig({ enabled: false });
+    process.stdout.write(notice("Telegram", ["disabled (config kept; 'reset' to wipe)"], "info"));
+    return 0;
+  }
+  if (sub === "reset") {
+    await clearTelegramConfig();
+    process.stdout.write(notice("Telegram", ["config wiped (token, chats, enabled)"], "info"));
+    return 0;
+  }
+  if (sub !== "serve") {
+    process.stderr.write("error: usage: ares telegram <serve|status|disable|reset>\n");
     return 2;
   }
-  const allowedChatIds = (process.env.ARES_TELEGRAM_ALLOWED_CHATS ?? args.flags.get("allow") ?? "")
-    .split(/[\s,]+/)
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isFinite(n) && n !== 0);
+
+  // serve: prefer the vault config (set via 'connect telegram'); env still works.
+  const cfg = await loadTelegramConfig();
+  const botToken = cfg.botToken ?? args.flags.get("bot-token");
+  if (!botToken) {
+    process.stderr.write("error: Telegram isn't configured. In Ares, say \"connect telegram\" to set it up (or set ARES_TELEGRAM_BOT_TOKEN).\n");
+    return 2;
+  }
+  const allowedChatIds = cfg.allowedChats.length
+    ? cfg.allowedChats
+    : (args.flags.get("allow") ?? "").split(/[\s,]+/).map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n !== 0);
   if (allowedChatIds.length === 0) {
-    process.stderr.write("error: set ARES_TELEGRAM_ALLOWED_CHATS to your Telegram chat id(s), comma-separated.\n");
+    process.stderr.write("error: no allowed chats. Say \"connect telegram\" in Ares (or set ARES_TELEGRAM_ALLOWED_CHATS).\n");
     return 2;
   }
 
@@ -5865,66 +5974,7 @@ async function telegramCommand(args: ParsedArgs): Promise<number> {
     gateway: { url: gatewayUrl, token: gatewayToken },
     allowedChatIds,
     log: (line: string) => process.stdout.write(`telegram: ${line}\n`),
-    // Remote command deps: read the war map straight from ~/.ares (same machine),
-    // and control the operator via the cross-process flag. No risky actions here —
-    // /run_next is dry-run; anything outward still goes through the approval gate.
-    commands: {
-      state: async () => {
-        const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
-        const [mission, project, paused] = await Promise.all([
-          loadMissionState(context.home).catch(() => null),
-          projectId ? loadProjectState(projectId, context.home).catch(() => null) : Promise.resolve(null),
-          isOperatorPaused(context.home).catch(() => false),
-        ]);
-        return {
-          project: project?.name ?? projectId,
-          campaign: mission?.currentCampaign,
-          nextActions: project?.nextActions ?? mission?.nextStrategicMoves,
-          lastGate: project?.lastGate,
-          recentWins: project?.recentWins,
-          operatorPaused: paused,
-        };
-      },
-      control: async (action) => {
-        if (action === "resume") await setOperatorControl({ paused: false }, context.home);
-        else await setOperatorControl({ paused: true }, context.home); // pause + stop both park the loop
-      },
-      // Level-3 orchestration: /run_next proposes (dry-run); /run_next approve
-      // QUEUES an operator goal (never runs tools directly); the operator loop
-      // executes it under its own safety gates. Risky actions are downgraded to
-      // planning-only here, and outward/irreversible steps still hit the approval
-      // gate at execution time. Telegram authorizes; the operator executes.
-      proposeNext: async () => {
-        const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
-        const project = projectId ? await loadProjectState(projectId, context.home).catch(() => null) : null;
-        const action = project?.nextActions?.[0] ?? "(no next action queued)";
-        const { planningOnly } = classifyMissionAction(action);
-        return { id: `tg-${stableHash(`${projectId ?? ""}:${action}`)}`, action, why: "top of the project war map's nextActions", planningOnly };
-      },
-      authorizeMission: async (p) => {
-        const existing = await loadGoal(context.home, p.id).catch(() => null);
-        if (existing) return { id: p.id, created: false }; // idempotent — no duplicate
-        const statement = p.planningOnly
-          ? `Plan ONLY — do NOT execute. Investigate and propose changes for the owner's approval: ${p.action}`
-          : p.action;
-        await saveGoal(context.home, createGoal({ id: p.id, statement }));
-        return { id: p.id, created: true };
-      },
-      listMissions: async () => {
-        const goals = await listGoals(context.home).catch(() => []);
-        return goals.slice(0, 20).map((g) => ({ id: g.id, statement: g.statement, status: g.status, progress: g.progress }));
-      },
-      getMission: async (id) => {
-        const g = await loadGoal(context.home, id).catch(() => null);
-        return g ? { id: g.id, statement: g.statement, status: g.status, progress: g.progress } : null;
-      },
-      cancelMission: async (id) => {
-        const g = await loadGoal(context.home, id).catch(() => null);
-        if (!g || g.status === "done" || g.status === "abandoned") return false;
-        await saveGoal(context.home, { ...g, status: "abandoned", updatedAt: new Date().toISOString() });
-        return true;
-      },
-    },
+    commands: telegramCommandDeps(context),
   });
   bridge.start();
 

@@ -35,6 +35,13 @@ export type {
 } from "./telegram/operatorReport.js";
 
 export {
+  verifyTelegramToken,
+  discoverChatFromUpdates,
+  pollForOwnerChat,
+} from "./telegram/setup.js";
+export type { TelegramSetupApi, VerifyResult, DiscoveredChat } from "./telegram/setup.js";
+
+export {
   parseTelegramCommand,
   handleTelegramCommand,
   classifyMissionAction,

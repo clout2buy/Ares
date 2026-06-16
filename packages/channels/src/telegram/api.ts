@@ -114,6 +114,11 @@ export class TelegramApi {
     this.max429 = opts.max429Retries ?? 3;
   }
 
+  /** Verify the bot token and identify the bot (setup: "is this token real?"). */
+  async getMe(signal?: AbortSignal): Promise<TgUser> {
+    return this.call<TgUser>("getMe", {}, signal);
+  }
+
   /** Long-poll for updates. `timeoutS` is Telegram's server-side hold, in seconds. */
   async getUpdates(offset: number, timeoutS: number, signal?: AbortSignal): Promise<TgUpdate[]> {
     const result = await this.call<TgUpdate[]>(

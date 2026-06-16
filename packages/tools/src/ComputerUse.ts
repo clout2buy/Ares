@@ -26,6 +26,8 @@ const inputSchema = z
       .enum([
         "screenshot",
         "zoom",
+        "window",
+        "windows",
         "move",
         "click",
         "double_click",
@@ -38,7 +40,7 @@ const inputSchema = z
         "activate",
       ])
       .describe(
-        "screenshot: capture the screen (downscaled, returned as an image you can see). zoom: capture a native-resolution rectangle at x,y of size w×h so small text/targets are legible and precisely clickable. move: move cursor to x,y. click/double_click/right_click: at x,y (or current position). type: send literal text. key: a key combo — SendKeys notation (^c=Ctrl+C, %{F4}=Alt+F4, {ENTER}, {TAB}, ~=Enter) OR a Windows-key chord like 'WIN', 'WIN+R', 'WIN+I'. scroll: wheel by amount (negative=down). cursor: report the current cursor position. launch: start an app/URI (text=program or ms-settings:/chrome:// URI, key=optional arguments) — use this to OPEN things, never the Win key. activate: bring a window to the foreground by title substring (text).",
+        "screenshot: capture the whole screen (downscaled, returned as an image you can see). window: capture ONLY the focused window — cleaner than a full multi-monitor shot when working in one app; clicks still map. windows: list the open top-level windows (title, process, position, minimized/visible) so you can pick what to activate/capture instead of guessing a title. zoom: capture a rectangle at x,y of size w×h so small text/targets are legible and precisely clickable. move: move cursor to x,y. click/double_click/right_click: at x,y (or current position). type: send literal text. key: a key combo — SendKeys notation (^c=Ctrl+C, %{F4}=Alt+F4, {ENTER}, {TAB}, ~=Enter) OR a Windows-key chord like 'WIN', 'WIN+R', 'WIN+I'. scroll: wheel by amount (negative=down). cursor: report the current cursor position. launch: start an app/URI (text=program, a common name like 'settings'/'notepad'/'calc', or a ms-settings:/chrome:// URI; key=optional arguments) — use this to OPEN things, never the Win key. activate: bring a window to the foreground by title substring (text).",
       ),
     x: z.number().int().optional().describe("Target X for move/click/zoom — in the pixel coordinates of the LAST image you were shown (top-left origin)."),
     y: z.number().int().optional().describe("Target Y for move/click/zoom — in the pixel coordinates of the LAST image you were shown (top-left origin)."),
@@ -50,6 +52,18 @@ const inputSchema = z
   })
   .strict();
 
+export interface WindowInfo {
+  title: string;
+  process?: string;
+  /** Top-left + size in absolute virtual-desktop pixels. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  minimized: boolean;
+  visible: boolean;
+}
+
 export interface ComputerUseOutput {
   ok: boolean;
   action: string;
@@ -59,6 +73,8 @@ export interface ComputerUseOutput {
   height?: number;
   /** Downscale factor of the last shown image (physical px per image px). */
   scale?: number;
+  /** Open top-level windows (for the `windows` action). */
+  windows?: WindowInfo[];
   error?: string;
   /** Where the screenshot PNG was also saved on disk (for desktop preview). */
   screenshotPath?: string;
@@ -137,6 +153,9 @@ export const ComputerUseTool = buildTool({
   inputZod: inputSchema,
   activityDescription: (i) => {
     if (i.action === "screenshot") return "Capturing the screen";
+    if (i.action === "window") return "Capturing the active window";
+    if (i.action === "windows") return "Listing open windows";
+    if (i.action === "launch") return `Launching ${i.text ?? "an app"}`;
     if (i.action === "type") return "Typing on the desktop";
     if (i.action === "key") return `Pressing ${i.key ?? "a key"}`;
     if (MOUSE_ACTIONS.has(i.action) && i.x !== undefined) return `${i.action} at ${i.x},${i.y}`;
@@ -159,7 +178,15 @@ export const ComputerUseTool = buildTool({
       throw new Error(`ComputerUse ${i.action} failed: ${result.error ?? "unknown error"}`);
     }
 
-    if ((i.action === "screenshot" || i.action === "zoom") && result.image) {
+    if (i.action === "windows") {
+      const windows = result.windows ?? [];
+      return {
+        output: { ok: true, action: "windows", windows, note: `${windows.length} open window(s). Use 'activate' (by title) or 'window' to capture the focused one.` },
+        display: `Listed ${windows.length} window(s)`,
+      };
+    }
+
+    if ((i.action === "screenshot" || i.action === "zoom" || i.action === "window") && result.image) {
       // Remember the full mapping metadata so the NEXT click/move converts the
       // model's image-space coordinate back to the right spot on the real desktop.
       lastShot = {
@@ -239,11 +266,12 @@ interface PsResult {
   captureW?: number;
   captureH?: number;
   scale?: number;
-  /** Virtual-desktop origin of the capture (vs.X/vs.Y, or the zoom region top-left). */
+  /** Virtual-desktop origin of the capture (vs.X/vs.Y, or the captured window/region top-left). */
   originX?: number;
   originY?: number;
   x?: number;
   y?: number;
+  windows?: WindowInfo[];
   error?: string;
 }
 
@@ -347,9 +375,14 @@ try {
   Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+public struct AresRect { public int Left; public int Top; public int Right; public int Bottom; }
 public static class AresIn {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out AresRect rect);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 }
 "@
   $a = Get-Content -Raw -LiteralPath $ActionFile | ConvertFrom-Json
@@ -360,32 +393,37 @@ public static class AresIn {
     Start-Sleep -Milliseconds 25
     [AresIn]::mouse_event($up, 0, 0, 0, [IntPtr]::Zero)
   }
-  function Take-Shot {
-    $bmp = New-Object System.Drawing.Bitmap($vs.Width, $vs.Height)
+  # Capture an arbitrary screen rectangle, downscaling so the long edge is <=
+  # 1568px (the model's vision limit; above it the API silently shrinks the image
+  # and small UI text becomes unaimable). Reports captured size, image size,
+  # scale, and origin so a click in the image maps back to the exact screen pixel.
+  function Capture-Region($rx, $ry, $rw, $rh) {
+    $bmp = New-Object System.Drawing.Bitmap($rw, $rh)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
+    $g.CopyFromScreen([int]$rx, [int]$ry, 0, 0, (New-Object System.Drawing.Size([int]$rw, [int]$rh)))
     $g.Dispose()
-    # Downscale so the long edge is <= 1568px: that's the model's vision limit,
-    # above which the API silently shrinks it (and small UI text becomes ~5px,
-    # unaimable). Report the scale so coordinates can be mapped back.
-    $maxEdge = [Math]::Max($vs.Width, $vs.Height)
+    $maxEdge = [Math]::Max($rw, $rh)
     $scale = 1.0
     if ($maxEdge -gt 1568) { $scale = $maxEdge / 1568.0 }
-    $outW = [int][Math]::Round($vs.Width / $scale)
-    $outH = [int][Math]::Round($vs.Height / $scale)
-    $scaled = New-Object System.Drawing.Bitmap($outW, $outH)
-    $sg = [System.Drawing.Graphics]::FromImage($scaled)
-    $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $sg.DrawImage($bmp, 0, 0, $outW, $outH)
-    $sg.Dispose(); $bmp.Dispose()
+    $outW = [int][Math]::Round($rw / $scale)
+    $outH = [int][Math]::Round($rh / $scale)
+    $img = $bmp
+    if ($scale -gt 1.0) {
+      $img = New-Object System.Drawing.Bitmap($outW, $outH)
+      $sg = [System.Drawing.Graphics]::FromImage($img)
+      $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $sg.DrawImage($bmp, 0, 0, $outW, $outH)
+      $sg.Dispose()
+    }
     $ms = New-Object System.IO.MemoryStream
-    $scaled.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-    $scaled.Dispose()
-    return @{ image = [Convert]::ToBase64String($ms.ToArray()); width = $outW; height = $outH; captureW = $vs.Width; captureH = $vs.Height; scale = $scale; originX = $vs.X; originY = $vs.Y }
+    $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+    if ($scale -gt 1.0) { $img.Dispose() }
+    $bmp.Dispose()
+    return @{ image = [Convert]::ToBase64String($ms.ToArray()); width = $outW; height = $outH; captureW = [int]$rw; captureH = [int]$rh; scale = $scale; originX = [int]$rx; originY = [int]$ry }
   }
   switch ($a.action) {
     'screenshot' {
-      $s = Take-Shot
+      $s = Capture-Region $vs.X $vs.Y $vs.Width $vs.Height
       Out-Result @{ ok = $true; action = 'screenshot'; image = $s.image; width = $s.width; height = $s.height; captureW = $s.captureW; captureH = $s.captureH; scale = $s.scale; originX = $s.originX; originY = $s.originY }
     }
     'zoom' {
@@ -393,36 +431,50 @@ public static class AresIn {
       $zw = [int]$a.w; $zh = [int]$a.h
       if ($zw -le 0) { $zw = 800 }
       if ($zh -le 0) { $zh = 600 }
-      $bmp = New-Object System.Drawing.Bitmap($zw, $zh)
-      $g = [System.Drawing.Graphics]::FromImage($bmp)
-      $g.CopyFromScreen($zx, $zy, 0, 0, (New-Object System.Drawing.Size($zw, $zh)))
-      $g.Dispose()
-      # Downscale the region too if it exceeds the vision limit, and report the
-      # captured size separately from the image size so the click maps back exactly
-      # (origin = region top-left).
-      $zMax = [Math]::Max($zw, $zh)
-      $zScale = 1.0
-      if ($zMax -gt 1568) { $zScale = $zMax / 1568.0 }
-      $zOutW = [int][Math]::Round($zw / $zScale)
-      $zOutH = [int][Math]::Round($zh / $zScale)
-      $zImg = $bmp
-      if ($zScale -gt 1.0) {
-        $zImg = New-Object System.Drawing.Bitmap($zOutW, $zOutH)
-        $zg = [System.Drawing.Graphics]::FromImage($zImg)
-        $zg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $zg.DrawImage($bmp, 0, 0, $zOutW, $zOutH)
-        $zg.Dispose()
+      $s = Capture-Region $zx $zy $zw $zh
+      Out-Result @{ ok = $true; action = 'zoom'; image = $s.image; width = $s.width; height = $s.height; captureW = $s.captureW; captureH = $s.captureH; scale = $s.scale; originX = $s.originX; originY = $s.originY }
+    }
+    'window' {
+      $h = [AresIn]::GetForegroundWindow()
+      if ($h -eq [IntPtr]::Zero) { Out-Result @{ ok = $false; error = 'no foreground window' } }
+      else {
+        $r = New-Object AresRect
+        if (-not [AresIn]::GetWindowRect($h, [ref]$r)) { Out-Result @{ ok = $false; error = 'could not read the foreground window rect' } }
+        else {
+          $ww = $r.Right - $r.Left; $wh = $r.Bottom - $r.Top
+          if ($ww -le 0 -or $wh -le 0) { Out-Result @{ ok = $false; error = 'foreground window has no visible area (minimized?)' } }
+          else {
+            $s = Capture-Region $r.Left $r.Top $ww $wh
+            Out-Result @{ ok = $true; action = 'window'; image = $s.image; width = $s.width; height = $s.height; captureW = $s.captureW; captureH = $s.captureH; scale = $s.scale; originX = $s.originX; originY = $s.originY }
+          }
+        }
       }
-      $ms = New-Object System.IO.MemoryStream
-      $zImg.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-      if ($zScale -gt 1.0) { $zImg.Dispose() }
-      $bmp.Dispose()
-      Out-Result @{ ok = $true; action = 'zoom'; image = [Convert]::ToBase64String($ms.ToArray()); width = $zOutW; height = $zOutH; captureW = $zw; captureH = $zh; scale = $zScale; originX = $zx; originY = $zy }
+    }
+    'windows' {
+      $list = @()
+      foreach ($p in (Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle })) {
+        $h = $p.MainWindowHandle
+        $r = New-Object AresRect
+        if ([AresIn]::GetWindowRect($h, [ref]$r)) {
+          $list += @{ title = $p.MainWindowTitle; process = $p.ProcessName; x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top); minimized = [bool][AresIn]::IsIconic($h); visible = [bool][AresIn]::IsWindowVisible($h) }
+        }
+      }
+      Out-Result @{ ok = $true; action = 'windows'; windows = @($list) }
     }
     'launch' {
-      if ([string]$a.key -ne '') { Start-Process -FilePath ([string]$a.text) -ArgumentList ([string]$a.key) }
-      else { Start-Process ([string]$a.text) }
-      Out-Result @{ ok = $true; action = 'launch' }
+      $target = ([string]$a.text).Trim()
+      $argline = [string]$a.key
+      # Resolve a few common names so "open settings"/"launch notepad" just work.
+      $aliases = @{ 'settings' = 'ms-settings:'; 'notepad' = 'notepad.exe'; 'calc' = 'calc.exe'; 'calculator' = 'calc.exe'; 'explorer' = 'explorer.exe'; 'files' = 'explorer.exe'; 'cmd' = 'cmd.exe'; 'terminal' = 'wt.exe'; 'task manager' = 'taskmgr.exe'; 'control panel' = 'control.exe'; 'paint' = 'mspaint.exe' }
+      $key = $target.ToLower()
+      if ($aliases.ContainsKey($key)) { $target = $aliases[$key] }
+      try {
+        if ($argline -ne '') { Start-Process -FilePath $target -ArgumentList $argline -ErrorAction Stop }
+        else { Start-Process -FilePath $target -ErrorAction Stop }
+        Out-Result @{ ok = $true; action = 'launch' }
+      } catch {
+        Out-Result @{ ok = $false; error = ("could not launch '" + $target + "': " + $_.Exception.Message + ". Try a full path, an executable name (notepad.exe), or a shell URI (ms-settings:).") }
+      }
     }
     'activate' {
       Add-Type -AssemblyName Microsoft.VisualBasic

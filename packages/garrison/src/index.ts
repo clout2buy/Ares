@@ -22,6 +22,7 @@ export { ensureToken, constantTimeEqual, garrisonDir, tokenPath } from "./token.
 export {
   SessionManager,
   rehydrateSessions,
+  rehydrateSession,
   sessionsDir,
   rolloutPath,
   SessionBusyError,

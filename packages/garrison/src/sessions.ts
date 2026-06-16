@@ -121,6 +121,9 @@ const TITLE_MAX_CHARS = 64;
 
 export class SessionManager {
   private readonly live = new Map<string, LiveSession>();
+  /** In-flight lazy rehydrations, deduped by id so two concurrent sends for the
+   *  same just-restored session don't spawn it twice. */
+  private readonly rehydrating = new Map<string, Promise<LiveSession | null>>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly home: string;
   private readonly factory: SessionFactory;
@@ -163,7 +166,10 @@ export class SessionManager {
    * SessionBusyError when a turn is already in flight.
    */
   async send(sessionId: string, text: string): Promise<void> {
-    const session = this.get(sessionId);
+    // Self-heal: a session whose rollout is on disk but isn't live (it appeared
+    // after boot, failed boot rehydration, or a client references it across a
+    // restart) is lazily rebuilt from its rollout rather than rejected.
+    const session = (await this.ensureLiveSession(sessionId)) ?? this.get(sessionId);
     if (session.busy) throw new SessionBusyError(sessionId);
     session.busy = true;
     this.lastSend = this.now();
@@ -252,12 +258,57 @@ export class SessionManager {
     return restored;
   }
 
+  /**
+   * Ensure a session is live, lazily rebuilding it from its rollout on disk when
+   * it isn't already in memory. Returns its summary, or null when no such session
+   * exists on disk (a genuinely unknown id). Unlike rehydrate(), this targets ONE
+   * id on demand — the gateway calls it before attach/send so a session survives
+   * a crash/restart even if it wasn't restored at boot.
+   */
+  async ensureLive(sessionId: string): Promise<SessionSummary | null> {
+    const session = await this.ensureLiveSession(sessionId);
+    return session ? this.summarize(session) : null;
+  }
+
   // ─── Internals ─────────────────────────────────────────────────────────
 
   private get(sessionId: string): LiveSession {
     const session = this.live.get(sessionId);
     if (!session) throw new UnknownSessionError(sessionId);
     return session;
+  }
+
+  /** live → in-flight rehydration → rollout-on-disk → null. Deduped per id. */
+  private ensureLiveSession(sessionId: string): Promise<LiveSession | null> {
+    const existing = this.live.get(sessionId);
+    if (existing) return Promise.resolve(existing);
+    const inflight = this.rehydrating.get(sessionId);
+    if (inflight) return inflight;
+    const job = (async (): Promise<LiveSession | null> => {
+      const restored = await rehydrateSession(this.home, sessionId);
+      if (!restored) return null;
+      // A concurrent path may have spawned it while we read disk.
+      const racewinner = this.live.get(sessionId);
+      if (racewinner) return racewinner;
+      let session: LiveSession;
+      try {
+        session = this.spawn({
+          id: restored.id,
+          provider: restored.provider,
+          model: restored.model,
+          workspace: restored.workspace,
+          createdAt: restored.createdAt,
+          title: restored.title,
+          titled: restored.title !== FALLBACK_TITLE,
+        });
+      } catch {
+        return null;
+      }
+      if (restored.messages.length > 0) session.engine.hydrate(restored.messages);
+      return session;
+    })().finally(() => this.rehydrating.delete(sessionId));
+    this.rehydrating.set(sessionId, job);
+    return job;
   }
 
   private spawn(p: {
@@ -456,6 +507,29 @@ export async function rehydrateSessions(home: string): Promise<RehydratedSession
     });
   }
   return out.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+}
+
+/**
+ * Reconstruct ONE session from its rollout on disk, or null when it has no
+ * rollout file. Same restoration rules as rehydrateSessions (see file header).
+ */
+export async function rehydrateSession(home: string, sessionId: string): Promise<RehydratedSession | null> {
+  const text = await fs.readFile(rolloutPath(home, sessionId), "utf8").catch(() => null);
+  if (text === null) return null;
+  const events = parseRolloutLines(text);
+  const messages = messagesFromRollout(events);
+  const meta = await readMetaFile(metaPath(home, sessionId));
+  const title = nonEmpty(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
+  return {
+    id: sessionId,
+    title,
+    provider: nonEmpty(meta?.provider),
+    model: nonEmpty(meta?.model),
+    workspace: nonEmpty(meta?.workspace),
+    createdAt: nonEmpty(meta?.createdAt),
+    messages,
+    eventCount: events.length,
+  };
 }
 
 async function readMetaFile(file: string): Promise<SessionMetaFile | null> {

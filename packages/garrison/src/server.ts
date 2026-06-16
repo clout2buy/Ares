@@ -273,15 +273,22 @@ export class GarrisonServer {
           return;
         }
         if (client.detachBySession.has(frame.sessionId)) return; // idempotent re-attach
-        try {
-          const sessionId = frame.sessionId;
-          const detach = sessions.attach(sessionId, (event) =>
-            this.enqueueFrame(client, { type: "event", sessionId, event }),
-          );
-          client.detachBySession.set(sessionId, detach);
-        } catch (err) {
-          this.enqueueError(client, errorMessage(err));
-        }
+        const sessionId = frame.sessionId;
+        // Lazily rebuild the session from its rollout if it isn't live (survives a
+        // crash/restart), then attach. ensureLive returns null for a genuinely
+        // unknown id; attach then throws UnknownSessionError → one error frame.
+        void (async () => {
+          try {
+            await sessions.ensureLive(sessionId);
+            if (client.detachBySession.has(sessionId)) return; // raced a re-attach
+            const detach = sessions.attach(sessionId, (event) =>
+              this.enqueueFrame(client, { type: "event", sessionId, event }),
+            );
+            client.detachBySession.set(sessionId, detach);
+          } catch (err) {
+            this.enqueueError(client, errorMessage(err));
+          }
+        })();
         return;
       }
       case "session.send": {

@@ -52,6 +52,7 @@ export {
 
 export {
   OperatorBackgroundLoop,
+  operatorLoopEnabled,
   type OperatorBackgroundLoopOptions,
   type OperatorBackgroundTick,
   type OperatorBackgroundEvent,

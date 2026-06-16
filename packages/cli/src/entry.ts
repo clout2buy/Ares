@@ -167,6 +167,7 @@ import {
 import {
   QueryEngineDispatcher,
   OperatorBackgroundLoop,
+  operatorLoopEnabled,
   acquireCapability,
   attentionItemsFromCapabilities,
   attentionItemsFromGoals,
@@ -227,7 +228,7 @@ import {
   type EvalTask,
   type VerificationSpec,
 } from "@ares/operator";
-import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, type MemoryKind } from "@ares/mind";
+import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, type MemoryKind } from "@ares/mind";
 import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { TelegramApi, TelegramBridge } from "@ares/channels";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "./holotable.js";
@@ -471,8 +472,15 @@ function normalizeEngineConfig(raw: unknown): import("./uiSettings.js").EngineCo
 function applyEngineConfigEnv(cfg: import("./uiSettings.js").EngineConfig): void {
   if (cfg.gatherStallRounds) process.env.ARES_GATHER_STALL_ROUNDS = String(cfg.gatherStallRounds);
   if (cfg.toolResultChars) process.env.ARES_TOOL_RESULT_CHARS = String(cfg.toolResultChars);
-  if (cfg.operatorAutotick === false) process.env.ARES_OPERATOR_AUTOTICK = "0";
-  else if (cfg.operatorAutotick === true) process.env.ARES_OPERATOR_AUTOTICK = "1";
+  // The operator loop is opt-IN (ARES_OPERATOR_LOOP=1). The UI "autotick" toggle
+  // drives it; an explicit false also trips the emergency kill so it's truly off.
+  if (cfg.operatorAutotick === false) {
+    process.env.ARES_OPERATOR_LOOP = "0";
+    process.env.ARES_OPERATOR_AUTOTICK = "0";
+  } else if (cfg.operatorAutotick === true) {
+    process.env.ARES_OPERATOR_LOOP = "1";
+    delete process.env.ARES_OPERATOR_AUTOTICK;
+  }
   if (cfg.subagentTurnLimit) process.env.ARES_SUBAGENT_TURN_LIMIT = String(cfg.subagentTurnLimit);
   if (cfg.operatorTickMinutes) process.env.ARES_OPERATOR_TICK_MS = String(cfg.operatorTickMinutes * 60_000);
 }
@@ -2607,14 +2615,14 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   applyEngineConfigEnv((await loadUiSettings()).engine ?? {});
 
   // Operator auto-tick: while the daemon idles, durable missions ADVANCE —
-  // one worker tick on the most urgent active goal per interval. Never
-  // overlaps a live user turn; failures never kill the daemon. Disable with
-  // ARES_OPERATOR_AUTOTICK=0; tune with ARES_OPERATOR_TICK_MS.
+  // one worker tick on the ATTENTION-SELECTED active goal per interval (not naive
+  // active[0]). Never overlaps a live user turn; failures never kill the daemon.
+  // OPT-IN: runs only with ARES_OPERATOR_LOOP=1; tune with ARES_OPERATOR_TICK_MS.
   let autotickBusy = false;
   let lastAutotickAt = Date.now();
   const autotick = setInterval(() => {
     if (activeTurns > 0 || autotickBusy) return;
-    if (process.env.ARES_OPERATOR_AUTOTICK === "0") return;
+    if (!operatorLoopEnabled()) return;
     const autotickMs = Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000);
     if (Date.now() - lastAutotickAt < autotickMs) return;
     lastAutotickAt = Date.now();
@@ -2623,7 +2631,12 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       try {
         const active = (await listGoals(live.context.home)).filter((g) => g.status === "active");
         if (active.length === 0) return;
-        const goal = active[0];
+        // Attention-ranked pick, not whichever goal happens to be first.
+        const decision = decideAttention(attentionItemsFromGoals(active));
+        const selectedId = decision.selected?.id.startsWith("goal:")
+          ? decision.selected.id.slice("goal:".length)
+          : undefined;
+        const goal = (selectedId ? active.find((g) => g.id === selectedId) : undefined) ?? active[0];
         const dispatcher = new QueryEngineDispatcher({
           provider: live.selection.provider,
           model: live.selection.model,
@@ -5566,31 +5579,41 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
 
   // Always-on autonomy: advance durable Operator goals unattended, attention-
-  // ranked (not naive active[0]). This is the organ the audit found exported but
-  // never instantiated — now it actually ticks in the always-on process so
-  // "work on it over days" is real. Off with ARES_OPERATOR_AUTOTICK=0.
-  const operatorLoop =
-    process.env.ARES_OPERATOR_AUTOTICK === "0"
-      ? null
-      : new OperatorBackgroundLoop(
-          {
-            home: context.home,
+  // ranked (not naive active[0]), fed the active project's war map. OPT-IN only —
+  // runs solely with ARES_OPERATOR_LOOP=1, never by surprise. Outward/risky tool
+  // use is hard-denied unattended (the policy gate), so an idle tick can't move
+  // money, send mail, or drive the browser without a human.
+  const operatorLoop = !operatorLoopEnabled()
+    ? null
+    : new OperatorBackgroundLoop(
+        {
+          home: context.home,
+          workspace: context.workspace,
+          dispatcher: new QueryEngineDispatcher({
+            provider: selection.provider,
+            model: selection.model,
             workspace: context.workspace,
-            dispatcher: new QueryEngineDispatcher({
-              provider: selection.provider,
-              model: selection.model,
-              workspace: context.workspace,
-              tools,
-              systemPrompt: agent.composeSystemPrompt(buildSystemPrompt("workspace-write", context)),
-            }),
+            tools,
+            systemPrompt: agent.composeSystemPrompt(buildSystemPrompt("workspace-write", context)),
+            requestPermission: async (request) => {
+              const gate = gateToolPermission(request, { attended: false });
+              return gate.kind === "allow" ? "allow_once" : "deny";
+            },
+          }),
+        },
+        {
+          everyMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+          // Mission-aware idle: surface the active project's next strategic moves.
+          nextActions: async () => {
+            const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
+            const project = projectId ? await loadProjectState(projectId, context.home).catch(() => null) : null;
+            return project?.nextActions ?? [];
           },
-          {
-            everyMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
-            emit: (event) =>
-              process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n"),
-            onError: () => {},
-          },
-        );
+          emit: (event) =>
+            process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n"),
+          onError: () => {},
+        },
+      );
 
   const requestedPort = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
   // The approval surface: staged outward effects (a browser submit, any

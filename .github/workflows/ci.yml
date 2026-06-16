@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Build & test (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The npm-ci equivalent for a pnpm workspace: reproducible, lockfile-pinned.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: node --test tests/*.test.mjs
+
+  rust:
+    name: Build (Rust desktop shell)
+    # The Tauri crate is Windows-first (windows-sys / WebView2). Building on a
+    # Windows runner matches the real target and avoids the Linux webkit2gtk
+    # system-dependency dance. Packaging the installer is intentionally skipped
+    # here — this just proves the shell compiles.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
+      - name: cargo build
+        run: cargo build --manifest-path tauri/src-tauri/Cargo.toml

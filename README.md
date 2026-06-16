@@ -1,81 +1,114 @@
 # Ares
 
-Ares (formerly Crix) is a TypeScript-first agent entity — *the battle-tested agent: it proves what it learns*. It combines a streaming engine, tool runtime, persistent identity, living memory, durable goals, browser connectors, and audited effect rails. The active directive is the ARES rebirth (`docs/roadmap/NEXT-ARES.md`): an always-on Garrison daemon, thin clients, and the Crucible empirical learning loop.
+**Ares** is a TypeScript-first autonomous + coding agent — *the battle-tested agent: it proves what it learns*. It pairs a streaming, multi-provider engine (Anthropic, OpenAI, Ollama Cloud, OpenRouter, DeepSeek) with a tool runtime, a continuous verifier, a multi-session daemon, a persistent agent "mind," audited side-effect rails, real desktop control, and an optional Tauri desktop shell.
+
+[![CI](https://github.com/clout2buy/Ares/actions/workflows/ci.yml/badge.svg)](https://github.com/clout2buy/Ares/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
+> ⚠️ **Status: experimental dev harness.** Ares is under active development and is not production software. Interfaces, on-disk formats, and command names change without notice; the autonomy/effects surfaces are powerful and only partially hardened. Run it on machines and accounts you control, and read the safety notes below before granting it real-world reach.
 
 The repository is a pnpm workspace. Source lives under `packages/`; the optional desktop companion lives under `tauri/`.
 
-## Quick Start
+## What Ares is
 
-```powershell
-cd D:\Ares
+- **A streaming agent engine** (`@ares/core`) — sessions, query loop, provider adapters, prompt caching, compaction, subagents, and a continuous verifier that refuses to let the model declare "done" while its own edits are red.
+- **A tool runtime** (`@ares/tools`) — file/edit/search/shell tools plus real-world reach (deploy, payments, email) behind permission gates and a structured risk classifier.
+- **A persistent mind** (`@ares/agent`, `@ares/mind`) — identity, bootstrap, living memory with optional semantic recall, heartbeat, dreaming/consolidation, and self-reflection.
+- **Durable autonomy** (`@ares/operator`) — long-lived goals, a background control loop, a capability graph, and attention ranking that advance work across restarts.
+- **A conscience layer** (`@ares/effects`) — every outward effect flows through one choke point: kill-switch → idempotency → simulate → irreversibility gate → budget → ledger, with human approval for staged actions.
+- **The Garrison** (`@ares/garrison`) — an always-on localhost daemon: N concurrent sessions that outlive both clients and the daemon (rehydrated from rollout), a WebSocket gateway, and a scheduler.
+- **A desktop shell** (`tauri/`) — a Tauri app that talks to the daemon, with the in-progress HELM UI.
+
+## Quick start
+
+Requires **Node 22+** and **pnpm 10+** (`corepack enable` will provision pnpm).
+
+```bash
+git clone https://github.com/clout2buy/Ares.git
+cd Ares
 pnpm install
 pnpm build
-.\ares.bat help
+pnpm test          # build + node --test
 ```
 
-Common commands:
+Run the CLI (cross-platform via the workspace `ares` script; on Windows you can also use `.\ares.bat`):
 
-```powershell
-.\ares.bat                         # provider/model launcher
-.\ares.bat chat --provider mock     # interactive terminal chat
-.\ares.bat run --goal "fix failing tests"
-.\ares.bat doctor                  # provider/runtime health
-.\ares.bat agent doctor            # identity and agent runtime health
-.\ares.bat mind doctor             # living-memory integrity report
-.\ares.bat mind consolidate        # prune, dedupe, and crystallize memory
-.\ares.bat operator attention      # inspect current Operator work queue
-.\ares.bat operator add --goal "ship a feature"
-.\ares.bat operator run --ticks 1
-pnpm voice:tts                     # start the local Kokoro-82M voice sidecar
+```bash
+pnpm ares help                          # list commands
+pnpm ares chat --provider mock          # interactive terminal chat (no API key)
+pnpm ares run --goal "fix failing tests"
+pnpm ares doctor                        # provider/runtime health
+pnpm ares garrison serve                # start the always-on daemon + gateway
+pnpm ares attach                        # attach a thin client to the gateway
+pnpm ares mind consolidate              # prune, dedupe, crystallize memory
+pnpm ares operator add --goal "ship a feature"
 ```
+
+Desktop shell (optional):
+
+```bash
+pnpm --filter ares-tauri dev            # run the Tauri app in dev
+pnpm desktop:installer                  # build the desktop installer
+```
+
+## Safety & secrets
+
+- **API keys and runtime state live outside the repo.** The durable home is `~/.ares` (`%USERPROFILE%\.ares` on Windows). Provider keys are stored there **AES-256-GCM encrypted at rest**, never committed. Repo-local `.ares/`, package `dist/`, Tauri build output, and screenshots are git-ignored. There are no secrets in this repository — verify before you fork.
+- **Permission posture.** Interactive sessions run owner-local. Outward effects (shell, desktop control, deploy, payments, email, sending mail, credentials) pass through a structured gate: hard-blocked categories require explicit approval and are **denied outright when running unattended** (the background operator never autonomously moves money, leaks a credential, sends mail, or runs destructive shell). A kill switch halts all effects.
+- **You are responsible for what you authorize.** Bypass/"unleashed" mode is a loud, audited, opt-in power-user choice. Treat desktop control and real-world connectors accordingly.
+
+See `docs/DEVELOPMENT.md` for the full permission-mode and verification policy.
 
 ## Packages
 
-- `@ares/protocol`: shared event, provider, reasoning, and tool-call shapes.
-- `@ares/core`: sessions, query engine, providers, checkpoints, subagents, verifier, hooks.
-- `@ares/tools`: local tool catalog and executors.
-- `@ares/agent`: identity files, bootstrap, recall, heartbeat, dreaming, skills, self-reflection.
-- `@ares/mind`: living memory, cognition, intent classification, memory diagnostics.
-- `@ares/operator`: durable goals, control loop, capability graph, acquisition, attention, background loop.
-- `@ares/effects`: budgets, ledger, kill switch, and side-effect rails.
-- `@ares/connectors`: browser connector, browser effects, filmstrip proof.
-- `@ares/cli`: command-line and terminal UI entrypoint.
-- `@ares/garrison`: the always-on daemon (sessions, gateway, scheduler). `ares garrison serve` / `ares attach`.
-- `@ares/channels`: channel bridges as gateway clients (Telegram).
+- `@ares/protocol` — shared event, provider, reasoning, and tool-call shapes.
+- `@ares/core` — sessions, query engine, providers, checkpoints, subagents, verifier, hooks.
+- `@ares/tools` — local tool catalog and executors.
+- `@ares/agent` — identity, bootstrap, recall, heartbeat, dreaming, skills, self-reflection.
+- `@ares/mind` — living memory, cognition, intent classification, diagnostics.
+- `@ares/operator` — durable goals, control loop, capability graph, acquisition, attention.
+- `@ares/effects` — budgets, ledger, kill switch, approval queue, side-effect rails.
+- `@ares/connectors` — browser connector, browser effects, filmstrip proof.
+- `@ares/garrison` — the always-on daemon (sessions, gateway, scheduler).
+- `@ares/channels` — channel bridges as gateway clients (Telegram).
+- `@ares/cli` — command-line and terminal UI entrypoint.
 
-## Repository Layout
+## Repository layout
 
 ```text
 docs/                 Project docs and roadmap specs
 packages/             Workspace packages
-tauri/                Optional desktop companion
-tests/                Node test suite
-ares.bat, ares.ps1    Windows launchers
+tauri/                Optional desktop companion (Tauri + React)
+tests/                Node test suite (node --test)
 ```
-
-Runtime state belongs outside source control. The default durable home is `%USERPROFILE%\.ares`; repo-local `.ares/`, package `dist/`, Tauri build output, and smoke screenshots are ignored.
-
-Interactive sessions are owner-local by default: Ares starts in bypass mode unless `dangerousBypass: false` is set in the UI settings file. See `docs/DEVELOPMENT.md` for the permission modes and verification workflow.
 
 ## Development
 
-```powershell
-pnpm lint     # TypeScript project check
-pnpm test     # build + node --test
-pnpm verify   # check + test
-pnpm clean    # remove generated build/log artifacts
+```bash
+pnpm lint      # TypeScript project check (tsc -b)
+pnpm test      # build + node --test tests/*.test.mjs
+pnpm verify    # check + test
+pnpm clean     # remove generated build/log artifacts
 ```
 
-The main quality rule is simple: changes should be backed by focused tests and reality checks. Build success is not enough for user-facing behavior; verify commands, files, HTTP probes, browser state, or logs as appropriate.
+For the Rust desktop shell:
 
-## Docs
+```bash
+cargo build --manifest-path tauri/src-tauri/Cargo.toml
+cargo test  --manifest-path tauri/src-tauri/Cargo.toml
+```
 
-- `docs/ARCHITECTURE.md`: current package architecture and runtime flow.
-- `docs/DEVELOPMENT.md`: setup, scripts, generated output, and verification policy.
-- `docs/PACKAGE_BOUNDARIES.md`: intended package dependency direction and known boundary debt.
-- `docs/AGENT.md`: agent layer and identity scaffold.
-- `docs/BLUEPRINT.md`: original architecture blueprint.
-- `docs/CODEX_BUILD_SPEC.md`: implementation reference.
-- `docs/CLEANUP.md`: cleanup and move/removal log.
-- `docs/roadmap/`: historical NEXT specs and future-roadmap notes.
-- `voice_service/`: optional local Kokoro-82M WebSocket sidecar for spoken replies.
+The quality rule: changes are backed by focused tests and reality checks. A clean build is not proof of user-facing behavior — verify commands, files, HTTP probes, browser state, or logs as appropriate.
+
+## Roadmap
+
+Near-term focus (see `docs/roadmap/` for the full specs):
+
+- **Browser / CDP** — ship the Playwright runtime inside the Tauri bundle, attach to a real Chrome over CDP, persistent profiles/logins, and browser screenshots that actually reach a vision model.
+- **Semantic memory** — graduate optional embedding-backed recall to the default, retire the legacy vector store, schedule consolidation.
+- **Garrison** — broaden the gateway (approvals surface, per-session queuing, interrupt/steer routing) and the autonomy lifecycle.
+- **HELM UI** — the desktop rewrite: shared-element session morph, append-only stream rendering, a live settings command-surface, and a tool-progress strip.
+
+## License
+
+[GNU AGPL-3.0-only](LICENSE). If you run a modified version of Ares as a network service, the AGPL requires you to offer your users the corresponding source.

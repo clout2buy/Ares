@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@10.33.0",
   "description": "Ares: a streaming, multi-provider coding + autonomous agent (Anthropic, OpenAI, Ollama Cloud, OpenRouter, DeepSeek) with a Tauri desktop and terminal — continuous verifier, multi-session daemon, persistent agent mind, and real desktop control.",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "build": "tsc -b",
     "check": "tsc -b --pretty false",

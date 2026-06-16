@@ -21,6 +21,19 @@ export type {
 export { TelegramBridge, chunkMessage } from "./telegram/bridge.js";
 export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers } from "./telegram/bridge.js";
 
+export {
+  OperatorTelegramReporter,
+  formatOperatorReport,
+  formatWarMapBriefing,
+  redactForTelegram,
+} from "./telegram/operatorReport.js";
+export type {
+  OperatorEventLike,
+  OperatorReportOptions,
+  OperatorReporterOptions,
+  WarMapBriefing,
+} from "./telegram/operatorReport.js";
+
 export type {
   ClientFrame,
   ServerFrame,

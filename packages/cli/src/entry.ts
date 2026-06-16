@@ -228,9 +228,9 @@ import {
   type EvalTask,
   type VerificationSpec,
 } from "@ares/operator";
-import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, type MemoryKind } from "@ares/mind";
+import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions, type MemoryKind } from "@ares/mind";
 import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
-import { TelegramApi, TelegramBridge } from "@ares/channels";
+import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing } from "@ares/channels";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "./holotable.js";
 import {
   Filmstrip,
@@ -4442,6 +4442,45 @@ async function gatherGitRunFacts(workspace: string): Promise<{ sha: string; subj
   return { sha, subject, changedFiles };
 }
 
+/** Build the operator→Telegram reporter from env, or null when disabled/unset. */
+function buildOperatorReporter(): OperatorTelegramReporter | null {
+  if (process.env.ARES_TELEGRAM !== "1") return null; // disabled by default
+  const token = (process.env.ARES_TELEGRAM_BOT_TOKEN ?? "").trim();
+  const chatRaw = process.env.ARES_TELEGRAM_CHAT_ID ?? process.env.ARES_TELEGRAM_ALLOWED_CHATS ?? "";
+  const chatIds = chatRaw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n !== 0);
+  if (!token || chatIds.length === 0) {
+    process.stderr.write(
+      "warning: ARES_TELEGRAM=1 but ARES_TELEGRAM_BOT_TOKEN / ARES_TELEGRAM_CHAT_ID is missing — operator reports off.\n",
+    );
+    return null;
+  }
+  return new OperatorTelegramReporter({
+    api: new TelegramApi(token),
+    chatIds,
+    debug: process.env.ARES_TELEGRAM_DEBUG === "1",
+    log: (line) => process.stderr.write(line + "\n"),
+  });
+}
+
+/** Push a compact war-map status (campaign / project / next / gate / last action). */
+async function sendWarMapBriefing(reporter: OperatorTelegramReporter, context: CliRuntimeContext): Promise<void> {
+  const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
+  const [mission, project, recent] = await Promise.all([
+    loadMissionState(context.home).catch(() => null),
+    projectId ? loadProjectState(projectId, context.home).catch(() => null) : Promise.resolve(null),
+    projectId ? loadRecentAfterActions(projectId, 1, context.home).catch(() => []) : Promise.resolve([]),
+  ]);
+  await reporter.send(
+    formatWarMapBriefing({
+      project: project?.name ?? projectId,
+      campaign: mission?.currentCampaign,
+      nextActions: project?.nextActions ?? mission?.nextStrategicMoves,
+      lastGate: project?.lastGate,
+      recentAction: recent[0]?.summary,
+    }),
+  );
+}
+
 async function loadGitContext(context: CliRuntimeContext): Promise<string> {
   const cwd = context.workspace;
   const run = (args: string[]): Promise<string> =>
@@ -5578,6 +5617,11 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
     lastActivityAt: () => sessions.lastActivityAt(),
   });
 
+  // Telegram reports: a voice outside the app. When ARES_TELEGRAM=1 + a bot token
+  // + chat id are set, the operator loop's events become compact mission updates
+  // on your phone. Best-effort — a Telegram outage never touches the loop.
+  const telegramReporter = buildOperatorReporter();
+
   // Always-on autonomy: advance durable Operator goals unattended, attention-
   // ranked (not naive active[0]), fed the active project's war map. OPT-IN only —
   // runs solely with ARES_OPERATOR_LOOP=1, never by surprise. Outward/risky tool
@@ -5609,8 +5653,10 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
             const project = projectId ? await loadProjectState(projectId, context.home).catch(() => null) : null;
             return project?.nextActions ?? [];
           },
-          emit: (event) =>
-            process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n"),
+          emit: (event) => {
+            process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n");
+            void telegramReporter?.report(event).catch(() => {});
+          },
           onError: () => {},
         },
       );
@@ -5629,6 +5675,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const bound = await server.start();
   scheduler.start();
   operatorLoop?.start();
+  if (telegramReporter) void sendWarMapBriefing(telegramReporter, context).catch(() => {});
 
   process.stdout.write(
     notice(

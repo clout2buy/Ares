@@ -58,6 +58,17 @@ export {
   type ProjectState,
 } from "./memory/missionState.js";
 export {
+  saveAfterAction,
+  loadRecentAfterActions,
+  applyAfterActionToProjectState,
+  recordAfterAction,
+  renderAfterActionFragment,
+  afterActionDir,
+  AFTER_ACTION_SCHEMA,
+  type AfterActionRecord,
+  type AfterActionResult,
+} from "./memory/afterAction.js";
+export {
   mindPaths,
   aresHome,
   migrateLegacyHome,

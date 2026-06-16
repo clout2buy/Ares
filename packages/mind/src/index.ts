@@ -29,6 +29,16 @@ export {
 } from "./memory/synthesis.js";
 export { currentStrength, reinforce, weaken, HALF_LIFE_MS } from "./memory/strength.js";
 export {
+  compileContext,
+  budgetForMessage,
+  estimateTokensDefault,
+  type MemoryTier,
+  type MemoryFragment,
+  type ContextRequest,
+  type ContextPacket,
+  type CompiledFragment,
+} from "./memory/contextCompiler.js";
+export {
   mindPaths,
   aresHome,
   migrateLegacyHome,

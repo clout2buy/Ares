@@ -38,9 +38,12 @@ async function openLivingStore(file?: string): Promise<LivingMemoryStore> {
   if (file && process.env.ARES_MIND_EMBED === "1") {
     try {
       const index = await EmbedIndex.open(`${file}.vec.jsonl`);
-      const embedder = ollamaEmbedder(
-        process.env.ARES_MIND_EMBED_MODEL ? { model: process.env.ARES_MIND_EMBED_MODEL } : {},
-      );
+      const embedder = ollamaEmbedder({
+        ...(process.env.ARES_MIND_EMBED_MODEL ? { model: process.env.ARES_MIND_EMBED_MODEL } : {}),
+        // ARES_MIND_EMBED_URL points at a local Ollama; falls back to OLLAMA_HOST
+        // then 127.0.0.1:11434 inside the embedder.
+        ...(process.env.ARES_MIND_EMBED_URL ? { baseUrl: process.env.ARES_MIND_EMBED_URL } : {}),
+      });
       store.attachEmbedder(embedder, index);
       if (!embedReindexed.has(file)) {
         embedReindexed.add(file);

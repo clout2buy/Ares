@@ -1012,32 +1012,44 @@ export class QueryEngine {
     const outcomes: Array<ToolExecutionOutcome | undefined> = new Array(uses.length);
     let finished = 0;
 
-    const tasks = uses.map((use, index) =>
-      this.executeToolUse(use, (event) => queue.push(event))
-        .then((outcome) => {
-          outcomes[index] = outcome;
-        })
-        .catch((err) => {
+    // Bounded concurrency: a batch of independent tools (disjoint Edits, or a
+    // fan-out of Task subagents) runs in parallel, but at most N at a time so a
+    // model emitting 20 Task calls can't open 20 concurrent provider streams.
+    // Order is still deterministic — every result lands in outcomes[index]
+    // regardless of finish order. ARES_MAX_TOOL_CONCURRENCY overrides the default.
+    const limit = Math.min(toolConcurrencyLimit(), uses.length);
+    let nextIndex = 0;
+    const runWorker = async (): Promise<void> => {
+      for (;;) {
+        const index = nextIndex++;
+        if (index >= uses.length) return;
+        const use = uses[index];
+        try {
+          outcomes[index] = await this.executeToolUse(use, (event) => queue.push(event));
+        } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           queue.push({ type: "tool_error", id: use.id, error: message, durationMs: 0 });
+          // A sibling's failure never poisons the others — it becomes its own
+          // error result and the batch keeps draining.
           outcomes[index] = {
             toolUseId: use.id,
             interrupted: isPermissionDeniedError(err),
             result: { type: "tool_result", tool_use_id: use.id, content: message, is_error: true },
           };
-        })
-        .finally(() => {
+        } finally {
           finished++;
           queue.wake();
-        }),
-    );
+        }
+      }
+    };
+    const workers = Array.from({ length: limit }, () => runWorker());
 
     while (finished < uses.length || queue.length > 0) {
       const event = await queue.shift();
       if (event) yield event;
     }
 
-    await Promise.all(tasks);
+    await Promise.all(workers);
     return outcomes.filter((outcome): outcome is ToolExecutionOutcome => outcome !== undefined);
   }
 
@@ -1226,6 +1238,16 @@ class AsyncEventQueue<T> {
  * Tools whose side effects we cannot analyze from input alone (shell commands,
  * sandboxed JS, agent dispatch) — must run solo so they can't race adjacent work.
  */
+/** Max tools run concurrently within one batch (bounds Task fan-out / parallel
+ *  Edits). Keeps the speedup of "a few specialists at once" without a 20-way
+ *  provider storm. Override with ARES_MAX_TOOL_CONCURRENCY. */
+const DEFAULT_TOOL_CONCURRENCY = 5;
+
+function toolConcurrencyLimit(): number {
+  const raw = Number(process.env.ARES_MAX_TOOL_CONCURRENCY);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_TOOL_CONCURRENCY;
+}
+
 const SOLO_TOOL_NAMES = new Set([
   "Bash",
   "PowerShell",

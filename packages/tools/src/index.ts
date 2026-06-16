@@ -57,7 +57,13 @@ export { makeKillShellTool, type KillShellOutput } from "./KillShell.js";
 export { McpListToolsTool, McpCallTool, type McpListOutput, type McpCallOutput } from "./Mcp.js";
 export { SkillsListTool, SkillReadTool, type SkillsListOutput, type SkillReadOutput, type SkillSummary } from "./Skills.js";
 export { MemoryTool, type MemoryOutput, type MemoryItem } from "./Memory.js";
-export { ComputerUseTool, type ComputerUseOutput } from "./ComputerUse.js";
+export {
+  ComputerUseTool,
+  mapImageToVirtual,
+  shotScale,
+  type ComputerUseOutput,
+  type ShotMeta,
+} from "./ComputerUse.js";
 export { DeployTool, type DeployOutput } from "./Deploy.js";
 export { StripeTool, type StripeOutput } from "./Stripe.js";
 export { EmailTool, type EmailOutput } from "./Email.js";

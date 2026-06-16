@@ -68,19 +68,64 @@ export interface ComputerUseOutput {
 const MOUSE_ACTIONS = new Set(["move", "click", "double_click", "right_click"]);
 
 /**
- * The model gives coordinates in the space of the IMAGE it was last shown. A
- * full-res 3840×1080 screen is downscaled to ≤1568px before the model sees it,
- * and on multi-monitor rigs the virtual screen doesn't start at (0,0). Without
- * mapping image-space back to physical-screen-space, every click misses. We
- * remember the last capture's scale+origin and convert here.
+ * Everything needed to map a click from the IMAGE the model saw back to an
+ * absolute point on the real (possibly multi-monitor) desktop:
+ *   - origin{X,Y}: the virtual-desktop top-left (vs.X/vs.Y), which on multi-monitor
+ *     rigs is NOT (0,0) and can be NEGATIVE (a monitor left/above the primary).
+ *   - capture{W,H}: the physical pixels captured (the full virtual desktop, or a
+ *     zoom region).
+ *   - image{W,H}: the dimensions of the image actually shown to the model after
+ *     downscaling (the long edge is capped to the vision limit).
  */
-let lastShot: { scale: number; originX: number; originY: number } = { scale: 1, originX: 0, originY: 0 };
+export interface ShotMeta {
+  originX: number;
+  originY: number;
+  captureW: number;
+  captureH: number;
+  imageW: number;
+  imageH: number;
+}
 
-function toPhysical(x: number, y: number): { x: number; y: number } {
+const IDENTITY_SHOT: ShotMeta = { originX: 0, originY: 0, captureW: 1, captureH: 1, imageW: 1, imageH: 1 };
+
+let lastShot: ShotMeta = { ...IDENTITY_SHOT };
+
+/**
+ * Map an image-space coordinate (what the model returns) to an absolute
+ * virtual-desktop coordinate (what the OS click API needs). Two steps, PURE:
+ *   1. image → physical capture: multiply by a PER-AXIS scale derived from the
+ *      real captured/image dimensions (not an assumed single factor, so rounding
+ *      and any aspect divergence can't skew it).
+ *   2. physical capture → absolute virtual desktop: add the capture origin, so a
+ *      negative / non-(0,0) virtual origin is handled and there's no monitor-width
+ *      skew.
+ */
+export function mapImageToVirtual(ix: number, iy: number, shot: ShotMeta): { x: number; y: number } {
+  const scaleX = shot.imageW > 0 ? shot.captureW / shot.imageW : 1;
+  const scaleY = shot.imageH > 0 ? shot.captureH / shot.imageH : 1;
   return {
-    x: Math.round(lastShot.originX + x * lastShot.scale),
-    y: Math.round(lastShot.originY + y * lastShot.scale),
+    x: Math.round(shot.originX + ix * scaleX),
+    y: Math.round(shot.originY + iy * scaleY),
   };
+}
+
+/** Per-axis scale factors for the last capture (physical px per image px). */
+export function shotScale(shot: ShotMeta): { scaleX: number; scaleY: number } {
+  return {
+    scaleX: shot.imageW > 0 ? shot.captureW / shot.imageW : 1,
+    scaleY: shot.imageH > 0 ? shot.captureH / shot.imageH : 1,
+  };
+}
+
+/** Debug-only trace of a coordinate mapping — stderr, gated, never in normal logs. */
+function traceMapping(action: string, ix: number, iy: number, shot: ShotMeta, mapped: { x: number; y: number }): void {
+  if (process.env.ARES_COMPUTER_DEBUG !== "1") return;
+  const { scaleX, scaleY } = shotScale(shot);
+  process.stderr.write(
+    `[ComputerUse] ${action} model=(${ix},${iy}) image=${shot.imageW}x${shot.imageH} ` +
+      `capture=${shot.captureW}x${shot.captureH} origin=(${shot.originX},${shot.originY}) ` +
+      `scale=(${scaleX.toFixed(3)},${scaleY.toFixed(3)}) -> virtual=(${mapped.x},${mapped.y})\n`,
+  );
 }
 
 export const ComputerUseTool = buildTool({
@@ -115,12 +160,15 @@ export const ComputerUseTool = buildTool({
     }
 
     if ((i.action === "screenshot" || i.action === "zoom") && result.image) {
-      // Remember how to map image-space coords back to physical-screen-space
-      // for the next click/move.
+      // Remember the full mapping metadata so the NEXT click/move converts the
+      // model's image-space coordinate back to the right spot on the real desktop.
       lastShot = {
-        scale: result.scale && result.scale > 0 ? result.scale : 1,
         originX: result.originX ?? 0,
         originY: result.originY ?? 0,
+        captureW: result.captureW && result.captureW > 0 ? result.captureW : (result.width ?? 1),
+        captureH: result.captureH && result.captureH > 0 ? result.captureH : (result.height ?? 1),
+        imageW: result.width && result.width > 0 ? result.width : 1,
+        imageH: result.height && result.height > 0 ? result.height : 1,
       };
       // Persist a copy under ARES_HOME (asset-protocol scope) so the desktop can
       // preview it; fall back to tmp if home isn't set.
@@ -135,13 +183,14 @@ export const ComputerUseTool = buildTool({
       } catch {
         screenshotPath = undefined;
       }
-      const native = i.action === "zoom" ? "(native resolution)" : `(downscaled ${result.scale?.toFixed(2)}×)`;
+      const { scaleX } = shotScale(lastShot);
+      const native = scaleX <= 1.001 ? "(native resolution)" : `(downscaled ${scaleX.toFixed(2)}×)`;
       const output: ComputerUseOutput = {
         ok: true,
         action: i.action,
         width: result.width,
         height: result.height,
-        scale: lastShot.scale,
+        scale: scaleX,
         screenshotPath,
         note: `Captured ${native}. Give click/move coordinates in THIS image's pixel space (top-left origin); they're mapped to the real screen automatically. If a target is small or text is hard to read, 'zoom' into its region for a native-resolution view.`,
       };
@@ -183,9 +232,14 @@ interface PsResult {
   ok: boolean;
   action?: string;
   image?: string;
+  /** Image dimensions shown to the model (after downscaling). */
   width?: number;
   height?: number;
+  /** Physical pixels captured (full virtual desktop, or the zoom region). */
+  captureW?: number;
+  captureH?: number;
   scale?: number;
+  /** Virtual-desktop origin of the capture (vs.X/vs.Y, or the zoom region top-left). */
   originX?: number;
   originY?: number;
   x?: number;
@@ -221,9 +275,10 @@ async function runComputerAction(input: z.infer<typeof inputSchema>): Promise<Ps
   let physX: number | null = input.x ?? null;
   let physY: number | null = input.y ?? null;
   if (MOUSE_ACTIONS.has(input.action) && input.x !== undefined && input.y !== undefined) {
-    const p = toPhysical(input.x, input.y);
+    const p = mapImageToVirtual(input.x, input.y, lastShot);
     physX = p.x;
     physY = p.y;
+    traceMapping(input.action, input.x, input.y, lastShot, p);
   }
   await fs.writeFile(
     actionFile,
@@ -326,12 +381,12 @@ public static class AresIn {
     $ms = New-Object System.IO.MemoryStream
     $scaled.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
     $scaled.Dispose()
-    return @{ image = [Convert]::ToBase64String($ms.ToArray()); width = $outW; height = $outH; scale = $scale; originX = $vs.X; originY = $vs.Y }
+    return @{ image = [Convert]::ToBase64String($ms.ToArray()); width = $outW; height = $outH; captureW = $vs.Width; captureH = $vs.Height; scale = $scale; originX = $vs.X; originY = $vs.Y }
   }
   switch ($a.action) {
     'screenshot' {
       $s = Take-Shot
-      Out-Result @{ ok = $true; action = 'screenshot'; image = $s.image; width = $s.width; height = $s.height; scale = $s.scale; originX = $s.originX; originY = $s.originY }
+      Out-Result @{ ok = $true; action = 'screenshot'; image = $s.image; width = $s.width; height = $s.height; captureW = $s.captureW; captureH = $s.captureH; scale = $s.scale; originX = $s.originX; originY = $s.originY }
     }
     'zoom' {
       $zx = [int]$a.x; $zy = [int]$a.y
@@ -342,11 +397,27 @@ public static class AresIn {
       $g = [System.Drawing.Graphics]::FromImage($bmp)
       $g.CopyFromScreen($zx, $zy, 0, 0, (New-Object System.Drawing.Size($zw, $zh)))
       $g.Dispose()
+      # Downscale the region too if it exceeds the vision limit, and report the
+      # captured size separately from the image size so the click maps back exactly
+      # (origin = region top-left).
+      $zMax = [Math]::Max($zw, $zh)
+      $zScale = 1.0
+      if ($zMax -gt 1568) { $zScale = $zMax / 1568.0 }
+      $zOutW = [int][Math]::Round($zw / $zScale)
+      $zOutH = [int][Math]::Round($zh / $zScale)
+      $zImg = $bmp
+      if ($zScale -gt 1.0) {
+        $zImg = New-Object System.Drawing.Bitmap($zOutW, $zOutH)
+        $zg = [System.Drawing.Graphics]::FromImage($zImg)
+        $zg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $zg.DrawImage($bmp, 0, 0, $zOutW, $zOutH)
+        $zg.Dispose()
+      }
       $ms = New-Object System.IO.MemoryStream
-      $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
-      # Native resolution: scale 1, origin = region top-left, so a click in this
-      # image maps straight to the screen.
-      Out-Result @{ ok = $true; action = 'zoom'; image = [Convert]::ToBase64String($ms.ToArray()); width = $zw; height = $zh; scale = 1.0; originX = $zx; originY = $zy }
+      $zImg.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+      if ($zScale -gt 1.0) { $zImg.Dispose() }
+      $bmp.Dispose()
+      Out-Result @{ ok = $true; action = 'zoom'; image = [Convert]::ToBase64String($ms.ToArray()); width = $zOutW; height = $zOutH; captureW = $zw; captureH = $zh; scale = $zScale; originX = $zx; originY = $zy }
     }
     'launch' {
       if ([string]$a.key -ne '') { Start-Process -FilePath ([string]$a.text) -ArgumentList ([string]$a.key) }

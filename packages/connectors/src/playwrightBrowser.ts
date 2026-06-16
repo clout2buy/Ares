@@ -100,6 +100,85 @@ function parseAriaSnapshot(yaml: string): AccessibilityNode[] {
   return out;
 }
 
+/** A page plus how to release it — close() disconnects a CDP attach (the user's
+ *  real browser keeps running) or closes a Playwright-launched context. */
+export interface AcquiredPage {
+  page: any;
+  close: () => Promise<void>;
+  /** Which strategy won, for diagnostics (e.g. "cdp:http://127.0.0.1:9222" or "launch:channel:msedge"). */
+  strategy: string;
+}
+
+export interface AcquireOptions {
+  /** Explicit CDP endpoint (ARES_BROWSER_CDP_URL). Tried first when set. */
+  cdpUrl?: string;
+  /** Opt-in localhost CDP auto-discovery (ARES_BROWSER_CDP_DISCOVERY=1). OFF by default. */
+  discovery?: boolean;
+  /** Ports to probe when discovery is on. Defaults to [9222]. */
+  discoveryPorts?: number[];
+  executablePath?: string;
+  headless: boolean;
+  userDataDir: string;
+  viewport: { width: number; height: number };
+}
+
+/** Parse "9222,9223" → [9222, 9223]; undefined/empty → undefined. */
+export function parseCdpPorts(raw: string | undefined): number[] | undefined {
+  if (!raw) return undefined;
+  const ports = raw
+    .split(",")
+    .map((p) => Number(p.trim()))
+    .filter((p) => Number.isInteger(p) && p > 0 && p <= 65_535);
+  return ports.length ? ports : undefined;
+}
+
+/**
+ * Acquire a usable page by the configured strategy order:
+ *   1. explicit CDP endpoint (attach to the user's REAL logged-in browser),
+ *   2. opt-in localhost CDP discovery (gated — never grabs a random browser by default),
+ *   3-6. launch a persistent-profile browser (detected exe → msedge → chrome → bundled).
+ * Attaching reuses the existing context/page (real cookies, extensions, sessions);
+ * close() only DISCONNECTS an attached browser, it never kills it.
+ * Injectable `pw` (the Playwright module) so the ordering is unit-testable.
+ */
+export async function acquireBrowserPage(pw: any, opts: AcquireOptions): Promise<AcquiredPage> {
+  const cdpTargets: string[] = [];
+  if (opts.cdpUrl) cdpTargets.push(opts.cdpUrl);
+  if (opts.discovery) {
+    for (const port of opts.discoveryPorts ?? [9222]) cdpTargets.push(`http://127.0.0.1:${port}`);
+  }
+  for (const url of cdpTargets) {
+    try {
+      const browser = await pw.chromium.connectOverCDP(url, { timeout: 5_000 });
+      const context = browser.contexts()[0] ?? (await browser.newContext());
+      const page = context.pages()[0] ?? (await context.newPage());
+      // close() on a CDP-connected browser disconnects Playwright; the real
+      // browser the user launched keeps running.
+      return { page, strategy: `cdp:${url}`, close: async () => { await browser.close(); } };
+    } catch {
+      // Unreachable / refused → try the next target, then fall back to launching.
+    }
+  }
+
+  let lastError: unknown;
+  for (const attempt of browserLaunchAttempts(opts.executablePath)) {
+    try {
+      const context = await pw.chromium.launchPersistentContext(opts.userDataDir, {
+        headless: opts.headless,
+        viewport: opts.viewport,
+        ...attempt.options,
+      });
+      const page = context.pages()[0] ?? (await context.newPage());
+      return { page, strategy: `launch:${attempt.label}`, close: async () => { await context.close(); } };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `BROWSER_UNAVAILABLE: no CDP endpoint reachable and no Edge/Chrome/Chromium runtime could launch. Last error: ${String(lastError)}`,
+  );
+}
+
 export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Promise<BrowserConnector> {
   const moduleName: string = "playwright";
   let pw: any;
@@ -114,7 +193,6 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     );
   }
 
-  const executablePath = findInstalledChromium();
   // A PERSISTENT profile under ~/.ares — durable cookies/logins survive across
   // sessions and daemon restarts (so "log into my accounts / manage dashboards"
   // is possible), and pointing at the user's real Chrome/Edge build gives a
@@ -122,25 +200,21 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
   const userDataDir = process.env.ARES_HOME
     ? path.join(process.env.ARES_HOME, "browser-profile")
     : path.join(os.tmpdir(), "ares-browser-profile");
-  // Try each strategy in turn — detected exe, then Edge/Chrome channels, then
-  // bundled Chromium — so a packaged app launches without `playwright install`.
-  const baseOptions = { headless: opts.headless ?? true, viewport: { width: 1280, height: 800 } };
-  let context: any;
-  let lastError: unknown;
-  for (const attempt of browserLaunchAttempts(executablePath)) {
-    try {
-      context = await pw.chromium.launchPersistentContext(userDataDir, { ...baseOptions, ...attempt.options });
-      break;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  if (!context) {
-    throw new Error(
-      `BROWSER_UNAVAILABLE: Playwright loaded, but no Edge/Chrome/Chromium runtime could launch. Last error: ${String(lastError)}`,
-    );
-  }
-  const page = context.pages()[0] ?? (await context.newPage());
+  // Prefer attaching to the user's REAL running browser (their logged-in profile,
+  // cookies, extensions — the thing that actually beats Cloudflare/anti-bot) when
+  // a CDP endpoint is configured; otherwise launch a persistent-profile browser.
+  // Auto-discovery is OFF unless explicitly enabled — Ares never grabs a random
+  // open browser on its own.
+  const acquired = await acquireBrowserPage(pw, {
+    cdpUrl: process.env.ARES_BROWSER_CDP_URL?.trim() || undefined,
+    discovery: process.env.ARES_BROWSER_CDP_DISCOVERY === "1",
+    discoveryPorts: parseCdpPorts(process.env.ARES_BROWSER_CDP_PORTS),
+    executablePath: findInstalledChromium(),
+    headless: opts.headless ?? true,
+    userDataDir,
+    viewport: { width: 1280, height: 800 },
+  });
+  const page = acquired.page;
 
   const flatten = (node: any, out: AccessibilityNode[] = []): AccessibilityNode[] => {
     if (node && typeof node.role === "string") {
@@ -194,7 +268,7 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       return { url: page.url(), title: await page.title() };
     },
     async close() {
-      await context.close();
+      await acquired.close();
     },
   };
 }

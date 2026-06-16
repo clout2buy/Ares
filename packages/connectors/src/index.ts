@@ -20,8 +20,12 @@ export { navigateEffect, fillEffect, clickEffect, type BrowserEffectOptions } fr
 
 export {
   createPlaywrightBrowser,
+  acquireBrowserPage,
   browserLaunchAttempts,
   findInstalledChromium,
+  parseCdpPorts,
   type PlaywrightOptions,
   type LaunchAttempt,
+  type AcquireOptions,
+  type AcquiredPage,
 } from "./playwrightBrowser.js";

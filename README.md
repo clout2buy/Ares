@@ -59,6 +59,39 @@ pnpm desktop:installer                  # build the desktop installer
 
 See `docs/DEVELOPMENT.md` for the full permission-mode and verification policy.
 
+## Browser & CDP attach
+
+Ares can drive a real browser. By default it launches a persistent-profile
+Chrome/Edge under `~/.ares`. For logged-in sites, existing cookies, extensions,
+and fewer anti-bot faceplants, point it at a **real running browser** over the
+Chrome DevTools Protocol instead:
+
+```bash
+# Start Chrome (or Edge) with remote debugging on a profile of your choice:
+chrome.exe --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\.ares\cdp-profile"
+# msedge.exe takes the same flags.
+
+# Then tell Ares to attach:
+set ARES_BROWSER_CDP_URL=http://127.0.0.1:9222   # Windows (PowerShell: $env:ARES_BROWSER_CDP_URL="...")
+export ARES_BROWSER_CDP_URL=http://127.0.0.1:9222 # macOS/Linux
+```
+
+Launch-strategy order: configured CDP endpoint → opt-in localhost discovery →
+detected Edge/Chrome exe (persistent `~/.ares` profile) → msedge channel →
+chrome channel → bundled Chromium.
+
+- `ARES_BROWSER_CDP_URL` — explicit endpoint, tried first. If it's unreachable,
+  Ares falls back to launching its own browser.
+- `ARES_BROWSER_CDP_DISCOVERY=1` — **opt-in** auto-discovery of a local debugging
+  browser (`127.0.0.1:9222` by default; override with `ARES_BROWSER_CDP_PORTS=9222,9223`).
+  Off by default on purpose: Ares never attaches to a random open browser unless
+  you ask it to.
+
+> ⚠️ **CDP attach gives Ares control of that browser session** — every tab,
+> cookie, and logged-in account in the profile you exposed. Use a dedicated
+> `--user-data-dir` for anything sensitive, and remember the debugging port is
+> unauthenticated to anything that can reach `127.0.0.1`.
+
 ## Packages
 
 - `@ares/protocol` — shared event, provider, reasoning, and tool-call shapes.

@@ -18,4 +18,10 @@ export { Filmstrip, type FilmstripEntry } from "./filmstrip.js";
 
 export { navigateEffect, fillEffect, clickEffect, type BrowserEffectOptions } from "./effects.js";
 
-export { createPlaywrightBrowser, type PlaywrightOptions } from "./playwrightBrowser.js";
+export {
+  createPlaywrightBrowser,
+  browserLaunchAttempts,
+  findInstalledChromium,
+  type PlaywrightOptions,
+  type LaunchAttempt,
+} from "./playwrightBrowser.js";

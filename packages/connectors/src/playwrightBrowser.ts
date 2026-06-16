@@ -60,6 +60,31 @@ export function findInstalledChromium(): string | undefined {
   return candidates.find((candidate) => candidate && existsSync(candidate));
 }
 
+/** One browser-launch strategy: extra options merged into launchPersistentContext. */
+export interface LaunchAttempt {
+  label: string;
+  options: { executablePath?: string; channel?: string };
+}
+
+/**
+ * Ordered launch strategies, best fingerprint first, so the browser actually
+ * starts on a real user's machine instead of demanding `playwright install`:
+ *   1. the user's real Edge/Chrome by detected path (best anti-bot fingerprint),
+ *   2/3. Playwright's channel lookup for msedge / chrome — finds installs the
+ *        hardcoded path probe missed (per-user dirs, non-standard locations),
+ *   4. Playwright's bundled Chromium — the floor that works whenever a browsers
+ *      dir is present (PLAYWRIGHT_BROWSERS_PATH, e.g. the shipped Tauri runtime).
+ * The first one that launches wins.
+ */
+export function browserLaunchAttempts(executablePath: string | undefined): LaunchAttempt[] {
+  const attempts: LaunchAttempt[] = [];
+  if (executablePath) attempts.push({ label: `executable:${executablePath}`, options: { executablePath } });
+  attempts.push({ label: "channel:msedge", options: { channel: "msedge" } });
+  attempts.push({ label: "channel:chrome", options: { channel: "chrome" } });
+  attempts.push({ label: "bundled-chromium", options: {} });
+  return attempts;
+}
+
 /** Parse Playwright's aria snapshot YAML (lines like `- button "Submit"`) into
  *  the {role, name, selector} nodes the connector contract uses. */
 function parseAriaSnapshot(yaml: string): AccessibilityNode[] {
@@ -97,16 +122,22 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
   const userDataDir = process.env.ARES_HOME
     ? path.join(process.env.ARES_HOME, "browser-profile")
     : path.join(os.tmpdir(), "ares-browser-profile");
+  // Try each strategy in turn — detected exe, then Edge/Chrome channels, then
+  // bundled Chromium — so a packaged app launches without `playwright install`.
+  const baseOptions = { headless: opts.headless ?? true, viewport: { width: 1280, height: 800 } };
   let context: any;
-  try {
-    context = await pw.chromium.launchPersistentContext(userDataDir, {
-      headless: opts.headless ?? true,
-      viewport: { width: 1280, height: 800 },
-      ...(executablePath ? { executablePath } : {}),
-    });
-  } catch (error) {
+  let lastError: unknown;
+  for (const attempt of browserLaunchAttempts(executablePath)) {
+    try {
+      context = await pw.chromium.launchPersistentContext(userDataDir, { ...baseOptions, ...attempt.options });
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!context) {
     throw new Error(
-      `BROWSER_UNAVAILABLE: Playwright loaded, but no compatible Edge/Chrome runtime could launch. ${String(error)}`,
+      `BROWSER_UNAVAILABLE: Playwright loaded, but no Edge/Chrome/Chromium runtime could launch. Last error: ${String(lastError)}`,
     );
   }
   const page = context.pages()[0] ?? (await context.newPage());

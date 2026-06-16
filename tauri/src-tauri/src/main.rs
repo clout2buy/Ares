@@ -229,6 +229,15 @@ fn start_daemon(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // If the runtime ships bundled Playwright browser binaries, point Playwright
+    // at them so the headless browser launches even on a machine without a system
+    // Chrome/Edge. Absent the bundle, Playwright falls back to the system browser
+    // (the connector's channel strategy), so leaving this unset is fine.
+    let bundled_browsers = runtime.app_root.join("browsers");
+    if bundled_browsers.is_dir() {
+        command.env("PLAYWRIGHT_BROWSERS_PATH", &bundled_browsers);
+    }
+
     let mut child = command
         .current_dir(&runtime.workspace)
         .env("ARES_AGENT_ENABLED", "1")

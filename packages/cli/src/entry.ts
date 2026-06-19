@@ -1014,8 +1014,21 @@ async function selectProvider(flags: Map<string, string>): Promise<ProviderSelec
 
   if (preferred === "deepseek") {
     const model = requestedModel ?? settings.lastDeepSeekModel ?? "deepseek-v4-pro";
+    // Default: DeepSeek's Anthropic-compatible endpoint via the hardened
+    // AnthropicProvider — proper thinking<->tool interleaving, unsigned-reasoning
+    // echo on tool loops (DeepSeek 400s otherwise), no wasted cache_control /
+    // budget_tokens. x-api-key skips the OAuth identity branch (no Claude-Code
+    // leak). ARES_DEEPSEEK_DIALECT=openai forces the legacy OpenAI-compat path.
+    const useOpenAiDialect = process.env.ARES_DEEPSEEK_DIALECT === "openai";
     return {
-      provider: new DeepSeekProvider({ apiKey: settings.deepSeekKey, model }),
+      provider: useOpenAiDialect
+        ? new DeepSeekProvider({ apiKey: settings.deepSeekKey, model })
+        : new AnthropicProvider({
+            apiKey: settings.deepSeekKey || undefined,
+            // /anthropic is the base; the Messages API path appends like Anthropic's own.
+            endpointUrl: "https://api.deepseek.com/anthropic/v1/messages",
+            dialect: "deepseek",
+          }),
       model,
       source: explicit ? "explicit:deepseek" : "settings:deepseek",
     };
@@ -1038,9 +1051,16 @@ async function selectProvider(flags: Map<string, string>): Promise<ProviderSelec
       reasoner: { model: requestedModel ?? settings.lastOllamaModel ?? DEFAULT_OLLAMA_SLOTS.reasoner.model },
     };
     const ollamaApiKey = settings.ollamaApiKey || process.env.OLLAMA_API_KEY;
+    // A cloud API key with no explicit OLLAMA_HOST means "use Ollama's CLOUD"
+    // (ollama.com) — not the local app. Without this, a user who set only an API
+    // key (no local Ollama running) times out hitting 127.0.0.1. An explicit
+    // OLLAMA_HOST, or no key at all, keeps the local-app default.
+    const ollamaHost =
+      process.env.OLLAMA_HOST ?? (ollamaApiKey ? "https://ollama.com" : "http://127.0.0.1:11434");
     const pool = new OllamaCloudPool({
       slots,
-      ...NATIVE_OLLAMA_OPTS,
+      useAnthropicCompat: NATIVE_OLLAMA_OPTS.useAnthropicCompat,
+      host: ollamaHost,
       apiKey: ollamaApiKey,
     });
     return {
@@ -2182,17 +2202,25 @@ function isProviderFatalError(err: { code?: string; message?: string } | undefin
 /** Pick a healthy provider to fall back to when the current one is failing.
  *  Prefers Anthropic (most tool-reliable) when it's authenticated and isn't the
  *  one that just failed. Returns null when there's no better option. */
-async function pickHealthyFallback(current: ProviderSelection): Promise<ProviderSelection | null> {
+async function pickHealthyFallback(
+  current: ProviderSelection,
+  dead: ReadonlySet<string> = new Set(),
+): Promise<ProviderSelection | null> {
   const settings = await loadUiSettings().catch(() => null);
   if (!settings) return null;
   const currentFamily = providerFamilyForSelection(current);
+  // Order = most-likely-to-actually-work first. Anthropic (Claude sign-in or key)
+  // before the pay-as-you-go balances that just ran dry. Ollama last (local/free
+  // but often not running). openrouter's default model may itself be a deepseek
+  // route, so if deepseek is dead, openrouter often is too — anthropic wins.
   const candidates: Array<{ family: string; authed: boolean }> = [
-    { family: "anthropic", authed: Boolean(settings.anthropicKey) },
+    { family: "anthropic", authed: Boolean(settings.anthropicKey) || Boolean(process.env.ANTHROPIC_API_KEY) || Boolean(process.env.ARES_ANTHROPIC_API_KEY) },
     { family: "openrouter", authed: Boolean(settings.openRouterKey) },
     { family: "deepseek", authed: Boolean(settings.deepSeekKey) },
+    { family: "ollama", authed: true },
   ];
   for (const c of candidates) {
-    if (c.family === currentFamily || !c.authed) continue;
+    if (c.family === currentFamily || dead.has(c.family) || !c.authed) continue;
     try {
       return await selectProvider(new Map([["provider", c.family]]));
     } catch {
@@ -3061,6 +3089,14 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   // doesn't kick off a parallel pull; the controller lets "cancel" abort it.
   let consciousnessDownloading = false;
   let consciousnessAbort: AbortController | undefined;
+
+  // Providers that failed THIS SESSION with a balance/auth error (402/401/403/
+  // insufficient balance) — they won't recover without the owner topping up or
+  // fixing a key, so we stop re-selecting them. Cleared only on a manual model
+  // switch. This is what stops "out of money on DeepSeek shit on everything".
+  const deadProviders = new Set<string>();
+  const isPermanentlyDeadError = (blob: string): boolean =>
+    /\b402\b|\b401\b|\b403\b|insufficient.?balance|unauthorized|forbidden|invalid.?api.?key|no_auth/i.test(blob);
   sessions.set(live.session.meta.id, primaryEntry);
 
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
@@ -3477,6 +3513,9 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
           const selection = await selectProvider(flags);
           mainSelection = selection;
           mainProviderFamily = provider;
+          // Owner explicitly chose a provider — give every provider a fresh chance
+          // (they may have just topped up the one that ran dry).
+          deadProviders.clear();
           const entries = [...new Set([primaryEntry, ...sessions.values()])];
           for (const entry of entries) {
             if (entry.turnActive) continue;
@@ -3829,7 +3868,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
             // Switch ONLY when the domain genuinely changed (or on the very first
             // turn) and there's a model assigned for the new lane. Otherwise the
             // current model keeps the conversation — that's the stickiness.
-            if (assigned?.family && assigned.model && !onAssigned && (laneChanged || firstTurn)) {
+            if (assigned?.family && assigned.model && !onAssigned && !deadProviders.has(assigned.family) && (laneChanged || firstTurn)) {
               try {
                 const sel = await selectProvider(new Map([["provider", assigned.family], ["model", assigned.model]]));
                 await entry.live.session.setProvider(sel.provider, sel.model, {
@@ -3872,28 +3911,47 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
           await streamOnce(entry.live.session.sendContent(await contentFromUserInput(goal, entry.live.context.workspace)));
 
           // Self-healing fallback: if the turn died because the current provider
-          // is unauthenticated/unreachable (Ollama 401/404, network), switch to a
-          // healthy provider (Anthropic) and re-run the SAME turn once — so the
-          // model lottery stops feeling like "it randomly stopped working".
-          if (turnState.status === "failed" && turnState.fatalProvider) {
-            const fallback = await pickHealthyFallback(entry.live.selection).catch(() => null);
-            if (fallback) {
-              await entry.live.session.setProvider(fallback.provider, fallback.model, {
-                contextBudgetTokens: chatContextBudget(fallback),
-                summarizeSpan: makeSpanSummarizer(fallback, (usage) =>
-                  entry.live.session.recordAuxiliaryUsage("compaction", fallback.provider.name, fallback.model, usage),
-                ),
-              });
-              entry.live.selection = fallback;
+          // is unauthenticated / out of balance / unreachable, walk healthy
+          // providers until one actually completes the turn — not just one hop.
+          // Dead-on-balance providers are remembered so later turns skip them.
+          let fallbackHops = 0;
+          while (turnState.status === "failed" && turnState.fatalProvider && fallbackHops < 4) {
+            fallbackHops++;
+            // The provider that just failed: if it's a balance/auth death, retire
+            // it for the session so we never waste another turn on it.
+            if (isPermanentlyDeadError(turnState.fatalProvider)) {
+              deadProviders.add(providerFamilyForSelection(entry.live.selection));
+            }
+            const fallback = await pickHealthyFallback(entry.live.selection, deadProviders).catch(() => null);
+            if (!fallback) {
               tagEmit(sid, {
                 type: "system_reminder_injected",
                 source: "instructions",
-                text: `Provider failed (${turnState.fatalProvider}). Switched to ${fallback.provider.name}/${fallback.model} and retried this turn.`,
+                text: `All configured providers failed (${turnState.fatalProvider}). Add credit or a working API key in Settings → API Keys.`,
               });
-              tagEmit(sid, { type: "route_resolved", model: fallback.model, provider: fallback.provider.name, lane: entry.lane ?? "chat", source: "assigned" });
-              turnState.status = "completed";
-              await streamOnce(entry.live.session.resumeTurn());
+              break;
             }
+            await entry.live.session.setProvider(fallback.provider, fallback.model, {
+              contextBudgetTokens: chatContextBudget(fallback),
+              summarizeSpan: makeSpanSummarizer(fallback, (usage) =>
+                entry.live.session.recordAuxiliaryUsage("compaction", fallback.provider.name, fallback.model, usage),
+              ),
+            });
+            entry.live.selection = fallback;
+            // Persist as the session default so the NEXT message starts on the
+            // healthy provider instead of re-running the dead gauntlet.
+            mainSelection = fallback;
+            mainProviderFamily = providerFamilyForSelection(fallback);
+            tagEmit(sid, {
+              type: "system_reminder_injected",
+              source: "instructions",
+              text: `Provider failed (${turnState.fatalProvider}). Switched to ${fallback.provider.name}/${fallback.model}.`,
+            });
+            tagEmit(sid, { type: "route_resolved", model: fallback.model, provider: fallback.provider.name, lane: entry.lane ?? "chat", source: "assigned" });
+            // Reset and re-run; if THIS one also fails fatally the loop continues.
+            turnState.status = "completed";
+            turnState.fatalProvider = null;
+            await streamOnce(entry.live.session.resumeTurn());
           }
           await finishTurn(entry.live, turnState.status);
           // A completed turn may have landed a commit — reflect it into the war

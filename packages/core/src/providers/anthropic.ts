@@ -55,6 +55,8 @@ export function usesAdaptiveThinking(model: string): boolean {
 const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 
+export type AnthropicDialect = "anthropic" | "deepseek";
+
 export interface AnthropicProviderOptions {
   /** Override the API key (tests / injected config). Falls back to
    *  ARES_ANTHROPIC_API_KEY, then ANTHROPIC_API_KEY. */
@@ -63,6 +65,12 @@ export interface AnthropicProviderOptions {
   fetchImpl?: typeof fetch;
   /** Override URL (tests / proxies). */
   endpointUrl?: string;
+  /** Wire dialect. "deepseek" targets DeepSeek's Anthropic-compatible endpoint
+   *  (https://api.deepseek.com/anthropic): echo UNSIGNED thinking (DeepSeek 400s
+   *  on tool loops without the reasoning echo), send NO cache_control (ignored —
+   *  DeepSeek auto KV-caches server-side), and enable thinking WITHOUT
+   *  budget_tokens / max_tokens inflation (budget is ignored). Defaults to "anthropic". */
+  dialect?: AnthropicDialect;
 }
 
 export class AnthropicProvider implements Provider {
@@ -70,11 +78,13 @@ export class AnthropicProvider implements Provider {
   private readonly fetchImpl: typeof fetch;
   private readonly overrideKey?: string;
   private readonly overrideUrl?: string;
+  private readonly dialect: AnthropicDialect;
 
   constructor(opts: AnthropicProviderOptions = {}) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.overrideKey = opts.apiKey;
     this.overrideUrl = opts.endpointUrl;
+    this.dialect = opts.dialect ?? "anthropic";
   }
 
   async *stream(req: ProviderRequest): AsyncGenerator<StreamEvent> {
@@ -101,7 +111,7 @@ export class AnthropicProvider implements Provider {
     if (req.signal?.aborted) return;
 
     const url = this.overrideUrl ?? ANTHROPIC_MESSAGES_URL;
-    const body = buildMessagesBody(req);
+    const body = buildMessagesBody(req, this.dialect);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
@@ -374,19 +384,57 @@ export class AnthropicProvider implements Provider {
 
 // ─── Request building ───────────────────────────────────────────────────
 
-function buildMessagesBody(req: ProviderRequest): Record<string, unknown> {
+/**
+ * Drop orphaned tool blocks before sending to Anthropic. The API 400s on a
+ * tool_result whose tool_use was dropped (compaction, an interrupted turn, or a
+ * mid-conversation provider switch) — "unexpected tool_use_id ... Each
+ * tool_result block must have a corresponding tool_use block". Convert orphans to
+ * plain text so the model keeps the context without an invalid request.
+ */
+function sanitizeToolPairs(messages: readonly Message[]): Message[] {
+  const useIds = new Set<string>();
+  const resultIds = new Set<string>();
+  for (const m of messages) {
+    for (const b of m.content) {
+      if (b.type === "tool_use") useIds.add(b.id);
+      else if (b.type === "tool_result") resultIds.add(b.tool_use_id);
+    }
+  }
+  return messages.map((m) => {
+    const content = m.content.flatMap((b): ContentBlock[] => {
+      if (b.type === "tool_use" && !resultIds.has(b.id)) {
+        return [{ type: "text", text: `[earlier ${b.name} tool call — result not retained]` }];
+      }
+      if (b.type === "tool_result" && !useIds.has(b.tool_use_id)) {
+        const text =
+          typeof b.content === "string"
+            ? b.content
+            : b.content.map((x) => (x.type === "text" ? x.text : "[image]")).join("\n");
+        return [{ type: "text", text: `[earlier tool result]\n${text}` }];
+      }
+      return [b];
+    });
+    return { ...m, content };
+  });
+}
+
+function buildMessagesBody(
+  req: ProviderRequest,
+  dialect: AnthropicDialect = "anthropic",
+): Record<string, unknown> {
+  const isDeepseek = dialect === "deepseek";
   const outputAllowance = req.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const body: Record<string, unknown> = {
     model: req.model,
     max_tokens: outputAllowance,
     stream: true,
-    messages: req.messages
+    messages: sanitizeToolPairs(req.messages)
       .map((m) => ({
         // Anthropic accepts only user/assistant; stray system-role history
         // (rare — the prompt rides req.system) folds into the user turn.
         role: m.role === "assistant" ? "assistant" : "user",
         content: m.content
-          .map(toAnthropicContentBlock)
+          .map((b) => toAnthropicContentBlock(b, dialect))
           .filter((b): b is Record<string, unknown> => b !== null),
       }))
       .filter((m) => m.content.length > 0),
@@ -397,7 +445,11 @@ function buildMessagesBody(req: ProviderRequest): Record<string, unknown> {
   // shape; older models still take explicit budgets (and require max_tokens to
   // exceed the budget, so grow the ceiling to leave room for visible output).
   if (req.reasoningLevel) {
-    if (usesAdaptiveThinking(req.model)) {
+    if (isDeepseek) {
+      // DeepSeek ignores budget_tokens; enable thinking and do NOT inflate
+      // max_tokens (the budget branch would grow the ceiling for nothing).
+      body.thinking = { type: "enabled" };
+    } else if (usesAdaptiveThinking(req.model)) {
       body.thinking = { type: "adaptive" };
     } else {
       const budget = thinkingBudgetTokens(req.reasoningLevel);
@@ -407,8 +459,12 @@ function buildMessagesBody(req: ProviderRequest): Record<string, unknown> {
   }
 
   if (req.system) {
+    // DeepSeek ignores cache_control (it auto KV-caches server-side on stable
+    // prefixes), so omit it there; keep the byte-stable system block either way.
     body.system = [
-      { type: "text", text: req.system, cache_control: { type: "ephemeral" } },
+      isDeepseek
+        ? { type: "text", text: req.system }
+        : { type: "text", text: req.system, cache_control: { type: "ephemeral" } },
     ];
   }
 
@@ -417,7 +473,9 @@ function buildMessagesBody(req: ProviderRequest): Record<string, unknown> {
       name: t.name,
       description: t.description,
       input_schema: t.input_schema,
-      ...(index === req.tools.length - 1 ? { cache_control: { type: "ephemeral" } } : {}),
+      ...(!isDeepseek && index === req.tools.length - 1
+        ? { cache_control: { type: "ephemeral" } }
+        : {}),
     }));
   }
 
@@ -429,19 +487,24 @@ function buildMessagesBody(req: ProviderRequest): Record<string, unknown> {
   // history (cache reads are ~10% the price of fresh input). Moves forward every
   // turn, so the cached span grows with the conversation. 3 breakpoints total
   // (system + tools + history), under the 4-breakpoint ceiling.
-  const msgs = body.messages as Array<{ content: Array<Record<string, unknown>> }>;
-  const lastMsg = msgs[msgs.length - 1];
-  if (lastMsg && Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
-    const lastBlock = lastMsg.content[lastMsg.content.length - 1];
-    if (lastBlock && typeof lastBlock === "object") {
-      lastBlock.cache_control = { type: "ephemeral" };
+  if (!isDeepseek) {
+    const msgs = body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    const lastMsg = msgs[msgs.length - 1];
+    if (lastMsg && Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+      const lastBlock = lastMsg.content[lastMsg.content.length - 1];
+      if (lastBlock && typeof lastBlock === "object") {
+        lastBlock.cache_control = { type: "ephemeral" };
+      }
     }
   }
 
   return body;
 }
 
-function toAnthropicContentBlock(block: ContentBlock): Record<string, unknown> | null {
+function toAnthropicContentBlock(
+  block: ContentBlock,
+  dialect: AnthropicDialect = "anthropic",
+): Record<string, unknown> | null {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
@@ -464,11 +527,13 @@ function toAnthropicContentBlock(block: ContentBlock): Record<string, unknown> |
         ...(block.is_error ? { is_error: true } : {}),
       };
     case "thinking":
-      // Replayed thinking needs the server-issued signature; unsigned
-      // blocks would be rejected, so they drop from outbound history.
-      return block.signature
-        ? { type: "thinking", thinking: block.text, signature: block.signature }
-        : null;
+      // Genuine Anthropic replays thinking only WITH the server-issued signature
+      // (unsigned is rejected) → drop unsigned. DeepSeek has no signatures and
+      // 400s a tool loop unless reasoning is echoed → emit unsigned thinking.
+      if (block.signature) {
+        return { type: "thinking", thinking: block.text, signature: block.signature };
+      }
+      return dialect === "deepseek" ? { type: "thinking", thinking: block.text } : null;
   }
 }
 

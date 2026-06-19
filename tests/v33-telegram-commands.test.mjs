@@ -34,9 +34,34 @@ test("parser: recognizes slash and bare one-word commands", () => {
   assert.equal(kind("/run_next"), "run_next");
   assert.equal(kind("PAUSE"), "pause");
   assert.equal(kind("/help"), "help");
+  assert.equal(kind("/start"), "help");
   // arg capture for the orchestration verbs
   assert.deepEqual(parseTelegramCommand("/run_next approve"), { kind: "run_next", arg: "approve" });
   assert.deepEqual(parseTelegramCommand("/cancel abc123"), { kind: "cancel", arg: "abc123" });
+  // model commands
+  assert.equal(kind("/models"), "models");
+  assert.deepEqual(parseTelegramCommand("/model anthropic claude-opus-4-8"), { kind: "model", arg: "anthropic claude-opus-4-8" });
+});
+
+test("model commands: /models lists, /model switches and resets the session", async () => {
+  const deps = {
+    listModels: async (provider) => [`models for ${provider ?? "current"}`, "claude-opus-4-8", "gpt-5.5"],
+    switchModel: async (provider, model) => ({ ok: true, text: `switched ${provider}/${model ?? "default"}` }),
+  };
+  const list = await handleTelegramCommand("models", deps, "anthropic");
+  assert.match(list.text, /models for anthropic/);
+  assert.match(list.text, /claude-opus-4-8/);
+
+  const sw = await handleTelegramCommand("model", deps, "anthropic claude-opus-4-8");
+  assert.match(sw.text, /switched anthropic\/claude-opus-4-8/);
+  assert.equal(sw.resetSession, true, "a successful switch tells the bridge to reset the session");
+
+  const usage = await handleTelegramCommand("model", deps, undefined);
+  assert.match(usage.text, /Usage: \/model/);
+
+  // A failed switch does NOT reset the session.
+  const fail = await handleTelegramCommand("model", { switchModel: async () => ({ ok: false, text: "bad provider" }) }, "nope x");
+  assert.ok(!fail.resetSession, "a failed switch leaves the session alone");
 });
 
 test("parser: unknown / multi-word / chat text falls through (null)", () => {

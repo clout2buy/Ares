@@ -206,6 +206,11 @@ export interface ToolSchema {
   providerHint?: ProviderHint;
   /** When true, tool is omitted from initial prompt; loaded via ToolSearch. */
   deferLoading?: boolean;
+  /** Per-tool execution watchdog. `0` = no watchdog (uncapped — for tools that
+   *  self-cap, e.g. Bash/Task); omitted = the engine picks a class default from
+   *  `safety`. Bounds a single tool call so a hung network fetch can't stall the
+   *  whole turn for minutes. */
+  watchdogTimeoutMs?: number;
 }
 
 // ─── Permissions ────────────────────────────────────────────────────────

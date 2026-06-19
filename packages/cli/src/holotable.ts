@@ -27,11 +27,22 @@ export interface HoloPart {
   axis?: [number, number, number];
   /** Exploded-view travel distance (default 1.5). */
   travel?: number;
+  /** Composite geometry role — servo, bracket, bearing, gear, fastener, motor,
+   *  wheel, pcb, rod, joint, plate, gripper. Inferred from name if omitted. */
+  role?: string;
   /** BOM: 3D-printable part (STL export offered) vs purchased. */
   printable?: boolean;
   /** BOM: where to buy / what to search for. */
   vendor?: string;
   qty?: number;
+  /** BOM: manufacturer/vendor part number. */
+  partNumber?: string;
+  /** BOM: unit price (USD). */
+  unitPrice?: number;
+  /** BOM: direct buy/spec link. */
+  link?: string;
+  /** BOM: print material (PLA/PETG/ABS) or stock material. */
+  material?: string;
   /** Inspector note: what this part does, what to watch for. */
   note?: string;
 }
@@ -44,6 +55,13 @@ export interface HoloWire {
   /** Optional intermediate routing points. */
   via?: Array<[number, number, number]>;
   color?: string;
+  /** Connection table: signal carried (e.g. "5V", "GND", "PWM", "SIG"). */
+  signal?: string;
+  /** Wire gauge (e.g. "22 AWG"). */
+  gauge?: string;
+  /** Connector pins at each end (e.g. "D9", "VCC"). */
+  fromPin?: string;
+  toPin?: string;
 }
 
 export interface HoloStep {
@@ -127,16 +145,33 @@ export function buildHolotableHtml(opts: HolotableOptions = {}): string {
                padding: 10px 16px; border: 1px solid ${accent}44; border-radius: 10px; background: #121013d9; color: #e9dfd0; }
   #steppanel h3 { margin: 0 0 4px; font-size: 11px; color: ${accent}; letter-spacing: 0.16em; }
   #steppanel p { margin: 0; font-size: 11px; line-height: 1.5; opacity: 0.85; }
-  #bom { position: fixed; right: 0; top: 0; bottom: 0; width: 280px; overflow-y: auto; transform: translateX(100%);
-         transition: transform 240ms ease; background: #121013ee; border-left: 1px solid ${accent}33; padding: 16px; }
+  #bom { position: fixed; right: 0; top: 0; bottom: 0; width: 400px; max-width: 92vw; overflow-y: auto; transform: translateX(100%);
+         transition: transform 240ms ease; background: #121013f2; border-left: 1px solid ${accent}33; padding: 16px 18px; }
   #bom.open { transform: none; }
-  #bom h2 { font-size: 11px; color: ${accent}; letter-spacing: 0.2em; margin: 12px 0 6px; }
-  .bomrow { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 5px 0;
-            border-bottom: 1px solid ${accent}1a; color: #e9dfd0; font-size: 10px; }
-  .bomrow small { opacity: 0.55; display: block; }
-  .bomrow button { color: ${accent}; background: none; border: 1px solid ${accent}55; border-radius: 5px;
-                   font: inherit; padding: 2px 7px; cursor: pointer; }
+  #bom h2 { font-size: 11px; color: ${accent}; letter-spacing: 0.2em; margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+  #bom h2 span { font-size: 9px; opacity: 0.5; letter-spacing: 0.1em; }
+  .bomtable { width: 100%; border-collapse: collapse; font-size: 10px; color: #e9dfd0; }
+  .bomtable th { text-align: left; font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.5; padding: 4px 6px; border-bottom: 1px solid ${accent}33; font-weight: 600; }
+  .bomtable td { padding: 6px 6px; border-bottom: 1px solid ${accent}14; vertical-align: top; }
+  .bomtable td.r, .bomtable th.r { text-align: right; }
+  .bomtable td.qty { color: ${accent}; font-weight: 700; white-space: nowrap; }
+  .bomtable td.nm { font-weight: 600; }
+  .bomtable td small { display: block; opacity: 0.5; font-size: 9px; margin-top: 1px; }
+  .bomtable a { color: ${accent}; text-decoration: none; border-bottom: 1px dotted ${accent}66; }
+  .bomtable td em { font-style: normal; opacity: 0.6; }
+  .bomtable tr.tot td { border-bottom: none; font-weight: 700; color: ${accent}; padding-top: 8px; }
+  .bomtable td.act button { color: ${accent}; background: none; border: 1px solid ${accent}66; border-radius: 5px; font: inherit; padding: 2px 8px; cursor: pointer; }
+  .bomtable td.act button:hover { background: ${accent}22; }
+  .wiretable .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; box-shadow: 0 0 6px currentColor; }
+  .bomgrand { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0 6px; padding: 10px 8px; border: 1px solid ${accent}44; border-radius: 8px; background: ${accent}12; }
+  .bomgrand span { font-size: 9px; letter-spacing: 0.18em; opacity: 0.6; }
+  .bomgrand b { font-size: 18px; color: ${accent}; }
   #hint { position: fixed; left: 22px; bottom: 24px; font-size: 10px; opacity: 0.45; }
+  #holoerr { display: none; position: fixed; inset: 0; align-items: center; justify-content: center; background: #0c0807ee; z-index: 50; }
+  #holoerr > div { text-align: center; max-width: 320px; padding: 24px; }
+  #holoerr b { display: block; color: ${accent}; font-size: 14px; letter-spacing: 0.1em; margin-bottom: 8px; }
+  #holoerr span { display: block; font-size: 11px; opacity: 0.6; line-height: 1.5; margin-bottom: 14px; }
+  #holoerr button { color: ${accent}; background: none; border: 1px solid ${accent}66; border-radius: 6px; font: inherit; padding: 6px 16px; cursor: pointer; }
 </style>
 <script type="importmap">
 {
@@ -149,6 +184,14 @@ export function buildHolotableHtml(opts: HolotableOptions = {}): string {
 </head>
 <body>
 <canvas id="scene"></canvas>
+<div id="holoerr"><div><b>3D engine didn't load</b><span>The hologram needs the three.js runtime. Check the connection and reload — the spec, BOM and wiring are all intact.</span><button onclick="location.reload()">Reload</button></div></div>
+<script>
+  // Watchdog: if the module never paints (CDN unreachable / blocked), surface a
+  // clear message instead of a silent black panel.
+  window.addEventListener("load", function () {
+    setTimeout(function () { if (!window.__holoReady) { var e = document.getElementById("holoerr"); if (e) e.style.display = "flex"; } }, 6500);
+  });
+</script>
 <div class="hud" id="title">${escapeHtml(title)}</div>
 <div class="hud" id="part">&nbsp;</div>
 <div class="hud" id="note">&nbsp;</div>
@@ -170,6 +213,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { STLExporter } from "three/addons/exporters/STLExporter.js";
+import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 
 const ACCENT = new THREE.Color("${accent}");
 const SPEC = ${specJson};
@@ -247,22 +291,128 @@ scene.add(scanPlane);
 
 // ── hologram materials — wire shell + translucent surface + additive glow ──
 function holoMaterials() {
-  const wire = new THREE.MeshBasicMaterial({ color: ACCENT, wireframe: true, transparent: true, opacity: 0.9 });
-  const surface = new THREE.MeshPhongMaterial({ color: ACCENT, emissive: ACCENT.clone().multiplyScalar(0.25), transparent: true, opacity: 0.12, shininess: 80, depthWrite: false, blending: THREE.AdditiveBlending });
+  // Crisp hologram OUTLINE (clean feature edges) instead of a noisy triangle
+  // wireframe — reads as a real engineered part, not a mesh soup.
+  const edge = new THREE.LineBasicMaterial({ color: ACCENT.clone().lerp(new THREE.Color("#ffffff"), 0.25), transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+  const surface = new THREE.MeshPhongMaterial({ color: ACCENT, emissive: ACCENT.clone().multiplyScalar(0.3), transparent: true, opacity: 0.17, shininess: 90, depthWrite: false, blending: THREE.AdditiveBlending });
   const glow = new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending, depthWrite: false });
-  return { wire, surface, glow };
+  return { edge, surface, glow };
+}
+
+// Position/rotate a geometry in place so role parts can be assembled from primitives.
+function xform(geo, pos, rot) {
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  if (rot) q.setFromEuler(new THREE.Euler(rot[0] || 0, rot[1] || 0, rot[2] || 0));
+  m.compose(new THREE.Vector3(pos ? pos[0] : 0, pos ? pos[1] : 0, pos ? pos[2] : 0), q, new THREE.Vector3(1, 1, 1));
+  geo.applyMatrix4(m);
+  return geo;
+}
+
+// Infer what a part IS from its name, so we can build geometry that actually
+// looks like that component instead of a featureless box.
+function inferRole(part) {
+  if (part.role) return part.role;
+  const n = ((part.name || "") + " " + (part.id || "")).toLowerCase();
+  if (/servo/.test(n)) return "servo";
+  if (/bracket|mount|clamp|holder/.test(n)) return "bracket";
+  if (/bearing/.test(n)) return "bearing";
+  if (/gear|cog|pinion/.test(n)) return "gear";
+  if (/screw|bolt|fasten|\bnut\b|standoff/.test(n)) return "fastener";
+  if (/motor|stepper/.test(n)) return "motor";
+  if (/wheel|roller|caster/.test(n)) return "wheel";
+  if (/board|pcb|controller|driver|mcu|arduino|raspberry|\bpi\b/.test(n)) return "pcb";
+  if (/rod|shaft|link|forearm|upperarm|\barm\b|rail|beam|spar|strut/.test(n)) return "rod";
+  if (/joint|pivot|\bhub\b|knuckle|shoulder|elbow|wrist/.test(n)) return "joint";
+  if (/plate|base|chassis|panel|deck|frame/.test(n)) return "plate";
+  if (/grip|jaw|claw|finger|gripper/.test(n)) return "gripper";
+  return null;
+}
+
+// Assemble a recognizable component from primitives, merged into one geometry so
+// the existing surface/edge/glow pipeline (and STL export) works unchanged.
+function buildRoleGeometry(part) {
+  const role = inferRole(part);
+  if (!role) return null;
+  const s = part.size || [0.5, 0.5, 0.5];
+  const W = s[0] || 0.5, H = s[1] || 0.5, D = s[2] !== undefined ? s[2] : (s[0] || 0.5);
+  const g = [];
+  const ring = (count, r, fn) => { for (let i = 0; i < count; i++) { const a = (i / count) * Math.PI * 2; fn(a, Math.cos(a) * r, Math.sin(a) * r); } };
+  switch (role) {
+    case "servo":
+      g.push(new THREE.BoxGeometry(W, H, D));
+      g.push(xform(new THREE.BoxGeometry(W * 0.62, H * 0.32, D * 0.7), [0, H * 0.58, 0]));
+      g.push(xform(new THREE.CylinderGeometry(W * 0.2, W * 0.2, H * 0.28, 16), [0, H * 0.82, 0]));
+      g.push(xform(new THREE.BoxGeometry(W * 1.5, H * 0.1, D * 0.5), [0, H * 0.22, 0]));
+      break;
+    case "bracket":
+      g.push(xform(new THREE.BoxGeometry(W, H * 0.16, D), [0, -H * 0.42, 0]));
+      g.push(xform(new THREE.BoxGeometry(W * 0.16, H, D), [-W * 0.42, 0, 0]));
+      g.push(xform(new THREE.BoxGeometry(W * 0.16, H * 0.16, D), [-W * 0.42, -H * 0.42, 0]));
+      break;
+    case "bearing":
+      g.push(xform(new THREE.TorusGeometry(W * 0.5, W * 0.15, 12, 28), [0, 0, 0], [Math.PI / 2, 0, 0]));
+      g.push(new THREE.CylinderGeometry(W * 0.22, W * 0.22, H * 0.5, 20));
+      break;
+    case "gear": {
+      const r = W * 0.5;
+      g.push(new THREE.CylinderGeometry(r * 0.92, r * 0.92, H * 0.6, 24));
+      ring(12, r, (a) => g.push(xform(new THREE.BoxGeometry(r * 0.26, H * 0.6, r * 0.16), [Math.cos(a) * r, 0, Math.sin(a) * r], [0, -a, 0])));
+      g.push(new THREE.CylinderGeometry(r * 0.2, r * 0.2, H * 0.72, 12));
+      break;
+    }
+    case "fastener":
+      g.push(xform(new THREE.CylinderGeometry(W * 0.5, W * 0.5, H * 0.35, 6), [0, H * 0.32, 0]));
+      g.push(xform(new THREE.CylinderGeometry(W * 0.26, W * 0.26, H, 12), [0, -H * 0.18, 0]));
+      break;
+    case "motor":
+      g.push(new THREE.CylinderGeometry(W * 0.5, W * 0.5, H, 22));
+      g.push(xform(new THREE.CylinderGeometry(W * 0.12, W * 0.12, H * 0.4, 12), [0, H * 0.62, 0]));
+      g.push(xform(new THREE.BoxGeometry(W * 1.2, H * 0.08, W * 1.2), [0, -H * 0.45, 0]));
+      break;
+    case "wheel":
+      g.push(xform(new THREE.TorusGeometry(W * 0.5, W * 0.17, 14, 30), [0, 0, 0], [Math.PI / 2, 0, 0]));
+      g.push(new THREE.CylinderGeometry(W * 0.2, W * 0.2, D * 0.6, 16));
+      ring(5, W * 0.26, (a) => g.push(xform(new THREE.BoxGeometry(W * 0.5, D * 0.1, W * 0.07), [Math.cos(a) * W * 0.26, 0, Math.sin(a) * W * 0.26], [0, -a, 0])));
+      break;
+    case "pcb":
+      g.push(new THREE.BoxGeometry(W, H * 0.12, D));
+      for (const c of [[0.22, 0.22], [-0.26, 0.12], [0.1, -0.3]]) g.push(xform(new THREE.BoxGeometry(W * 0.22, H * 0.18, D * 0.22), [c[0] * W, H * 0.14, c[1] * D]));
+      break;
+    case "rod":
+      g.push(new THREE.CapsuleGeometry(Math.min(W, D) * 0.42, H, 4, 12));
+      break;
+    case "joint":
+      g.push(new THREE.SphereGeometry(W * 0.5, 18, 14));
+      g.push(new THREE.CylinderGeometry(W * 0.28, W * 0.28, H, 14));
+      break;
+    case "plate":
+      g.push(new THREE.BoxGeometry(W, H * 0.12, D));
+      for (const c of [[0.42, 0.42], [-0.42, 0.42], [0.42, -0.42], [-0.42, -0.42]]) g.push(xform(new THREE.CylinderGeometry(W * 0.05, W * 0.05, H * 0.3, 8), [c[0] * W, 0, c[1] * D]));
+      break;
+    case "gripper":
+      g.push(new THREE.BoxGeometry(W, H, D * 0.5));
+      g.push(xform(new THREE.BoxGeometry(W * 0.32, H * 0.85, D), [0, H * 0.18, D * 0.32], [0.28, 0, 0]));
+      break;
+    default:
+      return null;
+  }
+  const merged = BufferGeometryUtils.mergeGeometries(g, false);
+  return merged || new THREE.BoxGeometry(W, H, D);
 }
 
 function buildGeometry(part) {
+  const role = buildRoleGeometry(part);
+  if (role) return role;
   const s = part.size;
   switch (part.kind) {
     case "box": return new THREE.BoxGeometry(s[0], s[1], s[2]);
-    case "cylinder": return new THREE.CylinderGeometry(s[0], s[1] !== undefined ? s[1] : s[0], s[2] !== undefined ? s[2] : 1, 12);
-    case "sphere": return new THREE.SphereGeometry(s[0], 14, 12);
+    case "cylinder": return new THREE.CylinderGeometry(s[0], s[1] !== undefined ? s[1] : s[0], s[2] !== undefined ? s[2] : 1, 16);
+    case "sphere": return new THREE.SphereGeometry(s[0], 18, 14);
     case "icosa": return new THREE.IcosahedronGeometry(s[0], 1);
-    case "capsule": return new THREE.CapsuleGeometry(s[0], s[1], 4, 10);
-    case "cone": return new THREE.ConeGeometry(s[0], s[1], 10);
-    case "torus": return new THREE.TorusGeometry(s[0], s[1], 10, 24);
+    case "capsule": return new THREE.CapsuleGeometry(s[0], s[1], 4, 12);
+    case "cone": return new THREE.ConeGeometry(s[0], s[1], 14);
+    case "torus": return new THREE.TorusGeometry(s[0], s[1], 12, 28);
     default: return new THREE.BoxGeometry(0.5, 0.5, 0.5);
   }
 }
@@ -275,14 +425,15 @@ const byId = new Map();
 
 function addSpecPart(p) {
   const geometry = buildGeometry(p);
-  const { wire, surface, glow } = holoMaterials();
+  const { edge, surface, glow } = holoMaterials();
   const group = new THREE.Group();
   group.name = p.name;
   const glowMesh = new THREE.Mesh(geometry, glow);
   glowMesh.scale.setScalar(0.985);
   const surfaceMesh = new THREE.Mesh(geometry, surface);
   surfaceMesh.scale.setScalar(0.992);
-  const shell = new THREE.Mesh(geometry, wire);
+  // crisp feature-edge outline (angle threshold drops coplanar tris → only real edges)
+  const shell = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 24), edge);
   group.add(glowMesh, surfaceMesh, shell);
   const base = new THREE.Vector3(p.position[0], p.position[1], p.position[2]);
   group.position.copy(base);
@@ -292,7 +443,7 @@ function addSpecPart(p) {
   if (p.axis) axis = new THREE.Vector3(p.axis[0], p.axis[1], p.axis[2]);
   else if (base.lengthSq() > 1e-6) axis = base.clone();
   else axis = new THREE.Vector3(0, 1, 0);
-  const entry = { group, shell, glowMesh, spec: p, base, axis: axis.normalize(), travel: p.travel !== undefined ? p.travel : 1.5, placed: true };
+  const entry = { group, shell, glowMesh, solidGeo: geometry, spec: p, base, axis: axis.normalize(), travel: p.travel !== undefined ? p.travel : 1.5, placed: true };
   parts.push(entry);
   byId.set(p.id, entry);
   return entry;
@@ -308,12 +459,15 @@ if (SPEC) {
     const center = box.getCenter(new THREE.Vector3());
     root.traverse((child) => {
       if (!child.isMesh) return;
-      const { wire } = holoMaterials();
-      child.material = wire;
+      const { edge, surface } = holoMaterials();
+      child.material = surface;
+      // crisp hologram edges over the loaded mesh
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry, 24), edge);
+      child.add(edges);
       const cc = new THREE.Box3().setFromObject(child).getCenter(new THREE.Vector3());
       const axis = cc.clone().sub(center);
       if (axis.lengthSq() < 1e-6) axis.set(0, 1, 0);
-      parts.push({ group: child, shell: child, glowMesh: null, spec: { id: child.uuid, name: child.name || "part" }, base: child.position.clone(), axis: axis.normalize(), travel: 1.6, placed: true });
+      parts.push({ group: child, shell: edges, glowMesh: null, solidGeo: child.geometry, spec: { id: child.uuid, name: child.name || "part" }, base: child.position.clone(), axis: axis.normalize(), travel: 1.6, placed: true });
     });
   });
 }
@@ -328,19 +482,43 @@ function endpoint(ref) {
   return part ? part.base.clone() : new THREE.Vector3();
 }
 if (SPEC && SPEC.wires) {
+  // count parallel runs between the same endpoints so a multi-conductor harness
+  // fans out instead of overlapping into one fat tube.
+  const pairKey = (w) => [w.from, w.to].map((e) => (Array.isArray(e) ? e.join(",") : e)).sort().join("|");
+  const pairCount = {}, pairSeen = {};
+  for (const w of SPEC.wires) pairCount[pairKey(w)] = (pairCount[pairKey(w)] || 0) + 1;
+
   for (const w of SPEC.wires) {
-    const pts = [endpoint(w.from)];
-    for (const v of w.via || []) pts.push(new THREE.Vector3(v[0], v[1], v[2]));
-    pts.push(endpoint(w.to));
+    const a = endpoint(w.from), b = endpoint(w.to);
+    const k = pairKey(w);
+    const n = pairCount[k], idx = (pairSeen[k] = (pairSeen[k] || 0)) , _ = (pairSeen[k]++);
+    // lateral offset so bundled conductors separate
+    const dir = b.clone().sub(a);
+    const off = new THREE.Vector3(0, 1, 0).cross(dir).normalize().multiplyScalar(n > 1 ? (idx - (n - 1) / 2) * 0.06 : 0);
+    const pts = [a.clone().add(off)];
+    for (const v of w.via || []) pts.push(new THREE.Vector3(v[0], v[1], v[2]).add(off));
+    if (!w.via || !w.via.length) {
+      // gentle catenary sag at the midpoint so runs look like real cable, not laser
+      const mid = a.clone().add(b).multiplyScalar(0.5).add(off);
+      mid.y -= dir.length() * 0.08;
+      pts.push(mid);
+    }
+    pts.push(b.clone().add(off));
     const curve = new THREE.CatmullRomCurve3(pts);
-    const tube = new THREE.TubeGeometry(curve, 40, 0.03, 6, false);
-    const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(w.color || "#7fa6a3"),
-      transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
-    });
+    const col = new THREE.Color(w.color || "#7fa6a3");
+    const tube = new THREE.TubeGeometry(curve, 48, 0.022, 8, false);
+    const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
     const mesh = new THREE.Mesh(tube, mat);
     mesh.name = "WIRE: " + w.name;
     wiring.add(mesh);
+    // connector nodes at both ends (little terminal beads)
+    const nodeGeo = new THREE.SphereGeometry(0.05, 10, 8);
+    const nodeMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    for (const p of [pts[0], pts[pts.length - 1]]) {
+      const node = new THREE.Mesh(nodeGeo, nodeMat);
+      node.position.copy(p);
+      wiring.add(node);
+    }
   }
 }
 
@@ -348,8 +526,9 @@ if (SPEC && SPEC.wires) {
 const bomEl = document.getElementById("bom");
 const exporter = new STLExporter();
 function downloadStl(entry) {
-  // Export the shell mesh with its world transform baked, ready to slice.
-  const mesh = new THREE.Mesh(entry.shell.geometry.clone(), new THREE.MeshBasicMaterial());
+  // Export the SOLID part geometry (not the edge outline) with its world
+  // transform baked, ready to slice into a real printable mesh.
+  const mesh = new THREE.Mesh(entry.solidGeo.clone(), new THREE.MeshBasicMaterial());
   mesh.rotation.copy(entry.group.rotation);
   mesh.updateMatrixWorld(true);
   const stl = exporter.parse(mesh, { binary: false });
@@ -360,40 +539,91 @@ function downloadStl(entry) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function money(n) { return "$" + Number(n).toFixed(2); }
+
 if (SPEC) {
   const printables = parts.filter((p) => p.spec.printable);
   const purchases = parts.filter((p) => !p.spec.printable);
-  const section = (label) => {
+  const section = (label, sub) => {
     const h = document.createElement("h2");
-    h.textContent = label;
+    h.innerHTML = esc(label) + (sub ? "<span>" + esc(sub) + "</span>" : "");
     bomEl.appendChild(h);
   };
-  const row = (entry, withStl) => {
-    const div = document.createElement("div");
-    div.className = "bomrow";
-    const left = document.createElement("div");
-    const qty = entry.spec.qty && entry.spec.qty > 1 ? " \\u00d7" + entry.spec.qty : "";
-    left.innerHTML = entry.spec.name + qty + (entry.spec.vendor ? "<small>" + entry.spec.vendor + "</small>" : "");
-    div.appendChild(left);
-    if (withStl) {
-      const btn = document.createElement("button");
-      btn.textContent = "STL";
-      btn.title = "export for 3D printing";
-      btn.addEventListener("click", () => downloadStl(entry));
-      div.appendChild(btn);
+
+  // a real bill-of-materials table: qty · part · spec · vendor/part# · unit · subtotal
+  const bomTable = (entries, withStl) => {
+    const tbl = document.createElement("table");
+    tbl.className = "bomtable";
+    const head = document.createElement("tr");
+    head.innerHTML = "<th>qty</th><th>part</th><th>vendor / part #</th><th class='r'>unit</th><th class='r'>subtotal</th><th></th>";
+    tbl.appendChild(head);
+    let total = 0;
+    for (const entry of entries) {
+      const s = entry.spec;
+      const qty = s.qty && s.qty > 0 ? s.qty : 1;
+      const unit = typeof s.unitPrice === "number" ? s.unitPrice : null;
+      const sub = unit != null ? unit * qty : null;
+      if (sub != null) total += sub;
+      const tr = document.createElement("tr");
+      const vendorCell = s.link
+        ? "<a href='" + esc(s.link) + "' target='_blank' rel='noopener'>" + esc(s.vendor || "buy") + "</a>"
+        : esc(s.vendor || "");
+      tr.innerHTML =
+        "<td class='qty'>" + qty + "\\u00d7</td>" +
+        "<td class='nm'>" + esc(s.name) + (s.material ? "<small>" + esc(s.material) + "</small>" : (s.note ? "<small>" + esc(s.note) + "</small>" : "")) + "</td>" +
+        "<td>" + vendorCell + (s.partNumber ? "<small>" + esc(s.partNumber) + "</small>" : "") + "</td>" +
+        "<td class='r'>" + (unit != null ? money(unit) : "\\u2014") + "</td>" +
+        "<td class='r'>" + (sub != null ? money(sub) : "\\u2014") + "</td>" +
+        "<td class='act'></td>";
+      if (withStl) {
+        const btn = document.createElement("button");
+        btn.textContent = "STL";
+        btn.title = "export this part for 3D printing";
+        btn.addEventListener("click", () => downloadStl(entry));
+        tr.lastChild.appendChild(btn);
+      }
+      tbl.appendChild(tr);
     }
-    bomEl.appendChild(div);
+    if (total > 0) {
+      const tot = document.createElement("tr");
+      tot.className = "tot";
+      tot.innerHTML = "<td></td><td></td><td class='r'>subtotal</td><td></td><td class='r'>" + money(total) + "</td><td></td>";
+      tbl.appendChild(tot);
+    }
+    bomEl.appendChild(tbl);
+    return total;
   };
-  if (printables.length) { section("PRINT THESE (" + printables.length + ")"); printables.forEach((p) => row(p, true)); }
-  if (purchases.length) { section("BUY THESE (" + purchases.length + ")"); purchases.forEach((p) => row(p, false)); }
+
+  let grand = 0;
+  if (printables.length) { section("PRINT", printables.length + " parts"); grand += bomTable(printables, true); }
+  if (purchases.length) { section("BUY", purchases.length + " parts"); grand += bomTable(purchases, false); }
+
+  // a real wiring HARNESS table: from-pin \\u2192 to-pin, signal, gauge, colour swatch
   if (SPEC.wires && SPEC.wires.length) {
-    section("WIRING RUNS (" + SPEC.wires.length + ")");
+    section("WIRING HARNESS", SPEC.wires.length + " runs");
+    const tbl = document.createElement("table");
+    tbl.className = "bomtable wiretable";
+    const head = document.createElement("tr");
+    head.innerHTML = "<th></th><th>run</th><th>from</th><th>to</th><th>signal</th><th>gauge</th>";
+    tbl.appendChild(head);
+    const nameOf = (ref) => { if (Array.isArray(ref)) return "pt"; const p = byId.get(ref); return p ? p.spec.name : ref; };
     for (const w of SPEC.wires) {
-      const div = document.createElement("div");
-      div.className = "bomrow";
-      div.innerHTML = "<div>" + w.name + "</div>";
-      bomEl.appendChild(div);
+      const tr = document.createElement("tr");
+      const sw = "<span class='swatch' style='background:" + esc(w.color || "#7fa6a3") + "'></span>";
+      const from = esc(nameOf(w.from)) + (w.fromPin ? " <em>" + esc(w.fromPin) + "</em>" : "");
+      const to = esc(nameOf(w.to)) + (w.toPin ? " <em>" + esc(w.toPin) + "</em>" : "");
+      tr.innerHTML = "<td>" + sw + "</td><td class='nm'>" + esc(w.name) + "</td><td>" + from + "</td><td>" + to + "</td><td>" + esc(w.signal || "\\u2014") + "</td><td>" + esc(w.gauge || "\\u2014") + "</td>";
+      tbl.appendChild(tr);
     }
+    bomEl.appendChild(tbl);
+  }
+
+  if (grand > 0) {
+    const g = document.createElement("div");
+    g.className = "bomgrand";
+    g.innerHTML = "<span>EST. TOTAL</span><b>" + money(grand) + "</b>";
+    bomEl.appendChild(g);
   }
 }
 
@@ -524,6 +754,7 @@ renderer.setAnimationLoop(() => {
 
   controls.update();
   renderer.render(scene, camera);
+  window.__holoReady = true; // signals the watchdog the engine painted
 });
 </script>
 </body>
@@ -575,30 +806,32 @@ export const MECH_SPEC: HoloSpec = {
 export const ROBOT_ARM_SPEC: HoloSpec = {
   title: "ARES // HOLOTABLE — DIY ROBOT ARM",
   parts: [
-    { id: "base", name: "BASE PLATE", kind: "cylinder", size: [1.6, 1.8, 0.3], position: [0, 0.15, 0], axis: [0, -1, 0], travel: 1.2, printable: true, note: "Print at 40% infill minimum — the whole arm cantilevers off this." },
-    { id: "bearing", name: "TURNTABLE BEARING", kind: "torus", size: [1.0, 0.12], position: [0, 0.42, 0], rotation: [1.5707963, 0, 0], axis: [0, -1, 0.4], travel: 1.4, vendor: "lazy susan bearing 120mm", note: "Takes the yaw load off the base servo spline." },
-    { id: "baseservo", name: "BASE YAW SERVO", kind: "box", size: [0.55, 0.5, 0.5], position: [0, 0.75, 0], axis: [0, -1, -0.6], travel: 1.6, vendor: "MG996R metal-gear servo", qty: 1, note: "The hardest-working servo in the build. Metal gears are not optional." },
-    { id: "shoulderbracket", name: "SHOULDER BRACKET", kind: "box", size: [0.7, 0.9, 0.5], position: [0, 1.35, 0], axis: [-0.6, 0.4, 0], travel: 1.5, printable: true },
-    { id: "shoulderservo", name: "SHOULDER SERVO", kind: "box", size: [0.55, 0.5, 0.5], position: [0, 1.85, 0], axis: [0.8, 0.3, 0], travel: 1.6, vendor: "MG996R metal-gear servo", qty: 1 },
-    { id: "upperarm", name: "UPPER ARM BEAM", kind: "box", size: [0.32, 1.5, 0.32], position: [0, 2.7, 0], axis: [0, 1, -0.5], travel: 1.6, printable: true, note: "Hollow print with 3 perimeters — stiffness over weight." },
-    { id: "elbowservo", name: "ELBOW SERVO", kind: "box", size: [0.5, 0.45, 0.45], position: [0, 3.5, 0], axis: [-0.8, 0.4, 0], travel: 1.7, vendor: "MG90S micro servo", qty: 1 },
-    { id: "forearm", name: "FOREARM BEAM", kind: "box", size: [0.26, 1.2, 0.26], position: [0, 4.25, 0.25], rotation: [0.5, 0, 0], axis: [0, 1, 0.6], travel: 1.7, printable: true },
-    { id: "wristservo", name: "WRIST SERVO", kind: "box", size: [0.4, 0.35, 0.35], position: [0, 4.85, 0.6], axis: [0.8, 0.5, 0], travel: 1.8, vendor: "MG90S micro servo", qty: 1 },
-    { id: "gripperbase", name: "GRIPPER CHASSIS", kind: "box", size: [0.5, 0.3, 0.4], position: [0, 5.2, 0.85], axis: [0, 1, 0.8], travel: 1.9, printable: true },
-    { id: "gripperjawl", name: "GRIPPER JAW L", kind: "box", size: [0.1, 0.45, 0.3], position: [-0.18, 5.55, 1.0], axis: [-1, 0.6, 0.4], travel: 2.1, printable: true, qty: 1 },
-    { id: "gripperjawr", name: "GRIPPER JAW R", kind: "box", size: [0.1, 0.45, 0.3], position: [0.18, 5.55, 1.0], axis: [1, 0.6, 0.4], travel: 2.1, printable: true, qty: 1 },
-    { id: "controller", name: "SERVO CONTROLLER (PCA9685)", kind: "box", size: [0.9, 0.15, 0.6], position: [2.2, 0.2, 0], axis: [1, 0, 0.3], travel: 1.4, vendor: "PCA9685 16-ch PWM board", note: "Drives all 5 servos from 2 I2C pins. Your brain board (Pi/Jetson for Cosmos) talks to this." },
-    { id: "brain", name: "BRAIN BOARD", kind: "box", size: [1.0, 0.18, 0.7], position: [2.2, 0.2, 1.1], axis: [1, 0, 0.8], travel: 1.5, vendor: "Raspberry Pi 5 / Jetson Orin Nano (for vision models)", note: "This is where your robotics model lives. Camera plugs here too." },
-    { id: "psu", name: "5V 10A PSU", kind: "box", size: [1.1, 0.5, 0.7], position: [2.2, 0.45, -1.1], axis: [1, 0, -0.8], travel: 1.5, vendor: "5V 10A switching supply", note: "Servos NEVER share the brain's power rail. Common ground only." },
+    { id: "base", name: "BASE PLATE", role: "plate", kind: "cylinder", size: [1.6, 1.8, 0.3], position: [0, 0.15, 0], axis: [0, -1, 0], travel: 1.2, printable: true, material: "PETG · 40% infill", unitPrice: 1.8, note: "Print at 40% infill minimum — the whole arm cantilevers off this." },
+    { id: "bearing", name: "TURNTABLE BEARING", role: "bearing", kind: "torus", size: [1.0, 0.12], position: [0, 0.42, 0], rotation: [1.5707963, 0, 0], axis: [0, -1, 0.4], travel: 1.4, vendor: "Lazy-susan bearing 120mm", partNumber: "VXB 120mm", unitPrice: 8.5, link: "https://www.amazon.com/s?k=lazy+susan+bearing+120mm", note: "Takes the yaw load off the base servo spline." },
+    { id: "baseservo", name: "BASE YAW SERVO", role: "servo", kind: "box", size: [0.55, 0.5, 0.5], position: [0, 0.75, 0], axis: [0, -1, -0.6], travel: 1.6, vendor: "TowerPro", partNumber: "MG996R", unitPrice: 4.2, qty: 1, link: "https://www.amazon.com/s?k=MG996R+servo", note: "Hardest-working servo in the build. Metal gears not optional." },
+    { id: "shoulderbracket", name: "SHOULDER BRACKET", role: "bracket", kind: "box", size: [0.7, 0.9, 0.5], position: [0, 1.35, 0], axis: [-0.6, 0.4, 0], travel: 1.5, printable: true, material: "PETG · 5 perimeters", unitPrice: 1.1 },
+    { id: "shoulderservo", name: "SHOULDER SERVO", role: "servo", kind: "box", size: [0.55, 0.5, 0.5], position: [0, 1.85, 0], axis: [0.8, 0.3, 0], travel: 1.6, vendor: "TowerPro", partNumber: "MG996R", unitPrice: 4.2, qty: 1 },
+    { id: "upperarm", name: "UPPER ARM BEAM", role: "rod", kind: "box", size: [0.32, 1.5, 0.32], position: [0, 2.7, 0], axis: [0, 1, -0.5], travel: 1.6, printable: true, material: "PETG · hollow, 3 walls", unitPrice: 0.9, note: "Hollow print with 3 perimeters — stiffness over weight." },
+    { id: "elbowservo", name: "ELBOW SERVO", role: "servo", kind: "box", size: [0.5, 0.45, 0.45], position: [0, 3.5, 0], axis: [-0.8, 0.4, 0], travel: 1.7, vendor: "TowerPro", partNumber: "MG90S", unitPrice: 2.6, qty: 1 },
+    { id: "forearm", name: "FOREARM BEAM", role: "rod", kind: "box", size: [0.26, 1.2, 0.26], position: [0, 4.25, 0.25], rotation: [0.5, 0, 0], axis: [0, 1, 0.6], travel: 1.7, printable: true, material: "PETG", unitPrice: 0.7 },
+    { id: "wristservo", name: "WRIST SERVO", role: "servo", kind: "box", size: [0.4, 0.35, 0.35], position: [0, 4.85, 0.6], axis: [0.8, 0.5, 0], travel: 1.8, vendor: "TowerPro", partNumber: "MG90S", unitPrice: 2.6, qty: 1 },
+    { id: "gripperbase", name: "GRIPPER CHASSIS", role: "gripper", kind: "box", size: [0.5, 0.3, 0.4], position: [0, 5.2, 0.85], axis: [0, 1, 0.8], travel: 1.9, printable: true, material: "PETG", unitPrice: 0.8 },
+    { id: "gripperjawl", name: "GRIPPER JAW L", role: "gripper", kind: "box", size: [0.1, 0.45, 0.3], position: [-0.18, 5.55, 1.0], axis: [-1, 0.6, 0.4], travel: 2.1, printable: true, material: "PETG", unitPrice: 0.4, qty: 1 },
+    { id: "gripperjawr", name: "GRIPPER JAW R", role: "gripper", kind: "box", size: [0.1, 0.45, 0.3], position: [0.18, 5.55, 1.0], axis: [1, 0.6, 0.4], travel: 2.1, printable: true, material: "PETG", unitPrice: 0.4, qty: 1 },
+    { id: "controller", name: "SERVO CONTROLLER", role: "pcb", kind: "box", size: [0.9, 0.15, 0.6], position: [2.2, 0.2, 0], axis: [1, 0, 0.3], travel: 1.4, vendor: "Adafruit / clone", partNumber: "PCA9685 16-ch", unitPrice: 6.0, link: "https://www.adafruit.com/product/815", note: "Drives all 5 servos from 2 I2C pins." },
+    { id: "brain", name: "BRAIN BOARD", role: "pcb", kind: "box", size: [1.0, 0.18, 0.7], position: [2.2, 0.2, 1.1], axis: [1, 0, 0.8], travel: 1.5, vendor: "Raspberry Pi", partNumber: "Pi 5 8GB / Jetson Orin Nano", unitPrice: 80.0, link: "https://www.raspberrypi.com/products/raspberry-pi-5/", note: "Where your robotics/vision model lives. Camera plugs here." },
+    { id: "psu", name: "5V 10A PSU", role: "pcb", kind: "box", size: [1.1, 0.5, 0.7], position: [2.2, 0.45, -1.1], axis: [1, 0, -0.8], travel: 1.5, vendor: "MeanWell", partNumber: "RS-50-5", unitPrice: 14.0, note: "Servos NEVER share the brain's power rail. Common ground only." },
+    { id: "fasteners", name: "M3 HARDWARE KIT", role: "fastener", kind: "cylinder", size: [0.12, 0.12, 0.5], position: [2.2, 0.1, -2.0], axis: [1, 0, -1], travel: 1.2, vendor: "Assorted M3 bolts/nuts/standoffs", partNumber: "M3 kit", unitPrice: 9.0, qty: 1, note: "M3×8/12/16, nuts, nylon standoffs. You will use all of them." },
   ],
   wires: [
-    { name: "PSU → controller V+ (heavy gauge)", from: "psu", to: "controller", color: "#b03a3a" },
-    { name: "brain → controller I2C (SDA/SCL)", from: "brain", to: "controller", color: "#7fa6a3" },
-    { name: "controller → base yaw servo (ch0)", from: "controller", to: "baseservo", via: [[1.2, 0.5, 0]], color: "#e3b86a" },
-    { name: "controller → shoulder servo (ch1)", from: "controller", to: "shoulderservo", via: [[1.3, 1.3, 0]], color: "#e3b86a" },
-    { name: "controller → elbow servo (ch2)", from: "controller", to: "elbowservo", via: [[1.4, 2.6, 0]], color: "#e3b86a" },
-    { name: "controller → wrist servo (ch3)", from: "controller", to: "wristservo", via: [[1.5, 3.8, 0.4]], color: "#e3b86a" },
-    { name: "controller → gripper servo (ch4)", from: "controller", to: "gripperbase", via: [[1.6, 4.4, 0.7]], color: "#e3b86a" },
+    { name: "Power rail", from: "psu", to: "controller", color: "#d0473a", signal: "+5V / GND", gauge: "18 AWG", fromPin: "V+/V-", toPin: "VCC/GND" },
+    { name: "I2C control", from: "brain", to: "controller", color: "#7fa6a3", signal: "SDA / SCL", gauge: "26 AWG", fromPin: "GPIO2/3", toPin: "SDA/SCL" },
+    { name: "Common ground", from: "brain", to: "psu", color: "#888888", signal: "GND", gauge: "22 AWG", fromPin: "GND", toPin: "V-" },
+    { name: "Base yaw", from: "controller", to: "baseservo", via: [[1.2, 0.5, 0]], color: "#e3b86a", signal: "PWM", gauge: "22 AWG", fromPin: "CH0", toPin: "SIG" },
+    { name: "Shoulder", from: "controller", to: "shoulderservo", via: [[1.3, 1.3, 0]], color: "#e3b86a", signal: "PWM", gauge: "22 AWG", fromPin: "CH1", toPin: "SIG" },
+    { name: "Elbow", from: "controller", to: "elbowservo", via: [[1.4, 2.6, 0]], color: "#e3b86a", signal: "PWM", gauge: "26 AWG", fromPin: "CH2", toPin: "SIG" },
+    { name: "Wrist", from: "controller", to: "wristservo", via: [[1.5, 3.8, 0.4]], color: "#e3b86a", signal: "PWM", gauge: "26 AWG", fromPin: "CH3", toPin: "SIG" },
+    { name: "Gripper", from: "controller", to: "gripperbase", via: [[1.6, 4.4, 0.7]], color: "#e3b86a", signal: "PWM", gauge: "26 AWG", fromPin: "CH4", toPin: "SIG" },
   ],
   steps: [
     { title: "Print the structure", instruction: "Print: base plate (40% infill), shoulder bracket, upper arm beam, forearm beam, gripper chassis + both jaws. PETG over PLA if the arm will run for hours — servo heat creeps.", parts: ["base"] },

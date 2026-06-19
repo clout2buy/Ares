@@ -28,6 +28,7 @@ export {
   defaultSearchChain,
   braveSearch,
   tavilySearch,
+  searxngSearch,
   withFallback,
   type WebSearchResult,
   type WebSearchOutput,
@@ -69,6 +70,12 @@ export { StripeTool, type StripeOutput } from "./Stripe.js";
 export { EmailTool, type EmailOutput } from "./Email.js";
 export { RequestUserActionTool, type RequestUserActionOutput } from "./RequestUserAction.js";
 export { makeEnterPlanModeTool, makeExitPlanModeTool, type PlanModeState } from "./PlanMode.js";
+export { WeatherTool, getWeatherText, type WeatherOutput, type WeatherCondition, type WeatherForecast } from "./Weather.js";
+export { RemindTool, setRemindScheduler, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { ConnectTool, type ConnectOutput } from "./Connect.js";
+export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
+export { GmailTool, type GmailOutput } from "./Gmail.js";
+export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
 
 import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";
@@ -90,6 +97,12 @@ import { DeployTool } from "./Deploy.js";
 import { StripeTool } from "./Stripe.js";
 import { EmailTool } from "./Email.js";
 import { RequestUserActionTool } from "./RequestUserAction.js";
+import { WeatherTool } from "./Weather.js";
+import { RemindTool } from "./Remind.js";
+import { ConnectTool } from "./Connect.js";
+import { GoogleCalendarTool } from "./GoogleCalendar.js";
+import { GmailTool } from "./Gmail.js";
+import { SpotifyTool } from "./Spotify.js";
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -116,6 +129,12 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       StripeTool,
       EmailTool,
       RequestUserActionTool,
+      WeatherTool,
+      RemindTool,
+      ConnectTool,
+      GoogleCalendarTool,
+      GmailTool,
+      SpotifyTool,
     ] as const
   : [
       ReadTool,
@@ -139,4 +158,10 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       StripeTool,
       EmailTool,
       RequestUserActionTool,
+      WeatherTool,
+      RemindTool,
+      ConnectTool,
+      GoogleCalendarTool,
+      GmailTool,
+      SpotifyTool,
     ] as const;

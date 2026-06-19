@@ -33,6 +33,12 @@ export interface OperatorBackgroundLoopOptions {
   nextActions?: () => readonly string[] | Promise<readonly string[]>;
   /** Pause gate: when this returns true, a tick is skipped (remote /pause). */
   paused?: () => boolean | Promise<boolean>;
+  /**
+   * Runs at the START of every (unpaused) tick, before goals are read. The daemon
+   * uses this to materialize DUE standing orders into fresh goals, so the same
+   * tick picks them up and executes them. Best-effort: a throw is swallowed.
+   */
+  beforeTick?: () => void | Promise<void>;
 }
 
 /**
@@ -115,6 +121,11 @@ export class OperatorBackgroundLoop {
       if (await this.isPaused()) {
         this.emit({ type: "operator_idle", reason, summary: "paused", suggestions: [] });
         return { reason, decision: decideAttention([]), ran: [] };
+      }
+      // Materialize due standing orders into goals BEFORE reading the goal set, so
+      // a recurring mission becomes runnable on the very tick it comes due.
+      if (this.opts.beforeTick) {
+        try { await this.opts.beforeTick(); } catch { /* never let a hook kill the tick */ }
       }
       const goals = await activeGoals(this.ctx.home);
       const decision = decideAttention(attentionItemsFromGoals(goals));

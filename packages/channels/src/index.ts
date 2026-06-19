@@ -13,13 +13,36 @@ export type {
   TgChat,
   TgUser,
   TgCallbackQuery,
+  TgVoice,
+  TgAudio,
+  TgFile,
   InlineKeyboardButton,
   InlineKeyboardMarkup,
   SendMessageOptions,
 } from "./telegram/api.js";
 
-export { TelegramBridge, chunkMessage } from "./telegram/bridge.js";
+export { TelegramBridge, chunkMessage, toTelegramText } from "./telegram/bridge.js";
 export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers } from "./telegram/bridge.js";
+
+export {
+  emptyRoster,
+  upsertParticipant,
+  removeParticipant,
+  markSeen,
+  findByChat,
+  isOwner,
+  isAllowed,
+  ownerChatIds,
+  allowedChatIds,
+  renderWho,
+  seedOwners,
+  loadRoster,
+  saveRoster,
+  rosterFile,
+  type Participant,
+  type ParticipantRole,
+  type RosterData,
+} from "./telegram/roster.js";
 
 export {
   OperatorTelegramReporter,
@@ -56,6 +79,54 @@ export type {
   MissionProposal,
   MissionSummary,
 } from "./telegram/commands.js";
+
+export {
+  TelegramOutbound,
+  createOutbound,
+  type OutboundConfig,
+  type OutboundMessage,
+} from "./telegram/outbound.js";
+
+export {
+  TelegramScheduler,
+  loadSchedule,
+  saveSchedule,
+  addAlarm,
+  removeAlarm,
+  listAlarms,
+  renderAlarms,
+  generateAlarmId,
+  slotsToAlarms,
+  DEFAULT_SLOTS,
+  type Alarm,
+  type ScheduleData,
+  type CheckInSlot,
+  type CheckInContext,
+  type CheckInBuilder,
+  type SchedulerOptions,
+} from "./telegram/scheduler.js";
+
+export {
+  synthesize,
+  textToVoice,
+  listVoices,
+  defaultVoice,
+  type EdgeVoice,
+  type SynthesizeOptions,
+} from "./telegram/edgeTts.js";
+
+export {
+  transcribe,
+  voiceToText,
+  type TranscribeResult,
+} from "./telegram/stt.js";
+
+export {
+  sendConnectMenu,
+  handleConnectCallback,
+  parseConnectCallback,
+} from "./telegram/connect.js";
+export type { ConnectFlowApi, ConnectFlowDeps } from "./telegram/connect.js";
 
 export type {
   ClientFrame,

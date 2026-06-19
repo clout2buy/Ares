@@ -57,6 +57,19 @@ export const WriteTool = buildTool({
     if (existed && !ctx.fileReadStamps.has(filePath)) {
       throw new Error(`${filePath} exists; Read it before overwriting so you've seen the current contents.`);
     }
+    // Staleness guard (matches Edit's discipline): a blind overwrite must not
+    // clobber changes made on disk since the last Read. New files (no stamp) are
+    // untouched; only an existing file whose content drifted from the read hash
+    // is refused — self-correctingly.
+    if (existed) {
+      const stamp = ctx.fileReadStamps.get(filePath);
+      if (stamp?.hash !== undefined) {
+        const current = await fs.readFile(filePath, "utf8").catch(() => null);
+        if (current !== null && contentHash(current) !== stamp.hash) {
+          throw new Error(`${filePath} was modified on disk since the last Read. Re-Read it and retry so you don't clobber newer changes.`);
+        }
+      }
+    }
     const written = await safeOverwrite({
       workspace: ctx.workspace,
       absPath: filePath,

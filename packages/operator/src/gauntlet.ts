@@ -14,7 +14,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { QueryEngine, type EngineTool, type Provider } from "@ares/core";
+import { QueryEngine, ContinuousVerifier, type EngineTool, type Provider } from "@ares/core";
 import { runProbe, type ProbeResult } from "./probe.js";
 import type { VerificationSpec } from "./types.js";
 
@@ -77,6 +77,11 @@ export interface GauntletOptions {
   /** Probe seam for tests. */
   probe?: (spec: VerificationSpec, ctx: { workspace: string; signal?: AbortSignal }) => Promise<ProbeResult>;
   systemPrompt?: string;
+  /** Run with the verification harness (ContinuousVerifier end-gate) ON. This is
+   *  the single biggest coding-quality feature — the model can't finish a turn
+   *  while its own edits leave the workspace red. Default ON; set false for the
+   *  A/B baseline that proves the harness moves the number. */
+  harness?: boolean;
 }
 
 const GAUNTLET_SYSTEM = `You are Ares running a scored coding evaluation. The workspace contains one task. Work it to completion with your tools: read what exists, make the change, and VERIFY it yourself (run the tests or the command) before finishing. Reality is scored after you stop — unverified claims earn nothing.`;
@@ -103,6 +108,11 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
         await writeFile(target, content, "utf8");
       }
 
+      // The verification harness under test: when on, edits schedule a narrow
+      // verify, and the end-gate refuses to let the turn finish while the
+      // workspace is red — the exact feature this gauntlet exists to measure.
+      const harnessOn = opts.harness !== false;
+      const verifier = harnessOn ? new ContinuousVerifier({ workspace }) : null;
       const engine = new QueryEngine(
         {
           provider: opts.provider,
@@ -112,13 +122,27 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
           workspace,
           signal: opts.signal,
           maxTurns: task.maxTurns ?? 16,
+          ...(verifier
+            ? {
+                drainSystemReminders: () => verifier.drainReminders().map((r) => ({ text: r.text, source: "verifier" as const })),
+                confirmTurnEnd: async () => {
+                  await verifier.settle(10_000);
+                  return verifier.drainReminders().map((r) => ({ text: r.text, source: "verifier" as const }));
+                },
+              }
+            : {}),
         },
         `gauntlet_${task.id}`,
       );
       engine.appendUserMessage(task.prompt);
-      for await (const event of engine.streamTurn()) {
-        if (event.type === "tool_start") toolCalls++;
-        if (event.type === "error" && !error) error = event.error.message;
+      try {
+        for await (const event of engine.streamTurn()) {
+          if (event.type === "tool_start") toolCalls++;
+          if (event.type === "tool_end" && event.touchedFiles?.length) verifier?.scheduleFor(event.touchedFiles);
+          if (event.type === "error" && !error) error = event.error.message;
+        }
+      } finally {
+        await verifier?.cancel();
       }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);

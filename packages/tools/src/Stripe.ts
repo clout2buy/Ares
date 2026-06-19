@@ -6,6 +6,7 @@
 // asks the owner first — this moves money.
 
 import { z } from "zod";
+import { getCredential } from "@ares/core";
 import { buildTool } from "./_shared.js";
 
 const inputSchema = z
@@ -34,12 +35,15 @@ export const StripeTool = buildTool({
     "Create a Stripe payment link (product + price + shareable checkout URL) so the owner can actually take money. Requires STRIPE_SECRET_KEY in the environment — an sk_test_… key creates a test-mode link (no real charges). Returns the checkout URL. This moves money; confirm with the owner.",
   safety: "external-state",
   concurrency: "parallel-safe",
+  // Generous headroom: three sequential POSTs (product→price→link) that move
+  // money must not be aborted mid-commit by the tight external-state default.
+  watchdogTimeoutMs: 45_000,
   inputZod: inputSchema,
   activityDescription: (i) => `Creating Stripe payment link for ${i.name}`,
 
   async checkPermissions(i, ctx) {
     if (ctx.permissionMode === "plan") return { kind: "deny", reason: "Stripe is disabled in plan mode." };
-    const live = !(process.env.STRIPE_SECRET_KEY ?? "").startsWith("sk_test_");
+    const live = !((await getCredential("STRIPE_SECRET_KEY")) ?? "").startsWith("sk_test_");
     const amount = (i.amount / 100).toFixed(2);
     return {
       kind: "ask",
@@ -49,10 +53,10 @@ export const StripeTool = buildTool({
   },
 
   async call(i, ctx): Promise<{ output: StripeOutput; display: string }> {
-    const key = process.env.STRIPE_SECRET_KEY;
+    const key = await getCredential("STRIPE_SECRET_KEY");
     if (!key) {
       throw new Error(
-        "STRIPE_NO_KEY: set STRIPE_SECRET_KEY in the environment (use an sk_test_… key for test mode). Ask the owner to add it.",
+        "STRIPE_NO_KEY: no STRIPE_SECRET_KEY in the credential vault or environment (use an sk_test_… key for test mode). Ask the owner to add it.",
       );
     }
     const post = async (path: string, form: Record<string, string>) => {

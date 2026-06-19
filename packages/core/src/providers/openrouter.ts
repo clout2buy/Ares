@@ -150,10 +150,15 @@ export class OpenRouterProvider implements Provider {
         return;
       }
       if (chunk.usage) {
+        // DeepSeek auto-caches the stable prompt prefix and reports the hit;
+        // OpenRouter/OpenAI report cached_tokens. Surface either so caching is
+        // visible and billed correctly instead of looking like full input each turn.
+        const cached = chunk.usage.prompt_tokens_details?.cached_tokens ?? chunk.usage.prompt_cache_hit_tokens;
         usage = {
           inputTokens: chunk.usage.prompt_tokens ?? 0,
           outputTokens: chunk.usage.completion_tokens ?? 0,
           reasoningTokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
+          ...(typeof cached === "number" ? { cacheReadTokens: cached } : {}),
         };
       }
       const choice = chunk.choices?.[0];
@@ -275,6 +280,11 @@ interface ChatChunk {
     prompt_tokens?: number;
     completion_tokens?: number;
     completion_tokens_details?: { reasoning_tokens?: number };
+    /** OpenAI / OpenRouter style cached-prompt accounting. */
+    prompt_tokens_details?: { cached_tokens?: number };
+    /** DeepSeek style: tokens served from / missed by its automatic context cache. */
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
   };
 }
 

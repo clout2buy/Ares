@@ -24,6 +24,10 @@ export type TelegramCommandKind =
   | "missions"
   | "mission"
   | "cancel"
+  | "model"
+  | "models"
+  | "connect"
+  | "standing"
   | "help";
 
 export interface TelegramCommand {
@@ -48,7 +52,14 @@ const ALIASES: Record<string, TelegramCommandKind> = {
   missions: "missions",
   mission: "mission",
   cancel: "cancel",
+  model: "model",
+  models: "models",
+  connect: "connect",
+  services: "connect",
+  standing: "standing",
+  orders: "standing",
   help: "help",
+  start: "help",
 };
 
 /**
@@ -113,11 +124,24 @@ export interface TelegramCommandDeps {
   listMissions?: () => MissionSummary[] | Promise<MissionSummary[]>;
   getMission?: (id: string) => MissionSummary | null | Promise<MissionSummary | null>;
   cancelMission?: (id: string) => boolean | Promise<boolean>;
+  /** List the model catalog for a provider (omit → current/all). */
+  listModels?: (provider?: string) => string[] | Promise<string[]>;
+  /** Switch the live provider/model. ok=true → the bridge resets the session. */
+  switchModel?: (provider: string, model?: string) => { ok: boolean; text: string } | Promise<{ ok: boolean; text: string }>;
+  /** Standing orders — recurring missions the operator runs unattended. */
+  standing?: {
+    list: () => string | Promise<string>;
+    add: (statement: string, cadenceMs: number) => string | Promise<string>;
+    cancel: (id: string) => boolean | Promise<boolean>;
+  };
 }
 
 export interface TelegramCommandResult {
   text: string;
   control?: "pause" | "resume" | "stop";
+  /** After a successful /model switch, the bridge drops the chat's session so the
+   *  next message spins up a fresh one on the new model. */
+  resetSession?: boolean;
 }
 
 const clip = (s: string, n: number): string => {
@@ -139,6 +163,12 @@ const HELP = [
   "/mission <id> — one mission",
   "/cancel <id> — cancel a mission",
   "/pause /resume /stop — operator control",
+  "/models [provider] — list models · /model <provider> [id] — switch",
+  "/connect — manage service connections (Google, Spotify, etc)",
+  "/standing — recurring missions Ares runs while you're gone",
+  "/standing add 2h <mission> · /standing cancel <id>",
+  "/who /activity — who can talk + who's saying what (owner)",
+  "/allow <id> <name> · /revoke <id|name> — manage people (owner)",
   "Anything else talks to Ares directly.",
 ].join("\n");
 
@@ -245,6 +275,52 @@ export async function handleTelegramCommand(
       if (!arg) return { text: "Usage: /cancel <id>" };
       const ok = deps.cancelMission ? await deps.cancelMission(arg) : false;
       return { text: ok ? `⏹ Cancelled mission ${arg}.` : `No pending mission ${arg} to cancel.` };
+    }
+
+    case "models": {
+      if (!deps.listModels) return { text: "Model listing isn't available here." };
+      const lines = await deps.listModels(arg);
+      return { text: lines.join("\n").slice(0, 3500) };
+    }
+
+    case "model": {
+      if (!deps.switchModel) return { text: "Model switching isn't available here." };
+      if (!arg) return { text: "Usage: /model <provider> [model-id]. Browse with /models <provider>." };
+      const [provider, ...rest] = arg.split(/\s+/);
+      const res = await deps.switchModel(provider.toLowerCase(), rest.join(" ").trim() || undefined);
+      return { text: res.text, resetSession: res.ok };
+    }
+
+    case "connect":
+      return { text: "__CONNECT_MENU__" };
+
+    case "standing": {
+      if (!deps.standing) return { text: "Standing orders aren't wired here." };
+      const sub = arg?.trim() ?? "";
+      // /standing  → list
+      if (!sub) return { text: redactForTelegram(["🜂 Standing orders", await deps.standing.list()].join("\n")) };
+      // /standing cancel <id>
+      const cancelM = /^(?:cancel|remove|rm|del)\s+(\S+)$/i.exec(sub);
+      if (cancelM) {
+        const ok = await deps.standing.cancel(cancelM[1]);
+        return { text: ok ? `⏹ Standing order ${cancelM[1]} cancelled.` : `No standing order ${cancelM[1]}.` };
+      }
+      // /standing add <cadence> <statement>   e.g. "add 2h summarize new email"
+      const addM = /^add\s+(\d+)\s*([mhd])\s+([\s\S]+)$/i.exec(sub);
+      if (addM) {
+        const n = Number(addM[1]);
+        const unit = addM[2].toLowerCase();
+        const ms = unit === "d" ? n * 86_400_000 : unit === "h" ? n * 3_600_000 : n * 60_000;
+        const statement = addM[3].trim();
+        if (!statement) return { text: "Usage: /standing add <2h|30m|1d> <mission>" };
+        const id = await deps.standing.add(statement, ms);
+        return {
+          text: redactForTelegram(
+            `✅ Standing order queued (${id}) — every ${addM[1]}${unit}.\n${clip(statement, 160)}\nAres will run it unattended under its safety gates and report here.`,
+          ),
+        };
+      }
+      return { text: "Usage:\n/standing — list\n/standing add <2h|30m|1d> <mission>\n/standing cancel <id>" };
     }
 
     case "pause":

@@ -10,12 +10,21 @@
 // Pure transitions only (mirrors agent/mission/loop.ts and operator/goal.ts).
 
 export type CapabilityStatus =
-  | "want" // a flagged gap, not yet started
+  | "want" // a flagged gap, no method wired yet, not yet started
+  | "available" // a real tool/skill backs it and it's wired, but NOT yet reality-verified
   | "learning" // actively acquiring, no verified success yet
   | "have" // works (>=1 verified success), not yet crystallized
   | "mastered" // crystallized into a reusable skill + reliably verified
   | "rotted" // was working, now failing its health check (O13)
   | "forbidden"; // not allowed (ToS/KYC/policy) — distinct from "can't yet"
+
+/**
+ * Where a capability node came from. Native dev primitives are the verified
+ * floor (seeded mastered). Tool/skill/business nodes are REGISTERED from real
+ * code Ares already ships but has not yet PROVEN — they seed `available`, never
+ * mastered, so "I can charge money" requires evidence, not a confident JSON row.
+ */
+export type CapabilitySource = "native" | "tool" | "skill" | "business";
 
 /** A way to satisfy a capability (O5). api > mcp > cli > skill > browser. */
 export type MethodKind = "api" | "mcp" | "cli" | "skill" | "browser";
@@ -49,6 +58,16 @@ export interface CapabilityNode {
   outcomes: CapabilityOutcomes;
   /** Novel sub-skills at first encounter — the data point for the shrink curve. */
   novelDeltaAtBirth?: number;
+  /** Coarse area this capability belongs to ("payments", "communications", …). */
+  domain?: string;
+  /** Provenance — native floor vs registered tool/skill vs business op. */
+  source?: CapabilitySource;
+  /** Gate side effects (charging money, prod deploys, live email) on a human
+   *  ok before the operator may run this unsupervised, regardless of leash. */
+  requiresHumanApproval?: boolean;
+  /** Evidence ids/summaries justifying this node's status — the durable audit
+   *  trail. EMPTY until a real verification event is logged (no proof, no claim). */
+  evidence?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -62,6 +81,9 @@ export function createCapability(input: {
   status?: CapabilityStatus;
   skillRef?: string;
   novelDeltaAtBirth?: number;
+  domain?: string;
+  source?: CapabilitySource;
+  requiresHumanApproval?: boolean;
   now?: Date;
 }): CapabilityNode {
   const at = (input.now ?? new Date()).toISOString();
@@ -75,6 +97,10 @@ export function createCapability(input: {
     skillRef: input.skillRef,
     outcomes: { ok: 0, fail: 0 },
     novelDeltaAtBirth: input.novelDeltaAtBirth,
+    domain: input.domain,
+    source: input.source,
+    requiresHumanApproval: input.requiresHumanApproval,
+    evidence: [],
     createdAt: at,
     updatedAt: at,
   };
@@ -103,9 +129,11 @@ export function recordOutcome(
     lastError: ok ? node.outcomes.lastError : opts.error?.trim() || node.outcomes.lastError,
     lastUsedAt: at,
   };
-  // First verified success promotes a learning/want capability to "have".
+  // First verified success promotes an unproven capability to "have" — this is
+  // the ONLY door from `available` (registered tool) to a reusable building
+  // block: reality has to confirm it before the planner may compose on it.
   let status = node.status;
-  if (ok && (status === "learning" || status === "want")) status = "have";
+  if (ok && (status === "learning" || status === "want" || status === "available")) status = "have";
   return { ...node, outcomes, status, updatedAt: at };
 }
 

@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import { spawn } from "node:child_process";
+import { getCredential } from "@ares/core";
 import { buildTool, resolveWorkspacePath } from "./_shared.js";
 
 const TOKEN_ENV: Record<string, string> = {
@@ -37,6 +38,9 @@ export const DeployTool = buildTool({
     "Deploy a built site or app to the web (Vercel, Netlify, or Cloudflare Pages) and return the live URL. Requires the provider's token in the environment: VERCEL_TOKEN, NETLIFY_AUTH_TOKEN, or CLOUDFLARE_API_TOKEN. Build the site first, then deploy its output directory. Outward-facing — confirm with the owner.",
   safety: "external-state",
   concurrency: "exclusive",
+  // A real deploy runs for minutes — the 20s external-state default would sever
+  // every one. Generous cap that still bounds a truly stuck provider CLI.
+  watchdogTimeoutMs: 300_000,
   inputZod: inputSchema,
   activityDescription: (i) => `Deploying to ${i.provider}${i.prod ? " (prod)" : ""}`,
 
@@ -50,10 +54,10 @@ export const DeployTool = buildTool({
   },
 
   async call(i, ctx): Promise<{ output: DeployOutput; display: string }> {
-    const token = process.env[TOKEN_ENV[i.provider]];
+    const token = await getCredential(TOKEN_ENV[i.provider]);
     if (!token) {
       throw new Error(
-        `DEPLOY_NO_TOKEN: set ${TOKEN_ENV[i.provider]} in the environment to deploy to ${i.provider}. ` +
+        `DEPLOY_NO_TOKEN: no ${TOKEN_ENV[i.provider]} in the credential vault or environment for ${i.provider}. ` +
           `Ask the owner to add it (Settings → Keys or an env var).`,
       );
     }

@@ -475,7 +475,7 @@ function barHeader(input: { workspace: string }, folder: string, provider: strin
   return [
     `${paint("ARES", t.primary)} ${paint(provider, t.model)} ${dim(folder)} ${chip(t.title, t.border)}`,
     `${dim("workspace")} ${input.workspace}`,
-    `${dim("commands")} /help  /plan  /code  /danger  /sessions  /checkpoints  /resume last  /workspace <path>  /exit`,
+    `${dim("commands")} /help  /settings  /model  /key  /routing  /plan  /code  /danger  /sessions  /exit`,
     rule(88),
   ].join("\n") + "\n";
 }
@@ -490,7 +490,7 @@ function panelHeader(input: { workspace: string }, folder: string, provider: str
     paint(sym.tl + sym.h, t.border) +
     paint(title, t.primary) +
     paint(sym.h.repeat(Math.max(0, width - visibleLength(title) - 3)) + sym.tr, t.border);
-  const commands = "/help  /plan  /code  /danger  /sessions  /checkpoints  /resume last  /exit";
+  const commands = "/help  /settings  /model  /key  /routing  /plan  /code  /danger  /sessions  /exit";
   const bodyLine = (text: string) =>
     `${paint(sym.v, t.border)} ${padRight(truncate(text, inner), inner)} ${paint(sym.v, t.border)}`;
   const footerText = ` ${truncate(commands, width - 6)} `;
@@ -510,7 +510,7 @@ function matrixHeader(input: { workspace: string }, _folder: string, provider: s
   return [
     paint(title, t.primary),
     paint(`workspace ${input.workspace}`, t.accent),
-    paint("[ /help ] [ /plan ] [ /code ] [ /danger ] [ /sessions ] [ /checkpoints ] [ /resume last ] [ /exit ]", t.accent),
+    paint("[ /help ] [ /settings ] [ /model ] [ /key ] [ /routing ] [ /plan ] [ /code ] [ /danger ] [ /exit ]", t.accent),
     rule(92),
   ].join("\n") + "\n";
 }
@@ -520,7 +520,7 @@ function proHeader(input: { workspace: string }, folder: string, provider: strin
   return [
     `${paint("ARES", t.primary)} ${chip(provider, t.border)} ${chip(folder, t.accent)} ${chip(t.title, t.primary)}`,
     `${dim("workspace")} ${input.workspace}`,
-    `${dim("menu     ")} /help  /plan  /code  /danger  /sessions  /checkpoints  /resume last  /doctor  /exit`,
+    `${dim("menu     ")} /help  /settings  /model  /key  /routing  /plan  /code  /danger  /doctor  /exit`,
     rule(90),
   ].join("\n") + "\n";
 }
@@ -544,7 +544,14 @@ export function interactiveHelp(): string {
     "Commands",
     [
       "/help                  Show this help.",
+      "/settings              Show model, key, routing, Telegram, and runtime state.",
       "/doctor                Provider and runtime status.",
+      "/models [provider]     List terminal model catalog for a provider.",
+      "/model <provider> [id] Switch the live model (id omitted = saved/default).",
+      "/keys                  Show saved API key status.",
+      "/key <provider> <key>  Save or clear a provider key (use 'clear').",
+      "/reasoning [level]     Show/set reasoning: low|medium|high|max.",
+      "/routing ...           Show/set per-lane model routing.",
       "/themes                Show installed UI themes.",
       "/theme <name>          Switch theme without restarting.",
       "/sessions              List saved .ares sessions for this workspace.",

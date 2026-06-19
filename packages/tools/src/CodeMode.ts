@@ -35,6 +35,8 @@ export const CodeModeTool = buildTool({
     "Execute a tiny async JavaScript batch program over workspace helper functions. Use when 5+ repetitive Read/Glob/Grep calls would waste context. Keep code short and return a compact JSON result.",
   safety: "workspace-write",
   concurrency: "exclusive",
+  // Batches can legitimately churn many files — generous cap, not the 60s default.
+  watchdogTimeoutMs: 180_000,
   inputZod: inputSchema,
   activityDescription: () => "Running CodeMode batch",
 

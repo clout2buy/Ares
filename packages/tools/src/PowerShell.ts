@@ -38,6 +38,8 @@ export const PowerShellTool = buildTool({
     "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts.",
   safety: "workspace-write",
   concurrency: "exclusive",
+  // Self-capping (own per-command timeout + run_in_background) — uncapped here.
+  watchdogTimeoutMs: 0,
   inputZod: inputSchema,
   activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   async checkPermissions(i, ctx) {

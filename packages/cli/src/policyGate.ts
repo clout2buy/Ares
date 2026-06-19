@@ -22,6 +22,43 @@
 import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effects";
 import type { ToolPermissionRequest } from "@ares/core";
 
+/**
+ * The categories that ALWAYS need the owner's explicit yes — even when Ares is
+ * running autonomously for a remote (Telegram) session. Money, mail, publishing
+ * to the world, credentials, and irreversible data-wipes. Everything NOT on this
+ * list (reading, web research/fetch, navigating, driving the desktop, editing
+ * the workspace, ordinary shell) runs without nagging, because the whole point
+ * of remote autonomy is that Ares moves while the owner is away.
+ */
+const REMOTE_GATED: ReadonlySet<ActionCategory> = new Set<ActionCategory>([
+  "payment_or_purchase",
+  "email_send",
+  "browser_submit",
+  "shell_destructive",
+  "git_push",
+  "credential_or_secret",
+]);
+
+/**
+ * Permission posture for REMOTE sessions (Telegram). Autonomy-first: anything
+ * that isn't outright dangerous just runs; the dangerous few escalate to the
+ * owner's phone (and auto-deny — the safe failure — if unanswered before the
+ * tool watchdog fires). PURE — no I/O.
+ *
+ *   allow → run it now, no prompt
+ *   ask   → send Allow/Deny buttons to the owner's Telegram
+ *   deny  → refuse outright
+ */
+export function remoteAutonomyDecision(request: ToolPermissionRequest): "allow" | "ask" | "deny" {
+  const category = classifyToolRequest(request);
+  // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
+  if (category === null) return "allow";
+  // The dangerous few → owner's phone.
+  if (REMOTE_GATED.has(category)) return "ask";
+  // Everything else — navigate, desktop control, file writes, ordinary shell — runs.
+  return "allow";
+}
+
 /** What the gate tells its caller to do with a staged tool call. */
 export type GateKind = "allow" | "ask" | "deny" | "defer";
 

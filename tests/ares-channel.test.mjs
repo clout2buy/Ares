@@ -208,6 +208,36 @@ test("inbound Telegram text becomes session.send on a freshly created session", 
   }
 });
 
+test("multiple Telegram texts for one chat are serialized until turn_end", async () => {
+  const ctx = await boot();
+  try {
+    ctx.tg.pushMessage(42, "first");
+    ctx.tg.pushMessage(42, "second");
+
+    const first = await waitFor(() => ctx.gateway.framesOf("session.send")[0], "first session.send");
+    assert.equal(first.sessionId, "s1");
+    assert.equal(first.text, "first");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ctx.gateway.framesOf("session.send").length, 1, "second text waits while first turn is busy");
+
+    ctx.gateway.sendEvent(first.sessionId, {
+      type: "turn_end",
+      status: "completed",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      durationMs: 5,
+    });
+
+    const second = await waitFor(
+      () => ctx.gateway.framesOf("session.send").find((f) => f.text === "second"),
+      "second session.send after turn_end",
+    );
+    assert.equal(second.sessionId, "s1");
+    assert.equal(ctx.gateway.framesOf("session.create").length, 1);
+  } finally {
+    await shutdown(ctx);
+  }
+});
+
 test("text deltas accumulate and flush as one message on turn_end", async () => {
   const ctx = await boot();
   try {

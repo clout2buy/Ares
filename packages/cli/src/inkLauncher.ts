@@ -4,8 +4,17 @@ import { OLLAMA_CLOUD_MODELS, type OllamaCloudModel } from "@ares/core";
 import { availableThemes, currentThemeName, setTheme, type ThemeName } from "./terminalUi.js";
 import type { UiSettings } from "./uiSettings.js";
 
-type ProviderId = "openai" | "ollama";
+type ProviderId = "ollama" | "openai" | "anthropic" | "deepseek" | "openrouter" | "mock";
 type LauncherPhase = "provider" | "ollama" | "openai" | "theme" | "workspace";
+
+const PROVIDER_OPTIONS: Array<{ id: ProviderId; title: string; body: string; footer: string }> = [
+  { id: "ollama", title: "Ollama Cloud", body: "Cloud and local Ollama models with tool support.", footer: "cloud/local" },
+  { id: "openai", title: "OpenAI", body: "Responses backend using your ChatGPT OAuth login.", footer: "OAuth" },
+  { id: "anthropic", title: "Anthropic", body: "Claude API models using your saved Anthropic key.", footer: "API key" },
+  { id: "deepseek", title: "DeepSeek", body: "Official DeepSeek long-context coding models.", footer: "API key" },
+  { id: "openrouter", title: "OpenRouter", body: "Use any OpenRouter model id saved in settings.", footer: "API key" },
+  { id: "mock", title: "Mock", body: "Offline echo provider for UI and installer testing.", footer: "offline" },
+];
 
 export type LauncherAction =
   | {
@@ -92,7 +101,9 @@ function AresLauncherApp({
   const app = useApp();
   const { rows, columns } = useWindowSize();
   const [phase, setPhase] = useState<LauncherPhase>("provider");
-  const [selectedProvider, setSelectedProvider] = useState(options.settings.lastProvider === "openai" ? 0 : 1);
+  const [selectedProvider, setSelectedProvider] = useState(() =>
+    Math.max(0, PROVIDER_OPTIONS.findIndex((provider) => provider.id === options.settings.lastProvider)),
+  );
   const [selectedOllama, setSelectedOllama] = useState(() => {
     const model = options.settings.lastOllamaModel ?? "qwen3-coder:480b-cloud";
     return Math.max(0, ollamaModels().findIndex((m) => m.id === model));
@@ -105,13 +116,14 @@ function AresLauncherApp({
   const [workspaceDraft, setWorkspaceDraft] = useState(options.workspace);
   const previousPhase = useRef<LauncherPhase>("provider");
   const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.graphite;
-  const openAIModels = useMemo(() => openAIModelList(options.settings), [options.settings]);
+  const currentProvider = PROVIDER_OPTIONS[Math.min(selectedProvider, PROVIDER_OPTIONS.length - 1)]?.id ?? "ollama";
+  const providerModels = useMemo(() => providerModelList(currentProvider, options.settings), [currentProvider, options.settings]);
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama]);
   const selectedModel = models[Math.min(selectedOllama, Math.max(0, models.length - 1))] ?? models[0];
-  const selectedOpenAIModel = openAIModels[Math.min(selectedOpenAI, Math.max(0, openAIModels.length - 1))] ?? "gpt-5.5";
+  const selectedOpenAIModel = providerModels[Math.min(selectedOpenAI, Math.max(0, providerModels.length - 1))] ?? defaultModelForProvider(currentProvider, options.settings);
   const maxVisibleModels = Math.max(8, rows - 15);
   const modelWindow = windowAround(selectedOllama, models.length, maxVisibleModels);
-  const openAIWindow = windowAround(selectedOpenAI, openAIModels.length, maxVisibleModels);
+  const openAIWindow = windowAround(selectedOpenAI, providerModels.length, maxVisibleModels);
 
   const finish = (action: LauncherAction) => {
     onDone(action);
@@ -133,20 +145,21 @@ function AresLauncherApp({
     }
     if (event.button === 65) {
       if (phase === "ollama") setSelectedOllama((prev) => Math.min(models.length - 1, prev + 3));
-      if (phase === "openai") setSelectedOpenAI((prev) => Math.min(openAIModels.length - 1, prev + 3));
+      if (phase === "openai") setSelectedOpenAI((prev) => Math.min(providerModels.length - 1, prev + 3));
       return;
     }
     if (event.button !== 0) return;
     if (phase === "provider") {
-      if (event.y >= 8 && event.y <= 14 && event.x >= 2 && event.x <= 36) {
-        setSelectedProvider(0);
-        setPhase("openai");
-        return;
-      }
-      if (event.y >= 8 && event.y <= 14 && event.x >= 38 && event.x <= 72) {
-        setSelectedProvider(1);
-        setPhase("ollama");
-        return;
+      if (event.y >= 8 && event.y <= 21 && event.x >= 2 && event.x <= 108) {
+        const col = event.x >= 74 ? 2 : event.x >= 38 ? 1 : 0;
+        const row = event.y >= 15 ? 1 : 0;
+        const index = row * 3 + col;
+        if (PROVIDER_OPTIONS[index]) {
+          setSelectedProvider(index);
+          setPhase(PROVIDER_OPTIONS[index].id === "ollama" ? "ollama" : "openai");
+          setSelectedOpenAI(0);
+          return;
+        }
       }
       if (event.y >= 16 && event.y <= 22 && event.x >= 2 && event.x <= 36) finish({ kind: "login" });
       if (event.y >= 16 && event.y <= 22 && event.x >= 38 && event.x <= 72) finish({ kind: "doctor" });
@@ -174,12 +187,12 @@ function AresLauncherApp({
     }
     if (phase === "openai") {
       const absolute = openAIWindow.start + event.y - 11;
-      if (absolute >= 0 && absolute < openAIModels.length) {
+      if (absolute >= 0 && absolute < providerModels.length) {
         if (absolute === selectedOpenAI) {
           finish({
             kind: "chat",
-            provider: "openai",
-            model: openAIModels[absolute] ?? "gpt-5.5",
+            provider: currentProvider,
+            model: providerModels[absolute] ?? defaultModelForProvider(currentProvider, options.settings),
             theme: selectedTheme,
             workspace,
             favoriteOllamaModels: favoriteOllama,
@@ -262,13 +275,23 @@ function AresLauncherApp({
     }
 
     if (phase === "provider") {
-      if (value === "1") setSelectedProvider(0);
-      if (value === "2") setSelectedProvider(1);
-      if (value === "3") finish({ kind: "login" });
-      if (value === "4") finish({ kind: "doctor" });
-      if (value === "5") finish({ kind: "help" });
-      if (previousKey || nextKey) setSelectedProvider((prev) => (prev === 0 ? 1 : 0));
-      if (key.return) setPhase(selectedProvider === 0 ? "openai" : "ollama");
+      const digit = Number(value);
+      if (Number.isInteger(digit) && digit >= 1 && digit <= PROVIDER_OPTIONS.length) {
+        setSelectedProvider(digit - 1);
+        setSelectedOpenAI(0);
+      }
+      if (value.toLowerCase() === "l") finish({ kind: "login" });
+      if (value.toLowerCase() === "d") finish({ kind: "doctor" });
+      if (value.toLowerCase() === "h") finish({ kind: "help" });
+      if (previousKey) {
+        setSelectedProvider((prev) => (prev - 1 + PROVIDER_OPTIONS.length) % PROVIDER_OPTIONS.length);
+        setSelectedOpenAI(0);
+      }
+      if (nextKey) {
+        setSelectedProvider((prev) => (prev + 1) % PROVIDER_OPTIONS.length);
+        setSelectedOpenAI(0);
+      }
+      if (key.return) setPhase(currentProvider === "ollama" ? "ollama" : "openai");
       return;
     }
 
@@ -313,10 +336,10 @@ function AresLauncherApp({
 
     if (phase === "openai") {
       if (previousKey) setSelectedOpenAI((prev) => Math.max(0, prev - 1));
-      if (nextKey) setSelectedOpenAI((prev) => Math.min(openAIModels.length - 1, prev + 1));
+      if (nextKey) setSelectedOpenAI((prev) => Math.min(providerModels.length - 1, prev + 1));
       if (pageUp) setSelectedOpenAI((prev) => Math.max(0, prev - 8));
-      if (pageDown) setSelectedOpenAI((prev) => Math.min(openAIModels.length - 1, prev + 8));
-      if (value.toLowerCase() === "f") {
+      if (pageDown) setSelectedOpenAI((prev) => Math.min(providerModels.length - 1, prev + 8));
+      if (value.toLowerCase() === "f" && currentProvider === "openai") {
         setFavoriteOpenAI((prev) => {
           const next = toggleFavorite(prev, selectedOpenAIModel);
           void options.onSettingsChange?.({ favoriteOpenAIModels: next });
@@ -326,7 +349,7 @@ function AresLauncherApp({
       if (key.return) {
         finish({
           kind: "chat",
-          provider: "openai",
+          provider: currentProvider,
           model: selectedOpenAIModel,
           theme: selectedTheme,
           workspace,
@@ -356,10 +379,11 @@ function AresLauncherApp({
         : phase === "openai"
           ? h(OpenAIModelDeck, {
               theme,
-              models: openAIModels.slice(openAIWindow.start, openAIWindow.end),
+              provider: currentProvider,
+              models: providerModels.slice(openAIWindow.start, openAIWindow.end),
               offset: openAIWindow.start,
               selected: selectedOpenAI,
-              favorites: favoriteOpenAI,
+              favorites: currentProvider === "openai" ? favoriteOpenAI : [],
             })
           : phase === "theme"
             ? h(ThemeDeck, { theme, selectedTheme })
@@ -400,13 +424,6 @@ function LauncherHeader({
 }
 
 function ProviderDeck({ theme, selectedProvider }: { theme: LauncherTheme; selectedProvider: number }) {
-  const cards = [
-    ["GPT OAuth", "OpenAI Responses backend using your ChatGPT OAuth login.", "gpt-5.5"],
-    ["Ollama Cloud", "Pick every cloud model from the bundled Ollama catalog.", "qwen/deepseek/kimi/glm"],
-    ["Login GPT OAuth", "Refresh the device-code login.", "auth"],
-    ["Doctor", "Check OpenAI auth and Ollama health.", "health"],
-    ["Help", "Show CLI commands and flags.", "docs"],
-  ];
   return h(
     Box,
     { flexDirection: "column", gap: 1 },
@@ -414,14 +431,14 @@ function ProviderDeck({ theme, selectedProvider }: { theme: LauncherTheme; selec
     h(
       Box,
       { flexDirection: "row", gap: 1 },
-      cards.slice(0, 2).map((card, index) =>
+      PROVIDER_OPTIONS.slice(0, 3).map((card, index) =>
         h(LauncherCard, {
-          key: card[0],
+          key: card.id,
           theme,
           hotkey: String(index + 1),
-          title: card[0],
-          body: card[1],
-          footer: card[2],
+          title: card.title,
+          body: card.body,
+          footer: card.footer,
           active: selectedProvider === index,
         }),
       ),
@@ -429,18 +446,19 @@ function ProviderDeck({ theme, selectedProvider }: { theme: LauncherTheme; selec
     h(
       Box,
       { flexDirection: "row", gap: 1 },
-      cards.slice(2).map((card, index) =>
+      PROVIDER_OPTIONS.slice(3).map((card, index) =>
         h(LauncherCard, {
-          key: card[0],
+          key: card.id,
           theme,
-          hotkey: String(index + 3),
-          title: card[0],
-          body: card[1],
-          footer: card[2],
-          active: false,
+          hotkey: String(index + 4),
+          title: card.title,
+          body: card.body,
+          footer: card.footer,
+          active: selectedProvider === index + 3,
         }),
       ),
     ),
+    h(Text, { color: theme.dim }, "L login OpenAI OAuth | D doctor | H help | API keys: use /key inside chat"),
   );
 }
 
@@ -525,12 +543,14 @@ function ModelDeck({
 
 function OpenAIModelDeck({
   theme,
+  provider,
   models,
   offset,
   selected,
   favorites,
 }: {
   theme: LauncherTheme;
+  provider: ProviderId;
   models: string[];
   offset: number;
   selected: number;
@@ -545,8 +565,8 @@ function OpenAIModelDeck({
       paddingX: 1,
       minHeight: 12,
     },
-    h(Box, { justifyContent: "space-between" }, h(Text, { color: theme.accent, bold: true }, "GPT OAuth"), h(Text, { color: theme.dim }, "F favorite | click selected model to launch")),
-    h(Text, { color: theme.dim }, "OpenAI Responses through ChatGPT OAuth."),
+    h(Box, { justifyContent: "space-between" }, h(Text, { color: theme.accent, bold: true }, providerLabel(provider)), h(Text, { color: theme.dim }, provider === "openai" ? "F favorite | click selected model to launch" : "click selected model to launch")),
+    h(Text, { color: theme.dim }, providerHint(provider)),
     h(Text, { color: theme.dim }, ""),
     ...models.map((model, index) => {
       const absolute = offset + index;
@@ -600,10 +620,10 @@ function WorkspaceDeck({ theme, workspaceDraft }: { theme: LauncherTheme; worksp
 function LauncherFooter({ theme, phase }: { theme: LauncherTheme; phase: LauncherPhase }) {
   const help =
     phase === "provider"
-      ? "A/D or arrows choose | Enter open | 1-5 quick launch | T theme | W workspace | Q quit"
+      ? "A/D or arrows choose | 1-6 jump | Enter open | L login | D doctor | H help | T theme | W workspace | Q quit"
       : phase === "workspace"
         ? "type path | Enter accept | Esc cancel"
-        : "A/D or arrows move | PgUp/PgDn jump | F favorite | Enter launch | P providers | T theme | Q back";
+        : "A/D or arrows move | PgUp/PgDn jump | F favorite where supported | Enter launch | P providers | T theme | Q back";
   return h(Box, { marginTop: 1 }, h(Text, { color: theme.dim }, help));
 }
 
@@ -637,6 +657,44 @@ function groupForModel(model: OllamaCloudModel): string {
 
 function cleanModelName(id: string): string {
   return id.replace(/-cloud$/u, "").replace(/:cloud$/u, "").replace(/:/gu, " ");
+}
+
+function providerModelList(provider: ProviderId, settings: UiSettings): string[] {
+  if (provider === "ollama") return ollamaModels().map((model) => model.id);
+  if (provider === "openai") return openAIModelList(settings);
+  if (provider === "anthropic") {
+    return unique([
+      settings.lastAnthropicModel,
+      "claude-fable-5",
+      "claude-opus-4-8",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-5-20251001",
+    ]);
+  }
+  if (provider === "deepseek") {
+    return unique([settings.lastDeepSeekModel, "deepseek-v4-pro", "deepseek-v4-flash"]);
+  }
+  if (provider === "openrouter") {
+    return unique([settings.lastOpenRouterModel, "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.5-pro"]);
+  }
+  return ["mock-echo"];
+}
+
+function defaultModelForProvider(provider: ProviderId, settings: UiSettings): string {
+  return providerModelList(provider, settings)[0] ?? "mock-echo";
+}
+
+function providerLabel(provider: ProviderId): string {
+  return PROVIDER_OPTIONS.find((item) => item.id === provider)?.title ?? provider;
+}
+
+function providerHint(provider: ProviderId): string {
+  if (provider === "openai") return "OpenAI Responses through ChatGPT OAuth.";
+  if (provider === "anthropic") return "Claude API models. Set a key with /key anthropic <value> inside chat.";
+  if (provider === "deepseek") return "Official DeepSeek models. Set a key with /key deepseek <value> inside chat.";
+  if (provider === "openrouter") return "OpenRouter model ids. Set a key with /key openrouter <value> inside chat.";
+  if (provider === "mock") return "Offline echo provider for installer and UI testing.";
+  return "Ollama Cloud and local Ollama models.";
 }
 
 function openAIModelList(settings: UiSettings): string[] {

@@ -19,7 +19,7 @@ import { loadTelegramConfig, saveTelegramConfig, clearTelegramConfig } from "./t
 const inputSchema = z
   .object({
     action: z.enum(["status", "verify", "link", "save", "disable", "reset"]).describe(
-      "status: show current config. verify: check a bot token (pass token). link: discover your chat from a /start you sent the bot. save: allowlist a chat (pass chat_id) + enable + test ping. disable: turn off (keep config). reset: wipe config.",
+      "status: show current config. verify: check a bot token (REQUIRES token). link: discover your chat from a /start you sent the bot. save: allowlist a chat (REQUIRES chat_id from link) + enable + test ping. disable: turn off (keep config). reset: wipe config. Do NOT call 'verify' without a token or 'save' without a chat_id.",
     ),
     token: z.string().optional().describe("Bot token from @BotFather — only for 'verify'."),
     chat_id: z.number().int().optional().describe("Chat id to allowlist — only for 'save' (use the id from 'link')."),
@@ -48,7 +48,7 @@ export function makeTelegramSetupTool(deps: TelegramSetupDeps = {}) {
   return buildTool({
     name: "TelegramSetup",
     description:
-      "Connect/manage the owner's Telegram so they can command Ares from their phone. Use this when the owner asks to set up / connect / enable Telegram. Flow: ask for their bot token from @BotFather → verify(token); ask them to DM /start to the bot, then link() to discover their chat; confirm it's them, then save(chat_id). The token is stored encrypted and never shown.",
+      "Connect/manage the owner's Telegram so they can command Ares from their phone. Flow: ask for their bot token from @BotFather → verify(token); ask them to DM /start to the bot, then link() to discover their chat; confirm it's them, then save(chat_id). The token is stored encrypted and never shown. ONLY call this when the owner, THIS turn, explicitly asked to connect / set up / enable / disable Telegram. Do NOT call it to answer a question ABOUT Telegram, to report status unprompted, to add another person to an already-connected bot, or on an incidental mention of the word 'telegram' — just talk to them instead.",
     safety: "external-state",
     concurrency: "exclusive",
     inputZod: inputSchema,
@@ -97,7 +97,7 @@ export function makeTelegramSetupTool(deps: TelegramSetupDeps = {}) {
           await saveTelegramConfig({ allowedChats: [i.chat_id], defaultChatId: i.chat_id, enabled: true });
           let pinged = false;
           try {
-            await apiFactory(c.botToken).sendMessage(i.chat_id, "🜂 Ares Telegram link is live. Send /help.");
+            await apiFactory(c.botToken).sendMessage(i.chat_id, "Ares Telegram link saved. Start or restart Garrison, then send /help.");
             pinged = true;
           } catch {
             // config is saved regardless; the ping is best-effort confirmation

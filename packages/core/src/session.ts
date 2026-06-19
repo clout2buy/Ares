@@ -7,7 +7,7 @@
 //
 // Full DAG fork/diff/rollback come in M4; M1 provides linear rollout.
 
-import { mkdir, appendFile, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, appendFile, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -288,6 +288,8 @@ export interface SessionSummary {
   updatedAt: string;
   eventCount: number;
   preview: string;
+  /** Owner-set custom name (meta.label). Falls back to the preview in the UI. */
+  label?: string;
 }
 
 export interface SessionSnapshot {
@@ -328,6 +330,7 @@ export async function listSessions(workspace: string, limit = 20): Promise<Sessi
           updatedAt: updated?.mtime.toISOString() ?? meta.createdAt,
           eventCount,
           preview,
+          label: meta.label,
         };
       }),
   );
@@ -361,6 +364,34 @@ export async function loadSessionSnapshot(
     omittedMessageCount: replay.omittedMessageCount,
     replayedMessageCount: replay.messages.length,
   };
+}
+
+/** Permanently remove a session's on-disk transcript + metadata. Idempotent:
+ *  a missing session resolves false rather than throwing. */
+export async function deleteSession(workspace: string, sessionId: string): Promise<boolean> {
+  const safe = path.basename(sessionId); // never escape the sessions root
+  if (!safe || safe !== sessionId) return false;
+  const sessionDir = path.join(workspace, ".ares", "sessions", safe);
+  const meta = await readSessionMeta(sessionDir);
+  if (!meta) return false;
+  await rm(sessionDir, { recursive: true, force: true });
+  return true;
+}
+
+/** Rename a session by setting its meta.label. Empty/whitespace clears the label
+ *  (the UI falls back to the preview). Returns false if the session is missing. */
+export async function renameSession(workspace: string, sessionId: string, label: string): Promise<boolean> {
+  const safe = path.basename(sessionId);
+  if (!safe || safe !== sessionId) return false;
+  const sessionDir = path.join(workspace, ".ares", "sessions", safe);
+  const meta = await readSessionMeta(sessionDir);
+  if (!meta) return false;
+  const trimmed = label.trim().slice(0, 120);
+  const next: SessionMeta = { ...meta };
+  if (trimmed) next.label = trimmed;
+  else delete next.label;
+  await writeFile(path.join(sessionDir, "meta.json"), JSON.stringify(next, null, 2) + "\n", "utf8");
+  return true;
 }
 
 async function readSessionMeta(sessionDir: string): Promise<SessionMeta | null> {

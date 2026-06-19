@@ -86,6 +86,9 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
   concurrency: Concurrency;
   providerHint?: ProviderHint;
   deferLoading?: boolean;
+  /** Per-tool execution watchdog (ms). 0 = uncapped (self-capping tools);
+   *  omitted = engine picks a class default from `safety`. */
+  watchdogTimeoutMs?: number;
   inputZod: I;
   checkPermissions?: (input: z.infer<I>, ctx: RichToolContext) => Promise<PermissionDecision>;
   call: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolResult<O>>;
@@ -106,6 +109,7 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     concurrency: def.concurrency,
     providerHint: def.providerHint,
     deferLoading: def.deferLoading,
+    watchdogTimeoutMs: def.watchdogTimeoutMs,
   };
 
   const checkPermissions = async (

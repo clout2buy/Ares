@@ -604,6 +604,15 @@ export class QueryEngine {
     const seenGatherSigs = new Set<string>();
     // C3 — times we've auto-continued after the model hit its output-token cap.
     let maxTokensContinues = 0;
+    // Loop precision (L-phase): catch spinning the failure-breaker misses —
+    // identical SUCCESSFUL calls, A/B/A/B oscillation, and an absolute per-turn
+    // tool-call ceiling. All fresh per turn, so lifecycle is automatic.
+    const repeatStreak = new Map<string, number>();
+    const roundSigHistory: string[] = [];
+    let totalToolCalls = 0;
+    let repeatBreakerFired = false;
+    let oscillationFired = false;
+    let ceilingNudged = false;
 
     for (let iter = 0; iter < maxIters; iter++) {
       // ─── Stream one assistant turn from the provider ─────────────────
@@ -943,6 +952,57 @@ export class QueryEngine {
         breakerFired = false; // re-arm once the loop clears
       }
 
+      // ── identical-call (no-op loop) + oscillation detectors ─────────────
+      // The failure breaker only catches repeated FAILURES. These catch a model
+      // re-issuing the identical SUCCESSFUL call (a no-op loop — e.g. the same
+      // TodoWrite every round to game the gather-stall) and A/B/A/B oscillation.
+      const roundSigs = new Set<string>();
+      for (const use of pendingToolUses) roundSigs.add(canonicalCallSignature(use.name, use.input));
+      for (const sig of roundSigs) repeatStreak.set(sig, (repeatStreak.get(sig) ?? 0) + 1);
+      for (const sig of [...repeatStreak.keys()]) if (!roundSigs.has(sig)) repeatStreak.delete(sig);
+      const repeatedSig = [...repeatStreak.entries()].find(([, n]) => n >= repeatCallLimit())?.[0];
+      if (repeatedSig && !repeatBreakerFired) {
+        repeatBreakerFired = true;
+        // Show the REAL tool name, not the lowercased canonical key.
+        const toolName = pendingToolUses.find((u) => canonicalCallSignature(u.name, u.input) === repeatedSig)?.name ?? repeatedSig.split("::")[0];
+        this.messages.push({
+          id: cryptoId(),
+          role: "user",
+          content: [{
+            type: "system_reminder",
+            text: `You've issued the identical ${toolName} call ${repeatCallLimit()} times in a row with no new input — a no-op loop even though it succeeds. Use the result you already have, or change approach.`,
+          }],
+          createdAt: new Date().toISOString(),
+        });
+        yield { type: "system_reminder_injected", text: `loop-guard: identical ${toolName} call repeated — nudging to converge`, source: "instructions" };
+      } else if (!repeatedSig) {
+        repeatBreakerFired = false; // re-arm once the repeat clears
+      }
+
+      const roundSig = [...roundSigs].sort().join("|");
+      roundSigHistory.push(roundSig);
+      if (roundSigHistory.length > 6) roundSigHistory.shift();
+      const h = roundSigHistory;
+      if (
+        h.length >= 4 &&
+        h[h.length - 1] === h[h.length - 3] &&
+        h[h.length - 2] === h[h.length - 4] &&
+        h[h.length - 1] !== h[h.length - 2] &&
+        !oscillationFired
+      ) {
+        oscillationFired = true;
+        this.messages.push({
+          id: cryptoId(),
+          role: "user",
+          content: [{
+            type: "system_reminder",
+            text: `You are oscillating between two states without converging — pick ONE direction and commit, or tell the user what's blocking the decision.`,
+          }],
+          createdAt: new Date().toISOString(),
+        });
+        yield { type: "system_reminder_injected", text: "loop-guard: A/B oscillation detected — commit to one path", source: "instructions" };
+      }
+
       // C1 mid-turn drain: verification that finished while tools ran reaches
       // the model NOW, in the same turn — not after it has already claimed done.
       const midTurn = this.cfg.drainSystemReminders?.() ?? [];
@@ -984,6 +1044,35 @@ export class QueryEngine {
           createdAt: new Date().toISOString(),
         });
         yield { type: "system_reminder_injected", text: "convergence: gather-stall detected — deliver now", source: "instructions" };
+      }
+
+      // ── absolute per-turn tool-call ceiling (graceful end) ──────────────
+      totalToolCalls += pendingToolUses.length;
+      const ceiling = toolCallCeiling();
+      if (totalToolCalls >= Math.floor(ceiling * 0.85) && !ceilingNudged) {
+        ceilingNudged = true;
+        this.messages.push({
+          id: cryptoId(),
+          role: "user",
+          content: [{
+            type: "system_reminder",
+            text: `You're approaching this turn's tool-call ceiling (${totalToolCalls}/${ceiling}). Wrap up: deliver what you have now or state precisely what's blocking you.`,
+          }],
+          createdAt: new Date().toISOString(),
+        });
+        yield { type: "system_reminder_injected", text: "convergence: approaching tool-call ceiling — deliver now", source: "instructions" };
+      }
+      if (totalToolCalls >= ceiling) {
+        // The tool_result for this round is already pushed above (no orphan
+        // tool_use), so end GRACEFULLY (completed) — NOT the failed
+        // max_turns_exceeded backstop. Partial work is preserved.
+        yield {
+          type: "turn_end",
+          status: "completed",
+          usage: totalUsage,
+          durationMs: Date.now() - startedAt,
+        };
+        return;
       }
 
       // Loop continues: provider will see the new tool_result message.
@@ -1126,7 +1215,14 @@ export class QueryEngine {
         emitProgress: (data) => emit({ type: "tool_progress", id: use.id, data }),
         fileReadStamps: this.cfg.fileReadStamps,
       };
-      const result = await use.tool.call(use.input, ctx);
+      // Watchdog: bound this single tool call. The MERGED child signal replaces
+      // ctx.signal so the tool's own fetch/child aborts on timeout — turning the
+      // 5-minute hang into a fast, correctable is_error the model can adapt to.
+      const result = await withWatchdog(
+        watchdogTimeoutMsFor(use.tool.schema),
+        this.liveSignal(),
+        (signal) => use.tool.call(use.input, { ...ctx, signal }),
+      );
       const durationMs = Date.now() - t0;
       emit({
         type: "tool_end",
@@ -1168,7 +1264,20 @@ export class QueryEngine {
       };
     } catch (err) {
       const durationMs = Date.now() - t0;
-      const message = err instanceof Error ? err.message : String(err);
+      // A watchdog abort gets an actionable message so the model changes course
+      // instead of re-trying the same hang. Stays is_error so the circuit-breaker
+      // accounting (failStreak) still counts it as a failure signal.
+      const message =
+        err instanceof ToolWatchdogError
+          ? use.tool.schema.safety === "external-state"
+            ? // An aborted fetch only stops the CLIENT — a POST that reached the
+              // server may have COMMITTED. Never invite a blind retry (double
+              // charge / double send); tell the model to verify first.
+              `Tool ${use.name} exceeded its ${err.toolMs}ms watchdog and was aborted — but it MAY have already taken effect on the remote service. Do NOT blindly retry; verify the outcome first, then decide.`
+            : `Tool ${use.name} exceeded its ${err.toolMs}ms watchdog and was aborted — result unavailable. Try a narrower input, a different approach, or proceed without it.`
+          : err instanceof Error
+            ? err.message
+            : String(err);
       emit({ type: "tool_error", id: use.id, error: message, durationMs });
       if (this.cfg.hookManager) {
         await this.cfg.hookManager.run({
@@ -1246,6 +1355,72 @@ const DEFAULT_TOOL_CONCURRENCY = 5;
 function toolConcurrencyLimit(): number {
   const raw = Number(process.env.ARES_MAX_TOOL_CONCURRENCY);
   return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_TOOL_CONCURRENCY;
+}
+
+/** Error tag for a watchdog-aborted tool — distinct from a user/turn abort. */
+export class ToolWatchdogError extends Error {
+  constructor(public readonly toolMs: number) {
+    super(`watchdog: tool exceeded ${toolMs}ms`);
+    this.name = "ToolWatchdogError";
+  }
+}
+
+/**
+ * The watchdog deadline for one tool call. An explicit `watchdogTimeoutMs` on
+ * the schema wins (including 0 = uncapped, for self-capping tools like
+ * Bash/Task). Otherwise a class default by safety: networked external-state is
+ * the tightest (a hung fetch is the classic stall), reads next, and
+ * workspace-write/destructive get the most room. ARES_TOOL_WATCHDOG_MS overrides
+ * the default globally (0 disables the watchdog everywhere).
+ */
+function watchdogTimeoutMsFor(schema: ToolSchema): number {
+  if (typeof schema.watchdogTimeoutMs === "number") return Math.max(0, Math.floor(schema.watchdogTimeoutMs));
+  const env = Number(process.env.ARES_TOOL_WATCHDOG_MS);
+  if (Number.isFinite(env) && env >= 0) return Math.floor(env);
+  switch (schema.safety) {
+    case "external-state":
+      return 20_000;
+    case "workspace-write":
+    case "destructive":
+      return 60_000;
+    default:
+      return 30_000;
+  }
+}
+
+/**
+ * Run a tool under a deadline. timeoutMs<=0 is a byte-for-byte fast path (the
+ * tool runs on the parent signal, unchanged). Otherwise a child controller is
+ * merged with the parent (so interrupt()/cfg.signal STILL abort the tool), a
+ * watchdog timer fires the child abort, and run() races an abort-reject. The
+ * timer is unref'd — a pure backstop that never holds the event loop open.
+ */
+async function withWatchdog<T>(
+  timeoutMs: number,
+  parentSignal: AbortSignal,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (timeoutMs <= 0) return run(parentSignal);
+  const ctrl = new AbortController();
+  const merged = AbortSignal.any([parentSignal, ctrl.signal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<never>((_, reject) => {
+    // NOT unref'd on purpose: while the tool is in flight the watchdog is ACTIVE
+    // work (it must keep the loop alive to fire on a tool that hangs with no
+    // other I/O pending — the exact case it exists for). The finally clears it
+    // the instant the tool settles, so it never holds the process open after.
+    timer = setTimeout(() => {
+      // Reject FIRST so Promise.race settles with the tagged ToolWatchdogError;
+      // THEN abort so the (now-abandoned) tool's own signal/fetch tears down.
+      reject(new ToolWatchdogError(timeoutMs));
+      ctrl.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(merged), watchdog]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const SOLO_TOOL_NAMES = new Set([
@@ -1450,6 +1625,7 @@ export const __internal = {
   analyzeToolDeps,
   buildDepAwareBatches,
   canonicalToolKey,
+  canonicalCallSignature,
   normalizeToolInput,
   resolveEngineTool,
 };
@@ -1636,6 +1812,60 @@ const PROGRESS_TOOLS = new Set([
 function currentGatherStallRounds(): number {
   const raw = Number(process.env.ARES_GATHER_STALL_ROUNDS);
   return Number.isFinite(raw) && raw >= 2 ? Math.floor(raw) : 10;
+}
+
+/** A stable per-CALL signature (tool + canonicalized args), so "the identical
+ *  call again" matches regardless of key order. Unlike gatherSignature (which is
+ *  gather-tool-specific and tracks NEW targets), this keys on the WHOLE input —
+ *  it catches a model re-issuing the exact same successful call in a no-op loop. */
+function canonicalCallSignature(name: string, input: unknown): string {
+  return `${canonicalToolKey(name)}::${stableArgsDigest(input)}`;
+}
+
+function stableArgsDigest(input: unknown): string {
+  // HASH the full canonical args (not a 200-char truncation): two different
+  // full-file Write/Edit payloads share a long boilerplate prefix, so truncating
+  // collapsed them into one signature and falsely tripped the repeat/oscillation
+  // detectors. A full-content hash makes distinct calls distinct.
+  try {
+    const raw =
+      input === null || typeof input !== "object"
+        ? String(input)
+        : Object.keys(input as Record<string, unknown>)
+            .sort()
+            .map((k) => {
+              const v = (input as Record<string, unknown>)[k];
+              return `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`;
+            })
+            .join("&");
+    return fnv1a(raw);
+  } catch {
+    return fnv1a(String(input));
+  }
+}
+
+/** Tiny deterministic hash (FNV-1a, base36) — no crypto, no Math.random. */
+function fnv1a(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** Threshold for the identical-call (no-op loop) detector. */
+function repeatCallLimit(): number {
+  const raw = Number(process.env.ARES_REPEAT_CALL_LIMIT);
+  return Number.isFinite(raw) && raw >= 2 ? Math.floor(raw) : 3;
+}
+
+/** Absolute per-turn tool-call ceiling — a graceful backstop that ends the turn
+ *  cleanly (status 'completed', partial work preserved) rather than the failed
+ *  max_turns_exceeded path. Default high enough no legit build hits it. */
+function toolCallCeiling(): number {
+  const raw = Number(process.env.ARES_MAX_TURN_TOOL_CALLS);
+  return Number.isFinite(raw) && raw >= 10 ? Math.floor(raw) : 400;
 }
 
 function contextBudgetAttempts(configuredBudgetTokens: number): number[] {

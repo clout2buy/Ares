@@ -116,6 +116,11 @@ export class AnthropicProvider implements Provider {
       headers["x-app"] = ANTHROPIC_OAUTH_X_APP;
       headers["anthropic-dangerous-direct-browser-access"] = "true";
       const existingSystem = Array.isArray(body.system) ? body.system : [];
+      // Block 0 stays byte-identical — it's the required OAuth contract string
+      // (the token is rejected otherwise; see ares-anthropic.test.mjs). The
+      // "Claude Code" identity leak is neutralized at the INSTRUCTION level by the
+      // always-on identity anchor in composeAgentSystemPrompt, which explicitly
+      // names "Claude Code" as a transport label, not the agent's name.
       body.system = [
         { type: "text", text: ANTHROPIC_OAUTH_IDENTITY },
         ...existingSystem,

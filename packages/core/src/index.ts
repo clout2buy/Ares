@@ -88,6 +88,8 @@ export {
   Session,
   listSessions,
   loadSessionSnapshot,
+  deleteSession,
+  renameSession,
   type SessionOptions,
   type SessionSummary,
   type SessionSnapshot,
@@ -148,6 +150,45 @@ export {
 } from "./providers/openrouter.js";
 
 export { buildPromptCacheKey, type PromptCacheKey } from "./promptCache.js";
+
+export {
+  getCredential,
+  setCredential,
+  deleteCredential,
+  listCredentialNames,
+  hasCredential,
+  encryptSecret,
+  decryptSecret,
+  type CredentialLookup,
+} from "./credentials.js";
+
+export {
+  buildAuthorizeUrl,
+  exchangeCodeForTokens,
+  refreshTokens,
+  getValidAccessToken,
+  storeTokens,
+  loadTokens,
+  isExpired,
+  clientIdName,
+  clientSecretName,
+  type OAuthProviderConfig,
+  type OAuthTokens,
+  type OAuthDeps,
+} from "./oauth.js";
+
+export {
+  OAUTH_PROVIDERS,
+  PROVIDER_LABELS,
+  getProviderConfig,
+  listProviders,
+} from "./oauthProviders.js";
+
+export {
+  startOAuthFlow,
+  connectedProviders,
+  type OAuthFlowOptions,
+} from "./oauthCallback.js";
 
 export {
   routeModel,

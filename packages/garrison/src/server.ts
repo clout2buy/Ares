@@ -261,7 +261,10 @@ export class GarrisonServer {
             this.enqueueFrame(client, { type: "event", sessionId: session.id, event }),
           );
           client.detachBySession.set(session.id, detach);
-          this.enqueueFrame(client, { type: "session.created", session });
+          // Broadcast the new session to every authenticated client so other
+          // surfaces (desktop UI, terminal, companion apps) can attach and
+          // follow the conversation in real time.
+          this.broadcast({ type: "session.created", session });
         } catch (err) {
           this.enqueueError(client, errorMessage(err));
         }

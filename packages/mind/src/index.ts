@@ -73,6 +73,16 @@ export {
   type ReflectOutcome,
 } from "./memory/afterAction.js";
 export {
+  buildConversationDigest,
+  mergeDurableFacts,
+  CONVERSATION_REFLECT_SYSTEM,
+  DURABLE_FACTS_SCHEMA_HINT,
+  type DurableFact,
+  type DurableFactKind,
+  type ReflectStoreLike,
+  type MergeFactsResult,
+} from "./memory/conversationReflect.js";
+export {
   mindPaths,
   aresHome,
   migrateLegacyHome,

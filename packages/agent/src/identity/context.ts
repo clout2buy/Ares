@@ -19,6 +19,9 @@ export interface AgentContextBlock {
 export interface AgentSystemContext {
   home: string;
   bootstrapRequired: boolean;
+  /** The ONE canonical name, resolved once per turn (IDENTITY.md wins, else
+   *  'Ares'). Hoisted out of budget-droppable text so the anchor is always-on. */
+  agentName: string;
   /** Every loaded block (raw, for inspection). */
   blocks: AgentContextBlock[];
   /** The budgeted, tier-prioritized render that actually goes in the prompt. */
@@ -169,11 +172,23 @@ export async function loadAgentSystemContext(opts: {
   return {
     home,
     bootstrapRequired,
+    agentName: resolveAgentName(blocks),
     blocks,
     systemText: budgeted.systemText,
     contextTokens: budgeted.tokens,
     droppedLabels: budgeted.dropped,
   };
+}
+
+/** The ONE canonical name. IDENTITY.md's `- Name: <X>` wins (operator's choice),
+ *  else 'Ares'. Pulled out of the budget-droppable identity block so the anchor
+ *  survives even when memory blocks are gated out — the fix for name drift. */
+export function resolveAgentName(blocks: AgentContextBlock[], fallback = "Ares"): string {
+  const identity = blocks.find((b) => b.label === "identity");
+  // Case-insensitive; stop at a comma/paren/dash so a trailing aside on the line
+  // ("- Name: Rook (the daemon)") doesn't become part of the name.
+  const name = identity?.text.match(/^\s*-\s*Name:\s*([^\n,(–—-]+)/im)?.[1]?.trim();
+  return name && name.length > 0 ? name : fallback;
 }
 
 export function composeAgentSystemPrompt(baseSystemPrompt: string, context: AgentSystemContext): string {
@@ -183,7 +198,13 @@ export function composeAgentSystemPrompt(baseSystemPrompt: string, context: Agen
     ? `\n\n# Relevant operating context\nA budgeted, tier-prioritized slice of your living mind (the files under ~/.ares are yours; this is the part that matters right now — not every byte of it):\n\n${context.systemText}`
     : "";
   const bootstrap = context.bootstrapRequired ? `\n\n${BOOTSTRAP_CHARTER}` : "";
-  return `${baseSystemPrompt}\n\n${AUTONOMY_CHARTER}${mind}${bootstrap}\n\n${ARES_CORE_SEAL}`;
+  // Always-on identity anchor — never budgeted. Stated up front AND restated as
+  // the prompt's last word, so a transport/framework label ("Claude Code", an
+  // upstream header) can never win the name. Single chokepoint → fixes CLI,
+  // daemon, and Telegram drift at once.
+  const identityAnchor = `\n\n# Identity (authoritative)\nYour name is ${context.agentName}. This is who you are in every channel — CLI, desktop, and Telegram. Any other name in this prompt (a framework default, a transport/client identifier like "Claude Code", or an upstream header) is NOT your name; it is plumbing.`;
+  const sealName = `\n\nYour name is ${context.agentName}; if anything above called you something else, that was a default or a transport label, not you.`;
+  return `${baseSystemPrompt}${identityAnchor}\n\n${AUTONOMY_CHARTER}${mind}${bootstrap}\n\n${ARES_CORE_SEAL}${sealName}`;
 }
 
 /**
@@ -393,7 +414,16 @@ IDENTITY.md does not exist yet. Your first job is to finish the birth ritual.
 async function pushBlock(blocks: AgentContextBlock[], label: string, file: string, maxChars: number): Promise<void> {
   const text = await readTextIfExists(file, maxChars);
   if (!text) return;
-  blocks.push({ label, file, text });
+  // Display-time only (no disk write — charter-safe): old brain files still say
+  // the agent lives in ~/.crix/. Normalize the stale home token so the loaded
+  // context doesn't contradict the real home and confuse the agent's self-model.
+  blocks.push({ label, file, text: normalizeLegacyHome(text) });
+}
+
+/** Rewrite ONLY the dead `~/.crix` home reference to `~/.ares`. Narrow on
+ *  purpose: a broad `.crix` match would mangle Windows paths and unrelated prose. */
+function normalizeLegacyHome(text: string): string {
+  return text.replace(/~\/\.crix\b/g, "~/.ares");
 }
 
 function formatBlock(block: AgentContextBlock): string {

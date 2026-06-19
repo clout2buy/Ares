@@ -13,6 +13,7 @@ export interface OperatorPaths {
   graphDir: string;
   acquisitionsDir: string;
   lessonsDir: string;
+  standingDir: string;
 }
 
 export function operatorPaths(explicit?: string): OperatorPaths {
@@ -26,5 +27,6 @@ export function operatorPaths(explicit?: string): OperatorPaths {
     graphDir: path.join(operatorDir, "graph"),
     acquisitionsDir: path.join(operatorDir, "acquisitions"),
     lessonsDir: path.join(operatorDir, "lessons"),
+    standingDir: path.join(operatorDir, "standing-orders"),
   };
 }

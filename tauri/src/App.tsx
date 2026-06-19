@@ -21,7 +21,7 @@
 //
 // In a plain browser (no native bridge) the app runs in DEMO mode.
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -30,6 +30,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 // Any model plugged into Ares emits a HoloSpec (*.holo.json) and this renders
 // it: exploded view, assembly steps, wiring overlay, BOM with STL export.
 import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packages/cli/src/holotable";
+import { UpdateBanner } from "./UpdateBanner";
 import "./styles.css";
 
 // ─── Bridge contract ───────────────────────────────────────────────────────
@@ -56,8 +57,8 @@ interface AresEvent {
   input?: unknown;
   /** tool_use_input_delta — partial JSON of the tool input being authored. */
   deltaJson?: string;
-  /** tool_progress — live sub-tool output (shell chunks, grep ticks, subagent activity). */
-  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string };
+  /** tool_progress — live sub-tool output (shell chunks, grep ticks, subagent activity, live browser frames). */
+  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string };
   /** compaction event fields */
   summarizedMessages?: number;
   tokensBefore?: number;
@@ -95,6 +96,55 @@ interface AresEvent {
   verifier?: string;
   state?: string;
   ok?: boolean;
+  label?: string;
+  providers?: unknown;
+  // consciousness (embedded local watcher) command replies
+  enabled?: boolean;
+  downloading?: boolean;
+  watching?: boolean;
+  pct?: number;
+  receivedBytes?: number;
+  totalBytes?: number;
+  filename?: string;
+  engineStatus?: { binaryInstalled?: boolean; available?: boolean };
+  seconds?: number;
+  observation?: string;
+  comment?: string | null;
+  spoke?: boolean;
+  at?: number;
+}
+
+interface ConsciousnessModelVm {
+  id: string;
+  role: string;
+  label: string;
+  filename: string;
+  bytes: number;
+  present: boolean;
+  downloadedBytes: number;
+}
+interface ConsciousnessVm {
+  enabled: boolean;
+  downloading: boolean;
+  ready: boolean;
+  watching: boolean;
+  paused: boolean;
+  engineInstalled: boolean;
+  engineAvailable: boolean;
+  error?: string;
+  models: ConsciousnessModelVm[];
+  /** model id → download percent */
+  progress: Record<string, number>;
+  lastObservation?: string;
+  lastComment?: string;
+  lastObservationAt?: number;
+}
+
+interface OAuthProviderVm {
+  id: string;
+  label: string;
+  connected: boolean;
+  hasApp: boolean;
 }
 
 interface BufferedEvent {
@@ -160,7 +210,7 @@ interface ToolStep {
 type Item =
   | { kind: "user"; key: string; text: string }
   | { kind: "steer"; key: string; text: string; landed?: boolean }
-  | { kind: "assistant"; key: string; text: string; thinking: string; streaming: boolean; model?: string; lane?: string; provider?: string }
+  | { kind: "assistant"; key: string; text: string; thinking: string; streaming: boolean; model?: string; lane?: string; provider?: string; proactive?: boolean }
   | { kind: "tools"; key: string; steps: ToolStep[]; startedAt: number; finishedAt?: number }
   | {
       kind: "usage";
@@ -239,6 +289,7 @@ interface SessionSummaryWire {
   provider?: { name?: string; model?: string };
   updatedAt?: string;
   preview?: string;
+  label?: string;
 }
 
 interface MessageWire {
@@ -250,7 +301,7 @@ interface MessageWire {
 function sessionFromSummary(summary: SessionSummaryWire): SessionVm {
   return {
     id: summary.id,
-    title: compact(summary.preview || "Saved session", 42),
+    title: compact(summary.label || summary.preview || "Saved session", 42),
     items: [],
     busy: false,
     tokensIn: 0,
@@ -340,6 +391,23 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.busy = true;
       session.activity = "marshalling";
       break;
+    case "consciousness_say": {
+      // A proactive remark from the Watch — drop it into the conversation as a
+      // finalized assistant bubble (never streaming, never sets busy).
+      if (last?.kind === "assistant" && last.streaming) items[items.length - 1] = { ...last, streaming: false };
+      const text = (e.text ?? "").trim();
+      if (text) {
+        items.push({
+          kind: "assistant",
+          key: nextKey(),
+          text,
+          thinking: "",
+          streaming: false,
+          proactive: true,
+        });
+      }
+      break;
+    }
     case "route_resolved": {
       // The daemon resolved which model+lane handles this turn — attach it so
       // the user can SEE routing working, per message.
@@ -1202,7 +1270,7 @@ const SANDBOX_SEED = `<!doctype html>
 </body>
 </html>`;
 
-type ForgeTab = "preview" | "sandbox" | "holo";
+type ForgeTab = "preview" | "sandbox" | "holo" | "live";
 
 interface ForgeState {
   open: boolean;
@@ -1266,11 +1334,32 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
+  const [consciousness, setConsciousness] = useState<ConsciousnessVm>({
+    enabled: false,
+    downloading: false,
+    ready: false,
+    watching: false,
+    paused: false,
+    engineInstalled: false,
+    engineAvailable: false,
+    models: [],
+    progress: {},
+  });
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [opStatus, setOpStatus] = useState<{ activeCount: number; goals: Array<{ id: string; statement: string; status: string; progress: number }>; autotick: boolean } | null>(null);
+  const [oauthProviders, setOauthProviders] = useState<OAuthProviderVm[]>([]);
+  const [strike, setStrike] = useState(0);
+  // The embedded live browser: latest JPEG frame Ares streamed while driving its
+  // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
+  const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
+  // The INTERACTIVE embedded browser — Ares drives its own self-contained HTML
+  // apps/games in-window (same-origin), no Playwright. Driven via webview_cmd.
+  const embeddedRef = useRef<EmbeddedBrowserHandle>(null);
+  const [embeddedActive, setEmbeddedActive] = useState(false);
+  const [embeddedActivity, setEmbeddedActivity] = useState("");
   const [forge, setForge] = useState<ForgeState>({ open: false, tab: "sandbox" });
   const [forgeWidth, setForgeWidth] = useState(() => Math.min(560, Math.round(window.innerWidth * 0.36)));
-  const [view, setView] = useState<"chat" | "artifacts">("chat");
+  const [view, setView] = useState<"chat" | "artifacts" | "helm">("chat");
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1459,6 +1548,73 @@ function App() {
           }
           return true;
         }
+        case "consciousness_status": {
+          const models = Array.isArray(e.models) ? (e.models as ConsciousnessModelVm[]) : [];
+          setConsciousness((c) => ({
+            ...c,
+            enabled: e.enabled === true,
+            downloading: e.downloading === true,
+            watching: e.watching === true,
+            engineInstalled: e.engineStatus?.binaryInstalled === true,
+            engineAvailable: e.engineStatus?.available === true,
+            models,
+            ready: models.length > 0 && models.every((m) => m.present),
+          }));
+          return true;
+        }
+        case "consciousness_set":
+          setConsciousness((c) => ({
+            ...c,
+            enabled: e.enabled === true,
+            watching: e.enabled === true ? c.watching : false,
+            paused: e.enabled === true ? c.paused : false,
+            error: undefined,
+          }));
+          return true;
+        case "consciousness_observation":
+          setConsciousness((c) => ({
+            ...c,
+            watching: true,
+            paused: false,
+            lastObservation: e.observation,
+            lastComment: e.spoke && e.comment ? e.comment : c.lastComment,
+            lastObservationAt: typeof e.at === "number" ? e.at : Date.now(),
+          }));
+          if (e.spoke && e.comment) pushLog(`[watch] ${e.comment}`);
+          return true;
+        case "consciousness_killed":
+          setConsciousness((c) => ({ ...c, enabled: false, watching: false, paused: false }));
+          pushLog("[watch] killswitch — consciousness halted");
+          return true;
+        case "consciousness_paused":
+          setConsciousness((c) => ({ ...c, watching: false, paused: true }));
+          pushLog(`[watch] looking away${typeof e.seconds === "number" ? ` (${e.seconds}s)` : ""}`);
+          return true;
+        case "consciousness_resumed":
+          setConsciousness((c) => ({ ...c, paused: false }));
+          daemonCmd({ type: "consciousness_status" });
+          return true;
+        case "consciousness_cancelled":
+          daemonCmd({ type: "consciousness_status" });
+          return true;
+        case "consciousness_progress": {
+          if (e.id) {
+            const id = e.id;
+            const pct = e.pct ?? 0;
+            setConsciousness((c) => ({ ...c, downloading: true, progress: { ...c.progress, [id]: pct } }));
+          }
+          return true;
+        }
+        case "consciousness_model_ready":
+          daemonCmd({ type: "consciousness_status" });
+          return true;
+        case "consciousness_ready":
+          setConsciousness((c) => ({ ...c, downloading: false, ready: true }));
+          daemonCmd({ type: "consciousness_status" });
+          return true;
+        case "consciousness_error":
+          setConsciousness((c) => ({ ...c, downloading: false, error: String(e.error ?? "download failed") }));
+          return true;
         case "skills_list":
           setSkills(Array.isArray(e.skills) ? (e.skills as SkillInfo[]) : []);
           return true;
@@ -1480,15 +1636,59 @@ function App() {
             autotick: e.autotick !== false,
           });
           return true;
+        case "oauth_status":
+          if (Array.isArray(e.providers)) setOauthProviders(e.providers as OAuthProviderVm[]);
+          return true;
+        case "oauth_url":
+          // The daemon's callback server is up; open the consent page in the
+          // user's REAL browser (codecs, logins, no automation flags).
+          if (e.url) void invoke("ares_open_url", { url: e.url }).catch(() => null);
+          return true;
+        case "oauth_connected":
+          pushLog(`[oauth] ${e.provider ?? "service"} connected`);
+          daemonCmd({ type: "oauth_status" });
+          return true;
+        case "oauth_disconnected":
+        case "oauth_credentials_set":
+          daemonCmd({ type: "oauth_status" });
+          return true;
+        case "oauth_error":
+          pushLog(`[oauth] ${e.provider ?? "service"} failed: ${e.error ? stringify(e.error) : "unknown"}`);
+          return true;
         case "sessions_list": {
           const disk = Array.isArray(e.sessions) ? (e.sessions as SessionSummaryWire[]) : [];
           pushLog(`[garrison] ${disk.length} sessions on disk`);
           setSessions((current) => {
             const byId = new Map(current.map((session) => [session.id, session]));
-            const merged = disk.map((summary) => byId.get(summary.id) ?? sessionFromSummary(summary));
+            const merged = disk.map((summary) => {
+              const existing = byId.get(summary.id);
+              if (!existing) return sessionFromSummary(summary);
+              // A rename done on disk (meta.label) should refresh the rail title.
+              if (summary.label) {
+                const next = compact(summary.label, 42);
+                if (existing.title !== next) return { ...existing, title: next };
+              }
+              return existing;
+            });
             const localOnly = current.filter((session) => !disk.some((summary) => summary.id === session.id));
             return [...localOnly, ...merged];
           });
+          return true;
+        }
+        case "session_deleted": {
+          if (e.id && e.ok !== false) {
+            setSessions((current) => current.filter((session) => session.id !== e.id));
+            if (activeRef.current === e.id) activeRef.current = "";
+          }
+          return true;
+        }
+        case "session_renamed": {
+          if (e.id && e.ok !== false) {
+            const label = typeof e.label === "string" ? e.label : "";
+            setSessions((current) => current.map((session) => (
+              session.id === e.id ? { ...session, title: label ? compact(label, 42) : session.title } : session
+            )));
+          }
           return true;
         }
         case "session_history":
@@ -1558,6 +1758,43 @@ function App() {
         fireNotification("Ares needs your approval", ev.reason || ev.toolName || "A tool needs your OK");
       } else if (ev.type === "turn_end" && elsewhere) {
         fireNotification("Ares finished a task", "A background turn just completed.");
+      }
+      // Live browser frame — Ares driving its own embedded browser. Don't fold
+      // into the transcript; push it to the Forge "Live" panel and open it.
+      if (ev.type === "tool_progress" && ev.data?.kind === "browser_frame" && ev.data.image) {
+        setLiveBrowser({ frame: ev.data.image, at: Date.now() });
+        setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
+        return;
+      }
+      // Embedded-browser command from the daemon — drive Ares's in-app browser and
+      // return the result over the same channel. This is the request/response
+      // bridge that lets the agent operate its own embedded browser.
+      if ((ev as { type?: string }).type === "webview_cmd") {
+        const c = ev as unknown as { cmdId?: string; op?: string; html?: string; query?: string; selector?: string; value?: string; js?: string; onlyErrors?: boolean };
+        void (async () => {
+          let ok = true, result: unknown, error: string | undefined;
+          try {
+            if (c.op === "load") {
+              setEmbeddedActive(true);
+              setForge((f) => ({ ...f, open: true, tab: "live" }));
+              let h = embeddedRef.current;
+              for (let i = 0; i < 40 && !h; i++) { await new Promise((r) => setTimeout(r, 33)); h = embeddedRef.current; }
+              if (!h) throw new Error("embedded browser unavailable");
+              result = await h.load(c.html ?? "");
+            } else {
+              const h = embeddedRef.current;
+              if (!h) throw new Error("nothing loaded — call load first");
+              if (c.op === "click") result = await h.click(c.query ?? "");
+              else if (c.op === "type") result = await h.type(c.selector ?? "", c.value ?? "");
+              else if (c.op === "eval") result = await h.evalJs(c.js ?? "");
+              else if (c.op === "console") result = h.getConsole(c.onlyErrors);
+              else if (c.op === "snapshot") result = h.snapshot();
+              else throw new Error(`unknown webview op: ${c.op}`);
+            }
+          } catch (err) { ok = false; error = err instanceof Error ? err.message : String(err); }
+          if (native) void invoke("ares_daemon_command", { command: { type: "webview_result", cmdId: c.cmdId, ok, result, error } }).catch(() => {});
+        })();
+        return;
       }
       const fold = (s: SessionVm) => {
         const next = foldEvent(s, buffered.event);
@@ -1814,6 +2051,16 @@ function App() {
       void openHoloSpec(path, label);
       return;
     }
+    // A pre-built holotable HTML (filename contains "holo") belongs in the HOLO
+    // section, not the flat preview — otherwise the holo panel looks redundant.
+    if (/holo[\w-]*\.html?$/i.test(path)) {
+      if (native) {
+        setHoloSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}` });
+        setHoloMeta(label);
+        setForge({ open: true, tab: "holo", artifact: { path, label } });
+        return;
+      }
+    }
     setForge({ open: true, tab: "preview", artifact: { path, label } });
   };
 
@@ -1965,9 +2212,53 @@ function App() {
     savePrefs(next);
   };
 
+  /** Rename a session: optimistic title update, then persist via the daemon. */
+  const renameSession = (id: string, label: string) => {
+    const clean = label.trim().slice(0, 120);
+    setSessions((current) => current.map((s) => (s.id === id ? { ...s, title: clean ? compact(clean, 42) : s.title } : s)));
+    daemonCmd({ type: "session_rename", id, label: clean });
+  };
+
+  /** Close (delete) a session: drop it locally, persist, and leave the active
+   *  session sane. The primary in-memory session is never deleted on disk but
+   *  vanishes from the rail until its next turn re-registers it. */
+  const closeSession = (id: string) => {
+    setSessions((current) => {
+      const next = current.filter((s) => s.id !== id);
+      if (activeRef.current === id) {
+        const fallback = next[0]?.id ?? "";
+        activeRef.current = fallback;
+        if (fallback) setTimeout(() => openSession(fallback), 0);
+      }
+      return next;
+    });
+    if (prefs.pinned.includes(id)) {
+      const cleaned = { ...prefs, pinned: prefs.pinned.filter((p) => p !== id) };
+      setPrefs(cleaned);
+      savePrefs(cleaned);
+    }
+    daemonCmd({ type: "session_delete", id });
+  };
+
   /** The vault: every image, file, and link Ares produced, across sessions. */
   const vault = useMemo(() => collectVault(sessions), [sessions]);
   const vaultCount = vault.images.length + vault.files.length + vault.links.length;
+
+  // God-of-War drivers for the whole shell: --heat (molten temperature) and
+  // --draft (daemon-gated ambient). Every ember, glow, and rune reads these.
+  const heat = Math.min(
+    1,
+    (daemon === "running" ? 0.3 : daemon === "starting" ? 0.18 : 0.05) +
+      (active?.busy ? 0.4 : 0) +
+      Math.min(0.15, (opStatus?.activeCount ?? 0) * 0.05),
+  );
+  const draft = daemon === "running" ? 1 : daemon === "starting" ? 0.5 : 0.1;
+  // Each agent action STRIKES — a felt ember-flare + micro-shake. Driven off the
+  // activity ticker so it fires once per tool, decoupled from event internals.
+  const activity = active?.activity;
+  useEffect(() => {
+    if (active?.busy && activity) setStrike((n) => n + 1);
+  }, [activity]);
 
   return (
     <div
@@ -1976,12 +2267,59 @@ function App() {
       data-theme={prefs.theme}
       data-panel={forge.open ? "1" : "0"}
       data-working={active?.busy ? "1" : "0"}
-      style={{ ["--forge-w" as string]: `${forgeWidth}px` }}
+      style={{ ["--forge-w" as string]: `${forgeWidth}px`, ["--heat" as string]: heat.toFixed(3), ["--draft" as string]: draft.toFixed(3) }}
     >
       {!bootGone && native ? <Boot /> : null}
+      <UpdateBanner />
       <Backdrop />
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />
+      <ScreenFlame />
+      {strike > 0 ? <div className="strikeFlash" key={strike} aria-hidden="true" /> : null}
+      {/* Turbulence filter that makes the composer's flame rim actually lick + flicker. */}
+      <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
+        <defs>
+          {/* coarse slow sway for the flame body */}
+          <filter id="flameTurbCoarse" x="-40%" y="-40%" width="180%" height="180%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.012 0.028" numOctaves={2} seed={5} result="n">
+              <animate attributeName="baseFrequency" dur="2.6s" values="0.012 0.026;0.018 0.04;0.012 0.026" repeatCount="indefinite" />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" in2="n" scale={11} xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+          {/* medium licking for the mid layer */}
+          <filter id="flameTurb" x="-30%" y="-30%" width="160%" height="160%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.02 0.05" numOctaves={2} seed={3} result="n">
+              <animate attributeName="baseFrequency" dur="1.4s" values="0.02 0.045;0.03 0.08;0.02 0.045" repeatCount="indefinite" />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" in2="n" scale={7} xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+          {/* fast fine crackle for the white-hot core */}
+          <filter id="flameTurbFine" x="-30%" y="-30%" width="160%" height="160%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.04 0.09" numOctaves={2} seed={8} result="n">
+              <animate attributeName="baseFrequency" dur="0.8s" values="0.04 0.08;0.06 0.13;0.04 0.08" repeatCount="indefinite" />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" in2="n" scale={5} xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+          {/* body: deep red → orange, fading translucent at the tips */}
+          <linearGradient id="flameGradBack" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0%" stopColor="var(--blood)" stopOpacity={0.9} />
+            <stop offset="45%" stopColor="var(--ember)" stopOpacity={0.8} />
+            <stop offset="100%" stopColor="var(--ember)" stopOpacity={0} />
+          </linearGradient>
+          {/* mid: orange → gold, soft fade */}
+          <linearGradient id="flameGradMid" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0%" stopColor="var(--ember)" stopOpacity={0.95} />
+            <stop offset="55%" stopColor="var(--ember-hi)" stopOpacity={0.95} />
+            <stop offset="100%" stopColor="#ffd98a" stopOpacity={0.15} />
+          </linearGradient>
+          {/* core: gold → white-hot tips */}
+          <linearGradient id="flameGradCore" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0%" stopColor="var(--ember-hi)" stopOpacity={0} />
+            <stop offset="55%" stopColor="#ffe8b0" stopOpacity={0.85} />
+            <stop offset="100%" stopColor="#fff7e6" stopOpacity={0.98} />
+          </linearGradient>
+        </defs>
+      </svg>
 
       <header className="titlebar" onMouseDown={dragWindow}>
         <div className="brand">
@@ -2018,6 +2356,19 @@ function App() {
             <i className="glyph" data-glyph="task" /> Sessions
           </button>
           <button
+            className="helmNav"
+            data-on={view === "helm" ? "1" : "0"}
+            onClick={() => {
+              setView("helm");
+              setForge((current) => ({ ...current, open: false }));
+              daemonCmd({ type: "operator_status" });
+              daemonCmd({ type: "usage_stats", days: 14 });
+            }}
+          >
+            <i className="glyph" data-glyph="dot" /> HELM
+            {opStatus?.activeCount ? <em>{opStatus.activeCount}</em> : null}
+          </button>
+          <button
             data-on={view === "artifacts" ? "1" : "0"}
             onClick={() => {
               setView("artifacts");
@@ -2042,7 +2393,7 @@ function App() {
             <div className="railLabel">Pinned</div>
             <nav className="sessionList pinnedList">
               {pinnedSessions.map((s) => (
-                <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned onSelect={openSession} onPin={togglePin} />
+                <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} />
               ))}
             </nav>
           </>
@@ -2051,7 +2402,7 @@ function App() {
         <div className="railLabel">Sessions</div>
         <nav className="sessionList">
           {unpinnedSessions.map((s) => (
-            <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} />
+            <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} />
           ))}
         </nav>
 
@@ -2083,7 +2434,19 @@ function App() {
           </div>
         </header>
 
-        {view === "artifacts" ? (
+        {view === "helm" ? (
+          <HelmView
+            daemon={daemon}
+            opStatus={opStatus}
+            usage={usageStats}
+            keyStatus={keyStatus}
+            sessions={sessions}
+            active={active}
+            onOpenSession={openSession}
+            onToggleAutotick={() => daemonCmd({ type: "operator_autotick", enabled: !(opStatus?.autotick ?? true) })}
+            onRefresh={() => { daemonCmd({ type: "operator_status" }); daemonCmd({ type: "usage_stats", days: 14 }); }}
+          />
+        ) : view === "artifacts" ? (
           <ArtifactsPage
             vault={vault}
             onOpenFile={(path, label) => openArtifact(path, label)}
@@ -2133,21 +2496,23 @@ function App() {
           </div>
         )}
 
-        <Composer
-          busy={active?.busy ?? false}
-          model={prefs.routingMode === "auto" ? "routing (auto)" : prefs.model}
-          autoRouting={prefs.routingMode === "auto"}
-          reasoning={prefs.reasoning}
-          routedLanes={routedLanes}
-          todos={active?.todos ?? []}
-          steerQueued={active?.steerQueued ?? 0}
-          onSend={send}
-          onSteer={steer}
-          onStop={stopTurn}
-          onModelChip={() => setModelPopOpen(true)}
-          onReasoningChip={cycleReasoning}
-          onRoutingChip={() => setRoutingOpen(true)}
-        />
+        {view !== "helm" ? (
+          <Composer
+            busy={active?.busy ?? false}
+            model={prefs.routingMode === "auto" ? "routing (auto)" : prefs.model}
+            autoRouting={prefs.routingMode === "auto"}
+            reasoning={prefs.reasoning}
+            routedLanes={routedLanes}
+            todos={active?.todos ?? []}
+            steerQueued={active?.steerQueued ?? 0}
+            onSend={send}
+            onSteer={steer}
+            onStop={stopTurn}
+            onModelChip={() => setModelPopOpen(true)}
+            onReasoningChip={cycleReasoning}
+            onRoutingChip={() => setRoutingOpen(true)}
+          />
+        ) : null}
 
         <footer className="statusBar">
           <button className="statusSeg" onClick={() => setGarrisonOpen(true)} title="Garrison panel — status, log, restart">
@@ -2196,9 +2561,9 @@ function App() {
           <header>
             <strong>THE FORGE</strong>
             <nav className="forgeTabs">
-              {(["preview", "sandbox", "holo"] as ForgeTab[]).map((t) => (
-                <button key={t} data-on={forge.tab === t ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: t }))}>
-                  {t}
+              {(["preview", "sandbox", "holo", "live"] as ForgeTab[]).map((t) => (
+                <button key={t} data-on={forge.tab === t ? "1" : "0"} data-live={t === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: t }))}>
+                  {t === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "● live" : t}
                 </button>
               ))}
             </nav>
@@ -2245,6 +2610,34 @@ function App() {
               <iframe title="holo" src={holoSrc?.src} srcDoc={holoSrc?.srcdoc} sandbox="allow-scripts allow-pointer-lock allow-downloads" />
             </div>
           ) : null}
+
+          {forge.tab === "live" ? (
+            <div className="forgeBody liveBrowser">
+              <div className="forgeMeta">
+                {embeddedActive
+                  ? <><i className="liveDot" /> {embeddedActivity || "Ares is driving its own browser — in-window"}</>
+                  : liveBrowser && Date.now() - liveBrowser.at < 4000
+                    ? <><i className="liveDot" /> Ares is driving the browser — watch the cursor</>
+                    : "Ares's embedded browser — appears here when it tests a page or UI"}
+              </div>
+              {/* interactive embedded browser (Ares's own HTML apps/games) */}
+              <div className="liveStage embed" data-on={embeddedActive ? "1" : "0"}>
+                <EmbeddedBrowser ref={embeddedRef} onActivity={setEmbeddedActivity} />
+              </div>
+              {/* streamed Playwright frames (localhost / real web), when not embedded */}
+              {!embeddedActive && liveBrowser ? (
+                <div className="liveStage">
+                  <img src={`data:image/jpeg;base64,${liveBrowser.frame}`} alt="Ares live browser" />
+                </div>
+              ) : null}
+              {!embeddedActive && !liveBrowser ? (
+                <div className="forgeEmpty">
+                  <div className="emptyEmblem" aria-hidden="true" />
+                  <p>When Ares tests a page, app, or game it built, you'll watch it here — cursor moving, clicking, navigating at human speed. Just like it has its own browser.</p>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </aside>
       ) : null}
 
@@ -2257,6 +2650,8 @@ function App() {
           skills={skills}
           usage={usageStats}
           keyStatus={keyStatus}
+          oauthProviders={oauthProviders}
+          consciousness={consciousness}
           onDaemonCommand={daemonCmd}
           onLivePref={(patch) => {
             const next = { ...prefs, ...patch };
@@ -2807,28 +3202,324 @@ function ArtifactsPage({
   );
 }
 
+// ─── HELM — "The Scrying Basin of Ares" ─────────────────────────────────────
+// A God-of-War war-room: a molten scrying basin at the heart, six augury slates
+// of live daemon data orbiting it, an omen ledger below. Everything heats, cools,
+// boils and stirs off two drivers written to the root: --heat (0..1 molten temp)
+// and --draft (0..1 daemon-gated ambient). Each agent action STIRS the basin.
+
+function kfmt(n: number): string {
+  if (!Number.isFinite(n)) return "0";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(Math.round(n));
+}
+
+function HelmView({
+  daemon,
+  opStatus,
+  usage,
+  keyStatus,
+  sessions,
+  active,
+  onOpenSession,
+  onToggleAutotick,
+  onRefresh,
+}: {
+  daemon: DaemonState;
+  opStatus: { activeCount: number; goals: Array<{ id: string; statement: string; status: string; progress: number }>; autotick: boolean } | null;
+  usage: UsageStats | null;
+  keyStatus: Record<string, boolean>;
+  sessions: SessionVm[];
+  active: SessionVm | undefined;
+  onOpenSession: (id: string) => void;
+  onToggleAutotick: () => void;
+  onRefresh: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const busy = Boolean(active?.busy);
+  const activity = active?.activity ?? "";
+  const [stir, setStir] = useState(0);
+
+  // Heat/draft drivers — written straight to the node so the whole temple
+  // re-tempers without per-frame React renders.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const base = daemon === "running" ? 0.34 : daemon === "starting" ? 0.2 : 0.06;
+    const missionHeat = Math.min(0.18, (opStatus?.activeCount ?? 0) * 0.06);
+    const heat = Math.min(1, base + (busy ? 0.42 : 0) + missionHeat);
+    const draft = daemon === "running" ? 1 : daemon === "starting" ? 0.5 : 0.08;
+    el.style.setProperty("--heat", heat.toFixed(3));
+    el.style.setProperty("--draft", draft.toFixed(3));
+    el.dataset.daemon = daemon;
+    el.dataset.working = busy ? "1" : "0";
+  }, [daemon, busy, opStatus?.activeCount]);
+
+  // Action-as-heartbeat: each new activity string spikes a stir/shockwave.
+  useEffect(() => {
+    if (!activity) return;
+    setStir((n) => n + 1);
+  }, [activity]);
+
+  const onMove = (e: React.MouseEvent) => {
+    const el = rootRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const tx = ((e.clientX - r.left) / r.width - 0.5) * 5;
+    const ty = ((e.clientY - r.top) / r.height - 0.5) * 5;
+    el.style.setProperty("--tilt-x", `${(-ty).toFixed(2)}deg`);
+    el.style.setProperty("--tilt-y", `${tx.toFixed(2)}deg`);
+  };
+
+  const goals = opStatus?.goals ?? [];
+  const activeGoals = goals.filter((g) => g.status === "active");
+  const wonGoals = goals.filter((g) => g.status === "completed" || g.status === "done");
+  const todos = active?.todos ?? [];
+  const recentSessions = sessions.filter((s) => s.loaded !== false || s.items.length > 0).slice(0, 6);
+  const services = [
+    { id: "anthropic", label: "Anthropic" }, { id: "openrouter", label: "OpenRouter" },
+    { id: "deepseek", label: "DeepSeek" }, { id: "ollama", label: "Ollama" }, { id: "brave", label: "Brave" },
+  ];
+  const connected = services.filter((s) => keyStatus[s.id]).length;
+  const daily = usage?.daily ?? [];
+  const peak = Math.max(1, ...daily.map((d) => d.in + d.out));
+
+  return (
+    <div className="helm-root" ref={rootRef} onMouseMove={onMove} data-daemon={daemon}>
+      {/* ambient ember field — gated by --draft */}
+      <div className="helm-embers" aria-hidden="true" />
+      <div className="helm-vignette" aria-hidden="true" />
+
+      {/* LINTEL — top ticker */}
+      <div className="helm-lintel">
+        <span className="helm-rune">⚔</span>
+        <div className="helm-ticker">
+          <span data-on={busy ? "1" : "0"}>{busy ? (activity || "Ares moves…") : daemon === "running" ? "The Garrison stands. Ares awaits the word." : `Daemon ${daemon}`}</span>
+        </div>
+        <button className="helm-refresh" onClick={onRefresh} title="Re-scry">⟳</button>
+      </div>
+
+      {/* CENTER GRID — basin flanked by three slates per side */}
+      <div className="helm-content">
+        {/* THE OMPHALOS — molten scrying basin */}
+        <div className={busy ? "helm-basin working" : "helm-basin"} data-stir={stir % 2}>
+          <ScryingBasin heat={busy ? 1 : 0.4} />
+          <div className="helm-basin-core">
+            <div className="helm-basin-count">{opStatus?.activeCount ?? 0}</div>
+            <div className="helm-basin-label">{(opStatus?.activeCount ?? 0) === 1 ? "MISSION" : "MISSIONS"}</div>
+            <div className="helm-basin-state" data-state={daemon}>{daemon === "running" ? "GARRISON UP" : daemon.toUpperCase()}</div>
+          </div>
+          {/* shockwave keyed to each stir */}
+          <span key={stir} className="helm-shock" aria-hidden="true" />
+        </div>
+
+        <div className="helm-slate slate-war">
+          <h4>Omen of War</h4>
+          {activeGoals.length === 0 ? (
+            <p className="helm-empty">No missions march. Queue one and Ares hunts unattended.</p>
+          ) : (
+            <ul className="helm-missions">
+              {activeGoals.slice(0, 4).map((g) => (
+                <li key={g.id}>
+                  <span className="helm-mtext">{compact(g.statement, 54)}</span>
+                  <span className="helm-bar"><i style={{ width: `${Math.round((g.progress ?? 0) * 100)}%` }} /></span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="helm-slate slate-plan">
+          <h4>Pythia's Plan</h4>
+          {todos.length === 0 ? (
+            <p className="helm-empty">{busy ? "Ares deliberates…" : "Silent. No plan etched."}</p>
+          ) : (
+            <ul className="helm-todos">
+              {todos.slice(0, 5).map((t) => (
+                <li key={t.id} data-status={t.status}>
+                  <i className="helm-glyph" />{compact(t.status === "in_progress" ? t.activeForm : t.content, 48)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="helm-slate slate-cost">
+          <h4>Entrails of Cost</h4>
+          <div className="helm-cost">
+            <div><b>{kfmt(Math.max(0, (usage?.tokensIn ?? 0) - (usage?.cacheReadTokens ?? 0)))}</b><span>fresh in</span></div>
+            <div><b>{kfmt(usage?.tokensOut ?? 0)}</b><span>out</span></div>
+            <div><b>{kfmt(usage?.apiCalls ?? 0)}</b><span>calls</span></div>
+          </div>
+          <div className="helm-cost-cached">
+            cached {kfmt(usage?.cacheReadTokens ?? 0)} · {usage && usage.tokensIn > 0 ? Math.round((usage.cacheReadTokens / usage.tokensIn) * 100) : 0}% reused
+          </div>
+          <div className="helm-spark">
+            {daily.slice(-14).map((d, i) => (
+              <span key={i} title={d.date} style={{ height: `${Math.max(6, Math.round(((d.in + d.out) / peak) * 100))}%` }} />
+            ))}
+          </div>
+        </div>
+
+        <div className="helm-slate slate-auguries">
+          <h4>Auguries · {connected}/{services.length}</h4>
+          <ul className="helm-augur">
+            {services.map((s) => (
+              <li key={s.id} data-on={keyStatus[s.id] ? "1" : "0"}><i />{s.label}</li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="helm-slate slate-memory">
+          <h4>Stelae of Memory · {sessions.length}</h4>
+          {recentSessions.length === 0 ? (
+            <p className="helm-empty">No engraved sessions yet.</p>
+          ) : (
+            <ul className="helm-stelae">
+              {recentSessions.map((s) => (
+                <li key={s.id}><button onClick={() => onOpenSession(s.id)}>{compact(s.title, 40)}</button></li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="helm-slate slate-favor">
+          <h4>Favor of Ares</h4>
+          <div className="helm-gauge" data-state={daemon}>
+            <div className="helm-gauge-fill" />
+            <span>{daemon === "running" ? "FAVORED" : daemon.toUpperCase()}</span>
+          </div>
+          <button className="helm-toggle" data-on={opStatus?.autotick ? "1" : "0"} onClick={onToggleAutotick}>
+            <i />{opStatus?.autotick ? "Unattended hunt: ON" : "Unattended hunt: OFF"}
+          </button>
+        </div>
+      </div>
+
+      {/* OMEN LEDGER — recent victories */}
+      <div className="helm-ledger">
+        <span className="helm-rune">𐤀</span>
+        {wonGoals.length === 0 ? (
+          <span className="helm-ledger-empty">Victories will be carved here as missions fall.</span>
+        ) : (
+          <div className="helm-ledger-scroll">
+            {wonGoals.slice(0, 8).map((g) => <span key={g.id} className="helm-tablet">✓ {compact(g.statement, 40)}</span>)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The molten basin surface — SVG feTurbulence + displacement (the WebGL-free
+// "never blank" path from the design), with rotating rune rings and a pulsing
+// core light whose intensity rides --heat.
+function ScryingBasin({ heat }: { heat: number }) {
+  return (
+    <svg className="helm-basin-svg" viewBox="0 0 400 400" aria-hidden="true">
+      <defs>
+        <radialGradient id="moltenPool" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--ember-hi, #ffd27a)" stopOpacity={0.95} />
+          <stop offset="34%" stopColor="var(--ember, #e08b2e)" stopOpacity={0.9} />
+          <stop offset="68%" stopColor="var(--blood, #7a1f12)" stopOpacity={0.92} />
+          <stop offset="100%" stopColor="#1a0d08" stopOpacity={1} />
+        </radialGradient>
+        <radialGradient id="poolGlow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--ember-hi, #ffd27a)" stopOpacity={0.9} />
+          <stop offset="55%" stopColor="var(--accent, #c79a4e)" stopOpacity={0.25} />
+          <stop offset="100%" stopColor="var(--accent, #c79a4e)" stopOpacity={0} />
+        </radialGradient>
+        <filter id="boil" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.012 0.02" numOctaves={2} seed={7} result="noise">
+            <animate attributeName="baseFrequency" dur={`${(9 - heat * 4).toFixed(1)}s`} values="0.010 0.018;0.020 0.030;0.010 0.018" repeatCount="indefinite" />
+          </feTurbulence>
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale={heat > 0.7 ? 26 : 16} xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+      </defs>
+      {/* outer rune ring */}
+      <circle className="helm-ring-outer" cx="200" cy="200" r="186" />
+      <circle className="helm-ring-mid" cx="200" cy="200" r="158" />
+      {/* the molten surface */}
+      <circle cx="200" cy="200" r="140" fill="url(#moltenPool)" filter="url(#boil)" className="helm-pool" />
+      {/* fresnel rim */}
+      <circle cx="200" cy="200" r="140" fill="none" stroke="var(--ember-hi, #ffd27a)" strokeOpacity={0.5} strokeWidth={2} className="helm-pool-rim" />
+      {/* core light */}
+      <circle cx="200" cy="200" r="120" fill="url(#poolGlow)" className="helm-pool-glow" />
+    </svg>
+  );
+}
+
 function SessionRow({
   s,
   activeId,
   pinned,
   onSelect,
   onPin,
+  onRename,
+  onClose,
 }: {
   s: SessionVm;
   activeId: string;
   pinned?: boolean;
   onSelect: (id: string) => void;
   onPin: (id: string) => void;
+  onRename: (id: string, label: string) => void;
+  onClose: (id: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(s.title);
+  const [confirming, setConfirming] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(s.title);
+      requestAnimationFrame(() => inputRef.current?.select());
+    }
+  }, [editing, s.title]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== s.title) onRename(s.id, next);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className={s.id === activeId ? "session on editing" : "session editing"}>
+        <input
+          ref={inputRef}
+          className="sessionRename"
+          value={draft}
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") setEditing(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={s.id === activeId ? "session on" : "session"}>
-      <button className="sessionMain" onClick={() => onSelect(s.id)}>
+      <button className="sessionMain" onClick={() => onSelect(s.id)} onDoubleClick={() => setEditing(true)} title="Double-click to rename">
         <i data-busy={s.busy ? "1" : "0"} />
         <span>{s.title}</span>
       </button>
-      <button className="pinBtn" data-pinned={pinned ? "1" : "0"} title={pinned ? "unpin" : "pin"} onClick={() => onPin(s.id)}>
-        {pinned ? "◆" : "◇"}
-      </button>
+      <div className="sessionActions">
+        <button className="rowBtn" title="Rename" onClick={() => setEditing(true)}>✎</button>
+        <button className="pinBtn" data-pinned={pinned ? "1" : "0"} title={pinned ? "unpin" : "pin"} onClick={() => onPin(s.id)}>
+          {pinned ? "◆" : "◇"}
+        </button>
+        {confirming ? (
+          <button className="rowBtn danger" title="Confirm delete" onClick={() => { onClose(s.id); setConfirming(false); }}>✓</button>
+        ) : (
+          <button className="rowBtn" title="Close session" onClick={() => { setConfirming(true); setTimeout(() => setConfirming(false), 2600); }}>✕</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -2991,6 +3682,237 @@ const Composer = React.memo(function Composer({
 
 // ─── Transcript items ──────────────────────────────────────────────────────
 
+// Build a flame-tongue silhouette path from per-tongue tip heights. `sharp`
+// pulls the control points toward the tip so tongues taper to a point (real
+// flames lick to thin tips, not rounded bumps).
+function flamePath(tips: number[], W: number, base: number, sharp = 0.16): string {
+  const step = W / tips.length;
+  let d = `M0,${base}`;
+  tips.forEach((h, i) => {
+    const x0 = i * step, xc = x0 + step / 2, x1 = x0 + step;
+    d += ` C ${(x0 + step * 0.28).toFixed(1)},${(base - h * 0.28).toFixed(1)} ${(xc - step * sharp).toFixed(1)},${(h * 1.05).toFixed(1)} ${xc.toFixed(1)},${h.toFixed(1)}`;
+    d += ` C ${(xc + step * sharp).toFixed(1)},${(h * 1.05).toFixed(1)} ${(x1 - step * 0.28).toFixed(1)},${(base - h * 0.28).toFixed(1)} ${x1.toFixed(1)},${base}`;
+  });
+  return d + ` L${W},${base} Z`;
+}
+
+// ─── Embedded interactive browser — Ares's OWN in-app browser ───────────────
+// For Ares's self-contained HTML apps/games: renders same-origin so Ares can
+// reach in and DRIVE it — a real cursor glides to controls (curved + eased),
+// hovers, presses, clicks; types char-by-char; reads console; evaluates JS.
+// Zero Playwright, fully in-window, the owner watches it happen.
+
+export interface EmbeddedBrowserHandle {
+  load: (html: string) => Promise<{ ok: boolean }>;
+  click: (query: string) => Promise<{ ok: boolean; matched?: string; error?: string }>;
+  type: (selector: string, value: string) => Promise<{ ok: boolean; error?: string }>;
+  evalJs: (js: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+  getConsole: (onlyErrors?: boolean) => { type: string; text: string }[];
+  snapshot: () => { title: string; text: string; controls: string[] };
+}
+
+const EmbeddedBrowser = React.forwardRef<EmbeddedBrowserHandle, { paceMs?: number; onActivity?: (label: string) => void }>(
+  function EmbeddedBrowser({ paceMs = 460, onActivity }, ref) {
+    const iframeRef = useRef<HTMLIFrameElement | null>(null);
+    const cur = useRef({ x: 200, y: 160 });
+    const consoleBuf = useRef<{ type: string; text: string }[]>([]);
+
+    const doc = () => iframeRef.current?.contentDocument ?? null;
+    const win = () => iframeRef.current?.contentWindow as (Window & typeof globalThis) | null;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+    const ensureCursor = () => {
+      const d = doc();
+      if (!d || !d.body || d.getElementById("__ares_cur")) return;
+      const c = d.createElement("div");
+      c.id = "__ares_cur";
+      c.style.cssText =
+        "position:fixed;left:0;top:0;width:24px;height:24px;z-index:2147483647;pointer-events:none;transform:translate(-100px,-100px);transition:filter 90ms ease;will-change:transform;filter:drop-shadow(0 2px 5px rgba(0,0,0,.55))";
+      c.innerHTML =
+        '<svg width="24" height="24" viewBox="0 0 26 26"><path d="M3,2 L3,20 L8,15 L11,23 L14,22 L11,14 L18,14 Z" fill="#fff" stroke="#d6402e" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+      d.body.appendChild(c);
+      const st = d.createElement("style");
+      st.textContent = "@keyframes __ar{0%{transform:translate(-50%,-50%) scale(.2);opacity:.95}100%{transform:translate(-50%,-50%) scale(2);opacity:0}}";
+      d.head.appendChild(st);
+    };
+    const moveCur = (x: number, y: number, scale = 1) => {
+      const c = doc()?.getElementById("__ares_cur");
+      if (c) (c as HTMLElement).style.transform = `translate(${x - 3}px,${y - 2}px) scale(${scale})`;
+    };
+    const ripple = (x: number, y: number) => {
+      const d = doc();
+      if (!d) return;
+      const r = d.createElement("div");
+      r.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:34px;height:34px;border:2.5px solid #d6402e;border-radius:50%;z-index:2147483646;pointer-events:none;animation:__ar .5s ease-out forwards`;
+      d.body.appendChild(r);
+      setTimeout(() => r.remove(), 560);
+    };
+
+    const glide = async (tx: number, ty: number) => {
+      ensureCursor();
+      const sx = cur.current.x, sy = cur.current.y;
+      const dx = tx - sx, dy = ty - sy, dist = Math.hypot(dx, dy);
+      if (dist < 1.5) { cur.current = { x: tx, y: ty }; moveCur(tx, ty); return; }
+      const bow = Math.min(dist * 0.16, 70) * (Math.random() < 0.5 ? 1 : -1);
+      const mx = (sx + tx) / 2 - (dy / dist) * bow, my = (sy + ty) / 2 + (dx / dist) * bow;
+      const steps = Math.max(14, Math.min(44, Math.round(dist / 9)));
+      for (let i = 1; i <= steps; i++) {
+        const t = easeInOut(i / steps), u = 1 - t;
+        const x = u * u * sx + 2 * u * t * mx + t * t * tx;
+        const y = u * u * sy + 2 * u * t * my + t * t * ty;
+        moveCur(x, y);
+        cur.current = { x, y };
+        // fire a real hover on whatever's under the cursor (cosmetic — never let it break the action)
+        try {
+          const w = win();
+          const el = doc()?.elementFromPoint(x, y);
+          if (w && el && typeof w.MouseEvent === "function") el.dispatchEvent(new w.MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+        } catch { /* ignore hover */ }
+        await sleep(paceMs / steps);
+      }
+      cur.current = { x: tx, y: ty };
+    };
+
+    const findEl = (query: string): HTMLElement | null => {
+      const d = doc();
+      if (!d) return null;
+      // CSS selector first
+      try { const byCss = d.querySelector(query) as HTMLElement | null; if (byCss) return byCss; } catch { /* not a selector */ }
+      // visible text match on clickable-ish elements
+      const cands = [...d.querySelectorAll("button,a,[role=button],input,summary,label,[onclick],.btn,td,li,span,div")] as HTMLElement[];
+      const q = query.trim().toLowerCase();
+      return cands.find((e) => (e.textContent ?? "").trim().toLowerCase() === q)
+        ?? cands.find((e) => (e.textContent ?? "").trim().toLowerCase().includes(q))
+        ?? null;
+    };
+
+    const hookConsole = () => {
+      const w = win();
+      if (!w || (w as unknown as { __aresHooked?: boolean }).__aresHooked) return;
+      (w as unknown as { __aresHooked?: boolean }).__aresHooked = true;
+      const wrap = (type: string, orig: (...a: unknown[]) => void) => (...args: unknown[]) => {
+        consoleBuf.current.push({ type, text: args.map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 1500) });
+        if (consoleBuf.current.length > 300) consoleBuf.current.shift();
+        orig(...args);
+      };
+      try {
+        w.console.log = wrap("log", w.console.log.bind(w.console));
+        w.console.warn = wrap("warn", w.console.warn.bind(w.console));
+        w.console.error = wrap("error", w.console.error.bind(w.console));
+        w.addEventListener("error", (e) => consoleBuf.current.push({ type: "error", text: String((e as ErrorEvent).message) }));
+      } catch { /* cross-origin — can't hook */ }
+    };
+
+    useImperativeHandle(ref, () => ({
+      load: (html: string) =>
+        new Promise((resolve) => {
+          const f = iframeRef.current;
+          if (!f) return resolve({ ok: false });
+          consoleBuf.current = [];
+          cur.current = { x: 200, y: 160 };
+          const onLoad = () => {
+            f.removeEventListener("load", onLoad);
+            hookConsole();
+            ensureCursor();
+            resolve({ ok: true });
+          };
+          f.addEventListener("load", onLoad);
+          f.srcdoc = html;
+        }),
+      click: async (query: string) => {
+        const el = findEl(query);
+        if (!el) return { ok: false, error: `no element matching "${query}"` };
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        await sleep(180);
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        onActivity?.(`Clicking ${(el.textContent ?? el.tagName).trim().slice(0, 30)}`);
+        await glide(cx, cy);
+        await sleep(120);
+        moveCur(cx, cy, 0.8); await sleep(90); moveCur(cx, cy, 1);
+        ripple(cx, cy);
+        const W = win()!;
+        // press feedback, then ONE real click (el.click fires the native handler) —
+        // don't also dispatch a synthetic 'click' or it double-fires onclick.
+        for (const t of ["mousedown", "mouseup"]) el.dispatchEvent(new W.MouseEvent(t, { bubbles: true, clientX: cx, clientY: cy }));
+        if (typeof (el as HTMLElement).click === "function") (el as HTMLElement).click();
+        else el.dispatchEvent(new W.MouseEvent("click", { bubbles: true, clientX: cx, clientY: cy }));
+        await sleep(220);
+        return { ok: true, matched: (el.textContent ?? el.tagName).trim().slice(0, 60) };
+      },
+      type: async (selector: string, value: string) => {
+        const el = findEl(selector) as HTMLInputElement | null;
+        if (!el) return { ok: false, error: `no field matching "${selector}"` };
+        const r = el.getBoundingClientRect();
+        await glide(r.left + r.width / 2, r.top + r.height / 2);
+        el.focus();
+        onActivity?.(`Typing into ${selector}`);
+        const W = win()!;
+        el.value = "";
+        for (const chr of value) {
+          el.value += chr;
+          el.dispatchEvent(new W.Event("input", { bubbles: true }));
+          await sleep(55);
+        }
+        el.dispatchEvent(new W.Event("change", { bubbles: true }));
+        return { ok: true };
+      },
+      evalJs: async (js: string) => {
+        const w = win();
+        if (!w) return { ok: false, error: "no window" };
+        try { return { ok: true, result: (w as unknown as { eval: (s: string) => unknown }).eval(`(()=>{return (${js})})()`) }; }
+        catch (e) { try { return { ok: true, result: (w as unknown as { eval: (s: string) => unknown }).eval(`(()=>{${js}})()`) }; } catch (e2) { return { ok: false, error: String(e2 instanceof Error ? e2.message : e2) }; } }
+      },
+      getConsole: (onlyErrors?: boolean) => onlyErrors ? consoleBuf.current.filter((c) => c.type === "error" || c.type === "warn") : consoleBuf.current.slice(),
+      snapshot: () => {
+        const d = doc();
+        const controls = d ? ([...d.querySelectorAll("button,a,[role=button],input,select,summary")] as HTMLElement[]).map((e) => (e.textContent ?? (e as HTMLInputElement).placeholder ?? e.tagName).trim().slice(0, 40)).filter(Boolean).slice(0, 40) : [];
+        return { title: d?.title ?? "", text: (d?.body?.innerText ?? "").slice(0, 4000), controls };
+      },
+    }), [paceMs, onActivity]);
+
+    return (
+      <iframe
+        ref={iframeRef}
+        title="Ares embedded browser"
+        className="embeddedBrowserFrame"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-pointer-lock"
+      />
+    );
+  },
+);
+
+// A layered strip of real fire: a deep-red body, an orange mid, and a white-hot
+// core — each its own tongue shape, gradient, turbulence and flicker rate, so it
+// reads as volumetric flame, not a glow.
+function FlameStrip() {
+  const W = 280, base = 22;
+  // Back body: tall, broad, fewer tongues. Mid: medium. Core: short, sharp, many.
+  const back = flamePath([16, 9, 19, 6, 14, 10, 18, 7, 15, 11, 17, 8], W, base, 0.24);
+  const mid = flamePath([12, 6, 15, 4, 10, 8, 14, 5, 11, 7, 13, 5, 12, 9, 15, 6], W, base, 0.16);
+  const core = flamePath([7, 3, 9, 2, 6, 4, 8, 3, 6, 5, 7, 3, 8, 4, 6, 3, 7, 4, 8, 3], W, base, 0.1);
+  return (
+    <svg viewBox={`0 0 ${W} ${base}`} preserveAspectRatio="none" aria-hidden="true">
+      <path className="flame-back" d={back} fill="url(#flameGradBack)" filter="url(#flameTurbCoarse)" />
+      <path className="flame-mid" d={mid} fill="url(#flameGradMid)" filter="url(#flameTurb)" />
+      <path className="flame-core" d={core} fill="url(#flameGradCore)" filter="url(#flameTurbFine)" />
+    </svg>
+  );
+}
+
+// The whole-UI flame border: four edge strips licking inward. Shown when working.
+function ScreenFlame() {
+  return (
+    <div className="screenFlame" aria-hidden="true">
+      <div className="fStrip edge-top"><FlameStrip /></div>
+      <div className="fStrip edge-bottom"><FlameStrip /></div>
+      <div className="fStrip edge-left"><FlameStrip /></div>
+      <div className="fStrip edge-right"><FlameStrip /></div>
+    </div>
+  );
+}
+
 const ItemView = React.memo(function ItemView({
   item,
   onPermission,
@@ -3049,7 +3971,12 @@ const ItemView = React.memo(function ItemView({
   }
   if (item.kind === "assistant") {
     return (
-      <div className="turn assistant" data-streaming={item.streaming ? "1" : "0"}>
+      <div className="turn assistant" data-streaming={item.streaming ? "1" : "0"} data-proactive={item.proactive ? "1" : "0"}>
+        {item.proactive ? (
+          <div className="watchBadge" title="Ares noticed this on your screen — unprompted">
+            <span aria-hidden="true">👁</span> watching
+          </div>
+        ) : null}
         {item.model ? (
           <div className="modelBadge" data-lane={item.lane ?? ""} title={`handled by ${item.model}${item.provider ? ` (${item.provider})` : ""}${item.lane ? ` · ${item.lane} lane` : ""}`}>
             <i className="glyph" data-glyph="task" /> {item.model}
@@ -3616,7 +4543,7 @@ function ModelPicker({
   );
 }
 
-type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "advanced" | "about";
+type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "advanced" | "about";
 
 interface SkillInfo {
   name: string;
@@ -3644,6 +4571,8 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "skills", label: "Skills & Tools", glyph: "file" },
   { id: "usage", label: "Usage", glyph: "web" },
   { id: "keys", label: "API Keys", glyph: "shell" },
+  { id: "services", label: "Services", glyph: "web" },
+  { id: "consciousness", label: "Consciousness", glyph: "dot" },
   { id: "advanced", label: "Advanced", glyph: "dot" },
   { id: "about", label: "About", glyph: "dot" },
 ];
@@ -3656,6 +4585,8 @@ function Settings({
   skills,
   usage,
   keyStatus,
+  oauthProviders,
+  consciousness,
   onDaemonCommand,
   onLivePref,
   onAnthropicSignIn,
@@ -3668,6 +4599,8 @@ function Settings({
   skills: SkillInfo[];
   usage: UsageStats | null;
   keyStatus: Record<string, boolean>;
+  oauthProviders: OAuthProviderVm[];
+  consciousness: ConsciousnessVm;
   onDaemonCommand: (cmd: Record<string, unknown>) => void;
   onLivePref: (patch: Partial<Prefs>) => void;
   onAnthropicSignIn: () => void;
@@ -3683,6 +4616,7 @@ function Settings({
     if (!native) return;
     if (tab === "skills") onDaemonCommand({ type: "skills_list" });
     if (tab === "usage") onDaemonCommand({ type: "usage_stats", days: 30 });
+    if (tab === "consciousness") onDaemonCommand({ type: "consciousness_status" });
   }, [tab, native, onDaemonCommand]);
 
   const setEngine = (patch: Partial<EngineConfig>) => setDraftPrefs({ ...draft, engine: { ...draft.engine, ...patch } });
@@ -3935,6 +4869,14 @@ function Settings({
             </div>
           ) : null}
 
+          {tab === "services" ? (
+            <ServicesPane native={native} providers={oauthProviders} onDaemonCommand={onDaemonCommand} />
+          ) : null}
+
+          {tab === "consciousness" ? (
+            <ConsciousnessPane native={native} state={consciousness} onDaemonCommand={onDaemonCommand} />
+          ) : null}
+
           {tab === "about" ? (
             <div className="settingsPane aboutPane">
               <div className="aboutMark" aria-hidden="true" />
@@ -3958,6 +4900,118 @@ function Settings({
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+const SERVICE_PROVIDERS = [
+  { id: "google", label: "Google", desc: "Calendar, Gmail, Contacts" },
+  { id: "spotify", label: "Spotify", desc: "Music playback & playlists" },
+  { id: "github", label: "GitHub", desc: "Repos, issues, PRs" },
+  { id: "discord", label: "Discord", desc: "Guilds & messages" },
+  { id: "reddit", label: "Reddit", desc: "Posts & messages" },
+  { id: "notion", label: "Notion", desc: "Pages & databases" },
+  { id: "slack", label: "Slack", desc: "Channels & messages" },
+  { id: "todoist", label: "Todoist", desc: "Tasks & projects" },
+  { id: "twitch", label: "Twitch", desc: "Streams & subscriptions" },
+  { id: "linkedin", label: "LinkedIn", desc: "Profile & connections" },
+  { id: "dropbox", label: "Dropbox", desc: "Files & sharing" },
+];
+
+function ServicesPane({
+  native,
+  providers,
+  onDaemonCommand,
+}: {
+  native: boolean;
+  providers: OAuthProviderVm[];
+  onDaemonCommand: (cmd: Record<string, unknown>) => void;
+}) {
+  const [setupFor, setSetupFor] = useState<string | null>(null);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [pending, setPending] = useState<string | null>(null);
+
+  // Fetch live status whenever the pane mounts.
+  useEffect(() => {
+    if (native) onDaemonCommand({ type: "oauth_status" });
+  }, [native]);
+
+  // Stop the connecting spinner once the provider reports connected.
+  useEffect(() => {
+    if (pending && providers.find((p) => p.id === pending)?.connected) setPending(null);
+  }, [providers, pending]);
+
+  const byId = (id: string) => providers.find((p) => p.id === id);
+
+  const connect = (id: string) => {
+    setPending(id);
+    onDaemonCommand({ type: "oauth_start", provider: id });
+    // Safety: clear the spinner after the flow's own timeout window.
+    setTimeout(() => setPending((p) => (p === id ? null : p)), 60_000);
+  };
+  const disconnect = (id: string) => onDaemonCommand({ type: "oauth_disconnect", provider: id });
+  const saveCredentials = (id: string) => {
+    if (!clientId.trim() || !clientSecret.trim()) return;
+    onDaemonCommand({ type: "oauth_set_credentials", provider: id, clientId: clientId.trim(), clientSecret: clientSecret.trim() });
+    setSetupFor(null); setClientId(""); setClientSecret("");
+  };
+
+  return (
+    <div className="settingsPane">
+      <h3 className="paneTitle">Connected Services</h3>
+      <p className="paneHint">
+        Sign in so Ares can manage your calendar, play music, send emails, and more — through YOUR account.
+        {!native && " (Connect to the daemon to manage services.)"}
+      </p>
+      <div className="servicesGrid">
+        {SERVICE_PROVIDERS.map((svc) => {
+          const p = byId(svc.id);
+          const connected = p?.connected ?? false;
+          const hasApp = p?.hasApp ?? false;
+          const isPending = pending === svc.id;
+          return (
+            <div key={svc.id} className="serviceCard" data-connected={connected ? "1" : "0"}>
+              <div className="serviceInfo">
+                <strong>{svc.label}</strong>
+                <span>{svc.desc}</span>
+              </div>
+              <div className="serviceActions">
+                {connected ? (
+                  <>
+                    <span className="serviceStatus connected">Connected</span>
+                    <button className="ghost small" onClick={() => disconnect(svc.id)} disabled={!native}>Disconnect</button>
+                  </>
+                ) : isPending ? (
+                  <span className="serviceStatus" style={{ color: "var(--bronze-hi)" }}>Authorizing…</span>
+                ) : hasApp ? (
+                  <button className="primary small" onClick={() => connect(svc.id)} disabled={!native}>Connect</button>
+                ) : (
+                  <button className="ghost small" onClick={() => setSetupFor(setupFor === svc.id ? null : svc.id)} disabled={!native}>
+                    {setupFor === svc.id ? "Cancel" : "Set up app"}
+                  </button>
+                )}
+              </div>
+              {setupFor === svc.id ? (
+                <div className="serviceSetup">
+                  <p className="paneHint">
+                    Register an OAuth app on {svc.label}'s developer console, set the redirect URI to
+                    <code> http://localhost:53691/oauth/callback</code>, then paste its credentials:
+                  </p>
+                  <input className="keyInput" placeholder="Client ID" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                  <input className="keyInput" placeholder="Client Secret" type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+                  <button className="primary small" onClick={() => saveCredentials(svc.id)} disabled={!clientId.trim() || !clientSecret.trim()}>Save credentials</button>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <p className="paneHint" style={{ marginTop: "1rem" }}>
+        Connecting opens your browser to sign in — Ares acts through your real account, never a bot.
+        You can also connect from Telegram with /connect. Browser-only services (DoorDash, Amazon, OpenTable)
+        work through Ares's browser automation — no sign-in needed.
+      </p>
     </div>
   );
 }
@@ -4005,6 +5059,148 @@ function AnthropicSignIn({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function ConsciousnessPane({
+  native,
+  state,
+  onDaemonCommand,
+}: {
+  native: boolean;
+  state: ConsciousnessVm;
+  onDaemonCommand: (cmd: Record<string, unknown>) => void;
+}) {
+  const readyCount = state.models.filter((m) => m.present).length;
+  const totalCount = state.models.length || 3;
+  const phase = !state.enabled
+    ? "Dormant"
+    : state.downloading
+      ? "Awakening…"
+      : state.paused
+        ? "Looking away"
+        : state.ready
+          ? "Awake"
+          : "Enabled";
+  const toggle = () =>
+    onDaemonCommand({ type: state.enabled ? "consciousness_disable" : "consciousness_enable" });
+
+  return (
+    <div className="settingsPane">
+      <h3 className="paneTitle">Consciousness</h3>
+      <p className="paneHint">
+        An embedded local brain that watches the screen and powers memory — it runs <em>inside</em> Ares,
+        with no provider, key, or network. Awakening pulls its models once (~600&nbsp;MB): a tiny vision
+        model (the eyes) and an embedding model (vector memory).
+      </p>
+
+      <div className="consciousHead">
+        <div>
+          <span className="consciousPhase" data-awake={state.ready ? "1" : "0"} data-on={state.enabled ? "1" : "0"}>
+            {phase}
+          </span>
+          <span className="paneHint"> · {readyCount}/{totalCount} models ready</span>
+        </div>
+        <div className="consciousBtns">
+          {state.downloading ? (
+            <button className="provChip" disabled={!native} onClick={() => onDaemonCommand({ type: "consciousness_cancel" })}>
+              Cancel
+            </button>
+          ) : null}
+          <button className="provChip" data-on={state.enabled ? "1" : "0"} disabled={!native || state.downloading} onClick={toggle}>
+            {state.enabled ? "Make dormant" : "Awaken"}
+          </button>
+        </div>
+      </div>
+
+      {state.models.length > 0 || state.enabled ? (
+        <div className="consciousModels">
+          {state.models.map((m) => {
+            const pct = m.present ? 100 : state.progress[m.id] ?? 0;
+            const right = m.present ? "ready" : state.downloading ? `${pct}%` : `${(m.bytes / 1048576).toFixed(0)} MB`;
+            return (
+              <div key={m.id} className="consciousModel">
+                <div className="consciousModelHead">
+                  <span>{m.label}</span>
+                  <span className="paneHint">{right}</span>
+                </div>
+                <div className="updateBanner__bar">
+                  <div className="updateBanner__barFill" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            );
+          })}
+          {state.enabled ? (
+            (() => {
+              const epct = state.engineInstalled ? 100 : state.progress.engine ?? 0;
+              const right = state.engineInstalled ? "installed" : state.downloading ? `${epct}%` : "~16 MB";
+              return (
+                <div className="consciousModel">
+                  <div className="consciousModelHead">
+                    <span>Vision engine (llama.cpp)</span>
+                    <span className="paneHint">{right}</span>
+                  </div>
+                  <div className="updateBanner__bar">
+                    <div className="updateBanner__barFill" style={{ width: `${epct}%` }} />
+                  </div>
+                </div>
+              );
+            })()
+          ) : null}
+        </div>
+      ) : null}
+
+      {state.error ? <p className="paneHint" style={{ color: "var(--crimson)" }}>{state.error}</p> : null}
+
+      {state.enabled ? (
+        <div className="consciousWatch">
+          <div className="consciousModelHead">
+            <strong>The eyes</strong>
+            <span className="paneHint">
+              {state.paused
+                ? "looking away"
+                : state.engineAvailable
+                  ? state.watching
+                    ? "watching"
+                    : "ready"
+                  : state.engineInstalled
+                    ? "engine present, models pending"
+                    : "engine not installed"}
+            </span>
+          </div>
+          {!state.engineInstalled ? (
+            <p className="paneHint">
+              The local vision engine binary isn't installed yet. Drop a <code>llama-mtmd-cli</code> build into{" "}
+              <code>&lt;home&gt;/engine</code> (or set <code>ARES_LLAMA_MTMD</code>) and the eyes open — no other change needed.
+            </p>
+          ) : null}
+          {state.lastComment ? (
+            <p className="consciousRemark">“{state.lastComment}”</p>
+          ) : state.lastObservation ? (
+            <p className="paneHint">Watching quietly · last read: {state.lastObservation}</p>
+          ) : null}
+          <div className="consciousBtns" style={{ marginTop: 12 }}>
+            {state.paused ? (
+              <button className="provChip" data-on="1" disabled={!native} onClick={() => onDaemonCommand({ type: "consciousness_resume" })}>
+                Resume
+              </button>
+            ) : (
+              <button className="provChip" disabled={!native || !state.watching} onClick={() => onDaemonCommand({ type: "consciousness_look_away", seconds: 300 })}>
+                Look away (5 min)
+              </button>
+            )}
+            <button className="provChip" data-danger="1" disabled={!native} onClick={() => onDaemonCommand({ type: "consciousness_killswitch" })}>
+              Killswitch
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <p className="paneHint">
+        Local + private: screen frames are read by the on-device model and never leave the machine. It stays silent
+        unless something's genuinely worth a word.
+      </p>
     </div>
   );
 }
@@ -4111,10 +5307,58 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
 
 // ─── Mount ─────────────────────────────────────────────────────────────────
 
+class AresErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error?: Error }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Surface the failure in a controlled way instead of letting the WebView
+    // show the generic "Something went wrong" crash page.
+    console.error("Ares UI crashed:", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="errorBoundary">
+          <div className="errorBoundaryMark" aria-hidden="true"></div>
+          <h2>Ares hit a rendering problem</h2>
+          <p>{this.state.error?.message ?? "Something went wrong."}</p>
+          <button onClick={() => this.setState({ hasError: false, error: undefined })} className="primary">
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Catch top-level runtime errors and promise rejections so a single bad event
+// or effect doesn't hard-crash the WebView renderer.
+window.addEventListener("error", (e) => {
+  console.error("Ares unhandled error:", e.error);
+  e.preventDefault();
+});
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("Ares unhandled rejection:", e.reason);
+  e.preventDefault();
+});
+
 const rootEl = document.getElementById("root");
 if (rootEl) {
   // Vite HMR re-evaluates this module — reuse the root across hot reloads.
   const holder = window as unknown as { __aresRoot?: ReturnType<typeof createRoot> };
   holder.__aresRoot ??= createRoot(rootEl);
-  holder.__aresRoot.render(<App />);
+  holder.__aresRoot.render(
+    <AresErrorBoundary>
+      <App />
+    </AresErrorBoundary>,
+  );
 }

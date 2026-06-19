@@ -111,11 +111,18 @@ export class ContinuousVerifier {
    */
   async settle(timeoutMs = 10_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
-    // Flush a pending debounce window right now.
+    const untilDeadline = (): Promise<void> =>
+      new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now())));
+    // Flush a pending debounce window right now. AWAIT the fired run (raced
+    // against the deadline): fire-and-forget here let settle() observe
+    // inFlight===null and pendingFiles empty (fireRun clears pendingFiles before
+    // its first await, then assigns inFlight only AFTER detectSetup) and return
+    // BEFORE the verdict landed — so the end-gate never saw the failure. The
+    // run's promise resolves only after the reminder is pushed.
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
-      void this.fireRun();
+      await Promise.race([this.fireRun().catch(() => undefined), untilDeadline()]);
     }
     // Runs can chain (a fireRun may have been queued while one was active),
     // so loop until quiet or out of time.
@@ -127,7 +134,7 @@ export class ContinuousVerifier {
         if (remaining <= 0) return;
         await Promise.race([inFlight.done, new Promise((r) => setTimeout(r, remaining))]);
       } else if (this.pendingFiles.size > 0) {
-        void this.fireRun();
+        await Promise.race([this.fireRun().catch(() => undefined), untilDeadline()]);
       }
     }
   }

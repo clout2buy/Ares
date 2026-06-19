@@ -17,11 +17,36 @@ export interface TgChat {
   title?: string;
 }
 
+export interface TgVoice {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TgAudio {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TgFile {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_path?: string;
+}
+
 export interface TgMessage {
   message_id: number;
   chat: TgChat;
   from?: TgUser;
   text?: string;
+  voice?: TgVoice;
+  audio?: TgAudio;
   date?: number;
 }
 
@@ -151,6 +176,52 @@ export class TelegramApi {
     const params: Record<string, unknown> = { callback_query_id: callbackQueryId };
     if (opts.text) params.text = opts.text;
     await this.call<unknown>("answerCallbackQuery", params, opts.signal);
+  }
+
+  /** Get file metadata (including file_path for download). */
+  async getFile(fileId: string, signal?: AbortSignal): Promise<TgFile> {
+    return this.call<TgFile>("getFile", { file_id: fileId }, signal);
+  }
+
+  /** Download a file by its file_path (from getFile). Returns raw bytes. */
+  async downloadFile(filePath: string, signal?: AbortSignal): Promise<Buffer> {
+    const url = `${this.base}/file/bot${this.token}/${filePath}`;
+    const res = await fetch(url, { signal });
+    if (!res.ok) throw new TelegramApiError("downloadFile", res.status, `download failed: ${res.statusText}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** Show the "typing…" bubble so the chat doesn't feel dead while Ares thinks.
+   *  Telegram clears it after ~5s, so callers refresh it until the reply lands. */
+  async sendChatAction(chatId: number, action: "typing" = "typing", signal?: AbortSignal): Promise<void> {
+    await this.call<unknown>("sendChatAction", { chat_id: chatId, action }, signal);
+  }
+
+  /** Send a voice note (OGG/Opus buffer). Uses multipart/form-data since Telegram
+   *  requires file uploads for voice messages. */
+  async sendVoice(chatId: number, voice: Buffer, opts: { caption?: string; signal?: AbortSignal } = {}): Promise<TgMessage> {
+    const boundary = `----AresVoice${Date.now()}`;
+    const parts: Buffer[] = [];
+    const addField = (name: string, value: string) => {
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+    };
+    addField("chat_id", String(chatId));
+    if (opts.caption) addField("caption", opts.caption);
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="voice.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`,
+    ));
+    parts.push(voice);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+    const res = await this.fetchImpl(`${this.base}/bot${this.token}/sendVoice`, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      body: body as unknown as string,
+      signal: opts.signal,
+    });
+    const raw = await res.json() as TgEnvelope<TgMessage>;
+    if (!raw.ok) throw new TelegramApiError("sendVoice", raw.error_code ?? res.status, raw.description ?? "unknown");
+    return raw.result as TgMessage;
   }
 
   private async call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {

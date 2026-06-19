@@ -29,3 +29,15 @@ export {
   type AcquireOptions,
   type AcquiredPage,
 } from "./playwrightBrowser.js";
+
+export {
+  detectChallenge,
+  challengePrompt,
+  runChallengeHandoff,
+  type ChallengeInfo,
+  type ChallengeKind,
+  type ChallengeSurface,
+  type HumanCheckHandler,
+  type HumanCheckOutcome,
+  type HandoffResult,
+} from "./challenge.js";

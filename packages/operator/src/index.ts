@@ -68,6 +68,23 @@ export {
 
 export { operatorPaths, type OperatorPaths } from "./paths.js";
 
+export {
+  STANDING_ORDER_SCHEMA,
+  MIN_CADENCE_MS,
+  newStandingOrderId,
+  normalizeStandingOrder,
+  saveStandingOrder,
+  loadStandingOrders,
+  addStandingOrder,
+  removeStandingOrder,
+  setStandingOrderEnabled,
+  dueStandingOrders,
+  materializeDueStandingOrders,
+  renderStandingOrders,
+  type StandingOrder,
+  type MaterializeResult,
+} from "./standingOrders.js";
+
 export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";
 
 export { WorldModel, type WorldSource, type WorldSnapshot } from "./worldModel.js";
@@ -195,6 +212,7 @@ export {
   DEFAULT_MASTERY_SUCCESSES,
   type CapabilityNode,
   type CapabilityStatus,
+  type CapabilitySource,
   type CapabilityOutcomes,
   type MethodKind,
   type MethodRung,
@@ -204,10 +222,18 @@ export { novelDelta, reusedSubskills, factor, novelDeltaCurve } from "./graph.js
 
 export {
   seedNativeCapabilities,
+  seedToolCapabilities,
+  seedSkillCapabilities,
+  seedAllCapabilities,
   NATIVE_CAPABILITY_SEEDS,
+  TOOL_CAPABILITY_SEEDS,
+  TOOL_CAPABILITY_MAP,
   type NativeCapabilitySeed,
+  type CapabilitySeed,
   type SeedNativeCapabilitiesReport,
 } from "./seed.js";
+
+export { renderCapabilitiesDoc, writeCapabilitiesDoc } from "./ledger.js";
 
 export {
   acquireCapability,

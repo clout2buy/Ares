@@ -77,6 +77,10 @@ export interface UiSettings {
   telegramDefaultChatId?: string;
   /** Whether the Telegram bridge should auto-start with the daemon. */
   telegramEnabled?: boolean;
+  /** Whether Consciousness (the embedded local watcher brain) is awakened.
+   *  When true, Ares pulls its local vision + embedding models and — in later
+   *  stages — runs the always-on screen-watch loop. */
+  consciousnessEnabled?: boolean;
 }
 
 /** Advanced run-tuning knobs. All optional; absent → engine defaults. */

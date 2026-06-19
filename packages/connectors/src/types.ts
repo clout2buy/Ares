@@ -26,6 +26,14 @@ export interface BrowserState {
   title?: string;
 }
 
+export interface ConsoleEntry {
+  /** log | info | warn | error | debug */
+  type: string;
+  text: string;
+  /** ISO timestamp when captured. */
+  at: string;
+}
+
 export interface BrowserConnector {
   readonly name: string;
   navigate(url: string): Promise<BrowserState>;
@@ -36,4 +44,14 @@ export interface BrowserConnector {
   screenshot(): Promise<Screenshot>;
   state(): Promise<BrowserState>;
   close(): Promise<void>;
+  /** Click the first element matching a CSS selector or visible text — the
+   *  flexible path for verifying UI (buttons, links, tabs). Animates the cursor. */
+  clickByText?(query: string): Promise<void>;
+  /** Type into an element by CSS selector (when label targeting won't reach it). */
+  fillBySelector?(selector: string, value: string): Promise<void>;
+  /** Captured console output since the page loaded — read errors after acting. */
+  consoleLogs?(opts?: { onlyErrors?: boolean; limit?: number }): Promise<ConsoleEntry[]>;
+  /** Evaluate JS in the page and return the JSON-serializable result — inspect
+   *  state, call functions, verify behavior. */
+  evaluate?(js: string): Promise<unknown>;
 }

@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Ares",
   "mainBinaryName": "Ares",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "identifier": "dev.ares.app",
   "build": {
     "beforeDevCommand": "pnpm dev:vite",
@@ -12,6 +12,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis"
     ],
@@ -31,6 +32,14 @@
         "installerIcon": "icons/icon.ico",
         "installerHooks": "nsis-hooks.nsh"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/clout2buy/Ares/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENBODQ4MkRGRkQ3QjI0RDIKUldUU0pIdjkzNEtFeXFPeUxhM0xGSlV6bVZuM1dsdVpQSVZwNjJBZkdzRGpEZ1lZT1RyQ1lZMzMK"
     }
   },
   "app": {

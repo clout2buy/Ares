@@ -32,6 +32,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 struct DaemonState {
     child: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+    /// The Garrison gateway (`garrison serve`) that hosts the Telegram bridge.
+    /// Owned by the app so it dies WITH the app — the fix for the bridge that
+    /// kept answering after the EXE "closed" (it was a manual, unowned process).
+    garrison: Arc<Mutex<Option<Child>>>,
     root: Mutex<Option<PathBuf>>,
     provider: Mutex<Option<String>>,
     model: Mutex<Option<String>>,
@@ -283,6 +287,43 @@ fn start_daemon(
     {
         let mut child_state = state.child.lock().map_err(|_| "daemon child lock failed")?;
         *child_state = Some(child);
+    }
+
+    // Own the Garrison gateway (the Telegram-bridge host) as a tracked child so it
+    // dies WITH the app — closing Ares now stops the bridge too. Best-effort: if
+    // the gateway can't start (e.g. a stale manual `garrison serve` still holds the
+    // port), the desktop session works fine; we just surface the error.
+    {
+        let mut garrison_cmd = Command::new(&runtime.node);
+        garrison_cmd.arg(&runtime.cli_entry).arg("garrison").arg("serve");
+        #[cfg(windows)]
+        {
+            garrison_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        if bundled_browsers.is_dir() {
+            garrison_cmd.env("PLAYWRIGHT_BROWSERS_PATH", &bundled_browsers);
+        }
+        match garrison_cmd
+            .current_dir(&runtime.workspace)
+            .env("ARES_AGENT_ENABLED", "1")
+            .env("ARES_HOME", desktop_ares_home_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(garrison_child) => {
+                if let Ok(mut g) = state.garrison.lock() {
+                    *g = Some(garrison_child);
+                }
+            }
+            Err(error) => push_event_parts(
+                &app,
+                &state.events,
+                &state.next_event_seq,
+                json!({ "type": "desktop_garrison_error", "error": error.to_string() }),
+            ),
+        }
     }
 
     // stdout (the content stream) flows through the coalescer so rapid token
@@ -639,6 +680,24 @@ fn spawn_exit_watcher(
     });
 }
 
+/// Kill a child AND every descendant it spawned. A bare `child.kill()` on Windows
+/// reaps only the direct `node` process, leaving any grandchildren (a spawned
+/// garrison gateway, a Playwright browser) orphaned — which is exactly how the
+/// Telegram bridge kept answering after the app "closed". `taskkill /T` walks the
+/// whole tree. Best-effort everywhere; the plain kill is the cross-platform floor.
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        let pid = child.id();
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn stop_existing_daemon(state: &DaemonState) -> Result<(), String> {
     // Bump the generation first so the exit watcher treats this as deliberate.
     state.generation.fetch_add(1, Ordering::SeqCst);
@@ -647,10 +706,17 @@ fn stop_existing_daemon(state: &DaemonState) -> Result<(), String> {
         *stdin_state = None;
     }
 
+    // Reap the Garrison gateway (and its Telegram bridge) first — same tree-kill,
+    // so the bridge can never outlive the app.
+    if let Ok(mut garrison_state) = state.garrison.lock() {
+        if let Some(mut garrison) = garrison_state.take() {
+            kill_child_tree(&mut garrison);
+        }
+    }
+
     let mut child_state = state.child.lock().map_err(|_| "daemon child lock failed")?;
     if let Some(mut child) = child_state.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_child_tree(&mut child);
     }
     {
         let mut provider_state = state
@@ -738,9 +804,12 @@ fn stop_voice_sidecar(state: &VoiceState) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(DaemonState {
             child: Arc::new(Mutex::new(None)),
             stdin: Arc::new(Mutex::new(None)),
+            garrison: Arc::new(Mutex::new(None)),
             root: Mutex::new(None),
             provider: Mutex::new(None),
             model: Mutex::new(None),
@@ -762,17 +831,10 @@ fn main() {
                 start_voice_sidecar(&handle, voice.inner());
             }
             app.listen("tauri://close-requested", move |_| {
+                // Reap the daemon AND the Garrison gateway/bridge (stop_existing_daemon
+                // now tree-kills both) so nothing outlives the window.
                 if let Some(state) = handle.try_state::<DaemonState>() {
-                    let mut stdin_state = state.stdin.lock().ok();
-                    if let Some(stdin_state) = stdin_state.as_mut() {
-                        **stdin_state = None;
-                    }
-                    if let Ok(mut child_state) = state.child.lock() {
-                        if let Some(mut child) = child_state.take() {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                        }
-                    }
+                    let _ = stop_existing_daemon(state.inner());
                 }
                 if let Some(voice) = handle.try_state::<VoiceState>() {
                     stop_voice_sidecar(voice.inner());
@@ -806,8 +868,23 @@ fn main() {
             ares_window_toggle_maximize,
             ares_window_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Ares Tauri app");
+        .build(tauri::generate_context!())
+        .expect("error while building Ares Tauri app")
+        .run(|app_handle, event| {
+            // The ONLY guaranteed cleanup hook. The `close-requested` listener and
+            // the in-app close button cover the friendly path, but OS close, Alt+F4,
+            // taskbar-close, and tray-quit don't go through them — and skipping
+            // cleanup orphaned the daemon (and its Telegram bridge), which kept
+            // answering after the app "exited". ExitRequested fires on ALL of them.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app_handle.try_state::<DaemonState>() {
+                    let _ = stop_existing_daemon(state.inner());
+                }
+                if let Some(voice) = app_handle.try_state::<VoiceState>() {
+                    stop_voice_sidecar(voice.inner());
+                }
+            }
+        });
 }
 
 #[cfg(windows)]

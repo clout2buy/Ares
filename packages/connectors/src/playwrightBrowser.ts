@@ -14,9 +14,20 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AccessibilityNode, BrowserConnector } from "./types.js";
+import { runChallengeHandoff, type HumanCheckHandler } from "./challenge.js";
 
 export interface PlaywrightOptions {
   headless?: boolean;
+  /** Called when a CAPTCHA/Cloudflare wall is hit — the human-handoff Gate.
+   *  Absent → challenges are detected but navigation just proceeds (legacy). */
+  onChallenge?: HumanCheckHandler;
+  /** Live view: called with a base64 JPEG every time the page visibly changes
+   *  (cursor glide frames, post-click). The daemon streams these into the Ares UI
+   *  so the owner WATCHES Ares browse — its own embedded browser, no popup. */
+  onFrame?: (jpegBase64: string) => void;
+  /** Human-watchable pacing: ms the cursor takes to glide to a target (default
+   *  420). Larger = slower/more deliberate so it's easy to follow. */
+  paceMs?: number;
 }
 
 export function findInstalledChromium(): string | undefined {
@@ -166,6 +177,17 @@ export async function acquireBrowserPage(pw: any, opts: AcquireOptions): Promise
       const context = await pw.chromium.launchPersistentContext(opts.userDataDir, {
         headless: opts.headless,
         viewport: opts.viewport,
+        // Real-browser posture so sites (esp. video — YouTube/Netflix) actually
+        // work instead of throwing "Something went wrong":
+        //  • chromiumSandbox:true   → drops the "--no-sandbox unsupported flag"
+        //    banner and restores the normal, sandboxed media pipeline.
+        //  • ignoreDefaultArgs      → strip Playwright's "--enable-automation",
+        //    the flag YouTube's player checks to refuse playback.
+        //  • AutomationControlled   → hide navigator.webdriver so anti-bot and
+        //    DRM (Widevine) treat the session as a real human's browser.
+        chromiumSandbox: true,
+        ignoreDefaultArgs: ["--enable-automation"],
+        args: ["--disable-blink-features=AutomationControlled"],
         ...attempt.options,
       });
       const page = context.pages()[0] ?? (await context.newPage());
@@ -201,13 +223,15 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     ? path.join(process.env.ARES_HOME, "browser-profile")
     : path.join(os.tmpdir(), "ares-browser-profile");
   // Prefer attaching to the user's REAL running browser (their logged-in profile,
-  // cookies, extensions — the thing that actually beats Cloudflare/anti-bot) when
-  // a CDP endpoint is configured; otherwise launch a persistent-profile browser.
-  // Auto-discovery is OFF unless explicitly enabled — Ares never grabs a random
-  // open browser on its own.
+  // cookies, extensions — the thing that actually beats Cloudflare/anti-bot and
+  // gives real codecs/DRM for video). Discovery now defaults ON: if a Chrome is
+  // listening on the debug port (started with --remote-debugging-port=9222) Ares
+  // uses THAT — a real, logged-in, human-fingerprinted session — and only launches
+  // its own persistent-profile browser when none is found. Kill switch:
+  // ARES_BROWSER_CDP_DISCOVERY=0. Explicit ARES_BROWSER_CDP_URL still wins.
   const acquired = await acquireBrowserPage(pw, {
     cdpUrl: process.env.ARES_BROWSER_CDP_URL?.trim() || undefined,
-    discovery: process.env.ARES_BROWSER_CDP_DISCOVERY === "1",
+    discovery: process.env.ARES_BROWSER_CDP_DISCOVERY !== "0",
     discoveryPorts: parseCdpPorts(process.env.ARES_BROWSER_CDP_PORTS),
     executablePath: findInstalledChromium(),
     headless: opts.headless ?? true,
@@ -215,6 +239,135 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     viewport: { width: 1280, height: 800 },
   });
   const page = acquired.page;
+
+  // ── console capture: read errors/logs after an interaction, like a dev tools ──
+  const consoleBuffer: Array<{ type: string; text: string; at: string }> = [];
+  const pushLog = (type: string, text: string) => {
+    consoleBuffer.push({ type, text: String(text).slice(0, 2000), at: new Date().toISOString() });
+    if (consoleBuffer.length > 600) consoleBuffer.shift();
+  };
+  try {
+    page.on("console", (m: any) => pushLog(m.type?.() ?? "log", m.text?.() ?? ""));
+    page.on("pageerror", (e: any) => pushLog("error", e?.message ?? String(e)));
+    page.on("requestfailed", (r: any) => pushLog("warn", `request failed: ${r?.url?.() ?? ""}`));
+  } catch {
+    // older Playwright event shapes — capture is best-effort
+  }
+
+  // ── human-like cursor: the REAL pointer moves along a curved, eased path so
+  // hover states fire and the motion reads as a person, not a robot. The owner
+  // watches it travel, aim, press, and click — streamed frame by frame. ──
+  const paceMs = Math.max(120, opts.paceMs ?? 460);
+  const viewW = 1280, viewH = 800;
+  let curX = viewW / 2, curY = viewH / 2; // tracked cursor position (continuous between actions)
+  const sleep = (ms: number) => page.waitForTimeout?.(ms).catch(() => undefined) ?? Promise.resolve();
+  const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+  const CURSOR_JS = `(() => {
+    if (window.__aresCursorReady) return;
+    window.__aresCursorReady = true;
+    const c = document.createElement('div');
+    c.id = '__ares_cursor';
+    c.style.cssText = 'position:fixed;left:0;top:0;width:24px;height:24px;z-index:2147483647;pointer-events:none;transform:translate(-100px,-100px);transition:transform 60ms linear,filter 90ms ease;will-change:transform;filter:drop-shadow(0 2px 5px rgba(0,0,0,.55));';
+    c.innerHTML = '<svg width="24" height="24" viewBox="0 0 26 26"><path d="M3,2 L3,20 L8,15 L11,23 L14,22 L11,14 L18,14 Z" fill="#fff" stroke="#d6402e" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+    document.documentElement.appendChild(c);
+    const st = document.createElement('style');
+    st.textContent = '@keyframes __aresRip{0%{transform:translate(-50%,-50%) scale(.2);opacity:.95}100%{transform:translate(-50%,-50%) scale(2);opacity:0}}';
+    document.documentElement.appendChild(st);
+    let px = -100, py = -100, scale = 1;
+    const apply = () => { c.style.transform = 'translate(' + (px - 3) + 'px,' + (py - 2) + 'px) scale(' + scale + ')'; };
+    window.__aresMove = (x, y) => { px = x; py = y; apply(); };
+    window.__aresPress = (down) => { scale = down ? 0.78 : 1; c.style.filter = down ? 'drop-shadow(0 0 6px #d6402e)' : 'drop-shadow(0 2px 5px rgba(0,0,0,.55))'; apply(); };
+    window.__aresRipple = (x, y) => {
+      const r = document.createElement('div');
+      r.style.cssText = 'position:fixed;left:' + x + 'px;top:' + y + 'px;width:34px;height:34px;border:2.5px solid #d6402e;border-radius:50%;z-index:2147483646;pointer-events:none;animation:__aresRip .5s ease-out forwards;';
+      document.documentElement.appendChild(r); setTimeout(() => r.remove(), 560);
+    };
+  })()`;
+  async function ensureCursor(): Promise<void> {
+    try { await page.evaluate(CURSOR_JS); } catch { /* page not ready — skip cosmetics */ }
+  }
+  async function emitFrame(): Promise<void> {
+    if (!opts.onFrame) return;
+    try {
+      const buf = await page.screenshot({ type: "jpeg", quality: 55 });
+      opts.onFrame(Buffer.from(buf).toString("base64"));
+    } catch { /* frame is best-effort */ }
+  }
+  async function syncCursor(x: number, y: number): Promise<void> {
+    try { await page.evaluate(([px, py]: number[]) => (window as any).__aresMove?.(px, py), [x, y]); } catch { /* ignore */ }
+  }
+
+  // Move the REAL mouse + visual cursor from where it is to (tx,ty) along a gently
+  // curved, ease-in-out path. Real movement = hover/:hover effects fire, exactly
+  // like a person sweeping to a control. Frames stream throughout.
+  async function humanMoveTo(tx: number, ty: number): Promise<void> {
+    await ensureCursor();
+    const sx = curX, sy = curY;
+    const dx = tx - sx, dy = ty - sy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1.5) { curX = tx; curY = ty; await syncCursor(tx, ty); return; }
+    // perpendicular bow so the path arcs instead of running dead-straight
+    const bow = Math.min(dist * 0.16, 70) * (Math.random() < 0.5 ? 1 : -1);
+    const mx = (sx + tx) / 2 - (dy / dist) * bow;
+    const my = (sy + ty) / 2 + (dx / dist) * bow;
+    const steps = Math.max(14, Math.min(44, Math.round(dist / 9)));
+    const frameEvery = Math.max(1, Math.round(steps / (opts.onFrame ? 9 : steps)));
+    for (let i = 1; i <= steps; i++) {
+      const t = easeInOut(i / steps);
+      const u = 1 - t;
+      const x = u * u * sx + 2 * u * t * mx + t * t * tx;
+      const y = u * u * sy + 2 * u * t * my + t * t * ty;
+      try { await page.mouse.move(x, y); } catch { /* ignore */ }
+      await syncCursor(x, y);
+      curX = x; curY = y;
+      if (opts.onFrame && i % frameEvery === 0) await emitFrame();
+      await sleep(paceMs / steps);
+    }
+    curX = tx; curY = ty;
+  }
+  async function pressCursor(): Promise<void> {
+    try { await page.evaluate(() => (window as any).__aresPress?.(true)); } catch { /* ignore */ }
+    await emitFrame();
+    await sleep(90);
+    try { await page.evaluate(() => (window as any).__aresPress?.(false)); } catch { /* ignore */ }
+  }
+  async function rippleAt(x: number, y: number): Promise<void> {
+    try { await page.evaluate(([px, py]: number[]) => (window as any).__aresRipple?.(px, py), [x, y]); } catch { /* ignore */ }
+    await emitFrame();
+  }
+
+  // Sweep to a locator like a person: scroll it into view, arc the cursor over,
+  // pause to "aim", dip a press, click, settle.
+  async function actOnLocator(locator: any, act: (l: any) => Promise<void>): Promise<void> {
+    try { await locator.scrollIntoViewIfNeeded({ timeout: 2000 }); } catch { /* ignore */ }
+    const box = await locator.boundingBox().catch(() => null);
+    if (box) {
+      // aim slightly off dead-center, like a real hand
+      const jitterX = (Math.random() - 0.5) * Math.min(box.width * 0.3, 8);
+      const jitterY = (Math.random() - 0.5) * Math.min(box.height * 0.3, 6);
+      const cx = box.x + box.width / 2 + jitterX, cy = box.y + box.height / 2 + jitterY;
+      await humanMoveTo(cx, cy);
+      await sleep(130);            // a beat to aim
+      await emitFrame();           // show the hover state
+      await pressCursor();         // press dip
+      await rippleAt(cx, cy);
+    }
+    await act(locator);
+    await sleep(240);              // let the result paint
+    await emitFrame();
+  }
+
+  // Type character-by-character at human cadence so the owner watches text appear.
+  async function typeHuman(locator: any, value: string): Promise<void> {
+    await actOnLocator(locator, (l) => l.click({ timeout: 5_000 }).catch(() => undefined));
+    try { await locator.fill(""); } catch { /* ignore */ }
+    const chunks = value.match(/.{1,4}/gs) ?? [value];
+    for (const ch of chunks) {
+      try { await locator.pressSequentially(ch, { delay: 55 }); } catch { try { await locator.type(ch, { delay: 55 }); } catch { /* ignore */ } }
+      await emitFrame();
+    }
+  }
 
   const flatten = (node: any, out: AccessibilityNode[] = []): AccessibilityNode[] => {
     if (node && typeof node.role === "string") {
@@ -224,11 +377,36 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     return out;
   };
 
+  /**
+   * After a navigation, run the CAPTCHA/Cloudflare handoff loop (testable, in
+   * challenge.ts). Best-effort: any error here never breaks the navigation.
+   */
+  async function maybeHandleChallenge(): Promise<void> {
+    if (!opts.onChallenge) return;
+    await runChallengeHandoff({
+      onChallenge: opts.onChallenge,
+      getSurface: async () => ({
+        url: page.url(),
+        title: await page.title().catch(() => ""),
+        html: await page.content().catch(() => ""),
+      }),
+      settle: async () => {
+        await page.waitForTimeout?.(500).catch(() => undefined);
+      },
+    }).catch(() => undefined);
+  }
+
   return {
     name: "playwright",
     async navigate(url) {
       // Bounded waits — a stock 30s default means every miss is a half-minute hang.
       await page.goto(url, { timeout: 15_000, waitUntil: "domcontentloaded" });
+      await maybeHandleChallenge();
+      await ensureCursor();
+      // park the pointer mid-screen so it's visible before the first move
+      try { await page.mouse.move(curX, curY); } catch { /* ignore */ }
+      await syncCursor(curX, curY);
+      await emitFrame();
       return { url: page.url(), title: await page.title() };
     },
     async accessibilityTree() {
@@ -246,19 +424,47 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       return parseAriaSnapshot(yaml);
     },
     async fillByLabel(label, value) {
-      await page.getByLabel(label).first().fill(value, { timeout: 5_000 });
+      await typeHuman(page.getByLabel(label).first(), value);
     },
     async clickByRole(role, name) {
-      const locator = page.getByRole(role, { name });
-      try {
-        await locator.click({ timeout: 5_000 });
-      } catch (err) {
-        // Strict-mode multi-match throws immediately — fall back to the first
-        // candidate instead of hanging/failing the whole action.
-        const count = await locator.count().catch(() => 0);
-        if (count > 1) await locator.first().click({ timeout: 5_000 });
-        else throw err;
+      const locator = page.getByRole(role, { name }).first();
+      await actOnLocator(locator, async (l) => {
+        try {
+          await l.click({ timeout: 5_000 });
+        } catch (err) {
+          const count = await page.getByRole(role, { name }).count().catch(() => 0);
+          if (count > 1) await page.getByRole(role, { name }).first().click({ timeout: 5_000 });
+          else throw err;
+        }
+      });
+    },
+    async clickByText(query) {
+      // Try CSS selector first (precise), else fall to visible-text matching.
+      let loc: any;
+      const looksLikeSelector = /[.#\[>:]/.test(query) || /^[a-z][a-z0-9-]*$/i.test(query);
+      if (looksLikeSelector) {
+        const cand = page.locator(query).first();
+        if (await cand.count().catch(() => 0)) loc = cand;
       }
+      if (!loc) loc = page.getByText(query, { exact: false }).first();
+      if (!(await loc.count().catch(() => 0))) loc = page.locator(`text=${query}`).first();
+      await actOnLocator(loc, (l) => l.click({ timeout: 5_000 }));
+    },
+    async fillBySelector(selector, value) {
+      await typeHuman(page.locator(selector).first(), value);
+    },
+    async consoleLogs(o) {
+      let logs = consoleBuffer.slice();
+      if (o?.onlyErrors) logs = logs.filter((e) => e.type === "error" || e.type === "warning" || e.type === "warn");
+      const limit = o?.limit ?? 50;
+      return logs.slice(-limit);
+    },
+    async evaluate(js) {
+      // Run an expression/IIFE in the page; return the JSON-serializable result.
+      return page.evaluate(`(() => { return (${js}); })()`).catch(async () =>
+        // not an expression? run as a statement body.
+        page.evaluate(`(() => { ${js} })()`),
+      );
     },
     async screenshot() {
       const buffer: Buffer = await page.screenshot();

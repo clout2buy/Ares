@@ -37,6 +37,8 @@ import {
   deviceCodeLogin,
   listSessions,
   loadSessionSnapshot,
+  deleteSession,
+  renameSession,
   loadAuthToken,
   type EngineTool,
   type ToolCallContext,
@@ -98,6 +100,8 @@ import {
   type PathPermissionStore,
   type CommandPermissionStore,
   type SubModelPool,
+  getWeatherText,
+  setRemindScheduler,
 } from "@ares/tools";
 import type { ContentBlock, Message, PermissionMode, PermissionPromptDecision, PermissionRule, PermissionRuleEffect, ReasoningLevel } from "@ares/protocol";
 import { isReasoningLevel, reasoningLabel, REASONING_LEVELS, messageText } from "@ares/protocol";
@@ -124,7 +128,13 @@ import {
 import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTui.js";
 import { runInkLauncher } from "./inkLauncher.js";
 import { loadUiSettings, updateUiSettings, type UiSettings } from "./uiSettings.js";
+import { consciousnessStatus, downloadAllConsciousnessModels } from "./consciousness.js";
+import { describeImage, engineStatus } from "./visionEngine.js";
+import { prepareEngineBinary } from "./engineBinary.js";
+import { captureScreen } from "./screenCapture.js";
+import { ConsciousnessWatch, WATCHER_VOICE_PROMPT } from "./watch.js";
 import { makeTelegramSetupTool } from "./telegramSetupTool.js";
+import { makeTelegramRosterTool } from "./telegramRosterTool.js";
 import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig } from "./telegramConfig.js";
 
 // Ares talks to the LOCAL Ollama daemon (native /api/chat) by default — it
@@ -197,7 +207,8 @@ import {
   loadMissionContract,
   missionContractCanComplete,
   missionContractNextVerificationAction,
-  seedNativeCapabilities,
+  seedAllCapabilities,
+  writeCapabilitiesDoc,
   summarizeContinuity,
   type ContinuitySummary,
   assembleWorldGraph,
@@ -223,6 +234,12 @@ import {
   runCrucibleTrials,
   TrustGovernor,
   runGauntlet,
+  loadStandingOrders,
+  addStandingOrder,
+  removeStandingOrder,
+  materializeDueStandingOrders,
+  renderStandingOrders,
+  type StandingOrder,
   type Goal,
   type CapabilityNode,
   type CapabilityEvidence,
@@ -232,9 +249,10 @@ import {
   type EvalTask,
   type VerificationSpec,
 } from "@ares/operator";
-import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions, type MemoryKind } from "@ares/mind";
+import { bridgeLegacyEnv, buildForegroundReminder, classifyUserIntent, diagnoseMemory, MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions, buildConversationDigest, mergeDurableFacts, CONVERSATION_REFLECT_SYSTEM, DURABLE_FACTS_SCHEMA_HINT, type DurableFact, type MemoryKind } from "@ares/mind";
 import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
-import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash } from "@ares/channels";
+import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, textToVoice, type ConnectFlowDeps } from "@ares/channels";
+import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, loadTokens } from "@ares/core";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "./holotable.js";
 import {
   Filmstrip,
@@ -242,10 +260,12 @@ import {
   createPlaywrightBrowser,
   fillEffect,
   navigateEffect,
+  challengePrompt,
   type BrowserConnector,
+  type HumanCheckHandler,
 } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, effectsPaths, ownerLeash, runEffect, type RailsContext } from "@ares/effects";
-import { gateToolPermission } from "./policyGate.js";
+import { gateToolPermission, remoteAutonomyDecision } from "./policyGate.js";
 
 interface ParsedArgs {
   command: string;
@@ -380,6 +400,8 @@ interface LiveSession {
   lastRecallIds?: string[];
   /** V5: the user message of the current turn, for the Witness snapshot. */
   lastUserMessage?: string;
+  /** Terminal auto-routing lane currently owning this conversation. */
+  routeLane?: string;
 }
 
 interface AresRuntimeState {
@@ -432,7 +454,19 @@ interface DaemonInputCommand {
   enabled?: boolean;
   days?: number;
   depth?: number;
+  /** consciousness_look_away pause duration. */
+  seconds?: number;
   text?: string;
+  /** New session name for session_rename (empty clears the custom label). */
+  label?: string;
+  /** OAuth: provider id + app credentials for oauth_* commands. */
+  clientId?: string;
+  clientSecret?: string;
+  /** Embedded-browser bridge result fields (webview_result). */
+  cmdId?: string;
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
   /** Which UI chat/session this command targets (multi-session daemon). */
   sessionId?: string;
 }
@@ -668,9 +702,57 @@ interface DaemonModelOption {
   capabilities?: string[];
 }
 
+const TERMINAL_PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "mock"] as const;
+type TerminalProviderId = (typeof TERMINAL_PROVIDERS)[number];
+const ROUTE_LANES = ["chat", "coding", "research", "tool-use"] as const;
+
+const STATIC_MODEL_CATALOG: Record<"openai" | "anthropic" | "mock", DaemonModelOption[]> = {
+  openai: [
+    { id: "gpt-5.5", hint: "flagship deep reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "gpt-5.5-codex", hint: "agentic coding tuned", group: "OpenAI", capabilities: ["tools", "reasoning"] },
+    { id: "gpt-5.1", hint: "previous flagship", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "gpt-5.1-codex", hint: "coding tuned", group: "OpenAI", capabilities: ["tools", "reasoning"] },
+    { id: "gpt-5", hint: "stable baseline", group: "OpenAI", capabilities: ["tools", "reasoning"] },
+    { id: "gpt-5-mini", hint: "fast + cheap", group: "OpenAI", capabilities: ["tools"] },
+  ],
+  anthropic: [
+    { id: "claude-fable-5", hint: "flagship adaptive thinking", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "claude-opus-4-8", hint: "deep reasoning workhorse", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "claude-sonnet-4-6", hint: "balanced speed / depth", group: "Anthropic", capabilities: ["tools", "reasoning"] },
+    { id: "claude-haiku-4-5-20251001", hint: "fast + cheap", group: "Anthropic", capabilities: ["tools"] },
+  ],
+  mock: [{ id: "mock-echo", hint: "offline echo provider for UI testing", group: "Mock", capabilities: [] }],
+};
+
+function isTerminalProviderId(provider: string): provider is TerminalProviderId {
+  return (TERMINAL_PROVIDERS as readonly string[]).includes(provider);
+}
+
+function defaultTerminalModel(provider: string, settings: UiSettings): string {
+  switch (provider) {
+    case "openai":
+      return settings.lastOpenAIModel ?? STATIC_MODEL_CATALOG.openai[0].id;
+    case "anthropic":
+      return settings.lastAnthropicModel ?? STATIC_MODEL_CATALOG.anthropic[0].id;
+    case "deepseek":
+      return settings.lastDeepSeekModel ?? "deepseek-v4-pro";
+    case "openrouter":
+      return settings.lastOpenRouterModel ?? "openai/gpt-4o-mini";
+    case "mock":
+      return "mock-echo";
+    case "ollama":
+    default:
+      return settings.lastOllamaModel ?? DEFAULT_OLLAMA_SLOTS.reasoner.model;
+  }
+}
+
 /** Build a live model catalog without exposing provider keys to the webview. */
 async function daemonModelCatalog(provider: string): Promise<DaemonModelOption[]> {
   const settings = await loadUiSettings();
+
+  if (provider === "openai" || provider === "anthropic" || provider === "mock") {
+    return STATIC_MODEL_CATALOG[provider];
+  }
 
   if (provider === "openrouter") {
     const rows = await fetchOpenRouterModels().catch(() => []);
@@ -1233,6 +1315,7 @@ async function buildEngineTools(
     MissionTool,
     SelfTool,
     makeTelegramSetupTool(),
+    makeTelegramRosterTool(),
   ];
 
   const baseTools = baseToolDefs.map((tool) => {
@@ -1256,6 +1339,7 @@ async function buildEngineTools(
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const workerTools = [...baseTools, taskTool];
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
+  const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
   const operatorWorkerTools = [...workerTools, livingMindTool, browserTool];
   const operatorTool = adaptToolForEngine(
@@ -1267,7 +1351,7 @@ async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  return [...workerTools, livingMindTool, operatorTool, browserTool];
+  return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool];
 }
 
 const livingMindInput = z
@@ -1346,6 +1430,57 @@ function makeLivingMindTool(context: CliRuntimeContext) {
         output: { action: i.action, home, count: store.count(), result },
         display: `listed ${result.length}/${store.count()} memories`,
       };
+    },
+  });
+}
+
+const standingOrderInput = z
+  .object({
+    action: z.enum(["add", "list", "cancel"]).describe("add a recurring mission, list them, or cancel one by id"),
+    statement: z.string().optional().describe("The recurring mission, e.g. 'Summarize any new important email and report it'. Required for add."),
+    every_minutes: z.number().int().min(5).optional().describe("How often to run it, in minutes (min 5). E.g. 120 for every 2 hours. Required for add."),
+    id: z.string().optional().describe("Standing-order id to cancel. Required for cancel."),
+  })
+  .strict();
+
+interface StandingOrderToolOutput {
+  action: string;
+  result: string;
+  id?: string;
+}
+
+/** The natural-language path to autonomy: the agent calls this whenever the owner
+ *  asks for recurring/standing work ("every 2 hours, check my email") — no slash
+ *  command needed. Materialized due orders run unattended under the safety gate. */
+function makeStandingOrderTool(context: CliRuntimeContext) {
+  return buildTool({
+    name: "StandingOrder",
+    description:
+      "Queue, list, or cancel STANDING ORDERS — recurring missions Ares runs on its own on a schedule, even while the owner is away (e.g. 'every 2 hours summarize new important email', 'each morning brief me on AI news'). " +
+      "Call this whenever the owner expresses recurring/scheduled intent in plain language — you do NOT need them to use a command. Each order runs unattended under Ares's safety gates and reports back.",
+    safety: "workspace-write",
+    concurrency: "exclusive",
+    inputZod: standingOrderInput,
+    activityDescription: (i) => (i.action === "add" ? "Queuing a standing order" : i.action === "cancel" ? "Cancelling a standing order" : "Listing standing orders"),
+    async call(i): Promise<{ output: StandingOrderToolOutput; display: string }> {
+      if (i.action === "add") {
+        const statement = i.statement?.trim();
+        if (!statement) throw new Error("StandingOrder add requires a statement");
+        const minutes = i.every_minutes ?? 60;
+        const order = await addStandingOrder(context.home, { statement, cadenceMs: minutes * 60_000 });
+        const cadence = minutes >= 60 ? `${(minutes / 60).toFixed(minutes % 60 ? 1 : 0)}h` : `${minutes}m`;
+        return {
+          output: { action: i.action, id: order.id, result: `Standing order queued (${order.id}): "${statement}" every ${cadence}. It will run unattended and report back.` },
+          display: `Standing order: ${compactLine(statement, 80)} every ${cadence}`,
+        };
+      }
+      if (i.action === "cancel") {
+        if (!i.id) throw new Error("StandingOrder cancel requires an id");
+        const ok = await removeStandingOrder(context.home, i.id);
+        return { output: { action: i.action, result: ok ? `Cancelled standing order ${i.id}.` : `No standing order ${i.id}.` }, display: ok ? `Cancelled ${i.id}` : `No ${i.id}` };
+      }
+      const orders = await loadStandingOrders(context.home);
+      return { output: { action: i.action, result: renderStandingOrders(orders) }, display: `${orders.length} standing orders` };
     },
   });
 }
@@ -1588,19 +1723,70 @@ function toVerificationSpec(input: VerificationInput): VerificationSpec {
   };
 }
 
+// ── Embedded-browser bridge: the daemon ⇄ UI request/response channel that lets
+// the agent drive Ares's OWN in-app browser (the same-origin iframe in the Forge).
+// exec() emits a webview_cmd event to stdout (→ UI), and awaits the matching
+// webview_result command the UI sends back. No Playwright — the page renders and
+// runs IN the Ares window.
+interface WebviewResult { ok: boolean; result?: unknown; error?: string; }
+class EmbeddedBrowserBridge {
+  private readonly pending = new Map<string, (r: WebviewResult) => void>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private seq = 0;
+  emit: ((obj: Record<string, unknown>) => void) | null = null;
+  get attached(): boolean { return this.emit !== null; }
+  exec(op: string, args: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<WebviewResult> {
+    if (!this.emit) return Promise.resolve({ ok: false, error: "embedded browser unavailable — open the Ares desktop window" });
+    const cmdId = `wv_${process.pid}_${++this.seq}`;
+    return new Promise<WebviewResult>((resolve) => {
+      this.pending.set(cmdId, resolve);
+      this.timers.set(cmdId, setTimeout(() => {
+        this.pending.delete(cmdId); this.timers.delete(cmdId);
+        resolve({ ok: false, error: "embedded browser timed out" });
+      }, timeoutMs));
+      this.emit!({ type: "webview_cmd", cmdId, op, ...args });
+    });
+  }
+  resolve(cmdId: string, payload: WebviewResult): void {
+    const r = this.pending.get(cmdId);
+    if (!r) return;
+    const t = this.timers.get(cmdId);
+    if (t) clearTimeout(t);
+    this.pending.delete(cmdId); this.timers.delete(cmdId);
+    r(payload);
+  }
+}
+const embeddedBridge = new EmbeddedBrowserBridge();
+
 const browserInput = z
   .object({
     action: z
-      .enum(["open", "tree", "screenshot", "fill", "click", "state", "close", "filmstrip"])
-      .describe("Browser action to perform through the DOM-first connector."),
-    url: z.string().optional().describe("URL for open."),
+      .enum(["open", "preview", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip"])
+      .describe(
+        "Browser action. DOM-first web actions: open/tree/fill/click/screenshot/state/close. " +
+        "PREVIEW & VERIFY (drives a VISIBLE browser with an animated cursor so the owner watches Ares test the UI): " +
+        "'preview' opens a URL visibly; 'click_text' clicks a button/link/tab by visible text or CSS selector; " +
+        "'fill_selector' types into a CSS selector; 'console' reads console logs/errors after acting; " +
+        "'eval' runs JS in the page to inspect state or call a function.",
+      ),
+    url: z.string().optional().describe("URL for open/preview (e.g. http://localhost:1420)."),
     label: z.string().optional().describe("Accessible label for fill."),
-    value: z.string().optional().describe("Value for fill."),
+    value: z.string().optional().describe("Value for fill / fill_selector."),
     role: z.string().optional().describe("ARIA role for click."),
     name: z.string().optional().describe("Accessible name for click."),
-    headless: z.boolean().optional().describe("Run the browser headless (invisible). DEFAULT true and STRONGLY preferred — the owner does NOT want to watch navigation. Only pass false when the owner EXPLICITLY asks to watch / 'open a browser' / 'show me live'. For 'find/look up/send me' requests, stay headless and return the findings (image URLs render inline in chat)."),
+    query: z.string().optional().describe("Visible text or CSS selector for click_text."),
+    selector: z.string().optional().describe("CSS selector for fill_selector."),
+    js: z.string().optional().describe("JS expression/IIFE to run in the page for eval (e.g. 'document.querySelectorAll(\".item\").length')."),
+    onlyErrors: z.boolean().optional().describe("console: return only errors/warnings."),
+    engine: z.enum(["playwright", "embedded"]).optional().describe(
+      "Which browser: 'playwright' (default) drives a streamed headless browser for ANY url (localhost dev servers, real web). " +
+      "'embedded' renders self-contained HTML you pass via `html` INSIDE the Ares window (same-origin) and drives it directly — use this to test the apps/games/UIs YOU build as a single .html, with a real visible cursor and zero popup. " +
+      "Embedded actions: preview(html) to load, then click_text/fill_selector/eval/console/screenshot(snapshot).",
+    ),
+    html: z.string().optional().describe("Self-contained HTML to render in the embedded browser (engine:'embedded', action:'preview')."),
+    headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true for plain web tasks — the owner does NOT want to watch navigation. The 'preview' action overrides this to VISIBLE so the owner can watch the UI test. Pass false to watch any action."),
     note: z.string().optional().describe("Optional note attached to screenshot frames."),
-    limit: z.number().int().min(1).max(100).optional().describe("Maximum tree/filmstrip entries returned."),
+    limit: z.number().int().min(1).max(100).optional().describe("Maximum tree/filmstrip/console entries returned."),
   })
   .strict();
 
@@ -1615,9 +1801,36 @@ function makeBrowserTool(context: CliRuntimeContext) {
   let browser: BrowserConnector | null = null;
   let filmstrip: Filmstrip | null = null;
   let sequence = 0;
+  // Set per-call to the current turn's progress emitter, so the persistent
+  // browser streams its live frames into THIS turn's UI panel.
+  let frameSink: ((jpegBase64: string) => void) | null = null;
 
   const ensureBrowser = async (headless?: boolean): Promise<BrowserConnector> => {
-    if (!browser) browser = await createPlaywrightBrowser({ headless: headless ?? true });
+    if (!browser) {
+      // CAPTCHA handoff: a challenge surfaces through the SAME Gate as approvals
+      // (so it renders on Telegram/UI). The owner solves it in their CDP-attached
+      // Chrome and approves → "solved"; deny → "skip". No Gate wired (plain CLI)
+      // → challenges are detected but navigation just proceeds.
+      const requestApproval = context.approvals?.requestApproval;
+      const onChallenge: HumanCheckHandler | undefined = requestApproval
+        ? async (info) => {
+            const decision = await requestApproval({
+              id: `captcha:${info.url}`.slice(0, 200),
+              kind: "human-check",
+              domain: "browser",
+              irreversibility: "reversible",
+              reason: challengePrompt(info),
+            });
+            return decision.verb === "deny" ? "skip" : "solved";
+          }
+        : undefined;
+      browser = await createPlaywrightBrowser({
+        headless: headless ?? true,
+        onChallenge,
+        onFrame: (jpeg) => frameSink?.(jpeg),
+        paceMs: Number(process.env.ARES_BROWSER_PACE_MS) || 480,
+      });
+    }
     return browser;
   };
 
@@ -1646,17 +1859,63 @@ function makeBrowserTool(context: CliRuntimeContext) {
         }
       };
       if (i.action === "open") return `Opening ${host(i.url)}`;
+      if (i.action === "preview") return `Previewing ${host(i.url)}`;
       if (i.action === "tree") return "Reading the page";
       if (i.action === "screenshot" || i.action === "filmstrip") return "Capturing the screen";
       if (i.action === "fill") return i.label ? `Filling “${i.label}”` : "Filling a field";
+      if (i.action === "fill_selector") return i.selector ? `Typing into ${i.selector}` : "Filling a field";
       if (i.action === "click") return i.name ? `Clicking “${i.name}”` : "Clicking a control";
+      if (i.action === "click_text") return i.query ? `Clicking “${i.query}”` : "Clicking a control";
+      if (i.action === "console") return "Reading the console";
+      if (i.action === "eval") return "Testing in the page";
       if (i.action === "state") return "Checking the page state";
       if (i.action === "close") return "Closing the browser";
       return "Browsing the web";
     },
 
-    async call(i): Promise<{ output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
+    async call(i, ctx): Promise<{ output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
       const strip = ensureFilmstrip();
+      // Route the browser's live frames into THIS turn's UI panel (the embedded
+      // browser the owner watches). Cleared when the call ends.
+      frameSink = ctx?.emitProgress
+        ? (jpeg) => ctx.emitProgress?.({ kind: "browser_frame", image: jpeg } as Record<string, unknown>)
+        : null;
+
+      // ── EMBEDDED ENGINE — drive Ares's own in-app browser (same-origin HTML) ──
+      if (i.engine === "embedded") {
+        const done = (status: string, result: unknown, display: string) =>
+          ({ output: { action: i.action, status, result, filmstripDir: filmstripDir(strip) } as BrowserToolOutput, display });
+        const snap = async () => (await embeddedBridge.exec("snapshot")).result;
+        if (i.action === "preview" || i.action === "open") {
+          if (!i.html) throw new Error("embedded preview requires `html` (the self-contained page to render)");
+          const r = await embeddedBridge.exec("load", { html: i.html });
+          if (!r.ok) throw new Error(r.error ?? "embedded load failed");
+          return done("ok", await snap(), "rendered in the embedded browser");
+        }
+        if (i.action === "click" || i.action === "click_text") {
+          const r = await embeddedBridge.exec("click", { query: i.query ?? i.name ?? "" });
+          if (!r.ok) throw new Error((r.result as { error?: string })?.error ?? r.error ?? "click failed");
+          return done("ok", { click: r.result, page: await snap() }, `clicked "${i.query ?? i.name}"`);
+        }
+        if (i.action === "fill" || i.action === "fill_selector") {
+          const r = await embeddedBridge.exec("type", { selector: i.selector ?? i.label ?? "", value: i.value ?? "" });
+          if (!r.ok) throw new Error((r.result as { error?: string })?.error ?? r.error ?? "fill failed");
+          return done("ok", r.result, `typed into ${i.selector ?? i.label}`);
+        }
+        if (i.action === "eval") {
+          if (!i.js) throw new Error("eval requires js");
+          const r = await embeddedBridge.exec("eval", { js: i.js });
+          return done(r.ok ? "ok" : "error", r.result, "eval");
+        }
+        if (i.action === "console") {
+          const r = await embeddedBridge.exec("console", { onlyErrors: i.onlyErrors });
+          const logs = (r.result as unknown[]) ?? [];
+          return done("ok", logs, `${logs.length} console entr${logs.length === 1 ? "y" : "ies"}`);
+        }
+        // tree / screenshot / state / snapshot → the page snapshot
+        const r = await embeddedBridge.exec("snapshot");
+        return done("ok", r.result, "snapshot");
+      }
 
       if (i.action === "filmstrip") {
         const result = (await strip.load()).slice(-(i.limit ?? 20));
@@ -1675,7 +1934,8 @@ function makeBrowserTool(context: CliRuntimeContext) {
         };
       }
 
-      const br = await ensureBrowser(i.headless);
+      // 'preview' drives a VISIBLE browser so the owner watches Ares test the UI.
+      const br = await ensureBrowser(i.action === "preview" ? false : i.headless);
 
       if (i.action === "tree") {
         const result = (await br.accessibilityTree()).slice(0, i.limit ?? 80);
@@ -1703,6 +1963,61 @@ function makeBrowserTool(context: CliRuntimeContext) {
           // off the accessibility tree alone and can't verify a click or read a
           // layout-dependent page. The viewport is 1280×800, under the vision limit.
           images: [{ mediaType: `image/${shot.format ?? "png"}`, data: shot.bytes }],
+        };
+      }
+
+      // ── PREVIEW / VERIFY loop — visible cursor, click by text, console, eval ──
+      if (i.action === "preview") {
+        if (!i.url) throw new Error("Browser preview requires url");
+        await br.navigate(i.url);
+        const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
+        const frame = await strip.record({ action: "preview", url: state.url, screenshot: shot, note: i.note });
+        return {
+          output: { action: i.action, status: "ok", result: { ...state, frame: frame.frame }, filmstripDir: filmstripDir(strip) },
+          display: `preview ${state.url}`,
+          images: [{ mediaType: `image/${shot.format ?? "png"}`, data: shot.bytes }],
+        };
+      }
+
+      if (i.action === "click_text") {
+        if (!i.query) throw new Error("Browser click_text requires query (visible text or CSS selector)");
+        if (!br.clickByText) throw new Error("click_text not supported by this browser");
+        await br.clickByText(i.query);
+        const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
+        await strip.record({ action: `click ${i.query}`, url: state.url, screenshot: shot });
+        return {
+          output: { action: i.action, status: "ok", result: state, filmstripDir: filmstripDir(strip) },
+          display: `clicked "${i.query}"`,
+          images: [{ mediaType: `image/${shot.format ?? "png"}`, data: shot.bytes }],
+        };
+      }
+
+      if (i.action === "fill_selector") {
+        if (!i.selector || i.value === undefined) throw new Error("Browser fill_selector requires selector and value");
+        if (!br.fillBySelector) throw new Error("fill_selector not supported by this browser");
+        await br.fillBySelector(i.selector, i.value);
+        return {
+          output: { action: i.action, status: "ok", filmstripDir: filmstripDir(strip) },
+          display: `filled ${i.selector}`,
+        };
+      }
+
+      if (i.action === "console") {
+        if (!br.consoleLogs) throw new Error("console not supported by this browser");
+        const logs = await br.consoleLogs({ onlyErrors: i.onlyErrors, limit: i.limit ?? 40 });
+        return {
+          output: { action: i.action, status: "ok", result: logs, filmstripDir: filmstripDir(strip) },
+          display: `${logs.length} console entr${logs.length === 1 ? "y" : "ies"}${i.onlyErrors ? " (errors)" : ""}`,
+        };
+      }
+
+      if (i.action === "eval") {
+        if (!i.js) throw new Error("Browser eval requires js");
+        if (!br.evaluate) throw new Error("eval not supported by this browser");
+        const result = await br.evaluate(i.js);
+        return {
+          output: { action: i.action, status: "ok", result, filmstripDir: filmstripDir(strip) },
+          display: "eval ok",
         };
       }
 
@@ -2077,7 +2392,10 @@ async function createSessionWithSelection(
   );
   const onHistoryTrimmed = (dropped: readonly Message[]) =>
     invalidateTrimmedReadStamps(fileReadStamps, context.workspace, dropped);
-  await seedNativeCapabilities(context.home).catch(() => undefined);
+  await seedAllCapabilities(context.home)
+    .then(() => listCapabilities(context.home))
+    .then((caps) => writeCapabilitiesDoc(context.home, caps))
+    .catch(() => undefined);
   const systemPrompt =
     agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context)) +
     (await loadLiveMindContext(context)) +
@@ -2227,7 +2545,14 @@ function resumedLines(resumed: ResumedSessionInfo): string[] {
 function inkHelpLines(): string[] {
   return [
     "/help                  Show this help.",
+    "/settings              Show model, key, routing, Telegram, and runtime state.",
     "/doctor                Provider and runtime status.",
+    "/models [provider]     List terminal model catalog for a provider.",
+    "/model <provider> [id] Switch the live model (id omitted = saved/default).",
+    "/keys                  Show saved API key status.",
+    "/key <provider> <key>  Save or clear a provider key (use 'clear').",
+    "/reasoning [level]     Show/set reasoning: low|medium|high|max.",
+    "/routing ...           Show/set per-lane model routing.",
     "/themes                Show installed UI themes.",
     "/theme <name>          Switch theme without restarting.",
     "/sessions              List saved .ares sessions for this workspace.",
@@ -2276,6 +2601,190 @@ async function doctorSummaryLines(): Promise<string[]> {
     `Ollama available models: ${health.availableModels.length}`,
     ...health.slots.map((slot) => `${slot.name}: ${slot.model} ${slot.present ? "[present]" : "[missing]"}`),
   ];
+}
+
+async function terminalSettingsLines(live: LiveSession): Promise<string[]> {
+  const [settings, auth, telegram] = await Promise.all([
+    loadUiSettings(),
+    authStatus().catch(() => null),
+    loadTelegramConfig().catch(() => null),
+  ]);
+  const routing = settings.routing ?? {};
+  const keyStatus = terminalKeyStatus(settings);
+  return [
+    `current: ${providerFamilyForSelection(live.selection)} / ${live.selection.model}`,
+    `reasoning: ${resolveReasoningLevel(settings)} (${reasoningLabel(resolveReasoningLevel(settings))})`,
+    `mode: ${live.runtime.permissionMode}`,
+    `routing: ${settings.routingMode ?? "manual"}${Object.keys(routing).length ? ` (${Object.keys(routing).length} lane(s))` : ""}`,
+    ...ROUTE_LANES.map((lane) => {
+      const entry = routing[lane];
+      return `  ${lane}: ${entry ? `${entry.family} / ${entry.model}` : "(main model)"}`;
+    }),
+    `keys: OpenAI OAuth ${auth?.configured ? "saved" : "not set"}; ${keyStatus.map(([provider, saved]) => `${provider} ${saved ? "saved" : "not set"}`).join("; ")}`,
+    `telegram: ${telegram?.enabled && telegram.botToken && telegram.allowedChats.length ? `enabled (${telegram.allowedChats.length} chat)` : "not configured/enabled"}`,
+    "commands: /model <provider> [model], /models [provider], /key <provider> <value|clear>, /routing, /reasoning <level>",
+  ];
+}
+
+function terminalKeyStatus(settings: UiSettings): Array<[string, boolean]> {
+  return [
+    ["anthropic", Boolean(settings.anthropicKey)],
+    ["deepseek", Boolean(settings.deepSeekKey)],
+    ["openrouter", Boolean(settings.openRouterKey)],
+    ["ollama", Boolean(settings.ollamaApiKey)],
+    ["brave", Boolean(settings.braveKey)],
+  ];
+}
+
+async function terminalKeyLines(): Promise<string[]> {
+  const settings = await loadUiSettings();
+  return [
+    "API key status:",
+    ...terminalKeyStatus(settings).map(([provider, saved]) => `  ${provider.padEnd(10)} ${saved ? "saved" : "not set"}`),
+    "OpenAI uses ChatGPT OAuth: run `ares login`.",
+    "Set/clear: /key <anthropic|deepseek|openrouter|ollama|brave> <value|clear>",
+  ];
+}
+
+async function setTerminalProviderKey(provider: string, rawKey: string): Promise<string[]> {
+  const key = rawKey.trim();
+  const clear = key.length === 0 || key.toLowerCase() === "clear" || key.toLowerCase() === "unset";
+  const value = clear ? "" : key;
+  const patch: Partial<UiSettings> = {};
+  if (provider === "openrouter") {
+    patch.openRouterKey = value;
+  } else if (provider === "deepseek") {
+    patch.deepSeekKey = value;
+  } else if (provider === "anthropic") {
+    patch.anthropicKey = value;
+  } else if (provider === "ollama") {
+    patch.ollamaApiKey = value;
+    if (value) process.env.OLLAMA_API_KEY = value;
+    else delete process.env.OLLAMA_API_KEY;
+  } else if (provider === "brave") {
+    patch.braveKey = value;
+    if (value) process.env.ARES_BRAVE_API_KEY = value;
+    else delete process.env.ARES_BRAVE_API_KEY;
+  } else {
+    return [`Unsupported key provider: ${provider}`, "Use: anthropic, deepseek, openrouter, ollama, brave"];
+  }
+  await updateUiSettings(patch);
+  return [`${provider} key ${clear ? "cleared" : "saved"} (encrypted at rest).`];
+}
+
+async function terminalModelCatalogLines(providerRaw?: string): Promise<string[]> {
+  const settings = await loadUiSettings();
+  const provider = (providerRaw || settings.lastProvider || providerRaw || "ollama").toLowerCase();
+  if (!isTerminalProviderId(provider)) {
+    return [`Unknown provider: ${provider}`, `Available: ${TERMINAL_PROVIDERS.join(", ")}`];
+  }
+  const models = await daemonModelCatalog(provider);
+  if (models.length === 0) return [`No model catalog available for ${provider}. You can still set an explicit id: /model ${provider} <model-id>`];
+  const preferred = defaultTerminalModel(provider, settings);
+  return [
+    `${provider} models (${models.length})${preferred ? ` — current/default: ${preferred}` : ""}`,
+    ...models.slice(0, 40).map((model) => {
+      const mark = model.id === preferred ? "*" : " ";
+      const hint = model.hint ? ` — ${model.hint}` : "";
+      return `${mark} ${model.id}${hint}`;
+    }),
+    ...(models.length > 40 ? [`...${models.length - 40} more. Use the exact id with /model ${provider} <model-id>.`] : []),
+  ];
+}
+
+async function persistTerminalModelPreference(provider: string, model: string, extra: Partial<UiSettings> = {}): Promise<void> {
+  const settings = await loadUiSettings();
+  await updateUiSettings({
+    ...extra,
+    lastProvider: provider as UiSettings["lastProvider"],
+    lastOpenAIModel: provider === "openai" ? model : settings.lastOpenAIModel,
+    lastOllamaModel: provider === "ollama" ? model : settings.lastOllamaModel,
+    lastAnthropicModel: provider === "anthropic" ? model : settings.lastAnthropicModel,
+    lastDeepSeekModel: provider === "deepseek" ? model : settings.lastDeepSeekModel,
+    lastOpenRouterModel: provider === "openrouter" ? model : settings.lastOpenRouterModel,
+  });
+}
+
+async function switchTerminalModel(live: LiveSession, provider: string, model: string, persist = true): Promise<string[]> {
+  if (!isTerminalProviderId(provider)) return [`Unknown provider: ${provider}`, `Available: ${TERMINAL_PROVIDERS.join(", ")}`];
+  const selection = await selectProvider(new Map([["provider", provider], ["model", model]]));
+  await live.session.setProvider(selection.provider, selection.model, {
+    contextBudgetTokens: chatContextBudget(selection),
+    summarizeSpan: makeSpanSummarizer(selection, (usage) =>
+      live.session.recordAuxiliaryUsage("compaction", selection.provider.name, selection.model, usage),
+    ),
+  });
+  live.selection = selection;
+  live.routeLane = undefined;
+  if (persist) await persistTerminalModelPreference(provider, selection.model, { routingMode: "manual" });
+  return [`Model switched: ${provider} / ${selection.model}`];
+}
+
+async function terminalRoutingLines(): Promise<string[]> {
+  const settings = await loadUiSettings();
+  const routing = settings.routing ?? {};
+  return [
+    `routing mode: ${settings.routingMode ?? "manual"}`,
+    ...ROUTE_LANES.map((lane) => {
+      const entry = routing[lane];
+      return `${lane.padEnd(8)} ${entry ? `${entry.family} / ${entry.model}` : "(main model)"}`;
+    }),
+    "Set lane: /routing <chat|coding|research|tool-use> <provider> <model>",
+    "Mode: /routing auto | /routing manual | /routing clear | /routing remove <lane>",
+  ];
+}
+
+async function applyTerminalRoutingCommand(raw: string): Promise<string[]> {
+  const parts = raw.trim().split(/\s+/).filter(Boolean);
+  const settings = await loadUiSettings();
+  const routing = { ...(settings.routing ?? {}) };
+  const op = parts[0]?.toLowerCase();
+  if (!op) return terminalRoutingLines();
+  if (op === "auto" || op === "manual") {
+    await updateUiSettings({ routingMode: op });
+    return [`Routing mode set to ${op}.`];
+  }
+  if (op === "clear") {
+    await updateUiSettings({ routing: {}, routingMode: "manual" });
+    return ["Routing cleared."];
+  }
+  if (op === "remove") {
+    const lane = parts[1] as keyof NonNullable<UiSettings["routing"]> | undefined;
+    if (!lane || !ROUTE_LANES.includes(lane as (typeof ROUTE_LANES)[number])) return ["Usage: /routing remove <chat|coding|research|tool-use>"];
+    delete routing[lane];
+    await updateUiSettings({ routing, routingMode: Object.keys(routing).length ? settings.routingMode ?? "auto" : "manual" });
+    return [`Removed routing for ${lane}.`];
+  }
+  const lane = op as keyof NonNullable<UiSettings["routing"]>;
+  const provider = parts[1]?.toLowerCase();
+  const model = parts.slice(2).join(" ");
+  if (!ROUTE_LANES.includes(lane as (typeof ROUTE_LANES)[number]) || !provider || !model) {
+    return ["Usage: /routing <chat|coding|research|tool-use> <provider> <model>"];
+  }
+  if (!isTerminalProviderId(provider) || provider === "mock") return [`Unsupported routing provider: ${provider}`, `Available: ${TERMINAL_PROVIDERS.filter((p) => p !== "mock").join(", ")}`];
+  routing[lane] = { family: provider, model };
+  await updateUiSettings({ routing, routingMode: "auto" });
+  return [`${lane} lane routed to ${provider} / ${model}.`, "Routing mode set to auto."];
+}
+
+async function applyTerminalAutoRouting(live: LiveSession, goal: string): Promise<void> {
+  const settings = await loadUiSettings();
+  if (settings.routingMode !== "auto") return;
+  const recentGoals = live.session
+    .history()
+    .filter((message) => message.role === "user" && !message.content.some((block) => block.type === "tool_result"))
+    .slice(-2)
+    .map((message) => messageText(message));
+  const lane = classifyLane([...recentGoals, goal].join("\n"));
+  const assigned = settings.routing?.[lane];
+  const currentProvider = providerFamilyForSelection(live.selection);
+  const laneChanged = live.routeLane !== undefined && live.routeLane !== lane;
+  const firstTurn = live.routeLane === undefined;
+  const onAssigned = !!assigned && assigned.family === currentProvider && assigned.model === live.selection.model;
+  if (assigned?.family && assigned.model && !onAssigned && (laneChanged || firstTurn)) {
+    await switchTerminalModel(live, assigned.family, assigned.model, false).catch(() => undefined);
+  }
+  live.routeLane = lane;
 }
 
 async function checkpointLines(context = cliRuntimeContext()): Promise<string[]> {
@@ -2495,6 +3004,10 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     process.stdout.write(JSON.stringify({ type: "daemon_error", error }) + "\n");
   });
   commands.start(rl);
+  // The embedded-browser bridge speaks to the desktop UI over this daemon's
+  // stdout (which the shell reads). webview_cmd goes out here; webview_result
+  // comes back as a command (handled in the loop below).
+  embeddedBridge.emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
   // Desktop posture: give the agent real freedom so the flow isn't constantly
   // interrupted. Low-risk actions (web/browser/read/search/most tool use)
   // auto-approve; only genuinely sensitive ones (credentials, payments,
@@ -2544,12 +3057,73 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   let mainSelection = live.selection;
   let mainProviderFamily = providerFamilyForSelection(live.selection);
   let activeTurns = 0;
+  // Guards the long-running Consciousness model download so a second "awaken"
+  // doesn't kick off a parallel pull; the controller lets "cancel" abort it.
+  let consciousnessDownloading = false;
+  let consciousnessAbort: AbortController | undefined;
   sessions.set(live.session.meta.id, primaryEntry);
 
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
+
+  // ─── Consciousness: the always-on local watcher ──────────────────────────
+  const consciousnessWatch = new ConsciousnessWatch({
+    capture: () => captureScreen(),
+    describe: (imagePath) => describeImage(live.context.home, imagePath),
+    // Phrase a notable observation into one dry remark via the chat model. The
+    // model gets final veto (returns NOTHING → the watcher stays silent).
+    phrase: async (observation) => {
+      // Ground STRICTLY in the current observation. No recent-context narrative —
+      // that's what produced nonsense like "still working three distractions ago".
+      if (/\b(unclear|uncertain|not sure|can't tell|cannot tell)\b/i.test(observation)) return null;
+      try {
+        const said = await sideQuery({
+          provider: mainSelection.provider,
+          model: mainSelection.model,
+          system: WATCHER_VOICE_PROMPT,
+          user:
+            `This is what is on the user's screen RIGHT NOW (a literal description):\n"${observation}"\n\n` +
+            `If there is something genuinely worth one calm remark, say it in ONE short sentence grounded ONLY in that description. ` +
+            `Invent nothing — no past events, no "earlier", no continuity, nothing not stated above. ` +
+            `If nothing is clearly worth saying, output exactly: NOTHING`,
+          maxOutputTokens: 50,
+        });
+        const trimmed = said.trim().replace(/^["']|["']$/g, "");
+        return !trimmed || /^nothing\b/i.test(trimmed) ? null : trimmed;
+      } catch {
+        return null; // phrasing failed — stay silent rather than blurt raw text
+      }
+    },
+    emit: (event) => {
+      process.stdout.write(JSON.stringify(event) + "\n");
+      // When the Watch decides to speak, surface it PROACTIVELY IN THE CHAT —
+      // not just the settings panel. This is the whole point of the watcher.
+      if (event.type === "consciousness_observation" && event.spoke === true && typeof event.comment === "string") {
+        process.stdout.write(JSON.stringify({ type: "consciousness_say", text: event.comment }) + "\n");
+      }
+    },
+    remember: (text) => {
+      // Durable, dependency-free log of what the watcher chose to say — the
+      // seed of "it remembers what it's been watching".
+      void import("node:fs/promises")
+        .then(({ appendFile }) =>
+          appendFile(path.join(live.context.home, "consciousness-observations.jsonl"), JSON.stringify({ at: Date.now(), text }) + "\n"),
+        )
+        .catch(() => {});
+    },
+    enabled: () => true, // started/stopped explicitly; the gate is start/stop
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "consciousness", line } }) + "\n"),
+  });
+  const startConsciousnessWatch = (): void => consciousnessWatch.start();
+  const stopConsciousnessWatch = (): void => consciousnessWatch.stop();
+  // Resume the watch across restarts when the owner left Consciousness awake.
+  void loadUiSettings()
+    .then((s) => {
+      if (s.consciousnessEnabled === true) startConsciousnessWatch();
+    })
+    .catch(() => {});
 
   // After-action reflection trigger: when a turn lands a NEW commit, summarize it
   // into the war map. Seed with the current HEAD so existing history isn't
@@ -2577,6 +3151,53 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     ).catch(() => null);
     if (out?.recorded) {
       tagEmit(undefined, { type: "lifecycle", event: { kind: "after_action", commit: facts.sha.slice(0, 10), task: facts.subject } });
+    }
+  };
+
+  // Conversation reflection: every Nth completed turn, distill durable facts
+  // (preferences, personal facts, decisions, relationships) from the recent chat
+  // and write them to Living Memory once, deduped — so Ares learns from TALKING,
+  // not just from commits, without ever re-reading the transcript. Token-smart:
+  // a few short facts in, recalled compactly later. Best-effort; never blocks.
+  const REFLECT_EVERY = Math.max(1, Number(process.env.ARES_REFLECT_EVERY) || 3);
+  const convReflectTurns = new Map<string, number>();
+  const reflectConversationAfterTurn = async (entry: DaemonEntry, sid: string): Promise<void> => {
+    if (process.env.ARES_REFLECT === "0") return;
+    const n = (convReflectTurns.get(sid) ?? 0) + 1;
+    convReflectTurns.set(sid, n);
+    if (n % REFLECT_EVERY !== 0) return; // throttle the side-call
+    const turns = entry.live.session
+      .history()
+      .filter((m) => (m.role === "user" || m.role === "assistant") && !m.content.some((b) => b.type === "tool_result" || b.type === "tool_use"))
+      .slice(-(2 * REFLECT_EVERY + 4))
+      .map((m) => ({ role: m.role, text: messageText(m) }))
+      .filter((t) => t.text.trim().length > 0 && !t.text.startsWith("(System:"));
+    if (turns.length < 2) return;
+    const digest = buildConversationDigest(turns);
+    if (digest.length < 40) return;
+    const sel = entry.live.selection;
+    let facts: DurableFact[];
+    try {
+      facts = await sideQueryJson<DurableFact[]>({
+        provider: sel.provider,
+        model: sel.model,
+        system: CONVERSATION_REFLECT_SYSTEM,
+        user: digest,
+        schemaHint: DURABLE_FACTS_SCHEMA_HINT,
+        maxOutputTokens: 600,
+      });
+    } catch {
+      return; // distillation failed — nothing learned this pass, no harm
+    }
+    if (!Array.isArray(facts) || facts.length === 0) return;
+    try {
+      const store = await MemoryStore.open(live.context.mind.memoryFile);
+      const res = await mergeDurableFacts(store, facts);
+      if (res.added > 0) {
+        tagEmit(undefined, { type: "lifecycle", event: { kind: "reflected", added: res.added, facts: res.addedFacts.slice(0, 3) } });
+      }
+    } catch {
+      // memory write is best-effort
     }
   };
 
@@ -2707,6 +3328,9 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       // never let lifecycle bridging crash the daemon
     }
   });
+  let unsubscribeGatewayMirror: (() => void) | undefined;
+  startGatewayMirror(live.context, tagEmit).catch(() => {});
+
   try {
     while (true) {
       const command = await commands.nextCommand();
@@ -2735,6 +3359,110 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
         const routingMode = command.enabled === true ? "auto" : "manual";
         await updateUiSettings({ routingMode });
         process.stdout.write(JSON.stringify({ type: "routing_mode_set", routingMode }) + "\n");
+        continue;
+      }
+      if (command.type === "consciousness_status") {
+        const models = await consciousnessStatus(live.context.home);
+        const settings = await loadUiSettings();
+        const engine = await engineStatus(live.context.home);
+        process.stdout.write(
+          JSON.stringify({
+            type: "consciousness_status",
+            enabled: settings.consciousnessEnabled === true,
+            downloading: consciousnessDownloading,
+            watching: consciousnessWatch.isRunning(),
+            engineStatus: { binaryInstalled: Boolean(engine.binary), available: engine.available },
+            models,
+          }) + "\n",
+        );
+        continue;
+      }
+      if (command.type === "consciousness_disable") {
+        await updateUiSettings({ consciousnessEnabled: false });
+        consciousnessAbort?.abort();
+        stopConsciousnessWatch();
+        process.stdout.write(JSON.stringify({ type: "consciousness_set", enabled: false }) + "\n");
+        continue;
+      }
+      if (command.type === "consciousness_killswitch") {
+        // Hard stop: blind the eyes and halt the download. The owner's brake.
+        consciousnessAbort?.abort();
+        stopConsciousnessWatch();
+        await updateUiSettings({ consciousnessEnabled: false });
+        process.stdout.write(JSON.stringify({ type: "consciousness_killed" }) + "\n");
+        continue;
+      }
+      if (command.type === "consciousness_look_away") {
+        // Pause the watch for N seconds (default 5 min) without disabling it.
+        const seconds = typeof command.seconds === "number" ? command.seconds : 300;
+        consciousnessWatch.pause(Math.max(1, seconds) * 1000);
+        process.stdout.write(JSON.stringify({ type: "consciousness_paused", seconds }) + "\n");
+        continue;
+      }
+      if (command.type === "consciousness_resume") {
+        consciousnessWatch.resume();
+        process.stdout.write(JSON.stringify({ type: "consciousness_resumed" }) + "\n");
+        continue;
+      }
+      if (command.type === "consciousness_enable") {
+        await updateUiSettings({ consciousnessEnabled: true });
+        process.stdout.write(JSON.stringify({ type: "consciousness_set", enabled: true }) + "\n");
+        // Start the watch right away (idempotent). It idles harmlessly until the
+        // engine + weights are present — so it's running no matter how the
+        // download/enable timing races.
+        startConsciousnessWatch();
+        // Pull any missing weights. Fire-and-forget so the command loop keeps
+        // serving; a guard prevents overlapping downloads.
+        if (!consciousnessDownloading) {
+          consciousnessDownloading = true;
+          consciousnessAbort = new AbortController();
+          const ac = consciousnessAbort;
+          void (async () => {
+            try {
+              await downloadAllConsciousnessModels(
+                live.context.home,
+                (p) => process.stdout.write(JSON.stringify({ type: "consciousness_progress", ...p }) + "\n"),
+                (m) => process.stdout.write(JSON.stringify({ type: "consciousness_model_ready", id: m.id, filename: m.filename }) + "\n"),
+                ac.signal,
+              );
+              // Install the local inference engine binary too — this is what
+              // actually opens the eyes. Best-effort: if it fails, the models are
+              // still down and the user can retry; the watch idles meanwhile.
+              try {
+                await prepareEngineBinary(
+                  live.context.home,
+                  (p) => process.stdout.write(JSON.stringify({ type: "consciousness_progress", ...p }) + "\n"),
+                  ac.signal,
+                );
+                process.stdout.write(JSON.stringify({ type: "consciousness_model_ready", id: "engine", filename: "vision engine" }) + "\n");
+              } catch (engineErr) {
+                if (!ac.signal.aborted) {
+                  process.stdout.write(
+                    JSON.stringify({ type: "consciousness_error", error: `engine: ${engineErr instanceof Error ? engineErr.message : String(engineErr)}` }) + "\n",
+                  );
+                }
+              }
+              process.stdout.write(JSON.stringify({ type: "consciousness_ready" }) + "\n");
+              startConsciousnessWatch();
+            } catch (err) {
+              if (ac.signal.aborted) {
+                process.stdout.write(JSON.stringify({ type: "consciousness_cancelled" }) + "\n");
+              } else {
+                process.stdout.write(
+                  JSON.stringify({ type: "consciousness_error", error: err instanceof Error ? err.message : String(err) }) + "\n",
+                );
+              }
+            } finally {
+              consciousnessDownloading = false;
+              consciousnessAbort = undefined;
+            }
+          })();
+        }
+        continue;
+      }
+      if (command.type === "consciousness_cancel") {
+        consciousnessAbort?.abort();
+        process.stdout.write(JSON.stringify({ type: "consciousness_cancelled" }) + "\n");
         continue;
       }
       if (command.type === "model_switch") {
@@ -2858,6 +3586,49 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         continue;
       }
+      if (command.type === "webview_result") {
+        // The UI finished an embedded-browser op — resolve the awaiting tool call.
+        if (typeof command.cmdId === "string") {
+          embeddedBridge.resolve(command.cmdId, { ok: command.ok !== false, result: command.result, error: typeof command.error === "string" ? command.error : undefined });
+        }
+        continue;
+      }
+      if (command.type === "session_delete") {
+        const id = cleanCommandId(command.id);
+        if (!id) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "session_delete requires id" }) + "\n");
+          continue;
+        }
+        try {
+          // Drop any live in-memory entry so a deleted session can't resurrect,
+          // then remove it from disk. The primary session is never deleted.
+          const entry = sessions.get(id);
+          if (entry && entry !== primaryEntry) {
+            try { entry.live.session.interrupt?.(); } catch { /* best-effort */ }
+            sessions.delete(id);
+          }
+          const ok = await deleteSession(live.context.workspace, id);
+          process.stdout.write(JSON.stringify({ type: "session_deleted", id, ok }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `session_delete: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+        }
+        continue;
+      }
+      if (command.type === "session_rename") {
+        const id = cleanCommandId(command.id);
+        const label = typeof command.label === "string" ? command.label : "";
+        if (!id) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "session_rename requires id" }) + "\n");
+          continue;
+        }
+        try {
+          const ok = await renameSession(live.context.workspace, id, label);
+          process.stdout.write(JSON.stringify({ type: "session_renamed", id, label: label.trim().slice(0, 120), ok }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `session_rename: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+        }
+        continue;
+      }
       if (command.type === "engine_config") {
         // Persist Advanced-tab knobs. Live ones (env-backed) apply immediately;
         // the rest take effect on the next session/turn.
@@ -2927,6 +3698,77 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
             activeCount: active.length,
           }) + "\n",
         );
+        continue;
+      }
+      if (command.type === "operator_autotick") {
+        // Live toggle of the unattended mission loop. The tick reads the env each
+        // pass, so this takes effect on the next tick; also persisted so it sticks.
+        const enabled = command.enabled !== false;
+        if (enabled) delete process.env.ARES_OPERATOR_AUTOTICK;
+        else process.env.ARES_OPERATOR_AUTOTICK = "0";
+        const settings = await loadUiSettings();
+        await updateUiSettings({ engine: { ...(settings.engine ?? {}), operatorAutotick: enabled } });
+        process.stdout.write(JSON.stringify({ type: "operator_autotick_set", enabled }) + "\n");
+        process.stdout.write(
+          JSON.stringify({
+            type: "operator_status",
+            autotick: enabled,
+            intervalMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+            goals: (await listGoals(live.context.home).catch(() => [])).map((g) => ({ id: g.id, statement: g.statement.slice(0, 160), status: g.status, progress: g.progress, steps: g.stepLog?.length ?? 0 })),
+            activeCount: (await listGoals(live.context.home).catch(() => [])).filter((g) => g.status === "active").length,
+          }) + "\n",
+        );
+        continue;
+      }
+      if (command.type === "oauth_status") {
+        // Report every provider: connected (tokens on file) + hasApp (client creds set).
+        const home = live.context.home;
+        const status = await connectedProviders(OAUTH_PROVIDERS, home).catch(() => ({}) as Record<string, boolean>);
+        const providers = await Promise.all(
+          Object.entries(OAUTH_PROVIDERS).map(async ([id, cfg]) => ({
+            id,
+            label: PROVIDER_LABELS[id] ?? id,
+            connected: status[id] ?? false,
+            hasApp: (await hasCredential(clientIdName(cfg), { home }).catch(() => false)) && (await hasCredential(clientSecretName(cfg), { home }).catch(() => false)),
+          })),
+        );
+        process.stdout.write(JSON.stringify({ type: "oauth_status", providers }) + "\n");
+        continue;
+      }
+      if (command.type === "oauth_set_credentials") {
+        const provider = typeof command.provider === "string" ? command.provider.trim().toLowerCase() : "";
+        const cfg = getProviderConfig(provider);
+        if (!cfg) { process.stdout.write(JSON.stringify({ type: "daemon_error", error: `oauth: unknown provider "${provider}"` }) + "\n"); continue; }
+        const clientId = typeof command.clientId === "string" ? command.clientId.trim() : "";
+        const clientSecret = typeof command.clientSecret === "string" ? command.clientSecret.trim() : "";
+        if (!clientId || !clientSecret) { process.stdout.write(JSON.stringify({ type: "daemon_error", error: "oauth: clientId and clientSecret required" }) + "\n"); continue; }
+        await setCredential(clientIdName(cfg), clientId, { home: live.context.home });
+        await setCredential(clientSecretName(cfg), clientSecret, { home: live.context.home });
+        process.stdout.write(JSON.stringify({ type: "oauth_credentials_set", provider }) + "\n");
+        continue;
+      }
+      if (command.type === "oauth_start") {
+        const provider = typeof command.provider === "string" ? command.provider.trim().toLowerCase() : "";
+        const cfg = getProviderConfig(provider);
+        if (!cfg) { process.stdout.write(JSON.stringify({ type: "daemon_error", error: `oauth: unknown provider "${provider}"` }) + "\n"); continue; }
+        // Spin up the loopback callback server, hand the consent URL to the UI to
+        // open in the system browser, and emit the result. Fire-and-forget so the
+        // command loop keeps serving while the owner authorizes.
+        void startOAuthFlow({
+          provider: cfg,
+          home: live.context.home,
+          onAuthorizeUrl: (url) => { process.stdout.write(JSON.stringify({ type: "oauth_url", provider, url }) + "\n"); },
+          onSuccess: () => { process.stdout.write(JSON.stringify({ type: "oauth_connected", provider }) + "\n"); },
+          onError: (err) => { process.stdout.write(JSON.stringify({ type: "oauth_error", provider, error: err.message }) + "\n"); },
+        }).catch((err) => { process.stdout.write(JSON.stringify({ type: "oauth_error", provider, error: err instanceof Error ? err.message : String(err) }) + "\n"); });
+        continue;
+      }
+      if (command.type === "oauth_disconnect") {
+        const provider = typeof command.provider === "string" ? command.provider.trim().toLowerCase() : "";
+        const cfg = getProviderConfig(provider);
+        if (!cfg) { process.stdout.write(JSON.stringify({ type: "daemon_error", error: `oauth: unknown provider "${provider}"` }) + "\n"); continue; }
+        await deleteCredential(`oauth/${cfg.provider}`, { home: live.context.home }).catch(() => {});
+        process.stdout.write(JSON.stringify({ type: "oauth_disconnected", provider }) + "\n");
         continue;
       }
       if (command.type === "steer") {
@@ -3056,7 +3898,11 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
           await finishTurn(entry.live, turnState.status);
           // A completed turn may have landed a commit — reflect it into the war
           // map. Fire-and-forget; reflection never delays or breaks the turn.
-          if (turnState.status === "completed") void reflectAfterTurn(goal).catch(() => {});
+          if (turnState.status === "completed") {
+            void reflectAfterTurn(goal).catch(() => {});
+            // Learn from the conversation too — durable facts/preferences → memory.
+            void reflectConversationAfterTurn(entry, sid).catch(() => {});
+          }
         } catch (err) {
           tagEmit(command.sessionId, { type: "error", error: { code: "turn_throw", message: err instanceof Error ? err.message : String(err), retriable: false } });
           tagEmit(command.sessionId, { type: "turn_end", status: "failed", usage: {}, durationMs: 0 });
@@ -3071,6 +3917,11 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     commands.close();
     rl.close();
     unsubscribeLifecycle();
+    try {
+      unsubscribeGatewayMirror?.();
+    } catch {
+      // best-effort mirror teardown
+    }
     // Tear down every session (the primary owns the shared mind loop).
     const allEntries = sessions.size > 0 ? [...sessions.values()] : [primaryEntry];
     for (const entry of allEntries) {
@@ -3970,11 +4821,8 @@ async function launcherCommand(args: ParsedArgs): Promise<number> {
     process.chdir(action.workspace);
   }
   setTheme(action.theme);
-  await updateUiSettings({
+  await persistTerminalModelPreference(action.provider, action.model, {
     theme: action.theme,
-    lastProvider: action.provider,
-    lastOpenAIModel: action.provider === "openai" ? action.model : settings.lastOpenAIModel,
-    lastOllamaModel: action.provider === "ollama" ? action.model : settings.lastOllamaModel,
     favoriteOllamaModels: action.favoriteOllamaModels,
     favoriteOpenAIModels: action.favoriteOpenAIModels,
   });
@@ -4005,6 +4853,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       snapshot,
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
       sendMessage: async (goal, onEvent) => {
+        await applyTerminalAutoRouting(live, goal);
         await prepareUserTurn(live, goal);
         let finalStatus: "completed" | "interrupted" | "failed" = "completed";
         for await (const event of live.session.sendContent(await contentFromUserInput(goal, live.context.workspace))) {
@@ -4024,7 +4873,40 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
           return { kind: "exit" };
         }
         if (line === "/help") return { kind: "handled", lines: inkHelpLines(), snapshot: snapshot() };
+        if (line === "/settings") return { kind: "handled", lines: await terminalSettingsLines(live), snapshot: snapshot() };
         if (line === "/doctor") return { kind: "handled", lines: await doctorSummaryLines(), snapshot: snapshot() };
+        if (line === "/keys") return { kind: "handled", lines: await terminalKeyLines(), snapshot: snapshot() };
+        if (line === "/key" || line.startsWith("/key ")) {
+          const rest = line.slice("/key".length).trim();
+          const [provider, ...keyParts] = rest.split(/\s+/);
+          if (!provider || keyParts.length === 0) return { kind: "handled", lines: ["Usage: /key <anthropic|deepseek|openrouter|ollama|brave> <value|clear>"], snapshot: snapshot() };
+          return { kind: "handled", lines: await setTerminalProviderKey(provider.toLowerCase(), keyParts.join(" ")), snapshot: snapshot() };
+        }
+        if (line === "/models" || line.startsWith("/models ")) {
+          return { kind: "handled", lines: await terminalModelCatalogLines(line.slice("/models".length).trim() || undefined), snapshot: snapshot() };
+        }
+        if (line === "/model" || line.startsWith("/model ")) {
+          const rest = line.slice("/model".length).trim();
+          if (!rest) {
+            return {
+              kind: "handled",
+              lines: [
+                `Current model: ${providerFamilyForSelection(live.selection)} / ${live.selection.model}`,
+                `Usage: /model <${TERMINAL_PROVIDERS.join("|")}> [model-id]`,
+                "Use /models <provider> to browse available ids.",
+              ],
+              snapshot: snapshot(),
+            };
+          }
+          const [providerRaw, ...modelParts] = rest.split(/\s+/);
+          const provider = providerRaw.toLowerCase();
+          const settings = await loadUiSettings();
+          const model = modelParts.join(" ").trim() || defaultTerminalModel(provider, settings);
+          return { kind: "handled", lines: await switchTerminalModel(live, provider, model), snapshot: snapshot() };
+        }
+        if (line === "/routing" || line.startsWith("/routing ")) {
+          return { kind: "handled", lines: await applyTerminalRoutingCommand(line.slice("/routing".length)), snapshot: snapshot() };
+        }
         if (line === "/themes") return { kind: "handled", lines: themeLines(), snapshot: snapshot() };
         if (line === "/sessions") return { kind: "handled", lines: await sessionsLines(20, live.context), snapshot: snapshot() };
         if (line === "/plan") {
@@ -4129,8 +5011,66 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       process.stdout.write(interactiveHelp());
       continue;
     }
+    if (line === "/settings") {
+      process.stdout.write(notice("Settings", await terminalSettingsLines(live), "info"));
+      continue;
+    }
     if (line === "/doctor" || line === "doctor") {
       await doctorCommand();
+      continue;
+    }
+    if (line === "/keys") {
+      process.stdout.write(notice("Keys", await terminalKeyLines(), "info"));
+      continue;
+    }
+    if (line === "/key" || line.startsWith("/key ")) {
+      const rest = line.slice("/key".length).trim();
+      const [provider, ...keyParts] = rest.split(/\s+/);
+      const lines = !provider || keyParts.length === 0
+        ? ["Usage: /key <anthropic|deepseek|openrouter|ollama|brave> <value|clear>"]
+        : await setTerminalProviderKey(provider.toLowerCase(), keyParts.join(" "));
+      process.stdout.write(notice("Keys", lines, "info"));
+      continue;
+    }
+    if (line === "/models" || line.startsWith("/models ")) {
+      process.stdout.write(notice("Models", await terminalModelCatalogLines(line.slice("/models".length).trim() || undefined), "info"));
+      continue;
+    }
+    if (line === "/model" || line.startsWith("/model ")) {
+      const rest = line.slice("/model".length).trim();
+      if (!rest) {
+        process.stdout.write(notice("Model", [
+          `Current model: ${providerFamilyForSelection(live.selection)} / ${live.selection.model}`,
+          `Usage: /model <${TERMINAL_PROVIDERS.join("|")}> [model-id]`,
+          "Use /models <provider> to browse available ids.",
+        ], "info"));
+        continue;
+      }
+      const [providerRaw, ...modelParts] = rest.split(/\s+/);
+      const provider = providerRaw.toLowerCase();
+      const settings = await loadUiSettings();
+      const model = modelParts.join(" ").trim() || defaultTerminalModel(provider, settings);
+      process.stdout.write(notice("Model", await switchTerminalModel(live, provider, model), "success"));
+      continue;
+    }
+    if (line === "/routing" || line.startsWith("/routing ")) {
+      process.stdout.write(notice("Routing", await applyTerminalRoutingCommand(line.slice("/routing".length)), "info"));
+      continue;
+    }
+    if (line === "/reasoning" || line.startsWith("/reasoning ")) {
+      const requested = line.split(/\s+/, 2)[1]?.toLowerCase();
+      if (!requested) {
+        const current = resolveReasoningLevel(await loadUiSettings());
+        process.stdout.write(notice("Reasoning", [`Reasoning: ${reasoningLabel(current)} (${current}). Change with /reasoning <${REASONING_LEVELS.join("|")}>.`], "info"));
+        continue;
+      }
+      if (!isReasoningLevel(requested)) {
+        process.stdout.write(notice("Reasoning", [`Unknown reasoning level: ${requested}`, `Available: ${REASONING_LEVELS.join(", ")}`], "error"));
+        continue;
+      }
+      live.session.setReasoningLevel(requested);
+      await updateUiSettings({ reasoningLevel: requested });
+      process.stdout.write(notice("Reasoning", [`Reasoning set to ${reasoningLabel(requested)} — applies on your next message.`], "success"));
       continue;
     }
     if (line === "/themes" || line === "themes") {
@@ -4239,6 +5179,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
       continue;
     }
 
+    await applyTerminalAutoRouting(live, line);
     await renderTurn(live, line);
   }
 }
@@ -4451,8 +5392,15 @@ async function gatherGitRunFacts(workspace: string): Promise<{ sha: string; subj
  *  `telegram serve` verb and the garrison auto-start. Reads the war map straight
  *  from ~/.ares; controls the operator via the cross-process flag; /run_next is
  *  dry-run, approve queues an operator goal — never direct tool execution. */
-function telegramCommandDeps(context: CliRuntimeContext) {
+interface TelegramModelControl {
+  listModels?: (provider?: string) => Promise<string[]>;
+  switchModel?: (provider: string, model?: string) => Promise<{ ok: boolean; text: string }>;
+}
+
+function telegramCommandDeps(context: CliRuntimeContext, modelControl?: TelegramModelControl) {
   return {
+    listModels: modelControl?.listModels,
+    switchModel: modelControl?.switchModel,
     state: async () => {
       const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
       const [mission, project, paused] = await Promise.all([
@@ -4502,29 +5450,171 @@ function telegramCommandDeps(context: CliRuntimeContext) {
       await saveGoal(context.home, { ...g, status: "abandoned", updatedAt: new Date().toISOString() });
       return true;
     },
+    standing: {
+      list: async () => renderStandingOrders(await loadStandingOrders(context.home).catch(() => [])),
+      add: async (statement: string, cadenceMs: number) => {
+        const o = await addStandingOrder(context.home, { statement, cadenceMs });
+        return o.id;
+      },
+      cancel: async (id: string) => removeStandingOrder(context.home, id),
+    },
   };
 }
 
 /** Start the Telegram bridge in-process when configured (garrison auto-start) —
  *  no second terminal. Best-effort: a Telegram failure never touches the daemon.
  *  Returns the bridge (to stop on shutdown) or null when not configured. */
-async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string): Promise<TelegramBridge | null> {
+async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl): Promise<TelegramBridge | null> {
   if (!(await telegramConfigured().catch(() => false))) return null;
   const cfg = await loadTelegramConfig();
   if (!cfg.botToken || cfg.allowedChats.length === 0) return null;
+  // The roster (names + roles + added guests) is the durable source of truth;
+  // the configured chats are seeded as owners. Guests join via /allow at runtime.
+  const roster = seedOwners(await loadRoster(context.home), cfg.allowedChats);
   const bridge = new TelegramBridge({
     api: new TelegramApi(cfg.botToken),
     gateway: { url: gatewayUrl, token: gatewayToken },
     allowedChatIds: cfg.allowedChats,
+    ownerChatIds: cfg.allowedChats,
+    initialRoster: roster,
+    persistRoster: (data) => saveRoster(context.home, data),
+    reloadRoster: () => loadRoster(context.home),
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "telegram", line } }) + "\n"),
-    commands: telegramCommandDeps(context),
+    commands: telegramCommandDeps(context, modelControl),
+    connectDeps: {
+      startOAuthFlow,
+      providers: OAUTH_PROVIDERS,
+      providerLabels: PROVIDER_LABELS,
+      connectedProviders,
+      home: context.home,
+    },
   });
   bridge.start();
   return bridge;
 }
 
+async function startTelegramCheckins(context: CliRuntimeContext): Promise<TelegramScheduler | null> {
+  if (!(await telegramConfigured().catch(() => false))) return null;
+  const cfg = await loadTelegramConfig();
+  if (!cfg.botToken) return null;
+  const outbound = new TelegramOutbound({ botToken: cfg.botToken, home: context.home });
+  const ownerLocation = process.env.ARES_OWNER_LOCATION;
+  const tgLog = (line: string) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "telegram-scheduler", line } }) + "\n");
+  const tgScheduler = new TelegramScheduler({
+    outbound,
+    home: context.home,
+    buildMessage: async (ctx) => {
+      const time = ctx.now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      const lines = [`🜂 ${ctx.alarm.label} — ${time}`];
+      if (ctx.alarm.body) lines.push("", ctx.alarm.body);
+      if (ownerLocation) {
+        const weather = await getWeatherText(ownerLocation).catch(() => "");
+        if (weather) lines.push("", weather);
+      }
+      lines.push("", "Anything you need? I'm here.");
+      return lines.join("\n");
+    },
+    log: tgLog,
+  });
+  await tgScheduler.start();
+  // Inject into the Remind tool so the agent can add/remove/list alarms at runtime.
+  setRemindScheduler(tgScheduler);
+  return tgScheduler;
+}
+
 /** Build the operator→Telegram reporter from the vault config (env overrides),
  *  or null when disabled/unconfigured. */
+/**
+ * Garrison gateway mirror for the desktop daemon.
+ *
+ * The UI talks to this daemon over NDJSON. When a Garrison server is running
+ * (e.g., `ares garrison serve` with the Telegram bridge), this client attaches
+ * to every session on the gateway and forwards TurnEvents to the UI verbatim,
+ * tagged with the gateway session id. That makes Telegram conversations and
+ * other companion-client sessions show up live inside the desktop app.
+ *
+ * Best-effort: if no gateway is reachable the daemon keeps running normally and
+ * just serves its local sessions. Reconnects automatically if the gateway
+ * later appears.
+ */
+async function startGatewayMirror(
+  context: CliRuntimeContext,
+  emit: (sessionId: string | undefined, obj: Record<string, unknown>) => void,
+): Promise<() => void> {
+  const token = await readFile(tokenPath(context.home), "utf8").then((t) => t.trim()).catch(() => "");
+  if (!token) return () => {};
+  const port = Number(process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
+  const url = `ws://127.0.0.1:${port}`;
+  const { default: WebSocket } = await import("ws");
+  const attached = new Set<string>();
+  let ws: InstanceType<typeof WebSocket> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
+  const send = (frame: unknown) => {
+    try {
+      ws?.send(JSON.stringify(frame));
+    } catch {
+      // socket may be closing; next reconnect will retry
+    }
+  };
+
+  const attach = (id: string) => {
+    if (attached.has(id)) return;
+    attached.add(id);
+    send({ type: "session.attach", sessionId: id });
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    ws.on("open", () => send({ type: "hello", token, client: "daemon-mirror", proto: 1 }));
+    ws.on("close", () => scheduleReconnect());
+    ws.on("error", () => {});
+    ws.on("message", (raw: Buffer) => {
+      let frame: GatewayServerFrame;
+      try {
+        frame = JSON.parse(String(raw)) as GatewayServerFrame;
+      } catch {
+        return;
+      }
+      if (frame.type === "welcome") {
+        for (const s of frame.sessions) attach(s.id);
+      } else if (frame.type === "session.created") {
+        attach(frame.session.id);
+      } else if (frame.type === "event" && typeof frame.sessionId === "string") {
+        // Forward verbatim so the desktop UI renders the gateway session in
+        // its own card. Avoid re-emitting events for sessions this daemon also
+        // owns locally: the local engine already streams those.
+        if (!attached.has(frame.sessionId)) attach(frame.sessionId);
+        emit(frame.sessionId, frame.event as Record<string, unknown>);
+      }
+    });
+  };
+
+  const scheduleReconnect = () => {
+    if (stopped || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      connect();
+    }, 3_000);
+  };
+
+  connect();
+  return () => {
+    stopped = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    try {
+      ws?.close();
+    } catch {}
+  };
+}
+
 async function buildOperatorReporter(): Promise<OperatorTelegramReporter | null> {
   const cfg = await loadTelegramConfig().catch(() => null);
   if (!cfg || !cfg.enabled || !cfg.botToken) return null;
@@ -4917,6 +6007,10 @@ When building an app or feature, you own the loop end to end — scaffold, run, 
 1. **Scaffold deliberately.** Match the stack the user has (check the repo first); greenfield default is the simplest stack that ships (single HTML file > vite app > full framework — pick the lightest that meets the ask). Don't add deps you don't need.
 2. **Run it for real.** Start dev servers/builds with **Bash run_in_background**, read **BashOutput** for errors, **KillShell** when done. Code that has never run is a draft, not a deliverable.
 3. **Verify against the RUNNING app**, not the source: hit the endpoint, run the CLI, check the server log line, load the page. Fix what you observe; repeat until clean.
+3b. **For anything with a UI — DRIVE IT, don't just eyeball the code.** Two ways, both show the owner a real cursor moving/clicking in the Live panel:
+   • If you built a **self-contained .html** app/game (single file), use the **Browser** tool with \`engine:"embedded"\`, \`action:"preview"\`, \`html:"<your file contents>"\` — it renders INSIDE the Ares window (no popup, no dev server) and you drive it directly: \`click_text\`, \`fill_selector\`, \`eval\`, \`console\`, \`screenshot\`(snapshot).
+   • If it's a **dev server / multi-file app / real website**, start it (Bash run_in_background) and use the default Playwright engine: \`preview\` the URL, then \`click_text\`/\`fill_selector\`/\`console\`/\`eval\`.
+   Either way: test the real thing like a human — click the buttons, play the game, submit the form — read the console for errors, fix what breaks, repeat until it genuinely works. THEN report. This is how you actually know instead of hoping.
 4. **Show, don't describe.** In the desktop app, HTML/SVG files you write auto-open in the Forge panel — for anything visual (prototypes, dashboards, reports, games), write a self-contained .html artifact so the user SEES it. For physical/3D designs, emit a \`*.holo.json\` HoloSpec for the holotable.
 5. **HUD displays — use them liberally.** Whenever a visual would communicate better than prose — research findings, comparison matrices, project status, metrics, plans, timelines, business dashboards — forge a styled self-contained \`.html\` HUD (dark theme, no external deps, data inlined) instead of a wall of text. It opens automatically beside the chat. A status HUD at the end of a long mission beats three paragraphs.
 5. **Big builds scale out:** TodoWrite the plan, parallelize independent modules via **Task** \`general-purpose\` subagents, then run a **Task** \`code-reviewer\` pass over the result and fix what it finds BEFORE declaring done.
@@ -4971,7 +6065,10 @@ async function operatorCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "list";
   const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
   const home = context.home;
-  await seedNativeCapabilities(home).catch(() => undefined);
+  await seedAllCapabilities(home)
+    .then(() => listCapabilities(home))
+    .then((caps) => writeCapabilitiesDoc(home, caps))
+    .catch(() => undefined);
 
   if (subcommand === "add" || subcommand === "goal") {
     const statement = args.flags.get("goal") ?? args.positionals.slice(1).join(" ").trim();
@@ -5625,7 +6722,9 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
     process.stderr.write("error: usage: ares garrison serve [--port N] [--provider mock|openai|ollama|anthropic|deepseek|openrouter] [--model X]\n");
     return 2;
   }
-  const selection = await selectProvider(args.flags);
+  // Reassignable so a Telegram /model switch reconfigures the provider for new
+  // sessions in place — the session factory closure reads the latest `selection`.
+  let selection = await selectProvider(args.flags);
   const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
   const pathPermissions = await AresPathPermissionStore.load(context);
   const commandPermissions = await AresCommandPermissionStore.load(context);
@@ -5659,7 +6758,19 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
           tools,
           workspace: req.workspace ?? context.workspace,
           signal: req.signal,
-          requestPermission: req.requestPermission,
+          // Remote-autonomy gate: safe work (research, fetch, read, navigate,
+          // desktop control, workspace edits) runs without a prompt so Ares
+          // doesn't freeze waiting on a tap nobody's there to give. Only the
+          // dangerous few — money, mail, publish, credentials, wipes — escalate
+          // to the owner's phone (and auto-deny if unanswered — the safe miss).
+          requestPermission: req.requestPermission
+            ? async (request) => {
+                const decision = remoteAutonomyDecision(request);
+                if (decision === "allow") return "allow_once";
+                if (decision === "deny") return "deny";
+                return req.requestPermission!(request);
+              }
+            : req.requestPermission,
           reasoningLevel: resolveReasoningLevel(settings),
           maxOutputTokens: chatMaxOutputTokens(selection),
           contextBudgetTokens: chatContextBudget(selection),
@@ -5703,7 +6814,13 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // runs solely with ARES_OPERATOR_LOOP=1, never by surprise. Outward/risky tool
   // use is hard-denied unattended (the policy gate), so an idle tick can't move
   // money, send mail, or drive the browser without a human.
-  const operatorLoop = !operatorLoopEnabled()
+  // Autonomy runs when explicitly opted in (ARES_OPERATOR_LOOP=1) OR when the
+  // owner has queued standing orders — adding a recurring mission IS the opt-in.
+  // The autotick kill switch still wins. Standing orders that come due each tick
+  // materialize into goals the loop then executes under the unattended gate.
+  const standingAtStart = await loadStandingOrders(context.home).catch(() => [] as StandingOrder[]);
+  const loopActive = process.env.ARES_OPERATOR_AUTOTICK !== "0" && (process.env.ARES_OPERATOR_LOOP === "1" || standingAtStart.length > 0);
+  const operatorLoop = !loopActive
     ? null
     : new OperatorBackgroundLoop(
         {
@@ -5723,6 +6840,14 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
         },
         {
           everyMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+          // Materialize due standing orders into goals so the same tick runs them.
+          beforeTick: async () => {
+            const { fired } = await materializeDueStandingOrders(context.home).catch(() => ({ goals: [], fired: [] as StandingOrder[] }));
+            for (const order of fired) {
+              process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "standing_order_fired", id: order.id, statement: order.statement.slice(0, 120) } }) + "\n");
+              void telegramReporter?.report({ type: "operator_tick", goalId: order.id, status: "active", summary: `🜂 Standing order fired: ${order.statement.slice(0, 80)}` }).catch(() => {});
+            }
+          },
           // Mission-aware idle: surface the active project's next strategic moves.
           nextActions: async () => {
             const projectId = await detectWorkspaceProjectId(context.workspace).catch(() => undefined);
@@ -5757,9 +6882,31 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // Auto-start the Telegram bridge in-process when configured — no second
   // terminal. Connects to this gateway; best-effort, never blocks the daemon.
   const gatewayToken = await readFile(tokenPath(context.home), "utf8").then((t) => t.trim()).catch(() => "");
+  // Model control over Telegram: list the catalog, and switch the live provider/
+  // model by rebuilding `selection` (new sessions pick it up; the bridge resets
+  // the chat's session so the switch takes effect on the next message).
+  const modelControl: TelegramModelControl = {
+    listModels: (provider) => terminalModelCatalogLines(provider),
+    switchModel: async (provider, model) => {
+      try {
+        const flags = new Map<string, string>([["provider", provider]]);
+        if (model) flags.set("model", model);
+        const next = await selectProvider(flags);
+        selection = next;
+        await persistTerminalModelPreference(provider, next.model).catch(() => undefined);
+        return { ok: true, text: `🔀 Switched to ${providerFamilyForSelection(next)} / ${next.model}. It applies on your next message.` };
+      } catch (err) {
+        return { ok: false, text: `Couldn't switch: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  };
   const telegramBridge = gatewayToken
-    ? await startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken).catch(() => null)
+    ? await startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl).catch(() => null)
     : null;
+
+  // Proactive scheduled check-ins over Telegram — 9am/12pm/3pm by default.
+  // Each check-in includes weather for the owner's area when configured.
+  const tgCheckinScheduler = await startTelegramCheckins(context).catch(() => null);
 
   process.stdout.write(
     notice(
@@ -5768,7 +6915,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
         `gateway   ws://${bound.host}:${bound.port}  (health: http://${bound.host}:${bound.port}/health)`,
         `provider  ${selection.provider.name} · ${selection.model}`,
         `sessions  ${restored.length} rehydrated`,
-        `telegram  ${telegramBridge ? "bridge online" : "off (run: ask Ares to connect telegram)"}`,
+        `telegram  ${telegramBridge ? "bridge online" : "off"}${tgCheckinScheduler ? " + check-ins" : ""}`,
         `token     ${tokenPath(context.home)}`,
         `attach    ares attach${bound.port === DEFAULT_GARRISON_PORT ? "" : ` --port ${bound.port}`}`,
       ],
@@ -5780,6 +6927,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
     const shutdown = () => {
       process.stdout.write("\ngarrison: standing down…\n");
       scheduler.stop();
+      tgCheckinScheduler?.stop();
       operatorLoop?.stop();
       void telegramBridge?.stop().catch(() => {});
       approvals.dispose();
@@ -5805,8 +6953,11 @@ async function attachCommand(args: ParsedArgs): Promise<number> {
   const { default: WebSocket } = await import("ws");
   const ws = new WebSocket(url);
   const send = (frame: unknown) => ws.send(JSON.stringify(frame));
-  let sessionId = args.flags.get("session");
+  const requestedSessionId = args.flags.get("session");
+  const attached = new Set<string>();
+  let activeSessionId: string | undefined = requestedSessionId;
   let streaming = false;
+  let lastEventSessionId: string | undefined;
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const prompt = () => {
@@ -5824,6 +6975,13 @@ async function attachCommand(args: ParsedArgs): Promise<number> {
         // already closed
       }
       resolve(code);
+    };
+
+    const attach = (id: string, label?: string) => {
+      if (attached.has(id)) return;
+      attached.add(id);
+      send({ type: "session.attach", sessionId: id });
+      if (label) process.stdout.write(dim(`${label}\n`));
     };
 
     ws.on("open", () => send({ type: "hello", token, client: "cli-attach", proto: 1 }));
@@ -5846,39 +7004,53 @@ async function attachCommand(args: ParsedArgs): Promise<number> {
         if (frame.sessions.length > 0) {
           process.stdout.write(
             notice(
-              "Garrison · sessions",
-              frame.sessions.map((s) => `${s.busy ? "●" : "○"} ${s.id}  ${s.title}`),
+              "Garrison ? sessions",
+              frame.sessions.map((s) => `${s.busy ? "?" : "?"} ${s.id}  ${s.title}`),
               "info",
             ),
           );
+          // Mirror every existing session so the terminal reflects ongoing
+          // conversations from Telegram, the desktop UI, or other clients.
+          for (const s of frame.sessions) {
+            attach(s.id, `attached to ${s.id} (${s.provider} ? ${s.model})`);
+          }
         }
-        if (sessionId) {
-          send({ type: "session.attach", sessionId });
-          process.stdout.write(dim(`attached to ${sessionId}\n`));
-          prompt();
-        } else {
+        // If the user asked for a specific session, prefer that as the send target.
+        if (requestedSessionId && !attached.has(requestedSessionId)) {
+          attach(requestedSessionId, `attached to ${requestedSessionId}`);
+        }
+        if (attached.size === 0) {
+          // No sessions exist yet and no --session was requested: create one.
           send({ type: "session.create" });
+        } else {
+          activeSessionId ??= frame.sessions[0]?.id;
+          prompt();
         }
         return;
       }
       if (frame.type === "session.created") {
-        sessionId = frame.session.id;
-        process.stdout.write(dim(`session ${sessionId} (${frame.session.provider} · ${frame.session.model})\n`));
+        // New session broadcast by the server (e.g., Telegram just started a
+        // chat). Attach to it so the terminal sees the conversation live.
+        attach(frame.session.id, `session ${frame.session.id} (${frame.session.provider} ? ${frame.session.model})`);
+        activeSessionId ??= frame.session.id;
         prompt();
         return;
       }
-      if (frame.type === "event" && frame.sessionId === sessionId) {
+      if (frame.type === "event" && typeof frame.sessionId === "string" && attached.has(frame.sessionId)) {
+        lastEventSessionId = frame.sessionId;
         const event = frame.event as { type: string } & Record<string, unknown>;
+        const prefix = frame.sessionId === activeSessionId ? "" : dim(`[${frame.sessionId}] `);
         if (event.type === "text_delta") {
           streaming = true;
-          process.stdout.write(String(event.text ?? ""));
+          process.stdout.write(prefix + String(event.text ?? ""));
         } else if (event.type === "tool_start") {
-          process.stderr.write(dim(`\n· ${String(event.activityDescription ?? event.name ?? "tool")}\n`));
+          process.stderr.write(dim(`\n[${frame.sessionId}] ? ${String(event.activityDescription ?? event.name ?? "tool")}\n`));
         } else if (event.type === "turn_end") {
           streaming = false;
+          if (prefix) process.stdout.write(prefix);
           process.stdout.write("\n");
           if (event.status !== "completed") {
-            process.stderr.write(notice("Turn", [`status ${String(event.status)}`], "warn"));
+            process.stderr.write(notice("Turn", [`[${frame.sessionId}] status ${String(event.status)}`], "warn"));
           }
           prompt();
         }
@@ -5895,12 +7067,29 @@ async function attachCommand(args: ParsedArgs): Promise<number> {
         bail("detached (the session lives on in the Garrison)", 0);
         return;
       }
-      if (!sessionId) {
-        process.stderr.write("no session yet — waiting for the gateway\n");
+      if (text === "/sessions") {
+        send({ type: "sessions.list" });
+        return;
+      }
+      if (text.startsWith("/use ")) {
+        const id = text.slice(5).trim();
+        if (attached.has(id)) {
+          activeSessionId = id;
+          process.stdout.write(dim(`active session: ${id}\n`));
+        } else {
+          attach(id, `attached to ${id}`);
+          activeSessionId = id;
+        }
+        prompt();
+        return;
+      }
+      const target = activeSessionId ?? lastEventSessionId ?? requestedSessionId;
+      if (!target || !attached.has(target)) {
+        process.stderr.write("no session yet ? waiting for the gateway\n");
         return;
       }
       streaming = true;
-      send({ type: "session.send", sessionId, text });
+      send({ type: "session.send", sessionId: target, text });
     });
     rl.on("SIGINT", () => bail("detached (the session lives on in the Garrison)", 0));
   });
@@ -5969,10 +7158,15 @@ async function telegramCommand(args: ParsedArgs): Promise<number> {
   }
 
   const api = new TelegramApi(botToken);
+  const roster = seedOwners(await loadRoster(context.home), allowedChatIds);
   const bridge = new TelegramBridge({
     api,
     gateway: { url: gatewayUrl, token: gatewayToken },
     allowedChatIds,
+    ownerChatIds: allowedChatIds,
+    initialRoster: roster,
+    persistRoster: (data) => saveRoster(context.home, data),
+    reloadRoster: () => loadRoster(context.home),
     log: (line: string) => process.stdout.write(`telegram: ${line}\n`),
     commands: telegramCommandDeps(context),
   });

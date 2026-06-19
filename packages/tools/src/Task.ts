@@ -82,6 +82,10 @@ export function makeTaskTool(runner: SubagentRunner) {
     // The engine now solos any tool that declares "exclusive", so this is the
     // explicit opt-in to concurrent fan-out.
     concurrency: "parallel-safe",
+    // Uncapped: a subagent legitimately runs for minutes. It still inherits the
+    // parent's (now deadline-bearing) signal, so a truly hung child is bounded
+    // by the parent's own watchdog rather than an arbitrary subagent cap.
+    watchdogTimeoutMs: 0,
     inputZod: inputSchema,
     activityDescription: (i) => `Task[${i.subagent_type}] ${i.description}`,
     async checkPermissions(i, ctx) {

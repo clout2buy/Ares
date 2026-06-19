@@ -91,7 +91,7 @@ test("tool: verify → link → save connects Telegram, never echoing the token"
 
   const save = await tool.call({ action: "save", chat_id: 4242 }, ctx);
   assert.equal(save.output.ok, true);
-  assert.ok(sent.some((s) => s.chatId === 4242 && /live/.test(s.text)), "a test ping was sent");
+  assert.ok(sent.some((s) => s.chatId === 4242 && /Garrison/.test(s.text)), "a test ping explains when replies go live");
   assert.equal(await telegramConfigured(), true, "now fully configured + enabled");
 });
 

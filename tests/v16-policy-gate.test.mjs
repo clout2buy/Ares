@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { gateToolPermission, classifyToolRequest, classifyShell } from "../packages/cli/dist/policyGate.js";
+import { gateToolPermission, classifyToolRequest, classifyShell, remoteAutonomyDecision } from "../packages/cli/dist/policyGate.js";
 
 const req = (toolName, extra = {}) => ({ toolName, input: extra.input ?? {}, reason: extra.reason ?? "" });
 const attended = (toolName, extra) => gateToolPermission(req(toolName, extra), { attended: true });
@@ -107,4 +107,31 @@ test("classifyShell distinguishes the three tiers", () => {
   assert.equal(classifyShell("cat package.json"), "shell_readonly");
   assert.equal(classifyShell("git status"), "shell_readonly");
   assert.equal(classifyShell("mkdir foo && cp a b"), "shell_mutating");
+});
+
+// ── Remote autonomy posture (Telegram sessions) ─────────────────────────────
+// Safe work runs without a prompt so Ares never freezes waiting on a tap; only
+// money/mail/publish/credentials/wipes escalate to the owner's phone.
+
+test("remote autonomy: safe + benign tools just RUN (no prompt)", () => {
+  for (const tool of ["Read", "WebFetch", "WebSearch", "Weather", "Glob", "Grep"]) {
+    assert.equal(remoteAutonomyDecision(req(tool)), "allow", `${tool} should run autonomously`);
+  }
+  // Desktop control, navigation, ordinary file/shell work — his machine, runs.
+  assert.equal(remoteAutonomyDecision(req("ComputerUse")), "allow");
+  assert.equal(remoteAutonomyDecision(req("Browser", { reason: "navigate to youtube" })), "allow");
+  assert.equal(remoteAutonomyDecision(req("Bash", { input: { command: "mkdir foo" } })), "allow");
+});
+
+test("remote autonomy: the dangerous few ASK on the owner's phone", () => {
+  assert.equal(remoteAutonomyDecision(req("Stripe", { reason: "create payment link" })), "ask");
+  assert.equal(remoteAutonomyDecision(req("Email", { reason: "send email" })), "ask");
+  assert.equal(remoteAutonomyDecision(req("Deploy", { reason: "publish to vercel" })), "ask");
+  assert.equal(remoteAutonomyDecision(req("Browser", { reason: "submit checkout and pay" })), "ask");
+  assert.equal(remoteAutonomyDecision(req("Bash", { input: { command: "rm -rf /" } })), "ask");
+  assert.equal(
+    remoteAutonomyDecision(req("Bash", { input: { command: "echo $API_KEY" }, reason: "read api key" })),
+    "ask",
+    "credential signal always escalates",
+  );
 });

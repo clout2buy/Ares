@@ -5,6 +5,7 @@
 // call). Outward-facing, so it asks the owner before sending.
 
 import { z } from "zod";
+import { getCredential } from "@ares/core";
 import { buildTool } from "./_shared.js";
 
 const inputSchema = z
@@ -29,6 +30,10 @@ export const EmailTool = buildTool({
     "Send an email via Resend. Requires RESEND_API_KEY in the environment and a verified sender (ARES_EMAIL_FROM, or pass `from`). Use for progress reports, waitlist confirmations, and outreach. Outward-facing; confirm with the owner.",
   safety: "external-state",
   concurrency: "parallel-safe",
+  // Generous headroom: aborting a committed POST mid-send risks a duplicate
+  // email, so don't let the tight external-state default clip a slow-but-fine
+  // send. Still bounded so a truly hung call can't stall the turn forever.
+  watchdogTimeoutMs: 45_000,
   inputZod: inputSchema,
   activityDescription: (i) => `Emailing ${i.to}`,
 
@@ -42,11 +47,11 @@ export const EmailTool = buildTool({
   },
 
   async call(i, ctx): Promise<{ output: EmailOutput; display: string }> {
-    const key = process.env.RESEND_API_KEY;
+    const key = await getCredential("RESEND_API_KEY");
     if (!key) {
-      throw new Error("EMAIL_NO_KEY: set RESEND_API_KEY in the environment to send mail. Ask the owner to add it.");
+      throw new Error("EMAIL_NO_KEY: no RESEND_API_KEY in the credential vault or environment. Ask the owner to add it.");
     }
-    const from = i.from ?? process.env.ARES_EMAIL_FROM;
+    const from = i.from ?? (await getCredential("ARES_EMAIL_FROM"));
     if (!from) {
       throw new Error("EMAIL_NO_SENDER: set ARES_EMAIL_FROM (a verified Resend sender) or pass `from`.");
     }

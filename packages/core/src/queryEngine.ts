@@ -999,14 +999,14 @@ export class QueryEngine {
         // C3 — the model was cut off at its output-token ceiling mid-message
         // (no tool calls). Don't end the turn on a truncated answer: tell it to
         // continue exactly where it stopped, and loop. Capped so it can't spin.
-        if (stopReason === "max_tokens" && maxTokensContinues < 2 && !this.liveSignal().aborted) {
+        if (stopReason === "max_tokens" && maxTokensContinues < 3 && !this.liveSignal().aborted) {
           maxTokensContinues++;
           this.messages.push({
             id: cryptoId(),
             role: "user",
             content: [{
               type: "system_reminder",
-              text: "Your previous message hit the output-token limit and was cut off mid-stream. Continue EXACTLY where you left off — do not repeat anything you already wrote, and don't restart the thought.",
+              text: "Your previous message hit the output-token limit and was cut off mid-stream. Resume EXACTLY where you left off — pick up mid-thought, NO apology and NO recap, and do not repeat anything you already wrote. If a lot of work remains, break it into smaller pieces so each step fits within the limit instead of one giant output.",
             }],
             createdAt: new Date().toISOString(),
           });

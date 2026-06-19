@@ -2266,12 +2266,13 @@ function chatMaxOutputTokens(selection?: ProviderSelection): number {
 }
 
 const COMPACTION_INSTRUCTIONS =
-  "You are compacting a long coding/agent session to free context. Write a dense, factual recap that lets the agent CONTINUE the work without the original transcript. " +
+  "You are compacting a long coding/agent session to free context. Write a dense, factual recap that lets the agent CONTINUE the work without the original transcript. This is a FACTUAL RECAP, not a continuation of the conversation — do not address the user, do not write a reply, just emit the structured recap. " +
   "Preserve specifics verbatim: file paths, function/symbol names, commands run and their outcomes, decisions and the reasons for them, values, and URLs. " +
   "Structure it as:\n" +
   "GOAL: what the user ultimately wants.\n" +
+  "CONSTRAINTS: hard requirements, preferences, and explicit 'do NOT do X' rules stated earlier that must still hold. These are the first things lost across repeated compactions — carry them forward verbatim every time.\n" +
   "DONE: files created/edited (with paths) and what changed; key commands + results; decisions made.\n" +
-  "STATE: what currently works and is verified vs. what is broken or unverified.\n" +
+  "STATE: what currently works and is verified vs. what is broken, in-progress, or unverified.\n" +
   "OPEN: unfinished threads and the concrete next steps.\n" +
   "FACTS: durable specifics to remember (paths, signatures, ids, config values).\n" +
   "Be concrete and terse — no preamble, no fluff. This recap REPLACES the transcript, so omitting a fact loses it.";
@@ -6005,6 +6006,7 @@ assistant: Planning this with TodoWrite — 3 steps: add the command parser, wir
 - **Faithful reporting.** NEVER claim tests pass, the build is green, or something works unless you ran it and saw it. If a step was skipped or a check failed, say so plainly. "I didn't run it" is a respectable answer; a false "it works" is not — and on long autonomous missions it is the most expensive lie you can tell.
 - **Diagnose before retry.** When something fails, READ the actual error and fix the cause. Don't blind-retry the same call and don't thrash. One focused fix after understanding beats five guesses.
 - **Comment discipline.** Add a comment only when the WHY isn't obvious from the code; don't narrate the obvious. Never delete a comment you don't understand — assume it's load-bearing.
+- **Verify, don't assume (a contract, not a nicety).** For any non-trivial change — multiple files, backend/infra, anything that runs — actually RUN the build/typecheck/test/command that proves it works before you claim it's done. Reading the code is NOT verification. The continuous verifier flags red edits in \`<system-reminder>\`s; treat those as blocking, not advisory. "Done, verified by running X" or "done but I could NOT verify because Y" — never a bare "done."
 
 ## Tactics — how you act through code
 

@@ -149,6 +149,19 @@ images to the text-only DeepSeek endpoint.
   leaves the file byte-unchanged (kills the half-applied multi-site edit). Sequential (hunk N sees hunk
   N-1's result); per-hunk validateInput (empty/no-op/mode); errors name the failing edit index +
   "all-or-nothing". `tests/c4-multiedit`. Suite 782 tests, 780 pass.
-- (next) Phase 2 cont.: max-output-tokens recovery ladder, structured compaction summary, tie TodoWrite
-  to turn-end. Then Phase 3: adversarial verification subagent + verification-as-contract. (Deferred from
-  Phase 0: tool_choice plumbing — the /anthropic endpoint already killed the runaway, so it's belt-only.)
+- **2026-06-19 — Phase 2 cont. + Phase 3 essence LANDED.** Max-output-tokens recovery upgraded (cap 2→3,
+  CC-style "resume mid-thought, no recap, break into smaller pieces" wording so a capped long edit resumes
+  instead of truncating). Compaction summary gained a **CONSTRAINTS** section + no-continuation guard (the
+  requirements/"do NOT do X" rules that vanish across repeated compactions are now carried verbatim).
+  **Verification-as-contract** directive added to the Coding doctrine (non-trivial changes must be RUN to
+  prove they work — "reading is not verification"; the continuous verifier's reminders are blocking;
+  never a bare "done"). This rides on Ares' EXISTING continuous verifier + confirmTurnEnd gate. Suite 782/780.
+- **State: the high-leverage coding upgrades are in.** DeepSeek codes; act-first + minimum-complexity +
+  faithful-reporting + diagnose-before-retry + verify-as-contract doctrines; honest CodebaseSearch;
+  self-correcting Read; MultiEdit; max-tokens recovery; structured compaction. On top of the existing
+  validation gate, disk-spill, microcompact, one fork loop, continuous verifier, confirmTurnEnd.
+- (remaining enhancement, not a gap) Full **adversarial verification SUBAGENT** (independent "try to break it"
+  agent) — Ares already has continuous verification, so this is depth/polish; revisit after the live harness
+  test shows where DeepSeek actually stumbles. Also deferred: tie-TodoWrite-to-turn-end, tool_choice plumbing
+  (belt-only — endpoint fix already killed the runaway), Phase 4 polish (steering queue, Unicode fuzzy edit,
+  gitignore grep, Read image/PDF, context-overflow recovery path).

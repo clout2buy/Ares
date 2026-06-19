@@ -16,8 +16,9 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Message, TurnEvent, Usage } from "@ares/protocol";
-import { QueryEngine, type EngineTool, type Provider } from "./queryEngine.js";
+import type { Usage } from "@ares/protocol";
+import { runForkedTurn } from "./forkedTurn.js";
+import type { EngineTool, Provider } from "./queryEngine.js";
 
 export interface SubagentTypeDef {
   name: string;
@@ -231,8 +232,10 @@ export class AresSubagentRunner implements SubagentRunner {
     const maxTurns =
       configuredMaxTurns === undefined ? typeMaxTurns : Math.min(typeMaxTurns, configuredMaxTurns);
 
-    const engine = new QueryEngine(
-      {
+    // Re-enter the ONE loop as a fork: fresh read-stamp isolation + a work-item
+    // seed (not a faked chat turn) are guaranteed inside runForkedTurn.
+    const result = await runForkedTurn({
+      config: {
         provider: this.opts.provider,
         model: this.opts.model,
         systemPrompt,
@@ -240,26 +243,11 @@ export class AresSubagentRunner implements SubagentRunner {
         workspace: req.workspace,
         signal: req.signal,
         maxTurns,
-        // Fresh read-stamp map per subagent run: a child's Reads must never
-        // poison the parent's re-read guard or grant it read-before-write on
-        // files the parent never inspected.
-        fileReadStamps: new Map(),
       },
-      id,
-    );
-
-    engine.appendUserMessage(req.prompt);
-
-    const events: TurnEvent[] = [];
-    let toolCallCount = 0;
-    let usage: Usage = { inputTokens: 0, outputTokens: 0 };
-    let status: SubagentRunResult["status"] = "completed";
-
-    try {
-      for await (const ev of engine.streamTurn()) {
-        events.push(ev);
+      sessionId: id,
+      seed: { kind: "work-item", text: req.prompt },
+      onEvent: (ev) => {
         if (ev.type === "tool_start") {
-          toolCallCount++;
           // Surface what the child is doing so the parent UI shows real activity
           // instead of a frozen "Delegating…".
           req.onProgress?.({
@@ -270,26 +258,17 @@ export class AresSubagentRunner implements SubagentRunner {
             activity: (ev as { activityDescription?: string }).activityDescription,
           });
         }
-        if (ev.type === "turn_end") {
-          usage = ev.usage;
-          status = ev.status === "completed" ? "completed" : "failed";
-        }
-        if (ev.type === "error") status = "failed";
-      }
-    } catch {
-      status = "failed";
-    }
+      },
+    });
 
-    // Extract the final assistant text as the summary.
-    const history = engine.history();
-    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
-    const summary = lastAssistant
-      ? lastAssistant.content
-          .filter((b) => b.type === "text")
-          .map((b) => (b as { type: "text"; text: string }).text)
-          .join("\n")
-          .trim() || "(subagent produced no text output)"
-      : "(subagent did not respond)";
+    const events = result.events;
+    const usage: Usage = result.usage;
+    const toolCallCount = events.filter((e) => e.type === "tool_start").length;
+    const status: SubagentRunResult["status"] = result.status === "completed" ? "completed" : "failed";
+
+    const hasAssistant = result.history.some((m) => m.role === "assistant");
+    const summary =
+      result.finalText || (hasAssistant ? "(subagent produced no text output)" : "(subagent did not respond)");
 
     // Persist transcript best-effort.
     let transcriptPath = path.join(transcriptDir, "transcript.jsonl");

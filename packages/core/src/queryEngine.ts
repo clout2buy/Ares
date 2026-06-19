@@ -28,6 +28,7 @@ import {
 } from "@ares/protocol";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
+import { promises as fs } from "node:fs";
 import type { HookManager } from "./hooks.js";
 
 // ─── Provider interface (what core asks of providers) ──────────────────
@@ -205,6 +206,18 @@ export interface QueryEngineConfig {
 const CHARS_PER_TOKEN = 4;
 const IMAGE_TOKEN_ESTIMATE = 1024; // a high-detail image's rough tile cost
 
+// Microcompact rung: cheaply clear OLD tool-output bodies (no model call) before
+// the heavy summarizer fires, keeping the last N at full fidelity. Only bulky,
+// re-derivable tool output (a Read can be re-Read, a Grep re-run) — assistant
+// reasoning and user intent are never touched.
+const MICROCOMPACT_TOOLS = new Set<string>([
+  "Read", "Bash", "PowerShell", "Grep", "Glob", "WebSearch", "WebFetch",
+  "CodebaseSearch", "Edit", "Write", "FindAndEdit",
+]);
+const MICROCOMPACT_KEEP_RECENT = 6;
+const MICROCOMPACT_PLACEHOLDER =
+  "[old tool output cleared to save context — re-run the tool or Read the file if you need it again]";
+
 function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
@@ -271,6 +284,52 @@ export function budgetMessages(
     trimmed++;
   }
   return { messages: kept, trimmed, dropped };
+}
+
+const STALE_IMAGE_PLACEHOLDER = "[screenshot from an earlier step — omitted to save context]";
+
+/**
+ * Keep only the most recent `keepLast` images in the outbound history; replace
+ * older ones (in tool_results or user content) with a text placeholder. A
+ * vision-heavy loop (ComputerUse / browser) otherwise retains every screenshot,
+ * and a dozen full frames balloon a single turn into millions of input tokens.
+ * This rewrites only the OUTBOUND copy — the engine's stored history is intact.
+ */
+export function keepRecentImages(messages: readonly Message[], keepLast = 2): Message[] {
+  let seen = 0;
+  const out: Message[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    let changed = false;
+    const content = m.content.map((b): ContentBlock => {
+      if (b.type === "image") {
+        if (++seen > keepLast) {
+          changed = true;
+          return { type: "text", text: STALE_IMAGE_PLACEHOLDER };
+        }
+        return b;
+      }
+      if (b.type === "tool_result" && Array.isArray(b.content)) {
+        let innerChanged = false;
+        const inner = b.content.map((c) => {
+          if (c.type === "image") {
+            if (++seen > keepLast) {
+              innerChanged = true;
+              return { type: "text" as const, text: STALE_IMAGE_PLACEHOLDER };
+            }
+          }
+          return c;
+        });
+        if (innerChanged) {
+          changed = true;
+          return { ...b, content: inner };
+        }
+      }
+      return b;
+    });
+    out.push(changed ? { ...m, content } : m);
+  }
+  return out.reverse();
 }
 
 /**
@@ -406,6 +465,34 @@ export class QueryEngine {
     this.tokenScale = Math.max(0.5, Math.min(2.5, next));
   }
 
+  /**
+   * Convert a tool's output to the model-facing tool_result text, capping size.
+   * Over-budget results are SPILLED to disk in full and replaced with a head
+   * preview + the file path the model can Read — so a giant file read or vision
+   * dump never bloats the window or is silently truncated-and-lost (the old
+   * behavior). Per-tool budget from schema.maxResultSizeChars (0 = uncapped, for
+   * self-bounding tools); otherwise the engine default. Computed once and stored
+   * in history, so the wire prefix stays prompt-cache-stable across turns.
+   */
+  private async capToolResultText(output: unknown, toolUseId: string, schema: ToolSchema): Promise<string> {
+    const full = stringifyToolOutput(output);
+    const budget = resolveToolResultBudget(schema);
+    if (budget === 0 || full.length <= budget) return full;
+    try {
+      const dir = path.join(this.cfg.workspace, ".ares", "tool-results", this.sessionId);
+      await fs.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `${toolUseId}.txt`);
+      await fs.writeFile(file, full, "utf8");
+      const previewChars = Math.min(budget, 2_000);
+      const omitted = full.length - previewChars;
+      return `${full.slice(0, previewChars)}\n\n[tool result truncated for context: ${omitted} of ${full.length} chars omitted. FULL output saved to ${file} — Read that file (use offset/limit to page) for the rest.]`;
+    } catch {
+      // Spill failed (read-only fs, etc.) — fall back to the prior lossy truncation
+      // so the turn never dies on a bookkeeping error.
+      return stringifyModelToolOutput(output);
+    }
+  }
+
   /** Stop the in-flight turn (provider stream + running tools see the abort).
    *  Safe to call when idle — the next turn is unaffected. */
   interrupt(): void {
@@ -472,12 +559,96 @@ export class QueryEngine {
   }
 
   /**
+   * Seed a turn with a goal/work-item instead of a chat message. An autonomous
+   * driver (operator step, subagent, Consciousness action) frames a directive
+   * here rather than faking a user turn. It is still a trailing user-role message
+   * (the API needs one to elicit an assistant turn), but tagged
+   * `metadata.source = "work-item"` so chat-only consumers (intent gating,
+   * episodic capture) can tell autonomous work from a real user message — the
+   * one Crix chat-assumption baked into the loop's entry, generalized.
+   */
+  appendWorkItem(text: string): Message {
+    const message: Message = {
+      id: cryptoId(),
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date().toISOString(),
+      metadata: { source: "work-item" },
+    };
+    this.messages.push(message);
+    return message;
+  }
+
+  /**
    * Smart compaction. When history exceeds the compaction threshold, summarize
    * the oldest span (via the host summarizer, or the deterministic ledger as a
    * fallback) into a single recap message and keep recent turns at full
    * fidelity. Mutates this.messages in place; returns the compaction event or
    * null. Never touches the pending user message (it stays last in `recent`).
    */
+  /**
+   * Microcompact rung — the cheap layer beneath compactIfNeeded. When history
+   * passes ~60% of the heavy-compaction threshold, clear the BODIES of old
+   * compactable tool_result blocks (keeping the most recent N) in place, with NO
+   * model call. Bulky, re-derivable output (file reads, greps, vision dumps) is
+   * what dominates a coding session's tokens; clearing it here usually keeps the
+   * conversation under `threshold` so the expensive summarizer never fires —
+   * and, unlike a blunt trim, it preserves every assistant reasoning step and
+   * user message. Returns a UI event, or null when nothing was cleared.
+   */
+  private microcompactIfNeeded(): Extract<TurnEvent, { type: "system_reminder_injected" }> | null {
+    const threshold =
+      this.cfg.compactionThresholdTokens ??
+      (this.cfg.contextBudgetTokens ? Math.floor(this.cfg.contextBudgetTokens * 0.8) : 0);
+    if (threshold <= 0) return null;
+    const est = this.messages.reduce((s, m) => s + estimateMessageTokens(m), 0);
+    if (est * this.tokenScale <= threshold * 0.6) return null;
+
+    // tool_result blocks only carry a tool_use_id — map ids to names via the
+    // assistant's tool_use blocks to know which results are compactable.
+    const compactableIds = new Set<string>();
+    for (const m of this.messages) {
+      if (m.role !== "assistant") continue;
+      for (const b of m.content) {
+        if (b.type === "tool_use" && MICROCOMPACT_TOOLS.has(b.name)) compactableIds.add(b.id);
+      }
+    }
+    if (compactableIds.size === 0) return null;
+
+    // Keep the most recent N compactable results at full fidelity.
+    const ordered: string[] = [];
+    for (const m of this.messages) {
+      for (const b of m.content) {
+        if (b.type === "tool_result" && compactableIds.has(b.tool_use_id)) ordered.push(b.tool_use_id);
+      }
+    }
+    const keep = new Set(ordered.slice(-MICROCOMPACT_KEEP_RECENT));
+
+    let cleared = 0;
+    let savedChars = 0;
+    for (const m of this.messages) {
+      for (const b of m.content) {
+        if (
+          b.type === "tool_result" &&
+          compactableIds.has(b.tool_use_id) &&
+          !keep.has(b.tool_use_id) &&
+          typeof b.content === "string" &&
+          b.content !== MICROCOMPACT_PLACEHOLDER
+        ) {
+          savedChars += b.content.length;
+          b.content = MICROCOMPACT_PLACEHOLDER;
+          cleared++;
+        }
+      }
+    }
+    if (cleared === 0) return null;
+    return {
+      type: "system_reminder_injected",
+      text: `microcompacted ${cleared} old tool output(s) (~${Math.round(savedChars / CHARS_PER_TOKEN)} tokens freed) to defer heavy compaction`,
+      source: "compaction",
+    };
+  }
+
   private async compactIfNeeded(): Promise<Extract<TurnEvent, { type: "compaction" }> | null> {
     const threshold =
       this.cfg.compactionThresholdTokens ??
@@ -574,6 +745,12 @@ export class QueryEngine {
     for (const r of reminders) {
       yield { type: "system_reminder_injected", text: r.text, source: r.source };
     }
+
+    // Microcompact rung (cheap, no model call): clear OLD tool-output bodies
+    // first. This often keeps the conversation under the heavy-compaction
+    // threshold so the expensive summarizer below never has to run.
+    const micro = this.microcompactIfNeeded();
+    if (micro) yield micro;
 
     // Smart compaction BEFORE the first model call: if the conversation has
     // grown past the threshold, summarize the old span into a recap and keep
@@ -691,12 +868,15 @@ export class QueryEngine {
                 }
               }
             }
+            // Drop all but the last couple of screenshots so a vision-heavy
+            // browser/ComputerUse loop can't balloon one turn to millions of tokens.
+            const outboundMessages = keepRecentImages(budgeted.messages, 2);
             const estPromptTokens =
-              overheadTokens + budgeted.messages.reduce((s, m) => s + estimateMessageTokens(m), 0);
+              overheadTokens + outboundMessages.reduce((s, m) => s + estimateMessageTokens(m), 0);
             const stream = this.cfg.provider.stream({
               model: this.cfg.model,
               system: this.cfg.systemPrompt,
-              messages: budgeted.messages,
+              messages: outboundMessages,
               tools: toolDescriptors,
               signal: this.liveSignal(),
               reasoningLevel: this.cfg.reasoningLevel,
@@ -1244,16 +1424,17 @@ export class QueryEngine {
           workspace: this.cfg.workspace,
         });
       }
+      const modelText = await this.capToolResultText(result.output, use.id, use.tool.schema);
       const resultContent: ToolResultBlock["content"] =
         result.images && result.images.length > 0
           ? [
-              { type: "text", text: stringifyModelToolOutput(result.output) },
+              { type: "text", text: modelText },
               ...result.images.map((img) => ({
                 type: "image" as const,
                 source: { kind: "base64" as const, mediaType: img.mediaType, data: img.data },
               })),
             ]
-          : stringifyModelToolOutput(result.output);
+          : modelText;
       return {
         toolUseId: use.id,
         result: {
@@ -1694,6 +1875,15 @@ function toolResultCharBudget(): number {
   const raw = Number(process.env.ARES_TOOL_RESULT_CHARS);
   if (Number.isFinite(raw) && raw > 1_000) return Math.floor(raw);
   return 24_000;
+}
+
+/** Resolve a tool's inline-result budget: per-tool override (incl. 0 = uncapped,
+ *  for self-bounding tools like Bash/Read) else the engine default. */
+function resolveToolResultBudget(schema: ToolSchema): number {
+  if (typeof schema.maxResultSizeChars === "number" && schema.maxResultSizeChars >= 0) {
+    return schema.maxResultSizeChars;
+  }
+  return toolResultCharBudget();
 }
 
 /** A stable signature for a tool error — the first line, stripped of volatile

@@ -314,8 +314,44 @@ semantically-invalid model input as a correctable `<tool_use_error>` envelope an
 permission/exec. `tests/c0-validation-gate.test.mjs`. This is the core "tool calls fail / bad at editing"
 fix; tool-specific `validateInput` impls (Edit/Write etc.) build on it next.
 
-**Suite:** 765 tests, 763 pass, 1 pre-existing holotable red (owner WIP, unrelated), 1 skip. No regressions.
-**Not committed** — owner WIP is mixed in the working tree.
+**Coding-win #0b — Edit/Write hardening: LANDED.** All model-facing editing errors now route through the
+`<tool_use_error>` envelope (the `adaptToolForEngine` policy-deny path + Edit's not-found/not-unique/stale
+throws + Write's read-first/stale throws). `Edit` gained a `validateInput` catching an empty `old_string`
+early (the first real tool to use the Phase-0 hook). `tests/c0-validation-gate` extended with the live-Edit case.
 
-**Next:** implement `Edit.validateInput` / `Write` semantic checks (old_string present + unique + file read)
-— the concrete editing-reliability payoff now that the gate is live. Then disk-spill (Phase 4) + microcompact.
+**Suite:** 766 tests, 764 pass, 1 pre-existing holotable red (owner WIP, unrelated), 1 skip. No regressions.
+**Committed:** `7a0dfbaa` on `feat/core-consolidation` — 10 files (mine only); owner WIP left unstaged.
+
+**Coding-win #1 — result disk-spill: LANDED.** `queryEngine.capToolResultText` spills over-budget tool
+output to `<workspace>/.ares/tool-results/<session>/<id>.txt` and hands the model a head preview + the
+re-readable path, instead of the old silent truncate-and-lose. Per-tool budget via `maxResultSizeChars`
+(0 = uncapped for self-bounding tools); computed once → cache-stable. `tests/c1-result-spill`.
+
+**Coding-win #2 — microcompact rung: LANDED.** `queryEngine.microcompactIfNeeded` runs before the heavy
+summarizer: past ~60% of the compaction threshold it clears OLD compactable tool_result bodies (keeps the
+last 6) in place with NO model call, preserving all reasoning/user messages — so heavy compaction fires far
+later. `tests/c1-microcompact`.
+
+**Suite:** 770 tests, 768 pass, 1 pre-existing holotable red, 1 skip. No regressions (v14-compaction/m0 green).
+**Caveat:** these live in `queryEngine.ts`, which already carried owner WIP — so this batch is NOT yet
+committed (can't hunk-split owner WIP from my changes in one file). Test files + this doc are clean.
+
+**Phase 1 (loop unification) — CORE LANDED.** The structural "three drivers → one primitive" change:
+- New core primitive `runForkedTurn` (`packages/core/src/forkedTurn.ts`): the ONE way to spawn a child run
+  of the loop. Centralizes the two fork invariants — a FRESH empty `fileReadStamps` (the option type omits
+  it so a call site *cannot* break isolation; critic fix #1) and a tagged work-item seed (not a faked chat
+  turn). Child inherits every guard (watchdog/oscillation/ceiling/stall/identity-anchor/microcompact/spill).
+- New engine seed `appendWorkItem` — a trailing user-role message tagged `metadata.source="work-item"`, so
+  chat-only consumers can tell autonomous work from a real user turn (the one Crix entry-assumption, generalized).
+- Collapsed BOTH duplicate drivers onto it: `subagents.ts` (AresSubagentRunner) and `operator/dispatcher.ts`
+  (QueryEngineDispatcher) no longer hand-roll `new QueryEngine + appendUserMessage + streamTurn` — they call
+  `runForkedTurn`. Behavior preserved (v24/v25/v31 green); read-stamp isolation now centralized, not copy-pasted.
+- `tests/c2-forked-turn`: work-item tagging, per-fork stamp isolation, result propagation.
+
+**Suite:** 773 tests, 771 pass, 1 pre-existing holotable red, 1 skip. Typecheck clean across all packages.
+**Still uncommitted** (same blocker): the engine pieces live in `queryEngine.ts`, which carries owner WIP.
+The clean new files (forkedTurn/subagents/dispatcher/index/tests/doc) depend on `appendWorkItem` in that
+file, so they can't be committed atomically without it.
+
+**Next:** migrate the remaining loop drivers (Consciousness actions, Telegram missions) onto `runForkedTurn`;
+then the shared command/intent registry — the front-end unification that makes terminal + desktop identical (§9).

@@ -27,6 +27,13 @@ export {
   isToolUseBlock,
 } from "./queryEngine.js";
 
+export {
+  runForkedTurn,
+  type ForkedTurnOptions,
+  type ForkedTurnResult,
+  type ForkedTurnSeed,
+} from "./forkedTurn.js";
+
 export { MockEchoProvider } from "./providers/mock.js";
 
 export {

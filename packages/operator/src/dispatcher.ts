@@ -12,7 +12,7 @@
 // done." The Dispatcher contract does not change when that lands.
 
 import { randomUUID } from "node:crypto";
-import { QueryEngine, type EngineTool, type Provider, type ToolPermissionRequest } from "@ares/core";
+import { runForkedTurn, type EngineTool, type Provider, type ToolPermissionRequest } from "@ares/core";
 import type { DispatchContext, Dispatcher, Goal, StepVerdict, VerificationSpec } from "./types.js";
 
 /** Mirrors protocol's PermissionPromptDecision without coupling operator to it. */
@@ -41,8 +41,11 @@ export class QueryEngineDispatcher implements Dispatcher {
   constructor(private readonly opts: QueryEngineDispatcherOptions) {}
 
   async runStep(goal: Goal, ctx: DispatchContext): Promise<StepVerdict> {
-    const engine = new QueryEngine(
-      {
+    // Mortal hands, one loop: each step is a fresh fork of the SAME QueryEngine
+    // (fresh read-stamp isolation + a work-item seed, guaranteed by runForkedTurn)
+    // rather than a hand-rolled engine faking a user turn.
+    const result = await runForkedTurn({
+      config: {
         provider: this.opts.provider,
         model: this.opts.model,
         systemPrompt: this.opts.systemPrompt ?? DEFAULT_WORKER_PROMPT,
@@ -52,16 +55,11 @@ export class QueryEngineDispatcher implements Dispatcher {
         maxTurns: this.opts.maxTurns ?? 8,
         requestPermission: this.opts.requestPermission,
       },
-      `wrk_${randomUUID().slice(0, 8)}`,
-    );
-    engine.appendUserMessage(buildStepPrompt(goal));
+      sessionId: `wrk_${randomUUID().slice(0, 8)}`,
+      seed: { kind: "work-item", text: buildStepPrompt(goal) },
+    });
 
-    let text = "";
-    for await (const event of engine.streamTurn()) {
-      if (event.type === "text_delta") text += event.text;
-    }
-
-    return (this.opts.evaluate ?? defaultEvaluate)(text, goal);
+    return (this.opts.evaluate ?? defaultEvaluate)(result.streamedText, goal);
   }
 }
 

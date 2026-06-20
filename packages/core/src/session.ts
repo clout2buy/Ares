@@ -249,8 +249,15 @@ export class Session {
   }
 
   private async ensureSessionDir(): Promise<void> {
-    if (this.metaWritten) return;
+    // ALWAYS ensure the directory exists (mkdir recursive is idempotent + cheap).
+    // A resumed/opened session is constructed with metaWritten=true on the
+    // ASSUMPTION its dir is already on disk — but that's false when the dir was
+    // never created (model_switch/setProvider firing before the first turn, or a
+    // session opened into a fresh workspace). Gating the mkdir on metaWritten made
+    // setProvider's writeFile(metaPath) ENOENT ("no such file … meta.json"). The
+    // flag only governs the one-time meta WRITE, not directory creation.
     await mkdir(path.dirname(this.eventsPath), { recursive: true });
+    if (this.metaWritten) return;
     await writeFile(this.metaPath, JSON.stringify(this.meta, null, 2) + "\n", "utf8");
     this.metaWritten = true;
   }

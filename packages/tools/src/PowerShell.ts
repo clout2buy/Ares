@@ -35,7 +35,7 @@ const inputSchema = z
 export const PowerShellTool = buildTool({
   name: "PowerShell",
   description:
-    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory.",
+    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — an unquoted spaced path makes `cd`/`Set-Location` fail with 'positional parameter' errors; this matters most when launching a detached/new-window process where you must include the path yourself.",
   safety: "workspace-write",
   concurrency: "exclusive",
   // Self-capping (own per-command timeout + run_in_background) — uncapped here.

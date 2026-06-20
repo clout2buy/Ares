@@ -57,7 +57,7 @@ export interface BashBackgroundOutput {
 export const BashTool = buildTool({
   name: "Bash",
   description:
-    "Run a bash/POSIX command. By default runs foreground until completion. Set run_in_background=true to launch it in the background — the tool returns a shell_id immediately; use BashOutput to poll new output and KillShell to terminate. On Windows, prefer PowerShell unless POSIX shell syntax is specifically required.",
+    "Run a bash/POSIX command. By default runs foreground until completion. Set run_in_background=true to launch it in the background — the tool returns a shell_id immediately; use BashOutput to poll new output and KillShell to terminate. On Windows, prefer PowerShell unless POSIX shell syntax is specifically required. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory.",
   safety: "workspace-write",
   concurrency: "exclusive",
   // Self-capping: Bash has its own per-command timeout + run_in_background.

@@ -35,7 +35,7 @@ const inputSchema = z
 export const PowerShellTool = buildTool({
   name: "PowerShell",
   description:
-    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts.",
+    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory.",
   safety: "workspace-write",
   concurrency: "exclusive",
   // Self-capping (own per-command timeout + run_in_background) — uncapped here.

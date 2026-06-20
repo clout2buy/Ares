@@ -1408,6 +1408,52 @@ function App() {
     setLogLines((prev) => [...prev.slice(-240), line]);
   }, []);
 
+  /** Serialize the current session (turns, tool calls, failures) + the Garrison
+   *  log into a plain-text report and save it — so feedback is one click + a
+   *  file attach. Captures everything that broke, not just the visible chat. */
+  const exportSessionLog = useCallback(async () => {
+    const s = active;
+    const out: string[] = [];
+    out.push(`ARES SESSION LOG`);
+    out.push(`exported: ${new Date().toISOString()}`);
+    out.push(`provider: ${prefs.provider} · model: ${prefs.model} · routing: ${prefs.routingMode}`);
+    out.push(`tokens: up ${s?.tokensIn ?? 0} / down ${s?.tokensOut ?? 0}`);
+    out.push("=".repeat(64));
+    for (const it of s?.items ?? []) {
+      if (it.kind === "user") out.push(`\n[USER] ${it.text}`);
+      else if (it.kind === "assistant") {
+        const who = `ARES${it.model ? ` ${it.model}` : ""}${it.provider ? `/${it.provider}` : ""}${it.proactive ? " (proactive)" : ""}`;
+        if (it.thinking) out.push(`\n[${who} · thinking] ${it.thinking}`);
+        out.push(`\n[${who}] ${it.text}`);
+      } else if (it.kind === "tools") {
+        for (const st of it.steps) {
+          const tag = st.status === "error" ? "TOOL FAILED" : "TOOL";
+          out.push(`  [${tag}] ${st.name} · ${st.status}${st.durationMs ? ` · ${st.durationMs}ms` : ""}`);
+          if (st.inputJson) out.push(`      input: ${st.inputJson}`);
+          if (st.detail) out.push(`      ${st.status === "error" ? "error" : "result"}: ${st.detail}`);
+        }
+      } else if (it.kind === "diff") out.push(`  [DIFF] ${(it.files ?? []).join(", ")}`);
+      else if (it.kind === "subagent") out.push(`  [SUBAGENT] ${it.name} · ${it.status}${it.summary ? ` — ${it.summary}` : ""}`);
+    }
+    out.push("\n" + "=".repeat(64));
+    out.push("GARRISON LOG (last 240 lines — includes provider switches, errors):");
+    out.push(...logLines);
+    const content = out.join("\n");
+    if (native) {
+      try {
+        const path = await invoke<string>("ares_export_log", { content });
+        pushLog(`[export] session log saved → ${path}`);
+      } catch (err) {
+        pushLog(`[export] failed: ${String(err)}`);
+      }
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([content], { type: "text/plain" }));
+      a.download = `ares-session-${Date.now()}.txt`;
+      a.click();
+    }
+  }, [active, logLines, prefs, native, pushLog]);
+
   /** Send a control command to the daemon (sessions_list, skills_list, etc.). */
   const daemonCmd = useCallback(
     (command: Record<string, unknown>) => {
@@ -2545,13 +2591,16 @@ function App() {
               ⟳ Restart
             </button>
           ) : null}
+          <button className="statusAction" onClick={() => void exportSessionLog()} title="Export this session (chat + tool calls + errors) to a file for feedback">
+            ⤓ Export log
+          </button>
           <button className="statusAction" onClick={() => setPaletteOpen(true)} title="command palette">
             ⌘ Ctrl+K
           </button>
           <span>
             ↑{fmtTokens(active?.tokensIn ?? 0)} ↓{fmtTokens(active?.tokensOut ?? 0)}
           </span>
-          <span>v0.10.0</span>
+          <span>v0.10.2</span>
         </footer>
       </main>
 

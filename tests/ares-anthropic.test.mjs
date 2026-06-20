@@ -529,3 +529,29 @@ test("anthropic: fable-class models get adaptive thinking, no budget, no max_tok
   assert.deepEqual(captured.body.thinking, { type: "adaptive" });
   assert.equal(captured.body.max_tokens, 8192, "max_tokens not grown for adaptive thinking");
 });
+
+test("AnthropicProvider: orphaned tool blocks are sanitized to text (no 400)", async () => {
+  const body = [
+    sse("message_start", { message: { id: "msg_orphan", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    sse("message_stop", {}),
+  ].join("");
+  const captured = {};
+  const provider = new AnthropicProvider({ apiKey: "k", fetchImpl: captureFetch(body, captured), endpointUrl: "http://x" });
+
+  // History after a mid-conversation provider switch: a tool_result whose
+  // tool_use was dropped, AND a tool_use with no result. Both must NOT survive
+  // as tool blocks (Anthropic 400s on either).
+  const messages = [
+    { id: "u0", role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_GONE", content: "stale result" }], createdAt: "now" },
+    { id: "a0", role: "assistant", content: [{ type: "tool_use", id: "toolu_NORESULT", name: "Read", input: {} }], createdAt: "now" },
+    { id: "u1", role: "user", content: [{ type: "text", text: "continue" }], createdAt: "now" },
+  ];
+
+  for await (const _ of provider.stream({ model: "claude-sonnet-4-6", system: "s", messages, tools: [] })) { /* drain */ }
+
+  const sent = JSON.stringify(captured.body.messages);
+  assert.ok(!sent.includes("tool_result"), "orphaned tool_result must be converted, not sent");
+  assert.ok(!sent.includes("tool_use"), "orphaned tool_use must be converted, not sent");
+  assert.ok(sent.includes("earlier tool result"), "orphaned result kept as context text");
+  assert.ok(sent.includes("earlier") && sent.includes("Read"), "orphaned call kept as context text");
+});

@@ -29,10 +29,14 @@ function windowsCaptureScript(outPath: string, maxWidth: number): string {
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-# Primary screen only — capturing the full virtual desktop on a multi-monitor
-# rig produces a wide thin strip the small VLM can't read. The active monitor is
-# what "what is the user doing" actually means.
-$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+# Follow the user across monitors: capture the screen that holds the FOREGROUND
+# window (where they're actually working), not just the primary. Capturing the
+# whole virtual desktop on a multi-monitor rig squishes it into an unreadable
+# strip, so we pick the active monitor instead.
+Add-Type -Name Fg -Namespace AresW -MemberDefinition '[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();'
+$hwnd = [AresW.Fg]::GetForegroundWindow()
+$screen = if ($hwnd -ne [System.IntPtr]::Zero) { [System.Windows.Forms.Screen]::FromHandle($hwnd) } else { [System.Windows.Forms.Screen]::PrimaryScreen }
+$b = $screen.Bounds
 $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)

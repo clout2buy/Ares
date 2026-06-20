@@ -564,6 +564,24 @@ fn ares_forge_write(name: String, html: String) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
+/// Write a session/feedback log to the user's Desktop (falling back to the Ares
+/// home) so it's trivial to attach and send. Returns the saved path.
+#[tauri::command]
+fn ares_export_log(content: String) -> Result<String, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = user_desktop_dir()
+        .filter(|d| d.is_dir())
+        .or_else(desktop_ares_home)
+        .ok_or_else(|| "no writable location for the log".to_string())?;
+    fs::create_dir_all(&dir).ok();
+    let path = dir.join(format!("ares-session-{stamp}.txt"));
+    fs::write(&path, content).map_err(|error| format!("failed to write log: {error}"))?;
+    Ok(path.display().to_string())
+}
+
 #[tauri::command]
 fn ares_read_text_file(path: String) -> Result<String, String> {
     let path = PathBuf::from(path);
@@ -862,6 +880,7 @@ fn main() {
             ares_open_url,
             ares_permission_response,
             ares_forge_write,
+            ares_export_log,
             ares_read_text_file,
             ares_stop_daemon,
             ares_window_minimize,

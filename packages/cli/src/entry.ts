@@ -69,6 +69,7 @@ import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:
 import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import {
@@ -1865,7 +1866,7 @@ function makeBrowserTool(context: CliRuntimeContext) {
   return buildTool({
     name: "Browser",
     description:
-      "Ares's DOM-first eyes and hands for the web. Use APIs/MCP/CLI first when better, then this browser connector to open pages, inspect the accessibility tree, fill forms, click controls, screenshot, and record visual proof. Run HEADLESS by default (the owner does not want to see the browser) — only open it visibly (headless:false) when they explicitly ask to watch. When the task is to find/show images, gather the image URLs and put them in your reply; the chat renders image URLs as inline pictures.",
+      "Ares's DOM-first eyes and hands for the web. Use APIs/MCP/CLI first when better, then this browser connector to open pages, inspect the accessibility tree, fill forms, click controls, screenshot, and record visual proof. Run HEADLESS by default (the owner does not want to see the browser) — only open it visibly (headless:false) when they explicitly ask to watch. When the task is to find/show images, gather the image URLs and put them in your reply; the chat renders image URLs as inline pictures. VERIFYING AN HTML APP YOU BUILT: write it to a .html file, then `preview` it (pass `html` to render it via a temp file, or pass a file `url`) and `screenshot` to SEE it — this is reliable; do NOT burn turns on the embedded engine's inline render. `eval` runs in the page's GLOBAL scope — it CANNOT read `let`/`const` declared inside a <script> block, so don't probe those; expose state on `window.*` (e.g. `window.app = state`) or read the DOM. After a `click`/`click_text`, `screenshot` again to confirm the change actually landed.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: browserInput,
@@ -1988,8 +1989,17 @@ function makeBrowserTool(context: CliRuntimeContext) {
 
       // ── PREVIEW / VERIFY loop — visible cursor, click by text, console, eval ──
       if (i.action === "preview") {
-        if (!i.url) throw new Error("Browser preview requires url");
-        await br.navigate(i.url);
+        let url = i.url;
+        if (!url && i.html) {
+          // Inline HTML → write to a temp .html and open it. The reliable way to
+          // preview a self-contained page (the embedded engine's inline render is
+          // flaky — agents waste turns on its blank result; a real file always works).
+          const tmp = path.join(os.tmpdir(), `ares-preview-${Date.now()}.html`);
+          await writeFile(tmp, i.html, "utf8");
+          url = pathToFileURL(tmp).href;
+        }
+        if (!url) throw new Error("Browser preview requires `url` (or `html` to render inline)");
+        await br.navigate(url);
         const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
         const frame = await strip.record({ action: "preview", url: state.url, screenshot: shot, note: i.note });
         return {

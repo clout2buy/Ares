@@ -88,6 +88,16 @@ export interface FleetPhaseSpec {
    *  deploy, account, desktop) are STILL stripped. A build phase must be a
    *  pipeline (serial writers) so parallel leaves never clobber the workspace. */
   build?: boolean;
+  /** SELF-REPAIR: if the phase fails (status 'failed', OR its last leaf returns a
+   *  verdict {ok:false}), re-run it up to this many times with the failure injected
+   *  into each agent's prompt — the "verify → fix → re-verify until green" loop that
+   *  makes a fleet reliably SHIP working code. Default 0 (no repair). */
+  repairRounds?: number;
+  /** Run a parallel phase's leaves in ISOLATED git worktrees so MANY writers can
+   *  build in parallel without clobbering, then merge file-disjoint changes back
+   *  (an overlap fails the phase closed). Requires deps.makeWorktree. Only meaningful
+   *  with build:true + kind:'parallel'. */
+  isolation?: "worktree";
 }
 
 export interface FleetSpec {
@@ -180,6 +190,20 @@ export interface FleetResult {
   manifestPath: string;
 }
 
+/** An isolated build sandbox for one parallel writer (a git worktree). The host
+ *  supplies these via ConductorDeps.makeWorktree so MANY builders run at once
+ *  without clobbering, then file-disjoint changes merge back. */
+export interface Worktree {
+  /** The isolated workspace dir the leaf runs in. */
+  dir: string;
+  /** Relative paths this leaf created/modified (e.g. `git status --porcelain`). */
+  changedFiles(): Promise<string[]>;
+  /** Copy this worktree's changed files into the main workspace. */
+  applyTo(mainWorkspace: string): Promise<void>;
+  /** Tear the worktree down. */
+  cleanup(): Promise<void>;
+}
+
 // ─── Validation seam (kept zod-free in core) ───────────────────────────────
 
 export interface ValidatorResult {
@@ -213,6 +237,9 @@ export interface RunAgentArgs {
   provider?: Provider;
   /** Optional per-leaf model override (defaults to deps.model). */
   model?: string;
+  /** Optional per-leaf workspace (an isolated git worktree for parallel builders;
+   *  defaults to deps.workspace). */
+  workspace?: string;
 }
 
 export interface RunAgentResult {
@@ -262,6 +289,10 @@ export interface ConductorDeps {
    *  degraded+completed (skipped, zero tokens) — peers are never aborted. The hard
    *  ceiling is still the wall-clock. Defaults to 4. (W2) */
   budgetOvershootGrace?: number;
+  /** Host factory for an isolated git worktree, enabling PARALLEL build phases
+   *  (isolation:'worktree'). Absent ⇒ such a phase safely runs its writers SERIALLY
+   *  in the shared workspace instead (no clobber, just no parallelism). */
+  makeWorktree?: (label: string) => Promise<Worktree>;
 }
 
 // ─── Small async semaphore (caps in-flight forks) ──────────────────────────
@@ -388,10 +419,11 @@ export function validateSpec(spec: FleetSpec, parentTools: readonly EngineTool[]
     }
     // A build phase's leaves write to the shared workspace; parallel writers would
     // clobber each other. Force serial (pipeline) writers.
-    if (phase.build && phase.kind === "parallel" && phase.agents.length > 1) {
+    if (phase.build && phase.kind === "parallel" && phase.agents.length > 1 && phase.isolation !== "worktree") {
       throw new Error(
         `phase '${phase.id}' is a parallel BUILD phase with ${phase.agents.length} writers that would ` +
-          `clobber the shared workspace — make build phases 'pipeline' (serial writers).`,
+          `clobber the shared workspace — make it 'pipeline' (serial writers), or set ` +
+          `isolation:'worktree' to run the writers in parallel sandboxes (file-disjoint, merged back).`,
       );
     }
     for (const agent of phase.agents) {
@@ -456,7 +488,7 @@ function defaultRunAgent(deps: ConductorDeps): RunAgentFn {
         model: args.model ?? deps.model,
         systemPrompt,
         tools: args.tools,
-        workspace: deps.workspace,
+        workspace: args.workspace ?? deps.workspace,
         signal: args.signal,
         maxTurns: args.maxTurns,
         requestPermission,
@@ -604,6 +636,7 @@ async function runLeaf(
   ledger: { usage: Usage },
   budget: number,
   allowWrite = false,
+  workspaceOverride?: string,
 ): Promise<LeafResult> {
   const agentId = newId("agent");
   // A build phase grants write tools to its leaves; the host's global flag still
@@ -641,6 +674,7 @@ async function runLeaf(
     signal: deps.signal,
     onEvent,
     model: agent.model,
+    workspace: workspaceOverride,
   });
   deps.emitProgress?.({ kind: "fleet_activity", event: "done", agentId, role: agent.role, phase: phaseId, status: first.status });
   ledger.usage = addUsage(ledger.usage, first.usage);
@@ -657,6 +691,7 @@ async function runLeaf(
         signal: deps.signal,
         onEvent,
         model: agent.model,
+        workspace: workspaceOverride,
       });
       return { text: r.finalText, usage: r.usage, events: r.events };
     };
@@ -792,6 +827,91 @@ async function runParallelPhase(
       phaseStatus === "failed"
         ? "every leaf in this parallel phase failed; its reduced text is error output, not a result."
         : undefined,
+  };
+}
+
+/** PARALLEL BUILD with worktree isolation (god mode): each writer leaf runs in its
+ *  OWN git worktree, then file-disjoint changes merge back into the main workspace.
+ *  An overlap (two leaves touched the same file) FAILS the phase closed — no clobber.
+ *  Requires deps.makeWorktree; the caller only routes here when it's present. */
+async function runWorktreePhase(
+  phase: FleetPhaseSpec,
+  pipelineCtx: Record<string, unknown>,
+  deps: ConductorDeps,
+  run: RunAgentFn,
+  ledger: { usage: Usage },
+  concurrency: number,
+  controller: AbortController,
+  budget: number,
+): Promise<PhaseResult> {
+  const make = deps.makeWorktree!;
+  const sem = new Semaphore(Math.max(1, Math.min(concurrency, MAX_CONCURRENCY)));
+  const grace = deps.budgetOvershootGrace ?? 4;
+  const hardStop = budget > 0 ? budget * grace : 0;
+  const admitBlocked = () => hardStop > 0 && totalTokens(ledger.usage) >= hardStop;
+  const worktrees: Array<Worktree | undefined> = [];
+
+  const settled = await Promise.allSettled(
+    phase.agents.map(async (agent, i) => {
+      const release = await sem.acquire();
+      try {
+        if (controller.signal.aborted) return invalidLeaf(agent, phase.id, "(aborted before start)", 0);
+        if (admitBlocked()) return invalidLeaf(agent, phase.id, "(skipped: over soft budget)", 0, true);
+        let wt: Worktree;
+        try {
+          wt = await make(`${phase.id}-${i}`);
+        } catch (e) {
+          return invalidLeaf(agent, phase.id, `(worktree create failed: ${e instanceof Error ? e.message : String(e)})`, 0);
+        }
+        worktrees[i] = wt;
+        const { text: prompt, unresolved } = resolveTemplates(agent.prompt, pipelineCtx);
+        return await runLeaf(agent, phase.id, prompt, unresolved, deps, run, ledger, budget, true, wt.dir);
+      } finally {
+        release();
+      }
+    }),
+  );
+  const leaves: LeafResult[] = settled.map((s, i) =>
+    s.status === "fulfilled" ? s.value : invalidLeaf(phase.agents[i], phase.id, String(s.reason), 0),
+  );
+
+  // Merge: collect each leaf's changed files, FAIL CLOSED on cross-leaf overlap,
+  // otherwise apply all. Always clean up the worktrees.
+  let failureReason: string | undefined;
+  try {
+    const changedByLeaf = await Promise.all(
+      worktrees.map((w) => (w ? w.changedFiles().catch(() => [] as string[]) : Promise.resolve([] as string[]))),
+    );
+    const owner = new Map<string, number>();
+    const conflicts: string[] = [];
+    changedByLeaf.forEach((files, i) => {
+      for (const f of files) {
+        if (owner.has(f)) conflicts.push(f);
+        else owner.set(f, i);
+      }
+    });
+    if (conflicts.length > 0) {
+      failureReason =
+        `worktree merge conflict — ${conflicts.length} file(s) were written by more than one parallel build ` +
+        `agent: ${[...new Set(conflicts)].slice(0, 6).join(", ")}. Make build agents FILE-DISJOINT (each owns different files).`;
+    } else {
+      for (const w of worktrees) if (w) await w.applyTo(deps.workspace);
+    }
+  } finally {
+    await Promise.allSettled(worktrees.map((w) => (w ? w.cleanup() : Promise.resolve())));
+  }
+
+  const anyCompleted = leaves.some((l) => l.status === "completed");
+  const status: PhaseResult["status"] = failureReason ? "failed" : anyCompleted ? "completed" : "failed";
+  const reduced = failureReason ?? reduceLeaves(leaves, "concat");
+  return {
+    id: phase.id,
+    kind: "parallel",
+    leaves,
+    reduced,
+    unresolvedTemplates: leaves.reduce((n, l) => n + l.unresolvedTemplates, 0),
+    status,
+    failureReason: failureReason ?? (status === "failed" ? "every build leaf failed." : undefined),
   };
 }
 
@@ -1153,6 +1273,26 @@ async function planFleet(
   throw new Error(`planner could not produce a valid FleetSpec after 2 tries: ${lastErr}`);
 }
 
+/** A phase needs a repair pass when it failed outright OR its last leaf returned
+ *  an explicit failure verdict (a verify agent reporting {ok:false}). */
+function phaseNeedsRepair(result: PhaseResult): boolean {
+  if (result.status === "failed") return true;
+  const last = result.leaves[result.leaves.length - 1];
+  return (last?.structured as { ok?: unknown } | undefined)?.ok === false;
+}
+
+/** Build a repair re-run of a phase: inject the prior failure into every agent's
+ *  prompt so the next attempt fixes it. Keeps the phase id (for templates) — resume
+ *  is disabled on repair runs by the caller so it actually re-executes. */
+function repairPhase(phase: FleetPhaseSpec, last: PhaseResult, round: number): FleetPhaseSpec {
+  const tail = last.leaves[last.leaves.length - 1];
+  const failure = last.failureReason ?? tail?.text ?? "the phase did not pass verification";
+  const note =
+    `\n\n[REPAIR ROUND ${round}] The previous attempt did NOT pass:\n${String(failure).slice(0, 1500)}\n` +
+    `Diagnose the root cause, fix it, and verify again. Do not repeat the same failing approach.`;
+  return { ...phase, agents: phase.agents.map((a) => ({ ...a, prompt: a.prompt + note })) };
+}
+
 export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<FleetResult> {
   const fleetId = newId("fleet");
   const run = deps.runAgent ?? defaultRunAgent(deps);
@@ -1239,29 +1379,51 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
   let aborted = false;
   let failed = false;
 
+  // Run ONE phase with the wall-clock race. phaseDeps lets a repair round disable
+  // resume so it actually re-executes instead of reusing the prior leaf.
+  const executePhase = async (
+    ph: FleetPhaseSpec,
+    phaseDeps: ConductorDeps,
+  ): Promise<PhaseResult | typeof ABORT_SENTINEL> => {
+    const isolatedBuild = ph.kind === "parallel" && ph.isolation === "worktree" && ph.build === true;
+    const phaseRun =
+      ph.kind === "pipeline"
+        ? runPipelinePhase(ph, pipelineCtx, phaseDeps, run, ledger, controller, budget)
+        : isolatedBuild && phaseDeps.makeWorktree
+          ? runWorktreePhase(ph, pipelineCtx, phaseDeps, run, ledger, concurrency, controller, budget)
+          : isolatedBuild
+            ? // No worktree factory: run the (file-disjoint) writers SERIALLY in the
+              // shared workspace — safe (no concurrent writes), just not parallel.
+              runParallelPhase(ph, pipelineCtx, phaseDeps, run, ledger, 1, controller, budget)
+            : runParallelPhase(ph, pipelineCtx, phaseDeps, run, ledger, concurrency, controller, budget);
+    // Swallow the abandoned phase's eventual outcome BEFORE racing so a
+    // hung-then-throwing leaf can't surface as an unhandled rejection.
+    void phaseRun.catch(() => {});
+    return Promise.race([phaseRun, deadline]);
+  };
+
   try {
     for (const phase of specPhases) {
       if (controller.signal.aborted) {
         aborted = true;
         break;
       }
-      const phaseRun =
-        phase.kind === "pipeline"
-          ? runPipelinePhase(phase, pipelineCtx, fleetDeps, run, ledger, controller, budget)
-          : runParallelPhase(
-              phase,
-              pipelineCtx,
-              fleetDeps,
-              run,
-              ledger,
-              concurrency,
-              controller,
-              budget,
-            );
-      // Swallow the abandoned phase's eventual outcome BEFORE racing so a
-      // hung-then-throwing leaf can't surface as an unhandled rejection.
-      void phaseRun.catch(() => {});
-      const raced = await Promise.race([phaseRun, deadline]);
+      let raced = await executePhase(phase, fleetDeps);
+      // SELF-REPAIR (god mode): re-run a failed phase with the failure injected,
+      // up to repairRounds — "verify → fix → re-verify until green". Resume is off
+      // for repair rounds so they actually re-execute.
+      const repairDeps: ConductorDeps = { ...fleetDeps, resume: undefined };
+      let round = 0;
+      while (
+        raced !== ABORT_SENTINEL &&
+        phaseNeedsRepair(raced) &&
+        round < (phase.repairRounds ?? 0) &&
+        !controller.signal.aborted
+      ) {
+        round++;
+        deps.emitProgress?.({ kind: "fleet_activity", event: "repair", phase: phase.id, role: `repair-round-${round}` });
+        raced = await executePhase(repairPhase(phase, raced, round), repairDeps);
+      }
       if (raced === ABORT_SENTINEL) {
         aborted = true;
         phases.push({

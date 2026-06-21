@@ -817,3 +817,114 @@ test("a parallel build phase with multiple writers is rejected (write-race guard
   };
   await assert.rejects(() => runFleet(spec, baseDeps({}, scriptedRunner({}))), /parallel BUILD phase/);
 });
+
+// ─── Self-repair loop (god mode: verify → fix → re-verify until green) ───────
+
+test("a phase whose verify fails twice then passes self-repairs to green", async () => {
+  const verdicts: RunAgentResult[] = [
+    { finalText: '{"ok":false,"summary":"build broke"}', events: [], usage: U(), status: "completed" },
+    { finalText: '{"ok":false,"summary":"still broken"}', events: [], usage: U(), status: "completed" },
+    { finalText: '{"ok":true,"summary":"green"}', events: [], usage: U(), status: "completed" },
+  ];
+  let i = 0;
+  const prompts: string[] = [];
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    prompts.push(args.prompt);
+    return verdicts[Math.min(i++, verdicts.length - 1)];
+  };
+  const spec: FleetSpec = {
+    phases: [{ id: "verify", kind: "pipeline", build: true, repairRounds: 3, agents: [{ role: "verify", prompt: "build+test", schema: { ok: true, summary: "..." } }] }],
+  };
+  const res = await runFleet(spec, baseDeps({}, run));
+  assert.equal(i, 3, "ran initial + 2 repair rounds");
+  assert.match(prompts[1], /REPAIR ROUND 1/);
+  assert.match(prompts[1], /build broke/); // prior failure injected
+  const last = res.phases[0].leaves[res.phases[0].leaves.length - 1];
+  assert.deepEqual(last.structured, { ok: true, summary: "green" });
+});
+
+test("repair is bounded: a never-green verify stops after repairRounds", async () => {
+  let i = 0;
+  const run: ConductorDeps["runAgent"] = async () => {
+    i++;
+    return { finalText: '{"ok":false,"summary":"nope"}', events: [], usage: U(), status: "completed" };
+  };
+  const spec: FleetSpec = {
+    phases: [{ id: "v", kind: "pipeline", build: true, repairRounds: 2, agents: [{ role: "v", prompt: "x", schema: { ok: true, summary: "..." } }] }],
+  };
+  await runFleet(spec, baseDeps({}, run));
+  assert.equal(i, 3, "initial + exactly 2 repair rounds, then gives up");
+});
+
+test("no repairRounds → a passing phase runs exactly once", async () => {
+  let i = 0;
+  const run: ConductorDeps["runAgent"] = async () => {
+    i++;
+    return { finalText: "done", events: [], usage: U(), status: "completed" };
+  };
+  const spec: FleetSpec = { phases: [{ id: "p", kind: "pipeline", agents: [{ role: "a", prompt: "x" }] }] };
+  await runFleet(spec, baseDeps({}, run));
+  assert.equal(i, 1);
+});
+
+// ─── Worktree isolation (god mode: parallel builders, merged file-disjoint) ──
+
+function mockWorktrees() {
+  const applied: string[] = [];
+  const cleaned: string[] = [];
+  const filesByLabel: Record<string, string[]> = {};
+  const make = async (label: string) => ({
+    dir: `/wt/${label}`,
+    changedFiles: async () => filesByLabel[label] ?? [],
+    applyTo: async (_ws: string) => { applied.push(label); },
+    cleanup: async () => { cleaned.push(label); },
+  });
+  return { make, applied, cleaned, filesByLabel };
+}
+
+test("worktree parallel build: file-disjoint leaves run in sandboxes and merge back", async () => {
+  const wt = mockWorktrees();
+  wt.filesByLabel["build-0"] = ["a.ts"];
+  wt.filesByLabel["build-1"] = ["b.ts"];
+  const seenWorkspaces: string[] = [];
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    seenWorkspaces.push(args.workspace ?? "MAIN");
+    return { finalText: args.role, events: [], usage: U(), status: "completed" };
+  };
+  const spec: FleetSpec = {
+    phases: [{ id: "build", kind: "parallel", build: true, isolation: "worktree", agents: [{ role: "x", prompt: "a" }, { role: "y", prompt: "b" }] }],
+  };
+  const res = await runFleet(spec, baseDeps({ makeWorktree: wt.make }, run));
+  assert.equal(res.phases[0].status, "completed");
+  assert.equal(seenWorkspaces.length, 2);
+  assert.ok(seenWorkspaces.every((w) => w.startsWith("/wt/")), `leaves ran in worktrees, got ${seenWorkspaces}`);
+  assert.deepEqual(wt.applied.sort(), ["build-0", "build-1"]);
+  assert.equal(wt.cleaned.length, 2);
+});
+
+test("worktree parallel build FAILS CLOSED when two leaves touch the same file", async () => {
+  const wt = mockWorktrees();
+  wt.filesByLabel["build-0"] = ["shared.ts"];
+  wt.filesByLabel["build-1"] = ["shared.ts"];
+  const run: ConductorDeps["runAgent"] = async (args) => ({ finalText: args.role, events: [], usage: U(), status: "completed" });
+  const spec: FleetSpec = {
+    phases: [{ id: "build", kind: "parallel", build: true, isolation: "worktree", agents: [{ role: "x", prompt: "a" }, { role: "y", prompt: "b" }] }],
+  };
+  const res = await runFleet(spec, baseDeps({ makeWorktree: wt.make }, run));
+  assert.equal(res.phases[0].status, "failed");
+  assert.match(res.phases[0].failureReason ?? "", /merge conflict/);
+  assert.equal(wt.applied.length, 0, "nothing merged on conflict");
+  assert.equal(wt.cleaned.length, 2, "worktrees still cleaned up");
+});
+
+test("isolation:worktree with NO factory falls back to safe serial build (no clobber)", async () => {
+  const record = { calls: [] as RunAgentArgs[], inFlight: 0, peak: 0 };
+  const run = scriptedRunner({}, record);
+  const spec: FleetSpec = {
+    phases: [{ id: "build", kind: "parallel", build: true, isolation: "worktree", agents: [{ role: "x", prompt: "a" }, { role: "y", prompt: "b" }] }],
+  };
+  const res = await runFleet(spec, baseDeps({}, run)); // no makeWorktree
+  assert.equal(res.phases[0].status, "completed");
+  assert.ok(record.peak <= 1, `serial fallback caps in-flight at 1, got ${record.peak}`);
+  assert.ok(record.calls.every((c) => c.workspace === undefined), "ran in the main workspace");
+});

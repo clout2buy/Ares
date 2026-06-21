@@ -84,6 +84,7 @@ export {
   type RunAgentFn,
   type RunAgentArgs,
   type RunAgentResult,
+  type Worktree,
 } from "./conductor.js";
 
 export {

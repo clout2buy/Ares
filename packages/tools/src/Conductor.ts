@@ -13,6 +13,9 @@
 // Schema.
 
 import { z } from "zod";
+import os from "node:os";
+import path from "node:path";
+import { mkdir, rm, cp, readdir } from "node:fs/promises";
 import type { EngineTool, Provider } from "@ares/core";
 import {
   runFleet,
@@ -21,8 +24,47 @@ import {
   type LeafValidator,
   type SchemaHinter,
   type ValidatorResult,
+  type Worktree,
 } from "@ares/core";
 import { buildTool } from "./_shared.js";
+
+/** All file paths under `dir`, relative to it (for the worktree merge). */
+async function walkRelFiles(dir: string, base = dir): Promise<string[]> {
+  const out: string[] = [];
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...(await walkRelFiles(full, base)));
+    else out.push(path.relative(base, full));
+  }
+  return out;
+}
+
+/** A copy-based isolation sandbox: an EMPTY temp dir a parallel build leaf writes
+ *  its (new) files into. The runtime detects cross-leaf file overlap and merges
+ *  the disjoint files back into the real workspace. No git dependency. */
+async function makeCopyWorktree(label: string): Promise<Worktree> {
+  const safe = label.replace(/[^a-zA-Z0-9-]/g, "_");
+  const dir = path.join(os.tmpdir(), "ares-fleet-wt", `${Date.now().toString(36)}-${safe}-${Math.random().toString(36).slice(2, 8)}`);
+  await mkdir(dir, { recursive: true });
+  return {
+    dir,
+    changedFiles: () => walkRelFiles(dir),
+    applyTo: async (mainWorkspace: string) => {
+      for (const rel of await walkRelFiles(dir)) {
+        const dest = path.join(mainWorkspace, rel);
+        await mkdir(path.dirname(dest), { recursive: true });
+        await cp(path.join(dir, rel), dest);
+      }
+    },
+    cleanup: () => rm(dir, { recursive: true, force: true }).catch(() => undefined),
+  };
+}
 
 export interface ConductorToolDeps {
   provider: Provider;
@@ -154,7 +196,17 @@ const phaseSchema = z
     build: z
       .boolean()
       .optional()
-      .describe("BUILD phase: leaves get write tools (Bash/Edit/Write) to create files. MUST be kind:'pipeline' (serial writers). Dangerous tools (payment/email/deploy/account/desktop) are still stripped."),
+      .describe("BUILD phase: leaves get write tools (Bash/Edit/Write) to create files. Use kind:'pipeline' (serial writers) OR kind:'parallel' with isolation:'worktree'. Dangerous tools (payment/email/deploy/account/desktop) are still stripped."),
+    repairRounds: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("SELF-REPAIR: if the phase fails (or its last agent returns {ok:false}), re-run it up to N times with the failure injected — 'verify→fix→re-verify until green'. Put this on a verify phase whose agent has schema {ok:true,summary:'...'}."),
+    isolation: z
+      .enum(["worktree"])
+      .optional()
+      .describe("'worktree' lets a PARALLEL build phase run many writers at once in isolated sandboxes, merged back file-disjoint (an overlap fails closed). Pair with kind:'parallel' + build:true and FILE-DISJOINT agents."),
   })
   .strict();
 
@@ -222,6 +274,7 @@ export function makeConductorTool(deps: ConductorToolDeps) {
         allowWriteTools: deps.allowWriteTools,
         validate: exampleValidator,
         schemaHint: exampleHinter,
+        makeWorktree: makeCopyWorktree,
       };
       const result = await runFleet(i as FleetSpec, runtimeDeps);
       // Corrective hints — turn the runtime's failure signals into one-line advice
@@ -308,4 +361,6 @@ NOTES:
 - In a pipeline, reference the prior stage with {{prev}} / {{prev.field}}; reference an earlier phase with {{phaseId.reduced}}. If a stage's schema fails OR a downstream {{prev.field}} doesn't resolve, the pipeline FAILS CLOSED — it does not run the next stage on garbage.
 - Each agent is STATELESS — make every prompt self-contained.
 - Children run UNATTENDED but CAN research: read-only tools (Read/Grep/Glob/CodebaseSearch/LSP) AND safe research tools (WebFetch/WebSearch/ImageSearch) are available — whitelist them freely on research agents. Write/destructive/credential/payment/account tools are stripped unless the host enabled write mode; serialize writers into a single pipeline stage.
+- SELF-REPAIR: put repairRounds (e.g. 3) on your VERIFY phase, whose agent returns schema {"ok":true,"summary":"..."}. If it reports ok:false the runtime re-runs it with the failure injected until green or rounds run out — this is how the fleet catches a broken build and FIXES it before finishing.
+- PARALLEL BUILD: to build many modules at once, use kind:'parallel' + build:true + isolation:'worktree' with FILE-DISJOINT agents (each owns different files) — they build in isolated sandboxes and merge back; an overlap fails closed. Serial build is just kind:'pipeline' + build:true.
 - If a fleet aborts (budget/time/crash), re-run with resumeFleetId: <the returned fleetId> — completed leaves are reused, only the rest re-runs. The result's 'hints' tell you what to fix.`;

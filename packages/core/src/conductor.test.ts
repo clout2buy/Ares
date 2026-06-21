@@ -765,3 +765,55 @@ test("grace 1 soft-skips the over-budget stage as completed+degraded, never abor
   assert.equal(cLeaf.degraded, true);
   assert.notEqual(res.status, "aborted"); // a soft-skip is never an abort
 });
+
+// ─── Planner-fork + build phases (the "go all out" fast-follow) ──────────────
+
+test("a one-line plan is expanded by the architect fork into a runnable fleet", async () => {
+  const expanded = {
+    phases: [{ id: "research", kind: "parallel", agents: [{ role: "a", prompt: "x", tools: ["Read"] }] }],
+  };
+  let architectRan = false;
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    if (args.role === "fleet-architect") {
+      architectRan = true;
+      return { finalText: "Here is the spec:\n" + JSON.stringify(expanded), events: [], usage: U(), status: "completed" };
+    }
+    return { finalText: args.role, events: [], usage: U(), status: "completed" };
+  };
+  const res = await runFleet({ plan: "build a thing" } as FleetSpec, baseDeps({}, run));
+  assert.equal(architectRan, true, "the planner fork ran");
+  assert.equal(res.status, "completed");
+  assert.equal(res.phases.length, 1);
+  assert.equal(res.phases[0].leaves[0].role, "a");
+});
+
+test("a planner that emits an invalid spec twice fails loudly (not silently)", async () => {
+  const run: ConductorDeps["runAgent"] = async () => ({ finalText: "no json here", events: [], usage: U(), status: "completed" });
+  await assert.rejects(() => runFleet({ plan: "x" } as FleetSpec, baseDeps({}, run)), /planner could not produce a valid FleetSpec/);
+});
+
+test("a build:true pipeline phase grants write tools but still strips dangerous ones", async () => {
+  let sawTools: string[] = [];
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    sawTools = args.tools.map((t) => t.schema.name);
+    return { finalText: "ok", events: [], usage: U(), status: "completed" };
+  };
+  const deps = baseDeps(
+    { parentTools: [tool("Read"), tool("Write", "workspace-write"), tool("Stripe", "external-state")] },
+    run,
+  );
+  const spec: FleetSpec = {
+    phases: [{ id: "build", kind: "pipeline", build: true, agents: [{ role: "b", prompt: "x", tools: ["Read", "Write", "Stripe"] }] }],
+  };
+  const res = await runFleet(spec, deps);
+  assert.ok(sawTools.includes("Write"), "build phase keeps the writer");
+  assert.ok(!sawTools.includes("Stripe"), "a dangerous tool is stripped even in a build phase");
+  assert.ok(res.phases[0].leaves[0].strippedTools.includes("Stripe"));
+});
+
+test("a parallel build phase with multiple writers is rejected (write-race guard)", async () => {
+  const spec: FleetSpec = {
+    phases: [{ id: "b", kind: "parallel", build: true, agents: [{ role: "x", prompt: "a" }, { role: "y", prompt: "b" }] }],
+  };
+  await assert.rejects(() => runFleet(spec, baseDeps({}, scriptedRunner({}))), /parallel BUILD phase/);
+});

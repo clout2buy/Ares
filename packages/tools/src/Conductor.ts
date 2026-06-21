@@ -151,13 +151,21 @@ const phaseSchema = z
       .string()
       .optional()
       .describe("'judge' only: how the synthesis fork should weigh the candidates (e.g. 'rank by severity, keep the top 3')."),
+    build: z
+      .boolean()
+      .optional()
+      .describe("BUILD phase: leaves get write tools (Bash/Edit/Write) to create files. MUST be kind:'pipeline' (serial writers). Dangerous tools (payment/email/deploy/account/desktop) are still stripped."),
   })
   .strict();
 
 const inputSchema = z
   .object({
     goal: z.string().optional().describe("Optional human label for the fleet."),
-    phases: z.array(phaseSchema).min(1).describe("Phases run sequentially."),
+    plan: z
+      .string()
+      .optional()
+      .describe("EASY MODE: a one-line goal (e.g. 'build a multiplayer FPS in the browser'). The planner expands it into a WIDE research→plan→build→verify fleet for you. Use this instead of authoring phases when you want a full build — omit 'phases' when you set 'plan'."),
+    phases: z.array(phaseSchema).min(1).optional().describe("Phases run sequentially. Omit when you set 'plan' (the planner authors them)."),
     concurrency: z
       .number()
       .int()
@@ -197,7 +205,9 @@ export function makeConductorTool(deps: ConductorToolDeps) {
     watchdogTimeoutMs: 0,
     inputZod: inputSchema,
     activityDescription: (i) =>
-      `Conductor: ${i.goal ?? `${i.phases.length} phase(s)`} (${i.phases.reduce((n, p) => n + p.agents.length, 0)} agents)`,
+      i.plan
+        ? `Conductor: planning a fleet for "${i.plan.slice(0, 60)}"`
+        : `Conductor: ${i.goal ?? `${i.phases?.length ?? 0} phase(s)`} (${(i.phases ?? []).reduce((n, p) => n + p.agents.length, 0)} agents)`,
     async call(i, ctx) {
       const runtimeDeps: ConductorDeps = {
         provider: deps.provider,
@@ -262,9 +272,11 @@ export function makeConductorTool(deps: ConductorToolDeps) {
   });
 }
 
-const CONDUCTOR_DESCRIPTION = `Author and run a deterministic agent FLEET for work with structure the model-driven Task tool can't guarantee: capped parallel fan-out, typed multi-stage pipelines, schema-validated outputs, and a token budget.
+const CONDUCTOR_DESCRIPTION = `Author and run a deterministic agent FLEET for work with structure the model-driven Task tool can't guarantee: capped parallel fan-out, typed multi-stage pipelines, schema-validated outputs, build phases that write code, and a token budget.
 
-You emit ONE flat spec; a deterministic runtime executes it start-to-finish — it owns concurrency, cancellation, schema retries, the pipeline hand-off barrier, and the budget. You do NOT manage the fan-out turn-by-turn.
+EASY MODE (preferred for builds): set "plan" to a ONE-LINE goal — e.g. {"plan":"build a browser multiplayer FPS with Node/Vite"} — and the planner expands it into a WIDE research→plan→build→verify fleet for you. Omit "phases" when you use "plan". This is the right call for "build me X": you get a deep, tooled, self-verifying fleet without hand-authoring it.
+
+ADVANCED: emit "phases" yourself. Either way a deterministic runtime executes it start-to-finish — it owns concurrency, cancellation, schema retries, the pipeline hand-off barrier, build-phase write tools, and the budget. You do NOT manage the fan-out turn-by-turn.
 
 REACH FOR THIS for any non-trivial BUILD or research task. DECOMPOSE DEEPLY — fan
 5-16 agents across phases, not 3-4. A 3-agent fleet is a review panel, NOT a build:

@@ -42,6 +42,12 @@ export const FORBIDDEN_CHILD_TOOLS = new Set(["Conductor", "Task", "Operator"]);
  *  failures ("WebFetch is getting stripped"). (W2 revamp) */
 export const SAFE_RESEARCH_TOOLS = new Set(["WebFetch", "WebSearch", "ImageSearch", "CodebaseSearch", "LSP"]);
 
+/** Tools a fleet leaf may NEVER get — even in a write-enabled BUILD phase. These
+ *  have irreversible outward effects (payment / mail / deploy / external account)
+ *  or drive the real desktop; an unattended leaf must not reach them. (Recursion
+ *  tools are handled separately by FORBIDDEN_CHILD_TOOLS.) */
+export const LEAF_NEVER_TOOLS = new Set(["Stripe", "Email", "Gmail", "GoogleCalendar", "Connect", "Deploy", "ComputerUse"]);
+
 // ─── Public spec types (what the model authors; the tool layer validates) ──
 
 /** One leaf agent: a single bounded fork. `tools` is a name whitelist filtered
@@ -77,12 +83,23 @@ export interface FleetPhaseSpec {
   reduce?: FleetReduce;
   /** "judge" only: how the synthesis fork should weigh the candidates. */
   judgeInstruction?: string;
+  /** BUILD phase: its leaves get write tools (Bash/Edit/Write/…) to actually
+   *  create files — not just research. Genuinely dangerous tools (payment, email,
+   *  deploy, account, desktop) are STILL stripped. A build phase must be a
+   *  pipeline (serial writers) so parallel leaves never clobber the workspace. */
+  build?: boolean;
 }
 
 export interface FleetSpec {
   /** Optional human label for the fleet. */
   goal?: string;
-  phases: FleetPhaseSpec[];
+  /** EITHER author `phases` directly, OR give a one-line `plan` goal and let the
+   *  planner-fork expand it into a wide research→build→verify fleet. Exactly one. */
+  phases?: FleetPhaseSpec[];
+  /** A one-line goal the planner-fork expands into a full FleetSpec (research →
+   *  plan → build → verify), so a weak model gets an ultracode-grade fleet from a
+   *  single sentence instead of hand-authoring a thin spec. */
+  plan?: string;
   /** Max in-flight forks across a parallel phase. Default 3; go lower for local.
    *  Hard-clamped to [1, MAX_CONCURRENCY]. */
   concurrency?: number;
@@ -369,6 +386,14 @@ export function validateSpec(spec: FleetSpec, parentTools: readonly EngineTool[]
     if (phase.kind !== "parallel" && phase.kind !== "pipeline") {
       throw new Error(`phase '${phase.id}' kind must be 'parallel' or 'pipeline'.`);
     }
+    // A build phase's leaves write to the shared workspace; parallel writers would
+    // clobber each other. Force serial (pipeline) writers.
+    if (phase.build && phase.kind === "parallel" && phase.agents.length > 1) {
+      throw new Error(
+        `phase '${phase.id}' is a parallel BUILD phase with ${phase.agents.length} writers that would ` +
+          `clobber the shared workspace — make build phases 'pipeline' (serial writers).`,
+      );
+    }
     for (const agent of phase.agents) {
       // An empty/primitive schema-example silently disables enforcement AND the
       // fail-closed pipeline barrier (matchShape over no keys = always valid).
@@ -541,14 +566,26 @@ function scopeTools(
   //    or the host forgot to exclude it from parentTools. validateSpec's explicit
   //    whitelist reject is the loud first gate; this is the silent-default backstop.
   const base = whitelisted.filter((t) => {
-    if (FORBIDDEN_CHILD_TOOLS.has(t.schema.name)) {
+    // Recursion guard + the never-in-a-leaf danger set are stripped ALWAYS — even
+    // in a write-enabled build phase. A build leaf may write code; it may never
+    // take payments, send mail, deploy, touch an account, or drive the desktop.
+    if (FORBIDDEN_CHILD_TOOLS.has(t.schema.name) || LEAF_NEVER_TOOLS.has(t.schema.name)) {
       stripped.push(t.schema.name);
       return false;
     }
     return true;
   });
-  if (allowWriteTools) return { tools: base, stripped };
-  // 3) Unattended posture: drop everything that is NOT read-only.
+  if (allowWriteTools) {
+    // 3a) Build posture: keep read-only + research + workspace-write (Bash/Edit/
+    //     Write), still drop destructive (rm -rf / format / etc).
+    const tools: EngineTool[] = [];
+    for (const t of base) {
+      if (t.schema.safety === "destructive") stripped.push(t.schema.name);
+      else tools.push(t);
+    }
+    return { tools, stripped };
+  }
+  // 3b) Unattended research posture: drop everything that is NOT read-only.
   const tools: EngineTool[] = [];
   for (const t of base) {
     if (t.schema.safety === "read-only" || SAFE_RESEARCH_TOOLS.has(t.schema.name)) tools.push(t);
@@ -566,9 +603,12 @@ async function runLeaf(
   run: RunAgentFn,
   ledger: { usage: Usage },
   budget: number,
+  allowWrite = false,
 ): Promise<LeafResult> {
   const agentId = newId("agent");
-  const { tools, stripped } = scopeTools(deps.parentTools, agent.tools, deps.allowWriteTools ?? false);
+  // A build phase grants write tools to its leaves; the host's global flag still
+  // forces it on everywhere if set.
+  const { tools, stripped } = scopeTools(deps.parentTools, agent.tools, allowWrite || (deps.allowWriteTools ?? false));
   const maxTurns = agent.maxTurns ?? deps.defaultMaxTurns ?? 12;
   const collected: TurnEvent[] = [];
 
@@ -708,7 +748,7 @@ async function runParallelPhase(
           return invalidLeaf(agent, phase.id, "(skipped: over soft budget)", 0, true);
         }
         const { text: prompt, unresolved } = resolveTemplates(agent.prompt, pipelineCtx);
-        const leaf = await runLeaf(agent, phase.id, prompt, unresolved, deps, run, ledger, budget);
+        const leaf = await runLeaf(agent, phase.id, prompt, unresolved, deps, run, ledger, budget, phase.build === true);
         return leaf;
       } finally {
         // Release the slot BEFORE journaling so a slow .ares write never gates
@@ -809,7 +849,7 @@ async function runPipelinePhase(
       prevText,
     };
     const { text: prompt, unresolved } = resolveTemplates(agent.prompt, localCtx);
-    const leaf = await runLeaf(agent, phase.id, prompt, unresolved, deps, run, ledger, budget);
+    const leaf = await runLeaf(agent, phase.id, prompt, unresolved, deps, run, ledger, budget, phase.build === true);
     leaves.push(leaf);
     journalTasks.push(journalLeaf(deps.workspace, leaf));
 
@@ -1058,11 +1098,75 @@ async function journalFleet(workspace: string, fleetId: string, result: FleetRes
 
 // ─── The orchestrator entrypoint ───────────────────────────────────────────
 
-export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<FleetResult> {
-  validateSpec(spec, deps.parentTools);
+/** The architect prompt: turns a one-line goal into a wide, multi-phase FleetSpec
+ *  even on a weak model — the structure is dictated, so the model just fills it in. */
+function fleetArchitectPrompt(goal: string, toolNames: string[]): string {
+  return (
+    `You are a FLEET ARCHITECT. Expand this goal into a deterministic agent-fleet spec that BUILDS it end to end.\n\n` +
+    `GOAL: ${goal}\n\n` +
+    `Output ONLY a JSON object (no prose, no fences) of shape:\n` +
+    `{ "goal": string, "concurrency": number, "phases": [ { "id": string, "kind": "parallel"|"pipeline", "build"?: boolean, "reduce"?: "concat"|"first"|"judge", "agents": [ { "role": string, "prompt": string, "tools"?: string[], "schema"?: object } ] } ] }\n\n` +
+    `RULES:\n` +
+    `- DECOMPOSE DEEPLY: 4-8 research agents, then plan, then 3-8 build agents, then verify. Aim for 10-20 agents total. A thin 3-4 agent spec is a FAILURE.\n` +
+    `- Phase 1 'research' (kind:parallel, reduce:judge): N agents each investigating ONE angle (stack, networking, mechanics, assets, etc). Whitelist research tools: ["WebSearch","WebFetch","Read","Grep","Glob"].\n` +
+    `- Phase 2 'plan' (kind:pipeline): 1 agent that turns {{research.reduced}} into a concrete file-by-file build plan. Give it a schema like {"files":["..."],"steps":["..."]}.\n` +
+    `- Phase 3 'build' (kind:pipeline, build:true): one agent PER module/file-group, each FILE-DISJOINT, run serially so they don't clobber. Whitelist ["Read","Write","Edit","Bash","Grep","Glob"]. Each prompt must be self-contained and reference {{plan.reduced}}.\n` +
+    `- Phase 4 'verify' (kind:pipeline, build:true): 1 agent that installs+builds+runs the project via Bash, reports failures, and FIXES them. Whitelist ["Bash","Read","Edit","Write","Grep"].\n` +
+    `- Every prompt is STATELESS and self-contained (a leaf sees none of your context). Use {{phaseId.reduced}} / {{prev.field}} to pass work forward.\n` +
+    `- Only whitelist tools from this catalog: ${toolNames.join(", ")}.\n` +
+    `Return the JSON now.`
+  );
+}
 
+/** Expand a one-line plan into a validated FleetSpec via a single architect fork
+ *  (one reprompt on invalid). Its usage counts against the fleet ledger. */
+async function planFleet(
+  goal: string,
+  deps: ConductorDeps,
+  run: RunAgentFn,
+  ledger: { usage: Usage },
+): Promise<FleetSpec> {
+  const toolNames = deps.parentTools
+    .map((t) => t.schema.name)
+    .filter((n) => !FORBIDDEN_CHILD_TOOLS.has(n) && !LEAF_NEVER_TOOLS.has(n));
+  let lastErr = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const prompt =
+      attempt === 0
+        ? fleetArchitectPrompt(goal, toolNames)
+        : `${fleetArchitectPrompt(goal, toolNames)}\n\nYour previous output was REJECTED: ${lastErr}\nReturn ONLY the corrected JSON FleetSpec.`;
+    const r = await run({ role: "fleet-architect", prompt, tools: [], maxTurns: 2, signal: deps.signal });
+    ledger.usage = addUsage(ledger.usage, r.usage);
+    const parsed = extractFirstJson(r.finalText);
+    if (!parsed.ok) {
+      lastErr = "no JSON object found in your output";
+      continue;
+    }
+    const cand = parsed.value as FleetSpec;
+    try {
+      validateSpec(cand, deps.parentTools);
+      return cand;
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+    }
+  }
+  throw new Error(`planner could not produce a valid FleetSpec after 2 tries: ${lastErr}`);
+}
+
+export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<FleetResult> {
   const fleetId = newId("fleet");
   const run = deps.runAgent ?? defaultRunAgent(deps);
+  const ledger = { usage: { inputTokens: 0, outputTokens: 0 } as Usage };
+  // PLANNER: a one-line `plan` (and no explicit phases) is expanded by an architect
+  // fork into a wide research→plan→build→verify spec, so a weak model gets an
+  // ultracode-grade fleet from a single sentence. The expanded spec is validated.
+  if (spec.plan && (!spec.phases || spec.phases.length === 0)) {
+    deps.emitProgress?.({ kind: "fleet_activity", event: "planning", fleetId, role: "fleet-architect", phase: "plan" });
+    const expanded = await planFleet(spec.plan, deps, run, ledger);
+    spec = { ...expanded, goal: expanded.goal ?? spec.plan, maxTotalTokens: spec.maxTotalTokens ?? expanded.maxTotalTokens, maxWallClockMs: spec.maxWallClockMs ?? expanded.maxWallClockMs, resumeFleetId: spec.resumeFleetId };
+  }
+  validateSpec(spec, deps.parentTools);
+
   // Announce the fleet (carries the id the desktop needs to offer "resume").
   deps.emitProgress?.({ kind: "fleet_activity", event: "fleet_start", fleetId });
   // Resume: load the prior fleet's completed leaves so they're reused, not re-run.
@@ -1074,8 +1178,11 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
     1,
     Math.min(Number.isFinite(reqC) && reqC > 0 ? Math.floor(reqC) : 6, MAX_CONCURRENCY),
   );
+  // Phases are guaranteed present + non-empty by validateSpec above (plan was
+  // already expanded). The local binding satisfies the optional `phases?` type.
+  const specPhases = spec.phases!;
   // Total leaf count drives both derived backstops below.
-  const totalAgents = spec.phases.reduce((n, p) => n + p.agents.length, 0);
+  const totalAgents = specPhases.reduce((n, p) => n + p.agents.length, 0);
   const perLeafTurns = deps.defaultMaxTurns ?? 12;
   // An unattended fleet must ALWAYS have a token backstop. If the model omits one,
   // derive a generous-but-finite ceiling from the fleet size (~50k tokens per
@@ -1084,7 +1191,6 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
   const budget = Number.isFinite(reqBudget) && reqBudget > 0
     ? reqBudget
     : totalAgents * perLeafTurns * 50_000;
-  const ledger = { usage: { inputTokens: 0, outputTokens: 0 } as Usage };
 
   // A shared controller, chained to the parent signal, that the budget guard and
   // any parent interrupt both feed. Every fork already receives deps.signal; the
@@ -1134,7 +1240,7 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
   let failed = false;
 
   try {
-    for (const phase of spec.phases) {
+    for (const phase of specPhases) {
       if (controller.signal.aborted) {
         aborted = true;
         break;

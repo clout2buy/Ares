@@ -1371,7 +1371,7 @@ async function buildEngineTools(
       parentTools: baseTools,
       baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
       subModel: selection.subModel,
-      defaultMaxTurns: 12,
+      defaultMaxTurns: 20,
     }),
     enrich,
   ) as EngineTool;

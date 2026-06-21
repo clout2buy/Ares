@@ -266,12 +266,18 @@ const CONDUCTOR_DESCRIPTION = `Author and run a deterministic agent FLEET for wo
 
 You emit ONE flat spec; a deterministic runtime executes it start-to-finish — it owns concurrency, cancellation, schema retries, the pipeline hand-off barrier, and the budget. You do NOT manage the fan-out turn-by-turn.
 
-REACH FOR THIS when a task has ≥3 independent angles, needs a hard parallel cap or token budget, or is a multi-stage extract→transform pipeline. For a single delegation, use Task instead.
+REACH FOR THIS for any non-trivial BUILD or research task. DECOMPOSE DEEPLY — fan
+5-16 agents across phases, not 3-4. A 3-agent fleet is a review panel, NOT a build:
+for "build me X", structure it as research (parallel, wide) → plan (pipeline) →
+build (parallel, file-disjoint modules) → verify (a stage that runs the build/tests
+and fails closed). Under-decomposing into a few agents is the #1 way a fleet
+underdelivers — when in doubt, fan WIDER and add a verify phase.
 
 WHEN TO USE:
+- Build something real: research the stack in parallel, then build modules in parallel, then verify.
 - Survey N angles in parallel then JUDGE them into one answer (research, design options, code-review panels).
 - A pipeline where each stage consumes the PREVIOUS stage's structured output (extract → transform → write).
-- Any fan-out where you need a hard concurrency cap, a token budget, or schema-valid leaf outputs.
+- Any fan-out where you need a concurrency cap, a token budget, or schema-valid leaf outputs.
 
 WORKED EXAMPLE — a review panel that fans out, then synthesizes:
 { "goal": "review the diff",
@@ -289,5 +295,5 @@ NOTES:
 - reduce: 'judge' adds one synthesis fork over all siblings — far better than 'concat' for panels (you get a merged answer, not N raw opinions to digest yourself).
 - In a pipeline, reference the prior stage with {{prev}} / {{prev.field}}; reference an earlier phase with {{phaseId.reduced}}. If a stage's schema fails OR a downstream {{prev.field}} doesn't resolve, the pipeline FAILS CLOSED — it does not run the next stage on garbage.
 - Each agent is STATELESS — make every prompt self-contained.
-- Children run UNATTENDED: by default they get only read-only tools (Read/Grep/Glob/etc). Whitelisting a write tool has no effect unless the host enabled write mode; serialize writers into a single pipeline stage.
+- Children run UNATTENDED but CAN research: read-only tools (Read/Grep/Glob/CodebaseSearch/LSP) AND safe research tools (WebFetch/WebSearch/ImageSearch) are available — whitelist them freely on research agents. Write/destructive/credential/payment/account tools are stripped unless the host enabled write mode; serialize writers into a single pipeline stage.
 - If a fleet aborts (budget/time/crash), re-run with resumeFleetId: <the returned fleetId> — completed leaves are reused, only the rest re-runs. The result's 'hints' tell you what to fix.`;

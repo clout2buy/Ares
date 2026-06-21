@@ -33,7 +33,7 @@ import type { EngineTool } from "./queryEngine.js";
 
 const U = (i = 10, o = 10): Usage => ({ inputTokens: i, outputTokens: o, modelCalls: 1 });
 
-function tool(name: string, safety: "read-only" | "workspace-write" = "read-only"): EngineTool {
+function tool(name: string, safety: "read-only" | "workspace-write" | "external-state" = "read-only"): EngineTool {
   return {
     schema: {
       name,
@@ -297,28 +297,9 @@ test("persistent schema miss with no subModel yields schemaValid:false, never th
   assert.equal(res.status, "completed"); // a bad leaf in a PARALLEL phase is recorded, not fatal
 });
 
-test("budget PRE-FLIGHT halts the fleet: no new fork admitted once spent, status aborted", async () => {
-  const ranRoles: string[] = [];
-  // Each leaf burns 1000 tokens; budget 1500. After leaf #2 the running total is
-  // 2000 ≥ 1500, so phase p2 must never admit its leaf.
-  const run: ConductorDeps["runAgent"] = async (args) => {
-    ranRoles.push(args.role);
-    return { finalText: args.role, events: [], usage: U(500, 500), status: "completed" };
-  };
-  const spec: FleetSpec = {
-    maxTotalTokens: 1500,
-    concurrency: 1,
-    phases: [
-      { id: "p1", kind: "pipeline", agents: [{ role: "a", prompt: "x" }, { role: "b", prompt: "x" }] },
-      { id: "p2", kind: "pipeline", agents: [{ role: "c", prompt: "x" }] },
-    ],
-  };
-  const res = await runFleet(spec, baseDeps({}, run));
-  assert.equal(res.budgetExceeded, true);
-  assert.equal(res.status, "aborted");
-  // 'c' must NOT have been spawned (pre-flight gate).
-  assert.equal(ranRoles.includes("c"), false);
-});
+// NOTE: the old "budget PRE-FLIGHT halts the fleet ... status aborted" test was
+// removed in the W2 revamp — the hard budget guillotine that aborted peers is
+// gone. The two soft-budget tests appended at the end of this file replace it.
 
 test("a fleet that finishes every phase but is over budget is completed (not relabeled aborted)", async () => {
   // budget 50; a single leaf burns 100 → over budget AFTER it ran, but nothing
@@ -714,4 +695,73 @@ test("a hung-then-rejecting leaf is swallowed, not an unhandled rejection (gap #
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
   }
+});
+
+
+// ─── W2 revamp: research-tool survival + soft budget ────────────────────────
+
+test("safe-research external-state tools survive unattended scoping; writers are stripped", async () => {
+  let sawTools: string[] = [];
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    sawTools = args.tools.map((t) => t.schema.name);
+    return { finalText: "ok", events: [], usage: U(), status: "completed" };
+  };
+  const spec: FleetSpec = {
+    phases: [
+      { id: "p", kind: "parallel", agents: [{ role: "a", prompt: "x", tools: ["Read", "WebFetch", "Write"] }] },
+    ],
+  };
+  // parentTools MUST include a genuine external-state WebFetch, else the test is a
+  // no-op: a read-only WebFetch would survive against unpatched code too.
+  const deps = baseDeps({
+    parentTools: [tool("Read"), tool("WebFetch", "external-state"), tool("Write", "workspace-write")],
+  }, run); // allowWriteTools defaults false
+  const res = await runFleet(spec, deps);
+  assert.deepEqual(sawTools.sort(), ["Read", "WebFetch"]);
+  assert.deepEqual(res.phases[0].leaves[0].strippedTools, ["Write"]);
+});
+
+test("over the hard budget but under soft grace: all leaves run, status completed, budgetExceeded true", async () => {
+  const ranRoles: string[] = [];
+  // Each leaf burns 1000; budget 1500, default grace 4 -> soft ceiling 6000.
+  // a+b = 2000 (over 1500, under 6000) so c is STILL admitted.
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    ranRoles.push(args.role);
+    return { finalText: args.role, events: [], usage: U(500, 500), status: "completed" };
+  };
+  const spec: FleetSpec = {
+    maxTotalTokens: 1500,
+    concurrency: 1,
+    phases: [
+      { id: "p1", kind: "pipeline", agents: [{ role: "a", prompt: "x" }, { role: "b", prompt: "x" }] },
+      { id: "p2", kind: "pipeline", agents: [{ role: "c", prompt: "x" }] },
+    ],
+  };
+  const res = await runFleet(spec, baseDeps({}, run));
+  assert.equal(res.budgetExceeded, true);
+  assert.equal(res.status, "completed"); // nothing was cut
+  assert.equal(ranRoles.includes("c"), true); // soft budget admitted it
+});
+
+test("grace 1 soft-skips the over-budget stage as completed+degraded, never aborts the fleet", async () => {
+  const ranRoles: string[] = [];
+  const run: ConductorDeps["runAgent"] = async (args) => {
+    ranRoles.push(args.role);
+    return { finalText: args.role, events: [], usage: U(500, 500), status: "completed" };
+  };
+  const spec: FleetSpec = {
+    maxTotalTokens: 1500,
+    concurrency: 1,
+    phases: [
+      { id: "p1", kind: "pipeline", agents: [{ role: "a", prompt: "x" }, { role: "b", prompt: "x" }] },
+      { id: "p2", kind: "pipeline", agents: [{ role: "c", prompt: "x" }] },
+    ],
+  };
+  // grace 1 -> soft ceiling == budget 1500. a+b = 2000 >= 1500 blocks c.
+  const res = await runFleet(spec, baseDeps({ budgetOvershootGrace: 1 }, run));
+  assert.equal(ranRoles.includes("c"), false); // c never really ran
+  const cLeaf = res.phases[1].leaves[0];
+  assert.equal(cLeaf.status, "completed"); // degraded leaves report completed
+  assert.equal(cLeaf.degraded, true);
+  assert.notEqual(res.status, "aborted"); // a soft-skip is never an abort
 });

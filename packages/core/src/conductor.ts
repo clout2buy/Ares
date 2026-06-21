@@ -35,6 +35,13 @@ export const MAX_CONCURRENCY = 8;
 /** Tool names a fleet child may NEVER be scoped — blocks recursive fleets. */
 export const FORBIDDEN_CHILD_TOOLS = new Set(["Conductor", "Task", "Operator"]);
 
+/** Non-read-only tools that are nonetheless SAFE for an unattended leaf: pure
+ *  research/inspection that reads the world but has no outward effect. Without
+ *  this, the read-only-only strip silently removed WebFetch/WebSearch from
+ *  research leaves — the real-world cause of a research fleet returning all
+ *  failures ("WebFetch is getting stripped"). (W2 revamp) */
+export const SAFE_RESEARCH_TOOLS = new Set(["WebFetch", "WebSearch", "ImageSearch", "CodebaseSearch", "LSP"]);
+
 // ─── Public spec types (what the model authors; the tool layer validates) ──
 
 /** One leaf agent: a single bounded fork. `tools` is a name whitelist filtered
@@ -121,6 +128,9 @@ export interface LeafResult {
   strippedTools: string[];
   /** Per-leaf transcript path under .ares/agents/<id>/, or '' if not (yet) written. */
   transcriptPath: string;
+  /** True when this leaf was admitted-as-completed without real work because the
+   *  fleet was over its soft budget — a graceful degrade, never an abort (W2). */
+  degraded?: boolean;
 }
 
 export interface PhaseResult {
@@ -230,6 +240,11 @@ export interface ConductorDeps {
   /** Internal: completed leaves reused on resume, keyed `${phaseId}#${index}`.
    *  Populated by runFleet from spec.resumeFleetId; never set by callers. */
   resume?: ReadonlyMap<string, LeafResult>;
+  /** Soft-budget multiplier: a fleet keeps ADMITTING leaves until the running
+   *  total reaches budget * this. Past the soft budget, further leaves are marked
+   *  degraded+completed (skipped, zero tokens) — peers are never aborted. The hard
+   *  ceiling is still the wall-clock. Defaults to 4. (W2) */
+  budgetOvershootGrace?: number;
 }
 
 // ─── Small async semaphore (caps in-flight forks) ──────────────────────────
@@ -536,7 +551,7 @@ function scopeTools(
   // 3) Unattended posture: drop everything that is NOT read-only.
   const tools: EngineTool[] = [];
   for (const t of base) {
-    if (t.schema.safety === "read-only") tools.push(t);
+    if (t.schema.safety === "read-only" || SAFE_RESEARCH_TOOLS.has(t.schema.name)) tools.push(t);
     else stripped.push(t.schema.name);
   }
   return { tools, stripped };
@@ -659,6 +674,13 @@ async function runParallelPhase(
   // latched after the last leaf finished (finding #9). A phase whose every leaf
   // ran is 'completed' even if the running total is now over the ceiling.
   let skipped = 0;
+  // Soft budget (W2): keep ADMITTING leaves until the running total reaches
+  // budget*grace; past that, degrade-skip (completed, zero tokens) rather than
+  // abort peers. A reasoner fleet is no longer guillotined at 1/N done — the only
+  // hard stops are the wall-clock and a parent interrupt.
+  const grace = deps.budgetOvershootGrace ?? 4;
+  const hardStop = budget > 0 ? budget * grace : 0;
+  const admitBlocked = () => hardStop > 0 && totalTokens(ledger.usage) >= hardStop;
   // Promise.allSettled so one failed/interrupted leaf never rejects the phase —
   // we inspect each result.status, never rely on try/catch around the batch.
   const settled = await Promise.allSettled(
@@ -681,17 +703,12 @@ async function runParallelPhase(
           skipped++;
           return invalidLeaf(agent, phase.id, "(aborted before start)", 0);
         }
-        if (budgetSpent(ledger, budget)) {
-          controller.abort();
-          skipped++;
-          return invalidLeaf(agent, phase.id, "(budget reached before start)", 0);
+        if (admitBlocked()) {
+          // Soft-budget skip: degrade (completed), do NOT abort peers or the fleet.
+          return invalidLeaf(agent, phase.id, "(skipped: over soft budget)", 0, true);
         }
         const { text: prompt, unresolved } = resolveTemplates(agent.prompt, pipelineCtx);
         const leaf = await runLeaf(agent, phase.id, prompt, unresolved, deps, run, ledger, budget);
-        // Latch the abort the moment the running total hits the ceiling so no
-        // further queued leaf is admitted. (Latching does NOT make THIS phase
-        // 'aborted' — only an actually-skipped leaf does.)
-        if (budgetSpent(ledger, budget)) controller.abort();
         return leaf;
       } finally {
         // Release the slot BEFORE journaling so a slow .ares write never gates
@@ -755,6 +772,10 @@ async function runPipelinePhase(
   let prevText = "";
   let status: PhaseResult["status"] = "completed";
   let failureReason: string | undefined;
+  // Soft budget (W2): degrade-skip a stage past budget*grace instead of aborting.
+  const grace = deps.budgetOvershootGrace ?? 4;
+  const hardStop = budget > 0 ? budget * grace : 0;
+  const admitBlocked = () => hardStop > 0 && totalTokens(ledger.usage) >= hardStop;
 
   for (let idx = 0; idx < phase.agents.length; idx++) {
     const agent = phase.agents[idx];
@@ -774,11 +795,12 @@ async function runPipelinePhase(
       status = "aborted";
       continue;
     }
-    // Pre-flight budget gate (finding #3): stop admitting stages once spent.
-    if (budgetSpent(ledger, budget)) {
-      controller.abort();
-      leaves.push(invalidLeaf(agent, phase.id, "(budget reached)", 0));
-      status = "aborted";
+    // Soft-budget gate (W2): past budget*grace, degrade-skip this stage rather
+    // than abort the pipeline. It's recorded completed-but-degraded; the barrier
+    // is skipped for it, and downstream stages still proceed seeded from the last
+    // stage that really ran. Only the wall-clock / parent interrupt hard-stop.
+    if (admitBlocked()) {
+      leaves.push(invalidLeaf(agent, phase.id, "(skipped: over soft budget)", 0, true));
       continue;
     }
     const localCtx: Record<string, unknown> = {
@@ -812,14 +834,8 @@ async function runPipelinePhase(
 
     prevStructured = leaf.schemaValid ? (leaf.structured ?? leaf.text) : leaf.text;
     prevText = leaf.text;
-    if (budgetSpent(ledger, budget)) {
-      controller.abort();
-      // Only 'aborted' if a downstream stage is actually being cut. If this was
-      // the final stage, every stage ran — the phase completed (finding #9). The
-      // fleet-wide budgetExceeded flag still carries the over-budget signal.
-      if (idx < phase.agents.length - 1) status = "aborted";
-      break;
-    }
+    // No hard budget latch here (W2): soft-budget skipping is handled by the
+    // admit gate at the top of the loop; a finished stage never aborts the rest.
   }
 
   await Promise.allSettled(journalTasks);
@@ -946,12 +962,13 @@ function invalidLeaf(
   phaseId: string,
   reason: string,
   unresolvedTemplates: number,
+  degraded = false,
 ): LeafResult {
   return {
     agentId: newId("agent"),
     role: agent.role,
     phaseId,
-    status: "failed",
+    status: degraded ? "completed" : "failed",
     text: reason,
     structured: undefined,
     schemaValid: false,
@@ -960,6 +977,7 @@ function invalidLeaf(
     unresolvedTemplates,
     strippedTools: [],
     transcriptPath: "",
+    degraded: degraded || undefined,
   };
 }
 
@@ -1054,7 +1072,7 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
   const reqC = Number(spec.concurrency);
   const concurrency = Math.max(
     1,
-    Math.min(Number.isFinite(reqC) && reqC > 0 ? Math.floor(reqC) : 3, MAX_CONCURRENCY),
+    Math.min(Number.isFinite(reqC) && reqC > 0 ? Math.floor(reqC) : 6, MAX_CONCURRENCY),
   );
   // Total leaf count drives both derived backstops below.
   const totalAgents = spec.phases.reduce((n, p) => n + p.agents.length, 0);

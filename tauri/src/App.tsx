@@ -63,8 +63,8 @@ interface AresEvent {
   input?: unknown;
   /** tool_use_input_delta — partial JSON of the tool input being authored. */
   deltaJson?: string;
-  /** tool_progress — live sub-tool output (shell chunks, grep ticks, subagent activity, live browser frames). */
-  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string };
+  /** tool_progress — live sub-tool output (shell chunks, grep ticks, subagent activity, live browser frames, Conductor fleet activity). */
+  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string; agentId?: string; event?: string; role?: string; phase?: string; status?: string; fleetId?: string };
   /** compaction event fields */
   summarizedMessages?: number;
   tokensBefore?: number;
@@ -195,6 +195,20 @@ function hasNativeBridge(): boolean {
 type ReasoningLevel = "low" | "medium" | "high" | "max";
 const REASONING_LEVELS: ReasoningLevel[] = ["low", "medium", "high", "max"];
 
+// The effort SLIDER: model reasoning low→max, plus ULTRA at the very top — which
+// is not a model dial but a posture: unleash a background fleet (the orchestrator).
+// "ultra" is kept as a separate Prefs.ultra flag so a daemon reasoning echo can
+// never clobber it; when ultra is on, the model dial is pinned to "max".
+const EFFORT_STEPS = ["low", "medium", "high", "max", "ultra"] as const;
+type EffortStep = (typeof EFFORT_STEPS)[number];
+const EFFORT_META: Record<EffortStep, { label: string; hint: string }> = {
+  low: { label: "low", hint: "snappy — minimal deliberation" },
+  medium: { label: "medium", hint: "balanced thinking for everyday work" },
+  high: { label: "high", hint: "deep passes for hard problems" },
+  max: { label: "max", hint: "everything the model has" },
+  ultra: { label: "ULTRA", hint: "unleash the fleet — background agents orchestrated in parallel" },
+};
+
 interface ToolStep {
   id: string;
   label: string;
@@ -259,6 +273,26 @@ interface SessionVm {
   loaded?: boolean;
   loading?: boolean;
   updatedAt?: string;
+  /** Live Conductor fleet — populated from fleet_activity progress events. */
+  fleet?: FleetVm;
+}
+
+interface FleetAgentVm {
+  role: string;
+  phase: string;
+  status: "running" | "done" | "failed";
+  tool?: string;
+  activity?: string;
+  resumed?: boolean;
+}
+interface FleetVm {
+  active: boolean;
+  /** The runFleet id — lets the UI offer a resume of an aborted run. */
+  fleetId?: string;
+  /** Set on turn-end when the fleet left failed/incomplete leaves behind. */
+  canResume?: boolean;
+  /** Insertion-ordered agents keyed by agentId. */
+  agents: Array<{ id: string } & FleetAgentVm>;
 }
 
 let keySeq = 0;
@@ -396,6 +430,7 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
     case "turn_start":
       session.busy = true;
       session.activity = "marshalling";
+      session.fleet = undefined; // clear last turn's fleet board
       break;
     case "consciousness_say": {
       // A proactive remark from the Watch — drop it into the conversation as a
@@ -521,6 +556,32 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // step's bounded live tail; surface grep/subagent ticks as the step label.
       const d = e.data;
       if (!d) break;
+      // Conductor fleet board — one row per leaf agent, grouped by phase.
+      if (d.kind === "fleet_activity" && d.event === "fleet_start") {
+        session.fleet = { active: true, fleetId: d.fleetId, agents: session.fleet?.agents ?? [] };
+        break;
+      }
+      if (d.kind === "fleet_activity" && typeof d.agentId === "string") {
+        const agents = [...(session.fleet?.agents ?? [])];
+        const at = agents.findIndex((a) => a.id === d.agentId);
+        const ev = d.event as string | undefined;
+        const resolved: FleetAgentVm["status"] =
+          ev === "done" ? (d.status === "completed" ? "done" : "failed") : ev === "resumed" ? "done" : "running";
+        const base = at === -1
+          ? { id: d.agentId, role: String(d.role ?? "agent"), phase: String(d.phase ?? ""), status: "running" as FleetAgentVm["status"], tool: undefined as string | undefined, activity: undefined as string | undefined, resumed: false }
+          : agents[at];
+        const next = {
+          ...base,
+          status: ev === "tool" ? base.status : resolved,
+          tool: typeof d.tool === "string" ? d.tool : base.tool,
+          activity: typeof d.activity === "string" ? d.activity : base.activity,
+          resumed: ev === "resumed" ? true : base.resumed,
+        };
+        if (at === -1) agents.push(next);
+        else agents[at] = next;
+        session.fleet = { ...session.fleet, active: true, agents };
+        break;
+      }
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
         if (it.kind !== "tools") continue;
@@ -691,6 +752,12 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.steerQueued = 0;
       session.tokensIn += input;
       session.tokensOut += output;
+      if (session.fleet) {
+        // If any leaf failed/aborted (or never finished), keep the board up with a
+        // resume affordance instead of hiding it. Otherwise hide on completion.
+        const incomplete = session.fleet.agents.some((a) => a.status === "failed" || a.status === "running");
+        session.fleet = { ...session.fleet, active: false, canResume: incomplete && !!session.fleet.fleetId };
+      }
       break;
     }
     case "steer_applied": {
@@ -1001,6 +1068,9 @@ interface Prefs {
   provider: string;
   model: string;
   reasoning: ReasoningLevel;
+  /** ULTRA posture — the top of the effort slider. Pins reasoning to max and
+   *  (once wired) routes the turn through the background orchestrator fleet. */
+  ultra?: boolean;
   routing: Routing;
   routingMode: "manual" | "auto";
   /** Tool-call rendering: product = concise summaries; technical = raw input/output. */
@@ -1057,6 +1127,7 @@ function loadPrefs(): Prefs {
       provider: raw.provider ?? fallback.provider,
       model: raw.model ?? fallback.model,
       reasoning: REASONING_LEVELS.includes(raw.reasoning as ReasoningLevel) ? (raw.reasoning as ReasoningLevel) : "medium",
+      ultra: raw.ultra === true,
       routing,
       // Existing installs already treated non-empty assignments as active.
       routingMode: raw.routingMode === "auto" || raw.routingMode === "manual"
@@ -2009,6 +2080,13 @@ function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
     const sid = activeRef.current;
+    // ULTRA posture: steer the agent toward the Conductor fleet for this turn.
+    // Prepended to the GOAL the daemon receives (provider-agnostic) but NOT shown
+    // in the transcript — the user's message stays clean.
+    const ultraDirective = prefsRef.current.ultra
+      ? "[ULTRA MODE] For this task, strongly prefer the Conductor tool to orchestrate a parallel agent FLEET — fan out the independent angles, then use reduce:\"judge\" to synthesize — instead of one linear pass. Author a FleetSpec whenever the work has ≥3 independent parts (research, multi-file/multi-angle review, design options). Otherwise proceed normally.\n\n---\n\n"
+      : "";
+    const goal = ultraDirective + trimmed;
     applyTo(sid, (s) => ({
       ...s,
       title: s.title === "New session" ? compact(trimmed, 42) : s.title,
@@ -2017,18 +2095,39 @@ function App() {
     }));
     if (native) {
       if (daemon !== "running") {
-        pendingGoal.current = { goal: trimmed, sessionId: sid };
+        pendingGoal.current = { goal, sessionId: sid };
         applyTo(sid, (s) => foldEvent(s, { type: "system_reminder_injected", source: "verifier", text: "Garrison is down — restarting, your message is queued." }));
         restartDaemon();
         return;
       }
-      void invoke("ares_send", { goal: trimmed, sessionId: sid }).catch((err) => {
+      void invoke("ares_send", { goal, sessionId: sid }).catch((err) => {
         pendingGoal.current = { goal: trimmed, sessionId: sid };
         applyTo(sid, (s) => ({ ...foldEvent(s, { type: "desktop_error", text: `${String(err)} — restarting the Garrison, message queued.` }), busy: true }));
         restartDaemon();
       });
     } else {
       window.setTimeout(() => apply((s) => foldEvent(s, { type: "turn_start" })), 150);
+      // ULTRA in demo mode shows a sample fleet so the board is visible without a daemon.
+      if (prefsRef.current.ultra) {
+        const fa = (data: Record<string, unknown>, t: number) =>
+          window.setTimeout(() => apply((s) => foldEvent(s, { type: "tool_progress", id: "demo-fleet", data })), t);
+        const crew = [
+          { id: "a1", role: "correctness", phase: "review" },
+          { id: "a2", role: "security", phase: "review" },
+          { id: "a3", role: "performance", phase: "review" },
+        ];
+        crew.forEach((c, i) => {
+          fa({ kind: "fleet_activity", event: "start", agentId: c.id, role: c.role, phase: c.phase }, 300 + i * 250);
+          fa({ kind: "fleet_activity", event: "tool", agentId: c.id, role: c.role, phase: c.phase, tool: "Grep", activity: "scanning the diff" }, 1200 + i * 350);
+          fa({ kind: "fleet_activity", event: "done", agentId: c.id, role: c.role, phase: c.phase, status: "completed" }, 3200 + i * 600);
+        });
+        fa({ kind: "fleet_activity", event: "start", agentId: "judge", role: "review-judge", phase: "review" }, 5200);
+        fa({ kind: "fleet_activity", event: "done", agentId: "judge", role: "review-judge", phase: "review", status: "completed" }, 6400);
+        const reply = "Demo fleet complete — 3 reviewers fanned out, one judge synthesized. In the installed app this is a real Conductor run.";
+        window.setTimeout(() => apply((s) => foldEvent(s, { type: "text_delta", text: reply })), 6700);
+        window.setTimeout(() => apply((s) => foldEvent(s, { type: "turn_end", status: "completed", durationMs: 7000, usage: { inputTokens: 9000, outputTokens: 600 } })), 7000);
+        return;
+      }
       const reply = "Demo mode — no daemon attached. In the installed app this streams from the Garrison.";
       reply.split(" ").forEach((word, i) => {
         window.setTimeout(() => apply((s) => foldEvent(s, { type: "text_delta", text: `${word} ` })), 300 + i * 40);
@@ -2151,12 +2250,22 @@ function App() {
     void applyLive();
   };
 
-  const cycleReasoning = () => {
-    const next = REASONING_LEVELS[(REASONING_LEVELS.indexOf(prefs.reasoning) + 1) % REASONING_LEVELS.length];
-    const p = { ...prefs, reasoning: next };
+  const currentEffort: EffortStep = prefs.ultra ? "ultra" : prefs.reasoning;
+  // One control for the whole slider. ULTRA pins the model dial to "max" and
+  // raises the fleet flag; every other step is a plain reasoning level.
+  const setEffort = (step: EffortStep) => {
+    const ultra = step === "ultra";
+    const reasoning: ReasoningLevel = ultra ? "max" : step;
+    const p = { ...prefs, reasoning, ultra };
     setPrefs(p);
     savePrefs(p);
-    if (native) void invoke("ares_set_reasoning", { level: next }).catch(() => null);
+    // The daemon only knows the four model levels — ultra rides as "max" until
+    // the orchestrator is wired to consume the fleet flag.
+    if (native) void invoke("ares_set_reasoning", { level: reasoning }).catch(() => null);
+  };
+  const cycleReasoning = () => {
+    const next = EFFORT_STEPS[(EFFORT_STEPS.indexOf(currentEffort) + 1) % EFFORT_STEPS.length];
+    setEffort(next);
   };
 
   const FLAME_MODES: Prefs["flameMode"][] = ["immersive", "clean", "combat"];
@@ -2479,6 +2588,7 @@ function App() {
       data-panel={forge.open ? "1" : "0"}
       data-working={active?.busy ? "1" : "0"}
       data-pill={pill ? "1" : "0"}
+      data-ultra={prefs.ultra ? "1" : "0"}
       style={{ ["--forge-w" as string]: `${forgeWidth}px`, ["--heat" as string]: heat.toFixed(3), ["--draft" as string]: draft.toFixed(3) }}
     >
       {pill ? (
@@ -2500,6 +2610,7 @@ function App() {
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />
       <ScreenFlame />
+      {prefs.ultra ? <HackerRain active={active?.busy ?? false} /> : null}
       {strike > 0 ? <div className="strikeFlash" key={strike} aria-hidden="true" /> : null}
       {/* Turbulence filter that makes the composer's flame rim actually lick + flicker. */}
       <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
@@ -2737,6 +2848,15 @@ function App() {
           </div>
         )}
 
+        {active?.fleet && active.fleet.agents.length > 0 && (active.fleet.active || active.fleet.canResume) ? (
+          <FleetPanel
+            fleet={active.fleet}
+            onResume={(fleetId) =>
+              send(`Resume the agent fleet "${fleetId}" — author a Conductor FleetSpec with resumeFleetId: "${fleetId}" so the completed leaves are reused from disk and only the failed/incomplete ones re-run.`)
+            }
+          />
+        ) : null}
+
         {view !== "helm" ? (
           <Composer
             busy={active?.busy ?? false}
@@ -2763,8 +2883,8 @@ function App() {
             <button className="statusSeg" onClick={() => setModelPopOpen(true)} title={prefs.routingMode === "auto" ? "auto-routing — model that handled the last turn" : "switch provider / model"}>
               <b>model</b><span>{liveModel}</span>
             </button>
-            <button className="statusSeg" onClick={() => setReasoningOpen(true)} title="reasoning effort">
-              <b>mode</b><span>{prefs.reasoning}</span>
+            <button className="statusSeg" data-ultra={prefs.ultra ? "1" : "0"} onClick={() => setReasoningOpen(true)} title="reasoning effort — slide to ULTRA to unleash the fleet">
+              <b>mode</b><span>{prefs.ultra ? "ultra" : prefs.reasoning}</span>
             </button>
             <button className="statusSeg" onClick={() => setRoutingOpen(true)} title="per-lane model routing">
               <b>route</b><span>{prefs.routingMode === "auto" ? `auto · ${routedLanes.length}` : routedLanes.length > 0 ? `ready · ${routedLanes.length}` : "off"}</span>
@@ -2998,30 +3118,7 @@ function App() {
         <div className="paletteScrim" onClick={() => setReasoningOpen(false)}>
           <div className="palette reasoningPop" onClick={(e) => e.stopPropagation()}>
             <div className="popTitle">Reasoning effort</div>
-            {(
-              [
-                ["low", "snappy — minimal deliberation"],
-                ["medium", "balanced thinking for everyday work"],
-                ["high", "deep passes for hard problems"],
-                ["max", "everything the model has"],
-              ] as Array<[ReasoningLevel, string]>
-            ).map(([level, hint]) => (
-              <button
-                key={level}
-                className="popRow"
-                data-on={prefs.reasoning === level ? "1" : "0"}
-                onClick={() => {
-                  const p = { ...prefs, reasoning: level };
-                  setPrefs(p);
-                  savePrefs(p);
-                  if (native) void invoke("ares_set_reasoning", { level }).catch(() => null);
-                  setReasoningOpen(false);
-                }}
-              >
-                <span>{level}</span>
-                <em>{hint}</em>
-              </button>
-            ))}
+            <ReasoningSlider value={currentEffort} onChange={setEffort} />
           </div>
         </div>
       ) : null}
@@ -3789,6 +3886,93 @@ function SessionRow({
   );
 }
 
+// ─── The live fleet board — Conductor agents, grouped by phase ──────────────
+function FleetPanel({ fleet, onResume }: { fleet: FleetVm; onResume: (fleetId: string) => void }) {
+  const agents = fleet.agents;
+  const total = agents.length;
+  const done = agents.filter((a) => a.status === "done").length;
+  const failed = agents.filter((a) => a.status === "failed").length;
+  const running = agents.filter((a) => a.status === "running").length;
+  const phases: string[] = [];
+  for (const a of agents) if (!phases.includes(a.phase)) phases.push(a.phase);
+  return (
+    <div className="fleetPanel" data-active={fleet.active ? "1" : "0"}>
+      <div className="fleetHead">
+        <span className="fleetTitle"><i className="fleetPulse" />FLEET</span>
+        <span className="fleetCounts">
+          {running > 0 ? <em data-k="run">{running} running</em> : null}
+          <em data-k="done">{done} done</em>
+          {failed > 0 ? <em data-k="fail">{failed} failed</em> : null}
+          <em data-k="total">/ {total}</em>
+          {fleet.canResume && fleet.fleetId ? (
+            <button className="fleetResume" onClick={() => onResume(fleet.fleetId!)} title="re-run the failed leaves; completed ones are reused from disk">
+              ↻ Resume
+            </button>
+          ) : null}
+        </span>
+      </div>
+      <div className="fleetBody">
+        {phases.map((ph) => (
+          <div key={ph} className="fleetPhase">
+            <div className="fleetPhaseName">{ph}</div>
+            <div className="fleetAgents">
+              {agents.filter((a) => a.phase === ph).map((a) => (
+                <div key={a.id} className="fleetAgent" data-status={a.status}>
+                  <i className="fleetDot" />
+                  <span className="fleetRole">{a.role}</span>
+                  <span className="fleetAct">
+                    {a.resumed ? "reused" : a.status === "running" ? (a.activity || a.tool || "working…") : a.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── The effort slider — low → max → ULTRA (with the fleet ignition) ─────────
+function ReasoningSlider({ value, onChange }: { value: EffortStep; onChange: (s: EffortStep) => void }) {
+  const idx = EFFORT_STEPS.indexOf(value);
+  const ignited = value === "ultra";
+  const pct = (idx / (EFFORT_STEPS.length - 1)) * 100;
+  return (
+    <div className={ignited ? "effortSlider ignited" : "effortSlider"} data-step={value}>
+      <div className="effortTrack">
+        <div className="effortFill" style={{ width: `${pct}%` }} />
+        <div className="effortFlame" aria-hidden="true" />
+        <div className="effortThumb" style={{ left: `${pct}%` }} />
+        <input
+          className="effortRange"
+          type="range"
+          min={0}
+          max={EFFORT_STEPS.length - 1}
+          step={1}
+          value={idx}
+          aria-label="reasoning effort"
+          onChange={(e) => onChange(EFFORT_STEPS[Number(e.target.value)])}
+        />
+      </div>
+      <div className="effortLabels">
+        {EFFORT_STEPS.map((s) => (
+          <button
+            key={s}
+            className="effortLabel"
+            data-on={s === value ? "1" : "0"}
+            data-ultra={s === "ultra" ? "1" : "0"}
+            onClick={() => onChange(s)}
+          >
+            {EFFORT_META[s].label}
+          </button>
+        ))}
+      </div>
+      <div className="effortHint">{EFFORT_META[value].hint}</div>
+    </div>
+  );
+}
+
 // ─── Dictation (speech → text) ───────────────────────────────────────────────
 // Mic → MediaRecorder (webm/opus) → Google Speech REST. Same public Chromium key
 // the rest of Ares uses for voice notes; the webview reaches the API directly
@@ -4354,6 +4538,56 @@ function ScreenFlame() {
       <div className="fStrip edge-right"><FlameStrip /></div>
     </div>
   );
+}
+
+// ─── Hacker rain — the ULTRA working effect. When the fleet is running, the
+// flame rims become Matrix-style digital rain (purple in nightfall, else green),
+// raining on the edges until the turn finishes. Center is masked out via CSS.
+function HackerRain({ active }: { active: boolean }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const canvas = ref.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const root = document.querySelector(".ares") ?? document.documentElement;
+    const theme = root.getAttribute("data-theme");
+    const color = theme === "nightfall" ? "#b9a8ff" : "#5cf08a"; // purple or matrix-green
+    const fontSize = 14;
+    const glyphs = "アァカサタナハマヤラ0123456789ABCDEF<>/\\|=+*#".split("");
+    let w = 0, h = 0, cols = 0, drops: number[] = [], raf = 0;
+    const resize = () => {
+      w = canvas.width = window.innerWidth;
+      h = canvas.height = window.innerHeight;
+      cols = Math.ceil(w / fontSize);
+      drops = Array.from({ length: cols }, () => Math.floor(Math.random() * -60));
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    const draw = () => {
+      ctx.fillStyle = "rgba(6,5,8,0.10)"; // fade trail
+      ctx.fillRect(0, 0, w, h);
+      ctx.font = `${fontSize}px "Cascadia Code", monospace`;
+      for (let i = 0; i < cols; i++) {
+        const ch = glyphs[(Math.random() * glyphs.length) | 0];
+        const x = i * fontSize;
+        const y = drops[i] * fontSize;
+        // lead glyph brighter than the trail
+        ctx.fillStyle = Math.random() > 0.92 ? "#ffffff" : color;
+        ctx.fillText(ch, x, y);
+        if (y > h && Math.random() > 0.975) drops[i] = 0;
+        drops[i]++;
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+    };
+  }, [active]);
+  if (!active) return null;
+  return <canvas ref={ref} className="hackerRain" aria-hidden="true" />;
 }
 
 const ItemView = React.memo(function ItemView({

@@ -101,6 +101,12 @@ function commandOf(request: ToolPermissionRequest): string {
   return typeof input?.command === "string" ? input.command : "";
 }
 
+/** The `action` discriminator for action-style tools (Gmail/Calendar/Connect). */
+function actionOf(request: ToolPermissionRequest): string {
+  const input = request.input as { action?: unknown } | null | undefined;
+  return typeof input?.action === "string" ? input.action : "";
+}
+
 /** Classify a shell command line by what it can do to the machine. */
 export function classifyShell(rawCommand: string): ActionCategory {
   const cmd = rawCommand.replace(/\s+/g, " ").trim();
@@ -142,6 +148,17 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       return "payment_or_purchase";
     case "Email":
       return "email_send";
+    // Gmail SENDS mail (an outward effect) — only the 'send' action is gated; reads
+    // are benign. The tool itself also asks on send (checkPermissions), but the
+    // structured gate must classify it so the unattended posture DENIES it.
+    case "Gmail":
+      return actionOf(request) === "send" ? "email_send" : null;
+    // Calendar create/delete mutates a real calendar + can send invites.
+    case "GoogleCalendar":
+      return actionOf(request) === "create_event" || actionOf(request) === "delete_event" ? "browser_submit" : null;
+    // Connect storing credentials / disconnecting touches secrets + account state.
+    case "Connect":
+      return actionOf(request) === "set_credentials" || actionOf(request) === "disconnect" ? "credential_or_secret" : null;
     // Deploy publishes to a real host — external + irreversible, but a deliberate
     // capability the owner can approve. Treated like git_push (ask), not blocked.
     case "Deploy":

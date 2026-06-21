@@ -535,11 +535,20 @@ export class QueryEngine {
   /** Stop the in-flight turn (provider stream + running tools see the abort).
    *  Safe to call when idle — the next turn is unaffected. */
   interrupt(): void {
-    // Arm a pending flag too: a Stop pressed during the pre-stream preamble
-    // (recall / compaction model call) arrives before turnAbort exists — without
-    // this it would silently no-op and the turn would run to completion.
-    this.interruptPending = true;
-    this.turnAbort?.abort();
+    // A LIVE turn owns a controller — aborting it ends THIS turn, and that's all.
+    // Only when there is no live controller (a Stop pressed in the gap before the
+    // next turn arms its own, e.g. during the recall/compaction preamble) do we
+    // carry the interrupt forward. Arming the pending flag while a turn is live was
+    // the bug that let an interrupt leak into the FOLLOWING turn.
+    if (this.turnAbort) this.turnAbort.abort();
+    else this.interruptPending = true;
+  }
+
+  /** Called by the session the instant a turn's generator finishes (for any
+   *  reason). Drops the live controller so a Stop between turns correctly arms the
+   *  next turn instead of being swallowed by a stale, already-aborted controller. */
+  markTurnEnded(): void {
+    this.turnAbort = null;
   }
 
   /** The live signal for the current turn: external config signal merged with

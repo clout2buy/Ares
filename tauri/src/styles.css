@@ -1535,6 +1535,16 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
   opacity: 0; transition: opacity 420ms ease;
 }
 .ares[data-working="1"] .screenFlame { opacity: 1; }
+/* ULTRA working: the flames give way to hacker rain on the rims. */
+.ares[data-ultra="1"][data-working="1"] .screenFlame { opacity: 0; }
+.hackerRain {
+  position: fixed; inset: 0; z-index: 47; pointer-events: none;
+  /* rain only on the rims — the center is masked transparent so the transcript stays readable */
+  -webkit-mask: radial-gradient(ellipse 64% 60% at 50% 50%, transparent 52%, #000 80%);
+  mask: radial-gradient(ellipse 64% 60% at 50% 50%, transparent 52%, #000 80%);
+  opacity: 0; animation: rainIn 600ms ease forwards; mix-blend-mode: screen;
+}
+@keyframes rainIn { to { opacity: 0.62; } }
 .screenFlame .fStrip { position: absolute; }
 .screenFlame .fStrip svg { display: block; width: 100%; height: 100%; }
 /* the three layers dance at different rates → volumetric, living fire */
@@ -2031,7 +2041,118 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 @keyframes paletteIn { from { transform: translateY(-14px) scale(0.985); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* small popovers (reasoning etc.) */
-.palette.reasoningPop { width: min(420px, 86vw); padding: 6px; gap: 2px; }
+.palette.reasoningPop { width: min(460px, 88vw); padding: 6px 6px 14px; gap: 2px; }
+
+/* ── the effort slider — low → max → ULTRA ──────────────────────────────── */
+.effortSlider { padding: 8px 16px 4px; display: grid; gap: 12px; }
+.effortTrack { position: relative; height: 26px; display: flex; align-items: center; }
+.effortTrack::before {
+  content: ""; position: absolute; left: 0; right: 0; height: 6px; border-radius: 999px;
+  background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line);
+}
+.effortFill {
+  position: absolute; left: 0; height: 6px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hi));
+  transition: width 160ms cubic-bezier(0.2, 0.9, 0.3, 1), box-shadow 200ms ease;
+  min-width: 6px;
+}
+/* the fire that sweeps the track only when ULTRA is lit */
+.effortFlame {
+  position: absolute; left: 0; right: 0; height: 8px; border-radius: 999px;
+  opacity: 0; pointer-events: none; mix-blend-mode: screen;
+  background: linear-gradient(90deg, transparent, rgba(var(--ember-rgb), 0.0) 8%, var(--ember) 28%, var(--ember-hi) 46%, var(--accent-hi) 60%, var(--ember-hi) 74%, var(--ember) 88%, transparent);
+  background-size: 220% 100%;
+  transition: opacity 240ms ease;
+}
+.effortSlider.ignited .effortFlame { opacity: 1; animation: effortFlameFlow 1.05s linear infinite; }
+.effortSlider.ignited .effortFill { box-shadow: 0 0 14px rgba(var(--ember-rgb), 0.65), 0 0 28px rgba(var(--ember-rgb), 0.35); }
+@keyframes effortFlameFlow { from { background-position: 120% 50%; } to { background-position: -120% 50%; } }
+.effortThumb {
+  position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%;
+  transform: translate(-50%, -50%); pointer-events: none;
+  background: var(--accent-hi); border: 2px solid var(--bg-raised);
+  box-shadow: 0 0 0 1px var(--accent), 0 2px 8px rgba(0, 0, 0, 0.5);
+  transition: left 160ms cubic-bezier(0.2, 0.9, 0.3, 1), background 200ms ease, box-shadow 200ms ease;
+}
+.effortSlider.ignited .effortThumb {
+  background: #fff;
+  box-shadow: 0 0 12px var(--ember-hi), 0 0 26px var(--ember), 0 0 0 1px var(--ember-hi);
+  animation: effortThumbPulse 1.05s ease-in-out infinite;
+}
+@keyframes effortThumbPulse { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.18); } }
+/* the real (invisible) control sits on top for native drag + keyboard */
+.effortRange {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+  -webkit-appearance: none; appearance: none; background: transparent; cursor: grab; z-index: 2;
+}
+.effortRange:active { cursor: grabbing; }
+.effortRange::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; background: transparent; cursor: grab; }
+.effortRange:focus-visible { outline: none; }
+.effortRange:focus-visible ~ .effortThumb, .effortLabel:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+.effortLabels { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
+.effortLabel {
+  font: 650 9px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--faint); padding: 5px 2px; border-radius: var(--r-sm); text-align: center;
+  transition: color 140ms ease, background 140ms ease, text-shadow 200ms ease;
+}
+.effortLabel:first-child { text-align: left; }
+.effortLabel:last-child { text-align: right; }
+.effortLabel:hover { color: var(--muted); }
+.effortLabel[data-on="1"] { color: var(--accent-hi); }
+.effortLabel[data-ultra="1"] { color: var(--faint); letter-spacing: 0.14em; }
+.effortLabel[data-ultra="1"][data-on="1"] { color: #fff; text-shadow: 0 0 10px var(--ember), 0 0 20px var(--ember-hi); }
+.effortHint {
+  font: 400 11.5px/1.4 var(--mono); color: var(--faint); text-align: center;
+  min-height: 16px; transition: color 200ms ease;
+}
+.effortSlider.ignited .effortHint { color: var(--ember-hi); }
+/* the HUD 'mode' chip glows when the fleet posture is armed */
+.statusSeg[data-ultra="1"] span { color: var(--ember-hi); text-shadow: 0 0 8px rgba(var(--ember-rgb), 0.6); }
+
+/* ── the live fleet board — Conductor agents, grouped by phase ───────────── */
+.fleetPanel {
+  margin: 0 0 8px; border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: linear-gradient(180deg, var(--bg-raised), var(--panel));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--ember-rgb), 0.06);
+  overflow: hidden; animation: paletteIn 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.fleetHead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 13px; border-bottom: 1px solid var(--line);
+  background: rgba(var(--ember-rgb), 0.05);
+}
+.fleetTitle { display: inline-flex; align-items: center; gap: 8px; font: 700 10px/1 var(--mono); letter-spacing: 0.22em; color: var(--ember-hi); }
+.fleetPulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ember); box-shadow: 0 0 8px var(--ember-hi); animation: micPulse 1.2s ease-in-out infinite; }
+.fleetCounts { display: inline-flex; align-items: center; gap: 10px; }
+.fleetCounts em { font: 600 10px/1 var(--mono); font-style: normal; letter-spacing: 0.04em; color: var(--faint); }
+.fleetCounts em[data-k="run"] { color: var(--ember-hi); }
+.fleetCounts em[data-k="done"] { color: var(--steel); }
+.fleetCounts em[data-k="fail"] { color: var(--crimson); }
+.fleetResume {
+  margin-left: 6px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: rgba(var(--ember-rgb), 0.1);
+  color: var(--ember-hi); font: 650 10px/1 var(--mono); letter-spacing: 0.06em;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.fleetResume:hover { background: rgba(var(--ember-rgb), 0.2); border-color: var(--ember); }
+.fleetBody { display: grid; gap: 8px; padding: 10px 13px; max-height: 230px; overflow-y: auto; }
+.fleetPhase { display: grid; gap: 5px; }
+.fleetPhaseName { font: 600 9px/1 var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--faint); }
+.fleetAgents { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 5px; }
+.fleetAgent {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 6px 9px; border-radius: var(--r-sm); border: 1px solid var(--line);
+  background: var(--panel); transition: border-color 160ms ease, background 160ms ease;
+}
+.fleetAgent[data-status="running"] { border-color: rgba(var(--ember-rgb), 0.4); background: rgba(var(--ember-rgb), 0.06); }
+.fleetAgent[data-status="done"] { border-color: rgba(127, 166, 163, 0.35); }
+.fleetAgent[data-status="failed"] { border-color: rgba(194, 80, 72, 0.45); background: rgba(194, 80, 72, 0.06); }
+.fleetDot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--faint); }
+.fleetAgent[data-status="running"] .fleetDot { background: var(--ember); box-shadow: 0 0 7px var(--ember-hi); animation: micPulse 1.2s ease-in-out infinite; }
+.fleetAgent[data-status="done"] .fleetDot { background: var(--steel); }
+.fleetAgent[data-status="failed"] .fleetDot { background: var(--crimson); }
+.fleetRole { font: 600 11px/1.2 var(--mono); color: var(--text); flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleetAct { font: 400 10.5px/1.3 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .popTitle { font: 600 10px/1 var(--mono); letter-spacing: 0.22em; text-transform: uppercase; color: var(--faint); padding: 12px 12px 8px; }
 .popRow {
   display: flex; align-items: baseline; gap: 12px;

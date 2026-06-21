@@ -78,6 +78,7 @@ import {
   buildTool,
   makeTodoWriteTool,
   makeTaskTool,
+  makeConductorTool,
   makeWebFetchTool,
   makeWebSearchTool,
   makeImageSearchTool,
@@ -1359,6 +1360,21 @@ async function buildEngineTools(
   });
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const workerTools = [...baseTools, taskTool];
+  // The Conductor — author + run a deterministic agent FLEET (capped parallel
+  // fan-out, typed pipelines, schema-validated leaves, token budget). parentTools
+  // is baseTools (NOT workerTools) so fleet leaves can't get Task/Conductor and
+  // recurse; it's added to the MAIN agent list only, so subagents can't orchestrate.
+  const conductorTool = adaptToolForEngine(
+    makeConductorTool({
+      provider: selection.provider,
+      model: selection.model,
+      parentTools: baseTools,
+      baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
+      subModel: selection.subModel,
+      defaultMaxTurns: 12,
+    }),
+    enrich,
+  ) as EngineTool;
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
@@ -1372,7 +1388,7 @@ async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool];
+  return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool, conductorTool];
 }
 
 const livingMindInput = z
@@ -2209,7 +2225,10 @@ function isProviderFatalError(err: { code?: string; message?: string } | undefin
   // provider and 400s identically (the cascade the user hit). Never fail over on
   // these; the engine's context-shrink retry handles them.
   if (/too long|too many tokens|maximum context|max context|context window|context_length|input length|exceeded max context|http_400|\b400\b/.test(blob)) return false;
-  return /http_(401|403|404|5\d\d)|\b401\b|\b403\b|\b404\b|_throw|unauthorized|forbidden|not ?found|fetch failed|unreachable|enotfound|econnrefused|etimedout/.test(
+  // 402 (out of balance) and no_auth/insufficient-balance are the TWO most common
+  // unattended deaths — a balance runs dry or a key signs out mid-mission. They were
+  // missing here, so failover never fired and a scheduled/autonomous run just died.
+  return /http_(401|402|403|404|5\d\d)|\b401\b|\b402\b|\b403\b|\b404\b|_throw|no_auth|unauthorized|forbidden|insufficient.?balance|out.?of.?balance|not ?found|fetch failed|unreachable|enotfound|econnrefused|etimedout/.test(
     blob,
   );
 }

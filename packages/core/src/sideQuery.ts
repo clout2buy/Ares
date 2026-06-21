@@ -80,11 +80,20 @@ export async function sideQueryJson<T = unknown>(opts: SideQueryJsonOptions): Pr
 
 // ─── JSON extraction ────────────────────────────────────────────────────
 
-function extractFirstJson(raw: string): { ok: true; value: unknown } | { ok: false } {
+export function extractFirstJson(raw: string): { ok: true; value: unknown } | { ok: false } {
   const text = unfence(raw);
-  const start = firstBracket(text);
-  if (start === -1) return { ok: false };
+  // Try each bracket position in turn: prose can contain an inline brace BEFORE
+  // the real JSON (e.g. "result {as requested}: {\"answer\":1}"), so a failed
+  // parse at the first bracket must not abandon the scan (finding #6).
+  for (let start = nextBracket(text, 0); start !== -1; start = nextBracket(text, start + 1)) {
+    const parsed = tryBalancedFrom(text, start);
+    if (parsed.ok) return parsed;
+  }
+  return { ok: false };
+}
 
+/** Parse a single balanced {...}/[...] starting exactly at `start`. */
+function tryBalancedFrom(text: string, start: number): { ok: true; value: unknown } | { ok: false } {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -119,8 +128,9 @@ function unfence(raw: string): string {
   return fence ? fence[1] : raw;
 }
 
-function firstBracket(text: string): number {
-  for (let i = 0; i < text.length; i++) {
+/** First '{' or '[' at or after `from`, or -1. */
+function nextBracket(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
     const ch = text[i];
     if (ch === "{" || ch === "[") return i;
   }

@@ -49,6 +49,13 @@ export const GoogleCalendarTool = buildTool<typeof inputSchema, GoogleCalendarOu
   safety: "workspace-write",
   concurrency: "parallel-safe",
   inputZod: inputSchema,
+  // Creating/deleting events mutates a real calendar (and can send invites) — an
+  // outward effect that must cross the gate. Listing stays free.
+  async checkPermissions(input) {
+    if (input.action === "create_event" || input.action === "delete_event")
+      return { kind: "ask", prompt: `${input.action === "create_event" ? "Create" : "Delete"} a Google Calendar event`, suggestion: "allow_once" };
+    return { kind: "allow" };
+  },
   activityDescription: (input) => {
     switch (input.action) {
       case "list_events": return "Checking calendar";

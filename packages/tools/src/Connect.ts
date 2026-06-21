@@ -56,6 +56,13 @@ export const ConnectTool = buildTool<typeof inputSchema, ConnectOutput>({
   safety: "workspace-write",
   concurrency: "parallel-safe",
   inputZod: inputSchema,
+  // Storing credentials or disconnecting an account touches secrets / external
+  // account state — must cross the gate. Listing/status stay free.
+  async checkPermissions(input) {
+    if (input.action === "set_credentials" || input.action === "disconnect")
+      return { kind: "ask", prompt: `${input.action === "set_credentials" ? "Store credentials for" : "Disconnect"} ${input.provider ?? "a service"}`, suggestion: "allow_once" };
+    return { kind: "allow" };
+  },
   activityDescription: (input) => {
     switch (input.action) {
       case "list": return "Checking service connections";

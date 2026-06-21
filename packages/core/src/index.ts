@@ -57,9 +57,34 @@ export {
 export {
   sideQuery,
   sideQueryJson,
+  extractFirstJson,
   type SideQueryOptions,
   type SideQueryJsonOptions,
 } from "./sideQuery.js";
+
+export {
+  runFleet,
+  resolveTemplates,
+  validateSpec,
+  MAX_AGENTS_PER_PHASE,
+  MAX_AGENTS_PER_FLEET,
+  MAX_CONCURRENCY,
+  FORBIDDEN_CHILD_TOOLS,
+  type FleetSpec,
+  type FleetPhaseSpec,
+  type FleetAgentSpec,
+  type FleetReduce,
+  type FleetResult,
+  type PhaseResult,
+  type LeafResult,
+  type ConductorDeps,
+  type LeafValidator,
+  type SchemaHinter,
+  type ValidatorResult,
+  type RunAgentFn,
+  type RunAgentArgs,
+  type RunAgentResult,
+} from "./conductor.js";
 
 export {
   SubagentRegistry,

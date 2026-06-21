@@ -65,6 +65,14 @@ export const GmailTool = buildTool<typeof inputSchema, GmailOutput>({
   safety: "workspace-write",
   concurrency: "parallel-safe",
   inputZod: inputSchema,
+  // SENDING mail is an irreversible OUTWARD effect — it must cross the gate, never
+  // auto-allow. Reads (list/search/read) stay free. Without this, 'send' rode the
+  // workspace-write auto-allow and bypassed the conscience gate entirely.
+  async checkPermissions(input) {
+    if (input.action === "send")
+      return { kind: "ask", prompt: `Send an email to ${input.to ?? "a recipient"} via Gmail`, suggestion: "allow_once" };
+    return { kind: "allow" };
+  },
   activityDescription: (input) => {
     switch (input.action) {
       case "list_messages": return "Checking inbox";

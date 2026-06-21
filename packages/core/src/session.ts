@@ -209,7 +209,7 @@ export class Session {
 
   private async *streamAndPersist(): AsyncGenerator<TurnEvent> {
     const preToolCheckpoints = new Map<string, string>();
-    {
+    try {
       for await (const event of this.engine.streamTurn()) {
         // Persistence is enqueued (not awaited) so a fast token stream never
         // waits on an NTFS append + Defender scan before reaching the consumer.
@@ -240,6 +240,11 @@ export class Session {
           yield diffEvent;
         }
       }
+    } finally {
+      // The turn's generator is done (completed, returned, or the consumer broke
+      // out) — drop the engine's live abort controller so a Stop pressed before the
+      // next turn arms its own is honored rather than swallowed (interrupt leak fix).
+      this.engine.markTurnEnded();
     }
   }
 

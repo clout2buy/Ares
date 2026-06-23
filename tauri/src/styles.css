@@ -2976,3 +2976,27 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
   .wnScrim, .wnCard, .wnItem, .wnOlderList { animation: none !important; }
   .wnItem { opacity: 1; transform: none; }
 }
+
+/* ─── Custom (OpenAI-compatible) provider block ──────────────────────────── */
+.customProv {
+  margin: 10px 0 4px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: rgba(var(--accent-rgb), 0.035);
+}
+.customProv .keyInput { width: 100%; margin: 0 0 8px; }
+.customProvRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.customProvRow .primary { margin-left: auto; }
+.customProvModel,
+.customProvModelText {
+  flex: 1 1 160px; min-width: 0;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 8px 10px; font-family: var(--mono); font-size: 12px; outline: none;
+}
+.customProvModel:focus,
+.customProvModelText:focus { border-color: var(--accent); }
+.customProvModelText { margin: 0; }
+.customProv .keyHint[data-ok="1"] { color: var(--steel); }
+.customProv .keyHint[data-ok="0"] { color: var(--crimson); }

@@ -1321,6 +1321,12 @@ function useModelCatalog(provider: string, native: boolean) {
         setModels(MOCK_MODELS);
         return;
       }
+      if (provider === "custom") {
+        // Models discovered from the owner's custom OpenAI-compatible endpoint
+        // (Settings → Keys → Custom provider). Empty until they run Discover.
+        setModels(readCustomModels().map((id) => ({ id, group: "Custom provider" })));
+        return;
+      }
       if (provider === "openai") {
         setModels(OPENAI_MODELS);
         return;
@@ -5145,7 +5151,129 @@ function Boot() {
   );
 }
 
-const PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "mock"];
+const PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "custom", "mock"];
+
+// ─── Custom (OpenAI-compatible) provider: bring-your-own URL + key + discovery ──
+// Point Ares at ANY OpenAI-compatible endpoint and pull its full model list from
+// {base}/models. Self-contained: persists base URL + discovered models in
+// localStorage (so the model picker can offer them) and ships key+url+model to the
+// daemon via the provider_key command.
+const CUSTOM_BASE_LS = "ares.custom.baseUrl";
+const CUSTOM_MODELS_LS = "ares.custom.models";
+const CUSTOM_MODEL_LS = "ares.custom.model";
+
+function readCustomModels(): string[] {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(CUSTOM_MODELS_LS) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function CustomProviderBlock({
+  onDaemonCommand,
+}: {
+  onDaemonCommand: (cmd: Record<string, unknown>) => void;
+}) {
+  const [base, setBase] = useState<string>(() => {
+    try { return window.localStorage.getItem(CUSTOM_BASE_LS) ?? ""; } catch { return ""; }
+  });
+  const [key, setKey] = useState<string>("");
+  const [models, setModels] = useState<string[]>(() => readCustomModels());
+  const [model, setModel] = useState<string>(() => {
+    try { return window.localStorage.getItem(CUSTOM_MODEL_LS) ?? ""; } catch { return ""; }
+  });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string>("");
+  const [ok, setOk] = useState<boolean | null>(null);
+
+  const discover = useCallback(async () => {
+    const root = base.trim().replace(/\/+$/, "");
+    if (!root) { setOk(false); setMsg("Enter a base URL first — e.g. https://api.together.xyz/v1"); return; }
+    setBusy(true); setOk(null); setMsg("Discovering models…");
+    try {
+      const res = await fetch(`${root}/models`, {
+        headers: key.trim() ? { Authorization: `Bearer ${key.trim()}` } : {},
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { data?: unknown[]; models?: unknown[] };
+      const list = (body.data ?? body.models ?? []) as Array<string | { id?: string }>;
+      const ids = list
+        .map((m) => (typeof m === "string" ? m : m?.id))
+        .filter((x): x is string => typeof x === "string" && x.length > 0)
+        .sort((a, b) => a.localeCompare(b));
+      if (!ids.length) throw new Error("the endpoint returned no models");
+      setModels(ids);
+      if (!model || !ids.includes(model)) setModel(ids[0]);
+      try { window.localStorage.setItem(CUSTOM_MODELS_LS, JSON.stringify(ids)); } catch { /* ignore */ }
+      setOk(true);
+      setMsg(`Found ${ids.length} model${ids.length === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setOk(false);
+      setMsg(
+        `Couldn't reach ${root}/models — ${err instanceof Error ? err.message : String(err)}. ` +
+        `Make sure it's an OpenAI-compatible endpoint; some hosts block browser requests, in which case enter a model id by hand below.`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [base, key, model]);
+
+  const save = useCallback(() => {
+    const root = base.trim().replace(/\/+$/, "");
+    const chosen = model.trim();
+    try {
+      window.localStorage.setItem(CUSTOM_BASE_LS, root);
+      window.localStorage.setItem(CUSTOM_MODEL_LS, chosen);
+    } catch { /* ignore */ }
+    onDaemonCommand({ type: "provider_key", provider: "custom", key: key.trim(), baseUrl: root, model: chosen });
+    setOk(true);
+    setMsg("Saved. Pick “custom” as your provider to use it.");
+  }, [base, key, model, onDaemonCommand]);
+
+  return (
+    <div className="customProv">
+      <div className="keyGroupLabel">Custom provider · OpenAI-compatible</div>
+      <p className="keyHint" style={{ margin: "0 0 8px" }}>
+        Point Ares at any OpenAI-compatible endpoint — Together, Groq, Fireworks, a gateway, or a local
+        vLLM&nbsp;/ LM&nbsp;Studio. Discover pulls its full model list automatically.
+      </p>
+      <input
+        className="keyInput"
+        placeholder="Base URL — e.g. https://api.together.xyz/v1"
+        value={base}
+        onChange={(e) => setBase(e.target.value)}
+      />
+      <input
+        className="keyInput"
+        type="password"
+        placeholder="API key (leave blank for keyless local endpoints)"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+      />
+      <div className="customProvRow">
+        <button className="provChip" disabled={busy || !base.trim()} onClick={() => void discover()}>
+          {busy ? "Discovering…" : "Discover models"}
+        </button>
+        {models.length ? (
+          <select className="customProvModel" value={model} onChange={(e) => setModel(e.target.value)}>
+            {models.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        ) : (
+          <input
+            className="keyInput customProvModelText"
+            placeholder="…or type a model id"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+        )}
+        <button className="primary" disabled={!base.trim() || !model.trim()} onClick={save}>Save</button>
+      </div>
+      {msg ? <p className="keyHint" data-ok={ok === null ? "" : ok ? "1" : "0"}>{msg}</p> : null}
+    </div>
+  );
+}
 /** Providers that take a pasted API key (the rest use OAuth / local daemon / nothing). */
 const KEYED_PROVIDERS: Array<{ id: string; label: string; placeholder: string }> = [
   { id: "anthropic", label: "Anthropic API key", placeholder: "sk-ant-… (stored by the daemon)" },
@@ -5540,6 +5668,7 @@ function Settings({
                     ) : null}
                   </div>
                 ))}
+                <CustomProviderBlock onDaemonCommand={onDaemonCommand} />
                 <div className="keyGroupLabel">Tools</div>
                 <div className="keyRegRow">
                   <div className="keyRegName">

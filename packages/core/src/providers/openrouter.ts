@@ -20,6 +20,7 @@ import type {
 import { openAIReasoningEffort } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard.js";
+import { parseRetryAfterMs } from "./retryAfter.js";
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
@@ -113,6 +114,7 @@ export class OpenRouterProvider implements Provider {
           code: `http_${response.status}`,
           message: `OpenRouter returned ${response.status}: ${text.slice(0, 500)}`,
           retriable: response.status === 429 || response.status >= 500,
+          retryAfterMs: parseRetryAfterMs(response.headers),
         },
       };
       return;

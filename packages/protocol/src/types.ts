@@ -93,6 +93,10 @@ export interface StreamError {
   code: string;
   message: string;
   retriable: boolean;
+  /** When a retriable error carries a server-provided reset window (HTTP
+   *  `Retry-After`, in ms), the retry loop waits at least this long instead of
+   *  burning its exponential backoff on a window that won't have elapsed. */
+  retryAfterMs?: number;
 }
 
 export type StreamEvent =

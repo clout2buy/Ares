@@ -23,6 +23,7 @@ import type {
 import { thinkingBudgetTokens } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent } from "./stallGuard.js";
+import { parseRetryAfterMs } from "./retryAfter.js";
 
 export type SlotName = "reasoner" | "apply" | "summarize";
 
@@ -532,6 +533,7 @@ export class OllamaCloudPool {
           code: `http_${res.status}`,
           message: `Ollama Anthropic-compat returned ${res.status}: ${text.slice(0, 500)}`,
           retriable: res.status >= 500 || res.status === 429,
+          retryAfterMs: parseRetryAfterMs(res.headers),
         },
       };
       return;

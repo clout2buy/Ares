@@ -864,7 +864,7 @@ export class QueryEngine {
       const pendingToolUses: Array<{ id: string; name: string; input: unknown }> = [];
       const toolNameById = new Map<string, string>();
       let assistantMessage: Message | null = null;
-      let streamError: { code: string; message: string; retriable: boolean } | null = null;
+      let streamError: { code: string; message: string; retriable: boolean; retryAfterMs?: number } | null = null;
 
       try {
         const toolDescriptors = this.cfg.tools.map((t) => ({
@@ -996,7 +996,11 @@ export class QueryEngine {
               transientRetry < MAX_TRANSIENT_RETRIES
             ) {
               transientRetry++;
-              const waitMs = transientBackoffMs(transientRetry);
+              // Honor a server-provided reset window (Retry-After) when it's
+              // longer than our exponential backoff — burning four 12s-capped
+              // retries against a 30s 429 window just fails a turn that waiting
+              // would have completed. The provider already clamps it to 60s.
+              const waitMs = Math.max(transientBackoffMs(transientRetry), streamError.retryAfterMs ?? 0);
               yield {
                 type: "system_reminder_injected",
                 text: `provider hiccup (${streamError.code}); retrying in ${(waitMs / 1000).toFixed(1)}s — attempt ${transientRetry}/${MAX_TRANSIENT_RETRIES}`,

@@ -28,6 +28,7 @@ import type {
 import { openAIReasoningEffort } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { loadAuthToken, type AuthToken } from "./openaiAuth.js";
+import { parseRetryAfterMs } from "./retryAfter.js";
 import { buildPromptCacheKey } from "../promptCache.js";
 
 const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -108,6 +109,7 @@ export class OpenAIResponsesProvider implements Provider {
           code: `http_${response.status}`,
           message: `OpenAI Responses returned ${response.status}: ${text.slice(0, 500)}`,
           retriable: response.status === 429 || response.status >= 500,
+          retryAfterMs: parseRetryAfterMs(response.headers),
         },
       };
       return;

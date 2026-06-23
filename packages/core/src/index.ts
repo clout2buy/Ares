@@ -35,6 +35,7 @@ export {
 } from "./forkedTurn.js";
 
 export { MockEchoProvider } from "./providers/mock.js";
+export { parseRetryAfterMs } from "./providers/retryAfter.js";
 
 export {
   AnthropicProvider,

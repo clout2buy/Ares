@@ -34,6 +34,7 @@ import type {
 import { thinkingBudgetTokens } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard.js";
+import { parseRetryAfterMs } from "./retryAfter.js";
 import {
   resolveAnthropicAccessToken,
   ANTHROPIC_OAUTH_BETA,
@@ -180,6 +181,7 @@ export class AnthropicProvider implements Provider {
             response.status === 429 ||
             response.status >= 500 ||
             text.includes("overloaded_error"),
+          retryAfterMs: parseRetryAfterMs(response.headers),
         },
       };
       return;

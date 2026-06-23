@@ -8,6 +8,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["src"],
-  "exclude": ["src/App.legacy.tsx"]
+  "include": ["src"]
 }

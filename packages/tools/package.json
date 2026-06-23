@@ -3,7 +3,7 @@
   "version": "0.3.0-alpha.1",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "description": "Ares v2 tool library. One file per tool; each owns its zod schema, permission check, execution, and display.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

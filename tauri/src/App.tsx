@@ -31,6 +31,7 @@ import { getCurrentWindow, LogicalSize, PhysicalSize, PhysicalPosition } from "@
 // it: exploded view, assembly steps, wiring overlay, BOM with STL export.
 import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packages/cli/src/holotable";
 import { UpdateBanner } from "./UpdateBanner";
+import { WhatsNew } from "./WhatsNew";
 import "./styles.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -2606,6 +2607,7 @@ function App() {
       ) : null}
       {!bootGone ? <Boot /> : null}
       <UpdateBanner />
+      <WhatsNew />
       <Backdrop />
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />
@@ -5594,7 +5596,7 @@ function Settings({
               <h3 className="aboutName">ARES</h3>
               <p className="aboutTag">the battle-tested agent</p>
               <div className="aboutGrid">
-                <div><span>Version</span><strong>0.10.0</strong></div>
+                <div><span>Version</span><strong>v{APP_VERSION}</strong></div>
                 <div><span>Engine</span><strong>queryEngine · 80-turn default</strong></div>
                 <div><span>Providers</span><strong>ollama · openai · anthropic · deepseek · openrouter</strong></div>
                 <div><span>Daemon</span><strong>{native ? "attached" : "demo mode"}</strong></div>

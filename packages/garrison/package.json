@@ -3,7 +3,7 @@
   "version": "0.5.0-alpha.1",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "description": "The Garrison: Ares's always-on daemon — session manager over QueryEngine, heartbeat/dream scheduler, and a token-authed localhost WebSocket+HTTP gateway every client attaches through.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

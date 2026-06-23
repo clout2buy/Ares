@@ -3,7 +3,7 @@
   "version": "0.5.0-alpha.1",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "description": "Ares v5 Effects + rails: the conscience — typed effects (simulate->stage->commit), append-only ledger, budget, kill switch, idempotency, and the irreversibility gate. The single choke point for every side effect that touches the world.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

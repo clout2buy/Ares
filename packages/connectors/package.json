@@ -3,7 +3,7 @@
   "version": "0.5.0-alpha.1",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "description": "Ares v5 connectors: the reach into the world. A vendor-neutral BrowserConnector (DOM-first + screenshot), browser actions as audited Effects, and the screenshot filmstrip. Playwright is an opt-in engine adapter; a deterministic mock backs tests.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

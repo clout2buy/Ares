@@ -3,7 +3,7 @@
   "version": "0.5.0-alpha.1",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "description": "Ares v5 Operator: the durable autonomy spine — goal store, scheduler, control loop, and a dispatcher that drives ephemeral QueryEngine workers headlessly.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

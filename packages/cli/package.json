@@ -3,7 +3,7 @@
   "version": "0.9.1",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "description": "Ares v2 CLI: the `ares` binary. Ink-based TUI, slash commands, session DAG navigation.",
   "main": "dist/entry.js",
   "bin": {

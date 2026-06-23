@@ -44,6 +44,12 @@ export const CHANGELOG: ChangelogEntry[] = [
     tagline: "Ares grew up — smoother to start, harder to break, and it shows you everything it's doing.",
     highlights: [
       {
+        icon: "🔌",
+        title: "Bring any AI",
+        tag: "New",
+        blurb: "Plug in any provider's URL + key — Together, Groq, a gateway, even a model on your own machine — and Ares pulls its whole model list automatically.",
+      },
+      {
         icon: "🚀",
         title: "Lands running",
         tag: "New",

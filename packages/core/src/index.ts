@@ -261,6 +261,16 @@ export {
 } from "./startupContext.js";
 
 export {
+  crashDir,
+  writeCrashLogSync,
+  installGlobalCrashHandlers,
+  EventRing,
+  type CrashKind,
+  type CrashRecord,
+  type CrashHandlerOptions,
+} from "./crashLog.js";
+
+export {
   parsePatch,
   parsePatchText,
   PatchParseError,

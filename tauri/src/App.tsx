@@ -1467,6 +1467,64 @@ function demoSession(): SessionVm {
   return s;
 }
 
+// ─── First-run key gate ──────────────────────────────────────────────────────
+//
+// A brand-new user who launches with zero API keys used to be able to type and
+// send — then the turn would die deep in the provider with a cryptic auth error.
+// This intercepts that: once the daemon reports its key status and NOTHING is
+// usable (no provider key AND no reachable local Ollama), we put a calm welcome
+// in front of the chat that routes straight to Settings → API Keys. It's
+// dismissible (so a power user spinning up Ollama isn't trapped) and re-appears
+// next launch while still unconfigured. It auto-closes the moment a key lands.
+
+function noUsableKeys(keyStatus: Record<string, boolean>): boolean {
+  const known = Object.values(keyStatus);
+  return known.length > 0 && known.every((v) => !v);
+}
+
+function FirstRunGate({
+  active,
+  onOpenKeys,
+}: {
+  active: boolean;
+  onOpenKeys: () => void;
+}): React.ReactElement | null {
+  const [dismissed, setDismissed] = useState(false);
+  // Re-arm if keys disappear again (e.g. the user clears them mid-session).
+  useEffect(() => {
+    if (!active) setDismissed(false);
+  }, [active]);
+  if (!active || dismissed) return null;
+  return (
+    <div className="scrim center" role="dialog" aria-modal="true" aria-labelledby="frgTitle">
+      <div className="wnCard frgCard" tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+        <div className="wnGlow" aria-hidden="true" />
+        <div className="wnMark" aria-hidden="true" />
+        <header className="wnHead">
+          <div className="wnKicker">
+            <span className="wnSpark" aria-hidden="true">✦</span>
+            Welcome to Ares
+          </div>
+          <h2 id="frgTitle" className="wnTitle">One quick step to begin</h2>
+          <p className="wnTagline">
+            Ares needs at least one AI provider to think. Add a key — Anthropic, OpenAI,
+            OpenRouter, DeepSeek, or any OpenAI-compatible endpoint — or point it at a local
+            Ollama. It takes about a minute.
+          </p>
+        </header>
+        <footer className="wnFoot">
+          <button className="wnOlderToggle" onClick={() => setDismissed(true)}>
+            I'll use local Ollama
+          </button>
+          <button className="wnGo" onClick={onOpenKeys} autoFocus>
+            Add an API key
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ───────────────────────────────────────────────────────────────────
 
 type DaemonState = "starting" | "running" | "stopped" | "error";
@@ -2614,6 +2672,13 @@ function App() {
       {!bootGone ? <Boot /> : null}
       <UpdateBanner />
       <WhatsNew />
+      <FirstRunGate
+        active={native && daemon !== "starting" && noUsableKeys(keyStatus)}
+        onOpenKeys={() => {
+          setSettingsTab("keys");
+          setSettingsOpen(true);
+        }}
+      />
       <Backdrop />
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />

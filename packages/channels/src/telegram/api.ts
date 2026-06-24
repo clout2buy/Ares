@@ -150,6 +150,9 @@ export class TelegramApi {
       "getUpdates",
       { offset, timeout: timeoutS, allowed_updates: ["message", "callback_query"] },
       signal,
+      // Long-poll: the client deadline must outlast Telegram's server-side hold,
+      // or we'd abort every healthy poll. Give it the server timeout + 20s slack.
+      (timeoutS + 20) * 1000,
     );
     return Array.isArray(result) ? result : [];
   }
@@ -186,7 +189,9 @@ export class TelegramApi {
   /** Download a file by its file_path (from getFile). Returns raw bytes. */
   async downloadFile(filePath: string, signal?: AbortSignal): Promise<Buffer> {
     const url = `${this.base}/file/bot${this.token}/${filePath}`;
-    const res = await fetch(url, { signal });
+    // 60s client deadline so a stalled download (large voice note on a flaky
+    // link) can't pin the channel indefinitely.
+    const res = await fetch(url, { signal: this.deadline(signal, 60_000) });
     if (!res.ok) throw new TelegramApiError("downloadFile", res.status, `download failed: ${res.statusText}`);
     return Buffer.from(await res.arrayBuffer());
   }
@@ -224,7 +229,16 @@ export class TelegramApi {
     return raw.result as TgMessage;
   }
 
-  private async call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  /** Compose the caller's abort signal with a client-side timeout so a hung
+   *  request can never block the channel forever (only a connection-level signal
+   *  existed before). The timeout fires independently of the caller's signal, so
+   *  shutdown vs. timeout stays distinguishable. */
+  private deadline(signal: AbortSignal | undefined, ms: number): AbortSignal {
+    const timeout = AbortSignal.timeout(ms);
+    return signal ? AbortSignal.any([signal, timeout]) : timeout;
+  }
+
+  private async call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs = 45_000): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       let res: FetchResponseLike;
       try {
@@ -232,10 +246,12 @@ export class TelegramApi {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(params),
-          signal,
+          signal: this.deadline(signal, timeoutMs),
         });
       } catch (err) {
-        // Aborts surface verbatim so callers can distinguish shutdown from failure.
+        // Caller aborts surface verbatim so callers can distinguish shutdown from
+        // failure; a client-timeout (caller signal NOT aborted) becomes a normal
+        // network failure the retry/backoff path can handle.
         if (signal?.aborted) throw err;
         throw new TelegramApiError(method, 0, `network failure: ${errText(err)}`);
       }

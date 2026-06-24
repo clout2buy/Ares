@@ -44,8 +44,8 @@ test("stabilization: root CLI script launches the built entrypoint", () => {
       });
 
   assert.equal(result.status, 0, `pnpm ares help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /ares v0\.9\.1/);
-  assert.match(result.stdout, /streaming coding-agent harness/);
+  assert.match(result.stdout, /ares v0\.11\.0/);
+  assert.match(result.stdout, /autonomous AI agent/);
 });
 
 test("stabilization: direct CLI entrypoint launches", () => {
@@ -58,8 +58,8 @@ test("stabilization: direct CLI entrypoint launches", () => {
   });
 
   assert.equal(result.status, 0, `node entry.js help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /ares v0\.9\.1/);
-  assert.match(result.stdout, /streaming coding-agent harness/);
+  assert.match(result.stdout, /ares v0\.11\.0/);
+  assert.match(result.stdout, /autonomous AI agent/);
 });
 
 test("stabilization: Tauri daemon launch expectation is build-gated", async () => {

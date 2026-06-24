@@ -64,6 +64,8 @@ import {
   sideQueryJson,
   QueryEngine,
   collectTrimmedFilePaths,
+  installGlobalCrashHandlers,
+  EventRing,
 } from "@ares/core";
 import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -305,7 +307,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 function printHelp(): void {
   process.stdout.write(
     [
-      "ares v0.9.1 — streaming coding-agent harness",
+      "ares v0.11.0 — autonomous AI agent",
       "",
       "Commands:",
       "  ares launcher                                Open the provider/model launch deck.",
@@ -2166,7 +2168,10 @@ async function resolveLeash(context: CliRuntimeContext): Promise<(domain: string
     const leashLog = path.join(context.effects.effectsDir, "leash.jsonl");
     const governor = new TrustGovernor({
       nodes: () => store.all(),
-      append: (change) => appendFile(leashLog, JSON.stringify(change) + "\n").catch(() => undefined),
+      append: (change) =>
+        mkdir(path.dirname(leashLog), { recursive: true })
+          .then(() => appendFile(leashLog, JSON.stringify(change) + "\n"))
+          .catch(() => undefined),
     });
     return (domain) => governor.leashOf(domain);
   } catch {
@@ -3184,10 +3189,43 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     /\b402\b|\b401\b|\b403\b|insufficient.?balance|unauthorized|forbidden|invalid.?api.?key|no_auth/i.test(blob);
   sessions.set(live.session.meta.id, primaryEntry);
 
+  // Bounded tail of what the daemon was doing right before a crash — pulled by
+  // the crash handler so a coworker's silent death leaves a diagnosable trail.
+  const eventRing = new EventRing(40);
+
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
+    eventRing.record({ at: Date.now(), ...payload });
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
+
+  // Crash safety net. The desktop bridge is a long-lived process on a coworker's
+  // machine; until now an uncaught error or stray rejection could kill it with
+  // nothing on disk. Now every fatal lands in ~/.ares/crashes and is surfaced to
+  // the UI; a stray background rejection is logged but no longer takes the chat
+  // down with it (see crashLog.ts for the posture).
+  // handleSignals:false on purpose: the desktop manages this process's lifecycle
+  // (normal close ends stdin → the command loop exits → the `finally` below runs
+  // the FULL teardown, incl. agent-runtime flush). Catching signals here would
+  // process.exit() straight past that teardown. We only want the uncaught/
+  // rejection net + crash log.
+  const uninstallCrashHandlers = installGlobalCrashHandlers({
+    home: live.context.home,
+    process: "daemon",
+    handleSignals: false,
+    getContext: () => ({
+      activeSessions: sessions.size,
+      activeTurns,
+      provider: mainProviderFamily,
+      model: mainSelection.model,
+      deadProviders: [...deadProviders],
+    }),
+    getRecentEvents: () => eventRing.snapshot(),
+    emit: (notice) =>
+      process.stdout.write(
+        JSON.stringify({ type: "daemon_crash", kind: notice.kind, message: notice.message, logFile: notice.logFile }) + "\n",
+      ),
+  });
 
   // ─── Consciousness: the always-on local watcher ──────────────────────────
   const consciousnessWatch = new ConsciousnessWatch({
@@ -3227,9 +3265,10 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     },
     remember: (text) => {
       // Durable, dependency-free log of what the watcher chose to say — the
-      // seed of "it remembers what it's been watching".
-      void import("node:fs/promises")
-        .then(({ appendFile }) =>
+      // seed of "it remembers what it's been watching". Ensure the home exists
+      // first so a fresh machine doesn't silently drop every observation.
+      void mkdir(live.context.home, { recursive: true })
+        .then(() =>
           appendFile(path.join(live.context.home, "consciousness-observations.jsonl"), JSON.stringify({ at: Date.now(), text }) + "\n"),
         )
         .catch(() => {});
@@ -4099,6 +4138,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     }
   } finally {
     clearInterval(autotick);
+    uninstallCrashHandlers();
     commands.close();
     rl.close();
     unsubscribeLifecycle();
@@ -6940,6 +6980,17 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const settings = await loadUiSettings();
   applyEngineConfigEnv(settings.engine ?? {});
   const runtime: AresRuntimeState = { permissionMode: settings.dangerousBypass === true ? "bypass" : "workspace-write" };
+  // Crash safety for the gateway process (Telegram + any garrison clients). It
+  // keeps its own SIGINT/SIGTERM shutdown below, so we only add the uncaught/
+  // rejection net here (handleSignals:false). Fatals land in ~/.ares/crashes;
+  // a stray rejection is logged but no longer kills the channel.
+  const uninstallGarrisonCrashHandlers = installGlobalCrashHandlers({
+    home: context.home,
+    process: "garrison",
+    getContext: () => ({ provider: selection.provider.name, model: selection.model }),
+    emit: (notice) => process.stderr.write(`garrison: crash(${notice.kind}): ${notice.message} → ${notice.logFile ?? "(unwritten)"}\n`),
+    handleSignals: false,
+  });
   // V1 slice tradeoff: one shared tool harness across daemon sessions (shell
   // registry and todo state are daemon-global). Per-session isolation arrives
   // with the full V2 composition.
@@ -7135,6 +7186,7 @@ async function garrisonCommand(args: ParsedArgs): Promise<number> {
   return await new Promise<number>((resolve) => {
     const shutdown = () => {
       process.stdout.write("\ngarrison: standing down…\n");
+      uninstallGarrisonCrashHandlers();
       scheduler.stop();
       tgCheckinScheduler?.stop();
       operatorLoop?.stop();
@@ -7356,6 +7408,16 @@ async function telegramCommand(args: ParsedArgs): Promise<number> {
     return 2;
   }
 
+  // Crash safety for the long-lived Telegram channel process (keeps its own
+  // SIGINT/SIGTERM shutdown below, so handleSignals:false). Fatals → crash log;
+  // a stray rejection is logged, not fatal to the channel.
+  const uninstallTelegramCrashHandlers = installGlobalCrashHandlers({
+    home: context.home,
+    process: "telegram",
+    emit: (notice) => process.stderr.write(`telegram: crash(${notice.kind}): ${notice.message} → ${notice.logFile ?? "(unwritten)"}\n`),
+    handleSignals: false,
+  });
+
   const port = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
   const gatewayUrl = args.flags.get("url") ?? `ws://127.0.0.1:${port}`;
   let gatewayToken: string;
@@ -7420,6 +7482,7 @@ async function telegramCommand(args: ParsedArgs): Promise<number> {
     const shutdown = () => {
       process.stdout.write("\ntelegram: standing down…\n");
       clearInterval(briefingTimer);
+      uninstallTelegramCrashHandlers();
       void bridge.stop().finally(() => resolve(0));
     };
     process.once("SIGINT", shutdown);

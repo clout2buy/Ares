@@ -7,6 +7,14 @@ type Tone = "info" | "success" | "warn" | "error" | "muted";
 type Layout = "bar" | "panel" | "matrix" | "pro";
 
 export type ThemeName =
+  // God-of-war themes (match the desktop). `rage` is the default face.
+  | "rage"
+  | "bronze"
+  | "crimson"
+  | "steel"
+  | "nightfall"
+  | "verdant"
+  // Legacy terminal themes (kept for back-compat; the desktop never had them).
   | "cyberpunk"
   | "minimal"
   | "matrix"
@@ -60,7 +68,52 @@ const ANSI = {
   brightWhite: "\x1b[97m",
 };
 
+/** 24-bit truecolor foreground escape from a #hex (modern terminals). Falls back
+ *  to the raw text if parsing fails. This is how the terminal hits the EXACT
+ *  desktop god-of-war palette instead of approximating with named ANSI colors. */
+function ansiHex(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
+  if (!m) return "";
+  return `\x1b[38;2;${parseInt(m[1], 16)};${parseInt(m[2], 16)};${parseInt(m[3], 16)}m`;
+}
+
 const THEMES: Record<ThemeName, Theme> = {
+  rage: {
+    name: "rage", title: "Rage", layout: "pro",
+    primary: ansiHex("#ff6a44"), accent: ansiHex("#ff6a30"), model: ansiHex("#ffb24d"),
+    border: ansiHex("#d6402e"), muted: ansiHex("#8b756d"),
+    success: ansiHex("#6dc398"), warn: ansiHex("#ffb24d"), error: ansiHex("#ff5740"), prompt: "❯",
+  },
+  bronze: {
+    name: "bronze", title: "Bronze", layout: "pro",
+    primary: ansiHex("#e6bd72"), accent: ansiHex("#e0a93c"), model: ansiHex("#ffd877"),
+    border: ansiHex("#c79a4e"), muted: ansiHex("#8b7a5d"),
+    success: ansiHex("#6dc398"), warn: ansiHex("#ffd877"), error: ansiHex("#e36258"), prompt: "❯",
+  },
+  crimson: {
+    name: "crimson", title: "Crimson", layout: "pro",
+    primary: ansiHex("#e87a72"), accent: ansiHex("#e36258"), model: ansiHex("#ff9a8f"),
+    border: ansiHex("#c0504a"), muted: ansiHex("#9b756d"),
+    success: ansiHex("#6dc398"), warn: ansiHex("#ffb24d"), error: ansiHex("#ff5740"), prompt: "❯",
+  },
+  steel: {
+    name: "steel", title: "Steel", layout: "pro",
+    primary: ansiHex("#a6e0da"), accent: ansiHex("#5fb8b0"), model: ansiHex("#95e6dd"),
+    border: ansiHex("#6fb3ae"), muted: ansiHex("#6d8b87"),
+    success: ansiHex("#6dc398"), warn: ansiHex("#ffb24d"), error: ansiHex("#ff5740"), prompt: "❯",
+  },
+  nightfall: {
+    name: "nightfall", title: "Nightfall", layout: "pro",
+    primary: ansiHex("#b6b6f5"), accent: ansiHex("#9a8bef"), model: ansiHex("#c4b6ff"),
+    border: ansiHex("#8b8bd9"), muted: ansiHex("#6d6d8b"),
+    success: ansiHex("#6dc398"), warn: ansiHex("#ffb24d"), error: ansiHex("#ff5740"), prompt: "❯",
+  },
+  verdant: {
+    name: "verdant", title: "Verdant", layout: "pro",
+    primary: ansiHex("#9fe7bd"), accent: ansiHex("#59c08c"), model: ansiHex("#93eab8"),
+    border: ansiHex("#6dc398"), muted: ansiHex("#6d8b7a"),
+    success: ansiHex("#6dc398"), warn: ansiHex("#ffd877"), error: ansiHex("#ff5740"), prompt: "❯",
+  },
   cyberpunk: {
     name: "cyberpunk",
     title: "Cyberpunk",
@@ -295,6 +348,18 @@ function normalizeThemeName(name: string | undefined): ThemeName | null {
   const raw = (name ?? "").trim().toLowerCase();
   if (!raw) return null;
   const aliases: Record<string, ThemeName> = {
+    // god-of-war aliases
+    war: "rage",
+    kratos: "rage",
+    fire: "rage",
+    gold: "bronze",
+    bronze2: "bronze",
+    blood: "crimson",
+    teal: "steel",
+    steelblue: "steel",
+    purple2: "nightfall",
+    night2: "nightfall",
+    green2: "verdant",
     cyber: "cyberpunk",
     pink: "cyberpunk",
     minimalist: "minimal",
@@ -336,7 +401,7 @@ function normalizeThemeName(name: string | undefined): ThemeName | null {
 }
 
 function theme(): Theme {
-  const selected = activeThemeName ?? normalizeThemeName(process.env.ARES_THEME) ?? "graphite";
+  const selected = activeThemeName ?? normalizeThemeName(process.env.ARES_THEME) ?? "rage";
   return THEMES[selected];
 }
 

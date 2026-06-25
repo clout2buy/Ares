@@ -52,6 +52,12 @@ interface LauncherTheme {
 const h = React.createElement;
 
 const LAUNCHER_THEMES: Record<ThemeName, LauncherTheme> = {
+  rage: { frame: "#d6402e", accent: "#ff6a44", accent2: "#ffb24d", accent3: "#ff6a30", text: "#ece3d9", dim: "#8b756d", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
+  bronze: { frame: "#c79a4e", accent: "#e6bd72", accent2: "#ffd877", accent3: "#e0a93c", text: "#ece0cf", dim: "#8b7a5d", success: "#6dc398", warn: "#ffd877", error: "#e36258" },
+  crimson: { frame: "#c0504a", accent: "#e87a72", accent2: "#ff9a8f", accent3: "#e36258", text: "#ece0dd", dim: "#9b756d", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
+  steel: { frame: "#6fb3ae", accent: "#a6e0da", accent2: "#95e6dd", accent3: "#5fb8b0", text: "#dceae9", dim: "#6d8b87", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
+  nightfall: { frame: "#8b8bd9", accent: "#b6b6f5", accent2: "#c4b6ff", accent3: "#9a8bef", text: "#e3e3f0", dim: "#6d6d8b", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
+  verdant: { frame: "#6dc398", accent: "#9fe7bd", accent2: "#93eab8", accent3: "#59c08c", text: "#dceae3", dim: "#6d8b7a", success: "#6dc398", warn: "#ffd877", error: "#ff5740" },
   cyberpunk: { frame: "magenta", accent: "magenta", accent2: "cyan", accent3: "blue", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
   minimal: { frame: "gray", accent: "cyan", accent2: "white", accent3: "blue", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
   matrix: { frame: "green", accent: "green", accent2: "green", accent3: "yellow", text: "green", dim: "gray", success: "green", warn: "yellow", error: "red" },
@@ -115,7 +121,7 @@ function AresLauncherApp({
   const [workspace, setWorkspace] = useState(options.workspace);
   const [workspaceDraft, setWorkspaceDraft] = useState(options.workspace);
   const previousPhase = useRef<LauncherPhase>("provider");
-  const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.graphite;
+  const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.rage;
   const currentProvider = PROVIDER_OPTIONS[Math.min(selectedProvider, PROVIDER_OPTIONS.length - 1)]?.id ?? "ollama";
   const providerModels = useMemo(() => providerModelList(currentProvider, options.settings), [currentProvider, options.settings]);
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama]);

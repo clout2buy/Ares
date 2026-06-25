@@ -41,9 +41,13 @@ export interface InkChatOptions {
 
 interface LogLine {
   id: number;
-  tone: "user" | "assistant" | "tool" | "error" | "notice" | "muted" | "diff-add" | "diff-del" | "diff-meta";
+  tone: "user" | "assistant" | "tool" | "error" | "notice" | "muted" | "diff-add" | "diff-del" | "diff-meta" | "verify";
   text: string;
   meta?: string;
+  /** For tool lines: the outcome appended on tool_end (▸ Name … ✓ result). */
+  result?: { ok: boolean; text: string };
+  /** A wrapped continuation of the line above — render without repeating the label. */
+  cont?: boolean;
 }
 
 interface RuntimeStats {
@@ -76,7 +80,51 @@ interface DeckTheme {
 
 const h = React.createElement;
 
+// God-of-war themes — exact desktop palette in 24-bit hex (Ink renders hex via
+// chalk). `rage` is the default face: warm-black, crimson, ember, warm-tan text.
 const DECK_THEMES: Record<ThemeName, DeckTheme> = {
+  rage: {
+    title: "RAGE", borderStyle: "round", frame: "#d6402e",
+    accent: "#ff6a44", accent2: "#ffb24d", accent3: "#ff6a30",
+    text: "#ece3d9", dim: "#8b756d", panel: "#d6402e", input: "#d6402e",
+    user: "#ece3d9", assistant: "#ece3d9", tool: "#ff6a44",
+    error: "#ff5740", success: "#6dc398", warn: "#ffb24d",
+  },
+  bronze: {
+    title: "BRONZE", borderStyle: "round", frame: "#c79a4e",
+    accent: "#e6bd72", accent2: "#ffd877", accent3: "#e0a93c",
+    text: "#ece0cf", dim: "#8b7a5d", panel: "#c79a4e", input: "#c79a4e",
+    user: "#ece0cf", assistant: "#ece0cf", tool: "#e6bd72",
+    error: "#e36258", success: "#6dc398", warn: "#ffd877",
+  },
+  crimson: {
+    title: "CRIMSON", borderStyle: "round", frame: "#c0504a",
+    accent: "#e87a72", accent2: "#ff9a8f", accent3: "#e36258",
+    text: "#ece0dd", dim: "#9b756d", panel: "#c0504a", input: "#c0504a",
+    user: "#ece0dd", assistant: "#ece0dd", tool: "#e87a72",
+    error: "#ff5740", success: "#6dc398", warn: "#ffb24d",
+  },
+  steel: {
+    title: "STEEL", borderStyle: "round", frame: "#6fb3ae",
+    accent: "#a6e0da", accent2: "#95e6dd", accent3: "#5fb8b0",
+    text: "#dceae9", dim: "#6d8b87", panel: "#6fb3ae", input: "#6fb3ae",
+    user: "#dceae9", assistant: "#dceae9", tool: "#a6e0da",
+    error: "#ff5740", success: "#6dc398", warn: "#ffb24d",
+  },
+  nightfall: {
+    title: "NIGHTFALL", borderStyle: "round", frame: "#8b8bd9",
+    accent: "#b6b6f5", accent2: "#c4b6ff", accent3: "#9a8bef",
+    text: "#e3e3f0", dim: "#6d6d8b", panel: "#8b8bd9", input: "#8b8bd9",
+    user: "#e3e3f0", assistant: "#e3e3f0", tool: "#b6b6f5",
+    error: "#ff5740", success: "#6dc398", warn: "#ffb24d",
+  },
+  verdant: {
+    title: "VERDANT", borderStyle: "round", frame: "#6dc398",
+    accent: "#9fe7bd", accent2: "#93eab8", accent3: "#59c08c",
+    text: "#dceae3", dim: "#6d8b7a", panel: "#6dc398", input: "#6dc398",
+    user: "#dceae3", assistant: "#dceae3", tool: "#9fe7bd",
+    error: "#ff5740", success: "#6dc398", warn: "#ffd877",
+  },
   cyberpunk: {
     title: "CYBERPUNK",
     borderStyle: "round",
@@ -362,6 +410,35 @@ const TOOL_RAIL = [
   "CodeMode",
 ];
 
+// ⌃P command palette — the desktop has a command surface; the terminal didn't.
+const PALETTE: { cmd: string; desc: string }[] = [
+  { cmd: "/help", desc: "show every command" },
+  { cmd: "/model", desc: "switch the live model" },
+  { cmd: "/models", desc: "list models for a provider" },
+  { cmd: "/reasoning", desc: "set reasoning low|medium|high|max" },
+  { cmd: "/routing", desc: "per-lane model routing" },
+  { cmd: "/theme", desc: "switch theme — rage, bronze, crimson, steel…" },
+  { cmd: "/themes", desc: "list installed themes" },
+  { cmd: "/plan", desc: "read-only planning mode" },
+  { cmd: "/code", desc: "exit plan, allow workspace writes" },
+  { cmd: "/danger", desc: "toggle bypass — auto-approve tools" },
+  { cmd: "/sessions", desc: "list saved sessions" },
+  { cmd: "/resume", desc: "replay a session into context" },
+  { cmd: "/checkpoints", desc: "list workspace checkpoints" },
+  { cmd: "/undo", desc: "restore the last pre-write checkpoint" },
+  { cmd: "/keys", desc: "API key status" },
+  { cmd: "/settings", desc: "model, keys, routing, runtime" },
+  { cmd: "/doctor", desc: "provider + runtime health" },
+  { cmd: "/workspace", desc: "switch the active workspace" },
+  { cmd: "/exit", desc: "close Ares" },
+];
+
+function filterPalette(query: string): { cmd: string; desc: string }[] {
+  const q = query.replace(/^\//, "").trim().toLowerCase();
+  if (!q) return PALETTE;
+  return PALETTE.filter((c) => c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q));
+}
+
 export async function runInkChat(options: InkChatOptions): Promise<number> {
   process.stdout.write("\u001b[?1049l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
   const instance = render(h(AresInkApp, { options }), {
@@ -389,6 +466,8 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const [assistantDraft, setAssistantDraft] = useState("");
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteSel, setPaletteSel] = useState(0);
   const [stats, setStats] = useState<RuntimeStats>({
     turns: 0,
     tools: 0,
@@ -464,9 +543,10 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     const chunks = text.split(/\r?\n/).filter((line) => line.length > 0);
     setLines((prev) => {
       const next = [...prev];
-      for (const chunk of chunks.length > 0 ? chunks : [text]) {
-        next.push({ id: lineId.current++, tone, text: chunk, meta });
-      }
+      const list = chunks.length > 0 ? chunks : [text];
+      list.forEach((chunk, i) => {
+        next.push({ id: lineId.current++, tone, text: chunk, meta, cont: i > 0 });
+      });
       return next.slice(-600);
     });
   }, []);
@@ -477,6 +557,24 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     assistantRef.current = "";
     setAssistantDraft("");
     append("assistant", text, "reply");
+  }, [append]);
+
+  // Paired tool flow: tool_start opens a "▸ Name desc" line; tool_end/_error
+  // stamps the ✓/✗ result onto that same line (the mockup's `▸ Read … ✓ 1.2k`).
+  const toolLineRef = useRef<number | null>(null);
+  const appendToolLine = useCallback((name: string, desc: string) => {
+    const id = lineId.current++;
+    setLines((prev) => [...prev, { id, tone: "tool" as const, text: desc, meta: name }].slice(-600));
+    toolLineRef.current = id;
+  }, []);
+  const finishToolLine = useCallback((ok: boolean, text: string) => {
+    const id = toolLineRef.current;
+    toolLineRef.current = null;
+    if (id == null) {
+      append(ok ? "tool" : "error", text, ok ? "ok" : "tool");
+      return;
+    }
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, result: { ok, text } } : l)));
   }, [append]);
 
   const handleEvent = useCallback(
@@ -490,13 +588,13 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       if (event.type === "tool_start") {
         flushAssistant();
         setActiveTool(event.name);
-        append("tool", event.activityDescription, event.name);
+        appendToolLine(event.name, event.activityDescription);
         return;
       }
       if (event.type === "tool_end") {
         setActiveTool(null);
         setStats((prev) => ({ ...prev, tools: prev.tools + 1 }));
-        append("tool", event.display ?? `completed in ${event.durationMs}ms`, "ok");
+        finishToolLine(true, event.display ?? `${event.durationMs}ms`);
         return;
       }
       if (event.type === "tool_progress") {
@@ -511,7 +609,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       if (event.type === "tool_error") {
         setActiveTool(null);
         setStats((prev) => ({ ...prev, errors: prev.errors + 1 }));
-        append("error", event.error, "tool");
+        finishToolLine(false, event.error);
         return;
       }
       if (event.type === "todo_updated") {
@@ -524,7 +622,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         return;
       }
       if (event.type === "system_reminder_injected") {
-        append("error", event.text, event.source);
+        append(event.source === "verifier" ? "verify" : "notice", event.text, event.source);
         return;
       }
       if (event.type === "error") {
@@ -548,7 +646,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         }));
       }
     },
-    [append, flushAssistant],
+    [append, flushAssistant, appendToolLine, finishToolLine],
   );
 
   const submit = useCallback(
@@ -599,6 +697,46 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     if (value.includes("\u001b[<")) return;
     if (key.ctrl && value === "c") {
       app.exit(130);
+      return;
+    }
+    // ⌃P command palette — fuzzy command picker (the desktop has one; now so does this).
+    if (paletteOpen) {
+      if (key.escape || (key.ctrl && value === "p")) {
+        setPaletteOpen(false);
+        setInput("");
+        return;
+      }
+      const filtered = filterPalette(input);
+      if (key.upArrow) {
+        setPaletteSel((s) => Math.max(0, s - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setPaletteSel((s) => Math.min(Math.max(0, filtered.length - 1), s + 1));
+        return;
+      }
+      if (key.return) {
+        const pick = filtered[Math.min(paletteSel, Math.max(0, filtered.length - 1))];
+        setPaletteOpen(false);
+        setInput("");
+        if (pick) void submit(pick.cmd);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setInput((prev) => prev.slice(0, -1));
+        setPaletteSel(0);
+        return;
+      }
+      if (value && !key.ctrl && !key.meta) {
+        setInput((prev) => prev + value.replace(/\r?\n/g, ""));
+        setPaletteSel(0);
+      }
+      return;
+    }
+    if (key.ctrl && value === "p") {
+      setPaletteOpen(true);
+      setPaletteSel(0);
+      setInput("");
       return;
     }
     if (key.ctrl && value === "l") {
@@ -714,6 +852,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     ),
     !layout.showStatus && todos.length > 0 ? h(TodosStrip, { theme, todos }) : null,
     pulses.length > 0 ? h(EvolutionPulses, { theme, pulses, width: layout.screenWidth }) : null,
+    paletteOpen ? h(CommandPalette, { theme, query: input, selected: paletteSel, width: layout.screenWidth }) : null,
     h(InputDeck, { theme, snapshot, busy, input, width: layout.screenWidth }),
     h(Footer, { theme, snapshot, stats, width: layout.screenWidth }),
   );
@@ -737,8 +876,9 @@ function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; 
       h(
         Box,
         { gap: 1 },
+        h(Text, { color: theme.accent3, bold: true }, "▲"),
         h(Text, { bold: true, color: theme.accent }, "ARES"),
-        h(Text, { color: theme.dim }, "coding harness"),
+        h(Text, { color: theme.dim }, "autonomous AI agent"),
         h(Text, { color: theme.accent2 }, theme.title),
       ),
       h(Text, { color: modeColor, bold: snapshot.mode === "bypass" }, snapshot.mode),
@@ -826,9 +966,9 @@ function EmptyState({ theme }: { theme: DeckTheme }) {
   return h(
     Box,
     { flexDirection: "column", marginTop: 1 },
-    h(Text, { color: theme.dim }, "> Harness initialized."),
-    h(Text, { color: theme.dim }, "> Agent ready."),
-    h(Text, { color: theme.dim }, "> Awaiting instruction..."),
+    h(Text, { color: theme.accent3, bold: true }, "▲ Ares stands ready."),
+    h(Text, { color: theme.dim }, "Speak, and it moves — files, shell, web, the whole arsenal."),
+    h(Text, { color: theme.dim }, "⌃P command palette · /help for the full loadout."),
   );
 }
 
@@ -886,8 +1026,8 @@ function InputDeck({
   input: string;
   width: number;
 }) {
-  const prompt = `${snapshot.mode === "plan" ? "[PLAN] " : ""}${busy ? "running" : "ares"} > `;
-  const inputText = input.length > 0 ? input : "Enter your instruction...";
+  const prompt = `${snapshot.mode === "plan" ? "[plan] " : ""}❯ `;
+  const inputText = input.length > 0 ? input : "message ares, or / for a command";
   return h(
     Box,
     {
@@ -902,15 +1042,51 @@ function InputDeck({
     h(
       Box,
       { justifyContent: "space-between" },
-      h(Text, { color: busy ? theme.warn : theme.accent, bold: true }, busy ? "RUNNING" : "COMMAND"),
-      h(Text, { color: theme.dim }, "enter send | pgup/pgdn scroll | ! bypass | ctrl+l clear"),
+      h(Text, { color: busy ? theme.warn : theme.accent, bold: true }, busy ? "▲ FORGING" : "▲ READY"),
+      h(Text, { color: theme.dim }, "enter send · ⌃P palette · pgup/pgdn scroll · ! bypass · ⌃L clear"),
     ),
     h(
       Box,
       null,
-      h(Text, { color: busy ? theme.warn : theme.accent2 }, prompt),
-      h(Text, { color: input.length > 0 ? theme.text : theme.dim, wrap: "truncate" }, inputText),
+      h(Text, { color: busy ? theme.warn : theme.accent3, bold: true }, prompt),
+      h(Text, { color: input.length > 0 ? theme.text : theme.dim, wrap: "truncate" }, `${inputText}${busy ? "" : "▏"}`),
     ),
+  );
+}
+
+function CommandPalette({ theme, query, selected, width }: { theme: DeckTheme; query: string; selected: number; width: number }) {
+  const filtered = filterPalette(query);
+  const sel = filtered.length ? Math.min(selected, filtered.length - 1) : 0;
+  const MAX = 8;
+  const start = filtered.length > MAX ? Math.min(Math.max(0, sel - Math.floor(MAX / 2)), filtered.length - MAX) : 0;
+  const shown = filtered.slice(start, start + MAX);
+  return h(
+    Box,
+    {
+      flexDirection: "column",
+      width,
+      borderStyle: theme.borderStyle,
+      borderColor: theme.accent,
+      paddingX: 1,
+      marginTop: 1,
+    },
+    h(
+      Box,
+      { justifyContent: "space-between" },
+      h(Text, { color: theme.accent, bold: true }, "▲ COMMAND PALETTE"),
+      h(Text, { color: theme.dim }, `${filtered.length} · ↑↓ select · enter run · esc close`),
+    ),
+    filtered.length === 0
+      ? h(Text, { color: theme.dim }, "  no matching command")
+      : shown.map((cmd, i) => {
+          const active = start + i === sel;
+          return h(
+            Box,
+            { key: cmd.cmd, justifyContent: "space-between" },
+            h(Text, { color: active ? theme.accent2 : theme.tool, bold: active }, `${active ? "▸ " : "  "}${cmd.cmd}`),
+            h(Text, { color: theme.dim, wrap: "truncate" }, cmd.desc),
+          );
+        }),
   );
 }
 
@@ -935,12 +1111,18 @@ function Footer({ theme, snapshot, stats, width }: { theme: DeckTheme; snapshot:
         h(Text, { color: theme.dim }, "·"),
         h(Text, { color: theme.success }, `${cache} cached`),
       ),
-      h(Text, { color: theme.dim }, `${compactModel(snapshot.provider, 18)} · ckpt ${stats.checkpoints}`),
+      h(
+        Box,
+        { gap: 1 },
+        h(Text, { color: theme.accent }, `◈ ${theme.title.toLowerCase()}`),
+        h(Text, { color: theme.dim }, "·"),
+        h(Text, { color: theme.dim }, `${compactModel(snapshot.provider, 16)} · ckpt ${stats.checkpoints}`),
+      ),
     ),
     h(
       Text,
       { color: theme.dim, wrap: "truncate" },
-      "/help  /undo  /themes  /plan  /code  /danger  /doctor  /exit",
+      "⌃P palette  ·  /help  /model  /theme  /plan  /code  /danger  /sessions  /doctor  /exit",
     ),
   );
 }
@@ -973,28 +1155,49 @@ function ProgressMetric({ theme, label, value }: { theme: DeckTheme; label: stri
 }
 
 function LogText({ line, theme }: { line: LogLine; theme: DeckTheme }) {
-  const color = toneColor(line.tone, theme);
-  const badge = toneBadge(line.tone);
-  const meta = line.meta ? ` ${line.meta}` : "";
+  // Tool flow: ▸ Name  desc ……………… ✓ result   (the result is stamped on tool_end)
   if (line.tone === "tool") {
-    const ok = line.meta === "ok";
+    const name = line.meta ?? "tool";
+    const r = line.result;
     return h(
       Box,
-      {
-        flexDirection: "row",
-      },
-      h(Text, { color: ok ? theme.success : theme.tool, bold: true }, `${badge} `),
-      h(Text, { color: theme.dim, wrap: "truncate" }, ` ${meta.trim() || "run"} `.padEnd(11).slice(0, 11)),
-      h(Text, { color: theme.text, wrap: "truncate" }, line.text),
+      { justifyContent: "space-between" },
+      h(
+        Box,
+        { flexShrink: 1 },
+        h(Text, { color: theme.accent3, bold: true }, line.cont ? "  " : "▸ "),
+        line.cont ? null : h(Text, { color: theme.accent, bold: true }, `${name} `),
+        h(Text, { color: theme.dim, wrap: "truncate" }, line.text),
+      ),
+      r
+        ? h(Text, { color: r.ok ? theme.success : theme.error }, ` ${r.ok ? "✓" : "✗"} ${truncateTail(r.text, 28)}`)
+        : h(Text, { color: theme.dim }, " …"),
     );
   }
-  return h(
-    Box,
-    { flexDirection: "row" },
-    h(Text, { color, bold: line.tone !== "assistant" }, badge.padEnd(5)),
-    h(Text, { color: theme.dim, wrap: "truncate" }, meta.padEnd(10).slice(0, 10)),
-    h(Text, { color, wrap: "truncate" }, line.text),
-  );
+  // Verifier objections — amber "fix this", never dressed up as success.
+  if (line.tone === "verify") {
+    return h(Text, { color: theme.warn, wrap: "truncate" }, `${line.cont ? "  " : "⚠ "}${line.text}`);
+  }
+  // Conversation lines get a one-word label on the first row, blank on wraps.
+  if (line.tone === "user" || line.tone === "assistant") {
+    const isUser = line.tone === "user";
+    const label = line.cont ? "" : isUser ? "you" : "ares";
+    return h(
+      Box,
+      null,
+      h(Text, { color: isUser ? theme.dim : theme.accent, bold: !isUser }, label.padEnd(5)),
+      h(Text, { color: isUser ? theme.user : theme.assistant, wrap: "truncate" }, line.text),
+    );
+  }
+  // notice / error / muted / diff
+  const color = toneColor(line.tone, theme);
+  const prefix = line.cont ? "  " : line.tone === "error" ? "✗ " : line.tone === "notice" ? "· " : "  ";
+  return h(Text, { color, wrap: "truncate" }, `${prefix}${line.text}`);
+}
+
+function truncateTail(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length <= max ? clean : clean.slice(0, max - 1) + "…";
 }
 
 function TodosStrip({ theme, todos }: { theme: DeckTheme; todos: Todo[] }) {
@@ -1017,7 +1220,7 @@ function TodoLine({ todo, theme }: { todo: Todo; theme: DeckTheme }) {
 }
 
 function deckTheme(): DeckTheme {
-  return DECK_THEMES[currentThemeName()] ?? DECK_THEMES.graphite;
+  return DECK_THEMES[currentThemeName()] ?? DECK_THEMES.rage;
 }
 
 function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
@@ -1027,20 +1230,10 @@ function toneColor(tone: LogLine["tone"], theme: DeckTheme): string {
   if (tone === "user") return theme.user;
   if (tone === "assistant") return theme.assistant;
   if (tone === "tool") return theme.tool;
+  if (tone === "verify") return theme.warn;
   if (tone === "error") return theme.error;
   if (tone === "notice") return theme.accent2;
   return theme.dim;
-}
-
-function toneBadge(tone: LogLine["tone"]): string {
-  if (tone === "diff-meta") return "DIFF";
-  if (tone === "diff-add" || tone === "diff-del") return "    ";
-  if (tone === "user") return "YOU";
-  if (tone === "assistant") return "ARES";
-  if (tone === "tool") return "TOOL";
-  if (tone === "error") return "ERR";
-  if (tone === "notice") return "INFO";
-  return "SYS";
 }
 
 function appendDiff(diff: string, append: (tone: LogLine["tone"], text: string, meta?: string) => void): void {

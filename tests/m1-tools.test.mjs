@@ -120,7 +120,17 @@ test("Read: outside workspace can be allowed once by prompt", async () => {
   const r = await ReadTool.call({ file_path: outside }, c);
   assert.match(r.output.content, /outside read allowed once/);
   assert.equal(asked, 1);
-  assert.deepEqual(store.grants, [{ path: outside, access: "read", scope: "once" }]);
+  // Approving an out-of-workspace file now covers its DIRECTORY (read/write),
+  // not just the one file — so "work on this project" means the project, and
+  // subagents/fleet leaves (which share this store but cannot prompt) can read
+  // siblings instead of dying on the second file.
+  assert.deepEqual(store.grants, [{ path: outsideDir, access: "read", scope: "once" }]);
+  // Prove it: a sibling in the approved dir reads WITHOUT a second prompt.
+  const sibling = path.join(outsideDir, "sibling.txt");
+  await fs.writeFile(sibling, "sibling content", "utf8");
+  const r2 = await ReadTool.call({ file_path: sibling }, c);
+  assert.match(r2.output.content, /sibling content/);
+  assert.equal(asked, 1, "sibling covered by the dir grant — no re-prompt");
 });
 
 test("Read: outside workspace can be allowed always by prompt", async () => {

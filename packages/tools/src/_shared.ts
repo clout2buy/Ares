@@ -410,7 +410,16 @@ export async function resolveWorkspacePath(
     if (decision === "deny") {
       throw permissionDenied(`${label} denied outside workspace: ${candidate}`);
     }
-    const grantPath = decision === "allow_always" ? await grantRootFor(candidate, access) : candidate;
+    // Grant the containing DIRECTORY (for read/write), not just the one file,
+    // even for allow_once. Rationale: when the owner points Ares at an
+    // out-of-workspace project and approves it, they mean "work on this project"
+    // — not "this single file." File-level once-grants are why fleets/subagents
+    // died instantly on the SECOND file: leaves share this store but have no
+    // prompt (deny-stub), so a sibling read they never individually approved was
+    // hard-denied. Dir-scope makes an approved project usable by the whole
+    // session incl. leaves. once vs always now differs only in persistence, not
+    // breadth; execute stays file-level (grantRootFor returns the file for exec).
+    const grantPath = await grantRootFor(candidate, access);
     const grantAccess = decision === "allow_always" && access === "execute" ? "all" : access;
     await ctx.pathPermissions?.grant(grantPath, grantAccess, decision === "allow_always" ? "always" : "once");
     if (!ctx.pathPermissions?.isAllowed(candidate, access)) {

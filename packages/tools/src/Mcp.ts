@@ -144,7 +144,7 @@ class StdioMcpClient {
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "ares", version: "0.11.0" },
+      clientInfo: { name: "ares", version: "0.11.1" },
     });
     this.notify("notifications/initialized", {});
   }

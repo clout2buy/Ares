@@ -973,6 +973,16 @@ async function runPipelinePhase(
     leaves.push(leaf);
     journalTasks.push(journalLeaf(deps.workspace, leaf));
 
+    // BARRIER (status): a stage whose leaf did not COMPLETE (the subagent errored,
+    // was denied, ran out of budget, or died) produced error text, not a result.
+    // Seeding {{prev}} downstream from a dead stage marches a broken pipeline
+    // forward and lets the fleet report success over corpses. Fail closed.
+    if (leaf.status !== "completed") {
+      status = "failed";
+      failureReason = `stage '${agent.role}' ${leaf.status}: downstream stages cannot build on a stage that did not complete.`;
+      break;
+    }
+
     // BARRIER (finding #5 + #6): a stage that declared a schema and failed it
     // produced raw, unvalidated prose — seeding it into {{prev.field}} downstream
     // silently corrupts the rest of the pipeline. Fail closed instead of marching

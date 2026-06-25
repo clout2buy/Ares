@@ -831,6 +831,11 @@ export class QueryEngine {
     let lastProgressIter = -1;
     let lastConvergenceIter = -Infinity;
     let endGateFired = 0;
+    // Signature of the last end-gate objection, so we can tell "the model made
+    // progress on the failures" (new objection → keep pushing) from "the model
+    // is stuck re-claiming done against the SAME red checks" (stop, but honestly).
+    let lastGateSig = "";
+    const END_GATE_HARDCAP = 6;
     // Repeated-failure circuit-breaker: tracks consecutive identical tool
     // failures (tool name + error signature). When the model bangs the same
     // dead approach, we inject a "change strategy" reminder instead of letting
@@ -1088,8 +1093,14 @@ export class QueryEngine {
           continue;
         }
         // C1 end-of-turn gate: before accepting "done", give verification a
-        // chance to object. Reminders → inject + loop; quiet → finish.
-        if (this.cfg.confirmTurnEnd && endGateFired < 2 && !this.liveSignal().aborted) {
+        // chance to object. The old logic fired at most twice then SILENTLY
+        // accepted "done" even if checks were still red — which let the agent
+        // declare victory over a failing build/test. New logic: keep pushing the
+        // model as long as the objection is NEW (it's making progress), up to a
+        // hard cap; but when it's stuck re-claiming done against the SAME red
+        // checks (or hits the cap), end the turn HONESTLY — surface the failures
+        // as UNRESOLVED rather than pretending success.
+        if (this.cfg.confirmTurnEnd && !this.liveSignal().aborted) {
           let gateReminders: Array<{ text: string; source: "verifier" | "hook" }> = [];
           try {
             gateReminders = await this.cfg.confirmTurnEnd();
@@ -1097,17 +1108,32 @@ export class QueryEngine {
             gateReminders = [];
           }
           if (gateReminders.length > 0) {
-            endGateFired++;
-            this.messages.push({
-              id: cryptoId(),
-              role: "user",
-              content: gateReminders.map((r) => ({ type: "system_reminder" as const, text: r.text })),
-              createdAt: new Date().toISOString(),
-            });
-            for (const r of gateReminders) {
-              yield { type: "system_reminder_injected", text: r.text, source: r.source };
+            const sig = gateReminders.map((r) => r.text).join("");
+            const stuck = sig === lastGateSig; // same objection as last time → no progress
+            if (!stuck && endGateFired < END_GATE_HARDCAP) {
+              lastGateSig = sig;
+              endGateFired++;
+              this.messages.push({
+                id: cryptoId(),
+                role: "user",
+                content: gateReminders.map((r) => ({ type: "system_reminder" as const, text: r.text })),
+                createdAt: new Date().toISOString(),
+              });
+              for (const r of gateReminders) {
+                yield { type: "system_reminder_injected", text: r.text, source: r.source };
+              }
+              continue;
             }
-            continue;
+            // Stuck or capped: do NOT loop forever, but do NOT bless it as done.
+            // Surface every unresolved failure so the turn ends with the red
+            // checks visible, not a clean "completed" over a broken result.
+            for (const r of gateReminders) {
+              yield {
+                type: "system_reminder_injected",
+                text: `UNRESOLVED at turn end (verification still failing): ${r.text}`,
+                source: r.source,
+              };
+            }
           }
         }
         yield {

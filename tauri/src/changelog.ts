@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.11.1",
+    date: "June 2026",
+    title: "Updates that don't jam",
+    tagline: "A hotfix for the broken updater, plus an agent that's straight with you about what it actually did.",
+    highlights: [
+      {
+        icon: "🔧",
+        title: "Updates apply cleanly",
+        tag: "Safer",
+        blurb: "The in-app update could fail with “node in use” and leave Ares stuck or unable to restart. It now shuts the engine down first and frees the files, so updates land and the app comes back — no ghost process.",
+      },
+      {
+        icon: "🧠",
+        title: "Straight about what's done",
+        tag: "Safer",
+        blurb: "Ares now checks against what you actually asked for — not a convenient stand-in — and reports failures plainly instead of declaring a fix that didn't land.",
+      },
+      {
+        icon: "🤝",
+        title: "Fleets that don't lie",
+        tag: "Polished",
+        blurb: "Multi-agent runs surface failures instead of reporting success when agents died, and can work on a project outside the main folder once you approve it.",
+      },
+    ],
+  },
+  {
     version: "0.11.0",
     date: "June 2026",
     title: "Built to be handed to someone else",

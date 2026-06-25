@@ -9,7 +9,7 @@
 // the whole component no-ops and renders nothing.
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { isTauri, invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
@@ -58,6 +58,18 @@ export function UpdateBanner(): React.ReactElement | null {
     setError("");
     setPhase("downloading");
     try {
+      // CRITICAL: stop the daemon + Garrison/Telegram bridge (tree-kill) BEFORE
+      // the NSIS installer runs. The installer overwrites Ares.exe and the
+      // bundled node.exe; if the daemon node child is still alive it locks those
+      // files → "node in use" retry/ignore/abort, and the ghost then blocks the
+      // new daemon from restarting. (Belt-and-suspenders: the v0.11.1 installer
+      // also force-kills these in its NSIS PREINSTALL hook, which is what rescues
+      // already-broken older clients on their next update.)
+      try {
+        await invoke("ares_stop_daemon");
+      } catch (e) {
+        console.warn("pre-update daemon stop failed (installer hook will still cover it):", e);
+      }
       let total = 0;
       let received = 0;
       await update.downloadAndInstall((event) => {

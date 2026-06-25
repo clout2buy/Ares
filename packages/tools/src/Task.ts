@@ -115,6 +115,15 @@ export function makeTaskTool(runner: SubagentRunner) {
         signal: ctx.signal,
         onProgress: ctx.emitProgress,
       });
+      // A subagent that did NOT complete is a FAILURE, not a result. Surface it
+      // as a tool error (is_error) so the parent can't read a dead subagent as
+      // success — the exact bug where a fleet died 8/8 yet reported "done".
+      if (result.status !== "completed") {
+        throw new Error(
+          `subagent ${result.type} ${result.status}: ${result.summary || "no summary"}` +
+            (result.transcriptPath ? ` (transcript: ${result.transcriptPath})` : ""),
+        );
+      }
       return {
         output: {
           agentId: result.id,

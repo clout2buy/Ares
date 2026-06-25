@@ -178,6 +178,66 @@ test("C1 gate cap: a permanently-red gate cannot trap the turn forever", async (
   await rm(dir, { recursive: true, force: true });
 });
 
+test("C1 gate honesty: a stuck red gate ends the turn but SURFACES the failure (no silent success)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
+  let gateCalls = 0;
+  const provider = scriptedProvider([{ text: "done (1)" }, { text: "done (2)" }, { text: "done (3)" }]);
+  const engine = new QueryEngine(
+    {
+      provider,
+      model: "scripted",
+      systemPrompt: "s",
+      tools: [],
+      workspace: dir,
+      // Permanently red, same objection every time — the agent is NOT resolving it.
+      confirmTurnEnd: async () => {
+        gateCalls++;
+        return [{ text: "typecheck is still red on a.ts", source: "verifier" }];
+      },
+    },
+    "sess_c1_honest",
+  );
+  engine.appendUserMessage("do the thing");
+  const events = await drain(engine);
+
+  // The OLD bug: after 2 fires it silently yielded status "completed" with the
+  // red check unmentioned. New contract: it still ends (no infinite loop) but the
+  // unresolved failure is surfaced, so the turn cannot pass off red as done.
+  const unresolved = events.filter(
+    (e) => e.type === "system_reminder_injected" && /UNRESOLVED at turn end/.test(e.text),
+  );
+  assert.ok(unresolved.length >= 1, "the still-red failure is surfaced as UNRESOLVED, not silently completed");
+  assert.equal(events.find((e) => e.type === "turn_end").status, "completed");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("C1 gate progress: NEW objections each round keep the model working past the old 2-fire cap", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
+  let gateCalls = 0;
+  const provider = scriptedProvider([{ text: "a" }, { text: "b" }, { text: "c" }, { text: "d" }, { text: "done" }]);
+  const engine = new QueryEngine(
+    {
+      provider,
+      model: "scripted",
+      systemPrompt: "s",
+      tools: [],
+      workspace: dir,
+      // A DIFFERENT objection each round (the model is making progress), then green.
+      confirmTurnEnd: async () => {
+        gateCalls++;
+        return gateCalls < 4 ? [{ text: `round ${gateCalls}: fix item ${gateCalls}`, source: "verifier" }] : [];
+      },
+    },
+    "sess_c1_progress",
+  );
+  engine.appendUserMessage("do the thing");
+  const events = await drain(engine);
+
+  assert.ok(gateCalls > 2, `gate fired ${gateCalls}× — fresh feedback keeps it working past the old hard cap of 2`);
+  assert.equal(events.find((e) => e.type === "turn_end").status, "completed");
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("C1 gate is skipped entirely when not configured (zero-cost default)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
   const provider = scriptedProvider([{ text: "done" }]);

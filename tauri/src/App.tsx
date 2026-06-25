@@ -32,6 +32,7 @@ import { getCurrentWindow, LogicalSize, PhysicalSize, PhysicalPosition } from "@
 import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packages/cli/src/holotable";
 import { UpdateBanner } from "./UpdateBanner";
 import { WhatsNew } from "./WhatsNew";
+import { CHANGELOG } from "./changelog";
 import "./styles.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -2149,7 +2150,7 @@ function App() {
     // Prepended to the GOAL the daemon receives (provider-agnostic) but NOT shown
     // in the transcript — the user's message stays clean.
     const ultraDirective = prefsRef.current.ultra
-      ? "[ULTRA MODE] For this task, strongly prefer the Conductor tool to orchestrate a parallel agent FLEET — fan out the independent angles, then use reduce:\"judge\" to synthesize — instead of one linear pass. Author a FleetSpec whenever the work has ≥3 independent parts (research, multi-file/multi-angle review, design options). Otherwise proceed normally.\n\n---\n\n"
+      ? "[ULTRA MODE — fleet by default] Run this task as a parallel agent FLEET unless it is trivial or purely conversational (a one-line answer, a single tiny edit, a greeting). Your FIRST move should be the Conductor tool: author a FleetSpec that fans out the independent angles, then reduce:\"judge\" to synthesize — do NOT do it as one linear pass and do NOT hand-roll what a fleet should do. Any task with research, multi-file or multi-angle review, design options, audits, refactors, or broad sweeps QUALIFIES — when in doubt, spawn the fleet. If you genuinely cannot decompose it, say so in one line, then proceed normally.\n\n---\n\n"
       : "";
     const goal = ultraDirective + trimmed;
     applyTo(sid, (s) => ({
@@ -5449,7 +5450,7 @@ function ModelPicker({
   );
 }
 
-type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "advanced" | "about";
+type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "advanced" | "updates" | "about";
 
 interface SkillInfo {
   name: string;
@@ -5480,6 +5481,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "services", label: "Services", glyph: "web" },
   { id: "consciousness", label: "Consciousness", glyph: "dot" },
   { id: "advanced", label: "Advanced", glyph: "dot" },
+  { id: "updates", label: "What's New", glyph: "dot" },
   { id: "about", label: "About", glyph: "dot" },
 ];
 
@@ -5784,6 +5786,42 @@ function Settings({
             <ConsciousnessPane native={native} state={consciousness} onDaemonCommand={onDaemonCommand} />
           ) : null}
 
+          {tab === "updates" ? (
+            <div className="settingsPane updatesPane">
+              <div className="updatesHead">
+                <div>
+                  <h3 className="updatesTitle">What's New</h3>
+                  <p className="paneHint">Every release, kept here so you can read it any time — not just when the popup flashes by.</p>
+                </div>
+                <button
+                  className="updatesReplay"
+                  onClick={() => window.dispatchEvent(new CustomEvent("ares:show-whatsnew"))}
+                >
+                  Show release popup
+                </button>
+              </div>
+              <div className="updatesList">
+                {CHANGELOG.map((e) => (
+                  <div key={e.version} className="updatesEntry">
+                    <div className="updatesEntryHead">
+                      <span className="updatesVer">v{e.version}</span>
+                      <span className="updatesEntryTitle">{e.title}</span>
+                      <span className="updatesDate">{e.date}</span>
+                    </div>
+                    <p className="updatesTagline">{e.tagline}</p>
+                    <ul className="updatesHighlights">
+                      {e.highlights.map((h) => (
+                        <li key={h.title}>
+                          <span className="updatesIcon" aria-hidden="true">{h.icon}</span>
+                          <span><strong>{h.title}</strong> — {h.blurb}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {tab === "about" ? (
             <div className="settingsPane aboutPane">
               <div className="aboutMark" aria-hidden="true" />

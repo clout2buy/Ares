@@ -1422,7 +1422,10 @@ async function buildEngineTools(
       parentTools: baseTools,
       baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
       subModel: selection.subModel,
-      defaultMaxTurns: 20,
+      // Was 20 — leaves doing several reads + producing structured output ran out
+      // of turns mid-read and died, which read as "the fleet always fails." 40
+      // gives a leaf room to finish; per-fleet overrides still apply.
+      defaultMaxTurns: 40,
     }),
     enrich,
   ) as EngineTool;

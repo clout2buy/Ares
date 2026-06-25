@@ -74,10 +74,23 @@ export function WhatsNew(): React.ReactElement | null {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [showOlder, setShowOlder] = useState(false);
+  const [forced, setForced] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
   const seen = useMemo(() => readSeen(), []);
   const entries = useMemo(() => entriesSince(seen), [seen]);
+  // Re-open on demand (Settings → What's New). Works even for a version already
+  // seen — the render below falls back to the latest entry so the popup the user
+  // forgot is always one click away.
+  useEffect(() => {
+    const onShow = (): void => {
+      setForced(true);
+      setClosing(false);
+      setOpen(true);
+    };
+    window.addEventListener("ares:show-whatsnew", onShow);
+    return () => window.removeEventListener("ares:show-whatsnew", onShow);
+  }, []);
 
   useEffect(() => {
     const force = forcedOpen();
@@ -100,6 +113,7 @@ export function WhatsNew(): React.ReactElement | null {
 
   const dismiss = useCallback(() => {
     setClosing(true);
+    setForced(false);
     markSeen(LATEST_VERSION);
     // Let the exit animation play before unmounting.
     window.setTimeout(() => setOpen(false), 220);
@@ -119,10 +133,13 @@ export function WhatsNew(): React.ReactElement | null {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, dismiss]);
 
-  if (!open || !entries.length) return null;
+  // On a re-open for a version already seen, "since seen" is empty — fall back to
+  // the latest entry so there's always something to show.
+  const shown = entries.length ? entries : forced && CHANGELOG.length ? [CHANGELOG[0]] : [];
+  if (!open || !shown.length) return null;
 
-  const hero = entries[0];
-  const older = entries.slice(1);
+  const hero = shown[0];
+  const older = shown.slice(1);
 
   return (
     <div

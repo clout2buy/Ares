@@ -1275,6 +1275,24 @@ a.vaultName { border-bottom: none; }
 .keyRegRow input:focus { border-color: var(--accent); }
 
 /* about pane */
+/* What's New / Updates tab — the persistent changelog the popup used to be the only view of. */
+.updatesHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.updatesTitle { margin: 0 0 2px; font-size: 16px; font-weight: 700; color: var(--accent-hi); }
+.updatesReplay { flex: none; padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--accent-hi);
+  background: rgba(var(--accent-rgb), 0.1); border: 1px solid rgba(var(--accent-rgb), 0.28); border-radius: 8px; cursor: pointer; }
+.updatesReplay:hover { background: rgba(var(--accent-rgb), 0.18); }
+.updatesList { display: grid; gap: 14px; }
+.updatesEntry { padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.015); }
+.updatesEntryHead { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.updatesVer { font: 700 12px/1 var(--mono); color: var(--accent-hi); padding: 2px 6px; border: 1px solid rgba(var(--accent-rgb), 0.3); border-radius: 6px; }
+.updatesEntryTitle { font-size: 14px; font-weight: 700; color: var(--fg); }
+.updatesDate { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+.updatesTagline { margin: 7px 0 9px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.updatesHighlights { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.updatesHighlights li { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--fg-soft, var(--fg)); }
+.updatesHighlights strong { color: var(--fg); }
+.updatesIcon { flex: none; }
+
 .aboutPane { justify-items: center; text-align: center; padding-top: 20px; }
 .aboutMark { width: 72px; height: 90px; background-image: var(--god-uri); background-size: contain; background-repeat: no-repeat; background-position: center; filter: drop-shadow(0 0 22px rgba(var(--accent-rgb), 0.5)); animation: reliefBreathe 9s ease-in-out infinite; }
 .aboutName { margin: 8px 0 0; font: 700 24px/1 var(--mono); letter-spacing: 0.42em; text-indent: 0.42em; color: var(--accent-hi); }

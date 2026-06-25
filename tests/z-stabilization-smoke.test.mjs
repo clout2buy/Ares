@@ -44,7 +44,7 @@ test("stabilization: root CLI script launches the built entrypoint", () => {
       });
 
   assert.equal(result.status, 0, `pnpm ares help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /ares v0\.11\.1/);
+  assert.match(result.stdout, /ares v0\.11\.2/);
   assert.match(result.stdout, /autonomous AI agent/);
 });
 
@@ -58,7 +58,7 @@ test("stabilization: direct CLI entrypoint launches", () => {
   });
 
   assert.equal(result.status, 0, `node entry.js help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /ares v0\.11\.1/);
+  assert.match(result.stdout, /ares v0\.11\.2/);
   assert.match(result.stdout, /autonomous AI agent/);
 });
 

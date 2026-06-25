@@ -31,7 +31,7 @@ function runAres(args) {
 test("M0: ares help exits 0 with usage on stdout", () => {
   const r = runAres(["help"]);
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /ares v0\.11\.1/);
+  assert.match(r.stdout, /ares v0\.11\.2/);
   assert.match(r.stdout, /autonomous AI agent/);
 });
 

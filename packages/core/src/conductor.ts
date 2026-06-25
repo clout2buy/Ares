@@ -279,6 +279,11 @@ export interface ConductorDeps {
    *  non-interactive auto-approve for writers (and accepts parallel writers share
    *  one workspace). */
   allowWriteTools?: boolean;
+  /** Permission decision for a leaf's tool calls. Leaves can't prompt a human, so
+   *  this returns allow_once / deny only. Default: deny everything (the safe
+   *  unattended backstop). The host passes a policy-aware one (e.g. honoring the
+   *  owner's "fleets inherit my permissions" toggle) to let leaves act. */
+  leafRequestPermission?: (req: ToolPermissionRequest) => Promise<PermissionPromptDecision>;
   /** Test seam: override the spawn primitive. Defaults to a runForkedTurn adapter. */
   runAgent?: RunAgentFn;
   /** Internal: completed leaves reused on resume, keyed `${phaseId}#${index}`.
@@ -474,9 +479,11 @@ function defaultRunAgent(deps: ConductorDeps): RunAgentFn {
   // non-read-only tools from the scoped catalog up-front (scopeTools) so a leaf
   // never burns turns deny-looping on a tool it can't use (finding #8); this
   // hard-deny is the belt-and-braces backstop.
-  const requestPermission = async (
-    _req: ToolPermissionRequest,
-  ): Promise<PermissionPromptDecision> => "deny";
+  // Default: deny (leaves can't prompt). The host may inject a policy-aware
+  // decision (the owner's "fleets inherit my permissions" toggle) so leaves can
+  // act on what the owner has allowed instead of dying on every gate.
+  const requestPermission =
+    deps.leafRequestPermission ?? (async (_req: ToolPermissionRequest): Promise<PermissionPromptDecision> => "deny");
 
   return async (args: RunAgentArgs): Promise<RunAgentResult> => {
     const systemPrompt =

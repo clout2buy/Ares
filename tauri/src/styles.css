@@ -1255,6 +1255,9 @@ a.vaultName { border-bottom: none; }
 
 /* engine rows */
 .engineRow { display: flex; align-items: center; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+/* Per-category rows are overridden by "Act freely" — dim them so it reads as "all on". */
+.engineRow[data-dim="1"] { opacity: 0.5; }
+.engineRow .toggle:disabled { cursor: not-allowed; }
 .engineInfo { flex: 1; display: grid; gap: 3px; }
 .engineInfo strong { font-size: 13px; color: var(--text); }
 .engineInfo span { font-size: 11.5px; color: var(--faint); line-height: 1.4; }

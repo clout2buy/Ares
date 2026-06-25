@@ -98,6 +98,7 @@ interface AresEvent {
   sessionId?: string;
   hasKey?: boolean;
   keyStatus?: Record<string, boolean>;
+  permissions?: Partial<PermSettings>;
   engine?: EngineConfig;
   // anthropic oauth
   url?: string;
@@ -1530,6 +1531,20 @@ function FirstRunGate({
 
 type DaemonState = "starting" | "running" | "stopped" | "error";
 
+// Owner permission posture — mirrors @ares/cli permissionPolicy.PermissionSettings.
+// Defaults are the conservative baseline (guarded; sensitive asks; fleets inherit).
+interface PermSettings {
+  mode: "guarded" | "free";
+  fileWrite: boolean;
+  shell: boolean;
+  network: boolean;
+  sensitive: boolean;
+  fleetsInherit: boolean;
+}
+const DEFAULT_PERMS: PermSettings = {
+  mode: "guarded", fileWrite: true, shell: true, network: true, sensitive: false, fleetsInherit: true,
+};
+
 const MAX_AUTO_RESTARTS = 3;
 
 function App() {
@@ -1554,6 +1569,7 @@ function App() {
     progress: {},
   });
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
+  const [permissions, setPermissions] = useState<PermSettings>(DEFAULT_PERMS);
   const [opStatus, setOpStatus] = useState<{ activeCount: number; goals: Array<{ id: string; statement: string; status: string; progress: number }>; autotick: boolean } | null>(null);
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderVm[]>([]);
   const [strike, setStrike] = useState(0);
@@ -1734,6 +1750,7 @@ function App() {
       savePrefs(next);
     }
     if (event?.keyStatus) setKeyStatus(event.keyStatus);
+    if (event?.permissions) setPermissions({ ...DEFAULT_PERMS, ...event.permissions });
     void invoke("ares_set_reasoning", { level: prefsRef.current.reasoning }).catch(() => null);
     if (Object.keys(prefsRef.current.routing).length > 0) {
       void invoke("ares_set_routing", { routing: prefsRef.current.routing }).catch(() => null);
@@ -3093,6 +3110,11 @@ function App() {
           skills={skills}
           usage={usageStats}
           keyStatus={keyStatus}
+          permissions={permissions}
+          onPermissions={(next) => {
+            setPermissions(next);
+            daemonCmd({ type: "set_permissions", permissions: next });
+          }}
           oauthProviders={oauthProviders}
           consciousness={consciousness}
           onDaemonCommand={daemonCmd}
@@ -5450,7 +5472,7 @@ function ModelPicker({
   );
 }
 
-type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "advanced" | "updates" | "about";
+type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
 
 interface SkillInfo {
   name: string;
@@ -5480,6 +5502,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "keys", label: "API Keys", glyph: "shell" },
   { id: "services", label: "Services", glyph: "web" },
   { id: "consciousness", label: "Consciousness", glyph: "dot" },
+  { id: "permissions", label: "Permissions", glyph: "shell" },
   { id: "advanced", label: "Advanced", glyph: "dot" },
   { id: "updates", label: "What's New", glyph: "dot" },
   { id: "about", label: "About", glyph: "dot" },
@@ -5493,6 +5516,8 @@ function Settings({
   skills,
   usage,
   keyStatus,
+  permissions,
+  onPermissions,
   oauthProviders,
   consciousness,
   onDaemonCommand,
@@ -5507,6 +5532,8 @@ function Settings({
   skills: SkillInfo[];
   usage: UsageStats | null;
   keyStatus: Record<string, boolean>;
+  permissions: PermSettings;
+  onPermissions: (next: PermSettings) => void;
   oauthProviders: OAuthProviderVm[];
   consciousness: ConsciousnessVm;
   onDaemonCommand: (cmd: Record<string, unknown>) => void;
@@ -5754,6 +5781,54 @@ function Settings({
                 </div>
               </div>
               <p className="keyHint">OpenAI uses ChatGPT OAuth. Local Ollama needs no key; the Ollama key enables direct ollama.com cloud discovery and inference.</p>
+            </div>
+          ) : null}
+
+          {tab === "permissions" ? (
+            <div className="settingsPane">
+              <h3 className="paneTitle">Permissions</h3>
+              <p className="paneHint">Decide what Ares does on its own vs. what it asks you first. Applies on the next turn.</p>
+              <div className="engineRow">
+                <div className="engineInfo">
+                  <strong>Act freely (no prompts)</strong>
+                  <span>Ares acts on everything without asking — files, commands, web, even sensitive actions. Off = guarded (sensitive asks).</span>
+                </div>
+                <button className="toggle" data-on={permissions.mode === "free" ? "1" : "0"}
+                  onClick={() => onPermissions({ ...permissions, mode: permissions.mode === "free" ? "guarded" : "free" })}>
+                  <i />
+                </button>
+              </div>
+              {(["fileWrite", "shell", "network", "sensitive"] as const).map((cat) => {
+                const meta = {
+                  fileWrite: ["Auto-approve file writes", "Create/edit files without asking."],
+                  shell: ["Auto-approve shell commands", "Run terminal commands without asking."],
+                  network: ["Auto-approve web & network", "Fetch pages and call the web without asking."],
+                  sensitive: ["Auto-approve sensitive actions", "Credentials, payments, email, destructive, computer control. Off by default — these ask."],
+                }[cat];
+                const on = permissions.mode === "free" ? true : permissions[cat];
+                return (
+                  <div className="engineRow" key={cat} data-dim={permissions.mode === "free" ? "1" : "0"}>
+                    <div className="engineInfo">
+                      <strong>{meta[0]}</strong>
+                      <span>{meta[1]}</span>
+                    </div>
+                    <button className="toggle" data-on={on ? "1" : "0"} disabled={permissions.mode === "free"}
+                      onClick={() => onPermissions({ ...permissions, [cat]: !permissions[cat] })}>
+                      <i />
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="engineRow">
+                <div className="engineInfo">
+                  <strong>Fleets inherit my permissions</strong>
+                  <span>Background agents (ULTRA fleets) act on what you've allowed. Off = fleets can only read, never act.</span>
+                </div>
+                <button className="toggle" data-on={permissions.fleetsInherit ? "1" : "0"}
+                  onClick={() => onPermissions({ ...permissions, fleetsInherit: !permissions.fleetsInherit })}>
+                  <i />
+                </button>
+              </div>
             </div>
           ) : null}
 

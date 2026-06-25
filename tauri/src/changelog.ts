@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.11.2",
+    date: "June 2026",
+    title: "You're in control",
+    tagline: "Decide what Ares does on its own, see every release any time, and let ULTRA actually unleash the fleet.",
+    highlights: [
+      {
+        icon: "🎛️",
+        title: "Permissions you can flip",
+        tag: "New",
+        blurb: "A new Permissions tab: act freely with no prompts, or stay guarded and choose exactly what auto-approves — files, commands, web, sensitive actions — plus whether background fleets inherit your permissions.",
+      },
+      {
+        icon: "📰",
+        title: "Updates that stick around",
+        tag: "New",
+        blurb: "A “What's New” tab keeps every release note in one place, and a button re-opens the popup any time — no more missing what changed.",
+      },
+      {
+        icon: "🛰️",
+        title: "ULTRA unleashes the fleet",
+        tag: "Faster",
+        blurb: "Slide to ULTRA and Ares now actually fans the work out to a parallel agent fleet by default — and the agents have room to finish instead of dying mid-task.",
+      },
+    ],
+  },
+  {
     version: "0.11.1",
     date: "June 2026",
     title: "Updates that don't jam",

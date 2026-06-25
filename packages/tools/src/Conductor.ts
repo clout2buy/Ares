@@ -80,6 +80,9 @@ export interface ConductorToolDeps {
    *  leaf's catalog so a child can't deny-loop on a human-gated tool. Set true
    *  only when the host arranged non-interactive auto-approve for writers. */
   allowWriteTools?: boolean;
+  /** Policy-aware leaf permission (the owner's "fleets inherit my permissions"
+   *  toggle). Forwarded to runFleet; absent → leaves deny everything. */
+  leafRequestPermission?: ConductorDeps["leafRequestPermission"];
 }
 
 // ─── Shape-example → validator + hint ──────────────────────────────────────
@@ -272,6 +275,7 @@ export function makeConductorTool(deps: ConductorToolDeps) {
         subModel: deps.subModel ?? ctx.subModel,
         defaultMaxTurns: deps.defaultMaxTurns,
         allowWriteTools: deps.allowWriteTools,
+        leafRequestPermission: deps.leafRequestPermission,
         validate: exampleValidator,
         schemaHint: exampleHinter,
         makeWorktree: makeCopyWorktree,

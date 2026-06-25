@@ -4,6 +4,7 @@ import { aresHome } from "@ares/core";
 import type { ReasoningLevel } from "@ares/protocol";
 import type { RouteAssignments } from "@ares/core";
 import type { ThemeName } from "./terminalUi.js";
+import type { PermissionSettings } from "./permissionPolicy.js";
 import { encryptSecret, decryptSecret } from "./keyVault.js";
 
 /** Settings fields that hold secrets — encrypted at rest, decrypted on load. */
@@ -76,6 +77,9 @@ export interface UiSettings {
   lastCustomModel?: string;
   /** Advanced engine knobs surfaced in the desktop Advanced tab. */
   engine?: EngineConfig;
+  /** Owner-toggleable permission posture (master + per-category + fleet inherit).
+   *  Absent → DEFAULT_PERMISSIONS (guarded; sensitive asks; fleets inherit). */
+  permissions?: PermissionSettings;
   /** Skills the owner has disabled (by name). Absent = all enabled. */
   disabledSkills?: string[];
   /** Telegram bot token (from @BotFather) — encrypted at rest. */

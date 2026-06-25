@@ -132,6 +132,7 @@ import {
 import { runInkChat, type InkChatSnapshot, type InkCommandResult } from "./inkTui.js";
 import { runInkLauncher } from "./inkLauncher.js";
 import { loadUiSettings, updateUiSettings, type UiSettings } from "./uiSettings.js";
+import { decidePermission, DEFAULT_PERMISSIONS, type PermissionSettings } from "./permissionPolicy.js";
 import { consciousnessStatus, downloadAllConsciousnessModels } from "./consciousness.js";
 import { describeImage, engineStatus } from "./visionEngine.js";
 import { prepareEngineBinary } from "./engineBinary.js";
@@ -307,7 +308,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 function printHelp(): void {
   process.stdout.write(
     [
-      "ares v0.11.1 — autonomous AI agent",
+      "ares v0.11.2 — autonomous AI agent",
       "",
       "Commands:",
       "  ares launcher                                Open the provider/model launch deck.",
@@ -410,6 +411,9 @@ interface LiveSession {
 
 interface AresRuntimeState {
   permissionMode: PermissionMode;
+  /** Live owner permission posture (master + per-category + fleet inherit).
+   *  Mutated by the set_permissions daemon command so toggles apply mid-session. */
+  permissions?: PermissionSettings;
 }
 
 interface CliRuntimeContext {
@@ -450,6 +454,8 @@ interface DaemonInputCommand {
   id?: string;
   decision?: string;
   routing?: unknown;
+  /** set_permissions payload — owner permission posture toggles. */
+  permissions?: PermissionSettings;
   key?: string;
   model?: string;
   provider?: string;
@@ -1426,6 +1432,11 @@ async function buildEngineTools(
       // of turns mid-read and died, which read as "the fleet always fails." 40
       // gives a leaf room to finish; per-fleet overrides still apply.
       defaultMaxTurns: 40,
+      // "Fleets inherit my permissions" toggle: leaves can't prompt, so the policy
+      // resolves to allow_once / deny. Reads runtime.permissions LIVE so the
+      // toggle applies to the next fleet without rebuilding the session.
+      leafRequestPermission: async (req) =>
+        decidePermission(req, runtime.permissions, { fleet: true }) === "allow" ? "allow_once" : "deny",
     }),
     enrich,
   ) as EngineTool;
@@ -2468,7 +2479,10 @@ async function createSessionWithSelection(
   applyEngineConfigEnv(settings.engine ?? {});
   // Guarded by default. Bypass mode requires an explicit owner opt-in.
   const guarded = settings.dangerousBypass !== true;
-  const runtime: AresRuntimeState = { permissionMode: guarded ? "workspace-write" : "bypass" };
+  const runtime: AresRuntimeState = {
+    permissionMode: guarded ? "workspace-write" : "bypass",
+    permissions: settings.permissions,
+  };
   const shellRegistry = new ShellRegistry();
   const todoStore = new TodoStore();
   const verifier = new ContinuousVerifier({
@@ -3145,8 +3159,10 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
     if (gate.kind === "ask") {
       return commands.waitForPermission({ ...request, reason: gate.reason ?? request.reason });
     }
-    const auto = autoPermissionDecision(request);
-    return auto ? Promise.resolve(auto) : commands.waitForPermission(request);
+    // Owner permission policy (master/per-category toggles, read LIVE so the
+    // Permissions tab applies mid-session). "allow" flows; "ask" prompts the owner.
+    const outcome = decidePermission(request, live?.runtime.permissions);
+    return outcome === "allow" ? Promise.resolve("allow_once") : commands.waitForPermission(request);
   };
   let live: LiveSession;
   try {
@@ -3501,6 +3517,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       routingMode: readySettings.routingMode ?? "manual",
       routing: readySettings.routing ?? {},
       engine: readySettings.engine ?? {},
+      permissions: { ...DEFAULT_PERMISSIONS, ...(readySettings.permissions ?? {}) },
       keyStatus: {
         anthropic: Boolean(readySettings.anthropicKey || process.env.ANTHROPIC_API_KEY || process.env.ARES_ANTHROPIC_API_KEY),
         openai: Boolean(readyAuth?.configured),
@@ -3558,6 +3575,30 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
         const routingMode = command.enabled === true ? "auto" : "manual";
         await updateUiSettings({ routingMode });
         process.stdout.write(JSON.stringify({ type: "routing_mode_set", routingMode }) + "\n");
+        continue;
+      }
+      if (command.type === "set_permissions") {
+        // Owner permission posture. Sanitize to known keys/types (never trust the
+        // wire), apply LIVE to every open session, keep dangerousBypass in sync
+        // (so the path-tool bypass + leash agree with "free"), and persist.
+        const incoming = (command.permissions ?? {}) as Partial<PermissionSettings>;
+        const permissions: PermissionSettings = {
+          mode: incoming.mode === "free" ? "free" : "guarded",
+          fileWrite: incoming.fileWrite !== false,
+          shell: incoming.shell !== false,
+          network: incoming.network !== false,
+          sensitive: incoming.sensitive === true,
+          fleetsInherit: incoming.fleetsInherit !== false,
+        };
+        const mode: PermissionMode = permissions.mode === "free" ? "bypass" : "workspace-write";
+        live.runtime.permissionMode = mode;
+        live.runtime.permissions = permissions;
+        for (const e of sessions.values()) {
+          e.live.runtime.permissionMode = mode;
+          e.live.runtime.permissions = permissions;
+        }
+        await updateUiSettings({ permissions, dangerousBypass: permissions.mode === "free" });
+        process.stdout.write(JSON.stringify({ type: "permissions_set", permissions }) + "\n");
         continue;
       }
       if (command.type === "consciousness_status") {

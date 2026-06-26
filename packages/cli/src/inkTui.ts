@@ -858,46 +858,32 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     todos.length > 0 ? h(TodosStrip, { theme, todos }) : null,
     pulses.length > 0 ? h(EvolutionPulses, { theme, pulses, width: layout.screenWidth }) : null,
     paletteOpen ? h(CommandPalette, { theme, query: input, selected: paletteSel, width: layout.screenWidth }) : null,
-    h(InputDeck, { theme, snapshot, busy, activeTool, activity, spinner: busy ? frame : "", input, width: layout.screenWidth }),
-    h(Footer, { theme, snapshot, stats, width: layout.screenWidth }),
+    h(InputDeck, { theme, snapshot, busy, activity, spinner: busy ? frame : "", input, stats, width: layout.screenWidth }),
   );
 }
 
 function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; stats: RuntimeStats; theme: DeckTheme; width: number }) {
-  const model = compactModel(snapshot.model, 34);
-  const modeColor = snapshot.mode === "plan" ? theme.warn : snapshot.mode === "bypass" ? theme.error : theme.success;
+  void stats;
+  const model = compactModel(snapshot.model, 30);
+  const folder = snapshot.workspace.split(/[\\/]/).filter(Boolean).pop() ?? snapshot.workspace;
+  // One slim line — no border, no chip boxes. The conversation is the page.
   return h(
     Box,
-    {
-      flexDirection: "column",
-      width,
-      borderStyle: theme.borderStyle,
-      borderColor: theme.frame,
-      paddingX: 1,
-    },
+    { width, justifyContent: "space-between", paddingX: 1, marginBottom: 1 },
     h(
       Box,
-      { justifyContent: "space-between" },
-      h(
-        Box,
-        { gap: 1 },
-        h(Text, { color: theme.accent3, bold: true }, "▲"),
-        h(Text, { bold: true, color: theme.accent }, "ARES"),
-        h(Text, { color: theme.dim }, "autonomous AI agent"),
-        h(Text, { color: theme.accent2 }, theme.title),
-      ),
-      h(Text, { color: modeColor, bold: snapshot.mode === "bypass" }, snapshot.mode),
+      { gap: 1 },
+      h(Text, { color: theme.accent3, bold: true }, "▲"),
+      h(Text, { color: theme.accent, bold: true }, "ARES"),
+      h(Text, { color: theme.dim }, model),
     ),
     h(
       Box,
       { gap: 1 },
-      h(Chip, { theme, label: "MODEL", value: model, color: theme.accent }),
-      h(Chip, { theme, label: "TOOLS", value: String(stats.tools), color: theme.tool }),
-      h(Chip, { theme, label: "TURNS", value: String(stats.turns), color: theme.accent2 }),
-      h(Chip, { theme, label: "TOKENS", value: compactNumber(stats.usage.inputTokens + stats.usage.outputTokens), color: theme.accent3 }),
-      h(Chip, { theme, label: "CACHE", value: cachePercent(stats.usage), color: theme.success }),
+      h(Text, { color: theme.dim }, folder),
+      h(Text, { color: theme.dim }, "·"),
+      h(Text, { color: theme.accent2 }, theme.title.toLowerCase()),
     ),
-    h(Text, { color: theme.dim, wrap: "truncate" }, snapshot.workspace),
   );
 }
 
@@ -1018,46 +1004,42 @@ function InputDeck({
   theme,
   snapshot,
   busy,
-  activeTool,
   activity,
   spinner,
   input,
+  stats,
   width,
 }: {
   theme: DeckTheme;
   snapshot: InkChatSnapshot;
   busy: boolean;
-  activeTool: string | null;
   activity: string | null;
   spinner: string;
   input: string;
+  stats: RuntimeStats;
   width: number;
 }) {
-  void activeTool;
-  const prompt = `${snapshot.mode === "plan" ? "[plan] " : ""}❯ `;
-  const inputText = input.length > 0 ? input : "message ares, or / for a command";
+  const tokens = compactNumber(stats.usage.inputTokens + stats.usage.outputTokens);
+  const plan = snapshot.mode === "plan";
+  const status = busy
+    ? `${spinner || "▲"} ${activity ?? "working"}`
+    : `${snapshot.mode} · ${tokens} · ⌃P`;
+  // No box. A single faint rule, the ❯ prompt, and a right-aligned status line.
   return h(
     Box,
-    {
-      flexDirection: "column",
-      width,
-      height: 4,
-      borderStyle: theme.borderStyle,
-      borderColor: busy ? theme.warn : theme.input,
-      paddingX: 1,
-      marginTop: 1,
-    },
+    { flexDirection: "column", width, marginTop: 1 },
+    h(Text, { color: theme.dim }, "─".repeat(Math.max(0, width - 2))),
     h(
       Box,
-      { justifyContent: "space-between" },
-      h(Text, { color: busy ? theme.warn : theme.accent, bold: true }, busy ? `${spinner || "▲"} ${(activity ?? "forging").toUpperCase()}` : "▲ READY"),
-      h(Text, { color: theme.dim }, "enter send · ⌃P palette · pgup/pgdn scroll · ! bypass · ⌃L clear"),
-    ),
-    h(
-      Box,
-      null,
-      h(Text, { color: busy ? theme.warn : theme.accent3, bold: true }, prompt),
-      h(Text, { color: input.length > 0 ? theme.text : theme.dim, wrap: "truncate" }, `${inputText}${busy ? "" : "▏"}`),
+      { justifyContent: "space-between", paddingX: 1 },
+      h(
+        Box,
+        { flexShrink: 1 },
+        h(Text, { color: theme.accent, bold: true }, plan ? "❯ [plan] " : "❯ "),
+        h(Text, { color: input.length > 0 ? theme.text : theme.dim, wrap: "truncate" }, input.length > 0 ? input : "message ares"),
+        busy ? null : h(Text, { color: theme.accent, bold: true }, "▏"),
+      ),
+      h(Text, { color: busy ? theme.warn : theme.dim }, status),
     ),
   );
 }
@@ -1163,7 +1145,7 @@ function ProgressMetric({ theme, label, value }: { theme: DeckTheme; label: stri
 }
 
 function LogText({ line, theme, spinner }: { line: LogLine; theme: DeckTheme; spinner: string }) {
-  // Tool flow: ▸ Name  desc … (spinner while running) → ✓ result on completion.
+  // Tool flow: indented, dim — "  ↳ bash  npm test … (spinner) → ✓ result".
   if (line.tone === "tool") {
     const name = line.meta ?? "tool";
     const r = line.result;
@@ -1173,35 +1155,40 @@ function LogText({ line, theme, spinner }: { line: LogLine; theme: DeckTheme; sp
       h(
         Box,
         { flexShrink: 1 },
-        h(Text, { color: theme.accent3, bold: true }, line.cont ? "  " : "▸ "),
-        line.cont ? null : h(Text, { color: theme.accent, bold: true }, `${name} `),
+        h(Text, { color: theme.dim }, line.cont ? "    " : "  ↳ "),
+        line.cont ? null : h(Text, { color: theme.accent2 }, `${name} `),
         h(Text, { color: theme.dim, wrap: "truncate" }, line.text),
       ),
       r
-        ? h(Text, { color: r.ok ? theme.success : theme.error }, ` ${r.ok ? "✓" : "✗"} ${truncateTail(r.text, 28)}`)
+        ? h(Text, { color: r.ok ? theme.success : theme.error }, ` ${r.ok ? "✓" : "✗"}${r.text ? ` ${truncateTail(r.text, 26)}` : ""}`)
         : h(Text, { color: theme.accent3, bold: true }, ` ${spinner || "…"}`),
     );
   }
-  // Verifier objections — amber "fix this", never dressed up as success.
+  // Verifier objections — amber, indented, never dressed up as success.
   if (line.tone === "verify") {
-    return h(Text, { color: theme.warn, wrap: "truncate" }, `${line.cont ? "  " : "⚠ "}${line.text}`);
+    return h(Text, { color: theme.warn, wrap: "truncate" }, `${line.cont ? "    " : "  ⚠ "}${line.text}`);
   }
-  // Conversation lines get a one-word label on the first row, blank on wraps.
-  if (line.tone === "user" || line.tone === "assistant") {
-    const isUser = line.tone === "user";
-    const label = line.cont ? "" : isUser ? "you" : "ares";
+  // You: ember ❯ then your words. Ares: plain warm text, no label — the page IS Ares.
+  if (line.tone === "user") {
+    return h(
+      Box,
+      null,
+      h(Text, { color: theme.accent, bold: true }, line.cont ? "  " : "❯ "),
+      h(Text, { color: theme.user, wrap: "truncate" }, line.text),
+    );
+  }
+  if (line.tone === "assistant") {
     const streaming = line.meta === "stream" && spinner;
     return h(
       Box,
       null,
-      h(Text, { color: isUser ? theme.dim : theme.accent, bold: !isUser }, label.padEnd(5)),
-      h(Text, { color: isUser ? theme.user : theme.assistant, wrap: "truncate" }, line.text),
+      h(Text, { color: theme.assistant, wrap: "truncate" }, line.text),
       streaming ? h(Text, { color: theme.accent3, bold: true }, ` ${spinner}`) : null,
     );
   }
-  // notice / error / muted / diff
+  // verifier-success / notice / error / muted / diff — subtle, indented.
   const color = toneColor(line.tone, theme);
-  const prefix = line.cont ? "  " : line.tone === "error" ? "✗ " : line.tone === "notice" ? "· " : "  ";
+  const prefix = line.cont ? "  " : line.tone === "error" ? "  ✗ " : line.tone === "notice" ? "  " : "  ";
   return h(Text, { color, wrap: "truncate" }, `${prefix}${line.text}`);
 }
 

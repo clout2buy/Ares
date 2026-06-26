@@ -439,6 +439,10 @@ function filterPalette(query: string): { cmd: string; desc: string }[] {
   return PALETTE.filter((c) => c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q));
 }
 
+// Live activity spinner — braille frames, the "Claude is working" pulse next to
+// streaming text and running tools.
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export async function runInkChat(options: InkChatOptions): Promise<number> {
   process.stdout.write("\u001b[?1049l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
   const instance = render(h(AresInkApp, { options }), {
@@ -468,6 +472,8 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const [scrollOffset, setScrollOffset] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteSel, setPaletteSel] = useState(0);
+  const [spin, setSpin] = useState(0);
+  const [activity, setActivity] = useState<string | null>(null);
   const [stats, setStats] = useState<RuntimeStats>({
     turns: 0,
     tools: 0,
@@ -510,6 +516,17 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     return () => clearInterval(timer);
   }, []);
   void frameTick;
+
+  // Fast spinner tick — runs ONLY while a turn is in flight, so idle is free.
+  useEffect(() => {
+    if (!busy) {
+      setSpin(0);
+      return;
+    }
+    const id = setInterval(() => setSpin((s) => (s + 1) % SPINNER.length), 90);
+    return () => clearInterval(id);
+  }, [busy]);
+  const frame = SPINNER[spin % SPINNER.length];
 
   const layout = useMemo(() => {
     // Clean single-stream (the approved mockup) — the conversation is the page,
@@ -579,17 +596,23 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       if (event.type === "text_delta") {
         assistantRef.current += event.text;
         setAssistantDraft(assistantRef.current);
+        setActivity("responding");
         return;
       }
-      if (event.type === "thinking_delta") return;
+      if (event.type === "thinking_delta") {
+        setActivity("thinking");
+        return;
+      }
       if (event.type === "tool_start") {
         flushAssistant();
         setActiveTool(event.name);
+        setActivity(event.name);
         appendToolLine(event.name, event.activityDescription);
         return;
       }
       if (event.type === "tool_end") {
         setActiveTool(null);
+        setActivity("responding");
         setStats((prev) => ({ ...prev, tools: prev.tools + 1 }));
         finishToolLine(true, event.display ?? `${event.durationMs}ms`);
         return;
@@ -680,6 +703,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         flushAssistant();
         setBusy(false);
         setActiveTool(null);
+        setActivity(null);
       }
     },
     [append, app, busy, flushAssistant, handleEvent, options],
@@ -827,13 +851,14 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       totalLines: displayLines.length,
       start,
       scrollOffset,
+      spinner: busy ? frame : "",
       width: layout.screenWidth,
       height: layout.mainHeight,
     }),
     todos.length > 0 ? h(TodosStrip, { theme, todos }) : null,
     pulses.length > 0 ? h(EvolutionPulses, { theme, pulses, width: layout.screenWidth }) : null,
     paletteOpen ? h(CommandPalette, { theme, query: input, selected: paletteSel, width: layout.screenWidth }) : null,
-    h(InputDeck, { theme, snapshot, busy, activeTool, input, width: layout.screenWidth }),
+    h(InputDeck, { theme, snapshot, busy, activeTool, activity, spinner: busy ? frame : "", input, width: layout.screenWidth }),
     h(Footer, { theme, snapshot, stats, width: layout.screenWidth }),
   );
 }
@@ -907,6 +932,7 @@ function LogPanel({
   totalLines,
   start,
   scrollOffset,
+  spinner,
   width,
   height,
 }: {
@@ -915,6 +941,7 @@ function LogPanel({
   totalLines: number;
   start: number;
   scrollOffset: number;
+  spinner: string;
   width: number;
   height: number;
 }) {
@@ -932,7 +959,7 @@ function LogPanel({
       : null,
     lines.length === 0
       ? h(EmptyState, { theme })
-      : lines.map((line) => h(LogText, { key: line.id, line, theme })),
+      : lines.map((line) => h(LogText, { key: line.id, line, theme, spinner })),
   );
 }
 
@@ -992,6 +1019,8 @@ function InputDeck({
   snapshot,
   busy,
   activeTool,
+  activity,
+  spinner,
   input,
   width,
 }: {
@@ -999,9 +1028,12 @@ function InputDeck({
   snapshot: InkChatSnapshot;
   busy: boolean;
   activeTool: string | null;
+  activity: string | null;
+  spinner: string;
   input: string;
   width: number;
 }) {
+  void activeTool;
   const prompt = `${snapshot.mode === "plan" ? "[plan] " : ""}❯ `;
   const inputText = input.length > 0 ? input : "message ares, or / for a command";
   return h(
@@ -1018,7 +1050,7 @@ function InputDeck({
     h(
       Box,
       { justifyContent: "space-between" },
-      h(Text, { color: busy ? theme.warn : theme.accent, bold: true }, busy ? `▲ FORGING${activeTool ? ` · ${activeTool}` : ""}` : "▲ READY"),
+      h(Text, { color: busy ? theme.warn : theme.accent, bold: true }, busy ? `${spinner || "▲"} ${(activity ?? "forging").toUpperCase()}` : "▲ READY"),
       h(Text, { color: theme.dim }, "enter send · ⌃P palette · pgup/pgdn scroll · ! bypass · ⌃L clear"),
     ),
     h(
@@ -1130,8 +1162,8 @@ function ProgressMetric({ theme, label, value }: { theme: DeckTheme; label: stri
   );
 }
 
-function LogText({ line, theme }: { line: LogLine; theme: DeckTheme }) {
-  // Tool flow: ▸ Name  desc ……………… ✓ result   (the result is stamped on tool_end)
+function LogText({ line, theme, spinner }: { line: LogLine; theme: DeckTheme; spinner: string }) {
+  // Tool flow: ▸ Name  desc … (spinner while running) → ✓ result on completion.
   if (line.tone === "tool") {
     const name = line.meta ?? "tool";
     const r = line.result;
@@ -1147,7 +1179,7 @@ function LogText({ line, theme }: { line: LogLine; theme: DeckTheme }) {
       ),
       r
         ? h(Text, { color: r.ok ? theme.success : theme.error }, ` ${r.ok ? "✓" : "✗"} ${truncateTail(r.text, 28)}`)
-        : h(Text, { color: theme.dim }, " …"),
+        : h(Text, { color: theme.accent3, bold: true }, ` ${spinner || "…"}`),
     );
   }
   // Verifier objections — amber "fix this", never dressed up as success.
@@ -1158,11 +1190,13 @@ function LogText({ line, theme }: { line: LogLine; theme: DeckTheme }) {
   if (line.tone === "user" || line.tone === "assistant") {
     const isUser = line.tone === "user";
     const label = line.cont ? "" : isUser ? "you" : "ares";
+    const streaming = line.meta === "stream" && spinner;
     return h(
       Box,
       null,
       h(Text, { color: isUser ? theme.dim : theme.accent, bold: !isUser }, label.padEnd(5)),
       h(Text, { color: isUser ? theme.user : theme.assistant, wrap: "truncate" }, line.text),
+      streaming ? h(Text, { color: theme.accent3, bold: true }, ` ${spinner}`) : null,
     );
   }
   // notice / error / muted / diff

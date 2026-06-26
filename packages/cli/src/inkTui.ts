@@ -37,6 +37,8 @@ export interface InkChatOptions {
   resumedLines?: string[];
   sendMessage(goal: string, onEvent: (event: TurnEvent) => void): Promise<void>;
   handleCommand(line: string): Promise<InkCommandResult>;
+  /** Structured model catalog per provider, for the ⌃M picker. */
+  listModelOptions?(provider: string): Promise<Array<{ id: string; label?: string; hint?: string }>>;
 }
 
 interface LogLine {
@@ -443,6 +445,9 @@ function filterPalette(query: string): { cmd: string; desc: string }[] {
 // streaming text and running tools.
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+// ⌃O / "/model" model+provider picker — scroll, don't type names.
+const PICKER_PROVIDERS = ["ollama", "openai", "anthropic", "openrouter", "deepseek"];
+
 export async function runInkChat(options: InkChatOptions): Promise<number> {
   process.stdout.write("\u001b[?1049l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
   const instance = render(h(AresInkApp, { options }), {
@@ -474,6 +479,11 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const [paletteSel, setPaletteSel] = useState(0);
   const [spin, setSpin] = useState(0);
   const [activity, setActivity] = useState<string | null>(null);
+  const [mpOpen, setMpOpen] = useState(false);
+  const [mpProvider, setMpProvider] = useState(0);
+  const [mpModels, setMpModels] = useState<Array<{ id: string; label?: string; hint?: string }>>([]);
+  const [mpSel, setMpSel] = useState(0);
+  const [mpLoading, setMpLoading] = useState(false);
   const [stats, setStats] = useState<RuntimeStats>({
     turns: 0,
     tools: 0,
@@ -527,6 +537,29 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     return () => clearInterval(id);
   }, [busy]);
   const frame = SPINNER[spin % SPINNER.length];
+
+  // Load the model catalog for the picker's current provider (async, cancellable).
+  useEffect(() => {
+    if (!mpOpen || !options.listModelOptions) return;
+    let cancelled = false;
+    setMpLoading(true);
+    options
+      .listModelOptions(PICKER_PROVIDERS[mpProvider])
+      .then((rows) => {
+        if (cancelled) return;
+        setMpModels(rows);
+        setMpSel(0);
+        setMpLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMpModels([]);
+        setMpLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mpOpen, mpProvider, options]);
 
   const layout = useMemo(() => {
     // Clean single-stream (the approved mockup) — the conversation is the page,
@@ -673,6 +706,13 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     async (raw: string) => {
       const line = raw.trim();
       if (!line || busy) return;
+      // /model and /models open the scrollable picker, not a text dump.
+      if ((line === "/model" || line === "/models") && options.listModelOptions) {
+        setInput("");
+        setMpProvider(Math.max(0, PICKER_PROVIDERS.indexOf(snapshot.provider)));
+        setMpOpen(true);
+        return;
+      }
       setInput("");
       setScrollOffset(0);
       history.current.push(line);
@@ -706,7 +746,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         setActivity(null);
       }
     },
-    [append, app, busy, flushAssistant, handleEvent, options],
+    [append, app, busy, flushAssistant, handleEvent, options, snapshot],
   );
 
   useInput((value, key) => {
@@ -758,6 +798,41 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       setPaletteOpen(true);
       setPaletteSel(0);
       setInput("");
+      return;
+    }
+    // ⌃O model + provider picker (⌃M is Enter in terminals, so ⌃O it is).
+    if (mpOpen) {
+      if (key.escape || (key.ctrl && value === "o")) {
+        setMpOpen(false);
+        return;
+      }
+      if (key.leftArrow) {
+        setMpProvider((p) => (p - 1 + PICKER_PROVIDERS.length) % PICKER_PROVIDERS.length);
+        return;
+      }
+      if (key.rightArrow || key.tab) {
+        setMpProvider((p) => (p + 1) % PICKER_PROVIDERS.length);
+        return;
+      }
+      if (key.upArrow) {
+        setMpSel((s) => Math.max(0, s - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setMpSel((s) => Math.min(Math.max(0, mpModels.length - 1), s + 1));
+        return;
+      }
+      if (key.return) {
+        const m = mpModels[Math.min(mpSel, Math.max(0, mpModels.length - 1))];
+        setMpOpen(false);
+        if (m) void submit(`/model ${PICKER_PROVIDERS[mpProvider]} ${m.id}`);
+        return;
+      }
+      return;
+    }
+    if (key.ctrl && value === "o") {
+      setMpProvider(Math.max(0, PICKER_PROVIDERS.indexOf(snapshot.provider)));
+      setMpOpen(true);
       return;
     }
     if (key.ctrl && value === "l") {
@@ -858,6 +933,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     todos.length > 0 ? h(TodosStrip, { theme, todos }) : null,
     pulses.length > 0 ? h(EvolutionPulses, { theme, pulses, width: layout.screenWidth }) : null,
     paletteOpen ? h(CommandPalette, { theme, query: input, selected: paletteSel, width: layout.screenWidth }) : null,
+    mpOpen ? h(ModelPicker, { theme, providerIdx: mpProvider, models: mpModels, sel: mpSel, loading: mpLoading, width: layout.screenWidth }) : null,
     h(InputDeck, { theme, snapshot, busy, activity, spinner: busy ? frame : "", input, stats, width: layout.screenWidth }),
   );
 }
@@ -955,7 +1031,7 @@ function EmptyState({ theme }: { theme: DeckTheme }) {
     { flexDirection: "column", marginTop: 1 },
     h(Text, { color: theme.accent3, bold: true }, "▲ Ares stands ready."),
     h(Text, { color: theme.dim }, "Speak, and it moves — files, shell, web, the whole arsenal."),
-    h(Text, { color: theme.dim }, "⌃P command palette · /help for the full loadout."),
+    h(Text, { color: theme.dim }, "⌃P commands · ⌃O models (or /model) · /help for the full loadout."),
   );
 }
 
@@ -1041,6 +1117,58 @@ function InputDeck({
       ),
       h(Text, { color: busy ? theme.warn : theme.dim }, status),
     ),
+  );
+}
+
+function ModelPicker({
+  theme,
+  providerIdx,
+  models,
+  sel,
+  loading,
+  width,
+}: {
+  theme: DeckTheme;
+  providerIdx: number;
+  models: Array<{ id: string; label?: string; hint?: string }>;
+  sel: number;
+  loading: boolean;
+  width: number;
+}) {
+  const provider = PICKER_PROVIDERS[providerIdx];
+  const MAX = 8;
+  const s = models.length ? Math.min(sel, models.length - 1) : 0;
+  const start = models.length > MAX ? Math.min(Math.max(0, s - Math.floor(MAX / 2)), models.length - MAX) : 0;
+  const shown = models.slice(start, start + MAX);
+  return h(
+    Box,
+    { flexDirection: "column", width, borderStyle: theme.borderStyle, borderColor: theme.accent, paddingX: 1, marginTop: 1 },
+    h(
+      Box,
+      { justifyContent: "space-between" },
+      h(
+        Box,
+        { gap: 1 },
+        h(Text, { color: theme.accent, bold: true }, "▲ MODELS"),
+        ...PICKER_PROVIDERS.map((p, i) =>
+          h(Text, { key: p, color: i === providerIdx ? theme.accent2 : theme.dim, bold: i === providerIdx }, i === providerIdx ? `[${p}]` : p),
+        ),
+      ),
+      h(Text, { color: theme.dim }, "←→ provider · ↑↓ · enter · esc"),
+    ),
+    loading
+      ? h(Text, { color: theme.dim }, `  loading ${provider}…`)
+      : models.length === 0
+        ? h(Text, { color: theme.dim }, `  no models for ${provider} (check key / connection)`)
+        : shown.map((m, i) => {
+            const active = start + i === s;
+            return h(
+              Box,
+              { key: m.id, justifyContent: "space-between" },
+              h(Text, { color: active ? theme.accent2 : theme.text, bold: active }, `${active ? "▸ " : "  "}${m.label ?? m.id}`),
+              h(Text, { color: theme.dim, wrap: "truncate" }, m.hint ?? m.id),
+            );
+          }),
   );
 }
 

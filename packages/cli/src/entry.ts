@@ -5127,6 +5127,7 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     return await runInkChat({
       snapshot,
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
+      listModelOptions: (provider) => daemonModelCatalog(provider),
       sendMessage: async (goal, onEvent) => {
         await applyTerminalAutoRouting(live, goal);
         await prepareUserTurn(live, goal);

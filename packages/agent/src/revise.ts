@@ -1,3 +1,5 @@
+import type { ReflectionResult, ReflectionSurface } from "@ares/mind";
+
 export interface ReviseSignal {
   shouldRevise: boolean;
   reason: string;
@@ -17,4 +19,16 @@ export function beforeAgentFinalizeSignal(events: readonly { type: string; error
   }
   return { shouldRevise: false, reason: "No self-revision trigger." };
 }
+
+/** This advisory pass as a {@link ReflectionSurface}: same signal, uniform envelope.
+ *  It only advises (persists nothing), so persistedTo is always absent. */
+export const reviseReflectionSurface: ReflectionSurface<
+  readonly { type: string; error?: string; text?: string }[]
+> = {
+  name: "revise-signal",
+  run(events): ReflectionResult {
+    const signal = beforeAgentFinalizeSignal(events);
+    return { directives: signal.shouldRevise ? [signal.reason] : [] };
+  },
+};
 

@@ -49,6 +49,33 @@ export interface EvidenceEntry {
   fingerprint?: string;
 }
 
+/**
+ * The ONE shape every reflection surface conforms to. Ares has many reflection
+ * passes — self-model reflect(), after-action reflectOnRun(), conversation
+ * mergeDurableFacts(), the store's consolidate()/synthesize(), the revise signal —
+ * that historically each had a bespoke return shape and ad-hoc substrate, with no
+ * way to drive them uniformly. A ReflectionSurface takes an input bundle and
+ * returns the directives it produced and where (if anywhere) it persisted, so a
+ * caller can run any surface and report on it identically.
+ *
+ * Behavior is unchanged: this is a uniform *envelope* over the existing passes,
+ * not a new policy. `directives` are human-readable lines (a fix to make, a fact
+ * learned, a theme promoted); `persistedTo` names the substrate written (e.g.
+ * "memory.jsonl", "after-action", or undefined when the surface only advises).
+ */
+export interface ReflectionResult {
+  /** Human-readable directives/observations this pass produced. */
+  directives: string[];
+  /** Substrate the pass wrote to, or undefined when it only advises (writes nothing). */
+  persistedTo?: string;
+}
+
+export interface ReflectionSurface<I = unknown> {
+  /** A stable name for the surface (for logging / dispatch). */
+  readonly name: string;
+  run(inputs: I): Promise<ReflectionResult> | ReflectionResult;
+}
+
 export interface MemoryNode {
   /** Schema version this record was written with. See {@link MEMORY_SCHEMA_VERSION}. */
   v: number;

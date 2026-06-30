@@ -12,6 +12,7 @@
 // everything here is pure + testable: build the digest, dedup, write.
 
 import { jaccard, tokenizeSalient } from "./idf.js";
+import type { ReflectionResult, ReflectionSurface } from "./types.js";
 
 export type DurableFactKind = "preference" | "fact" | "decision" | "relationship" | "skill";
 
@@ -76,10 +77,16 @@ function isDuplicate(factContent: string, existing: readonly string[], threshold
   return false;
 }
 
+/** One semantic-fact add input — what mergeDurableFacts hands the store. */
+type DurableAddInput = { kind: "semantic"; content: string; tags?: string[]; source?: string; strength?: number };
+
 /** Minimal structural shape of MemoryStore that we need (keeps mind decoupled). */
 export interface ReflectStoreLike {
   all(): ReadonlyArray<{ content: string }>;
-  add(input: { kind: "semantic"; content: string; tags?: string[]; source?: string; strength?: number }): Promise<unknown>;
+  add(input: DurableAddInput): Promise<unknown>;
+  /** Optional batch add — when present, all accepted facts flush in ONE persist()
+   *  instead of one full-file rewrite per fact (O(N²) → O(N)). */
+  addMany?(inputs: readonly DurableAddInput[]): Promise<unknown>;
 }
 
 export interface MergeFactsResult {
@@ -100,13 +107,16 @@ export async function mergeDurableFacts(
   const existing = store.all().map((n) => n.content);
   const accepted = [...existing];
   const result: MergeFactsResult = { added: 0, skipped: 0, addedFacts: [] };
+  // Accumulate accepted adds and flush them in ONE write (addMany) when the store
+  // supports it — looping add() rewrote the whole memory file once per fact (O(N²)).
+  const pending: DurableAddInput[] = [];
 
   for (const fact of facts) {
     const content = (fact.content ?? "").trim();
     if (!content || content.length < 6) { result.skipped++; continue; }
     if ((fact.importance ?? 0) < minImportance) { result.skipped++; continue; }
     if (isDuplicate(content, accepted)) { result.skipped++; continue; }
-    await store.add({
+    pending.push({
       kind: "semantic",
       content,
       tags: ["reflected", "conversation", fact.kind],
@@ -117,5 +127,29 @@ export async function mergeDurableFacts(
     result.added++;
     result.addedFacts.push(content);
   }
+
+  if (pending.length > 0) {
+    if (store.addMany) {
+      await store.addMany(pending); // single flush
+    } else {
+      for (const input of pending) await store.add(input);
+    }
+  }
   return result;
 }
+
+/** This pass as a {@link ReflectionSurface}: same mergeDurableFacts(), uniform envelope. */
+export const conversationReflectionSurface: ReflectionSurface<{
+  store: ReflectStoreLike;
+  facts: ReadonlyArray<DurableFact>;
+  minImportance?: number;
+}> = {
+  name: "conversation-reflection",
+  async run({ store, facts, minImportance }): Promise<ReflectionResult> {
+    const merged = await mergeDurableFacts(store, facts, minImportance === undefined ? {} : { minImportance });
+    return {
+      directives: merged.addedFacts,
+      ...(merged.added > 0 ? { persistedTo: "memory.jsonl" } : {}),
+    };
+  },
+};

@@ -16,6 +16,7 @@ import path from "node:path";
 import { writeFileAtomic } from "../io.js";
 import { stateDir, safeProjectId, inferProjectId, loadProjectState, saveProjectState, type ProjectState } from "./missionState.js";
 import type { MemoryFragment } from "./contextCompiler.js";
+import type { ReflectionResult, ReflectionSurface } from "./types.js";
 
 export const AFTER_ACTION_SCHEMA = 1;
 
@@ -254,6 +255,22 @@ export async function reflectOnRun(facts: RunFacts, home?: string): Promise<Refl
   const { record: saved, project } = await recordAfterAction(record, home);
   return { recorded: true, record: saved, project };
 }
+
+/** This pass as a {@link ReflectionSurface}: same reflectOnRun(), uniform envelope. */
+export const afterActionReflectionSurface: ReflectionSurface<{ facts: RunFacts; home?: string }> = {
+  name: "after-action",
+  async run({ facts, home }): Promise<ReflectionResult> {
+    const outcome = await reflectOnRun(facts, home);
+    if (!outcome.recorded || !outcome.record) {
+      return { directives: [] };
+    }
+    const r = outcome.record;
+    return {
+      directives: [`${r.result}: ${r.summary}`, ...(r.nextActions ?? [])],
+      persistedTo: "after-action",
+    };
+  },
+};
 
 // ─── Render (compact; receipts kept, logs never) ─────────────────────────────
 

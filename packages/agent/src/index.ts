@@ -14,7 +14,8 @@ export { VIBE_RULES, vibeRulesMarkdown } from "./bootstrap/vibeRules.js";
 export { loadAgentSystemContext, composeAgentSystemPrompt, resolveAgentName, type AgentSystemContext, type AgentContextBlock } from "./identity/context.js";
 export { embedText, embedOptionsFromConfig, lexicalEmbedding, type EmbedOptions } from "./memory/embed.js";
 export { createMemoryStore, formatRecallReminder, type MemoryStore } from "./memory/vectorStore.js";
-export type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult } from "./memory/types.js";
+export type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult, CanonicalMemoryInput } from "./memory/types.js";
+export { memoryEntryToCanonical } from "./memory/types.js";
 export { onLifecycle, emitLifecycle, type LifecycleEvent, type DreamPhase } from "./lifecycle/bus.js";
 export { runHeartbeatTick, startHeartbeatLoop, type HeartbeatResult } from "./heartbeat.js";
 export { runLightDream, runDeepDream, runRemDream, type DreamResult } from "./dreaming.js";
@@ -35,7 +36,7 @@ export {
   type DeliberateOptions,
 } from "./cognition/advisory.js";
 export { recordCardMemoryOnce, type CardMemoryInput } from "./memory/cardMemory.js";
-export { beforeAgentFinalizeSignal, type ReviseSignal } from "./revise.js";
+export { beforeAgentFinalizeSignal, reviseReflectionSurface, type ReviseSignal } from "./revise.js";
 export { recordToolPattern, proposeSkills, type ToolPatternObservation, type SkillProposal } from "./skills.js";
 export { prepareAresAgent, AresAgentRuntime, type PreparedAgent } from "./runtime.js";
 export { BootstrapTool, type BootstrapToolOutput } from "./tools/Bootstrap.js";
@@ -65,7 +66,7 @@ export {
   type SelfModel,
   type SelfSummary,
 } from "./self/types.js";
-export { reflect, type SelfDirective, type DirectiveKind, type ReflectOptions } from "./self/reflect.js";
+export { reflect, selfModelReflectionSurface, type SelfDirective, type DirectiveKind, type ReflectOptions } from "./self/reflect.js";
 export { SelfTool, type SelfToolOutput } from "./tools/Self.js";
 export { MissionTool, type MissionToolOutput } from "./tools/Mission.js";
 export {

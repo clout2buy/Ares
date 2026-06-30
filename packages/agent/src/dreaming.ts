@@ -1,15 +1,15 @@
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { agentPaths, aresAgentHome } from "./paths.js";
 import { readTextIfExists, writeFileAtomic } from "./files.js";
-import type { AresAgentConfig } from "./config.js";
+import { expandHomePath, type AresAgentConfig } from "./config.js";
 import { createMemoryStore } from "./memory/vectorStore.js";
 import type { MemoryCategory } from "./memory/types.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
-import { MemoryStore as LivingMemoryStore, mindPaths } from "@ares/mind";
+import { MemoryStore as LivingMemoryStore, migrateLegacyVectors, mindPaths } from "@ares/mind";
 
 const DREAM_MEMORY_ITEM_CHARS = 420;
 const DREAM_MEMORY_MAX_ITEMS = 120;
@@ -40,8 +40,17 @@ export async function runLightDream(opts: {
   if (snippets.length > 0) {
     await appendFile(daily, [`\n## Session ${opts.sessionId}`, ...snippets.map((s) => `- ${s}`), ""].join("\n"), "utf8");
     const store = await createMemoryStore(opts.config, home);
+    // Dream candidates must land in BOTH substrates: the v4 vector store (for the
+    // DEEP-dream promotion pass that reads store.list()) AND the v6 living memory
+    // the live turn actually recalls from. Writing only v4 left dreamed memories
+    // invisible to recall — staged into a silo the live brain never reads.
+    const living = await LivingMemoryStore.open(mindPaths(home).memoryFile).catch(() => null);
     for (const snippet of snippets) {
       await store.add({ category: classifySignal(snippet), workspace: opts.workspace, content: snippet, source: "light-dreaming", score: 0.55 });
+      // Episodic in v6: a dream candidate is a raw session signal; consolidation
+      // crystallizes the recurring ones into semantic. Best-effort — a dream is
+      // never broken by the living store being unavailable.
+      await living?.add({ kind: "episodic", content: snippet, source: "light-dreaming", strength: 0.55 }).catch(() => undefined);
     }
   }
   const report = snippets.length > 0 ? `LIGHT staged ${snippets.length} memory candidate(s).` : "LIGHT found no durable memory candidates.";
@@ -73,6 +82,10 @@ export async function runDeepDream(opts: {
     await writeFileAtomic(paths.memory, lines.join("\n") + "\n");
   }
   const soulPromoted = await promoteSoulRules(paths.soul, promoted, opts.config.dreaming.soulRewriteThreshold);
+  // One-time v4→v6 fold: migrate the legacy vector store into living memory once,
+  // guarded by a marker file so it never re-scans. Idempotent on its own too
+  // (content-hash dedup) — the marker just avoids the read every deep dream.
+  await migrateLegacyVectorsOnce(home, expandHomePath(opts.config.memory.jsonFallbackPath, home));
   const now = opts.now ?? new Date();
   // Real reflection: reason over the self-model and record what to fix, acquire,
   // or prune. This is the "why did I fail / what should I become" layer.
@@ -121,6 +134,33 @@ async function synthesizeLivingMemory(home: string, now: Date): Promise<string> 
     return `${report.insights} insight(s) + ${report.beliefs} belief(s) crystallized`;
   } catch {
     return "";
+  }
+}
+
+/**
+ * Fold the legacy v4 vector store into v6 living memory exactly once. Guarded by a
+ * `.v4-migrated` marker beside the memory file so it doesn't re-scan vectors.json
+ * on every deep dream. Best-effort — never throws, so a dream can't be broken by a
+ * missing/corrupt legacy file (migrateLegacyVectors already no-ops on those).
+ */
+async function migrateLegacyVectorsOnce(home: string, legacyDbJsonPath: string): Promise<void> {
+  try {
+    const memoryFile = mindPaths(home).memoryFile;
+    const marker = path.join(path.dirname(memoryFile), ".v4-migrated");
+    if (await readTextIfExists(marker, 256)) return; // already migrated
+    const store = await LivingMemoryStore.open(memoryFile);
+    const report = await migrateLegacyVectors({ store, legacyDbJsonPath });
+    await mkdir(path.dirname(marker), { recursive: true });
+    await writeFile(marker, `${new Date().toISOString()} migrated=${report.migrated} scanned=${report.scanned}\n`, "utf8");
+    if (report.migrated > 0) {
+      emitLifecycle({
+        type: "thought",
+        kind: "reflect",
+        text: `Folded ${report.migrated} legacy v4 memory(ies) into living memory.`,
+      });
+    }
+  } catch {
+    // Migration is an upgrade convenience; a failure must never break a dream.
   }
 }
 

@@ -20,13 +20,25 @@ import { recall, type RecallOptions, type RecallResult } from "./recall.js";
 import { contentHash, type EmbedIndex, type Embedder } from "./embedIndex.js";
 import { buildIdf } from "./idf.js";
 import { clusterByConcept, detectRecurringFailures, type Phraser } from "./synthesis.js";
-import { MEMORY_SCHEMA_VERSION, type CrucibleCheck, type HypothesisStatus, type MemoryKind, type MemoryNode } from "./types.js";
+import { MEMORY_SCHEMA_VERSION, type CrucibleCheck, type HypothesisStatus, type MemoryKind, type MemoryNode, type ReflectionResult, type ReflectionSurface } from "./types.js";
 
 export interface ConsolidationReport {
   pruned: number;
   deduped: number;
   promoted: string[];
   kept: number;
+}
+
+/** Input shape for adding a memory node (shared by add() and addMany()). */
+export interface AddInput {
+  kind: MemoryKind;
+  content: string;
+  tags?: string[];
+  source?: string;
+  strength?: number;
+  at?: Date;
+  status?: HypothesisStatus;
+  check?: CrucibleCheck;
 }
 
 export interface SynthesisReport {
@@ -149,16 +161,31 @@ export class MemoryStore {
     return this.nodes.size;
   }
 
-  async add(input: {
-    kind: MemoryKind;
-    content: string;
-    tags?: string[];
-    source?: string;
-    strength?: number;
-    at?: Date;
-    status?: HypothesisStatus;
-    check?: CrucibleCheck;
-  }): Promise<MemoryNode> {
+  async add(input: AddInput): Promise<MemoryNode> {
+    const node = this.insert(input);
+    await this.persist();
+    // Embed at write time — but in the background. A turn never waits on a model.
+    this.scheduleEmbedRefresh();
+    return node;
+  }
+
+  /**
+   * Add many nodes with a SINGLE persist() at the end. A bulk write (durable-fact
+   * merges, dream candidate batches) that looped add() rewrote the whole JSONL
+   * file once per node — N adds → N full-file rewrites, O(N²). This inserts all
+   * in memory, then flushes once. Same nodes, same embed refresh, one write.
+   */
+  async addMany(inputs: readonly AddInput[]): Promise<MemoryNode[]> {
+    if (inputs.length === 0) return [];
+    const nodes = inputs.map((input) => this.insert(input));
+    await this.persist();
+    this.scheduleEmbedRefresh();
+    return nodes;
+  }
+
+  /** Build + register a node in memory WITHOUT persisting — the shared core of
+   *  add()/addMany(). Callers own the flush so a batch can write the file once. */
+  private insert(input: AddInput): MemoryNode {
     const at = (input.at ?? new Date()).toISOString();
     const node: MemoryNode = {
       v: MEMORY_SCHEMA_VERSION,
@@ -176,9 +203,6 @@ export class MemoryStore {
       check: input.check,
     };
     this.nodes.set(node.id, node);
-    await this.persist();
-    // Embed at write time — but in the background. A turn never waits on a model.
-    this.scheduleEmbedRefresh();
     return node;
   }
 
@@ -583,6 +607,43 @@ export class MemoryStore {
     return merged;
   }
 }
+
+/** consolidate() as a {@link ReflectionSurface}: same call, uniform envelope. */
+export const consolidateReflectionSurface: ReflectionSurface<{ store: MemoryStore; now?: Date }> = {
+  name: "consolidate",
+  async run({ store, now }): Promise<ReflectionResult> {
+    const report = await store.consolidate(now === undefined ? {} : { now });
+    const directives = [
+      ...(report.pruned ? [`pruned ${report.pruned} faded memory(ies)`] : []),
+      ...(report.deduped ? [`merged ${report.deduped} duplicate(s)`] : []),
+      ...report.promoted.map((t) => `promoted theme "${t}"`),
+    ];
+    return { directives, persistedTo: "memory.jsonl" };
+  },
+};
+
+/** synthesize() as a {@link ReflectionSurface}: same call, uniform envelope. */
+export const synthesizeReflectionSurface: ReflectionSurface<{
+  store: MemoryStore;
+  now?: Date;
+  synthesizer?: Phraser;
+  minMembers?: number;
+}> = {
+  name: "synthesize",
+  async run({ store, now, synthesizer, minMembers }): Promise<ReflectionResult> {
+    const report = await store.synthesize({
+      ...(now === undefined ? {} : { now }),
+      ...(synthesizer === undefined ? {} : { synthesizer }),
+      ...(minMembers === undefined ? {} : { minMembers }),
+    });
+    const directives = [
+      ...(report.insights ? [`crystallized ${report.insights} insight(s)`] : []),
+      ...(report.beliefs ? [`crystallized ${report.beliefs} belief(s)`] : []),
+      ...(report.updated ? [`reinforced ${report.updated} synthesis node(s)`] : []),
+    ];
+    return { directives, persistedTo: "memory.jsonl" };
+  },
+};
 
 function sanitizeNode(node: MemoryNode): MemoryNode {
   const content = trimMemoryContent(node.content);

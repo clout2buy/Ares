@@ -7,7 +7,14 @@
 //
 // M2 Cognition (the thought process) lands on top of this.
 
-export { MemoryStore, type ConsolidationReport, type SynthesisReport } from "./memory/store.js";
+export {
+  MemoryStore,
+  consolidateReflectionSurface,
+  synthesizeReflectionSurface,
+  type AddInput,
+  type ConsolidationReport,
+  type SynthesisReport,
+} from "./memory/store.js";
 export { diagnoseMemory, type MemoryDoctorReport, type DuplicateMemoryGroup } from "./memory/doctor.js";
 export { recall, type RecallResult, type RecallOptions, type RecallVectors } from "./memory/recall.js";
 export {
@@ -65,6 +72,7 @@ export {
   renderAfterActionFragment,
   summarizeRun,
   reflectOnRun,
+  afterActionReflectionSurface,
   afterActionDir,
   AFTER_ACTION_SCHEMA,
   type AfterActionRecord,
@@ -75,6 +83,7 @@ export {
 export {
   buildConversationDigest,
   mergeDurableFacts,
+  conversationReflectionSurface,
   CONVERSATION_REFLECT_SYSTEM,
   DURABLE_FACTS_SCHEMA_HINT,
   type DurableFact,
@@ -91,7 +100,7 @@ export {
   type MindPaths,
 } from "./paths.js";
 export { MEMORY_SCHEMA_VERSION } from "./memory/types.js";
-export type { MemoryNode, MemoryKind, HypothesisStatus, CrucibleCheck, EvidenceEntry } from "./memory/types.js";
+export type { MemoryNode, MemoryKind, HypothesisStatus, CrucibleCheck, EvidenceEntry, ReflectionSurface, ReflectionResult } from "./memory/types.js";
 
 // ── M2: Cognition (the thought process) ───────────────────────────────────
 export { consider, detectDrives, type ConsiderDeps, type ReasonOption, type CapabilityGap } from "./cognition/cognition.js";

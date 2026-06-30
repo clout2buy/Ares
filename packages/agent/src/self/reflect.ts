@@ -4,6 +4,7 @@
 // outcome-grounded self-direction. It emits concrete, actionable directives;
 // the agent (or heartbeat/dream) decides whether to act on them.
 
+import type { ReflectionResult, ReflectionSurface } from "@ares/mind";
 import type { Capability, SelfModel } from "./types.js";
 import { reliabilityOf } from "./types.js";
 
@@ -65,6 +66,17 @@ export function reflect(model: SelfModel, opts: ReflectOptions = {}): SelfDirect
 
   return directives.sort((a, b) => b.severity - a.severity);
 }
+
+/** This pass as a {@link ReflectionSurface}: same reflect(), uniform envelope. It
+ *  only advises (the caller — dream/heartbeat — decides whether to act), so it
+ *  persists nothing. */
+export const selfModelReflectionSurface: ReflectionSurface<{ model: SelfModel; opts?: ReflectOptions }> = {
+  name: "self-model",
+  run({ model, opts }): ReflectionResult {
+    const directives = reflect(model, opts ?? {});
+    return { directives: directives.map((d) => `[${d.kind}] ${d.capabilityName}: ${d.reason}`) };
+  },
+};
 
 function acquireDirective(cap: Capability): SelfDirective {
   return {

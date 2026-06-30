@@ -20,9 +20,20 @@ import { MemoryStore as LivingMemoryStore, EmbedIndex, ollamaEmbedder, type Reca
 import type { AresAgentConfig } from "../config.js";
 import { recallForTurn } from "../recall.js";
 
-// Files whose sidecar vector index has already been reindexed this process, so
-// the one-time reindex on first wire doesn't repeat every recall.
-const embedReindexed = new Set<string>();
+// Recall is a WRITE path: v6 remember() reinforces and then persists by REWRITING
+// the whole memory.jsonl from its in-memory node map (store.persist()). The SAME
+// file is also written by ~a dozen short-lived handles (the LivingMind tool,
+// session-end consolidate, …), each of which opens its own store. So we must NOT
+// keep a long-lived cached store and persist from it: its map would go stale as
+// those handles write, and the next recall's persist() would silently clobber
+// their nodes. We re-open (re-read) per turn so the store always reflects current
+// disk — correctness over the small cost of re-reading a typically-tiny file.
+//
+// The ONLY thing kept across turns is the one-time sidecar-reindex flag, in a
+// bounded per-file set (one short string per distinct memory file — not the old
+// per-recall-unbounded `embedReindexed` growth), so reindex runs at most once per
+// file per process without caching any mutable store.
+const reindexedFiles = new Set<string>();
 
 /**
  * Open the living-memory store with SEMANTIC seeding wired in. Without this the
@@ -45,9 +56,10 @@ async function openLivingStore(file?: string): Promise<LivingMemoryStore> {
         ...(process.env.ARES_MIND_EMBED_URL ? { baseUrl: process.env.ARES_MIND_EMBED_URL } : {}),
       });
       store.attachEmbedder(embedder, index);
-      if (!embedReindexed.has(file)) {
-        embedReindexed.add(file);
-        // Populate the sidecar once, in the background — never await on a turn.
+      // Populate the sidecar once per file per process, in the background — never
+      // await on a turn.
+      if (!reindexedFiles.has(file)) {
+        reindexedFiles.add(file);
         void store.reindex().catch(() => {});
       }
     } catch {

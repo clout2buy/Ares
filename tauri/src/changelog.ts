@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.12.0",
+    date: "June 2026",
+    title: "Does what it says",
+    tagline: "The reliability release — Ares stops dropping tool calls, won't claim work it didn't finish, and the effort dial finally changes how hard it thinks.",
+    highlights: [
+      {
+        icon: "🎚️",
+        title: "The effort dial works",
+        tag: "New",
+        blurb: "Set how hard Ares thinks and it now actually changes the model's effort on every provider — plus a real Off for when you just want speed.",
+      },
+      {
+        icon: "🎯",
+        title: "No more silent tool fails",
+        tag: "Safer",
+        blurb: "When a tool call gets garbled or cut off mid-stream, Ares catches it and retries instead of pretending it ran — far fewer mystery stalls.",
+      },
+      {
+        icon: "🧾",
+        title: "Honest about “done”",
+        tag: "Safer",
+        blurb: "Ares can't report success when the build is still red, an answer got cut off, or a background agent crashed — what it tells you matches what actually happened.",
+      },
+      {
+        icon: "✏️",
+        title: "Edits you can trust",
+        tag: "Safer",
+        blurb: "After changing a file, Ares re-reads the real result and shows you the edited lines — no more working from a stale copy and editing blind.",
+      },
+      {
+        icon: "⏱️",
+        title: "Won't freeze or rush you",
+        tag: "Polished",
+        blurb: "Background tasks, web checks, and tool servers all have real deadlines so nothing wedges — and taking your time to approve an action no longer makes a tool “time out”.",
+      },
+    ],
+  },
+  {
     version: "0.11.2",
     date: "June 2026",
     title: "You're in control",

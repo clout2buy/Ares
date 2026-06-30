@@ -62,3 +62,7 @@ tauri/dist/
 *.tgz
 holo-demo.html
 holo-arm.html
+
+# Generated audit/scratch artifacts (kept local, never committed)
+.ares-*-report.md
+.codex-*.png

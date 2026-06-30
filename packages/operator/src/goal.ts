@@ -9,6 +9,13 @@ import type { Goal, GoalStatus, GoalStepRecord, StepVerdict, VerificationSpec } 
 
 const DEFAULT_MAX_NO_PROGRESS = 3;
 
+// How many recent world fingerprints to remember for oscillation detection, and
+// how many times a single state may recur within that window before we call it a
+// cycle. A genuine convergence visits each intermediate state at most once; an
+// A/B/A/B shuffler revisits the same handful of states over and over.
+const FINGERPRINT_HISTORY = 6;
+const OSCILLATION_RECURRENCE = 3;
+
 export function createGoal(input: {
   id: string;
   statement: string;
@@ -72,8 +79,15 @@ export function markInFlight(goal: Goal, now = new Date()): Goal {
  *   goalMet            → done
  *   moved              → keep going, streak reset
  *   no progress × N    → blocked (diverged; escalate rather than thrash)
+ *   world oscillates   → blocked (the gap "moves" but only cycles A/B/A/B)
+ *
+ * `fingerprint` is the post-act world fingerprint (when the loop has one). It
+ * feeds the oscillation ring: a Worker that shuffles the world every tick keeps
+ * `moved=true` and so never trips the no-progress streak, but it only ever
+ * revisits a small set of states. Catching that cycle blocks the goal for
+ * escalation instead of letting it thrash to the tick ceiling.
  */
-export function applyVerdict(goal: Goal, verdict: StepVerdict, now = new Date()): Goal {
+export function applyVerdict(goal: Goal, verdict: StepVerdict, now = new Date(), fingerprint?: string): Goal {
   if (goal.status !== "active") return goal;
   const at = now.toISOString();
   const index = goal.stepLog.length;
@@ -82,6 +96,7 @@ export function applyVerdict(goal: Goal, verdict: StepVerdict, now = new Date())
     at,
     moved: verdict.moved,
     goalMet: verdict.goalMet,
+    unverified: verdict.unverified || undefined,
     evidence: verdict.evidence?.trim() || undefined,
     prediction: verdict.prediction,
   };
@@ -89,14 +104,26 @@ export function applyVerdict(goal: Goal, verdict: StepVerdict, now = new Date())
   const progress = goal.progress + (verdict.moved ? 1 : 0);
   const noProgressStreak = verdict.moved ? 0 : goal.noProgressStreak + 1;
 
+  // Roll the fingerprint ring forward, but only when the step claimed to move —
+  // a no-progress step is already caught by the streak and shouldn't pollute the
+  // cycle history (an unchanged fingerprint isn't oscillation).
+  const recentFingerprints =
+    verdict.moved && fingerprint !== undefined
+      ? [...(goal.recentFingerprints ?? []), fingerprint].slice(-FINGERPRINT_HISTORY)
+      : goal.recentFingerprints;
+
   let status: GoalStatus = "active";
   let verdictText = goal.verdict;
   if (verdict.goalMet) {
     status = "done";
     verdictText = record.evidence ?? "goal met";
+    if (verdict.unverified) verdictText = `${verdictText} (unverified — no reality probe could corroborate)`;
   } else if (noProgressStreak >= goal.maxNoProgress) {
     status = "blocked";
     verdictText = `diverged: ${noProgressStreak} step(s) made no progress${record.evidence ? ` — ${record.evidence}` : ""}`;
+  } else if (isOscillating(recentFingerprints)) {
+    status = "blocked";
+    verdictText = `diverged: world oscillated between ${new Set(recentFingerprints).size} states without converging${record.evidence ? ` — ${record.evidence}` : ""}`;
   }
 
   return {
@@ -104,11 +131,28 @@ export function applyVerdict(goal: Goal, verdict: StepVerdict, now = new Date())
     stepLog,
     progress,
     noProgressStreak,
+    recentFingerprints,
     status,
     verdict: verdictText,
     inFlightStep: undefined,
     updatedAt: at,
   };
+}
+
+/**
+ * An A/B/A/B world: the fingerprint keeps changing (so `moved` stays true), but
+ * it only ever revisits a small set of states. We call it a cycle once some state
+ * recurs OSCILLATION_RECURRENCE times within the recent window AND the window has
+ * stopped introducing new states (distinct states ≤ half the window). Genuine
+ * convergence visits each intermediate state at most once, so it never trips this.
+ */
+function isOscillating(history: string[] | undefined): boolean {
+  if (!history || history.length < FINGERPRINT_HISTORY) return false;
+  const counts = new Map<string, number>();
+  for (const fp of history) counts.set(fp, (counts.get(fp) ?? 0) + 1);
+  const distinct = counts.size;
+  const maxRecurrence = Math.max(...counts.values());
+  return maxRecurrence >= OSCILLATION_RECURRENCE && distinct <= Math.floor(history.length / 2);
 }
 
 export function abandonGoal(goal: Goal, reason: string, now = new Date()): Goal {

@@ -18,6 +18,12 @@ export interface GoalStepRecord {
   at: string;
   moved: boolean; // did this step shrink the gap?
   goalMet: boolean; // did this step satisfy the whole goal?
+  /**
+   * goalMet was accepted on the Worker's say-so with NO reality probe able to
+   * corroborate it (spec-less goal + no WorldModel). The completion is real but
+   * UNVERIFIED — surfaced so the caller can flag it rather than trust it blindly.
+   */
+  unverified?: boolean;
   evidence?: string;
   /** The Worker's pre-commit prediction — fuels O7 calibration later. */
   prediction?: { outcome: string; p: number };
@@ -44,6 +50,13 @@ export interface Goal {
   verification?: VerificationSpec;
   /** Last reality fingerprint seen — lets the loop tell if a step changed the world. */
   lastFingerprint?: string;
+  /**
+   * A short ring of recent world fingerprints. An oscillating Worker that shuffles
+   * the world every tick keeps `moved=true` (so the no-progress streak never trips),
+   * yet the world only cycles between a small set of states (A/B/A/B). This history
+   * lets applyVerdict catch that cycle and block instead of thrashing to the ceiling.
+   */
+  recentFingerprints?: string[];
   /** Count of steps that moved the gap — the convergence signal. */
   progress: number;
   /** Consecutive no-progress steps; hits maxNoProgress → divergence. */
@@ -65,6 +78,12 @@ export interface Goal {
 export interface StepVerdict {
   moved: boolean;
   goalMet: boolean;
+  /**
+   * Set when goalMet was accepted with NO reality probe able to corroborate it
+   * (spec-less goal + no WorldModel). Lets the loop record the completion as
+   * real-but-unverified instead of silently trusting the Worker's say-so.
+   */
+  unverified?: boolean;
   evidence?: string;
   prediction?: { outcome: string; p: number };
 }

@@ -59,6 +59,19 @@ export class QueryEngineDispatcher implements Dispatcher {
       seed: { kind: "work-item", text: buildStepPrompt(goal) },
     });
 
+    // A failed/interrupted fork still returns whatever partial text it streamed.
+    // Short-circuit BEFORE evaluate: otherwise defaultEvaluate sees moved=text>0
+    // and a crashed fork masquerades as PROGRESS (resetting the no-progress
+    // streak forever, and possibly self-certifying goalMet off partial prose).
+    // 'failed' | 'interrupted' are forkedTurn's terminal-failure TurnEndStatus.
+    if (result.status === "failed" || result.status === "interrupted") {
+      return {
+        moved: false,
+        goalMet: false,
+        evidence: `worker fork ${result.status}: ${result.streamedText.trim().slice(0, 200) || "(no output)"}`,
+      };
+    }
+
     return (this.opts.evaluate ?? defaultEvaluate)(result.streamedText, goal);
   }
 }
@@ -111,10 +124,17 @@ function describeVerification(v: VerificationSpec): string {
  * O1 placeholder: a non-empty turn counts as progress; an explicit "met"
  * signal counts as completion. Deliberately naive — replaced by O3's reality
  * probe. Real convergence must never rest on the model's say-so.
+ *
+ * A `goalMet` derived from a REGEX over the Worker's prose has no world
+ * corroboration behind it, so we always tag it `unverified`. The control loop
+ * then demands a reality probe (the goal's VerificationSpec, or the WorldModel
+ * for a spec-less goal) before it lets a step certify the goal done — and where
+ * no probe can corroborate, the completion is recorded as real-but-unverified
+ * rather than trusted blindly. This keeps the bare regex from self-certifying.
  */
 export function defaultEvaluate(turnText: string, _goal: Goal): StepVerdict {
   const text = turnText.trim();
   const moved = text.length > 0;
   const goalMet = /\bgoal\s+(?:is\s+)?(?:now\s+)?(?:fully\s+)?met\b/i.test(text);
-  return { moved, goalMet, evidence: text.slice(0, 200) || undefined };
+  return { moved, goalMet, unverified: goalMet || undefined, evidence: text.slice(0, 200) || undefined };
 }

@@ -59,6 +59,16 @@ const inputSchema = z
     result: z.string().optional().describe("Outcome text for step_done, or the verification verdict for verify."),
     reason: z.string().optional().describe("Reason for step_failed / abandon, or a free note."),
     passed: z.boolean().optional().describe("For verify: true if the goal is genuinely met, false to loop and try again."),
+    verifiedBy: z
+      .object({
+        kind: z.enum(["command", "file", "http", "tool"]).describe("What kind of check ran."),
+        detail: z.string().describe("The command run, the file checked, etc."),
+        passed: z.boolean().describe("Whether that check actually passed."),
+      })
+      .optional()
+      .describe(
+        "For verify: corroboration that a tool actually confirmed the goal (a passing test, a grep hit, an exit-0 command). Without it, passed:true still completes but is flagged UNVERIFIED self-report — so attach it whenever a real check ran.",
+      ),
     maxIterations: z.number().int().optional().describe("Loop budget for create (1-20, default 6)."),
   })
   .strict();
@@ -189,7 +199,11 @@ export const MissionTool = buildTool({
       case "verify": {
         if (typeof input.passed !== "boolean") throw new Error("Mission.verify requires passed: true|false");
         const verdict = input.result ?? input.reason ?? "";
-        const { mission: verified, outcome } = verifyMission(mission, { passed: input.passed, verdict });
+        const { mission: verified, outcome, unverified } = verifyMission(mission, {
+          passed: input.passed,
+          verdict,
+          verifiedBy: input.verifiedBy,
+        });
         const file = await saveMission(home, verified);
         emitLifecycle({
           type: "mission_verified",
@@ -226,7 +240,7 @@ export const MissionTool = buildTool({
         const directive = nextDirective(verified);
         const display =
           outcome === "completed"
-            ? `MISSION COMPLETE — "${trim(verified.goal)}" [${verified.id}]`
+            ? `MISSION COMPLETE${unverified ? " (UNVERIFIED self-report — no tool-executed check corroborated)" : ""} — "${trim(verified.goal)}" [${verified.id}]`
             : outcome === "abandoned"
               ? `Mission abandoned — budget spent [${verified.id}]`
               : `Mission loop — iteration ${verified.iterations}/${verified.maxIterations} [${verified.id}]`;

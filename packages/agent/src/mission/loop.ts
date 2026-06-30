@@ -96,23 +96,53 @@ export function failStep(mission: Mission, reason: string, stepId?: string, now 
 export interface VerifyResult {
   mission: Mission;
   outcome: "completed" | "looped" | "abandoned";
+  /**
+   * The mission completed on the agent's self-report with NO tool-executed
+   * check (a run test, a grep, a build) to corroborate it. The completion is
+   * recorded so the loop never hangs, but the caller MUST surface this rather
+   * than treat the goal as reality-verified — this is the false-victory class.
+   */
+  unverified?: boolean;
+}
+
+/**
+ * Corroboration for a `passed:true` self-report: evidence that a tool actually
+ * ran and confirmed the goal (a passing test, a grep hit, an exit-0 command).
+ * Without it, the model is grading its own homework — `verifyMission` records
+ * the completion but flags it `unverified`. Pass it through from the mission's
+ * own verify command/probe at the call site.
+ */
+export interface MissionVerifyEvidence {
+  /** What kind of check ran. */
+  kind: "command" | "file" | "http" | "tool";
+  /** A human-readable note: the command run, the file checked, etc. */
+  detail: string;
+  /** Did the corroborating check actually pass? Only `true` blesses the claim. */
+  passed: boolean;
 }
 
 export function verifyMission(
   mission: Mission,
-  input: { passed: boolean; verdict: string },
+  input: { passed: boolean; verdict: string; verifiedBy?: MissionVerifyEvidence },
   now = new Date(),
 ): VerifyResult {
   if (isTerminal(mission.status)) throw new Error(`mission ${mission.id} is already ${mission.status}`);
   const verdict = input.verdict.trim();
   if (input.passed) {
+    // Require a tool-executed check before blessing the claim as reality. A
+    // bare self-report (no `verifiedBy`, or a check that did not pass) still
+    // completes the mission so nothing hangs, but is recorded as UNVERIFIED so
+    // the caller can flag it instead of trusting the model's say-so.
+    const corroborated = input.verifiedBy?.passed === true;
+    const unverified = !corroborated || undefined;
+    const detail = input.verifiedBy ? ` [${input.verifiedBy.kind}: ${truncate(input.verifiedBy.detail, 80)}]` : "";
     const next = touch(
-      { ...mission, status: "completed", verdict },
+      { ...mission, status: "completed", verdict: unverified ? `${verdict || "goal met"} (unverified — no tool-executed check corroborated)` : verdict },
       now,
       "completed",
-      verdict || "goal met",
+      `${verdict || "goal met"}${corroborated ? detail : " — UNVERIFIED self-report"}`,
     );
-    return { mission: next, outcome: "completed" };
+    return { mission: next, outcome: "completed", unverified };
   }
 
   const iterations = mission.iterations + 1;

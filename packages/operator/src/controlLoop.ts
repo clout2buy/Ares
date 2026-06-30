@@ -12,6 +12,7 @@
 import { applyVerdict, completeGoal, isActive, isTerminal, markInFlight } from "./goal.js";
 import { activeGoals, loadGoal, saveGoal } from "./store.js";
 import { runProbe, type ProbeResult } from "./probe.js";
+import type { WorldModel, WorldSnapshot } from "./worldModel.js";
 import {
   ensureGoalMissionContract,
   goalCanCompleteFromMission,
@@ -32,6 +33,15 @@ export interface ControlLoopContext {
   workspace?: string;
   /** Override the reality probe (tests). Defaults to runProbe against the workspace. */
   probe?: (spec: VerificationSpec, signal: AbortSignal) => Promise<ProbeResult>;
+  /**
+   * The reality model used to corroborate a SPEC-LESS goal's `goalMet=true`.
+   * Without it, a goal that carries no per-goal VerificationSpec would complete
+   * on the Worker's bare say-so. When supplied, the loop re-derives the world
+   * before and after each step: a step that does not move reality cannot certify
+   * the goal done. When NEITHER a spec nor a world is available, completion is
+   * still accepted but flagged `unverified` so nothing hangs forever.
+   */
+  world?: WorldModel;
 }
 
 /** Drive one goal one step forward. Reloads durable state first (resume-safe). */
@@ -67,6 +77,14 @@ export async function tickGoal(ctx: ControlLoopContext, goalRef: Goal): Promise<
     }
   }
 
+  // For a spec-less goal, the WorldModel (if any) is the only reality available.
+  // Snapshot it BEFORE the step so VERIFY can tell whether the world actually
+  // moved — a `goalMet=true` that didn't touch reality must not be believed.
+  const worldPre: WorldSnapshot | null =
+    !activeGoal.verification && ctx.world && ctx.world.names().length > 0
+      ? await ctx.world.refresh(signal)
+      : null;
+
   // Mark in-flight + persist so a crash mid-ACT is visible on the next start.
   const flighted = markInFlight(activeGoal, now());
   await saveGoal(ctx.home, flighted);
@@ -99,12 +117,38 @@ export async function tickGoal(ctx: ControlLoopContext, goalRef: Goal): Promise<
     fingerprint = post.fingerprint ?? fingerprint;
   } else {
     contract = await recordGoalStepProgress(ctx.home, contract, claim.evidence, now());
-    verdict = { ...claim, goalMet: claim.goalMet && goalCanCompleteFromMission(contract) };
+    // Spec-less goal: the Worker's bare `goalMet=true` is not enough on its own.
+    // Re-derive the world and demand corroboration — a step that did not move
+    // reality cannot certify the goal done. With no world to ask at all, we accept
+    // but mark it `unverified` rather than hang forever on an unprovable claim.
+    if (worldPre) {
+      const worldPost = await ctx.world!.refresh(signal);
+      const worldMoved = worldPre.fingerprint !== worldPost.fingerprint;
+      const corroborated = worldMoved || anySourceMet(worldPost);
+      const canComplete = claim.goalMet && corroborated && goalCanCompleteFromMission(contract);
+      verdict = {
+        ...claim,
+        moved: worldMoved || claim.moved,
+        goalMet: canComplete,
+        // The WorldModel sources are a GLOBAL set with no link to THIS goal — an
+        // unrelated already-green source (or an incidental fingerprint move) can
+        // "corroborate" a bare regex goalMet. That corroboration is NOT
+        // goal-scoped, so we must NOT claim reality-verified: keep `unverified`
+        // set (mirror the else-branch). A spec-less goal completes but stays
+        // flagged; goal.ts renders the unverified suffix downstream.
+        unverified: canComplete || undefined,
+      };
+      fingerprint = worldPost.fingerprint;
+    } else {
+      const canComplete = claim.goalMet && goalCanCompleteFromMission(contract);
+      verdict = { ...claim, goalMet: canComplete, unverified: canComplete || undefined };
+    }
   }
   ctx.emit?.({ type: "step_verdict", goalId: goal.id, index, moved: verdict.moved, goalMet: verdict.goalMet });
 
-  // LEARN → PERSIST.
-  const next = withFingerprint(applyVerdict(flighted, verdict, now()), fingerprint);
+  // LEARN → PERSIST. Hand the post-act fingerprint to applyVerdict so an
+  // A/B/A/B oscillation (moved stays true, world only cycles) trips divergence.
+  const next = withFingerprint(applyVerdict(flighted, verdict, now(), fingerprint), fingerprint);
   await saveGoal(ctx.home, next);
 
   if (next.status === "done") {
@@ -118,6 +162,11 @@ export async function tickGoal(ctx: ControlLoopContext, goalRef: Goal): Promise<
 
 function withFingerprint(goal: Goal, fingerprint: string | undefined): Goal {
   return fingerprint !== undefined ? { ...goal, lastFingerprint: fingerprint } : goal;
+}
+
+/** True if any of the world's sources reports reality as currently met. */
+function anySourceMet(snapshot: WorldSnapshot): boolean {
+  return Object.values(snapshot.sources).some((r) => r.met);
 }
 
 /** One full sweep across every active goal. */

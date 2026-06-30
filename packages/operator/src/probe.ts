@@ -114,8 +114,14 @@ function runCommand(
 
 async function probeHttp(spec: Extract<VerificationSpec, { kind: "http" }>, ctx: ProbeContext): Promise<ProbeResult> {
   const expect = spec.expectStatus ?? 200;
+  // ALWAYS impose a deadline. The caller (controlLoop) always threads a signal,
+  // and it's usually a never-firing one — so `ctx.signal ?? timeout` would drop
+  // spec.timeoutMs and fetch() would have no deadline, hanging the loop forever.
+  // Race the caller's signal against our own timeout the way probeCommand does.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), spec.timeoutMs ?? 10_000);
+  const signal = ctx.signal ? AbortSignal.any([ctx.signal, ctrl.signal]) : ctrl.signal;
   try {
-    const signal = ctx.signal ?? AbortSignal.timeout(spec.timeoutMs ?? 10_000);
     const res = await fetch(spec.url, { signal });
     const body = spec.contains !== undefined ? await res.text() : "";
     const statusOk = res.status === expect;
@@ -127,5 +133,7 @@ async function probeHttp(spec: Extract<VerificationSpec, { kind: "http" }>, ctx:
     };
   } catch (err) {
     return { met: false, summary: `GET ${spec.url} failed: ${err instanceof Error ? err.message : String(err)}`, fingerprint: "error" };
+  } finally {
+    clearTimeout(timer);
   }
 }

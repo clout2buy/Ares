@@ -330,7 +330,11 @@ export function destructiveShellDecision(command: string): PermissionDecision | 
     /(?:^|[;&|]\s*)rm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+/i.test(normalized) ||
     /(?:^|[;&|]\s*)(?:rmdir|unlink|shred)\b/i.test(normalized) ||
     /\bgit\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--)\b/i.test(normalized) ||
-    /\b(?:mkfs(?:\.\w+)?|wipefs|format)\b/i.test(normalized) ||
+    // `format(?!-)` matches the disk-format command ("format C:") but NOT the
+    // benign PowerShell Format-* cmdlets (Format-Table/List/Hex/…) — `\bformat\b`
+    // alone fired on every `... | Format-Table`, falsely prompting "can delete
+    // data" on read-only commands. The destructive Format-Volume is caught below.
+    /\b(?:mkfs(?:\.\w+)?|wipefs|format(?!-))\b/i.test(normalized) ||
     /\bRemove-Item\b/i.test(normalized) ||
     /(?:^|[;|]\s*)(?:del|erase|rd|rmdir)\s+(?:\/[a-z]+\s+)*/i.test(normalized) ||
     /\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i.test(normalized);

@@ -54,10 +54,17 @@ const SKILLS_PACKAGE_JSON = JSON.stringify({ type: "module", private: true }, nu
 // needs no separate build step or dist-path resolution.
 const RUNNER_SOURCE = `import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const handlerPath = process.env.ARES_SKILL_HANDLER;
 const inputFile = process.env.ARES_SKILL_INPUT_FILE;
 const outputFile = process.env.ARES_SKILL_OUTPUT_FILE;
+
+// Handlers are ESM, but \`require(...)\` is a near-universal reflex that otherwise
+// throws "require is not defined" — the exact friction first-run skills hit. Expose
+// a require anchored at the handler so BOTH import and require work, and relative
+// requires resolve from the skill dir.
+globalThis.require = createRequire(handlerPath);
 
 async function writeOut(payload) {
   try {

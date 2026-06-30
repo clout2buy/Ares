@@ -61,7 +61,7 @@ export interface SkillCraftOutput {
 export const SkillCraftTool = buildTool({
   name: "SkillCraft",
   description:
-    "Forge your own skills under ~/.ares/skills/. When you notice a capability gap — something you'll need to do that you don't have a clean path for yet — scaffold a skill instead of asking. A skill is just SKILL.md (description, usage, examples) plus optional handler.js. After crafting, append the skill name to CAPABILITIES.md via SelfEvolve. You can also update / remove / list / read your own skills. This is part of your self-extension: you grow your own body.",
+    "Forge your own skills under ~/.ares/skills/. When you notice a capability gap — something you'll need to do that you don't have a clean path for yet — scaffold a skill instead of asking. A skill is just SKILL.md (description, usage, examples) plus optional handler.js. `create` scaffolds a contract-correct starter handler.js for you (ESM default export `async (input, ctx) => result`, tolerant input parsing) — fill it in rather than re-deriving the shape; `import` and `require` both work, and `input` is whatever JSON you pass to RunSkill. After crafting, append the skill name to CAPABILITIES.md via SelfEvolve. You can also update / remove / list / read your own skills. This is part of your self-extension: you grow your own body.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
@@ -125,8 +125,13 @@ export const SkillCraftTool = buildTool({
     const skillMdBody = input.skill_md ?? defaultSkillMd(input.name, input.description ?? "");
     await writeFileAtomic(skillMdPath, ensureTrailingNewline(skillMdBody));
     const touched: string[] = [skillMdPath];
-    if (input.handler_js !== undefined) {
-      await writeFileAtomic(handlerPath, ensureTrailingNewline(input.handler_js));
+    // On create, scaffold a contract-correct starter handler when none is given —
+    // ESM default export, tolerant input parsing, no require/input-shape surprises —
+    // so a new skill is runnable-ready instead of the model re-deriving (and tripping
+    // on) the contract every time. Update only writes a handler when one is given.
+    const handlerBody = input.handler_js ?? (input.action === "create" ? defaultHandlerJs(input.name) : undefined);
+    if (handlerBody !== undefined) {
+      await writeFileAtomic(handlerPath, ensureTrailingNewline(handlerBody));
       touched.push(handlerPath);
     }
 
@@ -143,7 +148,7 @@ export const SkillCraftTool = buildTool({
         status: "have",
         provenance: "SkillCraft",
         description: input.description,
-        tags: input.handler_js !== undefined ? ["runnable"] : undefined,
+        tags: handlerBody !== undefined ? ["runnable"] : undefined,
       });
     } catch {
       // self-model is best-effort
@@ -214,6 +219,47 @@ dependencies, etc.)
 \`\`\`
 (usage examples)
 \`\`\`
+`;
+}
+
+/**
+ * A correct, runnable starter handler.js. Scaffolded on create when the model
+ * doesn't supply one — it encodes the execution contract (ESM default export,
+ * `(input, ctx)`, tolerant input, JSON-serializable return) so first-run skills
+ * stop tripping on the two things that actually bit: `require` in ESM scope and
+ * an unexpected input shape. (`require` also works at runtime via a compat shim,
+ * but `import` is the idiom shown here.)
+ */
+function defaultHandlerJs(name: string): string {
+  return `// handler.js for the "${name}" skill — executed by the RunSkill tool.
+//
+// CONTRACT (keep this shape):
+//   • ES module. Prefer \`import\`; \`require(...)\` also works via a runtime shim.
+//   • Export a DEFAULT async function, called as:  handler(input, ctx)
+//       input = whatever JSON you pass to RunSkill's \`input\` field — it may be a
+//               bare string, an object, or undefined, so parse defensively below.
+//       ctx   = { home, name }  (your Ares home dir + this skill's name)
+//   • Return any JSON-serializable value — it becomes RunSkill's \`result\`.
+//   • Heavy work (image/video/model calls): pass a generous \`timeout_ms\` to
+//     RunSkill (it self-caps on that — a too-small value is the only early abort).
+
+export default async function handler(input, ctx) {
+  // Tolerant input: accept a bare string, { prompt }, { text }, or { input }.
+  const arg =
+    typeof input === "string"
+      ? input
+      : input?.prompt ?? input?.text ?? input?.input ?? "";
+
+  // TODO: implement the capability. Examples:
+  //   import { readFile } from "node:fs/promises";
+  //   const res = await fetch("http://127.0.0.1:PORT/do", {
+  //     method: "POST", headers: { "content-type": "application/json" },
+  //     body: JSON.stringify({ arg }),
+  //   });
+  //   return await res.json();
+
+  return { ok: true, skill: ctx?.name ?? "${name}", received: arg, note: "handler not implemented yet" };
+}
 `;
 }
 

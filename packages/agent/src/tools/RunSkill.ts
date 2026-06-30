@@ -30,9 +30,11 @@ const inputSchema = z
       .number()
       .int()
       .positive()
-      .max(120_000)
+      .max(600_000)
       .optional()
-      .describe("Hard timeout in milliseconds (default 30000, max 120000)."),
+      .describe(
+        "Hard timeout in milliseconds (default 30000, max 600000). Pass a generous value for heavy skills (image/video generation can take 30s–minutes) — RunSkill self-caps on this, so a too-small value is the only thing that aborts a working skill early.",
+      ),
   })
   .strict();
 
@@ -52,6 +54,12 @@ export const RunSkillTool = buildTool({
     "Execute one of your own skills by name — runs its handler.js in an isolated child process and returns the result. Use after SkillCraft to actually exercise a capability you built, or whenever a stored skill is the right tool for the job. The handler's default export is called as async (input, ctx) => result. This is your body in motion: skills are no longer documentation islands.",
   safety: "external-state",
   concurrency: "exclusive",
+  // Self-capping: runSkill() enforces timeout_ms in an isolated child process and
+  // honors the abort signal, so it CANNOT hang the turn. Disable the engine's
+  // class-default watchdog (external-state = 20s) — it would otherwise fire before
+  // a legitimately long skill (image/video generation runs 30s–minutes) finishes
+  // and report a FALSE "aborted" while the work is still landing.
+  watchdogTimeoutMs: 0,
   inputZod: inputSchema,
   activityDescription: (i) => `RunSkill ${i.name}`,
 

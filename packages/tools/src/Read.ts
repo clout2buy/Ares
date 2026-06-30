@@ -45,11 +45,48 @@ export const ReadTool = buildTool({
   inputZod: inputSchema,
   activityDescription: (i) => `Reading ${path.basename(i.file_path)}`,
 
-  async call(i, ctx): Promise<{ output: ReadOutput; touchedFiles?: string[]; display?: string }> {
+  async call(i, ctx): Promise<{ output: ReadOutput; touchedFiles?: string[]; display?: string; images?: Array<{ mediaType: string; data: string }> }> {
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "read");
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) {
       throw new Error(`${filePath} is not a regular file`);
+    }
+
+    // Image files: reading the bytes as utf8 returns garbage that bloats and
+    // corrupts the context (and the model can't judge a render from binary). Return
+    // the image through the VISION channel so the model can actually SEE it — judge
+    // a generated picture, read a screenshot, inspect a diagram. The engine forwards
+    // tool-result images to the model as image blocks.
+    const imageMedia = imageMediaType(filePath);
+    if (imageMedia) {
+      const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+      if (stat.size > MAX_IMAGE_BYTES) {
+        return {
+          output: {
+            path: filePath,
+            totalLines: 0,
+            startLine: 0,
+            endLine: 0,
+            content: `<system>Image "${path.basename(filePath)}" is ${(stat.size / 1048576).toFixed(1)}MB — too large to inline (cap 12MB). Downscale it first, then Read again.</system>`,
+            truncated: true,
+          },
+          display: `Read ${path.basename(filePath)} — image too large (${(stat.size / 1048576).toFixed(1)}MB)`,
+        };
+      }
+      const data = (await fs.readFile(filePath)).toString("base64");
+      const kb = Math.max(1, Math.round(stat.size / 1024));
+      return {
+        output: {
+          path: filePath,
+          totalLines: 0,
+          startLine: 0,
+          endLine: 0,
+          content: `<system>Image "${path.basename(filePath)}" (${imageMedia}, ${kb}KB) is shown above.</system>`,
+          truncated: false,
+        },
+        images: [{ mediaType: imageMedia, data }],
+        display: `Read ${path.basename(filePath)} (image · ${kb}KB)`,
+      };
     }
 
     // Re-read guard: a whole-file Read of something already in context this
@@ -140,3 +177,24 @@ export const ReadTool = buildTool({
     };
   },
 });
+
+/** Media type for an image file by extension, or null if it isn't a (supported)
+ *  image. Drives Read's vision-channel branch so a Read of a render/screenshot
+ *  returns something the model can SEE, not a wall of binary. */
+function imageMediaType(file: string): string | null {
+  switch (path.extname(file).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    default:
+      return null;
+  }
+}

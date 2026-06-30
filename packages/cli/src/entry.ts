@@ -184,7 +184,6 @@ import {
 import {
   QueryEngineDispatcher,
   OperatorBackgroundLoop,
-  operatorLoopEnabled,
   isOperatorPaused,
   setOperatorControl,
   acquireCapability,
@@ -407,6 +406,12 @@ interface LiveSession {
   lastUserMessage?: string;
   /** Terminal auto-routing lane currently owning this conversation. */
   routeLane?: string;
+  /** The live reasoning dial for THIS session's engine — the source of truth the
+   *  display reads (engine.cfg is private). Kept in lock-step with
+   *  session.setReasoningLevel via handleReasoningCommand. Without this, /reasoning
+   *  (no-arg) and /settings reported the env/persisted value, not what the engine
+   *  is actually streaming with. */
+  reasoningLevel: ReasoningLevel;
 }
 
 interface AresRuntimeState {
@@ -2263,6 +2268,55 @@ function resolveReasoningLevel(settings: UiSettings): ReasoningLevel {
   if (isReasoningLevel(settings.reasoningLevel)) return settings.reasoningLevel;
   return "medium";
 }
+
+/** Was the env override (ARES_REASONING_LEVEL) what last resolved the dial?
+ *  Used so an explicit /reasoning can tell the owner their persisted choice was
+ *  being shadowed by the env, instead of silently ignoring it. */
+function reasoningEnvOverrideActive(): boolean {
+  return isReasoningLevel(process.env.ARES_REASONING_LEVEL?.toLowerCase());
+}
+
+/** Outcome of an explicit /reasoning <level>, so each dispatch site renders its
+ *  own transport (NDJSON vs notice) from one source of truth. */
+interface ReasoningChange {
+  level: ReasoningLevel;
+  appliedTo: number;
+  /** True when an ARES_REASONING_LEVEL env override was shadowing the dial and we
+   *  cleared it so the explicit choice wins this session. */
+  clearedEnvOverride: boolean;
+}
+
+/**
+ * THE one place /reasoning <level> is handled. The three former dispatch sites
+ * (daemon, TUI, REPL) each reimplemented validate/set/persist and had already
+ * drifted — the daemon applied to every open session, the others only the
+ * primary, so changing the dial inside a spawned chat silently did nothing.
+ *
+ * Validates, sets the level on EVERY open session's engine (and mirrors it onto
+ * each LiveSession.reasoningLevel so the display reads live state), persists, and
+ * — crucially — clears any ARES_REASONING_LEVEL env override so the owner's
+ * explicit choice wins for the rest of the session instead of being silently
+ * re-floored to the env value on the next fresh session. Returns null when the
+ * level is invalid (the caller renders the usage line).
+ */
+async function handleReasoningCommand(
+  level: ReasoningLevel,
+  liveSessions: Iterable<LiveSession>,
+): Promise<ReasoningChange> {
+  // An explicit choice overrides the env precedence for THIS process — otherwise
+  // ARES_REASONING_LEVEL would keep shadowing it on every /resume, /workspace, or
+  // newly-spawned daemon card and the dial would appear to "snap back".
+  const clearedEnvOverride = reasoningEnvOverrideActive();
+  if (clearedEnvOverride) delete process.env.ARES_REASONING_LEVEL;
+  let appliedTo = 0;
+  for (const live of liveSessions) {
+    live.session.setReasoningLevel(level);
+    live.reasoningLevel = level;
+    appliedTo++;
+  }
+  await updateUiSettings({ reasoningLevel: level });
+  return { level, appliedTo, clearedEnvOverride };
+}
 /**
  * Best-known context window (tokens) for a model id. Used to size the
  * kept-history budget so a long session is not trimmed far below what the
@@ -2420,13 +2474,13 @@ function renderSpanForSummary(messages: readonly Message[]): string {
 function makeSpanSummarizer(
   selection: ProviderSelection,
   onUsage?: (usage: import("@ares/protocol").Usage) => void | Promise<void>,
-): (messages: readonly Message[]) => Promise<string> {
-  return async (messages) => {
+): (messages: readonly Message[], signal?: AbortSignal) => Promise<string> {
+  return async (messages, signal) => {
     const transcript = renderSpanForSummary(messages);
     if (!transcript.trim()) return "";
     try {
       if (selection.subModel?.summarize) {
-        return await selection.subModel.summarize({ input: transcript, instructions: COMPACTION_INSTRUCTIONS });
+        return await selection.subModel.summarize({ input: transcript, instructions: COMPACTION_INSTRUCTIONS, signal });
       }
       return await sideQuery({
         provider: selection.provider,
@@ -2435,6 +2489,10 @@ function makeSpanSummarizer(
         user: transcript,
         maxOutputTokens: 2048,
         onUsage,
+        // Honor a stop during compaction — the engine threads the live turn
+        // signal in, so aborting the turn no longer runs the summarizer to
+        // completion against a dead turn.
+        signal,
       });
     } catch {
       return "";
@@ -2583,6 +2641,7 @@ async function createSessionWithSelection(
       todoStore,
       tools,
       queueSystemReminder,
+      reasoningLevel: resolveReasoningLevel(settings),
     };
     live.agentRuntime = new AresAgentRuntime(agent, {
       workspace: context.workspace,
@@ -2612,7 +2671,7 @@ async function createSessionWithSelection(
     summarizeSpan,
   });
   sessionRef = session;
-  const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder };
+  const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings) };
   live.agentRuntime = new AresAgentRuntime(agent, {
     workspace: context.workspace,
     sessionId: session.meta.id,
@@ -2685,7 +2744,7 @@ function inkHelpLines(): string[] {
     "/model <provider> [id] Switch the live model (id omitted = saved/default).",
     "/keys                  Show saved API key status.",
     "/key <provider> <key>  Save or clear a provider key (use 'clear').",
-    "/reasoning [level]     Show/set reasoning: low|medium|high|max.",
+    "/reasoning [level]     Show/set reasoning: off|low|medium|high|max.",
     "/routing ...           Show/set per-lane model routing.",
     "/themes                Show installed UI themes.",
     "/theme <name>          Switch theme without restarting.",
@@ -2747,7 +2806,7 @@ async function terminalSettingsLines(live: LiveSession): Promise<string[]> {
   const keyStatus = terminalKeyStatus(settings);
   return [
     `current: ${providerFamilyForSelection(live.selection)} / ${live.selection.model}`,
-    `reasoning: ${resolveReasoningLevel(settings)} (${reasoningLabel(resolveReasoningLevel(settings))})`,
+    `reasoning: ${live.reasoningLevel} (${reasoningLabel(live.reasoningLevel)})`,
     `mode: ${live.runtime.permissionMode}`,
     `routing: ${settings.routingMode ?? "manual"}${Object.keys(routing).length ? ` (${Object.keys(routing).length} lane(s))` : ""}`,
     ...ROUTE_LANES.map((lane) => {
@@ -3206,10 +3265,27 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   let consciousnessAbort: AbortController | undefined;
 
   // Providers that failed THIS SESSION with a balance/auth error (402/401/403/
-  // insufficient balance) — they won't recover without the owner topping up or
-  // fixing a key, so we stop re-selecting them. Cleared only on a manual model
-  // switch. This is what stops "out of money on DeepSeek shit on everything".
-  const deadProviders = new Set<string>();
+  // insufficient balance). They won't recover this instant, so we stop re-selecting
+  // them — but a balance top-up or re-auth IS recoverable, so each is parked only
+  // until a cooldown elapses, then auto-re-probed (the old behaviour kept them dead
+  // for the whole session, so topping up DeepSeek never came back without a manual
+  // model switch). A manual switch still clears them all immediately. Override the
+  // cooldown with ARES_DEAD_PROVIDER_TTL_MS.
+  const deadProviders = new Map<string, number>(); // family → epoch ms it may be re-probed
+  const deadProviderTtlMs = Math.max(60_000, Number(process.env.ARES_DEAD_PROVIDER_TTL_MS) || 10 * 60_000);
+  const markProviderDead = (family: string): void => {
+    deadProviders.set(family, Date.now() + deadProviderTtlMs);
+  };
+  // Prune expired entries (cooldown elapsed → give the provider another chance) and
+  // return the still-dead set — the single read path so re-probe is consistent.
+  const liveDeadProviders = (): Set<string> => {
+    const now = Date.now();
+    for (const [family, until] of deadProviders) {
+      if (now >= until) deadProviders.delete(family);
+    }
+    return new Set(deadProviders.keys());
+  };
+  const isProviderDead = (family: string): boolean => liveDeadProviders().has(family);
   const isPermanentlyDeadError = (blob: string): boolean =>
     /\b402\b|\b401\b|\b403\b|insufficient.?balance|unauthorized|forbidden|invalid.?api.?key|no_auth/i.test(blob);
   sessions.set(live.session.meta.id, primaryEntry);
@@ -3243,7 +3319,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       activeTurns,
       provider: mainProviderFamily,
       model: mainSelection.model,
-      deadProviders: [...deadProviders],
+      deadProviders: [...liveDeadProviders()],
     }),
     getRecentEvents: () => eventRing.snapshot(),
     emit: (notice) =>
@@ -3452,61 +3528,88 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
   // Apply any persisted Advanced-tab engine knobs (env-backed ones) on boot.
   applyEngineConfigEnv((await loadUiSettings()).engine ?? {});
 
-  // Operator auto-tick: while the daemon idles, durable missions ADVANCE —
-  // one worker tick on the ATTENTION-SELECTED active goal per interval (not naive
-  // active[0]). Never overlaps a live user turn; failures never kill the daemon.
-  // OPT-IN: runs only with ARES_OPERATOR_LOOP=1; tune with ARES_OPERATOR_TICK_MS.
-  let autotickBusy = false;
-  let lastAutotickAt = Date.now();
-  const autotick = setInterval(() => {
-    if (activeTurns > 0 || autotickBusy) return;
-    if (!operatorLoopEnabled()) return;
-    const autotickMs = Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000);
-    if (Date.now() - lastAutotickAt < autotickMs) return;
-    lastAutotickAt = Date.now();
-    autotickBusy = true;
-    void (async () => {
-      try {
-        const active = (await listGoals(live.context.home)).filter((g) => g.status === "active");
-        if (active.length === 0) return;
-        // Attention-ranked pick, not whichever goal happens to be first.
-        const decision = decideAttention(attentionItemsFromGoals(active));
-        const selectedId = decision.selected?.id.startsWith("goal:")
-          ? decision.selected.id.slice("goal:".length)
-          : undefined;
-        const goal = (selectedId ? active.find((g) => g.id === selectedId) : undefined) ?? active[0];
-        const dispatcher = new QueryEngineDispatcher({
-          provider: live.selection.provider,
-          model: live.selection.model,
-          workspace: live.context.workspace,
-          tools: live.tools,
-          systemPrompt: buildSystemPrompt("workspace-write", live.context),
-          // UNATTENDED gate: the owner isn't watching a background mission tick, so
-          // anything that needs a human (payment, credential, send-mail, destructive
-          // shell, computer-use) is hard-denied; only safe local work flows.
-          requestPermission: async (request) => {
-            const gate = gateToolPermission(request, { attended: false });
-            return gate.kind === "allow" ? "allow_once" : "deny";
+  // Operator auto-tick: while the daemon idles, durable missions ADVANCE — one
+  // worker tick on the ATTENTION-SELECTED active goal per interval (not naive
+  // active[0]). This now runs through the SAME OperatorBackgroundLoop that drives
+  // garrisonCommand — one autonomy driver, one gate — instead of a hand-rolled
+  // setInterval that omitted the pause gate, standing-order materialization, and
+  // next-action awareness (the two drivers had already drifted). The stdio JSON
+  // bridge transport is unchanged: the loop's events are mirrored to NDJSON below.
+  //
+  // OPT-IN: ARES_OPERATOR_LOOP=1, OR the owner has queued standing orders (adding a
+  // recurring mission IS the opt-in — same widening as the garrison). The live
+  // ARES_OPERATOR_AUTOTICK=0 kill switch and a live user turn both park ticks via
+  // the pause gate, so the operator_autotick toggle still takes effect next tick.
+  const daemonStandingAtStart = await loadStandingOrders(live.context.home).catch(() => [] as StandingOrder[]);
+  // Build the loop whenever the opt-in holds (LOOP=1 or standing orders queued).
+  // Do NOT gate construction on the ARES_OPERATOR_AUTOTICK kill switch: it's a
+  // LIVE toggle handled by the paused() gate below, so a daemon booted with
+  // autotick off (incl. the persisted UI setting) can still resume ticks when the
+  // user flips it back on — without a restart. The loop ticks are cheap no-ops
+  // while parked, exactly as the old per-tick-gated setInterval was.
+  const autotickLoop =
+    !(process.env.ARES_OPERATOR_LOOP === "1" || daemonStandingAtStart.length > 0)
+      ? null
+      : new OperatorBackgroundLoop(
+          {
+            home: live.context.home,
+            workspace: live.context.workspace,
+            dispatcher: new QueryEngineDispatcher({
+              provider: live.selection.provider,
+              model: live.selection.model,
+              workspace: live.context.workspace,
+              tools: live.tools,
+              systemPrompt: buildSystemPrompt("workspace-write", live.context),
+              // UNATTENDED gate: the owner isn't watching a background mission tick,
+              // so anything that needs a human (payment, credential, send-mail,
+              // destructive shell, computer-use) is hard-denied; only safe local
+              // work flows.
+              requestPermission: async (request) => {
+                const gate = gateToolPermission(request, { attended: false });
+                return gate.kind === "allow" ? "allow_once" : "deny";
+              },
+            }),
           },
-        });
-        const result = await runGoalToCompletion(
-          { home: live.context.home, dispatcher, workspace: live.context.workspace },
-          goal.id,
-          { maxTicks: 1 },
+          {
+            everyMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+            // Park a tick whenever a live user turn is in flight (never steal the
+            // foreground), the kill switch is flipped (live operator_autotick
+            // toggle), or a remote /pause is set — mirrors the garrison's gates.
+            paused: async () =>
+              activeTurns > 0 ||
+              process.env.ARES_OPERATOR_AUTOTICK === "0" ||
+              (await isOperatorPaused(live.context.home).catch(() => false)),
+            // Materialize due standing orders into goals so the same tick runs them
+            // (the inline setInterval omitted this — recurring missions never fired).
+            beforeTick: async () => {
+              const { fired } = await materializeDueStandingOrders(live.context.home).catch(() => ({ goals: [], fired: [] as StandingOrder[] }));
+              for (const order of fired) {
+                process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "standing_order_fired", id: order.id, statement: order.statement.slice(0, 120) } }) + "\n");
+              }
+            },
+            // Idle awareness: surface (never auto-run) the active project's next moves.
+            nextActions: async () => {
+              const projectId = await detectWorkspaceProjectId(live.context.workspace).catch(() => undefined);
+              const project = projectId ? await loadProjectState(projectId, live.context.home).catch(() => null) : null;
+              return project?.nextActions ?? [];
+            },
+            emit: (event) => {
+              // Unified lifecycle shape (matches garrison) PLUS the legacy
+              // operator_autotick event for older UI builds that key on it.
+              process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n");
+              if (event.type === "operator_tick") {
+                process.stdout.write(
+                  JSON.stringify({
+                    type: "lifecycle",
+                    event: { kind: "operator_autotick", goalId: event.goalId, statement: event.summary.slice(0, 120), status: event.status },
+                  }) + "\n",
+                );
+              }
+            },
+            onError: () => {},
+          },
         );
-        process.stdout.write(
-          JSON.stringify({
-            type: "lifecycle",
-            event: { kind: "operator_autotick", goalId: goal.id, statement: goal.statement.slice(0, 120), status: result.status, progress: result.progress },
-          }) + "\n",
-        );
-      } catch {
-        // mission ticking is best-effort; the daemon lives on
-      } finally {
-        autotickBusy = false;
-      }
-    })();
-  }, 60_000);
+  autotickLoop?.start();
   const readySettings = await loadUiSettings();
   // "Configured" must mean USABLE, not just "pasted into ui.json". A provider is
   // configured if its key is in settings OR in the environment, plus OpenAI via
@@ -3558,15 +3661,17 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       if (command.type === "reasoning") {
         const level = command.level?.toLowerCase();
         if (!isReasoningLevel(level)) {
-          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "reasoning requires level: low|medium|high|max" }) + "\n");
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `reasoning requires level: ${REASONING_LEVELS.join("|")}` }) + "\n");
           continue;
         }
-        // Apply to EVERY open session, not just the primary — otherwise changing
-        // the dial while in a spawned chat silently did nothing for that chat.
-        live.session.setReasoningLevel(level);
-        for (const e of sessions.values()) e.live.session.setReasoningLevel(level);
-        await updateUiSettings({ reasoningLevel: level });
-        process.stdout.write(JSON.stringify({ type: "reasoning_set", level }) + "\n");
+        // ONE handler for all three dispatch sites — validates, sets the dial on
+        // EVERY open session (not just the primary, which used to miss spawned
+        // chats), persists, and clears any env override so the explicit choice wins.
+        const change = await handleReasoningCommand(
+          level,
+          [...new Set([primaryEntry, ...sessions.values()])].map((e) => e.live),
+        );
+        process.stdout.write(JSON.stringify({ type: "reasoning_set", level: change.level, clearedEnvOverride: change.clearedEnvOverride }) + "\n");
         continue;
       }
       if (command.type === "routing") {
@@ -4084,7 +4189,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
             // Switch ONLY when the domain genuinely changed (or on the very first
             // turn) and there's a model assigned for the new lane. Otherwise the
             // current model keeps the conversation — that's the stickiness.
-            if (assigned?.family && assigned.model && !onAssigned && !deadProviders.has(assigned.family) && (laneChanged || firstTurn)) {
+            if (assigned?.family && assigned.model && !onAssigned && !isProviderDead(assigned.family) && (laneChanged || firstTurn)) {
               try {
                 const sel = await selectProvider(new Map([["provider", assigned.family], ["model", assigned.model]]));
                 await entry.live.session.setProvider(sel.provider, sel.model, {
@@ -4136,9 +4241,9 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
             // The provider that just failed: if it's a balance/auth death, retire
             // it for the session so we never waste another turn on it.
             if (isPermanentlyDeadError(turnState.fatalProvider)) {
-              deadProviders.add(providerFamilyForSelection(entry.live.selection));
+              markProviderDead(providerFamilyForSelection(entry.live.selection));
             }
-            const fallback = await pickHealthyFallback(entry.live.selection, deadProviders).catch(() => null);
+            const fallback = await pickHealthyFallback(entry.live.selection, liveDeadProviders()).catch(() => null);
             if (!fallback) {
               tagEmit(sid, {
                 type: "system_reminder_injected",
@@ -4187,7 +4292,7 @@ async function daemonCommand(args: ParsedArgs): Promise<number> {
       })();
     }
   } finally {
-    clearInterval(autotick);
+    autotickLoop?.stop();
     uninstallCrashHandlers();
     commands.close();
     rl.close();
@@ -5248,7 +5353,9 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
         if (line === "/reasoning" || line.startsWith("/reasoning ")) {
           const requested = line.split(/\s+/, 2)[1]?.toLowerCase();
           if (!requested) {
-            const current = resolveReasoningLevel(await loadUiSettings());
+            // Report the LIVE engine dial, not the env/persisted value — those
+            // lie once /reasoning has overridden them this session.
+            const current = live.reasoningLevel;
             return {
               kind: "handled",
               lines: [`Reasoning: ${reasoningLabel(current)} (${current}). Change with /reasoning <${REASONING_LEVELS.join("|")}>.`],
@@ -5258,9 +5365,10 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
           if (!isReasoningLevel(requested)) {
             return { kind: "handled", lines: [`Unknown reasoning level: ${requested}`, `Available: ${REASONING_LEVELS.join(", ")}`], snapshot: snapshot() };
           }
-          live.session.setReasoningLevel(requested);
-          await updateUiSettings({ reasoningLevel: requested });
-          return { kind: "handled", lines: [`Reasoning set to ${reasoningLabel(requested)} — applies on your next message.`], snapshot: snapshot() };
+          const change = await handleReasoningCommand(requested, [live]);
+          const lines = [`Reasoning set to ${reasoningLabel(requested)} — applies on your next message.`];
+          if (change.clearedEnvOverride) lines.push("(ARES_REASONING_LEVEL was overriding the dial — cleared for this session so your choice sticks.)");
+          return { kind: "handled", lines, snapshot: snapshot() };
         }
         return { kind: "not-handled" };
       },
@@ -5336,7 +5444,9 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
     if (line === "/reasoning" || line.startsWith("/reasoning ")) {
       const requested = line.split(/\s+/, 2)[1]?.toLowerCase();
       if (!requested) {
-        const current = resolveReasoningLevel(await loadUiSettings());
+        // Live engine dial — not the env/persisted value, which lies after an
+        // explicit /reasoning has overridden them this session.
+        const current = live.reasoningLevel;
         process.stdout.write(notice("Reasoning", [`Reasoning: ${reasoningLabel(current)} (${current}). Change with /reasoning <${REASONING_LEVELS.join("|")}>.`], "info"));
         continue;
       }
@@ -5344,9 +5454,10 @@ async function chatCommand(args: ParsedArgs, resumeSessionId?: string): Promise<
         process.stdout.write(notice("Reasoning", [`Unknown reasoning level: ${requested}`, `Available: ${REASONING_LEVELS.join(", ")}`], "error"));
         continue;
       }
-      live.session.setReasoningLevel(requested);
-      await updateUiSettings({ reasoningLevel: requested });
-      process.stdout.write(notice("Reasoning", [`Reasoning set to ${reasoningLabel(requested)} — applies on your next message.`], "success"));
+      const change = await handleReasoningCommand(requested, [live]);
+      const lines = [`Reasoning set to ${reasoningLabel(requested)} — applies on your next message.`];
+      if (change.clearedEnvOverride) lines.push("(ARES_REASONING_LEVEL was overriding the dial — cleared for this session so your choice sticks.)");
+      process.stdout.write(notice("Reasoning", lines, "success"));
       continue;
     }
     if (line === "/themes" || line === "themes") {

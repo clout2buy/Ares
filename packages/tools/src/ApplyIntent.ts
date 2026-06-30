@@ -9,7 +9,13 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildTool, contentHash, resolveWorkspacePath, zPath } from "./_shared.js";
+import type { FileReadStamp } from "./_shared.js";
 import { safeOverwrite } from "./safeWrite.js";
+
+// Post-write stamp carries `writtenNotRead` so Read's re-read guard does a real
+// read afterward — the model supplied a sketch, not the materialized file, so it
+// never saw the full result. Rides as an optional runtime extension.
+type WrittenStamp = FileReadStamp & { writtenNotRead?: boolean };
 
 const inputSchema = z
   .object({
@@ -83,20 +89,33 @@ export const ApplyIntentTool = buildTool({
     let engine: ApplyIntentOutput["engine"];
 
     if (hasExistingCodeMarker(sketch)) {
-      if (!ctx.subModel?.apply) {
-        throw new Error(
-          "ApplyIntent marker sketches require an APPLY sub-model. Provide full final file content in `sketch`, or run with Ollama Cloud APPLY configured.",
+      if (ctx.subModel?.apply) {
+        finalContent = stripCodeFence(
+          await ctx.subModel.apply({
+            file: filePath,
+            original,
+            instructions: i.instructions,
+            sketch,
+          }),
         );
+        engine = "apply-slot";
+      } else {
+        // Offline fallback: no APPLY sub-model, but marker sketches must still
+        // work or offline coding is degraded vs Edit (which has no such
+        // dependency). Each `... existing code ...` marker is a span to KEEP
+        // verbatim from the original; the literal segments between markers are
+        // the model's new/edited text. We splice them deterministically by
+        // anchoring each kept span to the original via the surrounding literals.
+        const merged = applyMarkerSketch(original, sketch);
+        if (!merged.ok) {
+          throw new Error(
+            `ApplyIntent could not deterministically apply the marker sketch offline (${merged.reason}). ` +
+              `Provide full final file content in \`sketch\`, run with Ollama Cloud APPLY configured, or use Edit for a precise replacement.`,
+          );
+        }
+        finalContent = merged.text;
+        engine = "full-file-sketch";
       }
-      finalContent = stripCodeFence(
-        await ctx.subModel.apply({
-          file: filePath,
-          original,
-          instructions: i.instructions,
-          sketch,
-        }),
-      );
-      engine = "apply-slot";
     } else {
       finalContent = sketch;
       engine = "full-file-sketch";
@@ -112,11 +131,14 @@ export const ApplyIntentTool = buildTool({
       allowFullReplace: i.allow_full_replace,
     });
     const newStat = await fs.stat(filePath);
-    ctx.fileReadStamps.set(filePath, {
+    const writtenStamp: WrittenStamp = {
       mtimeMs: newStat.mtimeMs,
       size: newStat.size,
       hash: contentHash(finalContent),
-    });
+      lines: finalContent.split("\n").length,
+      writtenNotRead: true,
+    };
+    ctx.fileReadStamps.set(filePath, writtenStamp);
 
     return {
       output: { path: filePath, bytesWritten: written.bytesWritten, engine, backupPath: written.backupPath },
@@ -134,4 +156,100 @@ function stripCodeFence(input: string): string {
 
 function hasExistingCodeMarker(input: string): boolean {
   return /(^|\n)\s*(\/\/|#|<!--|\/\*)?\s*\.{3}\s*existing code\s*\.{3}\s*(-->| \*\/|\*\/)?\s*(\n|$)/i.test(input);
+}
+
+/** Matches a whole line that is just an `... existing code ...` marker. */
+const MARKER_LINE = /^\s*(?:\/\/|#|<!--|\/\*)?\s*\.{3}\s*existing code\s*\.{3}\s*(?:-->|\*\/)?\s*$/i;
+
+type MarkerApplyResult = { ok: true; text: string } | { ok: false; reason: string };
+
+/**
+ * Deterministic, sub-model-free application of a `... existing code ...` marker
+ * sketch. The sketch is a sequence of literal blocks (the model's new/edited code,
+ * emitted verbatim) and marker lines (each meaning "keep whatever the original had
+ * here"). Markers keep original spans bounded by ANCHORED literals — literal blocks
+ * found verbatim in the original — or by the head/tail. This resolves insertions
+ * and edits that keep a real anchor on the consumed side.
+ *
+ * Intentionally SAFE, not clever: when new code sits between a kept region and its
+ * bounding anchor the kept span is ambiguous (the classic `marker / newBody /
+ * marker` replace), so we bail and the caller surfaces a clear error pointing at
+ * Edit (which locates the change precisely via `old_string`) — never guessing and
+ * corrupting the file.
+ */
+function applyMarkerSketch(original: string, sketch: string): MarkerApplyResult {
+  const eol = original.includes("\r\n") ? "\r\n" : "\n";
+  const src = original.replace(/\r\n/g, "\n");
+
+  // Tokenize the sketch into an ordered list of literal blocks and markers.
+  type Token = { kind: "literal"; text: string } | { kind: "marker" };
+  const tokens: Token[] = [];
+  let current: string[] = [];
+  const flushLiteral = () => {
+    const text = current.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+    if (text.length > 0) tokens.push({ kind: "literal", text });
+    current = [];
+  };
+  for (const line of sketch.replace(/\r\n/g, "\n").split("\n")) {
+    if (MARKER_LINE.test(line)) {
+      flushLiteral();
+      tokens.push({ kind: "marker" });
+    } else {
+      current.push(line);
+    }
+  }
+  flushLiteral();
+
+  // Collapse runs of consecutive markers (two adjacent "keep" gaps are one gap)
+  // and drop them so we have a clean alternation to reason about.
+  const compact: Token[] = [];
+  for (const t of tokens) {
+    if (t.kind === "marker" && compact[compact.length - 1]?.kind === "marker") continue;
+    compact.push(t);
+  }
+
+  if (!compact.some((t) => t.kind === "literal")) return { ok: false, reason: "sketch is only markers" };
+  if (!compact.some((t) => t.kind === "marker")) {
+    return { ok: false, reason: "no `... existing code ...` markers — pass full file content instead" };
+  }
+
+  // Literal blocks are NEW content emitted verbatim; markers keep original spans.
+  // A marker keeps the original from the last CONSUMED position (advanced only by
+  // an ANCHORED literal — one found verbatim in the original — or the head) up to
+  // the next anchored literal's start (or the tail). A literal not found in the
+  // original is "new" and inserted inline WITHOUT consuming original. If new code
+  // sits between a kept region and its bounding anchor, the kept region's extent is
+  // ambiguous — we bail rather than guess (that's the SEARCH/REPLACE case Edit does
+  // precisely with `old_string`). Insertions anchored to real code DO resolve.
+  let out = "";
+  let origPos = 0;
+  let pendingKeepFrom = -1; // -1 = no kept region open; >=0 = keep starts here, end TBD
+  for (const t of compact) {
+    if (t.kind === "marker") {
+      if (pendingKeepFrom === -1) pendingKeepFrom = origPos;
+      continue;
+    }
+    const idx = src.indexOf(t.text, origPos);
+    if (idx !== -1) {
+      // Anchored: exists verbatim at/after the consumed position. Resolve any open
+      // kept region up to this anchor, then emit the anchor and consume it.
+      if (pendingKeepFrom !== -1) {
+        out += src.slice(pendingKeepFrom, idx);
+        pendingKeepFrom = -1;
+      }
+      out += t.text;
+      origPos = idx + t.text.length;
+    } else {
+      // New content. We cannot place it relative to an unresolved kept region —
+      // the original location it replaces is unknown. Fail SAFE, file untouched.
+      if (pendingKeepFrom !== -1) {
+        return { ok: false, reason: "new code between two kept regions can't be located in the original — use Edit for a precise replacement" };
+      }
+      out += t.text;
+    }
+  }
+  // A trailing marker keeps the remainder of the original.
+  if (pendingKeepFrom !== -1) out += src.slice(pendingKeepFrom);
+
+  return { ok: true, text: eol === "\r\n" ? out.replace(/\n/g, "\r\n") : out };
 }

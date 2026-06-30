@@ -18,7 +18,11 @@ import type { Todo, TodoStatus } from "@ares/protocol";
 import { buildTool } from "./_shared.js";
 
 const todoItemSchema = z.object({
-  id: z.string().min(1).describe("Stable id for this todo (model picks; reused across updates)."),
+  id: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional stable id for this todo, reused across updates. Host-derived from position when omitted."),
   content: z
     .string()
     .min(1)
@@ -90,8 +94,11 @@ export function makeTodoWriteTool(store: TodoStore) {
     inputZod: inputSchema,
     activityDescription: (i) => `Tracking ${i.todos.length} todo${i.todos.length === 1 ? "" : "s"}`,
     async call(i): Promise<{ output: TodoWriteOutput; display: string }> {
-      const todos: Todo[] = i.todos.map((t) => ({
-        id: t.id,
+      // The canonical Claude TodoWrite shape is {content, status, activeForm}
+      // with no id, so honor a model-supplied id but derive a stable one from
+      // the item's position when omitted (don't hard-reject the common call).
+      const todos: Todo[] = i.todos.map((t, idx) => ({
+        id: t.id ?? `todo-${idx}`,
         content: t.content,
         activeForm: t.activeForm,
         status: t.status,

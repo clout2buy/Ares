@@ -6,6 +6,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { toolError } from "./_shared.js";
 
 const MAX_BUFFER_CHARS = 200_000;
 
@@ -66,7 +67,7 @@ export class ShellRegistry {
     return s ? snapshot(s) : undefined;
   }
 
-  spawn(opts: ShellLaunchOptions): ShellSnapshot {
+  async spawn(opts: ShellLaunchOptions): Promise<ShellSnapshot> {
     const id = `sh_${(++this.counter).toString(36)}_${Date.now().toString(36)}`;
     const child = spawn(opts.program, opts.args, {
       cwd: opts.cwd,
@@ -103,6 +104,8 @@ export class ShellRegistry {
 
     child.stdout?.on("data", (b: Buffer) => appendChunk("stdout", b));
     child.stderr?.on("data", (b: Buffer) => appendChunk("stderr", b));
+    // Persistent listeners — attached BEFORE we await the launch so a process
+    // that spawns then dies instantly (or errors after spawn) is still tracked.
     child.on("error", () => {
       state.status = "errored";
       state.finishedAt = new Date().toISOString();
@@ -115,9 +118,21 @@ export class ShellRegistry {
       state.events.emit("end");
     });
 
+    // Don't return a false 'running' before the OS confirms the child launched.
+    // ENOENT/EACCES on the binary, or fd exhaustion under heavy fan-out, fires
+    // async via 'error' — if we snapshot synchronously the caller gets a
+    // shell_id for a process that never started. Race spawn vs error: the
+    // persistent listeners above stay attached either way.
+    await new Promise<void>((res, rej) => {
+      child.once("spawn", res);
+      child.once("error", rej);
+    }).catch((err: NodeJS.ErrnoException) => {
+      throw toolError(`Background shell failed to launch: ${err.code ?? err.message}`);
+    });
+
     if (opts.timeoutMs && opts.timeoutMs > 0) {
       setTimeout(() => {
-        if (state.status === "running") this.kill(id, "timeout");
+        if (state.status === "running") void this.kill(id, "timeout");
       }, opts.timeoutMs);
     }
 
@@ -148,39 +163,61 @@ export class ShellRegistry {
     return { snapshot: snapshot(s), output: text, newChunks: newChunks.length };
   }
 
-  kill(id: string, reason: "user" | "timeout" = "user"): boolean {
+  /**
+   * Terminate a shell. Resolves to `true` only when the OS actually confirms
+   * the kill — on win32 that means awaiting taskkill's exit (it's otherwise
+   * fire-and-forget, so a synchronous `true` would be a claim we can't back).
+   * If taskkill errors we fall back to child.kill() and report THAT outcome
+   * rather than asserting success we never observed.
+   */
+  async kill(id: string, reason: "user" | "timeout" = "user"): Promise<boolean> {
     const s = this.shells.get(id);
     if (!s) return false;
     if (s.status !== "running") return false;
-    s.status = "killed";
-    s.finishedAt = new Date().toISOString();
+    void reason;
+    let confirmed = false;
     try {
       if (process.platform === "win32" && s.child.pid) {
         // child.kill() only signals the direct child (bash.exe/pwsh.exe); its
         // grandchildren (e.g. a `pnpm dev` node server) survive and keep the
-        // port. taskkill /T kills the whole tree, /F forces it.
-        spawn("taskkill", ["/PID", String(s.child.pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => {
-          try {
-            s.child.kill();
-          } catch {
-            /* ignore */
-          }
+        // port. taskkill /T kills the whole tree, /F forces it. Await its exit
+        // so the flag reflects a real kill, not a fired-and-forgotten one.
+        confirmed = await new Promise<boolean>((resolve) => {
+          const tk = spawn("taskkill", ["/PID", String(s.child.pid), "/T", "/F"], { stdio: "ignore" });
+          tk.on("error", () => {
+            try {
+              resolve(s.child.kill());
+            } catch {
+              resolve(false);
+            }
+          });
+          tk.on("close", (code) => resolve(code === 0));
         });
       } else {
-        s.child.kill("SIGTERM");
+        confirmed = s.child.kill("SIGTERM");
       }
     } catch {
-      /* ignore */
+      confirmed = false;
     }
-    s.events.emit("end");
-    void reason;
-    return true;
+    // Only flip the STORED state to "killed" once the kill is CONFIRMED — else a
+    // taskkill that failed (e.g. exit 1 "access denied" on a protected
+    // grandchild) would leave a still-running process reported as "killed", the
+    // exact state-lie we're guarding against. On failure leave status "running"
+    // so snapshot()/poll() stay honest; the child's own close handler still
+    // updates it if the process later dies. When confirmed, mark killed (the
+    // close handler preserves "killed" over "exited").
+    if (confirmed && s.status === "running") {
+      s.status = "killed";
+      s.finishedAt = new Date().toISOString();
+      s.events.emit("end");
+    }
+    return confirmed;
   }
 
   /** Kill everything; called on session shutdown. */
-  killAll(): number {
+  async killAll(): Promise<number> {
     let n = 0;
-    for (const id of this.shells.keys()) if (this.kill(id)) n++;
+    for (const id of this.shells.keys()) if (await this.kill(id)) n++;
     return n;
   }
 }

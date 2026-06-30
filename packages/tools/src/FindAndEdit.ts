@@ -8,6 +8,13 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildTool, assertInsideWorkspace, contentHash, workspaceRoot } from "./_shared.js";
+import type { FileReadStamp } from "./_shared.js";
+
+// Post-write stamps carry `writtenNotRead` so Read's re-read guard does a REAL
+// read afterward — FindAndEdit has no prior-Read requirement and returns only a
+// one-line preview per file, so the model never held the full post-edit file.
+// The flag rides as an optional runtime extension (not on the shared type).
+type WrittenStamp = FileReadStamp & { writtenNotRead?: boolean };
 
 const inputSchema = z
   .object({
@@ -116,9 +123,19 @@ export const FindAndEditTool = buildTool({
         touched.push(file);
         // Refresh the read stamp so a follow-up Edit on this file doesn't fail
         // the staleness check (mixed FindAndEdit+Edit refactors otherwise thrash).
+        // Mark it writtenNotRead + record `lines`: a write is not a read, so a
+        // subsequent whole-file Read must actually re-read instead of returning
+        // a "(0 lines) already in context" pointer at content the model never saw.
         const stat = await fs.stat(file).catch(() => null);
         if (stat) {
-          ctx.fileReadStamps.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, hash: contentHash(updated) });
+          const stamp: WrittenStamp = {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            hash: contentHash(updated),
+            lines: countLines(updated),
+            writtenNotRead: true,
+          };
+          ctx.fileReadStamps.set(file, stamp);
         }
       }
     }
@@ -176,6 +193,11 @@ function globToRegExp(glob: string): RegExp {
     }
   }
   return new RegExp(out + "$");
+}
+
+/** Line count of a text blob (matches Read's `total = raw.split("\n").length`). */
+function countLines(text: string): number {
+  return text.split("\n").length;
 }
 
 function previewLine(content: string, line: number): string {

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { buildTool, resolveWorkspacePath, type RichToolContext } from "./_shared.js";
+import { buildTool, resolveWorkspacePath, toolError, type RichToolContext } from "./_shared.js";
 
 const DEFAULT_IGNORE_GLOBS = [
   "**/.git/**",
@@ -190,7 +190,19 @@ async function nativeGrep(
   emitProgress?: (data: unknown) => void,
 ): Promise<GrepOutput> {
   const flags = i.case_insensitive ? "i" : "";
-  const regex = new RegExp(i.pattern, flags);
+  // An invalid model-supplied pattern throws a raw JS SyntaxError here, which
+  // surfaces as an opaque crash rather than something the model can correct.
+  // Re-throw as a recognizable tool error (ripgrep already returns its own
+  // error text; keep the native fallback consistent).
+  let regex: RegExp;
+  try {
+    regex = new RegExp(i.pattern, flags);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw toolError(
+      `Grep: invalid regular expression: ${msg}. Escape regex metacharacters or fix the pattern.`,
+    );
+  }
   const matches: GrepMatch[] = [];
   const files = new Set<string>();
   const counts: Record<string, number> = {};
@@ -288,16 +300,38 @@ async function resolveSearchPaths(
   if (requested.length === 0) {
     return [await resolveWorkspacePath(ctx, undefined, "path", "read")];
   }
+  // Only treat whitespace as a path separator when the caller passed the
+  // explicit ARRAY form. A single string with a space is one path (e.g.
+  // "src/foo bar.ts") — splitting it fanned out into ["src/foo","bar.ts"] and
+  // silently returned 0 matches. For the array form we still tolerate a stray
+  // space-joined element, but only when EVERY split token actually exists;
+  // otherwise the space is part of a real (spaced) filename.
+  const isArrayForm = Array.isArray(inputPath);
 
   const expanded: string[] = [];
   for (const raw of requested) {
     const candidate = path.resolve(ctx.workspace, raw);
     const exists = await fs.stat(candidate).then(() => true).catch(() => false);
+    if (exists) {
+      expanded.push(raw);
+      continue;
+    }
     const parts = raw.trim().split(/\s+/).filter(Boolean);
-    if (!exists && !path.isAbsolute(raw) && parts.length > 1) {
+    if (parts.length <= 1 || path.isAbsolute(raw)) {
+      // A single nonexistent path is an error the model can correct, not a
+      // candidate to split — surface it instead of returning 0 matches.
+      throw toolError(`path not found: ${raw}`);
+    }
+    // Multi-token, nonexistent, relative path. Split only if it's the array
+    // form AND every token resolves to a real path; otherwise it's a spaced
+    // filename that simply doesn't exist.
+    const tokenExists = await Promise.all(
+      parts.map((p) => fs.stat(path.resolve(ctx.workspace, p)).then(() => true).catch(() => false)),
+    );
+    if (isArrayForm && tokenExists.every(Boolean)) {
       expanded.push(...parts);
     } else {
-      expanded.push(raw);
+      throw toolError(`path not found: ${raw}`);
     }
   }
 

@@ -8,7 +8,12 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { buildTool, resolveWorkspacePath, workspaceRoot } from "./_shared.js";
+import { buildTool, contentHash, resolveWorkspacePath, workspaceRoot } from "./_shared.js";
+import type { FileReadStamp } from "./_shared.js";
+
+// A post-write stamp carries `writtenNotRead` so Read's re-read guard does a real
+// read afterward. Rides as an optional runtime extension (not on the shared type).
+type WrittenStamp = FileReadStamp & { writtenNotRead?: boolean };
 
 const inputSchema = z
   .object({
@@ -51,14 +56,41 @@ export const CodeModeTool = buildTool({
       workspace: root,
       async read(filePath: string) {
         const resolved = await resolveWorkspacePath(ctx, filePath, "file_path", "read");
-        return await fs.readFile(resolved, "utf8");
+        const text = await fs.readFile(resolved, "utf8");
+        // Record a real read-stamp so a file read via ares.read can be Edited
+        // afterward without a redundant Read ("Read X before editing it").
+        const stat = await fs.stat(resolved).catch(() => null);
+        if (stat) {
+          ctx.fileReadStamps.set(resolved, {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            hash: contentHash(text),
+            lines: text.split("\n").length,
+          });
+        }
+        return text;
       },
       async write(filePath: string, content: string) {
         if (!i.allow_writes) throw new Error("ares.write requires allow_writes=true");
         const resolved = await resolveWorkspacePath(ctx, filePath, "file_path", "write");
         await fs.mkdir(path.dirname(resolved), { recursive: true });
-        await fs.writeFile(resolved, String(content), "utf8");
+        const text = String(content);
+        await fs.writeFile(resolved, text, "utf8");
         touched.add(resolved);
+        // Stamp the write (writtenNotRead) so the hash is current — a later Edit
+        // won't false-positive "modified on disk" — but a whole-file Read still
+        // does a REAL read since the model never saw the post-write file.
+        const stat = await fs.stat(resolved).catch(() => null);
+        if (stat) {
+          const stamp: WrittenStamp = {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            hash: contentHash(text),
+            lines: text.split("\n").length,
+            writtenNotRead: true,
+          };
+          ctx.fileReadStamps.set(resolved, stamp);
+        }
         return resolved;
       },
       async json(filePath: string) {

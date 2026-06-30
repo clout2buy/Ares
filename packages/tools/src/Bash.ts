@@ -68,8 +68,15 @@ export const BashTool = buildTool({
   commandFor: (i) => i.command,
   async checkPermissions(i, ctx) {
     const configured = ctx.commandPermissions?.decide("Bash", i.command);
+    // A configured/stored deny|ask wins as before.
     if (configured && configured.kind !== "allow") return configured;
-    return destructiveShellDecision(i.command) ?? configured ?? { kind: "allow" };
+    // An EXPLICIT prior allow (configured or `allow_always`-persisted) must win
+    // over the destructive heuristic — otherwise destructiveShellDecision's
+    // {kind:'ask'} short-circuited the `??` below and silently re-prompted on a
+    // command the user already granted. Only re-ask for destructive commands
+    // that were NEVER approved.
+    if (configured?.kind === "allow") return configured;
+    return destructiveShellDecision(i.command) ?? { kind: "allow" };
   },
 
   async call(i, ctx): Promise<{ output: unknown; display: string }> {
@@ -80,7 +87,10 @@ export const BashTool = buildTool({
       if (!ctx.shellRegistry) {
         throw new Error("run_in_background requires a shell registry on the session context");
       }
-      const snap = ctx.shellRegistry.spawn({
+      // Await the real launch — spawn() now resolves only after the child
+      // actually started (or throws toolError if it failed to), so we never
+      // return a false {status:'running'} for a process that never ran.
+      const snap = await ctx.shellRegistry.spawn({
         program: bash,
         args: ["-lc", i.command],
         cwd,

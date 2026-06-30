@@ -27,6 +27,13 @@ export interface FileReadStamp {
   /** Total line count at Read time, so the re-read guard can report the real
    *  size instead of returning something indistinguishable from an empty file. */
   lines?: number;
+  /** Set by an edit tool (Edit/FindAndEdit/ApplyIntent/CodeMode.write) when it
+   *  stamps a file it WROTE. The stamp still exists so a follow-up edit's
+   *  read-before-write + staleness checks pass, but the model never actually
+   *  read the post-edit bytes — so Read's whole-file re-read guard must do a
+   *  REAL read instead of pointing at content "already in context". A real Read
+   *  re-stamps without this flag, clearing it. */
+  writtenNotRead?: boolean;
 }
 
 /** Cheap, stable content hash for read-stamp staleness checks. */
@@ -64,7 +71,9 @@ export interface CommandPermissionStore {
 
 export interface SubModelPool {
   apply(req: { file: string; original: string; instructions: string; sketch: string }): Promise<string>;
-  summarize(req: { input: string; instructions?: string }): Promise<string>;
+  /** `signal` lets a Stop during compaction abort the summarizer instead of
+   *  running the sub-model to completion against an already-dead turn. */
+  summarize(req: { input: string; instructions?: string; signal?: AbortSignal }): Promise<string>;
 }
 
 export interface ToolResult<O> extends EngineToolResult {

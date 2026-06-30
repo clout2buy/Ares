@@ -32,14 +32,20 @@ export function makeKillShellTool(registry: ShellRegistry) {
           display: `unknown shell: ${i.shell_id}`,
         };
       }
-      const killed = registry.kill(i.shell_id, "user");
+      // Capture status BEFORE the kill so a `killed:false` can be reported
+      // HONESTLY: "already finished" (it wasn't running) vs "kill failed — the
+      // process may still be running" (it WAS running and the kill didn't land).
+      // Collapsing both into "already finished" would lie about a live process.
+      const wasRunning = registry.get(i.shell_id)?.status === "running";
+      const killed = await registry.kill(i.shell_id, "user");
+      const reason = killed
+        ? "killed"
+        : wasRunning
+          ? "kill failed — the process may still be running"
+          : "already finished";
       return {
-        output: {
-          shell_id: i.shell_id,
-          killed,
-          reason: killed ? "killed" : "already finished",
-        },
-        display: killed ? `killed ${i.shell_id}` : `${i.shell_id} already finished`,
+        output: { shell_id: i.shell_id, killed, reason },
+        display: killed ? `killed ${i.shell_id}` : `${i.shell_id}: ${reason}`,
       };
     },
   });

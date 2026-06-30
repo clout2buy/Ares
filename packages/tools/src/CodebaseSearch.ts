@@ -11,7 +11,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool } from "./_shared.js";
+import { buildTool, resolveWorkspacePath } from "./_shared.js";
 
 export interface CodebaseSearchHit {
   path: string;
@@ -142,9 +142,17 @@ Pair CodebaseSearch with Task(researcher) when the investigation needs many foll
 
   async call(i, ctx): Promise<{ output: CodebaseSearchOutput; display: string }> {
     const t0 = Date.now();
+    // Confine every target_directories entry to the workspace (or an explicitly
+    // granted out-of-workspace path), same as Grep/Glob/Read. Previously this
+    // path.resolve'd straight off ctx.workspace with no guard — the one read tool
+    // that could be steered to read ../../etc with a "../" target.
     const roots =
       i.target_directories.length > 0
-        ? i.target_directories.map((d) => path.resolve(ctx.workspace, d))
+        ? await Promise.all(
+            i.target_directories.map((d) =>
+              resolveWorkspacePath(ctx, d, "target_directories", "read"),
+            ),
+          )
         : [ctx.workspace];
 
     // 1. Tokenize query.
@@ -223,14 +231,30 @@ interface Chunk {
 // Per-process chunk cache keyed by path → (mtime,size). A query previously
 // re-read+re-chunked the WHOLE workspace every time; now only files that
 // changed since last seen are re-chunked.
+//
+// Bounded LRU: the Map is module-level and was never evicted, so a long-lived
+// process searching many repos grew it without limit. Map keeps insertion
+// order, so the oldest entry is the first key — evict it once we exceed the cap.
+const CHUNK_CACHE_MAX = 5_000;
 const chunkCache = new Map<string, { mtimeMs: number; size: number; chunks: Chunk[] }>();
+
+function cacheChunks(filePath: string, entry: { mtimeMs: number; size: number; chunks: Chunk[] }): void {
+  // Re-insert moves the key to the most-recently-used end (Map ordering).
+  chunkCache.delete(filePath);
+  chunkCache.set(filePath, entry);
+  while (chunkCache.size > CHUNK_CACHE_MAX) {
+    const oldest = chunkCache.keys().next().value;
+    if (oldest === undefined) break;
+    chunkCache.delete(oldest);
+  }
+}
 
 function chunksForFile(filePath: string, content: string, mtimeMs: number, size: number): Chunk[] {
   const cached = chunkCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.chunks;
   const chunks: Chunk[] = [];
   chunkify(filePath, content, chunks);
-  chunkCache.set(filePath, { mtimeMs, size, chunks });
+  cacheChunks(filePath, { mtimeMs, size, chunks });
   return chunks;
 }
 

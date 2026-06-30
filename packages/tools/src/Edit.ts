@@ -16,6 +16,13 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildTool, contentHash, resolveWorkspacePath, toolError, zPath } from "./_shared.js";
+import type { FileReadStamp } from "./_shared.js";
+
+// A post-write stamp carries `writtenNotRead` so Read's re-read guard does a
+// real re-read (the model wrote these bytes but never saw the full file). The
+// flag isn't on the shared FileReadStamp type — it rides as an optional runtime
+// extension so this package needn't widen _shared.ts.
+type WrittenStamp = FileReadStamp & { writtenNotRead?: boolean };
 
 const editHunk = z
   .object({
@@ -57,6 +64,10 @@ export interface EditOutput {
   replacements: number;
   /** Which matching layer landed the edit: "exact" | "whitespace". */
   matchedBy: string;
+  /** cat -n style excerpt of each edited region WITH a few lines of surrounding
+   *  context, so the model can verify the change landed without a follow-up Read
+   *  (which would only re-read the file it just wrote). */
+  diff: string;
 }
 
 export const EditTool = buildTool({
@@ -163,15 +174,30 @@ export const EditTool = buildTool({
 
     await fs.writeFile(filePath, working, "utf8");
     const newStat = await fs.stat(filePath);
-    ctx.fileReadStamps.set(filePath, { mtimeMs: newStat.mtimeMs, size: newStat.size, hash: contentHash(working) });
+    // Stamp the WRITE, not a read: keep the hash/size current so a follow-up Edit
+    // in the same turn passes read-before-write + staleness, but mark it
+    // writtenNotRead so a whole-file Read still does a REAL read — the model
+    // wrote these bytes but never saw the full post-edit file.
+    const writtenStamp: WrittenStamp = {
+      mtimeMs: newStat.mtimeMs,
+      size: newStat.size,
+      hash: contentHash(working),
+      lines: countLines(working),
+      writtenNotRead: true,
+    };
+    ctx.fileReadStamps.set(filePath, writtenStamp);
 
     const matchedBy = [...matchedBys].join(",");
     const note = matchedBy === "exact" ? "" : ` [matched via ${matchedBy}]`;
     const across = hunks.length > 1 ? ` across ${hunks.length} edits` : "";
+    // Return the edited region(s) with surrounding context so the model can
+    // verify the change from the tool result alone (like Claude Code's Edit),
+    // instead of issuing a follow-up Read that would only re-read what it wrote.
+    const diff = editedExcerpt(content, working);
     return {
-      output: { path: filePath, replacements: totalReplacements, matchedBy },
+      output: { path: filePath, replacements: totalReplacements, matchedBy, diff },
       touchedFiles: [filePath],
-      display: `Edited ${filePath} (${totalReplacements} replacement${totalReplacements === 1 ? "" : "s"}${across})${note}`,
+      display: `Edited ${filePath} (${totalReplacements} replacement${totalReplacements === 1 ? "" : "s"}${across})${note}${diff ? `\n${diff}` : ""}`,
     };
   },
 });
@@ -279,6 +305,47 @@ function fromLf(text: string, eol: "\r\n" | "\n"): string {
 
 function stripTrailingWs(line: string): string {
   return line.replace(/[ \t\r]+$/, "");
+}
+
+/** Line count of a text blob (matches Read's `total = raw.split("\n").length`). */
+function countLines(text: string): number {
+  return text.split("\n").length;
+}
+
+/**
+ * Build a bounded cat -n excerpt of the regions that changed between `before`
+ * and `after`, with a few lines of surrounding context per hunk — so the model
+ * can verify the edit landed straight from the tool result. Line numbers are
+ * post-edit (what a subsequent Read would show). Whole-file rewrites are capped.
+ */
+function editedExcerpt(before: string, after: string): string {
+  const CONTEXT = 3;
+  const MAX_LINES = 60; // hard ceiling so a huge edit can't flood the result
+  const a = toLf(before).split("\n");
+  const b = toLf(after).split("\n");
+
+  // Cheap common-prefix / common-suffix trim to localize the changed span(s).
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+
+  if (start === endB) return ""; // nothing visibly changed (e.g. pure EOL)
+
+  const from = Math.max(0, start - CONTEXT);
+  const to = Math.min(b.length, endB + CONTEXT);
+  const lines = b.slice(from, to);
+  const clipped = lines.length > MAX_LINES;
+  const shown = clipped ? lines.slice(0, MAX_LINES) : lines;
+
+  const body = shown
+    .map((line, idx) => `${(from + idx + 1).toString().padStart(5, " ")}\t${line}`)
+    .join("\n");
+  return clipped ? `${body}\n     …\t[${lines.length - MAX_LINES} more changed lines]` : body;
 }
 
 function countOccurrences(haystack: string, needle: string): number {

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildTool, contentHash, resolveWorkspacePath, zPath } from "./_shared.js";
+import type { FileReadStamp } from "./_shared.js";
 
 const inputSchema = z
   .object({
@@ -58,7 +59,10 @@ export const ReadTool = buildTool({
     // so a legitimately-changed file is always re-read.
     const prior = ctx.fileReadStamps.get(filePath);
     const wholeFile = i.offset === undefined && i.limit === undefined;
-    if (prior && wholeFile && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) {
+    // A write-only stamp does NOT satisfy the re-read guard: the model wrote the
+    // file but never saw the full post-edit result, so a whole-file Read must
+    // actually re-read rather than claim "already in your context."
+    if (prior && !prior.writtenNotRead && wholeFile && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) {
       // The model-visible content MUST NOT look like an empty file, or a model
       // that re-reads because it lost track will edit/rewrite blind. Put the
       // explanation in `content` itself, report the real line count, and cite the

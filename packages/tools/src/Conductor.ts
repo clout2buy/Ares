@@ -55,12 +55,26 @@ async function makeCopyWorktree(label: string): Promise<Worktree> {
   return {
     dir,
     changedFiles: () => walkRelFiles(dir),
+    // Collect a per-file inventory instead of throwing on the first failed copy:
+    // a mid-loop EACCES/ENOSPC/locked file would otherwise leave the workspace
+    // half-merged AND let the exception escape runWorktreePhase (its try has only a
+    // finally) — the phase never gets recorded and the model gets a stale summary
+    // over a corrupted workspace. The caller turns {applied,failed} into an honest
+    // failureReason listing exactly what was written vs failed (merge-honesty).
     applyTo: async (mainWorkspace: string) => {
+      const applied: string[] = [];
+      const failed: { rel: string; err: string }[] = [];
       for (const rel of await walkRelFiles(dir)) {
-        const dest = path.join(mainWorkspace, rel);
-        await mkdir(path.dirname(dest), { recursive: true });
-        await cp(path.join(dir, rel), dest);
+        try {
+          const dest = path.join(mainWorkspace, rel);
+          await mkdir(path.dirname(dest), { recursive: true });
+          await cp(path.join(dir, rel), dest);
+          applied.push(rel);
+        } catch (e) {
+          failed.push({ rel, err: e instanceof Error ? e.message : String(e) });
+        }
       }
+      return { applied, failed };
     },
     cleanup: () => rm(dir, { recursive: true, force: true }).catch(() => undefined),
   };

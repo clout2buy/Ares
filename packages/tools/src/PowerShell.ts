@@ -59,7 +59,10 @@ export const PowerShellTool = buildTool({
       if (!ctx.shellRegistry) {
         throw new Error("run_in_background requires a shell registry on the session context");
       }
-      const snap = ctx.shellRegistry.spawn({
+      // Await the real launch — spawn() now resolves only after the child
+      // actually started (or throws toolError if it failed to), so we never
+      // return a false {status:'running'} for a process that never ran.
+      const snap = await ctx.shellRegistry.spawn({
         program: pwsh,
         args,
         cwd,

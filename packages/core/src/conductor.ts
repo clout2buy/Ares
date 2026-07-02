@@ -68,6 +68,10 @@ export interface FleetAgentSpec {
   /** Per-leaf model override — e.g. cheap leaves + a strong judge. Omit to
    *  inherit the fleet model. (Provider is host runtime, never model-authored.) */
   model?: string;
+  /** WRITE leaves only: path prefixes this leaf owns (glob-ish, e.g. "src/api" or
+   *  "src/api/**"). Used by the overlap check that gates un-isolated parallel
+   *  writers (isolation:'none' requires every writer to declare a disjoint scope). */
+  scope?: readonly string[];
 }
 
 export type FleetReduce = "concat" | "first" | "judge";
@@ -96,8 +100,11 @@ export interface FleetPhaseSpec {
   /** Run a parallel phase's leaves in ISOLATED git worktrees so MANY writers can
    *  build in parallel without clobbering, then merge file-disjoint changes back
    *  (an overlap fails the phase closed). Requires deps.makeWorktree. Only meaningful
-   *  with build:true + kind:'parallel'. */
-  isolation?: "worktree";
+   *  with build:true + kind:'parallel'. DEFAULT: a parallel build phase with 2+
+   *  writers gets 'worktree' automatically when deps.makeWorktree is available.
+   *  'none' opts OUT (shared workspace) — allowed only when every writer declares
+   *  a disjoint `scope`, so un-isolated parallel writers provably can't clobber. */
+  isolation?: "worktree" | "none";
 }
 
 export interface FleetSpec {
@@ -398,6 +405,48 @@ export function resolveTemplates(
   return { text: out, unresolved };
 }
 
+/** Normalize a glob-ish scope entry to a comparable path prefix: forward slashes,
+ *  no leading "./", trailing "/*" or "/**" glob tails collapsed to their dir. */
+function scopePrefix(entry: string): string {
+  let s = String(entry).replace(/\\/g, "/").replace(/^\.\//, "");
+  s = s.replace(/\/\*{1,2}$/, "");
+  return s.replace(/\/+$/, "");
+}
+
+/** Two scopes overlap when one is a path-segment prefix of the other (or equal).
+ *  An empty/root scope owns everything and overlaps all. */
+function scopesOverlap(a: string, b: string): boolean {
+  const x = scopePrefix(a);
+  const y = scopePrefix(b);
+  if (!x || !y) return true;
+  return x === y || x.startsWith(y + "/") || y.startsWith(x + "/");
+}
+
+/** TYPED HANDOFF: statically check every {{prev.field…}} ref in a prompt against
+ *  the upstream stage's declared shape-example. Returns the first ref whose path
+ *  CANNOT exist in the schema (walking objects by key and arrays via their element
+ *  example; an empty array example is unverifiable and passes). undefined = all ok. */
+function undeclaredPrevRef(prompt: string, schema: Record<string, unknown>): string | undefined {
+  const re = /\{\{\s*prev\.([^}]+?)\s*\}\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(prompt))) {
+    const segs = m[1].split(".").map((s) => s.trim()).filter(Boolean);
+    let cur: unknown = schema;
+    for (const seg of segs) {
+      if (cur === undefined) break; // unverifiable deeper — defer to the post-run barrier
+      if (cur === null || typeof cur !== "object") return m[1];
+      if (Array.isArray(cur)) {
+        if (!/^\d+$/.test(seg)) return m[1];
+        cur = cur.length > 0 ? cur[0] : undefined;
+        continue;
+      }
+      if (!(seg in (cur as Record<string, unknown>))) return m[1];
+      cur = (cur as Record<string, unknown>)[seg];
+    }
+  }
+  return undefined;
+}
+
 /** Validate the spec structurally and against the parent catalog. Throws loudly
  *  on a typo (a silently-dropped whitelisted tool is worse than a hard error the
  *  model can correct) AND on adversarial spec sizes (finding #7) / a child that
@@ -426,13 +475,42 @@ export function validateSpec(spec: FleetSpec, parentTools: readonly EngineTool[]
       throw new Error(`phase '${phase.id}' kind must be 'parallel' or 'pipeline'.`);
     }
     // A build phase's leaves write to the shared workspace; parallel writers would
-    // clobber each other. Force serial (pipeline) writers.
+    // clobber each other. Force serial (pipeline) writers, worktree isolation, or
+    // an explicit isolation:'none' backed by provably-disjoint declared scopes.
     if (phase.build && phase.kind === "parallel" && phase.agents.length > 1 && phase.isolation !== "worktree") {
-      throw new Error(
-        `phase '${phase.id}' is a parallel BUILD phase with ${phase.agents.length} writers that would ` +
-          `clobber the shared workspace — make it 'pipeline' (serial writers), or set ` +
-          `isolation:'worktree' to run the writers in parallel sandboxes (file-disjoint, merged back).`,
-      );
+      if (phase.isolation === "none") {
+        for (const agent of phase.agents) {
+          if (!agent.scope || agent.scope.length === 0) {
+            throw new Error(
+              `phase '${phase.id}' sets isolation:'none' with ${phase.agents.length} parallel writers — ` +
+                `every writer must declare 'scope' (the path prefixes it owns) so disjointness can be ` +
+                `checked; '${agent.role}' declares none. Add scopes, or use isolation:'worktree'.`,
+            );
+          }
+        }
+        for (let i = 0; i < phase.agents.length; i++) {
+          for (let j = i + 1; j < phase.agents.length; j++) {
+            for (const sa of phase.agents[i].scope!) {
+              for (const sb of phase.agents[j].scope!) {
+                if (scopesOverlap(sa, sb)) {
+                  throw new Error(
+                    `phase '${phase.id}': parallel writers '${phase.agents[i].role}' and '${phase.agents[j].role}' ` +
+                      `declare overlapping scopes ('${sa}' vs '${sb}') with isolation off — they would clobber ` +
+                      `each other. Make the scopes disjoint, or use isolation:'worktree'.`,
+                  );
+                }
+              }
+            }
+          }
+        }
+      } else {
+        throw new Error(
+          `phase '${phase.id}' is a parallel BUILD phase with ${phase.agents.length} writers that would ` +
+            `clobber the shared workspace — make it 'pipeline' (serial writers), set ` +
+            `isolation:'worktree' to run the writers in parallel sandboxes (file-disjoint, merged back), ` +
+            `or set isolation:'none' with a disjoint 'scope' declared on every writer.`,
+        );
+      }
     }
     for (const agent of phase.agents) {
       // An empty/primitive schema-example silently disables enforcement AND the
@@ -977,6 +1055,9 @@ async function runPipelinePhase(
   // transcript), exposed to templates as {{prev}} plus {{prev.field}}.
   let prevStructured: unknown;
   let prevText = "";
+  // The upstream stage's declared shape-example, when its VALIDATED output is what
+  // currently feeds {{prev}} — drives the typed-handoff pre-check below.
+  let prevSchema: Record<string, unknown> | undefined;
   let status: PhaseResult["status"] = "completed";
   let failureReason: string | undefined;
   // Soft budget (W2): degrade-skip a stage past budget*grace instead of aborting.
@@ -994,6 +1075,7 @@ async function runPipelinePhase(
       leaves.push(leaf);
       prevStructured = leaf.structured;
       prevText = leaf.text;
+      prevSchema = agent.schema && leaf.schemaValid ? agent.schema : undefined;
       deps.emitProgress?.({ kind: "fleet_activity", event: "resumed", agentId: leaf.agentId, role: agent.role, phase: phase.id, status: "completed" });
       continue;
     }
@@ -1009,6 +1091,22 @@ async function runPipelinePhase(
     if (admitBlocked()) {
       leaves.push(invalidLeaf(agent, phase.id, "(skipped: over soft budget)", 0, true));
       continue;
+    }
+    // TYPED HANDOFF: when the upstream stage declared a schema, every {{prev.x}}
+    // ref must be a field that can exist in it. A ref the schema cannot satisfy
+    // fails the stage BEFORE it runs — instead of prompting a fork with a value
+    // that will never resolve (or resolves to lucky garbage the contract never
+    // promised). No upstream schema → today's post-run fail-fast still applies.
+    if (prevSchema) {
+      const bad = undeclaredPrevRef(agent.prompt, prevSchema);
+      if (bad !== undefined) {
+        status = "failed";
+        failureReason =
+          `stage '${agent.role}' references {{prev.${bad}}} but the upstream schema has no field ` +
+          `'${bad}' — declared fields: [${Object.keys(prevSchema).join(", ")}].`;
+        leaves.push(invalidLeaf(agent, phase.id, failureReason, 1));
+        break;
+      }
     }
     const localCtx: Record<string, unknown> = {
       ...pipelineCtx,
@@ -1051,6 +1149,7 @@ async function runPipelinePhase(
 
     prevStructured = leaf.schemaValid ? (leaf.structured ?? leaf.text) : leaf.text;
     prevText = leaf.text;
+    prevSchema = agent.schema && leaf.schemaValid ? agent.schema : undefined;
     // No hard budget latch here (W2): soft-budget skipping is handled by the
     // admit gate at the top of the loop; a finished stage never aborts the rest.
   }
@@ -1361,6 +1460,21 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
     deps.emitProgress?.({ kind: "fleet_activity", event: "planning", fleetId, role: "fleet-architect", phase: "plan" });
     const expanded = await planFleet(spec.plan, deps, run, ledger);
     spec = { ...expanded, goal: expanded.goal ?? spec.plan, maxTotalTokens: spec.maxTotalTokens ?? expanded.maxTotalTokens, maxWallClockMs: spec.maxWallClockMs ?? expanded.maxWallClockMs, resumeFleetId: spec.resumeFleetId };
+  }
+  // ISOLATION BY DEFAULT: a parallel build phase with 2+ writers is isolated in
+  // worktrees unless it explicitly opts out (isolation:'none', which validateSpec
+  // only admits with disjoint declared scopes). Only applied when the host can
+  // actually make worktrees; explicit isolation values are never touched, and
+  // single-leaf / read-only phases stay un-isolated (worktrees aren't free).
+  if (deps.makeWorktree && Array.isArray(spec.phases)) {
+    spec = {
+      ...spec,
+      phases: spec.phases.map((ph) =>
+        ph.kind === "parallel" && ph.build === true && Array.isArray(ph.agents) && ph.agents.length > 1 && ph.isolation === undefined
+          ? { ...ph, isolation: "worktree" as const }
+          : ph,
+      ),
+    };
   }
   validateSpec(spec, deps.parentTools);
 

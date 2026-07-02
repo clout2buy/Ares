@@ -187,6 +187,12 @@ const agentSchema = z
         'Optional shape-EXAMPLE object (NOT JSON-Schema), e.g. {"summary":"...","score":0}. The leaf output is validated to match it.',
       ),
     maxTurns: z.number().int().positive().optional().describe("Per-agent turn ceiling."),
+    scope: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "WRITE agents only: path prefixes this agent owns (e.g. [\"src/api\"]). Required (and checked for overlap) when a parallel build phase sets isolation:'none'.",
+      ),
   })
   .strict();
 
@@ -221,9 +227,11 @@ const phaseSchema = z
       .optional()
       .describe("SELF-REPAIR: if the phase fails (or its last agent returns {ok:false}), re-run it up to N times with the failure injected — 'verify→fix→re-verify until green'. Put this on a verify phase whose agent has schema {ok:true,summary:'...'}."),
     isolation: z
-      .enum(["worktree"])
+      .enum(["worktree", "none"])
       .optional()
-      .describe("'worktree' lets a PARALLEL build phase run many writers at once in isolated sandboxes, merged back file-disjoint (an overlap fails closed). Pair with kind:'parallel' + build:true and FILE-DISJOINT agents."),
+      .describe(
+        "'worktree' runs a PARALLEL build phase's writers in isolated sandboxes, merged back file-disjoint (an overlap fails closed) — this is the DEFAULT for a parallel build phase with 2+ agents, so you rarely set it. 'none' opts out (shared workspace, faster) and is only accepted when EVERY agent declares a disjoint 'scope'.",
+      ),
   })
   .strict();
 
@@ -273,6 +281,22 @@ export function makeConductorTool(deps: ConductorToolDeps) {
     // Fleets legitimately run minutes; bounded by the parent's deadline signal.
     watchdogTimeoutMs: 0,
     inputZod: inputSchema,
+    // WHEN-TO-SPAWN policy (deterministic, not model whim): a fleet must buy real
+    // structure. A single phase with a single agent is just an inline task wearing
+    // orchestration overhead — reject it with the fix. (A lone self-repairing
+    // verify phase is exempt: repairRounds makes it a real loop, not one leaf.)
+    validateInput: async (i) => {
+      if (!i.plan && i.phases?.length === 1 && i.phases[0].agents.length === 1 && !(i.phases[0].repairRounds && i.phases[0].repairRounds > 0)) {
+        return {
+          ok: false,
+          message:
+            "This fleet is a single phase with a single agent — a fleet adds orchestration overhead " +
+            "for zero parallelism. Run the task inline (or as one Task) instead; use Conductor only " +
+            "for parallel fan-out, multi-stage pipelines, or a self-repairing verify phase.",
+        };
+      }
+      return { ok: true };
+    },
     activityDescription: (i) =>
       i.plan
         ? `Conductor: planning a fleet for "${i.plan.slice(0, 60)}"`
@@ -356,11 +380,15 @@ build (parallel, file-disjoint modules) → verify (a stage that runs the build/
 and fails closed). Under-decomposing into a few agents is the #1 way a fleet
 underdelivers — when in doubt, fan WIDER and add a verify phase.
 
-WHEN TO USE:
+WHEN TO USE — fan out ONLY for parallelizable read/search/analysis work or isolated write shards (disjoint files/dirs):
 - Build something real: research the stack in parallel, then build modules in parallel, then verify.
 - Survey N angles in parallel then JUDGE them into one answer (research, design options, code-review panels).
 - A pipeline where each stage consumes the PREVIOUS stage's structured output (extract → transform → write).
 - Any fan-out where you need a concurrency cap, a token budget, or schema-valid leaf outputs.
+
+WHEN NOT TO USE (rejected or wasteful):
+- NEVER for a single-file edit or a task needing shared evolving context — run it inline. A fleet that is one phase with one agent is REJECTED (pure overhead; exception: a lone verify phase with repairRounds).
+- One phase per dependency step; add a new phase (a barrier) ONLY when a step needs ALL prior results. Independent work belongs in ONE parallel phase, not a chain.
 
 WORKED EXAMPLE — a review panel that fans out, then synthesizes:
 { "goal": "review the diff",
@@ -377,8 +405,9 @@ NOTES:
 - 'schema' is a shape-EXAMPLE object (values illustrate types), NOT JSON-Schema.
 - reduce: 'judge' adds one synthesis fork over all siblings — far better than 'concat' for panels (you get a merged answer, not N raw opinions to digest yourself).
 - In a pipeline, reference the prior stage with {{prev}} / {{prev.field}}; reference an earlier phase with {{phaseId.reduced}}. If a stage's schema fails OR a downstream {{prev.field}} doesn't resolve, the pipeline FAILS CLOSED — it does not run the next stage on garbage.
+- TYPED HANDOFF: when the upstream stage declares a schema, every {{prev.field}} you write is checked against it BEFORE the stage runs — referencing a field the schema doesn't declare fails immediately with the declared field list. Only reference fields the upstream schema actually has.
 - Each agent is STATELESS — make every prompt self-contained.
 - Children run UNATTENDED but CAN research: read-only tools (Read/Grep/Glob/CodebaseSearch/LSP) AND safe research tools (WebFetch/WebSearch/ImageSearch) are available — whitelist them freely on research agents. Write/destructive/credential/payment/account tools are stripped unless the host enabled write mode; serialize writers into a single pipeline stage.
 - SELF-REPAIR: put repairRounds (e.g. 3) on your VERIFY phase, whose agent returns schema {"ok":true,"summary":"..."}. If it reports ok:false the runtime re-runs it with the failure injected until green or rounds run out — this is how the fleet catches a broken build and FIXES it before finishing.
-- PARALLEL BUILD: to build many modules at once, use kind:'parallel' + build:true + isolation:'worktree' with FILE-DISJOINT agents (each owns different files) — they build in isolated sandboxes and merge back; an overlap fails closed. Serial build is just kind:'pipeline' + build:true.
+- PARALLEL BUILD: to build many modules at once, use kind:'parallel' + build:true with FILE-DISJOINT agents (each owns different files). Isolation defaults to 'worktree' automatically (isolated sandboxes, merged back; an overlap fails closed). To share the workspace directly set isolation:'none' — accepted only when every agent declares a disjoint 'scope' (path prefixes it owns). Serial build is just kind:'pipeline' + build:true.
 - If a fleet aborts (budget/time/crash), re-run with resumeFleetId: <the returned fleetId> — completed leaves are reused, only the rest re-runs. The result's 'hints' tell you what to fix.`;

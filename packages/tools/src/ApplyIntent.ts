@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, contentHash, resolveWorkspacePath, zPath } from "./_shared.js";
+import { buildTool, contentHash, pathInputProblem, resolveWorkspacePath, zPath } from "./_shared.js";
 import type { FileReadStamp } from "./_shared.js";
 import { safeOverwrite } from "./safeWrite.js";
 
@@ -56,6 +56,23 @@ export const ApplyIntentTool = buildTool({
   providerHint: "apply",
   inputZod: inputSchema,
   activityDescription: (i) => `ApplyIntent ${path.basename(i.file_path)}`,
+
+  // Semantic pre-checks: whitespace-only instructions/sketch pass zod's min(1)
+  // but always fail downstream (an empty sketch would blank the file).
+  async validateInput(i, ctx) {
+    const pathProblem = pathInputProblem(i.file_path, ctx?.workspace);
+    if (pathProblem) return { ok: false, message: `file_path: ${pathProblem}` };
+    if (i.instructions.trim() === "") {
+      return { ok: false, message: "instructions is blank — describe the intended change in one or two plain-English sentences." };
+    }
+    if (i.sketch.trim() === "") {
+      return {
+        ok: false,
+        message: "sketch is blank — pass either the full final file content, or a concise sketch with `... existing code ...` markers around the changed parts.",
+      };
+    }
+    return { ok: true };
+  },
 
   async checkPermissions(i, ctx) {
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");

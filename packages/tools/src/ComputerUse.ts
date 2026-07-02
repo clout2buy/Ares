@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { buildTool } from "./_shared.js";
 
 const inputSchema = z
@@ -79,9 +79,29 @@ export interface ComputerUseOutput {
   /** Where the screenshot PNG was also saved on disk (for desktop preview). */
   screenshotPath?: string;
   note?: string;
+  /** True when a post-action verification capture was taken and attached. */
+  verified?: boolean;
+  /** Whether the screen changed vs. the pre-action capture (undefined = no baseline). */
+  changed?: boolean;
+  /** Audit line for keyboard-tier actions: what was injected, and into which window. */
+  audit?: string;
 }
 
 const MOUSE_ACTIONS = new Set(["move", "click", "double_click", "right_click"]);
+
+/**
+ * Per-action permission tiers. The static schema safety stays "external-state"
+ * (conservative for the watchdog class + conductor filtering); the PERMISSION
+ * decision uses the per-input tier via dynamicSafety:
+ *   - read-only (no confirmation cost): screenshot / zoom / window / windows /
+ *     cursor — they only observe the screen.
+ *   - standard (external-state ask): move / click / scroll / launch / activate.
+ *   - risky (external-state ask + audit line + env gate): type / key — they
+ *     inject keystrokes into whatever holds focus. ARES_COMPUTERUSE_ALLOW_TYPING=0
+ *     blocks them outright (default: allowed).
+ */
+const READ_ONLY_ACTIONS = new Set(["screenshot", "zoom", "window", "windows", "cursor"]);
+const TYPING_ACTIONS = new Set(["type", "key"]);
 
 /**
  * Everything needed to map a click from the IMAGE the model saw back to an
@@ -104,7 +124,29 @@ export interface ShotMeta {
 
 const IDENTITY_SHOT: ShotMeta = { originX: 0, originY: 0, captureW: 1, captureH: 1, imageW: 1, imageH: 1 };
 
-let lastShot: ShotMeta = { ...IDENTITY_SHOT };
+/** State-changing actions that get a post-action verification capture. */
+const VERIFY_ACTIONS = new Set(["click", "double_click", "right_click", "type", "key", "scroll"]);
+
+function captureHash(imageBase64: string): string {
+  return createHash("sha1").update(imageBase64).digest("hex");
+}
+
+function shotMetaFrom(result: PsResult): ShotMeta {
+  return {
+    originX: result.originX ?? 0,
+    originY: result.originY ?? 0,
+    captureW: result.captureW && result.captureW > 0 ? result.captureW : (result.width ?? 1),
+    captureH: result.captureH && result.captureH > 0 ? result.captureH : (result.height ?? 1),
+    imageW: result.width && result.width > 0 ? result.width : 1,
+    imageH: result.height && result.height > 0 ? result.height : 1,
+  };
+}
+
+function unchangedNote(action: string): string {
+  return MOUSE_ACTIONS.has(action)
+    ? `screen unchanged after ${action} — the click may have missed`
+    : `screen unchanged after ${action} — the input may not have registered`;
+}
 
 /**
  * Map an image-space coordinate (what the model returns) to an absolute
@@ -144,99 +186,189 @@ function traceMapping(action: string, ix: number, iy: number, shot: ShotMeta, ma
   );
 }
 
-export const ComputerUseTool = buildTool({
-  name: "ComputerUse",
-  description:
-    "Control the REAL desktop (mouse, keyboard, screen) — for tasks about the user's machine and native apps, not files/code: clicking through a GUI, managing a browser extension, operating an app with no API. Doctrine: SCREENSHOT FIRST to see the screen, act on what you SEE (coordinates are screen pixels from the top-left), then screenshot again to verify. Windows only. Note: this controls the user's actual machine — be deliberate and confirm destructive/outward actions.",
-  safety: "external-state",
-  concurrency: "exclusive",
-  inputZod: inputSchema,
-  activityDescription: (i) => {
-    if (i.action === "screenshot") return "Capturing the screen";
-    if (i.action === "window") return "Capturing the active window";
-    if (i.action === "windows") return "Listing open windows";
-    if (i.action === "launch") return `Launching ${i.text ?? "an app"}`;
-    if (i.action === "type") return "Typing on the desktop";
-    if (i.action === "key") return `Pressing ${i.key ?? "a key"}`;
-    if (MOUSE_ACTIONS.has(i.action) && i.x !== undefined) return `${i.action} at ${i.x},${i.y}`;
-    return `Computer: ${i.action}`;
-  },
+export type ComputerActionRunner = (input: z.infer<typeof inputSchema>, shot: ShotMeta) => Promise<PsResult>;
 
-  async call(i, _ctx): Promise<{ output: ComputerUseOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
-    if (process.env.ARES_COMPUTER_USE === "0") {
-      throw new Error("COMPUTER_USE_DISABLED: ComputerUse is turned off (ARES_COMPUTER_USE=0).");
-    }
-    if (process.platform !== "win32") {
-      // Terminal, non-retriable — do NOT try to install anything, switch tools.
-      throw new Error(
-        "COMPUTER_USE_UNAVAILABLE: desktop control is Windows-only in this build. Use the Browser tool for web tasks, or do the work through files/CLI instead.",
-      );
-    }
+export function makeComputerUseTool(runner: ComputerActionRunner = runComputerAction) {
+  // Per-tool capture state: the mapping metadata of the last image the model
+  // saw, plus its content hash for post-action change detection.
+  let lastShot: ShotMeta = { ...IDENTITY_SHOT };
+  let lastShotHash: string | null = null;
+  const realDesktop = runner === runComputerAction;
 
-    const result = await runComputerAction(i);
-    if (!result.ok) {
-      throw new Error(`ComputerUse ${i.action} failed: ${result.error ?? "unknown error"}`);
-    }
+  return buildTool({
+    name: "ComputerUse",
+    description:
+      "Control the REAL desktop (mouse, keyboard, screen) — for tasks about the user's machine and native apps, not files/code: clicking through a GUI, managing a browser extension, operating an app with no API. Doctrine: SCREENSHOT FIRST to see the screen, act on what you SEE (coordinates are screen pixels from the top-left). After click/type/key/scroll a post-action screenshot is attached automatically — LOOK at it to confirm the effect before acting again. Windows only. Note: this controls the user's actual machine — be deliberate and confirm destructive/outward actions.",
+    safety: "external-state",
+    concurrency: "exclusive",
+    inputZod: inputSchema,
+    dynamicSafety: (i) => (READ_ONLY_ACTIONS.has(i.action) ? "read-only" : "external-state"),
 
-    if (i.action === "windows") {
-      const windows = result.windows ?? [];
-      return {
-        output: { ok: true, action: "windows", windows, note: `${windows.length} open window(s). Use 'activate' (by title) or 'window' to capture the focused one.` },
-        display: `Listed ${windows.length} window(s)`,
-      };
-    }
-
-    if ((i.action === "screenshot" || i.action === "zoom" || i.action === "window") && result.image) {
-      // Remember the full mapping metadata so the NEXT click/move converts the
-      // model's image-space coordinate back to the right spot on the real desktop.
-      lastShot = {
-        originX: result.originX ?? 0,
-        originY: result.originY ?? 0,
-        captureW: result.captureW && result.captureW > 0 ? result.captureW : (result.width ?? 1),
-        captureH: result.captureH && result.captureH > 0 ? result.captureH : (result.height ?? 1),
-        imageW: result.width && result.width > 0 ? result.width : 1,
-        imageH: result.height && result.height > 0 ? result.height : 1,
-      };
-      // Persist a copy under ARES_HOME (asset-protocol scope) so the desktop can
-      // preview it; fall back to tmp if home isn't set.
-      let screenshotPath: string | undefined;
-      try {
-        const base = process.env.ARES_HOME
-          ? path.join(process.env.ARES_HOME, "screenshots")
-          : path.join(os.tmpdir(), "ares-screenshots");
-        await fs.mkdir(base, { recursive: true });
-        screenshotPath = path.join(base, `shot-${Date.now()}.png`);
-        await fs.writeFile(screenshotPath, Buffer.from(result.image, "base64"));
-      } catch {
-        screenshotPath = undefined;
+    // Per-action semantic checks: catch the calls that fail (or silently no-op)
+    // deep in the PowerShell driver, with a one-sentence fix.
+    async validateInput(i) {
+      if (TYPING_ACTIONS.has(i.action) && process.env.ARES_COMPUTERUSE_ALLOW_TYPING === "0") {
+        return {
+          ok: false,
+          message: `${i.action} is blocked: keyboard input is disabled (ARES_COMPUTERUSE_ALLOW_TYPING=0). Use click-based UI interaction, or ask the owner to re-enable typing.`,
+        };
       }
-      const { scaleX } = shotScale(lastShot);
-      const native = scaleX <= 1.001 ? "(native resolution)" : `(downscaled ${scaleX.toFixed(2)}×)`;
+      if (i.action === "type" && !i.text) {
+        return { ok: false, message: "type needs `text` — the literal characters to type into the focused window." };
+      }
+      if (i.action === "key" && !i.key) {
+        return { ok: false, message: "key needs `key` — a SendKeys combo like ^c, %{F4}, {ENTER}, or a WIN chord like WIN+R." };
+      }
+      if (i.action === "launch" && !i.text?.trim()) {
+        return { ok: false, message: "launch needs `text` — a program name (notepad), full path, or URI (ms-settings:)." };
+      }
+      if (i.action === "activate" && !i.text?.trim()) {
+        return { ok: false, message: "activate needs `text` — a substring of the target window's title (use `windows` to list them)." };
+      }
+      if ((i.action === "move" || i.action === "zoom") && (i.x === undefined || i.y === undefined)) {
+        return { ok: false, message: `${i.action} needs both x and y — pixel coordinates from the LAST image you were shown.` };
+      }
+      if (MOUSE_ACTIONS.has(i.action) && (i.x === undefined) !== (i.y === undefined)) {
+        return { ok: false, message: `${i.action} got only one of x/y — pass BOTH coordinates, or neither to act at the current cursor position.` };
+      }
+      return { ok: true };
+    },
+
+    activityDescription: (i) => {
+      if (i.action === "screenshot") return "Capturing the screen";
+      if (i.action === "window") return "Capturing the active window";
+      if (i.action === "windows") return "Listing open windows";
+      if (i.action === "launch") return `Launching ${i.text ?? "an app"}`;
+      if (i.action === "type") return "Typing on the desktop";
+      if (i.action === "key") return `Pressing ${i.key ?? "a key"}`;
+      if (MOUSE_ACTIONS.has(i.action) && i.x !== undefined) return `${i.action} at ${i.x},${i.y}`;
+      return `Computer: ${i.action}`;
+    },
+
+    async call(i, _ctx): Promise<{ output: ComputerUseOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
+      if (process.env.ARES_COMPUTER_USE === "0") {
+        throw new Error("COMPUTER_USE_DISABLED: ComputerUse is turned off (ARES_COMPUTER_USE=0).");
+      }
+      if (realDesktop && process.platform !== "win32") {
+        // Terminal, non-retriable — do NOT try to install anything, switch tools.
+        throw new Error(
+          "COMPUTER_USE_UNAVAILABLE: desktop control is Windows-only in this build. Use the Browser tool for web tasks, or do the work through files/CLI instead.",
+        );
+      }
+
+      const result = await runner(i, lastShot);
+      if (!result.ok) {
+        throw new Error(`ComputerUse ${i.action} failed: ${result.error ?? "unknown error"}`);
+      }
+
+      if (i.action === "windows") {
+        const windows = result.windows ?? [];
+        return {
+          output: { ok: true, action: "windows", windows, note: `${windows.length} open window(s). Use 'activate' (by title) or 'window' to capture the focused one.` },
+          display: `Listed ${windows.length} window(s)`,
+        };
+      }
+
+      if ((i.action === "screenshot" || i.action === "zoom" || i.action === "window") && result.image) {
+        // Remember the full mapping metadata so the NEXT click/move converts the
+        // model's image-space coordinate back to the right spot on the real desktop.
+        lastShot = shotMetaFrom(result);
+        lastShotHash = captureHash(result.image);
+        // Persist a copy under ARES_HOME (asset-protocol scope) so the desktop can
+        // preview it; fall back to tmp if home isn't set.
+        let screenshotPath: string | undefined;
+        try {
+          const base = process.env.ARES_HOME
+            ? path.join(process.env.ARES_HOME, "screenshots")
+            : path.join(os.tmpdir(), "ares-screenshots");
+          await fs.mkdir(base, { recursive: true });
+          screenshotPath = path.join(base, `shot-${Date.now()}.png`);
+          await fs.writeFile(screenshotPath, Buffer.from(result.image, "base64"));
+        } catch {
+          screenshotPath = undefined;
+        }
+        const { scaleX } = shotScale(lastShot);
+        const native = scaleX <= 1.001 ? "(native resolution)" : `(downscaled ${scaleX.toFixed(2)}×)`;
+        const output: ComputerUseOutput = {
+          ok: true,
+          action: i.action,
+          width: result.width,
+          height: result.height,
+          scale: scaleX,
+          screenshotPath,
+          note: `Captured ${native}. Give click/move coordinates in THIS image's pixel space (top-left origin); they're mapped to the real screen automatically. If a target is small or text is hard to read, 'zoom' into its region for a native-resolution view.`,
+        };
+        return {
+          output,
+          display: `Captured ${i.action} ${result.width}×${result.height}`,
+          images: [{ mediaType: "image/png", data: result.image }],
+        };
+      }
+
       const output: ComputerUseOutput = {
         ok: true,
         action: i.action,
-        width: result.width,
-        height: result.height,
-        scale: scaleX,
-        screenshotPath,
-        note: `Captured ${native}. Give click/move coordinates in THIS image's pixel space (top-left origin); they're mapped to the real screen automatically. If a target is small or text is hard to read, 'zoom' into its region for a native-resolution view.`,
+        x: result.x,
+        y: result.y,
       };
-      return {
-        output,
-        display: `Captured ${i.action} ${result.width}×${result.height}`,
-        images: [{ mediaType: "image/png", data: result.image }],
-      };
-    }
+      let display = describeDone(i, result);
+      // Keyboard tier: an explicit audit line — what was injected, into which
+      // window — so a transcript reviewer (and the model) can see exactly where
+      // the keystrokes went. Survives the verification note below.
+      if (TYPING_ACTIONS.has(i.action)) {
+        const focus = result.focus?.trim() ? `"${result.focus.trim()}"` : "the focused window";
+        output.audit =
+          i.action === "type"
+            ? `typed ${(i.text ?? "").length} chars into ${focus}`
+            : `pressed ${i.key ?? ""} in ${focus}`;
+        display = output.audit.charAt(0).toUpperCase() + output.audit.slice(1);
+      }
+      let images: Array<{ mediaType: string; data: string }> | undefined;
 
-    const output: ComputerUseOutput = {
-      ok: true,
-      action: i.action,
-      x: result.x,
-      y: result.y,
-    };
-    return { output, display: describeDone(i, result) };
-  },
-});
+      // Vision verification: after a state-changing action, take ONE post-action
+      // capture (same region the model last saw), attach it so the model SEES the
+      // effect, and hash-compare against the pre-action capture — "clicked blind"
+      // becomes "clicked, looked, and knows whether anything happened". No retry
+      // loops here; self-correction is the model's job. ARES_COMPUTERUSE_VERIFY=0
+      // disables.
+      if (VERIFY_ACTIONS.has(i.action) && process.env.ARES_COMPUTERUSE_VERIFY !== "0") {
+        const settleMs = Number(process.env.ARES_COMPUTERUSE_SETTLE_MS ?? 350);
+        if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
+        const hadBaseline = lastShotHash !== null && lastShot.captureW > 1;
+        const captureInput = (hadBaseline
+          ? { action: "zoom", x: lastShot.originX, y: lastShot.originY, w: lastShot.captureW, h: lastShot.captureH }
+          : { action: "screenshot" }) as z.infer<typeof inputSchema>;
+        const capture = await runner(captureInput, lastShot).catch(
+          (err): PsResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }),
+        );
+        if (capture.ok && capture.image) {
+          const postHash = captureHash(capture.image);
+          const changed = hadBaseline ? postHash !== lastShotHash : undefined;
+          lastShot = shotMetaFrom(capture);
+          lastShotHash = postHash;
+          output.verified = true;
+          output.changed = changed;
+          output.note =
+            changed === false
+              ? unchangedNote(i.action)
+              : changed
+                ? "screen changed after the action — post-action screenshot attached; coordinates now refer to THIS image"
+                : "post-action screenshot attached (no prior capture to compare against); coordinates now refer to THIS image";
+          display = changed === false
+            ? `${display} — ${unchangedNote(i.action)}`
+            : `${display} — verified (screen ${changed ? "changed" : "captured"})`;
+          images = [{ mediaType: "image/png", data: capture.image }];
+        } else {
+          output.note = `post-action verification capture failed (${capture.error ?? "unknown error"}) — take a screenshot to confirm the effect`;
+        }
+      }
+
+      return { output, display, images };
+    },
+  });
+}
+
+export const ComputerUseTool = makeComputerUseTool();
 
 function describeDone(i: z.infer<typeof inputSchema>, r: PsResult): string {
   switch (i.action) {
@@ -272,6 +404,8 @@ interface PsResult {
   x?: number;
   y?: number;
   windows?: WindowInfo[];
+  /** Foreground-window title at type/key time (for the audit line). */
+  focus?: string;
   error?: string;
 }
 
@@ -295,7 +429,7 @@ async function ensureScript(): Promise<string> {
   return scriptPathPromise;
 }
 
-async function runComputerAction(input: z.infer<typeof inputSchema>): Promise<PsResult> {
+async function runComputerAction(input: z.infer<typeof inputSchema>, shot: ShotMeta): Promise<PsResult> {
   const script = await ensureScript();
   const actionFile = path.join(os.tmpdir(), `ares-cu-${randomUUID()}.json`);
   // Mouse actions: convert the model's image-space coordinates to physical
@@ -303,10 +437,10 @@ async function runComputerAction(input: z.infer<typeof inputSchema>): Promise<Ps
   let physX: number | null = input.x ?? null;
   let physY: number | null = input.y ?? null;
   if (MOUSE_ACTIONS.has(input.action) && input.x !== undefined && input.y !== undefined) {
-    const p = mapImageToVirtual(input.x, input.y, lastShot);
+    const p = mapImageToVirtual(input.x, input.y, shot);
     physX = p.x;
     physY = p.y;
-    traceMapping(input.action, input.x, input.y, lastShot, p);
+    traceMapping(input.action, input.x, input.y, shot, p);
   }
   await fs.writeFile(
     actionFile,
@@ -380,6 +514,7 @@ public static class AresIn {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out AresRect rect);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -388,6 +523,15 @@ public static class AresIn {
   $a = Get-Content -Raw -LiteralPath $ActionFile | ConvertFrom-Json
   $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
   function Set-Pos($x, $y) { [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]$x, [int]$y) }
+  function Get-FocusTitle {
+    try {
+      $h = [AresIn]::GetForegroundWindow()
+      if ($h -eq [IntPtr]::Zero) { return '' }
+      $sb = New-Object System.Text.StringBuilder 512
+      [void][AresIn]::GetWindowText($h, $sb, 512)
+      return $sb.ToString()
+    } catch { return '' }
+  }
   function Mouse($down, $up) {
     [AresIn]::mouse_event($down, 0, 0, 0, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 25
@@ -516,11 +660,13 @@ public static class AresIn {
       Out-Result @{ ok = $true; action = 'scroll' }
     }
     'type' {
+      $focus = Get-FocusTitle
       [System.Windows.Forms.SendKeys]::SendWait([string]$a.text)
-      Out-Result @{ ok = $true; action = 'type' }
+      Out-Result @{ ok = $true; action = 'type'; focus = $focus }
     }
     'key' {
       $k = [string]$a.key
+      $focus = Get-FocusTitle
       if ($k -match '^(?i:win)\b') {
         # SendKeys can't press the Windows key. Hold LWIN (0x5B) and tap the rest.
         $rest = ($k -replace '^(?i:win)\s*\+?\s*', '')
@@ -528,10 +674,10 @@ public static class AresIn {
         if ($rest.Length -gt 0) { [System.Windows.Forms.SendKeys]::SendWait($rest) }
         Start-Sleep -Milliseconds 40
         [AresIn]::keybd_event(0x5B, 0, 2, [IntPtr]::Zero)
-        Out-Result @{ ok = $true; action = 'key' }
+        Out-Result @{ ok = $true; action = 'key'; focus = $focus }
       } else {
         [System.Windows.Forms.SendKeys]::SendWait($k)
-        Out-Result @{ ok = $true; action = 'key' }
+        Out-Result @{ ok = $true; action = 'key'; focus = $focus }
       }
     }
     default { Out-Result @{ ok = $false; error = ("unknown action: " + $a.action) } }

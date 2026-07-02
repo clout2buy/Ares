@@ -10,12 +10,17 @@
 // and often drop trailing whitespace:
 //   1. exact match in EOL-normalized space (covers both exact and CRLF-vs-LF)
 //   2. trailing-whitespace-insensitive line-block match (single occurrence only)
+//   3. diff-anchor / fuzzy match: anchor on the first & last non-blank lines of
+//      old_string (the most stable lines under line-shift + reflow drift), then
+//      verify the interior modulo leading/trailing whitespace and blank lines. A
+//      unique anchored region is replaced; MULTIPLE candidates fail loudly with
+//      their line numbers rather than guessing.
 // The file's dominant EOL style is preserved on write.
 
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, contentHash, resolveWorkspacePath, toolError, zPath } from "./_shared.js";
+import { buildTool, contentHash, pathInputProblem, resolveWorkspacePath, toolError, zPath } from "./_shared.js";
 import type { FileReadStamp } from "./_shared.js";
 
 // A post-write stamp carries `writtenNotRead` so Read's re-read guard does a
@@ -62,7 +67,7 @@ function editHunks(i: EditInput): Array<{ old_string: string; new_string: string
 export interface EditOutput {
   path: string;
   replacements: number;
-  /** Which matching layer landed the edit: "exact" | "whitespace". */
+  /** Which matching layer landed the edit: "exact" | "whitespace" | "anchor". */
   matchedBy: string;
   /** cat -n style excerpt of each edited region WITH a few lines of surrounding
    *  context, so the model can verify the change landed without a follow-up Read
@@ -83,7 +88,9 @@ export const EditTool = buildTool({
   // a missing mode, an empty old_string, or a no-op identical edit are common
   // model mistakes that would otherwise fail deep in matching. Catch them early
   // with a clear, correctable message.
-  async validateInput(i) {
+  async validateInput(i, ctx) {
+    const pathProblem = pathInputProblem(i.file_path, ctx?.workspace);
+    if (pathProblem) return { ok: false, message: `file_path: ${pathProblem}` };
     const usingBatch = Array.isArray(i.edits) && i.edits.length > 0;
     if (!usingBatch && (i.old_string === undefined || i.new_string === undefined)) {
       return {
@@ -102,6 +109,12 @@ export const EditTool = buildTool({
       }
       if (hunks[idx].old_string === hunks[idx].new_string) {
         return { ok: false, message: `old_string and new_string are identical${where} — the edit would be a no-op.` };
+      }
+      if (looksLineNumberPrefixed(hunks[idx].old_string)) {
+        return {
+          ok: false,
+          message: `old_string${where} still carries Read's line-number prefixes ("   12\\t…") — copy only the text AFTER the tab on each line.`,
+        };
       }
     }
     return { ok: true };
@@ -158,9 +171,22 @@ export const EditTool = buildTool({
         const where = hunks.length > 1 ? ` (edit ${idx + 1} of ${hunks.length})` : "";
         const batchNote = hunks.length > 1 ? " No edits were applied — the batch is all-or-nothing." : "";
         if (result.reason === "not-found") {
+          // Make the dead end ACTIONABLE: name the indentation-only miss when
+          // that's what happened, show the closest near-miss so the model can
+          // re-copy without a full re-Read, and give the explicit escape hatch.
+          const hint = nearMissHint(working, h.old_string);
           throw toolError(
-            `old_string not found in ${filePath}${where} (tried exact and whitespace-tolerant matching). ` +
-              `Re-Read the file and copy the text exactly as it appears, without line-number prefixes.${batchNote}`,
+            `old_string not found in ${filePath}${where} (tried exact, whitespace-tolerant, and diff-anchor matching). ` +
+              `Re-Read the file and copy the text exactly as it appears, without line-number prefixes.` +
+              `${hint ? `\n${hint}` : ""}${batchNote} ` +
+              `If the target drifted too far, use ApplyIntent with a concise instruction + sketch instead of retrying Edit.`,
+          );
+        }
+        if (result.reason === "anchor-ambiguous") {
+          throw toolError(
+            `old_string is ambiguous in ${filePath}${where}: the diff-anchor matcher found ${result.lines.length} regions ` +
+              `sharing its first/last lines (near line${result.lines.length === 1 ? "" : "s"} ${result.lines.join(", ")}). ` +
+              `Add more surrounding context so the target is unique — the edit was NOT applied to avoid changing the wrong place.${batchNote}`,
           );
         }
         throw toolError(
@@ -203,9 +229,12 @@ export const EditTool = buildTool({
 });
 
 type ReplaceResult =
-  | { ok: true; text: string; replacements: number; matchedBy: "exact" | "whitespace" }
+  | { ok: true; text: string; replacements: number; matchedBy: "exact" | "whitespace" | "anchor" }
   | { ok: false; reason: "not-found" }
-  | { ok: false; reason: "not-unique"; occurrences: number };
+  | { ok: false; reason: "not-unique"; occurrences: number }
+  // Anchor tier found several regions whose first/last lines match — refuse to
+  // guess. `lines` are 1-based start line numbers of each candidate region.
+  | { ok: false; reason: "anchor-ambiguous"; lines: number[] };
 
 /**
  * Layered replacement. All matching happens in LF-normalized space so CRLF
@@ -251,7 +280,109 @@ export function replaceResilient(
   if (fuzzy.kind === "ambiguous") {
     return { ok: false, reason: "not-unique", occurrences: fuzzy.matches };
   }
+
+  // Layer 3: diff-anchor / fuzzy match. Anchor on the first & last non-blank
+  // lines of old_string (the lines a model reproduces most faithfully), then
+  // verify the interior modulo leading/trailing whitespace and blank lines. Only
+  // ever replaces a UNIQUE anchored region; multiple candidates fail loudly.
+  const anchored = anchorReplace(haystack, needle, replacement);
+  if (anchored.kind === "replaced") {
+    return { ok: true, text: fromLf(anchored.text, eol), replacements: 1, matchedBy: "anchor" };
+  }
+  if (anchored.kind === "ambiguous") {
+    return { ok: false, reason: "anchor-ambiguous", lines: anchored.lines };
+  }
   return { ok: false, reason: "not-found" };
+}
+
+/**
+ * Diff-anchor replacement (Layer 3). When both exact and whitespace-tolerant
+ * matching miss — typically because interior lines drifted (indentation reflow,
+ * a blank line added/removed) or the block moved — we locate the target by its
+ * two most stable lines: the first and last NON-BLANK lines of old_string.
+ *
+ * Algorithm:
+ *   1. Reduce old_string to its "significant" lines: non-blank lines with
+ *      leading+trailing whitespace collapsed. Need >= 2 to anchor safely (a
+ *      single-line target is what the whitespace tier already handles; anchoring
+ *      on one line is far too loose to be safe).
+ *   2. Find every content line matching the first significant line (whitespace-
+ *      insensitive). For each such start, scan forward for the first line
+ *      matching the last significant line — that pair bounds a candidate region.
+ *   3. Verify the candidate: its significant lines (blank lines dropped, inner
+ *      whitespace normalized) must equal old_string's significant lines exactly,
+ *      in order. This guards against two blocks that merely share end-lines.
+ *   4. If exactly one region verifies, replace the WHOLE region (its literal
+ *      lines, blanks included) with new_string. If two or more verify, return
+ *      their start line numbers and refuse — the caller turns this into a
+ *      "N candidates, add more context" error. Never guess.
+ */
+function anchorReplace(
+  content: string,
+  oldString: string,
+  newString: string,
+): { kind: "replaced"; text: string } | { kind: "ambiguous"; lines: number[] } | { kind: "none" } {
+  const contentLines = content.split("\n");
+  const oldLines = oldString.split("\n");
+
+  // Significant = non-blank, with interior whitespace normalized to single
+  // spaces and edges trimmed. Two lines that differ only in indentation or run
+  // of spaces are considered equal for anchoring.
+  const sig = (line: string): string => line.trim().replace(/\s+/g, " ");
+  const oldSig: string[] = [];
+  for (const l of oldLines) {
+    if (l.trim() !== "") oldSig.push(sig(l));
+  }
+  // Anchoring needs a first AND last line to bound a region. One significant
+  // line is too loose to anchor on safely — decline and let it fall through to
+  // "not-found" so the model re-reads.
+  if (oldSig.length < 2) return { kind: "none" };
+
+  const firstSig = oldSig[0];
+  const lastSig = oldSig[oldSig.length - 1];
+
+  // Candidate regions: each starts at a line matching firstSig and ends at the
+  // NEXT line matching lastSig at or after the minimum possible span.
+  const candidates: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < contentLines.length; i++) {
+    if (contentLines[i].trim() === "" || sig(contentLines[i]) !== firstSig) continue;
+    // The region must be at least as long as the significant-line count (minus 1
+    // for a 2-line block whose ends coincide only when oldSig.length === 2).
+    const minEnd = i + oldSig.length - 1;
+    for (let k = minEnd; k < contentLines.length; k++) {
+      if (contentLines[k].trim() === "") continue;
+      if (sig(contentLines[k]) === lastSig) {
+        candidates.push({ start: i, end: k });
+        break; // shortest region for this start; longer ones would over-capture
+      }
+    }
+  }
+
+  // Verify each candidate: significant lines within [start, end] must match
+  // oldSig exactly (blank lines ignored, whitespace normalized).
+  const verified: Array<{ start: number; end: number }> = [];
+  for (const cand of candidates) {
+    const regionSig: string[] = [];
+    for (let k = cand.start; k <= cand.end; k++) {
+      if (contentLines[k].trim() !== "") regionSig.push(sig(contentLines[k]));
+    }
+    if (regionSig.length === oldSig.length && regionSig.every((v, idx) => v === oldSig[idx])) {
+      verified.push(cand);
+    }
+  }
+
+  if (verified.length === 0) return { kind: "none" };
+  if (verified.length > 1) {
+    return { kind: "ambiguous", lines: verified.map((v) => v.start + 1) };
+  }
+
+  const { start, end } = verified[0];
+  const updated = [
+    ...contentLines.slice(0, start),
+    ...newString.split("\n"),
+    ...contentLines.slice(end + 1),
+  ];
+  return { kind: "replaced", text: updated.join("\n") };
 }
 
 function fuzzyLineReplace(
@@ -346,6 +477,94 @@ function editedExcerpt(before: string, after: string): string {
     .map((line, idx) => `${(from + idx + 1).toString().padStart(5, " ")}\t${line}`)
     .join("\n");
   return clipped ? `${body}\n     …\t[${lines.length - MAX_LINES} more changed lines]` : body;
+}
+
+/**
+ * True when old_string still carries Read's `cat -n` line-number prefixes
+ * ("   12\tcode") — the classic copy-paste burn. Every non-blank line must be
+ * number+tab prefixed, and for multi-line blocks the numbers must be
+ * CONSECUTIVE (so numeric TSV data can't false-positive).
+ */
+export function looksLineNumberPrefixed(oldString: string): boolean {
+  const lines = toLf(oldString).split("\n").filter((l) => l.trim() !== "");
+  if (lines.length === 0) return false;
+  const nums: number[] = [];
+  for (const line of lines) {
+    const m = /^(\s*)(\d+)\t/.exec(line);
+    if (!m) return false;
+    // A single line needs the padded-number shape ("   12\t"), not just "0\t".
+    if (lines.length === 1 && m[1].length === 0) return false;
+    nums.push(Number(m[2]));
+  }
+  for (let k = 1; k < nums.length; k++) {
+    if (nums[k] !== nums[k - 1] + 1) return false;
+  }
+  return true;
+}
+
+/**
+ * Near-miss context for the "not found" dead end. Two cheap, line-based probes
+ * over the LF-normalized content:
+ *   1. indentation-only miss: a contiguous region equals old_string line-for-line
+ *      once leading/trailing whitespace is stripped — say exactly that, with the
+ *      line number (the classic single-line wrong-indent failure the anchor tier
+ *      can't rescue).
+ *   2. closest candidate: the content line with the best token overlap against
+ *      old_string's first significant line, shown as a small cat -n excerpt.
+ * Returns "" when nothing plausible is found.
+ */
+export function nearMissHint(content: string, oldString: string): string {
+  const contentLines = toLf(content).split("\n");
+  const needleLines = toLf(oldString).split("\n");
+  const trimmed = needleLines.map((l) => l.trim());
+  const n = needleLines.length;
+
+  if (trimmed.some((l) => l !== "")) {
+    const indentHits: number[] = [];
+    for (let i = 0; i + n <= contentLines.length && indentHits.length < 4; i++) {
+      let hit = true;
+      for (let j = 0; j < n; j++) {
+        if (contentLines[i + j].trim() !== trimmed[j]) {
+          hit = false;
+          break;
+        }
+      }
+      if (hit) indentHits.push(i + 1);
+    }
+    if (indentHits.length > 0) {
+      const also = indentHits.length > 1 ? ` (also at line${indentHits.length > 2 ? "s" : ""} ${indentHits.slice(1).join(", ")})` : "";
+      return (
+        `The same text DOES appear at line ${indentHits[0]}${also} — every line differs only in leading whitespace. ` +
+        `Copy the indentation exactly as it appears in the file.`
+      );
+    }
+  }
+
+  const firstSig = trimmed.find((l) => l !== "");
+  if (!firstSig) return "";
+  const tokens = firstSig.split(/[^\w$]+/).filter((t) => t.length > 2);
+  if (tokens.length === 0) return "";
+  let bestLine = -1;
+  let bestScore = 0;
+  for (let i = 0; i < contentLines.length; i++) {
+    const line = contentLines[i];
+    if (line.trim() === "") continue;
+    let score = 0;
+    for (const t of tokens) if (line.includes(t)) score++;
+    if (score > bestScore) {
+      bestScore = score;
+      bestLine = i;
+    }
+  }
+  // Require a real overlap (more than half the tokens) before claiming a near miss.
+  if (bestLine < 0 || bestScore * 2 <= tokens.length) return "";
+  const from = Math.max(0, bestLine - 2);
+  const to = Math.min(contentLines.length, bestLine + 3);
+  const excerpt = contentLines
+    .slice(from, to)
+    .map((line, idx) => `${(from + idx + 1).toString().padStart(5, " ")}\t${line}`)
+    .join("\n");
+  return `Closest near-miss in the file is around line ${bestLine + 1}:\n${excerpt}`;
 }
 
 function countOccurrences(haystack: string, needle: string): number {

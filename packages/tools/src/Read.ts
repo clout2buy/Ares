@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, contentHash, resolveWorkspacePath, zPath } from "./_shared.js";
+import { buildTool, contentHash, pathInputProblem, resolveWorkspacePath, zPath } from "./_shared.js";
 import type { FileReadStamp } from "./_shared.js";
 
 const inputSchema = z
@@ -44,6 +44,28 @@ export const ReadTool = buildTool({
   concurrency: "parallel-safe",
   inputZod: inputSchema,
   activityDescription: (i) => `Reading ${path.basename(i.file_path)}`,
+
+  // Semantic pre-checks: a pattern-looking path, and an `offset` past the end of
+  // a file whose size we already know from this session's read stamp (verified
+  // unchanged via a cheap stat, so a stale stamp can't false-positive).
+  async validateInput(i, ctx) {
+    const pathProblem = pathInputProblem(i.file_path, ctx?.workspace);
+    if (pathProblem) return { ok: false, message: `file_path: ${pathProblem}` };
+    if (i.offset !== undefined && i.offset > 0 && ctx?.fileReadStamps) {
+      const abs = path.resolve(ctx.workspace, i.file_path);
+      const stamp = ctx.fileReadStamps.get(abs);
+      if (stamp?.lines !== undefined && i.offset >= stamp.lines) {
+        const stat = await fs.stat(abs).catch(() => null);
+        if (stat && stat.size === stamp.size && stat.mtimeMs === stamp.mtimeMs) {
+          return {
+            ok: false,
+            message: `offset ${i.offset} is past the end of ${path.basename(i.file_path)} — the file has only ${stamp.lines} lines. Use an offset below ${stamp.lines}.`,
+          };
+        }
+      }
+    }
+    return { ok: true };
+  },
 
   async call(i, ctx): Promise<{ output: ReadOutput; touchedFiles?: string[]; display?: string; images?: Array<{ mediaType: string; data: string }> }> {
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "read");

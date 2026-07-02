@@ -121,6 +121,11 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
   inputZod: I;
   /** Optional semantic input check (Phase 4). See {@link ToolInputValidation}. */
   validateInput?: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolInputValidation>;
+  /** Per-INPUT effective safety for the permission decision (e.g. ComputerUse's
+   *  screenshot is read-only while its click is external-state). Affects ONLY the
+   *  permission gate — `schema.safety` stays the static class, so watchdog
+   *  defaults and conductor tool filtering remain conservative. */
+  dynamicSafety?: (input: z.infer<I>) => SafetyClass;
   checkPermissions?: (input: z.infer<I>, ctx: RichToolContext) => Promise<PermissionDecision>;
   call: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolResult<O>>;
   activityDescription: (input: z.infer<I>) => string;
@@ -153,7 +158,7 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     input: z.infer<I>,
     ctx: RichToolContext,
   ): Promise<PermissionDecision> => {
-    const base = defaultPermissionDecision(def, ctx);
+    const base = defaultPermissionDecision(def, ctx, def.dynamicSafety?.(input));
     if (base.kind !== "allow") return base;
     return def.checkPermissions ? def.checkPermissions(input, ctx) : base;
   };
@@ -302,6 +307,35 @@ export const zPath = z.string().min(1).describe("Absolute or workspace-relative 
 export const zAbsPath = zPath;
 
 /**
+ * Cheap, synchronous file-path sanity for validateInput hooks. Returns a
+ * model-facing "how to fix it" sentence, or null when the path looks concrete.
+ * Catches the burns that otherwise fail deep in fs: glob metacharacters (the
+ * model pasted a pattern where a single path belongs), embedded newlines
+ * (a copy-paste of two lines), and NUL bytes. `workspace` (optional) also flags
+ * a RELATIVE path whose `..` segments climb out of the workspace — those calls
+ * always fail or mis-prompt; an absolute path is the intentional form.
+ */
+export function pathInputProblem(inputPath: string, workspace?: string): string | null {
+  if (inputPath.trim() === "") {
+    return "file path is empty — pass an absolute or workspace-relative path.";
+  }
+  if (/[\n\r\0]/.test(inputPath)) {
+    return "file path contains a newline or NUL — pass a single path with no line breaks.";
+  }
+  if (/[*?"<>|]/.test(inputPath.replace(/^[A-Za-z]:/, ""))) {
+    return `"${inputPath}" contains glob/wildcard characters — pass ONE concrete file path (use Glob to find files by pattern).`;
+  }
+  if (workspace !== undefined && !path.isAbsolute(inputPath) && inputPath.split(/[\\/]/).includes("..")) {
+    const resolved = path.resolve(workspace, inputPath);
+    const rel = path.relative(path.resolve(workspace), resolved);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      return `"${inputPath}" climbs out of the workspace via '..' — pass the absolute path (${resolved}) if you really mean that location.`;
+    }
+  }
+  return null;
+}
+
+/**
  * Topic-first narration for a shell command ("Switching to main", "Running
  * tests", "Committing changes"). Mirrors the engine's narrator so the CLI strip
  * and the desktop card read identically. Shared by Bash + PowerShell.
@@ -351,8 +385,10 @@ export function destructiveShellDecision(command: string): PermissionDecision | 
 function defaultPermissionDecision<I extends z.ZodTypeAny, O>(
   def: ToolDef<I, O>,
   ctx: RichToolContext,
+  safetyOverride?: SafetyClass,
 ): PermissionDecision {
-  if (def.safety === "read-only") return { kind: "allow" };
+  const safety = safetyOverride ?? def.safety;
+  if (safety === "read-only") return { kind: "allow" };
 
   if (ctx.permissionMode === "plan") {
     return { kind: "deny", reason: `${def.name} is disabled in plan mode.` };
@@ -361,33 +397,33 @@ function defaultPermissionDecision<I extends z.ZodTypeAny, O>(
   if (ctx.permissionMode === "bypass") return { kind: "allow" };
 
   if (ctx.permissionMode === "workspace-write") {
-    if (def.safety === "workspace-write") return { kind: "allow" };
-    if (def.safety === "external-state" || def.safety === "destructive") {
+    if (safety === "workspace-write") return { kind: "allow" };
+    if (safety === "external-state" || safety === "destructive") {
       return {
         kind: "ask",
-        prompt: `${def.name} wants to perform a ${def.safety} action.`,
-        suggestion: def.safety === "external-state" ? "allow_once" : "deny",
+        prompt: `${def.name} wants to perform a ${safety} action.`,
+        suggestion: safety === "external-state" ? "allow_once" : "deny",
       };
     }
     return {
       kind: "deny",
-      reason: `${def.name} is ${def.safety}; workspace-write mode only allows workspace edits.`,
+      reason: `${def.name} is ${safety}; workspace-write mode only allows workspace edits.`,
     };
   }
 
   if (ctx.permissionMode === "auto-safe") {
-    if (def.safety === "workspace-write") return { kind: "allow" };
+    if (safety === "workspace-write") return { kind: "allow" };
     return {
       kind: "ask",
-      prompt: `${def.name} wants to perform a ${def.safety} action.`,
-      suggestion: def.safety === "external-state" ? "allow_once" : "deny",
+      prompt: `${def.name} wants to perform a ${safety} action.`,
+      suggestion: safety === "external-state" ? "allow_once" : "deny",
     };
   }
 
   return {
     kind: "ask",
-    prompt: `${def.name} wants to perform a ${def.safety} action.`,
-    suggestion: def.safety === "workspace-write" ? "allow_once" : "deny",
+    prompt: `${def.name} wants to perform a ${safety} action.`,
+    suggestion: safety === "workspace-write" ? "allow_once" : "deny",
   };
 }
 

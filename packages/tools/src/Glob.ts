@@ -31,6 +31,28 @@ export const GlobTool = buildTool({
   inputZod: inputSchema,
   activityDescription: (i) => `Globbing ${i.pattern}`,
 
+  // Pattern sanity: the two shapes that silently match NOTHING today are
+  // backslash separators (Windows paths pasted as patterns) and absolute
+  // patterns (matching runs against workspace-relative paths).
+  async validateInput(i) {
+    if (i.pattern.trim() === "") {
+      return { ok: false, message: "pattern is blank — pass a glob like `src/**/*.ts`." };
+    }
+    if (i.pattern.includes("\\")) {
+      return {
+        ok: false,
+        message: `pattern "${i.pattern}" contains backslashes — glob patterns use forward slashes even on Windows (e.g. src/**/*.ts).`,
+      };
+    }
+    if (/^([A-Za-z]:|\/)/.test(i.pattern)) {
+      return {
+        ok: false,
+        message: `pattern "${i.pattern}" is an absolute path — pass the root via \`cwd\` and a relative pattern (e.g. cwd: "D:/proj", pattern: "src/**/*.ts").`,
+      };
+    }
+    return { ok: true };
+  },
+
   async call(i, ctx): Promise<{ output: GlobOutput; display: string }> {
     const root = await resolveWorkspacePath(ctx, i.cwd, "cwd", "read");
     const matches = await glob(root, i.pattern, i.max_results + 1);

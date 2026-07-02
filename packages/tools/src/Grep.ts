@@ -60,6 +60,52 @@ export interface GrepOutput {
   engine: "ripgrep" | "native";
 }
 
+/**
+ * Semantic pattern check for validateInput: compile the regex up front and name
+ * the bad construct in one FRIENDLY sentence, instead of letting ripgrep dump
+ * stderr (or worse, silently return 0 matches on a construct its engine lacks).
+ * Returns null when the pattern is fine.
+ */
+export function regexInputProblem(pattern: string): string | null {
+  try {
+    new RegExp(pattern);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.replace(/^Invalid regular expression:\s*/i, "") : String(err);
+    return `invalid regular expression — ${msg}. Escape literal metacharacters with a backslash (e.g. \\( \\[ \\.) or fix the construct.`;
+  }
+  // Constructs JS accepts but ripgrep's default engine rejects or misparses.
+  let inClass = false;
+  for (let k = 0; k < pattern.length; k++) {
+    const c = pattern[k];
+    if (c === "\\") {
+      const next = pattern[k + 1] ?? "";
+      if (!inClass && /[1-9]/.test(next)) {
+        return `the pattern uses a backreference (\\${next}), which ripgrep's engine does not support — repeat the text literally instead.`;
+      }
+      k++; // skip the escaped char
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      continue;
+    }
+    if (c === "(" && pattern.startsWith("(?", k)) {
+      const look = pattern.slice(k, k + 4);
+      if (look.startsWith("(?=") || look.startsWith("(?!") || look.startsWith("(?<=") || look.startsWith("(?<!")) {
+        return `the pattern uses lookaround (${look.slice(0, 4)}…), which ripgrep's engine does not support — rewrite it to match the surrounding text directly.`;
+      }
+    }
+    if (c === "{" && !/^\{\d+(,\d*)?\}/.test(pattern.slice(k))) {
+      return `the pattern has a literal unescaped '{' — ripgrep parses braces as repetition. Escape literal braces: \\{ and \\} (e.g. interface\\{\\}).`;
+    }
+  }
+  return null;
+}
+
 export const GrepTool = buildTool({
   name: "Grep",
   description:
@@ -68,6 +114,12 @@ export const GrepTool = buildTool({
   concurrency: "parallel-safe",
   inputZod: inputSchema,
   activityDescription: (i) => `Searching for ${i.pattern}`,
+
+  async validateInput(i) {
+    const problem = regexInputProblem(i.pattern);
+    if (problem) return { ok: false, message: `Grep pattern: ${problem}` };
+    return { ok: true };
+  },
 
   async call(i, ctx): Promise<{ output: GrepOutput; display: string }> {
     const roots = await resolveSearchPaths(ctx, i.path);

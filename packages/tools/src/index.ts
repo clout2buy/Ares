@@ -5,11 +5,11 @@ export * from "./_shared.js";
 
 export { ReadTool } from "./Read.js";
 export { WriteTool } from "./Write.js";
-export { EditTool } from "./Edit.js";
+export { EditTool, nearMissHint, looksLineNumberPrefixed } from "./Edit.js";
 export { ApplyIntentTool, type ApplyIntentOutput } from "./ApplyIntent.js";
 export { safeOverwrite, assessShrink, type SafeOverwriteOptions, type SafeOverwriteResult, type ShrinkVerdict } from "./safeWrite.js";
 export { GlobTool } from "./Glob.js";
-export { GrepTool } from "./Grep.js";
+export { GrepTool, regexInputProblem } from "./Grep.js";
 export { BashTool } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
 export { LspTool, type LspOutput, type LspLocation } from "./LSP.js";
@@ -27,6 +27,14 @@ export {
   type WebFetchOutput,
   type Summarizer,
 } from "./WebFetch.js";
+export {
+  looksJsGated,
+  discoverCdpEndpoint,
+  renderOverCdp,
+  cdpRenderer,
+  type JsRenderer,
+  type CdpRenderOptions,
+} from "./cdpRender.js";
 export {
   makeWebSearchTool,
   duckDuckGoLite,
@@ -66,8 +74,10 @@ export { SkillsListTool, SkillReadTool, type SkillsListOutput, type SkillReadOut
 export { MemoryTool, type MemoryOutput, type MemoryItem } from "./Memory.js";
 export {
   ComputerUseTool,
+  makeComputerUseTool,
   mapImageToVirtual,
   shotScale,
+  type ComputerActionRunner,
   type ComputerUseOutput,
   type ShotMeta,
 } from "./ComputerUse.js";

@@ -25,6 +25,7 @@ import type { ToolPermissionRequest } from "./queryEngine.js";
 import type { PermissionPromptDecision, ReasoningLevel, Usage } from "@ares/protocol";
 import type { HookManager } from "./hooks.js";
 import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified } from "./checkpoints.js";
+import { FrictionRecorder } from "./frictionLog.js";
 
 type ReminderSource =
   | "verifier"
@@ -83,6 +84,8 @@ export interface SessionOptions {
 
 export class Session {
   readonly meta: SessionMeta;
+  /** Friction telemetry — one JSONL line per turn under ~/.ares/telemetry. */
+  private readonly friction: FrictionRecorder;
   readonly engine: QueryEngine;
   private seq = 0;
   /** Serializes rollout appends off the hot path; ordered, never interleaved. */
@@ -104,6 +107,7 @@ export class Session {
     const sessionDir = path.join(opts.workspace, ".ares", "sessions", sessionId);
     this.eventsPath = path.join(sessionDir, "events.jsonl");
     this.metaPath = path.join(sessionDir, "meta.json");
+    this.friction = new FrictionRecorder(sessionId);
     this.engine = new QueryEngine(
       {
         provider: opts.provider,
@@ -217,6 +221,9 @@ export class Session {
         // Persistence is enqueued (not awaited) so a fast token stream never
         // waits on an NTFS append + Defender scan before reaching the consumer.
         this.persistEvent(event);
+        // Friction telemetry rides the same tap — every surface (chat, TUI,
+        // daemon) logs identically because they all stream through here.
+        this.friction.record(event);
         // Durability barrier at the turn boundary: drain pending appends BEFORE
         // surfacing turn_end, so the rollout is complete on disk without holding
         // the turn "active" past the generator's return (which would reject the

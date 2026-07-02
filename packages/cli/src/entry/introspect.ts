@@ -1,6 +1,6 @@
 // Extracted from entry.ts — introspect.
 
-import { OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWorkspaceCheckpoint, restoreWorkspaceCheckpoint, authStatus, deviceCodeLogin, type Provider } from "@ares/core";
+import { OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWorkspaceCheckpoint, restoreWorkspaceCheckpoint, authStatus, deviceCodeLogin, summarizeFriction, type Provider } from "@ares/core";
 import { notice, themesList } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { deliberateForTurn, loadAgentConfig, unifiedRecallForTurn } from "@ares/agent";
@@ -354,6 +354,46 @@ export async function loginCommand(): Promise<number> {
     process.stderr.write(`error: login failed: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
+}
+
+/** `ares friction [--days N] [--json]` — the upgrade-priority report: what
+ *  actually goes wrong across every surface, aggregated from telemetry. */
+export async function frictionCommand(args: ParsedArgs): Promise<number> {
+  const days = Math.max(1, Number(args.flags.get("days")) || 7);
+  const summary = await summarizeFriction(undefined, days);
+  if (args.flags.has("json")) {
+    process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
+    return 0;
+  }
+  if (summary.turns === 0) {
+    process.stdout.write(notice("Friction", [`No telemetry in the last ${days} day(s). Run some turns first (ARES_TELEMETRY=0 disables logging).`], "warn"));
+    return 0;
+  }
+  const lines: string[] = [
+    `${summary.turns} turn(s) · ${summary.completed} completed · ${summary.failed} failed · last ${days} day(s)`,
+    "",
+  ];
+  const tools = Object.entries(summary.tools).sort((a, b) => b[1].errors - a[1].errors || b[1].calls - a[1].calls);
+  if (tools.length) {
+    lines.push("Tools (worst error-rate first):");
+    for (const [name, t] of tools.slice(0, 10)) {
+      const rate = t.calls > 0 ? Math.round((t.errors / t.calls) * 100) : 0;
+      lines.push(`  ${String(rate).padStart(3)}% err  ${String(t.calls).padStart(4)} calls  ${name}${t.errors ? ` (${t.errors} error${t.errors === 1 ? "" : "s"})` : ""}`);
+    }
+  }
+  const e = summary.editTiers;
+  const editTotal = e.exact + e.whitespace + e.anchor + e.miss;
+  if (editTotal > 0) {
+    lines.push("", `Edit tiers: ${e.exact} exact · ${e.whitespace} whitespace · ${e.anchor} anchor · ${e.miss} MISS${e.miss > 0 ? "  ← misses burn turns" : ""}`);
+  }
+  lines.push(
+    "",
+    `Stalls cut by the effort dial: ${summary.stalls} (${summary.reasoningStalls} thinking)`,
+    `Verifier red flags: ${summary.verifyReminders} · compactions: ${summary.compactions}`,
+    `Prompt cache: ${summary.avgCacheReadRatio === null ? "no data" : `${Math.round(summary.avgCacheReadRatio * 100)}% of input tokens served from cache`}`,
+  );
+  process.stdout.write(notice("Friction · what to upgrade next", lines, "info"));
+  return 0;
 }
 
 export async function doctorCommand(): Promise<number> {

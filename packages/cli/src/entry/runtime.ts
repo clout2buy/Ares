@@ -166,6 +166,7 @@ export async function printHelp(): Promise<void> {
       "  ares eval [--json]         Run the built-in harness regression eval suite.",
       "  ares login                  ChatGPT OAuth device-code flow.",
       "  ares doctor                 Show provider auth + Ollama Cloud health.",
+      "  ares friction [--days N]    Telemetry report: tool errors, edit tiers, stalls, cache health.",
       "  ares help                   Print this help.",
       "",
       "Env vars:",

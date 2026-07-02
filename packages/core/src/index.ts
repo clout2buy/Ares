@@ -110,6 +110,14 @@ export {
 } from "./subagentJournal.js";
 
 export {
+  FrictionRecorder,
+  summarizeFriction,
+  telemetryDir,
+  type FrictionTurn,
+  type FrictionSummary,
+} from "./frictionLog.js";
+
+export {
   ContinuousVerifier,
   deriveNarrowVerify,
   findRelatedTestFiles,

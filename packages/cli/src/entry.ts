@@ -19,7 +19,7 @@ import { agentCommand, evalCommand, missionCommand, modelsCommand } from "./entr
 import { chatCommand, launcherCommand, runCommand } from "./entry/chat.js";
 import { daemonCommand } from "./entry/daemon.js";
 import { attachCommand, garrisonCommand, holoCommand } from "./entry/garrisonCmd.js";
-import { checkpointsCommand, doctorCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
+import { checkpointsCommand, doctorCommand, frictionCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
 import { mindCommand } from "./entry/mindCmd.js";
 import { operatorCommand } from "./entry/operatorCmd.js";
 import { TERMINAL_PROVIDERS } from "./entry/providers.js";
@@ -127,6 +127,9 @@ async function main(): Promise<void> {
       return;
     case "doctor":
       process.exit(await doctorCommand());
+      return;
+    case "friction":
+      process.exit(await frictionCommand(args));
       return;
     case "help":
     case "--help":

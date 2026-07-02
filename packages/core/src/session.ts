@@ -55,6 +55,8 @@ export interface SessionOptions {
   drainSystemReminders?: () => Array<{ text: string; source: ReminderSource }>;
   /** C1 end-of-turn gate — see QueryEngineConfig.confirmTurnEnd. */
   confirmTurnEnd?: () => Promise<Array<{ text: string; source: "verifier" | "hook" }>>;
+  /** Failure-signature recall — see QueryEngineConfig.recallFailureFix. */
+  recallFailureFix?: (input: { tool: string; signature: string; error: string }) => Promise<string | null>;
   hookManager?: HookManager;
   requestPermission?: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision>;
   /**
@@ -112,6 +114,7 @@ export class Session {
         signal: opts.signal,
         drainSystemReminders: opts.drainSystemReminders,
         confirmTurnEnd: opts.confirmTurnEnd,
+        recallFailureFix: opts.recallFailureFix,
         hookManager: opts.hookManager,
         requestPermission: opts.requestPermission,
         selfTerritoryRoots: opts.selfTerritoryRoots,

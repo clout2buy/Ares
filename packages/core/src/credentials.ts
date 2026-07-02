@@ -20,6 +20,37 @@ import { aresHome } from "./providers/openaiAuth.js";
 
 const PREFIX = "enc:v1:";
 let keyPromise: Promise<Buffer | null> | null = null;
+let warnedPlaintext = false;
+
+/** Thrown when encryption is unavailable AND the operator demanded it
+ *  (ARES_REQUIRE_ENCRYPTION=1). Prevents silently writing plaintext keys. */
+export class EncryptionUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`credential encryption unavailable: ${reason}. Refusing to store a plaintext secret because ARES_REQUIRE_ENCRYPTION is set.`);
+    this.name = "EncryptionUnavailableError";
+  }
+}
+
+/** True when the operator insists secrets must be encrypted at rest. */
+function encryptionRequired(): boolean {
+  const v = process.env.ARES_REQUIRE_ENCRYPTION;
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/** Emit a one-time, redaction-safe warning that the vault fell back to plaintext.
+ *  Silent plaintext storage was the single worst finding of the security audit. */
+function warnPlaintextOnce(reason: string): void {
+  if (warnedPlaintext) return;
+  warnedPlaintext = true;
+  try {
+    process.stderr.write(
+      `⚠️  Ares credential vault could not create a machine secret (${reason}); secrets will be stored WITHOUT encryption at ~/.ares/credentials.json. ` +
+        `Set ARES_REQUIRE_ENCRYPTION=1 to refuse plaintext storage instead.\n`,
+    );
+  } catch {
+    // stderr unavailable — nothing more we can do
+  }
+}
 
 async function secretKey(): Promise<Buffer | null> {
   keyPromise ??= (async () => {
@@ -41,10 +72,21 @@ async function secretKey(): Promise<Buffer | null> {
       }
       return key;
     } catch {
-      return null; // can't persist a secret → fall back to plaintext, never break
+      return null; // can't persist a secret → caller decides (warn or hard-fail)
     }
   })();
   return keyPromise;
+}
+
+/**
+ * Report whether encryption-at-rest is actually live on this machine. The daemon
+ * calls this at startup so a plaintext-fallback situation is surfaced loudly
+ * instead of discovered later in a leaked credentials.json.
+ */
+export async function probeCredentialEncryption(): Promise<{ available: boolean; reason?: string }> {
+  const key = await secretKey();
+  if (key) return { available: true };
+  return { available: false, reason: "could not create or read ~/.ares/.keysecret" };
 }
 
 /** Encrypt a secret for storage. Idempotent: already-encrypted or empty values
@@ -52,7 +94,11 @@ async function secretKey(): Promise<Buffer | null> {
 export async function encryptSecret(plain: string | undefined): Promise<string | undefined> {
   if (!plain || plain.startsWith(PREFIX)) return plain;
   const key = await secretKey();
-  if (!key) return plain;
+  if (!key) {
+    if (encryptionRequired()) throw new EncryptionUnavailableError("no machine secret");
+    warnPlaintextOnce("no machine secret");
+    return plain;
+  }
   try {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv);

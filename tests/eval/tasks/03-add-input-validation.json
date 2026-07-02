@@ -1,0 +1,12 @@
+{
+  "id": "add-input-validation",
+  "title": "Add input validation to a divide function",
+  "prompt": "The file `divide.mjs` exports `divide(a, b)`. Add input validation: if `b` is 0, throw an Error whose message contains the text 'divide by zero'. Otherwise return a / b unchanged.",
+  "seedFiles": {
+    "divide.mjs": "export function divide(a, b) {\n  return a / b;\n}\n"
+  },
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./divide.mjs').then(m=>{if(m.divide(10,2)!==5)throw new Error('bad quotient');let threw=false;try{m.divide(1,0)}catch(e){threw=true;if(!/divide by zero/i.test(e.message))throw new Error('wrong message: '+e.message)}if(!threw)throw new Error('did not throw on zero');console.log('ok')})\""
+  }
+}

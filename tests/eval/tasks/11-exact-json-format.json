@@ -1,0 +1,11 @@
+{
+  "id": "write-exact-package-json",
+  "title": "Author an exact package.json manifest",
+  "prompt": "Create a file `manifest.json` whose contents are EXACTLY the following, with a trailing newline:\n{\n  \"name\": \"widget\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\"\n}\n",
+  "seedFiles": {},
+  "grade": {
+    "type": "fileEquals",
+    "path": "manifest.json",
+    "value": "{\n  \"name\": \"widget\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\"\n}\n"
+  }
+}

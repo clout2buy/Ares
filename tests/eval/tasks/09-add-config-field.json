@@ -1,0 +1,13 @@
+{
+  "id": "add-config-field",
+  "title": "Add a field to a JSON config and consume it",
+  "prompt": "The file `config.json` holds app settings and `getTimeout.mjs` reads it. Add a numeric field `timeoutMs` set to 5000 in `config.json`, and update `getTimeout.mjs` so its exported `getTimeout()` returns that value from the config (currently it returns a hardcoded 0). Read the config file relative to the module using fs.",
+  "seedFiles": {
+    "config.json": "{\n  \"name\": \"demo\"\n}\n",
+    "getTimeout.mjs": "import { readFileSync } from 'node:fs';\nimport { fileURLToPath } from 'node:url';\nimport { dirname, join } from 'node:path';\n\nexport function getTimeout() {\n  return 0;\n}\n"
+  },
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./getTimeout.mjs').then(m=>{const t=m.getTimeout();if(t!==5000)throw new Error('got '+t);console.log('ok')})\""
+  }
+}

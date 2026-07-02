@@ -1,0 +1,10 @@
+{
+  "id": "parse-query-string",
+  "title": "Implement a query-string parser",
+  "prompt": "Create `qs.mjs` exporting `parseQuery(str)` that parses a URL query string (without the leading '?') into an object. Split on '&', then on the first '='. URL-decode both keys and values. A key with no '=' maps to an empty string. Example: parseQuery('a=1&b=hello%20world&c') === { a: '1', b: 'hello world', c: '' }.",
+  "seedFiles": {},
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./qs.mjs').then(m=>{const r=m.parseQuery('a=1&b=hello%20world&c');if(r.a!=='1'||r.b!=='hello world'||r.c!=='')throw new Error('got '+JSON.stringify(r));console.log('ok')})\""
+  }
+}

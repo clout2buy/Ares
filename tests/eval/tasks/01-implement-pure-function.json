@@ -1,0 +1,10 @@
+{
+  "id": "implement-pure-function",
+  "title": "Implement a pure slugify() function",
+  "prompt": "Create a file `slugify.mjs` that exports a pure function `slugify(text)`. It must lowercase the input, replace any run of non-alphanumeric characters with a single hyphen, and trim leading/trailing hyphens. Example: slugify(' Hello, World! ') === 'hello-world'.",
+  "seedFiles": {},
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./slugify.mjs').then(m=>{const a=m.slugify(' Hello, World! ');if(a!=='hello-world')throw new Error('got '+a);const b=m.slugify('foo__bar--baz');if(b!=='foo-bar-baz')throw new Error('got '+b);console.log('ok')})\""
+  }
+}

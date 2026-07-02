@@ -1,0 +1,13 @@
+{
+  "id": "write-license-header",
+  "title": "Prepend a license header to a source file",
+  "prompt": "The file `lib.mjs` needs an SPDX license header. Prepend exactly the line `// SPDX-License-Identifier: MIT` as the first line of the file, keeping all existing content below it unchanged.",
+  "seedFiles": {
+    "lib.mjs": "export const VERSION = '1.0.0';\n"
+  },
+  "grade": {
+    "type": "fileContains",
+    "path": "lib.mjs",
+    "value": "// SPDX-License-Identifier: MIT"
+  }
+}

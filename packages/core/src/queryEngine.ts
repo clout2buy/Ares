@@ -163,6 +163,15 @@ export interface QueryEngineConfig {
    * repair loop at the engine level.
    */
   confirmTurnEnd?(): Promise<Array<{ text: string; source: "verifier" | "hook" }>>;
+  /**
+   * Failure-signature recall. When a tool fails the SAME way twice in a row (an
+   * approach that's about to be declared dead), the engine asks the host whether
+   * it has seen this failure before and how it was resolved. A returned hint is
+   * injected so the model can apply the KNOWN fix instead of flailing — the agent
+   * literally learning from its own past. Return null when nothing is remembered.
+   * Called at most once per distinct signature per turn.
+   */
+  recallFailureFix?(input: { tool: string; signature: string; error: string }): Promise<string | null>;
   requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
   beforeToolUseCheckpoint?(request: {
     toolUseId: string;
@@ -210,7 +219,16 @@ export interface QueryEngineConfig {
 // the goal is "never hard-fail with context_length_exceeded," not exactness.
 
 const CHARS_PER_TOKEN = 4;
-const IMAGE_TOKEN_ESTIMATE = 1024; // a high-detail image's rough tile cost
+const IMAGE_TOKEN_FLOOR = 256; // a small image still costs something
+const IMAGE_TOKEN_CAP = 2000; // providers downscale — per-image token cost is bounded
+// A model only ever *charges* ~1600 tokens for a large image (it downscales),
+// but the raw base64 payload still crosses the wire and hits the request-SIZE
+// limit long before the token limit. So we bound token cost for window
+// accounting (below) AND cap total image payload bytes separately (fitImagesToBudget).
+const MAX_IMAGE_PAYLOAD_BYTES = (() => {
+  const raw = Number(process.env.ARES_MAX_IMAGE_PAYLOAD_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 12 * 1024 * 1024; // ~12MB decoded, safely under provider limits
+})();
 
 // Microcompact rung: cheaply clear OLD tool-output bodies (no model call) before
 // the heavy summarizer fires, keeping the last N at full fidelity. Only bulky,
@@ -228,14 +246,43 @@ function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-/** A base64 screenshot's REAL token cost tracks its encoded payload size, not a
- *  flat tile estimate — a high-res ComputerUse/browser frame is hundreds of
- *  thousands of tokens. Undercounting it (the old flat 1024) let the budgeter
- *  ship a payload double the model's context window → "prompt too long" 400s
- *  that compaction couldn't fix (the bulk was images, not summarizable text). */
+/** Decoded byte size of a base64 payload (base64 encodes 3 bytes per 4 chars,
+ *  minus padding). Cheap and allocation-free. */
+function base64DecodedBytes(data: string): number {
+  const len = data.length;
+  if (len === 0) return 0;
+  let padding = 0;
+  if (data.endsWith("==")) padding = 2;
+  else if (data.endsWith("=")) padding = 1;
+  return Math.max(0, Math.floor((len * 3) / 4) - padding);
+}
+
+/** A base64 image's token cost for WINDOW accounting is bounded — providers
+ *  downscale, so even a huge frame charges ~1600 tokens, not the base64 length.
+ *  We scale gently with decoded size (so many frames still add up and trigger
+ *  image-dropping) but cap it, so one screenshot never falsely evicts real text.
+ *  The wire-SIZE risk (a payload too big to send) is handled separately by
+ *  MAX_IMAGE_PAYLOAD_BYTES in fitImagesToBudget. */
 function estimateImageTokens(source: ImageBlock["source"]): number {
-  if (source.kind === "base64") return Math.max(IMAGE_TOKEN_ESTIMATE, Math.ceil(source.data.length / CHARS_PER_TOKEN));
-  return IMAGE_TOKEN_ESTIMATE; // url image — true size unknown, rough floor
+  if (source.kind === "base64") {
+    const bytes = base64DecodedBytes(source.data);
+    return Math.min(IMAGE_TOKEN_CAP, Math.max(IMAGE_TOKEN_FLOOR, Math.ceil(bytes / 900)));
+  }
+  return IMAGE_TOKEN_FLOOR; // url image — true size unknown, rough floor
+}
+
+/** Total decoded bytes of every base64 image in a message set — the real wire
+ *  payload that must stay under the provider's request-size limit. */
+function totalImagePayloadBytes(messages: readonly Message[]): number {
+  let bytes = 0;
+  const walk = (b: ContentBlock): void => {
+    if (b.type === "image" && b.source.kind === "base64") bytes += base64DecodedBytes(b.source.data);
+    else if (b.type === "tool_result" && Array.isArray(b.content)) {
+      for (const c of b.content) walk(c as ContentBlock);
+    }
+  };
+  for (const m of messages) for (const b of m.content) walk(b);
+  return bytes;
 }
 
 function estimateBlockTokens(b: ContentBlock): number {
@@ -378,9 +425,16 @@ export function fitImagesToBudget(
 ): Message[] {
   for (const keep of [2, 1, 0]) {
     const trimmed = keepRecentImages(messages, keep);
-    if (budgetTokens <= 0) return trimmed;
+    // Wire-size guard: even if the token budget says an image fits, a payload
+    // over the provider's request-size limit hard-fails the call. Drop images
+    // until BOTH the token estimate and the raw byte payload are safe.
+    const payloadOk = totalImagePayloadBytes(trimmed) <= MAX_IMAGE_PAYLOAD_BYTES;
+    if (budgetTokens <= 0) {
+      if (payloadOk) return trimmed;
+      continue;
+    }
     const total = overheadTokens + trimmed.reduce((s, m) => s + estimateMessageTokens(m), 0);
-    if (total <= budgetTokens) return trimmed;
+    if (total <= budgetTokens && payloadOk) return trimmed;
   }
   return keepRecentImages(messages, 0);
 }
@@ -508,10 +562,42 @@ export class QueryEngine {
    * real datapoint; EWMA-smoothed and clamped so one weird turn can't wreck it.
    */
   private tokenScale = 1;
+  /** Latest TodoWrite snapshot — so the end-of-turn gate can refuse a premature
+   *  "done" while the model's own plan still has unfinished items. */
+  private latestTodos: import("@ares/protocol").Todo[] = [];
+  /** Whether the todo-completion gate has already fired this turn (fires once,
+   *  then trusts the model — never an infinite "you have todos" loop). */
+  private todoGateFired = false;
+  /** Effort-dial override for the rest of THIS turn: set when a stalled attempt
+   *  downgraded reasoning, cleared at the next turn start. */
+  private turnReasoningOverride: ReasoningLevel | null = null;
 
   constructor(cfg: QueryEngineConfig, sessionId: string) {
     this.cfg = cfg;
     this.sessionId = sessionId;
+  }
+
+  /**
+   * Task-adaptive reasoning dial. A reasoning model left on "high" burns minutes
+   * (and tokens) thinking about "hi" or a one-line edit — the "stuck thinking
+   * forever" complaint. This DOWN-shifts trivial turns and NEVER up-shifts past
+   * the owner's chosen ceiling, so explicit control is preserved. Opt out with
+   * ARES_ADAPTIVE_REASONING=0.
+   */
+  private effectiveReasoningLevel(): ReasoningLevel | undefined {
+    // The most recent user turn's text (skip tool-result-only user messages).
+    let text = "";
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role !== "user") continue;
+      const t = m.content
+        .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+        .map((b) => b.text)
+        .join(" ")
+        .trim();
+      if (t) { text = t; break; }
+    }
+    return adaptiveReasoningLevel(this.cfg.reasoningLevel, text, process.env.ARES_ADAPTIVE_REASONING !== "0");
   }
 
   /** Fold a real usage datapoint into the token-scale calibration (S4). */
@@ -888,6 +974,8 @@ export class QueryEngine {
     let lastProgressIter = -1;
     let lastConvergenceIter = -Infinity;
     let endGateFired = 0;
+    this.todoGateFired = false; // re-arm the todo-completion gate for this turn
+    this.turnReasoningOverride = null; // effort dial resets each turn
     // Signature of the last end-gate objection, so we can tell "the model made
     // progress on the failures" (new objection → keep pushing) from "the model
     // is stuck re-claiming done against the SAME red checks" (stop, but honestly).
@@ -899,6 +987,9 @@ export class QueryEngine {
     // it loop for minutes (e.g. retrying a missing browser install forever).
     const failStreak = new Map<string, number>();
     let breakerFired = false;
+    // Failure signatures we've already asked memory about this turn (recall fires
+    // at most once per distinct signature — no repeated lookups on every round).
+    const recalledFailureSigs = new Set<string>();
     // S5 — signatures of every gather target seen this turn (novelty tracking).
     const seenGatherSigs = new Set<string>();
     // C3 — times we've auto-continued after the model hit its output-token cap.
@@ -1009,17 +1100,25 @@ export class QueryEngine {
             const outboundMessages = fitImagesToBudget(budgeted.messages, budgetAttempts[attempt], overheadTokens);
             const estPromptTokens =
               overheadTokens + outboundMessages.reduce((s, m) => s + estimateMessageTokens(m), 0);
+            // Per-attempt abort: a stalled request is cut without killing the
+            // turn — the stall guard fires it, the retry loop recovers.
+            const attemptAbort = new AbortController();
             const stream = this.cfg.provider.stream({
               model: this.cfg.model,
               system: this.cfg.systemPrompt,
               messages: outboundMessages,
               tools: toolDescriptors,
-              signal: this.liveSignal(),
-              reasoningLevel: this.cfg.reasoningLevel,
+              signal: AbortSignal.any([this.liveSignal(), attemptAbort.signal]),
+              reasoningLevel: this.turnReasoningOverride ?? this.effectiveReasoningLevel(),
               maxOutputTokens: this.cfg.maxOutputTokens,
             });
 
-            for await (const ev of stream) {
+            let sawCommittedOutput = false;
+            for await (const ev of guardStreamStalls(stream, {
+              idleMs: streamIdleMs(),
+              thinkCeilingMs: thinkCeilingMs(),
+              onStall: () => attemptAbort.abort(),
+            })) {
               if (
                 ev.type === "error" &&
                 isContextLimitError(ev.error) &&
@@ -1033,7 +1132,10 @@ export class QueryEngine {
               // Forward every stream event to the consumer.
               yield ev;
 
-              if (isModelOutputEvent(ev)) modelStarted = true;
+              if (isModelOutputEvent(ev)) {
+                modelStarted = true;
+                if (ev.type !== "thinking_delta") sawCommittedOutput = true;
+              }
               if (ev.type === "tool_use_start") {
                 toolNameById.set(ev.id, ev.name);
               }
@@ -1053,11 +1155,13 @@ export class QueryEngine {
             }
 
             // Transient, pre-output failure → wait and retry the same request.
+            // A stall is also retriable after thinking-only output: nothing was
+            // committed to the conversation, so re-issuing is safe.
             if (
               streamError &&
               streamError.retriable &&
               !isContextLimitError(streamError) &&
-              !modelStarted &&
+              (!modelStarted || (isStallError(streamError) && !sawCommittedOutput)) &&
               !this.liveSignal().aborted &&
               transientRetry < MAX_TRANSIENT_RETRIES
             ) {
@@ -1066,12 +1170,22 @@ export class QueryEngine {
               // longer than our exponential backoff — burning four 12s-capped
               // retries against a 30s 429 window just fails a turn that waiting
               // would have completed. The provider already clamps it to 60s.
-              const waitMs = Math.max(transientBackoffMs(transientRetry), streamError.retryAfterMs ?? 0);
-              yield {
-                type: "system_reminder_injected",
-                text: `provider hiccup (${streamError.code}); retrying in ${(waitMs / 1000).toFixed(1)}s — attempt ${transientRetry}/${MAX_TRANSIENT_RETRIES}`,
-                source: "instructions",
-              };
+              let waitMs = Math.max(transientBackoffMs(transientRetry), streamError.retryAfterMs ?? 0);
+              let note = `provider hiccup (${streamError.code}); retrying in ${(waitMs / 1000).toFixed(1)}s — attempt ${transientRetry}/${MAX_TRANSIENT_RETRIES}`;
+              if (isStallError(streamError)) {
+                // The effort-dial cutoff: a stall already burned its wait — retry
+                // promptly, one reasoning notch down (never below "low"), so the
+                // turn completes at reduced effort instead of spinning forever.
+                waitMs = 500;
+                const current = this.turnReasoningOverride ?? this.effectiveReasoningLevel();
+                if (process.env.ARES_STALL_DOWNGRADE !== "0" && current && current !== "off" && current !== "low") {
+                  this.turnReasoningOverride = downshift(current, 1);
+                  note = `${streamError.code === "reasoning_stall" ? "reasoning stalled" : "stream stalled"} at "${current}"; retrying at "${this.turnReasoningOverride}" — attempt ${transientRetry}/${MAX_TRANSIENT_RETRIES}`;
+                } else {
+                  note = `${streamError.code} — retrying — attempt ${transientRetry}/${MAX_TRANSIENT_RETRIES}`;
+                }
+              }
+              yield { type: "system_reminder_injected", text: note, source: "instructions" };
               await abortableDelay(waitMs, this.liveSignal());
               if (this.liveSignal().aborted) break retryStream;
               continue retryStream;
@@ -1193,6 +1307,32 @@ export class QueryEngine {
             createdAt: new Date().toISOString(),
           });
           yield { type: "system_reminder_injected", text: "empty assistant turn — nudging for output", source: "instructions" };
+          continue;
+        }
+        // Todo-completion gate: if the model wrote a plan (TodoWrite) and is now
+        // trying to end while items are still pending/in-progress, push back ONCE
+        // — the "finish what you started" rule. Fires a single time per turn so a
+        // genuinely-blocked plan can still end (the model just has to say why),
+        // never an infinite loop. Skipped when aborted.
+        if (
+          !this.todoGateFired &&
+          !this.liveSignal().aborted &&
+          this.latestTodos.length > 0 &&
+          hasUnfinishedTodos(this.latestTodos)
+        ) {
+          this.todoGateFired = true;
+          const pending = this.latestTodos.filter((t) => t.status === "pending" || t.status === "in_progress");
+          const list = pending.slice(0, 8).map((t) => `- [${t.status === "in_progress" ? ">" : " "}] ${t.status === "in_progress" ? t.activeForm : t.content}`).join("\n");
+          this.messages.push({
+            id: cryptoId(),
+            role: "user",
+            content: [{
+              type: "system_reminder",
+              text: `Your own todo list still has ${pending.length} unfinished item(s):\n${list}\nEither complete them now, or — if one is genuinely blocked or no longer needed — update the list (mark it done/removed) and state plainly why before finishing. Do not end with a silently-abandoned plan.`,
+            }],
+            createdAt: new Date().toISOString(),
+          });
+          yield { type: "system_reminder_injected", text: `todo gate: ${pending.length} unfinished item(s) — finish or explain`, source: "instructions" };
           continue;
         }
         // C1 end-of-turn gate: before accepting "done", give verification a
@@ -1350,17 +1490,48 @@ export class QueryEngine {
       // Track this round's failures by (tool, error-signature). Any signature
       // seen 3× in a row means the model is looping a dead approach.
       const seenThisRound = new Set<string>();
+      const errorTextBySig = new Map<string, string>();
       for (const use of pendingToolUses) {
         const result = resultByToolUseId.get(use.id);
         if (result?.is_error) {
-          const sig = `${use.name}:${failureSignature(typeof result.content === "string" ? result.content : "")}`;
+          const errText = typeof result.content === "string" ? result.content : "";
+          const sig = `${use.name}:${failureSignature(errText)}`;
           seenThisRound.add(sig);
+          errorTextBySig.set(sig, errText);
           failStreak.set(sig, (failStreak.get(sig) ?? 0) + 1);
         }
       }
       // reset streaks for signatures that did NOT recur this round
       for (const sig of [...failStreak.keys()]) {
         if (!seenThisRound.has(sig)) failStreak.delete(sig);
+      }
+      // ── failure-signature recall ──────────────────────────────────────────
+      // The SECOND identical failure is the moment to intervene — the model is
+      // repeating a mistake but the breaker hasn't given up yet. Ask the host if
+      // it remembers fixing this exact failure and inject the known fix, so the
+      // agent applies its OWN past solution instead of flailing into the breaker.
+      if (this.cfg.recallFailureFix) {
+        for (const [sig, count] of failStreak.entries()) {
+          if (count === 2 && !recalledFailureSigs.has(sig)) {
+            recalledFailureSigs.add(sig);
+            const tool = sig.split(":")[0];
+            const hint = await this.cfg
+              .recallFailureFix({ tool, signature: sig, error: errorTextBySig.get(sig) ?? "" })
+              .catch(() => null);
+            if (hint && hint.trim()) {
+              this.messages.push({
+                id: cryptoId(),
+                role: "user",
+                content: [{
+                  type: "system_reminder",
+                  text: `RECALLED FIX — you've hit this ${tool} failure before. Last time it was resolved by: ${hint.trim()}\nApply this before trying anything else.`,
+                }],
+                createdAt: new Date().toISOString(),
+              });
+              yield { type: "system_reminder_injected", text: `failure-recall: known fix for ${tool} surfaced`, source: "instructions" };
+            }
+          }
+        }
       }
       const stuckSig = [...failStreak.entries()].find(([, n]) => n >= 3)?.[0];
       if (stuckSig && !breakerFired) {
@@ -1693,6 +1864,7 @@ export class QueryEngine {
         display: result.display,
       });
       if (use.name === "TodoWrite" && isTodoOutput(result.output)) {
+        this.latestTodos = result.output.todos;
         emit({ type: "todo_updated", todos: result.output.todos });
       }
       if (this.cfg.hookManager) {
@@ -2268,6 +2440,97 @@ function transientBackoffMs(attempt: number): number {
   return Math.min(12_000, base + jitter);
 }
 
+// ─── Stream stall guard (the effort-dial cutoff) ───────────────────────
+/** No events at all for this long → the request is hung, not thinking. */
+function streamIdleMs(): number {
+  const raw = Number(process.env.ARES_STREAM_IDLE_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 90_000;
+}
+/** Reasoning-only output for this long → the model is spinning, not working. */
+function thinkCeilingMs(): number {
+  const raw = Number(process.env.ARES_THINK_CEILING_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 180_000;
+}
+
+interface StallGuardOpts {
+  idleMs: number;
+  thinkCeilingMs: number;
+  /** Called the moment a stall is declared — abort the underlying request. */
+  onStall: () => void;
+  now?: () => number;
+}
+
+/**
+ * Wrap a provider stream with two watchdogs: an idle cutoff (no events at all)
+ * and a thinking ceiling (reasoning deltas but never any committed output).
+ * On stall it aborts the attempt via onStall and yields ONE synthetic retriable
+ * error event, so the existing retry machinery handles recovery. Committed
+ * output (text/tool-use/message) disarms the thinking ceiling permanently.
+ */
+export async function* guardStreamStalls(
+  stream: AsyncIterable<StreamEvent>,
+  opts: StallGuardOpts,
+): AsyncGenerator<StreamEvent> {
+  const now = opts.now ?? Date.now;
+  const it = stream[Symbol.asyncIterator]();
+  let thinkingStartedAt = 0;
+  let committed = false;
+  try {
+    while (true) {
+      // The per-event deadline: idle cutoff, tightened by the thinking ceiling
+      // while the model has produced nothing but reasoning.
+      let waitMs = opts.idleMs;
+      if (!committed && thinkingStartedAt > 0) {
+        waitMs = Math.min(waitMs, Math.max(0, thinkingStartedAt + opts.thinkCeilingMs - now()));
+      }
+      // Deliberately NOT unref'd: a wedged provider stream may hold no other
+      // handles, and this timer firing is the only way the turn recovers.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"stall">((resolve) => {
+        timer = setTimeout(() => resolve("stall"), waitMs);
+      });
+      const winner = await Promise.race([it.next(), timeout]).finally(() => clearTimeout(timer));
+      if (winner === "stall") {
+        const thinking = !committed && thinkingStartedAt > 0;
+        opts.onStall();
+        try {
+          void it.return?.(undefined);
+        } catch {
+          // the aborted request may throw on close — irrelevant now
+        }
+        yield {
+          type: "error",
+          error: {
+            code: thinking ? "reasoning_stall" : "stream_stall",
+            message: thinking
+              ? `model produced only reasoning for ${Math.round(opts.thinkCeilingMs / 1000)}s — cutting the attempt`
+              : `no stream events for ${Math.round(opts.idleMs / 1000)}s — cutting the attempt`,
+            retriable: true,
+          },
+        };
+        return;
+      }
+      if (winner.done) return;
+      const ev = winner.value;
+      if (ev.type === "thinking_delta") {
+        if (thinkingStartedAt === 0) thinkingStartedAt = now();
+      } else if (isModelOutputEvent(ev)) {
+        committed = true;
+      }
+      yield ev;
+    }
+  } catch (err) {
+    // An abort we triggered surfaces as a throw from the underlying iterator —
+    // the synthetic stall error already covered it; anything else propagates.
+    if (!(err instanceof Error && /abort/i.test(err.name + err.message))) throw err;
+  }
+}
+
+/** A stall error minted by guardStreamStalls (safe to retry after thinking-only output). */
+function isStallError(err: { code?: string } | null | undefined): boolean {
+  return err?.code === "stream_stall" || err?.code === "reasoning_stall";
+}
+
 /** A delay that resolves immediately if the signal aborts mid-wait. Not
  *  unref'd on purpose: a mid-turn backoff is active work and must keep the
  *  event loop alive until it resolves (unlike a watchdog timer). */
@@ -2661,6 +2924,52 @@ function describeActivity(toolName: string, input: unknown): string {
   const q = str(i.pattern) ?? str(i.query);
   if (q) return `${toolName} · ${q.slice(0, 50)}`;
   return toolName;
+}
+
+/** Lower a reasoning level by N steps within the off..max ladder. */
+function downshift(level: ReasoningLevel, steps: number): ReasoningLevel {
+  const ladder: ReasoningLevel[] = ["off", "low", "medium", "high", "max"];
+  const idx = ladder.indexOf(level);
+  if (idx < 0) return level;
+  return ladder[Math.max(0, idx - steps)];
+}
+
+/**
+ * Task-adaptive reasoning selection (PURE, exported for tests). Given the owner's
+ * chosen ceiling and the latest user text, returns the level to actually use this
+ * turn. NEVER exceeds `base` (owner control is a ceiling); down-shifts trivial and
+ * short single-clause turns so a reasoning model stops burning minutes on "hi" or
+ * a one-line ask. `enabled=false` (owner opt-out) returns `base` unchanged.
+ */
+export function adaptiveReasoningLevel(
+  base: ReasoningLevel | undefined,
+  latestUserText: string,
+  enabled = true,
+): ReasoningLevel | undefined {
+  if (!base || base === "off" || base === "low") return base;
+  if (!enabled) return base;
+  const text = latestUserText.trim();
+  if (!text) return base;
+  const words = text.split(/\s+/).length;
+  // Deep-work verbs ALWAYS keep the ceiling, even in a terse "debug this" — these
+  // are exactly the turns that earn max deliberation, so they beat every downshift.
+  if (/\b(why|how|debug|design|plan|refactor|architect|analy[sz]e|investigate|trace|root cause)\b/i.test(text)) {
+    return base;
+  }
+  // Pure greetings / acknowledgements, or very short non-work chatter → no thinking.
+  const trivial =
+    /^(hi|hey+|hello|yo|sup|thanks|thank you|ok|okay|cool|nice|lol|bet|word|yes|no|yep|nope|got it|gotcha)\b/i.test(text) ||
+    text.length < 24;
+  if (trivial) return "off";
+  // A short, single-clause ask doesn't need max-tier deliberation — one rung down
+  // keeps it snappy without going blind.
+  if (words <= 12) return downshift(base, 1);
+  return base;
+}
+
+/** True if the plan still has unstarted or in-progress items. */
+function hasUnfinishedTodos(todos: readonly import("@ares/protocol").Todo[]): boolean {
+  return todos.some((t) => t.status === "pending" || t.status === "in_progress");
 }
 
 function isTodoOutput(output: unknown): output is { todos: import("@ares/protocol").Todo[] } {

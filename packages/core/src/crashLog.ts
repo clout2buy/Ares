@@ -21,6 +21,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { redactSecrets } from "@ares/protocol";
 
 export type CrashKind =
   | "uncaughtException"
@@ -57,7 +58,13 @@ export function writeCrashLogSync(home: string, record: CrashRecord): string | n
     fs.mkdirSync(dir, { recursive: true });
     const stamp = record.at.replace(/[:.]/g, "-");
     const file = path.join(dir, `${record.process}-${stamp}.jsonl`);
-    fs.appendFileSync(file, JSON.stringify(record) + "\n");
+    // `context`/`recentEvents` are free-form and may echo tool-call
+    // inputs/outputs verbatim (API keys, tokens, passwords a coworker pasted
+    // into a prompt). Scrub the serialized bytes before they ever touch disk
+    // — a stringify → redact round-trip on the whole record catches secrets
+    // no matter how deep they're nested, without a bespoke recursive walker.
+    const scrubbed = redactSecrets(JSON.stringify(record));
+    fs.appendFileSync(file, scrubbed + "\n");
     return file;
   } catch {
     return null;

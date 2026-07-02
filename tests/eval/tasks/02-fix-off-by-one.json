@@ -1,0 +1,12 @@
+{
+  "id": "fix-off-by-one",
+  "title": "Fix an off-by-one bug in a range function",
+  "prompt": "The file `range.mjs` has a bug: `range(1, 5)` should return [1, 2, 3, 4, 5] (inclusive of both ends) but it currently drops the last element. Fix the off-by-one error. Do not change the function signature.",
+  "seedFiles": {
+    "range.mjs": "export function range(start, end) {\n  const out = [];\n  for (let i = start; i < end; i++) {\n    out.push(i);\n  }\n  return out;\n}\n"
+  },
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./range.mjs').then(m=>{const a=JSON.stringify(m.range(1,5));if(a!=='[1,2,3,4,5]')throw new Error('got '+a);console.log('ok')})\""
+  }
+}

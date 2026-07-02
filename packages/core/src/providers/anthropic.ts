@@ -604,6 +604,32 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
+// ─── model listing ─────────────────────────────────────────────────────
+
+/** Fetch the models available to an Anthropic API key.
+ *  Mirrors fetchOpenRouterModels/fetchDeepSeekModels's shape and
+ *  error-handling in openrouter.ts: throws on a non-ok response so the
+ *  caller can catch it and fall back to the hardcoded catalog. */
+export async function fetchAnthropicModels(apiKey: string): Promise<Array<{ id: string; label?: string }>> {
+  if (!apiKey) return [];
+  const res = await fetch("https://api.anthropic.com/v1/models", {
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) throw new Error(`Anthropic models ${res.status}`);
+  const json = (await res.json()) as { data?: Array<Record<string, unknown>> };
+  const rows = Array.isArray(json.data) ? json.data : [];
+  return rows
+    .filter((row) => typeof row.id === "string" && row.id.length > 0)
+    .map((row) => ({
+      id: String(row.id),
+      label: typeof row.display_name === "string" ? row.display_name : undefined,
+    }));
+}
+
 // ─── Anthropic SSE event shape (only the fields we read) ───────────────
 
 interface AnthropicWireUsage {

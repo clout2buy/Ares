@@ -13,6 +13,8 @@ export {
   collectTrimmedFilePaths,
   chooseCompactionSplit,
   stringifyModelToolOutput,
+  adaptiveReasoningLevel,
+  guardStreamStalls,
   type QueryEngineConfig,
   type Provider,
   type ProviderRequest,
@@ -41,6 +43,7 @@ export {
   AnthropicProvider,
   ANTHROPIC_MESSAGES_URL,
   DEFAULT_ANTHROPIC_MODEL,
+  fetchAnthropicModels,
   type AnthropicProviderOptions,
 } from "./providers/anthropic.js";
 
@@ -100,14 +103,24 @@ export {
 } from "./subagents.js";
 
 export {
+  SubagentJournal,
+  renderSubagentHandoff,
+  type SubagentHandoff,
+  type SubagentJournalEntry,
+} from "./subagentJournal.js";
+
+export {
   ContinuousVerifier,
   deriveNarrowVerify,
   findRelatedTestFiles,
+  triageVerifyOutput,
   type VerifierOptions,
   type VerifyCommand,
   type VerifyResult,
   type VerifyEvent,
   type WorkspaceSetup,
+  type CommandRunner,
+  type VerifyCacheStats,
 } from "./verifier.js";
 
 export {
@@ -193,6 +206,8 @@ export {
   hasCredential,
   encryptSecret,
   decryptSecret,
+  probeCredentialEncryption,
+  EncryptionUnavailableError,
   type CredentialLookup,
 } from "./credentials.js";
 

@@ -1,0 +1,10 @@
+{
+  "id": "implement-clamp",
+  "title": "Implement a clamp() utility",
+  "prompt": "Create `clamp.mjs` exporting `clamp(value, min, max)` that returns `value` constrained to the inclusive range [min, max]: if value < min return min, if value > max return max, otherwise value.",
+  "seedFiles": {},
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./clamp.mjs').then(m=>{if(m.clamp(5,0,10)!==5)throw new Error('a');if(m.clamp(-3,0,10)!==0)throw new Error('b');if(m.clamp(42,0,10)!==10)throw new Error('c');console.log('ok')})\""
+  }
+}

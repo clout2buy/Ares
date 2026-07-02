@@ -15,6 +15,7 @@
 // Codex requires you to ask. Ares makes it the default.
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -36,6 +37,10 @@ export interface VerifyResult {
   /** The tool wasn't found on PATH (ENOENT) — verifier unavailable, not a real
    *  failure. Callers must NOT turn this into a "fix this" reminder. */
   skipped?: boolean;
+  /** This result was served from the fingerprint pass-cache — the command was
+   *  NOT re-run because the same command already passed against unchanged
+   *  files. Always implies ok:true. */
+  cached?: boolean;
 }
 
 export type VerifyEvent =
@@ -43,6 +48,29 @@ export type VerifyEvent =
   | { type: "running"; command: VerifyCommand }
   | { type: "finished"; result: VerifyResult }
   | { type: "all_finished"; ok: boolean; results: VerifyResult[] };
+
+/**
+ * Runs a single verify command to completion. Injectable so tests can supply a
+ * fake that counts invocations and returns canned results without spawning a
+ * real process. The default (see {@link ContinuousVerifier.spawnRunOne}) spawns
+ * the command. A runner MUST honour the abort signal and never throw — it
+ * resolves a VerifyResult even on error.
+ */
+export type CommandRunner = (cmd: VerifyCommand, signal: AbortSignal) => Promise<VerifyResult>;
+
+/** Cache-hit/miss counters exposed for observability + testing. */
+export interface VerifyCacheStats {
+  /** Verify commands served from the pass-cache without re-running. */
+  hits: number;
+  /** Verify commands that had to actually run (no cached pass). */
+  misses: number;
+  /** Passes stored into the cache. */
+  stores: number;
+  /** Entries evicted because the cache hit its size bound. */
+  evictions: number;
+  /** Current number of cached (command,files) → pass fingerprints. */
+  size: number;
+}
 
 export interface VerifierOptions {
   workspace: string;
@@ -52,6 +80,17 @@ export interface VerifierOptions {
   outputTailChars?: number;
   /** Hook for the CLI/TUI to render verify events live. */
   onEvent?: (event: VerifyEvent) => void;
+  /**
+   * Override the process spawner (tests inject a counting fake). Defaults to the
+   * real spawn-based runner. Purely a testing/instrumentation seam — production
+   * never sets this.
+   */
+  runCommand?: CommandRunner;
+  /**
+   * Upper bound on the pass-fingerprint cache before oldest entries are evicted.
+   * Default 256. Tunable with ARES_VERIFY_CACHE_MAX.
+   */
+  cacheMax?: number;
 }
 
 interface PendingReminder {
@@ -68,6 +107,8 @@ export class ContinuousVerifier {
   private readonly debounceMs: number;
   private readonly outputTailChars: number;
   private readonly onEvent?: (event: VerifyEvent) => void;
+  private readonly runCommand: CommandRunner;
+  private readonly cacheMax: number;
 
   private pendingFiles = new Set<string>();
   private debounceTimer: NodeJS.Timeout | null = null;
@@ -75,6 +116,16 @@ export class ContinuousVerifier {
   private pendingReminders: PendingReminder[] = [];
   /** Detected once per workspace and cached. */
   private detectedSetupPromise: Promise<WorkspaceSetup> | null = null;
+
+  /**
+   * Pass-cache: fingerprint → true. A fingerprint identifies (this exact
+   * command) + (the exact content of the files that run covered). If it's
+   * present, that command already PASSED against unchanged inputs, so we can
+   * skip re-running. Insertion-ordered so the oldest key is `keys().next()`.
+   * Only PASSES are ever stored (see fireRun) — failures always re-run.
+   */
+  private passCache = new Map<string, true>();
+  private stats: VerifyCacheStats = { hits: 0, misses: 0, stores: 0, evictions: 0, size: 0 };
 
   constructor(opts: VerifierOptions) {
     this.workspace = opts.workspace;
@@ -86,6 +137,15 @@ export class ContinuousVerifier {
     this.debounceMs = opts.debounceMs ?? (Number.isFinite(envDebounce) && envDebounce >= 0 ? Math.floor(envDebounce) : 1500);
     this.outputTailChars = opts.outputTailChars ?? 4000;
     this.onEvent = opts.onEvent;
+    // Injectable runner: tests count invocations here; prod uses the spawner.
+    this.runCommand = opts.runCommand ?? ((cmd, signal) => this.spawnRunOne(cmd, signal));
+    const envCacheMax = Number(process.env.ARES_VERIFY_CACHE_MAX);
+    this.cacheMax = opts.cacheMax ?? (Number.isFinite(envCacheMax) && envCacheMax > 0 ? Math.floor(envCacheMax) : 256);
+  }
+
+  /** Snapshot of pass-cache hit/miss counters for observability + tests. */
+  cacheStats(): VerifyCacheStats {
+    return { ...this.stats, size: this.passCache.size };
   }
 
   /** Called by QueryEngine after every tool_end with touchedFiles. */
@@ -205,10 +265,18 @@ export class ContinuousVerifier {
     // Editing a source file should exercise its tests, not just its types —
     // pull in existing sibling/related test files for everything touched.
     const related = await findRelatedTestFiles(files, this.workspace);
-    const commands = deriveNarrowVerify([...files, ...related], this.workspace, setup);
+    const coveredFiles = [...files, ...related];
+    const commands = deriveNarrowVerify(coveredFiles, this.workspace, setup);
     if (commands.length === 0) return;
 
     this.onEvent?.({ type: "scheduled", files, commands });
+
+    // FINGERPRINT CACHING — hash the content of the files this run covers ONCE
+    // (all commands in a run share the same input set), then combine that with
+    // each command's own identity. If a command with the SAME fingerprint
+    // already PASSED, we skip the process entirely and reuse the pass. Any edit
+    // to a covered file changes its content hash → new fingerprint → re-run.
+    const filesDigest = await this.hashFiles(coveredFiles);
 
     const abort = new AbortController();
     let resolveDone!: () => void;
@@ -221,10 +289,34 @@ export class ContinuousVerifier {
     try {
       for (const cmd of commands) {
         if (abort.signal.aborted) break;
+        const fp = fingerprintCommand(cmd, filesDigest);
+        // Cache hit: this exact command already passed against these exact file
+        // contents. Serve a synthetic pass instantly — no spawn.
+        if (this.passCache.has(fp)) {
+          this.stats.hits++;
+          this.touchCacheEntry(fp);
+          const cached: VerifyResult = {
+            ok: true,
+            cached: true,
+            command: cmd,
+            exitCode: 0,
+            stdoutTail: "",
+            stderrTail: "",
+            durationMs: 0,
+          };
+          results.push(cached);
+          this.onEvent?.({ type: "finished", result: cached });
+          continue;
+        }
+        this.stats.misses++;
         this.onEvent?.({ type: "running", command: cmd });
-        const result = await this.runOne(cmd, abort.signal);
+        const result = await this.runCommand(cmd, abort.signal);
         results.push(result);
         if (!result.ok) allOk = false;
+        // Only cache PASSES, and never cache a skipped/ENOENT "pass" (the tool
+        // was absent, not verified) or an aborted run. A real failure is left
+        // uncached so it re-runs next time — the user is presumably fixing it.
+        if (result.ok && !result.skipped && !abort.signal.aborted) this.storePass(fp);
         this.onEvent?.({ type: "finished", result });
       }
       this.onEvent?.({ type: "all_finished", ok: allOk, results });
@@ -243,19 +335,24 @@ export class ContinuousVerifier {
   private formatReminder(failed: VerifyResult[]): string {
     const sections = failed.map((r) => {
       const tail = (r.stderrTail || r.stdoutTail).trim();
-      const trimmed = tail.length > 1500 ? "…" + tail.slice(-1500) : tail;
+      const triage = triageVerifyOutput(tail);
+      // Triage first: a wall of 50 failures is usually 3 root causes — say
+      // that, then show a shorter tail. No triage signal → the old full tail.
+      const tailBudget = triage ? 800 : 1500;
+      const trimmed = tail.length > tailBudget ? "…" + tail.slice(-tailBudget) : tail;
+      const head = triage ? `${triage}\n` : "";
       return `[${r.command.label}] ${r.command.program} ${r.command.args.join(" ")}
 exit: ${r.exitCode ?? "killed"}  (${r.durationMs}ms)
-${trimmed}`;
+${head}${trimmed}`;
     });
     return `Continuous verifier detected failures after your recent edits. Address these before reporting "done":
 
 ${sections.join("\n\n")}
 
-If a failure is unrelated to your change, say so explicitly. If you can't fix it, mark the relevant TodoWrite items in_progress (not completed) and call it out.`;
+Fix the ROOT CAUSE first — one bad symbol or import usually explains a whole page of red. If a failure is unrelated to your change, say so explicitly. If you can't fix it, mark the relevant TodoWrite items in_progress (not completed) and call it out.`;
   }
 
-  private async runOne(cmd: VerifyCommand, signal: AbortSignal): Promise<VerifyResult> {
+  private async spawnRunOne(cmd: VerifyCommand, signal: AbortSignal): Promise<VerifyResult> {
     return new Promise((resolve) => {
       const t0 = Date.now();
       const child = spawn(cmd.program, cmd.args, {
@@ -315,6 +412,75 @@ If a failure is unrelated to your change, say so explicitly. If you can't fix it
     if (!this.detectedSetupPromise) this.detectedSetupPromise = detectWorkspaceSetup(this.workspace);
     return this.detectedSetupPromise;
   }
+
+  /**
+   * Content-hash the files a run covers into one stable digest. Sorted so order
+   * of touched files never changes the fingerprint. A file that can't be read
+   * (deleted, permission) contributes a "missing" marker rather than throwing —
+   * a change in readability still busts the cache. This is the only file I/O the
+   * cache adds per run, and it's cheap relative to a tsc/test spawn.
+   */
+  private async hashFiles(files: readonly string[]): Promise<string> {
+    const h = createHash("sha1");
+    for (const f of [...files].sort()) {
+      const abs = path.resolve(f);
+      const content = await fs.readFile(abs).catch(() => null);
+      h.update(abs);
+      h.update("\0");
+      if (content === null) h.update("\x01missing");
+      else {
+        h.update("\x02");
+        h.update(content);
+      }
+      h.update("\n");
+    }
+    return h.digest("hex");
+  }
+
+  /** Insert a passing fingerprint, evicting the oldest entry past the bound. */
+  private storePass(fp: string): void {
+    if (this.passCache.has(fp)) {
+      this.touchCacheEntry(fp);
+      return;
+    }
+    this.passCache.set(fp, true);
+    this.stats.stores++;
+    while (this.passCache.size > this.cacheMax) {
+      // Map preserves insertion order → the first key is the oldest (LRU-ish;
+      // touchCacheEntry re-inserts on hit so recently-used keys move to the end).
+      const oldest = this.passCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.passCache.delete(oldest);
+      this.stats.evictions++;
+    }
+  }
+
+  /** Move a key to the most-recently-used end so eviction skips hot entries. */
+  private touchCacheEntry(fp: string): void {
+    if (!this.passCache.has(fp)) return;
+    this.passCache.delete(fp);
+    this.passCache.set(fp, true);
+  }
+}
+
+/**
+ * Fingerprint = sha1( command identity ⊕ covered-files content digest ). The
+ * command identity is program + args + cwd + label so two different checks over
+ * the same files (e.g. tsc vs. tests) never collide. `filesDigest` already folds
+ * in every covered file's content, so any edit changes it.
+ */
+function fingerprintCommand(cmd: VerifyCommand, filesDigest: string): string {
+  const h = createHash("sha1");
+  h.update(cmd.program);
+  h.update("\0");
+  h.update(cmd.args.join(""));
+  h.update("\0");
+  h.update(cmd.cwd);
+  h.update("\0");
+  h.update(cmd.label);
+  h.update("\0");
+  h.update(filesDigest);
+  return h.digest("hex");
 }
 
 // ─── Narrow verify command derivation ──────────────────────────────────
@@ -583,4 +749,69 @@ export function deriveNarrowVerify(
   }
 
   return cmds;
+}
+
+// ─── Failure triage — a wall of red becomes N root causes ───────────────
+/**
+ * Group a failing command's output into root-cause buckets (PURE, exported for
+ * tests). Recognizes TypeScript diagnostics, node:test failures, and generic
+ * Error lines; normalizes away paths/line-numbers/identifiers so "the same
+ * mistake in 12 places" collapses into one bucket. Returns a compact summary
+ * ("12 failures, 3 root causes: …") or null when there's no triage signal —
+ * callers fall back to the raw tail.
+ */
+export function triageVerifyOutput(output: string): string | null {
+  interface Bucket {
+    count: number;
+    sample: string;
+    files: Set<string>;
+  }
+  const buckets = new Map<string, Bucket>();
+  const add = (key: string, sample: string, file?: string) => {
+    const b = buckets.get(key) ?? { count: 0, sample, files: new Set<string>() };
+    b.count++;
+    if (file) b.files.add(file.replace(/\\/g, "/").split("/").pop() ?? file);
+    buckets.set(key, b);
+  };
+  // The FIRST quoted token is the subject of the diagnostic ("Cannot find name
+  // 'lastShot'") and distinguishes root causes; later quoted tokens are context
+  // ("on type 'Bar'") and collapse. Digits always collapse (foo1/foo2 → fooN).
+  const normalize = (msg: string): string => {
+    let seenQuote = false;
+    return msg
+      .replace(/'[^']*'|"[^"]*"/g, (m) => {
+        if (seenQuote) return "'…'";
+        seenQuote = true;
+        return m;
+      })
+      .replace(/\d+/g, "N")
+      .trim()
+      .slice(0, 90);
+  };
+
+  let matched = 0;
+  // TypeScript: path(line,col): error TS1234: message
+  for (const m of output.matchAll(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/gm)) {
+    add(`${m[4]} ${normalize(m[5])}`, `${m[4]}: ${m[5].trim()}`, m[1]);
+    matched++;
+  }
+  // node:test TAP failures: "not ok N - name" / summary "✖ name"
+  for (const m of output.matchAll(/^\s*(?:not ok \d+ -|✖) (.+)$/gm)) {
+    add("failing test(s)", `failing test: ${m[1].trim().slice(0, 80)}`);
+    matched++;
+  }
+  // Generic thrown errors: "TypeError: x is not a function" etc.
+  for (const m of output.matchAll(/^\s*((?:Assertion|Type|Range|Syntax|Reference)?Error): (.+)$/gm)) {
+    add(`${m[1]} ${normalize(m[2])}`, `${m[1]}: ${m[2].trim()}`, undefined);
+    matched++;
+  }
+  if (matched < 2 || buckets.size === 0) return null;
+
+  const top = [...buckets.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 5);
+  const lines = top.map(([, b], i) => {
+    const where = b.files.size ? ` (${[...b.files].slice(0, 3).join(", ")}${b.files.size > 3 ? `, +${b.files.size - 3} more` : ""})` : "";
+    return `  ${i + 1}. ×${b.count} ${b.sample}${where}`;
+  });
+  const extra = buckets.size > top.length ? ` (+${buckets.size - top.length} more cause(s))` : "";
+  return `TRIAGE: ${matched} failure line(s), ${buckets.size} distinct root cause(s)${extra}:\n${lines.join("\n")}`;
 }

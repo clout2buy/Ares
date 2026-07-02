@@ -1,0 +1,10 @@
+{
+  "id": "implement-debounce",
+  "title": "Implement a debounce utility",
+  "prompt": "Create `debounce.mjs` exporting `debounce(fn, waitMs)`. It returns a function that delays invoking `fn` until `waitMs` have elapsed since the last call. Only the final call within a burst should fire, and `fn` should receive the arguments of that final call.",
+  "seedFiles": {},
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./debounce.mjs').then(async m=>{let calls=[];const d=m.debounce((x)=>calls.push(x),30);d(1);d(2);d(3);await new Promise(r=>setTimeout(r,60));if(JSON.stringify(calls)!=='[3]')throw new Error('got '+JSON.stringify(calls));console.log('ok')})\""
+  }
+}

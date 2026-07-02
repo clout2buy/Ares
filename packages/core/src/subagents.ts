@@ -19,6 +19,7 @@ import path from "node:path";
 import type { Usage } from "@ares/protocol";
 import { runForkedTurn } from "./forkedTurn.js";
 import type { EngineTool, Provider } from "./queryEngine.js";
+import { SubagentJournal, renderSubagentHandoff, type SubagentHandoff } from "./subagentJournal.js";
 
 export interface SubagentTypeDef {
   name: string;
@@ -53,6 +54,9 @@ export interface SubagentRunResult {
   usage: Usage;
   /** Persistent transcript path under <workspace>/.ares/agents/<id>/. */
   transcriptPath: string;
+  /** Structured flight-recorder handoff: what the child actually DID (from its
+   *  engine events), not what its prose claims. Also rendered into `summary`. */
+  handoff: SubagentHandoff;
 }
 
 export interface SubagentRunner {
@@ -223,6 +227,13 @@ export class AresSubagentRunner implements SubagentRunner {
     const id = `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const startedAt = Date.now();
     const transcriptDir = path.join(req.workspace, ".ares", "agents", id);
+    // Flight recorder: fed live from the child's engine events, flushed to disk
+    // incrementally so a crashed subagent leaves evidence. Never fails the run.
+    const journal = new SubagentJournal(transcriptDir, {
+      id,
+      type: req.subagent_type,
+      description: req.description,
+    });
 
     const systemPrompt = `${def.systemPrompt}\n\n---\n\n${this.opts.baseSystemPrompt}`;
 
@@ -247,6 +258,7 @@ export class AresSubagentRunner implements SubagentRunner {
       sessionId: id,
       seed: { kind: "work-item", text: req.prompt },
       onEvent: (ev) => {
+        journal.record(ev);
         if (ev.type === "tool_start") {
           // Surface what the child is doing so the parent UI shows real activity
           // instead of a frozen "Delegating…".
@@ -267,8 +279,13 @@ export class AresSubagentRunner implements SubagentRunner {
     const status: SubagentRunResult["status"] = result.status === "completed" ? "completed" : "failed";
 
     const hasAssistant = result.history.some((m) => m.role === "assistant");
-    const summary =
+    const finalText =
       result.finalText || (hasAssistant ? "(subagent produced no text output)" : "(subagent did not respond)");
+
+    // Structured handoff: what the child actually DID (from engine events), fed
+    // back alongside its prose so the parent doesn't have to trust the claims.
+    const handoff = await journal.finish(result.status);
+    const summary = `${finalText}\n\n${renderSubagentHandoff(handoff)}`;
 
     // Persist transcript best-effort.
     let transcriptPath = path.join(transcriptDir, "transcript.jsonl");
@@ -308,6 +325,7 @@ export class AresSubagentRunner implements SubagentRunner {
       durationMs: Date.now() - startedAt,
       usage,
       transcriptPath,
+      handoff,
     };
   }
 }

@@ -77,7 +77,10 @@ test("chat tuning: reasoningLevel + maxOutputTokens reach the provider", async (
     maxOutputTokens: 1234,
     contextBudgetTokens: 0,
   });
-  for await (const _event of session.send("hi")) {
+  // A substantive ask so the adaptive router keeps the configured ceiling — this
+  // test verifies the dial PLUMBS THROUGH; the router's downshift logic has its
+  // own coverage in reasoning-router.test.mjs.
+  for await (const _event of session.send("Refactor the auth module to add a token refresh path and cover it with tests")) {
     void _event;
   }
   assert.ok(captured, "provider should have been called");
@@ -101,9 +104,11 @@ test("chat tuning: setReasoningLevel updates the dial live", async () => {
   };
   const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-reason-"));
   const session = new Session({ workspace, provider, model: "m", systemPrompt: "s", tools: [], reasoningLevel: "low", contextBudgetTokens: 0 });
-  for await (const _e of session.send("one")) void _e;
+  // Substantive asks so the adaptive router preserves the configured level and
+  // this stays a pure plumbing test for setReasoningLevel.
+  for await (const _e of session.send("Please implement a debounce utility and unit-test it")) void _e;
   session.setReasoningLevel("max");
-  for await (const _e of session.send("two")) void _e;
+  for await (const _e of session.send("Now design a retry policy for the HTTP client with backoff")) void _e;
   assert.deepEqual(levels, ["low", "max"]);
 });
 

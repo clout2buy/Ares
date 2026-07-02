@@ -1,0 +1,13 @@
+{
+  "id": "make-failing-test-pass",
+  "title": "Make a failing test pass by implementing the function",
+  "prompt": "The file `fizzbuzz.test.mjs` imports `fizzbuzz` from `./fizzbuzz.mjs` and asserts its behavior, but `fizzbuzz.mjs` is unimplemented (throws). Implement `fizzbuzz(n)` in `fizzbuzz.mjs` so the test passes: return 'Fizz' for multiples of 3, 'Buzz' for multiples of 5, 'FizzBuzz' for multiples of both, and the number as a string otherwise.",
+  "seedFiles": {
+    "fizzbuzz.mjs": "export function fizzbuzz(n) {\n  throw new Error('not implemented');\n}\n",
+    "fizzbuzz.test.mjs": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { fizzbuzz } from './fizzbuzz.mjs';\n\ntest('fizzbuzz basics', () => {\n  assert.equal(fizzbuzz(1), '1');\n  assert.equal(fizzbuzz(3), 'Fizz');\n  assert.equal(fizzbuzz(5), 'Buzz');\n  assert.equal(fizzbuzz(15), 'FizzBuzz');\n});\n"
+  },
+  "grade": {
+    "type": "command",
+    "command": "node --test fizzbuzz.test.mjs"
+  }
+}

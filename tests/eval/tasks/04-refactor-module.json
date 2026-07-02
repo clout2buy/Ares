@@ -1,0 +1,12 @@
+{
+  "id": "refactor-extract-helper",
+  "title": "Refactor: extract a shared helper without changing behavior",
+  "prompt": "The file `stats.mjs` exports `mean(nums)` and `variance(nums)`, both of which duplicate the summation logic. Refactor by extracting a `sum(nums)` helper and exporting it too, then use it inside both functions. Behavior of mean and variance must not change.",
+  "seedFiles": {
+    "stats.mjs": "export function mean(nums) {\n  let total = 0;\n  for (const n of nums) total += n;\n  return total / nums.length;\n}\n\nexport function variance(nums) {\n  let total = 0;\n  for (const n of nums) total += n;\n  const m = total / nums.length;\n  let acc = 0;\n  for (const n of nums) acc += (n - m) ** 2;\n  return acc / nums.length;\n}\n"
+  },
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./stats.mjs').then(m=>{if(typeof m.sum!=='function')throw new Error('sum not exported');if(m.sum([1,2,3])!==6)throw new Error('bad sum');if(m.mean([2,4,6])!==4)throw new Error('bad mean');if(m.variance([1,2,3])!==0.6666666666666666)throw new Error('bad variance '+m.variance([1,2,3]));console.log('ok')})\""
+  }
+}

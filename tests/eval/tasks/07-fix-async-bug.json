@@ -1,0 +1,12 @@
+{
+  "id": "fix-async-race",
+  "title": "Fix a bug where results come back out of order",
+  "prompt": "The file `fetchAll.mjs` exports `fetchAll(ids, fetchOne)` which should resolve to an array of results in the SAME order as `ids`. It currently uses a push-as-they-resolve pattern, so results arrive out of order. Fix it so the output order matches the input order. `fetchOne(id)` returns a Promise.",
+  "seedFiles": {
+    "fetchAll.mjs": "export async function fetchAll(ids, fetchOne) {\n  const out = [];\n  await Promise.all(\n    ids.map(async (id) => {\n      const r = await fetchOne(id);\n      out.push(r);\n    }),\n  );\n  return out;\n}\n"
+  },
+  "grade": {
+    "type": "command",
+    "command": "node -e \"import('./fetchAll.mjs').then(async m=>{const delay=(id)=>new Promise(r=>setTimeout(()=>r(id*10),(5-id)*10));const out=await m.fetchAll([1,2,3,4],delay);if(JSON.stringify(out)!=='[10,20,30,40]')throw new Error('got '+JSON.stringify(out));console.log('ok')})\""
+  }
+}

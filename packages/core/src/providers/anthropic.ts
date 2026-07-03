@@ -121,11 +121,15 @@ export class AnthropicProvider implements Provider {
       Accept: "text/event-stream",
       "anthropic-version": ANTHROPIC_VERSION,
     };
+    // Opt-in beta flags (e.g. a long-context beta) without a code change:
+    // ARES_ANTHROPIC_BETA="context-1m-..." — comma-merged with any auth beta.
+    const extraBeta = (process.env.ARES_ANTHROPIC_BETA ?? "").trim();
+    if (extraBeta) headers["anthropic-beta"] = extraBeta;
     if (apiKey) {
       headers["x-api-key"] = apiKey;
     } else if (oauthToken) {
       headers["Authorization"] = `Bearer ${oauthToken}`;
-      headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA;
+      headers["anthropic-beta"] = extraBeta ? `${ANTHROPIC_OAUTH_BETA},${extraBeta}` : ANTHROPIC_OAUTH_BETA;
       headers["User-Agent"] = ANTHROPIC_OAUTH_USER_AGENT;
       headers["x-app"] = ANTHROPIC_OAUTH_X_APP;
       headers["anthropic-dangerous-direct-browser-access"] = "true";

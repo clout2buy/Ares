@@ -159,10 +159,13 @@ export async function handleReasoningCommand(
  * model can actually hold — the "1M-context model still forgot my project"
  * bug. Conservative families fall back to a sane modern default.
  */
-function modelContextWindow(modelId: string): number {
+export function modelContextWindow(modelId: string): number {
   const id = (modelId ?? "").toLowerCase();
   if (/deepseek-v4|v4-pro|v4-flash|deepseek-v3\.2/.test(id)) return 1_000_000;
   if (/deepseek-v3\.1|671b/.test(id)) return 160_000;
+  // Opus 4.8+ ships the 1M window; earlier Claude models stay at 200k below.
+  if (/opus-4-[89]|opus-5/.test(id)) return 1_000_000;
+  if (/glm-5\.1/.test(id)) return 1_000_000;
   if (/glm-5|glm-4\.7|glm-4\.6/.test(id)) return 200_000;
   if (/qwen3-coder|qwen3\.5|qwen3-next|qwen3-vl/.test(id)) return 256_000;
   if (/kimi|moonshot/.test(id)) return 256_000;
@@ -235,7 +238,11 @@ export function chatContextBudget(selection: ProviderSelection): number {
   const env = Number(process.env.ARES_CONTEXT_BUDGET);
   if (Number.isFinite(env) && env > 0) return Math.floor(env);
   const windowTokens = modelContextWindow(selection.model);
-  const cap = Number(process.env.ARES_CONTEXT_BUDGET_CAP) || 192_000;
+  // The cap exists so a mistake in the window table can't produce an absurd
+  // prompt; at 800k it no longer strangles genuine 1M-window models (Opus 4.8,
+  // DeepSeek v4, GLM 5.1) down to a fifth of their capacity. Long sessions on
+  // 1M models cost real money — pin ARES_CONTEXT_BUDGET(_CAP) to spend less.
+  const cap = Number(process.env.ARES_CONTEXT_BUDGET_CAP) || 800_000;
   return Math.max(32_000, Math.min(Math.floor(windowTokens * 0.75), cap));
 }
 

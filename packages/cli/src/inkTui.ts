@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 import type { PermissionMode, Todo, TurnEvent, Usage } from "@ares/protocol";
 import { currentThemeName, type ThemeName } from "./terminalUi.js";
+import { modelContextWindow } from "./entry/sessionFactory.js";
 import { renderMarkdown, type MdLine, type MdSpan, type MdTheme } from "./mdRender.js";
 import {
   diffHeaderLabel,
@@ -1770,20 +1771,14 @@ function fillBar(percent: number, width: number): string {
   return "█".repeat(filled) + "░".repeat(Math.max(0, width - filled));
 }
 
-// A model's context window, inferred from its name so the fill gauge is honest
-// without threading provider metadata all the way down. Override via
-// ARES_CONTEXT_WINDOW_TOKENS. Conservative defaults per known family.
+// A model's context window for the fill gauge. Override via
+// ARES_CONTEXT_WINDOW_TOKENS; otherwise the ONE canonical table the budgeter
+// uses — a gauge that disagrees with the budgeter lies exactly when it
+// matters (1M-window models like Opus 4.8 / DeepSeek v4 / GLM 5.1).
 function contextWindowFor(model: string): number {
   const override = Number(process.env.ARES_CONTEXT_WINDOW_TOKENS);
   if (Number.isFinite(override) && override > 0) return override;
-  const m = model.toLowerCase();
-  if (m.includes("gpt-4o") || m.includes("gpt-4.1") || m.includes("o1") || m.includes("o3")) return 128_000;
-  if (m.includes("gpt")) return 128_000;
-  if (m.includes("deepseek")) return 128_000;
-  if (m.includes("gemini")) return 1_000_000;
-  if (m.includes("llama") || m.includes("qwen") || m.includes("mistral")) return 128_000;
-  if (m.includes("claude") || m.includes("sonnet") || m.includes("opus") || m.includes("haiku") || m.includes("fable")) return 200_000;
-  return 200_000;
+  return modelContextWindow(model);
 }
 
 // Context-fill percentage from the last request's prompt size — the single most

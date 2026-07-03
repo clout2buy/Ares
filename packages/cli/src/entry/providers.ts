@@ -47,7 +47,7 @@ const STATIC_MODEL_CATALOG: Record<"openai" | "anthropic" | "mock", DaemonModelO
   ],
   anthropic: [
     { id: "claude-fable-5", hint: "flagship adaptive thinking", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
-    { id: "claude-opus-4-8", hint: "deep reasoning workhorse", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "claude-opus-4-8", hint: "deep reasoning workhorse · 1M context", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
     { id: "claude-sonnet-4-6", hint: "balanced speed / depth", group: "Anthropic", capabilities: ["tools", "reasoning"] },
     { id: "claude-haiku-4-5-20251001", hint: "fast + cheap", group: "Anthropic", capabilities: ["tools"] },
   ],

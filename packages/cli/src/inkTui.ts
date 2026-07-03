@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 import type { PermissionMode, Todo, TurnEvent, Usage } from "@ares/protocol";
-import { currentThemeName, type ThemeName } from "./terminalUi.js";
+import { availableThemes, currentThemeName, type ThemeName } from "./terminalUi.js";
 import { modelContextWindow } from "./entry/sessionFactory.js";
 import { renderMarkdown, type MdLine, type MdSpan, type MdTheme } from "./mdRender.js";
+import { flameLine, moltenCursor, forgeStrike, type FxSpan, type FxPalette } from "./tuiFx.js";
 import {
   diffHeaderLabel,
   diffLineSpans,
@@ -24,6 +25,37 @@ import {
   type FleetState,
 } from "./tuiElite.js";
 import { onLifecycle, type LifecycleEvent } from "@ares/agent";
+import {
+  disableMouseTracking,
+  enableMouseTracking,
+  isMouseFragment,
+  parseSgrMouse,
+  type SgrMouseEvent,
+} from "./mouseInput.js";
+import {
+  CHROME_SEPARATOR,
+  CHROME_START_COL,
+  MODAL_BODY_START_ROW,
+  MODAL_TAB_ROW,
+  SLIDER_LEVELS,
+  SURGE_TICKS,
+  SURGE_TICK_MS,
+  TOOLBAR_ITEMS,
+  indexForKey,
+  keyForIndex,
+  modalHitTest,
+  parseReasoningLevel,
+  sliderFillColor,
+  sliderFlameRow,
+  sliderIndexAt,
+  sliderSpans,
+  surgeFrame,
+  terminalRowToAppRow,
+  textWidth,
+  toolbarHitTest,
+  ultraBadgeFrame,
+  type SliderTokens,
+} from "./tuiChrome.js";
 
 // Weirdcore score popup. Every evolution event emits a gain { target, delta }.
 // The TUI shows the last few as floating +N TARGET cards that fade out.
@@ -469,8 +501,44 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 // ⌃O / "/model" model+provider picker — scroll, don't type names.
 const PICKER_PROVIDERS = ["ollama", "openai", "anthropic", "openrouter", "deepseek"];
 
+// ─── Clickable chrome geometry (shared with the tuiChrome hit-tests) ─────────
+// The owner's device has NO arrow keys: everything below is mouse-first with
+// number-key fallbacks. Overlays REPLACE the main view (anchored app row 1) so
+// modalHitTest's row math is exact; the toolbar pins to the frame's bottom row.
+const SETTINGS_TABS = ["Providers", "Models", "Appearance", "Effort", "Engine"];
+const SETTINGS_PROVIDERS_TAB = 0;
+const SETTINGS_MODELS_TAB = 1;
+const SETTINGS_APPEARANCE_TAB = 2;
+const SETTINGS_EFFORT_TAB = 3;
+const SETTINGS_ENGINE_TAB = 4;
+/** Providers whose keys can be set from the Providers tab — mirrors the
+ *  desktop Settings → API Keys card and dispatches the same /key command. */
+const KEY_PROVIDERS = ["anthropic", "openrouter", "deepseek", "openai", "brave"] as const;
+// Effort slider geometry: the bar starts after chrome padding + the "🔥 " prefix,
+// and its body rows sit at fixed app rows so clicks/drags map deterministically.
+const EFFORT_BAR_START = CHROME_START_COL + textWidth("🔥 ");
+const EFFORT_FLAME_ROW = MODAL_BODY_START_ROW;
+const EFFORT_LABEL_ROW = MODAL_BODY_START_ROW + 2;
+// The fixed ramp the slider burns through regardless of theme:
+// steel → ember → crimson → gold (desktop palette hexes).
+function sliderTokensFrom(theme: DeckTheme): SliderTokens {
+  return { steel: "#6fb3ae", ember: "#ff6a44", crimson: "#d6402e", gold: "#ffd877", dim: theme.dim };
+}
+
+/** Bridge the active theme into the fire palette so every God-of-War theme
+ *  (rage, bronze, crimson, steel, nightfall, verdant) re-tints the flames. */
+function fxPaletteFrom(theme: DeckTheme): FxPalette {
+  return { ember: theme.accent, crimson: theme.accent3 ?? theme.accent, gold: theme.accent2, steel: theme.text, dim: theme.dim };
+}
+
+/** Render FX spans as an Ink Text run — the one adapter from the pure fire
+ *  library to the terminal. */
+function fxSpans(spans: FxSpan[], keyBase: string): React.ReactNode[] {
+  return spans.map((s, i) => h(Text, { key: `${keyBase}-${i}`, color: s.color, bold: s.bold, dimColor: s.dim }, s.text));
+}
+
 export async function runInkChat(options: InkChatOptions): Promise<number> {
-  process.stdout.write("\u001b[?1049l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
+  process.stdout.write("\u001b[?1049l\u001b[?1002l\u001b[?1006l\u001b[?1000l\u001b[?25h\u001b[2J\u001b[3J\u001b[H");
   const instance = render(h(AresInkApp, { options }), {
     stdin: process.stdin,
     stdout: process.stdout,
@@ -478,8 +546,15 @@ export async function runInkChat(options: InkChatOptions): Promise<number> {
     alternateScreen: false,
     exitOnCtrlC: true,
   });
-  const result = await instance.waitUntilExit();
-  return typeof result === "number" ? result : 0;
+  try {
+    const result = await instance.waitUntilExit();
+    return typeof result === "number" ? result : 0;
+  } finally {
+    // Belt-and-braces: the mount effect's cleanup and mouseInput's process
+    // hooks also restore, but this is the common exit path — NEVER hand the
+    // owner back a terminal stuck in mouse mode.
+    disableMouseTracking();
+  }
 }
 
 function AresInkApp({ options }: { options: InkChatOptions }) {
@@ -507,7 +582,25 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const [paletteSel, setPaletteSel] = useState(0);
   const [spin, setSpin] = useState(0);
   const [activity, setActivity] = useState<string | null>(null);
-  const [mpOpen, setMpOpen] = useState(false);
+  // Fullscreen overlays — each REPLACES the main view (anchored at app row 1)
+  // so every row is deterministic for the tuiChrome hit-tests.
+  const [overlay, setOverlay] = useState<"models" | "effort" | "settings" | null>(null);
+  const [settingsTab, setSettingsTab] = useState(0);
+  const [ovScroll, setOvScroll] = useState(0);
+  /** Non-null while the "custom model id" row is capturing typed text. */
+  const [mpCustom, setMpCustom] = useState<string | null>(null);
+  /** Masked key entry on the Providers tab: which provider + typed value. */
+  const [keyCapture, setKeyCapture] = useState<{ provider: string; value: string } | null>(null);
+  /** Live info lines for the Providers (/keys) and Engine (/settings) tabs. */
+  const [settingsInfo, setSettingsInfo] = useState<string[]>([]);
+  // Effort dial — local mirror of the host's /reasoning level, seeded lazily
+  // the first time an effort surface opens (parsed from the live /reasoning line).
+  const [effortLevel, setEffortLevel] = useState(2);
+  const effortKnown = useRef(false);
+  // THE ULTRA SURGE tick (null = idle) + the slow post-surge badge breathe.
+  const [surgeTick, setSurgeTick] = useState<number | null>(null);
+  const [pulseTick, setPulseTick] = useState(0);
+  const dragEffort = useRef(false);
   const [mpProvider, setMpProvider] = useState(0);
   const [mpModels, setMpModels] = useState<Array<{ id: string; label?: string; hint?: string }>>([]);
   const [mpSel, setMpSel] = useState(0);
@@ -570,7 +663,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
 
   // Load the model catalog for the picker's current provider (async, cancellable).
   useEffect(() => {
-    if (!mpOpen || !options.listModelOptions) return;
+    if (overlay !== "models" || !options.listModelOptions) return;
     let cancelled = false;
     setMpLoading(true);
     options
@@ -579,6 +672,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         if (cancelled) return;
         setMpModels(rows);
         setMpSel(0);
+        setOvScroll(0);
         setMpLoading(false);
       })
       .catch(() => {
@@ -589,7 +683,67 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     return () => {
       cancelled = true;
     };
-  }, [mpOpen, mpProvider, options]);
+  }, [overlay, mpProvider, options]);
+
+  // Providers/Engine tabs show live host state — quiet /keys | /settings
+  // queries, refetched on tab entry (and after a key save via keyCapture).
+  useEffect(() => {
+    if (overlay !== "settings" || (settingsTab !== SETTINGS_PROVIDERS_TAB && settingsTab !== SETTINGS_ENGINE_TAB)) return;
+    if (keyCapture != null) return; // wait until the save lands
+    let cancelled = false;
+    options
+      .handleCommand(settingsTab === SETTINGS_PROVIDERS_TAB ? "/keys" : "/settings")
+      .then((r) => {
+        if (!cancelled && r.kind === "handled") setSettingsInfo(r.lines ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [overlay, settingsTab, keyCapture, options]);
+
+  // Seed the effort dial from the host's LIVE /reasoning level the first time
+  // an effort surface opens — quiet query, no lines appended to the stream.
+  useEffect(() => {
+    if (overlay !== "effort" && overlay !== "settings") return;
+    if (effortKnown.current) return;
+    let cancelled = false;
+    options
+      .handleCommand("/reasoning")
+      .then((result) => {
+        if (cancelled) return;
+        const level = parseReasoningLevel(result.lines ?? []);
+        if (level) setEffortLevel(Math.max(0, SLIDER_LEVELS.indexOf(level)));
+        effortKnown.current = true;
+      })
+      .catch(() => {
+        effortKnown.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [overlay, options]);
+
+  // THE ULTRA SURGE driver — one self-stopping chain of 80ms timeouts (~1.2s),
+  // then the badge takes over. Never starts when motion is disabled.
+  useEffect(() => {
+    if (surgeTick == null) return;
+    if (!MOTION || surgeTick >= SURGE_TICKS) {
+      setSurgeTick(null);
+      return;
+    }
+    const id = setTimeout(() => setSurgeTick((t) => (t == null ? null : t + 1)), SURGE_TICK_MS);
+    return () => clearTimeout(id);
+  }, [surgeTick]);
+
+  // Post-surge ✦ U L T R A ✦ breathe — slow 600ms crimson↔gold pulse, only
+  // while an effort surface is on screen at MAX and no surge is running.
+  useEffect(() => {
+    const effortVisible = overlay === "effort" || (overlay === "settings" && settingsTab === SETTINGS_EFFORT_TAB);
+    if (!MOTION || !effortVisible || effortLevel !== SLIDER_LEVELS.length - 1 || surgeTick != null) return;
+    const id = setInterval(() => setPulseTick((t) => t + 1), 600);
+    return () => clearInterval(id);
+  }, [overlay, settingsTab, effortLevel, surgeTick]);
 
   const layout = useMemo(() => {
     // Clean single-stream (the approved mockup) — the conversation is the page,
@@ -597,9 +751,15 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     const screenWidth = Math.max(60, columns - 2);
     const screenHeight = Math.max(18, rows - 1);
     const mainWidth = screenWidth;
-    const mainHeight = Math.max(7, screenHeight - 11);
+    // −13: toolbar row (−1 from −11) + the header's living flame divider (−1).
+    const mainHeight = Math.max(7, screenHeight - 13);
     return { mainWidth, mainHeight, screenWidth, screenHeight };
   }, [columns, rows]);
+
+  // Overlay list capacity + effort-bar width — the SAME numbers the renderer
+  // uses, so the mouse hit-tests can never drift from the pixels.
+  const overlayCapacity = Math.max(4, layout.screenHeight - MODAL_BODY_START_ROW - 2);
+  const effortBarWidth = Math.max(12, Math.min(30, layout.screenWidth - 16));
 
   const visibleLogRows = Math.max(5, layout.mainHeight - 3);
   const maxScrollOffset = Math.max(0, lines.length + (assistantDraft ? 1 : 0) - visibleLogRows);
@@ -610,11 +770,17 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     setScrollOffset((prev) => Math.max(0, prev - amount));
   }, [visibleLogRows]);
 
-  useTerminalMouseMode();
-  const handleMouseEvent = useCallback((event: MouseEvent) => {
-    if (event.button === 64) scrollUp(Math.max(3, Math.floor(visibleLogRows / 2)));
-    if (event.button === 65) scrollDown(Math.max(3, Math.floor(visibleLogRows / 2)));
-  }, [scrollDown, scrollUp, visibleLogRows]);
+  // Terminal mouse mode: ?1002 (press/drag/release) + ?1006 (SGR encoding).
+  // Gated on TTY + ARES_NO_MOUSE inside enableMouseTracking; cleanup runs on
+  // unmount AND on process exit/signals (mouseInput's hooks) — a terminal left
+  // in mouse mode is broken for the user.
+  useEffect(() => {
+    if (!process.stdin.isTTY) return;
+    if (!enableMouseTracking()) return;
+    const stdinStream = process.stdin as typeof process.stdin & { setRawMode?: (mode: boolean) => void };
+    stdinStream.setRawMode?.(true);
+    return () => disableMouseTracking();
+  }, []);
 
   const append = useCallback((tone: LogLine["tone"], text: string, meta?: string) => {
     // Assistant replies keep their full multi-line body in ONE LogLine so the
@@ -803,7 +969,10 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       if ((line === "/model" || line === "/models") && options.listModelOptions) {
         setInput("");
         setMpProvider(Math.max(0, PICKER_PROVIDERS.indexOf(snapshot.provider)));
-        setMpOpen(true);
+        setMpSel(0);
+        setOvScroll(0);
+        setMpCustom(null);
+        setOverlay("models");
         return;
       }
       setInput("");
@@ -841,16 +1010,187 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     [append, app, busy, flushAssistant, handleEvent, options, snapshot],
   );
 
+  // ─── Mouse routing — SGR events → toolbar / overlay geometry / scroll ──────
+  // Plain closures (recreated per render) so they always see live state; the
+  // useInput handler below re-subscribes every render anyway.
+  const effortSurfaceActive = overlay === "effort" || (overlay === "settings" && settingsTab === SETTINGS_EFFORT_TAB);
+
+  /** Set + dispatch an effort level through the host's real /reasoning path.
+   *  Landing on MAX ignites THE ULTRA SURGE (motion-gated; static renders the
+   *  settled badge). */
+  const commitEffort = (idx: number) => {
+    const clamped = Math.max(0, Math.min(SLIDER_LEVELS.length - 1, idx));
+    setEffortLevel(clamped);
+    effortKnown.current = true;
+    if (clamped === SLIDER_LEVELS.length - 1 && MOTION) setSurgeTick(0);
+    void submit(`/reasoning ${SLIDER_LEVELS[clamped]}`);
+  };
+
+  /** Row index → action for the models overlay. The row AFTER the last model
+   *  is the "custom model id" row, which flips into text-input mode. */
+  const selectModelRow = (idx: number) => {
+    if (idx < 0 || idx > mpModels.length) return;
+    setMpSel(idx);
+    if (idx === mpModels.length) {
+      setMpCustom("");
+      return;
+    }
+    const m = mpModels[idx];
+    if (!m) return;
+    setOverlay(null);
+    void submit(`/model ${PICKER_PROVIDERS[mpProvider]} ${m.id}`);
+  };
+
+  const openModelsOverlay = () => {
+    setMpProvider(Math.max(0, PICKER_PROVIDERS.indexOf(snapshot.provider)));
+    setMpSel(0);
+    setOvScroll(0);
+    setMpCustom(null);
+    setOverlay("models");
+  };
+
+  const toolbarAction = (id: string) => {
+    if (id === "models") {
+      openModelsOverlay();
+    } else if (id === "effort") {
+      setOverlay("effort");
+    } else if (id === "themes") {
+      setSettingsTab(SETTINGS_APPEARANCE_TAB);
+      setOvScroll(0);
+      setOverlay("settings");
+    } else if (id === "settings") {
+      setSettingsTab(0);
+      setOvScroll(0);
+      setOverlay("settings");
+    } else if (id === "ultra") {
+      // The headline button: slam the dial to MAX and let the surge rip.
+      setOverlay("effort");
+      commitEffort(SLIDER_LEVELS.length - 1);
+    }
+  };
+
+  /** Click/drag on the effort slider band (flame row → labels row): x maps to
+   *  the nearest level stop; drags track live, release commits. */
+  const effortMouse = (event: SgrMouseEvent, appRow: number) => {
+    const inBand = appRow >= EFFORT_FLAME_ROW && appRow <= EFFORT_LABEL_ROW;
+    const idx = sliderIndexAt(event.x, EFFORT_BAR_START, effortBarWidth);
+    if (event.kind === "down" && inBand) {
+      dragEffort.current = true;
+      setEffortLevel(idx);
+      return;
+    }
+    if (event.kind === "drag" && dragEffort.current) {
+      setEffortLevel(idx);
+      return;
+    }
+    if (event.kind === "up" && dragEffort.current) {
+      dragEffort.current = false;
+      commitEffort(idx);
+    }
+  };
+
+  const handleMouseEvent = (event: SgrMouseEvent) => {
+    const appRow = terminalRowToAppRow(event.y, rows, layout.screenHeight);
+    if (overlay) {
+      if (event.kind === "wheel-up" || event.kind === "wheel-down") {
+        if (effortSurfaceActive) {
+          // Wheel nudges the dial: up = hotter, down = cooler.
+          const next = Math.max(0, Math.min(SLIDER_LEVELS.length - 1, effortLevel + (event.kind === "wheel-up" ? 1 : -1)));
+          if (next !== effortLevel) commitEffort(next);
+          return;
+        }
+        const total =
+          overlay === "models"
+            ? mpModels.length + 1
+            : overlay === "settings" && settingsTab === SETTINGS_APPEARANCE_TAB
+              ? availableThemes().length
+              : 0;
+        const maxScroll = Math.max(0, total - overlayCapacity);
+        setOvScroll((s) => Math.max(0, Math.min(maxScroll, s + (event.kind === "wheel-down" ? 2 : -2))));
+        return;
+      }
+      if (overlay === "models") {
+        if (mpCustom != null || event.kind !== "down") return;
+        const visible = Math.max(0, Math.min(overlayCapacity, mpModels.length + 1 - ovScroll));
+        const hit = modalHitTest(event.x, appRow, PICKER_PROVIDERS, visible);
+        if (!hit) return;
+        if (hit.kind === "tab") {
+          setMpProvider(hit.index);
+          setMpSel(0);
+          setOvScroll(0);
+          return;
+        }
+        selectModelRow(ovScroll + hit.index);
+        return;
+      }
+      if (overlay === "effort") {
+        effortMouse(event, appRow);
+        return;
+      }
+      // settings — tabs row first, then the active tab's surface.
+      if (event.kind === "down" && appRow === MODAL_TAB_ROW) {
+        const hit = modalHitTest(event.x, appRow, SETTINGS_TABS, 0);
+        if (hit && hit.kind === "tab") {
+          setSettingsTab(hit.index);
+          setOvScroll(0);
+        }
+        return;
+      }
+      if (settingsTab === SETTINGS_EFFORT_TAB) {
+        effortMouse(event, appRow);
+        return;
+      }
+      if (settingsTab === SETTINGS_APPEARANCE_TAB && event.kind === "down") {
+        const themes = availableThemes();
+        const visible = Math.max(0, Math.min(overlayCapacity, themes.length - ovScroll));
+        const hit = modalHitTest(event.x, appRow, SETTINGS_TABS, visible);
+        if (hit && hit.kind === "item") {
+          const name = themes[ovScroll + hit.index];
+          if (name) void submit(`/theme ${name}`);
+        }
+        return;
+      }
+      if (settingsTab === SETTINGS_PROVIDERS_TAB && event.kind === "down" && keyCapture == null) {
+        const hit = modalHitTest(event.x, appRow, SETTINGS_TABS, KEY_PROVIDERS.length);
+        if (hit && hit.kind === "item") {
+          const provider = KEY_PROVIDERS[hit.index];
+          if (provider) setKeyCapture({ provider, value: "" });
+        }
+        return;
+      }
+      if (settingsTab === SETTINGS_MODELS_TAB && event.kind === "down") {
+        // One row: jump to the full picker (same surface as ⌃O / toolbar).
+        const hit = modalHitTest(event.x, appRow, SETTINGS_TABS, 1);
+        if (hit && hit.kind === "item") openModelsOverlay();
+        return;
+      }
+      return;
+    }
+    // Main view: wheel scrolls the stream, clicks land on the bottom toolbar.
+    if (event.kind === "wheel-up") {
+      scrollUp(Math.max(3, Math.floor(visibleLogRows / 2)));
+      return;
+    }
+    if (event.kind === "wheel-down") {
+      scrollDown(Math.max(3, Math.floor(visibleLogRows / 2)));
+      return;
+    }
+    if (event.kind === "down") {
+      const id = toolbarHitTest(event.x, appRow, layout.screenHeight, layout.screenWidth);
+      if (id) toolbarAction(id);
+    }
+  };
+
   useInput((value, key) => {
     // Explicit bracketed paste beats every other classifier — pasted text can
     // contain "<" runs that would otherwise read as mouse fragments.
-    if (!busy && !paletteOpen && !mpOpen && !rsOpen && /\x1b?\[20[01]~/.test(value)) {
+    if (!busy && !paletteOpen && !overlay && !rsOpen && /\x1b?\[20[01]~/.test(value)) {
       setInput((prev) => prev + normalizeInputChunk(value).text);
       return;
     }
-    const mouseEvents = parseMouseEvents(value);
-    if (mouseEvents.length > 0 || looksLikeMouseFragment(value)) {
-      for (const event of mouseEvents) handleMouseEvent(event);
+    const mouseEvents = parseSgrMouse(value);
+    if (mouseEvents || isMouseFragment(value)) {
+      for (const event of mouseEvents ?? []) handleMouseEvent(event);
       return;
     }
     if (value.includes("\u001b[<")) return;
@@ -892,45 +1232,155 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       }
       return;
     }
-    if (key.ctrl && value === "p") {
+    if (key.ctrl && value === "p" && !overlay) {
       setPaletteOpen(true);
       setPaletteSel(0);
       setInput("");
       return;
     }
-    // ⌃O model + provider picker (⌃M is Enter in terminals, so ⌃O it is).
-    if (mpOpen) {
+    // Fullscreen overlays — number keys 1-9/a-z select, Tab cycles tabs, Esc
+    // closes, Enter confirms. Arrows are SUPPORTED but never required (the
+    // owner's device has none). Everything here is also mouse-clickable.
+    if (overlay) {
+      // "Custom model id" text capture beats every other key.
+      if (overlay === "settings" && keyCapture != null) {
+        // Masked API-key entry: typed/pasted chars accumulate hidden; Enter
+        // dispatches the SAME /key command the composer accepts, Esc bails.
+        if (key.escape) {
+          setKeyCapture(null);
+          return;
+        }
+        if (key.return) {
+          const { provider, value } = keyCapture;
+          setKeyCapture(null);
+          const trimmed = value.trim();
+          if (trimmed) void submit(`/key ${provider} ${trimmed}`);
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setKeyCapture((c) => (c ? { ...c, value: c.value.slice(0, -1) } : c));
+          return;
+        }
+        if (value && !key.ctrl && !key.meta && !key.tab) {
+          const clean = normalizeInputChunk(value).text.replace(/[\r\n\t ]/g, "");
+          setKeyCapture((c) => (c ? { ...c, value: c.value + clean } : c));
+        }
+        return;
+      }
+      if (overlay === "models" && mpCustom != null) {
+        if (key.escape) {
+          setMpCustom(null);
+          return;
+        }
+        if (key.return) {
+          const id = mpCustom.trim();
+          setMpCustom(null);
+          if (id) {
+            setOverlay(null);
+            void submit(`/model ${PICKER_PROVIDERS[mpProvider]} ${id}`);
+          }
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setMpCustom((c) => (c ?? "").slice(0, -1));
+          return;
+        }
+        if (value && !key.ctrl && !key.meta && !key.tab) {
+          // normalizeInputChunk strips bracketed-paste markers so a pasted
+          // model id lands clean; ids are single-line, so newlines drop too.
+          setMpCustom((c) => (c ?? "") + normalizeInputChunk(value).text.replace(/[\r\n\t]/g, ""));
+        }
+        return;
+      }
       if (key.escape || (key.ctrl && value === "o")) {
-        setMpOpen(false);
+        setOverlay(null);
+        setSurgeTick(null);
+        dragEffort.current = false;
         return;
       }
-      if (key.leftArrow) {
-        setMpProvider((p) => (p - 1 + PICKER_PROVIDERS.length) % PICKER_PROVIDERS.length);
+      if (key.tab) {
+        if (overlay === "models") {
+          setMpProvider((p) => (p + 1) % PICKER_PROVIDERS.length);
+          setMpSel(0);
+          setOvScroll(0);
+        } else if (overlay === "settings") {
+          setSettingsTab((t) => (t + 1) % SETTINGS_TABS.length);
+          setOvScroll(0);
+        }
         return;
       }
-      if (key.rightArrow || key.tab) {
-        setMpProvider((p) => (p + 1) % PICKER_PROVIDERS.length);
+      if (effortSurfaceActive) {
+        // The dial: 1-5 = off·low·medium·high·MAX. ←→ nudge if present.
+        if (/^[1-5]$/.test(value)) {
+          commitEffort(Number(value) - 1);
+          return;
+        }
+        if (key.leftArrow) {
+          commitEffort(effortLevel - 1);
+          return;
+        }
+        if (key.rightArrow) {
+          commitEffort(effortLevel + 1);
+          return;
+        }
+        if (key.return) {
+          setOverlay(null);
+          return;
+        }
         return;
       }
-      if (key.upArrow) {
-        setMpSel((s) => Math.max(0, s - 1));
+      if (overlay === "models") {
+        if (key.leftArrow) {
+          setMpProvider((p) => (p - 1 + PICKER_PROVIDERS.length) % PICKER_PROVIDERS.length);
+          setMpSel(0);
+          setOvScroll(0);
+          return;
+        }
+        if (key.rightArrow) {
+          setMpProvider((p) => (p + 1) % PICKER_PROVIDERS.length);
+          setMpSel(0);
+          setOvScroll(0);
+          return;
+        }
+        if (key.upArrow || key.downArrow) {
+          const total = mpModels.length + 1; // + custom-id row
+          const next = key.upArrow ? Math.max(0, mpSel - 1) : Math.min(total - 1, mpSel + 1);
+          setMpSel(next);
+          // Keep the selection visible: follow it past either window edge.
+          setOvScroll((sc) => (next < sc ? next : next >= sc + overlayCapacity ? next - overlayCapacity + 1 : sc));
+          return;
+        }
+        if (key.return) {
+          selectModelRow(mpSel);
+          return;
+        }
+        const ki = indexForKey(value);
+        if (ki != null && ki <= mpModels.length) selectModelRow(ki);
         return;
       }
-      if (key.downArrow) {
-        setMpSel((s) => Math.min(Math.max(0, mpModels.length - 1), s + 1));
+      // settings — Appearance items select by number key (Effort handled above).
+      if (settingsTab === SETTINGS_APPEARANCE_TAB) {
+        const ki = indexForKey(value);
+        if (ki != null) {
+          const name = availableThemes()[ki];
+          if (name) void submit(`/theme ${name}`);
+        }
         return;
       }
-      if (key.return) {
-        const m = mpModels[Math.min(mpSel, Math.max(0, mpModels.length - 1))];
-        setMpOpen(false);
-        if (m) void submit(`/model ${PICKER_PROVIDERS[mpProvider]} ${m.id}`);
+      if (settingsTab === SETTINGS_PROVIDERS_TAB) {
+        const ki = indexForKey(value);
+        const provider = ki != null ? KEY_PROVIDERS[ki] : undefined;
+        if (provider) setKeyCapture({ provider, value: "" });
+        return;
+      }
+      if (settingsTab === SETTINGS_MODELS_TAB && (key.return || indexForKey(value) === 0)) {
+        openModelsOverlay();
         return;
       }
       return;
     }
     if (key.ctrl && value === "o") {
-      setMpProvider(Math.max(0, PICKER_PROVIDERS.indexOf(snapshot.provider)));
-      setMpOpen(true);
+      openModelsOverlay();
       return;
     }
     if (key.ctrl && value === "l") {
@@ -1067,10 +1517,35 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const start = Math.max(0, bottom - visibleLogRows);
   const visibleLines = displayLines.slice(start, bottom);
 
+  // A modal REPLACES the main view — fullscreen, anchored at app row 1 — so
+  // every row matches the tuiChrome hit-test geometry exactly.
+  if (overlay) {
+    return h(OverlayView, {
+      theme,
+      overlay,
+      width: layout.screenWidth,
+      height: layout.screenHeight,
+      providerIdx: mpProvider,
+      models: mpModels,
+      sel: mpSel,
+      loading: mpLoading,
+      custom: mpCustom,
+      scroll: ovScroll,
+      capacity: overlayCapacity,
+      settingsTab,
+      keyCapture,
+      settingsInfo,
+      effortLevel,
+      surgeTick,
+      pulseTick,
+      barWidth: effortBarWidth,
+    });
+  }
+
   return h(
     Box,
     { flexDirection: "column", width: layout.screenWidth, height: layout.screenHeight },
-    h(Header, { snapshot, stats, theme, width: layout.screenWidth }),
+    h(Header, { snapshot, stats, theme, width: layout.screenWidth, tick: spin, busy }),
     h(LogPanel, {
       theme,
       lines: visibleLines,
@@ -1085,7 +1560,9 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     fleet && fleet.active ? h(FleetPanel, { theme, fleet, spinner: busy ? frame : "⚔", width: layout.screenWidth }) : null,
     pulses.length > 0 ? h(EvolutionPulses, { theme, pulses, width: layout.screenWidth }) : null,
     paletteOpen ? h(CommandPalette, { theme, query: input, selected: paletteSel, width: layout.screenWidth }) : null,
-    mpOpen ? h(ModelPicker, { theme, providerIdx: mpProvider, models: mpModels, sel: mpSel, loading: mpLoading, width: layout.screenWidth }) : null,
+    // Flex spacer: pins the bottom cluster (status → input → toolbar) to the
+    // frame's true bottom, so the toolbar row = screenHeight for hit-testing.
+    h(Box, { flexGrow: 1 }),
     h(StatusBar, { theme, snapshot, stats, busy, width: layout.screenWidth }),
     h(InputDeck, {
       theme,
@@ -1099,31 +1576,43 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       stats,
       width: layout.screenWidth,
     }),
+    h(Toolbar, { theme, width: layout.screenWidth }),
   );
 }
 
-function Header({ snapshot, stats, theme, width }: { snapshot: InkChatSnapshot; stats: RuntimeStats; theme: DeckTheme; width: number }) {
+function Header({ snapshot, stats, theme, width, tick, busy }: { snapshot: InkChatSnapshot; stats: RuntimeStats; theme: DeckTheme; width: number; tick: number; busy: boolean }) {
   void stats;
   const model = compactModel(snapshot.model, 30);
   const folder = snapshot.workspace.split(/[\\/]/).filter(Boolean).pop() ?? snapshot.workspace;
+  const palette = fxPaletteFrom(theme);
+  // A living flame divider under the header — burns hot while a turn streams,
+  // idles as low coals otherwise (motion-gated: static coals when off).
+  const flame = motionEnabled()
+    ? flameLine(busy ? tick : Math.floor(tick / 3), Math.max(1, width - 2), palette)
+    : flameLine(0, Math.max(1, width - 2), { ...palette, ember: palette.dim, gold: palette.steel });
   // One slim line — no border, no chip boxes. The conversation is the page.
   return h(
     Box,
-    { width, justifyContent: "space-between", paddingX: 1, marginBottom: 1 },
+    { flexDirection: "column", width },
     h(
       Box,
-      { gap: 1 },
-      h(Text, { color: theme.accent3, bold: true }, "▲"),
-      h(Text, { color: theme.accent, bold: true }, "ARES"),
-      h(Text, { color: theme.dim }, model),
+      { width, justifyContent: "space-between", paddingX: 1 },
+      h(
+        Box,
+        { gap: 1 },
+        h(Text, { color: theme.accent3, bold: true }, "⚔"),
+        h(Text, { color: theme.accent, bold: true }, "ARES"),
+        h(Text, { color: theme.dim }, model),
+      ),
+      h(
+        Box,
+        { gap: 1 },
+        h(Text, { color: theme.dim }, folder),
+        h(Text, { color: theme.dim }, "·"),
+        h(Text, { color: theme.accent2 }, theme.title.toLowerCase()),
+      ),
     ),
-    h(
-      Box,
-      { gap: 1 },
-      h(Text, { color: theme.dim }, folder),
-      h(Text, { color: theme.dim }, "·"),
-      h(Text, { color: theme.accent2 }, theme.title.toLowerCase()),
-    ),
+    h(Box, { width, paddingX: 1, marginBottom: 1 }, ...fxSpans(flame, "hdrflame")),
   );
 }
 
@@ -1170,7 +1659,7 @@ function EmptyState({ theme }: { theme: DeckTheme }) {
     { flexDirection: "column", marginTop: 1 },
     h(Text, { color: theme.accent3, bold: true }, "▲ Ares stands ready."),
     h(Text, { color: theme.dim }, "Speak, and it moves — files, shell, web, the whole arsenal."),
-    h(Text, { color: theme.dim }, "⌃P commands · ⌃O models (or /model) · /help for the full loadout."),
+    h(Text, { color: theme.dim }, "⌃P commands · ⌃O models (or /model) · click the toolbar below · /help for the full loadout."),
   );
 }
 
@@ -1314,7 +1803,15 @@ function InputDeck({
         { flexShrink: 1 },
         h(Text, { color: promptColor, bold: true }, promptTag),
         h(Text, { color: input.length > 0 ? theme.text : theme.dim, wrap: "truncate" }, input.length > 0 ? first : "message ares"),
-        busy || rest.length > 0 ? null : h(Text, { color: theme.accent, bold: true }, "▏"),
+        // Molten caret: a slow ember/gold breathing block at the ready prompt.
+        busy || rest.length > 0
+          ? null
+          : MOTION
+            ? (() => {
+                const c = moltenCursor(tick, fxPaletteFrom(theme));
+                return h(Text, { color: c.color, bold: c.bold, dimColor: c.dim }, c.text);
+              })()
+            : h(Text, { color: theme.accent, bold: true }, "▏"),
       ),
       statusNode,
     ),
@@ -1342,56 +1839,277 @@ function InputDeck({
   );
 }
 
-function ModelPicker({
-  theme,
-  providerIdx,
-  models,
-  sel,
-  loading,
-  width,
-}: {
+// ─── Bottom toolbar — the always-visible click bar ───────────────────────────
+// One row pinned to the frame's bottom: ⚔ Models ▾ · 🔥 Effort · 🎨 Themes ·
+// ⚙ Settings · ✦ Ultra. Rendered as one Text per label so the column spans
+// match toolbarButtons() exactly (separators are dead zones on purpose).
+function Toolbar({ theme, width }: { theme: DeckTheme; width: number }) {
+  const colors: Record<string, string> = {
+    models: theme.accent,
+    effort: theme.warn,
+    themes: theme.accent2,
+    settings: theme.text,
+    ultra: theme.accent3,
+  };
+  return h(
+    Box,
+    { width, paddingX: 1 },
+    ...TOOLBAR_ITEMS.flatMap((item, i) => [
+      i > 0 ? h(Text, { key: `sep-${item.id}`, color: theme.dim }, CHROME_SEPARATOR) : null,
+      h(Text, { key: item.id, color: colors[item.id] ?? theme.text, bold: item.id === "ultra" }, item.label),
+    ]),
+  );
+}
+
+// ─── Fullscreen overlays ─────────────────────────────────────────────────────
+// A modal replaces the main view and anchors at app row 1 with NO borders
+// (borders would shift every row), so the geometry is exactly what
+// modalHitTest() assumes: row 1 title · row 2 tabs · row 3 hint · rows 4… body.
+
+interface OverlayProps {
   theme: DeckTheme;
+  overlay: "models" | "effort" | "settings";
+  width: number;
+  height: number;
   providerIdx: number;
   models: Array<{ id: string; label?: string; hint?: string }>;
   sel: number;
   loading: boolean;
-  width: number;
-}) {
-  const provider = PICKER_PROVIDERS[providerIdx];
-  const MAX = 8;
-  const s = models.length ? Math.min(sel, models.length - 1) : 0;
-  const start = models.length > MAX ? Math.min(Math.max(0, s - Math.floor(MAX / 2)), models.length - MAX) : 0;
-  const shown = models.slice(start, start + MAX);
+  custom: string | null;
+  scroll: number;
+  capacity: number;
+  settingsTab: number;
+  keyCapture: { provider: string; value: string } | null;
+  settingsInfo: string[];
+  effortLevel: number;
+  surgeTick: number | null;
+  pulseTick: number;
+  barWidth: number;
+}
+
+function OverlayView(p: OverlayProps) {
+  const { theme } = p;
+  const tokens = sliderTokensFrom(theme);
+  // The surge sweeps (nearly) the full modal width, not just the bar.
+  const surge = p.surgeTick != null ? surgeFrame(p.surgeTick, Math.max(10, p.width - 4), tokens) : null;
+  const surging = surge != null && !surge.done;
+  const title = p.overlay === "models" ? "⚔ MODELS" : p.overlay === "effort" ? "🔥 EFFORT" : "⚙ SETTINGS";
+  // Title jitter: ±1 column while the surge runs; a steady 1-space indent idle.
+  const titlePad = " ".repeat(Math.max(0, 1 + (surging ? surge.titleOffset : 0)));
+  const tabs = p.overlay === "models" ? PICKER_PROVIDERS : p.overlay === "settings" ? SETTINGS_TABS : [];
+  const activeTab = p.overlay === "models" ? p.providerIdx : p.overlay === "settings" ? p.settingsTab : -1;
+  const provider = PICKER_PROVIDERS[p.providerIdx];
+  const hint =
+    p.overlay === "models"
+      ? p.loading
+        ? `loading ${provider}…`
+        : p.models.length === 0
+          ? `no models for ${provider} — check key / connection`
+          : `${p.models.length} models · ${provider}`
+      : p.overlay === "effort"
+        ? "slide right. burn hotter."
+        : SETTINGS_TABS[p.settingsTab] === "Appearance"
+          ? "click a theme — it applies live"
+          : `settings · ${SETTINGS_TABS[p.settingsTab].toLowerCase()}`;
+  const footer =
+    p.overlay === "models"
+      ? "click / 1-9 a-z select · tab provider · enter confirm · wheel scroll · esc close"
+      : p.overlay === "effort"
+        ? "click or drag the bar · 1-5 levels · wheel nudge · esc close"
+        : "click a tab (or Tab to cycle) · number keys select · esc close";
+  const body =
+    p.overlay === "models"
+      ? modelsOverlayBody(p)
+      : p.overlay === "effort"
+        ? effortBody(p, tokens, surge)
+        : settingsBody(p, tokens, surge);
   return h(
     Box,
-    { flexDirection: "column", width, borderStyle: theme.borderStyle, borderColor: theme.accent, paddingX: 1, marginTop: 1 },
+    { flexDirection: "column", width: p.width, height: p.height },
+    // row 1 — title (strobe-colored + jittering during THE ULTRA SURGE)
     h(
       Box,
-      { justifyContent: "space-between" },
+      { paddingX: 1, justifyContent: "space-between" },
+      h(Text, { color: surging ? surge.color : theme.accent, bold: true }, `${titlePad}${title}`),
+      h(Text, { color: theme.dim }, "esc close"),
+    ),
+    // row 2 — clickable tabs (kept even when empty so body rows stay put)
+    h(
+      Box,
+      { paddingX: 1 },
+      tabs.length === 0
+        ? h(Text, { color: theme.dim }, "reasoning dial")
+        : h(
+            Text,
+            {},
+            ...tabs.flatMap((tab, i) => [
+              i > 0 ? h(Text, { key: `s${i}`, color: theme.dim }, CHROME_SEPARATOR) : null,
+              // Highlight via color/bold/underline ONLY — width must not change
+              // or the modalTabSpans hit-test drifts.
+              h(Text, { key: tab, color: i === activeTab ? theme.accent2 : theme.dim, bold: i === activeTab, underline: i === activeTab }, tab),
+            ]),
+          ),
+    ),
+    // row 3 — hint
+    h(Box, { paddingX: 1 }, h(Text, { color: theme.dim, wrap: "truncate" }, hint)),
+    // rows 4… — body (each entry is exactly ONE terminal row)
+    ...body,
+    h(Box, { flexGrow: 1 }),
+    h(Box, { paddingX: 1 }, h(Text, { color: theme.dim, wrap: "truncate" }, footer)),
+  );
+}
+
+// Models overlay body: one row per model (windowed by scroll/capacity), each
+// prefixed with its selection key; the final row opens the custom-id input.
+function modelsOverlayBody(p: OverlayProps): React.ReactNode[] {
+  const { theme } = p;
+  if (p.custom != null) {
+    return [
       h(
         Box,
-        { gap: 1 },
-        h(Text, { color: theme.accent, bold: true }, "▲ MODELS"),
-        ...PICKER_PROVIDERS.map((p, i) =>
-          h(Text, { key: p, color: i === providerIdx ? theme.accent2 : theme.dim, bold: i === providerIdx }, i === providerIdx ? `[${p}]` : p),
-        ),
+        { key: "custom", paddingX: 1 },
+        h(Text, { color: theme.accent2, bold: true }, "◇ custom model id: "),
+        h(Text, { color: theme.text }, p.custom),
+        h(Text, { color: theme.accent, bold: true }, "▏"),
+        h(Text, { color: theme.dim }, "  (enter apply · esc back)"),
       ),
-      h(Text, { color: theme.dim }, "←→ provider · ↑↓ · enter · esc"),
+    ];
+  }
+  const items = p.models.map((m, i) => ({ abs: i, label: m.label ?? m.id, hint: m.hint ?? m.id, custom: false }));
+  items.push({ abs: p.models.length, label: "◇ custom model id…", hint: "type any id", custom: true });
+  const shown = items.slice(p.scroll, p.scroll + p.capacity);
+  return shown.map((item) => {
+    const active = item.abs === p.sel;
+    const keyGlyph = keyForIndex(item.abs) ?? "·";
+    return h(
+      Box,
+      { key: item.abs, paddingX: 1, justifyContent: "space-between" },
+      h(
+        Text,
+        { color: item.custom ? theme.accent3 : active ? theme.accent2 : theme.text, bold: active, wrap: "truncate" },
+        `${active ? "▸" : " "}${keyGlyph} ${item.label}`,
+      ),
+      h(Text, { color: theme.dim, wrap: "truncate" }, item.hint),
+    );
+  });
+}
+
+// The effort dial — the centerpiece. Four fixed rows (flames / bar / level
+// labels / status-badge) whose app rows match EFFORT_FLAME_ROW…EFFORT_LABEL_ROW
+// for click/drag mapping. During THE ULTRA SURGE the first three rows are
+// replaced by the strobing wave.
+function effortBody(p: OverlayProps, tokens: SliderTokens, surge: ReturnType<typeof surgeFrame> | null): React.ReactNode[] {
+  const { theme } = p;
+  if (surge && !surge.done) {
+    return [
+      h(Box, { key: "sa", paddingX: 1 }, h(Text, { color: surge.color, wrap: "truncate" }, surge.above)),
+      h(Box, { key: "sb", paddingX: 1 }, h(Text, { color: surge.color, bold: true, wrap: "truncate" }, surge.bar)),
+      h(Box, { key: "sc", paddingX: 1 }, h(Text, { color: surge.color, wrap: "truncate" }, surge.below)),
+      h(Box, { key: "sd", paddingX: 1 }, h(Text, { color: tokens.gold, bold: true }, "⇪ MAXIMUM EFFORT")),
+    ];
+  }
+  const level = p.effortLevel;
+  const isMax = level === SLIDER_LEVELS.length - 1;
+  const flames = sliderFlameRow(level, p.barWidth);
+  const spans = sliderSpans(level, p.barWidth, tokens);
+  // Static fallback renders the settled gold badge (tick 1); motion breathes.
+  const badge = ultraBadgeFrame(MOTION ? p.pulseTick : 1, tokens);
+  const barIndent = " ".repeat(EFFORT_BAR_START - CHROME_START_COL); // aligns flames/labels with the bar
+  return [
+    // flames accumulate above the filled span as the dial climbs
+    h(Box, { key: "flames", paddingX: 1 }, h(Text, { color: tokens.ember, wrap: "truncate" }, `${barIndent}${flames || " "}`)),
+    // the bar itself: 🔥 ────●────── ULTRA
+    h(
+      Box,
+      { key: "bar", paddingX: 1 },
+      h(Text, {}, "🔥 "),
+      ...spans.map((s, i) => h(Text, { key: i, color: s.color, bold: s.bold }, s.text)),
+      h(Text, { color: isMax ? tokens.gold : theme.dim, bold: isMax }, " ULTRA"),
     ),
-    loading
-      ? h(Text, { color: theme.dim }, `  loading ${provider}…`)
-      : models.length === 0
-        ? h(Text, { color: theme.dim }, `  no models for ${provider} (check key / connection)`)
-        : shown.map((m, i) => {
-            const active = start + i === s;
-            return h(
-              Box,
-              { key: m.id, justifyContent: "space-between" },
-              h(Text, { color: active ? theme.accent2 : theme.text, bold: active }, `${active ? "▸ " : "  "}${m.label ?? m.id}`),
-              h(Text, { color: theme.dim, wrap: "truncate" }, m.hint ?? m.id),
-            );
-          }),
+    // numbered level labels (1-5 are live keys)
+    h(
+      Box,
+      { key: "labels", paddingX: 1 },
+      h(Text, {}, barIndent),
+      ...SLIDER_LEVELS.flatMap((name, i) => [
+        i > 0 ? h(Text, { key: `g${i}`, color: theme.dim }, "  ") : null,
+        h(
+          Text,
+          { key: name, color: i === level ? sliderFillColor(i, tokens) : theme.dim, bold: i === level },
+          `${i + 1} ${i === SLIDER_LEVELS.length - 1 ? "MAX" : name}`,
+        ),
+      ]),
+    ),
+    // status row: the persistent pulsing ULTRA badge at MAX, else the dispatch preview
+    h(
+      Box,
+      { key: "status", paddingX: 1 },
+      h(Text, {}, barIndent),
+      isMax
+        ? h(Text, { color: badge.color, bold: true }, badge.text)
+        : h(Text, { color: theme.dim }, `dispatches /reasoning ${SLIDER_LEVELS[level]}`),
+    ),
+  ];
+}
+
+// Settings overlay body, per tab. Appearance + Effort are live; the rest are
+// structured placeholders with the tab plumbing (click/Tab/hit-test) ready.
+function settingsBody(p: OverlayProps, tokens: SliderTokens, surge: ReturnType<typeof surgeFrame> | null): React.ReactNode[] {
+  const { theme } = p;
+  if (p.settingsTab === SETTINGS_EFFORT_TAB) return effortBody(p, tokens, surge);
+  if (p.settingsTab === SETTINGS_APPEARANCE_TAB) {
+    const themes = availableThemes();
+    const current = currentThemeName();
+    const shown = themes.slice(p.scroll, p.scroll + p.capacity);
+    return shown.map((name, i) => {
+      const abs = p.scroll + i;
+      const active = name === current;
+      return h(
+        Box,
+        { key: name, paddingX: 1, justifyContent: "space-between" },
+        h(Text, { color: active ? theme.accent2 : theme.text, bold: active, wrap: "truncate" }, `${active ? "✓" : " "}${keyForIndex(abs) ?? "·"} ${name}`),
+        h(Text, { color: theme.dim, wrap: "truncate" }, DECK_THEMES[name]?.title.toLowerCase() ?? ""),
+      );
+    });
+  }
+  if (p.settingsTab === SETTINGS_PROVIDERS_TAB) {
+    // Masked key entry replaces the list while typing — same rhythm as the
+    // custom-model capture, but the value renders as dots, never plaintext.
+    if (p.keyCapture) {
+      const dots = "•".repeat(Math.min(48, p.keyCapture.value.length)) || " ";
+      return [
+        h(Box, { key: "kc1", paddingX: 1 }, h(Text, { color: theme.accent2, bold: true }, `${p.keyCapture.provider} API key`)),
+        h(Box, { key: "kc2", paddingX: 1 }, h(Text, { color: theme.text }, `▸ ${dots}▌`)),
+        h(Box, { key: "kc3", paddingX: 1 }, h(Text, { color: theme.dim }, "paste or type · Enter saves · Esc cancels — stored encrypted, shown never")),
+      ];
+    }
+    const rows = KEY_PROVIDERS.map((name, i) =>
+      h(
+        Box,
+        { key: name, paddingX: 1, justifyContent: "space-between" },
+        h(Text, { color: theme.text, wrap: "truncate" }, `${keyForIndex(i) ?? "·"} ${name}`),
+        h(Text, { color: theme.dim }, "set key ▸"),
+      ),
+    );
+    const info = p.settingsInfo.slice(0, Math.max(0, p.capacity - KEY_PROVIDERS.length - 1)).map((line, i) =>
+      h(Box, { key: `ki${i}`, paddingX: 1 }, h(Text, { color: theme.dim, wrap: "truncate" }, line)),
+    );
+    return [...rows, h(Box, { key: "ksp", paddingX: 1 }, h(Text, { color: theme.dim }, "─".repeat(24))), ...info];
+  }
+  if (p.settingsTab === SETTINGS_MODELS_TAB) {
+    return [
+      h(Box, { key: "m1", paddingX: 1 }, h(Text, { color: theme.text }, `${keyForIndex(0) ?? "·"} Open the full model picker ⏎`)),
+      h(Box, { key: "m2", paddingX: 1 }, h(Text, { color: theme.dim }, "provider tabs · live catalogs · custom ids — also ⌃O or ⚔ Models in the toolbar")),
+    ];
+  }
+  // Engine tab: the live /settings snapshot, read-only — the knobs themselves
+  // are daemon-side; visibility parity now, editing lands with the daemon UI.
+  const engineInfo = p.settingsInfo.slice(0, Math.max(2, p.capacity - 1)).map((line, i) =>
+    h(Box, { key: `e${i}`, paddingX: 1 }, h(Text, { color: i === 0 ? theme.text : theme.dim, wrap: "truncate" }, line)),
   );
+  return engineInfo.length
+    ? engineInfo
+    : [h(Box, { key: "e0", paddingX: 1 }, h(Text, { color: theme.dim }, "loading engine settings…"))];
 }
 
 function CommandPalette({ theme, query, selected, width }: { theme: DeckTheme; query: string; selected: number; width: number }) {
@@ -1437,13 +2155,23 @@ function LogText({ line, theme, spinner }: { line: LogLine; theme: DeckTheme; sp
     const r = line.result;
     // Running: animated spinner + live elapsed. Done: one ✓/✗ line + duration.
     const elapsed = line.startedAt != null ? formatDuration(Date.now() - line.startedAt) : "";
+    // Forge-strike: when a tool FIRES, the leading glyph is a hammer-on-anvil
+    // spark burst for its first ~7 frames (a felt "the god acts" beat), then
+    // it settles to the normal ↳ arrow. Cools on its own (forgeStrike → []).
+    const strikeTick = MOTION && line.startedAt != null && !r ? Math.floor((Date.now() - line.startedAt) / 90) : -1;
+    const strike = strikeTick >= 0 ? forgeStrike(strikeTick, fxPaletteFrom(theme)) : [];
+    const lead = line.cont
+      ? h(Text, { color: theme.dim }, "    ")
+      : strike.length > 0
+        ? h(Box, null, h(Text, { color: theme.dim }, "  "), ...fxSpans(strike, `strike-${line.id}`), h(Text, null, " "))
+        : h(Text, { color: theme.dim }, "  ↳ ");
     return h(
       Box,
       { justifyContent: "space-between" },
       h(
         Box,
         { flexShrink: 1 },
-        h(Text, { color: theme.dim }, line.cont ? "    " : "  ↳ "),
+        lead,
         line.cont ? null : h(Text, { color: theme.accent2 }, `${name} `),
         h(Text, { color: theme.dim, wrap: "truncate" }, line.text),
       ),
@@ -1797,42 +2525,5 @@ function fillColor(percent: number, theme: DeckTheme): string {
   return theme.success;
 }
 
-interface MouseEvent {
-  button: number;
-  x: number;
-  y: number;
-  release: boolean;
-}
-
-function useTerminalMouseMode(): void {
-  useEffect(() => {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) return;
-    const stdinStream = process.stdin as typeof process.stdin & {
-      setRawMode?: (mode: boolean) => void;
-    };
-    process.stdout.write("\u001b[?1000h\u001b[?1006h");
-    stdinStream.setRawMode?.(true);
-    return () => {
-      process.stdout.write("\u001b[?1006l\u001b[?1000l");
-    };
-  }, []);
-}
-
-function parseMouseEvents(text: string): MouseEvent[] {
-  const events: MouseEvent[] = [];
-  const pattern = /(?:\u001b\[|\[)?<(\d+);(\d+);(\d+)([mM])/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) {
-    events.push({
-      button: Number(match[1]),
-      x: Number(match[2]),
-      y: Number(match[3]),
-      release: match[4] === "m",
-    });
-  }
-  return events;
-}
-
-function looksLikeMouseFragment(text: string): boolean {
-  return /(?:\u001b\[|\[)?<\d*(?:;\d*){0,2}[mM]?/.test(text);
-}
+// (SGR mouse parsing + terminal mouse-mode management live in mouseInput.ts;
+// hit-test/slider/surge geometry lives in tuiChrome.ts — both pure-tested.)

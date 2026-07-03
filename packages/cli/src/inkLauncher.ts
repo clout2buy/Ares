@@ -3,6 +3,24 @@ import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 import { OLLAMA_CLOUD_MODELS, type OllamaCloudModel } from "@ares/core";
 import { availableThemes, currentThemeName, setTheme, type ThemeName } from "./terminalUi.js";
 import type { UiSettings } from "./uiSettings.js";
+import { motionEnabled } from "./tuiElite.js";
+import {
+  bladeSweep,
+  emberRain,
+  fireWordmark,
+  flameLine,
+  forgeStrike,
+  introStageAt,
+  INTRO_HARD_CAP_MS,
+  INTRO_TICK_MS,
+  INTRO_TOTAL_MS,
+  STRIKE_FRAME_COUNT,
+  WORDMARK_LETTERS,
+  WORDMARK_ROWS,
+  WORDMARK_WIDTH,
+  type FxPalette,
+  type FxSpan,
+} from "./tuiFx.js";
 
 type ProviderId = "ollama" | "openai" | "anthropic" | "deepseek" | "openrouter" | "mock";
 type LauncherPhase = "provider" | "ollama" | "openai" | "theme" | "workspace";
@@ -146,6 +164,37 @@ function AresLauncherApp({
   const previousPhase = useRef<LauncherPhase>("provider");
   const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.rage;
   const currentProvider = PROVIDER_OPTIONS[Math.min(selectedProvider, PROVIDER_OPTIONS.length - 1)]?.id ?? "ollama";
+
+  // ── Boot intro + idle fire ────────────────────────────────────────────────
+  // One clock for both: while the intro plays the interval runs at 66ms; once
+  // it ends (or is skipped) the SAME effect re-arms at 500ms for the header's
+  // subtle idle flicker. Non-TTY / ARES_NO_MOTION → zero timers, static face.
+  // ARES_NO_INTRO=1 skips the cinematic but keeps the idle flicker.
+  const introEligible = motionEnabled() && process.env.ARES_NO_INTRO !== "1";
+  const [introActive, setIntroActive] = useState(introEligible);
+  const [fxTick, setFxTick] = useState(0);
+  const introStart = useRef(Date.now());
+  const skipIntro = () => {
+    setIntroActive(false);
+    setFxTick(0); // restart the idle clock so the header lands on a calm frame
+  };
+  useEffect(() => {
+    if (!motionEnabled()) return undefined; // static rendering: no timers to leak
+    const id = setInterval(() => {
+      if (introActive && Date.now() - introStart.current >= INTRO_HARD_CAP_MS) {
+        // Wall-clock kill switch: a stalled event loop can never hold the deck
+        // hostage past the 2.2s budget, no matter how few ticks fired.
+        skipIntro();
+        return;
+      }
+      setFxTick((tick) => tick + 1);
+    }, introActive ? INTRO_TICK_MS : 500);
+    return () => clearInterval(id); // cleared on skip (re-arm) and on unmount
+  }, [introActive]);
+  useEffect(() => {
+    // Storyboard complete → hand over to the deck (idle-flicker interval re-arms).
+    if (introActive && fxTick * INTRO_TICK_MS >= INTRO_TOTAL_MS) skipIntro();
+  }, [introActive, fxTick]);
   const [ollamaLiveTick, setOllamaLiveTick] = useState(0);
   useEffect(() => {
     void refreshLiveOllamaModels(options.settings).then((live) => {
@@ -156,7 +205,10 @@ function AresLauncherApp({
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama, ollamaLiveTick]);
   const selectedModel = models[Math.min(selectedOllama, Math.max(0, models.length - 1))] ?? models[0];
   const selectedOpenAIModel = providerModels[Math.min(selectedOpenAI, Math.max(0, providerModels.length - 1))] ?? defaultModelForProvider(currentProvider, options.settings);
-  const maxVisibleModels = Math.max(8, rows - 15);
+  // The fire wordmark header costs 6 extra rows (5 letters + flame divider) —
+  // only spend them on tall terminals, and shrink the model window to match.
+  const showWordmark = rows >= 28;
+  const maxVisibleModels = Math.max(8, rows - (showWordmark ? 21 : 15));
   const modelWindow = windowAround(selectedOllama, models.length, maxVisibleModels);
   const openAIWindow = windowAround(selectedOpenAI, providerModels.length, maxVisibleModels);
 
@@ -171,7 +223,11 @@ function AresLauncherApp({
   };
 
   useTerminalMouseMode();
-  function handleMouseEvent(event: TerminalMouseEvent) {
+  // TODO(mouse): these hardcoded hitboxes move to the dedicated mouse module
+  // when it lands; until then we shift them by the fire header's extra rows.
+  function handleMouseEvent(raw: TerminalMouseEvent) {
+    const headerExtra = (showWordmark ? WORDMARK_ROWS : 0) + 1; // wordmark rows + flame divider
+    const event: TerminalMouseEvent = { ...raw, y: raw.y - headerExtra };
     if (event.release) return;
     if (event.button === 64) {
       if (phase === "ollama") setSelectedOllama((prev) => Math.max(0, prev - 3));
@@ -253,6 +309,16 @@ function AresLauncherApp({
   }
 
   useInput((value, key) => {
+    if (introActive) {
+      // ANY key or mouse click (clicks arrive through useInput as SGR
+      // sequences) skips straight to the deck. Ctrl+C still quits.
+      if (key.ctrl && value === "c") {
+        finish({ kind: "quit" });
+        return;
+      }
+      skipIntro();
+      return;
+    }
     const mouseEvents = parseMouseEvents(value);
     if (mouseEvents.length > 0 || looksLikeMouseFragment(value)) {
       for (const event of mouseEvents) handleMouseEvent(event);
@@ -344,6 +410,28 @@ function AresLauncherApp({
     }
 
     if (phase === "ollama") {
+      // Number keys 1-9 pick the Nth VISIBLE row (owner has no arrow keys);
+      // pressing the number of the already-selected row launches it — same
+      // two-step contract as the mouse click path.
+      if (/^[1-9]$/.test(value)) {
+        const absolute = modelWindow.start + Number(value) - 1;
+        if (absolute >= 0 && absolute < models.length && models[absolute]) {
+          if (absolute === selectedOllama) {
+            finish({
+              kind: "chat",
+              provider: "ollama",
+              model: models[absolute].id,
+              theme: selectedTheme,
+              workspace,
+              favoriteOllamaModels: favoriteOllama,
+              favoriteOpenAIModels: favoriteOpenAI,
+            });
+          } else {
+            setSelectedOllama(absolute);
+          }
+        }
+        return;
+      }
       if (previousKey) setSelectedOllama((prev) => Math.max(0, prev - 1));
       if (nextKey) setSelectedOllama((prev) => Math.min(models.length - 1, prev + 1));
       if (pageUp) setSelectedOllama((prev) => Math.max(0, prev - 10));
@@ -370,6 +458,26 @@ function AresLauncherApp({
     }
 
     if (phase === "openai") {
+      // Same 1-9 visible-row picker as the ollama deck (no-arrow-keys owner).
+      if (/^[1-9]$/.test(value)) {
+        const absolute = openAIWindow.start + Number(value) - 1;
+        if (absolute >= 0 && absolute < providerModels.length) {
+          if (absolute === selectedOpenAI) {
+            finish({
+              kind: "chat",
+              provider: currentProvider,
+              model: providerModels[absolute] ?? defaultModelForProvider(currentProvider, options.settings),
+              theme: selectedTheme,
+              workspace,
+              favoriteOllamaModels: favoriteOllama,
+              favoriteOpenAIModels: favoriteOpenAI,
+            });
+          } else {
+            setSelectedOpenAI(absolute);
+          }
+        }
+        return;
+      }
       if (previousKey) setSelectedOpenAI((prev) => Math.max(0, prev - 1));
       if (nextKey) setSelectedOpenAI((prev) => Math.min(providerModels.length - 1, prev + 1));
       if (pageUp) setSelectedOpenAI((prev) => Math.max(0, prev - 8));
@@ -395,10 +503,14 @@ function AresLauncherApp({
     }
   });
 
+  if (introActive) {
+    return h(IntroCinematic, { theme, tick: fxTick, columns, rows });
+  }
+
   return h(
     Box,
     { flexDirection: "column", width: columns, height: rows, paddingX: 1 },
-    h(LauncherHeader, { theme, phase, selectedTheme, workspace }),
+    h(LauncherHeader, { theme, phase, selectedTheme, workspace, fxTick, columns, showWordmark }),
     phase === "provider"
       ? h(ProviderDeck, { theme, selectedProvider, settings: options.settings })
       : phase === "ollama"
@@ -427,17 +539,44 @@ function AresLauncherApp({
   );
 }
 
+// ─── Fire FX plumbing (theme → palette, spans → Ink) ──────────────────────────
+
+/** The rage theme's frame/accent/accent2 ARE crimson/ember/gold — every other
+ *  theme re-tints the fire through the same mapping instead of fighting it. */
+function paletteFromTheme(theme: LauncherTheme): FxPalette {
+  return { crimson: theme.frame, ember: theme.accent, gold: theme.accent2, steel: theme.accent3, dim: theme.dim };
+}
+
+/** Render one FX span row as nested Ink <Text> runs (dim → dimColor). */
+function FxLine({ spans }: { spans: FxSpan[] }) {
+  return h(
+    Text,
+    null,
+    ...spans.map((span, index) => h(Text, { key: index, color: span.color, bold: span.bold, dimColor: span.dim }, span.text)),
+  );
+}
+
 function LauncherHeader({
   theme,
   phase,
   selectedTheme,
   workspace,
+  fxTick,
+  columns,
+  showWordmark,
 }: {
   theme: LauncherTheme;
   phase: LauncherPhase;
   selectedTheme: ThemeName;
   workspace: string;
+  fxTick: number;
+  columns: number;
+  showWordmark: boolean;
 }) {
+  const palette = paletteFromTheme(theme);
+  // fxTick advances every ~500ms post-intro (0 forever when motion is off), so
+  // the wordmark gradient creeps and the flame divider breathes — alive, cheap.
+  const divider = flameLine(fxTick, Math.max(10, Math.min(columns - 6, 96)), palette);
   return h(
     Box,
     {
@@ -448,6 +587,9 @@ function LauncherHeader({
       marginTop: 1,
       marginBottom: 1,
     },
+    ...(showWordmark
+      ? fireWordmark(fxTick, palette).map((row, index) => h(FxLine, { key: `wm${index}`, spans: row }))
+      : []),
     h(
       Box,
       { justifyContent: "space-between" },
@@ -455,6 +597,78 @@ function LauncherHeader({
       h(Box, { gap: 1 }, h(Text, { color: theme.dim }, "theme"), h(Text, { color: theme.accent, bold: true }, selectedTheme)),
     ),
     h(Text, { color: theme.dim, wrap: "truncate" }, workspace),
+    h(FxLine, { spans: divider }),
+  );
+}
+
+// ─── Boot intro cinematic ─────────────────────────────────────────────────────
+
+const INTRO_TAGLINE = "GOD OF WAR // AUTONOMOUS AGENT";
+
+/** The skippable ~1.8s cinematic. Pure render of (tick) — the parent owns the
+ *  single 66ms interval, the storyboard math lives in tuiFx.introStageAt, so a
+ *  stalled render can never desync stages from wall time. */
+function IntroCinematic({
+  theme,
+  tick,
+  columns,
+  rows,
+}: {
+  theme: LauncherTheme;
+  tick: number;
+  columns: number;
+  rows: number;
+}) {
+  const palette = paletteFromTheme(theme);
+  const { stage, progress } = introStageAt(tick * INTRO_TICK_MS);
+  const fieldW = Math.max(24, Math.min(columns - 4, 90));
+  const fieldH = Math.max(4, Math.min(rows - 10, 10));
+  const children: React.ReactNode[] = [];
+  if (stage === "embers") {
+    // Stage 1: sparks rise out of a dark screen — the forge is waking up.
+    emberRain(tick, fieldW, fieldH, palette).forEach((row, index) => {
+      children.push(h(FxLine, { key: `em${index}`, spans: row }));
+    });
+  } else {
+    // A thin ember veil keeps drifting behind the metal for the whole show.
+    emberRain(tick, fieldW, 2, palette).forEach((row, index) => {
+      children.push(h(FxLine, { key: `veil${index}`, spans: row }));
+    });
+    const letterCount = WORDMARK_LETTERS.length;
+    const lit = stage === "ignite" ? Math.min(letterCount, 1 + Math.floor(progress * letterCount)) : letterCount;
+    fireWordmark(tick, palette, lit).forEach((row, index) => {
+      children.push(h(FxLine, { key: `wm${index}`, spans: row }));
+    });
+    if (stage === "ignite") {
+      // Stage 2: each letter lands with a hammer strike under it. The strike
+      // clock restarts per letter: fraction-within-letter × frame count.
+      const letterIndex = Math.max(0, lit - 1);
+      const strikeTick = Math.floor(((progress * letterCount) % 1) * STRIKE_FRAME_COUNT);
+      const strike = forgeStrike(strikeTick, palette);
+      children.push(
+        h(FxLine, {
+          key: "strike",
+          spans: strike.length > 0 ? [{ text: " ".repeat(letterIndex * 7) }, ...strike] : [{ text: " " }],
+        }),
+      );
+    } else {
+      // Stage 3: the blade slash under the wordmark reveals the tagline in its
+      // wake; stage 4 keeps both fully settled while the fire calms down.
+      const sweepTick = stage === "sweep" ? Math.floor((progress * 400) / INTRO_TICK_MS) : 99;
+      children.push(h(FxLine, { key: "sweep", spans: bladeSweep(sweepTick, WORDMARK_WIDTH + 6, palette) }));
+      const revealed = stage === "sweep" ? Math.min(INTRO_TAGLINE.length, sweepTick * 5) : INTRO_TAGLINE.length;
+      children.push(h(Text, { key: "tag", color: theme.accent2, bold: true }, INTRO_TAGLINE.slice(0, revealed) || " "));
+      if (stage === "settle") {
+        // Stage 4: embers settle into the hearth line the deck header keeps.
+        children.push(h(FxLine, { key: "hearth", spans: flameLine(tick >> 1, fieldW, palette) }));
+      }
+    }
+  }
+  children.push(h(Text, { key: "skip", color: theme.dim }, "any key to skip"));
+  return h(
+    Box,
+    { flexDirection: "column", width: columns, height: rows, alignItems: "center", justifyContent: "center" },
+    ...children,
   );
 }
 
@@ -581,6 +795,9 @@ function ModelDeck({
       const absolute = offset + index;
       const active = absolute === selected;
       const fav = favorites.includes(model.id);
+      // [n] badge mirrors the 1-9 hotkeys (visible-window relative) — the
+      // owner picks models entirely by number, no arrow keys on his board.
+      // TODO(mouse): richer per-row hitboxes land with the mouse module.
       return h(
         Box,
         { key: model.id, justifyContent: "space-between" },
@@ -588,6 +805,7 @@ function ModelDeck({
           Box,
           { gap: 1 },
           h(Text, { color: active ? theme.accent : theme.dim }, active ? ">" : " "),
+          h(Text, { color: active ? theme.accent : theme.dim }, index < 9 ? `[${index + 1}]` : "   "),
           h(Text, { color: fav ? theme.warn : active ? theme.accent2 : theme.text, bold: active || fav }, `${fav ? "*" : " "} ${cleanModelName(model.id)}`),
         ),
         h(Text, { color: theme.dim, wrap: "truncate" }, model.hint),
@@ -627,10 +845,12 @@ function OpenAIModelDeck({
       const absolute = offset + index;
       const active = absolute === selected;
       const fav = favorites.includes(model);
+      // Same [n] hotkey badge as the Ollama deck — number-first navigation.
       return h(
         Box,
         { key: model, gap: 1 },
         h(Text, { color: active ? theme.accent : theme.dim }, active ? ">" : " "),
+        h(Text, { color: active ? theme.accent : theme.dim }, index < 9 ? `[${index + 1}]` : "   "),
         h(Text, { color: fav ? theme.warn : active ? theme.accent2 : theme.text, bold: active || fav }, `${fav ? "*" : " "} ${model}`),
       );
     }),
@@ -678,7 +898,7 @@ function LauncherFooter({ theme, phase }: { theme: LauncherTheme; phase: Launche
       ? "A/D or arrows choose | 1-6 jump | Enter open | L login | D doctor | H help | T theme | W workspace | Q quit"
       : phase === "workspace"
         ? "type path | Enter accept | Esc cancel"
-        : "A/D or arrows move | PgUp/PgDn jump | F favorite where supported | Enter launch | P providers | T theme | Q back";
+        : "1-9 pick (same number launches) | A/D or arrows move | PgUp/PgDn jump | F favorite where supported | Enter launch | P providers | T theme | Q back";
   return h(Box, { marginTop: 1 }, h(Text, { color: theme.dim }, help));
 }
 

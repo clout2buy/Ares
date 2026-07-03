@@ -204,6 +204,12 @@ export async function pickHealthyFallback(
   const settings = await loadUiSettings().catch(() => null);
   if (!settings) return null;
   const currentFamily = providerFamilyForSelection(current);
+  // The Ares Gateway IS the routing layer — it already picks the real provider
+  // and key server-side. A gateway failure (out of credits, not entitled, no
+  // house model) is a terminal, user-facing condition; cascading into the
+  // owner's LOCAL keys would silently spend them and defeat the whole product.
+  // Surface the gateway's own error instead of falling back.
+  if (currentFamily === "ares") return null;
   // Order = most-likely-to-actually-work first. Anthropic (Claude sign-in or key)
   // before the pay-as-you-go balances that just ran dry. Ollama last (local/free
   // but often not running). openrouter's default model may itself be a deepseek

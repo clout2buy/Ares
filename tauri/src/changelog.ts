@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.3",
+    date: "July 2026",
+    title: "Ares routes cleanly",
+    tagline: "Pick Ares and it just runs your in-house model through credits — never your own keys.",
+    highlights: [
+      {
+        icon: "✅",
+        title: "Picking Ares just works",
+        tag: "Safer",
+        blurb: "The default now resolves to your in-house model on the gateway, so it runs the first time instead of erroring on an unknown id.",
+      },
+      {
+        icon: "🔒",
+        title: "Never falls back to local keys",
+        tag: "Safer",
+        blurb: "If your Ares account can't run a turn (credits, access), Ares tells you to check your account — it no longer silently switches to another provider's API key.",
+      },
+      {
+        icon: "🎯",
+        title: "Your models, by name",
+        tag: "Polished",
+        blurb: "The Ares tab lists exactly what your account was granted, and the footer chip and picker show the real display name — not a raw internal id or borrowed catalog.",
+      },
+    ],
+  },
+  {
     version: "0.13.2",
     date: "July 2026",
     title: "Ares leads the way",

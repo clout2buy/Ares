@@ -109,13 +109,26 @@ export async function fetchAresGatewayModels(
   const payload = (await res.json().catch(() => ({}))) as {
     models?: Array<{ id: string; display_name?: string; is_free?: boolean; is_house?: boolean }>;
   };
-  return (payload.models ?? []).map((m) => ({
+  const granted = payload.models ?? [];
+  const house = granted.find((m) => m.is_house);
+  const rows: DaemonModelOption[] = granted.map((m) => ({
     id: m.id,
     label: m.display_name,
-    hint: [m.display_name ?? m.id, m.is_house ? "in house" : "", m.is_free ? "FREE" : ""].filter(Boolean).join(" · "),
+    hint: [m.is_house ? "in house" : "", m.is_free ? "FREE" : ""].filter(Boolean).join(" · "),
     group: "Ares Gateway",
     capabilities: ["tools", "reasoning"],
   }));
+  // A friendly default that always works: "ares-internal" is the sentinel the
+  // gateway resolves to the house model. Surface it as a named row so the
+  // picker/footer never show a raw id and picking Ares needs no extra step.
+  rows.unshift({
+    id: "ares-internal",
+    label: house?.display_name ? `${house.display_name} (default)` : "Ares (in house)",
+    hint: "default · routes to your in-house model",
+    group: "Ares Gateway",
+    capabilities: ["tools", "reasoning"],
+  });
+  return rows;
 }
 
 export function defaultTerminalModel(provider: string, settings: UiSettings): string {

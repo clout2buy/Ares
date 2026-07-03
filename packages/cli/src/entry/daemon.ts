@@ -1629,10 +1629,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             }
             const fallback = await pickHealthyFallback(entry.live.selection, liveDeadProviders()).catch(() => null);
             if (!fallback) {
+              const onAres = providerFamilyForSelection(entry.live.selection) === "ares";
               tagEmit(sid, {
                 type: "system_reminder_injected",
                 source: "instructions",
-                text: `All configured providers failed (${turnState.fatalProvider}). Add credit or a working API key in Settings → API Keys.`,
+                text: onAres
+                  ? `Your Ares account couldn't run this turn (${turnState.fatalProvider}). Check your credits and granted models at doingteam.com → Account — you won't be switched to another provider's key.`
+                  : `All configured providers failed (${turnState.fatalProvider}). Add credit or a working API key in Settings → API Keys.`,
               });
               break;
             }

@@ -1335,6 +1335,7 @@ function useModelCatalog(provider: string, native: boolean) {
       const detail = (event as CustomEvent<{ provider?: string; models?: ModelOption[] }>).detail;
       if (!live || detail?.provider !== provider || !Array.isArray(detail.models)) return;
       setModels((current) => mergeModelOptions(current, detail.models ?? []));
+      if (provider === "ares") setLoading(false);
     };
     const requestDaemonCatalog = () => {
       if (!native) return;
@@ -1361,6 +1362,18 @@ function useModelCatalog(provider: string, native: boolean) {
       }
       if (provider === "anthropic") {
         setModels(ANTHROPIC_MODELS);
+        return;
+      }
+      if (provider === "ares") {
+        // The Ares tab lists ONLY what the gateway granted this account —
+        // white-labeled display names, never the local ollama/openai catalogs.
+        setModels([]);
+        if (native) {
+          setLoading(true);
+          requestDaemonCatalog();
+        } else {
+          setModels([{ id: "ares-internal", hint: "connect your account — get a token at doingteam.com → Account", group: "Ares Gateway" }]);
+        }
         return;
       }
       if (provider === "deepseek") {
@@ -2674,7 +2687,15 @@ function App() {
   // The model that ACTUALLY handled this session's last turn (sticky/lane/
   // failover-aware), falling back to the picked default before any turn runs.
   // The footer/composer show this so they never contradict the per-message badge.
-  const liveModel = active?.turnModel ?? (prefs.routingMode === "auto" ? "routing (auto)" : prefs.model);
+  const liveModelId = active?.turnModel ?? (prefs.routingMode === "auto" ? "routing (auto)" : prefs.model);
+  // Gateway models are white-labeled: the footer chip shows the friendly name
+  // ("Model Ares (in house)"), never the raw virtual id or the upstream model.
+  // "ares-internal" is the house sentinel — resolve it to the crowned model's name.
+  const houseModel = gatewayAccount?.models?.find((m) => m.is_house);
+  const liveModel =
+    liveModelId === "ares-internal"
+      ? houseModel?.display_name ?? "Ares (in house)"
+      : gatewayAccount?.models?.find((m) => m.id === liveModelId)?.display_name ?? liveModelId;
 
   // ── rail: search, pins, and the artifact vault ───────────────────────────
   const q = sessionQuery.trim().toLowerCase();
@@ -5647,6 +5668,9 @@ function ModelPicker({
     onPick(id);
     if (!searchOnly && !compact) setOpen(false);
   };
+  // Show the friendly name for the current pick when the catalog knows one
+  // (e.g. "Model Ares (in house)" instead of a raw virtual id).
+  const valueLabel = models.find((m) => m.id === value)?.label ?? value;
 
   return (
     <div className={compact ? "modelPicker compact" : "modelPicker"}>
@@ -5654,7 +5678,7 @@ function ModelPicker({
       {!searchOnly && !compact ? (
         <button className="modelCurrent" data-open={open ? "1" : "0"} onClick={() => setOpen((current) => !current)}>
           <span>
-            <strong>{value || "Choose a model"}</strong>
+            <strong>{valueLabel || "Choose a model"}</strong>
             <em>{loading ? "Loading catalog..." : `${models.length} available models`}</em>
           </span>
           <i>{open ? "Close" : "Change"}</i>
@@ -5697,9 +5721,10 @@ function ModelPicker({
               .map((m, i) => (
                 <button key={m.id} className="modelRow" data-on={m.id === value ? "1" : "0"} style={{ ["--i" as string]: i }} onClick={() => choose(m.id)}>
                   <span className="modelIdentity">
-                    <span className="modelId">{m.id}</span>
+                    {/* Friendly name leads (white-labeled for gateway models); raw id demotes to a tag. */}
+                    <span className="modelId">{m.label ?? m.id}</span>
                     <span className="modelTags">
-                      {m.label && m.label !== m.id ? <span className="modelLabel">{m.label}</span> : null}
+                      {m.label && m.label !== m.id ? <span className="modelLabel">{m.id}</span> : null}
                       {m.capabilities?.slice(0, 3).map((cap) => <i key={cap}>{cap}</i>)}
                     </span>
                   </span>

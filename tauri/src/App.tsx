@@ -1261,6 +1261,7 @@ const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
   anthropic: ANTHROPIC_MODELS[0].id,
   deepseek: DEEPSEEK_MODELS[0].id,
   openrouter: "openai/gpt-4o-mini",
+  ares: "ares-internal",
   mock: MOCK_MODELS[0].id,
 };
 
@@ -5480,7 +5481,8 @@ function Boot() {
   );
 }
 
-const PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "custom", "mock"];
+// Ares (the owner gateway) leads; mock is dev-only and hidden from users.
+const PROVIDERS = ["ares", "ollama", "openai", "anthropic", "deepseek", "openrouter", "custom"];
 
 // ─── Custom (OpenAI-compatible) provider: bring-your-own URL + key + discovery ──
 // Point Ares at ANY OpenAI-compatible endpoint and pull its full model list from
@@ -5756,9 +5758,14 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
 function GatewayAccountPane({
   account,
   onDaemonCommand,
+  onUseModel,
+  activeModel,
 }: {
   account: GatewayAccountVm | null;
   onDaemonCommand: (cmd: Record<string, unknown>) => void;
+  /** Clicking a granted model switches the live session to it. */
+  onUseModel?: (id: string) => void;
+  activeModel?: string | null;
 }) {
   const [url, setUrl] = useState("https://www.doingteam.com");
   const [token, setToken] = useState("");
@@ -5818,12 +5825,24 @@ function GatewayAccountPane({
           </div>
           <div className="gwModels">
             {(account?.models ?? []).map((m) => (
-              <div key={m.id} className="gwModel">
+              <button
+                key={m.id}
+                className="gwModel gwModelBtn"
+                data-active={activeModel === m.id ? "1" : "0"}
+                title="use this model"
+                onClick={() => onUseModel?.(m.id)}
+              >
                 <span>
                   {m.is_house ? <em className="gwHouse">ARES</em> : null} {m.display_name ?? m.id}
                 </span>
-                {m.is_free ? <em className="gwFree">FREE</em> : null}
-              </div>
+                <span className="gwModelMeta">
+                  {m.is_free ? <em className="gwFree">FREE</em> : null}
+                  {typeof m.cap_remaining_microcents === "number" ? (
+                    <em className="gwCap">${(m.cap_remaining_microcents / 1e6).toFixed(2)} left</em>
+                  ) : null}
+                  {activeModel === m.id ? <em className="gwActive">●</em> : null}
+                </span>
+              </button>
             ))}
             {(account?.models ?? []).length === 0 ? <p className="paneHint">No models assigned yet — the owner grants them.</p> : null}
           </div>
@@ -6082,7 +6101,7 @@ function Settings({
           {tab === "usage" ? <UsagePane usage={usage} onDaemonCommand={onDaemonCommand} native={native} /> : null}
 
           {tab === "account" ? (
-            <GatewayAccountPane account={gatewayAccount} onDaemonCommand={onDaemonCommand} />
+            <GatewayAccountPane account={gatewayAccount} onDaemonCommand={onDaemonCommand} activeModel={draft.provider === "ares" ? draft.model : null} onUseModel={(id) => { onLivePref({ provider: "ares", model: id }); onDaemonCommand({ type: "model_switch", provider: "ares", model: id }); }} />
           ) : null}
           {tab === "keys" ? (
             <div className="settingsPane">

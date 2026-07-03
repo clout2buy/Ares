@@ -1952,6 +1952,7 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .provChip:hover { color: var(--text); border-color: var(--line-strong); background: rgba(var(--accent-rgb), 0.04); transform: translateY(-1px); }
 .provChip[data-on="1"] { color: var(--bronze-hi); border-color: var(--bronze); background: rgba(var(--accent-rgb), 0.1); box-shadow: 0 0 18px rgba(var(--accent-rgb), 0.1); }
 .provDot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 8px currentColor; }
+.provDot[data-provider="ares"] { background: #ff6a44; color: #ff6a44; }
 .provDot[data-provider="ollama"] { background: #7fa6a3; color: #7fa6a3; }
 .provDot[data-provider="openai"] { background: #74c39c; color: #74c39c; }
 .provDot[data-provider="anthropic"] { background: #d9935a; color: #d9935a; }
@@ -3229,3 +3230,11 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .amEmpty { font-size: 12px; color: var(--faint); line-height: 1.55; padding: 14px; }
 .amAction { margin: 4px 10px 12px; background: color-mix(in srgb, var(--ember, #e08b2e) 18%, transparent); border: 1px solid var(--ember, #e08b2e); color: var(--text); border-radius: 9px; padding: 9px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; transition: background 160ms; }
 .amAction:hover { background: color-mix(in srgb, var(--ember, #e08b2e) 32%, transparent); }
+
+/* gateway account — clickable model rows */
+.gwModelBtn { cursor: pointer; background: color-mix(in srgb, var(--panel) 60%, transparent); color: var(--text); text-align: left; width: 100%; transition: all 140ms; }
+.gwModelBtn:hover { border-color: color-mix(in srgb, var(--ember, #e08b2e) 45%, var(--line)); background: color-mix(in srgb, var(--ember, #e08b2e) 10%, transparent); }
+.gwModelBtn[data-active="1"] { border-color: var(--ember, #e08b2e); background: color-mix(in srgb, var(--ember, #e08b2e) 16%, transparent); }
+.gwModelMeta { display: flex; align-items: center; gap: 8px; }
+.gwCap { font-style: normal; font-size: 10.5px; font-weight: 700; color: var(--steel, #7fa6a3); }
+.gwActive { font-style: normal; color: var(--ember, #e08b2e); font-size: 9px; }

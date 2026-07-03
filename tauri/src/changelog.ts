@@ -38,6 +38,50 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.0",
+    date: "July 2026",
+    title: "The war room opens",
+    tagline: "The biggest Ares yet: a terminal that burns, a desktop that breathes, and an agent that proves its work.",
+    highlights: [
+      {
+        icon: "🔥",
+        title: "A terminal with a soul",
+        tag: "New",
+        blurb: "The TUI got the full forge treatment — a cinematic fire intro, living flame accents, tool calls that strike like a hammer, and everything clickable: models, themes, settings, no arrow keys needed.",
+      },
+      {
+        icon: "🎚️",
+        title: "The effort slider",
+        tag: "New",
+        blurb: "Drag how hard Ares thinks — and when you slide it to ULTRA, you'll know. Stalled thinking now auto-recovers by stepping down a notch and finishing instead of spinning.",
+      },
+      {
+        icon: "✅",
+        title: "It can't bluff \"done\" anymore",
+        tag: "Safer",
+        blurb: "Every edit is verified on every surface — desktop included — and Ares refuses to finish while its own changes are broken. Fifty red errors arrive triaged into the few root causes that matter.",
+      },
+      {
+        icon: "🏛️",
+        title: "HELM is alive + the Forged look",
+        tag: "Polished",
+        blurb: "The war room streams live missions, cost, and earned-trust meters — and the whole desktop wears a new spring-animated skin (Legacy is one toggle away).",
+      },
+      {
+        icon: "🧠",
+        title: "1M-token memory lane",
+        tag: "Faster",
+        blurb: "Opus 4.8, DeepSeek v4, and GLM 5.1 now use their full million-token windows — with an honest fuel gauge and smarter caching so long sessions stay affordable.",
+      },
+      {
+        icon: "📈",
+        title: "It keeps score on itself",
+        tag: "New",
+        blurb: "A 50-task coding exam, friction telemetry on every turn, and an `ares friction` report that names exactly what to sharpen next. Ares now improves on evidence, not vibes.",
+      },
+    ],
+  },
+  {
     version: "0.12.1",
     date: "June 2026",
     title: "Sharper hands",

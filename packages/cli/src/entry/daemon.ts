@@ -27,7 +27,7 @@ import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge } from "./browserBridge.js";
 import { garrisonCommand } from "./garrisonCmd.js";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
-import { daemonModelCatalog, providerFamilyForSelection, selectProvider } from "./providers.js";
+import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, providerFamilyForSelection, selectProvider } from "./providers.js";
 import { ParsedArgs } from "./runtime.js";
 import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isProviderFatalError, makeSpanSummarizer, pickHealthyFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { startGatewayMirror } from "./telegramWiring.js";
@@ -36,6 +36,9 @@ import { buildSystemPrompt, finishTurn, gatherGitRunFacts, mindSessionEnded, pre
 
 interface DaemonInputCommand {
   type?: string;
+  /** gateway_connect */
+  token?: string;
+  url?: string;
   goal?: string;
   command?: string;
   level?: string;
@@ -432,6 +435,29 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   if (args.flags.get("json") !== "true" && !args.flags.has("json")) {
     process.stderr.write("error: daemon currently requires --json\n");
     return 2;
+  }
+  // Gateway account poll: when the owner-site token is configured, snapshot
+  // /me every 20s — new credit grants become gateway_grant toasts in the UI,
+  // and balance/model changes refresh the Account panel live. Silent on every
+  // failure; a dead gateway can never affect the daemon.
+  {
+    let gwCursor: string | undefined;
+    const gwPoll = setInterval(async () => {
+      try {
+        const settings = await loadUiSettings();
+        if (!settings.aresGatewayToken) return;
+        const me = await fetchAresGatewayMe(aresGatewayBase(settings), settings.aresGatewayToken, gwCursor);
+        if (!me) return;
+        for (const g of me.new_grants ?? []) {
+          process.stdout.write(JSON.stringify({ type: "gateway_grant", amount_usd: g.amount_usd, reason: g.reason, at: g.at }) + "\n");
+        }
+        process.stdout.write(JSON.stringify({ type: "gateway_account", connected: true, ...me }) + "\n");
+        gwCursor = me.server_time ?? gwCursor;
+      } catch {
+        // best-effort
+      }
+    }, 20_000);
+    gwPoll.unref?.();
   }
   // Scrub the daemon's diagnostic stream. The desktop shell forwards this
   // process's stderr straight into the webview; a verbose provider/library debug
@@ -1370,6 +1396,32 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             activeCount: active.length,
             trust,
           }) + "\n",
+        );
+        continue;
+      }
+      if (command.type === "gateway_connect" || command.type === "gateway_status") {
+        // Ares Gateway account bridge (doingteam.com): connect persists the
+        // URL+token; status (and the 20s poll below) snapshots /me for the
+        // desktop Account panel. Grants surface as gateway_grant toasts.
+        if (command.type === "gateway_connect") {
+          const patch: Record<string, string> = {};
+          if (typeof command.token === "string" && command.token.trim()) patch.aresGatewayToken = command.token.trim();
+          if (typeof command.url === "string" && command.url.trim()) patch.aresGatewayUrl = command.url.trim().replace(/\/+$/, "");
+          if (Object.keys(patch).length > 0) await updateUiSettings(patch);
+        }
+        const gwSettings = await loadUiSettings();
+        const gwToken = gwSettings.aresGatewayToken;
+        if (!gwToken) {
+          process.stdout.write(JSON.stringify({ type: "gateway_account", connected: false, reason: "no token" }) + "\n");
+          continue;
+        }
+        const me = await fetchAresGatewayMe(aresGatewayBase(gwSettings), gwToken);
+        process.stdout.write(
+          JSON.stringify(
+            me
+              ? { type: "gateway_account", connected: true, ...me }
+              : { type: "gateway_account", connected: false, reason: "unreachable or token rejected" },
+          ) + "\n",
         );
         continue;
       }

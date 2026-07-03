@@ -1515,7 +1515,9 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
   // (they legitimately run minutes), so a fork that hangs mid-await would never
   // return usage and never trip the token budget. Cap total wall-time — derived
   // from fleet size (2 min/leaf), clamped to [2 min, 30 min], unless the spec sets it.
-  const reqWall = Number(spec.maxWallClockMs);
+  // ARES_FLEET_WALL_MS caps ALL fleets (e.g. 600000 = 10 min) — added after a
+  // real 31-minute run where the 30-min ceiling itself was the bad experience.
+  const reqWall = Number(spec.maxWallClockMs ?? process.env.ARES_FLEET_WALL_MS);
   const wallClockMs = Number.isFinite(reqWall) && reqWall > 0
     ? reqWall
     : Math.min(30 * 60_000, Math.max(2 * 60_000, totalAgents * 2 * 60_000));

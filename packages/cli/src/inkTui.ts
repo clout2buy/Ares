@@ -499,7 +499,7 @@ function filterPalette(query: string): { cmd: string; desc: string }[] {
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // ⌃O / "/model" model+provider picker — scroll, don't type names.
-const PICKER_PROVIDERS = ["ollama", "openai", "anthropic", "openrouter", "deepseek"];
+const PICKER_PROVIDERS = ["ollama", "openai", "anthropic", "openrouter", "deepseek", "ares"];
 
 // ─── Clickable chrome geometry (shared with the tuiChrome hit-tests) ─────────
 // The owner's device has NO arrow keys: everything below is mouse-first with
@@ -513,7 +513,7 @@ const SETTINGS_EFFORT_TAB = 3;
 const SETTINGS_ENGINE_TAB = 4;
 /** Providers whose keys can be set from the Providers tab — mirrors the
  *  desktop Settings → API Keys card and dispatches the same /key command. */
-const KEY_PROVIDERS = ["anthropic", "openrouter", "deepseek", "openai", "brave"] as const;
+const KEY_PROVIDERS = ["anthropic", "openrouter", "deepseek", "openai", "brave", "ares"] as const;
 // Effort slider geometry: the bar starts after chrome padding + the "🔥 " prefix,
 // and its body rows sit at fixed app rows so clicks/drags map deterministically.
 const EFFORT_BAR_START = CHROME_START_COL + textWidth("🔥 ");
@@ -932,7 +932,23 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         return;
       }
       if (event.type === "system_reminder_injected") {
-        append(event.source === "verifier" ? "verify" : "notice", event.text, event.source);
+        // Verifier verdicts and compaction notices carry real user-facing
+        // signal. Everything else (memory weave, identity anchor, foreground
+        // framing) is INTERNAL prompt plumbing — dumping it into the stream
+        // was the single ugliest thing in the TUI. Collapse to one dim pulse
+        // per source and never repeat back-to-back.
+        if (event.source === "verifier") {
+          append("verify", event.text, event.source);
+        } else if (event.source === "compaction") {
+          append("muted", event.text.split("\n")[0].slice(0, 120), "compaction");
+        } else {
+          const tag = `⟡ ${event.source ?? "context"} woven in`;
+          setLines((prev) => {
+            const last = prev.at(-1);
+            if (last && last.tone === "muted" && last.text === tag) return prev;
+            return [...prev, { id: lineId.current++, tone: "muted" as const, text: tag }].slice(-600);
+          });
+        }
         return;
       }
       if (event.type === "error") {

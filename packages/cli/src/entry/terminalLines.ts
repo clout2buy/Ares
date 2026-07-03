@@ -163,6 +163,7 @@ export function terminalKeyStatus(settings: UiSettings): Array<[string, boolean]
     ["anthropic", Boolean(settings.anthropicKey || process.env.ANTHROPIC_API_KEY || process.env.ARES_ANTHROPIC_API_KEY)],
     ["deepseek", Boolean(settings.deepSeekKey || process.env.DEEPSEEK_API_KEY)],
     ["openrouter", Boolean(settings.openRouterKey || process.env.OPENROUTER_API_KEY)],
+    ["ares", Boolean(settings.aresGatewayToken || process.env.ARES_GATEWAY_TOKEN)],
     ["ollama", Boolean(settings.ollamaApiKey || process.env.OLLAMA_API_KEY)],
     ["brave", Boolean(settings.braveKey || process.env.ARES_BRAVE_API_KEY)],
   ];
@@ -193,12 +194,21 @@ export async function setTerminalProviderKey(provider: string, rawKey: string): 
     patch.ollamaApiKey = value;
     if (value) process.env.OLLAMA_API_KEY = value;
     else delete process.env.OLLAMA_API_KEY;
+  } else if (provider === "ares") {
+    // Accepts '/key ares <token>' or '/key ares <url> <token>' (two words).
+    const parts = value.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      patch.aresGatewayUrl = parts[0].replace(/\/+$/, "");
+      patch.aresGatewayToken = parts[1];
+    } else {
+      patch.aresGatewayToken = value;
+    }
   } else if (provider === "brave") {
     patch.braveKey = value;
     if (value) process.env.ARES_BRAVE_API_KEY = value;
     else delete process.env.ARES_BRAVE_API_KEY;
   } else {
-    return [`Unsupported key provider: ${provider}`, "Use: anthropic, deepseek, openrouter, ollama, brave"];
+    return [`Unsupported key provider: ${provider}`, "Use: anthropic, deepseek, openrouter, ollama, brave, ares"];
   }
   await updateUiSettings(patch);
   return [`${provider} key ${clear ? "cleared" : "saved"} (encrypted at rest).`];

@@ -14,6 +14,7 @@ const SECRET_FIELDS = [
   "braveKey",
   "tavilyKey",
   "deepSeekKey",
+  "aresGatewayToken",
   "ollamaApiKey",
   "customApiKey",
   "telegramBotToken",
@@ -55,6 +56,10 @@ export interface UiSettings {
   lastOpenRouterModel?: string;
   /** Anthropic API key (owner-pasted in-app). x-api-key auth for api.anthropic.com. */
   anthropicKey?: string;
+  /** Ares Gateway (doingteam.com) — account base URL + bearer token. */
+  aresGatewayUrl?: string;
+  aresGatewayToken?: string;
+  lastAresModel?: string;
   /** Brave Search API key — upgrades WebSearch from DDG scrape to the Brave API. */
   braveKey?: string;
   /** Tavily Search API key — agent-grade search, tried after Brave, before DDG. */

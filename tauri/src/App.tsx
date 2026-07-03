@@ -94,6 +94,12 @@ interface AresEvent {
   activeCount?: number;
   autotick?: boolean;
   trust?: unknown;
+  // gateway account frames
+  connected?: boolean;
+  balance_usd?: number;
+  new_grants?: unknown;
+  amount_usd?: number;
+  profile?: unknown;
   lane?: string;
   routingMode?: "manual" | "auto";
   routing?: Prefs["routing"];
@@ -157,6 +163,16 @@ interface OAuthProviderVm {
   label: string;
   connected: boolean;
   hasApp: boolean;
+}
+
+/** Ares Gateway account snapshot (doingteam.com /me via the daemon bridge). */
+interface GatewayAccountVm {
+  connected?: boolean;
+  reason?: string;
+  profile?: { display_name?: string | null; avatar_url?: string | null; status?: string };
+  balance_usd?: number;
+  usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number };
+  models?: Array<{ id: string; display_name?: string; is_free?: boolean; is_house?: boolean }>;
 }
 
 interface BufferedEvent {
@@ -1581,6 +1597,15 @@ function App() {
   const [permissions, setPermissions] = useState<PermSettings>(DEFAULT_PERMS);
   const [opStatus, setOpStatus] = useState<{ activeCount: number; goals: Array<{ id: string; statement: string; status: string; progress: number }>; autotick: boolean; trust?: Array<{ domain: string; level: number; proven: number }> } | null>(null);
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderVm[]>([]);
+  // Ares Gateway account (doingteam.com): live snapshot + grant toasts.
+  const [gatewayAccount, setGatewayAccount] = useState<GatewayAccountVm | null>(null);
+  const [gatewayToasts, setGatewayToasts] = useState<Array<{ id: number; text: string }>>([]);
+  const gwToastId = useRef(0);
+  const pushGatewayToast = useCallback((text: string) => {
+    const id = ++gwToastId.current;
+    setGatewayToasts((t) => [...t, { id, text }]);
+    setTimeout(() => setGatewayToasts((t) => t.filter((x) => x.id !== id)), 6500);
+  }, []);
   const [strike, setStrike] = useState(0);
   // The embedded live browser: latest JPEG frame Ares streamed while driving its
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
@@ -1948,6 +1973,15 @@ function App() {
             trust: Array.isArray(e.trust) ? (e.trust as Array<{ domain: string; level: number; proven: number }>) : [],
           });
           return true;
+        case "gateway_account":
+          setGatewayAccount(e as unknown as GatewayAccountVm);
+          return true;
+        case "gateway_grant": {
+          // A credit grant landed while the app is open — ember toast, live.
+          const usd = typeof e.amount_usd === "number" ? `+$${e.amount_usd.toFixed(2)}` : "+credits";
+          pushGatewayToast(`${usd} credits${e.reason ? ` — ${e.reason}` : ""}`);
+          return true;
+        }
         case "oauth_status":
           if (Array.isArray(e.providers)) setOauthProviders(e.providers as OAuthProviderVm[]);
           return true;
@@ -3141,6 +3175,15 @@ function App() {
         </aside>
       ) : null}
 
+      {gatewayToasts.length > 0 ? (
+        <div className="gwToasts">
+          {gatewayToasts.map((t) => (
+            <div key={t.id} className="gwToast">
+              🔥 {t.text}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {settingsOpen ? (
         <Settings
           prefs={prefs}
@@ -3150,6 +3193,7 @@ function App() {
           skills={skills}
           usage={usageStats}
           keyStatus={keyStatus}
+          gatewayAccount={gatewayAccount}
           permissions={permissions}
           onPermissions={(next) => {
             setPermissions(next);
@@ -5581,7 +5625,7 @@ function ModelPicker({
   );
 }
 
-type SettingsTab = "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
+type SettingsTab = "account" | "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
 
 interface SkillInfo {
   name: string;
@@ -5604,6 +5648,7 @@ interface UsageStats {
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = [
   { id: "model", label: "Model", glyph: "task" },
+  { id: "account", label: "Ares Account", glyph: "dot" },
   { id: "routing", label: "Routing", glyph: "search" },
   { id: "appearance", label: "Appearance", glyph: "edit" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
@@ -5617,6 +5662,92 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "about", label: "About", glyph: "dot" },
 ];
 
+/** Ares Account — connect to the owner's gateway (doingteam.com), then live
+ *  credits / usage / models. Data arrives via gateway_account daemon frames;
+ *  grants toast app-wide the moment the owner pushes them. */
+function GatewayAccountPane({
+  account,
+  onDaemonCommand,
+}: {
+  account: GatewayAccountVm | null;
+  onDaemonCommand: (cmd: Record<string, unknown>) => void;
+}) {
+  const [url, setUrl] = useState("https://doingteam.com");
+  const [token, setToken] = useState("");
+  useEffect(() => {
+    onDaemonCommand({ type: "gateway_status" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const connected = account?.connected === true;
+  return (
+    <div className="settingsPane">
+      <h3 className="paneTitle">Ares Account</h3>
+      {!connected ? (
+        <div className="gwConnect">
+          <p className="paneHint">
+            Sign up at <strong>doingteam.com</strong>, then Account → <em>Connect Ares</em> gives you a token. Paste it
+            here — credits, models, and usage sync live.
+          </p>
+          <input className="txt" placeholder="gateway url" value={url} onChange={(ev) => setUrl(ev.target.value)} />
+          <input
+            className="txt"
+            placeholder="ares_… token (shown once on the site)"
+            type="password"
+            value={token}
+            onChange={(ev) => setToken(ev.target.value)}
+          />
+          <button
+            className="btn"
+            disabled={!token.trim()}
+            onClick={() => {
+              onDaemonCommand({ type: "gateway_connect", url: url.trim(), token: token.trim() });
+              setToken("");
+            }}
+          >
+            Connect
+          </button>
+          {account?.reason ? <p className="paneHint gwBad">Not connected: {account.reason}</p> : null}
+        </div>
+      ) : (
+        <div className="gwAccount">
+          <div className="gwRow">
+            <div className="gwAvatar">
+              {account?.profile?.avatar_url ? (
+                <img src={account.profile.avatar_url} alt="" />
+              ) : (
+                <span>{(account?.profile?.display_name ?? "A").slice(0, 1).toUpperCase()}</span>
+              )}
+            </div>
+            <div>
+              <strong>{account?.profile?.display_name ?? "warrior"}</strong>
+              <span className="gwStatus" data-status={account?.profile?.status ?? ""}> {account?.profile?.status}</span>
+            </div>
+            <div className="gwBalance">${(account?.balance_usd ?? 0).toFixed(2)}</div>
+          </div>
+          <div className="gwUsage">
+            today · {(account?.usage?.input_tokens ?? 0).toLocaleString()} in / {(account?.usage?.output_tokens ?? 0).toLocaleString()} out
+            · ${(account?.usage?.cost_usd ?? 0).toFixed(4)}
+          </div>
+          <div className="gwModels">
+            {(account?.models ?? []).map((m) => (
+              <div key={m.id} className="gwModel">
+                <span>
+                  {m.is_house ? <em className="gwHouse">ARES</em> : null} {m.display_name ?? m.id}
+                </span>
+                {m.is_free ? <em className="gwFree">FREE</em> : null}
+              </div>
+            ))}
+            {(account?.models ?? []).length === 0 ? <p className="paneHint">No models assigned yet — the owner grants them.</p> : null}
+          </div>
+          <button className="btn subtle" onClick={() => onDaemonCommand({ type: "gateway_status" })}>
+            Refresh
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Settings({
   prefs,
   onApply,
@@ -5625,6 +5756,7 @@ function Settings({
   skills,
   usage,
   keyStatus,
+  gatewayAccount,
   permissions,
   onPermissions,
   oauthProviders,
@@ -5641,6 +5773,7 @@ function Settings({
   skills: SkillInfo[];
   usage: UsageStats | null;
   keyStatus: Record<string, boolean>;
+  gatewayAccount: GatewayAccountVm | null;
   permissions: PermSettings;
   onPermissions: (next: PermSettings) => void;
   oauthProviders: OAuthProviderVm[];
@@ -5860,6 +5993,9 @@ function Settings({
 
           {tab === "usage" ? <UsagePane usage={usage} onDaemonCommand={onDaemonCommand} native={native} /> : null}
 
+          {tab === "account" ? (
+            <GatewayAccountPane account={gatewayAccount} onDaemonCommand={onDaemonCommand} />
+          ) : null}
           {tab === "keys" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">API Keys</h3>

@@ -30,7 +30,7 @@ interface DaemonModelOption {
   capabilities?: string[];
 }
 
-export const TERMINAL_PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "custom", "mock"] as const;
+export const TERMINAL_PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "ares", "custom", "mock"] as const;
 
 type TerminalProviderId = (typeof TERMINAL_PROVIDERS)[number];
 
@@ -58,6 +58,62 @@ export function isTerminalProviderId(provider: string): provider is TerminalProv
   return (TERMINAL_PROVIDERS as readonly string[]).includes(provider);
 }
 
+/** The Ares Gateway base URL (the owner's accounts site). */
+export function aresGatewayBase(settings: UiSettings): string {
+  return (settings.aresGatewayUrl || process.env.ARES_GATEWAY_URL || "https://doingteam.com").replace(/\/+$/, "");
+}
+
+export interface AresGatewayMe {
+  profile?: { display_name?: string | null; avatar_url?: string | null; status?: string; hide_providers?: boolean };
+  balance_usd?: number;
+  usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number };
+  models?: Array<{ id: string; display_name?: string; is_free?: boolean; is_house?: boolean }>;
+  new_grants?: Array<{ amount_usd?: number; reason?: string | null; at?: string }>;
+  server_time?: string;
+}
+
+/** Account snapshot (+ grant deltas since a cursor) from the gateway /me. */
+export async function fetchAresGatewayMe(
+  base: string,
+  token: string,
+  since?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AresGatewayMe | null> {
+  const url = `${base}/api/gateway/v1/me${since ? `?since=${encodeURIComponent(since)}` : ""}`;
+  const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }).catch(() => null);
+  if (!res?.ok) return null;
+  return (await res.json().catch(() => null)) as AresGatewayMe | null;
+}
+
+/** Live entitled-model list from the gateway — what THIS account may use.
+ *  Friendly single-row hints when not connected; injectable fetch for tests. */
+export async function fetchAresGatewayModels(
+  base: string,
+  token: string | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DaemonModelOption[]> {
+  if (!token) {
+    return [{ id: "ares-internal", hint: "connect your account — get a token at doingteam.com → Account", group: "Ares Gateway", capabilities: [] }];
+  }
+  const res = await fetchImpl(`${base}/api/gateway/v1/models`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  }).catch(() => null);
+  if (!res || res.status === 401) {
+    return [{ id: "ares-internal", hint: "token rejected — reconnect at doingteam.com → Account", group: "Ares Gateway", capabilities: [] }];
+  }
+  if (!res.ok) return [];
+  const payload = (await res.json().catch(() => ({}))) as {
+    models?: Array<{ id: string; display_name?: string; is_free?: boolean; is_house?: boolean }>;
+  };
+  return (payload.models ?? []).map((m) => ({
+    id: m.id,
+    label: m.display_name,
+    hint: [m.display_name ?? m.id, m.is_house ? "in house" : "", m.is_free ? "FREE" : ""].filter(Boolean).join(" · "),
+    group: "Ares Gateway",
+    capabilities: ["tools", "reasoning"],
+  }));
+}
+
 export function defaultTerminalModel(provider: string, settings: UiSettings): string {
   switch (provider) {
     case "openai":
@@ -66,6 +122,8 @@ export function defaultTerminalModel(provider: string, settings: UiSettings): st
       return settings.lastAnthropicModel ?? STATIC_MODEL_CATALOG.anthropic[0].id;
     case "deepseek":
       return settings.lastDeepSeekModel ?? "deepseek-v4-pro";
+    case "ares":
+      return settings.lastAresModel ?? "ares-internal";
     case "openrouter":
       return settings.lastOpenRouterModel ?? "openai/gpt-4o-mini";
     case "mock":
@@ -133,6 +191,10 @@ export async function daemonModelCatalog(provider: string): Promise<DaemonModelO
       group: "DeepSeek",
       capabilities: ["tools", "reasoning"],
     }));
+  }
+
+  if (provider === "ares") {
+    return fetchAresGatewayModels(aresGatewayBase(settings), settings.aresGatewayToken);
   }
 
   if (provider !== "ollama") return [];
@@ -248,6 +310,22 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       }),
       model,
       source: explicit ? "explicit:custom" : "settings:custom",
+    };
+  }
+
+  if (preferred === "ares") {
+    // The Ares Gateway (the owner's accounts site) speaks the Anthropic wire
+    // and takes the account bearer token as x-api-key — the hardened
+    // AnthropicProvider needs no changes. The GATEWAY resolves the virtual
+    // model id ("ares-internal") to a real provider+key server-side.
+    const model = requestedModel ?? settings.lastAresModel ?? "ares-internal";
+    return {
+      provider: new AnthropicProvider({
+        apiKey: settings.aresGatewayToken || process.env.ARES_GATEWAY_TOKEN || undefined,
+        endpointUrl: `${aresGatewayBase(settings)}/api/gateway/v1/messages`,
+      }),
+      model,
+      source: explicit ? "explicit:ares" : "settings:ares",
     };
   }
 

@@ -58,9 +58,13 @@ export function isTerminalProviderId(provider: string): provider is TerminalProv
   return (TERMINAL_PROVIDERS as readonly string[]).includes(provider);
 }
 
-/** The Ares Gateway base URL (the owner's accounts site). */
+/** The Ares Gateway base URL (the owner's accounts site). Normalizes the bare
+ *  apex doingteam.com → www: the apex 307-redirects to www, and fetch DROPS the
+ *  Authorization header on that cross-subdomain hop, so the token never arrives
+ *  ("token rejected"). Talk to the canonical host directly — no redirect. */
 export function aresGatewayBase(settings: UiSettings): string {
-  return (settings.aresGatewayUrl || process.env.ARES_GATEWAY_URL || "https://doingteam.com").replace(/\/+$/, "");
+  const raw = (settings.aresGatewayUrl || process.env.ARES_GATEWAY_URL || "https://www.doingteam.com").replace(/\/+$/, "");
+  return raw.replace(/^(https?:\/\/)doingteam\.com/i, "$1www.doingteam.com");
 }
 
 export interface AresGatewayMe {

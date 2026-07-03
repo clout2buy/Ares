@@ -5760,7 +5760,7 @@ function GatewayAccountPane({
   account: GatewayAccountVm | null;
   onDaemonCommand: (cmd: Record<string, unknown>) => void;
 }) {
-  const [url, setUrl] = useState("https://doingteam.com");
+  const [url, setUrl] = useState("https://www.doingteam.com");
   const [token, setToken] = useState("");
   useEffect(() => {
     onDaemonCommand({ type: "gateway_status" });

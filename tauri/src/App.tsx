@@ -172,7 +172,7 @@ interface GatewayAccountVm {
   profile?: { display_name?: string | null; avatar_url?: string | null; status?: string };
   balance_usd?: number;
   usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number };
-  models?: Array<{ id: string; display_name?: string; is_free?: boolean; is_house?: boolean }>;
+  models?: Array<{ id: string; display_name?: string; is_free?: boolean; is_house?: boolean; cap_remaining_microcents?: number }>;
 }
 
 interface BufferedEvent {
@@ -2866,28 +2866,59 @@ function App() {
                     <strong>{gatewayAccount.profile?.display_name ?? "warrior"}</strong>
                     <span className="gwStatus" data-status={gatewayAccount.profile?.status ?? ""}>{gatewayAccount.profile?.status}</span>
                   </div>
-                  <div className="amBalance">${(gatewayAccount.balance_usd ?? 0).toFixed(2)}</div>
                 </div>
-                <div className="amUsage">
-                  today · {(gatewayAccount.usage?.input_tokens ?? 0).toLocaleString()} in / {(gatewayAccount.usage?.output_tokens ?? 0).toLocaleString()} out · ${(gatewayAccount.usage?.cost_usd ?? 0).toFixed(4)}
+                <div className="amWallet">
+                  <div className="amWalletBig">${(gatewayAccount.balance_usd ?? 0).toFixed(2)}</div>
+                  <div className="amWalletSub">credits · ${(gatewayAccount.usage?.cost_usd ?? 0).toFixed(4)} spent today</div>
                 </div>
+                <div className="amSectionLabel">Models you can use</div>
                 <div className="amModels">
-                  {(gatewayAccount.models ?? []).slice(0, 5).map((m) => (
-                    <div key={m.id} className="amModel">
-                      <span>{m.is_house ? <em className="gwHouse">ARES</em> : null} {m.display_name ?? m.id}</span>
-                      {m.is_free ? <em className="gwFree">FREE</em> : null}
-                    </div>
-                  ))}
+                  {(gatewayAccount.models ?? []).length === 0 ? (
+                    <div className="amEmpty">No models assigned yet — the owner grants them.</div>
+                  ) : (
+                    (gatewayAccount.models ?? []).map((m) => {
+                      const active = prefs.provider === "ares" && prefs.model === m.id;
+                      const limit = m.is_free
+                        ? "free"
+                        : typeof m.cap_remaining_microcents === "number"
+                          ? `$${(m.cap_remaining_microcents / 1e6).toFixed(2)} left`
+                          : "wallet";
+                      return (
+                        <button
+                          key={m.id}
+                          className="amModelRow"
+                          data-active={active ? "1" : "0"}
+                          title={active ? "current model" : "use this model"}
+                          onClick={() => {
+                            const next = { ...prefsRef.current, provider: "ares", model: m.id };
+                            setPrefs(next as Prefs);
+                            prefsRef.current = next as Prefs;
+                            savePrefs(next as Prefs);
+                            daemonCmd({ type: "model_switch", provider: "ares", model: m.id });
+                            setAccountMenuOpen(false);
+                          }}
+                        >
+                          <span className="amModelName">
+                            {m.is_house ? <em className="gwHouse">ARES</em> : null}
+                            {m.display_name ?? m.id}
+                          </span>
+                          <span className="amModelLimit" data-free={m.is_free ? "1" : "0"}>{limit}</span>
+                          {active ? <span className="amModelDot" aria-hidden="true">●</span> : null}
+                        </button>
+                      );
+                    })
+                  )}
                 </div>
-                <button className="amAction" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); setSettingsTab("account"); }}>
-                  Manage account →
-                </button>
+                <div className="amFoot">
+                  <span className="amUsageLine">{(gatewayAccount.usage?.input_tokens ?? 0).toLocaleString()} in · {(gatewayAccount.usage?.output_tokens ?? 0).toLocaleString()} out today</span>
+                  <button className="amManage" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); setSettingsTab("account"); }}>Manage →</button>
+                </div>
               </>
             ) : (
               <>
-                <div className="amEmpty">Not connected. Get a token at <strong>doingteam.com</strong> → Account → Connect Ares.</div>
+                <div className="amEmpty">Connect your Ares account to route through the gateway with your credits.</div>
                 <button className="amAction" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); setSettingsTab("account"); }}>
-                  Connect →
+                  Connect account →
                 </button>
               </>
             )}

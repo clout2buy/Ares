@@ -3205,13 +3205,27 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .brandCredits { font-style: normal; font-weight: 800; font-size: 12px; color: var(--ember, #e08b2e); margin-left: 8px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 55%, transparent); border-radius: 999px; }
 .brandCaret { font-style: normal; color: var(--faint); font-size: 10px; margin-left: 6px; transition: transform 160ms; }
 .brandBtn[data-open="1"] .brandCaret { transform: rotate(180deg); color: var(--ember, #e08b2e); }
-.accountMenu { position: absolute; top: 44px; left: 12px; z-index: 200; min-width: 320px; background: color-mix(in srgb, var(--panel) 92%, black); border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 45%, var(--line)); border-radius: 12px; box-shadow: 0 18px 60px rgba(0,0,0,.65), 0 0 0 1px rgba(0,0,0,.4); padding: 14px; display: flex; flex-direction: column; gap: 10px; animation: fadeUp 180ms ease-out; }
-.amHead { display: flex; align-items: center; gap: 10px; }
-.amWho { display: flex; flex-direction: column; line-height: 1.2; }
-.amBalance { margin-left: auto; font-size: 20px; font-weight: 800; color: var(--ember, #e08b2e); }
-.amUsage { font-size: 11px; color: var(--faint); border-top: 1px solid var(--line); padding-top: 8px; }
-.amModels { display: flex; flex-direction: column; gap: 5px; max-height: 180px; overflow-y: auto; }
-.amModel { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; }
-.amEmpty { font-size: 12px; color: var(--faint); line-height: 1.5; }
-.amAction { margin-top: 2px; background: color-mix(in srgb, var(--ember, #e08b2e) 18%, transparent); border: 1px solid var(--ember, #e08b2e); color: var(--text); border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background 160ms; }
+.accountMenu { position: absolute; top: 46px; left: 12px; z-index: 200; width: 320px; background: color-mix(in srgb, var(--panel) 94%, black); border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 40%, var(--line)); border-radius: 14px; box-shadow: 0 22px 70px rgba(0,0,0,.7), 0 0 0 1px rgba(0,0,0,.4); padding: 4px; display: flex; flex-direction: column; animation: fadeUp 160ms ease-out; overflow: hidden; }
+.amHead { display: flex; align-items: center; gap: 10px; padding: 12px 12px 8px; }
+.amWho { display: flex; flex-direction: column; line-height: 1.25; }
+.amWho strong { font-size: 14px; }
+/* wallet — the hero number */
+.amWallet { margin: 2px 8px 8px; padding: 12px 14px; border-radius: 11px; background: linear-gradient(135deg, color-mix(in srgb, var(--ember, #e08b2e) 16%, transparent), color-mix(in srgb, var(--blood, #7a1f12) 14%, transparent)); border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 30%, var(--line)); }
+.amWalletBig { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; color: var(--ember-hi, #ffd27a); line-height: 1; }
+.amWalletSub { font-size: 11px; color: var(--faint); margin-top: 4px; }
+.amSectionLabel { font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); padding: 4px 14px 6px; }
+.amModels { display: flex; flex-direction: column; gap: 3px; max-height: 210px; overflow-y: auto; padding: 0 8px; }
+.amModelRow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; font-size: 12.5px; padding: 9px 11px; border: 1px solid transparent; border-radius: 9px; background: color-mix(in srgb, var(--panel) 60%, transparent); color: var(--text); cursor: pointer; transition: all 140ms; }
+.amModelRow:hover { background: color-mix(in srgb, var(--ember, #e08b2e) 12%, transparent); border-color: color-mix(in srgb, var(--ember, #e08b2e) 30%, var(--line)); }
+.amModelRow[data-active="1"] { background: color-mix(in srgb, var(--ember, #e08b2e) 18%, transparent); border-color: var(--ember, #e08b2e); }
+.amModelName { flex: 1; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.amModelLimit { flex: none; font-size: 10.5px; font-weight: 700; color: var(--steel, #7fa6a3); background: color-mix(in srgb, var(--steel, #7fa6a3) 12%, transparent); padding: 2px 7px; border-radius: 999px; }
+.amModelLimit[data-free="1"] { color: var(--ember, #e08b2e); background: color-mix(in srgb, var(--ember, #e08b2e) 14%, transparent); }
+.amModelDot { flex: none; color: var(--ember, #e08b2e); font-size: 9px; }
+.amFoot { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.amUsageLine { font-size: 10.5px; color: var(--faint); }
+.amManage { background: none; border: none; color: var(--ember, #e08b2e); font-size: 12px; font-weight: 700; cursor: pointer; padding: 2px 4px; }
+.amManage:hover { text-decoration: underline; }
+.amEmpty { font-size: 12px; color: var(--faint); line-height: 1.55; padding: 14px; }
+.amAction { margin: 4px 10px 12px; background: color-mix(in srgb, var(--ember, #e08b2e) 18%, transparent); border: 1px solid var(--ember, #e08b2e); color: var(--text); border-radius: 9px; padding: 9px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; transition: background 160ms; }
 .amAction:hover { background: color-mix(in srgb, var(--ember, #e08b2e) 32%, transparent); }

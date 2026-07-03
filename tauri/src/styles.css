@@ -3198,3 +3198,20 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .gwModel { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .gwHouse { font-style: normal; font-size: 10px; font-weight: 800; letter-spacing: .12em; color: var(--ember, #e08b2e); border: 1px solid var(--ember, #e08b2e); border-radius: 4px; padding: 1px 5px; margin-right: 6px; }
 .gwFree { font-style: normal; font-size: 10px; font-weight: 700; color: var(--steel, #7fa6a3); }
+
+/* ARES brand dropdown — the account lives one click from the wordmark */
+.brandBtn { cursor: pointer; background: none; border: none; padding: 0 8px 0 0; border-radius: 8px; transition: background 160ms; position: relative; }
+.brandBtn:hover, .brandBtn[data-open="1"] { background: color-mix(in srgb, var(--ember, #e08b2e) 10%, transparent); }
+.brandCredits { font-style: normal; font-weight: 800; font-size: 12px; color: var(--ember, #e08b2e); margin-left: 8px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 55%, transparent); border-radius: 999px; }
+.brandCaret { font-style: normal; color: var(--faint); font-size: 10px; margin-left: 6px; transition: transform 160ms; }
+.brandBtn[data-open="1"] .brandCaret { transform: rotate(180deg); color: var(--ember, #e08b2e); }
+.accountMenu { position: absolute; top: 44px; left: 12px; z-index: 200; min-width: 320px; background: color-mix(in srgb, var(--panel) 92%, black); border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 45%, var(--line)); border-radius: 12px; box-shadow: 0 18px 60px rgba(0,0,0,.65), 0 0 0 1px rgba(0,0,0,.4); padding: 14px; display: flex; flex-direction: column; gap: 10px; animation: fadeUp 180ms ease-out; }
+.amHead { display: flex; align-items: center; gap: 10px; }
+.amWho { display: flex; flex-direction: column; line-height: 1.2; }
+.amBalance { margin-left: auto; font-size: 20px; font-weight: 800; color: var(--ember, #e08b2e); }
+.amUsage { font-size: 11px; color: var(--faint); border-top: 1px solid var(--line); padding-top: 8px; }
+.amModels { display: flex; flex-direction: column; gap: 5px; max-height: 180px; overflow-y: auto; }
+.amModel { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; }
+.amEmpty { font-size: 12px; color: var(--faint); line-height: 1.5; }
+.amAction { margin-top: 2px; background: color-mix(in srgb, var(--ember, #e08b2e) 18%, transparent); border: 1px solid var(--ember, #e08b2e); color: var(--text); border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background 160ms; }
+.amAction:hover { background: color-mix(in srgb, var(--ember, #e08b2e) 32%, transparent); }

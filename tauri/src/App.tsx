@@ -1580,6 +1580,7 @@ function App() {
   const [activeId, setActiveId] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
   const [consciousness, setConsciousness] = useState<ConsciousnessVm>({
@@ -2831,11 +2832,67 @@ function App() {
       </svg>
 
       <header className="titlebar" onMouseDown={dragWindow}>
-        <div className="brand">
+        <button
+          className="brand brandBtn"
+          data-open={accountMenuOpen ? "1" : "0"}
+          onMouseDown={(ev) => ev.stopPropagation()}
+          onClick={() => {
+            setAccountMenuOpen((v) => !v);
+            if (!accountMenuOpen) daemonCmd({ type: "gateway_status" });
+          }}
+          title="Ares account"
+        >
           <div className="emblem" aria-hidden="true" />
           <h1>ARES</h1>
           <span>the battle-tested agent</span>
-        </div>
+          {gatewayAccount?.connected ? (
+            <em className="brandCredits">${(gatewayAccount.balance_usd ?? 0).toFixed(2)}</em>
+          ) : null}
+          <i className="brandCaret" aria-hidden="true">▾</i>
+        </button>
+        {accountMenuOpen ? (
+          <div className="accountMenu" onMouseDown={(ev) => ev.stopPropagation()}>
+            {gatewayAccount?.connected ? (
+              <>
+                <div className="amHead">
+                  <div className="gwAvatar">
+                    {gatewayAccount.profile?.avatar_url ? (
+                      <img src={gatewayAccount.profile.avatar_url} alt="" />
+                    ) : (
+                      <span>{(gatewayAccount.profile?.display_name ?? "A").slice(0, 1).toUpperCase()}</span>
+                    )}
+                  </div>
+                  <div className="amWho">
+                    <strong>{gatewayAccount.profile?.display_name ?? "warrior"}</strong>
+                    <span className="gwStatus" data-status={gatewayAccount.profile?.status ?? ""}>{gatewayAccount.profile?.status}</span>
+                  </div>
+                  <div className="amBalance">${(gatewayAccount.balance_usd ?? 0).toFixed(2)}</div>
+                </div>
+                <div className="amUsage">
+                  today · {(gatewayAccount.usage?.input_tokens ?? 0).toLocaleString()} in / {(gatewayAccount.usage?.output_tokens ?? 0).toLocaleString()} out · ${(gatewayAccount.usage?.cost_usd ?? 0).toFixed(4)}
+                </div>
+                <div className="amModels">
+                  {(gatewayAccount.models ?? []).slice(0, 5).map((m) => (
+                    <div key={m.id} className="amModel">
+                      <span>{m.is_house ? <em className="gwHouse">ARES</em> : null} {m.display_name ?? m.id}</span>
+                      {m.is_free ? <em className="gwFree">FREE</em> : null}
+                    </div>
+                  ))}
+                </div>
+                <button className="amAction" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); setSettingsTab("account"); }}>
+                  Manage account →
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="amEmpty">Not connected. Get a token at <strong>doingteam.com</strong> → Account → Connect Ares.</div>
+                <button className="amAction" onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); setSettingsTab("account"); }}>
+                  Connect →
+                </button>
+              </>
+            )}
+          </div>
+        ) : null}
         <div className="titleDrag" />
         <span className="pill" data-state={daemon}>
           {daemon === "running" ? "ONLINE" : daemon.toUpperCase()}

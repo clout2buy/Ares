@@ -2,9 +2,11 @@
 
 import { AresSubagentRunner, SubagentRegistry, type EngineTool, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { DEFAULT_TOOLS, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeConductorTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeEnterPlanModeTool, makeExitPlanModeTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
+import { DEFAULT_TOOLS, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeEnterPlanModeTool, makeExitPlanModeTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
+import { loadUiSettings } from "../uiSettings.js";
+import { aresGatewayBase } from "./providers.js";
 import { makeTelegramSetupTool } from "../telegramSetupTool.js";
 import { makeTelegramRosterTool } from "../telegramRosterTool.js";
 import { BootstrapTool, MissionTool, RunSkillTool, SelfEvolveTool, SelfTool, SkillCraftTool } from "@ares/agent";
@@ -106,6 +108,19 @@ export async function buildEngineTools(
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
+  // CodingBackend — drive an external coding CLI (Claude Code / Codex) on the
+  // ARES account (gateway creds injected, no user OAuth). Main-agent only, like
+  // Conductor: subagents/leaves can't recurse into it. Gateway base + token come
+  // from settings; an absent token surfaces a "connect your account" tool error.
+  const settings = await loadUiSettings().catch(() => null);
+  const codingBackendTool = adaptToolForEngine(
+    makeCodingBackendTool({
+      gatewayBase: settings ? aresGatewayBase(settings) : "https://www.doingteam.com",
+      gatewayToken: settings?.aresGatewayToken || process.env.ARES_GATEWAY_TOKEN,
+      defaultModel: settings?.lastAresModel ?? "ares-internal",
+    }),
+    enrich,
+  ) as EngineTool;
   const operatorWorkerTools = [...workerTools, livingMindTool, browserTool];
   const operatorTool = adaptToolForEngine(
     makeOperatorChatTool({
@@ -116,7 +131,7 @@ export async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool, conductorTool];
+  return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool, conductorTool, codingBackendTool];
 }
 
 const livingMindInput = z

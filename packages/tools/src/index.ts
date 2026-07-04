@@ -16,6 +16,15 @@ export { LspTool, type LspOutput, type LspLocation } from "./LSP.js";
 export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.js";
 export { makeTaskTool, type SubagentRunner, type TaskOutput } from "./Task.js";
 export {
+  makeCodingBackendTool,
+  detectBackend,
+  BACKENDS,
+  type BackendName,
+  type BackendSpec,
+  type CodingBackendDeps,
+  type CodingBackendOutput,
+} from "./CodingBackend.js";
+export {
   makeConductorTool,
   exampleValidator,
   exampleHinter,

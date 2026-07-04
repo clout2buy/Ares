@@ -2175,6 +2175,70 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .fleetAgent[data-status="failed"] .fleetDot { background: var(--crimson); }
 .fleetRole { font: 600 11px/1.2 var(--mono); color: var(--text); flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleetAct { font: 400 10.5px/1.3 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+
+/* ── Delegation cut-scene: Ares beaming a job to Claude Code / Codex ────────── */
+.cbScene {
+  --cb-accent: #d9935a;
+  margin: 0 0 8px; padding: 14px 14px 11px; border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  background:
+    radial-gradient(120% 90% at 50% -10%, rgba(var(--ember-rgb), 0.10), transparent 60%),
+    linear-gradient(180deg, var(--bg-raised), var(--panel));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(var(--ember-rgb), 0.06);
+  overflow: hidden; animation: paletteIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.cbScene[data-phase="done"] { border-color: rgba(127, 166, 163, 0.5); box-shadow: 0 10px 34px rgba(0, 0, 0, 0.42), 0 0 26px -6px var(--cb-accent); }
+.cbScene[data-phase="failed"] { border-color: rgba(194, 80, 72, 0.5); animation: cbShake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+
+.cbStage { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; }
+.cbChar { display: grid; justify-items: center; gap: 5px; }
+.cbAvatar {
+  width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px;
+  font-size: 24px; line-height: 1;
+  border: 1px solid var(--line-strong); background: rgba(0, 0, 0, 0.25);
+  animation: cbBob 2.6s ease-in-out infinite;
+}
+.cbAres .cbAvatar { box-shadow: 0 0 18px -4px var(--ember-hi); border-color: rgba(var(--ember-rgb), 0.5); }
+.cbBackend .cbAvatar { color: var(--cb-accent); box-shadow: 0 0 18px -6px var(--cb-accent); border-color: color-mix(in srgb, var(--cb-accent) 55%, transparent); animation-delay: -1.3s; }
+.cbName { font: 650 9.5px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); }
+.cbAres .cbName { color: var(--ember-hi); }
+.cbBackend .cbName { color: var(--cb-accent); }
+
+/* The beam: three chevrons streaming Ares → backend while working. */
+.cbBeam { display: inline-flex; gap: 6px; align-items: center; opacity: 0.35; }
+.cbBeam i { width: 8px; height: 8px; border-top: 2px solid var(--cb-accent); border-right: 2px solid var(--cb-accent); transform: rotate(45deg); border-radius: 1px; }
+.cbScene[data-phase="running"] .cbBeam { opacity: 1; }
+.cbScene[data-phase="running"] .cbBeam i { animation: cbFlow 1s linear infinite; }
+.cbScene[data-phase="running"] .cbBeam i:nth-child(2) { animation-delay: 0.16s; }
+.cbScene[data-phase="running"] .cbBeam i:nth-child(3) { animation-delay: 0.32s; }
+.cbScene[data-phase="done"] .cbBeam i { border-color: var(--steel); opacity: 0.5; }
+.cbScene[data-phase="failed"] .cbBeam i { border-color: var(--crimson); }
+
+.cbBubble {
+  margin: 11px auto 0; max-width: 92%; text-align: center;
+  font: 500 12px/1.45 var(--mono); color: var(--text);
+  padding: 8px 12px; border-radius: 10px; position: relative;
+  border: 1px solid var(--line); background: rgba(var(--ember-rgb), 0.05);
+}
+.cbBubble::before { content: ""; position: absolute; top: -5px; left: 50%; width: 9px; height: 9px; transform: translateX(-50%) rotate(45deg); background: rgba(var(--ember-rgb), 0.05); border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+
+.cbTimeline { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 11px; }
+.cbStep { display: inline-flex; align-items: center; gap: 5px; font: 600 9px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); opacity: 0.5; }
+.cbStep[data-state="active"] { opacity: 1; color: var(--ember-hi); }
+.cbStep[data-state="done"] { opacity: 0.85; color: var(--steel); }
+.cbStep:not(:last-child)::after { content: "→"; margin-left: 4px; color: var(--faint); opacity: 0.5; }
+.cbStepDot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cbStep[data-state="active"] .cbStepDot { box-shadow: 0 0 7px var(--ember-hi); animation: micPulse 1.2s ease-in-out infinite; }
+
+.cbMeta { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
+.cbLive { flex: 1; min-width: 0; font: 400 10px/1.3 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cbLiveIdle { opacity: 0.6; font-style: italic; }
+.cbTally { font: 650 10px/1 var(--mono); color: var(--cb-accent); flex: none; }
+.cbClock { font: 600 10px/1 var(--mono); color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
+
+@keyframes cbBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes cbFlow { 0% { opacity: 0.15; transform: rotate(45deg) translate(-2px, 2px); } 50% { opacity: 1; } 100% { opacity: 0.15; transform: rotate(45deg) translate(3px, -3px); } }
+@keyframes cbShake { 10%, 90% { transform: translateX(-1px); } 30%, 70% { transform: translateX(3px); } 50% { transform: translateX(-3px); } }
 .popTitle { font: 600 10px/1 var(--mono); letter-spacing: 0.22em; text-transform: uppercase; color: var(--faint); padding: 12px 12px 8px; }
 .popRow {
   display: flex; align-items: baseline; gap: 12px;

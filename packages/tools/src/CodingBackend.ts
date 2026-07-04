@@ -369,6 +369,7 @@ export function makeCodingBackendTool(deps: CodingBackendDeps) {
       });
 
       if (run.spawnError) {
+        ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: spec.label, phase: "failed" });
         throw toolError(`Couldn't launch ${spec.label}: ${run.spawnError.message}`);
       }
 
@@ -380,12 +381,22 @@ export function makeCodingBackendTool(deps: CodingBackendDeps) {
         run.stderr.trim().slice(-2000);
 
       if (failed) {
+        // Let the cut-scene shatter, then surface the correctable error.
+        ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: spec.label, phase: "failed" });
         throw toolError(
           `${spec.label} ${run.timedOut ? "timed out" : `exited ${run.code}`}. ` +
             `Last output:\n${(finalText || run.stderr).slice(-1500)}`,
         );
       }
 
+      // Victory: the cut-scene celebrates with the final file tally.
+      ctx.emitProgress?.({
+        kind: "coding_backend",
+        backend: spec.name,
+        label: spec.label,
+        phase: "done",
+        filesTouched: parsed.files.length,
+      });
       return {
         output: {
           backend: spec.name,

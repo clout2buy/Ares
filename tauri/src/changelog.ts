@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.14.0",
+    date: "July 2026",
+    title: "The delegation cut-scene",
+    tagline: "Watch Ares hand a job to Claude Code — a little animated scene, live, right in the chat.",
+    highlights: [
+      {
+        icon: "🎬",
+        title: "Ares delegates, on screen",
+        tag: "New",
+        blurb: "When Ares drives an external coder like Claude Code on your Ares account, a live animated scene shows it happening — Ares and the backend as characters, a delegation beam, a phase timeline, and a running file tally. \"Completely overpowered.\"",
+      },
+      {
+        icon: "🔥",
+        title: "See exactly what's running",
+        tag: "Polished",
+        blurb: "The scene narrates each act — sizing up the job, bringing the backend online, driving it, done — with the files it touched, so a long delegated run never looks frozen.",
+      },
+    ],
+  },
+  {
     version: "0.13.13",
     date: "July 2026",
     title: "Your model stays put — and a richer model browser",

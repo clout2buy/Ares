@@ -68,7 +68,7 @@ interface AresEvent {
   /** tool_use_input_delta — partial JSON of the tool input being authored. */
   deltaJson?: string;
   /** tool_progress — live sub-tool output (shell chunks, grep ticks, subagent activity, live browser frames, Conductor fleet activity). */
-  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string; agentId?: string; event?: string; role?: string; phase?: string; status?: string; fleetId?: string };
+  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string; agentId?: string; event?: string; role?: string; phase?: string; status?: string; fleetId?: string; backend?: string; label?: string; line?: string; filesTouched?: number; version?: string };
   /** compaction event fields */
   summarizedMessages?: number;
   tokensBefore?: number;
@@ -309,6 +309,23 @@ interface SessionVm {
   updatedAt?: string;
   /** Live Conductor fleet — populated from fleet_activity progress events. */
   fleet?: FleetVm;
+  /** Live delegation cut-scene — populated from coding_backend progress events
+   *  while Ares drives an external coder (Claude Code / Codex) on the account. */
+  codingBackend?: CodingBackendVm;
+}
+
+interface CodingBackendVm {
+  /** "claude" | "codex" — which little character Ares is working with. */
+  backend: string;
+  label: string;
+  /** The act of the cut-scene. */
+  phase: "detect" | "install" | "running" | "done" | "failed";
+  /** Bounded recent activity lines from the backend (stdout/stream-json). */
+  lines: string[];
+  /** Files the backend has touched so far (parsed live from stream-json). */
+  filesTouched: number;
+  /** When it started (for the elapsed readout). Set from the render clock. */
+  startedTick: number;
 }
 
 interface FleetAgentVm {
@@ -465,6 +482,7 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.busy = true;
       session.activity = "marshalling";
       session.fleet = undefined; // clear last turn's fleet board
+      session.codingBackend = undefined; // and last turn's delegation cut-scene (fresh elapsed clock)
       break;
     case "consciousness_say": {
       // A proactive remark from the Watch — drop it into the conversation as a
@@ -614,6 +632,29 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         if (at === -1) agents.push(next);
         else agents[at] = next;
         session.fleet = { ...session.fleet, active: true, agents };
+        break;
+      }
+      // Delegation cut-scene — Ares handing a job to Claude Code / Codex on the
+      // Ares account. These events already flowed here but were dropped; now they
+      // drive the animated scene.
+      if (d.kind === "coding_backend") {
+        const prev = session.codingBackend;
+        const phase = (typeof d.phase === "string" ? d.phase : prev?.phase ?? "detect") as CodingBackendVm["phase"];
+        const line = typeof d.line === "string" ? d.line.trim() : "";
+        const lines = line ? [...(prev?.lines ?? []), line].slice(-6) : prev?.lines ?? [];
+        // Count edited files live from Claude Code's stream-json tool_use blocks.
+        let filesTouched = typeof d.filesTouched === "number" ? d.filesTouched : prev?.filesTouched ?? 0;
+        if (line && /"type"\s*:\s*"tool_use"/.test(line) && /"name"\s*:\s*"(Edit|Write|MultiEdit|NotebookEdit|Update)"/.test(line)) {
+          filesTouched = (prev?.filesTouched ?? 0) + 1;
+        }
+        session.codingBackend = {
+          backend: typeof d.backend === "string" ? d.backend : prev?.backend ?? "claude",
+          label: typeof d.label === "string" ? d.label : prev?.label ?? "Claude Code",
+          phase,
+          lines,
+          filesTouched,
+          startedTick: prev?.startedTick ?? Date.now(),
+        };
         break;
       }
       for (let i = items.length - 1; i >= 0; i--) {
@@ -2341,6 +2382,23 @@ function App() {
       });
     } else {
       window.setTimeout(() => apply((s) => foldEvent(s, { type: "turn_start" })), 150);
+      // Demo mode shows the delegation cut-scene when the message mentions a
+      // backend — so the feature is visible without a daemon (and demoable).
+      if (/claude code|codex|delegate/i.test(trimmed)) {
+        const backend = /codex/i.test(trimmed) ? "codex" : "claude";
+        const label = backend === "codex" ? "Codex" : "Claude Code";
+        const cb = (data: Record<string, unknown>, t: number) =>
+          window.setTimeout(() => apply((s) => foldEvent(s, { type: "tool_progress", id: "demo-cb", data: { kind: "coding_backend", backend, label, ...data } })), t);
+        cb({ phase: "detect" }, 300);
+        cb({ phase: "running", version: "1.0.0" }, 1400);
+        cb({ phase: "running", line: '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/mod.lua"}}]}}' }, 2500);
+        cb({ phase: "running", line: '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"src/hud.lua"}}]}}' }, 3600);
+        cb({ phase: "done", filesTouched: 2 }, 4800);
+        const reply = `Demo — I delegated to ${label} on the Ares account. In the installed app this drives the real CLI, no login needed.`;
+        window.setTimeout(() => apply((s) => foldEvent(s, { type: "text_delta", text: reply })), 5100);
+        window.setTimeout(() => apply((s) => foldEvent(s, { type: "turn_end", status: "completed", durationMs: 5400, usage: { inputTokens: 4000, outputTokens: 300 } })), 5400);
+        return;
+      }
       // ULTRA in demo mode shows a sample fleet so the board is visible without a daemon.
       if (prefsRef.current.ultra) {
         const fa = (data: Record<string, unknown>, t: number) =>
@@ -3206,6 +3264,8 @@ function App() {
             }
           />
         ) : null}
+
+        {active?.codingBackend ? <CodingBackendScene vm={active.codingBackend} /> : null}
 
         {view !== "helm" ? (
           <Composer
@@ -4482,6 +4542,67 @@ function SessionRow({
 }
 
 // ─── The live fleet board — Conductor agents, grouped by phase ──────────────
+// ─── The delegation cut-scene — Ares handing a job to Claude Code / Codex ────
+// A little animated stage: Ares (the dragon) beams a task across to the chosen
+// backend's character, a phase timeline lights up (detect → install → running →
+// done), and Ares narrates. Pure CSS/emoji — no assets, CSP-safe.
+const CODING_CHARS: Record<string, { glyph: string; accent: string }> = {
+  claude: { glyph: "✳", accent: "#d9935a" },
+  codex: { glyph: "◆", accent: "#74c39c" },
+};
+const CODING_PHASES: Array<CodingBackendVm["phase"]> = ["detect", "install", "running", "done"];
+function codingNarration(vm: CodingBackendVm): string {
+  switch (vm.phase) {
+    case "detect": return `Sizing up the job — is ${vm.label} here?`;
+    case "install": return `Bringing ${vm.label} online…`;
+    case "running": return `${vm.label} is on it — I'm driving. This is overpowered.`;
+    case "done": return `Done — ${vm.filesTouched} file${vm.filesTouched === 1 ? "" : "s"} touched. Completely overpowered. 🔥`;
+    case "failed": return `${vm.label} choked. I've got it from here.`;
+    default: return "";
+  }
+}
+function CodingBackendScene({ vm }: { vm: CodingBackendVm }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (vm.phase === "done" || vm.phase === "failed") return;
+    const t = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [vm.phase]);
+  const backend = CODING_CHARS[vm.backend] ?? CODING_CHARS.claude;
+  const elapsed = Math.max(0, Math.round((Date.now() - vm.startedTick) / 1000));
+  const running = vm.phase === "running";
+  const activeIdx = CODING_PHASES.indexOf(vm.phase === "failed" ? "running" : vm.phase);
+  const lastLine = vm.lines[vm.lines.length - 1];
+  return (
+    <div className="cbScene" data-phase={vm.phase} data-backend={vm.backend} style={{ ["--cb-accent" as string]: backend.accent }}>
+      <div className="cbStage">
+        <div className="cbChar cbAres" title="Ares">
+          <span className="cbAvatar">🐉</span>
+          <span className="cbName">Ares</span>
+        </div>
+        <div className="cbBeam" aria-hidden="true"><i /><i /><i /></div>
+        <div className="cbChar cbBackend" title={vm.label}>
+          <span className="cbAvatar">{backend.glyph}</span>
+          <span className="cbName">{vm.label}</span>
+        </div>
+      </div>
+      <div className="cbBubble">{codingNarration(vm)}</div>
+      <div className="cbTimeline">
+        {CODING_PHASES.map((p, i) => (
+          <div key={p} className="cbStep" data-state={vm.phase === "done" || i < activeIdx ? "done" : i === activeIdx ? "active" : "todo"}>
+            <i className="cbStepDot" /><span>{p}</span>
+          </div>
+        ))}
+      </div>
+      <div className="cbMeta">
+        {running && lastLine ? <span className="cbLive" title={lastLine}>{lastLine.slice(0, 84)}</span> : <span className="cbLive cbLiveIdle">{running ? "streaming…" : vm.phase}</span>}
+        <span className="cbTally">{vm.filesTouched} file{vm.filesTouched === 1 ? "" : "s"}</span>
+        <span className="cbClock">{elapsed}s</span>
+      </div>
+    </div>
+  );
+}
+
 function FleetPanel({ fleet, onResume }: { fleet: FleetVm; onResume: (fleetId: string) => void }) {
   const agents = fleet.agents;
   const total = agents.length;

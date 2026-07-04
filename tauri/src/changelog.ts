@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.12",
+    date: "July 2026",
+    title: "Your model sticks — and easier account setup",
+    tagline: "Ares now remembers the model you pick, and getting started can connect your Ares account in one click.",
+    highlights: [
+      {
+        icon: "📌",
+        title: "It remembers your model",
+        tag: "Safer",
+        blurb: "Pick an Ares-account or custom-endpoint model and it now sticks across restarts instead of snapping back to the default. Every provider's choice is remembered.",
+      },
+      {
+        icon: "🚀",
+        title: "One-click account on setup",
+        tag: "New",
+        blurb: "The welcome screen now offers \"Connect Ares account\" right alongside local Ollama and API keys — the zero-setup path to models is front and center.",
+      },
+    ],
+  },
+  {
     version: "0.13.11",
     date: "July 2026",
     title: "Helper agents ask instead of dying",

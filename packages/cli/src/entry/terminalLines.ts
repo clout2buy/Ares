@@ -244,6 +244,10 @@ export async function persistTerminalModelPreference(provider: string, model: st
     lastAnthropicModel: provider === "anthropic" ? model : settings.lastAnthropicModel,
     lastDeepSeekModel: provider === "deepseek" ? model : settings.lastDeepSeekModel,
     lastOpenRouterModel: provider === "openrouter" ? model : settings.lastOpenRouterModel,
+    // Same gap as the daemon's model_switch: Ares gateway + custom models
+    // weren't being remembered. Persist them so a /model choice survives restart.
+    lastAresModel: provider === "ares" ? model : settings.lastAresModel,
+    lastCustomModel: provider === "custom" ? model : settings.lastCustomModel,
   });
 }
 

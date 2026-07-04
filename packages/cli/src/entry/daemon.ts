@@ -1202,6 +1202,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             lastAnthropicModel: provider === "anthropic" ? model : settings.lastAnthropicModel,
             lastDeepSeekModel: provider === "deepseek" ? model : settings.lastDeepSeekModel,
             lastOpenRouterModel: provider === "openrouter" ? model : settings.lastOpenRouterModel,
+            // Ares gateway + custom endpoints were omitted here, so picking one
+            // of their models never persisted — next start snapped back to the
+            // "ares-internal"/"" default. Remember them like every other provider.
+            lastAresModel: provider === "ares" ? model : settings.lastAresModel,
+            lastCustomModel: provider === "custom" ? model : settings.lastCustomModel,
           });
           process.stdout.write(JSON.stringify({ type: "model_switched", provider, model }) + "\n");
         } catch (err) {

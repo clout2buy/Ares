@@ -1543,9 +1543,11 @@ function noUsableKeys(keyStatus: Record<string, boolean>): boolean {
 function FirstRunGate({
   active,
   onOpenKeys,
+  onConnectAres,
 }: {
   active: boolean;
   onOpenKeys: () => void;
+  onConnectAres: () => void;
 }): React.ReactElement | null {
   const [dismissed, setDismissed] = useState(false);
   // Re-arm if keys disappear again (e.g. the user clears them mid-session).
@@ -1565,17 +1567,21 @@ function FirstRunGate({
           </div>
           <h2 id="frgTitle" className="wnTitle">One quick step to begin</h2>
           <p className="wnTagline">
-            Ares needs at least one AI provider to think. Add a key — Anthropic, OpenAI,
-            OpenRouter, DeepSeek, or any OpenAI-compatible endpoint — or point it at a local
-            Ollama. It takes about a minute.
+            Ares needs a way to think. Connect your Ares account for models with zero setup —
+            or bring your own: add a provider key (Anthropic, OpenAI, OpenRouter, DeepSeek, or
+            any OpenAI-compatible endpoint), or point it at a local Ollama. About a minute.
           </p>
         </header>
         <footer className="wnFoot">
           <button className="wnOlderToggle" onClick={() => setDismissed(true)}>
             I'll use local Ollama
           </button>
-          <button className="wnGo" onClick={onOpenKeys} autoFocus>
+          <button className="wnGhost" onClick={onOpenKeys}>
             Add an API key
+          </button>
+          {/* The zero-setup path: one account, models included. Made primary. */}
+          <button className="wnGo" onClick={onConnectAres} autoFocus>
+            Connect Ares account
           </button>
         </footer>
       </div>
@@ -2842,6 +2848,10 @@ function App() {
         active={native && daemon !== "starting" && noUsableKeys(keyStatus)}
         onOpenKeys={() => {
           setSettingsTab("keys");
+          setSettingsOpen(true);
+        }}
+        onConnectAres={() => {
+          setSettingsTab("account");
           setSettingsOpen(true);
         }}
       />

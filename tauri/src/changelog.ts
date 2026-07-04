@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.6",
+    date: "July 2026",
+    title: "Connect anything — type /mcp",
+    tagline: "A Directory of tools & apps. Click, approve in your browser, and Ares can use them.",
+    highlights: [
+      {
+        icon: "🔌",
+        title: "The connector Directory",
+        tag: "New",
+        blurb: "Type /mcp (or Ctrl+K → Connectors) to open a searchable gallery — Notion, Linear, Sentry, GitHub, Vercel, Atlassian, Stripe, Supabase and more. Click one, approve access in your browser, and its tools are instantly live for the agent.",
+      },
+      {
+        icon: "🌐",
+        title: "Any MCP server, by URL",
+        tag: "New",
+        blurb: "Not in the list? Paste any remote MCP server's URL and Ares connects to it generically — it discovers the server's login, registers itself, and does the secure OAuth handshake with no setup on your end.",
+      },
+      {
+        icon: "🔐",
+        title: "Tokens stay encrypted",
+        tag: "Safer",
+        blurb: "Connector access tokens are stored encrypted on your machine and refreshed automatically — never written in plain text, never leaving your device.",
+      },
+    ],
+  },
+  {
     version: "0.13.5",
     date: "July 2026",
     title: "Any AI provider, one click",

@@ -11,6 +11,7 @@
 // NATURALLY without explicit user prompting).
 
 import { z } from "zod";
+import type { ToolCallContext } from "@ares/core";
 import { buildTool } from "./_shared.js";
 
 export interface SubagentRunner {
@@ -24,6 +25,12 @@ export interface SubagentRunner {
     /** Forward child activity (tool_start/tool_end) so the UI isn't a silent
      *  "Delegating…" for up to 40 inner turns. */
     onProgress?: (data: unknown) => void;
+    /** Bubble the child's permission prompts to the PARENT session's prompt.
+     *  Without this, a subagent that touches anything outside the workspace
+     *  hard-fails ("escapes workspace and no permission prompt is available")
+     *  — the exact way a 5-researcher fan-out died 5/5 when the user's mods
+     *  lived in a sibling folder the fleet had never been granted. */
+    requestPermission?: ToolCallContext["requestPermission"];
   }): Promise<{
     id: string;
     type: string;
@@ -114,6 +121,10 @@ export function makeTaskTool(runner: SubagentRunner) {
         workspace: ctx.workspace,
         signal: ctx.signal,
         onProgress: ctx.emitProgress,
+        // The parent's live prompt: child permission requests surface in the
+        // parent UI mid-run. Grants land in the SHARED path-permission store
+        // (dir-scoped), so one approval unblocks every sibling leaf.
+        requestPermission: ctx.requestPermission,
       });
       // A subagent that did NOT complete is a FAILURE, not a result. Surface it
       // as a tool error (is_error) so the parent can't read a dead subagent as

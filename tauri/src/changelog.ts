@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.11",
+    date: "July 2026",
+    title: "Helper agents ask instead of dying",
+    tagline: "When Ares sends helper agents into a folder outside your workspace, they now ask you for access — before, they all silently failed.",
+    highlights: [
+      {
+        icon: "🔑",
+        title: "Helpers ask for folder access",
+        tag: "Safer",
+        blurb: "Research helpers working in a folder outside your workspace now pop a normal permission prompt instead of instantly failing. One approval covers the whole crew.",
+      },
+      {
+        icon: "🛠️",
+        title: "Big scans actually finish",
+        tag: "New",
+        blurb: "\"Scan this whole mods folder\" style jobs used to die on the first file when the folder wasn't pre-approved. Now they ask once and get to work.",
+      },
+    ],
+  },
+  {
     version: "0.13.10",
     date: "July 2026",
     title: "No more frozen chats from a big image",

@@ -18,7 +18,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Usage } from "@ares/protocol";
 import { runForkedTurn } from "./forkedTurn.js";
-import type { EngineTool, Provider } from "./queryEngine.js";
+import type { EngineTool, Provider, QueryEngineConfig } from "./queryEngine.js";
 import { SubagentJournal, renderSubagentHandoff, type SubagentHandoff } from "./subagentJournal.js";
 
 export interface SubagentTypeDef {
@@ -41,6 +41,13 @@ export interface SubagentRunRequest {
   signal?: AbortSignal;
   /** Forward child activity to the parent so a running subagent isn't invisible. */
   onProgress?: (data: unknown) => void;
+  /** Parent-session permission prompt, forwarded into the child engine so a
+   *  subagent touching paths outside the workspace ASKS instead of hard-dying
+   *  ("escapes workspace and no permission prompt is available"). The child's
+   *  request pauses its own tool watchdog and surfaces in the parent UI like
+   *  any other prompt; the resulting dir-scope grant lands in the shared
+   *  path-permission store, unblocking sibling leaves without re-prompting. */
+  requestPermission?: QueryEngineConfig["requestPermission"];
 }
 
 export interface SubagentRunResult {
@@ -254,6 +261,9 @@ export class AresSubagentRunner implements SubagentRunner {
         workspace: req.workspace,
         signal: req.signal,
         maxTurns,
+        // Bubble child permission prompts to the parent session (absent in
+        // headless runs, where out-of-workspace access stays denied).
+        requestPermission: req.requestPermission,
       },
       sessionId: id,
       seed: { kind: "work-item", text: req.prompt },

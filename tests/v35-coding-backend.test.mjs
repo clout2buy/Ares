@@ -177,6 +177,31 @@ test("CodingBackend: a denied install fails with a correctable error, installs n
 
 // ── A backend error surfaces as a correctable tool error ─────────────────────
 
+// ── The choice popup: offer → allow delegates, deny does it in-house ─────────
+
+test("CodingBackend: offer=true + deny returns 'declined' and spawns nothing", async () => {
+  const spawn = makeFakeSpawn(() => ({ code: 0 }));
+  const prompts = [];
+  const tool = makeCodingBackendTool({ gatewayBase: BASE, gatewayToken: TOKEN, spawnImpl: spawn });
+  const res = await tool.call(input({ backend: "claude", offer: true }), ctx(async (req) => { prompts.push(req); return "deny"; }));
+  assert.equal(prompts.length, 1, "the choice popup was offered");
+  assert.equal(prompts[0].toolName, "CodingBackend:offer", "distinct toolName so the desktop renders backend buttons");
+  assert.equal(res.output.status, "declined");
+  assert.match(res.output.summary, /do this directly|implement it/i, "tells the model to do it in-house");
+  assert.equal(spawn.calls.length, 0, "declined → nothing detected or spawned");
+});
+
+test("CodingBackend: offer=true + allow proceeds to drive the backend", async () => {
+  const spawn = makeFakeSpawn((cmd, args) => {
+    if (cmd === "claude" && args.includes("--version")) return { code: 0, stdout: "1.0.0\n" };
+    if (cmd === "claude" && args.includes("-p")) return { code: 0, stdout: CLAUDE_STREAM };
+    return { code: 0 };
+  });
+  const tool = makeCodingBackendTool({ gatewayBase: BASE, gatewayToken: TOKEN, spawnImpl: spawn });
+  const res = await tool.call(input({ backend: "claude", offer: true }), ctx(async () => "allow_once"));
+  assert.equal(res.output.status, "completed", "allow → the backend actually ran");
+});
+
 test("CodingBackend: a backend that reports is_error surfaces as a tool error", async () => {
   const errStream = JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "could not apply edit" }) + "\n";
   const spawn = makeFakeSpawn((cmd, args) => {

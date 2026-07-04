@@ -2382,6 +2382,12 @@ function App() {
       });
     } else {
       window.setTimeout(() => apply((s) => foldEvent(s, { type: "turn_start" })), 150);
+      // Demo mode shows the delegation CHOICE popup when asked which coder to use.
+      if (/should i|which coder|use claude code or|do it yourself/i.test(trimmed)) {
+        window.setTimeout(() => apply((s) => foldEvent(s, { type: "permission_request", id: "demo-offer", toolName: "CodingBackend:offer", reason: "Hand this to Claude Code (runs on your Ares account — no login needed), or have Ares do it directly?" })), 400);
+        window.setTimeout(() => apply((s) => foldEvent(s, { type: "turn_end", status: "completed", durationMs: 600, usage: { inputTokens: 500, outputTokens: 0 } })), 700);
+        return;
+      }
       // Demo mode shows the delegation cut-scene when the message mentions a
       // backend — so the feature is visible without a daemon (and demoable).
       if (/claude code|codex|delegate/i.test(trimmed)) {
@@ -5506,6 +5512,35 @@ const ItemView = React.memo(function ItemView({
         {fmtMs(item.durationMs)} · {item.modelCalls} call{item.modelCalls === 1 ? "" : "s"} · ↑{fmtTokens(item.input)} ↓{fmtTokens(item.output)}
         {item.cacheRead > 0 ? ` · ${Math.round((item.cacheRead / Math.max(1, item.input)) * 100)}% cached` : ""}
         {item.model ? <span className="usageModelTag">{item.model}{item.provider ? ` (${item.provider})` : ""}{item.lane ? ` · ${item.lane}` : ""}</span> : null}
+      </div>
+    );
+  }
+  if (item.kind === "permission" && item.toolName === "CodingBackend:offer") {
+    // The delegation choice popup: Ares asks whether to hand the job to an
+    // external coder or do it itself. Claude Code = allow, Ares = deny; Codex
+    // is gated until the gateway speaks the OpenAI wire.
+    return (
+      <div className="cbOffer" data-decided={item.decided ? "1" : "0"}>
+        <div className="cbOfferHead">
+          <span className="cbOfferSpark" aria-hidden="true">🐉</span>
+          <strong>How should I build this?</strong>
+        </div>
+        <span className="cbOfferReason">{item.reason || "Delegate this, or do it myself?"}</span>
+        {item.decided ? (
+          <em className="gateDecided">{item.decided === "deny" ? "Ares is handling it" : "delegated ⚡"}</em>
+        ) : (
+          <div className="cbOfferActions">
+            <button className="cbOfferPick cbOfferClaude" onClick={() => onPermission(item.id, "allow_once")}>
+              <span className="cbOfferGlyph">✳</span><span>Use Claude Code</span><small>on your Ares account</small>
+            </button>
+            <button className="cbOfferPick cbOfferCodex" disabled title="Coming soon — needs the gateway's OpenAI-compatible route">
+              <span className="cbOfferGlyph">◆</span><span>Codex</span><small>soon</small>
+            </button>
+            <button className="cbOfferPick cbOfferSelf" onClick={() => onPermission(item.id, "deny")}>
+              <span className="cbOfferGlyph">🐉</span><span>Ares does it</span><small>in-house</small>
+            </button>
+          </div>
+        )}
       </div>
     );
   }

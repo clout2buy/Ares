@@ -88,7 +88,8 @@ export function makeTodoWriteTool(store: TodoStore) {
   return buildTool({
     name: "TodoWrite",
     description:
-      "Create or update the structured task list for this session. Pass the COMPLETE list each time — it replaces the previous list. Use proactively for any task with 3+ steps; mark exactly one task as in_progress at a time; mark items completed IMMEDIATELY after finishing.",
+      "Create or update the structured task list for this session. Pass the COMPLETE list each time — it replaces the previous list. Use proactively for any task with 3+ steps; mark exactly one task as in_progress at a time; mark items completed IMMEDIATELY after finishing (don't batch completions). " +
+      "COMPLETION GATE: only mark a task 'completed' when it is FULLY done and verified — never while tests are failing, the implementation is partial, or errors are unresolved. If you hit a blocker, keep the task in_progress and add a new task describing what must be resolved. A green checkmark you didn't earn is a lie to the user.",
     safety: "read-only",
     concurrency: "parallel-safe",
     inputZod: inputSchema,

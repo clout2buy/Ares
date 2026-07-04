@@ -252,13 +252,17 @@ const inputSchema = z
       .boolean()
       .default(false)
       .describe("If the chosen backend isn't installed, permit a consented global npm install before running."),
+    offer: z
+      .boolean()
+      .default(true)
+      .describe("Pop the 'Use Claude Code / Codex / or Ares does it?' choice to the user before delegating. Set false ONLY when the user EXPLICITLY named the backend already."),
   })
   .strict();
 
 export interface CodingBackendOutput {
   backend: BackendName;
   label: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "declined";
   summary: string;
   filesTouched: string[];
   installed: boolean;
@@ -305,6 +309,33 @@ export function makeCodingBackendTool(deps: CodingBackendDeps) {
           `${spec.label} can't run on the Ares account yet: it speaks the OpenAI wire and the Ares gateway ` +
             `only exposes the Anthropic API today. Use backend "claude" for now.`,
         );
+      }
+
+      // The choice popup: unless the user already named the backend, offer them
+      // "Use ${label} / or Ares does it directly". Reuses the permission
+      // round-trip (allow = delegate, deny = do it inline). The desktop renders
+      // the distinct "CodingBackend:offer" toolName as backend-choice buttons.
+      if (i.offer && ctx.requestPermission) {
+        const choice = await ctx.requestPermission({
+          toolName: "CodingBackend:offer",
+          input: { task: i.task.slice(0, 240), backend: spec.name, label: spec.label },
+          reason: `Hand this to ${spec.label} (runs on your Ares account — no login needed), or have Ares do it directly?`,
+          suggestion: "allow_once",
+        });
+        if (choice === "deny") {
+          return {
+            output: {
+              backend: spec.name,
+              label: spec.label,
+              status: "declined",
+              summary:
+                "The user chose to have YOU do this directly instead of delegating. Do NOT call CodingBackend again for this task — implement it now with your own tools (Read/Edit/Write/Bash).",
+              filesTouched: [],
+              installed: false,
+            },
+            display: "→ Ares handles it directly",
+          };
+        }
       }
 
       ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: spec.label, phase: "detect" });

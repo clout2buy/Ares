@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.14.1",
+    date: "July 2026",
+    title: "Your call: delegate, or Ares does it",
+    tagline: "Ares now asks before handing a job to Claude Code — and codes sharper when it does it itself.",
+    highlights: [
+      {
+        icon: "🎛️",
+        title: "The delegation choice is yours",
+        tag: "New",
+        blurb: "On a big coding job, Ares pops a choice — \"Use Claude Code (on your Ares account), or I'll do it myself?\" One click. Pick Claude Code and the cut-scene plays; pick Ares and it codes in-house.",
+      },
+      {
+        icon: "🎯",
+        title: "Sharper, no gold-plating",
+        tag: "Polished",
+        blurb: "Ares's coding instincts got tighter: do exactly what's asked (no speculative extras), never touch code it hasn't read, comment only where the why isn't obvious, and never check off a task while anything's still failing.",
+      },
+    ],
+  },
+  {
     version: "0.14.0",
     date: "July 2026",
     title: "The delegation cut-scene",

@@ -2291,8 +2291,11 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 }
 .modelGroup em { font-style: normal; letter-spacing: 0; color: var(--bronze); }
 .modelRow {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px 12px;
-  padding: 9px 11px;
+  /* glyph | identity(flex) | hint | tick — explicit 4 tracks (the tick used to
+     wrap under the glyph on a phantom 2nd row); top-aligned so the description
+     card can grow downward. */
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: start; gap: 4px 12px;
+  padding: 10px 11px;
   border-radius: var(--r-sm);
   text-align: left;
   position: relative;
@@ -2304,7 +2307,15 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 }
 .modelRow:hover { background: rgba(var(--accent-rgb), 0.08); }
 .modelRow[data-on="1"] { background: rgba(var(--accent-rgb), 0.13); box-shadow: inset 2px 0 0 var(--accent); }
+.modelRow .modelGlyph { align-self: start; margin-top: 1px; }
 .modelIdentity { display: grid; gap: 5px; min-width: 0; }
+/* The discovery blurb: prose (sans, not mono) clamped to two lines so a long
+   OpenRouter description enriches the card without blowing up the list height. */
+.modelDesc {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font: 400 11px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif;
+  color: var(--muted); margin-top: 1px;
+}
 .modelId { font: 500 12px/1.3 var(--mono); color: var(--text); word-break: break-all; }
 .modelTags { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
 .modelLabel { color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }

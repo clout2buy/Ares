@@ -1176,10 +1176,12 @@ function loadPrefs(): Prefs {
       reasoning: REASONING_LEVELS.includes(raw.reasoning as ReasoningLevel) ? (raw.reasoning as ReasoningLevel) : "medium",
       ultra: raw.ultra === true,
       routing,
-      // Existing installs already treated non-empty assignments as active.
-      routingMode: raw.routingMode === "auto" || raw.routingMode === "manual"
-        ? raw.routingMode
-        : Object.keys(routing).length > 0 ? "auto" : "manual",
+      // Auto-routing is OPT-IN, never inferred. Previously an unset routingMode
+      // flipped to "auto" whenever any lane assignment existed — so a user who
+      // once tried routing found their manual model silently swapped per task
+      // ("keeps flipping to random ones"). Unset now always means manual; auto
+      // only when the user explicitly toggled it (which saves routingMode).
+      routingMode: raw.routingMode === "auto" ? "auto" : "manual",
       toolDisplay: raw.toolDisplay === "technical" ? "technical" : "product",
       flameMode: raw.flameMode === "clean" || raw.flameMode === "combat" || raw.flameMode === "immersive" ? raw.flameMode : fallback.flameMode,
       pinned: Array.isArray(raw.pinned) ? raw.pinned.filter((p): p is string => typeof p === "string") : [],
@@ -1207,6 +1209,8 @@ interface ModelOption {
   hint?: string;
   group: string;
   capabilities?: string[];
+  /** Rich prose (OpenRouter) shown on the discovery card. */
+  description?: string;
 }
 
 const OLLAMA_CLOUD_MODELS: ModelOption[] = [
@@ -1301,6 +1305,7 @@ async function fetchOpenRouterModels(): Promise<ModelOption[]> {
       name?: string;
       context_length?: number;
       pricing?: { prompt?: string };
+      description?: string;
       supported_parameters?: string[];
       architecture?: { input_modalities?: string[] };
     }>;
@@ -1321,6 +1326,7 @@ async function fetchOpenRouterModels(): Promise<ModelOption[]> {
         hint: [ctx, price].filter(Boolean).join(" · "),
         group: "OpenRouter",
         capabilities: [...new Set(capabilities)],
+        description: m.description?.trim() || undefined,
       };
     });
   models.sort((a, b) => a.id.localeCompare(b.id));
@@ -2747,9 +2753,12 @@ function App() {
 
   const routedLanes = ROUTE_LANES.filter((l) => prefs.routing[l]);
   // The model that ACTUALLY handled this session's last turn (sticky/lane/
-  // failover-aware), falling back to the picked default before any turn runs.
-  // The footer/composer show this so they never contradict the per-message badge.
-  const liveModelId = active?.turnModel ?? (prefs.routingMode === "auto" ? "routing (auto)" : prefs.model);
+  // In MANUAL mode the footer is SOLID: it always shows the model the user
+  // picked (prefs.model), never the per-turn model — so a one-off route or a
+  // transient failover can't make the readout look like the selection changed.
+  // What actually ran is still surfaced per-message (the assistant badge). In
+  // auto mode the routed per-turn model IS the point, so show it there.
+  const liveModelId = prefs.routingMode === "auto" ? (active?.turnModel ?? "routing (auto)") : prefs.model;
   // Gateway models are white-labeled: the footer chip shows the friendly name
   // ("Model Ares (in house)"), never the raw virtual id or the upstream model.
   // "ares-internal" is the house sentinel — resolve it to the crowned model's name.
@@ -6204,6 +6213,10 @@ function ModelPicker({
                       {m.label && m.label !== m.id ? <span className="modelLabel">{m.id}</span> : null}
                       {m.capabilities?.slice(0, 3).map((cap) => <i key={cap}>{cap}</i>)}
                     </span>
+                    {/* The discovery blurb — OpenRouter's per-model description, clamped
+                        to two lines (full text on hover). This is what turns the list
+                        into a "browse the good stuff" experience. */}
+                    {m.description ? <span className="modelDesc" title={m.description}>{m.description}</span> : null}
                   </span>
                   {m.hint ? <span className="modelHint">{m.hint}</span> : null}
                   <span className="modelTick" aria-hidden="true" />

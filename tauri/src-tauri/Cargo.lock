@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "ares-tauri"
-version = "0.13.12"
+version = "0.13.13"
 dependencies = [
  "serde",
  "serde_json",

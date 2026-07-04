@@ -29,6 +29,8 @@ interface DaemonModelOption {
   hint?: string;
   group: string;
   capabilities?: string[];
+  /** Rich prose (OpenRouter) for the discovery cards. */
+  description?: string;
 }
 
 export const TERMINAL_PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "ares", "custom", "mock"] as const;
@@ -261,6 +263,8 @@ export async function daemonModelCatalog(provider: string): Promise<DaemonModelO
         ...((model.inputModalities ?? []).includes("image") ? ["vision"] : []),
         ...(Number(model.promptPrice ?? "1") === 0 ? ["free"] : []),
       ],
+      // OpenRouter ships a rich blurb per model — the heart of the discovery UI.
+      description: model.description?.trim() || undefined,
     }));
   }
 

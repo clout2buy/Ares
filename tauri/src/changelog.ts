@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.13",
+    date: "July 2026",
+    title: "Your model stays put — and a richer model browser",
+    tagline: "The model you pick no longer drifts to Ollama or a routed model, and the model list now shows real descriptions.",
+    highlights: [
+      {
+        icon: "📍",
+        title: "Your pick stops drifting",
+        tag: "Safer",
+        blurb: "In manual mode the readout now always shows the model YOU chose — a one-off route or a fallback after a hiccup won't make it look like your selection changed. Auto-routing is opt-in only, never turned on behind your back.",
+      },
+      {
+        icon: "✨",
+        title: "Browse models, not just IDs",
+        tag: "New",
+        blurb: "The model picker now shows a real description under each model — a genuine \"discover the good ones\" browse, especially across OpenRouter's huge catalog, with capabilities, context, and pricing at a glance.",
+      },
+    ],
+  },
+  {
     version: "0.13.12",
     date: "July 2026",
     title: "Your model sticks — and easier account setup",

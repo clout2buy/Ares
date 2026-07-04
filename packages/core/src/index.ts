@@ -140,6 +140,17 @@ export {
 } from "./hooks.js";
 
 export {
+  generatePkce,
+  discoverMcpAuth,
+  registerMcpClient,
+  buildMcpAuthorizeUrl,
+  exchangeMcpCode,
+  type McpAuthServer,
+  type McpClientRegistration,
+  type McpTokenResponse,
+} from "./mcpOAuth.js";
+
+export {
   Session,
   listSessions,
   loadSessionSnapshot,

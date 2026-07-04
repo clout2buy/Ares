@@ -273,6 +273,16 @@ export {
 } from "./oauthCallback.js";
 
 export {
+  runAresAccountSignin,
+  buildAresAuthorizeUrl,
+  exchangeAresCode,
+  probeAresOauth,
+  captureLoopbackCode,
+  normalizeGatewayBase,
+  type AresSigninOptions,
+} from "./aresAccountAuth.js";
+
+export {
   routeModel,
   resolveRoute,
   laneForTask,

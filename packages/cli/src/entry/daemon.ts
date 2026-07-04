@@ -21,7 +21,7 @@ import { recordConsciousnessObservation } from "../consciousnessContext.js";
 import { aresAgentHome, onLifecycle } from "@ares/agent";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, type StandingOrder } from "@ares/operator";
 import { MemoryStore, reflectOnRun, detectWorkspaceProjectId, loadProjectState, buildConversationDigest, mergeDurableFacts, CONVERSATION_REFLECT_SYSTEM, DURABLE_FACTS_SCHEMA_HINT, type DurableFact } from "@ares/mind";
-import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName } from "@ares/core";
+import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, runAresAccountSignin, probeAresOauth } from "@ares/core";
 import { KillSwitch } from "@ares/effects";
 import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge } from "./browserBridge.js";
@@ -1554,18 +1554,47 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         const gwSettings = await loadUiSettings();
         const gwToken = gwSettings.aresGatewayToken;
+        // Capability probe: does doingteam expose click-to-connect OAuth yet? The
+        // desktop only shows the "Sign in" button when this is true, so the button
+        // stays hidden (no broken UX) until the gateway endpoints go live.
+        const oauthSupported = await probeAresOauth(aresGatewayBase(gwSettings)).catch(() => false);
         if (!gwToken) {
-          process.stdout.write(JSON.stringify({ type: "gateway_account", connected: false, reason: "no token" }) + "\n");
+          process.stdout.write(JSON.stringify({ type: "gateway_account", connected: false, reason: "no token", oauthSupported }) + "\n");
           continue;
         }
         const me = await fetchAresGatewayMe(aresGatewayBase(gwSettings), gwToken);
         process.stdout.write(
           JSON.stringify(
             me
-              ? { type: "gateway_account", connected: true, ...me }
-              : { type: "gateway_account", connected: false, reason: "unreachable or token rejected" },
+              ? { type: "gateway_account", connected: true, oauthSupported, ...me }
+              : { type: "gateway_account", connected: false, reason: "unreachable or token rejected", oauthSupported },
           ) + "\n",
         );
+        continue;
+      }
+      if (command.type === "gateway_signin") {
+        // Click-to-connect: run the loopback code-exchange sign-in against
+        // doingteam, then persist the returned account token into
+        // aresGatewayToken — after which every gateway call authenticates with
+        // no token paste. Fire-and-forget so the loop keeps serving; the desktop
+        // opens the authorize URL from oauth_url and refreshes on oauth_connected.
+        const siSettings = await loadUiSettings();
+        const siBase = typeof command.url === "string" && command.url.trim()
+          ? command.url.trim().replace(/\/+$/, "")
+          : aresGatewayBase(siSettings);
+        void runAresAccountSignin(siBase, {
+          onAuthorizeUrl: (url) => { process.stdout.write(JSON.stringify({ type: "oauth_url", provider: "ares", url }) + "\n"); },
+        })
+          .then(async ({ token, base }) => {
+            await updateUiSettings({ aresGatewayToken: token, aresGatewayUrl: base });
+            process.stdout.write(JSON.stringify({ type: "oauth_connected", provider: "ares" }) + "\n");
+            // Immediately snapshot the freshly-connected account for the panel.
+            const me = await fetchAresGatewayMe(base, token).catch(() => null);
+            process.stdout.write(
+              JSON.stringify(me ? { type: "gateway_account", connected: true, oauthSupported: true, ...me } : { type: "gateway_account", connected: true, oauthSupported: true }) + "\n",
+            );
+          })
+          .catch((err) => process.stdout.write(JSON.stringify({ type: "oauth_error", provider: "ares", error: err instanceof Error ? err.message : String(err) }) + "\n"));
         continue;
       }
       if (command.type === "operator_autotick") {

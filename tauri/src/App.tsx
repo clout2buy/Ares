@@ -178,6 +178,9 @@ interface McpConnectorVm {
 interface GatewayAccountVm {
   connected?: boolean;
   reason?: string;
+  /** doingteam advertises click-to-connect OAuth — gates the "Sign in" button
+   *  so it only appears once the gateway endpoints are live. */
+  oauthSupported?: boolean;
   profile?: { display_name?: string | null; avatar_url?: string | null; status?: string };
   balance_usd?: number;
   usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number };
@@ -2056,7 +2059,8 @@ function App() {
           return true;
         case "oauth_connected":
           pushLog(`[oauth] ${e.provider ?? "service"} connected`);
-          daemonCmd({ type: "oauth_status" });
+          if (e.provider === "ares") pushGatewayToast("🐉 Ares account connected — models and credits are live.");
+          else daemonCmd({ type: "oauth_status" });
           return true;
         case "oauth_disconnected":
         case "oauth_credentials_set":
@@ -2064,6 +2068,7 @@ function App() {
           return true;
         case "oauth_error":
           pushLog(`[oauth] ${e.provider ?? "service"} failed: ${e.error ? stringify(e.error) : "unknown"}`);
+          if (e.provider === "ares") pushGatewayToast(`Sign-in failed: ${e.error ? stringify(e.error) : "unknown"}`);
           return true;
         case "sessions_list": {
           const disk = Array.isArray(e.sessions) ? (e.sessions as SessionSummaryWire[]) : [];
@@ -6276,28 +6281,68 @@ function GatewayAccountPane({
       <h3 className="paneTitle">Ares Account</h3>
       {!connected ? (
         <div className="gwConnect">
-          <p className="paneHint">
-            Sign up at <strong>doingteam.com</strong>, then Account → <em>Connect Ares</em> gives you a token. Paste it
-            here — credits, models, and usage sync live.
-          </p>
-          <input className="txt" placeholder="gateway url" value={url} onChange={(ev) => setUrl(ev.target.value)} />
-          <input
-            className="txt"
-            placeholder="ares_… token (shown once on the site)"
-            type="password"
-            value={token}
-            onChange={(ev) => setToken(ev.target.value)}
-          />
-          <button
-            className="btn"
-            disabled={!token.trim()}
-            onClick={() => {
-              onDaemonCommand({ type: "gateway_connect", url: url.trim(), token: token.trim() });
-              setToken("");
-            }}
-          >
-            Connect
-          </button>
+          {/* Preferred path when the gateway supports it: one-click browser
+              sign-in, no token paste. Gated on oauthSupported so it stays hidden
+              until doingteam's OAuth endpoints go live. */}
+          {account?.oauthSupported ? (
+            <>
+              <p className="paneHint">
+                Sign in with your <strong>doingteam.com</strong> account — models, credits, and usage sync live. No token to copy.
+              </p>
+              <button
+                className="btn gwSignin"
+                onClick={() => onDaemonCommand({ type: "gateway_signin", url: url.trim() })}
+              >
+                Sign in with doingteam
+              </button>
+              <details className="gwPasteFallback">
+                <summary>Paste a token instead</summary>
+                <input className="txt" placeholder="gateway url" value={url} onChange={(ev) => setUrl(ev.target.value)} />
+                <input
+                  className="txt"
+                  placeholder="ares_… token (shown once on the site)"
+                  type="password"
+                  value={token}
+                  onChange={(ev) => setToken(ev.target.value)}
+                />
+                <button
+                  className="btn"
+                  disabled={!token.trim()}
+                  onClick={() => {
+                    onDaemonCommand({ type: "gateway_connect", url: url.trim(), token: token.trim() });
+                    setToken("");
+                  }}
+                >
+                  Connect
+                </button>
+              </details>
+            </>
+          ) : (
+            <>
+              <p className="paneHint">
+                Sign up at <strong>doingteam.com</strong>, then Account → <em>Connect Ares</em> gives you a token. Paste it
+                here — credits, models, and usage sync live.
+              </p>
+              <input className="txt" placeholder="gateway url" value={url} onChange={(ev) => setUrl(ev.target.value)} />
+              <input
+                className="txt"
+                placeholder="ares_… token (shown once on the site)"
+                type="password"
+                value={token}
+                onChange={(ev) => setToken(ev.target.value)}
+              />
+              <button
+                className="btn"
+                disabled={!token.trim()}
+                onClick={() => {
+                  onDaemonCommand({ type: "gateway_connect", url: url.trim(), token: token.trim() });
+                  setToken("");
+                }}
+              >
+                Connect
+              </button>
+            </>
+          )}
           {account?.reason ? <p className="paneHint gwBad">Not connected: {account.reason}</p> : null}
         </div>
       ) : (

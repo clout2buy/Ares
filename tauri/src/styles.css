@@ -3238,3 +3238,20 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .gwModelMeta { display: flex; align-items: center; gap: 8px; }
 .gwCap { font-style: normal; font-size: 10.5px; font-weight: 700; color: var(--steel, #7fa6a3); }
 .gwActive { font-style: normal; color: var(--ember, #e08b2e); font-size: 9px; }
+
+/* bug report modal */
+.bugReport { max-width: 540px; gap: 12px; }
+.bugReportHead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.bugReportHead strong { font-size: 15px; }
+.bugReportHead em { font-style: normal; color: var(--dim, #8a8f98); font-size: 12px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bugReportBlurb { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--text); opacity: 0.86; }
+.bugReportBlurb b { color: var(--ember, #e08b2e); }
+.bugReportWarn { font-size: 12px; padding: 8px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, #e0902e 45%, var(--line)); background: color-mix(in srgb, #e0902e 12%, transparent); color: var(--text); }
+.bugReportLabel { font-size: 12px; font-weight: 700; }
+.bugReportLabel span { font-weight: 400; color: var(--dim, #8a8f98); }
+.bugReportNote { width: 100%; resize: vertical; font: inherit; font-size: 13px; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text); }
+.bugReportNote:focus { outline: none; border-color: var(--ember, #e08b2e); }
+.bugReportActions { display: flex; justify-content: flex-end; gap: 8px; }
+.bugReportActions .primary { background: var(--ember, #e08b2e); color: #1a1206; border: none; font-weight: 700; padding: 8px 16px; border-radius: 9px; cursor: pointer; }
+.bugReportActions .primary:disabled { opacity: 0.6; cursor: default; }
+.bugReportActions .ghost { background: transparent; border: 1px solid var(--line); color: var(--text); padding: 8px 14px; border-radius: 9px; cursor: pointer; }

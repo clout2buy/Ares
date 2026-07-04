@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.4",
+    date: "July 2026",
+    title: "Report a bug in one click",
+    tagline: "Something break? Send the whole chat to the owner so Ares gets fixed.",
+    highlights: [
+      {
+        icon: "🐛",
+        title: "Report bug button",
+        tag: "New",
+        blurb: "In the status bar next to Export: press it, add a note about what went wrong, and Ares uploads the entire session — every message, all generated code, every tool call and result, and any errors — to your Ares account.",
+      },
+      {
+        icon: "🔬",
+        title: "So coding failures actually get fixed",
+        tag: "New",
+        blurb: "The owner sees exactly what happened — the HTML game it built, which tool calls failed and why — and can diagnose and improve Ares from real sessions instead of guesswork.",
+      },
+    ],
+  },
+  {
     version: "0.13.3",
     date: "July 2026",
     title: "Ares routes cleanly",

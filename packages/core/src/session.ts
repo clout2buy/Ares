@@ -388,6 +388,27 @@ export async function loadSessionSnapshot(
   };
 }
 
+/** The FULL raw rollout for a session — every persisted event, untouched by
+ *  the compaction that loadSessionSnapshot applies. This is what a bug report
+ *  ships so the owner can see exactly what the agent did: every tool call, its
+ *  input/output, every error, and all generated code. Never trims content. */
+export interface SessionRollout {
+  meta: SessionMeta;
+  entries: RolloutEntry[];
+  eventCount: number;
+  toolFailures: number;
+}
+
+export async function loadSessionRollout(workspace: string, sessionId: string): Promise<SessionRollout> {
+  const sessionDir = path.join(workspace, ".ares", "sessions", path.basename(sessionId));
+  const meta = await readSessionMeta(sessionDir);
+  if (!meta) throw new Error(`session not found: ${sessionId}`);
+  const eventsText = await readFile(path.join(sessionDir, "events.jsonl"), "utf8").catch(() => "");
+  const entries = parseRolloutEntries(eventsText);
+  const toolFailures = entries.filter((e) => e.event.type === "tool_error").length;
+  return { meta, entries, eventCount: entries.length, toolFailures };
+}
+
 /** Permanently remove a session's on-disk transcript + metadata. Idempotent:
  *  a missing session resolves false rather than throwing. */
 export async function deleteSession(workspace: string, sessionId: string): Promise<boolean> {

@@ -1,6 +1,6 @@
 // Extracted from entry.ts — daemon.
 
-import { authStatus, listSessions, loadSessionSnapshot, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption } from "@ares/core";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -27,8 +27,8 @@ import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge } from "./browserBridge.js";
 import { garrisonCommand } from "./garrisonCmd.js";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
-import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, providerFamilyForSelection, selectProvider } from "./providers.js";
-import { ParsedArgs } from "./runtime.js";
+import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, postAresGatewayReport, providerFamilyForSelection, selectProvider } from "./providers.js";
+import { ParsedArgs, cliVersion } from "./runtime.js";
 import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isProviderFatalError, makeSpanSummarizer, pickHealthyFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, undoLines } from "./terminalLines.js";
@@ -39,6 +39,8 @@ interface DaemonInputCommand {
   /** gateway_connect */
   token?: string;
   url?: string;
+  /** bug_report — optional user description of what went wrong. */
+  note?: string;
   goal?: string;
   command?: string;
   level?: string;
@@ -1246,6 +1248,36 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           process.stdout.write(JSON.stringify({ type: "session_history", id, messages: snap.messages, meta: snap.meta }) + "\n");
         } catch (err) {
           process.stdout.write(JSON.stringify({ type: "daemon_error", error: `session_history: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+        }
+        continue;
+      }
+      if (command.type === "bug_report") {
+        // Opt-in: the user pressed "Report bug". Ship the FULL raw rollout of a
+        // session to the owner's gateway so coding failures can be diagnosed —
+        // every tool call, its output, every error, and all generated code.
+        const id = cleanCommandId(command.id);
+        if (!id) {
+          process.stdout.write(JSON.stringify({ type: "bug_report_result", ok: false, error: "no session to report" }) + "\n");
+          continue;
+        }
+        try {
+          const note = typeof command.note === "string" ? command.note.slice(0, 2000) : "";
+          const rollout = await loadSessionRollout(live.context.workspace, id);
+          const brSettings = await loadUiSettings();
+          const payload = {
+            session_id: id,
+            note,
+            model: rollout.meta.provider?.model ?? "",
+            app_version: await cliVersion(),
+            os: `${process.platform} ${process.arch}`,
+            event_count: rollout.eventCount,
+            tool_failures: rollout.toolFailures,
+            transcript: { meta: rollout.meta, events: rollout.entries },
+          };
+          const result = await postAresGatewayReport(aresGatewayBase(brSettings), brSettings.aresGatewayToken, payload);
+          process.stdout.write(JSON.stringify({ type: "bug_report_result", ...result }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "bug_report_result", ok: false, error: err instanceof Error ? err.message : String(err) }) + "\n");
         }
         continue;
       }

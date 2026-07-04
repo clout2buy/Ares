@@ -131,6 +131,33 @@ export async function fetchAresGatewayModels(
   return rows;
 }
 
+/** Ship a full session transcript to the gateway as a bug report. Opt-in only
+ *  (the user presses "Report bug"). Returns the new report id or an error the
+ *  UI shows in a toast. Injectable fetch for tests. */
+export async function postAresGatewayReport(
+  base: string,
+  token: string | undefined,
+  payload: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  if (!token) return { ok: false, error: "connect your Ares account first (doingteam.com → Account)" };
+  const res = await fetchImpl(`${base}/api/gateway/v1/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Authorization: `Bearer ${token}`, Accept: "application/json" },
+    body: JSON.stringify(payload),
+  }).catch(() => null);
+  if (!res) return { ok: false, error: "couldn't reach the Ares gateway" };
+  const data = (await res.json().catch(() => ({}))) as { id?: string; error?: unknown };
+  if (!res.ok) {
+    // The gateway may return a bare {error:string} or the Anthropic error shape
+    // {error:{message}} — unwrap either into a readable line for the toast.
+    const e = data.error;
+    const msg = typeof e === "string" ? e : (e as { message?: string } | undefined)?.message;
+    return { ok: false, error: msg || `gateway returned ${res.status}` };
+  }
+  return { ok: true, id: String(data.id ?? "") };
+}
+
 export function defaultTerminalModel(provider: string, settings: UiSettings): string {
   switch (provider) {
     case "openai":

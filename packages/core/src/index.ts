@@ -143,11 +143,13 @@ export {
   Session,
   listSessions,
   loadSessionSnapshot,
+  loadSessionRollout,
   deleteSession,
   renameSession,
   type SessionOptions,
   type SessionSummary,
   type SessionSnapshot,
+  type SessionRollout,
   type LoadSessionSnapshotOptions,
 } from "./session.js";
 

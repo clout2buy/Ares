@@ -1640,6 +1640,9 @@ function App() {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [routingOpen, setRoutingOpen] = useState(false);
   const [cronOpen, setCronOpen] = useState(false);
+  // Bug report: opt-in upload of the full session transcript to the gateway.
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
   // Floating-pill mode: shrink the window to an always-on-top mic bar.
   const [pill, setPill] = useState(false);
   const [pinTop, setPinTop] = useState(true);
@@ -1995,6 +1998,12 @@ function App() {
           // A credit grant landed while the app is open — ember toast, live.
           const usd = typeof e.amount_usd === "number" ? `+$${e.amount_usd.toFixed(2)}` : "+credits";
           pushGatewayToast(`${usd} credits${e.reason ? ` — ${e.reason}` : ""}`);
+          return true;
+        }
+        case "bug_report_result": {
+          setReportBusy(false);
+          pushGatewayToast(e.ok ? "🐛 Bug report sent — thank you, this helps improve Ares." : `Report failed: ${e.error ? stringify(e.error) : "unknown"}`);
+          if (e.ok) setReportOpen(false);
           return true;
         }
         case "oauth_status":
@@ -3188,6 +3197,14 @@ function App() {
             <button className="statusAction" onClick={() => void exportSessionLog()} title="Export this session (chat + tool calls + errors) to a file for feedback">
               ⤓ Export
             </button>
+            <button
+              className="statusAction"
+              onClick={() => setReportOpen(true)}
+              disabled={!active?.id}
+              title="Report a bug — upload this whole chat (all code, tool calls, errors) so the owner can diagnose and improve Ares"
+            >
+              🐛 Report bug
+            </button>
             <button className="statusAction" onClick={() => setPaletteOpen(true)} title="command palette">
               ⌘ Ctrl+K
             </button>
@@ -3319,6 +3336,20 @@ function App() {
           }}
           onAnthropicSignIn={startAnthropicSignIn}
           initialTab={settingsTab}
+        />
+      ) : null}
+
+      {reportOpen ? (
+        <BugReportModal
+          busy={reportBusy}
+          sessionTitle={active?.title ?? "this session"}
+          connected={Boolean(gatewayAccount?.connected)}
+          onClose={() => (reportBusy ? null : setReportOpen(false))}
+          onSend={(note) => {
+            if (!active?.id) return;
+            setReportBusy(true);
+            daemonCmd({ type: "bug_report", id: active.id, note });
+          }}
         />
       ) : null}
 
@@ -3629,6 +3660,58 @@ function RoutingPanel({
 }
 
 // ─── Model hot-swap popover ────────────────────────────────────────────────
+
+function BugReportModal({
+  busy,
+  sessionTitle,
+  connected,
+  onSend,
+  onClose,
+}: {
+  busy: boolean;
+  sessionTitle: string;
+  connected: boolean;
+  onSend: (note: string) => void;
+  onClose: () => void;
+}) {
+  const [note, setNote] = useState("");
+  return (
+    <div className="paletteScrim" onClick={onClose}>
+      <div className="palette bugReport" onClick={(e) => e.stopPropagation()}>
+        <header className="bugReportHead">
+          <strong>🐛 Report a bug</strong>
+          <em>{sessionTitle}</em>
+        </header>
+        <p className="bugReportBlurb">
+          This uploads the <b>whole chat</b> — every message, all generated code, every tool call and its
+          result, and any errors — to your Ares account so the owner can see exactly what went wrong and improve
+          Ares. Nothing is sent unless you press Send.
+        </p>
+        {!connected ? (
+          <div className="bugReportWarn">You're not connected to your Ares account. Connect at doingteam.com → Account first, or this will fail.</div>
+        ) : null}
+        <label className="bugReportLabel">
+          What went wrong? <span>(optional, but it helps)</span>
+        </label>
+        <textarea
+          className="bugReportNote"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. asked for a snake game — it created the HTML but the arrow keys don't move the snake, and it claimed it was done"
+          rows={4}
+          autoFocus
+          spellCheck
+        />
+        <div className="bugReportActions">
+          <button className="ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="primary" onClick={() => onSend(note.trim())} disabled={busy}>
+            {busy ? "Sending…" : "Send report"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ModelPopover({
   prefs,

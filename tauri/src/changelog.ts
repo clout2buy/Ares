@@ -38,6 +38,20 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.13.7",
+    date: "July 2026",
+    title: "Bug reports that actually send",
+    tagline: "Big coding sessions no longer hit \"too large\" — reports now compress before upload.",
+    highlights: [
+      {
+        icon: "📦",
+        title: "Large chats send fine now",
+        tag: "Safer",
+        blurb: "Long coding sessions were too big to upload (\"Request Entity Too Large\"). Reports are now compressed before sending — a 15MB session becomes ~1-2MB — so even marathon sessions go through.",
+      },
+    ],
+  },
+  {
     version: "0.13.6",
     date: "July 2026",
     title: "Connect anything — type /mcp",

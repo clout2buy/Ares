@@ -2,6 +2,7 @@
 
 import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, loadAuthToken, type Provider } from "@ares/core";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { type SubModelPool } from "@ares/tools";
 import { loadUiSettings, type UiSettings } from "../uiSettings.js";
 
@@ -172,10 +173,19 @@ export async function postAresGatewayReport(
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   if (!token) return { ok: false, error: "connect your Ares account first (doingteam.com → Account)" };
+  // Coding transcripts run to tens of MB — far past the platform's ~4.5MB
+  // request-body limit ("Request Entity Too Large"). gzip shrinks text ~10x so
+  // it fits; the gateway inflates it (x-ares-encoding: gzip).
+  const gz = gzipSync(Buffer.from(JSON.stringify(payload), "utf8"));
   const res = await fetchImpl(`${base}/api/gateway/v1/report`, {
     method: "POST",
-    headers: { "content-type": "application/json", Authorization: `Bearer ${token}`, Accept: "application/json" },
-    body: JSON.stringify(payload),
+    headers: {
+      "content-type": "application/json",
+      "x-ares-encoding": "gzip",
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+    body: gz,
   }).catch(() => null);
   if (!res) return { ok: false, error: "couldn't reach the Ares gateway" };
   const data = (await res.json().catch(() => ({}))) as { id?: string; error?: unknown };

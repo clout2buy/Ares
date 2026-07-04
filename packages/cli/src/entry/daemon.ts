@@ -84,6 +84,44 @@ interface DaemonInputCommand {
 
 const ROUTING_LANES = ["chat", "coding", "research", "tool-use"] as const;
 
+/** Cap a bug-report rollout so even an extreme session gzips under the gateway's
+ *  request-body limit. Deep-clones while truncating any single string over
+ *  ~256KB (base64 images, huge tool outputs), then, if the whole thing is still
+ *  over ~28MB serialized, keeps the MOST RECENT events (where the failure being
+ *  reported usually is) and notes how many were dropped. */
+function trimRolloutForReport(entries: unknown[]): unknown[] {
+  const MAX_STRING = 256 * 1024;
+  const MAX_TOTAL = 28 * 1024 * 1024;
+  const truncateStrings = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…[trimmed ${value.length - MAX_STRING} chars]` : value;
+    }
+    if (Array.isArray(value)) return value.map(truncateStrings);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value)) out[k] = truncateStrings(v);
+      return out;
+    }
+    return value;
+  };
+  const trimmed = entries.map(truncateStrings);
+  if (JSON.stringify(trimmed).length <= MAX_TOTAL) return trimmed;
+  // Still too big: keep the tail (recent events) that fits the budget.
+  const kept: unknown[] = [];
+  let size = 0;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const len = JSON.stringify(trimmed[i]).length + 1;
+    if (size + len > MAX_TOTAL) break;
+    kept.unshift(trimmed[i]);
+    size += len;
+  }
+  const dropped = trimmed.length - kept.length;
+  if (dropped > 0) {
+    kept.unshift({ ts: null, seq: -1, event: { type: "report_note", text: `[${dropped} earlier events omitted to fit the size limit]` } });
+  }
+  return kept;
+}
+
 /** Normalize the UI's {provider,model} routing table into core's {family,model}. */
 function normalizeRoutingCommand(raw: unknown): RouteAssignments {
   const out: RouteAssignments = {};
@@ -1327,6 +1365,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           const note = typeof command.note === "string" ? command.note.slice(0, 2000) : "";
           const rollout = await loadSessionRollout(live.context.workspace, id);
           const brSettings = await loadUiSettings();
+          // Trim pathological bulk (base64 images, giant tool dumps) so even an
+          // extreme transcript gzips under the platform limit. Truncates any
+          // single oversized string; the diagnosis value is in the code + errors,
+          // not a multi-MB embedded screenshot.
+          const events = trimRolloutForReport(rollout.entries);
           const payload = {
             session_id: id,
             note,
@@ -1335,7 +1378,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             os: `${process.platform} ${process.arch}`,
             event_count: rollout.eventCount,
             tool_failures: rollout.toolFailures,
-            transcript: { meta: rollout.meta, events: rollout.entries },
+            transcript: { meta: rollout.meta, events },
           };
           const result = await postAresGatewayReport(aresGatewayBase(brSettings), brSettings.aresGatewayToken, payload);
           process.stdout.write(JSON.stringify({ type: "bug_report_result", ...result }) + "\n");

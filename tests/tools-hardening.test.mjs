@@ -88,25 +88,22 @@ async function seedAndRead(c, file, content) {
   await ReadTool.call({ file_path: file }, c);
 }
 
-test("Edit not-found: indentation-only miss is named with its line number", async () => {
+test("Edit: indentation-only miss is RESCUED by the normalized tier (re-indented to the file)", async () => {
+  // This used to fail with a "DOES appear at line 2 / leading whitespace" hint
+  // and burn a model round-trip. Layer 4 (canonical match) now applies it,
+  // re-indenting the replacement to the FILE's real depth.
   const tmp = await makeTmp();
   const file = path.join(tmp, "indent.ts");
   const c = ctx(tmp);
   await seedAndRead(c, file, "function f() {\n  const total = 1;\n}\n");
 
-  await assert.rejects(
-    EditTool.call(
-      { file_path: file, old_string: "      const total = 1;", new_string: "      const total = 2;", replace_all: false },
-      c,
-    ),
-    (err) => {
-      assert.match(err.message, /not found/i);
-      assert.match(err.message, /DOES appear at line 2/);
-      assert.match(err.message, /leading whitespace/);
-      assert.match(err.message, /ApplyIntent/); // explicit escalation path
-      return true;
-    },
+  const result = await EditTool.call(
+    { file_path: file, old_string: "      const total = 1;", new_string: "      const total = 2;", replace_all: false },
+    c,
   );
+  assert.equal(result.output.matchedBy, "normalized");
+  const text = await fs.readFile(file, "utf8");
+  assert.match(text, /^ {2}const total = 2;$/m, "replacement landed at the file's 2-space depth, not the model's 6");
 });
 
 test("Edit not-found: closest near-miss excerpt + ApplyIntent escalation", async () => {

@@ -38,6 +38,25 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.19.1",
+    date: "July 2026",
+    title: "Unkillable writes",
+    highlights: [
+      {
+        icon: "🛡️",
+        title: "A snapshot can't kill your work",
+        tag: "Safer",
+        blurb: "Building in a folder with locked files (like a running browser's cache) used to make every file-write die with a permission error before it even started. Undo snapshots now skip what they can't read, stay out of home-directory-sized folders entirely, and can never take a tool down with them.",
+      },
+      {
+        icon: "🫁",
+        title: "Room to breathe",
+        tag: "Polished",
+        blurb: "The terminal transcript adds a breath of air before each of your messages — exchanges read as turns, not one dense wall.",
+      },
+    ],
+  },
+  {
     version: "0.19.0",
     date: "July 2026",
     title: "Tactical: coding got fast",

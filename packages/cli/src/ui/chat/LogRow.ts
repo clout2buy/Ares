@@ -163,6 +163,11 @@ export function Transcript(props: {
   const inFlight = lines.filter((l) => l.tone === "tool" && l.running).length;
   let bannerPlaced = false;
   for (const [i, line] of lines.entries()) {
+    // Turn rhythm: a breath of air before each user message (except the first
+    // visible row) — turns read as separate exchanges, not one dense wall.
+    if (line.tone === "user" && i > 0) {
+      rows.push(h(Text, { key: `sp-${i}` }, " "));
+    }
     // Banner above the FIRST running tool when a parallel batch is in flight.
     if (!bannerPlaced && inFlight >= 2 && line.tone === "tool" && line.running) {
       rows.push(

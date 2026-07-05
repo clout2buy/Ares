@@ -404,3 +404,34 @@ test("C5: a THROWING checkpoint host degrades to no-undo — the tool still runs
   assert.ok(!events.some((e) => e.type === "tool_error"), "no tool_error from the checkpoint layer");
   assert.equal(events.at(-1).status, "completed");
 });
+
+// ─── Elite gaps: post-compact file re-pin + explorer fast lane ────────────────
+
+import { recentFilePathsFromSpan, BUILT_IN_SUBAGENT_TYPES } from "../packages/core/dist/index.js";
+
+test("C5: recentFilePathsFromSpan pulls the last N unique worked-in files, most recent first", () => {
+  const mk = (name, file_path) => ({
+    id: "x", role: "assistant", createdAt: "now",
+    content: [{ type: "tool_use", id: "t", name, input: { file_path } }],
+  });
+  const span = [
+    mk("Read", "a.ts"),
+    mk("Edit", "b.ts"),
+    { id: "u", role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }], createdAt: "now" },
+    mk("Write", "c.ts"),
+    mk("Edit", "b.ts"), // duplicate — must dedupe
+    mk("Grep", "ignored.ts"), // not a file tool input shape that counts
+  ];
+  const got = recentFilePathsFromSpan(span, 5);
+  assert.deepEqual(got, ["b.ts", "c.ts", "a.ts"], `most recent first, deduped; got ${JSON.stringify(got)}`);
+  assert.deepEqual(recentFilePathsFromSpan(span, 1), ["b.ts"], "cap respected");
+});
+
+test("C5: explorer subagent type exists — read-only whitelist + fast-lane preference", () => {
+  const explorer = BUILT_IN_SUBAGENT_TYPES.find((t) => t.name === "explorer");
+  assert.ok(explorer, "explorer type registered");
+  assert.equal(explorer.modelPreference, "fast");
+  assert.ok(explorer.toolWhitelist.includes("Grep") && explorer.toolWhitelist.includes("Read"));
+  assert.ok(!explorer.toolWhitelist.includes("Edit") && !explorer.toolWhitelist.includes("Write"), "read-only");
+  assert.match(explorer.systemPrompt, /file_path:line|file:line|citations/i);
+});

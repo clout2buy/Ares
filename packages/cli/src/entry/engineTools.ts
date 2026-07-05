@@ -13,7 +13,7 @@ import { BootstrapTool, MissionTool, RunSkillTool, SelfEvolveTool, SelfTool, Ski
 import { QueryEngineDispatcher, acquireCapability, createGoal, listGoals, listAcquisitions, listCapabilities, newGoalId, novelDeltaCurve, reliabilityOf, runGoalToCompletion, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, type StandingOrder, type Goal, type AcquisitionKind, type VerificationSpec } from "@ares/operator";
 import { MemoryRouter, MemoryStore, withConsolidationLock } from "@ares/mind";
 import { makeBrowserTool } from "./browserBridge.js";
-import { ProviderSelection } from "./providers.js";
+import { ProviderSelection, fastModelFor } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, compactLine } from "./runtime.js";
 import { buildSystemPrompt } from "./turnPipeline.js";
 
@@ -73,6 +73,9 @@ export async function buildEngineTools(
     registry: new SubagentRegistry(),
     provider: selection.provider,
     model: selection.model,
+    // Explorer subagents fan out on the family's cheap sibling (flash/haiku/
+    // gateway-fast) — wide search shouldn't burn frontier tokens.
+    fastModel: fastModelFor(selection),
     parentTools: baseTools,
     baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
     maxTurns: () => {

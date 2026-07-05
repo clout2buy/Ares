@@ -23,6 +23,17 @@ export interface ProviderSelection {
   subModel?: SubModelPool;
 }
 
+/** The cheap/fast model id ON THE SAME PROVIDER for fan-out work (explorer
+ *  subagents) — searching doesn't need the frontier model. Returns undefined
+ *  when the family has no cheaper sibling (fan-out then inherits the parent). */
+export function fastModelFor(selection: ProviderSelection): string | undefined {
+  const m = selection.model.toLowerCase();
+  if (m.includes("deepseek") && !m.includes("flash")) return "deepseek-v4-flash";
+  if (m.startsWith("claude-") && !m.includes("haiku")) return "claude-haiku-4-5-20251001";
+  if (m === "ares-internal" || m === "balanced" || m === "max") return "fast"; // gateway tier
+  return undefined;
+}
+
 interface DaemonModelOption {
   id: string;
   label?: string;

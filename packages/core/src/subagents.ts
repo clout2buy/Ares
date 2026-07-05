@@ -30,6 +30,10 @@ export interface SubagentTypeDef {
   systemPrompt: string;
   /** Max iterations the inner QueryEngine will run before bailing. */
   maxTurns?: number;
+  /** "fast" = run on the host's cheap/fast lane when one is wired (searching
+   *  doesn't need the frontier model — this is what keeps wide exploration
+   *  cheap and quick). Default: inherit the parent model. */
+  modelPreference?: "fast" | "inherit";
 }
 
 export interface SubagentRunRequest {
@@ -186,7 +190,25 @@ VERDICT: PARTIAL
 
 PARTIAL is for environmental limits ONLY (no test framework, tool unavailable, server won't start) — never for "I'm unsure if it's a bug." If you can run the check, decide PASS or FAIL.`;
 
+const EXPLORER_PROMPT = `You are an EXPLORER subagent — a fast, read-only search specialist. The caller needs a CONCLUSION, not file dumps.
+
+Rules:
+- Sweep wide: Glob/Grep/CodebaseSearch across every plausible location and naming convention, then Read only the excerpts that decide the answer.
+- Never paste large file bodies back. Cite findings as file_path:line with a one-line quote at most.
+- Cover the misses too: say where you looked that turned up empty, so the caller doesn't re-search it.
+- Finish with a tight summary: ANSWER (the conclusion), EVIDENCE (citations), NOT FOUND (searched-but-absent).
+Speed matters — prefer three broad searches over ten narrow ones.`;
+
 export const BUILT_IN_SUBAGENT_TYPES: SubagentTypeDef[] = [
+  {
+    name: "explorer",
+    description:
+      "Fast read-only search specialist for broad fan-out exploration — 'find every place X happens', 'which files own Y'. Runs on the cheap/fast model lane when available, so use it liberally to keep YOUR context lean: it reads the excerpts so you don't have to. Returns a conclusion with file:line citations, never file dumps.",
+    toolWhitelist: ["Read", "Glob", "Grep", "CodebaseSearch", "LSP"],
+    systemPrompt: EXPLORER_PROMPT,
+    maxTurns: 20,
+    modelPreference: "fast",
+  },
   {
     name: "verifier",
     description:
@@ -247,6 +269,9 @@ export interface SubagentRunnerOptions {
   /** Provider used by all subagent runs. Same model as the parent. */
   provider: Provider;
   model: string;
+  /** Cheap/fast model id ON THE SAME PROVIDER for types that prefer it
+   *  (explorer). Absent → those types inherit the parent model. */
+  fastModel?: string;
   /** Full parent tool catalog. The runner filters by whitelist per type. */
   parentTools: readonly EngineTool[];
   /** Base system prompt the subagent sees AFTER its type-specific prompt. */
@@ -301,10 +326,14 @@ export class AresSubagentRunner implements SubagentRunner {
 
     // Re-enter the ONE loop as a fork: fresh read-stamp isolation + a work-item
     // seed (not a faked chat turn) are guaranteed inside runForkedTurn.
+    // Fast-lane types (explorer) run on the cheap model when the host wired one
+    // — searching doesn't need the frontier model, and it keeps fan-out cheap.
+    const model =
+      def.modelPreference === "fast" && this.opts.fastModel ? this.opts.fastModel : this.opts.model;
     const result = await runForkedTurn({
       config: {
         provider: this.opts.provider,
-        model: this.opts.model,
+        model,
         systemPrompt,
         tools: allowedTools,
         workspace: req.workspace,

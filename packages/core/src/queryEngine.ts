@@ -490,6 +490,28 @@ export function collectTrimmedFilePaths(dropped: readonly Message[]): string[] {
  * No model call: user asks (first lines), tools used, and files touched are
  * extracted mechanically from the dropped messages. Capped hard.
  */
+/** The file paths a summarized span was WORKING IN — the last `max` unique
+ *  file_path inputs across Read/Edit/Write-class tool calls, most recent first.
+ *  Feeds the post-compaction re-pin (current file state survives the summary). */
+export function recentFilePathsFromSpan(span: readonly Message[], max: number): string[] {
+  const FILE_TOOLS = new Set(["Read", "Edit", "Write", "NotebookEdit", "ApplyIntent"]);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = span.length - 1; i >= 0 && out.length < max; i--) {
+    const m = span[i];
+    if (m.role !== "assistant") continue;
+    for (let j = m.content.length - 1; j >= 0 && out.length < max; j--) {
+      const b = m.content[j] as { type?: string; name?: string; input?: { file_path?: unknown } };
+      if (b.type !== "tool_use" || !b.name || !FILE_TOOLS.has(b.name)) continue;
+      const fp = b.input?.file_path;
+      if (typeof fp !== "string" || !fp.trim() || seen.has(fp)) continue;
+      seen.add(fp);
+      out.push(fp);
+    }
+  }
+  return out;
+}
+
 export function buildContextLedger(dropped: readonly Message[]): string {
   if (dropped.length === 0) return "";
   const asks: string[] = [];
@@ -935,6 +957,24 @@ export class QueryEngine {
     }
     if (!summary) return null;
 
+    // Post-compact file re-injection: the summary remembers the WORK, but the
+    // model also needs the CURRENT state of the files it was just editing —
+    // without it, the first post-compaction edit is a blind edit against a
+    // remembered (possibly stale) version. Re-pin the most recently touched
+    // files from the summarized span, bounded so it can't undo the compaction.
+    let filePins = "";
+    for (const rel of recentFilePathsFromSpan(older, 5)) {
+      const full = path.resolve(this.cfg.workspace, rel);
+      try {
+        const body = await fs.readFile(full, "utf8");
+        if (body.length > 24_000) continue; // too big to re-pin — the model can Read it
+        filePins += `\n\n=== CURRENT content of ${rel} (re-read after compaction) ===\n${body}`;
+        if (filePins.length > 60_000) break;
+      } catch {
+        // deleted/unreadable since — skip
+      }
+    }
+
     const recap: Message = {
       id: cryptoId("compact"),
       role: "user",
@@ -943,7 +983,10 @@ export class QueryEngine {
           type: "system_reminder",
           text:
             `Compacted memory — the earlier part of this session was summarized to free context. ` +
-            `Everything below really happened; treat it as established fact, do not redo it, and stay on the mission.\n\n${summary}`,
+            `Everything below really happened; treat it as established fact, do not redo it, and stay on the mission.\n\n${summary}` +
+            (filePins
+              ? `\n\nThe files you were working in, re-read AFTER compaction (this is their live current state — trust it over the summary):${filePins}`
+              : ""),
         },
       ],
       createdAt: new Date().toISOString(),
@@ -975,6 +1018,8 @@ export class QueryEngine {
       })),
     };
   }
+
+  // (compaction helper lives at module scope below: recentFilePathsFromSpan)
 
   async *streamTurn(): AsyncGenerator<TurnEvent> {
     const turnId = cryptoId("turn");

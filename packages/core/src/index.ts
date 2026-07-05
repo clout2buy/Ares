@@ -10,6 +10,7 @@ export {
   QueryEngine,
   budgetMessages,
   buildContextLedger,
+  recentFilePathsFromSpan,
   collectTrimmedFilePaths,
   chooseCompactionSplit,
   stringifyModelToolOutput,

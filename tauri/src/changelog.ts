@@ -38,6 +38,38 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.19.0",
+    date: "July 2026",
+    title: "Tactical: coding got fast",
+    tagline: "The bookkeeping tax on every edit is gone, deep thinking spends itself where it pays, and you can steer Ares mid-task without killing the run.",
+    highlights: [
+      {
+        icon: "⚡",
+        title: "Edits without the wait",
+        tag: "Faster",
+        blurb: "Every file edit used to trigger a full workspace snapshot — seconds of dead time per edit on a big project, twice. Snapshots are now incremental: the same undo safety, at milliseconds.",
+      },
+      {
+        icon: "🎯",
+        title: "Thinks where it counts",
+        tag: "Faster",
+        blurb: "Full reasoning depth goes to the opening plan and to failure recovery; routine steps in between run light. On DeepSeek that's the difference between a minute of silent 'thinking' before each step and just doing the step.",
+      },
+      {
+        icon: "🕹️",
+        title: "Steer it mid-task",
+        tag: "New",
+        blurb: "Type while Ares is working and your message reaches it within one tool step — course-correct without cancelling. And in the terminal, clicks now land exactly where you aim.",
+      },
+      {
+        icon: "🛠️",
+        title: "Edits that just land",
+        tag: "Safer",
+        blurb: "Smart-quote drift, odd spaces, and misjudged indentation no longer bounce an edit back for a retry — a canonical matcher rescues them safely, and anything ambiguous still refuses loudly.",
+      },
+    ],
+  },
+  {
     version: "0.18.1",
     date: "July 2026",
     title: "In-House, front and center",

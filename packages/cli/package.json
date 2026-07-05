@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test:tui": "node --test tests/tui/*.test.mjs"
   },
   "dependencies": {
     "@ares/agent": "workspace:*",
@@ -19,17 +20,18 @@
     "@ares/connectors": "workspace:*",
     "@ares/core": "workspace:*",
     "@ares/effects": "workspace:*",
+    "@ares/garrison": "workspace:*",
     "@ares/mind": "workspace:*",
     "@ares/operator": "workspace:*",
     "@ares/protocol": "workspace:*",
     "@ares/tools": "workspace:*",
     "ink": "^7.0.4",
     "react": "^19.2.6",
-    "zod": "^3.23.8",
-    "@ares/garrison": "workspace:*",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.13"
+    "@types/ws": "^8.5.13",
+    "ink-testing-library": "^4.0.0"
   }
 }

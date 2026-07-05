@@ -302,8 +302,13 @@ export function makeConductorTool(deps: ConductorToolDeps) {
       // (Easy-mode `plan` is exempt — its planner always emits a build phase.)
       if (!i.plan && i.phases && i.phases.length > 0) {
         const hasBuildPhase = i.phases.some((p) => p.build === true);
+        const goalText = i.goal ?? "";
         const buildIntent = /\b(build|implement|scaffold|develop|rebuild|reimplement|code\s*up|write\s+(the|a|an)\s)/i;
-        const looksLikeBuild = buildIntent.test(i.goal ?? "");
+        // A goal that explicitly frames itself as research/analysis is allowed to be
+        // build-phase-free even if it names "build" (e.g. "research how to build X") —
+        // the user asked for findings, not code. Only a plain build directive is caught.
+        const researchIntent = /\b(research|investigate|explore|survey|compare|evaluate|analy[sz]e|assess|feasibility|how\s+to|options?\s+for|approach(es)?\s+(to|for))\b/i;
+        const looksLikeBuild = buildIntent.test(goalText) && !researchIntent.test(goalText);
         if (looksLikeBuild && !hasBuildPhase) {
           return {
             ok: false,

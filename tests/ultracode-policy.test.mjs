@@ -409,6 +409,18 @@ test("BUILD-DELIVERY: a non-build goal (review/research panel) is NOT falsely re
   );
 });
 
+test("BUILD-DELIVERY: a research-framed goal that merely NAMES 'build' is NOT rejected", async () => {
+  const t = conductorTool();
+  // "research how to build X" is a findings request, not a build directive.
+  assert.equal(
+    (await t.validateInput(
+      { goal: "research rendering approaches for building a voxel game", phases: [{ id: "r", kind: "parallel", reduce: "judge", agents: [{ role: "a", prompt: "meshing" }, { role: "b", prompt: "shaders" }] }] },
+      {},
+    )).ok,
+    true,
+  );
+});
+
 test("the input schema accepts scope + isolation:'none' and rejects unknown isolation values", () => {
   const t = conductorTool();
   const good = t.inputZod.safeParse({

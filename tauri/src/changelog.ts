@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.17.0",
+    date: "July 2026",
+    title: "The new terminal look is here — and builds that finish",
+    tagline: "The redesigned CLI is now the default, the chat noise is gone, and when Ares fans a big job out to a team it can no longer research forever and ship nothing.",
+    highlights: [
+      {
+        icon: "🖥️",
+        title: "The new terminal UI, by default",
+        tag: "New",
+        blurb: "The calm cool-teal redesign of the `ares` CLI is now what you get out of the box — new intro, provider grid, and live activity view, all in one consistent look. (Prefer the old fire theme? Launch with ARES_TUI=classic.)",
+      },
+      {
+        icon: "🤖",
+        title: "Fleets that actually build",
+        tag: "Safer",
+        blurb: "When Ares delegates a big build to a team of agents, it can no longer spend 20 minutes researching and planning and then stop without writing a line of code — a research-only build plan is now rejected up front, so the work ends in real, verified files.",
+      },
+      {
+        icon: "🧹",
+        title: "A quieter chat",
+        tag: "Polished",
+        blurb: "The repeating internal-plumbing lines that used to clutter the transcript every turn are gone — you see your conversation and the work, not the machinery.",
+      },
+    ],
+  },
+  {
     version: "0.16.0",
     date: "July 2026",
     title: "A new terminal look — in preview",

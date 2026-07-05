@@ -31,6 +31,42 @@ function statusFor(r: Readiness, theme: SlateTheme): { text: string; color: stri
 
 const CARD_W = 26;
 const PER_ROW = 3;
+const CARD_H = 5; // round border (2) + icon/title + body + status
+const CELL_W = CARD_W + 2; // marginX 1 each side
+
+/**
+ * Pure hit-testing for the provider grid — mirrors the EXACT flexbox math the
+ * renderer uses (the launcher's old hardcoded classic zones were why clicks
+ * landed nowhere near the slate cards). Coordinates are 1-based terminal
+ * (x, y); the screen is the full terminal (the launcher clears to home and the
+ * wrapper Box is height=rows with justifyContent:"center", alignItems center).
+ * Returns the provider index under the point, or null.
+ */
+export function providerHitTest(
+  x: number,
+  y: number,
+  columns: number,
+  rows: number,
+  count: number,
+  hasVersion: boolean,
+): number | null {
+  const cardRows = Math.ceil(count / PER_ROW);
+  // Content rows: logo 6 · version 0/1 · spacer · title · spacer · cards · spacer · hints
+  const contentH = 6 + (hasVersion ? 1 : 0) + 3 + cardRows * CARD_H + 2;
+  const topGap = Math.max(0, Math.floor((rows - contentH) / 2));
+  const firstCardTop = topGap + 6 + (hasVersion ? 1 : 0) + 3 + 1; // 1-based
+  const rowIdx = Math.floor((y - firstCardTop) / CARD_H);
+  if (y < firstCardTop || rowIdx < 0 || rowIdx >= cardRows) return null;
+
+  const inRow = Math.min(PER_ROW, count - rowIdx * PER_ROW);
+  const rowWidth = inRow * CELL_W;
+  const left0 = Math.max(0, Math.floor((columns - rowWidth) / 2)); // 0-based
+  const colIdx = Math.floor((x - 1 - left0) / CELL_W);
+  if (x - 1 < left0 || colIdx < 0 || colIdx >= inRow) return null;
+
+  const index = rowIdx * PER_ROW + colIdx;
+  return index < count ? index : null;
+}
 
 export function ProviderSelect(props: {
   theme: SlateTheme;

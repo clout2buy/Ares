@@ -6,7 +6,7 @@ import type { UiSettings } from "./uiSettings.js";
 import { motionEnabled } from "./tuiElite.js";
 import { SLATE } from "./ui/theme.js";
 import { IntroScreen } from "./ui/IntroScreen.js";
-import { ProviderSelect } from "./ui/ProviderSelect.js";
+import { ProviderSelect, providerHitTest } from "./ui/ProviderSelect.js";
 import {
   bladeSweep,
   emberRain,
@@ -253,6 +253,22 @@ function AresLauncherApp({
     }
     if (event.button !== 0) return;
     if (phase === "provider") {
+      if (process.env.ARES_TUI !== "classic") {
+        // Slate grid: exact flexbox-mirror hit-test on RAW terminal coords —
+        // the classic headerExtra shift and hardcoded zones belong to the old
+        // left-anchored deck and landed clicks nowhere near the centered cards.
+        const hit = providerHitTest(raw.x, raw.y, columns, rows, PROVIDER_OPTIONS.length, !!process.env.npm_package_version);
+        if (hit != null) {
+          if (hit === selectedProvider) {
+            // Second click on the selected card = confirm (the hint's contract).
+            setPhase(PROVIDER_OPTIONS[hit].id === "ollama" ? "ollama" : "openai");
+            setSelectedOpenAI(0);
+          } else {
+            setSelectedProvider(hit);
+          }
+        }
+        return;
+      }
       if (event.y >= 8 && event.y <= 21 && event.x >= 2 && event.x <= 108) {
         const col = event.x >= 74 ? 2 : event.x >= 38 ? 1 : 0;
         const row = event.y >= 15 ? 1 : 0;

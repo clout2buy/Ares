@@ -165,7 +165,10 @@ function AresLauncherApp({
   const [workspace, setWorkspace] = useState(options.workspace);
   const [workspaceDraft, setWorkspaceDraft] = useState(options.workspace);
   const previousPhase = useRef<LauncherPhase>("provider");
-  const theme = LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.rage;
+  const theme =
+    process.env.ARES_TUI !== "classic"
+      ? { frame: SLATE.line, accent: SLATE.primary, accent2: SLATE.secondary, accent3: SLATE.primaryDim, text: SLATE.text, dim: SLATE.muted, success: SLATE.success, warn: SLATE.warn, error: SLATE.danger }
+      : LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.rage;
   const currentProvider = PROVIDER_OPTIONS[Math.min(selectedProvider, PROVIDER_OPTIONS.length - 1)]?.id ?? "ollama";
 
   // ── Boot intro + idle fire ────────────────────────────────────────────────
@@ -506,7 +509,7 @@ function AresLauncherApp({
     }
   });
 
-  const slateUi = process.env.ARES_TUI === "slate";
+  const slateUi = process.env.ARES_TUI !== "classic";
 
   if (introActive) {
     return slateUi

@@ -6,6 +6,7 @@ import { modelContextWindow } from "./entry/sessionFactory.js";
 import { renderMarkdown, type MdLine, type MdSpan, type MdTheme } from "./mdRender.js";
 import { flameLine, moltenCursor, forgeStrike, type FxSpan, type FxPalette } from "./tuiFx.js";
 import { ChatMain, mapTone } from "./ui/chat/ChatMain.js";
+import { SLATE } from "./ui/theme.js";
 import {
   diffHeaderLabel,
   diffLineSpans,
@@ -956,14 +957,10 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
           append("verify", event.text, event.source);
         } else if (event.source === "compaction") {
           append("muted", event.text.split("\n")[0].slice(0, 120), "compaction");
-        } else {
-          const tag = `⟡ ${event.source ?? "context"} woven in`;
-          setLines((prev) => {
-            const last = prev.at(-1);
-            if (last && last.tone === "muted" && last.text === tag) return prev;
-            return [...prev, { id: lineId.current++, tone: "muted" as const, text: tag }].slice(-600);
-          });
         }
+        // Everything else (memory weave, identity anchor, foreground framing) is
+        // INTERNAL prompt plumbing with zero user value. It is NOT shown — dumping
+        // "⟡ … woven in" into the stream every turn was pure noise.
         return;
       }
       if (event.type === "error") {
@@ -1574,11 +1571,10 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     });
   }
 
-  // ── Slate rebuild (opt-in via ARES_TUI=slate) ─────────────────────────────
-  // Renders the new ground-up main screen. Gated so the classic TUI stays the
-  // safe default until the new one is signed off in a real terminal; overlays
-  // (model picker/settings) still use the classic path for now.
-  if (process.env.ARES_TUI === "slate") {
+  // ── Slate rebuild (now the DEFAULT; ARES_TUI=classic opts out) ────────────
+  // Renders the new ground-up main screen. Overlays (model picker/settings) fall
+  // through to the classic modal path below for now.
+  if (process.env.ARES_TUI !== "classic") {
     const slateLines = visibleLines.map((l) => {
       const isTool = l.tone === "tool";
       return {
@@ -2453,7 +2449,19 @@ function FleetPanel({ theme, fleet, spinner, width }: { theme: DeckTheme; fleet:
   );
 }
 
+// When slate is active, even the classic-rendered surfaces (overlays, launcher
+// fallbacks) borrow slate's cool palette so nothing flashes fire-orange over the
+// new main screen.
+const SLATE_DECK: DeckTheme = {
+  title: "SLATE", borderStyle: "round", frame: SLATE.line,
+  accent: SLATE.primary, accent2: SLATE.secondary, accent3: SLATE.primaryDim,
+  text: SLATE.text, dim: SLATE.muted, panel: SLATE.surface, input: SLATE.surfaceAlt,
+  user: SLATE.text, assistant: SLATE.text, tool: SLATE.active,
+  error: SLATE.danger, success: SLATE.success, warn: SLATE.warn,
+};
+
 function deckTheme(): DeckTheme {
+  if (process.env.ARES_TUI !== "classic") return SLATE_DECK;
   return DECK_THEMES[currentThemeName()] ?? DECK_THEMES.rage;
 }
 

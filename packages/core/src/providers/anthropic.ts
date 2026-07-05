@@ -149,31 +149,56 @@ export class AnthropicProvider implements Provider {
     // window so a hung connection becomes a retriable error, not a freeze.
     const guard = createStallGuard(req.signal);
     let response: Response;
-    try {
-      response = await this.fetchImpl(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: guard.signal,
-      });
-    } catch (err) {
-      guard.dispose();
-      if (guard.stalled()) {
-        yield stallErrorEvent();
+    for (;;) {
+      try {
+        response = await this.fetchImpl(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: guard.signal,
+        });
+      } catch (err) {
+        guard.dispose();
+        if (guard.stalled()) {
+          yield stallErrorEvent();
+          return;
+        }
+        if (req.signal?.aborted || isAbortError(err)) return;
+        yield {
+          type: "error",
+          error: {
+            code: "network_error",
+            message: err instanceof Error ? err.message : String(err),
+            retriable: true,
+          },
+        };
         return;
       }
-      if (req.signal?.aborted || isAbortError(err)) return;
-      yield {
-        type: "error",
-        error: {
-          code: "network_error",
-          message: err instanceof Error ? err.message : String(err),
-          retriable: true,
-        },
-      };
-      return;
+      guard.reset();
+      // Act-first forcing is best-effort: if THIS endpoint rejects tool_choice
+      // (Anthropic disallows it with extended thinking; a compat layer may not
+      // support it at all), strip it and retry once instead of failing the turn.
+      if (!response.ok && response.status === 400 && body.tool_choice) {
+        void response.text().catch(() => "");
+        delete body.tool_choice;
+        continue;
+      }
+      // Tactical thinking-skip is best-effort too: if the endpoint 400s when a
+      // routine round omitted the thinking pass (e.g. it insists thinking stay
+      // enabled once history carries thinking blocks), re-enable and retry once.
+      if (
+        !response.ok &&
+        response.status === 400 &&
+        this.dialect === "deepseek" &&
+        body.thinking === undefined &&
+        reasoningEnabled(req.reasoningLevel)
+      ) {
+        void response.text().catch(() => "");
+        body.thinking = { type: "enabled" };
+        continue;
+      }
+      break;
     }
-    guard.reset();
 
     if (!response.ok) {
       // Surface the body verbatim: the engine's context-limit matcher
@@ -442,7 +467,17 @@ function buildMessagesBody(
     if (isDeepseek) {
       // DeepSeek ignores budget_tokens; enable thinking and do NOT inflate
       // max_tokens (the budget branch would grow the ceiling for nothing).
-      body.thinking = { type: "enabled" };
+      //
+      // TACTICAL: DeepSeek's dial is binary on the wire (every enabled level is
+      // identical), so a "routine" continuation — mid tool loop, previous round
+      // clean — SKIPS the thinking pass entirely. That's the difference between
+      // "52s of reasoning before calling Edit" and just calling Edit. History
+      // rendering stays byte-identical (echoed thinking blocks untouched) so
+      // the server-side KV cache keeps its prefix. If the endpoint rejects the
+      // mix, the 400 self-heal in stream() re-adds thinking and retries.
+      if (req.reasoningPhase !== "routine") {
+        body.thinking = { type: "enabled" };
+      }
     } else if (usesAdaptiveThinking(req.model)) {
       // Fable-class models are intentionally adaptive — the API picks the depth,
       // so the dial collapses to on/off here (the level isn't threaded in).
@@ -473,6 +508,14 @@ function buildMessagesBody(
         ? { cache_control: { type: "ephemeral" } }
         : {}),
     }));
+    // Act-first forcing: "any" structurally REQUIRES a tool call (the engine
+    // sets it on the first agentic turn of a goal + right after a fleet
+    // returns). Anthropic disallows forced tool use WITH extended thinking —
+    // thinking needs a free-form assistant turn — so thinking wins when both
+    // are requested EXCEPT on DeepSeek, whose /anthropic dialect accepts both.
+    if (req.toolChoice === "any" && (isDeepseek || !reasoningEnabled(req.reasoningLevel))) {
+      body.tool_choice = { type: "any" };
+    }
   }
 
   // S3 — rolling conversation cache breakpoint. The system + last-tool

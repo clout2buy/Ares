@@ -43,6 +43,8 @@ export interface ChatMainProps {
   tick: number;
   input: string;
   thinking?: boolean;
+  /** Live reasoning-token estimate this turn — proves deep thought is alive. */
+  thinkingTokens?: number;
   currentTool?: string;
   feed?: ActivityItem[];
   fleet?: { summary: string; rows: FleetRowVm[] };
@@ -63,7 +65,7 @@ export interface ChatMainProps {
 
 export function ChatMain(props: ChatMainProps): React.ReactElement {
   const {
-    snapshot, lines, stats, git, busy, tick, input, thinking, currentTool, feed, fleet,
+    snapshot, lines, stats, git, busy, tick, input, thinking, thinkingTokens, currentTool, feed, fleet,
     scrolled, todosNode, paletteNode, permNode, themeName, version, width, height,
   } = props;
   const mode = snapshot.mode === "plan" ? "plan" : snapshot.mode === "bypass" ? "bypass" : null;
@@ -74,7 +76,7 @@ export function ChatMain(props: ChatMainProps): React.ReactElement {
       theme: SLATE, model: snapshot.model, tokens: stats.tokens, workspace: snapshot.workspace,
       branch: git?.branch, dirty: git?.dirty, mode, busy, tick, width,
     }),
-    h(ActivityHUD, { theme: SLATE, tick, thinking: busy && thinking, currentTool, feed, fleet }),
+    h(ActivityHUD, { theme: SLATE, tick, thinking: busy && thinking, thinkingTokens, currentTool, feed, fleet }),
     h(Transcript, { theme: SLATE, lines, tick, scrolled, width }),
     todosNode ?? null,
     paletteNode ?? null,

@@ -131,6 +131,11 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
       workspace: live.context.workspace,
       mode: live.runtime.permissionMode,
     });
+    // Post-turn bookkeeping (Witness — a full model call — plus memory writes)
+    // must NOT hold the UI "busy" after the answer has rendered. It runs
+    // detached; the NEXT send awaits it first, so the cost hides in the user's
+    // think-time instead of a dead spinner.
+    let pendingFinish: Promise<void> = Promise.resolve();
     return await runInkChat({
       snapshot,
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
@@ -138,7 +143,16 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
       registerPermissionHandler: (handler) => {
         inkPermissionHandler = handler;
       },
+      steer: (text) => {
+        // Same contract as the daemon's steer verb: course-correct the LIVE
+        // turn without restarting it (drained after the current tool round).
+        live.queueSystemReminder(
+          `The user STEERED mid-task: "${text}". Adjust course to honor this, but keep your current objective and everything you've already done — do not restart.`,
+          "instructions",
+        );
+      },
       sendMessage: async (goal, onEvent) => {
+        await pendingFinish;
         await applyTerminalAutoRouting(live, goal);
         await prepareUserTurn(live, goal);
         let finalStatus: "completed" | "interrupted" | "failed" = "completed";
@@ -149,10 +163,11 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
           if (event.type === "turn_end") finalStatus = event.status;
           onEvent(event);
         }
-        await finishTurn(live, finalStatus);
+        pendingFinish = finishTurn(live, finalStatus).catch(() => {});
       },
       handleCommand: async (line): Promise<InkCommandResult> => {
         if (line === "/exit" || line === "/quit") {
+          await pendingFinish; // don't lose detached post-turn bookkeeping on exit
           await live.agentRuntime?.sessionEnded();
           await mindSessionEnded();
           live.agentRuntime?.stop();

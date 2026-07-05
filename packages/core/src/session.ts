@@ -129,13 +129,16 @@ export class Session {
         onHistoryTrimmed: opts.onHistoryTrimmed,
         summarizeSpan: opts.summarizeSpan,
         compactionThresholdTokens: opts.compactionThresholdTokens,
-        beforeToolUseCheckpoint: async ({ toolUseId, toolName }) => {
+        beforeToolUseCheckpoint: async ({ toolUseId, toolName, targetFiles }) => {
           const checkpoint = await createWorkspaceCheckpoint({
             workspace: this.opts.workspace,
             sessionId: this.meta.id,
             turnSeq: this.seq,
             parentCheckpointId: this.lastCheckpointId,
             label: `before ${toolName} ${toolUseId}`,
+            // Declared-target tools (Edit/Write) snapshot incrementally — the
+            // full-workspace walk only runs for shells/unknowable side effects.
+            targetFiles,
           });
           this.lastCheckpointId = checkpoint.id;
           return { checkpointId: checkpoint.id, label: checkpoint.label };

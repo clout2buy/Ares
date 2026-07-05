@@ -64,7 +64,11 @@ export interface LiveSession {
 async function confirmTurnEndWith(
   verifier: ContinuousVerifier,
 ): Promise<Array<{ text: string; source: "verifier" | "hook" }>> {
-  await verifier.settle(10_000);
+  // A verdict that's about to land must not be abandoned: 10s was shorter than
+  // a typical tsc/test run, so the gate saw "still running" twice, called
+  // itself stuck, and let the turn end with the verdict never delivered.
+  const settleMs = Number(process.env.ARES_VERIFY_SETTLE_MS) > 0 ? Number(process.env.ARES_VERIFY_SETTLE_MS) : 60_000;
+  await verifier.settle(settleMs);
   return verifier
     .drainReminders()
     .map((r) => ({ text: `${r.text}

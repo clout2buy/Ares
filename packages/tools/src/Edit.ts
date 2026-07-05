@@ -229,7 +229,7 @@ export const EditTool = buildTool({
 });
 
 type ReplaceResult =
-  | { ok: true; text: string; replacements: number; matchedBy: "exact" | "whitespace" | "anchor" }
+  | { ok: true; text: string; replacements: number; matchedBy: "exact" | "whitespace" | "anchor" | "normalized" }
   | { ok: false; reason: "not-found" }
   | { ok: false; reason: "not-unique"; occurrences: number }
   // Anchor tier found several regions whose first/last lines match — refuse to
@@ -292,7 +292,100 @@ export function replaceResilient(
   if (anchored.kind === "ambiguous") {
     return { ok: false, reason: "anchor-ambiguous", lines: anchored.lines };
   }
+
+  // Layer 4: canonical match — the two remaining burn-a-turn classes. (a) The
+  // model reproduced curly quotes/dashes/NBSP/zero-width chars imperfectly
+  // (unicode drift); (b) it guessed the block's indentation wrong by a uniform
+  // amount (incl. SINGLE-line targets, which layers 2-3 can't rescue). Compare
+  // per-line in canonical space (NFC + homoglyph fold + whitespace collapse),
+  // require a UNIQUE window, require the indent delta be UNIFORM, then re-indent
+  // new_string by that delta so the replacement lands at the file's real depth.
+  const normalized = normalizedReplace(haystack, needle, replacement);
+  if (normalized.kind === "replaced") {
+    return { ok: true, text: fromLf(normalized.text, eol), replacements: 1, matchedBy: "normalized" };
+  }
+  if (normalized.kind === "ambiguous") {
+    return { ok: false, reason: "not-unique", occurrences: normalized.matches };
+  }
   return { ok: false, reason: "not-found" };
+}
+
+/** Fold the characters a model most often reproduces "close but not byte-equal":
+ *  curly quotes → straight, en/em/horizontal dashes → '-', ellipsis → '...',
+ *  zero-width chars → gone. NFC first so composed/decomposed accents agree. */
+function homoglyphFold(text: string): string {
+  return text
+    .normalize("NFC")
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‒–—―−]/g, "-")
+    .replace(/…/g, "...")
+    .replace(/[​‌‍﻿]/g, "");
+}
+
+function normalizedReplace(
+  content: string,
+  oldString: string,
+  newString: string,
+): { kind: "replaced"; text: string } | { kind: "ambiguous"; matches: number } | { kind: "none" } {
+  // Canonical per-line form. \s+ collapse also folds NBSP/thin spaces (JS \s
+  // matches unicode spaces); homoglyphFold handles the rest.
+  const canon = (line: string): string => homoglyphFold(line).trim().replace(/\s+/g, " ");
+  const contentLines = content.split("\n");
+  const oldLines = oldString.split("\n");
+  // Drop pure-blank edge lines from the needle (models pad blocks with them).
+  while (oldLines.length > 0 && oldLines[0].trim() === "") oldLines.shift();
+  while (oldLines.length > 0 && oldLines[oldLines.length - 1].trim() === "") oldLines.pop();
+  if (oldLines.length === 0) return { kind: "none" };
+  const oldCanon = oldLines.map(canon);
+  if (oldCanon.every((l) => l === "")) return { kind: "none" };
+
+  let matchIndex = -1;
+  let matches = 0;
+  for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+    let hit = true;
+    for (let j = 0; j < oldLines.length; j++) {
+      if (canon(contentLines[i + j]) !== oldCanon[j]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) {
+      matches++;
+      matchIndex = i;
+      if (matches > 1) return { kind: "ambiguous", matches };
+    }
+  }
+  if (matches !== 1) return { kind: "none" };
+
+  // Indent delta must be UNIFORM across non-blank lines — a canon match with
+  // scattered indent differences means the file's structure differs from what
+  // the model believes, and auto-replacing would plant mis-indented code.
+  const leading = (s: string): number => s.length - s.trimStart().length;
+  let delta: number | null = null;
+  for (let j = 0; j < oldLines.length; j++) {
+    if (oldLines[j].trim() === "") continue;
+    const d = leading(contentLines[matchIndex + j]) - leading(oldLines[j]);
+    if (delta === null) delta = d;
+    else if (d !== delta) return { kind: "none" };
+  }
+  const shift = delta ?? 0;
+  const reindented = newString.split("\n").map((line) => {
+    if (line.trim() === "") return line;
+    if (shift > 0) return " ".repeat(shift) + line;
+    if (shift < 0) {
+      const cut = Math.min(-shift, leading(line));
+      return line.slice(cut);
+    }
+    return line;
+  });
+
+  const updated = [
+    ...contentLines.slice(0, matchIndex),
+    ...reindented,
+    ...contentLines.slice(matchIndex + oldLines.length),
+  ];
+  return { kind: "replaced", text: updated.join("\n") };
 }
 
 /**

@@ -17,7 +17,7 @@ const cli = path.join(here, "..", "packages", "cli", "dist", "entry.js");
 // Resolves once `expectedTurnEnds` turn_end events arrive (the daemon is
 // kill-on-resolve), with a generous ceiling for loaded CI machines — a fixed
 // short window flakes when the full suite runs in parallel.
-function runDaemon(workspace, commands, expectedTurnEnds, ms = 30000) {
+function runDaemon(workspace, commands, expectedTurnEnds, ms = 60000) { // CLI cold boot is 6-10s on Windows; two sessions + agent runtime need real headroom
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cli, "daemon", "--json", "--workspace", workspace, "--provider", "mock", "--model", "mock-echo"], {
       env: { ...process.env, ARES_AGENT_ENABLED: "1", ARES_HOME: path.join(workspace, "home"), ARES_OPERATOR_AUTOTICK: "0" },

@@ -105,6 +105,9 @@ export interface InkChatOptions {
   registerPermissionHandler?(
     handler: (req: { toolName: string; reason: string; suggestion?: string }) => Promise<"allow_once" | "allow_always" | "deny">,
   ): void;
+  /** Mid-turn steering: a line typed while busy is queued into the live turn
+   *  (the engine drains reminders after every tool round) instead of dropped. */
+  steer?(text: string): void;
 }
 
 /** One pending permission ask — the card renders it; a key/click resolves it. */
@@ -605,6 +608,9 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const [activity, setActivity] = useState<string | null>(null);
   // When the current turn began — drives the live "working Ns" timer in slate.
   const turnStartedAt = useRef<number | null>(null);
+  // Cumulative reasoning chars this turn (~4 chars/token) — the live "thinking"
+  // counter that keeps a deep-reasoning model from looking frozen.
+  const thinkingChars = useRef(0);
   // ── In-frame permission prompts ──────────────────────────────────────────
   // The engine's requestPermission lands here (via registerPermissionHandler);
   // one card shows at a time, parallel asks queue behind it.
@@ -944,6 +950,8 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         return;
       }
       if (event.type === "thinking_delta") {
+        // Live reasoning telemetry — deep thinking must LOOK alive. ~4 chars/token.
+        thinkingChars.current += event.text.length;
         setActivity("thinking");
         return;
       }
@@ -1045,7 +1053,21 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   const submit = useCallback(
     async (raw: string) => {
       const line = raw.trim();
-      if (!line || busy) return;
+      if (!line) return;
+      // Mid-turn STEERING: typing while Ares works no longer dies at the door.
+      // The line rides the engine's reminder drain and reaches the model within
+      // one tool round — course-correct without killing the turn.
+      if (busy) {
+        if (!line.startsWith("/") && options.steer) {
+          options.steer(line);
+          setInput("");
+          history.current.push(line);
+          historyIndex.current = null;
+          append("user", `↳ ${line}`, "steer");
+          append("muted", "steering — applies within a tool round", "steer");
+        }
+        return;
+      }
       // /model and /models open the scrollable picker, not a text dump.
       if ((line === "/model" || line === "/models") && options.listModelOptions) {
         setInput("");
@@ -1062,6 +1084,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       historyIndex.current = null;
       append("user", line, "send");
       turnStartedAt.current = Date.now();
+      thinkingChars.current = 0;
       setBusy(true);
       try {
         if (line.startsWith("/")) {
@@ -1716,6 +1739,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       tick: spin,
       input,
       thinking: busy,
+      thinkingTokens: activity === "thinking" && thinkingChars.current > 0 ? Math.round(thinkingChars.current / 4) : undefined,
       currentTool: activity && activity !== "responding" && activity !== "thinking" ? activity : undefined,
       fleet: slateFleet,
       scrolled: scrollOffset,

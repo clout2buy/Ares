@@ -38,11 +38,14 @@ export function ActivityHUD(props: {
   theme: SlateTheme;
   tick: number;
   thinking?: boolean;
+  /** Live reasoning-token estimate — renders a counter so deep thought never
+   *  looks frozen ("✦ Thinking… · ~8.4k tokens of thought"). */
+  thinkingTokens?: number;
   currentTool?: string;
   feed?: ActivityItem[];
   fleet?: { summary: string; rows: FleetRowVm[] };
 }): React.ReactElement | null {
-  const { theme, tick, thinking, currentTool, feed = [], fleet } = props;
+  const { theme, tick, thinking, thinkingTokens, currentTool, feed = [], fleet } = props;
   if (!thinking && feed.length === 0 && !fleet) return null;
 
   const kids: React.ReactNode[] = [];
@@ -52,6 +55,16 @@ export function ActivityHUD(props: {
     const dots = ".".repeat(1 + (Math.floor(tick / 6) % 3));
     if (currentTool) {
       kids.push(h(Text, { key: "think", color: theme.active }, `⚡ Running ${currentTool}${dots}`));
+    } else if (thinkingTokens && thinkingTokens > 0) {
+      const pretty = thinkingTokens >= 1000 ? `${(thinkingTokens / 1000).toFixed(1)}k` : String(thinkingTokens);
+      kids.push(
+        h(
+          Text,
+          { key: "think" },
+          h(Text, { color: pulse(tick) ? theme.primary : theme.secondary }, `✦ Thinking${dots}`),
+          h(Text, { color: theme.faint }, `  ~${pretty} tokens of thought`),
+        ),
+      );
     } else {
       const phase = THINK[Math.floor(tick / 25) % THINK.length];
       kids.push(h(Text, { key: "think", color: pulse(tick) ? theme.primary : theme.secondary }, `✦ ${phase}${dots}`));

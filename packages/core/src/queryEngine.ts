@@ -43,6 +43,16 @@ export interface ProviderRequest {
   /** Unified reasoning dial; each provider translates it (effort vs budget). */
   reasoningLevel?: ReasoningLevel;
   maxOutputTokens?: number;
+  /** Structural act-first forcing: "any" REQUIRES a tool call this turn (used
+   *  on the first agentic turn of a goal, and right after a research fleet
+   *  returns — the two spots where "summarize and stop" wastes the work).
+   *  Providers that can't honor it ignore it. */
+  toolChoice?: "auto" | "any";
+  /** Tactical phase hint. "routine" = a mid-loop continuation after a clean
+   *  tool round — binary-dial reasoners (DeepSeek: every level is the same
+   *  wire) use this to SKIP the reasoning pass entirely on such calls, which
+   *  is the only real speed lever they have. "deep" (or absent) = full think. */
+  reasoningPhase?: "deep" | "routine";
 }
 
 export interface ProviderToolDescriptor {
@@ -178,6 +188,9 @@ export interface QueryEngineConfig {
     toolName: string;
     input: unknown;
     safety: SafetyClass;
+    /** The tool's declared target file(s), when analyzable (Edit/Write). Lets
+     *  the host take an INCREMENTAL snapshot instead of a full workspace walk. */
+    targetFiles?: string[];
   }): Promise<{ checkpointId: string; label?: string } | null>;
   /**
    * Absolute paths the engine considers "self-territory" — writes targeting
@@ -579,6 +592,9 @@ export class QueryEngine {
   /** Effort-dial override for the rest of THIS turn: set when a stalled attempt
    *  downgraded reasoning, cleared at the next turn start. */
   private turnReasoningOverride: ReasoningLevel | null = null;
+  /** Did the previous tool round contain a failure? Failure recovery earns the
+   *  full effort ceiling back (see tacticalReasoningLevel). */
+  private lastRoundHadFailure = false;
 
   constructor(cfg: QueryEngineConfig, sessionId: string) {
     this.cfg = cfg;
@@ -606,6 +622,38 @@ export class QueryEngine {
       if (t) { text = t; break; }
     }
     return adaptiveReasoningLevel(this.cfg.reasoningLevel, text, process.env.ARES_ADAPTIVE_REASONING !== "0");
+  }
+
+  /**
+   * The TACTICAL effort dial — deep thought where it pays, speed everywhere
+   * else. A reasoning model at "max" burning a full thinking budget on EVERY
+   * tool-loop continuation is the "worked 52s between two tool calls" complaint:
+   * the opening plan deserves the ceiling; "I got the file contents, now call
+   * Edit" does not. Policy: full ceiling on the FIRST model call of a turn and
+   * whenever the previous round contained a tool failure (recovery = real
+   * thinking); one notch lighter on routine continuations. Never up-shifts past
+   * the owner's dial; ARES_TACTICAL_REASONING=0 opts out.
+   */
+  private tacticalReasoningLevel(iter: number): ReasoningLevel | undefined {
+    const base = this.turnReasoningOverride ?? this.effectiveReasoningLevel();
+    if (process.env.ARES_TACTICAL_REASONING === "0") return base;
+    // Only high/max have a meaningful notch below; leave lighter dials alone.
+    if (!base || base === "off" || base === "low" || base === "medium") return base;
+    if (iter === 0 || this.lastRoundHadFailure) return base;
+    return downshift(base, 1);
+  }
+
+  /** True when the trailing REAL user message is an autonomous work-item (goal
+   *  mode: run/mission/operator/subagent) — the act-first tool_choice forcing
+   *  applies only there, never to interactive chat. */
+  private inGoalMode(): boolean {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role !== "user") continue;
+      if (!m.content.some((b) => b.type === "text")) continue; // tool-result plumbing
+      return m.metadata?.source === "work-item";
+    }
+    return false;
   }
 
   /** Fold a real usage datapoint into the token-scale calibration (S4). */
@@ -984,6 +1032,7 @@ export class QueryEngine {
     let endGateFired = 0;
     this.todoGateFired = false; // re-arm the todo-completion gate for this turn
     this.turnReasoningOverride = null; // effort dial resets each turn
+    this.lastRoundHadFailure = false; // tactical dial starts clean
     // Signature of the last end-gate objection, so we can tell "the model made
     // progress on the failures" (new objection → keep pushing) from "the model
     // is stuck re-claiming done against the SAME red checks" (stop, but honestly).
@@ -1117,8 +1166,18 @@ export class QueryEngine {
               messages: outboundMessages,
               tools: toolDescriptors,
               signal: AbortSignal.any([this.liveSignal(), attemptAbort.signal]),
-              reasoningLevel: this.turnReasoningOverride ?? this.effectiveReasoningLevel(),
+              reasoningLevel: this.tacticalReasoningLevel(iter),
               maxOutputTokens: this.cfg.maxOutputTokens,
+              // Act first: the opening call of an autonomous goal must DO
+              // something (a tool call), not produce a plan-essay and stop.
+              toolChoice: iter === 0 && this.inGoalMode() ? "any" : undefined,
+              // Tactical phase for binary-dial reasoners: full think on the
+              // opening call + failure recovery, skip the reasoning pass on
+              // routine continuations. ARES_TACTICAL_REASONING=0 opts out.
+              reasoningPhase:
+                process.env.ARES_TACTICAL_REASONING !== "0" && iter > 0 && !this.lastRoundHadFailure
+                  ? "routine"
+                  : "deep",
             });
 
             let sawCommittedOutput = false;
@@ -1654,6 +1713,12 @@ export class QueryEngine {
         yield { type: "system_reminder_injected", text: "convergence: gather-stall detected — deliver now", source: "instructions" };
       }
 
+      // Tactical dial input: a failed round earns the full effort ceiling back
+      // on the next model call (recovery deserves real thinking).
+      this.lastRoundHadFailure = pendingToolUses.some(
+        (u) => resultByToolUseId.get(u.id)?.is_error === true,
+      );
+
       // ── absolute per-turn tool-call ceiling (graceful end) ──────────────
       totalToolCalls += pendingToolUses.length;
       const ceiling = toolCallCeiling();
@@ -1789,11 +1854,15 @@ export class QueryEngine {
     }
 
     if (shouldCheckpointBeforeTool(use.tool) && this.cfg.beforeToolUseCheckpoint) {
+      // Declared single-file target (Edit/Write) → the host can snapshot
+      // incrementally instead of walking the whole workspace before EVERY edit.
+      const deps = analyzeToolDeps(use, this.cfg.workspace);
       const checkpoint = await this.cfg.beforeToolUseCheckpoint({
         toolUseId: use.id,
         toolName: use.name,
         input: use.input,
         safety: use.tool.schema.safety,
+        targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
       });
       if (checkpoint) {
         emit({

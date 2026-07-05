@@ -55,16 +55,17 @@ export interface CreateCheckpointOptions {
   turnSeq: number;
   parentCheckpointId?: string;
   label?: string;
+  /** When the tool declares its exact target file(s) (Edit/Write — the HOT
+   *  coding path), the checkpoint is INCREMENTAL: re-snapshot only those files
+   *  layered on the parent's manifest, instead of walking the whole workspace.
+   *  On a 30k-file repo that turns seconds-per-Edit into milliseconds. Tools
+   *  with unknowable side effects (shells) omit this and get the full walk. */
+  targetFiles?: readonly string[];
 }
 
 export async function createWorkspaceCheckpoint(opts: CreateCheckpointOptions): Promise<CheckpointMeta> {
-  const files = await listWorkspaceFilesWithStats(opts.workspace);
-  const manifest: BlobRef[] = [];
-  for (const file of files) {
-    const hash = await hashFileCached(opts.workspace, file.path, file.mtimeMs, file.size);
-    const rel = path.relative(opts.workspace, file.path).replace(/\\/g, "/");
-    manifest.push({ path: rel, blobHash: hash, mode: 0o100644 });
-  }
+  const manifest =
+    (await incrementalManifest(opts).catch(() => null)) ?? (await fullManifest(opts.workspace));
   manifest.sort((a, b) => a.path.localeCompare(b.path));
   const id = sha256(
     JSON.stringify({
@@ -83,24 +84,84 @@ export async function createWorkspaceCheckpoint(opts: CreateCheckpointOptions): 
   };
   await fs.mkdir(metaDir(opts.workspace), { recursive: true });
   await fs.writeFile(path.join(metaDir(opts.workspace), `${id}.json`), JSON.stringify(meta, null, 2) + "\n", "utf8");
-  // Opportunistic GC so blobs/metas don't accumulate forever (the old behavior).
-  await gcCheckpoints(opts.workspace).catch(() => {});
+  // Throttled GC — a full meta+blob sweep on EVERY checkpoint was measurable
+  // tax on the hottest coding path; every Nth keeps growth bounded all the same.
+  if (++checkpointsSinceGc >= GC_EVERY) {
+    checkpointsSinceGc = 0;
+    await gcCheckpoints(opts.workspace).catch(() => {});
+  }
   return meta;
 }
 
+let checkpointsSinceGc = 0;
+const GC_EVERY = 25;
+
+/** Full-walk manifest (parallel-stat; the base checkpoint + shell-tool path). */
+async function fullManifest(workspace: string): Promise<BlobRef[]> {
+  const files = await listWorkspaceFilesWithStats(workspace);
+  const manifest: BlobRef[] = [];
+  // Hash with bounded concurrency — unchanged files are one cache hit each.
+  const CONC = 16;
+  let idx = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(CONC, files.length) }, async () => {
+      for (;;) {
+        const i = idx++;
+        if (i >= files.length) return;
+        const file = files[i];
+        const hash = await hashFileCached(workspace, file.path, file.mtimeMs, file.size);
+        manifest.push({ path: path.relative(workspace, file.path).replace(/\\/g, "/"), blobHash: hash, mode: 0o100644 });
+      }
+    }),
+  );
+  return manifest;
+}
+
+/** Incremental manifest: parent manifest + re-snapshot of ONLY the declared
+ *  target files. Returns null (→ full walk) when there's no parent to layer on
+ *  or no declared targets. */
+async function incrementalManifest(opts: CreateCheckpointOptions): Promise<BlobRef[] | null> {
+  if (!opts.targetFiles || opts.targetFiles.length === 0 || !opts.parentCheckpointId) return null;
+  const parent = await loadWorkspaceCheckpoint(opts.workspace, opts.parentCheckpointId); // throws → full walk
+  const byPath = new Map(parent.fileManifest.map((f) => [f.path, f]));
+  for (const raw of opts.targetFiles) {
+    const full = path.isAbsolute(raw) ? raw : path.join(opts.workspace, raw);
+    const rel = path.relative(opts.workspace, full).replace(/\\/g, "/");
+    if (!rel || rel.startsWith("..")) continue; // outside the workspace — not snapshot territory
+    const stat = await fs.stat(full).catch(() => null);
+    if (!stat || !stat.isFile() || stat.size > MAX_FILE_BYTES) {
+      byPath.delete(rel); // deleted (or no longer snapshotable) since the parent
+      continue;
+    }
+    const hash = await hashFileCached(opts.workspace, full, stat.mtimeMs, stat.size);
+    byPath.set(rel, { path: rel, blobHash: hash, mode: 0o100644 });
+  }
+  return [...byPath.values()];
+}
+
+/** Blob hashes known to exist on disk this process. Replaces the per-file
+ *  blob-existence stat on every cache hit (34k stats per checkpoint on a big
+ *  repo). GC invalidates by deleting from this set. */
+const knownBlobs = new Set<string>();
+
 /** Hash a file, reusing the cached hash when mtime+size are unchanged AND the
- *  blob still exists on disk (cheap stat). Re-reads only genuinely-changed files. */
+ *  blob is known present (in-memory set; one stat only on first sighting).
+ *  Re-reads only genuinely-changed files. */
 async function hashFileCached(workspace: string, full: string, mtimeMs: number, size: number): Promise<string> {
   const cached = fileHashCache.get(full);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
-    // Trust the cache only if its blob is still present (GC may have removed it).
+    if (knownBlobs.has(cached.hash)) return cached.hash;
     const exists = await fs.stat(blobPath(workspace, cached.hash)).then(() => true).catch(() => false);
-    if (exists) return cached.hash;
+    if (exists) {
+      knownBlobs.add(cached.hash);
+      return cached.hash;
+    }
   }
   const bytes = await fs.readFile(full);
   const hash = sha256(bytes);
   await writeBlob(workspace, hash, bytes);
   fileHashCache.set(full, { mtimeMs, size, hash });
+  knownBlobs.add(hash);
   return hash;
 }
 
@@ -136,7 +197,10 @@ async function gcCheckpoints(workspace: string): Promise<void> {
     const shardDir = path.join(blobsRoot, shard);
     const blobs = await fs.readdir(shardDir).catch(() => [] as string[]);
     for (const hash of blobs) {
-      if (!live.has(hash)) await fs.rm(path.join(shardDir, hash), { force: true }).catch(() => {});
+      if (!live.has(hash)) {
+        await fs.rm(path.join(shardDir, hash), { force: true }).catch(() => {});
+        knownBlobs.delete(hash); // keep the in-memory existence set honest
+      }
     }
   }
 }
@@ -205,10 +269,23 @@ export async function diffWorkspaceCheckpointUnified(
 ): Promise<{ diff: string; files: string[]; truncated: boolean }> {
   const checkpoint = await loadWorkspaceCheckpoint(workspace, id);
   const manifest = new Map(checkpoint.fileManifest.map((f) => [f.path, f]));
-  const currentFiles = new Set((await listWorkspaceFiles(workspace)).map((file) => relPath(workspace, file)));
-  const requested = files?.length
-    ? files.map((file) => normalizeRel(workspace, file))
-    : [...new Set([...manifest.keys(), ...currentFiles])].sort();
+  // When the caller names the files (the per-tool touchedFiles diff — the hot
+  // path), stat ONLY those instead of walking the whole workspace again.
+  let currentFiles: Set<string>;
+  let requested: string[];
+  if (files?.length) {
+    requested = files.map((file) => normalizeRel(workspace, file));
+    currentFiles = new Set<string>();
+    await Promise.all(
+      requested.map(async (rel) => {
+        const stat = await fs.stat(path.join(workspace, rel)).catch(() => null);
+        if (stat?.isFile()) currentFiles.add(rel);
+      }),
+    );
+  } else {
+    currentFiles = new Set((await listWorkspaceFiles(workspace)).map((file) => relPath(workspace, file)));
+    requested = [...new Set([...manifest.keys(), ...currentFiles])].sort();
+  }
   const maxChars = opts.maxChars ?? 40_000;
   const contextLines = opts.contextLines ?? 3;
   const parts: string[] = [];
@@ -249,16 +326,23 @@ async function listWorkspaceFilesWithStats(
   const out: Array<{ path: string; mtimeMs: number; size: number }> = [];
   async function walk(dir: string): Promise<void> {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const subdirs: string[] = [];
+    const files: string[] = [];
     for (const entry of entries) {
       if (IGNORED_DIRS.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile()) {
+      if (entry.isDirectory()) subdirs.push(full);
+      else if (entry.isFile()) files.push(full);
+    }
+    // Stat this directory's files CONCURRENTLY — the old one-await-per-file
+    // pattern serialized ~34k round-trips through the fs (and the AV scanner).
+    await Promise.all(
+      files.map(async (full) => {
         const stat = await fs.stat(full).catch(() => null);
         if (stat && stat.size <= MAX_FILE_BYTES) out.push({ path: full, mtimeMs: stat.mtimeMs, size: stat.size });
-      }
-    }
+      }),
+    );
+    await Promise.all(subdirs.map((sub) => walk(sub)));
   }
   await walk(workspace);
   return out;

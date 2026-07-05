@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.16.0",
+    date: "July 2026",
+    title: "A new terminal look — in preview",
+    tagline: "The ares command-line interface got a complete ground-up redesign. Try it now, make it default when it's dialed in.",
+    highlights: [
+      {
+        icon: "🖥️",
+        title: "The terminal UI, reborn",
+        tag: "New",
+        blurb: "The `ares` CLI got a full ground-up redesign — a calm, cool-teal look with a new intro, a provider grid, and a live activity view. It's an opt-in preview: launch with ARES_TUI=slate to try it. It becomes the default once it's dialed in.",
+      },
+      {
+        icon: "🎯",
+        title: "Sharper coding instincts",
+        tag: "Polished",
+        blurb: "Tighter guidance on making the smallest correct change and on how Ares briefs its helper agents — less over-engineering, cleaner delegation.",
+      },
+    ],
+  },
+  {
     version: "0.15.0",
     date: "July 2026",
     title: "Pick a whole council as your model",

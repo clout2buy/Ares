@@ -6,8 +6,27 @@
 
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { BlobRef, CheckpointMeta } from "@ares/protocol";
+
+/**
+ * Is this workspace too broad to snapshot? A checkpoint of the user's HOME
+ * directory (or a drive root) means hashing their entire digital life before
+ * the first Write — minutes of dead time, locked app files (browser profiles),
+ * and a restore that could touch everything they own. Real case: workspace
+ * C:\Users\Clout hashed for 106s, hit a Chrome-locked cache under a sibling
+ * agent home, and the EPERM killed the Write. Such workspaces get NO
+ * checkpoints (tools run fine; undo is simply unavailable there).
+ */
+export function isUnsnapshotableWorkspace(workspace: string): boolean {
+  const resolved = path.resolve(workspace);
+  const home = path.resolve(os.homedir());
+  if (resolved === home) return true;
+  // home's parents (C:\Users, C:\) and filesystem roots
+  if (home.startsWith(resolved + path.sep)) return true;
+  return path.dirname(resolved) === resolved; // drive/fs root
+}
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -15,6 +34,11 @@ const IGNORED_DIRS = new Set([
   // Legacy pre-rename home left ~43k files (a Python voice-venv + old sessions)
   // that were being read+hashed before every single write/shell call.
   ".crix",
+  // Sibling agent homes + Windows app data: browser profiles inside hold
+  // LOCKED files (Chrome crx caches) that EPERM any reader while running.
+  ".crypt",
+  "AppData",
+  "browser-profile",
   "node_modules",
   "dist",
   "build",
@@ -110,6 +134,7 @@ async function fullManifest(workspace: string): Promise<BlobRef[]> {
         if (i >= files.length) return;
         const file = files[i];
         const hash = await hashFileCached(workspace, file.path, file.mtimeMs, file.size);
+        if (hash === null) continue; // unreadable (locked/EPERM) — excluded from the snapshot
         manifest.push({ path: path.relative(workspace, file.path).replace(/\\/g, "/"), blobHash: hash, mode: 0o100644 });
       }
     }),
@@ -134,6 +159,7 @@ async function incrementalManifest(opts: CreateCheckpointOptions): Promise<BlobR
       continue;
     }
     const hash = await hashFileCached(opts.workspace, full, stat.mtimeMs, stat.size);
+    if (hash === null) continue; // unreadable — keep the parent's view of it
     byPath.set(rel, { path: rel, blobHash: hash, mode: 0o100644 });
   }
   return [...byPath.values()];
@@ -146,8 +172,12 @@ const knownBlobs = new Set<string>();
 
 /** Hash a file, reusing the cached hash when mtime+size are unchanged AND the
  *  blob is known present (in-memory set; one stat only on first sighting).
- *  Re-reads only genuinely-changed files. */
-async function hashFileCached(workspace: string, full: string, mtimeMs: number, size: number): Promise<string> {
+ *  Re-reads only genuinely-changed files. Returns NULL when the file can't be
+ *  read (EPERM/EBUSY — e.g. a browser's locked cache): an unreadable file is
+ *  simply excluded from the snapshot. It must NEVER kill the checkpoint — a
+ *  real turn died exactly this way (a locked Chrome profile under the
+ *  workspace EPERM'd the walk and took the Write tool down with it). */
+async function hashFileCached(workspace: string, full: string, mtimeMs: number, size: number): Promise<string | null> {
   const cached = fileHashCache.get(full);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
     if (knownBlobs.has(cached.hash)) return cached.hash;
@@ -157,7 +187,12 @@ async function hashFileCached(workspace: string, full: string, mtimeMs: number, 
       return cached.hash;
     }
   }
-  const bytes = await fs.readFile(full);
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(full);
+  } catch {
+    return null; // locked/permission-denied — skip, never throw
+  }
   const hash = sha256(bytes);
   await writeBlob(workspace, hash, bytes);
   fileHashCache.set(full, { mtimeMs, size, hash });

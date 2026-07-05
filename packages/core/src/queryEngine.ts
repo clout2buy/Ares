@@ -1857,13 +1857,26 @@ export class QueryEngine {
       // Declared single-file target (Edit/Write) → the host can snapshot
       // incrementally instead of walking the whole workspace before EVERY edit.
       const deps = analyzeToolDeps(use, this.cfg.workspace);
-      const checkpoint = await this.cfg.beforeToolUseCheckpoint({
-        toolUseId: use.id,
-        toolName: use.name,
-        input: use.input,
-        safety: use.tool.schema.safety,
-        targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
-      });
+      // ARMOR: a checkpoint is a SAFETY NET, not a precondition — a snapshot
+      // failure (locked file mid-walk, disk hiccup) must degrade to "no undo
+      // for this call", never kill the tool. A real Write died on a checkpoint
+      // EPERM before this guard existed.
+      let checkpoint: { checkpointId: string; label?: string } | null = null;
+      try {
+        checkpoint = await this.cfg.beforeToolUseCheckpoint({
+          toolUseId: use.id,
+          toolName: use.name,
+          input: use.input,
+          safety: use.tool.schema.safety,
+          targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
+        });
+      } catch (err) {
+        emit({
+          type: "system_reminder_injected",
+          text: `checkpoint failed (${err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120)}) — proceeding without undo for this call`,
+          source: "instructions",
+        });
+      }
       if (checkpoint) {
         emit({
           type: "checkpoint_created",

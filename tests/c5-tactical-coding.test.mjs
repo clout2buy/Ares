@@ -350,3 +350,57 @@ test("C5: normalized tier refuses ambiguity (two unicode-drifted matches fail lo
   const r = replaceResilient(file, `log("a - b");`, `log("c");`, false);
   assert.equal(r.ok, false, "two canon matches must never auto-apply");
 });
+
+// ─── EPERM armor: checkpoints can never kill a tool ───────────────────────────
+
+import { isUnsnapshotableWorkspace } from "../packages/core/dist/index.js";
+import os2 from "node:os";
+
+test("C5: home / root / home-parent workspaces are unsnapshotable; project dirs are fine", () => {
+  assert.equal(isUnsnapshotableWorkspace(os2.homedir()), true, "home itself");
+  assert.equal(isUnsnapshotableWorkspace(path.dirname(os2.homedir())), true, "home's parent (C:\Users)");
+  assert.equal(isUnsnapshotableWorkspace(path.parse(os2.homedir()).root), true, "drive root");
+  assert.equal(isUnsnapshotableWorkspace("D:\Ares"), false, "a project dir snapshots normally");
+  assert.equal(isUnsnapshotableWorkspace(path.join(os2.homedir(), "projects", "x")), false, "a project under home is fine");
+});
+
+test("C5: a THROWING checkpoint host degrades to no-undo — the tool still runs", async () => {
+  const captured = [];
+  let toolRan = false;
+  const engine = new QueryEngine(
+    {
+      provider: makeToolLoopProvider(captured),
+      model: "test",
+      systemPrompt: "test",
+      tools: [{
+        schema: {
+          name: "Echo",
+          description: "writes",
+          inputJsonSchema: { type: "object", properties: {} },
+          safety: "workspace-write", // checkpointed class
+          concurrency: "exclusive",
+        },
+        async call() {
+          toolRan = true;
+          return { output: "wrote it" };
+        },
+      }],
+      workspace: "D:\Ares",
+      maxTurns: 4,
+      beforeToolUseCheckpoint: async () => {
+        throw new Error("EPERM: operation not permitted, open 'C:\locked\file'");
+      },
+    },
+    "sess_c5_ckpt_armor",
+  );
+  engine.appendWorkItem("write the file");
+  const events = await runTurn(engine);
+
+  assert.equal(toolRan, true, "the tool MUST run despite the checkpoint failure");
+  assert.ok(
+    events.some((e) => e.type === "system_reminder_injected" && /checkpoint failed/.test(e.text)),
+    "failure surfaced as a reminder, not a tool_error",
+  );
+  assert.ok(!events.some((e) => e.type === "tool_error"), "no tool_error from the checkpoint layer");
+  assert.equal(events.at(-1).status, "completed");
+});

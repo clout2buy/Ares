@@ -24,7 +24,7 @@ import { QueryEngine, stringifyModelToolOutput, type EngineTool, type Provider }
 import type { ToolPermissionRequest } from "./queryEngine.js";
 import type { PermissionPromptDecision, ReasoningLevel, Usage } from "@ares/protocol";
 import type { HookManager } from "./hooks.js";
-import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified } from "./checkpoints.js";
+import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified, isUnsnapshotableWorkspace } from "./checkpoints.js";
 import { FrictionRecorder } from "./frictionLog.js";
 
 type ReminderSource =
@@ -130,6 +130,10 @@ export class Session {
         summarizeSpan: opts.summarizeSpan,
         compactionThresholdTokens: opts.compactionThresholdTokens,
         beforeToolUseCheckpoint: async ({ toolUseId, toolName, targetFiles }) => {
+          // A home-directory (or root) workspace is unsnapshotable: hashing the
+          // user's entire digital life per Write is minutes of dead time and a
+          // restore hazard. Tools still run; undo is unavailable there.
+          if (isUnsnapshotableWorkspace(this.opts.workspace)) return null;
           const checkpoint = await createWorkspaceCheckpoint({
             workspace: this.opts.workspace,
             sessionId: this.meta.id,

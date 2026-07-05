@@ -25,17 +25,19 @@ import {
   type FxSpan,
 } from "./tuiFx.js";
 
-type ProviderId = "ollama" | "openai" | "anthropic" | "deepseek" | "openrouter" | "mock";
+type ProviderId = "ares" | "ollama" | "openai" | "anthropic" | "deepseek" | "openrouter" | "mock";
 type LauncherPhase = "provider" | "ollama" | "openai" | "theme" | "workspace";
 
 const PROVIDER_OPTIONS: Array<{ id: ProviderId; title: string; body: string; footer: string }> = [
+  { id: "ares", title: "In-House", body: "The Ares account — frontier models on us, one balance, no keys.", footer: "account" },
   { id: "ollama", title: "Ollama Cloud", body: "Cloud and local Ollama models with tool support.", footer: "cloud/local" },
   { id: "openai", title: "OpenAI", body: "Responses backend using your ChatGPT OAuth login.", footer: "OAuth" },
   { id: "anthropic", title: "Anthropic", body: "Claude API models using your saved Anthropic key.", footer: "API key" },
   { id: "deepseek", title: "DeepSeek", body: "Official DeepSeek long-context coding models.", footer: "API key" },
   { id: "openrouter", title: "OpenRouter", body: "Use any OpenRouter model id saved in settings.", footer: "API key" },
-  { id: "mock", title: "Mock", body: "Offline echo provider for UI and installer testing.", footer: "offline" },
 ];
+// `mock` stays a valid ProviderId (tests + installer smoke via `--provider mock`)
+// but is intentionally OFF the interactive grid — a new user should never pick it.
 
 export type LauncherAction =
   | {
@@ -104,6 +106,10 @@ function providerReadiness(id: ProviderId, settings: UiSettings): ProviderReadin
   switch (id) {
     case "mock":
       return "ready";
+    case "ares":
+      // The house account: ready once connected (a gateway token is saved),
+      // otherwise it's a sign-in (the click-to-connect account flow).
+      return settings.aresGatewayToken ? "ready" : "oauth";
     case "ollama":
       return "ready"; // local Ollama needs no key; cloud key is optional
     case "openai":
@@ -1002,6 +1008,7 @@ function cleanModelName(id: string): string {
 }
 
 function providerModelList(provider: ProviderId, settings: UiSettings): string[] {
+  if (provider === "ares") return unique([settings.lastAresModel, "ares-internal"]);
   if (provider === "ollama") return ollamaModels().map((model) => model.id);
   if (provider === "openai") return openAIModelList(settings);
   if (provider === "anthropic") {
@@ -1031,6 +1038,7 @@ function providerLabel(provider: ProviderId): string {
 }
 
 function providerHint(provider: ProviderId): string {
+  if (provider === "ares") return "The Ares account — frontier models billed to your balance, no keys to manage. Connect your account to sign in.";
   if (provider === "openai") return "OpenAI Responses through ChatGPT OAuth.";
   if (provider === "anthropic") return "Claude API models. Set a key with /key anthropic <value> inside chat.";
   if (provider === "deepseek") return "Official DeepSeek models. Set a key with /key deepseek <value> inside chat.";

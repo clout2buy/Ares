@@ -20,7 +20,7 @@ export interface ProviderCardData {
 }
 
 const ICONS: Record<string, string> = {
-  ollama: "◈", openai: "◐", anthropic: "✦", deepseek: "⬡", openrouter: "⬢", moa: "🜲", mock: "○",
+  ares: "◆", ollama: "◈", openai: "◐", anthropic: "✦", deepseek: "⬡", openrouter: "⬢", moa: "🜲", mock: "○",
 };
 
 function statusFor(r: Readiness, theme: SlateTheme): { text: string; color: string } {

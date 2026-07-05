@@ -38,6 +38,20 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.18.1",
+    date: "July 2026",
+    title: "In-House, front and center",
+    tagline: "The In-House account provider is back on the picker — one balance, frontier models, no keys to manage.",
+    highlights: [
+      {
+        icon: "◆",
+        title: "In-House on the picker",
+        tag: "New",
+        blurb: "The In-House (Ares account) provider now leads the provider grid — pick it to run frontier models billed to your account balance, with no API keys to juggle.",
+      },
+    ],
+  },
+  {
     version: "0.18.0",
     date: "July 2026",
     title: "A living terminal — and no more silent stalls",

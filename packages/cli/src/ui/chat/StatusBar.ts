@@ -36,28 +36,20 @@ export function StatusBar(props: {
       sep,
       working
         ? h(Text, null, h(Text, { color: theme.text }, "esc "), h(Text, { color: theme.faint }, "cancel"))
-        : h(
-            Text,
-            null,
-            h(Text, { color: theme.text }, "ctrl+p "),
-            h(Text, { color: theme.faint }, "palette · "),
-            h(Text, { color: theme.text }, "click "),
-            h(Text, { color: theme.faint }, "toolbar"),
-          ),
+        : h(Text, null, h(Text, { color: theme.text }, "ctrl+p "), h(Text, { color: theme.faint }, "palette")),
     ),
     // right — stats
     h(
       Box,
       null,
-      ttft !== undefined ? h(Text, { color: theme.muted }, `TTFT:${ttft.toFixed(1)}s`) : null,
-      total !== undefined ? h(Text, { color: theme.muted }, ` Total:${total.toFixed(1)}s`) : null,
+      ttft !== undefined ? h(Text, { color: theme.muted }, `${ttft.toFixed(1)}s`) : null,
+      total !== undefined ? h(Text, { color: theme.faint }, `→${total.toFixed(1)}s`) : null,
       sep,
       h(Text, { color: theme.muted }, `${msgs} msgs`),
       agents && agents > 0 ? h(Text, null, sep, h(Text, { color: theme.secondary }, `🤖 ${agents}`)) : null,
       sep,
       h(Text, { color: theme.secondary }, themeName),
-      sep,
-      h(Text, { color: theme.faint }, `v${version} `),
+      version ? h(Text, null, sep, h(Text, { color: theme.faint }, `v${version} `)) : null,
     ),
   );
 }

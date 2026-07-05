@@ -28,7 +28,7 @@ test("StatusBar: ready vs working, stats on the right", () => {
   const working = strip(frame(h(StatusBar, { theme: SLATE, working: true, tick: 0, ttft: 0.8, total: 4.2, msgs: 3, agents: 2, themeName: "slate", version: "0.15.0", width: 90 })));
   assert.match(working, /working/);
   assert.match(working, /esc/);
-  assert.match(working, /TTFT:0\.8s/); assert.match(working, /Total:4\.2s/);
+  assert.match(working, /0\.8s/); assert.match(working, /→4\.2s/);
   assert.match(working, /🤖 2/);
 });
 

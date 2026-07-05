@@ -5,6 +5,7 @@ import { availableThemes, currentThemeName, type ThemeName } from "./terminalUi.
 import { modelContextWindow } from "./entry/sessionFactory.js";
 import { renderMarkdown, type MdLine, type MdSpan, type MdTheme } from "./mdRender.js";
 import { flameLine, moltenCursor, forgeStrike, type FxSpan, type FxPalette } from "./tuiFx.js";
+import { ChatMain, mapTone } from "./ui/chat/ChatMain.js";
 import {
   diffHeaderLabel,
   diffLineSpans,
@@ -1570,6 +1571,54 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
       surgeTick,
       pulseTick,
       barWidth: effortBarWidth,
+    });
+  }
+
+  // ── Slate rebuild (opt-in via ARES_TUI=slate) ─────────────────────────────
+  // Renders the new ground-up main screen. Gated so the classic TUI stays the
+  // safe default until the new one is signed off in a real terminal; overlays
+  // (model picker/settings) still use the classic path for now.
+  if (process.env.ARES_TUI === "slate") {
+    const slateLines = visibleLines.map((l) => {
+      const isTool = l.tone === "tool";
+      return {
+        tone: mapTone(l.tone),
+        text: isTool ? l.result?.text ?? l.text : l.text,
+        name: isTool ? l.meta || l.text.split(/\s+/)[0] : undefined,
+        ok: l.result?.ok,
+        elapsed: l.result?.durationMs ? formatDuration(l.result.durationMs) : undefined,
+      };
+    });
+    const slateFleet =
+      fleet && fleet.active && fleet.agents.length > 0
+        ? {
+            summary: fleetSummary(fleet),
+            rows: foldFleetRows(fleet.agents, 8).shown.map((a, i, arr) => ({
+              glyph: fleetGlyph(a.status),
+              name: a.agentId,
+              activity: a.activity || a.phase || a.role || a.status,
+              last: i === arr.length - 1,
+            })),
+          }
+        : undefined;
+    return h(ChatMain, {
+      snapshot: { model: snapshot.model, workspace: snapshot.workspace, mode: snapshot.mode },
+      lines: slateLines,
+      stats: {
+        msgs: stats.turns,
+        tokens: stats.usage.inputTokens + stats.usage.outputTokens,
+        total: stats.durationMs > 0 ? stats.durationMs / 1000 : undefined,
+        agents: fleet?.agents?.length,
+      },
+      busy,
+      tick: spin,
+      input,
+      thinking: busy,
+      fleet: slateFleet,
+      themeName: "slate",
+      version: process.env.npm_package_version ?? "",
+      width: layout.screenWidth,
+      height: layout.screenHeight,
     });
   }
 

@@ -4,6 +4,9 @@ import { OLLAMA_CLOUD_MODELS, type OllamaCloudModel } from "@ares/core";
 import { availableThemes, currentThemeName, setTheme, type ThemeName } from "./terminalUi.js";
 import type { UiSettings } from "./uiSettings.js";
 import { motionEnabled } from "./tuiElite.js";
+import { SLATE } from "./ui/theme.js";
+import { IntroScreen } from "./ui/IntroScreen.js";
+import { ProviderSelect } from "./ui/ProviderSelect.js";
 import {
   bladeSweep,
   emberRain,
@@ -503,8 +506,33 @@ function AresLauncherApp({
     }
   });
 
+  const slateUi = process.env.ARES_TUI === "slate";
+
   if (introActive) {
-    return h(IntroCinematic, { theme, tick: fxTick, columns, rows });
+    return slateUi
+      ? h(IntroScreen, { theme: SLATE, tick: fxTick, width: columns, height: rows })
+      : h(IntroCinematic, { theme, tick: fxTick, columns, rows });
+  }
+
+  // Slate provider grid (the classic model/theme/workspace decks follow for now).
+  if (slateUi && phase === "provider") {
+    return h(
+      Box,
+      { flexDirection: "column", width: columns, height: rows, justifyContent: "center" },
+      h(ProviderSelect, {
+        theme: SLATE,
+        providers: PROVIDER_OPTIONS.map((p) => ({
+          id: p.id,
+          title: p.title,
+          body: p.body,
+          readiness: providerReadiness(p.id, options.settings),
+        })),
+        selectedIndex: selectedProvider,
+        tick: fxTick,
+        width: columns,
+        version: process.env.npm_package_version,
+      }),
+    );
   }
 
   return h(

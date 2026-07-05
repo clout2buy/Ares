@@ -57,7 +57,7 @@ test("V4 V10: daemon permission_response unblocks a pending tool", async () => {
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error(`daemon permission test timed out\nstdout=${stdoutBuffer}\nstderr=${stderr}`));
-      }, 12_000);
+      }, 45_000); // CLI cold boot is 6-10s on Windows (module graph + AV scan) — 12s flaked
 
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk) => {
@@ -102,6 +102,13 @@ test("V4 V10: daemon permission_response unblocks a pending tool", async () => {
   } finally {
     writeCommand({ type: "exit" });
     child.kill();
+    // Wait for the child to actually die — on Windows a just-killed node can
+    // hold CPU/AV attention for seconds and starve the NEXT test's cold boot.
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once("exit", resolve);
+      setTimeout(resolve, 5_000).unref?.();
+    });
   }
 
   const types = events.map((event) => event.type);
@@ -145,7 +152,7 @@ test("V4 V10: daemon fresh sessions pass context budget and chat tuning", async 
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error(`daemon budget test timed out\nstdout=${stdoutBuffer}\nstderr=${stderr}`));
-      }, 12_000);
+      }, 45_000); // CLI cold boot is 6-10s on Windows (module graph + AV scan) — 12s flaked
 
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk) => {
@@ -192,6 +199,13 @@ test("V4 V10: daemon fresh sessions pass context budget and chat tuning", async 
   } finally {
     writeCommand({ type: "exit" });
     child.kill();
+    // Wait for the child to actually die — on Windows a just-killed node can
+    // hold CPU/AV attention for seconds and starve the NEXT test's cold boot.
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once("exit", resolve);
+      setTimeout(resolve, 5_000).unref?.();
+    });
   }
 
   const statsText = events

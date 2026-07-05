@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.18.0",
+    date: "July 2026",
+    title: "A living terminal — and no more silent stalls",
+    tagline: "The terminal's main screen came alive: live tool cards, clickable everything, and the bug that froze a turn forever on an invisible question is dead.",
+    highlights: [
+      {
+        icon: "🃏",
+        title: "Tools you can watch",
+        tag: "New",
+        blurb: "Every tool call is now a living card — a spinner and a ticking timer while it runs, a ✓ with its duration and a peek at its output when it lands. When several run at once you'll see \"⚡ N tools in flight\".",
+      },
+      {
+        icon: "🖱️",
+        title: "Click it, don't type it",
+        tag: "New",
+        blurb: "The terminal's bottom bar (Models · Effort · Themes · Settings · Ultra) and the model name in the header are clickable now, replies render real formatting, and the header shimmers while Ares works.",
+      },
+      {
+        icon: "🛡️",
+        title: "No more frozen turns",
+        tag: "Safer",
+        blurb: "When a tool needs your permission, a card now appears right in the frame — answer with a key or a click. Before, that question was invisible and Ares waited on it forever; a time ceiling now guarantees a stuck prompt can never freeze a turn again.",
+      },
+    ],
+  },
+  {
     version: "0.17.0",
     date: "July 2026",
     title: "The new terminal look is here — and builds that finish",

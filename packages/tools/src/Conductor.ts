@@ -295,6 +295,29 @@ export function makeConductorTool(deps: ConductorToolDeps) {
             "for parallel fan-out, multi-stage pipelines, or a self-repairing verify phase.",
         };
       }
+      // BUILD-DELIVERY guard: the #1 failure is a hand-authored fleet that
+      // researches + plans for 20 minutes and writes ZERO code, because nothing
+      // requires a build phase. If the goal clearly means "produce code" but no
+      // phase has build:true, reject with the fix BEFORE the fleet burns time.
+      // (Easy-mode `plan` is exempt — its planner always emits a build phase.)
+      if (!i.plan && i.phases && i.phases.length > 0) {
+        const hasBuildPhase = i.phases.some((p) => p.build === true);
+        const buildIntent = /\b(build|implement|scaffold|develop|rebuild|reimplement|code\s*up|write\s+(the|a|an)\s)/i;
+        const looksLikeBuild = buildIntent.test(i.goal ?? "");
+        if (looksLikeBuild && !hasBuildPhase) {
+          return {
+            ok: false,
+            message:
+              "This fleet only researches/plans — no phase sets build:true, so it will write ZERO code, " +
+              "yet the goal is to BUILD something. A research-only fleet for a build task is the #1 way to " +
+              "burn 20 minutes and ship nothing. Fix it ONE of two ways: (a) add a build phase " +
+              "(kind:'parallel' or 'pipeline', build:true) with file-disjoint agents that IMPLEMENT the code, " +
+              "followed by a verify phase (repairRounds:3) that runs the build/tests and fails closed; or " +
+              "(b) drop 'phases' entirely and use easy mode — {\"plan\":\"<one-line build goal>\"} — which " +
+              "auto-authors research→plan→build→verify for you. Keep research to 1-2 phases; the deliverable is written, tested code.",
+          };
+        }
+      }
       return { ok: true };
     },
     activityDescription: (i) =>
@@ -336,6 +359,17 @@ export function makeConductorTool(deps: ConductorToolDeps) {
         hints.push("The token budget was hit; later forks were skipped. Raise maxTotalTokens or split into smaller fleets — then resumeFleetId to finish.");
       if (result.status !== "completed")
         hints.push(`Fleet ${result.status}. Re-run with resumeFleetId: "${result.fleetId}" to reuse completed leaves and only retry the rest.`);
+      // BUILD-DELIVERY backstop: if the fleet completed but no phase built and no
+      // leaf wrote a file, it only produced research/plans. Loudly tell the model
+      // NOT to stop here — the user asked for working code, so it must now build.
+      const hadBuildPhase = (i as FleetSpec).phases?.some((p) => p.build === true) ?? false;
+      if (result.status === "completed" && !hadBuildPhase) {
+        hints.unshift(
+          "⚠ This fleet wrote NO code — it only researched/planned. Do NOT stop here or summarize and end the turn. " +
+            "If the task was to build something, IMPLEMENT it now: scaffold the files and write the code with Write/Edit/Bash " +
+            "(or run one more Conductor with a build:true phase). Research without a shipped build is a failed turn.",
+        );
+      }
       return {
         output: {
           fleetId: result.fleetId,
@@ -386,8 +420,11 @@ WHEN TO USE — fan out ONLY for parallelizable read/search/analysis work or iso
 - A pipeline where each stage consumes the PREVIOUS stage's structured output (extract → transform → write).
 - Any fan-out where you need a concurrency cap, a token budget, or schema-valid leaf outputs.
 
+BUILD FLEETS MUST BUILD: for any goal that means "produce code" (build/implement/scaffold/develop/rebuild X), a hand-authored fleet with NO build:true phase is REJECTED — research + planning that never writes code is a failed turn, not a deliverable. Keep research to 1-2 phases, then a build phase (build:true, file-disjoint agents) and a verify phase (repairRounds). When unsure how to structure it, use easy mode ({"plan":"..."}) which always ends in build→verify.
+
 WHEN NOT TO USE (rejected or wasteful):
 - NEVER for a single-file edit or a task needing shared evolving context — run it inline. A fleet that is one phase with one agent is REJECTED (pure overhead; exception: a lone verify phase with repairRounds).
+- A build-goal fleet with no build:true phase is REJECTED (see BUILD FLEETS MUST BUILD) — you would research forever and ship nothing.
 - One phase per dependency step; add a new phase (a barrier) ONLY when a step needs ALL prior results. Independent work belongs in ONE parallel phase, not a chain.
 
 WORKED EXAMPLE — a review panel that fans out, then synthesizes:

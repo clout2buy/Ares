@@ -367,6 +367,48 @@ test("plan-only and multi-agent fleets pass the tool policy gate", async () => {
   );
 });
 
+test("BUILD-DELIVERY: a build-goal fleet with NO build phase is REJECTED (research-only ships nothing)", async () => {
+  const t = conductorTool();
+  const verdict = await t.validateInput(
+    {
+      goal: "build a minecraft-style voxel builder in three.js",
+      phases: [
+        { id: "r", kind: "parallel", reduce: "judge", agents: [{ role: "a", prompt: "research voxel meshing" }, { role: "b", prompt: "research shaders" }] },
+        { id: "p", kind: "pipeline", agents: [{ role: "planner", prompt: "plan the architecture" }] },
+      ],
+    },
+    {},
+  );
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /no phase sets build:true|write ZERO code/i);
+});
+
+test("BUILD-DELIVERY: a build-goal fleet WITH a build:true phase passes", async () => {
+  const t = conductorTool();
+  const verdict = await t.validateInput(
+    {
+      goal: "build a minecraft-style voxel builder",
+      phases: [
+        { id: "r", kind: "parallel", reduce: "judge", agents: [{ role: "a", prompt: "research" }, { role: "b", prompt: "research2" }] },
+        { id: "b", kind: "parallel", build: true, agents: [{ role: "m1", prompt: "write world.ts" }, { role: "m2", prompt: "write render.ts" }] },
+      ],
+    },
+    {},
+  );
+  assert.equal(verdict.ok, true);
+});
+
+test("BUILD-DELIVERY: a non-build goal (review/research panel) is NOT falsely rejected", async () => {
+  const t = conductorTool();
+  assert.equal(
+    (await t.validateInput(
+      { goal: "review the staged diff", phases: [{ id: "rev", kind: "parallel", reduce: "judge", agents: [{ role: "c", prompt: "correctness" }, { role: "s", prompt: "security" }] }] },
+      {},
+    )).ok,
+    true,
+  );
+});
+
 test("the input schema accepts scope + isolation:'none' and rejects unknown isolation values", () => {
   const t = conductorTool();
   const good = t.inputZod.safeParse({
@@ -392,4 +434,6 @@ test("the tool description carries the when-to-spawn doctrine", () => {
   assert.match(d, /NEVER for a single-file edit/);
   assert.match(d, /TYPED HANDOFF/);
   assert.match(d, /DEFAULT for a parallel build phase|defaults to 'worktree'/i);
+  assert.match(d, /BUILD FLEETS MUST BUILD/);
+  assert.match(d, /no build:true phase is REJECTED/i);
 });

@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.20.1",
+    date: "July 2026",
+    title: "Ares through the harness",
+    tagline: "Claude Code and Codex can now be operating harnesses while the agent, account, and model stay Ares.",
+    highlights: [
+      {
+        icon: "A",
+        title: "Codex runs as Ares",
+        tag: "New",
+        blurb: "Codex delegation now uses an Ares custom provider, Ares account token, and isolated Codex home, so the harness works without touching your Codex login.",
+      },
+      {
+        icon: "!",
+        title: "No borrowed logins",
+        tag: "Safer",
+        blurb: "Every delegated run is wrapped as Ares through the local harness, and any path that could fall back to a separate Claude or Codex login is refused.",
+      },
+      {
+        icon: ">",
+        title: "Smarter backend choice",
+        tag: "Polished",
+        blurb: "Auto delegation now skips the broken Bun-backed Claude shim and chooses a real Ares-bound harness when one is available.",
+      },
+    ],
+  },
+  {
     version: "0.20.0",
     date: "July 2026",
     title: "Elite coding, cleaner story",

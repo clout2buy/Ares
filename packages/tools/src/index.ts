@@ -17,6 +17,7 @@ export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.
 export { makeTaskTool, type SubagentRunner, type TaskOutput } from "./Task.js";
 export {
   makeCodingBackendTool,
+  buildAresHarnessPrompt,
   detectBackend,
   BACKENDS,
   type BackendName,

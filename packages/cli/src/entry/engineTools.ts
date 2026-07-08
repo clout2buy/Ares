@@ -111,10 +111,10 @@ export async function buildEngineTools(
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
-  // CodingBackend — drive an external coding CLI (Claude Code / Codex) on the
-  // ARES account (gateway creds injected, no user OAuth). Main-agent only, like
-  // Conductor: subagents/leaves can't recurse into it. Gateway base + token come
-  // from settings; an absent token surfaces a "connect your account" tool error.
+  // CodingBackend — optional bridge to an external coding harness
+  // (Claude Code / Codex) on the ARES account. Main-agent only, like Conductor:
+  // subagents/leaves can't recurse into it. It refuses any backend that is not
+  // bound to Ares-owned auth, so it never falls back to the user's CLI OAuth.
   const settings = await loadUiSettings().catch(() => null);
   const codingBackendTool = adaptToolForEngine(
     makeCodingBackendTool({

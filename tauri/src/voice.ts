@@ -149,12 +149,22 @@ export class TtsClient {
     void a.play().catch(done);
   }
 
-  /** Speak text (already spoken-cleaned by the caller, or we clean it here). */
+  /** Speak text through the built-in sidecar (already spoken-cleaned, or we
+   *  clean it here). */
   async speak(text: string, voice: string, speed = 1): Promise<void> {
     const clean = sanitizeForSpeech(text);
     if (!clean) return;
     const ws = await this.connect();
     ws.send(JSON.stringify({ type: "speak", id: `s${++this.seq}`, text: clean, voice, speed }));
+  }
+
+  /** Enqueue externally-produced audio (a TTS-provider SKILL's output) onto the
+   *  SAME queue + player, so barge-in and ordering work identically whether the
+   *  audio came from the built-in sidecar or a provider skill. */
+  enqueueAudio(base64: string, mime?: string): void {
+    if (!base64) return;
+    this.queue.push(b64ToUrl(base64, mime));
+    this.pump();
   }
 
   /** Barge-in: silence everything now. */
@@ -195,10 +205,18 @@ export async function fetchVoices(signal?: AbortSignal): Promise<{ voices: Voice
 
 // ── React hook: the voice bus ───────────────────────────────────────────────
 
+/** A TTS-provider SKILL: given text, return audio (or null). When set, the bus
+ *  routes speech through it instead of the built-in sidecar — this is how any
+ *  voice engine (Piper, ElevenLabs, …) overrides the default. */
+export type ProviderSpeak = (text: string, voice: string, speed: number) => Promise<{ audio?: string; mime?: string } | null>;
+
 export interface UseTtsOptions {
   enabled: boolean;
   voice: string;
   speed?: number;
+  /** When present, speech is produced by this provider skill; the built-in
+   *  sidecar is the fallback (and the default when this is undefined). */
+  provider?: ProviderSpeak;
 }
 
 /** The app's TTS bus. Keeps one TtsClient for the session; `speak` no-ops when
@@ -223,7 +241,18 @@ export function useTts(opts: UseTtsOptions) {
   const speak = useCallback((text: string) => {
     const o = optsRef.current;
     if (!o.enabled || !o.voice) return;
-    void clientRef.current?.speak(text, o.voice, o.speed ?? 1).catch(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    if (o.provider) {
+      // Provider skill: sanitize, hand it the clean text, play what it returns.
+      const clean = sanitizeForSpeech(text);
+      if (!clean) return;
+      void o.provider(clean, o.voice, o.speed ?? 1)
+        .then((out) => { if (out?.audio) client.enqueueAudio(out.audio, out.mime); })
+        .catch(() => { /* provider failed — stay silent, never error per reply */ });
+      return;
+    }
+    void client.speak(text, o.voice, o.speed ?? 1).catch(() => {
       // Sidecar down — stay silent rather than surface an error per reply.
     });
   }, []);

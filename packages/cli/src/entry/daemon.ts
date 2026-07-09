@@ -18,7 +18,7 @@ import { prepareEngineBinary } from "../engineBinary.js";
 import { captureScreen } from "../screenCapture.js";
 import { ConsciousnessWatch, WATCHER_VOICE_PROMPT } from "../watch.js";
 import { recordConsciousnessObservation } from "../consciousnessContext.js";
-import { aresAgentHome, onLifecycle } from "@ares/agent";
+import { aresAgentHome, onLifecycle, runSkill } from "@ares/agent";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, type StandingOrder } from "@ares/operator";
 import { MemoryStore, reflectOnRun, detectWorkspaceProjectId, loadProjectState, buildConversationDigest, mergeDurableFacts, CONVERSATION_REFLECT_SYSTEM, DURABLE_FACTS_SCHEMA_HINT, type DurableFact } from "@ares/mind";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, runAresAccountSignin, probeAresOauth } from "@ares/core";
@@ -80,6 +80,11 @@ interface DaemonInputCommand {
   action?: string;
   /** operator_control halt reason (freeform, logged with the kill-switch flag file). */
   reason?: string;
+  /** skill_invoke payload — JSON handed to the skill's handler(input, ctx). */
+  input?: unknown;
+  /** skill_invoke correlation id — echoed back in skill_result so the UI can
+   *  match a response to the exact call (TTS utterances, surface clicks). */
+  invokeId?: string;
 }
 
 const ROUTING_LANES = ["chat", "coding", "research", "tool-use"] as const;
@@ -172,12 +177,63 @@ export function applyEngineConfigEnv(cfg: import("../uiSettings.js").EngineConfi
   if (cfg.operatorTickMinutes) process.env.ARES_OPERATOR_TICK_MS = String(cfg.operatorTickMinutes * 60_000);
 }
 
+/** A UI surface a skill contributes — a button (and, later, toggles/panels)
+ *  that the app renders in the active-skills tray. Clicking it invokes the
+ *  skill itself with `input` (the whole security model: a surface can only run
+ *  its own skill). */
+interface SkillSurface {
+  id: string;
+  label: string;
+  icon?: string;
+  kind?: "button" | "toggle";
+  /** JSON passed to the skill's handler when the surface is activated. */
+  input?: unknown;
+  /** Optional hint shown on hover. */
+  hint?: string;
+}
+
 interface DaemonSkillInfo {
   name: string;
   description: string;
   status: string;
   category: string;
   enabled: boolean;
+  /** Capabilities this skill supplies (e.g. ["tts"]) — Ares routes the matching
+   *  built-in through the toggled-on provider skill instead. */
+  provides: string[];
+  /** UI buttons this skill contributes to the active-skills tray. */
+  surfaces: SkillSurface[];
+}
+
+/** Parse a `surfaces:` value (JSON array) into validated SkillSurface[]. Tolerant:
+ *  a malformed value yields no surfaces rather than breaking the whole list. */
+export function parseSurfaces(raw: string): SkillSurface[] {
+  if (!raw || !raw.trim().startsWith("[")) return [];
+  let arr: unknown;
+  try {
+    arr = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(arr)) return [];
+  const out: SkillSurface[] = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    const id = typeof s.id === "string" ? s.id : "";
+    const label = typeof s.label === "string" ? s.label : "";
+    if (!id || !label) continue;
+    out.push({
+      id,
+      label,
+      icon: typeof s.icon === "string" ? s.icon : undefined,
+      kind: s.kind === "toggle" ? "toggle" : "button",
+      input: s.input,
+      hint: typeof s.hint === "string" ? s.hint : undefined,
+    });
+    if (out.length >= 12) break; // a tray, not a dashboard
+  }
+  return out;
 }
 
 /** List skills under ~/.ares/skills, parsing SKILL.md frontmatter + enabled set. */
@@ -200,12 +256,23 @@ async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
     if (!text) continue;
     const fm = text.match(/^---\n([\s\S]*?)\n---/);
     const field = (key: string) => fm?.[1].match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim() ?? "";
+    // `provides` is a comma list of capability ids; `surfaces` is a JSON array
+    // on one line (the single-line frontmatter reader can't do nested YAML). A
+    // separate surfaces.json in the skill dir is also honored (nicer to author).
+    const provides = field("provides").split(",").map((s) => s.trim()).filter(Boolean);
+    let surfaces = parseSurfaces(field("surfaces"));
+    if (surfaces.length === 0) {
+      const sj = await readFile(path.join(skillsDir, entry.name, "surfaces.json"), "utf8").catch(() => "");
+      if (sj) surfaces = parseSurfaces(sj);
+    }
     skills.push({
       name: entry.name,
       description: field("description") || "Local skill.",
       status: field("status") || "ready",
       category: field("category") || "general",
       enabled: !disabled.has(entry.name),
+      provides,
+      surfaces,
     });
   }
   skills.sort((a, b) => a.name.localeCompare(b.name));
@@ -1481,6 +1548,37 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // the skill directory doesn't exist yet (e.g. toggled before install).
         }
         process.stdout.write(JSON.stringify({ type: "skill_toggle_set", name, enabled }) + "\n");
+        continue;
+      }
+      if (command.type === "skill_invoke") {
+        // One generic path for BOTH a tray surface-button click and a capability
+        // call (e.g. TTS through a provider skill). The app never runs arbitrary
+        // skills — it can only invoke what's already installed + enabled, and a
+        // surface can only run its own skill.
+        const name = typeof command.name === "string" ? command.name.trim() : "";
+        const invokeId = typeof command.invokeId === "string" ? command.invokeId : undefined;
+        if (!name) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "skill_invoke requires name" }) + "\n");
+          continue;
+        }
+        const settings = await loadUiSettings();
+        if ((settings.disabledSkills ?? []).includes(name)) {
+          process.stdout.write(JSON.stringify({ type: "skill_result", invokeId, name, ok: false, error: `skill '${name}' is disabled` }) + "\n");
+          continue;
+        }
+        const started = Date.now();
+        const run = await runSkill({ home: live.context.home, name, input: command.input, timeoutMs: 60_000 }).catch(
+          (err) => ({ ok: false, result: undefined, error: err instanceof Error ? err.message : String(err) }) as { ok: boolean; result?: unknown; error?: string },
+        );
+        process.stdout.write(JSON.stringify({
+          type: "skill_result",
+          invokeId,
+          name,
+          ok: run.ok,
+          result: run.ok ? run.result : undefined,
+          error: run.ok ? undefined : (run.error ?? "skill failed"),
+          durationMs: Date.now() - started,
+        }) + "\n");
         continue;
       }
       if (command.type === "usage_stats") {

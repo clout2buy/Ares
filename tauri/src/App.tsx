@@ -1756,10 +1756,6 @@ function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // ── Voice bus: speak Ares's replies aloud via the local sidecar. ──
-  const voice = useTts({ enabled: prefs.voiceEnabled ?? false, voice: prefs.voiceId ?? "", speed: prefs.voiceSpeed ?? 1 });
-  const voiceRef = useRef(voice);
-  voiceRef.current = voice;
   // Accumulates the active session's assistant text for the current turn, spoken
   // on turn_end. A ref (not state) so streaming never re-renders the whole app.
   const spokenBuf = useRef("");
@@ -1886,6 +1882,80 @@ function App() {
     },
     [native],
   );
+
+  // Promise-correlated skill invocation: send skill_invoke with a unique id and
+  // resolve when the matching skill_result comes back. Powers TTS-provider
+  // skills (op:"tts") and tray surface-button clicks over one channel.
+  const skillInvokePending = useRef(new Map<string, { resolve: (r: { ok: boolean; result?: unknown; error?: string }) => void; timer: number }>());
+  const skillInvoke = useCallback(
+    (name: string, input: unknown, timeoutMs = 60_000): Promise<{ ok: boolean; result?: unknown; error?: string }> => {
+      if (!native) return Promise.resolve({ ok: false, error: "no daemon attached" });
+      const invokeId = `si_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise((resolve) => {
+        const timer = window.setTimeout(() => {
+          skillInvokePending.current.delete(invokeId);
+          resolve({ ok: false, error: "skill timed out" });
+        }, timeoutMs);
+        skillInvokePending.current.set(invokeId, { resolve, timer });
+        daemonCmd({ type: "skill_invoke", name, input, invokeId });
+      });
+    },
+    [native, daemonCmd],
+  );
+
+  // ── Voice bus ──────────────────────────────────────────────────────────
+  // A toggled-on `provides:tts` skill overrides the built-in sidecar voice —
+  // Ares speaks through whatever engine the user installed (Piper, ElevenLabs…).
+  const ttsProviderSkill = skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"));
+  const voice = useTts({
+    enabled: prefs.voiceEnabled ?? false,
+    voice: prefs.voiceId ?? "",
+    speed: prefs.voiceSpeed ?? 1,
+    provider: ttsProviderSkill
+      ? (text, v, speed) =>
+          skillInvoke(ttsProviderSkill.name, { op: "tts", text, voice: v, speed }).then((r) =>
+            r.ok ? (r.result as { audio?: string; mime?: string }) : null,
+          )
+      : undefined,
+  });
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  // ── Conversation mode ─────────────────────────────────────────────────────
+  // Full-duplex hands-free: after Ares finishes SPEAKING a reply, auto-open the
+  // mic; the transcript is sent as the next message; a new send barges in. One
+  // switch on top of the STT + TTS halves. Off by default; needs voice on.
+  const [convoMode, setConvoMode] = useState(false);
+  const [convoListening, setConvoListening] = useState(false);
+  const convoRef = useRef<{ cancel: () => void } | null>(null);
+  const sendRef = useRef<(t: string) => void>(() => {});
+  const prevSpeaking = useRef(false);
+  useEffect(() => {
+    // Fire when speech just ENDED (true→false) while convo mode is on & idle.
+    const justFinishedSpeaking = prevSpeaking.current && !voice.speaking;
+    prevSpeaking.current = voice.speaking;
+    if (!convoMode || !prefs.voiceEnabled) return;
+    if (!justFinishedSpeaking || convoListening) return;
+    let cancelled = false;
+    setConvoListening(true);
+    void sidecarListen().then((handle) => {
+      if (cancelled) { handle.cancel(); return; }
+      convoRef.current = handle;
+      // Auto-close the turn after a short listen window; VAD-stop lands the text.
+      window.setTimeout(() => {
+        void handle.stop().then((txt) => {
+          convoRef.current = null;
+          setConvoListening(false);
+          if (txt.trim()) sendRef.current(txt.trim());
+        });
+      }, 8000);
+    }).catch(() => setConvoListening(false));
+    return () => { cancelled = true; };
+  }, [voice.speaking, convoMode, prefs.voiceEnabled, convoListening]);
+  // Leaving convo mode stops any listen in progress.
+  useEffect(() => {
+    if (!convoMode && convoRef.current) { convoRef.current.cancel(); convoRef.current = null; setConvoListening(false); }
+  }, [convoMode]);
 
   // HELM live feed: while the war room is visible, re-scry on open, every 5s,
   // and on every busy flip (turn start/end) so missions, todos, and cost move
@@ -2107,6 +2177,16 @@ function App() {
         case "skills_list":
           setSkills(Array.isArray(e.skills) ? (e.skills as SkillInfo[]) : []);
           return true;
+        case "skill_result": {
+          const id = (e as { invokeId?: string }).invokeId;
+          const pending = id ? skillInvokePending.current.get(id) : undefined;
+          if (pending && id) {
+            clearTimeout(pending.timer);
+            skillInvokePending.current.delete(id);
+            pending.resolve({ ok: (e as { ok?: boolean }).ok === true, result: (e as { result?: unknown }).result, error: (e as { error?: string }).error });
+          }
+          return true;
+        }
         case "usage_stats":
           setUsageStats((e.stats as UsageStats | null) ?? null);
           return true;
@@ -2512,6 +2592,8 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [native, daemon, applyTo]);
+  // Conversation mode auto-sends the recognized transcript through the same path.
+  sendRef.current = send;
 
   /** Steer: queue a message mid-turn; the daemon folds it in at a safe boundary. */
   const steer = useCallback((text: string) => {
@@ -2647,6 +2729,25 @@ function App() {
     const p = { ...prefs, flameMode: next };
     setPrefs(p);
     savePrefs(p);
+  };
+
+  const setVoiceEnabled = (on: boolean) => {
+    const p = { ...prefs, voiceEnabled: on };
+    setPrefs(p); savePrefs(p);
+    if (!on) { setConvoMode(false); voiceRef.current.stop(); }
+  };
+  // Fetch skills for the tray whenever the daemon attaches.
+  useEffect(() => { if (native) daemonCmd({ type: "skills_list" }); }, [native, daemonCmd]);
+  const [skillToast, setSkillToast] = useState<{ name: string; text: string; ok: boolean } | null>(null);
+  const runSurface = (skill: SkillInfo, surface: SkillSurface) => {
+    setSkillToast({ name: skill.name, text: `Running ${surface.label}…`, ok: true });
+    void skillInvoke(skill.name, surface.input ?? { op: surface.id }).then((r) => {
+      const text = r.ok
+        ? (typeof r.result === "string" ? r.result : (r.result as { message?: string })?.message ?? `${surface.label} done`)
+        : (r.error ?? "failed");
+      setSkillToast({ name: skill.name, text: String(text).slice(0, 160), ok: r.ok });
+      window.setTimeout(() => setSkillToast(null), 4000);
+    });
   };
 
   // ── the Forge ─────────────────────────────────────────────────────────────
@@ -2997,6 +3098,21 @@ function App() {
         />
       ) : null}
       {!bootGone ? <Boot /> : null}
+      {native && !pill ? (
+        <SkillDock
+          voiceEnabled={prefs.voiceEnabled ?? false}
+          onToggleVoice={setVoiceEnabled}
+          speaking={voice.speaking}
+          listening={convoListening}
+          convoMode={convoMode}
+          onToggleConvo={setConvoMode}
+          onStopVoice={() => voiceRef.current.stop()}
+          providerLabel={ttsProviderSkill ? `via ${ttsProviderSkill.name}` : "built-in · local"}
+          skills={skills}
+          onSurface={runSurface}
+          toast={skillToast}
+        />
+      ) : null}
       <UpdateBanner />
       <WhatsNew />
       <FirstRunGate
@@ -6570,12 +6686,22 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
 
 type SettingsTab = "account" | "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
 
+interface SkillSurface {
+  id: string;
+  label: string;
+  icon?: string;
+  kind?: "button" | "toggle";
+  input?: unknown;
+  hint?: string;
+}
 interface SkillInfo {
   name: string;
   description: string;
   status: string;
   category: string;
   enabled: boolean;
+  provides?: string[];
+  surfaces?: SkillSurface[];
 }
 interface UsageStats {
   sessions: number;
@@ -7206,6 +7332,83 @@ const SERVICE_PROVIDERS = [
   { id: "linkedin", label: "LinkedIn", desc: "Profile & connections" },
   { id: "dropbox", label: "Dropbox", desc: "Files & sharing" },
 ];
+
+// The active-skills dock — a floating, animated tray. Core voice controls (a
+// living orb reflecting idle/listening/speaking, quick on/off, conversation
+// mode) sit alongside buttons that enabled skills contribute via their
+// `surfaces` manifest. A surface can only invoke its own skill.
+function SkillDock({
+  voiceEnabled,
+  onToggleVoice,
+  speaking,
+  listening,
+  convoMode,
+  onToggleConvo,
+  onStopVoice,
+  providerLabel,
+  skills,
+  onSurface,
+  toast,
+}: {
+  voiceEnabled: boolean;
+  onToggleVoice: (on: boolean) => void;
+  speaking: boolean;
+  listening: boolean;
+  convoMode: boolean;
+  onToggleConvo: (on: boolean) => void;
+  onStopVoice: () => void;
+  providerLabel: string;
+  skills: SkillInfo[];
+  onSurface: (skill: SkillInfo, surface: SkillSurface) => void;
+  toast: { name: string; text: string; ok: boolean } | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const withSurfaces = skills.filter((s) => s.enabled && (s.surfaces?.length ?? 0) > 0);
+  const orbState = speaking ? "speaking" : listening ? "listening" : voiceEnabled ? "ready" : "off";
+  const surfaceCount = withSurfaces.reduce((n, s) => n + (s.surfaces?.length ?? 0), 0);
+
+  return (
+    <div className="skillDock" data-open={open ? "1" : "0"}>
+      {toast ? <div className="skillDockToast" data-ok={toast.ok ? "1" : "0"}>{toast.text}</div> : null}
+      {open ? (
+        <div className="skillDockPanel">
+          <div className="skillDockHead">
+            <strong>Voice</strong>
+            <span className="skillDockProvider">{providerLabel}</span>
+          </div>
+          <div className="skillDockRow">
+            <button className="skillDockBtn" data-on={voiceEnabled ? "1" : "0"} onClick={() => onToggleVoice(!voiceEnabled)}>
+              {voiceEnabled ? "🔊 Speaking on" : "🔇 Speak replies"}
+            </button>
+            <button className="skillDockBtn" data-on={convoMode ? "1" : "0"} disabled={!voiceEnabled} onClick={() => onToggleConvo(!convoMode)}>
+              💬 Conversation
+            </button>
+            {speaking ? <button className="skillDockBtn stop" onClick={onStopVoice}>⏹ Stop</button> : null}
+          </div>
+          {withSurfaces.length > 0 ? (
+            <>
+              <div className="skillDockHead"><strong>Skills</strong><span className="skillDockProvider">{surfaceCount} action{surfaceCount === 1 ? "" : "s"}</span></div>
+              <div className="skillDockSurfaces">
+                {withSurfaces.map((s) => (s.surfaces ?? []).map((surf) => (
+                  <button key={`${s.name}:${surf.id}`} className="skillDockSurface" title={surf.hint ?? s.description} onClick={() => onSurface(s, surf)}>
+                    <span className="skillDockIcon" aria-hidden="true">{surf.icon ?? "✦"}</span>
+                    <span>{surf.label}</span>
+                  </button>
+                )))}
+              </div>
+            </>
+          ) : (
+            <p className="skillDockHint">Enabled skills that declare buttons appear here.</p>
+          )}
+        </div>
+      ) : null}
+      <button className="skillDockOrb" data-state={orbState} onClick={() => setOpen((v) => !v)} title="Voice & skills" aria-label="Voice and skills">
+        <span className="skillDockOrbCore" />
+        {(speaking || listening) ? <span className="skillDockOrbPulse" /> : null}
+      </button>
+    </div>
+  );
+}
 
 // The Voice Hub — enable spoken replies, pick a voice from the local sidecar's
 // catalog (or a TTS-provider skill once registered), and set the rate. Applies

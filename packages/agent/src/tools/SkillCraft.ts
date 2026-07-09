@@ -48,6 +48,18 @@ const inputSchema = z
       .string()
       .optional()
       .describe("Why this skill is being crafted. Logged for traceability."),
+    provides: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Capabilities this skill SUPPLIES to Ares, so a toggled-on skill can override a built-in. Currently 'tts' (text-to-speech): a tts provider's handler must answer input {op:'voices'} → {voices:[{id,label}]} and {op:'tts', text, voice, speed} → {audio:<base64>, mime:'audio/wav'|'audio/mpeg'}. When this skill is enabled, Ares speaks through it instead of the built-in voice. Use for Piper/ElevenLabs/any voice engine.",
+      ),
+    surfaces: z
+      .array(z.object({ id: z.string(), label: z.string(), icon: z.string().optional(), input: z.unknown().optional(), hint: z.string().optional() }))
+      .optional()
+      .describe(
+        "UI buttons this skill contributes to the active-skills tray. Each button, when clicked, runs THIS skill's handler with its `input` (a surface can only invoke its own skill). e.g. [{id:'brief', label:'Daily brief', icon:'📋', input:{op:'brief'}}].",
+      ),
   })
   .strict();
 
@@ -126,7 +138,7 @@ export const SkillCraftTool = buildTool({
     }
 
     await fs.mkdir(skillDir, { recursive: true });
-    const skillMdBody = input.skill_md ?? defaultSkillMd(input.name, input.description ?? "");
+    const skillMdBody = input.skill_md ?? defaultSkillMd(input.name, input.description ?? "", input.provides, input.surfaces);
     await writeFileAtomic(skillMdPath, ensureTrailingNewline(skillMdBody));
     const touched: string[] = [skillMdPath];
     // On create, scaffold a contract-correct starter handler when none is given —
@@ -197,10 +209,18 @@ async function listSkills(dir: string): Promise<Array<{ name: string; descriptio
   }
 }
 
-function defaultSkillMd(name: string, description: string): string {
+function defaultSkillMd(
+  name: string,
+  description: string,
+  provides?: string[],
+  surfaces?: Array<{ id: string; label: string; icon?: string; input?: unknown; hint?: string }>,
+): string {
+  const providesLine = provides && provides.length ? `\nprovides: ${provides.join(", ")}` : "";
+  // surfaces MUST be a single JSON line — the frontmatter reader is line-based.
+  const surfacesLine = surfaces && surfaces.length ? `\nsurfaces: ${JSON.stringify(surfaces)}` : "";
   return `---
 name: ${name}
-description: ${description}
+description: ${description}${providesLine}${surfacesLine}
 ---
 
 # ${name}

@@ -38,6 +38,38 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.22.0",
+    date: "July 2026",
+    title: "Hey Ares",
+    tagline: "Say the word and just talk — hands-free wake word, auto-send when you stop speaking, voice previews, and read-aloud anywhere.",
+    highlights: [
+      {
+        icon: "👂",
+        title: "“Hey Ares” wake word",
+        tag: "New",
+        blurb: "Turn it on and just say it — Ares wakes, listens, and sends your message the moment you stop talking. Fully local and private; no button, no clicking.",
+      },
+      {
+        icon: "⏱",
+        title: "Sends when you stop talking",
+        tag: "New",
+        blurb: "Conversation mode and the mic now detect the end of your sentence — no fixed timer, no waiting, no hanging. Caps guarantee it never stalls listening forever.",
+      },
+      {
+        icon: "▶",
+        title: "Hear voices before you pick",
+        tag: "Polished",
+        blurb: "Every voice in the Voice Hub has a play button, and when a voice skill is active you pick from ITS voices — no more choosing blind.",
+      },
+      {
+        icon: "🔊",
+        title: "Speak anything, follow along",
+        tag: "New",
+        blurb: "Select any reply text to get a Speak button; a subtle caption shows the sentence being spoken; and when a background task finishes while you're away, Ares says so out loud.",
+      },
+    ],
+  },
+  {
     version: "0.21.4",
     date: "July 2026",
     title: "Voice that finishes the thought",

@@ -133,16 +133,21 @@ interface TtsChunk { type: string; audio?: string; mime?: string; message?: stri
  *  sidecar or provider skill — flows through the SAME Web Audio decode path. */
 export class TtsClient {
   private ws: WebSocket | null = null;
-  private queue: ArrayBuffer[] = [];       // encoded audio bytes awaiting decode+play
+  private queue: Array<{ bytes: ArrayBuffer; label?: string }> = []; // encoded audio awaiting decode+play
   private currentSource: AudioBufferSourceNode | null = null;
   private browserUtterance: SpeechSynthesisUtterance | null = null;
   private browserQueued = 0;
   private playing = false;
   private seq = 0;
   private onState?: (speaking: boolean) => void;
+  /** Karaoke: the text of the clip playing right now (null = quiet). */
+  private onUtterance?: (text: string | null) => void;
+  /** Maps a sidecar speak-request id → its text, so audio frames get labeled. */
+  private pendingTexts = new Map<string, string>();
 
-  constructor(onState?: (speaking: boolean) => void) {
+  constructor(onState?: (speaking: boolean) => void, onUtterance?: (text: string | null) => void) {
     this.onState = onState;
+    this.onUtterance = onUtterance;
   }
 
   private connect(): Promise<WebSocket> {
@@ -158,11 +163,14 @@ export class TtsClient {
       ws.onopen = () => resolve(ws);
       ws.onerror = () => reject(new Error("tts sidecar unreachable"));
       ws.onmessage = (e) => {
-        let m: TtsChunk;
-        try { m = JSON.parse(e.data as string) as TtsChunk; } catch { return; }
+        let m: TtsChunk & { id?: string };
+        try { m = JSON.parse(e.data as string) as TtsChunk & { id?: string }; } catch { return; }
         if (m.type === "audio" && m.audio) {
-          this.enqueueAudio(m.audio, m.mime);
+          // Label each clip with the text of the speak request it came from, so
+          // the UI can show what's being spoken (karaoke).
+          this.enqueueAudio(m.audio, m.mime, m.id ? this.pendingTexts.get(m.id) : undefined);
         }
+        if (m.type === "done" && m.id) this.pendingTexts.delete(m.id);
       };
       ws.onclose = () => { if (this.ws === ws) this.ws = null; };
       this.ws = ws;
@@ -171,18 +179,21 @@ export class TtsClient {
 
   private pump(): void {
     if (this.playing) return;
-    const bytes = this.queue.shift();
-    if (!bytes) {
-      if (!this.currentSource && this.browserQueued === 0) this.onState?.(false);
+    const item = this.queue.shift();
+    if (!item) {
+      if (!this.currentSource && this.browserQueued === 0) {
+        this.onState?.(false);
+        this.onUtterance?.(null);
+      }
       return;
     }
     this.playing = true;
     this.onState?.(true);
-    void this.playBytes(bytes);
+    void this.playBytes(item.bytes, item.label);
   }
 
   /** Decode + play one encoded audio clip via Web Audio (format-agnostic). */
-  private async playBytes(bytes: ArrayBuffer): Promise<void> {
+  private async playBytes(bytes: ArrayBuffer, label?: string): Promise<void> {
     const done = () => {
       this.playing = false;
       this.currentSource = null;
@@ -198,6 +209,7 @@ export class TtsClient {
       src.connect(ctx.destination);
       src.onended = done;
       this.currentSource = src;
+      if (label) this.onUtterance?.(label);
       src.start();
     } catch (err) {
       // A decode failure is a REAL problem (a provider returned audio the engine
@@ -261,25 +273,30 @@ export class TtsClient {
     if (!clean) return;
     try {
       const ws = await this.connect();
-      ws.send(JSON.stringify({ type: "speak", id: `s${++this.seq}`, text: clean, voice: voice || DEFAULT_BUILTIN_VOICE, speed }));
+      const id = `s${++this.seq}`;
+      this.pendingTexts.set(id, clean);
+      ws.send(JSON.stringify({ type: "speak", id, text: clean, voice: voice || DEFAULT_BUILTIN_VOICE, speed }));
     } catch {
-      await this.speakWithBrowser(clean, voice, speed);
+      this.onUtterance?.(clean);
+      await this.speakWithBrowser(clean, voice, speed).finally(() => this.onUtterance?.(null));
     }
   }
 
   /** Enqueue externally-produced audio (a TTS-provider SKILL's output) onto the
    *  SAME queue + player, so barge-in and ordering work identically whether the
    *  audio came from the built-in sidecar or a provider skill. */
-  enqueueAudio(base64: string, mime?: string): void {
+  enqueueAudio(base64: string, mime?: string, label?: string): void {
     if (!base64) return;
     void mime; // advisory only — decodeAudioData sniffs the container itself.
-    this.queue.push(base64ToBytes(base64));
+    this.queue.push({ bytes: base64ToBytes(base64), label });
     this.pump();
   }
 
   /** Barge-in: silence everything now. */
   stop(): void {
     this.queue = [];
+    this.pendingTexts.clear();
+    this.onUtterance?.(null);
     if (this.currentSource) { try { this.currentSource.stop(); } catch { /* already ended */ } this.currentSource = null; }
     if (this.browserUtterance) {
       try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
@@ -324,6 +341,8 @@ export interface UseTtsOptions {
   /** When present, speech is produced by this provider skill; the built-in
    *  sidecar is the fallback (and the default when this is undefined). */
   provider?: ProviderSpeak;
+  /** Karaoke: fired with the text of the clip currently playing (null = quiet). */
+  onUtterance?: (text: string | null) => void;
 }
 
 /** The app's TTS bus. Keeps one TtsClient for the session; `speak` no-ops when
@@ -348,7 +367,10 @@ export function useTts(opts: UseTtsOptions) {
   }, []);
 
   useEffect(() => {
-    const client = new TtsClient((s) => { clientSpeakingRef.current = s; recomputeSpeaking(); });
+    const client = new TtsClient(
+      (s) => { clientSpeakingRef.current = s; recomputeSpeaking(); },
+      (text) => optsRef.current.onUtterance?.(text),
+    );
     clientRef.current = client;
     return () => { client.dispose(); clientRef.current = null; };
   }, [recomputeSpeaking]);
@@ -364,9 +386,11 @@ export function useTts(opts: UseTtsOptions) {
     }
   }, [opts.enabled, recomputeSpeaking]);
 
-  const speak = useCallback((text: string) => {
+  const speak = useCallback((text: string, o2?: { force?: boolean }) => {
     const o = optsRef.current;
-    if (!o.enabled) return;
+    // `force` speaks even with the voice toggle off (read-aloud selection,
+    // voice previews) — an explicit user click IS the consent.
+    if (!o.enabled && !o2?.force) return;
     const client = clientRef.current;
     if (!client) return;
     const selectedVoice = o.voice || DEFAULT_BUILTIN_VOICE;
@@ -381,10 +405,12 @@ export function useTts(opts: UseTtsOptions) {
       pendingSynthRef.current += 1;
       recomputeSpeaking();
       const settle = () => { pendingSynthRef.current = Math.max(0, pendingSynthRef.current - 1); recomputeSpeaking(); };
+      const force = o2?.force === true;
+      const stillWanted = () => (optsRef.current.enabled || force) && epoch === speechEpochRef.current;
       const run = providerQueueRef.current.then(async () => {
         const latest = optsRef.current;
         const currentClient = clientRef.current;
-        if (!currentClient || !latest.enabled || epoch !== speechEpochRef.current) return;
+        if (!currentClient || !stillWanted()) return;
         const voice = latest.voice || selectedVoice;
         const speed = latest.speed ?? 1;
         const provider = latest.provider;
@@ -394,11 +420,11 @@ export function useTts(opts: UseTtsOptions) {
         }
         try {
           const out = await provider(clean, latest.voice, speed);
-          if (!clientRef.current || !optsRef.current.enabled || epoch !== speechEpochRef.current) return;
-          if (out?.audio) clientRef.current.enqueueAudio(out.audio, out.mime);
+          if (!clientRef.current || !stillWanted()) return;
+          if (out?.audio) clientRef.current.enqueueAudio(out.audio, out.mime, clean);
           else await clientRef.current.speak(clean, voice || DEFAULT_BUILTIN_VOICE, speed).catch(() => {});
         } catch {
-          if (clientRef.current && optsRef.current.enabled && epoch === speechEpochRef.current) {
+          if (clientRef.current && stillWanted()) {
             await clientRef.current.speak(clean, voice || DEFAULT_BUILTIN_VOICE, speed).catch(() => {});
           }
         }
@@ -419,7 +445,23 @@ export function useTts(opts: UseTtsOptions) {
   }, [recomputeSpeaking]);
   const playAudio = useCallback((audio: string, mime?: string) => clientRef.current?.enqueueAudio(audio, mime), []);
 
-  return { speak, stop, playAudio, speaking };
+  /** Hear a SPECIFIC voice before selecting it (the Voice Hub ▶). Uses the
+   *  provider skill when one is active, else the sidecar — regardless of the
+   *  voice toggle (the click is the consent). */
+  const preview = useCallback((voiceId: string, text = "Hey — this is what I sound like. Pick me if you like it.") => {
+    const client = clientRef.current;
+    if (!client) return;
+    const o = optsRef.current;
+    if (o.provider) {
+      void o.provider(text, voiceId, o.speed ?? 1)
+        .then((out) => { if (out?.audio) clientRef.current?.enqueueAudio(out.audio, out.mime, text); })
+        .catch(() => { /* preview is best-effort */ });
+      return;
+    }
+    void client.speak(text, voiceId, o.speed ?? 1).catch(() => {});
+  }, []);
+
+  return { speak, stop, playAudio, preview, speaking };
 }
 
 // ── Sidecar STT (push-to-talk) ───────────────────────────────────────────────
@@ -428,6 +470,10 @@ export interface SttHandle {
   /** Resolves with the transcript (empty string if nothing recognized). */
   stop: () => Promise<string>;
   cancel: () => void;
+  /** Resolves when the transcript lands — whether the client called stop() or
+   *  the sidecar's VAD ended the utterance on its own (auto mode). This is what
+   *  hands-free flows await: talk, stop talking, the text arrives. */
+  transcript: Promise<string>;
 }
 
 /**
@@ -435,7 +481,10 @@ export interface SttHandle {
  * server-side; we get status events and, on stop, the transcript. Rejects fast
  * if the sidecar isn't reachable so the caller can fall back to the legacy path.
  */
-export function sidecarListen(onStatus?: (s: "connecting" | "listening" | "transcribing") => void): Promise<SttHandle> {
+export function sidecarListen(
+  onStatus?: (s: "connecting" | "listening" | "transcribing") => void,
+  opts?: { auto?: boolean },
+): Promise<SttHandle> {
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
     try {
@@ -445,15 +494,22 @@ export function sidecarListen(onStatus?: (s: "connecting" | "listening" | "trans
       return;
     }
     let settledOpen = false;
-    let transcriptResolve: ((t: string) => void) | null = null;
+
+    // ONE shared transcript promise: resolved by an explicit stop(), by the
+    // sidecar's VAD auto-stop, by cancel (empty), or by the socket dying (empty).
+    let settleTranscript: (t: string) => void = () => {};
+    let transcriptSettled = false;
+    const transcript = new Promise<string>((res) => {
+      settleTranscript = (t: string) => { if (!transcriptSettled) { transcriptSettled = true; res(t); } };
+    });
 
     const failOpen = () => { if (!settledOpen) { settledOpen = true; reject(new Error("stt sidecar unreachable")); } };
     ws.onerror = failOpen;
-    ws.onclose = () => { failOpen(); transcriptResolve?.(""); transcriptResolve = null; };
+    ws.onclose = () => { failOpen(); settleTranscript(""); };
 
     ws.onopen = () => {
       onStatus?.("connecting");
-      ws.send(JSON.stringify({ type: "listen_start" }));
+      ws.send(JSON.stringify({ type: "listen_start", auto: opts?.auto === true }));
     };
     ws.onmessage = (e) => {
       let m: { type: string; text?: string; available?: boolean };
@@ -461,18 +517,62 @@ export function sidecarListen(onStatus?: (s: "connecting" | "listening" | "trans
       if (m.type === "ready" && m.available === false) { failOpen(); try { ws.close(); } catch { /* ignore */ } return; }
       if (m.type === "listening") { if (!settledOpen) { settledOpen = true; resolve(handle); } onStatus?.("listening"); }
       if (m.type === "transcribing") onStatus?.("transcribing");
-      if (m.type === "transcript") { transcriptResolve?.(m.text ?? ""); transcriptResolve = null; try { ws.close(); } catch { /* ignore */ } }
-      if (m.type === "cancelled") { transcriptResolve?.(""); transcriptResolve = null; try { ws.close(); } catch { /* ignore */ } }
-      if (m.type === "error") { transcriptResolve?.(""); transcriptResolve = null; }
+      if (m.type === "transcript") { settleTranscript(m.text ?? ""); try { ws.close(); } catch { /* ignore */ } }
+      if (m.type === "cancelled") { settleTranscript(""); try { ws.close(); } catch { /* ignore */ } }
+      if (m.type === "error") settleTranscript("");
     };
 
     const handle: SttHandle = {
-      stop: () =>
-        new Promise<string>((res) => {
-          transcriptResolve = res;
-          try { ws.send(JSON.stringify({ type: "listen_stop" })); } catch { res(""); }
-        }),
-      cancel: () => { try { ws.send(JSON.stringify({ type: "listen_cancel" })); ws.close(); } catch { /* ignore */ } },
+      transcript,
+      stop: () => {
+        try { ws.send(JSON.stringify({ type: "listen_stop" })); } catch { settleTranscript(""); }
+        return transcript;
+      },
+      cancel: () => { settleTranscript(""); try { ws.send(JSON.stringify({ type: "listen_cancel" })); ws.close(); } catch { /* ignore */ } },
+    };
+  });
+}
+
+// ── Wake word ("Hey Ares") ──────────────────────────────────────────────────
+
+export interface WakeHandle {
+  /** Re-arm listening after the follow-up command capture finished. */
+  resume: () => void;
+  dispose: () => void;
+}
+
+/**
+ * Open the sidecar's wake-word loop. `onWake` fires each time the wake phrase
+ * is heard; the loop then PAUSES (so /stt can own the mic for the command) until
+ * resume() is called. Rejects fast when the sidecar/wake engine isn't available
+ * so callers can retry later without a dangling socket.
+ */
+export function wakeListen(onWake: (heard: string) => void): Promise<WakeHandle> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(`${VOICE_WS_BASE}/wake`);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    let settled = false;
+    const fail = (why: string) => { if (!settled) { settled = true; reject(new Error(why)); } };
+    ws.onerror = () => fail("wake sidecar unreachable");
+    ws.onclose = () => fail("wake socket closed");
+    ws.onopen = () => ws.send(JSON.stringify({ type: "wake_start" }));
+    ws.onmessage = (e) => {
+      let m: { type: string; text?: string; available?: boolean };
+      try { m = JSON.parse(e.data as string); } catch { return; }
+      if (m.type === "ready" && m.available === false) { fail("wake engine unavailable"); try { ws.close(); } catch { /* ignore */ } return; }
+      if (m.type === "waking" && !settled) {
+        settled = true;
+        resolve({
+          resume: () => { try { ws.send(JSON.stringify({ type: "wake_resume" })); } catch { /* ignore */ } },
+          dispose: () => { try { ws.send(JSON.stringify({ type: "wake_stop" })); ws.close(); } catch { /* ignore */ } },
+        });
+      }
+      if (m.type === "wake") onWake(m.text ?? "");
     };
   });
 }

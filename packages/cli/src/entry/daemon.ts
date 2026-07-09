@@ -253,6 +253,18 @@ export function inferSkillProvides(entryName: string, skillMd: string, surfaces:
   if (!provides.has("tts") && (entryName === "tts" || surfaceProvidesTts || bodyClaimsTts)) {
     provides.add("tts");
   }
+  // Same courtesy for speech-to-text providers (whisper.cpp, Deepgram, …):
+  // a transcribe surface, an stt name, or a clear body claim registers them.
+  const surfaceProvidesStt = surfaces.some((surface) => {
+    const input = surface.input;
+    return !!input && typeof input === "object" && (input as Record<string, unknown>).op === "transcribe";
+  });
+  const bodyClaimsStt =
+    /\bprovides\s+(?:the\s+)?['"`]?stt['"`]?\s+capability\b/i.test(skillMd) ||
+    /\bspeech[- ]to[- ]text\b/i.test(skillMd);
+  if (!provides.has("stt") && (entryName === "stt" || surfaceProvidesStt || bodyClaimsStt)) {
+    provides.add("stt");
+  }
   return [...provides];
 }
 

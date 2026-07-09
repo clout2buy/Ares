@@ -35,7 +35,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { WhatsNew } from "./WhatsNew";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle } from "./newStyle";
 import { CHANGELOG } from "./changelog";
-import { useTts, sidecarListen, fetchVoices, type VoiceInfo } from "./voice";
+import { useTts, sidecarListen, wakeListen, fetchVoices, type VoiceInfo, type WakeHandle } from "./voice";
 import "./styles.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -1276,6 +1276,10 @@ interface Prefs {
   voiceId?: string;
   /** Speech rate multiplier (0.5–2.0). */
   voiceSpeed?: number;
+  /** Hands-free: "Hey Ares" wake word arms the mic (needs voice + sidecar). */
+  wakeWord?: boolean;
+  /** Speak a short heads-up when a background/other-session turn finishes. */
+  voiceNotify?: boolean;
 }
 
 type ThemeName = "rage" | "bronze" | "crimson" | "steel" | "nightfall" | "verdant" | "daylight";
@@ -1345,6 +1349,9 @@ function loadPrefs(): Prefs {
       voiceEnabled: raw.voiceEnabled === true,
       voiceId: typeof raw.voiceId === "string" ? raw.voiceId : undefined,
       voiceSpeed: typeof raw.voiceSpeed === "number" && raw.voiceSpeed >= 0.5 && raw.voiceSpeed <= 2 ? raw.voiceSpeed : 1,
+      wakeWord: raw.wakeWord === true,
+      voiceNotify: raw.voiceNotify !== false, // default ON — a spoken heads-up is the point of voice
+
     };
   } catch {
     return fallback;
@@ -2005,10 +2012,13 @@ function App() {
   // A toggled-on `provides:tts` skill overrides the built-in sidecar voice —
   // Ares speaks through whatever engine the user installed (Piper, ElevenLabs…).
   const ttsProviderSkill = skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"));
+  // Karaoke: the sentence Ares is speaking RIGHT NOW (null = quiet).
+  const [nowSpeaking, setNowSpeaking] = useState<string | null>(null);
   const voice = useTts({
     enabled: prefs.voiceEnabled ?? false,
     voice: prefs.voiceId ?? "",
     speed: prefs.voiceSpeed ?? 1,
+    onUtterance: setNowSpeaking,
     provider: ttsProviderSkill
       ? (text, v, speed) =>
           skillInvoke(ttsProviderSkill.name, { op: "tts", text, voice: v, speed }).then((r) =>
@@ -2018,6 +2028,20 @@ function App() {
   });
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
+
+  // ── STT provider skill (mirror of the TTS override) ──
+  // A toggled-on `provides:stt` skill transcribes the composer mic's recording
+  // instead of the cloud fallback: {op:"transcribe", audio,<b64>, mime} → {text}.
+  const sttProviderSkill = skills.find((s) => s.enabled && (s.provides ?? []).includes("stt"));
+  useEffect(() => {
+    globalSttProvider.current = sttProviderSkill
+      ? async (audio: string, mime: string) => {
+          const r = await skillInvoke(sttProviderSkill.name, { op: "transcribe", audio, mime });
+          const text = r.ok ? (r.result as { text?: string })?.text : null;
+          return typeof text === "string" ? text : null;
+        }
+      : null;
+  }, [sttProviderSkill?.name, skillInvoke]);
 
   const clearSpokenFlushTimer = () => {
     if (spokenFlushTimer.current !== null) {
@@ -2085,20 +2109,66 @@ function App() {
     if (!justFinishedSpeaking || convoListening || activeBusy) return;
     let cancelled = false;
     setConvoListening(true);
-    void sidecarListen().then((handle) => {
+    // AUTO listen: the sidecar's VAD ends the utterance the moment you stop
+    // talking (with its own no-speech + hard caps), so the reply sends itself —
+    // no fixed window, no waiting. The 30s client cap is pure belt-and-braces.
+    void sidecarListen(undefined, { auto: true }).then((handle) => {
       if (cancelled) { handle.cancel(); return; }
       convoRef.current = handle;
-      // Auto-close the turn after a short listen window; VAD-stop lands the text.
-      window.setTimeout(() => {
-        void handle.stop().then((txt) => {
-          convoRef.current = null;
-          setConvoListening(false);
-          if (txt.trim()) sendRef.current(txt.trim());
-        });
-      }, 8000);
+      const cap = window.setTimeout(() => void handle.stop(), 30_000);
+      void handle.transcript.then((txt) => {
+        window.clearTimeout(cap);
+        convoRef.current = null;
+        setConvoListening(false);
+        if (txt.trim()) sendRef.current(txt.trim());
+      });
     }).catch(() => setConvoListening(false));
     return () => { cancelled = true; };
   }, [voice.speaking, convoMode, prefs.voiceEnabled, convoListening, activeBusy]);
+
+  // ── Wake word: "Hey Ares" arms the mic hands-free ─────────────────────────
+  const wakeRef = useRef<WakeHandle | null>(null);
+  const wakeOn = (prefs.wakeWord ?? false) && (prefs.voiceEnabled ?? false) && native;
+  useEffect(() => {
+    if (!wakeOn) {
+      wakeRef.current?.dispose();
+      wakeRef.current = null;
+      return;
+    }
+    let disposed = false;
+    let retry: number | null = null;
+    const arm = () => {
+      if (disposed) return;
+      wakeListen((_heard) => {
+        // Woken: cut any speech, capture the command with VAD auto-send, then
+        // re-arm the wake loop for the next "Hey Ares".
+        voiceRef.current.stop();
+        setConvoListening(true);
+        void sidecarListen(undefined, { auto: true }).then((handle) => {
+          const cap = window.setTimeout(() => void handle.stop(), 30_000);
+          void handle.transcript.then((txt) => {
+            window.clearTimeout(cap);
+            setConvoListening(false);
+            wakeRef.current?.resume();
+            if (txt.trim()) sendRef.current(txt.trim());
+          });
+        }).catch(() => { setConvoListening(false); wakeRef.current?.resume(); });
+      }).then((handle) => {
+        if (disposed) { handle.dispose(); return; }
+        wakeRef.current = handle;
+      }).catch(() => {
+        // Sidecar down / wake engine unavailable — retry quietly.
+        if (!disposed) retry = window.setTimeout(arm, 30_000);
+      });
+    };
+    arm();
+    return () => {
+      disposed = true;
+      if (retry !== null) window.clearTimeout(retry);
+      wakeRef.current?.dispose();
+      wakeRef.current = null;
+    };
+  }, [wakeOn]);
   // Leaving convo mode stops any listen in progress.
   useEffect(() => {
     if (!convoMode && convoRef.current) { convoRef.current.cancel(); convoRef.current = null; setConvoListening(false); }
@@ -2533,6 +2603,10 @@ function App() {
         fireNotification("Ares needs your approval", ev.reason || ev.toolName || "A tool needs your OK");
       } else if (ev.type === "turn_end" && elsewhere) {
         fireNotification("Ares finished a task", "A background turn just completed.");
+        // Spoken heads-up: you're away from the window — say it out loud too.
+        if (prefsRef.current.voiceEnabled && prefsRef.current.voiceNotify !== false) {
+          voiceRef.current.speak("Heads up — a background task just finished.");
+        }
       }
       // Live browser frame — Ares driving its own embedded browser. Don't fold
       // into the transcript; push it to the Forge "Live" panel and open it.
@@ -2894,6 +2968,41 @@ function App() {
     setPrefs(p); savePrefs(p);
     if (!on) { setConvoMode(false); voiceRef.current.stop(); resetSpokenStream(); }
   };
+  const setWakeWord = (on: boolean) => {
+    const p = { ...prefs, wakeWord: on };
+    setPrefs(p); savePrefs(p);
+  };
+
+  // ── Read-aloud selection: select reply text → a floating 🔊 Speak button ──
+  const [readAloud, setReadAloud] = useState<{ x: number; y: number; text: string } | null>(null);
+  useEffect(() => {
+    const onMouseUp = () => {
+      // Defer a tick so the selection is final before we read it.
+      window.setTimeout(() => {
+        const sel = window.getSelection();
+        const text = sel?.toString().trim() ?? "";
+        if (!sel || !text || text.length < 8 || sel.rangeCount === 0) { setReadAloud(null); return; }
+        // Only offer it for selections inside the chat transcript.
+        const anchor = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement;
+        if (!anchor?.closest(".chat")) { setReadAloud(null); return; }
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        setReadAloud({
+          x: Math.min(window.innerWidth - 110, Math.max(8, rect.left + rect.width / 2 - 40)),
+          y: Math.max(8, rect.top - 38),
+          text: text.slice(0, 4000),
+        });
+      }, 0);
+    };
+    const dismiss = () => setReadAloud(null);
+    document.addEventListener("mouseup", onMouseUp);
+    document.addEventListener("keydown", dismiss);
+    document.addEventListener("scroll", dismiss, true);
+    return () => {
+      document.removeEventListener("mouseup", onMouseUp);
+      document.removeEventListener("keydown", dismiss);
+      document.removeEventListener("scroll", dismiss, true);
+    };
+  }, []);
   // Fetch skills for the tray whenever the daemon attaches.
   useEffect(() => { if (native) daemonCmd({ type: "skills_list" }); }, [native, daemonCmd]);
   const [skillToast, setSkillToast] = useState<{ name: string; text: string; ok: boolean } | null>(null);
@@ -3268,12 +3377,35 @@ function App() {
           listening={convoListening}
           convoMode={convoMode}
           onToggleConvo={setConvoMode}
+          wakeWord={prefs.wakeWord ?? false}
+          onToggleWake={setWakeWord}
           onStopVoice={() => { voiceRef.current.stop(); resetSpokenStream(); }}
           providerLabel={ttsProviderSkill ? `via ${ttsProviderSkill.name}` : "built-in · local"}
           skills={skills}
           onSurface={runSurface}
           toast={skillToast}
         />
+      ) : null}
+      {/* Karaoke: the sentence being spoken right now, following the voice. */}
+      {!pill && voice.speaking && nowSpeaking ? (
+        <div className="speakingNow" aria-live="off">
+          <span className="speakingNowIcon" aria-hidden="true" />
+          <span className="speakingNowText">{nowSpeaking}</span>
+        </div>
+      ) : null}
+      {/* Read-aloud: select any reply text → a floating speak button. */}
+      {readAloud ? (
+        <button
+          className="readAloudBtn"
+          style={{ left: readAloud.x, top: readAloud.y }}
+          onMouseDown={(e) => e.preventDefault() /* keep the selection alive */}
+          onClick={() => {
+            voiceRef.current.speak(readAloud.text, { force: true });
+            setReadAloud(null);
+          }}
+        >
+          🔊 Speak
+        </button>
       ) : null}
       <UpdateBanner />
       <WhatsNew />
@@ -3823,6 +3955,15 @@ function App() {
           }}
           onAnthropicSignIn={startAnthropicSignIn}
           initialTab={settingsTab}
+          onPreviewVoice={(id) => voiceRef.current.preview(id)}
+          listProviderVoices={
+            ttsProviderSkill
+              ? () => skillInvoke(ttsProviderSkill.name, { op: "voices" }).then((r) => {
+                  const voices = r.ok ? (r.result as { voices?: VoiceInfo[] })?.voices : null;
+                  return Array.isArray(voices) ? voices : [];
+                })
+              : undefined
+          }
         />
       ) : null}
 
@@ -5152,6 +5293,11 @@ async function transcribeSpeech(blob: Blob, language = "en-US"): Promise<string>
   return (data.results ?? []).map((r) => r.alternatives?.[0]?.transcript ?? "").join(" ").trim();
 }
 
+// A `provides:stt` skill's transcriber, installed by the App component when one
+// is enabled. Module-level so the mic hooks (which live in deeply-nested
+// components) reach it without threading a prop through every layer.
+const globalSttProvider: { current: ((audioB64: string, mime: string) => Promise<string | null>) | null } = { current: null };
+
 type DictState = "idle" | "recording" | "thinking" | "error";
 /**
  * Click to record, click to stop → transcribe → onText. Prefers the LOCAL voice
@@ -5175,7 +5321,7 @@ function useDictation(onText: (text: string) => void) {
     streamRef.current = null;
   };
 
-  // ── legacy path (MediaRecorder → Google) — the fallback ──
+  // ── legacy path (MediaRecorder → provider skill → Google) — the fallback ──
   const startLegacy = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
@@ -5189,7 +5335,15 @@ function useDictation(onText: (text: string) => void) {
       if (!blob.size) { setState("idle"); return; }
       setState("thinking");
       try {
-        const txt = await transcribeSpeech(blob);
+        // A provides:stt skill (whisper.cpp, Deepgram, …) transcribes the
+        // recording first; the cloud path is the last resort.
+        let txt = "";
+        const provider = globalSttProvider.current;
+        if (provider) {
+          const viaSkill = await provider(await blobToBase64(blob), mime).catch(() => null);
+          if (viaSkill?.trim()) txt = viaSkill.trim();
+        }
+        if (!txt) txt = await transcribeSpeech(blob);
         setState("idle");
         if (txt) onTextRef.current(txt);
       } catch {
@@ -5203,12 +5357,21 @@ function useDictation(onText: (text: string) => void) {
   }, []);
 
   const start = useCallback(async () => {
-    // Try the local sidecar first.
+    // Try the local sidecar first — in AUTO mode, so the mic also ends itself
+    // when you stop talking (the transcript just lands in the composer).
     try {
-      const handle = await sidecarListen();
+      const handle = await sidecarListen(undefined, { auto: true });
       sttRef.current = handle;
       usingSidecar.current = true;
       setState("recording");
+      // VAD auto-stop: the transcript can arrive without stop() being clicked.
+      void handle.transcript.then((txt) => {
+        if (sttRef.current !== handle) return; // manual stop already handled it
+        sttRef.current = null;
+        usingSidecar.current = false;
+        setState("idle");
+        if (txt) onTextRef.current(txt);
+      });
       return;
     } catch {
       usingSidecar.current = false;
@@ -7053,6 +7216,8 @@ function Settings({
   onLivePref,
   onAnthropicSignIn,
   initialTab,
+  onPreviewVoice,
+  listProviderVoices,
 }: {
   prefs: Prefs;
   onApply: (p: Prefs, keys: Record<string, string>) => void;
@@ -7070,6 +7235,8 @@ function Settings({
   onLivePref: (patch: Partial<Prefs>) => void;
   onAnthropicSignIn: () => void;
   initialTab?: SettingsTab;
+  onPreviewVoice?: (voiceId: string) => void;
+  listProviderVoices?: () => Promise<VoiceInfo[]>;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "model");
   const [draft, setDraftPrefs] = useState<Prefs>(prefs);
@@ -7245,7 +7412,7 @@ function Settings({
                   </button>
                 ))}
               </div>
-              <VoiceSettings draft={draft} setDraftPrefs={setDraftPrefs} onLivePref={onLivePref} providerSkill={skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"))} />
+              <VoiceSettings draft={draft} setDraftPrefs={setDraftPrefs} onLivePref={onLivePref} providerSkill={skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"))} onPreviewVoice={onPreviewVoice} listProviderVoices={listProviderVoices} />
             </div>
           ) : null}
 
@@ -7591,6 +7758,8 @@ function SkillDock({
   listening,
   convoMode,
   onToggleConvo,
+  wakeWord,
+  onToggleWake,
   onStopVoice,
   providerLabel,
   skills,
@@ -7603,6 +7772,8 @@ function SkillDock({
   listening: boolean;
   convoMode: boolean;
   onToggleConvo: (on: boolean) => void;
+  wakeWord: boolean;
+  onToggleWake: (on: boolean) => void;
   onStopVoice: () => void;
   providerLabel: string;
   skills: SkillInfo[];
@@ -7629,6 +7800,9 @@ function SkillDock({
             </button>
             <button className="skillDockBtn" data-on={convoMode ? "1" : "0"} disabled={!voiceEnabled} onClick={() => onToggleConvo(!convoMode)}>
               💬 Conversation
+            </button>
+            <button className="skillDockBtn" data-on={wakeWord ? "1" : "0"} disabled={!voiceEnabled} onClick={() => onToggleWake(!wakeWord)} title="Say “Hey Ares”, then just talk — it sends when you stop.">
+              👂 Hey Ares
             </button>
             {speaking ? <button className="skillDockBtn stop" onClick={onStopVoice}>⏹ Stop</button> : null}
           </div>
@@ -7665,11 +7839,15 @@ function VoiceSettings({
   setDraftPrefs,
   onLivePref,
   providerSkill,
+  onPreviewVoice,
+  listProviderVoices,
 }: {
   draft: Prefs;
   setDraftPrefs: (p: Prefs) => void;
   onLivePref: (patch: Partial<Prefs>) => void;
   providerSkill?: SkillInfo;
+  onPreviewVoice?: (voiceId: string) => void;
+  listProviderVoices?: () => Promise<VoiceInfo[]>;
 }) {
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [defaultVoice, setDefaultVoice] = useState("");
@@ -7677,13 +7855,34 @@ function VoiceSettings({
 
   useEffect(() => {
     const ac = new AbortController();
+    // When a provider skill is the active voice engine, its catalog IS the
+    // picker — you choose among the voices that will actually speak. The
+    // sidecar catalog is the fallback.
+    if (listProviderVoices) {
+      let cancelled = false;
+      void listProviderVoices().then((provided) => {
+        if (cancelled) return;
+        if (provided.length > 0) {
+          setVoices(provided);
+          setDefaultVoice(provided[0]?.id ?? "");
+          setStatus("ready");
+        } else {
+          fetchVoices(ac.signal).then(({ voices, default: def }) => {
+            setVoices(voices);
+            setDefaultVoice(def);
+            setStatus(voices.length ? "ready" : "offline");
+          });
+        }
+      });
+      return () => { cancelled = true; ac.abort(); };
+    }
     fetchVoices(ac.signal).then(({ voices, default: def }) => {
       setVoices(voices);
       setDefaultVoice(def);
       setStatus(voices.length ? "ready" : "offline");
     });
     return () => ac.abort();
-  }, []);
+  }, [listProviderVoices]);
 
   const setEnabled = (on: boolean) => {
     // On first enable with no chosen voice, adopt the sidecar default so it
@@ -7717,19 +7916,20 @@ function VoiceSettings({
       </p>
       {status === "ready" ? (
         <>
-          <label className="fieldLabel">Voice</label>
+          <label className="fieldLabel">Voice{providerSkill ? ` — via ${providerSkill.name}` : ""}</label>
           <div className="voiceGrid">
             {voices.map((v) => (
-              <button
-                key={v.id}
-                className="voiceCard"
-                data-on={(draft.voiceId || defaultVoice) === v.id ? "1" : "0"}
-                onClick={() => pickVoice(v.id)}
-                title={v.character}
-              >
-                <strong>{v.label}</strong>
-                <em>{[v.accent, v.gender].filter(Boolean).join(" · ")}{v.id === defaultVoice ? " · recommended" : ""}</em>
-              </button>
+              <div key={v.id} className="voiceCard" data-on={(draft.voiceId || defaultVoice) === v.id ? "1" : "0"} title={v.character}>
+                <button className="voiceCardPick" onClick={() => pickVoice(v.id)}>
+                  <strong>{v.label}</strong>
+                  <em>{[v.accent, v.gender].filter(Boolean).join(" · ")}{v.id === defaultVoice ? " · recommended" : ""}</em>
+                </button>
+                {onPreviewVoice ? (
+                  <button className="voicePreview" title={`Hear ${v.label}`} aria-label={`Preview ${v.label}`} onClick={() => onPreviewVoice(v.id)}>
+                    ▶
+                  </button>
+                ) : null}
+              </div>
             ))}
           </div>
           <label className="fieldLabel">Speed — {(draft.voiceSpeed ?? 1).toFixed(2)}×</label>
@@ -7741,6 +7941,23 @@ function VoiceSettings({
           />
         </>
       ) : null}
+      <label className="fieldLabel">Hands-free</label>
+      <div className="displayModes">
+        <button
+          data-on={draft.wakeWord ? "1" : "0"}
+          onClick={() => { const on = !draft.wakeWord; setDraftPrefs({ ...draft, wakeWord: on }); onLivePref({ wakeWord: on }); }}
+        >
+          <strong>“Hey Ares” wake word</strong>
+          <span>Say it, then speak — Ares listens, and sends the moment you stop talking. Local &amp; private.</span>
+        </button>
+        <button
+          data-on={draft.voiceNotify !== false ? "1" : "0"}
+          onClick={() => { const on = draft.voiceNotify === false; setDraftPrefs({ ...draft, voiceNotify: on }); onLivePref({ voiceNotify: on }); }}
+        >
+          <strong>Spoken heads-up</strong>
+          <span>When a background task finishes while you're away, Ares says so out loud.</span>
+        </button>
+      </div>
     </div>
   );
 }

@@ -41,6 +41,15 @@ test("inferSkillProvides: recognizes TTS skills that omit frontmatter", () => {
   assert.deepEqual(inferSkillProvides("voicebox", "This provides the tts capability for Ares.", [], ["custom"]), ["custom", "tts"]);
 });
 
+test("inferSkillProvides: recognizes STT skills the same way", () => {
+  const surfaces = parseSurfaces('[{"id":"listen","label":"Transcribe","input":{"op":"transcribe"}}]');
+  assert.deepEqual(inferSkillProvides("stt", "---\nname: stt\n---\n# STT\n", [], []), ["stt"]);
+  assert.deepEqual(inferSkillProvides("my_ears", "---\nname: my_ears\n---\n# Ears\n", surfaces, []), ["stt"]);
+  assert.deepEqual(inferSkillProvides("deepgram", "A speech-to-text provider for Ares.", [], []), ["stt"]);
+  // A plain skill infers nothing.
+  assert.deepEqual(inferSkillProvides("weather", "---\nname: weather\n---\n# Weather\n", [], []), []);
+});
+
 test("tts provider contract: a skill handler answers voices + tts ops", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "ares-skill-tts-"));
   try {

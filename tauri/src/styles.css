@@ -1360,6 +1360,8 @@ a.vaultName { border-bottom: none; }
 .skillDockSurface:hover { border-color: var(--accent); transform: translateY(-1px); }
 .skillDockIcon { font-size: 15px; }
 .skillDockHint { font-size: 11px; color: var(--ink-dim); margin: 0; }
+.skillDockHint.warn { color: #e0a468; }
+.skillDockHint code { font-size: 10.5px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 5px; }
 .skillDockToast {
   max-width: 300px; padding: 8px 12px; font-size: 12px;
   border: 1px solid var(--line-strong); border-radius: var(--r-md);

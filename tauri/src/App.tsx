@@ -2014,16 +2014,45 @@ function App() {
   const ttsProviderSkill = skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"));
   // Karaoke: the sentence Ares is speaking RIGHT NOW (null = quiet).
   const [nowSpeaking, setNowSpeaking] = useState<string | null>(null);
+  // The active provider's own voice catalog. Needed at CALL time: the saved
+  // voiceId often belongs to the PREVIOUS engine (e.g. Kokoro's "af_heart"
+  // sent to a Piper skill), which made every provider call fail and silently
+  // fall back to the robotic browser voice — "it's not using my skill".
+  const [providerVoices, setProviderVoices] = useState<VoiceInfo[] | null>(null);
+  const providerFailToasted = useRef(false);
+  useEffect(() => {
+    providerFailToasted.current = false;
+    if (!ttsProviderSkill) { setProviderVoices(null); return; }
+    let cancelled = false;
+    void skillInvoke(ttsProviderSkill.name, { op: "voices" }).then((r) => {
+      if (cancelled) return;
+      const voices = r.ok ? (r.result as { voices?: VoiceInfo[] })?.voices : null;
+      setProviderVoices(Array.isArray(voices) ? voices : []);
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsProviderSkill?.name]);
   const voice = useTts({
     enabled: prefs.voiceEnabled ?? false,
     voice: prefs.voiceId ?? "",
     speed: prefs.voiceSpeed ?? 1,
     onUtterance: setNowSpeaking,
     provider: ttsProviderSkill
-      ? (text, v, speed) =>
-          skillInvoke(ttsProviderSkill.name, { op: "tts", text, voice: v, speed }).then((r) =>
-            r.ok ? (r.result as { audio?: string; mime?: string }) : null,
-          )
+      ? (text, v, speed) => {
+          // Only pass a voice the provider actually KNOWS; otherwise send ""
+          // so the skill uses its own default instead of erroring out.
+          const known = providerVoices;
+          const voiceForSkill = known && known.length > 0 ? (known.some((k) => k.id === v) ? v : "") : v;
+          return skillInvoke(ttsProviderSkill.name, { op: "tts", text, voice: voiceForSkill, speed }).then((r) => {
+            if (!r.ok && !providerFailToasted.current) {
+              // Never AGAIN fail silently into the robot voice — say why, once.
+              providerFailToasted.current = true;
+              setSkillToast({ name: ttsProviderSkill.name, text: `Voice skill ${ttsProviderSkill.name} failed: ${(r.error ?? "unknown error").slice(0, 120)}`, ok: false });
+              window.setTimeout(() => setSkillToast(null), 5000);
+            }
+            return r.ok ? (r.result as { audio?: string; mime?: string }) : null;
+          });
+        }
       : undefined,
   });
   const voiceRef = useRef(voice);
@@ -2128,17 +2157,25 @@ function App() {
 
   // ── Wake word: "Hey Ares" arms the mic hands-free ─────────────────────────
   const wakeRef = useRef<WakeHandle | null>(null);
-  const wakeOn = (prefs.wakeWord ?? false) && (prefs.voiceEnabled ?? false) && native;
+  // Wake works WITHOUT the speak-replies toggle — hearing you and speaking to
+  // you are independent. (It was chained to voiceEnabled, so a reset voice
+  // toggle silently killed the wake word too.)
+  const wakeOn = (prefs.wakeWord ?? false) && native;
+  // Surfaced in the dock: silence was the old failure mode — you toggled "Hey
+  // Ares" on, the sidecar was down, and NOTHING told you it couldn't hear.
+  const [wakeStatus, setWakeStatus] = useState<"off" | "arming" | "armed" | "offline">("off");
   useEffect(() => {
     if (!wakeOn) {
       wakeRef.current?.dispose();
       wakeRef.current = null;
+      setWakeStatus("off");
       return;
     }
     let disposed = false;
     let retry: number | null = null;
     const arm = () => {
       if (disposed) return;
+      setWakeStatus("arming");
       wakeListen((_heard) => {
         // Woken: cut any speech, capture the command with VAD auto-send, then
         // re-arm the wake loop for the next "Hey Ares".
@@ -2156,9 +2193,13 @@ function App() {
       }).then((handle) => {
         if (disposed) { handle.dispose(); return; }
         wakeRef.current = handle;
+        setWakeStatus("armed");
       }).catch(() => {
-        // Sidecar down / wake engine unavailable — retry quietly.
-        if (!disposed) retry = window.setTimeout(arm, 30_000);
+        // Sidecar down / wake engine unavailable — SHOW it, then keep retrying.
+        if (!disposed) {
+          setWakeStatus("offline");
+          retry = window.setTimeout(arm, 30_000);
+        }
       });
     };
     arm();
@@ -3378,6 +3419,7 @@ function App() {
           convoMode={convoMode}
           onToggleConvo={setConvoMode}
           wakeWord={prefs.wakeWord ?? false}
+          wakeStatus={wakeStatus}
           onToggleWake={setWakeWord}
           onStopVoice={() => { voiceRef.current.stop(); resetSpokenStream(); }}
           providerLabel={ttsProviderSkill ? `via ${ttsProviderSkill.name}` : "built-in · local"}
@@ -7759,6 +7801,7 @@ function SkillDock({
   convoMode,
   onToggleConvo,
   wakeWord,
+  wakeStatus,
   onToggleWake,
   onStopVoice,
   providerLabel,
@@ -7773,6 +7816,7 @@ function SkillDock({
   convoMode: boolean;
   onToggleConvo: (on: boolean) => void;
   wakeWord: boolean;
+  wakeStatus: "off" | "arming" | "armed" | "offline";
   onToggleWake: (on: boolean) => void;
   onStopVoice: () => void;
   providerLabel: string;
@@ -7801,11 +7845,16 @@ function SkillDock({
             <button className="skillDockBtn" data-on={convoMode ? "1" : "0"} disabled={!voiceEnabled} onClick={() => onToggleConvo(!convoMode)}>
               💬 Conversation
             </button>
-            <button className="skillDockBtn" data-on={wakeWord ? "1" : "0"} disabled={!voiceEnabled} onClick={() => onToggleWake(!wakeWord)} title="Say “Hey Ares”, then just talk — it sends when you stop.">
-              👂 Hey Ares
+            <button className="skillDockBtn" data-on={wakeWord ? "1" : "0"} onClick={() => onToggleWake(!wakeWord)} title="Say “Hey Ares”, then just talk — it sends when you stop.">
+              👂 Hey Ares{wakeWord ? (wakeStatus === "armed" ? " · listening" : wakeStatus === "arming" ? " · starting…" : "") : ""}
             </button>
             {speaking ? <button className="skillDockBtn stop" onClick={onStopVoice}>⏹ Stop</button> : null}
           </div>
+          {wakeWord && wakeStatus === "offline" ? (
+            <p className="skillDockHint warn">
+              The local voice engine isn't running, so “Hey Ares” can't hear you. Start it with <code>pnpm voice:tts</code> in the Ares folder (it needs Python + the voice service installed) — I'll connect automatically.
+            </p>
+          ) : null}
           {withSurfaces.length > 0 ? (
             <>
               <div className="skillDockHead"><strong>Skills</strong><span className="skillDockProvider">{surfaceCount} action{surfaceCount === 1 ? "" : "s"}</span></div>

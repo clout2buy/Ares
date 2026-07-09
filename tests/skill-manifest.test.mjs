@@ -41,6 +41,14 @@ test("inferSkillProvides: recognizes TTS skills that omit frontmatter", () => {
   assert.deepEqual(inferSkillProvides("voicebox", "This provides the tts capability for Ares.", [], ["custom"]), ["custom", "tts"]);
 });
 
+test("inferSkillProvides: tts-ish names and known engines register as voice providers", () => {
+  assert.deepEqual(inferSkillProvides("piper_tts", "---\nname: piper_tts\n---\n# Piper\n", [], []), ["tts"]);
+  assert.deepEqual(inferSkillProvides("tts-eleven", "---\nname: tts-eleven\n---\n# Eleven\n", [], []), ["tts"]);
+  assert.deepEqual(inferSkillProvides("myvoice", "Talks to the local Kokoro daemon for speech.", [], []), ["tts"]);
+  // "cutts" must NOT match — tts has to be its own name segment.
+  assert.deepEqual(inferSkillProvides("cutter", "---\nname: cutter\n---\n# Cuts video\n", [], []), []);
+});
+
 test("inferSkillProvides: recognizes STT skills the same way", () => {
   const surfaces = parseSurfaces('[{"id":"listen","label":"Transcribe","input":{"op":"transcribe"}}]');
   assert.deepEqual(inferSkillProvides("stt", "---\nname: stt\n---\n# STT\n", [], []), ["stt"]);

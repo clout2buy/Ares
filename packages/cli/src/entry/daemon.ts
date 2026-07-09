@@ -244,13 +244,18 @@ export function inferSkillProvides(entryName: string, skillMd: string, surfaces:
   });
   const bodyClaimsTts =
     /\bprovides\s+(?:the\s+)?['"`]?tts['"`]?\s+capability\b/i.test(skillMd) ||
-    /\btext[- ]to[- ]speech\b/i.test(skillMd);
+    /\btext[- ]to[- ]speech\b/i.test(skillMd) ||
+    // Known voice engines named in the manifest are as clear a signal as any.
+    /\b(piper|kokoro|elevenlabs|coqui)\b/i.test(skillMd);
+  // "tts" anywhere in the skill's NAME (piper_tts, tts-eleven, my_tts…) — users
+  // name their voice skills exactly this way and expect them to just be used.
+  const nameSignalsTts = /(^|[_-])tts([_-]|$)/i.test(entryName);
 
   // A hand-authored voice provider should not fail silently because its
   // frontmatter omitted one line. The explicit `provides:` field still wins,
-  // but the built-in `tts` skill name, a TTS surface, or a clear manifest body
-  // claim are enough for the desktop to route speech through the provider.
-  if (!provides.has("tts") && (entryName === "tts" || surfaceProvidesTts || bodyClaimsTts)) {
+  // but a tts-ish name, a TTS surface, or a clear manifest body claim are
+  // enough for the desktop to route speech through the provider.
+  if (!provides.has("tts") && (nameSignalsTts || surfaceProvidesTts || bodyClaimsTts)) {
     provides.add("tts");
   }
   // Same courtesy for speech-to-text providers (whisper.cpp, Deepgram, …):

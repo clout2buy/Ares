@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.22.1",
+    date: "July 2026",
+    title: "Voice that tells you what's wrong",
+    tagline: "Your voice skills actually get used, Hey Ares says when it can't hear, and nothing about voice fails silently anymore.",
+    highlights: [
+      {
+        icon: "V",
+        title: "Your voice skills get used",
+        tag: "Safer",
+        blurb: "A voice picked for an old engine was silently breaking every call to your voice skill and dropping to the robot voice. The app now only sends voices your skill knows — and if a skill fails, it tells you why instead of going quiet.",
+      },
+      {
+        icon: "👂",
+        title: "Hey Ares speaks up",
+        tag: "Polished",
+        blurb: "The wake word now shows its real status — listening, starting, or a clear note when the local voice engine is offline with exactly how to start it. And it works independently of the speak-replies toggle.",
+      },
+      {
+        icon: "S",
+        title: "More voice skills recognized",
+        tag: "Polished",
+        blurb: "Skills named things like piper_tts, or whose docs mention Piper/Kokoro/ElevenLabs, are auto-detected as voice providers — no manifest line needed.",
+      },
+    ],
+  },
+  {
     version: "0.22.0",
     date: "July 2026",
     title: "Hey Ares",

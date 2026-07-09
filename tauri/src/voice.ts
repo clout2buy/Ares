@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export const VOICE_HTTP_BASE = "http://127.0.0.1:8765";
 export const VOICE_WS_BASE = "ws://127.0.0.1:8765";
+export const DEFAULT_BUILTIN_VOICE = "af_heart";
 
 export interface VoiceInfo {
   id: string;
@@ -94,6 +95,7 @@ export class TtsClient {
   private ws: WebSocket | null = null;
   private queue: string[] = [];       // object URLs awaiting playback
   private current: HTMLAudioElement | null = null;
+  private browserUtterance: SpeechSynthesisUtterance | null = null;
   private playing = false;
   private seq = 0;
   private onState?: (speaking: boolean) => void;
@@ -149,13 +151,60 @@ export class TtsClient {
     void a.play().catch(done);
   }
 
+  private browserVoice(voice?: string): SpeechSynthesisVoice | undefined {
+    const synth = window.speechSynthesis;
+    if (!synth) return undefined;
+    const requested = (voice ?? "").toLowerCase();
+    const voices = synth.getVoices();
+    if (requested) {
+      const match = voices.find((v) =>
+        v.name.toLowerCase() === requested ||
+        v.voiceURI.toLowerCase() === requested ||
+        v.lang.toLowerCase() === requested ||
+        v.name.toLowerCase().includes(requested.replace(/[_-]/g, " ")),
+      );
+      if (match) return match;
+    }
+    return voices.find((v) => /^en[-_]/i.test(v.lang)) ?? voices[0];
+  }
+
+  private speakWithBrowser(text: string, voice?: string, speed = 1): Promise<void> {
+    const synth = window.speechSynthesis;
+    if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
+      return Promise.reject(new Error("browser speech synthesis unavailable"));
+    }
+    return new Promise((resolve, reject) => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      const selected = this.browserVoice(voice);
+      if (selected) utterance.voice = selected;
+      utterance.rate = Math.min(2, Math.max(0.5, speed || 1));
+      utterance.onstart = () => this.onState?.(true);
+      utterance.onend = () => {
+        if (this.browserUtterance === utterance) this.browserUtterance = null;
+        this.onState?.(false);
+        resolve();
+      };
+      utterance.onerror = () => {
+        if (this.browserUtterance === utterance) this.browserUtterance = null;
+        this.onState?.(false);
+        reject(new Error("browser speech synthesis failed"));
+      };
+      this.browserUtterance = utterance;
+      synth.speak(utterance);
+    });
+  }
+
   /** Speak text through the built-in sidecar (already spoken-cleaned, or we
    *  clean it here). */
   async speak(text: string, voice: string, speed = 1): Promise<void> {
     const clean = sanitizeForSpeech(text);
     if (!clean) return;
-    const ws = await this.connect();
-    ws.send(JSON.stringify({ type: "speak", id: `s${++this.seq}`, text: clean, voice, speed }));
+    try {
+      const ws = await this.connect();
+      ws.send(JSON.stringify({ type: "speak", id: `s${++this.seq}`, text: clean, voice: voice || DEFAULT_BUILTIN_VOICE, speed }));
+    } catch {
+      await this.speakWithBrowser(clean, voice, speed);
+    }
   }
 
   /** Enqueue externally-produced audio (a TTS-provider SKILL's output) onto the
@@ -172,6 +221,10 @@ export class TtsClient {
     this.queue.forEach((u) => URL.revokeObjectURL(u));
     this.queue = [];
     if (this.current) { try { this.current.pause(); } catch { /* ignore */ } this.current = null; }
+    if (this.browserUtterance) {
+      try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+      this.browserUtterance = null;
+    }
     this.playing = false;
     try { this.ws?.send(JSON.stringify({ type: "cancel" })); } catch { /* ignore */ }
     this.onState?.(false);
@@ -240,26 +293,29 @@ export function useTts(opts: UseTtsOptions) {
 
   const speak = useCallback((text: string) => {
     const o = optsRef.current;
-    if (!o.enabled || !o.voice) return;
+    if (!o.enabled) return;
     const client = clientRef.current;
     if (!client) return;
+    const selectedVoice = o.voice || DEFAULT_BUILTIN_VOICE;
     if (o.provider) {
       // Provider skill: sanitize, hand it the clean text, play what it returns.
       const clean = sanitizeForSpeech(text);
       if (!clean) return;
       void o.provider(clean, o.voice, o.speed ?? 1)
-        .then((out) => { if (out?.audio) client.enqueueAudio(out.audio, out.mime); })
-        .catch(() => { /* provider failed — stay silent, never error per reply */ });
+        .then((out) => {
+          if (out?.audio) client.enqueueAudio(out.audio, out.mime);
+          else void client.speak(clean, selectedVoice, o.speed ?? 1).catch(() => {});
+        })
+        .catch(() => { void client.speak(clean, selectedVoice, o.speed ?? 1).catch(() => {}); });
       return;
     }
-    void client.speak(text, o.voice, o.speed ?? 1).catch(() => {
-      // Sidecar down — stay silent rather than surface an error per reply.
-    });
+    void client.speak(text, selectedVoice, o.speed ?? 1).catch(() => {});
   }, []);
 
   const stop = useCallback(() => clientRef.current?.stop(), []);
+  const playAudio = useCallback((audio: string, mime?: string) => clientRef.current?.enqueueAudio(audio, mime), []);
 
-  return { speak, stop, speaking };
+  return { speak, stop, playAudio, speaking };
 }
 
 // ── Sidecar STT (push-to-talk) ───────────────────────────────────────────────

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { parseSurfaces } from "../packages/cli/dist/entry/daemon.js";
+import { inferSkillProvides, parseSurfaces } from "../packages/cli/dist/entry/daemon.js";
 import { runSkill } from "../packages/agent/dist/skills/runtime.js";
 
 test("parseSurfaces: valid JSON array → validated surfaces", () => {
@@ -32,6 +32,13 @@ test("parseSurfaces: drops malformed / unlabeled entries, tolerates junk", () =>
 test("parseSurfaces: caps the tray at 12", () => {
   const many = JSON.stringify(Array.from({ length: 30 }, (_, i) => ({ id: `b${i}`, label: `B${i}` })));
   assert.equal(parseSurfaces(many).length, 12);
+});
+
+test("inferSkillProvides: recognizes TTS skills that omit frontmatter", () => {
+  const surfaces = parseSurfaces('[{"id":"test_voice","label":"Test Voice","input":{"op":"tts","text":"hello"}}]');
+  assert.deepEqual(inferSkillProvides("tts", "---\nname: tts\n---\n# TTS\n", [], []), ["tts"]);
+  assert.deepEqual(inferSkillProvides("custom_voice", "---\nname: custom_voice\n---\n# Voice\n", surfaces, []), ["tts"]);
+  assert.deepEqual(inferSkillProvides("voicebox", "This provides the tts capability for Ares.", [], ["custom"]), ["custom", "tts"]);
 });
 
 test("tts provider contract: a skill handler answers voices + tts ops", async () => {

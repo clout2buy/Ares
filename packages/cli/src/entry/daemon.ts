@@ -236,6 +236,26 @@ export function parseSurfaces(raw: string): SkillSurface[] {
   return out;
 }
 
+export function inferSkillProvides(entryName: string, skillMd: string, surfaces: SkillSurface[], declared: string[]): string[] {
+  const provides = new Set(declared.map((s) => s.trim()).filter(Boolean));
+  const surfaceProvidesTts = surfaces.some((surface) => {
+    const input = surface.input;
+    return !!input && typeof input === "object" && (input as Record<string, unknown>).op === "tts";
+  });
+  const bodyClaimsTts =
+    /\bprovides\s+(?:the\s+)?['"`]?tts['"`]?\s+capability\b/i.test(skillMd) ||
+    /\btext[- ]to[- ]speech\b/i.test(skillMd);
+
+  // A hand-authored voice provider should not fail silently because its
+  // frontmatter omitted one line. The explicit `provides:` field still wins,
+  // but the built-in `tts` skill name, a TTS surface, or a clear manifest body
+  // claim are enough for the desktop to route speech through the provider.
+  if (!provides.has("tts") && (entryName === "tts" || surfaceProvidesTts || bodyClaimsTts)) {
+    provides.add("tts");
+  }
+  return [...provides];
+}
+
 /** List skills under ~/.ares/skills, parsing SKILL.md frontmatter + enabled set. */
 async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
   const settings = await loadUiSettings();
@@ -259,12 +279,13 @@ async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
     // `provides` is a comma list of capability ids; `surfaces` is a JSON array
     // on one line (the single-line frontmatter reader can't do nested YAML). A
     // separate surfaces.json in the skill dir is also honored (nicer to author).
-    const provides = field("provides").split(",").map((s) => s.trim()).filter(Boolean);
+    const declaredProvides = field("provides").split(",").map((s) => s.trim()).filter(Boolean);
     let surfaces = parseSurfaces(field("surfaces"));
     if (surfaces.length === 0) {
       const sj = await readFile(path.join(skillsDir, entry.name, "surfaces.json"), "utf8").catch(() => "");
       if (sj) surfaces = parseSurfaces(sj);
     }
+    const provides = inferSkillProvides(entry.name, text, surfaces, declaredProvides);
     skills.push({
       name: entry.name,
       description: field("description") || "Local skill.",

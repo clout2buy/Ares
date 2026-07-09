@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.21.1",
+    date: "July 2026",
+    title: "Voice that actually speaks",
+    tagline: "TTS skills now override correctly, test buttons play audio, and built-in speech falls back instead of going silent.",
+    highlights: [
+      {
+        icon: "V",
+        title: "Skills can speak",
+        tag: "Safer",
+        blurb: "Ares now recognizes voice skills even when the manifest forgot the capability line, so enabled TTS skills are used for spoken replies.",
+      },
+      {
+        icon: "A",
+        title: "No silent fallback",
+        tag: "Safer",
+        blurb: "If the local voice service is missing or down, Ares falls back to WebView speech instead of doing nothing.",
+      },
+      {
+        icon: "T",
+        title: "Test means sound",
+        tag: "Polished",
+        blurb: "Voice skill buttons now play the returned audio, so testing a configured voice produces sound instead of only a toast.",
+      },
+    ],
+  },
+  {
     version: "0.21.0",
     date: "July 2026",
     title: "Voice, skills, and a big stability pass",

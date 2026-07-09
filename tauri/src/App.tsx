@@ -2756,8 +2756,12 @@ function App() {
   const runSurface = (skill: SkillInfo, surface: SkillSurface) => {
     setSkillToast({ name: skill.name, text: `Running ${surface.label}…`, ok: true });
     void skillInvoke(skill.name, surface.input ?? { op: surface.id }).then((r) => {
+      const result = r.result as { audio?: string; mime?: string; message?: string } | string | undefined;
+      if (r.ok && result && typeof result === "object" && result.audio) {
+        voiceRef.current.playAudio(result.audio, result.mime);
+      }
       const text = r.ok
-        ? (typeof r.result === "string" ? r.result : (r.result as { message?: string })?.message ?? `${surface.label} done`)
+        ? (typeof result === "string" ? result : result?.message ?? (result?.audio ? `${surface.label} playing` : `${surface.label} done`))
         : (r.error ?? "failed");
       setSkillToast({ name: skill.name, text: String(text).slice(0, 160), ok: r.ok });
       window.setTimeout(() => setSkillToast(null), 4000);
@@ -7097,7 +7101,7 @@ function Settings({
                   </button>
                 ))}
               </div>
-              <VoiceSettings draft={draft} setDraftPrefs={setDraftPrefs} onLivePref={onLivePref} />
+              <VoiceSettings draft={draft} setDraftPrefs={setDraftPrefs} onLivePref={onLivePref} providerSkill={skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"))} />
             </div>
           ) : null}
 
@@ -7516,10 +7520,12 @@ function VoiceSettings({
   draft,
   setDraftPrefs,
   onLivePref,
+  providerSkill,
 }: {
   draft: Prefs;
   setDraftPrefs: (p: Prefs) => void;
   onLivePref: (patch: Partial<Prefs>) => void;
+  providerSkill?: SkillInfo;
 }) {
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [defaultVoice, setDefaultVoice] = useState("");
@@ -7561,7 +7567,8 @@ function VoiceSettings({
       </div>
       <p className="paneHint">
         {status === "loading" ? "Checking the local voice engine…"
-          : status === "offline" ? "Local voice engine offline — start it with `pnpm voice:tts`. A TTS-provider skill can also supply voices."
+          : status === "offline" && providerSkill ? `Using ${providerSkill.name} for speech. Built-in local voice is offline, but replies still speak through the skill.`
+          : status === "offline" ? "Local voice engine offline. A TTS-provider skill can also supply voices."
           : `${voices.length} voice${voices.length === 1 ? "" : "s"} · local (Kokoro), private & offline`}
       </p>
       {status === "ready" ? (

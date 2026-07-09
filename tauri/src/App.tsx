@@ -228,6 +228,11 @@ function hasNativeBridge(): boolean {
 const STREAM_SPEECH_SENTENCE_MIN = 16;
 const STREAM_SPEECH_RELAXED_MIN = 72;
 const STREAM_SPEECH_HARD_MAX = 180;
+// After the FIRST spoken chunk (which fires small so speech starts fast), batch
+// subsequent chunks into larger spans. Each provider (Piper/API) synth is a
+// round-trip with real per-call overhead, so 3 sentences in one call ≈ 1/3 the
+// latency of one call each — the biggest lever on "it's delayed".
+const STREAM_SPEECH_BATCH_MIN = 150;
 
 function codeBlockSummary(body: string, lang: string): string {
   const lines = body.split(/\r?\n/).filter((line) => line.trim()).length;
@@ -303,13 +308,13 @@ function relaxedBoundary(text: string): number {
   return afterMin >= 0 ? STREAM_SPEECH_RELAXED_MIN + afterMin + 1 : 0;
 }
 
-function takeStreamSpeechChunk(raw: string, force = false, relaxed = false): { chunk: string; rest: string } {
+function takeStreamSpeechChunk(raw: string, force = false, relaxed = false, min = STREAM_SPEECH_SENTENCE_MIN): { chunk: string; rest: string } {
   const normalized = normalizeCompletedSpeechFences(raw, force);
   const fenceAt = firstUnclosedFence(normalized);
   const held = fenceAt >= 0 ? normalized.slice(fenceAt) : "";
   const speakable = fenceAt >= 0 ? normalized.slice(0, fenceAt) : normalized;
   if (force) return { chunk: speakable.trim(), rest: held };
-  const boundary = boundaryAfter(speakable, STREAM_SPEECH_SENTENCE_MIN) || (relaxed ? relaxedBoundary(speakable) : 0);
+  const boundary = boundaryAfter(speakable, min) || (relaxed ? relaxedBoundary(speakable) : 0);
   if (!boundary) return { chunk: "", rest: normalized };
   return { chunk: speakable.slice(0, boundary).trim(), rest: speakable.slice(boundary) + held };
 }
@@ -1849,6 +1854,9 @@ function App() {
   // phrases to TTS while tokens stream. A ref avoids chat-wide re-renders.
   const spokenBuf = useRef("");
   const spokenFlushTimer = useRef<number | null>(null);
+  // How many chunks we've spoken this turn — the first fires small (fast start),
+  // the rest batch larger to cut provider round-trips (the delay lever).
+  const spokenChunkCount = useRef(0);
   const [view, setView] = useState<"chat" | "artifacts" | "helm">("chat");
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
@@ -2022,10 +2030,15 @@ function App() {
     if (force) clearSpokenFlushTimer();
     let guard = 0;
     while (guard < 8) {
-      const { chunk, rest } = takeStreamSpeechChunk(spokenBuf.current, force, relaxed);
+      // First chunk of the turn fires at the small min for a fast start; every
+      // chunk after batches to STREAM_SPEECH_BATCH_MIN so slow provider synths
+      // run a third as often.
+      const min = spokenChunkCount.current === 0 ? STREAM_SPEECH_SENTENCE_MIN : STREAM_SPEECH_BATCH_MIN;
+      const { chunk, rest } = takeStreamSpeechChunk(spokenBuf.current, force, relaxed, min);
       spokenBuf.current = rest;
       if (!chunk) break;
       voiceRef.current.speak(chunk);
+      spokenChunkCount.current += 1;
       guard += 1;
       if (!force && !relaxed) continue;
       if (!force) break;
@@ -2051,6 +2064,7 @@ function App() {
   const resetSpokenStream = () => {
     clearSpokenFlushTimer();
     spokenBuf.current = "";
+    spokenChunkCount.current = 0;
   };
 
   // ── Conversation mode ─────────────────────────────────────────────────────

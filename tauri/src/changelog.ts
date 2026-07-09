@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.21.4",
+    date: "July 2026",
+    title: "Voice that finishes the thought",
+    tagline: "Spoken replies now play all the way through, and start noticeably faster.",
+    highlights: [
+      {
+        icon: "F",
+        title: "Finishes every reply",
+        tag: "Safer",
+        blurb: "Multi-sentence replies no longer cut off partway — Ares stays 'speaking' across the whole answer instead of dropping the last sentences in the gap between them.",
+      },
+      {
+        icon: ">",
+        title: "Starts faster",
+        tag: "Faster",
+        blurb: "The first sentence speaks right away, then the rest are synthesized in bigger batches — far fewer round-trips to the voice engine, so a lot less lag.",
+      },
+    ],
+  },
+  {
     version: "0.21.3",
     date: "July 2026",
     title: "Voice you can actually hear",

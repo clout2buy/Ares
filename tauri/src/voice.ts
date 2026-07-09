@@ -332,24 +332,37 @@ export function useTts(opts: UseTtsOptions) {
   const clientRef = useRef<TtsClient | null>(null);
   const providerQueueRef = useRef<Promise<void>>(Promise.resolve());
   const speechEpochRef = useRef(0);
+  // The audio queue and the provider-synth pipeline each report activity; the
+  // spoken state is the OR of both. Without this, `speaking` flickered to false
+  // in the gap between one sentence finishing and the next slow synth landing —
+  // which read as "it stopped mid-reply" and tripped conversation mode into
+  // listening before Ares was actually done.
+  const clientSpeakingRef = useRef(false);
+  const pendingSynthRef = useRef(0); // provider synths queued or in flight
   const [speaking, setSpeaking] = useState(false);
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
+  const recomputeSpeaking = useCallback(() => {
+    setSpeaking(clientSpeakingRef.current || pendingSynthRef.current > 0);
+  }, []);
+
   useEffect(() => {
-    const client = new TtsClient((s) => setSpeaking(s));
+    const client = new TtsClient((s) => { clientSpeakingRef.current = s; recomputeSpeaking(); });
     clientRef.current = client;
     return () => { client.dispose(); clientRef.current = null; };
-  }, []);
+  }, [recomputeSpeaking]);
 
   // Disabling voice mid-utterance stops it immediately.
   useEffect(() => {
     if (!opts.enabled) {
       speechEpochRef.current += 1;
       providerQueueRef.current = Promise.resolve();
+      pendingSynthRef.current = 0;
       clientRef.current?.stop();
+      recomputeSpeaking();
     }
-  }, [opts.enabled]);
+  }, [opts.enabled, recomputeSpeaking]);
 
   const speak = useCallback((text: string) => {
     const o = optsRef.current;
@@ -362,6 +375,12 @@ export function useTts(opts: UseTtsOptions) {
       const clean = sanitizeForSpeech(text);
       if (!clean) return;
       const epoch = speechEpochRef.current;
+      // Count this synth as pending NOW (before it's even started synthesizing)
+      // so `speaking` stays true continuously across the whole multi-sentence
+      // reply — no false gap that drops the tail or triggers early listening.
+      pendingSynthRef.current += 1;
+      recomputeSpeaking();
+      const settle = () => { pendingSynthRef.current = Math.max(0, pendingSynthRef.current - 1); recomputeSpeaking(); };
       const run = providerQueueRef.current.then(async () => {
         const latest = optsRef.current;
         const currentClient = clientRef.current;
@@ -384,17 +403,20 @@ export function useTts(opts: UseTtsOptions) {
           }
         }
       });
-      providerQueueRef.current = run.catch(() => {});
+      // .catch keeps one failed synth from breaking the chain for later sentences.
+      providerQueueRef.current = run.finally(settle).catch(() => {});
       return;
     }
     void client.speak(text, selectedVoice, o.speed ?? 1).catch(() => {});
-  }, []);
+  }, [recomputeSpeaking]);
 
   const stop = useCallback(() => {
     speechEpochRef.current += 1;
     providerQueueRef.current = Promise.resolve();
+    pendingSynthRef.current = 0;
     clientRef.current?.stop();
-  }, []);
+    recomputeSpeaking();
+  }, [recomputeSpeaking]);
   const playAudio = useCallback((audio: string, mime?: string) => clientRef.current?.enqueueAudio(audio, mime), []);
 
   return { speak, stop, playAudio, speaking };

@@ -131,8 +131,17 @@ a:hover { border-bottom-color: var(--bronze-hi); }
 
 .ares { transition: grid-template-columns 280ms cubic-bezier(0.2, 0.9, 0.3, 1); }
 
+/* During an active Forge-grip drag the 280ms track animation fought the
+   pointer, so the panel rubber-banded and trailed the grip (the "glitches when
+   dragged" bug). Suppress the transition while dragging so width tracks 1:1. */
+.ares[data-dragging="1"] { transition: none; }
+
 .ares[data-panel="1"] {
-  grid-template-columns: 264px minmax(0, 1fr) var(--forge-w, 480px);
+  /* The forge track is minmax(0, …) so it SHRINKS instead of overflowing when
+     the window narrows — a fixed px third track pushed the total past the
+     viewport and `overflow:hidden` clipped the right half of the UI. The JS
+     resize clamp (App.tsx) keeps --forge-w from ever crushing the chat. */
+  grid-template-columns: 264px minmax(0, 1fr) minmax(0, var(--forge-w, 480px));
   grid-template-areas:
     "title title title"
     "rail stage forge";

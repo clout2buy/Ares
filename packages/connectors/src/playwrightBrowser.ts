@@ -268,6 +268,50 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     // older Playwright event shapes — capture is best-effort
   }
 
+  // ── Continuous live stream (CDP screencast) ──────────────────────────────
+  // The old "live" view only emitted a JPEG around discrete cursor/click/nav
+  // actions, so between actions it froze on a stale frame and read as "just
+  // screenshots, bugged out". A CDP screencast pushes a real frame every time
+  // the page REPAINTS (scroll, animation, video, load, the cursor glide) — the
+  // genuine live view. Chromium-only; on any failure we silently keep the
+  // discrete emitFrame() path as the fallback. ARES_BROWSER_SCREENCAST=0 opts out.
+  let screencast: { session: any; stop: () => Promise<void> } | null = null;
+  const startScreencast = async (): Promise<void> => {
+    if (screencast || !opts.onFrame || process.env.ARES_BROWSER_SCREENCAST === "0") return;
+    try {
+      const session = await page.context().newCDPSession(page);
+      session.on("Page.screencastFrame", (frame: { data: string; sessionId: number }) => {
+        try {
+          opts.onFrame?.(frame.data); // already base64 jpeg
+        } finally {
+          // MUST ack or Chromium stops sending frames after a few in flight.
+          session.send("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(() => undefined);
+        }
+      });
+      await session.send("Page.startScreencast", {
+        format: "jpeg",
+        quality: Number(process.env.ARES_BROWSER_SCREENCAST_QUALITY) || 70,
+        maxWidth: 1280,
+        maxHeight: 800,
+        everyNthFrame: 1,
+      });
+      screencast = {
+        session,
+        stop: async () => {
+          try { await session.send("Page.stopScreencast"); } catch { /* ignore */ }
+          try { await session.detach(); } catch { /* ignore */ }
+        },
+      };
+    } catch {
+      // Non-Chromium engine or CDP unavailable — discrete emitFrame() carries the
+      // stream instead. Never let a cosmetic screencast failure break the tool.
+      screencast = null;
+    }
+  };
+  // Kick it off in the background; the first navigate/action still emits frames
+  // while this warms up.
+  void startScreencast();
+
   // ── human-like cursor: the REAL pointer moves along a curved, eased path so
   // hover states fire and the motion reads as a person, not a robot. The owner
   // watches it travel, aim, press, and click — streamed frame by frame. ──
@@ -488,6 +532,7 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       return { url: page.url(), title: await page.title() };
     },
     async close() {
+      if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }
       await acquired.close();
     },
   };

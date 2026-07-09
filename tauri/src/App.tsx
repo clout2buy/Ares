@@ -227,6 +227,14 @@ function hasNativeBridge(): boolean {
 // ─── View model ────────────────────────────────────────────────────────────
 
 type ReasoningLevel = "low" | "medium" | "high" | "max";
+// Preview iframes ran with only `allow-scripts`, so previewed apps lived in an
+// opaque origin where localStorage/IndexedDB/cookies, alert/confirm/prompt,
+// forms, popups and same-origin fetch all threw or no-op'd — the app "broke"
+// vs. running standalone. Grant the fuller set (same posture as the embedded
+// browser) so a previewed app behaves the way it does on its own. This is the
+// user's OWN generated code in their OWN desktop app, so same-origin is fine.
+const PREVIEW_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-downloads";
+
 const REASONING_LEVELS: ReasoningLevel[] = ["low", "medium", "high", "max"];
 
 // The effort SLIDER: model reasoning low→max, plus ULTRA at the very top — which
@@ -1723,6 +1731,20 @@ function App() {
   const [embeddedActivity, setEmbeddedActivity] = useState("");
   const [forge, setForge] = useState<ForgeState>({ open: false, tab: "sandbox" });
   const [forgeWidth, setForgeWidth] = useState(() => Math.min(560, Math.round(window.innerWidth * 0.36)));
+  // True only during an active grip drag — flips off the 280ms grid transition
+  // so the panel tracks the pointer 1:1 instead of rubber-banding behind it.
+  const [forgeDragging, setForgeDragging] = useState(false);
+  // The forge must never crush the chat below a usable width. This is the max
+  // forge width the CURRENT window allows (rail 264 + a min chat of 360).
+  const maxForgeFor = (winW: number) => Math.max(300, winW - 264 - 360);
+  // Re-clamp the forge as the window shrinks — without this the forge kept its
+  // px width while the window narrowed, overflowing the grid and clipping the
+  // right half of the UI (the "UI gets cut off when smaller" bug).
+  useEffect(() => {
+    const onResize = () => setForgeWidth((w) => Math.min(w, maxForgeFor(window.innerWidth)));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const [view, setView] = useState<"chat" | "artifacts" | "helm">("chat");
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
@@ -2717,13 +2739,17 @@ function App() {
 
   const onForgeGrip = (down: React.PointerEvent) => {
     down.preventDefault();
+    setForgeDragging(true);
     const startX = down.clientX;
     const startW = forgeWidth;
     const move = (e: PointerEvent) => {
-      const w = Math.min(Math.max(startW + (startX - e.clientX), 340), Math.round(window.innerWidth * 0.62));
+      // Cap by what actually fits (never past the chat's min width) instead of a
+      // flat 62% of the window, so dragging wide can't occlude the chat.
+      const w = Math.min(Math.max(startW + (startX - e.clientX), 340), maxForgeFor(window.innerWidth));
       setForgeWidth(w);
     };
     const up = () => {
+      setForgeDragging(false);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
@@ -2919,6 +2945,7 @@ function App() {
       data-flame={prefs.flameMode}
       data-style={prefs.uiStyle}
       data-panel={forge.open ? "1" : "0"}
+      data-dragging={forgeDragging ? "1" : "0"}
       data-working={active?.busy ? "1" : "0"}
       data-pill={pill ? "1" : "0"}
       data-ultra={prefs.ultra ? "1" : "0"}
@@ -3391,7 +3418,7 @@ function App() {
                   title={forge.artifact.label}
                   src={native ? convertFileSrc(forge.artifact.path) : undefined}
                   srcDoc={native ? undefined : holoDefaultHtml()}
-                  sandbox="allow-scripts"
+                  sandbox={PREVIEW_SANDBOX}
                 />
               </div>
             ) : (
@@ -3411,14 +3438,14 @@ function App() {
                 </button>
               </div>
               <textarea className="sandboxCode" value={sandboxCode} onChange={(e) => setSandboxCode(e.target.value)} spellCheck={false} />
-              <iframe title="sandbox" src={sandboxSrc?.src} srcDoc={sandboxSrc?.srcdoc} sandbox="allow-scripts" />
+              <iframe title="sandbox" src={sandboxSrc?.src} srcDoc={sandboxSrc?.srcdoc} sandbox={PREVIEW_SANDBOX} />
             </div>
           ) : null}
 
           {forge.tab === "holo" ? (
             <div className="forgeBody">
               <div className="forgeMeta">{holoMeta}</div>
-              <iframe title="holo" src={holoSrc?.src} srcDoc={holoSrc?.srcdoc} sandbox="allow-scripts allow-pointer-lock allow-downloads" />
+              <iframe title="holo" src={holoSrc?.src} srcDoc={holoSrc?.srcdoc} sandbox={PREVIEW_SANDBOX} />
             </div>
           ) : null}
 

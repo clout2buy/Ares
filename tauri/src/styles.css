@@ -1243,6 +1243,22 @@ a.vaultName { border-bottom: none; }
 .themeCard:hover { border-color: var(--line-strong); transform: translateY(-1px); }
 .themeCard[data-on="1"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
 .themeSwatch { width: 100%; height: 26px; border-radius: 6px; box-shadow: 0 0 16px currentColor; }
+
+/* ── Voice Hub ── */
+.voiceHub { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.voiceGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.voiceCard {
+  display: grid; gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  text-align: left;
+  transition: all 150ms ease;
+}
+.voiceCard:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.voiceCard[data-on="1"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
+.voiceCard em { color: var(--ink-dim); font-style: normal; font-size: 12px; }
+.voiceSpeed { width: 100%; accent-color: var(--accent); margin-top: 4px; }
 .themeCard strong { font-size: 12.5px; color: var(--text); }
 .themeCard[data-on="1"] strong { color: var(--accent-hi); }
 .themeCard em { font-style: normal; font-size: 10.5px; color: var(--faint); }

@@ -35,6 +35,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { WhatsNew } from "./WhatsNew";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle } from "./newStyle";
 import { CHANGELOG } from "./changelog";
+import { useTts, sidecarListen, fetchVoices, type VoiceInfo } from "./voice";
 import "./styles.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -1175,6 +1176,12 @@ interface Prefs {
   uiStyle: "legacy" | "new";
   /** Advanced engine knobs (mirrors the daemon's EngineConfig). */
   engine: EngineConfig;
+  /** Voice: speak Ares's replies aloud via the local sidecar (Kokoro TTS). */
+  voiceEnabled?: boolean;
+  /** Chosen TTS voice id (from the sidecar /voices catalog, or a skill provider). */
+  voiceId?: string;
+  /** Speech rate multiplier (0.5–2.0). */
+  voiceSpeed?: number;
 }
 
 type ThemeName = "rage" | "bronze" | "crimson" | "steel" | "nightfall" | "verdant" | "daylight";
@@ -1241,6 +1248,9 @@ function loadPrefs(): Prefs {
       theme: themeOk ? (raw.theme as ThemeName) : "rage",
       uiStyle: raw.uiStyle === "legacy" ? "legacy" : "new",
       engine: raw.engine && typeof raw.engine === "object" ? raw.engine : {},
+      voiceEnabled: raw.voiceEnabled === true,
+      voiceId: typeof raw.voiceId === "string" ? raw.voiceId : undefined,
+      voiceSpeed: typeof raw.voiceSpeed === "number" && raw.voiceSpeed >= 0.5 && raw.voiceSpeed <= 2 ? raw.voiceSpeed : 1,
     };
   } catch {
     return fallback;
@@ -1745,6 +1755,14 @@ function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // ── Voice bus: speak Ares's replies aloud via the local sidecar. ──
+  const voice = useTts({ enabled: prefs.voiceEnabled ?? false, voice: prefs.voiceId ?? "", speed: prefs.voiceSpeed ?? 1 });
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  // Accumulates the active session's assistant text for the current turn, spoken
+  // on turn_end. A ref (not state) so streaming never re-renders the whole app.
+  const spokenBuf = useRef("");
   const [view, setView] = useState<"chat" | "artifacts" | "helm">("chat");
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
@@ -2261,6 +2279,16 @@ function App() {
       if (!sid || sid === activeRef.current) {
         if ((ev.type === "text_delta" || ev.type === "thinking_delta") && ev.text) pushTokenFlow(ev.text.length);
         else if (ev.type === "tool_use_input_delta" && ev.deltaJson) pushTokenFlow(ev.deltaJson.length);
+        // Voice: gather the reply's spoken text and read it on turn end. Only the
+        // session you're looking at speaks; thinking + tool noise never do.
+        if (prefs.voiceEnabled) {
+          if (ev.type === "text_delta" && ev.text) spokenBuf.current += ev.text;
+          else if (ev.type === "turn_end") {
+            const say = spokenBuf.current;
+            spokenBuf.current = "";
+            if (say.trim()) voiceRef.current.speak(say);
+          }
+        }
       }
       const elsewhere = document.hidden || (!!sid && sid !== activeRef.current);
       if (ev.type === "permission_request" && elsewhere) {
@@ -2387,6 +2415,10 @@ function App() {
   const send = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    // Barge-in: sending a new message cuts any reply still being spoken, and
+    // resets the spoken buffer so the next turn starts clean.
+    voiceRef.current.stop();
+    spokenBuf.current = "";
     // Slash command: "/mcp" (or /connectors) opens the connector Directory
     // instead of sending a message — the one-word way in the user asked for.
     if (/^\/(mcp|connectors?)$/i.test(trimmed)) {
@@ -4843,12 +4875,20 @@ async function transcribeSpeech(blob: Blob, language = "en-US"): Promise<string>
 }
 
 type DictState = "idle" | "recording" | "thinking" | "error";
-/** Click to record, click to stop → transcribe → onText. Auto-stops on unmount. */
+/**
+ * Click to record, click to stop → transcribe → onText. Prefers the LOCAL voice
+ * sidecar (faster-whisper, offline, no key, mic captured server-side so there's
+ * no WebView getUserMedia dance). Falls back to the old MediaRecorder → Google
+ * Speech path only when the sidecar isn't reachable, so the mic still works on a
+ * machine without the sidecar running.
+ */
 function useDictation(onText: (text: string) => void) {
   const [state, setState] = useState<DictState>("idle");
   const recRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const sttRef = useRef<Awaited<ReturnType<typeof sidecarListen>> | null>(null);
+  const usingSidecar = useRef(false);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
 
@@ -4857,40 +4897,71 @@ function useDictation(onText: (text: string) => void) {
     streamRef.current = null;
   };
 
-  const stop = useCallback(() => {
-    if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
+  // ── legacy path (MediaRecorder → Google) — the fallback ──
+  const startLegacy = useCallback(async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    streamRef.current = stream;
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+    const rec = new MediaRecorder(stream, { mimeType: mime });
+    chunksRef.current = [];
+    rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+    rec.onstop = async () => {
+      cleanupStream();
+      const blob = new Blob(chunksRef.current, { type: mime });
+      if (!blob.size) { setState("idle"); return; }
+      setState("thinking");
+      try {
+        const txt = await transcribeSpeech(blob);
+        setState("idle");
+        if (txt) onTextRef.current(txt);
+      } catch {
+        setState("error");
+        setTimeout(() => setState("idle"), 2400);
+      }
+    };
+    rec.start();
+    recRef.current = rec;
+    setState("recording");
   }, []);
 
   const start = useCallback(async () => {
+    // Try the local sidecar first.
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
-      const rec = new MediaRecorder(stream, { mimeType: mime });
-      chunksRef.current = [];
-      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
-      rec.onstop = async () => {
-        cleanupStream();
-        const blob = new Blob(chunksRef.current, { type: mime });
-        if (!blob.size) { setState("idle"); return; }
-        setState("thinking");
-        try {
-          const txt = await transcribeSpeech(blob);
-          setState("idle");
-          if (txt) onTextRef.current(txt);
-        } catch {
-          setState("error");
-          setTimeout(() => setState("idle"), 2400);
-        }
-      };
-      rec.start();
-      recRef.current = rec;
+      const handle = await sidecarListen();
+      sttRef.current = handle;
+      usingSidecar.current = true;
       setState("recording");
+      return;
+    } catch {
+      usingSidecar.current = false;
+      sttRef.current = null;
+    }
+    // Sidecar down → legacy.
+    try {
+      await startLegacy();
     } catch {
       cleanupStream();
       setState("error");
       setTimeout(() => setState("idle"), 2400);
     }
+  }, [startLegacy]);
+
+  const stop = useCallback(() => {
+    if (usingSidecar.current && sttRef.current) {
+      const handle = sttRef.current;
+      sttRef.current = null;
+      usingSidecar.current = false;
+      setState("thinking");
+      void handle.stop().then((txt) => {
+        setState("idle");
+        if (txt) onTextRef.current(txt);
+      }).catch(() => {
+        setState("error");
+        setTimeout(() => setState("idle"), 2400);
+      });
+      return;
+    }
+    if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
   }, []);
 
   const toggle = useCallback(() => {
@@ -4901,7 +4972,11 @@ function useDictation(onText: (text: string) => void) {
     });
   }, [start, stop]);
 
-  useEffect(() => () => { stop(); cleanupStream(); }, [stop]);
+  useEffect(() => () => {
+    try { sttRef.current?.cancel(); } catch { /* ignore */ }
+    if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
+    cleanupStream();
+  }, []);
 
   return { state, toggle };
 }
@@ -6882,6 +6957,7 @@ function Settings({
                   </button>
                 ))}
               </div>
+              <VoiceSettings draft={draft} setDraftPrefs={setDraftPrefs} onLivePref={onLivePref} />
             </div>
           ) : null}
 
@@ -7130,6 +7206,91 @@ const SERVICE_PROVIDERS = [
   { id: "linkedin", label: "LinkedIn", desc: "Profile & connections" },
   { id: "dropbox", label: "Dropbox", desc: "Files & sharing" },
 ];
+
+// The Voice Hub — enable spoken replies, pick a voice from the local sidecar's
+// catalog (or a TTS-provider skill once registered), and set the rate. Applies
+// live via onLivePref so the toggle takes effect without a session restart.
+function VoiceSettings({
+  draft,
+  setDraftPrefs,
+  onLivePref,
+}: {
+  draft: Prefs;
+  setDraftPrefs: (p: Prefs) => void;
+  onLivePref: (patch: Partial<Prefs>) => void;
+}) {
+  const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  const [defaultVoice, setDefaultVoice] = useState("");
+  const [status, setStatus] = useState<"loading" | "ready" | "offline">("loading");
+
+  useEffect(() => {
+    const ac = new AbortController();
+    fetchVoices(ac.signal).then(({ voices, default: def }) => {
+      setVoices(voices);
+      setDefaultVoice(def);
+      setStatus(voices.length ? "ready" : "offline");
+    });
+    return () => ac.abort();
+  }, []);
+
+  const setEnabled = (on: boolean) => {
+    // On first enable with no chosen voice, adopt the sidecar default so it
+    // speaks immediately instead of silently doing nothing.
+    const voiceId = draft.voiceId || defaultVoice || voices[0]?.id || "";
+    const patch: Partial<Prefs> = { voiceEnabled: on, voiceId };
+    setDraftPrefs({ ...draft, ...patch });
+    onLivePref(patch);
+  };
+  const pickVoice = (id: string) => { setDraftPrefs({ ...draft, voiceId: id }); onLivePref({ voiceId: id }); };
+  const setSpeed = (n: number) => { setDraftPrefs({ ...draft, voiceSpeed: n }); onLivePref({ voiceSpeed: n }); };
+
+  return (
+    <div className="voiceHub">
+      <label className="fieldLabel">Voice — speak replies aloud</label>
+      <div className="displayModes">
+        <button data-on={draft.voiceEnabled ? "1" : "0"} onClick={() => setEnabled(true)}>
+          <strong>On</strong>
+          <span>Ares reads its replies aloud (emoji, markdown &amp; code stripped).</span>
+        </button>
+        <button data-on={!draft.voiceEnabled ? "1" : "0"} onClick={() => setEnabled(false)}>
+          <strong>Off</strong>
+          <span>Text only.</span>
+        </button>
+      </div>
+      <p className="paneHint">
+        {status === "loading" ? "Checking the local voice engine…"
+          : status === "offline" ? "Local voice engine offline — start it with `pnpm voice:tts`. A TTS-provider skill can also supply voices."
+          : `${voices.length} voice${voices.length === 1 ? "" : "s"} · local (Kokoro), private & offline`}
+      </p>
+      {status === "ready" ? (
+        <>
+          <label className="fieldLabel">Voice</label>
+          <div className="voiceGrid">
+            {voices.map((v) => (
+              <button
+                key={v.id}
+                className="voiceCard"
+                data-on={(draft.voiceId || defaultVoice) === v.id ? "1" : "0"}
+                onClick={() => pickVoice(v.id)}
+                title={v.character}
+              >
+                <strong>{v.label}</strong>
+                <em>{[v.accent, v.gender].filter(Boolean).join(" · ")}{v.id === defaultVoice ? " · recommended" : ""}</em>
+              </button>
+            ))}
+          </div>
+          <label className="fieldLabel">Speed — {(draft.voiceSpeed ?? 1).toFixed(2)}×</label>
+          <input
+            className="voiceSpeed"
+            type="range" min={0.5} max={2} step={0.05}
+            value={draft.voiceSpeed ?? 1}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+          />
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 function ServicesPane({
   native,

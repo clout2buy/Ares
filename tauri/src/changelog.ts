@@ -38,6 +38,38 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.21.0",
+    date: "July 2026",
+    title: "Voice, skills, and a big stability pass",
+    tagline: "Ares can talk and listen, skills became first-class extensions with their own UI and a shared hub, and a stack of session-killing bugs are gone.",
+    highlights: [
+      {
+        icon: "V",
+        title: "Ares speaks and listens",
+        tag: "New",
+        blurb: "Turn on Voice and Ares reads its replies aloud (emoji, markdown, and code stripped out); the mic now uses a local, offline speech engine. Conversation mode is full hands-free — it speaks, listens, and you can talk right over it.",
+      },
+      {
+        icon: "S",
+        title: "Skills that plug in",
+        tag: "New",
+        blurb: "Skills can now provide capabilities (bring your own text-to-speech voice) and add their own buttons to a floating tray. A SkillHub lets you browse, one-click install, and publish community skills.",
+      },
+      {
+        icon: "!",
+        title: "No more bricked sessions",
+        tag: "Safer",
+        blurb: "A tool-pairing bug that could 400 every message after a context limit is fixed and self-heals; pasted images no longer go to a model that can't see them; and the browser 'live' view actually streams now.",
+      },
+      {
+        icon: "#",
+        title: "A window that behaves",
+        tag: "Polished",
+        blurb: "The UI reflows instead of clipping when you shrink it, the Forge panel stops covering the chat when you drag it, and previewed apps behave like they do standalone.",
+      },
+    ],
+  },
+  {
     version: "0.20.1",
     date: "July 2026",
     title: "Ares through the harness",

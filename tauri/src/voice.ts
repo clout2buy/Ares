@@ -547,7 +547,7 @@ export interface WakeHandle {
  * resume() is called. Rejects fast when the sidecar/wake engine isn't available
  * so callers can retry later without a dangling socket.
  */
-export function wakeListen(onWake: (heard: string) => void): Promise<WakeHandle> {
+export function wakeListen(onWake: (heard: string) => void, onDead?: () => void): Promise<WakeHandle> {
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
     try {
@@ -557,9 +557,14 @@ export function wakeListen(onWake: (heard: string) => void): Promise<WakeHandle>
       return;
     }
     let settled = false;
+    let disposed = false;
     const fail = (why: string) => { if (!settled) { settled = true; reject(new Error(why)); } };
-    ws.onerror = () => fail("wake sidecar unreachable");
-    ws.onclose = () => fail("wake socket closed");
+    // Pre-arm failures reject the promise; a POST-arm close (sidecar crash or
+    // restart) used to die silently with the UI stuck on "listening" — now it
+    // notifies the caller so the wake loop can re-arm.
+    const dead = () => { if (settled && !disposed) { disposed = true; onDead?.(); } };
+    ws.onerror = () => { fail("wake sidecar unreachable"); dead(); };
+    ws.onclose = () => { fail("wake socket closed"); dead(); };
     ws.onopen = () => ws.send(JSON.stringify({ type: "wake_start" }));
     ws.onmessage = (e) => {
       let m: { type: string; text?: string; available?: boolean };
@@ -569,7 +574,7 @@ export function wakeListen(onWake: (heard: string) => void): Promise<WakeHandle>
         settled = true;
         resolve({
           resume: () => { try { ws.send(JSON.stringify({ type: "wake_resume" })); } catch { /* ignore */ } },
-          dispose: () => { try { ws.send(JSON.stringify({ type: "wake_stop" })); ws.close(); } catch { /* ignore */ } },
+          dispose: () => { disposed = true; try { ws.send(JSON.stringify({ type: "wake_stop" })); ws.close(); } catch { /* ignore */ } },
         });
       }
       if (m.type === "wake") onWake(m.text ?? "");

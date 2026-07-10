@@ -176,6 +176,7 @@ export {
 export {
   connectMcpServer,
   disconnectMcpServer,
+  setMcpServerEnabled,
   getMcpAccessToken,
   loadRemoteMcpServers,
   connectorNameFromUrl,

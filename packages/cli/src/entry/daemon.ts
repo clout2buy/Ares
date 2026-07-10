@@ -1,6 +1,6 @@
 // Extracted from entry.ts — daemon.
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, loadRemoteMcpServers, connectorNameFromUrl } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, loadRemoteMcpServers, connectorNameFromUrl } from "@ares/core";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -296,11 +296,36 @@ async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
     if (!text) continue;
     const fm = text.match(/^---\n([\s\S]*?)\n---/);
     const field = (key: string) => fm?.[1].match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim() ?? "";
-    // `provides` is a comma list of capability ids; `surfaces` is a JSON array
-    // on one line (the single-line frontmatter reader can't do nested YAML). A
-    // separate surfaces.json in the skill dir is also honored (nicer to author).
-    const declaredProvides = field("provides").split(",").map((s) => s.trim()).filter(Boolean);
+    // Multi-line frontmatter tolerance: authors write normal YAML —
+    //   provides:
+    //     - tts
+    // or a surfaces JSON array spread over lines. Capture everything from the
+    // key to the next top-level key and flatten it, so those parse instead of
+    // silently yielding nothing (the old reader was strictly single-line).
+    const fieldBlock = (key: string) => {
+      const lines = (fm?.[1] ?? "").split("\n");
+      const start = lines.findIndex((l) => l.startsWith(`${key}:`));
+      if (start < 0) return "";
+      const out: string[] = [lines[start].slice(key.length + 1)];
+      for (let i = start + 1; i < lines.length; i++) {
+        if (/^\S/.test(lines[i])) break; // next top-level key
+        out.push(lines[i]);
+      }
+      return out.join("\n").trim();
+    };
+    const listField = (key: string) => {
+      const inline = field(key);
+      if (inline && !inline.startsWith("-")) return inline.split(",").map((s) => s.trim()).filter(Boolean);
+      const block = fieldBlock(key);
+      const items = [...block.matchAll(/^\s*-\s*(.+)$/gm)].map((m) => m[1].trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
+      return items.length > 0 ? items : inline.split(",").map((s) => s.trim()).filter(Boolean);
+    };
+    const declaredProvides = listField("provides");
     let surfaces = parseSurfaces(field("surfaces"));
+    if (surfaces.length === 0) {
+      const block = fieldBlock("surfaces").split("\n").map((l) => l.trim()).join(" ").trim();
+      if (block.startsWith("[")) surfaces = parseSurfaces(block);
+    }
     if (surfaces.length === 0) {
       const sj = await readFile(path.join(skillsDir, entry.name, "surfaces.json"), "utf8").catch(() => "");
       if (sj) surfaces = parseSurfaces(sj);
@@ -323,6 +348,19 @@ async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
   }
   skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
+}
+
+/** One row per connected remote MCP connector, shaped for the /mcp explorer. */
+async function mcpDirectorySnapshot(): Promise<Array<{ name: string; url: string; displayName: string; oauth: boolean; connectedAt: string | null; enabled: boolean }>> {
+  const servers = await loadRemoteMcpServers().catch(() => ({}));
+  return Object.entries(servers).map(([name, e]) => ({
+    name,
+    url: e.url,
+    displayName: e.displayName ?? name,
+    oauth: !!e.oauth,
+    connectedAt: e.connectedAt ?? null,
+    enabled: e.enabled !== false,
+  }));
 }
 
 interface UsageStats {
@@ -1413,15 +1451,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         continue;
       }
       if (command.type === "mcp_list") {
-        const servers = await loadRemoteMcpServers().catch(() => ({}));
-        const connectors = Object.entries(servers).map(([name, e]) => ({
-          name,
-          url: e.url,
-          displayName: e.displayName ?? name,
-          oauth: !!e.oauth,
-          connectedAt: e.connectedAt ?? null,
-        }));
-        process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors }) + "\n");
+        process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
         continue;
       }
       if (command.type === "mcp_connect") {
@@ -1442,10 +1472,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 process.stdout.write(JSON.stringify({ type: "oauth_url", url: authUrl }) + "\n");
               },
             });
-            const servers = await loadRemoteMcpServers().catch(() => ({}));
-            const connectors = Object.entries(servers).map(([n, e]) => ({ name: n, url: e.url, displayName: e.displayName ?? n, oauth: !!e.oauth, connectedAt: e.connectedAt ?? null }));
-            process.stdout.write(JSON.stringify({ type: "mcp_connect_result", ok: true, name: result.name }) + "\n");
-            process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "mcp_connect_result", ok: true, name: result.name, toolCount: result.toolCount ?? null }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
           } catch (err) {
             process.stdout.write(JSON.stringify({ type: "mcp_connect_result", ok: false, name, error: err instanceof Error ? err.message : String(err) }) + "\n");
           }
@@ -1455,9 +1483,32 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       if (command.type === "mcp_disconnect") {
         const name = typeof command.name === "string" ? command.name.trim() : "";
         await disconnectMcpServer(name).catch(() => false);
-        const servers = await loadRemoteMcpServers().catch(() => ({}));
-        const connectors = Object.entries(servers).map(([n, e]) => ({ name: n, url: e.url, displayName: e.displayName ?? n, oauth: !!e.oauth, connectedAt: e.connectedAt ?? null }));
-        process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors }) + "\n");
+        process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
+        continue;
+      }
+      if (command.type === "mcp_toggle") {
+        // Pause/resume a connector without dropping its OAuth tokens.
+        const name = typeof command.name === "string" ? command.name.trim() : "";
+        const enabled = command.enabled !== false;
+        if (name) await setMcpServerEnabled(name, enabled).catch(() => false);
+        process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
+        continue;
+      }
+      if (command.type === "mcp_tools") {
+        // Live tool listing for one connector — the /mcp explorer's expand row.
+        // Runs off the command loop: a slow/unreachable server must not block chat.
+        const name = typeof command.name === "string" ? command.name.trim() : "";
+        if (!name) {
+          process.stdout.write(JSON.stringify({ type: "mcp_tools", name, tools: [], error: "a connector name is required" }) + "\n");
+          continue;
+        }
+        void (async () => {
+          const { listMcpServerTools } = await import("@ares/tools");
+          const out = await listMcpServerTools(live.context.workspace, name, 15_000).catch(
+            (err) => ({ tools: [], error: err instanceof Error ? err.message : String(err) }),
+          );
+          process.stdout.write(JSON.stringify({ type: "mcp_tools", name, tools: out.tools, error: out.error ?? null }) + "\n");
+        })();
         continue;
       }
       if (command.type === "discover_custom_models") {
@@ -1621,6 +1672,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         if ((settings.disabledSkills ?? []).includes(name)) {
           process.stdout.write(JSON.stringify({ type: "skill_result", invokeId, name, ok: false, error: `skill '${name}' is disabled` }) + "\n");
           continue;
+        }
+        // Self-heal divergence: UI settings are the source of truth here, but
+        // runSkill enforces the on-disk `.disabled` marker. A stale marker (a
+        // best-effort write from an old toggle) would make an enabled skill
+        // refuse to run — clear it before invoking.
+        if (/^[a-z0-9][a-z0-9_-]*$/i.test(name)) {
+          await rm(path.join(aresAgentHome(live.context.home), "skills", name, ".disabled"), { force: true }).catch(() => {});
         }
         const started = Date.now();
         const run = await runSkill({ home: live.context.home, name, input: command.input, timeoutMs: 60_000 }).catch(

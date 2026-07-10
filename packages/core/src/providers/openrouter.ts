@@ -526,6 +526,7 @@ export interface OpenRouterModel {
   name: string;
   contextLength?: number;
   promptPrice?: string;
+  completionPrice?: string;
   description?: string;
   supportedParameters?: string[];
   inputModalities?: string[];
@@ -574,6 +575,7 @@ export async function fetchOpenRouterModels(opts: { baseUrl?: string; fetchImpl?
     name: typeof r.name === "string" ? r.name : String(r.id),
     contextLength: typeof r.context_length === "number" ? r.context_length : undefined,
     promptPrice: typeof (r.pricing as Record<string, unknown> | undefined)?.prompt === "string" ? String((r.pricing as Record<string, unknown>).prompt) : undefined,
+    completionPrice: typeof (r.pricing as Record<string, unknown> | undefined)?.completion === "string" ? String((r.pricing as Record<string, unknown>).completion) : undefined,
     description: typeof r.description === "string" ? r.description : undefined,
     supportedParameters: Array.isArray(r.supported_parameters)
       ? r.supported_parameters.filter((value): value is string => typeof value === "string")

@@ -166,13 +166,31 @@ interface OAuthProviderVm {
   hasApp: boolean;
 }
 
-/** A connected remote MCP server (the /mcp Directory). */
+/** A connected remote MCP server (the /mcp explorer). */
 interface McpConnectorVm {
   name: string;
   url: string;
   displayName?: string;
   oauth?: boolean;
   connectedAt?: string | null;
+  /** false = paused via the explorer toggle (tokens kept, tools unloaded). */
+  enabled?: boolean;
+}
+
+/** A composer "/" command (rendered in the slash menu, Enter runs it). */
+interface SlashAction {
+  id: string;
+  icon: string;
+  label: string;
+  hint: string;
+  run: () => void;
+}
+
+/** One connector's live tool listing, as fetched for the explorer's expand row. */
+interface McpToolsVm {
+  loading: boolean;
+  tools: Array<{ name: string; description?: string }>;
+  error?: string | null;
 }
 
 /** Ares Gateway account snapshot (doingteam.com /me via the daemon bridge). */
@@ -1904,6 +1922,7 @@ function App() {
   // Connector Directory (/mcp): remote MCP servers connected via OAuth.
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [mcpConnectors, setMcpConnectors] = useState<McpConnectorVm[]>([]);
+  const [mcpTools, setMcpTools] = useState<Record<string, McpToolsVm>>({});
   const [mcpConnecting, setMcpConnecting] = useState<string | null>(null);
   // Floating-pill mode: shrink the window to an always-on-top mic bar.
   const [pill, setPill] = useState(false);
@@ -2014,6 +2033,19 @@ function App() {
     [native],
   );
 
+  // Slash-command palette for the composer: typing "/" surfaces these, Enter
+  // runs them. The composer stays dumb — it just renders and fires `run`.
+  const slashActions = useMemo<SlashAction[]>(
+    () => [
+      { id: "mcp", icon: "🔌", label: "Connectors", hint: "Open the MCP explorer — connect, toggle & inspect tools", run: () => { setDirectoryOpen(true); daemonCmd({ type: "mcp_list" }); } },
+      { id: "model", icon: "🧠", label: "Models", hint: "Open the model discovery panel", run: () => setModelPopOpen(true) },
+      { id: "helm", icon: "🛡️", label: "HELM", hint: "Open the war room — missions, usage, autonomy", run: () => setView("helm") },
+      { id: "settings", icon: "⚙️", label: "Settings", hint: "Open settings", run: () => setSettingsOpen(true) },
+      { id: "bug", icon: "🐛", label: "Report a bug", hint: "Send a bug report with this session's log", run: () => setReportOpen(true) },
+    ],
+    [daemonCmd],
+  );
+
   // Promise-correlated skill invocation: send skill_invoke with a unique id and
   // resolve when the matching skill_result comes back. Powers TTS-provider
   // skills (op:"tts") and tray surface-button clicks over one channel.
@@ -2045,9 +2077,12 @@ function App() {
   // sent to a Piper skill), which made every provider call fail and silently
   // fall back to the robotic browser voice — "it's not using my skill".
   const [providerVoices, setProviderVoices] = useState<VoiceInfo[] | null>(null);
-  const providerFailToasted = useRef(false);
+  // Throttled, not latched: the old one-shot flag surfaced only the FIRST
+  // provider failure ever — every later failure fell into the robot voice
+  // with zero explanation until the skill name changed.
+  const providerFailAt = useRef(0);
   useEffect(() => {
-    providerFailToasted.current = false;
+    providerFailAt.current = 0;
     if (!ttsProviderSkill) { setProviderVoices(null); return; }
     let cancelled = false;
     void skillInvoke(ttsProviderSkill.name, { op: "voices" }).then((r) => {
@@ -2070,11 +2105,21 @@ function App() {
           const known = providerVoices;
           const voiceForSkill = known && known.length > 0 ? (known.some((k) => k.id === v) ? v : "") : v;
           return skillInvoke(ttsProviderSkill.name, { op: "tts", text, voice: voiceForSkill, speed }).then((r) => {
-            if (!r.ok && !providerFailToasted.current) {
-              // Never AGAIN fail silently into the robot voice — say why, once.
-              providerFailToasted.current = true;
-              setSkillToast({ name: ttsProviderSkill.name, text: `Voice skill ${ttsProviderSkill.name} failed: ${(r.error ?? "unknown error").slice(0, 120)}`, ok: false });
-              window.setTimeout(() => setSkillToast(null), 5000);
+            if (!r.ok) {
+              // Never fail silently into the robot voice — say why (at most
+              // once per 30s so a broken skill doesn't spam toasts).
+              const now = Date.now();
+              if (now - providerFailAt.current > 30_000) {
+                providerFailAt.current = now;
+                setSkillToast({ name: ttsProviderSkill.name, text: `Voice skill ${ttsProviderSkill.name} failed: ${(r.error ?? "unknown error").slice(0, 120)}`, ok: false });
+                window.setTimeout(() => setSkillToast(null), 5000);
+              }
+              // The failure may be a stale voice catalog (provider updated its
+              // voices in place) — refresh it so the next call self-heals.
+              void skillInvoke(ttsProviderSkill.name, { op: "voices" }).then((vr) => {
+                const voices = vr.ok ? (vr.result as { voices?: VoiceInfo[] })?.voices : null;
+                if (Array.isArray(voices)) setProviderVoices(voices);
+              });
             }
             return r.ok ? (r.result as { audio?: string; mime?: string }) : null;
           });
@@ -2216,6 +2261,14 @@ function App() {
             if (txt.trim()) sendRef.current(txt.trim());
           });
         }).catch(() => { setConvoListening(false); wakeRef.current?.resume(); });
+      }, () => {
+        // Sidecar died AFTER arming (crash/restart). The old code left the UI
+        // claiming "· listening" forever — drop to offline and re-arm.
+        if (!disposed) {
+          wakeRef.current = null;
+          setWakeStatus("offline");
+          retry = window.setTimeout(arm, 5_000);
+        }
       }).then((handle) => {
         if (disposed) { handle.dispose(); return; }
         wakeRef.current = handle;
@@ -2240,6 +2293,27 @@ function App() {
   useEffect(() => {
     if (!convoMode && convoRef.current) { convoRef.current.cancel(); convoRef.current = null; setConvoListening(false); }
   }, [convoMode]);
+
+  // ── Voice engine health: the Rust shell provisions + runs the sidecar and
+  // streams its phase here, so the dock can narrate real status ("installing
+  // the voice engine…") instead of telling the user to run pnpm commands.
+  const [voiceEngine, setVoiceEngine] = useState<{ phase: string; detail: string }>({ phase: "idle", detail: "" });
+  useEffect(() => {
+    if (!native) return;
+    let alive = true;
+    void invoke<{ phase: string; detail: string }>("ares_voice_status")
+      .then((s) => { if (alive && s?.phase) setVoiceEngine({ phase: s.phase, detail: s.detail ?? "" }); })
+      .catch(() => { /* shell predates the command */ });
+    const un = listen<{ phase: string; detail: string }>("ares:voice-status", (e) => {
+      if (alive && e.payload?.phase) setVoiceEngine({ phase: e.payload.phase, detail: e.payload.detail ?? "" });
+    });
+    return () => { alive = false; void un.then((f) => f()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const repairVoice = useCallback(() => {
+    setVoiceEngine({ phase: "setup", detail: "Repairing the voice engine…" });
+    void invoke("ares_voice_setup").catch(() => { /* ignore */ });
+  }, []);
 
   // HELM live feed: while the war room is visible, re-scry on open, every 5s,
   // and on every busy flip (turn start/end) so missions, todos, and cost move
@@ -2534,6 +2608,15 @@ function App() {
         case "mcp_directory": {
           const list = (e as { connectors?: unknown }).connectors;
           if (Array.isArray(list)) setMcpConnectors(list as McpConnectorVm[]);
+          return true;
+        }
+        case "mcp_tools": {
+          const name = typeof (e as { name?: unknown }).name === "string" ? (e as { name: string }).name : "";
+          if (name) {
+            const tools = Array.isArray((e as { tools?: unknown }).tools) ? ((e as unknown as { tools: McpToolsVm["tools"] }).tools) : [];
+            const error = typeof (e as { error?: unknown }).error === "string" ? (e as { error: string }).error : null;
+            setMcpTools((prev) => ({ ...prev, [name]: { loading: false, tools, error } }));
+          }
           return true;
         }
         case "mcp_connect_result":
@@ -3469,6 +3552,8 @@ function App() {
           skills={skills}
           onSurface={runSurface}
           toast={skillToast}
+          voiceEngine={voiceEngine}
+          onRepairVoice={repairVoice}
         />
       ) : null}
       {/* Karaoke: the sentence being spoken right now, following the voice. */}
@@ -3860,6 +3945,7 @@ function App() {
             onModelChip={() => setModelPopOpen(true)}
             onReasoningChip={cycleReasoning}
             onRoutingChip={() => setRoutingOpen(true)}
+            slashActions={slashActions}
           />
         ) : null}
 
@@ -4086,12 +4172,18 @@ function App() {
         <ConnectorDirectory
           connectors={mcpConnectors}
           connecting={mcpConnecting}
+          tools={mcpTools}
           onClose={() => setDirectoryOpen(false)}
           onConnect={(url, name) => {
             setMcpConnecting(name);
             daemonCmd({ type: "mcp_connect", url, name });
           }}
           onDisconnect={(name) => daemonCmd({ type: "mcp_disconnect", name })}
+          onToggle={(name, enabled) => daemonCmd({ type: "mcp_toggle", name, enabled })}
+          onListTools={(name) => {
+            setMcpTools((prev) => ({ ...prev, [name]: { loading: true, tools: prev[name]?.tools ?? [], error: null } }));
+            daemonCmd({ type: "mcp_tools", name });
+          }}
         />
       ) : null}
 
@@ -4431,29 +4523,43 @@ const CONNECTOR_PRESETS: ConnectorPreset[] = [
 function ConnectorDirectory({
   connectors,
   connecting,
+  tools,
   onConnect,
   onDisconnect,
+  onToggle,
+  onListTools,
   onClose,
 }: {
   connectors: McpConnectorVm[];
   connecting: string | null;
+  tools: Record<string, McpToolsVm>;
   onConnect: (url: string, name: string) => void;
   onDisconnect: (name: string) => void;
+  onToggle: (name: string, enabled: boolean) => void;
+  onListTools: (name: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [customUrl, setCustomUrl] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const connectedNames = new Set(connectors.map((c) => c.name));
   const q = query.trim().toLowerCase();
   const shown = q ? CONNECTOR_PRESETS.filter((p) => `${p.label} ${p.blurb}`.toLowerCase().includes(q)) : CONNECTOR_PRESETS;
+  const glyphFor = (c: McpConnectorVm) =>
+    CONNECTOR_PRESETS.find((p) => p.id === c.name || p.label.toLowerCase() === c.name)?.glyph ?? "🔌";
+  const expand = (name: string) => {
+    const next = expanded === name ? null : name;
+    setExpanded(next);
+    if (next && !tools[next]?.tools.length && !tools[next]?.loading) onListTools(next);
+  };
 
   return (
     <div className="paletteScrim" onClick={onClose}>
       <div className="palette directory" onClick={(e) => e.stopPropagation()}>
         <header className="dirHead">
           <div>
-            <strong>Directory</strong>
-            <em>Connect tools & apps — Ares does the OAuth, then their tools are live for the agent.</em>
+            <strong>Connectors</strong>
+            <em>/mcp — Ares does the OAuth, then their tools are live for the agent.</em>
           </div>
           <button className="ghost" onClick={onClose}>Close</button>
         </header>
@@ -4464,13 +4570,52 @@ function ConnectorDirectory({
           <>
             <div className="dirSectionLabel">Connected</div>
             <div className="dirConnected">
-              {connectors.map((c) => (
-                <div key={c.name} className="dirConnRow">
-                  <span className="dirConnName">🔌 {c.displayName ?? c.name}</span>
-                  <span className="dirConnUrl">{c.url}</span>
-                  <button className="dirDisconnect" onClick={() => onDisconnect(c.name)}>Disconnect</button>
-                </div>
-              ))}
+              {connectors.map((c, i) => {
+                const on = c.enabled !== false;
+                const open = expanded === c.name;
+                const t = tools[c.name];
+                return (
+                  <div key={c.name} className="dirConn" data-open={open ? "1" : "0"} data-on={on ? "1" : "0"} style={{ "--i": i } as React.CSSProperties}>
+                    <div className="dirConnRow">
+                      <button className="dirConnMain" onClick={() => expand(c.name)} title={open ? "collapse" : "show tools"}>
+                        <span className="dirConnGlyph" aria-hidden="true">{glyphFor(c)}</span>
+                        <span className="dirConnName">{c.displayName ?? c.name}</span>
+                        <span className="dirConnDot" data-on={on ? "1" : "0"} title={on ? "active" : "paused"} />
+                        <span className="dirConnUrl">{c.url}</span>
+                        <span className="dirConnChevron" data-open={open ? "1" : "0"} aria-hidden="true">▾</span>
+                      </button>
+                      <button
+                        className="dirSwitch"
+                        role="switch"
+                        aria-checked={on}
+                        data-on={on ? "1" : "0"}
+                        title={on ? "Pause — keep the connection, unload its tools" : "Resume — tools load again"}
+                        onClick={() => onToggle(c.name, !on)}
+                      >
+                        <span className="dirSwitchKnob" />
+                      </button>
+                      <button className="dirDisconnect" onClick={() => onDisconnect(c.name)}>Disconnect</button>
+                    </div>
+                    {open ? (
+                      <div className="dirTools">
+                        {t?.loading ? (
+                          <span className="dirToolsStatus"><span className="skillDockSpin" aria-hidden="true" /> asking {c.displayName ?? c.name} for its tools…</span>
+                        ) : t?.error ? (
+                          <span className="dirToolsStatus warn">{t.error}</span>
+                        ) : t && t.tools.length > 0 ? (
+                          t.tools.map((tool) => (
+                            <span key={tool.name} className="dirTool" title={tool.description ?? tool.name}>
+                              {tool.name}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="dirToolsStatus">no tools reported</span>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </>
         ) : null}
@@ -4587,6 +4732,20 @@ function BugReportModal({
   );
 }
 
+/** Provider identity for the discovery panel — a branded gradient mark per
+ *  provider (no external logo fetches; the CSP forbids them anyway). */
+const PROVIDER_IDENTITY: Record<string, { title: string; tagline: string; mark: string; from: string; to: string }> = {
+  ares: { title: "Ares", tagline: "In-house models on your Ares account", mark: "Λ", from: "#5c1414", to: "#e08b2e" },
+  ollama: { title: "Ollama", tagline: "Local machine + Ollama Cloud", mark: "ᒍ", from: "#1d2b31", to: "#7fa6a3" },
+  openai: { title: "OpenAI", tagline: "The GPT frontier family", mark: "◎", from: "#0c2b22", to: "#10a37f" },
+  anthropic: { title: "Anthropic", tagline: "The Claude family", mark: "A\\", from: "#3b2417", to: "#d97757" },
+  deepseek: { title: "DeepSeek", tagline: "Frontier coding + reasoning, open weights", mark: "◗", from: "#101f3d", to: "#4d6bfe" },
+  openrouter: { title: "OpenRouter", tagline: "Hundreds of models behind one key", mark: "◈", from: "#241a33", to: "#9d7bea" },
+  custom: { title: "Custom", tagline: "Any OpenAI-compatible endpoint", mark: "✦", from: "#2a2a2e", to: "#9aa3ad" },
+  moa: { title: "Mixture of Agents", tagline: "Ensembles — several models, one answer", mark: "⁂", from: "#2d1a30", to: "#c86bd1" },
+  mock: { title: "Demo", tagline: "Offline demo models", mark: "◇", from: "#26262a", to: "#8a8f98" },
+};
+
 function ModelPopover({
   prefs,
   native,
@@ -4601,24 +4760,140 @@ function ModelPopover({
   onClose: () => void;
 }) {
   const [provider, setProvider] = useState(prefs.provider);
+  const { models, loading, error } = useModelCatalog(provider, native);
+  const [query, setQuery] = useState("");
+  const [capability, setCapability] = useState<"all" | "tools" | "reasoning" | "vision" | "free">("all");
+  const [detail, setDetail] = useState<ModelOption | null>(null);
+  const value = prefs.provider === provider ? prefs.model : "";
+  const ident = PROVIDER_IDENTITY[provider] ?? { title: provider, tagline: "", mark: "◆", from: "#26262a", to: "#8a8f98" };
+  const q = query.trim().toLowerCase();
+  const byCapability = capability === "all" ? models : models.filter((m) => m.capabilities?.includes(capability));
+  const filtered = q
+    ? byCapability.filter((m) => [m.id, m.label ?? "", m.hint ?? "", m.description ?? "", ...(m.capabilities ?? [])].join(" ").toLowerCase().includes(q))
+    : byCapability;
+  const capabilityCount = (name: Exclude<typeof capability, "all">) => models.filter((m) => m.capabilities?.includes(name)).length;
+  const ctxLabel = (n?: number) => {
+    if (!n) return null;
+    const k = Math.round(n / 1000);
+    return k >= 1000 ? `${(k / 1000).toFixed(k % 1000 ? 1 : 0)}M ctx` : `${k}k ctx`;
+  };
+  const markStyle = (pi: { from: string; to: string }) => ({ background: `linear-gradient(135deg, ${pi.from}, ${pi.to})` });
+  const pickProvider = (p: string) => {
+    setProvider(p);
+    setDetail(null);
+    setQuery("");
+    setCapability("all");
+  };
   return (
     <div className="paletteScrim" onClick={onClose}>
-      <div className="palette modelSwap" onClick={(e) => e.stopPropagation()}>
-        <button className="autoRoutePick" data-on={prefs.routingMode === "auto" ? "1" : "0"} onClick={onPickAuto} title={prefs.routingMode === "auto" ? "Routing is ON — click to switch back to a single manual model" : "Enable per-lane auto routing"}>
-          <span>
-            <strong>Routing (Auto){prefs.routingMode === "auto" ? " · ON" : ""}</strong>
-            <em>{prefs.routingMode === "auto" ? "click to disable — pick a model below for manual" : "classifies each turn and uses your lane assignments"}</em>
-          </span>
-          <i>{prefs.routingMode === "auto" ? "ON" : `${Object.keys(prefs.routing).length} lanes`}</i>
-        </button>
-        <div className="segment">
-          {PROVIDERS.map((p) => (
-            <button key={p} data-on={provider === p ? "1" : "0"} onClick={() => setProvider(p)}>
-              {p}
-            </button>
-          ))}
-        </div>
-        <ModelPicker provider={provider} value={prefs.provider === provider ? prefs.model : ""} onPick={(id) => onPick(provider, id)} native={native} searchOnly />
+      <div className="palette modelDiscovery" onClick={(e) => e.stopPropagation()}>
+        <aside className="mdlRail">
+          <div className="mdlRailTitle">Providers</div>
+          <div className="mdlRailList">
+            {PROVIDERS.map((p, i) => {
+              const pi = PROVIDER_IDENTITY[p] ?? { title: p, tagline: "", mark: "◆", from: "#26262a", to: "#8a8f98" };
+              return (
+                <button key={p} className="mdlProv" data-on={provider === p ? "1" : "0"} style={{ "--i": i } as React.CSSProperties} onClick={() => pickProvider(p)}>
+                  <span className="mdlMark" style={markStyle(pi)} aria-hidden="true">{pi.mark}</span>
+                  <span className="mdlProvBody">
+                    <strong>{pi.title}</strong>
+                    <em>{pi.tagline}</em>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <button className="autoRoutePick" data-on={prefs.routingMode === "auto" ? "1" : "0"} onClick={onPickAuto} title={prefs.routingMode === "auto" ? "Routing is ON — click to switch back to a single manual model" : "Enable per-lane auto routing"}>
+            <span>
+              <strong>Routing (Auto){prefs.routingMode === "auto" ? " · ON" : ""}</strong>
+              <em>{prefs.routingMode === "auto" ? "click to disable — pick a model for manual" : "classifies each turn per lane"}</em>
+            </span>
+            <i>{prefs.routingMode === "auto" ? "ON" : `${Object.keys(prefs.routing).length} lanes`}</i>
+          </button>
+        </aside>
+        <section className="mdlMain">
+          <header className="mdlHero">
+            <span className="mdlMark big" style={markStyle(ident)} aria-hidden="true">{ident.mark}</span>
+            <div className="mdlHeroBody">
+              <strong>{ident.title}</strong>
+              <em>{ident.tagline}</em>
+            </div>
+            <span className="mdlCount">{loading ? "scanning…" : `${models.length} models`}</span>
+            <button className="ghost" onClick={onClose}>Close</button>
+          </header>
+          <div className="mdlControls">
+            <input
+              className="modelSearch"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={loading ? "loading models…" : `search ${models.length} models`}
+              spellCheck={false}
+              autoFocus
+            />
+            <div className="modelFilters" aria-label="model capability filters">
+              <button data-on={capability === "all" ? "1" : "0"} onClick={() => setCapability("all")}>all</button>
+              {(["tools", "reasoning", "vision", "free"] as const).map((name) => {
+                const count = capabilityCount(name);
+                return (
+                  <button key={name} data-on={capability === name ? "1" : "0"} disabled={count === 0} onClick={() => setCapability(name)}>
+                    {name} <em>{count}</em>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {error ? <div className="modelError">{error}</div> : null}
+          {detail ? (
+            <div className="mdlDetailWrap">
+              <ModelDetail
+                model={detail}
+                selected={detail.id === value}
+                onUse={(id) => { onPick(provider, id); setDetail(null); }}
+                onBack={() => setDetail(null)}
+              />
+            </div>
+          ) : (
+            <div className="mdlGrid">
+              {filtered.map((m, i) => {
+                const ctx = ctxLabel(m.contextLength);
+                const isFree = m.capabilities?.includes("free");
+                const price = m.pricing?.input !== undefined ? `$${m.pricing.input.toFixed(2)}/M in` : null;
+                return (
+                  <button key={m.id} className="mdlCard" data-on={m.id === value ? "1" : "0"} style={{ "--i": Math.min(i, 20) } as React.CSSProperties} onClick={() => onPick(provider, m.id)}>
+                    <span className="mdlCardTop">
+                      <span className="modelGlyph" aria-hidden="true">{modelGlyph(m)}</span>
+                      <span className="mdlCardName">
+                        <strong>{m.label ?? m.id}</strong>
+                        {m.label && m.label !== m.id ? <em>{m.id}</em> : null}
+                      </span>
+                      <span
+                        className="modelInfo"
+                        role="button"
+                        tabIndex={0}
+                        title="Details"
+                        aria-label={`Details for ${m.label ?? m.id}`}
+                        onClick={(e) => { e.stopPropagation(); setDetail(m); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setDetail(m); } }}
+                      >ⓘ</span>
+                    </span>
+                    {m.description ? (
+                      <span className="mdlCardDesc" title={m.description}>{m.description}</span>
+                    ) : m.hint ? (
+                      <span className="mdlCardDesc thin">{m.hint}</span>
+                    ) : null}
+                    <span className="mdlCardFoot">
+                      {ctx ? <i className="mdlChip">{ctx}</i> : null}
+                      {isFree ? <i className="mdlChip free">FREE</i> : price ? <i className="mdlChip">{price}</i> : null}
+                      {m.capabilities?.filter((c) => c !== "free").slice(0, 3).map((c) => <i key={c} className="mdlChip cap">{c}</i>)}
+                      {m.id === value ? <i className="mdlChip current">✓ current</i> : null}
+                    </span>
+                  </button>
+                );
+              })}
+              {!loading && filtered.length === 0 ? <div className="modelHintEmpty">no models match</div> : null}
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -5614,6 +5889,7 @@ const Composer = React.memo(function Composer({
   onModelChip,
   onReasoningChip,
   onRoutingChip,
+  slashActions,
 }: {
   busy: boolean;
   model: string;
@@ -5628,8 +5904,22 @@ const Composer = React.memo(function Composer({
   onModelChip: () => void;
   onReasoningChip: () => void;
   onRoutingChip: () => void;
+  slashActions: SlashAction[];
 }) {
   const [text, setText] = useState("");
+  // "/" command menu: visible while the draft is a bare slash prefix.
+  const [slashSel, setSlashSel] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const slashQuery = text.startsWith("/") && !/\s/.test(text) && text.length <= 24 ? text.slice(1).toLowerCase() : null;
+  const slashMatches = slashQuery !== null && !slashDismissed
+    ? slashActions.filter((a) => a.id.startsWith(slashQuery) || a.label.toLowerCase().includes(slashQuery))
+    : [];
+  const runSlash = (a: SlashAction) => {
+    a.run();
+    setText("");
+    setSlashSel(0);
+    if (ref.current) ref.current.style.height = "auto";
+  };
   const [attachments, setAttachmentsState] = useState<Array<{ name: string; dataUrl: string }>>([]);
   // Mirrors `attachments` synchronously. Refs update immediately (unlike state,
   // which is batched/rendered-on-a-delay) — submit() reads THIS after awaiting
@@ -5719,6 +6009,27 @@ const Composer = React.memo(function Composer({
           ))}
         </div>
       ) : null}
+      {slashMatches.length > 0 ? (
+        <div className="slashMenu" role="listbox" aria-label="Commands">
+          <div className="slashMenuTitle">Commands</div>
+          {slashMatches.map((a, i) => (
+            <button
+              key={a.id}
+              className="slashItem"
+              role="option"
+              aria-selected={i === slashSel}
+              data-sel={i === slashSel ? "1" : "0"}
+              onMouseEnter={() => setSlashSel(i)}
+              onClick={() => runSlash(a)}
+            >
+              <span className="slashIcon" aria-hidden="true">{a.icon}</span>
+              <span className="slashCmd">/{a.id}</span>
+              <span className="slashLabel">{a.label}</span>
+              <span className="slashHint">{a.hint}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div
         className="composerRow"
         data-busy={busy ? "1" : "0"}
@@ -5737,6 +6048,8 @@ const Composer = React.memo(function Composer({
           rows={1}
           onChange={(e) => {
             setText(e.target.value);
+            setSlashSel(0);
+            setSlashDismissed(false);
             e.target.style.height = "auto";
             e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;
           }}
@@ -5748,6 +6061,12 @@ const Composer = React.memo(function Composer({
             }
           }}
           onKeyDown={(e) => {
+            if (slashMatches.length > 0) {
+              if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((s) => (s + 1) % slashMatches.length); return; }
+              if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((s) => (s - 1 + slashMatches.length) % slashMatches.length); return; }
+              if (e.key === "Escape") { e.preventDefault(); setSlashDismissed(true); return; }
+              if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); runSlash(slashMatches[Math.min(slashSel, slashMatches.length - 1)]); return; }
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               void submit();
@@ -6458,13 +6777,46 @@ function ChartBlock({ spec, complete }: { spec: string; complete: boolean }) {
   );
 }
 
+// The thought card. Streams visibly (shimmering label + growing preview while
+// deltas arrive), springs open/closed like the tool cards, and keeps the text
+// in a real div so it stays selectable (the old version was one big <button>).
 function ThinkingView({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
-  return (
-    <button className="thinking" data-open={open ? "1" : "0"} onClick={() => setOpen(!open)}>
-      <span className="thinkLabel">thinking</span>
-      <span className="thinkText">{open ? text : compact(text, 140)}</span>
-    </button>
+  const newStyle = useNewStyle();
+  // "Live" = the text grew within the last moment. No session state needed —
+  // the stream itself is the signal.
+  const [live, setLive] = useState(false);
+  const lastLen = useRef(text.length);
+  useEffect(() => {
+    if (text.length === lastLen.current) return;
+    lastLen.current = text.length;
+    setLive(true);
+    const t = window.setTimeout(() => setLive(false), 1500);
+    return () => window.clearTimeout(t);
+  }, [text]);
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const body = (
+    <>
+      <button className="thinkHead" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="thinkSigil" aria-hidden="true" />
+        <span className="thinkLabel">{live ? "thinking" : "thought"}</span>
+        {live ? <span className="thinkEllipsis" aria-hidden="true"><i /><i /><i /></span> : null}
+        <span className="thinkMeta">{words.toLocaleString()} word{words === 1 ? "" : "s"}</span>
+        <span className="thinkChevron" data-open={open ? "1" : "0"} aria-hidden="true">▾</span>
+      </button>
+      <div className="thinkText" data-open={open ? "1" : "0"}>
+        {open ? text : compact(live ? text.slice(-220) : text, 220)}
+      </div>
+    </>
+  );
+  return newStyle ? (
+    <SpringHeight className="thinking" attrs={{ "data-open": open ? "1" : "0", "data-live": live ? "1" : "0" }}>
+      {body}
+    </SpringHeight>
+  ) : (
+    <div className="thinking" data-open={open ? "1" : "0"} data-live={live ? "1" : "0"}>
+      {body}
+    </div>
   );
 }
 
@@ -7888,6 +8240,8 @@ function SkillDock({
   skills,
   onSurface,
   toast,
+  voiceEngine,
+  onRepairVoice,
 }: {
   voiceEnabled: boolean;
   onToggleVoice: (on: boolean) => void;
@@ -7903,6 +8257,8 @@ function SkillDock({
   skills: SkillInfo[];
   onSurface: (skill: SkillInfo, surface: SkillSurface) => void;
   toast: { name: string; text: string; ok: boolean } | null;
+  voiceEngine: { phase: string; detail: string };
+  onRepairVoice: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const withSurfaces = skills.filter((s) => s.enabled && (s.surfaces?.length ?? 0) > 0);
@@ -7930,10 +8286,24 @@ function SkillDock({
             </button>
             {speaking ? <button className="skillDockBtn stop" onClick={onStopVoice}>⏹ Stop</button> : null}
           </div>
-          {wakeWord && wakeStatus === "offline" ? (
-            <p className="skillDockHint warn">
-              The local voice engine isn't running, so “Hey Ares” can't hear you. Start it with <code>pnpm voice:tts</code> in the Ares folder (it needs Python + the voice service installed) — I'll connect automatically.
-            </p>
+          {(wakeWord && wakeStatus === "offline") || voiceEngine.phase === "setup" || voiceEngine.phase === "error" || voiceEngine.phase === "missing" ? (
+            voiceEngine.phase === "setup" ? (
+              <p className="skillDockHint">
+                <span className="skillDockSpin" aria-hidden="true" /> {voiceEngine.detail || "Setting up the local voice engine…"}
+              </p>
+            ) : voiceEngine.phase === "error" ? (
+              <p className="skillDockHint warn">
+                {voiceEngine.detail || "The local voice engine hit a problem."}{" "}
+                <button className="skillDockRepair" onClick={onRepairVoice}>Repair</button>
+              </p>
+            ) : voiceEngine.phase === "missing" ? (
+              <p className="skillDockHint warn">{voiceEngine.detail || "The voice service files aren't in this install."}</p>
+            ) : (
+              <p className="skillDockHint warn">
+                Connecting to the local voice engine — “Hey Ares” will arm itself the moment it's up.{" "}
+                <button className="skillDockRepair" onClick={onRepairVoice}>Repair</button>
+              </p>
+            )
           ) : null}
           {withSurfaces.length > 0 ? (
             <>

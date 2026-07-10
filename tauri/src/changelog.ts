@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.25.0",
+    date: "July 2026",
+    title: "Voice that sets itself up",
+    tagline: "“Hey Ares” now installs its own engine, /mcp becomes a real connector explorer, and models get a full discovery panel.",
+    highlights: [
+      {
+        icon: "🎙",
+        title: "Zero-setup voice",
+        tag: "New",
+        blurb: "The app now installs and repairs its own local voice engine — no more terminal commands. If something breaks, one Repair button fixes it.",
+      },
+      {
+        icon: "👂",
+        title: "Hey Ares self-heals",
+        tag: "Safer",
+        blurb: "The wake word reconnects by itself if the voice engine restarts, and voice-skill failures always tell you why instead of falling back silently.",
+      },
+      {
+        icon: "🔌",
+        title: "The connector explorer",
+        tag: "New",
+        blurb: "Type /mcp or hit / for commands: pause and resume connectors without re-authorizing, and expand any of them to see the exact tools they add.",
+      },
+      {
+        icon: "🧠",
+        title: "Model discovery",
+        tag: "New",
+        blurb: "The model button now opens a full browser — providers with their own identity, rich descriptions, context sizes, pricing, and a detail page per model.",
+      },
+      {
+        icon: "✨",
+        title: "Thinking you can watch",
+        tag: "Polished",
+        blurb: "Thought cards shimmer while Ares reasons, spring open smoothly, and the text is finally selectable.",
+      },
+    ],
+  },
+  {
     version: "0.24.0",
     date: "July 2026",
     title: "The Forge comes alive",

@@ -42,6 +42,10 @@ interface DaemonModelOption {
   capabilities?: string[];
   /** Rich prose (OpenRouter) for the discovery cards. */
   description?: string;
+  /** Structured stats for the discovery panel (the hint string keeps a packed
+   *  copy for old clients, but the UI wants real numbers). */
+  contextLength?: number;
+  pricing?: { input?: number; output?: number };
 }
 
 export const TERMINAL_PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "openrouter", "ares", "custom", "moa", "mock"] as const;
@@ -321,6 +325,11 @@ export async function daemonModelCatalog(provider: string): Promise<DaemonModelO
       ],
       // OpenRouter ships a rich blurb per model — the heart of the discovery UI.
       description: model.description?.trim() || undefined,
+      contextLength: model.contextLength || undefined,
+      pricing: {
+        input: model.promptPrice != null ? Number(model.promptPrice) * 1e6 : undefined,
+        output: model.completionPrice != null ? Number(model.completionPrice) * 1e6 : undefined,
+      },
     }));
   }
 

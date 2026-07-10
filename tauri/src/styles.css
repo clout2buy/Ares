@@ -832,20 +832,51 @@ a:hover { border-bottom-color: var(--bronze-hi); }
 .chartVal { flex: none; width: 52px; text-align: right; font: 600 12px/1 var(--mono); color: var(--accent-hi); }
 @keyframes chartGrow { from { width: 0 !important; } }
 
+/* the thought card — matches the tool-card glass, springs open, streams live */
 .thinking {
-  display: flex; gap: 10px; align-items: baseline;
-  padding: 8px 12px;
   border-left: 2px solid var(--line-strong);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   background: rgba(var(--accent-rgb), 0.04);
-  text-align: left;
   color: var(--muted);
-  transition: background 140ms ease;
+  transition: background 160ms ease, border-color 160ms ease;
 }
 .thinking:hover { background: rgba(var(--accent-rgb), 0.08); }
+.thinking[data-live="1"] { border-left-color: var(--accent); }
+.thinkHead {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 12px; background: transparent; border: none; cursor: pointer;
+  color: var(--muted); font: inherit; text-align: left;
+}
+.thinkSigil {
+  flex: none; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--faint); transition: background 200ms ease, box-shadow 200ms ease;
+}
+.thinking[data-live="1"] .thinkSigil { background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.8); animation: thinkPulse 1.2s ease-in-out infinite; }
+@keyframes thinkPulse { 50% { box-shadow: 0 0 3px rgba(var(--accent-rgb), 0.3); } }
 .thinkLabel { flex: none; font: 600 10px/1.6 var(--mono); letter-spacing: 0.18em; color: var(--faint); text-transform: uppercase; }
-.thinkText { font-size: 12.5px; line-height: 1.5; font-style: italic; white-space: pre-wrap; }
-.thinking[data-open="0"] .thinkText { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+.thinking[data-live="1"] .thinkLabel {
+  background: linear-gradient(90deg, var(--faint) 30%, var(--accent-hi) 50%, var(--faint) 70%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: thinkShimmer 1.8s linear infinite;
+}
+@keyframes thinkShimmer { from { background-position: 180% 0; } to { background-position: -20% 0; } }
+.thinkEllipsis { display: inline-flex; gap: 2px; }
+.thinkEllipsis i { width: 3px; height: 3px; border-radius: 50%; background: var(--faint); animation: thinkDot 1.1s ease-in-out infinite; }
+.thinkEllipsis i:nth-child(2) { animation-delay: 150ms; }
+.thinkEllipsis i:nth-child(3) { animation-delay: 300ms; }
+@keyframes thinkDot { 40% { transform: translateY(-2px); background: var(--accent); } }
+.thinkMeta { margin-left: auto; flex: none; font: 500 10px/1 var(--mono); color: var(--faint); }
+.thinkChevron { flex: none; font-size: 10px; color: var(--faint); transition: transform 180ms ease; }
+.thinkChevron[data-open="1"] { transform: rotate(180deg); }
+.thinkText {
+  padding: 0 12px 8px 26px;
+  font-size: 12.5px; line-height: 1.55; font-style: italic; white-space: pre-wrap;
+  user-select: text; cursor: text;
+}
+.thinkText[data-open="0"] { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+@media (prefers-reduced-motion: reduce) {
+  .thinking[data-live="1"] .thinkSigil, .thinking[data-live="1"] .thinkLabel, .thinkEllipsis i { animation: none; }
+}
 
 /* ── the morphing tool card ────────────────────────────────────────────────
    One reused card per tool batch. A single icon slot crossfades through each
@@ -1365,6 +1396,21 @@ a.vaultName { border-bottom: none; }
 .skillDockHint { font-size: 11px; color: var(--ink-dim); margin: 0; }
 .skillDockHint.warn { color: #e0a468; }
 .skillDockHint code { font-size: 10.5px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 5px; }
+.skillDockRepair {
+  font: inherit; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;
+  padding: 2px 9px; margin-left: 4px; cursor: pointer;
+  color: var(--text); background: rgba(var(--accent-rgb), 0.12);
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.skillDockRepair:hover { background: rgba(var(--accent-rgb), 0.24); border-color: var(--accent); }
+.skillDockSpin {
+  display: inline-block; width: 9px; height: 9px; margin-right: 5px; vertical-align: -1px;
+  border: 1.5px solid var(--line-strong); border-top-color: var(--accent);
+  border-radius: 50%; animation: skillDockSpin 800ms linear infinite;
+}
+@keyframes skillDockSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .skillDockSpin { animation: none; } }
 .skillDockToast {
   max-width: 300px; padding: 8px 12px; font-size: 12px;
   border: 1px solid var(--line-strong); border-radius: var(--r-md);
@@ -1714,7 +1760,30 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 
 /* ── composer ───────────────────────────────────────────────────────── */
 
-.composer { padding: 4px clamp(20px, 6vw, 96px) 12px; display: grid; gap: 8px; }
+.composer { padding: 4px clamp(20px, 6vw, 96px) 12px; display: grid; gap: 8px; position: relative; }
+
+/* "/" command menu — floats above the composer, keyboard-driven. */
+.slashMenu {
+  position: absolute; bottom: calc(100% + 6px); left: clamp(20px, 6vw, 96px); right: clamp(20px, 6vw, 96px);
+  z-index: 30; display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 50px -18px rgba(0, 0, 0, 0.7);
+  animation: paletteIn 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.slashMenuTitle { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim, #8a8f98); font-weight: 700; padding: 2px 8px 4px; }
+.slashItem {
+  display: grid; grid-template-columns: 24px auto auto 1fr; align-items: center; gap: 10px;
+  padding: 7px 10px; border: none; border-radius: 8px; background: transparent;
+  color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.slashItem[data-sel="1"] { background: rgba(var(--accent-rgb), 0.14); }
+.slashIcon { text-align: center; }
+.slashCmd { font-family: var(--mono); font-weight: 700; color: var(--accent-hi, var(--accent)); }
+.slashLabel { font-weight: 600; white-space: nowrap; }
+.slashHint { color: var(--dim, #8a8f98); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+[data-perf="lite"] .slashMenu { backdrop-filter: none; background: var(--bg-raised); }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .attachments { display: flex; gap: 8px; flex-wrap: wrap; }
 .attachChip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel); max-width: 220px; }
@@ -2209,7 +2278,8 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
   display: grid; justify-items: center; align-items: center;
   padding: 5vh 16px;
   animation: bootIn 140ms ease;
-  backdrop-filter: blur(2px);
+  /* a deeper blur reads as depth-of-field — the room recedes, the panel is the subject */
+  backdrop-filter: blur(7px) saturate(0.85);
 }
 .palette {
   width: min(560px, 90vw);
@@ -2241,6 +2311,95 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .paletteList button em { font-style: normal; font-size: 11px; color: var(--faint); margin-left: auto; flex: none; }
 .paletteEmpty { padding: 16px; text-align: center; font-size: 12px; color: var(--faint); }
 .palette.modelSwap { width: min(600px, 92vw); max-height: 82vh; gap: 10px; padding-bottom: 14px; }
+
+/* ── model DISCOVERY panel — the big two-pane model browser ─────────────── */
+.palette.modelDiscovery {
+  width: min(1080px, 94vw); max-height: 86vh; height: min(720px, 86vh);
+  flex-direction: row; padding: 0; gap: 0;
+}
+.mdlRail {
+  flex: none; width: 248px; display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 10px; border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  overflow-y: auto;
+}
+.mdlRailTitle { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); font-weight: 700; padding: 0 8px 6px; }
+.mdlRailList { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.mdlProv {
+  display: flex; align-items: center; gap: 10px; text-align: left;
+  padding: 8px 8px; border-radius: 10px; border: 1px solid transparent;
+  background: transparent; color: var(--text); cursor: pointer; font: inherit;
+  animation: modelRowIn 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 30ms);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.mdlProv:hover { background: rgba(var(--accent-rgb), 0.07); }
+.mdlProv[data-on="1"] { background: rgba(var(--accent-rgb), 0.12); border-color: var(--line-strong); }
+.mdlMark {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  font-size: 15px; font-weight: 800; color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 8px -3px rgba(0, 0, 0, 0.6);
+}
+.mdlMark.big { width: 46px; height: 46px; border-radius: 13px; font-size: 23px; }
+.mdlProvBody { min-width: 0; }
+.mdlProvBody strong { display: block; font-size: 12.5px; }
+.mdlProvBody em { display: block; font-style: normal; font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mdlRail .autoRoutePick { margin: 6px 2px 0; }
+.mdlMain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mdlHero {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
+}
+.mdlHeroBody { flex: 1; min-width: 0; }
+.mdlHeroBody strong { display: block; font-size: 17px; letter-spacing: 0.01em; }
+.mdlHeroBody em { display: block; font-style: normal; font-size: 12px; color: var(--muted); }
+.mdlCount { flex: none; font: 600 11px/1 var(--mono); color: var(--faint); letter-spacing: 0.04em; }
+.mdlHero .ghost { flex: none; background: transparent; border: 1px solid var(--line); color: var(--text); padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+.mdlControls { flex: none; display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
+.mdlControls .modelSearch { flex: 1; }
+.mdlGrid {
+  flex: 1; overflow-y: auto; padding: 4px 16px 16px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px;
+  align-content: start;
+}
+.mdlCard {
+  display: flex; flex-direction: column; gap: 7px; text-align: left;
+  padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  color: var(--text); cursor: pointer; font: inherit;
+  animation: modelRowIn 300ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 22ms);
+  transition: border-color 150ms ease, transform 150ms ease, background 150ms ease;
+}
+.mdlCard:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); transform: translateY(-1px); }
+.mdlCard[data-on="1"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
+.mdlCardTop { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mdlCardName { flex: 1; min-width: 0; }
+.mdlCardName strong { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mdlCardName em { display: block; font-style: normal; font: 500 10px/1.3 var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mdlCardDesc {
+  font-size: 11.5px; line-height: 1.45; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mdlCardDesc.thin { color: var(--faint); }
+.mdlCardFoot { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; }
+.mdlChip {
+  font: 600 10px/1 var(--mono); font-style: normal; letter-spacing: 0.03em;
+  padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--muted); white-space: nowrap;
+}
+.mdlChip.free { border-color: var(--steel); color: var(--steel); }
+.mdlChip.cap { color: var(--faint); }
+.mdlChip.current { border-color: var(--accent); color: var(--accent-hi, var(--accent)); }
+.mdlDetailWrap { flex: 1; overflow-y: auto; padding: 12px 16px 16px; position: relative; }
+@media (max-width: 860px) {
+  .palette.modelDiscovery { flex-direction: column; height: 86vh; }
+  .mdlRail { width: 100%; flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--line); }
+  .mdlRailTitle, .mdlProvBody em { display: none; }
+  .mdlRailList { flex-direction: row; flex-wrap: wrap; }
+}
 .palette.modelSwap .segment { padding: 12px 14px 2px; }
 .palette.modelSwap .modelPicker { padding: 0 14px; gap: 8px; }
 .palette.modelSwap .modelList { max-height: 46vh; }
@@ -3654,10 +3813,51 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .dirSearch:focus { outline: none; border-color: var(--ember, #e08b2e); }
 .dirSectionLabel { font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--dim, #8a8f98); font-weight: 700; margin-top: 2px; }
 .dirConnected { display: flex; flex-direction: column; gap: 6px; }
-.dirConnRow { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 35%, var(--line)); background: color-mix(in srgb, var(--ember, #e08b2e) 8%, transparent); }
-.dirConnName { font-weight: 700; font-size: 13px; }
-.dirConnUrl { font-size: 11px; color: var(--dim, #8a8f98); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dirDisconnect { background: transparent; border: 1px solid var(--line); color: var(--text); font-size: 11px; padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+.dirConn {
+  border-radius: 10px; border: 1px solid color-mix(in srgb, var(--ember, #e08b2e) 35%, var(--line));
+  background: color-mix(in srgb, var(--ember, #e08b2e) 8%, transparent);
+  animation: modelRowIn 300ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 35ms);
+  transition: border-color 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+.dirConn[data-on="0"] { opacity: 0.6; border-style: dashed; background: transparent; }
+.dirConn[data-open="1"] { border-color: var(--ember, #e08b2e); }
+.dirConnRow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+.dirConnMain {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none; color: var(--text); cursor: pointer;
+  font: inherit; text-align: left; padding: 0;
+}
+.dirConnGlyph { font-size: 16px; width: 22px; text-align: center; flex: none; }
+.dirConnName { font-weight: 700; font-size: 13px; white-space: nowrap; }
+.dirConnDot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--steel, #7fa6a3); box-shadow: 0 0 6px var(--steel, #7fa6a3); }
+.dirConnDot[data-on="0"] { background: var(--dim, #8a8f98); box-shadow: none; }
+.dirConnUrl { flex: 1; font-size: 11px; color: var(--dim, #8a8f98); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dirConnChevron { font-size: 11px; color: var(--dim, #8a8f98); transition: transform 180ms ease; flex: none; }
+.dirConnChevron[data-open="1"] { transform: rotate(180deg); }
+.dirSwitch {
+  flex: none; width: 34px; height: 19px; padding: 2px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line-strong); background: color-mix(in srgb, var(--panel) 70%, transparent);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.dirSwitch[data-on="1"] { background: color-mix(in srgb, var(--steel, #7fa6a3) 45%, transparent); border-color: var(--steel, #7fa6a3); }
+.dirSwitchKnob {
+  display: block; width: 13px; height: 13px; border-radius: 50%; background: var(--text);
+  transform: translateX(0); transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.dirSwitch[data-on="1"] .dirSwitchKnob { transform: translateX(15px); }
+.dirTools {
+  display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 10px 40px;
+  animation: paletteIn 180ms ease both;
+}
+.dirTool {
+  font-size: 10.5px; font-family: var(--mono); padding: 3px 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 60%, transparent);
+  color: var(--text); white-space: nowrap;
+}
+.dirToolsStatus { font-size: 11px; color: var(--dim, #8a8f98); }
+.dirToolsStatus.warn { color: #e0a468; }
+.dirDisconnect { flex: none; background: transparent; border: 1px solid var(--line); color: var(--text); font-size: 11px; padding: 5px 10px; border-radius: 7px; cursor: pointer; }
 .dirDisconnect:hover { border-color: #f87171; color: #f87171; }
 .dirGallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; overflow-y: auto; padding: 2px; min-height: 0; }
 .dirCard { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text); cursor: pointer; transition: all 130ms; }
@@ -3736,3 +3936,26 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .ares[data-theme="daylight"] .backdrop::before { display: none !important; }
 .ares[data-theme="daylight"] .backdrop { opacity: 0.35; }
 .ares[data-theme="daylight"] .astrolabe { opacity: 0.5; }
+
+/* ── micro-interaction layer (v0.25) — press feedback + staged entrances ────
+   Small physical touches everywhere: pills compress under the pointer, the
+   send button lifts, empty-stage starters cascade in. All guarded for
+   reduced-motion; transforms only (no layout thrash). */
+.starter:active, .chip:active, .statusSeg:active, .mdlCard:active, .mdlProv:active,
+.dirCard:active, .slashItem:active, .session:active, .skillDockBtn:active {
+  transform: translateY(0) scale(0.985);
+}
+.starters .starter { animation: fadeUp 460ms cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.starters .starter:nth-child(1) { animation-delay: 240ms; }
+.starters .starter:nth-child(2) { animation-delay: 300ms; }
+.starters .starter:nth-child(3) { animation-delay: 360ms; }
+.starters .starter:nth-child(4) { animation-delay: 420ms; }
+.starters .starter:nth-child(5) { animation-delay: 480ms; }
+.starters .starter:nth-child(n+6) { animation-delay: 540ms; }
+.send { transition: transform 150ms cubic-bezier(0.2, 0.9, 0.3, 1), filter 150ms ease, background 150ms ease; }
+.send:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.12); }
+.send:active:not(:disabled) { transform: scale(0.92); }
+@media (prefers-reduced-motion: reduce) {
+  .starters .starter { animation: none; }
+  .send, .send:hover:not(:disabled), .send:active:not(:disabled) { transform: none; }
+}

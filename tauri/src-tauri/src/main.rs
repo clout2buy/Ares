@@ -486,6 +486,30 @@ fn ares_open_url(url: String) -> Result<(), String> {
     }
 }
 
+/// Open a forged artifact in the user's default browser. Only existing files
+/// are accepted; arguments are passed directly to the OS (never through a shell).
+#[tauri::command]
+fn ares_open_path(path: String) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if !target.is_file() {
+        return Err("artifact does not exist".to_string());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let wide: Vec<u16> = target.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+        let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+        let result = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), wide.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32) };
+        if result as isize <= 32 { return Err("failed to launch artifact".to_string()); }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    { Command::new("open").arg(&target).spawn().map_err(|e| format!("failed to launch artifact: {e}"))?; Ok(()) }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    { Command::new("xdg-open").arg(&target).spawn().map_err(|e| format!("failed to launch artifact: {e}"))?; Ok(()) }
+}
+
 #[tauri::command]
 fn ares_daemon_command(command: Value, state: State<DaemonState>) -> Result<(), String> {
     if !command.is_object() {
@@ -934,6 +958,7 @@ fn main() {
             ares_set_provider_key,
             ares_daemon_command,
             ares_open_url,
+            ares_open_path,
             ares_permission_response,
             ares_forge_write,
             ares_export_log,

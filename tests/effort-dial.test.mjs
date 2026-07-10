@@ -157,6 +157,31 @@ test("engine: ARES_STALL_DOWNGRADE=0 retries at the same level", async () => {
   }
 });
 
+test("engine: an empty premature provider close retries and completes", async () => {
+  let calls = 0;
+  const provider = {
+    name: "close-once",
+    async *stream() {
+      calls++;
+      if (calls === 1) return;
+      yield { type: "text_delta", text: "recovered" };
+      yield msgDone("recovered");
+    },
+  };
+  const engine = new QueryEngine(
+    { provider, model: "test", systemPrompt: "test", tools: [], workspace: "D:\\Ares", maxTurns: 2 },
+    "sess_close_retry",
+  );
+  engine.appendUserMessage("keep working");
+  const events = [];
+  for await (const ev of engine.streamTurn()) events.push(ev);
+
+  assert.equal(calls, 2, "the empty close is retried once");
+  assert.equal(events.at(-1)?.status, "completed");
+  assert.ok(events.some((e) => e.type === "system_reminder_injected" && /no_message_done/.test(e.text)));
+  assert.ok(!events.some((e) => e.type === "error"), "a recovered close is not shown as a failure");
+});
+
 test("guard: post-output silence gets the ACTIVE window, not the pre-output cutoff", async () => {
   // The Minecraft-clone regression: model streams text, then goes silent while
   // composing a big buffered Write. The old guard cut at idleMs and killed a

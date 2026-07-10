@@ -153,7 +153,15 @@ export class CodingJournal {
     this.state.turns++;
     this.state.requests = [...this.state.requests, request].slice(-12);
     const explicitReplacement = /\b(?:new task|switch (?:tasks?|to)|instead,? (?:build|fix|implement)|unrelated task)\b/i.test(request);
-    const startingNew = !wasActive || !this.state.objective || explicitReplacement || (this.state.phase === "verified" && codingIntent && !looksLikeContinuation(request));
+    // A user should not need to say the magic words "new task" after an
+    // unverified/paused build. A fresh concrete deliverable ("build a Pomodoro
+    // timer webpage") is a new objective, not steering for the prior Stopwatch.
+    // Keep narrower follow-ups such as "add dark mode" on the current journal.
+    const freshDeliverable = looksLikeFreshDeliverable(request);
+    const settledOrPaused = this.state.phase === "verified" || this.state.phase === "paused" || this.state.phase === "failed";
+    const startingNew = !wasActive || !this.state.objective || explicitReplacement ||
+      (settledOrPaused && codingIntent && freshDeliverable && !looksLikeContinuation(request)) ||
+      (this.state.phase === "verified" && codingIntent && !looksLikeContinuation(request));
     if (startingNew) {
       this.state.objective = request;
       this.state.steering = [];
@@ -432,6 +440,12 @@ function looksLikeCodingRequest(text: string): boolean {
 
 function looksLikeContinuation(text: string): boolean {
   return /^(?:ok(?:ay)?\s+)?(?:continue|finish|keep going|go on|resume|do it|ship it|proceed|yes|yep|all out)\b/i.test(text.trim());
+}
+
+/** Strong signal that the user named a NEW artifact rather than refining the
+ * current one. Optional prefixes cover benchmark prompts such as "vein:". */
+function looksLikeFreshDeliverable(text: string): boolean {
+  return /^(?:[\w-]+:\s*)?(?:build|create|make|implement|write)\b.{0,180}\b(?:app|application|website|webpage|page|tool|game|dashboard|service|api|cli|timer|clone)\b/i.test(text.trim());
 }
 
 function isManualVerification(name: string, input: unknown): boolean {

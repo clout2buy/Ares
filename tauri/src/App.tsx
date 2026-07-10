@@ -69,7 +69,7 @@ interface AresEvent {
   /** tool_use_input_delta — partial JSON of the tool input being authored. */
   deltaJson?: string;
   /** tool_progress — live sub-tool output (shell chunks, grep ticks, subagent activity, live browser frames, Conductor fleet activity). */
-  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string; agentId?: string; event?: string; role?: string; phase?: string; status?: string; fleetId?: string; backend?: string; label?: string; line?: string; filesTouched?: number; version?: string };
+  data?: { kind?: string; stream?: string; text?: string; total?: number; activity?: string; tool?: string; image?: string; url?: string; title?: string; agentId?: string; event?: string; role?: string; phase?: string; status?: string; fleetId?: string; backend?: string; label?: string; line?: string; filesTouched?: number; version?: string };
   /** compaction event fields */
   summarizedMessages?: number;
   tokensBefore?: number;
@@ -954,6 +954,9 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.activity = "steering";
       break;
     }
+    case "steer_queued":
+      session.activity = "steer queued";
+      break;
     case "daemon_error":
       items.push({ kind: "notice", key: nextKey(), text: compact(stringify(e.error ?? "daemon error"), 500), tone: "bad" });
       break;
@@ -1672,6 +1675,26 @@ interface ForgeState {
   artifact?: { path: string; label: string };
 }
 
+function launchableUrl(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  if (/^(https?|file):\/\//i.test(value)) return value;
+  return `http://${value}`;
+}
+
+function forgeFrameUrl(url: string, native: boolean, revision: number): string {
+  if (/^file:\/\//i.test(url) && native) {
+    try {
+      const parsed = new URL(url);
+      let filePath = decodeURIComponent(parsed.pathname);
+      if (/^\/[A-Za-z]:\//.test(filePath)) filePath = filePath.slice(1);
+      return `${convertFileSrc(filePath)}?forge=${revision}`;
+    } catch { return url; }
+  }
+  const join = url.includes("?") ? "&" : "?";
+  return `${url}${join}ares_forge=${revision}`;
+}
+
 // ─── Demo feed (browser preview) ───────────────────────────────────────────
 
 function demoSession(): SessionVm {
@@ -1835,6 +1858,9 @@ function App() {
   // The embedded live browser: latest JPEG frame Ares streamed while driving its
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
   const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
+  const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number } | null>(null);
+  const [liveUrl, setLiveUrl] = useState("http://127.0.0.1:3000");
+  const [liveRevision, setLiveRevision] = useState(0);
   // The INTERACTIVE embedded browser — Ares drives its own self-contained HTML
   // apps/games in-window (same-origin), no Playwright. Driven via webview_cmd.
   const embeddedRef = useRef<EmbeddedBrowserHandle>(null);
@@ -2442,6 +2468,14 @@ function App() {
             clearTimeout(pending.timer);
             skillInvokePending.current.delete(id);
             pending.resolve({ ok: (e as { ok?: boolean }).ok === true, result: (e as { result?: unknown }).result, error: (e as { error?: string }).error });
+          } else {
+            const ok = (e as { ok?: boolean }).ok === true;
+            const result = (e as { result?: unknown }).result;
+            const text = ok
+              ? (typeof result === "string" ? result : `${e.name ?? "Skill"} is ready`)
+              : String((e as { error?: string }).error ?? "skill failed");
+            setSkillToast({ name: String(e.name ?? "Skill"), text: text.slice(0, 180), ok });
+            window.setTimeout(() => setSkillToast(null), 4500);
           }
           return true;
         }
@@ -2655,6 +2689,14 @@ function App() {
         setLiveBrowser({ frame: ev.data.image, at: Date.now() });
         setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
         return;
+      }
+      if (ev.type === "tool_progress" && ev.data?.kind === "browser_target" && typeof ev.data.url === "string") {
+        const target = { url: ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
+        setLiveTarget(target);
+        setLiveUrl(target.url);
+        setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
+        // Do not return: the progress event also belongs in the running tool's
+        // activity stream, so the transcript and Forge stay in sync.
       }
       // Embedded-browser command from the daemon — drive Ares's in-app browser and
       // return the result over the same channel. This is the request/response
@@ -3064,8 +3106,9 @@ function App() {
 
   // ── the Forge ─────────────────────────────────────────────────────────────
   const [sandboxCode, setSandboxCode] = useState(SANDBOX_SEED);
-  const [sandboxSrc, setSandboxSrc] = useState<{ src?: string; srcdoc?: string } | null>(null);
-  const [holoSrc, setHoloSrc] = useState<{ src?: string; srcdoc?: string } | null>(null);
+  const [sandboxSrc, setSandboxSrc] = useState<{ src?: string; srcdoc?: string; path?: string } | null>(null);
+  const [holoSrc, setHoloSrc] = useState<{ src?: string; srcdoc?: string; path?: string } | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
 
   const [holoMeta, setHoloMeta] = useState<string>("MECH MK I — built-in showpiece");
 
@@ -3079,7 +3122,7 @@ function App() {
         const html = buildHolotableHtml({ spec });
         if (native) {
           const out = await invoke<string>("ares_forge_write", { name: "holo-spec", html });
-          setHoloSrc({ src: `${convertFileSrc(out)}?t=${Date.now()}` });
+          setHoloSrc({ src: `${convertFileSrc(out)}?t=${Date.now()}`, path: out });
         } else {
           setHoloSrc({ srcdoc: html });
         }
@@ -3101,7 +3144,7 @@ function App() {
     // section, not the flat preview — otherwise the holo panel looks redundant.
     if (/holo[\w-]*\.html?$/i.test(path)) {
       if (native) {
-        setHoloSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}` });
+        setHoloSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}`, path });
         setHoloMeta(label);
         setForge({ open: true, tab: "holo", artifact: { path, label } });
         return;
@@ -3115,7 +3158,7 @@ function App() {
       if (native) {
         try {
           const path = await invoke<string>("ares_forge_write", { name: "sandbox", html: code });
-          setSandboxSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}` });
+          setSandboxSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}`, path });
         } catch (err) {
           apply((s) => foldEvent(s, { type: "desktop_error", text: String(err) }));
         }
@@ -3131,7 +3174,7 @@ function App() {
     if (native) {
       try {
         const path = await invoke<string>("ares_forge_write", { name: "holo", html: holoDefaultHtml() });
-        setHoloSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}` });
+        setHoloSrc({ src: `${convertFileSrc(path)}?t=${Date.now()}`, path });
       } catch (err) {
         apply((s) => foldEvent(s, { type: "desktop_error", text: String(err) }));
       }
@@ -3897,10 +3940,15 @@ function App() {
           {forge.tab === "preview" ? (
             forge.artifact ? (
               <div className="forgeBody">
-                <div className="forgeMeta">{forge.artifact.label}</div>
+                <div className="forgeToolbar">
+                  <span className="forgeMeta">{forge.artifact.label}</span>
+                  <button onClick={() => setPreviewRevision((n) => n + 1)}>↻ Refresh</button>
+                  {native ? <button onClick={() => void invoke("ares_open_path", { path: forge.artifact!.path })}>↗ Launch</button> : null}
+                </div>
                 <iframe
+                  key={`${forge.artifact.path}-${previewRevision}`}
                   title={forge.artifact.label}
-                  src={native ? convertFileSrc(forge.artifact.path) : undefined}
+                  src={native ? `${convertFileSrc(forge.artifact.path)}?forge=${previewRevision}` : undefined}
                   srcDoc={native ? undefined : holoDefaultHtml()}
                   sandbox={PREVIEW_SANDBOX}
                 />
@@ -3917,42 +3965,53 @@ function App() {
             <div className="forgeBody sandbox">
               <div className="sandboxBar">
                 <span>live HTML — scripts run for real</span>
-                <button className="primary tiny" onClick={() => void runSandbox(sandboxCode)}>
-                  ▶ Run
-                </button>
+                <span className="forgeActions">
+                  {native && sandboxSrc?.path ? <button onClick={() => void invoke("ares_open_path", { path: sandboxSrc.path })}>↗ Launch</button> : null}
+                  <button onClick={() => void runSandbox(sandboxCode)}>↻ Refresh</button>
+                  <button className="primary tiny" onClick={() => void runSandbox(sandboxCode)}>▶ Run</button>
+                </span>
               </div>
-              <textarea className="sandboxCode" value={sandboxCode} onChange={(e) => setSandboxCode(e.target.value)} spellCheck={false} />
+              <textarea className="sandboxCode" value={sandboxCode} onChange={(e) => setSandboxCode(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void runSandbox(sandboxCode); } }} spellCheck={false} />
               <iframe title="sandbox" src={sandboxSrc?.src} srcDoc={sandboxSrc?.srcdoc} sandbox={PREVIEW_SANDBOX} />
             </div>
           ) : null}
 
           {forge.tab === "holo" ? (
             <div className="forgeBody">
-              <div className="forgeMeta">{holoMeta}</div>
+              <div className="forgeToolbar">
+                <span className="forgeMeta">{holoMeta}</span>
+                <button onClick={() => setHoloSrc((current) => current?.src ? { ...current, src: `${current.src.split("?")[0]}?t=${Date.now()}` } : current)}>↻ Refresh</button>
+                {native && holoSrc?.path ? <button onClick={() => void invoke("ares_open_path", { path: holoSrc.path })}>↗ Launch</button> : null}
+              </div>
               <iframe title="holo" src={holoSrc?.src} srcDoc={holoSrc?.srcdoc} sandbox={PREVIEW_SANDBOX} />
             </div>
           ) : null}
 
           {forge.tab === "live" ? (
             <div className="forgeBody liveBrowser">
+              <form className="liveToolbar" onSubmit={(e) => { e.preventDefault(); const url = launchableUrl(liveUrl); if (url) { setLiveTarget({ url, title: "Manual preview", at: Date.now() }); setLiveUrl(url); setLiveRevision((n) => n + 1); } }}>
+                <i className={embeddedActive || liveTarget ? "liveDot" : "idleDot"} />
+                <input aria-label="Preview URL" value={liveUrl} onChange={(e) => setLiveUrl(e.target.value)} placeholder="localhost:3000 or https://…" />
+                <button type="submit">Launch</button>
+                <button type="button" onClick={() => setLiveRevision((n) => n + 1)} disabled={!liveTarget}>↻</button>
+                {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })}>↗</button> : null}
+              </form>
               <div className="forgeMeta">
-                {embeddedActive
-                  ? <><i className="liveDot" /> {embeddedActivity || "Ares is driving its own browser — in-window"}</>
-                  : liveBrowser && Date.now() - liveBrowser.at < 4000
-                    ? <><i className="liveDot" /> Ares is driving the browser — watch the cursor</>
-                    : "Ares's embedded browser — appears here when it tests a page or UI"}
+                {embeddedActive ? embeddedActivity || "Interactive app controlled by Ares" : liveTarget?.title || liveTarget?.url || "Launch a local app or let Ares open one"}
               </div>
               {/* interactive embedded browser (Ares's own HTML apps/games) */}
               <div className="liveStage embed" data-on={embeddedActive ? "1" : "0"}>
                 <EmbeddedBrowser ref={embeddedRef} onActivity={setEmbeddedActivity} />
               </div>
-              {/* streamed Playwright frames (localhost / real web), when not embedded */}
-              {!embeddedActive && liveBrowser ? (
-                <div className="liveStage">
-                  <img src={`data:image/jpeg;base64,${liveBrowser.frame}`} alt="Ares live browser" />
+              {/* Playwright publishes its actual target, so the Forge is an
+                  interactive document rather than a screenshot viewer. */}
+              {!embeddedActive && liveTarget ? (
+                <div className="liveStage interactive">
+                  <iframe key={`${liveTarget.url}-${liveRevision}`} title={liveTarget.title || "Live preview"} src={forgeFrameUrl(liveTarget.url, native, liveRevision)} sandbox={PREVIEW_SANDBOX} />
+                  {liveBrowser ? <img className="liveTelemetry" src={`data:image/jpeg;base64,${liveBrowser.frame}`} alt="Latest automation frame" title="Latest frame seen by Ares" /> : null}
                 </div>
               ) : null}
-              {!embeddedActive && !liveBrowser ? (
+              {!embeddedActive && !liveTarget ? (
                 <div className="forgeEmpty">
                   <div className="emptyEmblem" aria-hidden="true" />
                   <p>When Ares tests a page, app, or game it built, you'll watch it here — cursor moving, clicking, navigating at human speed. Just like it has its own browser.</p>
@@ -6415,6 +6474,7 @@ function ThinkingView({ text }: { text: string }) {
 // per-step breakdown stays one click away. One reused card, not a stack.
 function ToolGroup({ item, technical }: { item: Extract<Item, { kind: "tools" }>; technical?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [now, setNow] = useState(Date.now());
   const newStyle = useNewStyle();
   const running = item.steps.some((s) => s.status === "running" || s.status === "drafting");
   const failed = item.steps.some((s) => s.status === "error");
@@ -6425,13 +6485,18 @@ function ToolGroup({ item, technical }: { item: Extract<Item, { kind: "tools" }>
   const doneCount = item.steps.filter((s) => s.status === "ok").length;
   const failedCount = item.steps.filter((s) => s.status === "error").length;
   const total = item.steps.length;
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [running]);
   // The step the card is currently "wearing": the first live one, else the last.
   const current = runningSteps[0] ?? item.steps[item.steps.length - 1];
   const activeGlyph = toolGlyph(current?.name ?? "");
 
   const title = running ? current?.label ?? "working…" : `${total} tool${total === 1 ? "" : "s"} attempted`;
   const subline = running
-    ? `${doneCount}/${total} done${runningSteps.length > 1 ? ` · ${runningSteps.length} running` : ""}`
+    ? `${doneCount}/${total} done · ${fmtMs(Math.max(0, now - item.startedAt))}${runningSteps.length > 1 ? ` · ${runningSteps.length} running` : ""}`
     : `${summarizeSteps(item.steps)}${failed ? ` · ${failedCount} failed` : ""} · ${fmtMs(elapsed)}`;
 
   // New style: a finished card COLLAPSES to a compact ✓ line (height-spring via
@@ -6464,6 +6529,7 @@ function ToolGroup({ item, technical }: { item: Extract<Item, { kind: "tools" }>
         </span>
         <i className="caret" data-open={open ? "1" : "0"} />
       </button>
+      {running ? <div className="toolProgressRail" aria-hidden="true"><i style={{ width: `${Math.max(5, (doneCount / Math.max(total, 1)) * 100)}%` }} /></div> : null}
       {running && current?.liveTail && !open ? (
         <pre className="stepLiveTail cardTail">{current.liveTail.split("\n").slice(-10).join("\n")}</pre>
       ) : null}
@@ -7069,6 +7135,8 @@ interface SkillInfo {
   enabled: boolean;
   provides?: string[];
   surfaces?: SkillSurface[];
+  runnable?: boolean;
+  modifiedAt?: number;
 }
 interface UsageStats {
   sessions: number;
@@ -7283,6 +7351,7 @@ function Settings({
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "model");
   const [draft, setDraftPrefs] = useState<Prefs>(prefs);
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [skillQuery, setSkillQuery] = useState("");
   const providerModels = useRef<Record<string, string>>({ [prefs.provider]: prefs.model });
 
   // pull live data when entering data-backed tabs
@@ -7461,22 +7530,33 @@ function Settings({
           {tab === "skills" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">Skills & Tools</h3>
-              <p className="paneHint">Skills Ares has learned or you've installed, under ~/.ares/skills. Toggle to enable per session.</p>
+              <p className="paneHint">Installed capabilities under ~/.ares/skills. Search, inspect readiness, test executable skills, and disable anything you do not want routed into a turn.</p>
+              <div className="skillOverview">
+                <span><strong>{skills.filter((s) => s.enabled).length}</strong> enabled</span>
+                <span><strong>{skills.filter((s) => s.runnable).length}</strong> executable</span>
+                <span><strong>{new Set(skills.flatMap((s) => s.provides ?? [])).size}</strong> capabilities</span>
+              </div>
+              <input className="txt skillFilter" type="search" placeholder="Filter skills, categories, capabilities…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
               {skills.length === 0 ? (
                 <div className="paneEmpty">No skills yet. Ares proposes skills from repeated workflows; approved ones land here.</div>
               ) : (
                 <div className="skillList">
-                  {skills.map((s) => (
+                  {skills.filter((s) => {
+                    const q = skillQuery.trim().toLowerCase();
+                    return !q || [s.name, s.description, s.category, ...(s.provides ?? [])].join(" ").toLowerCase().includes(q);
+                  }).map((s) => (
                     <div key={s.name} className="skillRow">
                       <div className="skillInfo">
                         <strong>
                           {s.name}
                           <span className="skillCat">{s.category}</span>
                           {(s.provides ?? []).map((p) => <span key={p} className="skillCat provides">{p}</span>)}
+                          <span className="skillReady" data-ready={s.runnable ? "1" : "0"}>{s.runnable ? "executable" : "prompt"}</span>
                         </strong>
                         <span>{s.description}</span>
                       </div>
                       <div className="skillRowActions">
+                        {s.runnable ? <button className="btn tiny ghost" disabled={!s.enabled} title="Run this skill's health check" onClick={() => onDaemonCommand({ type: "skill_invoke", name: s.name, input: { op: "healthcheck", source: "settings" } })}>▶ Test</button> : null}
                         <button className="btn tiny ghost" title="Publish this skill to the SkillHub" onClick={() => onDaemonCommand({ type: "skillhub_publish", name: s.name })}>
                           ⬆ Upload
                         </button>

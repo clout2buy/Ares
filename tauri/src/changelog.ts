@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.24.0",
+    date: "July 2026",
+    title: "The Forge comes alive",
+    tagline: "One-click account sign-in is bound end to end, previews are interactive, and long coding turns stay visible and recover cleanly.",
+    highlights: [
+      {
+        icon: "↗",
+        title: "One-click account sign-in",
+        tag: "New",
+        blurb: "Connect through doingteam.com without pasting a token. The desktop now uses a verified PKCE exchange, a reliable loopback address, and a useful device name.",
+      },
+      {
+        icon: "◆",
+        title: "A working Forge",
+        tag: "New",
+        blurb: "Live previews are real interactive pages with an address bar, launch, refresh, and external-open controls — screenshots are now only a small automation diagnostic.",
+      },
+      {
+        icon: "S",
+        title: "Skills you can trust",
+        tag: "Polished",
+        blurb: "The skill panel shows what is enabled, executable, and available as a capability, with instant filtering and a direct health-check action.",
+      },
+      {
+        icon: "≈",
+        title: "Live work stays live",
+        tag: "Faster",
+        blurb: "Tool cards show elapsed time, progress, and streaming output while work runs; steering can recover a wedged turn instead of leaving the chat stuck.",
+      },
+      {
+        icon: "✓",
+        title: "Harder to derail",
+        tag: "Safer",
+        blurb: "Provider retries, browser reconnection, fresh artifact requests, exact balances, and Windows process cleanup all received a reliability pass.",
+      },
+    ],
+  },
+  {
     version: "0.22.1",
     date: "July 2026",
     title: "Voice that tells you what's wrong",

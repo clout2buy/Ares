@@ -203,6 +203,9 @@ interface DaemonSkillInfo {
   provides: string[];
   /** UI buttons this skill contributes to the active-skills tray. */
   surfaces: SkillSurface[];
+  /** Whether this skill has executable code, versus prompt/docs only. */
+  runnable: boolean;
+  modifiedAt?: number;
 }
 
 /** Parse a `surfaces:` value (JSON array) into validated SkillSurface[]. Tolerant:
@@ -303,6 +306,9 @@ async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
       if (sj) surfaces = parseSurfaces(sj);
     }
     const provides = inferSkillProvides(entry.name, text, surfaces, declaredProvides);
+    const handlerPath = path.join(skillsDir, entry.name, "handler.js");
+    const handlerStat = await stat(handlerPath).catch(() => null);
+    const manifestStat = await stat(md).catch(() => null);
     skills.push({
       name: entry.name,
       description: field("description") || "Local skill.",
@@ -311,6 +317,8 @@ async function daemonSkillsList(home: string): Promise<DaemonSkillInfo[]> {
       enabled: !disabled.has(entry.name),
       provides,
       surfaces,
+      runnable: !!handlerStat,
+      modifiedAt: Math.max(handlerStat?.mtimeMs ?? 0, manifestStat?.mtimeMs ?? 0) || undefined,
     });
   }
   skills.sort((a, b) => a.name.localeCompare(b.name));
@@ -689,13 +697,15 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   interface DaemonEntry {
     live: LiveSession;
     turnActive: boolean;
+    pendingSteers: string[];
+    landingSteers: Array<{ text: string; reminder: string }>;
     /** The lane (task domain) this session is currently on, for sticky auto
      *  routing — the model only switches when the lane actually changes. */
     lane?: string;
   }
   const DEFAULT_SID = "__primary__";
   const sessions = new Map<string, DaemonEntry>();
-  const primaryEntry: DaemonEntry = { live, turnActive: false };
+  const primaryEntry: DaemonEntry = { live, turnActive: false, pendingSteers: [], landingSteers: [] };
   let mainSelection = live.selection;
   let mainProviderFamily = providerFamilyForSelection(live.selection);
   let activeTurns = 0;
@@ -935,7 +945,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       requestPermission,
       { startAgentRuntime: false, sessionId: saved ? undefined : sid },
     );
-    const entry: DaemonEntry = { live: fresh, turnActive: false };
+    const entry: DaemonEntry = { live: fresh, turnActive: false, pendingSteers: [], landingSteers: [] };
     sessions.set(sid, entry);
     tagEmit(sid, { type: "session_opened", model: fresh.selection.model, provider: fresh.selection.provider.name });
     return entry;
@@ -1873,12 +1883,17 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           tagEmit(command.sessionId, { type: "daemon_error", error: "steer requires text" });
           continue;
         }
-        const entry = sessions.get(command.sessionId || DEFAULT_SID) ?? primaryEntry;
-        entry.live.queueSystemReminder(
-          `The user STEERED mid-task: "${text.trim()}". Adjust course to honor this, but keep your current objective and everything you've already done — do not restart.`,
-          "instructions",
-        );
-        tagEmit(command.sessionId, { type: "steer_applied", text: text.trim() });
+        const entry = sessions.get(command.sessionId || DEFAULT_SID);
+        if (!entry?.turnActive) {
+          tagEmit(command.sessionId, { type: "daemon_error", error: "there is no active turn to steer" });
+          continue;
+        }
+        // Preempt a provider or tool that may never reach the old "safe"
+        // reminder boundary. The turn runner resumes the same pending turn with
+        // this steering text injected after the interrupt unwinds.
+        entry.pendingSteers.push(text.trim());
+        tagEmit(command.sessionId, { type: "steer_queued", text: text.trim() });
+        entry.live.session.interrupt();
         continue;
       }
       if (command.type !== "send" || !command.goal) {
@@ -1990,7 +2005,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           }
           const streamOnce = async (gen: AsyncGenerator<unknown>) => {
             for await (const event of gen) {
-              const ev = event as { type: string; status?: "completed" | "interrupted" | "failed"; error?: { code?: string; message?: string }; touchedFiles?: string[] };
+              const ev = event as { type: string; status?: "completed" | "interrupted" | "failed"; error?: { code?: string; message?: string }; touchedFiles?: string[]; text?: string };
               // Continuous verification, daemon path: every edited file feeds the
               // verifier (same as the chat paths); the engine's end-of-turn gate
               // settles it and refuses "done" over red verdicts.
@@ -1999,10 +2014,35 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               if (ev.type === "error" && isProviderFatalError(ev.error)) {
                 turnState.fatalProvider = `${ev.error?.code ?? "provider_error"}: ${ev.error?.message ?? ""}`.slice(0, 200);
               }
+              if (ev.type === "system_reminder_injected" && typeof ev.text === "string") {
+                const landed = entry.landingSteers.findIndex((steer) => steer.reminder === ev.text);
+                if (landed >= 0) {
+                  const [steer] = entry.landingSteers.splice(landed, 1);
+                  tagEmit(sid, { type: "steer_applied", text: steer.text });
+                }
+              }
+              // Steering preemption is internal. Keep the composer busy until
+              // the automatically resumed attempt reaches its real turn_end.
+              if (ev.type === "turn_end" && ev.status === "interrupted" && entry.pendingSteers.length > 0) continue;
               tagEmit(sid, event as Record<string, unknown>);
             }
           };
           await streamOnce(entry.live.session.sendContent(turnContent));
+
+          // Queue steering only after the interrupted attempt unwinds. That
+          // guarantees the resumed provider call receives it instead of draining
+          // it immediately before an abort boundary.
+          while (entry.pendingSteers.length > 0) {
+            const steers = entry.pendingSteers.splice(0);
+            for (const text of steers) {
+              const reminder = `The user STEERED mid-task: "${text}". Adjust course to honor this, but keep your current objective and everything you've already done — do not restart.`;
+              entry.landingSteers.push({ text, reminder });
+              entry.live.queueSystemReminder(reminder, "instructions");
+            }
+            turnState.status = "completed";
+            turnState.fatalProvider = null;
+            await streamOnce(entry.live.session.resumeTurn());
+          }
 
           // Self-healing fallback: if the turn died because the current provider
           // is unauthenticated / out of balance / unreachable, walk healthy

@@ -90,7 +90,10 @@ interface BrowserToolOutput {
   filmstripDir: string;
 }
 
-export function makeBrowserTool(context: CliRuntimeContext) {
+export function makeBrowserTool(
+  context: CliRuntimeContext,
+  createBrowser: typeof createPlaywrightBrowser = createPlaywrightBrowser,
+) {
   let browser: BrowserConnector | null = null;
   let filmstrip: Filmstrip | null = null;
   let sequence = 0;
@@ -99,6 +102,19 @@ export function makeBrowserTool(context: CliRuntimeContext) {
   let frameSink: ((jpegBase64: string) => void) | null = null;
 
   const ensureBrowser = async (headless?: boolean): Promise<BrowserConnector> => {
+    if (browser) {
+      try {
+        await browser.state();
+      } catch (error) {
+        // Users routinely close the visible preview window. Retaining that dead
+        // connector made every subsequent action fail with "Target page,
+        // context or browser has been closed". Re-acquire transparently on the
+        // next call; unrelated state errors still surface honestly.
+        if (!isClosedBrowserError(error)) throw error;
+        await browser.close().catch(() => undefined);
+        browser = null;
+      }
+    }
     if (!browser) {
       // CAPTCHA handoff: a challenge surfaces through the SAME Gate as approvals
       // (so it renders on Telegram/UI). The owner solves it in their CDP-attached
@@ -117,7 +133,7 @@ export function makeBrowserTool(context: CliRuntimeContext) {
             return decision.verb === "deny" ? "skip" : "solved";
           }
         : undefined;
-      browser = await createPlaywrightBrowser({
+      browser = await createBrowser({
         headless: headless ?? true,
         onChallenge,
         onFrame: (jpeg) => frameSink?.(jpeg),
@@ -176,6 +192,9 @@ export function makeBrowserTool(context: CliRuntimeContext) {
 
     async call(i, ctx): Promise<{ output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
       const strip = ensureFilmstrip();
+      const emitTarget = (state: { url?: string; title?: string }) => {
+        if (state.url) ctx?.emitProgress?.({ kind: "browser_target", url: state.url, title: state.title ?? "" });
+      };
       // Route the browser's live frames into THIS turn's UI panel (the embedded
       // browser the owner watches). Cleared when the call ends.
       frameSink = ctx?.emitProgress
@@ -267,6 +286,7 @@ export function makeBrowserTool(context: CliRuntimeContext) {
 
       if (i.action === "state") {
         const result = await br.state();
+        emitTarget(result);
         return {
           output: { action: i.action, status: "ok", result, filmstripDir: filmstripDir(strip) },
           display: `${result.title ?? "(untitled)"} ${result.url}`,
@@ -275,6 +295,7 @@ export function makeBrowserTool(context: CliRuntimeContext) {
 
       if (i.action === "screenshot") {
         const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
+        emitTarget(state);
         const frame = await strip.record({ action: "manual screenshot", url: state.url, screenshot: shot, note: i.note });
         return {
           output: { action: i.action, status: "ok", result: frame, filmstripDir: filmstripDir(strip) },
@@ -300,6 +321,7 @@ export function makeBrowserTool(context: CliRuntimeContext) {
         if (!url) throw new Error("Browser preview requires `url` (or `html` to render inline)");
         await br.navigate(url);
         const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
+        emitTarget(state);
         const frame = await strip.record({ action: "preview", url: state.url, screenshot: shot, note: i.note });
         return {
           output: { action: i.action, status: "ok", result: { ...state, frame: frame.frame }, filmstripDir: filmstripDir(strip) },
@@ -313,6 +335,7 @@ export function makeBrowserTool(context: CliRuntimeContext) {
         if (!br.clickByText) throw new Error("click_text not supported by this browser");
         await br.clickByText(i.query);
         const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
+        emitTarget(state);
         await strip.record({ action: `click ${i.query}`, url: state.url, screenshot: shot });
         return {
           output: { action: i.action, status: "ok", result: state, filmstripDir: filmstripDir(strip) },
@@ -356,6 +379,7 @@ export function makeBrowserTool(context: CliRuntimeContext) {
         if (!i.url) throw new Error("Browser open requires url");
         const effect = navigateEffect(br, i.url, { filmstrip: strip, idemPrefix });
         const result = await runEffect(effect, rails);
+        emitTarget(await br.state());
         return {
           output: { action: i.action, status: result.status, result, filmstripDir: filmstripDir(strip) },
           display: `open ${i.url}: ${result.status}`,
@@ -382,6 +406,12 @@ export function makeBrowserTool(context: CliRuntimeContext) {
       };
     },
   });
+}
+
+function isClosedBrowserError(error: unknown): boolean {
+  return /target (?:page|context|browser) has been closed|browser has been closed|page has been closed/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 /**

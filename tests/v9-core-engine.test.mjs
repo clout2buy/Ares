@@ -193,11 +193,62 @@ test("engine: interrupt() stops the current turn; the next turn is unaffected", 
   session.interrupt();
   await run;
   assert.equal(events.at(-1)?.type, "turn_end");
+  assert.equal(events.at(-1)?.status, "interrupted");
+  assert.ok(!events.some((e) => e.error?.code === "no_message_done"), "Stop is never mislabeled as a provider close");
 
   // next turn must stream normally — interrupt() must not poison the session
   const events2 = [];
   for await (const e of session.send("again")) events2.push(e);
   assert.equal(events2.at(-1)?.status, "completed");
+});
+
+test("session: an interrupted attempt can resume the same pending turn with steering", async () => {
+  const { Session } = await import("../packages/core/dist/index.js");
+  const reminders = [];
+  const requests = [];
+  let calls = 0;
+  const provider = {
+    name: "steer-resume",
+    async *stream(req) {
+      calls++;
+      requests.push(req.messages);
+      if (calls === 1) {
+        yield { type: "text_delta", text: "working" };
+        await new Promise((resolve) => req.signal.addEventListener("abort", resolve, { once: true }));
+        return;
+      }
+      yield {
+        type: "message_done",
+        message: { id: "steered", role: "assistant", content: [{ type: "text", text: "changed course" }], createdAt: new Date().toISOString() },
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: "end_turn",
+      };
+    },
+  };
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-steer-resume-"));
+  const session = new Session({
+    workspace,
+    provider,
+    model: "m",
+    systemPrompt: "s",
+    tools: [],
+    contextBudgetTokens: 0,
+    drainSystemReminders: () => reminders.splice(0),
+  });
+  const first = [];
+  const running = (async () => { for await (const event of session.send("build it")) first.push(event); })();
+  const deadline = Date.now() + 5000;
+  while (!first.some((event) => event.type === "text_delta") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  session.interrupt();
+  await running;
+  assert.equal(first.at(-1)?.status, "interrupted");
+
+  reminders.push({ text: "The user STEERED mid-task: use blue", source: "instructions" });
+  const resumed = [];
+  for await (const event of session.resumeTurn()) resumed.push(event);
+  assert.equal(resumed.at(-1)?.status, "completed");
+  assert.match(JSON.stringify(requests[1]), /STEERED mid-task: use blue/);
+  assert.equal(calls, 2);
 });
 
 test("verifier: findRelatedTestFiles maps source files to existing tests only", async () => {

@@ -663,6 +663,24 @@ test("coding journal promotes the original natural-language request when edits r
   await rm(root, { recursive: true, force: true });
 });
 
+test("coding journal replaces a paused artifact when the user names a fresh deliverable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-journal-new-deliverable-"));
+  const journal = await CodingJournal.open({ workspace: root, sessionId: "sess_new_deliverable" });
+  journal.beginTurn("vein: build a simple stopwatch webpage — start, stop, reset");
+  journal.recordTurnEvent({ type: "tool_start", id: "w1", name: "Write", input: { file_path: "stopwatch.html" } });
+  journal.recordTurnEvent({ type: "tool_end", id: "w1", output: "ok", touchedFiles: [path.join(root, "stopwatch.html")], durationMs: 1 });
+  journal.recordTurnEvent({ type: "turn_end", status: "completed", workStatus: "unverified", usage: {}, durationMs: 1 });
+  await journal.finishTurn("completed");
+
+  const reminder = journal.beginTurn("vein: build a pomodoro timer webpage — 25 min work / 5 min break");
+  const state = journal.snapshot();
+  assert.match(state.objective, /pomodoro timer/i);
+  assert.deepEqual(state.steering, []);
+  assert.deepEqual(state.touchedFiles, []);
+  assert.doesNotMatch(reminder, /objective: .*stopwatch/i);
+  await rm(root, { recursive: true, force: true });
+});
+
 test("coding journal keeps restart verification debt immutable through the end gate", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ares-journal-debt-"));
   const sessionId = "sess_debt";

@@ -1374,6 +1374,20 @@ export class QueryEngine {
               }
             }
 
+            // Some gateways occasionally close an otherwise healthy HTTP/SSE
+            // response before sending a terminal message_done. When NOTHING was
+            // committed, replaying the same request is safe and materially more
+            // useful than failing the whole turn (production report
+            // sess_ebed3deb). An owner interrupt is deliberately excluded: that
+            // is handled as an interrupted turn below, never retried.
+            if (!assistantMessage && !streamError && !this.liveSignal().aborted) {
+              streamError = {
+                code: "no_message_done",
+                message: "provider closed stream without message_done",
+                retriable: true,
+              };
+            }
+
             // Transient, pre-output failure → wait and retry the same request.
             // A stall is also retriable after thinking-only output: nothing was
             // committed to the conversation, so re-issuing is safe.
@@ -1454,7 +1468,28 @@ export class QueryEngine {
         return;
       }
 
+      // guardStreamStalls intentionally swallows the AbortError raised while it
+      // closes the provider iterator. Without this explicit branch, Stop fell
+      // through to the missing-message guard and surfaced as a FAILED
+      // `no_message_done` turn even though the abort worked.
+      if (this.liveSignal().aborted) {
+        yield {
+          type: "turn_end",
+          status: "interrupted",
+          workStatus: resolvedWorkStatus(),
+          usage: totalUsage,
+          durationMs: Date.now() - startedAt,
+        };
+        return;
+      }
+
       if (streamError) {
+        // Provider-emitted errors were already forwarded from the stream. The
+        // premature-close error is synthesized locally, so surface it once only
+        // after its retry budget is exhausted.
+        if (streamError.code === "no_message_done") {
+          yield { type: "error", error: streamError };
+        }
         yield {
           type: "turn_end",
           // A user interrupt surfaces as a provider abort error — report it as

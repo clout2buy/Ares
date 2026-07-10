@@ -35,7 +35,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { WhatsNew } from "./WhatsNew";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle } from "./newStyle";
 import { CHANGELOG } from "./changelog";
-import { useTts, sidecarListen, wakeListen, fetchVoices, type VoiceInfo, type WakeHandle } from "./voice";
+import { useTts, sidecarListen, wakeListen, fetchVoices, setVoiceToken, type VoiceInfo, type WakeHandle } from "./voice";
 import "./styles.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -184,6 +184,15 @@ interface SlashAction {
   label: string;
   hint: string;
   run: () => void;
+}
+
+/** A connect-able remote server from the public MCP registry. */
+interface McpRegistryResult {
+  name: string;
+  fullName: string;
+  description: string;
+  url: string;
+  needsKey: boolean;
 }
 
 /** One connector's live tool listing, as fetched for the explorer's expand row. */
@@ -1308,6 +1317,10 @@ interface Prefs {
   wakeWord?: boolean;
   /** Speak a short heads-up when a background/other-session turn finishes. */
   voiceNotify?: boolean;
+  /** Starred models in the discovery panel, as "provider/model" keys. */
+  favoriteModels?: string[];
+  /** Last-used models (newest first, max 6), as "provider/model" keys. */
+  recentModels?: string[];
 }
 
 type ThemeName = "rage" | "bronze" | "crimson" | "steel" | "nightfall" | "verdant" | "daylight";
@@ -1456,19 +1469,23 @@ const OLLAMA_CLOUD_MODELS: ModelOption[] = [
 ];
 
 const OPENAI_MODELS: ModelOption[] = [
-  { id: "gpt-5.5", hint: "flagship — deep reasoning", group: "OpenAI" },
-  { id: "gpt-5.5-codex", hint: "agentic coding tuned", group: "OpenAI" },
-  { id: "gpt-5.1", hint: "previous flagship", group: "OpenAI" },
-  { id: "gpt-5.1-codex", hint: "coding tuned", group: "OpenAI" },
-  { id: "gpt-5", hint: "stable baseline", group: "OpenAI" },
-  { id: "gpt-5-mini", hint: "fast + cheap", group: "OpenAI" },
+  { id: "gpt-5.6-terra", label: "5.6 Terra", hint: "flagship — deep reasoning + agents", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "gpt-5.6-sol", label: "5.6 Sol", hint: "5.6 — high reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "gpt-5.6-luna", label: "5.6 Luna", hint: "5.6 — fast, efficient reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "gpt-5.5", label: "5.5", hint: "previous flagship", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "gpt-5.4", label: "5.4", hint: "stable baseline", group: "OpenAI", capabilities: ["tools", "reasoning"] },
+  { id: "gpt-5.4-mini", label: "5.4 Mini", hint: "fast + cheap", group: "OpenAI", capabilities: ["tools"] },
+  { id: "gpt-5.3-codex-spark", label: "5.3 Codex Spark", hint: "agentic coding tuned", group: "OpenAI", capabilities: ["tools", "reasoning"] },
 ];
 
 const ANTHROPIC_MODELS: ModelOption[] = [
-  { id: "claude-fable-5", hint: "flagship — adaptive thinking", group: "Anthropic" },
-  { id: "claude-opus-4-8", hint: "deep reasoning workhorse", group: "Anthropic" },
-  { id: "claude-sonnet-4-6", hint: "balanced speed / depth", group: "Anthropic" },
-  { id: "claude-haiku-4-5-20251001", hint: "fast + cheap", group: "Anthropic" },
+  { id: "claude-fable-5", label: "Claude Fable 5", hint: "flagship — adaptive extended thinking", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5", hint: "frontier Sonnet — coding + agents", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8", hint: "deep reasoning workhorse — 1M context", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7", hint: "prior Opus — deep reasoning", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6", hint: "earlier Opus", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "balanced speed / depth", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", hint: "fastest — cheap + capable", group: "Anthropic", capabilities: ["tools", "vision"] },
 ];
 
 const DEEPSEEK_MODELS: ModelOption[] = [
@@ -1938,12 +1955,19 @@ function App() {
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [mcpConnectors, setMcpConnectors] = useState<McpConnectorVm[]>([]);
   const [mcpTools, setMcpTools] = useState<Record<string, McpToolsVm>>({});
+  /** Ollama library downloads in flight: model → progress (done/error terminal). */
+  const [ollamaPulls, setOllamaPulls] = useState<Record<string, { pct: number | null; status: string; done?: boolean; error?: string }>>({});
+  /** MCP registry search results for the /mcp explorer. */
+  const [mcpSearch, setMcpSearch] = useState<{ text: string; searching: boolean; results: McpRegistryResult[] }>({ text: "", searching: false, results: [] });
   const [mcpConnecting, setMcpConnecting] = useState<string | null>(null);
   // Floating-pill mode: shrink the window to an always-on-top mic bar.
   const [pill, setPill] = useState(false);
   const [pinTop, setPinTop] = useState(true);
   const prePillGeom = useRef<{ size: PhysicalSize; pos: PhysicalPosition } | null>(null);
   const [anthropicAuth, setAnthropicAuth] = useState<{ open: boolean; status: "idle" | "opening" | "waiting" | "done" | "error"; error?: string }>({ open: false, status: "idle" });
+  // ChatGPT (OpenAI) OAuth — routes GPT usage through the user's ChatGPT
+  // subscription via the Codex backend; no API key.
+  const [openaiAuth, setOpenaiAuth] = useState<{ signingIn: boolean; connected: boolean; email: string | null; plan: string | null }>({ signingIn: false, connected: false, email: null, plan: null });
   const oauthCtx = useRef<{ verifier: string; state: string }>({ verifier: "", state: "" });
   const [logLines, setLogLines] = useState<string[]>([]);
   const [bootGone, setBootGone] = useState(false);
@@ -2213,7 +2237,16 @@ function App() {
   const [convoMode, setConvoMode] = useState(false);
   const [convoListening, setConvoListening] = useState(false);
   const convoRef = useRef<{ cancel: () => void } | null>(null);
-  const sendRef = useRef<(t: string) => void>(() => {});
+  const sendRef = useRef<(t: string, opts?: { voice?: boolean }) => void>(() => {});
+  // Voice presence: what the hands-free session is doing right now, plus the
+  // last thing Ares HEARD (flashed as a caption so you know it got you right).
+  const [presenceHeard, setPresenceHeard] = useState<string | null>(null);
+  const presenceHeardTimer = useRef<number | null>(null);
+  const flashHeard = useCallback((txt: string) => {
+    setPresenceHeard(txt);
+    if (presenceHeardTimer.current !== null) window.clearTimeout(presenceHeardTimer.current);
+    presenceHeardTimer.current = window.setTimeout(() => setPresenceHeard(null), 3200);
+  }, []);
   const prevSpeaking = useRef(false);
   const activeBusy = active?.busy ?? false;
   useEffect(() => {
@@ -2263,19 +2296,30 @@ function App() {
       if (disposed) return;
       setWakeStatus("arming");
       wakeListen((_heard) => {
-        // Woken: cut any speech, capture the command with VAD auto-send, then
-        // re-arm the wake loop for the next "Hey Ares".
+        // Woken: cut any speech, ACKNOWLEDGE out loud (presence — you know it
+        // heard you), then capture the command with VAD auto-send and re-arm
+        // the wake loop for the next "Hey Ares".
         voiceRef.current.stop();
+        const acks = ["Yeah?", "What's up?", "Listening.", "Go ahead."];
+        voiceRef.current.speak(acks[Math.floor(Math.random() * acks.length)], { force: true });
         setConvoListening(true);
-        void sidecarListen(undefined, { auto: true }).then((handle) => {
-          const cap = window.setTimeout(() => void handle.stop(), 30_000);
-          void handle.transcript.then((txt) => {
-            window.clearTimeout(cap);
-            setConvoListening(false);
-            wakeRef.current?.resume();
-            if (txt.trim()) sendRef.current(txt.trim());
-          });
-        }).catch(() => { setConvoListening(false); wakeRef.current?.resume(); });
+        // Give the ack a beat to leave the speaker before the mic opens, so
+        // the wake capture doesn't transcribe Ares talking to itself.
+        window.setTimeout(() => {
+          if (!wakeRef.current) { setConvoListening(false); return; }
+          void sidecarListen(undefined, { auto: true }).then((handle) => {
+            const cap = window.setTimeout(() => void handle.stop(), 30_000);
+            void handle.transcript.then((txt) => {
+              window.clearTimeout(cap);
+              setConvoListening(false);
+              wakeRef.current?.resume();
+              if (txt.trim()) {
+                flashHeard(txt.trim());
+                sendRef.current(txt.trim(), { voice: true });
+              }
+            });
+          }).catch(() => { setConvoListening(false); wakeRef.current?.resume(); });
+        }, 700);
       }, () => {
         // Sidecar died AFTER arming (crash/restart). The old code left the UI
         // claiming "· listening" forever — drop to offline and re-arm.
@@ -2316,8 +2360,13 @@ function App() {
   useEffect(() => {
     if (!native) return;
     let alive = true;
-    void invoke<{ phase: string; detail: string }>("ares_voice_status")
-      .then((s) => { if (alive && s?.phase) setVoiceEngine({ phase: s.phase, detail: s.detail ?? "" }); })
+    void invoke<{ phase: string; detail: string; token?: string }>("ares_voice_status")
+      .then((s) => {
+        if (!alive) return;
+        // Learn the per-launch sidecar auth token BEFORE any socket opens.
+        if (s?.token) setVoiceToken(s.token);
+        if (s?.phase) setVoiceEngine({ phase: s.phase, detail: s.detail ?? "" });
+      })
       .catch(() => { /* shell predates the command */ });
     const un = listen<{ phase: string; detail: string }>("ares:voice-status", (e) => {
       if (alive && e.payload?.phase) setVoiceEngine({ phase: e.payload.phase, detail: e.payload.detail ?? "" });
@@ -2480,6 +2529,26 @@ function App() {
           }
           return true;
         }
+        case "openai_login_url": {
+          // Device-code flow: open the verification URL (code pre-filled) in the
+          // real browser; the daemon polls until the user approves.
+          const oe = e as { url?: unknown; userCode?: unknown };
+          if (oe.url) void invoke("ares_open_url", { url: String(oe.url) }).catch(() => null);
+          setOpenaiAuth((s) => ({ ...s, signingIn: true }));
+          pushGatewayToast(`Opened ChatGPT sign-in in your browser${oe.userCode ? ` — code ${String(oe.userCode)}` : ""}.`);
+          return true;
+        }
+        case "openai_login_done": {
+          const oe = e as { ok?: unknown; email?: unknown; plan?: unknown; error?: unknown };
+          setOpenaiAuth({ signingIn: false, connected: oe.ok === true, email: typeof oe.email === "string" ? oe.email : null, plan: typeof oe.plan === "string" ? oe.plan : null });
+          pushGatewayToast(oe.ok ? `🟢 ChatGPT connected${oe.plan ? ` — ${String(oe.plan)} plan` : ""}. GPT models use your subscription.` : `ChatGPT sign-in failed: ${oe.error ? stringify(oe.error) : "unknown"}`);
+          return true;
+        }
+        case "openai_auth_status": {
+          const oe = e as { configured?: unknown; email?: unknown; plan?: unknown };
+          setOpenaiAuth({ signingIn: false, connected: oe.configured === true, email: typeof oe.email === "string" ? oe.email : null, plan: typeof oe.plan === "string" ? oe.plan : null });
+          return true;
+        }
         case "consciousness_status": {
           const models = Array.isArray(e.models) ? (e.models as ConsciousnessModelVm[]) : [];
           setConsciousness((c) => ({
@@ -2638,6 +2707,31 @@ function App() {
           setMcpConnecting(null);
           pushGatewayToast(e.ok ? `🔌 Connected ${e.name ?? "connector"} — its tools are live.` : `Connect failed: ${e.error ? stringify(e.error) : "unknown"}`);
           return true;
+        case "mcp_search_results": {
+          const text = typeof (e as { text?: unknown }).text === "string" ? (e as { text: string }).text : "";
+          const results = Array.isArray((e as { results?: unknown }).results) ? ((e as unknown as { results: McpRegistryResult[] }).results) : [];
+          setMcpSearch((prev) => (prev.text === text ? { ...prev, searching: false, results } : prev));
+          return true;
+        }
+        case "ollama_pull_progress": {
+          const model = typeof (e as { model?: unknown }).model === "string" ? (e as { model: string }).model : "";
+          if (model) {
+            const pct = typeof (e as { pct?: unknown }).pct === "number" ? (e as { pct: number }).pct : null;
+            const status = typeof (e as { status?: unknown }).status === "string" ? (e as { status: string }).status : "";
+            setOllamaPulls((prev) => ({ ...prev, [model]: { pct, status } }));
+          }
+          return true;
+        }
+        case "ollama_pull_done": {
+          const model = typeof (e as { model?: unknown }).model === "string" ? (e as { model: string }).model : "";
+          if (model) {
+            const ok = (e as { ok?: unknown }).ok !== false;
+            const error = typeof (e as { error?: unknown }).error === "string" ? (e as { error: string }).error : undefined;
+            setOllamaPulls((prev) => ({ ...prev, [model]: ok ? { pct: 100, status: "success", done: true } : { pct: null, status: "error", error } }));
+            pushGatewayToast(ok ? `🦙 Pulled ${model} — it's ready to use.` : `Pull failed: ${error ?? "unknown error"}`);
+          }
+          return true;
+        }
         case "oauth_status":
           if (Array.isArray(e.providers)) setOauthProviders(e.providers as OAuthProviderVm[]);
           return true;
@@ -2905,7 +2999,7 @@ function App() {
   }, []);
 
   // ── intents ──────────────────────────────────────────────────────────────
-  const send = useCallback((text: string) => {
+  const send = useCallback((text: string, opts?: { voice?: boolean }) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     // Barge-in: sending a new message cuts any reply still being spoken, and
@@ -2926,7 +3020,13 @@ function App() {
     const ultraDirective = prefsRef.current.ultra
       ? "[ULTRA MODE — fleet by default] Run this task as a parallel agent FLEET unless it is trivial or purely conversational (a one-line answer, a single tiny edit, a greeting). Your FIRST move should be the Conductor tool: author a FleetSpec that fans out the independent angles, then reduce:\"judge\" to synthesize — do NOT do it as one linear pass and do NOT hand-roll what a fleet should do. Any task with research, multi-file or multi-angle review, design options, audits, refactors, or broad sweeps QUALIFIES — when in doubt, spawn the fleet. If you genuinely cannot decompose it, say so in one line, then proceed normally.\n\n---\n\n"
       : "";
-    const goal = ultraDirective + trimmed;
+    // Hands-free turns feel like a PERSON, not a report: fast, short, spoken —
+    // and when the web is involved, worked in the visible browser so the user
+    // literally watches Ares browse (scroll to + highlight what matters).
+    const voiceDirective = opts?.voice
+      ? "[VOICE MODE — the user is TALKING to you hands-free] Answer conversationally in 1–3 short sentences (they are read ALOUD) — no headers, lists, code blocks, or markdown unless explicitly asked. Skip extended thinking; respond immediately. If the task needs the web, use the LIVE visible browser tools (CDP/computer-use — never a headless fetch): navigate, scroll to the exact part that answers the question, and highlight/outline it on the page (inject a temporary style via the browser's JS eval) so the user can SEE the evidence while you say the answer. If they ask you to download or click something, actually do it in that browser and confirm out loud when it's done.\n\n---\n\n"
+      : "";
+    const goal = ultraDirective + voiceDirective + trimmed;
     applyTo(sid, (s) => ({
       ...s,
       title: s.title === "New session" ? compact(trimmed, 42) : s.title,
@@ -3051,6 +3151,17 @@ function App() {
     if (native) daemonCmd({ type: "anthropic_login_start" });
     else setAnthropicAuth({ open: true, status: "error", error: "sign-in needs the daemon (installed app)." });
   }, [native, daemonCmd]);
+
+  const startOpenaiSignIn = useCallback(() => {
+    if (!native) { pushGatewayToast("ChatGPT sign-in needs the installed app."); return; }
+    setOpenaiAuth((s) => ({ ...s, signingIn: true }));
+    daemonCmd({ type: "openai_login_start" });
+  }, [native, daemonCmd, pushGatewayToast]);
+
+  // Reflect existing ChatGPT connection when the daemon comes up.
+  useEffect(() => {
+    if (native && daemon === "running") daemonCmd({ type: "openai_auth_status" });
+  }, [native, daemon, daemonCmd]);
 
   // finishAnthropicSignIn no longer needed — loopback flow handles it automatically.
 
@@ -3571,6 +3682,22 @@ function App() {
           onRepairVoice={repairVoice}
         />
       ) : null}
+      {/* Voice PRESENCE: the monitor edges glow while Ares listens (steel) or
+          speaks (ember) — the Gemini-style "I'm here" signal for hands-free. */}
+      {!pill && (convoListening || voice.speaking) ? (
+        <div className="presenceGlow" data-mode={convoListening ? "listening" : "speaking"} aria-hidden="true" />
+      ) : null}
+      {/* Hands-free captions: "listening…" while the mic is open, then a flash
+          of exactly what Ares heard, then the karaoke of what it's saying. */}
+      {!pill && convoListening ? (
+        <div className="presenceCaption" data-kind="listening" aria-live="off">
+          <span className="presenceDot" aria-hidden="true" />
+          listening…
+        </div>
+      ) : null}
+      {!pill && !convoListening && presenceHeard && !voice.speaking ? (
+        <div className="presenceCaption" data-kind="heard" aria-live="off">“{presenceHeard}”</div>
+      ) : null}
       {/* Karaoke: the sentence being spoken right now, following the voice. */}
       {!pill && voice.speaking && nowSpeaking ? (
         <div className="speakingNow" aria-live="off">
@@ -3978,46 +4105,37 @@ function App() {
             <button className="statusSeg" onClick={() => setRoutingOpen(true)} title="per-lane model routing">
               <b>route</b><span>{prefs.routingMode === "auto" ? `auto · ${routedLanes.length}` : routedLanes.length > 0 ? `ready · ${routedLanes.length}` : "off"}</span>
             </button>
-            <button
-              className="statusSeg"
-              onClick={() => {
-                daemonCmd({ type: "operator_status" });
-                setCronOpen(true);
-              }}
-              title="durable missions (Operator)"
-            >
-              <i className="dot" data-state={opStatus?.activeCount ? "running" : "stopped"} /><b>missions</b><span>{opStatus?.activeCount ?? 0}</span>
-            </button>
+            {opStatus?.activeCount ? (
+              <button
+                className="statusSeg"
+                onClick={() => {
+                  daemonCmd({ type: "operator_status" });
+                  setCronOpen(true);
+                }}
+                title="durable missions (Operator)"
+              >
+                <i className="dot" data-state="running" /><b>missions</b><span>{opStatus.activeCount}</span>
+              </button>
+            ) : null}
             <button className="statusSeg" onClick={cycleFlame} title="screen flame border — immersive / clean / combat">
               <b>flame</b><span>{prefs.flameMode}</span>
             </button>
           </div>
           <span className="grow" />
-          <div className="statusGroup">
+          <span className="hudReadout" title="tokens in / out this session">
+            ↑<SpringNumber value={active?.tokensIn ?? 0} format={fmtTokens} /> ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
+          </span>
+          <div className="statusGroup statusActions">
             {native && daemon !== "running" && daemon !== "starting" ? (
-              <button className="statusAction" onClick={() => { restartAttempts.current = 0; restartDaemon(); }}>
-                ⟳ Restart
-              </button>
+              <button className="statusIcon" onClick={() => { restartAttempts.current = 0; restartDaemon(); }} title="Restart the Garrison" aria-label="Restart">⟳</button>
             ) : null}
-            <button className="statusAction" onClick={() => void exportSessionLog()} title="Export this session (chat + tool calls + errors) to a file for feedback">
-              ⤓ Export
+            <button className="statusIcon" onClick={() => void exportSessionLog()} title="Export this session (chat + tool calls + errors) to a file" aria-label="Export session">⤓</button>
+            <button className="statusIcon" onClick={() => setReportOpen(true)} disabled={!active?.id} title="Report a bug — upload this chat so the owner can diagnose it" aria-label="Report a bug">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M8 5.5v6M4.5 8H2m12 0h-2.5M4.8 5.2 3.4 3.8m9.2 1.4 1.4-1.4M4.6 11l-1.4 1.4m9.6-1.4 1.4 1.4"/><rect x="5" y="4.5" width="6" height="7.5" rx="3"/></svg>
             </button>
-            <button
-              className="statusAction"
-              onClick={() => setReportOpen(true)}
-              disabled={!active?.id}
-              title="Report a bug — upload this whole chat (all code, tool calls, errors) so the owner can diagnose and improve Ares"
-            >
-              🐛 Report bug
-            </button>
-            <button className="statusAction" onClick={() => setPaletteOpen(true)} title="command palette">
-              ⌘ Ctrl+K
-            </button>
-            <span className="hudReadout" title="tokens in / out this session">
-              ↑<SpringNumber value={active?.tokensIn ?? 0} format={fmtTokens} /> ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
-            </span>
-            <span className="hudVersion">v{APP_VERSION}</span>
+            <button className="statusIcon" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl+K)" aria-label="Command palette">⌘</button>
           </div>
+          <span className="hudVersion" title={`Ares v${APP_VERSION}`}>{APP_VERSION}</span>
         </footer>
       </main>
 
@@ -4158,6 +4276,11 @@ function App() {
           onAnthropicSignIn={startAnthropicSignIn}
           initialTab={settingsTab}
           onPreviewVoice={(id) => voiceRef.current.preview(id)}
+          voiceEngine={voiceEngine}
+          onRepairVoice={repairVoice}
+          onOpenModelBrowser={() => setModelPopOpen(true)}
+          openaiAuth={openaiAuth}
+          onOpenaiSignIn={startOpenaiSignIn}
           listProviderVoices={
             ttsProviderSkill
               ? () => skillInvoke(ttsProviderSkill.name, { op: "voices" }).then((r) => {
@@ -4199,6 +4322,11 @@ function App() {
             setMcpTools((prev) => ({ ...prev, [name]: { loading: true, tools: prev[name]?.tools ?? [], error: null } }));
             daemonCmd({ type: "mcp_tools", name });
           }}
+          registry={mcpSearch}
+          onSearchRegistry={(text) => {
+            setMcpSearch({ text, searching: true, results: [] });
+            daemonCmd({ type: "mcp_search", text });
+          }}
         />
       ) : null}
 
@@ -4208,6 +4336,11 @@ function App() {
           native={native}
           usage={usageStats}
           onRequestUsage={() => daemonCmd({ type: "usage_stats", days: 30 })}
+          pulls={ollamaPulls}
+          onPull={(model) => {
+            setOllamaPulls((prev) => ({ ...prev, [model]: { pct: null, status: "starting…" } }));
+            daemonCmd({ type: "ollama_pull", model });
+          }}
           onClose={() => setModelPopOpen(false)}
           onPickAuto={() => {
             setModelPopOpen(false);
@@ -4224,9 +4357,19 @@ function App() {
             apply((s) => ({ ...s, turnModel: enabled ? undefined : next.model, turnProvider: enabled ? undefined : next.provider }));
             daemonCmd({ type: "routing_mode", enabled });
           }}
+          onToggleFavorite={(key) => {
+            const favorites = (prefs.favoriteModels ?? []).includes(key)
+              ? (prefs.favoriteModels ?? []).filter((k) => k !== key)
+              : [...(prefs.favoriteModels ?? []), key].slice(-12);
+            const next = { ...prefs, favoriteModels: favorites };
+            setPrefs(next);
+            savePrefs(next);
+          }}
           onPick={(provider, model) => {
             setModelPopOpen(false);
-            const next = { ...prefs, provider, model, routingMode: "manual" as const };
+            const key = `${provider}/${model}`;
+            const recentModels = [key, ...(prefs.recentModels ?? []).filter((k) => k !== key)].slice(0, 6);
+            const next = { ...prefs, provider, model, routingMode: "manual" as const, recentModels };
             setPrefs(next);
             savePrefs(next);
             // Immediately show the picked model in the footer/composer. The next
@@ -4432,6 +4575,12 @@ const LANE_HINTS: Record<RouteLane, string> = {
   research: "planning, analysis, deep reads",
   "tool-use": "tool-output digestion, mechanical steps",
 };
+const LANE_ICONS: Record<RouteLane, string> = {
+  chat: "💬",
+  coding: "⌨️",
+  research: "🔎",
+  "tool-use": "🔧",
+};
 
 function RoutingPanel({
   prefs,
@@ -4468,10 +4617,13 @@ function RoutingPanel({
             return (
               <div key={lane} className="routeLane" data-on={open ? "1" : "0"}>
                 <button className="laneToggle" onClick={() => setLane(lane, entry ? undefined : { provider: prefs.provider, model: prefs.model })}>
-                  <i />
-                  <span className="laneName">{lane}</span>
-                  <em className="laneHint">{LANE_HINTS[lane]}</em>
-                  {entry ? <span className="laneModel">{entry.model}</span> : <span className="laneFallback">main model</span>}
+                  <span className="laneIcon" aria-hidden="true">{LANE_ICONS[lane]}</span>
+                  <span className="laneName">
+                    <strong>{lane}</strong>
+                    <em>{LANE_HINTS[lane]}</em>
+                  </span>
+                  <span className="laneAssign">{entry ? `${entry.provider} · ${entry.model}` : "main model"}</span>
+                  <span className="laneSwitch" data-on={entry ? "1" : "0"} aria-hidden="true"><i /></span>
                 </button>
                 {entry ? (
                   <div className="laneBody">
@@ -4545,6 +4697,8 @@ function ConnectorDirectory({
   onDisconnect,
   onToggle,
   onListTools,
+  registry,
+  onSearchRegistry,
   onClose,
 }: {
   connectors: McpConnectorVm[];
@@ -4554,9 +4708,20 @@ function ConnectorDirectory({
   onDisconnect: (name: string) => void;
   onToggle: (name: string, enabled: boolean) => void;
   onListTools: (name: string) => void;
+  registry: { text: string; searching: boolean; results: McpRegistryResult[] };
+  onSearchRegistry: (text: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  // Registry search rides the same box, debounced — presets filter instantly,
+  // the whole public MCP registry answers a beat later.
+  useEffect(() => {
+    const text = query.trim();
+    if (text.length < 2) return;
+    const t = window.setTimeout(() => onSearchRegistry(text), 400);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
   const [customUrl, setCustomUrl] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const connectedNames = new Set(connectors.map((c) => c.name));
@@ -4660,8 +4825,44 @@ function ConnectorDirectory({
               </button>
             );
           })}
-          {shown.length === 0 ? <div className="dirEmpty">No preset matches — add it by URL below.</div> : null}
+          {shown.length === 0 ? <div className="dirEmpty">No preset matches — check the registry results below, or add by URL.</div> : null}
         </div>
+
+        {query.trim().length >= 2 ? (
+          <>
+            <div className="dirSectionLabel">MCP Registry</div>
+            <div className="dirRegistry">
+              {registry.searching ? (
+                <div className="dirToolsStatus"><span className="skillDockSpin" aria-hidden="true" /> searching the public registry…</div>
+              ) : registry.results.length === 0 ? (
+                <div className="dirToolsStatus">no remote servers found for “{registry.text}”</div>
+              ) : (
+                registry.results.map((r, i) => {
+                  const isConnected = connectedNames.has(r.name);
+                  const isConnecting = connecting === r.name;
+                  return (
+                    <button
+                      key={r.url}
+                      className="dirCard wide"
+                      data-connected={isConnected ? "1" : "0"}
+                      disabled={isConnected || connecting !== null}
+                      style={{ "--i": i } as React.CSSProperties}
+                      onClick={() => onConnect(r.url, r.name)}
+                      title={`${r.fullName}\n${r.url}`}
+                    >
+                      <span className="dirCardGlyph" aria-hidden="true">🛰️</span>
+                      <span className="dirCardBody">
+                        <strong>{r.name}{r.needsKey ? <i className="dirNeedsKey"> · needs API key</i> : null}</strong>
+                        <em>{r.description || r.url}</em>
+                      </span>
+                      <span className="dirCardAction">{isConnected ? "✓ connected" : isConnecting ? "connecting…" : "+ connect"}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </>
+        ) : null}
 
         <div className="dirSectionLabel">Add any MCP server by URL</div>
         <div className="dirCustom">
@@ -4768,6 +4969,9 @@ function ModelPopover({
   native,
   usage,
   onRequestUsage,
+  pulls,
+  onPull,
+  onToggleFavorite,
   onPickAuto,
   onPick,
   onClose,
@@ -4776,6 +4980,9 @@ function ModelPopover({
   native: boolean;
   usage: UsageStats | null;
   onRequestUsage: () => void;
+  pulls: Record<string, { pct: number | null; status: string; done?: boolean; error?: string }>;
+  onPull: (model: string) => void;
+  onToggleFavorite: (key: string) => void;
   onPickAuto: () => void;
   onPick: (provider: string, model: string) => void;
   onClose: () => void;
@@ -4841,7 +5048,7 @@ function ModelPopover({
               const pi = PROVIDER_IDENTITY[p] ?? { title: p, tagline: "", mark: "◆", from: "#26262a", to: "#8a8f98" };
               return (
                 <button key={p} className="mdlProv" data-on={provider === p ? "1" : "0"} style={{ "--i": i } as React.CSSProperties} onClick={() => pickProvider(p)}>
-                  <span className="mdlMark" style={markStyle(pi)} aria-hidden="true">{pi.mark}</span>
+                  <ProviderLogo brand={p} className="mdlMark" />
                   <span className="mdlProvBody">
                     <strong>{pi.title}</strong>
                     <em>{pi.tagline}</em>
@@ -4860,7 +5067,7 @@ function ModelPopover({
         </aside>
         <section className="mdlMain">
           <header className="mdlHero">
-            <span className="mdlMark big" style={markStyle(ident)} aria-hidden="true">{ident.mark}</span>
+            <ProviderLogo brand={provider} className="mdlMark big" />
             <div className="mdlHeroBody">
               <strong>{ident.title}</strong>
               <em>{ident.tagline}</em>
@@ -4868,6 +5075,28 @@ function ModelPopover({
             <span className="mdlCount">{loading ? "scanning…" : `${models.length} models`}</span>
             <button className="ghost" onClick={onClose}>Close</button>
           </header>
+          {(prefs.favoriteModels ?? []).length > 0 || (prefs.recentModels ?? []).length > 0 ? (
+            <div className="mdlQuick">
+              {(prefs.favoriteModels ?? []).map((key) => {
+                const [p, ...rest] = key.split("/");
+                const id = rest.join("/");
+                return (
+                  <button key={`f:${key}`} className="mdlQuickChip fav" data-on={p === prefs.provider && id === prefs.model ? "1" : "0"} title={key} onClick={() => onPick(p, id)}>
+                    ★ {id}
+                  </button>
+                );
+              })}
+              {(prefs.recentModels ?? []).filter((key) => !(prefs.favoriteModels ?? []).includes(key)).slice(0, 4).map((key) => {
+                const [p, ...rest] = key.split("/");
+                const id = rest.join("/");
+                return (
+                  <button key={`r:${key}`} className="mdlQuickChip" data-on={p === prefs.provider && id === prefs.model ? "1" : "0"} title={`recent · ${key}`} onClick={() => onPick(p, id)}>
+                    ↺ {id}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
           {providerUsage ? (
             <div className="mdlUsage" title="Your last 30 days through this provider (spend estimated from live OpenRouter pricing)">
               <span className="mdlUsageLabel">30d</span>
@@ -4928,11 +5157,21 @@ function ModelPopover({
                     return (
                       <button key={m.id} className="mdlCard" data-on={m.id === value ? "1" : "0"} style={{ "--i": Math.min(i, 20) } as React.CSSProperties} onClick={() => onPick(provider, m.id)}>
                         <span className="mdlCardTop">
-                          <span className="modelGlyph" aria-hidden="true">{modelGlyph(m)}</span>
+                          <ProviderLogo brand={brandKey(m)} className="modelGlyph" />
                           <span className="mdlCardName">
                             <strong>{m.label ?? m.id}</strong>
                             {m.label && m.label !== m.id ? <em>{m.id}</em> : null}
                           </span>
+                          <span
+                            className="mdlStar"
+                            role="button"
+                            tabIndex={0}
+                            data-on={(prefs.favoriteModels ?? []).includes(`${provider}/${m.id}`) ? "1" : "0"}
+                            title={(prefs.favoriteModels ?? []).includes(`${provider}/${m.id}`) ? "Unpin" : "Pin to the top"}
+                            aria-label={`Pin ${m.label ?? m.id}`}
+                            onClick={(e) => { e.stopPropagation(); onToggleFavorite(`${provider}/${m.id}`); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onToggleFavorite(`${provider}/${m.id}`); } }}
+                          >{(prefs.favoriteModels ?? []).includes(`${provider}/${m.id}`) ? "★" : "☆"}</span>
                           <span
                             className="modelInfo"
                             role="button"
@@ -4954,11 +5193,29 @@ function ModelPopover({
                             {m.updated ? <span title="last updated">↻ {m.updated}</span> : null}
                           </span>
                         ) : null}
+                        {(() => {
+                          const pullState = pulls[m.label ?? m.id];
+                          if (!pullState || pullState.done || pullState.error) return null;
+                          return (
+                            <span className="mdlPullBar" title={pullState.status}>
+                              <span className="mdlPullFill" style={{ width: pullState.pct !== null ? `${pullState.pct}%` : "100%" }} data-indeterminate={pullState.pct === null ? "1" : "0"} />
+                              <em>{pullState.pct !== null ? `${pullState.pct}%` : pullState.status || "pulling…"}</em>
+                            </span>
+                          );
+                        })()}
                         <span className="mdlCardFoot">
                           {isLibrary ? (
-                            pulled ? <i className="mdlChip pulled">✓ pulled</i>
+                            pulled || pulls[m.label ?? m.id]?.done ? <i className="mdlChip pulled">✓ pulled</i>
                             : cloudHosted ? null
-                            : <i className="mdlChip ghosted">not pulled</i>
+                            : pulls[m.label ?? m.id] && !pulls[m.label ?? m.id]?.error ? null
+                            : <span
+                                className="mdlChip pullBtn"
+                                role="button"
+                                tabIndex={0}
+                                title="Download this model through your local Ollama"
+                                onClick={(e) => { e.stopPropagation(); onPull(m.label ?? m.id); }}
+                                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPull(m.label ?? m.id); } }}
+                              >⇩ pull</span>
                           ) : null}
                           {cloudHosted && provider === "ollama" ? <i className="mdlChip cloud">☁ cloud</i> : null}
                           {m.group === "Local Ollama" ? <i className="mdlChip pulled">💾 local</i> : null}
@@ -7352,33 +7609,112 @@ function CustomProviderBlock({
   );
 }
 /** Providers that take a pasted API key (the rest use OAuth / local daemon / nothing). */
-const KEYED_PROVIDERS: Array<{ id: string; label: string; placeholder: string }> = [
-  { id: "anthropic", label: "Anthropic API key", placeholder: "sk-ant-… (stored by the daemon)" },
-  { id: "deepseek", label: "DeepSeek API key", placeholder: "sk-… official api.deepseek.com access" },
-  { id: "openrouter", label: "OpenRouter API key", placeholder: "sk-or-… (stored by the daemon)" },
-  { id: "ollama", label: "Ollama Cloud API key", placeholder: "cloud catalog; auth for OLLAMA_HOST=https://ollama.com" },
+const KEYED_PROVIDERS: Array<{ id: string; brand: string; label: string; sub: string; placeholder: string }> = [
+  { id: "anthropic", brand: "anthropic", label: "Anthropic", sub: "Claude models via API", placeholder: "sk-ant-…" },
+  { id: "deepseek", brand: "deepseek", label: "DeepSeek", sub: "official api.deepseek.com", placeholder: "sk-…" },
+  { id: "openrouter", brand: "openrouter", label: "OpenRouter", sub: "hundreds of models, one key", placeholder: "sk-or-…" },
+  { id: "ollama", brand: "ollama", label: "Ollama Cloud", sub: "cloud catalog + inference", placeholder: "ollama.com API key" },
 ];
 
 // A small brand glyph per model so the picker reads like a gallery, not a
 // wall of ids. Keyed off the catalog group first, then the id prefix that
 // OpenRouter-style ids carry ("openai/…", "anthropic/…").
-function modelGlyph(m: { id: string; group?: string }): string {
-  const g = (m.group ?? "").toLowerCase();
-  if (g.includes("ares")) return "⚔️";
-  if (g.includes("anthropic")) return "🔶";
-  if (g.includes("openai")) return "🟢";
-  if (g.includes("deepseek")) return "🐋";
-  if (g.includes("ollama")) return "🦙";
-  if (g.includes("openrouter")) return "🧭";
-  if (g.includes("custom")) return "🔧";
-  if (g.includes("mixture") || g.includes("moa")) return "🜲";
-  if (g.includes("mock")) return "🎭";
-  const prefix = m.id.split("/")[0]?.toLowerCase() ?? "";
+// Map a model (by group + id prefix) to a brand key for its logo. Covers both
+// the native providers and the model FAMILY (id prefix) for OpenRouter's mixed
+// catalog, so a "google/gemini-…" row shows Google's mark, not OpenRouter's.
+function brandKey(m: { id: string; group?: string }): string {
+  const id = m.id.toLowerCase();
+  const prefix = id.split("/")[0] ?? "";
   const byPrefix: Record<string, string> = {
-    openai: "🟢", anthropic: "🔶", google: "🔵", "meta-llama": "🦙", meta: "🦙",
-    mistralai: "🌫️", deepseek: "🐋", qwen: "🟣", "x-ai": "✖️", cohere: "🔗",
+    openai: "openai", "o1": "openai", "o3": "openai", "gpt": "openai",
+    anthropic: "anthropic", claude: "anthropic",
+    google: "google", "gemini": "google", "gemma": "google",
+    "meta-llama": "meta", meta: "meta", llama: "meta",
+    mistralai: "mistral", mistral: "mistral", ministral: "mistral",
+    deepseek: "deepseek", qwen: "qwen", qwq: "qwen", "x-ai": "xai", grok: "xai",
+    cohere: "cohere", "command": "cohere", nvidia: "nvidia", microsoft: "microsoft",
+    perplexity: "perplexity", "z-ai": "zai", moonshotai: "moonshot", moonshot: "moonshot",
   };
-  return byPrefix[prefix] ?? "🔥";
+  if (byPrefix[prefix]) return byPrefix[prefix];
+  const bare = id.split("/").pop() ?? id;
+  for (const [k, v] of Object.entries(byPrefix)) if (bare.startsWith(k)) return v;
+  const g = (m.group ?? "").toLowerCase();
+  if (g.includes("ares")) return "ares";
+  if (g.includes("anthropic")) return "anthropic";
+  if (g.includes("openai")) return "openai";
+  if (g.includes("deepseek")) return "deepseek";
+  if (g.includes("ollama") || g.includes("library")) return "ollama";
+  if (g.includes("openrouter")) return "openrouter";
+  if (g.includes("mixture") || g.includes("moa")) return "moa";
+  if (g.includes("custom")) return "custom";
+  if (g.includes("mock") || g.includes("demo")) return "mock";
+  return "generic";
+}
+
+// Original geometric brand marks — functional provider identifiers rendered as
+// self-contained rounded tiles (bg + mark), so they read as real app icons
+// instead of emoji. Not tracings of trademarked artwork; simple vector forms
+// in each brand's signature color.
+const BRAND_LOGOS: Record<string, { bg: string; fg: string; body: React.ReactNode }> = {
+  ares: { bg: "#3a0f0f", fg: "#f0b046", body: <path d="M12 4l6 14h-3l-1-3h-4l-1 3H5z m0 5l-1.2 3h2.4z" /> },
+  openai: { bg: "#0d1f1a", fg: "#10a37f", body: <path d="M12 5a4 4 0 0 1 3.9 3.1 4 4 0 0 1 .1 7.8A4 4 0 0 1 8.1 15 4 4 0 0 1 8 7.2 4 4 0 0 1 12 5m0 2.2a2.2 2.2 0 0 0-2.2 2.2v5.2a2.2 2.2 0 1 0 4.4 0V9.4A2.2 2.2 0 0 0 12 7.2" /> },
+  anthropic: { bg: "#2b1a12", fg: "#d97757", body: <path d="M9.2 5h2.2l4.4 14h-2.4l-.9-3H8.6l-.9 3H5.3zM9.3 14h3.1L10.9 8.8z" /> },
+  ollama: { bg: "#101a1c", fg: "#c9d6d3", body: <path d="M8 6c1 0 1.6.9 1.6 2.2 0 .5-.1 1-.3 1.4h5.4c-.2-.4-.3-.9-.3-1.4C14.4 6.9 15 6 16 6s1.7 1.1 1.7 2.7c0 1-.3 1.9-.8 2.5.6.7 1 1.7 1 2.8 0 2.5-2.2 4-5.9 4s-5.9-1.5-5.9-4c0-1.1.4-2.1 1-2.8-.5-.6-.8-1.5-.8-2.5C6.3 7.1 7 6 8 6m2.2 8.2a1 1 0 1 0 0 .1zm3.6 0a1 1 0 1 0 0 .1z" /> },
+  deepseek: { bg: "#101a33", fg: "#4d6bfe", body: <path d="M18 7c-1.5 2.3-3.4 2.2-5.3 2.5-2.6.4-4 1.6-4.4 3.9-.3-1-1-1.6-2-1.9 1 .9 1.1 2.4.3 3.6C7.9 16 10 17 12.4 17c3.4 0 5.8-2.4 5.8-6 0-1.5-.3-2.9-.2-4z" /> },
+  openrouter: { bg: "#1e1630", fg: "#9d7bea", body: <path d="M4 12h3.5M16.5 8.5 20 12l-3.5 3.5M7.5 12c1.8 0 2.2-4 4.5-4h4M7.5 12c1.8 0 2.2 4 4.5 4h4" fill="none" stroke="#9d7bea" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /> },
+  google: { bg: "#12151c", fg: "#4285f4", body: <path d="M12 4c1 3.8 3.2 6 7 7-3.8 1-6 3.2-7 7-1-3.8-3.2-6-7-7 3.8-1 6-3.2 7-7z" /> },
+  meta: { bg: "#0a1830", fg: "#3b82f6", body: <path d="M4 15c1.6 0 2.6-1.4 3.8-3.4C9 9.7 9.8 8.6 11 8.6c1.4 0 2 1.8 2.6 3.6M20 15c-1.6 0-2.6-1.4-3.8-3.4C15 9.7 14.2 8.6 13 8.6c-1.4 0-2 1.8-2.6 3.6" fill="none" stroke="#3b82f6" strokeWidth="1.7" strokeLinecap="round" /> },
+  mistral: { bg: "#201408", fg: "#f2a33c", body: <path d="M5 6h3v3H5zm5 0h3v3h-3zm5 0h3v3h-3zM5 11h3v3H5zm10 0h3v3h-3zM5 16h3v2H5zm5-5h3v3h-3zm0 5h3v2h-3zm5 0h3v2h-3z" /> },
+  qwen: { bg: "#1c1030", fg: "#a56bf0", body: <path d="M12 4l7 4v8l-7 4-7-4V8zm0 2.3L7 9v6l5 2.7L17 15V9z" /> },
+  xai: { bg: "#161616", fg: "#e8e8e8", body: <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="#e8e8e8" strokeWidth="1.8" strokeLinecap="round" /> },
+  cohere: { bg: "#241416", fg: "#e06a5a", body: <path d="M9 9a3 3 0 1 0 3 3h6M9 9h4" fill="none" stroke="#e06a5a" strokeWidth="1.7" strokeLinecap="round" /> },
+  nvidia: { bg: "#0f1a0a", fg: "#76b900", body: <path d="M6 9c3-1 6-1 8 0s2 4 0 6c-3-1.5-3-4.5-8-6z" /> },
+  microsoft: { bg: "#101820", fg: "#3aa0ff", body: <path d="M5 5h5.5v5.5H5zm8.5 0H19v5.5h-5.5zM5 13.5h5.5V19H5zm8.5 0H19V19h-5.5z" /> },
+  perplexity: { bg: "#0d1c1e", fg: "#4fd0c8", body: <path d="M12 4v16M6 8l6 4 6-4M6 16l6-4 6 4" fill="none" stroke="#4fd0c8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /> },
+  zai: { bg: "#151530", fg: "#7f8bf0", body: <path d="M7 7h10l-7 10h7" fill="none" stroke="#7f8bf0" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /> },
+  moonshot: { bg: "#12121c", fg: "#c9c9ff", body: <path d="M15 4a7 7 0 1 0 4 8 5.5 5.5 0 0 1-4-8z" /> },
+  ares_gateway: { bg: "#3a0f0f", fg: "#f0b046", body: <path d="M12 4l6 14h-3l-1-3h-4l-1 3H5z" /> },
+  moa: { bg: "#241430", fg: "#c86bd1", body: <path d="M12 5a2 2 0 1 1 0 .1zM6.5 15a2 2 0 1 1 0 .1zM17.5 15a2 2 0 1 1 0 .1zM12 5v3M12 8l-4.5 5M12 8l4.5 5" fill="none" stroke="#c86bd1" strokeWidth="1.5" strokeLinecap="round" /> },
+  custom: { bg: "#1a1a1e", fg: "#9aa3ad", body: <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-4v2m0 12v2M4 12h2m12 0h2M6 6l1.5 1.5M16.5 16.5 18 18" fill="none" stroke="#9aa3ad" strokeWidth="1.4" strokeLinecap="round" /> },
+  mock: { bg: "#1a1a1e", fg: "#8a8f98", body: <path d="M8 9a1.5 1.5 0 1 1 0 .1zm8 0a1.5 1.5 0 1 1 0 .1zM8 15c1 1.2 2.4 1.8 4 1.8s3-.6 4-1.8" fill="none" stroke="#8a8f98" strokeWidth="1.4" strokeLinecap="round" /> },
+  generic: { bg: "#1a1a1e", fg: "#c98a3a", body: <path d="M12 4l2.2 5.6L20 10l-4.5 3.4L17 19l-5-3-5 3 1.5-5.6L4 10l5.8-.4z" /> },
+};
+
+// The provider's OWN domain — we load its real favicon (the genuine logo it
+// serves) at runtime and only fall back to the vector mark when offline / the
+// image fails. Ares/MoA/custom have no external brand, so they use the mark.
+const BRAND_DOMAINS: Record<string, string> = {
+  openai: "openai.com", anthropic: "anthropic.com", google: "google.com",
+  meta: "meta.com", mistral: "mistral.ai", deepseek: "deepseek.com",
+  qwen: "qwen.ai", xai: "x.ai", cohere: "cohere.com", ollama: "ollama.com",
+  openrouter: "openrouter.ai", nvidia: "nvidia.com", microsoft: "microsoft.com",
+  perplexity: "perplexity.ai", zai: "z.ai", moonshot: "moonshot.ai",
+};
+
+function ProviderLogo({ brand, className }: { brand: string; className?: string }) {
+  const domain = BRAND_DOMAINS[brand];
+  const [failed, setFailed] = useState(false);
+  const b = BRAND_LOGOS[brand] ?? BRAND_LOGOS.generic;
+  if (domain && !failed) {
+    // DuckDuckGo's favicon service returns the provider's real, normalized
+    // logo; a clean light tile keeps dark marks visible in any theme.
+    return (
+      <span className={`brandLogo ${className ?? ""}`} aria-hidden="true">
+        <img
+          src={`https://icons.duckduckgo.com/ip3/${domain}.ico`}
+          alt=""
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      </span>
+    );
+  }
+  return (
+    <svg className={className} viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <rect x="0" y="0" width="24" height="24" rx="6" fill={b.bg} />
+      <g fill={b.fg}>{b.body}</g>
+    </svg>
+  );
 }
 
 function ModelPicker({
@@ -7469,7 +7805,7 @@ function ModelPicker({
               .filter((m) => m.group === g)
               .map((m, i) => (
                 <button key={m.id} className="modelRow" data-on={m.id === value ? "1" : "0"} style={{ ["--i" as string]: i }} onClick={() => choose(m.id)}>
-                  <span className="modelGlyph" aria-hidden="true">{modelGlyph(m)}</span>
+                  <ProviderLogo brand={brandKey(m)} className="modelGlyph" />
                   <span className="modelIdentity">
                     {/* Friendly name leads (white-labeled for gateway models); raw id demotes to a tag. */}
                     <span className="modelId">{m.label ?? m.id}</span>
@@ -7524,7 +7860,7 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
     <div className="modelDetail" role="dialog" aria-label={`${model.label ?? model.id} details`}>
       <button className="mdBack" onClick={onBack}>← Back to models</button>
       <div className="mdHead">
-        <span className="mdGlyph" aria-hidden="true">{modelGlyph(model)}</span>
+        <ProviderLogo brand={brandKey(model)} className="mdGlyph" />
         <div className="mdTitle">
           <strong>{model.label ?? model.id}</strong>
           <span className="mdSub">{model.group}{model.label && model.label !== model.id ? ` · ${model.id}` : ""}</span>
@@ -7551,7 +7887,7 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
   );
 }
 
-type SettingsTab = "account" | "model" | "appearance" | "skills" | "usage" | "routing" | "keys" | "services" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
+type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
 
 interface SkillSurface {
   id: string;
@@ -7591,10 +7927,10 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "account", label: "Ares Account", glyph: "dot" },
   { id: "routing", label: "Routing", glyph: "search" },
   { id: "appearance", label: "Appearance", glyph: "edit" },
+  { id: "voice", label: "Voice", glyph: "dot" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
   { id: "usage", label: "Usage", glyph: "web" },
   { id: "keys", label: "API Keys", glyph: "shell" },
-  { id: "services", label: "Services", glyph: "web" },
   { id: "consciousness", label: "Consciousness", glyph: "dot" },
   { id: "permissions", label: "Permissions", glyph: "shell" },
   { id: "advanced", label: "Advanced", glyph: "dot" },
@@ -7764,6 +8100,11 @@ function Settings({
   initialTab,
   onPreviewVoice,
   listProviderVoices,
+  voiceEngine,
+  onRepairVoice,
+  onOpenModelBrowser,
+  openaiAuth,
+  onOpenaiSignIn,
 }: {
   prefs: Prefs;
   onApply: (p: Prefs, keys: Record<string, string>) => void;
@@ -7783,6 +8124,11 @@ function Settings({
   initialTab?: SettingsTab;
   onPreviewVoice?: (voiceId: string) => void;
   listProviderVoices?: () => Promise<VoiceInfo[]>;
+  voiceEngine: { phase: string; detail: string };
+  onRepairVoice: () => void;
+  onOpenModelBrowser: () => void;
+  openaiAuth: { signingIn: boolean; connected: boolean; email: string | null; plan: string | null };
+  onOpenaiSignIn: () => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "model");
   const [draft, setDraftPrefs] = useState<Prefs>(prefs);
@@ -7841,17 +8187,15 @@ function Settings({
             <div className="settingsPane">
               <h3 className="paneTitle">Model</h3>
               <p className="paneHint">The main model for new sessions. Hot-swap the active chat from the composer.</p>
-              <label className="fieldLabel">Provider</label>
-              <div className="provGrid">
-                {PROVIDERS.map((p) => (
-                  <button key={p} className="provChip" data-on={draft.provider === p ? "1" : "0"} onClick={() => setProvider(p)}>
-                    <i className="provDot" data-provider={p} />
-                    <span>{p}</span>
-                  </button>
-                ))}
-              </div>
-              <label className="fieldLabel">Model</label>
-              <ModelPicker provider={draft.provider} value={draft.model} onPick={setModel} native={native} />
+              <label className="fieldLabel">Current model</label>
+              <button className="settingsModelCard" onClick={onOpenModelBrowser} title="Open the full model browser">
+                <ProviderLogo brand={brandKey({ id: prefs.model, group: prefs.provider })} className="settingsModelLogo" />
+                <span className="settingsModelBody">
+                  <strong>{prefs.model}</strong>
+                  <em>{PROVIDER_IDENTITY[prefs.provider]?.title ?? prefs.provider}{prefs.routingMode === "auto" ? " · auto-routing on" : ""}</em>
+                </span>
+                <span className="settingsModelBrowse">Browse models →</span>
+              </button>
               <label className="fieldLabel">Reasoning effort</label>
               <div className="segment">
                 {REASONING_LEVELS.map((r) => (
@@ -7878,9 +8222,13 @@ function Settings({
                 return (
                   <div key={lane} className="routeLane" data-on={entry ? "1" : "0"}>
                     <button className="laneToggle" onClick={() => setLane(entry ? undefined : { provider: draft.provider, model: draft.model })}>
-                      <i />
-                      <span>{lane}</span>
-                      <em>{LANE_HINTS[lane]}</em>
+                      <span className="laneIcon" aria-hidden="true">{LANE_ICONS[lane]}</span>
+                      <span className="laneName">
+                        <strong>{lane}</strong>
+                        <em>{LANE_HINTS[lane]}</em>
+                      </span>
+                      <span className="laneAssign">{entry ? `${entry.provider} · ${entry.model}` : "main model"}</span>
+                      <span className="laneSwitch" data-on={entry ? "1" : "0"} aria-hidden="true"><i /></span>
                     </button>
                     {entry ? (
                       <div className="laneBody">
@@ -7959,6 +8307,14 @@ function Settings({
                   </button>
                 ))}
               </div>
+            </div>
+          ) : null}
+
+          {tab === "voice" ? (
+            <div className="settingsPane">
+              <h3 className="paneTitle">Voice</h3>
+              <p className="paneHint">Speak with Ares hands-free. The local voice engine runs on your machine — private, no cloud.</p>
+              <VoiceEngineStatus voiceEngine={voiceEngine} onRepair={onRepairVoice} />
               <VoiceSettings draft={draft} setDraftPrefs={setDraftPrefs} onLivePref={onLivePref} providerSkill={skills.find((s) => s.enabled && (s.provides ?? []).includes("tts"))} onPreviewVoice={onPreviewVoice} listProviderVoices={listProviderVoices} />
             </div>
           ) : null}
@@ -8020,56 +8376,72 @@ function Settings({
           {tab === "keys" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">API Keys</h3>
-              <p className="paneHint">Keys are encrypted by the daemon under ~/.ares and never enter this window's storage.</p>
-              <div className="keyRegistry">
-                <div className="keyGroupLabel">Sign in</div>
-                <div className="keyRegRow signInRow">
-                  <div className="keyRegName">
-                    <i className="provDot" data-provider="anthropic" />
-                    <strong>Claude (Pro / Max)</strong>
-                  </div>
-                  <button className="ghost signInBtn" onClick={onAnthropicSignIn}>
-                    ◆ Sign in with browser
-                  </button>
+              <p className="paneHint">Keys are encrypted by the daemon under ~/.ares and never touch this window's storage.</p>
+
+              <div className="keyGroupLabel">Sign in — no key needed</div>
+              <div className="keyCard signIn">
+                <ProviderLogo brand="anthropic" className="keyLogo" />
+                <div className="keyCardBody">
+                  <strong>Claude (Pro / Max)</strong>
+                  <em>Use your Claude subscription — nothing to paste.</em>
                 </div>
-                <p className="keyHint" style={{ margin: "0 0 6px" }}>Use your Claude subscription — no API key needed.</p>
-                <div className="keyGroupLabel">API keys</div>
-                {KEYED_PROVIDERS.map((kp) => (
-                  <div key={kp.id} className="keyRegRow">
-                    <div className="keyRegName">
-                      <i className="provDot" data-provider={kp.id} />
-                      <strong>{kp.label}</strong>
-                      <span className="keyState" data-on={keyStatus[kp.id] ? "1" : "0"}>
-                        {keyStatus[kp.id] ? "saved" : "not set"}
-                      </span>
+                <button className="keySignInBtn" onClick={onAnthropicSignIn}>Sign in with browser</button>
+              </div>
+              <div className="keyCard signIn" data-on={openaiAuth.connected ? "1" : "0"}>
+                <ProviderLogo brand="openai" className="keyLogo" />
+                <div className="keyCardBody">
+                  <div className="keyCardHead">
+                    <strong>ChatGPT (Plus / Pro / Max)</strong>
+                    {openaiAuth.connected ? <span className="keyPill" data-on="1">connected{openaiAuth.plan ? ` · ${openaiAuth.plan}` : ""}</span> : null}
+                  </div>
+                  <em>{openaiAuth.connected ? (openaiAuth.email ? `Signed in as ${openaiAuth.email} — GPT models use your subscription.` : "GPT models run on your ChatGPT subscription.") : "Run GPT models on your ChatGPT subscription — no API key."}</em>
+                </div>
+                <button className="keySignInBtn" disabled={openaiAuth.signingIn} onClick={onOpenaiSignIn}>
+                  {openaiAuth.signingIn ? "Waiting…" : openaiAuth.connected ? "Re-sign in" : "Sign in with browser"}
+                </button>
+              </div>
+
+              <div className="keyGroupLabel">Provider keys</div>
+              {KEYED_PROVIDERS.map((kp) => {
+                const on = !!keyStatus[kp.id];
+                return (
+                  <div key={kp.id} className="keyCard" data-on={on ? "1" : "0"}>
+                    <ProviderLogo brand={kp.brand} className="keyLogo" />
+                    <div className="keyCardBody">
+                      <div className="keyCardHead">
+                        <strong>{kp.label}</strong>
+                        <span className="keyPill" data-on={on ? "1" : "0"}>{on ? "connected" : "not set"}</span>
+                      </div>
+                      <input className="keyInput" value={keys[kp.id] ?? ""} type="password" placeholder={on ? "•••••••• saved — paste to replace" : kp.placeholder} onChange={(e) => setKeys({ ...keys, [kp.id]: e.target.value })} />
+                      <em className="keySub">{kp.sub}</em>
                     </div>
-                    <input value={keys[kp.id] ?? ""} type="password" placeholder={kp.placeholder} onChange={(e) => setKeys({ ...keys, [kp.id]: e.target.value })} />
-                    {keyStatus[kp.id] ? (
-                      <button className="ghost keyClear" onClick={() => onDaemonCommand({ type: "provider_key", provider: kp.id, key: "" })}>
-                        Clear
-                      </button>
+                    {on ? (
+                      <button className="keyClearBtn" title="Remove this key" onClick={() => onDaemonCommand({ type: "provider_key", provider: kp.id, key: "" })}>✕</button>
                     ) : null}
                   </div>
-                ))}
-                <CustomProviderBlock onDaemonCommand={onDaemonCommand} native={native} />
-                <div className="keyGroupLabel">Tools</div>
-                <div className="keyRegRow">
-                  <div className="keyRegName">
-                    <i className="provDot" data-provider="brave" />
+                );
+              })}
+
+              <div className="keyGroupLabel">Search & tools</div>
+              <div className="keyCard" data-on={keyStatus.brave ? "1" : "0"}>
+                <ProviderLogo brand="generic" className="keyLogo" />
+                <div className="keyCardBody">
+                  <div className="keyCardHead">
                     <strong>Brave Search</strong>
-                    <span className="keyState" data-on={keyStatus.brave ? "1" : "0"}>
-                      {keyStatus.brave ? "saved" : "not set"}
-                    </span>
+                    <span className="keyPill" data-on={keyStatus.brave ? "1" : "0"}>{keyStatus.brave ? "connected" : "not set"}</span>
                   </div>
-                  <input value={keys.brave ?? ""} type="password" placeholder="BSA… — upgrades web + image search" onChange={(e) => setKeys({ ...keys, brave: e.target.value })} />
-                  {keyStatus.brave ? (
-                    <button className="ghost keyClear" onClick={() => onDaemonCommand({ type: "provider_key", provider: "brave", key: "" })}>
-                      Clear
-                    </button>
-                  ) : null}
+                  <input className="keyInput" value={keys.brave ?? ""} type="password" placeholder={keyStatus.brave ? "•••••••• saved — paste to replace" : "BSA…"} onChange={(e) => setKeys({ ...keys, brave: e.target.value })} />
+                  <em className="keySub">upgrades web + image search</em>
                 </div>
+                {keyStatus.brave ? (
+                  <button className="keyClearBtn" title="Remove this key" onClick={() => onDaemonCommand({ type: "provider_key", provider: "brave", key: "" })}>✕</button>
+                ) : null}
               </div>
-              <p className="keyHint">OpenAI uses ChatGPT OAuth. Local Ollama needs no key; the Ollama key enables direct ollama.com cloud discovery and inference.</p>
+
+              <div className="keyGroupLabel">Custom / OpenAI-compatible</div>
+              <CustomProviderBlock onDaemonCommand={onDaemonCommand} native={native} />
+
+              <p className="keyHint">OpenAI signs in with ChatGPT OAuth. Local Ollama needs no key — the Ollama Cloud key adds ollama.com discovery + inference.</p>
             </div>
           ) : null}
 
@@ -8140,10 +8512,6 @@ function Settings({
               </div>
               <EngineRow label="Auto-tick interval (min)" hint="Minutes between idle mission ticks." value={draft.engine.operatorTickMinutes ?? 30} onChange={(v) => setEngine({ operatorTickMinutes: v })} />
             </div>
-          ) : null}
-
-          {tab === "services" ? (
-            <ServicesPane native={native} providers={oauthProviders} onDaemonCommand={onDaemonCommand} />
           ) : null}
 
           {tab === "consciousness" ? (
@@ -8410,6 +8778,31 @@ function SkillDock({
         <span className="skillDockOrbCore" />
         {(speaking || listening) ? <span className="skillDockOrbPulse" /> : null}
       </button>
+    </div>
+  );
+}
+
+// Live health of the local voice engine + one honest Repair button. Repair
+// wipes and rebuilds the Python venv (the fix for a setup that half-installed
+// on an incompatible Python and crash-looped).
+function VoiceEngineStatus({ voiceEngine, onRepair }: { voiceEngine: { phase: string; detail: string }; onRepair: () => void }) {
+  const phase = voiceEngine.phase;
+  const tone = phase === "running" ? "ok" : phase === "setup" || phase === "starting" ? "busy" : phase === "error" || phase === "missing" ? "warn" : "idle";
+  const label =
+    phase === "running" ? "Voice engine running"
+    : phase === "starting" ? "Starting the voice engine…"
+    : phase === "setup" ? (voiceEngine.detail || "Setting up the voice engine…")
+    : phase === "error" ? (voiceEngine.detail || "The voice engine hit a problem.")
+    : phase === "missing" ? (voiceEngine.detail || "The voice service isn't installed.")
+    : "Voice engine idle";
+  const busy = phase === "setup" || phase === "starting";
+  return (
+    <div className="voiceEngineStatus" data-tone={tone}>
+      <span className="voiceEngineDot" data-tone={tone}>{busy ? <i className="skillDockSpin" /> : null}</span>
+      <span className="voiceEngineLabel">{label}</span>
+      {phase !== "running" && phase !== "missing" ? (
+        <button className="voiceEngineRepair" disabled={busy} onClick={onRepair}>{busy ? "Working…" : "Repair"}</button>
+      ) : null}
     </div>
   );
 }

@@ -410,7 +410,17 @@ export class Session {
       .catch(() => undefined)
       .then(() => appendFile(this.eventsPath, line, "utf8"))
       .catch((error: unknown) => {
-        this.ioError = error instanceof Error ? error : new Error(String(error));
+        const err = error instanceof Error ? error : new Error(String(error));
+        // Surface the FIRST failure immediately (disk full, perms, path gone) —
+        // the rollout is the durable session history; silently losing it until
+        // someone happens to await flush() was how sessions vanished with no
+        // trace. Log once (not per-event) so a persistent fault isn't spammy.
+        if (!this.ioError) {
+          try {
+            process.stderr.write(`[session] rollout persistence failing (${this.eventsPath}): ${err.message}\n`);
+          } catch { /* stderr unavailable */ }
+        }
+        this.ioError = err;
       });
   }
 

@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.27.0",
+    date: "July 2026",
+    title: "Sign in with ChatGPT, real logos, and a self-healing voice",
+    tagline: "Run GPT on your ChatGPT subscription, browse models with their real provider logos, and a redesigned settings — plus a voice engine that repairs itself and a hands-free presence you can feel.",
+    highlights: [
+      {
+        icon: "🔓",
+        title: "Sign in with ChatGPT",
+        tag: "New",
+        blurb: "Run GPT models on your ChatGPT Plus / Pro / Max subscription — one browser sign-in, no API key. Sits right next to Claude sign-in in API Keys.",
+      },
+      {
+        icon: "🎨",
+        title: "Real provider logos + a discovery model browser",
+        tag: "New",
+        blurb: "The model panel now shows each provider's real logo, live descriptions, context, and pricing — and the settings Model tab is the same browser. Current Claude models (Sonnet 5, Opus 4.8/4.7/4.6, Fable 5) are all listed.",
+      },
+      {
+        icon: "🩺",
+        title: "Self-healing voice + presence",
+        tag: "Safer",
+        blurb: "The voice engine detects a broken setup and rebuilds itself on a compatible Python. Say “Hey Ares” and the screen glows, it answers out loud, and shows a caption of what it heard.",
+      },
+      {
+        icon: "🧭",
+        title: "Cleaner everywhere",
+        tag: "Polished",
+        blurb: "Redesigned API Keys, Routing, and a dedicated Voice tab; simpler thinking cards; a tidier status bar; fixed daylight mode, the /mcp and bug-report panels, and off-screen launches.",
+      },
+      {
+        icon: "🛡",
+        title: "Hardened",
+        tag: "Safer",
+        blurb: "The local voice service is now access-controlled, web fetches can't reach your private network, hooks handle large payloads, and the daemon only accepts known commands.",
+      },
+    ],
+  },
+  {
     version: "0.26.0",
     date: "July 2026",
     title: "The whole Ollama library, and your bill",

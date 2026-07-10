@@ -15,8 +15,9 @@ from typing import Any, Iterator
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 
 app = FastAPI(title="Ares Voice Service", version="0.1.0")
@@ -32,6 +33,41 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Per-launch auth token (set by the Rust shell via ARES_VOICE_TOKEN). CORS does
+# NOT protect WebSockets, so without this any web page could open ws://127.0.0.1
+# :8765 and drive the mic/TTS. The webview attaches ?token=… to every request.
+# Empty token (e.g. running the sidecar standalone for dev) disables the gate.
+AUTH_TOKEN = os.environ.get("ARES_VOICE_TOKEN", "").strip()
+
+
+def _token_ok(token: str | None) -> bool:
+    if not AUTH_TOKEN:
+        return True
+    import hmac
+    return bool(token) and hmac.compare_digest(token, AUTH_TOKEN)
+
+
+def _http_authorized(request: Any) -> bool:
+    token = request.query_params.get("token")
+    if token is None:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:]
+    return _token_ok(token)
+
+
+async def _ws_authorized(websocket: WebSocket) -> bool:
+    """Accept the socket, then verify the token; close 4401 on mismatch. (We must
+    accept before we can read query params reliably across ASGI servers.)"""
+    token = websocket.query_params.get("token")
+    if _token_ok(token):
+        return True
+    try:
+        await websocket.close(code=4401)
+    except Exception:
+        pass
+    return False
 
 # Break a chunk into per-sentence segments for incremental streaming.
 SENTENCE_SPLIT = r"(?<=[.!?…。！？])\s+|\n+"
@@ -381,14 +417,20 @@ def parse_args() -> tuple[VoiceSettings, STTSettings]:
     return voice, stt
 
 
-def build_synth(settings: VoiceSettings) -> MockSynth | KokoroSynth:
+def build_synth(settings: VoiceSettings) -> MockSynth | KokoroSynth | None:
     if settings.mock or settings.engine == "mock":
         return MockSynth()
-    return KokoroSynth(settings)
+    try:
+        return KokoroSynth(settings)
+    except Exception as error:  # kokoro missing (e.g. Python >=3.13 install) / model unavailable
+        print(f"[tts] kokoro unavailable ({error}); /tts disabled — wake word + STT unaffected", flush=True)
+        return None
 
 
 @app.get("/voices")
-async def voices() -> dict[str, Any]:
+async def voices(request: Request) -> Any:
+    if not _http_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     settings: VoiceSettings | None = getattr(app.state, "settings", None)
     return {
         "voices": VOICE_CATALOG,
@@ -419,6 +461,8 @@ async def health() -> dict[str, Any]:
 @app.websocket("/tts")
 async def tts_socket(websocket: WebSocket) -> None:
     await websocket.accept()
+    if not await _ws_authorized(websocket):
+        return
     synth = getattr(app.state, "synth", None)
     settings: VoiceSettings = app.state.settings
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=64)
@@ -427,12 +471,25 @@ async def tts_socket(websocket: WebSocket) -> None:
 
     await websocket.send_json({
         "type": "ready",
+        # available:false tells the client to use its fallback voice for this
+        # session (kokoro didn't install — Python >=3.13 refuses the wheel).
+        "available": synth is not None,
         "engine": settings.engine,
         "model": getattr(synth, "name", None),
         "speaker": settings.voice,
         "language": settings.language,
         "mock": settings.mock,
     })
+    if synth is None:
+        try:
+            while True:
+                await websocket.receive_json()  # drain politely until the client hangs up
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await queue.put(None)
+            worker.cancel()
+        return
 
     try:
         while True:
@@ -471,6 +528,8 @@ async def stt_socket(websocket: WebSocket) -> None:
       listen_cancel → discard. One utterance at a time; the mic is owned here
     (server side), so there is no WebView microphone-permission dance."""
     await websocket.accept()
+    if not await _ws_authorized(websocket):
+        return
     stt = getattr(app.state, "stt", None)
     stt_settings: STTSettings = app.state.stt_settings
     await websocket.send_json({
@@ -634,6 +693,8 @@ async def wake_socket(websocket: WebSocket) -> None:
     (so the follow-up command capture on /stt owns the mic). {type:"wake_stop"}
     ends the loop. Yields the mic instantly whenever /stt is listening."""
     await websocket.accept()
+    if not await _ws_authorized(websocket):
+        return
     stt = getattr(app.state, "stt", None)
     usable = isinstance(stt, WhisperSTT)
     await websocket.send_json({"type": "ready", "available": usable})

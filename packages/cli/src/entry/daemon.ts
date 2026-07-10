@@ -1,6 +1,6 @@
 // Extracted from entry.ts — daemon.
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, loadRemoteMcpServers, connectorNameFromUrl, fetchOpenRouterModels } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, loadRemoteMcpServers, connectorNameFromUrl, fetchOpenRouterModels, deviceCodeLogin } from "@ares/core";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -500,7 +500,7 @@ async function daemonUsageStats(workspace: string, days: number): Promise<UsageS
       sIn += inTok;
       sOut += outTok;
       counted = true;
-      const mKey = `${eventProvider} ${eventModel}`;
+      const mKey = `${eventProvider} ${eventModel}`;
       const m = models.get(mKey) ?? { provider: eventProvider, model: eventModel, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, calls: 0 };
       m.tokensIn += inTok;
       m.tokensOut += outTok;
@@ -1581,6 +1581,108 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         })();
         continue;
       }
+      if (command.type === "mcp_search") {
+        // Search the public MCP registry for connect-able (remote HTTP) servers.
+        const text = typeof command.text === "string" ? command.text.trim() : "";
+        void (async () => {
+          try {
+            const res = await fetch(
+              `https://registry.modelcontextprotocol.io/v0/servers?limit=30&search=${encodeURIComponent(text)}`,
+              { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) },
+            );
+            if (!res.ok) throw new Error(`registry ${res.status}`);
+            const json = await res.json() as {
+              servers?: Array<{
+                server?: {
+                  name?: string;
+                  description?: string;
+                  remotes?: Array<{ type?: string; url?: string; headers?: Array<{ isRequired?: boolean; isSecret?: boolean }> }>;
+                };
+                _meta?: Record<string, { isLatest?: boolean; status?: string }>;
+              }>;
+            };
+            const seen = new Set<string>();
+            const results: Array<{ name: string; fullName: string; description: string; url: string; needsKey: boolean }> = [];
+            for (const row of json.servers ?? []) {
+              const server = row.server;
+              const official = row._meta?.["io.modelcontextprotocol.registry/official"];
+              if (!server?.name || official?.isLatest === false || (official?.status && official.status !== "active")) continue;
+              for (const remote of server.remotes ?? []) {
+                const url = remote.url ?? "";
+                if (!/^https:\/\//i.test(url) || seen.has(url)) continue;
+                if (remote.type && !/^(streamable-http|sse|http)$/i.test(remote.type)) continue;
+                seen.add(url);
+                results.push({
+                  name: server.name.split("/").pop() ?? server.name,
+                  fullName: server.name,
+                  description: (server.description ?? "").slice(0, 160),
+                  url,
+                  needsKey: (remote.headers ?? []).some((h) => h.isRequired && h.isSecret),
+                });
+                break; // one remote per server is enough for the gallery
+              }
+              if (results.length >= 12) break;
+            }
+            process.stdout.write(JSON.stringify({ type: "mcp_search_results", text, results }) + "\n");
+          } catch (err) {
+            process.stdout.write(JSON.stringify({ type: "mcp_search_results", text, results: [], error: err instanceof Error ? err.message : String(err) }) + "\n");
+          }
+        })();
+        continue;
+      }
+      if (command.type === "ollama_pull") {
+        // Download a library model through the LOCAL ollama daemon, streaming
+        // /api/pull progress to the model panel. Runs off the command loop.
+        const model = typeof command.model === "string" ? command.model.trim() : "";
+        if (!model || !/^[a-z0-9._:\/-]+$/i.test(model)) {
+          process.stdout.write(JSON.stringify({ type: "ollama_pull_done", model, ok: false, error: "a valid model name is required" }) + "\n");
+          continue;
+        }
+        void (async () => {
+          const host = (process.env.OLLAMA_HOST?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
+          try {
+            const res = await fetch(`${host}/api/pull`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ model }),
+            });
+            if (!res.ok || !res.body) throw new Error(res.status === 404 ? "model not found in the library" : `local Ollama isn't running (${res.status})`);
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = "";
+            let lastEmit = 0;
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              const lines = buf.split("\n");
+              buf = lines.pop() ?? "";
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                let p: { status?: string; total?: number; completed?: number; error?: string };
+                try {
+                  p = JSON.parse(line);
+                } catch {
+                  continue;
+                }
+                if (p.error) throw new Error(p.error);
+                const pct = p.total ? Math.round(((p.completed ?? 0) / p.total) * 100) : null;
+                const now = Date.now();
+                if (now - lastEmit > 300) {
+                  lastEmit = now;
+                  process.stdout.write(JSON.stringify({ type: "ollama_pull_progress", model, status: p.status ?? "", pct }) + "\n");
+                }
+              }
+            }
+            process.stdout.write(JSON.stringify({ type: "ollama_pull_done", model, ok: true }) + "\n");
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const friendly = /fetch failed|ECONNREFUSED/i.test(msg) ? "Local Ollama isn't running — start the Ollama app, then try again." : msg;
+            process.stdout.write(JSON.stringify({ type: "ollama_pull_done", model, ok: false, error: friendly }) + "\n");
+          }
+        })();
+        continue;
+      }
       if (command.type === "discover_custom_models") {
         // Server-side model discovery for the Custom (OpenAI-compatible)
         // provider — runs here in Node so CORS / browser-origin rejection
@@ -1824,6 +1926,35 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       if (command.type === "anthropic_login_finish") {
         // No-op: finish is handled automatically by the loopback server.
         // Kept so older UI builds don't crash the daemon.
+        continue;
+      }
+      if (command.type === "openai_login_start") {
+        // ChatGPT OAuth (device-code). We open the verification URL (with the
+        // code pre-filled) in the user's browser, then poll until they approve —
+        // this routes GPT usage through their ChatGPT Plus/Pro/Max subscription,
+        // no API key. Runs off the command loop (the poll can take minutes).
+        const sid = command.sessionId;
+        void deviceCodeLogin({
+          onDeviceCode: (dc) => {
+            tagEmit(sid, { type: "openai_login_url", url: dc.verificationUrl, userCode: dc.userCode });
+          },
+        })
+          .then((file) => {
+            tagEmit(sid, { type: "openai_login_done", ok: true, email: file.profile.email ?? null, plan: file.profile.planType ?? null });
+          })
+          .catch((err: unknown) => {
+            tagEmit(sid, { type: "openai_login_done", ok: false, error: err instanceof Error ? err.message : String(err) });
+          });
+        continue;
+      }
+      if (command.type === "openai_auth_status") {
+        const status = await authStatus().catch(() => null);
+        process.stdout.write(JSON.stringify({
+          type: "openai_auth_status",
+          configured: !!status?.configured,
+          email: status?.email ?? null,
+          plan: status?.planType ?? null,
+        }) + "\n");
         continue;
       }
       if (command.type === "operator_status") {

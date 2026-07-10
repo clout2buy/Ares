@@ -19,6 +19,15 @@ export const VOICE_HTTP_BASE = "http://127.0.0.1:8765";
 export const VOICE_WS_BASE = "ws://127.0.0.1:8765";
 export const DEFAULT_BUILTIN_VOICE = "af_heart";
 
+// Per-launch auth token the sidecar requires (set by the Rust shell; read once
+// via ares_voice_status). Without it the sidecar closes every socket 4401.
+let voiceToken = "";
+export function setVoiceToken(token: string): void { voiceToken = token || ""; }
+/** Append ?token=… to a sidecar URL when we have one. */
+export function voiceUrl(base: string, path: string): string {
+  return voiceToken ? `${base}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(voiceToken)}` : `${base}${path}`;
+}
+
 export interface VoiceInfo {
   id: string;
   label: string;
@@ -139,6 +148,9 @@ export class TtsClient {
   private browserQueued = 0;
   private playing = false;
   private seq = 0;
+  /** Sidecar is up but its TTS engine didn't install (e.g. Python 3.13 refused
+   *  kokoro) — speak() should go straight to the browser voice. */
+  private serverTtsUnavailable = false;
   private onState?: (speaking: boolean) => void;
   /** Karaoke: the text of the clip playing right now (null = quiet). */
   private onUtterance?: (text: string | null) => void;
@@ -155,7 +167,7 @@ export class TtsClient {
     return new Promise((resolve, reject) => {
       let ws: WebSocket;
       try {
-        ws = new WebSocket(`${VOICE_WS_BASE}/tts`);
+        ws = new WebSocket(voiceUrl(VOICE_WS_BASE, "/tts"));
       } catch (err) {
         reject(err);
         return;
@@ -163,8 +175,9 @@ export class TtsClient {
       ws.onopen = () => resolve(ws);
       ws.onerror = () => reject(new Error("tts sidecar unreachable"));
       ws.onmessage = (e) => {
-        let m: TtsChunk & { id?: string };
-        try { m = JSON.parse(e.data as string) as TtsChunk & { id?: string }; } catch { return; }
+        let m: TtsChunk & { id?: string; available?: boolean };
+        try { m = JSON.parse(e.data as string) as TtsChunk & { id?: string; available?: boolean }; } catch { return; }
+        if (m.type === "ready") this.serverTtsUnavailable = m.available === false;
         if (m.type === "audio" && m.audio) {
           // Label each clip with the text of the speak request it came from, so
           // the UI can show what's being spoken (karaoke).
@@ -273,6 +286,7 @@ export class TtsClient {
     if (!clean) return;
     try {
       const ws = await this.connect();
+      if (this.serverTtsUnavailable) throw new Error("sidecar tts unavailable");
       const id = `s${++this.seq}`;
       this.pendingTexts.set(id, clean);
       ws.send(JSON.stringify({ type: "speak", id, text: clean, voice: voice || DEFAULT_BUILTIN_VOICE, speed }));
@@ -318,7 +332,7 @@ export class TtsClient {
 /** Fetch the sidecar's voice catalog (empty when it isn't running). */
 export async function fetchVoices(signal?: AbortSignal): Promise<{ voices: VoiceInfo[]; default: string }> {
   try {
-    const res = await fetch(`${VOICE_HTTP_BASE}/voices`, { signal });
+    const res = await fetch(voiceUrl(VOICE_HTTP_BASE, "/voices"), { signal });
     if (!res.ok) return { voices: [], default: "" };
     const data = (await res.json()) as { voices?: VoiceInfo[]; default?: string };
     return { voices: data.voices ?? [], default: data.default ?? "" };
@@ -488,7 +502,7 @@ export function sidecarListen(
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
     try {
-      ws = new WebSocket(`${VOICE_WS_BASE}/stt`);
+      ws = new WebSocket(voiceUrl(VOICE_WS_BASE, "/stt"));
     } catch (err) {
       reject(err);
       return;
@@ -551,7 +565,7 @@ export function wakeListen(onWake: (heard: string) => void, onDead?: () => void)
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
     try {
-      ws = new WebSocket(`${VOICE_WS_BASE}/wake`);
+      ws = new WebSocket(voiceUrl(VOICE_WS_BASE, "/wake"));
     } catch (err) {
       reject(err);
       return;

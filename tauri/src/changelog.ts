@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.28.4",
+    date: "July 2026",
+    title: "Computer use that actually lands",
+    tagline: "Ares stops clicking in circles: it focuses the right window, aims true on multi-monitor rigs, and sees exactly where every click landed.",
+    highlights: [
+      {
+        icon: "🎯",
+        title: "Clicks hit what you meant",
+        tag: "Faster",
+        blurb: "Zooming in on a busy screen used to aim at the wrong spot on multi-monitor setups — the source of those endless click-nothing-happened loops. Zoom and click now share one exact coordinate map.",
+      },
+      {
+        icon: "🪟",
+        title: "Window focus that works",
+        tag: "New",
+        blurb: "Bringing an app to the front used to fail almost every time. Ares now finds windows by loose name, forces them into focus, and instantly shows itself a fresh picture of the window it's about to drive.",
+      },
+      {
+        icon: "📍",
+        title: "Every click leaves a mark",
+        tag: "New",
+        blurb: "After each click Ares sees a red marker at the exact spot it hit and the name of the window that received it — so a miss gets corrected on the next move instead of repeated twenty times.",
+      },
+      {
+        icon: "⌨️",
+        title: "Typing keeps your symbols",
+        tag: "Polished",
+        blurb: "Em-dashes, emoji, and accents used to arrive as garbled characters when Ares typed for you. Text is now injected as true Unicode, exactly as written.",
+      },
+      {
+        icon: "🎙️",
+        title: "Voice unsticks itself",
+        tag: "Safer",
+        blurb: "The pill's mic could wedge the app on 'listening…' forever, and one audio-device hiccup silently killed 'Hey Ares' until restart. Both now recover on their own.",
+      },
+    ],
+  },
+  {
     version: "0.28.3",
     date: "July 2026",
     title: "No more dead chats",

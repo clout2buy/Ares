@@ -712,22 +712,51 @@ async def wake_socket(websocket: WebSocket) -> None:
     paused = asyncio.Event()
 
     async def loop() -> None:
-        try:
-            while not stop_flag.is_set():
-                if paused.is_set() or MIC_BUSY.is_set():
-                    await asyncio.sleep(0.2)
-                    continue
-                text = await asyncio.to_thread(wake_capture_once, stt, stop_flag)
-                if stop_flag.is_set():
-                    return
-                if text and WAKE_RE.search(text):
-                    paused.set()
-                    await websocket.send_json({"type": "wake", "text": text})
-        except Exception as error:
+        # The try/except used to wrap the WHOLE while-loop, so ONE transient
+        # InputStream error (WASAPI device contention right after /stt released
+        # the mic) silently ended wake listening forever while the client still
+        # showed "armed". Errors are now handled per-iteration with backoff; the
+        # socket is only closed (so the client re-arms) after a sustained streak.
+        consecutive_errors = 0
+        was_blocked = False
+        while not stop_flag.is_set():
+            if paused.is_set() or MIC_BUSY.is_set():
+                was_blocked = True
+                await asyncio.sleep(0.2)
+                continue
+            if was_blocked:
+                # Just got the mic back from /stt — give the audio stack a beat
+                # to fully release the device before reopening it.
+                was_blocked = False
+                await asyncio.sleep(0.15)
+                continue
             try:
-                await websocket.send_json({"type": "error", "message": str(error)})
-            except Exception:
-                pass
+                text = await asyncio.to_thread(wake_capture_once, stt, stop_flag)
+                consecutive_errors = 0
+            except Exception as error:
+                consecutive_errors += 1
+                if consecutive_errors >= 8:
+                    try:
+                        await websocket.send_json(
+                            {"type": "error", "message": f"wake loop giving up after repeated capture errors: {error}"}
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    return
+                await asyncio.sleep(min(2.0, 0.25 * consecutive_errors))
+                continue
+            if stop_flag.is_set():
+                return
+            if text and WAKE_RE.search(text):
+                paused.set()
+                try:
+                    await websocket.send_json({"type": "wake", "text": text})
+                except Exception:
+                    return
 
     task: asyncio.Task | None = None
     try:

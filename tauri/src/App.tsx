@@ -2324,34 +2324,56 @@ function App() {
     presenceHeardTimer.current = window.setTimeout(() => setPresenceHeard(null), 3200);
   }, []);
   const activeBusy = active?.busy ?? false;
+  // Mirror convoMode into a ref so async arms can re-check the CURRENT value at
+  // promise-resolution time instead of the value captured when the effect ran.
+  const convoModeRef = useRef(convoMode);
+  convoModeRef.current = convoMode;
+  // True while sidecarListen() is in flight (mic opening) but before the handle
+  // exists — closes the double-arm window without putting transient state in
+  // the effect's dependency array.
+  const convoArmingRef = useRef(false);
   useEffect(() => {
     if (!convoMode || !prefs.voiceEnabled) return;
     // Enabling conversation mode opens the channel immediately; after every
     // reply or empty utterance it re-arms once Ares is idle.
-    if (voice.speaking || convoListening || activeBusy || convoRef.current) return;
-    let cancelled = false;
+    if (voice.speaking || convoListening || activeBusy || convoRef.current || convoArmingRef.current) return;
+    // NO cleanup-cancellation here, on purpose. This effect sets convoListening
+    // — one of its own dependencies — so React ALWAYS runs its cleanup right
+    // after the set. The old `cancelled` flag therefore tripped on every single
+    // arm: the mic-open promise resolved into the cancelled branch, skipped
+    // attaching the transcript handler, and convoListening was orphaned at true
+    // ("listening…" forever, mic dead). Stale arms are instead reconciled below
+    // by re-checking convoModeRef when the promise resolves.
+    convoArmingRef.current = true;
     setConvoListening(true);
     // AUTO listen: the sidecar's VAD ends the utterance the moment you stop
     // talking (with its own no-speech + hard caps), so the reply sends itself —
     // no fixed window, no waiting. The 30s client cap is pure belt-and-braces.
     void sidecarListen(undefined, { auto: true }).then((handle) => {
-      if (cancelled) { handle.cancel(); return; }
+      convoArmingRef.current = false;
+      if (!convoModeRef.current) {
+        // Conversation was switched off while the mic was opening — walk the
+        // arm back completely instead of leaving "listening" stuck on.
+        void handle.cancel();
+        setConvoListening(false);
+        return;
+      }
       convoRef.current = handle;
       const cap = window.setTimeout(() => void handle.stop(), 30_000);
       void handle.transcript.then((txt) => {
         window.clearTimeout(cap);
         convoRef.current = null;
         setConvoListening(false);
-        if (txt.trim()) {
+        if (txt.trim() && convoModeRef.current) {
           flashHeard(txt.trim());
           sendRef.current(txt.trim(), { voice: true });
         }
       });
     }).catch(() => {
+      convoArmingRef.current = false;
       // Avoid a hot reconnect loop while the local sidecar is being repaired.
-      window.setTimeout(() => { if (!cancelled) setConvoListening(false); }, 1_500);
+      window.setTimeout(() => setConvoListening(false), 1_500);
     });
-    return () => { cancelled = true; };
   }, [voice.speaking, convoMode, prefs.voiceEnabled, convoListening, activeBusy, flashHeard]);
 
   // ── Wake word: "Hey Ares" arms the mic hands-free ─────────────────────────
@@ -2390,13 +2412,16 @@ function App() {
             void handle.transcript.then((txt) => {
               window.clearTimeout(cap);
               setConvoListening(false);
-              wakeRef.current?.resume();
+              // Symmetric to the 32ms wake→stt handoff above: give the audio
+              // device a beat to release before the wake loop reopens it, or
+              // picky Windows drivers fail the reopen and kill wake listening.
+              window.setTimeout(() => wakeRef.current?.resume(), 120);
               if (txt.trim()) {
                 flashHeard(txt.trim());
                 sendRef.current(txt.trim(), { voice: true });
               }
             });
-          }).catch(() => { setConvoListening(false); wakeRef.current?.resume(); });
+          }).catch(() => { setConvoListening(false); window.setTimeout(() => wakeRef.current?.resume(), 120); });
         }, 32);
       }, () => {
         // Sidecar died AFTER arming (crash/restart). The old code left the UI
@@ -2426,9 +2451,13 @@ function App() {
       wakeRef.current = null;
     };
   }, [wakeOn]);
-  // Leaving convo mode stops any listen in progress.
+  // Leaving convo mode stops any listen in progress. Reset convoListening even
+  // when no handle exists — an arm may have died between setConvoListening(true)
+  // and the handle arriving, and this is the state's last line of defense.
   useEffect(() => {
-    if (!convoMode && convoRef.current) { convoRef.current.cancel(); convoRef.current = null; setConvoListening(false); }
+    if (convoMode) return;
+    if (convoRef.current) { convoRef.current.cancel(); convoRef.current = null; }
+    setConvoListening(false);
   }, [convoMode]);
 
   // HELM live feed: while the war room is visible, re-scry on open, every 5s,

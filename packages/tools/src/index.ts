@@ -87,8 +87,10 @@ export {
   makeComputerUseTool,
   mapImageToVirtual,
   shotScale,
+  normalizeActionCoords,
   type ComputerActionRunner,
   type ComputerUseOutput,
+  type RunnerInput,
   type ShotMeta,
 } from "./ComputerUse.js";
 export { DeployTool, type DeployOutput } from "./Deploy.js";

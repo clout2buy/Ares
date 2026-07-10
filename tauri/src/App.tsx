@@ -1378,6 +1378,8 @@ interface EngineConfig {
   operatorAutotick?: boolean;
   operatorTickMinutes?: number;
   subagentTurnLimit?: number;
+  /** Owner opt-in: ComputerUse may drive real browser windows with the mouse. */
+  computerUseBrowser?: boolean;
 }
 
 // WebKitGTK (the Linux webview) composites backdrop-filter and the edge-flame
@@ -8806,6 +8808,15 @@ function Settings({
                 </button>
               </div>
               <EngineRow label="Auto-tick interval (min)" hint="Minutes between idle mission ticks." value={draft.engine.operatorTickMinutes ?? 30} onChange={(v) => setEngine({ operatorTickMinutes: v })} />
+              <div className="engineRow">
+                <div className="engineInfo">
+                  <strong>Desktop control of browser windows</strong>
+                  <span>Let Ares drive your real Chrome/Edge with the physical mouse. Off keeps web pages from ever steering your cursor; the sandboxed Browser tool still works either way.</span>
+                </div>
+                <button className="toggle" data-on={draft.engine.computerUseBrowser === true ? "1" : "0"} onClick={() => setEngine({ computerUseBrowser: !(draft.engine.computerUseBrowser === true) })}>
+                  <i />
+                </button>
+              </div>
             </div>
           ) : null}
 

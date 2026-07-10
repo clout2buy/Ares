@@ -117,6 +117,9 @@ export interface EngineConfig {
   operatorTickMinutes?: number;
   /** Subagent turn limit (default 50). */
   subagentTurnLimit?: number;
+  /** Let ComputerUse activate/drive REAL browser windows with the physical
+   *  mouse (default false — web content must not reach the desktop input). */
+  computerUseBrowser?: boolean;
 }
 
 export function uiSettingsPath(): string {

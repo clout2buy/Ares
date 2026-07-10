@@ -38,6 +38,20 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.28.2",
+    date: "July 2026",
+    title: "Your mouse, your call",
+    tagline: "A new owner switch lets Ares drive your real browser window with the physical mouse — off by default, on when you say so.",
+    highlights: [
+      {
+        icon: "🖱️",
+        title: "Desktop control of browser windows",
+        tag: "New",
+        blurb: "Settings → Advanced: flip it on and Ares can click and type in your actual Chrome — post, browse, manage tabs. Off (the default) keeps web pages from ever steering your cursor.",
+      },
+    ],
+  },
+  {
     version: "0.28.1",
     date: "July 2026",
     title: "The Living Surface, actually alive",

@@ -225,10 +225,16 @@ export function makeComputerUseTool(runner: ComputerActionRunner = runComputerAc
       if (i.action === "activate" && !i.text?.trim()) {
         return { ok: false, message: "activate needs `text` — a substring of the target window's title (use `windows` to list them)." };
       }
-      if (i.action === "activate" && /\b(chrome|edge|firefox|brave|opera|vivaldi|browser|x —|youtube|twitter)\b/i.test(i.text ?? "")) {
+      if (
+        i.action === "activate" &&
+        process.env.ARES_COMPUTERUSE_ALLOW_BROWSER !== "1" &&
+        /\b(chrome|edge|firefox|brave|opera|vivaldi|browser|x —|youtube|twitter)\b/i.test(i.text ?? "")
+      ) {
+        // Default-closed: a web page steering the model must never reach the
+        // physical mouse. The OWNER can lift it (their machine, their call).
         return {
           ok: false,
-          message: "ComputerUse cannot activate browser windows. Use Browser tabs/attach/open: it controls the page without stealing the owner's mouse and renders the Ares cursor in-page.",
+          message: "ComputerUse cannot activate browser windows. Use Browser tabs/attach/open: it controls the page without stealing the owner's mouse and renders the Ares cursor in-page. If the owner explicitly wants Ares driving their real browser with the mouse, they can flip Settings → Advanced → 'Desktop control of browser windows' — tell them that, don't work around it.",
         };
       }
       if ((i.action === "move" || i.action === "zoom") && (i.x === undefined || i.y === undefined)) {

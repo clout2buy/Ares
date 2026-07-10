@@ -159,6 +159,7 @@ function normalizeEngineConfig(raw: unknown): import("../uiSettings.js").EngineC
     operatorAutotick: typeof r.operatorAutotick === "boolean" ? r.operatorAutotick : undefined,
     operatorTickMinutes: num(r.operatorTickMinutes, 1, 720),
     subagentTurnLimit: num(r.subagentTurnLimit, 5, 200),
+    computerUseBrowser: typeof r.computerUseBrowser === "boolean" ? r.computerUseBrowser : undefined,
   };
 }
 
@@ -177,6 +178,10 @@ export function applyEngineConfigEnv(cfg: import("../uiSettings.js").EngineConfi
   }
   if (cfg.subagentTurnLimit) process.env.ARES_SUBAGENT_TURN_LIMIT = String(cfg.subagentTurnLimit);
   if (cfg.operatorTickMinutes) process.env.ARES_OPERATOR_TICK_MS = String(cfg.operatorTickMinutes * 60_000);
+  // Owner opt-in: desktop control of real browser windows. Explicit false
+  // clears it so flipping the toggle off takes effect without a restart.
+  if (cfg.computerUseBrowser === true) process.env.ARES_COMPUTERUSE_ALLOW_BROWSER = "1";
+  else if (cfg.computerUseBrowser === false) delete process.env.ARES_COMPUTERUSE_ALLOW_BROWSER;
 }
 
 /** A UI surface a skill contributes — a button (and, later, toggles/panels)

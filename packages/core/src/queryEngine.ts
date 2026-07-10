@@ -259,6 +259,71 @@ export interface QueryEngineConfig {
   compactionThresholdTokens?: number;
 }
 
+/**
+ * Keep the provider's tool prefix proportional to the current job. A fresh
+ * desktop session owns dozens of tools; serializing every schema on every
+ * model round wastes thousands of input tokens and weakens tool selection.
+ * Execution still resolves against the full set, and tools used in the recent
+ * transcript remain advertised so multi-step work never loses its handles.
+ */
+export function selectToolsForTurn(tools: readonly EngineTool[], messages: readonly Message[]): readonly EngineTool[] {
+  if (process.env.ARES_DYNAMIC_TOOLS === "0" || tools.length <= 12) return tools;
+
+  let userText = "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "user") continue;
+    userText = message.content
+      .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+      .map((block) => block.text)
+      .join(" ")
+      .toLowerCase();
+    if (userText.trim()) break;
+  }
+
+  const wanted = new Set([
+    "todowrite", "requestuseraction", "memory", "browser", "websearch",
+    "webfetch", "imagesearch", "skillhub", "skillslist", "skillread",
+  ]);
+  const add = (...names: string[]) => names.forEach((name) => wanted.add(name.toLowerCase()));
+
+  const coding = /\b(?:build|code|coding|implement|fix|debug|refactor|test|compile|html|css|javascript|typescript|python|repo|repository|file|folder|component|website|app|api|database|git|terminal|powershell|bash|install|package)\b/.test(userText)
+    || /\b(?:make|create|design|develop|update|change)\b[^.?!]{0,80}\b(?:page|site|app|component|script|file|project)\b/.test(userText);
+  const browser = /\b(?:browser|website|webpage|youtube|twitter|x\.com|google|search|navigate|tab|click|scroll|video|page|url|download)\b/.test(userText);
+  const desktop = /\b(?:desktop|screen|window|mouse|keyboard|native app|computer use)\b/.test(userText);
+  if (coding) {
+    add(
+      "read", "write", "edit", "applyintent", "glob", "grep", "codebasesearch",
+      "lsp", "powershell", "bash", "findandedit", "codemode", "bashoutput",
+      "killshell", "enterplanmode", "exitplanmode", "task", "conductor",
+      "codingbackend", "deploy",
+    );
+  }
+  if (browser) add("browser", "websearch", "webfetch", "imagesearch", "computeruse");
+  if (desktop) add("computeruse", "powershell");
+  if (/\b(?:email|mail|gmail)\b/.test(userText)) add("email", "gmail", "connect", "mcplisttools", "mcpcalltool");
+  if (/\b(?:calendar|meeting|event|schedule)\b/.test(userText)) add("googlecalendar", "connect", "mcplisttools", "mcpcalltool");
+  if (/\b(?:spotify|song|music|playlist)\b/.test(userText)) add("spotify", "connect");
+  if (/\b(?:weather|forecast|temperature)\b/.test(userText)) add("weather");
+  if (/\b(?:remind|reminder|alarm)\b/.test(userText)) add("remind");
+  if (/\b(?:stripe|payment|invoice|subscription)\b/.test(userText)) add("stripe");
+  if (/\b(?:deploy|publish|hosting|production)\b/.test(userText)) add("deploy");
+  if (/\b(?:telegram)\b/.test(userText)) add("telegramsetup", "telegramroster", "connect");
+  if (/\b(?:notion|slack|teams|drive|dropbox|github|gitlab|jira|atlassian|outlook|sharepoint|figma|box)\b/.test(userText)) add("connect", "mcplisttools", "mcpcalltool");
+  if (/\b(?:skill|capability)\b/.test(userText)) add("skillcraft", "runskill", "skillhub", "skillslist", "skillread");
+  if (/\b(?:mission|standing order|autonomous|operator)\b/.test(userText)) add("mission", "standingorder", "operator", "self", "selfevolve", "bootstrap");
+
+  // Preserve schemas for recently used tools even if the newest user message is
+  // a terse follow-up such as "do that again" or "now fix the second one".
+  for (const message of messages.slice(-8)) {
+    for (const block of message.content) {
+      if (block.type === "tool_use" && typeof block.name === "string") wanted.add(block.name.toLowerCase());
+    }
+  }
+  const selected = tools.filter((tool) => wanted.has(tool.schema.name.toLowerCase()));
+  return selected.length > 0 ? selected : tools;
+}
+
 // ─── Context budgeting ─────────────────────────────────────────────────
 //
 // No tokenizer dependency: a ~4-chars/token heuristic plus a flat per-image
@@ -1233,7 +1298,8 @@ export class QueryEngine {
       let streamError: { code: string; message: string; retriable: boolean; retryAfterMs?: number } | null = null;
 
       try {
-        const toolDescriptors = this.cfg.tools.map((t) => ({
+        const activeTools = selectToolsForTurn(this.cfg.tools, this.messages);
+        const toolDescriptors = activeTools.map((t) => ({
           name: t.schema.name,
           description: t.schema.description,
           input_schema: t.schema.inputJsonSchema,
@@ -3417,9 +3483,9 @@ function describeActivity(toolName: string, input: unknown): string {
   return toolName;
 }
 
-/** Lower a reasoning level by N steps within the off..max ladder. */
+/** Lower a reasoning level by N steps within the full provider-neutral ladder. */
 function downshift(level: ReasoningLevel, steps: number): ReasoningLevel {
-  const ladder: ReasoningLevel[] = ["off", "low", "medium", "high", "max"];
+  const ladder: ReasoningLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
   const idx = ladder.indexOf(level);
   if (idx < 0) return level;
   return ladder[Math.max(0, idx - steps)];
@@ -3437,7 +3503,7 @@ export function adaptiveReasoningLevel(
   latestUserText: string,
   enabled = true,
 ): ReasoningLevel | undefined {
-  if (!base || base === "off" || base === "low") return base;
+  if (!base || base === "off" || base === "minimal" || base === "low") return base;
   if (!enabled) return base;
   const text = latestUserText.trim();
   if (!text) return base;

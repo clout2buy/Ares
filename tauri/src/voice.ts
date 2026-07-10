@@ -15,14 +15,19 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export const VOICE_HTTP_BASE = "http://127.0.0.1:8765";
-export const VOICE_WS_BASE = "ws://127.0.0.1:8765";
+export let VOICE_HTTP_BASE = "http://127.0.0.1:8765";
+export let VOICE_WS_BASE = "ws://127.0.0.1:8765";
 export const DEFAULT_BUILTIN_VOICE = "af_heart";
 
 // Per-launch auth token the sidecar requires (set by the Rust shell; read once
 // via ares_voice_status). Without it the sidecar closes every socket 4401.
 let voiceToken = "";
 export function setVoiceToken(token: string): void { voiceToken = token || ""; }
+export function setVoiceEndpoint(port: number): void {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return;
+  VOICE_HTTP_BASE = `http://127.0.0.1:${port}`;
+  VOICE_WS_BASE = `ws://127.0.0.1:${port}`;
+}
 /** Append ?token=… to a sidecar URL when we have one. */
 export function voiceUrl(base: string, path: string): string {
   return voiceToken ? `${base}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(voiceToken)}` : `${base}${path}`;
@@ -142,12 +147,14 @@ interface TtsChunk { type: string; audio?: string; mime?: string; message?: stri
  *  sidecar or provider skill — flows through the SAME Web Audio decode path. */
 export class TtsClient {
   private ws: WebSocket | null = null;
+  private connecting: Promise<WebSocket> | null = null;
   private queue: Array<{ bytes: ArrayBuffer; label?: string }> = []; // encoded audio awaiting decode+play
   private currentSource: AudioBufferSourceNode | null = null;
   private browserUtterance: SpeechSynthesisUtterance | null = null;
   private browserQueued = 0;
   private playing = false;
   private seq = 0;
+  private cancelEpoch = 0;
   /** Sidecar is up but its TTS engine didn't install (e.g. Python 3.13 refused
    *  kokoro) — speak() should go straight to the browser voice. */
   private serverTtsUnavailable = false;
@@ -164,7 +171,8 @@ export class TtsClient {
 
   private connect(): Promise<WebSocket> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve(this.ws);
-    return new Promise((resolve, reject) => {
+    if (this.connecting) return this.connecting;
+    const pending = new Promise<WebSocket>((resolve, reject) => {
       let ws: WebSocket;
       try {
         ws = new WebSocket(voiceUrl(VOICE_WS_BASE, "/tts"));
@@ -183,20 +191,31 @@ export class TtsClient {
           // the UI can show what's being spoken (karaoke).
           this.enqueueAudio(m.audio, m.mime, m.id ? this.pendingTexts.get(m.id) : undefined);
         }
-        if (m.type === "done" && m.id) this.pendingTexts.delete(m.id);
+        if (m.type === "done" && m.id) {
+          this.pendingTexts.delete(m.id);
+          this.pump();
+        }
       };
       ws.onclose = () => { if (this.ws === ws) this.ws = null; };
       this.ws = ws;
     });
+    this.connecting = pending;
+    void pending.finally(() => { if (this.connecting === pending) this.connecting = null; }).catch(() => {});
+    return pending;
   }
 
   private pump(): void {
     if (this.playing) return;
     const item = this.queue.shift();
     if (!item) {
-      if (!this.currentSource && this.browserQueued === 0) {
+      if (!this.currentSource && this.browserQueued === 0 && this.pendingTexts.size === 0) {
         this.onState?.(false);
         this.onUtterance?.(null);
+      } else {
+        // The sidecar accepted more speech but is still synthesizing it. Keep
+        // speaking=true across that gap so hands-free mode cannot open the mic
+        // in the middle of a working reply.
+        this.onState?.(true);
       }
       return;
     }
@@ -284,8 +303,10 @@ export class TtsClient {
   async speak(text: string, voice: string, speed = 1): Promise<void> {
     const clean = sanitizeForSpeech(text);
     if (!clean) return;
+    const epoch = this.cancelEpoch;
     try {
       const ws = await this.connect();
+      if (epoch !== this.cancelEpoch) return;
       if (this.serverTtsUnavailable) throw new Error("sidecar tts unavailable");
       const id = `s${++this.seq}`;
       this.pendingTexts.set(id, clean);
@@ -308,6 +329,7 @@ export class TtsClient {
 
   /** Barge-in: silence everything now. */
   stop(): void {
+    this.cancelEpoch += 1;
     this.queue = [];
     this.pendingTexts.clear();
     this.onUtterance?.(null);

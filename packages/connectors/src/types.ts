@@ -54,4 +54,10 @@ export interface BrowserConnector {
   /** Evaluate JS in the page and return the JSON-serializable result — inspect
    *  state, call functions, verify behavior. */
   evaluate?(js: string): Promise<unknown>;
+  /** Tabs currently reachable through the browser control channel. This is
+   *  intentionally metadata-only: cookies and storage never leave the browser. */
+  tabs?(): Promise<Array<{ index: number; url: string; title?: string; active: boolean }>>;
+  /** Rebind this connector to an already-open tab. Returns false when no tab
+   *  matches, allowing the caller to navigate the Ares-owned page instead. */
+  attachToExisting?(query: string): Promise<boolean>;
 }

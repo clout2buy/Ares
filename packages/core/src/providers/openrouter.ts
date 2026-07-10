@@ -351,11 +351,13 @@ function buildChatBody(model: string, req: ProviderRequest, flavor: OpenAIChatFl
           tool_choice: req.toolChoice === "any" ? "required" : "auto",
         }
       : {}),
-    ...(reasoningEnabled(req.reasoningLevel)
+    ...(flavor === "deepseek" && req.reasoningLevel === "off"
+      ? { thinking: { type: "disabled" } }
+      : reasoningEnabled(req.reasoningLevel)
       ? flavor === "deepseek"
         ? {
             thinking: { type: "enabled" },
-            reasoning_effort: req.reasoningLevel === "max" ? "max" : "high",
+            reasoning_effort: req.reasoningLevel === "xhigh" || req.reasoningLevel === "max" ? "max" : "high",
           }
         : // reasoningEnabled() guarantees a defined, non-"off" level here.
           { reasoning: { effort: openAIReasoningEffort(req.reasoningLevel!) } }

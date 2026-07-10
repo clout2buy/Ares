@@ -31,7 +31,7 @@ import type {
   StreamEvent,
   Usage,
 } from "@ares/protocol";
-import { reasoningEnabled, thinkingBudgetTokens } from "@ares/protocol";
+import { anthropicReasoningEffort, deepSeekReasoningEffort, reasoningEnabled, thinkingBudgetTokens } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard.js";
 import { parseRetryAfterMs } from "./retryAfter.js";
@@ -54,6 +54,16 @@ export function usesAdaptiveThinking(model: string): boolean {
   // Substring match: any model id CONTAINING "fable" routes to the adaptive
   // branch (covers fable-class ids); no capability lookup.
   return /fable|claude-fable/i.test(model);
+}
+
+/** Claude families with native adaptive thinking. */
+export function usesNativeAdaptiveThinking(model: string): boolean {
+  return /(?:fable|mythos)-?5|opus-4-[678]|sonnet-(?:4-6|5)/i.test(model);
+}
+
+/** Claude families with native output_config.effort support. */
+export function supportsAnthropicEffort(model: string): boolean {
+  return /(?:fable|mythos)-?5|opus-4-[5-8]|sonnet-(?:4-6|5)/i.test(model);
 }
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -149,6 +159,7 @@ export class AnthropicProvider implements Provider {
     // window so a hung connection becomes a retriable error, not a freeze.
     const guard = createStallGuard(req.signal);
     let response: Response;
+    let consumedErrorText: string | undefined;
     for (;;) {
       try {
         response = await this.fetchImpl(url, {
@@ -197,13 +208,41 @@ export class AnthropicProvider implements Provider {
         body.thinking = { type: "enabled" };
         continue;
       }
+      // Cross-provider/model thinking blocks carry signatures Anthropic can't
+      // validate ("Invalid `signature` in `thinking` block") — this happens
+      // after a model/provider switch replays another engine's reasoning. Strip
+      // EVERY thinking block from history and retry once; they're the model's
+      // own scratch reasoning, never required for a correct fresh answer.
+      if (!response.ok && response.status === 400) {
+        const errText = await response.text().catch(() => "");
+        if (/signature/i.test(errText) && /thinking/i.test(errText)) {
+          let stripped = false;
+          for (const msg of (body.messages as Array<{ content?: unknown }>)) {
+            if (Array.isArray(msg.content)) {
+              const content = msg.content as Array<{ type?: string }>;
+              const kept = content.filter((b) => b.type !== "thinking");
+              if (kept.length !== content.length) {
+                msg.content = kept;
+                stripped = true;
+              }
+            }
+          }
+          if (stripped) {
+            body.thinking = undefined; // don't re-request thinking on the clean retry
+            continue;
+          }
+        }
+        // Not a signature issue (or nothing left to strip) — surface it with the
+        // text we already read (can't re-read a consumed body).
+        consumedErrorText = errText;
+      }
       break;
     }
 
     if (!response.ok) {
       // Surface the body verbatim: the engine's context-limit matcher
       // reads it ("prompt is too long"), and 529s carry overloaded_error.
-      const text = await response.text().catch(() => "");
+      const text = consumedErrorText ?? await response.text().catch(() => "");
       yield {
         type: "error",
         error: {
@@ -463,7 +502,9 @@ function buildMessagesBody(
   // reasoningEnabled() (not bare truthiness) so "off" sends NO thinking block on
   // any branch — presence of the field, even enabled with a 0 budget, turns
   // thinking back on / 400s the adaptive-only models.
-  if (reasoningEnabled(req.reasoningLevel)) {
+  if (isDeepseek && req.reasoningLevel === "off") {
+    body.thinking = { type: "disabled" };
+  } else if (reasoningEnabled(req.reasoningLevel)) {
     if (isDeepseek) {
       // DeepSeek ignores budget_tokens; enable thinking and do NOT inflate
       // max_tokens (the budget branch would grow the ceiling for nothing).
@@ -478,14 +519,19 @@ function buildMessagesBody(
       if (req.reasoningPhase !== "routine") {
         body.thinking = { type: "enabled" };
       }
-    } else if (usesAdaptiveThinking(req.model)) {
-      // Fable-class models are intentionally adaptive — the API picks the depth,
-      // so the dial collapses to on/off here (the level isn't threaded in).
+      body.output_config = { effort: deepSeekReasoningEffort(req.reasoningLevel) };
+    } else if (usesNativeAdaptiveThinking(req.model)) {
+      // Current Claude families pair adaptive thinking with a real effort wire.
+      // This is the control the old desktop dial claimed to expose but never sent.
       body.thinking = { type: "adaptive" };
+      body.output_config = { effort: anthropicReasoningEffort(req.reasoningLevel, req.model) };
     } else {
       const budget = thinkingBudgetTokens(req.reasoningLevel);
       body.thinking = { type: "enabled", budget_tokens: budget };
       body.max_tokens = budget + outputAllowance;
+      if (supportsAnthropicEffort(req.model)) {
+        body.output_config = { effort: anthropicReasoningEffort(req.reasoningLevel, req.model) };
+      }
     }
   }
 

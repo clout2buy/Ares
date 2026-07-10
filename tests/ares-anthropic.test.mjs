@@ -165,7 +165,7 @@ test("AnthropicProvider: tool-use stream → start, input deltas, parsed input_d
   assert.deepEqual(toolUse.input, { file_path: "a.txt" });
 });
 
-test("AnthropicProvider: request shape — cache breakpoints, thinking budget, headers", async () => {
+test("AnthropicProvider: request shape — cache breakpoints, adaptive effort, headers", async () => {
   const body = [
     sse("message_start", { message: { id: "msg_3", usage: { input_tokens: 1, output_tokens: 1 } } }),
     sse("message_stop", {}),
@@ -179,7 +179,7 @@ test("AnthropicProvider: request shape — cache breakpoints, thinking budget, h
 
   const events = [];
   for await (const e of provider.stream({
-    model: "claude-sonnet-4-6", // budget-class: fable models take adaptive thinking instead
+    model: "claude-sonnet-4-6",
     system: "the stable prefix",
     messages: [userMessage("go")],
     tools: [
@@ -210,10 +210,10 @@ test("AnthropicProvider: request shape — cache breakpoints, thinking budget, h
   assert.equal(Object.hasOwn(req.tools[0], "cache_control"), false);
   assert.deepEqual(req.tools[1].cache_control, { type: "ephemeral" });
 
-  // reasoningLevel medium → 8192-token thinking budget; max_tokens grows to
-  // fit budget + visible-output allowance (Anthropic requires budget < max).
-  assert.deepEqual(req.thinking, { type: "enabled", budget_tokens: 8192 });
-  assert.equal(req.max_tokens, 8192 + 2048);
+  // Current Claude uses adaptive thinking plus the native effort parameter.
+  assert.deepEqual(req.thinking, { type: "adaptive" });
+  assert.deepEqual(req.output_config, { effort: "medium" });
+  assert.equal(req.max_tokens, 2048);
 
   // The last block of the most recent message carries the rolling conversation
   // cache breakpoint (S3) so a long session reuses its history prefix.
@@ -527,6 +527,7 @@ test("anthropic: fable-class models get adaptive thinking, no budget, no max_tok
     // drain
   }
   assert.deepEqual(captured.body.thinking, { type: "adaptive" });
+  assert.deepEqual(captured.body.output_config, { effort: "high" });
   assert.equal(captured.body.max_tokens, 8192, "max_tokens not grown for adaptive thinking");
 });
 

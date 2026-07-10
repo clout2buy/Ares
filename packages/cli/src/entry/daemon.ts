@@ -1,6 +1,6 @@
 // Extracted from entry.ts — daemon.
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, loadRemoteMcpServers, connectorNameFromUrl, fetchOpenRouterModels, deviceCodeLogin } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, type Provider, classifyLane, runAnthropicLoginFlow, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, loadRemoteMcpServers, connectorNameFromUrl, fetchOpenRouterModels, runOpenAILoginFlow } from "@ares/core";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -27,7 +27,7 @@ import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge } from "./browserBridge.js";
 import { garrisonCommand } from "./garrisonCmd.js";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
-import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
+import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion } from "./runtime.js";
 import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { startGatewayMirror } from "./telegramWiring.js";
@@ -44,6 +44,8 @@ interface DaemonInputCommand {
   /** discover_custom_models — OpenAI-compatible base URL to probe. */
   base?: string;
   goal?: string;
+  /** Structured hands-free mode; excluded from goal classification/history. */
+  voice?: boolean;
   command?: string;
   level?: string;
   id?: string;
@@ -1392,30 +1394,24 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           continue;
         }
         try {
+          const entry = await resolveEntry(command.sessionId);
+          if (entry.turnActive) throw new Error("this chat is busy; stop the turn before changing its model");
           const flags = new Map<string, string>([["provider", provider], ["model", model]]);
           const selection = await selectProvider(flags);
+          await preflightProviderSelection(selection);
+          const previous = entry.live.selection;
+          // The owner may have just repaired this provider; re-probe this one
+          // without reviving unrelated providers that failed in other chats.
+          deadProviders.delete(providerFamilyForSelection(selection));
+          await entry.live.session.setProvider(selection.provider, selection.model, {
+            contextBudgetTokens: chatContextBudget(selection),
+            summarizeSpan: makeSpanSummarizer(selection, (usage) =>
+              entry.live.session.recordAuxiliaryUsage("compaction", selection.provider.name, selection.model, usage),
+            ),
+          });
+          entry.live.selection = selection;
           mainSelection = selection;
-          mainProviderFamily = provider;
-          // Owner explicitly chose a provider — give every provider a fresh chance
-          // (they may have just topped up the one that ran dry).
-          deadProviders.clear();
-          const entries = [...new Set([primaryEntry, ...sessions.values()])];
-          for (const entry of entries) {
-            if (entry.turnActive) continue;
-            const entrySelection = entry === primaryEntry ? selection : await selectProvider(flags);
-            await entry.live.session.setProvider(entrySelection.provider, entrySelection.model, {
-              contextBudgetTokens: chatContextBudget(entrySelection),
-              summarizeSpan: makeSpanSummarizer(entrySelection, (usage) =>
-                entry.live.session.recordAuxiliaryUsage(
-                  "compaction",
-                  entrySelection.provider.name,
-                  entrySelection.model,
-                  usage,
-                ),
-              ),
-            });
-            entry.live.selection = entrySelection;
-          }
+          mainProviderFamily = providerFamilyForSelection(selection);
           const settings = await loadUiSettings();
           await updateUiSettings({
             routingMode: "manual",
@@ -1432,9 +1428,23 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             lastCustomModel: provider === "custom" ? model : settings.lastCustomModel,
             lastMoaModel: provider === "moa" ? model : settings.lastMoaModel,
           });
-          process.stdout.write(JSON.stringify({ type: "model_switched", provider, model }) + "\n");
+          tagEmit(command.sessionId, {
+            type: "model_switched",
+            provider: providerFamilyForSelection(selection),
+            model: selection.model,
+            previousProvider: providerFamilyForSelection(previous),
+            previousModel: previous.model,
+          });
         } catch (err) {
-          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `model_switch: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+          const entry = await resolveEntry(command.sessionId).catch(() => null);
+          tagEmit(command.sessionId, {
+            type: "model_switch_failed",
+            provider,
+            model,
+            currentProvider: entry ? providerFamilyForSelection(entry.live.selection) : mainProviderFamily,
+            currentModel: entry?.live.selection.model ?? mainSelection.model,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
         continue;
       }
@@ -1929,21 +1939,20 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         continue;
       }
       if (command.type === "openai_login_start") {
-        // ChatGPT OAuth (device-code). We open the verification URL (with the
-        // code pre-filled) in the user's browser, then poll until they approve —
-        // this routes GPT usage through their ChatGPT Plus/Pro/Max subscription,
-        // no API key. Runs off the command loop (the poll can take minutes).
+        // ChatGPT OAuth (loopback authorization-code + PKCE). The browser does
+        // the /authorize page — clearing Cloudflare's bot challenge, which a
+        // server-side device-code fetch cannot — and we catch the redirect on
+        // localhost:1455. Routes GPT usage through the ChatGPT subscription.
         const sid = command.sessionId;
-        void deviceCodeLogin({
-          onDeviceCode: (dc) => {
-            tagEmit(sid, { type: "openai_login_url", url: dc.verificationUrl, userCode: dc.userCode });
-          },
+        void runOpenAILoginFlow({
+          onAuthorizeUrl: (url) => tagEmit(sid, { type: "openai_login_url", url }),
         })
           .then((file) => {
             tagEmit(sid, { type: "openai_login_done", ok: true, email: file.profile.email ?? null, plan: file.profile.planType ?? null });
           })
           .catch((err: unknown) => {
-            tagEmit(sid, { type: "openai_login_done", ok: false, error: err instanceof Error ? err.message : String(err) });
+            const msg = err instanceof Error ? err.message : String(err);
+            tagEmit(sid, { type: "openai_login_done", ok: false, error: msg.slice(0, 200) });
           });
         continue;
       }
@@ -2164,6 +2173,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       // stream concurrently and steer/interrupt land mid-turn.
       const sid = command.sessionId || DEFAULT_SID;
       const goal = command.goal;
+      const voiceMode = command.voice === true;
       const entry = await resolveEntry(command.sessionId);
       if (entry.turnActive) {
         tagEmit(command.sessionId, { type: "daemon_error", error: "a turn is already running in this chat" });
@@ -2185,7 +2195,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             .map((message) => messageText(message));
           const lane = classifyLane([...recentGoals, goal].join("\n"));
           let model = entry.live.selection.model;
-          let providerName = entry.live.selection.provider.name;
+          let providerName = providerFamilyForSelection(entry.live.selection);
           let source: "assigned" | "main" | "sticky" = "main";
           if (settings.routingMode === "auto") {
             const assigned = settings.routing?.[lane];
@@ -2198,6 +2208,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             if (assigned?.family && assigned.model && !onAssigned && !isProviderDead(assigned.family) && (laneChanged || firstTurn)) {
               try {
                 const sel = await selectProvider(new Map([["provider", assigned.family], ["model", assigned.model]]));
+                await preflightProviderSelection(sel);
                 await entry.live.session.setProvider(sel.provider, sel.model, {
                   contextBudgetTokens: chatContextBudget(sel),
                   summarizeSpan: makeSpanSummarizer(sel, (usage) =>
@@ -2206,7 +2217,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 });
                 entry.live.selection = sel;
                 model = sel.model;
-                providerName = sel.provider.name;
+                providerName = providerFamilyForSelection(sel);
                 source = "assigned";
               } catch {
                 // bad family / missing key → keep the current model
@@ -2235,6 +2246,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // lacks vision, escalate JUST this turn to a vision-capable provider
           // (never off the Ares Gateway), or tell the model to be honest.
           const turnContent = await contentFromUserInput(goal, entry.live.context.workspace);
+          if (voiceMode) turnContent.unshift({ type: "system_reminder", text: "<voice-mode/>" });
           const hasImages = turnContent.some((block) => block.type === "image");
           if (hasImages && !modelLikelyHasVision(entry.live.selection.model)) {
             const pinned = entry.live.selection;
@@ -2315,7 +2327,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             if (isPermanentlyDeadError(turnState.fatalProvider)) {
               markProviderDead(providerFamilyForSelection(entry.live.selection));
             }
-            const fallback = await pickHealthyFallback(entry.live.selection, liveDeadProviders()).catch(() => null);
+            const routingMode = (await loadUiSettings().catch(() => ({ routingMode: "manual" as const }))).routingMode;
+            const fallback = await pickHealthyFallback(entry.live.selection, liveDeadProviders(), {
+              allowCrossProvider: routingMode === "auto",
+            }).catch(() => null);
             if (!fallback) {
               const onAres = providerFamilyForSelection(entry.live.selection) === "ares";
               tagEmit(sid, {
@@ -2323,7 +2338,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 source: "instructions",
                 text: onAres
                   ? `Your Ares account couldn't run this turn (${turnState.fatalProvider}). Check your credits and granted models at doingteam.com → Account — you won't be switched to another provider's key.`
-                  : `All configured providers failed (${turnState.fatalProvider}). Add credit or a working API key in Settings → API Keys.`,
+                  : routingMode !== "auto"
+                    ? `Pinned provider ${providerFamilyForSelection(entry.live.selection)}/${entry.live.selection.model} failed (${turnState.fatalProvider}). The selection was kept. Enable Auto routing if you want cross-provider failover.`
+                    : `All configured providers failed (${turnState.fatalProvider}). Add credit or a working API key in Settings → API Keys.`,
               });
               break;
             }
@@ -2341,9 +2358,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             tagEmit(sid, {
               type: "system_reminder_injected",
               source: "instructions",
-              text: `Provider failed (${turnState.fatalProvider}). Switched to ${fallback.provider.name}/${fallback.model}.`,
+              text: `Provider failed (${turnState.fatalProvider}). Auto routing switched to ${providerFamilyForSelection(fallback)}/${fallback.model}.`,
             });
-            tagEmit(sid, { type: "route_resolved", model: fallback.model, provider: fallback.provider.name, lane: entry.lane ?? "chat", source: "assigned" });
+            tagEmit(sid, { type: "route_resolved", model: fallback.model, provider: providerFamilyForSelection(fallback), lane: entry.lane ?? "chat", source: "assigned" });
             // Reset and re-run; if THIS one also fails fatally the loop continues.
             turnState.status = "completed";
             turnState.fatalProvider = null;

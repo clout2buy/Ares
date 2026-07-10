@@ -14,9 +14,9 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
-use tauri::{Emitter, Listener, Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -56,10 +56,50 @@ struct VoiceState {
     setup_running: Arc<Mutex<bool>>,
     /// Bumped on every stop/restart so stale exit-watchers stand down.
     generation: Arc<AtomicU64>,
+    /// Consecutive unexpected exits. The supervisor restarts a transient crash
+    /// automatically, but stops after a small bounded burst instead of looping.
+    crash_count: Arc<AtomicU64>,
     /// Per-launch shared secret the sidecar requires on every WS/HTTP request.
     /// Without it, any web page could reach ws://127.0.0.1:8765 and drive the
     /// mic/TTS; the webview learns the token via ares_voice_status.
     token: String,
+    /// Per-launch loopback port. A fixed 8765 collided with plugin sidecars
+    /// (notably image generation), making Repair deterministically fail.
+    port: u16,
+}
+
+/// Presentation-only state for the click-through, monitor-sized voice overlay.
+/// Keeping the latest snapshot in Rust means a newly-created overlay cannot
+/// miss the first event while its WebView is still booting.
+struct PresenceState {
+    snapshot: Mutex<PresenceSnapshot>,
+}
+
+/// Session handoff for the experimental renderer. Passing this through a hash
+/// made WebView2 intermittently leave dynamically-created windows at
+/// `about:blank`; the renderer now reads it over the trusted Tauri bridge after
+/// loading a plain, deterministic asset URL.
+struct LivingSurfaceState {
+    session_id: Mutex<Option<String>>,
+}
+
+#[derive(Clone, Serialize)]
+struct PresenceSnapshot {
+    visible: bool,
+    mode: String,
+    caption: String,
+    detail: String,
+}
+
+impl Default for PresenceSnapshot {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            mode: "idle".into(),
+            caption: String::new(),
+            detail: String::new(),
+        }
+    }
 }
 
 /// A random 128-bit hex token. RandomState is seeded from the OS CSPRNG on each
@@ -76,6 +116,13 @@ fn random_token() -> String {
         h.finish()
     };
     format!("{:016x}{:016x}", mk(), mk())
+}
+
+fn available_loopback_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .unwrap_or(8765)
 }
 
 struct AresRuntime {
@@ -417,7 +464,7 @@ fn start_daemon(
 }
 
 #[tauri::command]
-fn ares_send(goal: String, session_id: Option<String>, state: State<DaemonState>) -> Result<(), String> {
+fn ares_send(goal: String, session_id: Option<String>, voice: Option<bool>, state: State<DaemonState>) -> Result<(), String> {
     let trimmed = goal.trim();
     if trimmed.is_empty() {
         return Err("message is empty".to_string());
@@ -425,7 +472,7 @@ fn ares_send(goal: String, session_id: Option<String>, state: State<DaemonState>
 
     write_daemon_command(
         state.inner(),
-        json!({ "type": "send", "goal": trimmed, "sessionId": session_id }),
+        json!({ "type": "send", "goal": trimmed, "sessionId": session_id, "voice": voice.unwrap_or(false) }),
     )
 }
 
@@ -442,8 +489,8 @@ fn ares_interrupt(session_id: Option<String>, state: State<DaemonState>) -> Resu
 #[tauri::command]
 fn ares_set_reasoning(level: String, state: State<DaemonState>) -> Result<(), String> {
     let level = level.trim().to_ascii_lowercase();
-    if !matches!(level.as_str(), "low" | "medium" | "high" | "max") {
-        return Err("reasoning level must be low, medium, high, or max".to_string());
+    if !matches!(level.as_str(), "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") {
+        return Err("reasoning level must be off, minimal, low, medium, high, xhigh, or max".to_string());
     }
 
     write_daemon_command(
@@ -753,6 +800,9 @@ fn ares_window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn ares_window_close(app: tauri::AppHandle, state: State<DaemonState>) -> Result<(), String> {
     let _ = stop_existing_daemon(state.inner());
+    if let Some(overlay) = app.get_webview_window("presence-overlay") {
+        let _ = overlay.close();
+    }
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main window unavailable".to_string())?;
@@ -949,6 +999,26 @@ fn voice_run_logged(mut cmd: Command, log_path: &Path) -> bool {
     matches!(cmd.status(), Ok(s) if s.success())
 }
 
+/// A hard app crash can leave Python alive after Rust loses its Child handle.
+/// The next launch then reports a healthy venv, starts another server, and dies
+/// with WSAEADDRINUSE forever — Repair used to repeat that exact cycle. Reclaim
+/// only a listener whose command line is recognizably Ares's voice server; an
+/// unrelated process on the same port is never touched.
+fn reclaim_orphan_voice_server(port: u16) {
+    #[cfg(windows)]
+    {
+        let script = format!(r#"$owners = Get-NetTCPConnection -LocalPort {} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($ownerPid in $owners) {{ $p = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue; if ($p.CommandLine -match 'voice_service[\\/]+server\.py') {{ Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue }} }}"#, port);
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.status();
+        thread::sleep(Duration::from_millis(180));
+    }
+}
+
 /// Spawn voice_service/server.py with output captured to the log, and watch
 /// for unexpected exits so the UI can say "the engine died" instead of the
 /// wake toggle silently sitting at offline forever.
@@ -957,13 +1027,16 @@ fn spawn_voice_server(
     child_arc: &Arc<Mutex<Option<Child>>>,
     phase_arc: &Arc<Mutex<(String, String)>>,
     gen_arc: &Arc<AtomicU64>,
+    crash_arc: &Arc<AtomicU64>,
     root: &Path,
+    port: u16,
 ) {
     if let Ok(guard) = child_arc.lock() {
         if guard.is_some() {
             return;
         }
     }
+    reclaim_orphan_voice_server(port);
     let script = root.join("voice_service").join("server.py");
     let _ = fs::create_dir_all(root.join(".ares"));
     let log_path = voice_log_path(root);
@@ -976,7 +1049,7 @@ fn spawn_voice_server(
         std::ffi::OsString::from("python3")
     };
     let mut command = Command::new(python);
-    command.arg(&script).current_dir(root);
+    command.arg(&script).current_dir(root).env("ARES_TTS_PORT", port.to_string());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command.stdin(Stdio::null());
@@ -1000,45 +1073,83 @@ fn spawn_voice_server(
             if let Ok(mut guard) = child_arc.lock() {
                 *guard = Some(child);
             }
-            voice_emit(app, phase_arc, "running", "");
+            voice_emit(app, phase_arc, "starting", "Warming up local speech…");
             let generation = gen_arc.load(Ordering::SeqCst);
             let child_watch = child_arc.clone();
             let phase_watch = phase_arc.clone();
             let gen_watch = gen_arc.clone();
+            let crash_watch = crash_arc.clone();
             let app_watch = app.clone();
-            thread::spawn(move || loop {
-                thread::sleep(Duration::from_secs(2));
+            let root_watch = root.to_path_buf();
+            thread::spawn(move || {
+              let mut healthy_since: Option<Instant> = None;
+              loop {
+                thread::sleep(Duration::from_millis(250));
                 if gen_watch.load(Ordering::SeqCst) != generation {
                     return;
                 }
-                let exited = {
+                let exit_code = {
                     let mut guard = match child_watch.lock() {
                         Ok(g) => g,
                         Err(_) => return,
                     };
                     match guard.as_mut() {
                         Some(child) => match child.try_wait() {
-                            Ok(Some(_)) => {
+                            Ok(Some(status)) => {
                                 *guard = None;
-                                true
+                                Some(status.code())
                             }
-                            Ok(None) => false,
+                            Ok(None) => None,
                             Err(_) => return,
                         },
                         None => return,
                     }
                 };
-                if exited {
+                if let Some(code) = exit_code {
                     if gen_watch.load(Ordering::SeqCst) == generation {
-                        voice_emit(
-                            &app_watch,
-                            &phase_watch,
-                            "error",
-                            "The voice engine stopped unexpectedly — check .ares/voice-sidecar.log, or hit Repair to reinstall it.",
-                        );
+                        let attempt = crash_watch.fetch_add(1, Ordering::SeqCst) + 1;
+                        if attempt <= 3 {
+                            voice_emit(
+                                &app_watch,
+                                &phase_watch,
+                                "starting",
+                                &format!("Voice engine restarted automatically ({attempt}/3)…"),
+                            );
+                            thread::sleep(Duration::from_millis(650 * attempt));
+                            if gen_watch.load(Ordering::SeqCst) == generation {
+                                spawn_voice_server(
+                                    &app_watch,
+                                    &child_watch,
+                                    &phase_watch,
+                                    &gen_watch,
+                                    &crash_watch,
+                                    &root_watch,
+                                    port,
+                                );
+                            }
+                        } else {
+                            voice_emit(
+                                &app_watch,
+                                &phase_watch,
+                                "error",
+                                &format!("The voice engine stopped repeatedly (exit {}). Repair will restart it without reinstalling.", code.map_or_else(|| "unknown".into(), |value| value.to_string())),
+                            );
+                        }
                     }
                     return;
                 }
+
+                // Do not call the engine "running" merely because Python was
+                // spawned. Wait until its dynamic loopback port is actually
+                // accepting connections, which prevents the wake UI flicker.
+                if healthy_since.is_none() && TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    healthy_since = Some(Instant::now());
+                    voice_emit(&app_watch, &phase_watch, "running", "");
+                }
+                if healthy_since.is_some_and(|at| at.elapsed() >= Duration::from_secs(30)) {
+                    crash_watch.store(0, Ordering::SeqCst);
+                }
+              }
             });
         }
         Err(err) => {
@@ -1055,12 +1166,22 @@ fn spawn_voice_server(
 /// Quick venv sanity: can it import the CORE deps the server needs to boot?
 /// (kokoro is deliberately not checked — TTS degrades, the server still runs.)
 fn voice_venv_healthy(root: &Path) -> bool {
+    voice_import_ok(root, "import fastapi, uvicorn, numpy, faster_whisper, sounddevice")
+}
+
+/// Deep check used by Repair: is the premium TTS (kokoro) actually importable?
+/// Slower (imports torch) — only run on an explicit Repair, never at startup.
+fn voice_kokoro_ok(root: &Path) -> bool {
+    voice_import_ok(root, "import kokoro")
+}
+
+fn voice_import_ok(root: &Path, import_line: &str) -> bool {
     let py = voice_venv_python(root);
     if !py.exists() {
         return false;
     }
     let mut cmd = Command::new(py);
-    cmd.args(["-c", "import fastapi, uvicorn, numpy, faster_whisper, sounddevice"])
+    cmd.args(["-c", import_line])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -1101,7 +1222,9 @@ fn ensure_voice_ready(app: &tauri::AppHandle, state: &VoiceState, force: bool) {
     let child_arc = state.child.clone();
     let phase_arc = state.phase.clone();
     let gen_arc = state.generation.clone();
+    let crash_arc = state.crash_count.clone();
     let setup_flag = state.setup_running.clone();
+    let port = state.port;
     // Everything (including the health probe — it launches python) runs off
     // the main thread so app startup never blocks on the voice stack.
     thread::spawn(move || {
@@ -1111,9 +1234,21 @@ fn ensure_voice_ready(app: &tauri::AppHandle, state: &VoiceState, force: bool) {
             }
         };
         let venv_dir = root.join(".ares").join("voice-venv");
-        if !force && voice_venv_healthy(&root) {
+        let core_ok = voice_venv_healthy(&root);
+        // Startup fast path: core deps present → just start.
+        if !force && core_ok {
             voice_emit(&app2, &phase_arc, "starting", "Starting the local voice engine…");
-            spawn_voice_server(&app2, &child_arc, &phase_arc, &gen_arc, &root);
+            spawn_voice_server(&app2, &child_arc, &phase_arc, &gen_arc, &crash_arc, &root, port);
+            done();
+            return;
+        }
+        // Repair on an already-complete install (core + kokoro import fine):
+        // the engine just crashed — RESTART it, don't wipe and re-download
+        // gigabytes (the "hit repair → installing forever" the user hit).
+        if force && core_ok && voice_kokoro_ok(&root) {
+            voice_emit(&app2, &phase_arc, "starting", "Restarting the local voice engine…");
+            crash_arc.store(0, Ordering::SeqCst);
+            spawn_voice_server(&app2, &child_arc, &phase_arc, &gen_arc, &crash_arc, &root, port);
             done();
             return;
         }
@@ -1159,14 +1294,26 @@ fn ensure_voice_ready(app: &tauri::AppHandle, state: &VoiceState, force: bool) {
         let mut pip_cmd = Command::new(voice_venv_python(&root));
         pip_cmd.args(["-m", "pip", "install", "--upgrade", "pip"]).current_dir(&root);
         let _ = voice_run_logged(pip_cmd, &log_path);
-        // Core first (wake word + dictation + the server itself), then the
-        // premium TTS separately: kokoro requires Python >=3.10,<3.13, and one
-        // refused wheel must not take down the entire voice stack.
+        // CPU-only PyTorch FIRST. kokoro depends on torch; the default index
+        // pulls the ~2.5GB CUDA build (the "installing forever" the user hit).
+        // The CPU wheel is ~200MB and plenty for real-time TTS on this hardware.
+        // Honor ARES_VOICE_CUDA=1 for users who want the GPU build.
+        if env::var("ARES_VOICE_CUDA").as_deref() != Ok("1") {
+            voice_emit(&app2, &phase_arc, "setup", "Downloading the voice runtime (CPU PyTorch, ~200 MB — first run only)…");
+            let mut torch_cmd = Command::new(voice_venv_python(&root));
+            torch_cmd
+                .args(["-m", "pip", "install", "--index-url", "https://download.pytorch.org/whl/cpu", "torch"])
+                .current_dir(&root);
+            let _ = voice_run_logged(torch_cmd, &log_path); // non-fatal; kokoro will pull torch if this fails
+        }
+        // Core (wake word + dictation + the server itself), then the premium
+        // TTS separately: kokoro requires Python >=3.10,<3.13, and one refused
+        // wheel must not take down the entire voice stack.
         voice_emit(
             &app2,
             &phase_arc,
             "setup",
-            "Installing the voice engine (Whisper + server) — first run only, this can take a few minutes…",
+            "Installing the voice engine (Whisper + server)…",
         );
         let mut core_cmd = Command::new(voice_venv_python(&root));
         core_cmd
@@ -1193,7 +1340,8 @@ fn ensure_voice_ready(app: &tauri::AppHandle, state: &VoiceState, force: bool) {
             });
         }
         voice_emit(&app2, &phase_arc, "starting", "Starting the local voice engine…");
-        spawn_voice_server(&app2, &child_arc, &phase_arc, &gen_arc, &root);
+        crash_arc.store(0, Ordering::SeqCst);
+        spawn_voice_server(&app2, &child_arc, &phase_arc, &gen_arc, &crash_arc, &root, port);
         done();
     });
 }
@@ -1283,6 +1431,7 @@ fn ares_voice_status(app: tauri::AppHandle, state: State<VoiceState>) -> Value {
         // The per-launch secret the webview must attach to every sidecar
         // request — the loopback-service auth gate.
         "token": state.token,
+        "port": state.port,
     })
 }
 
@@ -1292,6 +1441,217 @@ fn ares_voice_status(app: tauri::AppHandle, state: State<VoiceState>) -> Value {
 fn ares_voice_setup(app: tauri::AppHandle, state: State<VoiceState>) {
     stop_voice_sidecar(state.inner());
     ensure_voice_ready(&app, state.inner(), true);
+}
+
+fn presence_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window("presence-overlay") {
+        return Ok(window);
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "presence-overlay",
+        tauri::WebviewUrl::App("index.html?presence=1".into()),
+    )
+    .title("Ares presence")
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .resizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .build()
+    .map_err(|error| format!("failed to create presence overlay: {error}"))?;
+
+    // The overlay is visual presence only. Mouse and keyboard input must pass
+    // straight through so the user can keep working in every app underneath.
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("failed to make presence overlay click-through: {error}"))?;
+
+    // Cover the monitor containing the Ares pill. Physical coordinates avoid
+    // DPI seams that leave one unlit edge on mixed-scale multi-monitor setups.
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        let _ = window.set_position(tauri::PhysicalPosition::new(
+            monitor.position().x,
+            monitor.position().y,
+        ));
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            monitor.size().width,
+            monitor.size().height,
+        ));
+    }
+
+    #[cfg(windows)]
+    hide_windows_accent_border(&window);
+    Ok(window)
+}
+
+#[tauri::command]
+fn ares_presence_status(state: State<PresenceState>) -> PresenceSnapshot {
+    state
+        .snapshot
+        .lock()
+        .map(|snapshot| snapshot.clone())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn ares_presence_update(
+    app: tauri::AppHandle,
+    state: State<PresenceState>,
+    mode: String,
+    caption: String,
+    detail: String,
+) -> Result<(), String> {
+    let snapshot = PresenceSnapshot {
+        visible: true,
+        mode,
+        caption,
+        detail,
+    };
+    if let Ok(mut current) = state.snapshot.lock() {
+        *current = snapshot.clone();
+    }
+    let window = presence_window(&app)?;
+    // Re-evaluate the monitor each time the overlay wakes in case the user
+    // dragged the pill to a different display since the last voice turn.
+    if let Some(monitor) = app
+        .get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+    {
+        let _ = window.set_position(tauri::PhysicalPosition::new(
+            monitor.position().x,
+            monitor.position().y,
+        ));
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            monitor.size().width,
+            monitor.size().height,
+        ));
+    }
+    window
+        .show()
+        .map_err(|error| format!("failed to show presence overlay: {error}"))?;
+    let _ = app.emit_to("presence-overlay", "ares:presence-state", snapshot);
+    Ok(())
+}
+
+#[tauri::command]
+fn ares_presence_hide(app: tauri::AppHandle, state: State<PresenceState>) {
+    if let Ok(mut snapshot) = state.snapshot.lock() {
+        *snapshot = PresenceSnapshot::default();
+    }
+    if let Some(window) = app.get_webview_window("presence-overlay") {
+        let _ = window.hide();
+    }
+}
+
+/// Open Ares's experimental self-generating UI in its own unprivileged window.
+/// The generated document itself lives in an inert iframe; this outer window
+/// only owns the normal daemon/voice bridge and never exposes extra authority.
+#[tauri::command]
+async fn ares_living_surface_open(
+    app: tauri::AppHandle,
+    session_id: String,
+    state: State<'_, LivingSurfaceState>,
+) -> Result<(), String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return Err("invalid Living Surface session id".to_string());
+    }
+    if let Ok(mut current) = state.session_id.lock() {
+        *current = Some(session_id.to_string());
+    }
+    if let Some(existing) = app.get_webview_window("living-surface") {
+        existing
+            .set_focus()
+            .map_err(|error| format!("failed to focus Living Surface: {error}"))?;
+        return Ok(());
+    }
+    // Keep the asset URL deterministic and transfer the session through
+    // LivingSurfaceState. On Windows this command must stay async: WebView2 can
+    // otherwise create the native window but strand its renderer at about:blank.
+    let webview_url = tauri::WebviewUrl::App("living.html".into());
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "living-surface",
+        webview_url,
+    )
+    .title("Ares — Living Surface (Beta)")
+    .inner_size(1380.0, 860.0)
+    .min_inner_size(900.0, 620.0)
+    .center()
+    .background_color(tauri::utils::config::Color(5, 6, 5, 255))
+    // Beta safety rail: native close/minimize controls remain available even
+    // if the experimental React surface fails before its trusted chrome mounts.
+    .decorations(true)
+    .shadow(true)
+    .resizable(true)
+    .build()
+    .map_err(|error| format!("failed to open Living Surface: {error}"))?;
+
+    #[cfg(windows)]
+    hide_windows_accent_border(&window);
+    let close_handle = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            let _ = close_handle.emit_to("main", "ares:living-surface-closed", ());
+        }
+    });
+    window
+        .set_focus()
+        .map_err(|error| format!("failed to focus Living Surface: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn ares_living_surface_context(state: State<LivingSurfaceState>) -> Result<String, String> {
+    state
+        .session_id
+        .lock()
+        .map_err(|_| "Living Surface session state is unavailable".to_string())?
+        .clone()
+        .ok_or_else(|| "Living Surface session has not been initialized".to_string())
+}
+
+#[tauri::command]
+fn ares_living_surface_close(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("living-surface") {
+        window
+            .close()
+            .map_err(|error| format!("failed to close Living Surface: {error}"))?;
+    }
+    let _ = app.emit_to("main", "ares:living-surface-closed", ());
+    Ok(())
+}
+
+/// Renderer handshake. Classic does not collapse into the pill until this
+/// arrives, so a failed surface bootstrap can never strand the owner.
+#[tauri::command]
+fn ares_living_surface_ready(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("missing Living Surface session id".to_string());
+    }
+    app.emit_to(
+        "main",
+        "ares:living-surface-ready",
+        json!({ "sessionId": session_id }),
+    )
+    .map_err(|error| format!("failed to acknowledge Living Surface: {error}"))
 }
 
 fn main() {
@@ -1329,7 +1689,15 @@ fn main() {
             phase: Arc::new(Mutex::new(("idle".into(), String::new()))),
             setup_running: Arc::new(Mutex::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
+            crash_count: Arc::new(AtomicU64::new(0)),
             token: random_token(),
+            port: available_loopback_port(),
+        })
+        .manage(PresenceState {
+            snapshot: Mutex::new(PresenceSnapshot::default()),
+        })
+        .manage(LivingSurfaceState {
+            session_id: Mutex::new(None),
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1340,6 +1708,10 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 clamp_window_to_monitor(&window);
             }
+            // Warm the transparent voice-presence surface while hidden. Its
+            // first listening pulse can then appear instantly without a WebView
+            // boot flash over the user's desktop.
+            let _ = presence_window(app.handle());
             // Auto-start the local voice sidecar so spoken replies work out of
             // the box — provisioning the Python venv + deps itself on first
             // run, and rebuilding a broken venv automatically. The per-launch
@@ -1349,16 +1721,36 @@ fn main() {
                 env::set_var("ARES_VOICE_TOKEN", &voice.token);
                 ensure_voice_ready(&handle, voice.inner(), false);
             }
-            app.listen("tauri://close-requested", move |_| {
-                // Reap the daemon AND the Garrison gateway/bridge (stop_existing_daemon
-                // now tree-kills both) so nothing outlives the window.
-                if let Some(state) = handle.try_state::<DaemonState>() {
-                    let _ = stop_existing_daemon(state.inner());
-                }
-                if let Some(voice) = handle.try_state::<VoiceState>() {
-                    stop_voice_sidecar(voice.inner());
-                }
-            });
+            // Only the MAIN window owns app shutdown. A global
+            // `tauri://close-requested` listener also fires for the transparent
+            // presence surface; closing/recreating that helper window used to
+            // kill voice while the visible Ares window stayed open.
+            if let Some(main) = app.get_webview_window("main") {
+                let close_handle = handle.clone();
+                let chrome_window = main.clone();
+                main.on_window_event(move |event| {
+                    // Windows can restore its active-window accent after focus
+                    // or a resize (including pill mode). Reassert the frameless
+                    // chrome on every focus transition so no green top strip
+                    // flashes when Ares is clicked.
+                    #[cfg(windows)]
+                    if matches!(event, tauri::WindowEvent::Focused(_)) {
+                        hide_windows_accent_border(&chrome_window);
+                    }
+                    if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                        if let Some(state) = close_handle.try_state::<DaemonState>() {
+                            let _ = stop_existing_daemon(state.inner());
+                        }
+                        if let Some(voice) = close_handle.try_state::<VoiceState>() {
+                            stop_voice_sidecar(voice.inner());
+                        }
+                        if let Some(overlay) = close_handle.get_webview_window("presence-overlay") {
+                            let _ = overlay.close();
+                        }
+                        close_handle.exit(0);
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1389,7 +1781,14 @@ fn main() {
             ares_window_toggle_maximize,
             ares_window_close,
             ares_voice_status,
-            ares_voice_setup
+            ares_voice_setup,
+            ares_presence_status,
+            ares_presence_update,
+            ares_presence_hide,
+            ares_living_surface_open,
+            ares_living_surface_close,
+            ares_living_surface_ready,
+            ares_living_surface_context
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ares Tauri app")

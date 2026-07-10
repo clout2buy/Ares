@@ -1,6 +1,6 @@
 // Extracted from entry.ts — providers.
 
-import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, loadAuthToken, MoaProvider, type MoaMember, type Provider } from "@ares/core";
+import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchCodexModels, loadAuthToken, MoaProvider, type MoaMember, type Provider } from "@ares/core";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { type SubModelPool } from "@ares/tools";
@@ -20,6 +20,12 @@ export interface ProviderSelection {
   provider: Provider;
   model: string;
   source: string;
+  /** Canonical product-facing provider identity. Never infer this from the
+   * transport adapter: Ares and DeepSeek both deliberately reuse the hardened
+   * Anthropic wire client, but they are not Anthropic accounts. */
+  family?: TerminalProviderId;
+  /** Cheap validation run before a user-selected model is committed. */
+  preflight?: () => Promise<{ ok: true } | { ok: false; error: string }>;
   subModel?: SubModelPool;
 }
 
@@ -86,15 +92,18 @@ export const MOA_ENSEMBLES: Record<string, MoaEnsembleSpec> = {
   },
 };
 
-type TerminalProviderId = (typeof TERMINAL_PROVIDERS)[number];
+export type TerminalProviderId = (typeof TERMINAL_PROVIDERS)[number];
 
 export const ROUTE_LANES = ["chat", "coding", "research", "tool-use"] as const;
 
 const STATIC_MODEL_CATALOG: Record<"openai" | "anthropic" | "mock", DaemonModelOption[]> = {
   openai: [
-    { id: "gpt-5.6-terra", label: "5.6 Terra", hint: "flagship — deep reasoning + agents", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
-    { id: "gpt-5.6-sol", label: "5.6 Sol", hint: "5.6 — high reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
-    { id: "gpt-5.6-luna", label: "5.6 Luna", hint: "5.6 — fast, efficient reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+    // Verified working through ChatGPT Codex OAuth (probed live). Luna and the
+    // bare gpt-5.6 alias are NOT supported on a ChatGPT account (API-only), so
+    // they're omitted. The daemon also live-fetches the account's real list;
+    // this is the fallback when signed out / the endpoint is unreachable.
+    { id: "gpt-5.6-sol", label: "5.6 Sol", hint: "flagship — deepest reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "gpt-5.6-terra", label: "5.6 Terra", hint: "balanced — ~5.5 quality, 2× cheaper", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
     { id: "gpt-5.5", label: "5.5", hint: "previous flagship", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
     { id: "gpt-5.4", label: "5.4", hint: "stable baseline", group: "OpenAI", capabilities: ["tools", "reasoning"] },
     { id: "gpt-5.4-mini", label: "5.4 Mini", hint: "fast + cheap", group: "OpenAI", capabilities: ["tools"] },
@@ -280,8 +289,31 @@ export function defaultTerminalModel(provider: string, settings: UiSettings): st
 export async function daemonModelCatalog(provider: string): Promise<DaemonModelOption[]> {
   const settings = await loadUiSettings();
 
-  if (provider === "openai" || provider === "mock") {
-    return STATIC_MODEL_CATALOG[provider];
+  if (provider === "mock") {
+    return STATIC_MODEL_CATALOG.mock;
+  }
+
+  if (provider === "openai") {
+    // Ask the authenticated ChatGPT/Codex account for its REAL model list —
+    // exact ids the backend accepts, never guessed from display labels or an
+    // app-update-stale hardcoded list. Falls back to the static catalog when
+    // signed out or the endpoint is unreachable.
+    const live = await fetchCodexModels().catch(() => []);
+    if (live.length > 0) {
+      const staticHints = new Map(STATIC_MODEL_CATALOG.openai.map((m) => [m.id, m]));
+      return live.map((m) => {
+        const known = staticHints.get(m.id);
+        return {
+          id: m.id,
+          label: m.label ?? known?.label ?? m.id,
+          hint: m.description?.slice(0, 80) ?? known?.hint ?? "",
+          group: "OpenAI",
+          capabilities: known?.capabilities ?? ["tools", "reasoning", "vision"],
+          description: m.description,
+        };
+      });
+    }
+    return STATIC_MODEL_CATALOG.openai;
   }
 
   if (provider === "moa") {
@@ -436,8 +468,9 @@ export async function daemonModelCatalog(provider: string): Promise<DaemonModelO
 }
 
 export function providerFamilyForSelection(selection: ProviderSelection): string {
+  if (selection.family) return selection.family;
   const fromSource = selection.source.split(":").at(-1);
-  if (fromSource && ["openai", "ollama", "anthropic", "deepseek", "openrouter", "mock"].includes(fromSource)) {
+  if (fromSource && TERMINAL_PROVIDERS.includes(fromSource as TerminalProviderId)) {
     return fromSource;
   }
   const name = selection.provider.name.toLowerCase();
@@ -445,6 +478,21 @@ export function providerFamilyForSelection(selection: ProviderSelection): string
   if (name.startsWith("ollama")) return "ollama";
   if (name.startsWith("mock")) return "mock";
   return name;
+}
+
+/** Validate a newly requested provider/model without sending conversation data.
+ * Selection is only committed after this succeeds, so a typo, expired key, or
+ * unpulled Ollama model cannot mutate the session and trigger surprise routing. */
+export async function preflightProviderSelection(selection: ProviderSelection): Promise<void> {
+  if (!selection.preflight) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${selection.family ?? "provider"} preflight timed out after 8 seconds`)), 8_000);
+  });
+  const result = await Promise.race([selection.preflight(), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+  if (!result.ok) throw new Error(result.error);
 }
 
 /** Resolve a MoA ensemble's members into concrete Providers by re-entering
@@ -472,6 +520,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider: new MockEchoProvider(),
       model: requestedModel ?? "mock-echo",
       source: "explicit:mock",
+      family: "mock",
     };
   }
 
@@ -481,6 +530,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider,
       model: requestedModel ?? process.env.ARES_OPENAI_MODEL ?? settings.lastOpenAIModel ?? "gpt-5.5",
       source: explicit ? "explicit:openai" : preferred ? "settings:openai" : "auto:openai",
+      family: "openai",
     };
   }
 
@@ -491,6 +541,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider: new OpenRouterProvider({ apiKey: settings.openRouterKey ?? "", model }),
       model,
       source: explicit ? "explicit:openrouter" : "settings:openrouter",
+      family: "openrouter",
     };
   }
 
@@ -511,6 +562,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       }),
       model,
       source: explicit ? "explicit:custom" : "settings:custom",
+      family: "custom",
     };
   }
 
@@ -527,6 +579,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       }),
       model,
       source: explicit ? "explicit:ares" : "settings:ares",
+      family: "ares",
     };
   }
 
@@ -538,17 +591,31 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
     // budget_tokens. x-api-key skips the OAuth identity branch (no Claude-Code
     // leak). ARES_DEEPSEEK_DIALECT=openai forces the legacy OpenAI-compat path.
     const useOpenAiDialect = process.env.ARES_DEEPSEEK_DIALECT === "openai";
+    const deepSeekKey = settings.deepSeekKey || process.env.DEEPSEEK_API_KEY || "";
     return {
       provider: useOpenAiDialect
-        ? new DeepSeekProvider({ apiKey: settings.deepSeekKey, model })
+        ? new DeepSeekProvider({ apiKey: deepSeekKey, model })
         : new AnthropicProvider({
-            apiKey: settings.deepSeekKey || undefined,
+            apiKey: deepSeekKey || undefined,
             // /anthropic is the base; the Messages API path appends like Anthropic's own.
             endpointUrl: "https://api.deepseek.com/anthropic/v1/messages",
             dialect: "deepseek",
           }),
       model,
       source: explicit ? "explicit:deepseek" : "settings:deepseek",
+      family: "deepseek",
+      preflight: async () => {
+        if (!deepSeekKey) return { ok: false, error: "DeepSeek API key is missing. Add it in Settings → API Keys." };
+        try {
+          const models = await fetchDeepSeekModels({ apiKey: deepSeekKey });
+          if (!models.some((item) => item.id === model)) {
+            return { ok: false, error: `DeepSeek model \"${model}\" is not enabled for this API key.` };
+          }
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: `DeepSeek connection failed: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      },
     };
   }
 
@@ -560,6 +627,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider: new AnthropicProvider({ apiKey: settings.anthropicKey || undefined }),
       model,
       source: explicit ? "explicit:anthropic" : "settings:anthropic",
+      family: "anthropic",
     };
   }
 
@@ -570,6 +638,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider: await buildMoaProvider(ensembleName),
       model: ensembleName,
       source: explicit ? "explicit:moa" : "settings:moa",
+      family: "moa",
     };
   }
 
@@ -595,6 +664,21 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider: pool.provider("reasoner"),
       model: slots.reasoner.model,
       source: explicit ? "explicit:ollama" : preferred ? "settings:ollama" : "auto:ollama",
+      family: "ollama",
+      preflight: async () => {
+        const health = await pool.health();
+        if (!health.reachable) {
+          return { ok: false, error: `Ollama is not reachable at ${health.host}. Start Ollama or check OLLAMA_HOST.` };
+        }
+        if (!health.availableModels.includes(slots.reasoner.model)) {
+          const available = health.availableModels.slice(0, 6).join(", ");
+          return {
+            ok: false,
+            error: `Ollama model \"${slots.reasoner.model}\" is not installed or available${available ? `. Available now: ${available}` : ""}. Pull it before selecting it.`,
+          };
+        }
+        return { ok: true };
+      },
       subModel: {
         apply: (req) => pool.apply(req),
         summarize: (req) => pool.summarize(req),

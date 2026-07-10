@@ -256,8 +256,10 @@ export class OllamaCloudPool {
       // (mirrors openAIReasoningEffort) to avoid a 400 on models that validate it,
       // while still letting the owner's dial bite here. Gate on reasoningEnabled so
       // "off"/undefined omit think entirely (a present field re-enables thinking).
-      ...(reasoningEnabled(req.reasoningLevel)
-        ? { think: req.reasoningLevel === "max" ? "high" : req.reasoningLevel }
+      ...(req.reasoningLevel === "off"
+        ? { think: false }
+        : reasoningEnabled(req.reasoningLevel)
+        ? { think: req.reasoningLevel === "xhigh" || req.reasoningLevel === "max" ? "high" : req.reasoningLevel === "minimal" ? "low" : req.reasoningLevel }
         : {}),
       // Inject the system prompt as a leading system message — Ollama
       // doesn't have a separate `system` field at the chat-level API.

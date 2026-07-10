@@ -25,7 +25,7 @@ import type {
   StopReason,
   ContentBlock,
 } from "@ares/protocol";
-import { openAIReasoningEffort, reasoningEnabled } from "@ares/protocol";
+import { openAIReasoningEffort } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { loadAuthToken, type AuthToken } from "./openaiAuth.js";
 import { parseRetryAfterMs } from "./retryAfter.js";
@@ -410,12 +410,9 @@ function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
     })),
     ...(req.tools.length > 0 ? { tool_choice: req.toolChoice === "any" ? "required" : "auto" } : {}),
     stream: true,
-    // Gate on reasoningEnabled() (not bare truthiness) so "off" sends NO
-    // reasoning field at all. "max" collapsing to "high" is handled inside
-    // openAIReasoningEffort()/reasoning.ts already.
-    ...(reasoningEnabled(level)
-      ? { reasoning: { effort: openAIReasoningEffort(level ?? "off") } }
-      : {}),
+    // Explicitly send `none` for Off: omitting this field lets several current
+    // GPT models fall back to their own default, which made Off look fake.
+    ...(level ? { reasoning: { effort: openAIReasoningEffort(level) } } : {}),
   };
 }
 

@@ -252,7 +252,7 @@ test("OpenAIResponsesProvider: sends reasoning effort but not unsupported output
   }
 
   assert.equal(events.at(-1).type, "message_done");
-  assert.deepEqual(captured.body.reasoning, { effort: "high" });
+  assert.deepEqual(captured.body.reasoning, { effort: "xhigh" });
   assert.equal(Object.hasOwn(captured.body, "max_output_tokens"), false);
 });
 

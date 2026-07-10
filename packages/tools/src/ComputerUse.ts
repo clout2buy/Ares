@@ -198,7 +198,7 @@ export function makeComputerUseTool(runner: ComputerActionRunner = runComputerAc
   return buildTool({
     name: "ComputerUse",
     description:
-      "Control the REAL desktop (mouse, keyboard, screen) — for tasks about the user's machine and native apps, not files/code: clicking through a GUI, managing a browser extension, operating an app with no API. Doctrine: SCREENSHOT FIRST to see the screen, act on what you SEE (coordinates are screen pixels from the top-left). After click/type/key/scroll a post-action screenshot is attached automatically — LOOK at it to confirm the effect before acting again. Windows only. Note: this controls the user's actual machine — be deliberate and confirm destructive/outward actions.",
+      "Control the REAL desktop (mouse, keyboard, screen) — LAST RESORT, for native apps only (no API, no web page): a settings dialog, a desktop-only app, an installer. NEVER use this for anything inside a web page or browser — use the Browser tool instead: it drives the page directly without stealing the user's mouse, is faster, and doesn't break when the user moves their own cursor. Doctrine: SCREENSHOT FIRST to see the screen, act on what you SEE (coordinates are screen pixels from the top-left). After click/type/key/scroll a post-action screenshot is attached automatically — LOOK at it to confirm the effect before acting again. Windows only. Note: this hijacks the user's actual mouse/keyboard — be deliberate.",
     safety: "external-state",
     concurrency: "exclusive",
     inputZod: inputSchema,
@@ -224,6 +224,12 @@ export function makeComputerUseTool(runner: ComputerActionRunner = runComputerAc
       }
       if (i.action === "activate" && !i.text?.trim()) {
         return { ok: false, message: "activate needs `text` — a substring of the target window's title (use `windows` to list them)." };
+      }
+      if (i.action === "activate" && /\b(chrome|edge|firefox|brave|opera|vivaldi|browser|x —|youtube|twitter)\b/i.test(i.text ?? "")) {
+        return {
+          ok: false,
+          message: "ComputerUse cannot activate browser windows. Use Browser tabs/attach/open: it controls the page without stealing the owner's mouse and renders the Ares cursor in-page.",
+        };
       }
       if ((i.action === "move" || i.action === "zoom") && (i.x === undefined || i.y === undefined)) {
         return { ok: false, message: `${i.action} needs both x and y — pixel coordinates from the LAST image you were shown.` };
@@ -332,7 +338,9 @@ export function makeComputerUseTool(runner: ComputerActionRunner = runComputerAc
       // loops here; self-correction is the model's job. ARES_COMPUTERUSE_VERIFY=0
       // disables.
       if (VERIFY_ACTIONS.has(i.action) && process.env.ARES_COMPUTERUSE_VERIFY !== "0") {
-        const settleMs = Number(process.env.ARES_COMPUTERUSE_SETTLE_MS ?? 350);
+        // 120ms settles a click's visual effect on modern UIs; the old 350ms
+        // was a large slice of the per-action wall clock users complained about.
+        const settleMs = Number(process.env.ARES_COMPUTERUSE_SETTLE_MS ?? 120);
         if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
         const hadBaseline = lastShotHash !== null && lastShot.captureW > 1;
         const captureInput = (hadBaseline
@@ -429,9 +437,64 @@ async function ensureScript(): Promise<string> {
   return scriptPathPromise;
 }
 
-async function runComputerAction(input: z.infer<typeof inputSchema>, shot: ShotMeta): Promise<PsResult> {
+// ── Persistent PowerShell host ──────────────────────────────────────────────
+// The old design spawned a FRESH powershell.exe per action, paying the
+// Add-Type C# JIT (~1-3s) every single click — the dominant share of the
+// 5-15s/action users saw. The host compiles once, then executes actions from
+// a stdin JSON-line loop for the life of the process.
+
+interface PsHost {
+  child: import("node:child_process").ChildProcessWithoutNullStreams;
+  pending: Array<{ resolve: (r: PsResult) => void; timer: NodeJS.Timeout }>;
+  buffer: string;
+}
+
+let psHost: PsHost | null = null;
+let actionChain: Promise<unknown> = Promise.resolve();
+
+async function ensureHost(): Promise<PsHost> {
+  if (psHost && psHost.child.exitCode === null && !psHost.child.killed) return psHost;
   const script = await ensureScript();
-  const actionFile = path.join(os.tmpdir(), `ares-cu-${randomUUID()}.json`);
+  const ps = process.env.ARES_POWERSHELL || "powershell";
+  const child = spawn(ps, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script], {
+    windowsHide: true,
+  });
+  const host: PsHost = { child, pending: [], buffer: "" };
+  const marker = "ARES_RESULT:";
+  child.stdout.on("data", (b: Buffer) => {
+    host.buffer += b.toString("utf8");
+    let idx = host.buffer.indexOf("\n");
+    while (idx >= 0) {
+      const line = host.buffer.slice(0, idx).trim();
+      host.buffer = host.buffer.slice(idx + 1);
+      if (line.includes(marker)) {
+        const waiter = host.pending.shift();
+        if (waiter) {
+          clearTimeout(waiter.timer);
+          try {
+            waiter.resolve(JSON.parse(line.slice(line.indexOf(marker) + marker.length)) as PsResult);
+          } catch {
+            waiter.resolve({ ok: false, error: "unparseable driver result" });
+          }
+        }
+      }
+      idx = host.buffer.indexOf("\n");
+    }
+  });
+  const failAll = (why: string) => {
+    if (psHost === host) psHost = null;
+    for (const waiter of host.pending.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.resolve({ ok: false, error: why });
+    }
+  };
+  child.on("error", (err) => failAll(`PowerShell host failed: ${err.message}`));
+  child.on("close", (code) => failAll(`PowerShell host exited (${code ?? "killed"})`));
+  psHost = host;
+  return host;
+}
+
+async function runComputerAction(input: z.infer<typeof inputSchema>, shot: ShotMeta): Promise<PsResult> {
   // Mouse actions: convert the model's image-space coordinates to physical
   // screen pixels. zoom: x,y are already physical (the region's top-left).
   let physX: number | null = input.x ?? null;
@@ -442,67 +505,58 @@ async function runComputerAction(input: z.infer<typeof inputSchema>, shot: ShotM
     physY = p.y;
     traceMapping(input.action, input.x, input.y, shot, p);
   }
-  await fs.writeFile(
-    actionFile,
-    JSON.stringify({
-      action: input.action,
-      x: physX,
-      y: physY,
-      w: input.w ?? null,
-      h: input.h ?? null,
-      // Literal text must be SendKeys-escaped so +^%~(){}[] aren't read as
-      // modifiers, and newlines/tabs become real key presses. launch/activate
-      // use the raw text (program path / window title), not SendKeys-escaped.
-      text: input.action === "type" ? escapeSendKeys(input.text ?? "") : (input.text ?? ""),
-      key: input.key ?? "",
-      amount: input.amount ?? 3,
-    }),
-    "utf8",
-  );
-  try {
-    const ps = process.env.ARES_POWERSHELL || "powershell";
-    const stdout = await spawnCapture(
-      ps,
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, actionFile],
-      20_000,
-    );
-    const marker = "ARES_RESULT:";
-    const line = stdout.split(/\r?\n/).find((l) => l.includes(marker));
-    if (!line) {
-      return { ok: false, error: `no result from PowerShell driver. Output: ${stdout.slice(0, 300)}` };
-    }
-    return JSON.parse(line.slice(line.indexOf(marker) + marker.length)) as PsResult;
-  } finally {
-    await fs.rm(actionFile, { force: true }).catch(() => {});
-  }
-}
-
-function spawnCapture(program: string, args: string[], timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-    child.stdout.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
-    child.stderr.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (stdout.includes("ARES_RESULT:")) return resolve(stdout);
-      if (code === 0) return resolve(stdout);
-      reject(new Error(stderr.trim() || `PowerShell exited ${code}`));
-    });
+  const payload = JSON.stringify({
+    action: input.action,
+    x: physX,
+    y: physY,
+    w: input.w ?? null,
+    h: input.h ?? null,
+    // Literal text must be SendKeys-escaped so +^%~(){}[] aren't read as
+    // modifiers, and newlines/tabs become real key presses. launch/activate
+    // use the raw text (program path / window title), not SendKeys-escaped.
+    text: input.action === "type" ? escapeSendKeys(input.text ?? "") : (input.text ?? ""),
+    key: input.key ?? "",
+    amount: input.amount ?? 3,
   });
+  // Serialize actions: the host answers strictly in order, so pending waiters
+  // are matched FIFO — never interleave two writes.
+  const run = actionChain.then(async (): Promise<PsResult> => {
+    const attempt = (): Promise<PsResult> =>
+      new Promise<PsResult>((resolve) => {
+        void ensureHost().then((host) => {
+          const timer = setTimeout(() => {
+            // Wedged action: kill the host (next call respawns it) and report.
+            try { host.child.kill(); } catch { /* already dead */ }
+            resolve({ ok: false, error: "computer action timed out after 20s" });
+          }, 20_000);
+          host.pending.push({ resolve, timer });
+          host.child.stdin.write(payload + "\n", (err) => {
+            if (err) {
+              clearTimeout(timer);
+              const i = host.pending.findIndex((w) => w.timer === timer);
+              if (i >= 0) host.pending.splice(i, 1);
+              resolve({ ok: false, error: `PowerShell host write failed: ${err.message}` });
+            }
+          });
+        }).catch((err: unknown) => resolve({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+      });
+    let result = await attempt();
+    // One transparent retry on host death (stale host from a previous timeout).
+    if (!result.ok && /host (failed|exited)|write failed/i.test(result.error ?? "")) {
+      result = await attempt();
+    }
+    return result;
+  });
+  actionChain = run.catch(() => undefined);
+  return run;
 }
 
-// The driver: reads one action from a JSON file, performs it via .NET + a tiny
-// user32 P/Invoke, prints exactly one `ARES_RESULT:{json}` line.
+// The driver: a PERSISTENT host. Setup (Add-Type JIT) runs once, then actions
+// arrive as JSON lines on stdin; each prints exactly one `ARES_RESULT:{json}`
+// line. Passing an action-file path still works (legacy one-shot mode).
 const POWERSHELL_DRIVER = String.raw`param([string]$ActionFile)
 $ErrorActionPreference = 'Stop'
-function Out-Result($obj) { Write-Output ("ARES_RESULT:" + ($obj | ConvertTo-Json -Compress -Depth 6)) }
+function Out-Result($obj) { [Console]::Out.WriteLine("ARES_RESULT:" + ($obj | ConvertTo-Json -Compress -Depth 6)); [Console]::Out.Flush() }
 try {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
@@ -520,7 +574,6 @@ public static class AresIn {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 }
 "@
-  $a = Get-Content -Raw -LiteralPath $ActionFile | ConvertFrom-Json
   $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
   function Set-Pos($x, $y) { [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]$x, [int]$y) }
   function Get-FocusTitle {
@@ -565,6 +618,8 @@ public static class AresIn {
     $bmp.Dispose()
     return @{ image = [Convert]::ToBase64String($ms.ToArray()); width = $outW; height = $outH; captureW = [int]$rw; captureH = [int]$rh; scale = $scale; originX = [int]$rx; originY = [int]$ry }
   }
+  function Invoke-AresAction($a) {
+  try {
   switch ($a.action) {
     'screenshot' {
       $s = Capture-Region $vs.X $vs.Y $vs.Width $vs.Height
@@ -681,6 +736,26 @@ public static class AresIn {
       }
     }
     default { Out-Result @{ ok = $false; error = ("unknown action: " + $a.action) } }
+  }
+  } catch {
+    Out-Result @{ ok = $false; error = $_.Exception.Message }
+  }
+  }
+
+  if ($ActionFile) {
+    # Legacy one-shot mode: action JSON in a file, exit after.
+    $a = Get-Content -Raw -LiteralPath $ActionFile | ConvertFrom-Json
+    Invoke-AresAction $a
+  } else {
+    # Host mode: JSON action per stdin line, result per stdout line, forever.
+    while ($true) {
+      $line = [Console]::In.ReadLine()
+      if ($null -eq $line) { break }
+      $line = $line.Trim()
+      if ($line -eq '') { continue }
+      try { $a = $line | ConvertFrom-Json } catch { Out-Result @{ ok = $false; error = 'unparseable action json' }; continue }
+      Invoke-AresAction $a
+    }
   }
 }
 catch {

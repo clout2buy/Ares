@@ -38,7 +38,7 @@ async function encryptSecretFields(settings: UiSettings): Promise<UiSettings> {
 
 export interface UiSettings {
   theme?: ThemeName;
-  lastProvider?: "openai" | "ollama" | "mock" | "openrouter" | "anthropic" | "deepseek" | "custom";
+  lastProvider?: "openai" | "ollama" | "mock" | "openrouter" | "anthropic" | "deepseek" | "ares" | "custom" | "moa";
   lastOpenAIModel?: string;
   lastOllamaModel?: string;
   favoriteOllamaModels?: string[];

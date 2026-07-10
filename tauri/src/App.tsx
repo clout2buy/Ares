@@ -33,9 +33,10 @@ import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packa
 import { redactSecrets } from "../../packages/protocol/src/secretRedact";
 import { UpdateBanner } from "./UpdateBanner";
 import { WhatsNew } from "./WhatsNew";
+import { LivingSurface } from "./LivingSurface";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle } from "./newStyle";
 import { CHANGELOG } from "./changelog";
-import { useTts, sidecarListen, wakeListen, fetchVoices, setVoiceToken, type VoiceInfo, type WakeHandle } from "./voice";
+import { useTts, sidecarListen, wakeListen, fetchVoices, setVoiceToken, setVoiceEndpoint, type VoiceInfo, type WakeHandle } from "./voice";
 import "./styles.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -59,6 +60,8 @@ interface AresEvent {
   level?: string;
   provider?: string;
   model?: string;
+  currentProvider?: string;
+  currentModel?: string;
   code?: number | null;
   durationMs?: number;
   touchedFiles?: string[];
@@ -244,6 +247,15 @@ interface OllamaDiscovery {
   error?: string | null;
 }
 
+type PresenceMode = "idle" | "listening" | "working" | "speaking" | "heard";
+
+interface PresenceSnapshot {
+  visible: boolean;
+  mode: PresenceMode;
+  caption: string;
+  detail: string;
+}
+
 function hasNativeBridge(): boolean {
   try {
     return isTauri();
@@ -348,7 +360,7 @@ function takeStreamSpeechChunk(raw: string, force = false, relaxed = false, min 
 
 // ─── View model ────────────────────────────────────────────────────────────
 
-type ReasoningLevel = "low" | "medium" | "high" | "max";
+type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 // Preview iframes ran with only `allow-scripts`, so previewed apps lived in an
 // opaque origin where localStorage/IndexedDB/cookies, alert/confirm/prompt,
 // forms, popups and same-origin fetch all threw or no-op'd — the app "broke"
@@ -357,22 +369,38 @@ type ReasoningLevel = "low" | "medium" | "high" | "max";
 // user's OWN generated code in their OWN desktop app, so same-origin is fine.
 const PREVIEW_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-downloads";
 
-const REASONING_LEVELS: ReasoningLevel[] = ["low", "medium", "high", "max"];
-
-// The effort SLIDER: model reasoning low→max, plus ULTRA at the very top — which
-// is not a model dial but a posture: unleash a background fleet (the orchestrator).
-// "ultra" is kept as a separate Prefs.ultra flag so a daemon reasoning echo can
-// never clobber it; when ultra is on, the model dial is pinned to "max".
-const EFFORT_STEPS = ["low", "medium", "high", "max", "ultra"] as const;
-type EffortStep = (typeof EFFORT_STEPS)[number];
-const EFFORT_META: Record<EffortStep, { label: string; hint: string }> = {
-  low: { label: "low", hint: "snappy — minimal deliberation" },
-  medium: { label: "medium", hint: "balanced thinking for everyday work" },
-  high: { label: "high", hint: "deep passes for hard problems" },
-  max: { label: "max", hint: "everything the model has" },
-  ultra: { label: "ULTRA", hint: "unleash the fleet — background agents orchestrated in parallel" },
+const REASONING_LEVELS: ReasoningLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const EFFORT_META: Record<ReasoningLevel, { label: string; hint: string }> = {
+  off: { label: "Off", hint: "no deliberate reasoning; fastest response" },
+  minimal: { label: "Minimal", hint: "a featherweight reasoning pass" },
+  low: { label: "Low", hint: "fast, economical, and direct" },
+  medium: { label: "Medium", hint: "balanced depth for everyday work" },
+  high: { label: "High", hint: "deep reasoning for difficult work" },
+  xhigh: { label: "X-High", hint: "long-horizon agentic reasoning" },
+  max: { label: "Max", hint: "the provider's absolute capability ceiling" },
 };
 
+function effortLevelsFor(provider: string, model: string): ReasoningLevel[] {
+  const p = provider.toLowerCase();
+  const m = model.toLowerCase();
+  if (/deepseek-v4|deepseek-v3\.2/.test(m) || p === "deepseek") return ["off", "high", "max"];
+  if (/claude|fable|mythos|opus|sonnet/.test(m) || p === "anthropic") {
+    if (/(?:fable|mythos)-?5|opus-4-[78]|sonnet-5/.test(m)) return ["low", "medium", "high", "xhigh", "max"];
+    if (/opus-4-6|sonnet-4-6/.test(m)) return ["low", "medium", "high", "max"];
+    return ["off", "low", "medium", "high", "max"];
+  }
+  if (/gpt-|o[134](?:-|$)/.test(m) || p === "openai") return ["off", "minimal", "low", "medium", "high", "xhigh"];
+  if (p === "ollama") return ["off", "low", "medium", "high"];
+  return ["off", "low", "medium", "high", "xhigh", "max"];
+}
+
+function effortWireLabel(provider: string, model: string, level: ReasoningLevel): string {
+  const m = model.toLowerCase();
+  if (/deepseek-v4|deepseek-v3\.2/.test(m) || provider.toLowerCase() === "deepseek") return level === "off" ? "thinking.disabled" : `reasoning_effort: ${level === "max" || level === "xhigh" ? "max" : "high"}`;
+  if (/claude|fable|mythos|opus|sonnet/.test(m) || provider.toLowerCase() === "anthropic") return `output_config.effort: ${level}`;
+  if (/gpt-|o[134](?:-|$)/.test(m) || provider.toLowerCase() === "openai") return `reasoning.effort: ${level === "off" ? "none" : level === "max" ? "xhigh" : level}`;
+  return `native effort: ${level}`;
+}
 interface ToolStep {
   id: string;
   label: string;
@@ -392,7 +420,7 @@ interface ToolStep {
 }
 
 type Item =
-  | { kind: "user"; key: string; text: string }
+  | { kind: "user"; key: string; text: string; images?: string[] }
   | { kind: "steer"; key: string; text: string; landed?: boolean }
   | { kind: "assistant"; key: string; text: string; thinking: string; streaming: boolean; model?: string; lane?: string; provider?: string; proactive?: boolean }
   | { kind: "tools"; key: string; steps: ToolStep[]; startedAt: number; finishedAt?: number }
@@ -422,6 +450,8 @@ interface SessionVm {
   items: Item[];
   busy: boolean;
   tokensIn: number;
+  /** Portion of tokensIn served from the provider prompt cache. */
+  cacheReadTokens: number;
   tokensOut: number;
   /** Live one-liner of what the agent is doing right now (the activity ticker). */
   activity?: string;
@@ -499,6 +529,7 @@ function freshSession(): SessionVm {
     items: [],
     busy: false,
     tokensIn: 0,
+    cacheReadTokens: 0,
     tokensOut: 0,
     todos: [],
     loaded: true,
@@ -526,6 +557,7 @@ function sessionFromSummary(summary: SessionSummaryWire): SessionVm {
     items: [],
     busy: false,
     tokensIn: 0,
+    cacheReadTokens: 0,
     tokensOut: 0,
     todos: [],
     loaded: false,
@@ -559,8 +591,21 @@ function sessionFromHistory(id: string, rawMessages: unknown, meta: unknown): Se
       continue;
     }
     if (message.role === "user") {
-      const text = blocks.filter((b) => b.type === "text").map((b) => String(b.text ?? "")).join("\n").trim();
-      if (text) items.push({ kind: "user", key: nextKey(), text });
+      const rawText = blocks.filter((b) => b.type === "text").map((b) => String(b.text ?? "")).join("\n").trim();
+      // Real image content blocks from the saved turn, plus any data URLs that
+      // were embedded in the text — both become visible thumbnails, not blobs.
+      const blockImages = blocks
+        .filter((b) => b.type === "image")
+        .map((b) => {
+          const src = b as { source?: { data?: string; media_type?: string; type?: string; url?: string } };
+          if (src.source?.url) return src.source.url;
+          if (src.source?.data) return `data:${src.source.media_type ?? "image/png"};base64,${src.source.data}`;
+          return "";
+        })
+        .filter(Boolean);
+      const { text, images: inlineImages } = splitDataImages(rawText);
+      const images = [...blockImages, ...inlineImages];
+      if (text || images.length) items.push({ kind: "user", key: nextKey(), text, images: images.length ? images : undefined });
       // system_reminder blocks on saved user turns are internal context assembly
       // (memory/instructions/recall) — never user-facing. Don't replay them.
     }
@@ -573,6 +618,7 @@ function sessionFromHistory(id: string, rawMessages: unknown, meta: unknown): Se
     items,
     busy: false,
     tokensIn: 0,
+    cacheReadTokens: 0,
     tokensOut: 0,
     todos: [],
     loaded: true,
@@ -871,23 +917,13 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       break;
     }
     case "system_reminder_injected": {
-      // Most injected context is prompt assembly — memory recall, loaded
-      // instructions, the foreground-intent reminder, dream/heartbeat/skill/hook
-      // notes. It steers the model but is pure noise in the transcript: a bare
-      // "hi" was dumping the whole "Loaded global memory… / Foreground request
-      // (greeting): hi" trace. Hide that, but KEEP the genuinely user-facing
-      // runtime notices (provider failover, token-cap, loop/circuit guards).
-      // The model still receives every reminder — only the UI rendering changes.
-      const src = e.source ?? "context";
+      // Injected reminders are model plumbing, not chat. Surface only the small
+      // operational allowlist that needs owner attention; durable state,
+      // repository maps, verifier output and loop guards stay in diagnostics.
       const text = e.text ?? "";
-      const NOISE = new Set(["memory", "recall", "dream", "heartbeat", "hook", "skill", "compaction", "undo"]);
-      const isStartupNoise = src === "instructions" && /^(Loaded |Foreground request)/i.test(text);
-      // Compaction-source RETRY notices are the user's only signal during the
-      // provider-too-large / stall-shrink ladder — hiding them left minutes of
-      // unexplained dead air (bug 4a8ac088). Let those through, dim.
-      const isRetryStatus = /retrying with a smaller recent-history window/i.test(text);
-      if ((NOISE.has(src) && !isRetryStatus) || isStartupNoise) break;
-      const tone = src === "verifier" ? "warn" : "dim";
+      const visible = /^(?:Provider failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down)|retrying with a smaller recent-history window/i.test(text);
+      if (!visible) break;
+      const tone = /failed|couldn't run|down/i.test(text) ? "warn" : "dim";
       items.push({ kind: "notice", key: nextKey(), text: compact(text, 400), tone });
       break;
     }
@@ -960,6 +996,7 @@ function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.busy = false;
       session.steerQueued = 0;
       session.tokensIn += input;
+      session.cacheReadTokens += e.usage?.cacheReadTokens ?? 0;
       session.tokensOut += output;
       if (session.fleet) {
         // If any leaf failed/aborted (or never finished), keep the board up with a
@@ -1373,7 +1410,10 @@ function loadPrefs(): Prefs {
       provider: raw.provider ?? fallback.provider,
       model: raw.model ?? fallback.model,
       reasoning: REASONING_LEVELS.includes(raw.reasoning as ReasoningLevel) ? (raw.reasoning as ReasoningLevel) : "medium",
-      ultra: raw.ultra === true,
+      // The old global "mode" dial mixed provider reasoning with fleet
+      // orchestration and could silently stay ultra after the control vanished.
+      // Autonomy is selected by the task/router now, never by stale UI state.
+      ultra: false,
       routing,
       // Auto-routing is OPT-IN, never inferred. Previously an unset routingMode
       // flipped to "auto" whenever any lane assignment existed — so a user who
@@ -1469,9 +1509,10 @@ const OLLAMA_CLOUD_MODELS: ModelOption[] = [
 ];
 
 const OPENAI_MODELS: ModelOption[] = [
-  { id: "gpt-5.6-terra", label: "5.6 Terra", hint: "flagship — deep reasoning + agents", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
-  { id: "gpt-5.6-sol", label: "5.6 Sol", hint: "5.6 — high reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
-  { id: "gpt-5.6-luna", label: "5.6 Luna", hint: "5.6 — fast, efficient reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+  // Verified working through ChatGPT Codex OAuth. The daemon live-fetches the
+  // account's real list; this is the offline fallback.
+  { id: "gpt-5.6-sol", label: "5.6 Sol", hint: "flagship — deepest reasoning", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "gpt-5.6-terra", label: "5.6 Terra", hint: "balanced — ~5.5 quality, 2× cheaper", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
   { id: "gpt-5.5", label: "5.5", hint: "previous flagship", group: "OpenAI", capabilities: ["tools", "reasoning", "vision"] },
   { id: "gpt-5.4", label: "5.4", hint: "stable baseline", group: "OpenAI", capabilities: ["tools", "reasoning"] },
   { id: "gpt-5.4-mini", label: "5.4 Mini", hint: "fast + cheap", group: "OpenAI", capabilities: ["tools"] },
@@ -1916,7 +1957,7 @@ function App() {
   const embeddedRef = useRef<EmbeddedBrowserHandle>(null);
   const [embeddedActive, setEmbeddedActive] = useState(false);
   const [embeddedActivity, setEmbeddedActivity] = useState("");
-  const [forge, setForge] = useState<ForgeState>({ open: false, tab: "sandbox" });
+  const [forge, setForge] = useState<ForgeState>({ open: false, tab: "preview" });
   const [forgeWidth, setForgeWidth] = useState(() => Math.min(560, Math.round(window.innerWidth * 0.36)));
   // True only during an active grip drag — flips off the 280ms grid transition
   // so the panel tracks the pointer 1:1 instead of rubber-banding behind it.
@@ -1962,7 +2003,7 @@ function App() {
   const [mcpConnecting, setMcpConnecting] = useState<string | null>(null);
   // Floating-pill mode: shrink the window to an always-on-top mic bar.
   const [pill, setPill] = useState(false);
-  const [pinTop, setPinTop] = useState(true);
+  const [railCollapsed, setRailCollapsed] = useState(() => window.localStorage.getItem("ares.rail.collapsed") === "1");
   const prePillGeom = useRef<{ size: PhysicalSize; pos: PhysicalPosition } | null>(null);
   const [anthropicAuth, setAnthropicAuth] = useState<{ open: boolean; status: "idle" | "opening" | "waiting" | "done" | "error"; error?: string }>({ open: false, status: "idle" });
   // ChatGPT (OpenAI) OAuth — routes GPT usage through the user's ChatGPT
@@ -1980,9 +2021,16 @@ function App() {
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef("");
+  // While the experimental Living Surface owns this session it owns narration
+  // too. The hidden Classic window must not read the JSON patch stream aloud.
+  const livingSessionRef = useRef<string | null>(null);
+  // The daemon's bootstrap conversation is stable even while the owner opens
+  // and focuses other cards. Untagged legacy events belong here, never to the
+  // card that happens to be active when they arrive.
+  const primarySessionRef = useRef(sessions[0]?.id ?? "");
   const prefsRef = useRef(prefs);
   const restartAttempts = useRef(0);
-  const pendingGoal = useRef<{ goal: string; sessionId: string } | null>(null);
+  const pendingGoal = useRef<{ goal: string; sessionId: string; voice?: boolean } | null>(null);
   const stderrTail = useRef<string[]>([]);
   prefsRef.current = prefs;
 
@@ -1999,12 +2047,11 @@ function App() {
     setSessions((prev) => {
       const hit = prev.some((s) => s.id === sessionId);
       if (!hit) {
-        // Untagged/legacy event: route to the ACTIVE card, else the one that's
-        // busy, else the first. (New cards unshift to index 0, so prev[0] is the
-        // newest empty card — the wrong target.)
-        const target =
-          prev.find((s) => s.id === activeRef.current) ?? prev.find((s) => s.busy) ?? prev[0];
-        return prev.map((s) => (s === target ? fn(s) : s));
+        // A background session may emit before sessions_list hydrates its rail
+        // row. Adopt it as its own card; routing an unknown id into the focused
+        // card is the exact cross-session bleed this registry exists to prevent.
+        const adopted = fn({ ...freshSession(), id: sessionId, title: "Background session" });
+        return [...prev, adopted];
       }
       return prev.map((s) => (s.id === sessionId ? fn(s) : s));
     });
@@ -2212,8 +2259,10 @@ function App() {
     if (spokenFlushTimer.current !== null) return;
     spokenFlushTimer.current = window.setTimeout(() => {
       spokenFlushTimer.current = null;
-      flushSpokenBuffer(false, true);
-      if (spokenBuf.current.trim()) scheduleSpokenFlush();
+      // Never force a phrase boundary merely because the model paused to call a
+      // tool. A token such as "trouble" may still become "troubleshooting" in
+      // the next model round; sentence punctuation or turn_end is the safe cut.
+      flushSpokenBuffer(false, false);
     }, 700);
   };
 
@@ -2229,6 +2278,31 @@ function App() {
     spokenBuf.current = "";
     spokenChunkCount.current = 0;
   };
+
+  // Native voice health gates every mic/wake connection. Previously the wake
+  // loop retried independently while Python was down, making the button flash
+  // between "starting" and "offline" every few seconds.
+  const [voiceEngine, setVoiceEngine] = useState<{ phase: string; detail: string }>({ phase: "idle", detail: "" });
+  useEffect(() => {
+    if (!native) return;
+    let alive = true;
+    void invoke<{ phase: string; detail: string; token?: string; port?: number }>("ares_voice_status")
+      .then((s) => {
+        if (!alive) return;
+        if (s?.token) setVoiceToken(s.token);
+        if (s?.port) setVoiceEndpoint(s.port);
+        if (s?.phase) setVoiceEngine({ phase: s.phase, detail: s.detail ?? "" });
+      })
+      .catch(() => { /* shell predates the command */ });
+    const un = listen<{ phase: string; detail: string }>("ares:voice-status", (e) => {
+      if (alive && e.payload?.phase) setVoiceEngine({ phase: e.payload.phase, detail: e.payload.detail ?? "" });
+    });
+    return () => { alive = false; void un.then((f) => f()); };
+  }, [native]);
+  const repairVoice = useCallback(() => {
+    setVoiceEngine({ phase: "starting", detail: "Restarting local speech…" });
+    void invoke("ares_voice_setup").catch(() => { /* ignore */ });
+  }, []);
 
   // ── Conversation mode ─────────────────────────────────────────────────────
   // Full-duplex hands-free: after Ares finishes SPEAKING a reply, auto-open the
@@ -2247,14 +2321,12 @@ function App() {
     if (presenceHeardTimer.current !== null) window.clearTimeout(presenceHeardTimer.current);
     presenceHeardTimer.current = window.setTimeout(() => setPresenceHeard(null), 3200);
   }, []);
-  const prevSpeaking = useRef(false);
   const activeBusy = active?.busy ?? false;
   useEffect(() => {
-    // Fire when speech just ENDED (true→false) while convo mode is on & idle.
-    const justFinishedSpeaking = prevSpeaking.current && !voice.speaking;
-    prevSpeaking.current = voice.speaking;
     if (!convoMode || !prefs.voiceEnabled) return;
-    if (!justFinishedSpeaking || convoListening || activeBusy) return;
+    // Enabling conversation mode opens the channel immediately; after every
+    // reply or empty utterance it re-arms once Ares is idle.
+    if (voice.speaking || convoListening || activeBusy || convoRef.current) return;
     let cancelled = false;
     setConvoListening(true);
     // AUTO listen: the sidecar's VAD ends the utterance the moment you stop
@@ -2268,18 +2340,24 @@ function App() {
         window.clearTimeout(cap);
         convoRef.current = null;
         setConvoListening(false);
-        if (txt.trim()) sendRef.current(txt.trim());
+        if (txt.trim()) {
+          flashHeard(txt.trim());
+          sendRef.current(txt.trim(), { voice: true });
+        }
       });
-    }).catch(() => setConvoListening(false));
+    }).catch(() => {
+      // Avoid a hot reconnect loop while the local sidecar is being repaired.
+      window.setTimeout(() => { if (!cancelled) setConvoListening(false); }, 1_500);
+    });
     return () => { cancelled = true; };
-  }, [voice.speaking, convoMode, prefs.voiceEnabled, convoListening, activeBusy]);
+  }, [voice.speaking, convoMode, prefs.voiceEnabled, convoListening, activeBusy, flashHeard]);
 
   // ── Wake word: "Hey Ares" arms the mic hands-free ─────────────────────────
   const wakeRef = useRef<WakeHandle | null>(null);
   // Wake works WITHOUT the speak-replies toggle — hearing you and speaking to
   // you are independent. (It was chained to voiceEnabled, so a reset voice
   // toggle silently killed the wake word too.)
-  const wakeOn = (prefs.wakeWord ?? false) && native;
+  const wakeOn = (prefs.wakeWord ?? false) && native && voiceEngine.phase === "running";
   // Surfaced in the dock: silence was the old failure mode — you toggled "Hey
   // Ares" on, the sidecar was down, and NOTHING told you it couldn't hear.
   const [wakeStatus, setWakeStatus] = useState<"off" | "arming" | "armed" | "offline">("off");
@@ -2296,15 +2374,13 @@ function App() {
       if (disposed) return;
       setWakeStatus("arming");
       wakeListen((_heard) => {
-        // Woken: cut any speech, ACKNOWLEDGE out loud (presence — you know it
-        // heard you), then capture the command with VAD auto-send and re-arm
-        // the wake loop for the next "Hey Ares".
+        // Woken: cut any speech and open the command mic immediately. The
+        // monitor-edge pulse is the acknowledgement; a spoken "Yeah?" made us
+        // wait and then risked transcribing Ares through its own speaker.
         voiceRef.current.stop();
-        const acks = ["Yeah?", "What's up?", "Listening.", "Go ahead."];
-        voiceRef.current.speak(acks[Math.floor(Math.random() * acks.length)], { force: true });
         setConvoListening(true);
-        // Give the ack a beat to leave the speaker before the mic opens, so
-        // the wake capture doesn't transcribe Ares talking to itself.
+        // The wake stream closes before this event is emitted. One animation
+        // frame lets picky Windows audio drivers release the device cleanly.
         window.setTimeout(() => {
           if (!wakeRef.current) { setConvoListening(false); return; }
           void sidecarListen(undefined, { auto: true }).then((handle) => {
@@ -2319,7 +2395,7 @@ function App() {
               }
             });
           }).catch(() => { setConvoListening(false); wakeRef.current?.resume(); });
-        }, 700);
+        }, 32);
       }, () => {
         // Sidecar died AFTER arming (crash/restart). The old code left the UI
         // claiming "· listening" forever — drop to offline and re-arm.
@@ -2352,32 +2428,6 @@ function App() {
   useEffect(() => {
     if (!convoMode && convoRef.current) { convoRef.current.cancel(); convoRef.current = null; setConvoListening(false); }
   }, [convoMode]);
-
-  // ── Voice engine health: the Rust shell provisions + runs the sidecar and
-  // streams its phase here, so the dock can narrate real status ("installing
-  // the voice engine…") instead of telling the user to run pnpm commands.
-  const [voiceEngine, setVoiceEngine] = useState<{ phase: string; detail: string }>({ phase: "idle", detail: "" });
-  useEffect(() => {
-    if (!native) return;
-    let alive = true;
-    void invoke<{ phase: string; detail: string; token?: string }>("ares_voice_status")
-      .then((s) => {
-        if (!alive) return;
-        // Learn the per-launch sidecar auth token BEFORE any socket opens.
-        if (s?.token) setVoiceToken(s.token);
-        if (s?.phase) setVoiceEngine({ phase: s.phase, detail: s.detail ?? "" });
-      })
-      .catch(() => { /* shell predates the command */ });
-    const un = listen<{ phase: string; detail: string }>("ares:voice-status", (e) => {
-      if (alive && e.payload?.phase) setVoiceEngine({ phase: e.payload.phase, detail: e.payload.detail ?? "" });
-    });
-    return () => { alive = false; void un.then((f) => f()); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const repairVoice = useCallback(() => {
-    setVoiceEngine({ phase: "setup", detail: "Repairing the voice engine…" });
-    void invoke("ares_voice_setup").catch(() => { /* ignore */ });
-  }, []);
 
   // HELM live feed: while the war room is visible, re-scry on open, every 5s,
   // and on every busy flip (turn start/end) so missions, todos, and cost move
@@ -2417,11 +2467,13 @@ function App() {
     setDaemon("running");
     if (!native) return;
     if (event?.sessionId) {
+      const previousPrimary = primarySessionRef.current;
+      primarySessionRef.current = event.sessionId;
       setSessions((prev) => {
         if (prev.some((session) => session.id === event.sessionId)) return prev;
-        const emptyIndex = prev.findIndex(
-          (session) => session.loaded !== false && session.items.length === 0 && session.title === "New session",
-        );
+        // Replace only the bootstrap placeholder. A newly-created empty card may
+        // sit beside it while the daemon starts and must keep its own id/history.
+        const emptyIndex = prev.findIndex((session) => session.id === previousPrimary);
         if (emptyIndex < 0) return prev;
         const next = [...prev];
         const oldId = next[emptyIndex].id;
@@ -2461,7 +2513,7 @@ function App() {
     const queued = pendingGoal.current;
     if (queued) {
       pendingGoal.current = null;
-      void invoke("ares_send", { goal: queued.goal, sessionId: queued.sessionId }).catch((err) => {
+      void invoke("ares_send", { goal: queued.goal, sessionId: queued.sessionId, voice: queued.voice ?? false }).catch((err) => {
         applyTo(queued.sessionId, (s) => ({ ...foldEvent(s, { type: "desktop_error", text: String(err) }), busy: false }));
       });
     }
@@ -2499,7 +2551,6 @@ function App() {
         case "reasoning_set":
         case "routing_set":
         case "routing_mode_set":
-        case "model_switched":
         case "openrouter_key_set":
         case "provider_key_set":
         case "engine_config_set":
@@ -2510,6 +2561,22 @@ function App() {
           }
           if (e.type === "skill_toggle_set") daemonCmd({ type: "skills_list" });
           return true;
+        case "model_switched":
+          pushLog(`[garrison] model pinned · ${e.provider ?? ""}/${e.model ?? ""}`);
+          return true;
+        case "model_switch_failed": {
+          const currentProvider = String(e.currentProvider ?? prefsRef.current.provider);
+          const currentModel = String(e.currentModel ?? prefsRef.current.model);
+          const restored = { ...prefsRef.current, provider: currentProvider, model: currentModel };
+          setPrefs(restored);
+          savePrefs(restored);
+          applyTo(e.sessionId ?? activeRef.current, (s) => foldEvent({
+            ...s,
+            turnProvider: currentProvider,
+            turnModel: currentModel,
+          }, { type: "desktop_error", text: `Model selection kept on ${currentProvider}/${currentModel}: ${String(e.error ?? "provider preflight failed")}` }));
+          return true;
+        }
         case "anthropic_login_url": {
           // Daemon started the loopback server and opened the browser — just
           // show the waiting state. Code arrives automatically via the redirect.
@@ -2521,7 +2588,7 @@ function App() {
           if (e.ok) {
             setAnthropicAuth({ open: true, status: "done" });
             window.setTimeout(() => {
-              daemonCmd({ type: "model_switch", provider: prefsRef.current.provider, model: prefsRef.current.model });
+              daemonCmd({ type: "model_switch", provider: prefsRef.current.provider, model: prefsRef.current.model, sessionId: activeRef.current });
               setAnthropicAuth({ open: false, status: "idle" });
             }, 1400);
           } else {
@@ -2859,16 +2926,20 @@ function App() {
         else if (ev.type === "tool_use_input_delta" && ev.deltaJson) pushTokenFlow(ev.deltaJson.length);
         // Voice: speak natural phrases while reply text streams. Only the session
         // you're looking at speaks; thinking + tool noise never do.
-        if (prefs.voiceEnabled) {
+        if (prefs.voiceEnabled && sid !== livingSessionRef.current) {
           if (ev.type === "turn_start") resetSpokenStream();
           else if (ev.type === "text_delta" && ev.text) appendSpokenDelta(ev.text);
-          else if (ev.type === "turn_end") flushSpokenBuffer(true, true);
+          else if (ev.type === "message_done" && spokenBuf.current && !/\s$/.test(spokenBuf.current)) {
+            // Separate assistant rounds around tool calls. Token deltas within a
+            // round still concatenate exactly, so BPE word pieces stay intact.
+            spokenBuf.current += " ";
+          } else if (ev.type === "turn_end") flushSpokenBuffer(true, true);
         }
       }
       const elsewhere = document.hidden || (!!sid && sid !== activeRef.current);
       if (ev.type === "permission_request" && elsewhere) {
         fireNotification("Ares needs your approval", ev.reason || ev.toolName || "A tool needs your OK");
-      } else if (ev.type === "turn_end" && elsewhere) {
+      } else if (ev.type === "turn_end" && elsewhere && sid !== livingSessionRef.current) {
         fireNotification("Ares finished a task", "A background turn just completed.");
         // Spoken heads-up: you're away from the window — say it out loud too.
         if (prefsRef.current.voiceEnabled && prefsRef.current.voiceNotify !== false) {
@@ -2928,8 +2999,11 @@ function App() {
         }
         return next;
       };
-      if (sid) applyTo(sid, fold);
-      else apply(fold);
+      // Modern turn events are tagged. Legacy/daemon-global events are pinned
+      // to the bootstrap card instead of whichever session the owner is viewing.
+      const owner = sid ?? primarySessionRef.current;
+      if (owner) applyTo(owner, fold);
+      else pushLog(`[routing] quarantined unowned event ${buffered.event.type}`);
     };
 
     const poll = async () => {
@@ -2999,7 +3073,7 @@ function App() {
   }, []);
 
   // ── intents ──────────────────────────────────────────────────────────────
-  const send = useCallback((text: string, opts?: { voice?: boolean }) => {
+  const send = useCallback((text: string, opts?: { voice?: boolean; images?: string[] }) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     // Barge-in: sending a new message cuts any reply still being spoken, and
@@ -3020,28 +3094,27 @@ function App() {
     const ultraDirective = prefsRef.current.ultra
       ? "[ULTRA MODE — fleet by default] Run this task as a parallel agent FLEET unless it is trivial or purely conversational (a one-line answer, a single tiny edit, a greeting). Your FIRST move should be the Conductor tool: author a FleetSpec that fans out the independent angles, then reduce:\"judge\" to synthesize — do NOT do it as one linear pass and do NOT hand-roll what a fleet should do. Any task with research, multi-file or multi-angle review, design options, audits, refactors, or broad sweeps QUALIFIES — when in doubt, spawn the fleet. If you genuinely cannot decompose it, say so in one line, then proceed normally.\n\n---\n\n"
       : "";
-    // Hands-free turns feel like a PERSON, not a report: fast, short, spoken —
-    // and when the web is involved, worked in the visible browser so the user
-    // literally watches Ares browse (scroll to + highlight what matters).
-    const voiceDirective = opts?.voice
-      ? "[VOICE MODE — the user is TALKING to you hands-free] Answer conversationally in 1–3 short sentences (they are read ALOUD) — no headers, lists, code blocks, or markdown unless explicitly asked. Skip extended thinking; respond immediately. If the task needs the web, use the LIVE visible browser tools (CDP/computer-use — never a headless fetch): navigate, scroll to the exact part that answers the question, and highlight/outline it on the page (inject a temporary style via the browser's JS eval) so the user can SEE the evidence while you say the answer. If they ask you to download or click something, actually do it in that browser and confirm out loud when it's done.\n\n---\n\n"
-      : "";
-    const goal = ultraDirective + voiceDirective + trimmed;
+    // Images ride along to the daemon appended to the goal (its
+    // contentFromUserInput parses data:image URLs into image blocks), but are
+    // stored on the item separately so the bubble renders thumbnails.
+    const images = (opts?.images ?? []).filter((u) => u.startsWith("data:image/"));
+    const imagePart = images.length ? "\n" + images.join("\n") : "";
+    const goal = ultraDirective + trimmed + imagePart;
     applyTo(sid, (s) => ({
       ...s,
-      title: s.title === "New session" ? compact(trimmed, 42) : s.title,
-      items: [...s.items, { kind: "user", key: nextKey(), text: trimmed }],
+      title: s.title === "New session" ? compact(trimmed || "image", 42) : s.title,
+      items: [...s.items, { kind: "user", key: nextKey(), text: trimmed, images: images.length ? images : undefined }],
       busy: true,
     }));
     if (native) {
       if (daemon !== "running") {
-        pendingGoal.current = { goal, sessionId: sid };
+        pendingGoal.current = { goal, sessionId: sid, voice: opts?.voice === true };
         applyTo(sid, (s) => foldEvent(s, { type: "system_reminder_injected", source: "verifier", text: "Garrison is down — restarting, your message is queued." }));
         restartDaemon();
         return;
       }
-      void invoke("ares_send", { goal, sessionId: sid }).catch((err) => {
-        pendingGoal.current = { goal: trimmed, sessionId: sid };
+      void invoke("ares_send", { goal, sessionId: sid, voice: opts?.voice === true }).catch((err) => {
+        pendingGoal.current = { goal, sessionId: sid, voice: opts?.voice === true };
         applyTo(sid, (s) => ({ ...foldEvent(s, { type: "desktop_error", text: `${String(err)} — restarting the Garrison, message queued.` }), busy: true }));
         restartDaemon();
       });
@@ -3109,16 +3182,18 @@ function App() {
   sendRef.current = send;
 
   /** Steer: queue a message mid-turn; the daemon folds it in at a safe boundary. */
-  const steer = useCallback((text: string) => {
+  const steer = useCallback((text: string, images?: string[]) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    const imgs = (images ?? []).filter((u) => u.startsWith("data:image/"));
+    if (!trimmed && imgs.length === 0) return;
     const sid = activeRef.current;
     applyTo(sid, (s) => ({
       ...s,
       items: [...s.items, { kind: "steer", key: nextKey(), text: trimmed }],
       steerQueued: (s.steerQueued ?? 0) + 1,
     }));
-    if (native) void invoke("ares_daemon_command", { command: { type: "steer", text: trimmed, sessionId: sid } }).catch(() => null);
+    const steerText = trimmed + (imgs.length ? "\n" + imgs.join("\n") : "");
+    if (native) void invoke("ares_daemon_command", { command: { type: "steer", text: steerText, sessionId: sid } }).catch(() => null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [native, applyTo]);
 
@@ -3186,6 +3261,14 @@ function App() {
     openSession(fresh.id);
   };
 
+  const toggleRail = useCallback(() => {
+    setRailCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem("ares.rail.collapsed", next ? "1" : "0");
+      return next;
+    });
+  }, []);
+
   const respondPermission = (id: string, decision: string) => {
     // Route the answer to the session that actually raised this prompt (B4) —
     // a permission request from a background chat must never resolve into
@@ -3222,29 +3305,20 @@ function App() {
       await invoke("ares_set_reasoning", { level: next.reasoning }).catch(() => null);
       if (next.provider !== prefs.provider || next.model !== prefs.model) {
         await invoke("ares_daemon_command", {
-          command: { type: "model_switch", provider: next.provider, model: next.model },
+          command: { type: "model_switch", provider: next.provider, model: next.model, sessionId: activeRef.current },
         }).catch(() => null);
       }
     };
     void applyLive();
   };
 
-  const currentEffort: EffortStep = prefs.ultra ? "ultra" : prefs.reasoning;
-  // One control for the whole slider. ULTRA pins the model dial to "max" and
-  // raises the fleet flag; every other step is a plain reasoning level.
-  const setEffort = (step: EffortStep) => {
-    const ultra = step === "ultra";
-    const reasoning: ReasoningLevel = ultra ? "max" : step;
-    const p = { ...prefs, reasoning, ultra };
-    setPrefs(p);
-    savePrefs(p);
-    // The daemon only knows the four model levels — ultra rides as "max" until
-    // the orchestrator is wired to consume the fleet flag.
-    if (native) void invoke("ares_set_reasoning", { level: reasoning }).catch(() => null);
-  };
-  const cycleReasoning = () => {
-    const next = EFFORT_STEPS[(EFFORT_STEPS.indexOf(currentEffort) + 1) % EFFORT_STEPS.length];
-    setEffort(next);
+  const chooseReasoning = (level: ReasoningLevel) => {
+    const next = { ...prefs, reasoning: level };
+    setPrefs(next);
+    savePrefs(next);
+    if (native) void invoke("ares_set_reasoning", { level }).catch((err) => {
+      apply((s) => foldEvent(s, { type: "desktop_error", text: `effort change failed: ${String(err)}` }));
+    });
   };
 
   const FLAME_MODES: Prefs["flameMode"][] = ["immersive", "clean", "combat"];
@@ -3394,7 +3468,6 @@ function App() {
 
   useEffect(() => {
     if (forge.open && forge.tab === "holo") void igniteHolo();
-    if (forge.open && forge.tab === "sandbox" && !sandboxSrc) void runSandbox(SANDBOX_SEED);
   }, [forge, igniteHolo, runSandbox, sandboxSrc]);
 
   // Web links in the transcript/vault are <a target="_blank">, which a Tauri
@@ -3478,15 +3551,11 @@ function App() {
   const paletteActions: PaletteAction[] = [
     { label: "New session", hint: "fresh Garrison session", run: newSession },
     { label: "Undo last agent change", hint: "restore the latest workspace checkpoint", run: undoLastChange },
-    { label: forge.open ? "Close the Forge" : "Open the Forge", hint: "artifact / sandbox / holotable panel", run: () => setForge((f) => ({ ...f, open: !f.open })) },
-    { label: "Forge: preview", hint: "latest artifact", run: () => setForge((f) => ({ ...f, open: true, tab: "preview" })) },
-    { label: "Forge: sandbox", hint: "live HTML scratchpad", run: () => setForge((f) => ({ ...f, open: true, tab: "sandbox" })) },
-    { label: "Forge: holotable", hint: "3D build engine", run: () => setForge((f) => ({ ...f, open: true, tab: "holo" })) },
+    { label: forge.open ? "Close the Forge" : "Open the Forge", hint: "one live artifact and browser canvas", run: () => setForge((f) => ({ ...f, open: !f.open })) },
     { label: "Settings", hint: "provider · model · keys", run: () => setSettingsOpen(true) },
     { label: "Connectors — the Directory", hint: "/mcp · connect tools & apps", run: () => { setDirectoryOpen(true); daemonCmd({ type: "mcp_list" }); } },
     { label: "Switch model", hint: `current: ${prefs.routingMode === "auto" ? "routing (auto)" : prefs.model}`, run: () => setModelPopOpen(true) },
     { label: "Routing — the war table", hint: "per-lane model assignments", run: () => setRoutingOpen(true) },
-    { label: `Reasoning effort (now ${prefs.reasoning})`, hint: "low / medium / high / max", run: () => setReasoningOpen(true) },
     { label: "Garrison: restart", hint: "bounce the daemon", run: () => { restartAttempts.current = 0; restartDaemon(); } },
     { label: "Garrison: panel", hint: "status + live log", run: () => setGarrisonOpen(true) },
     ...sessions.map((s) => ({ label: `Jump: ${s.title}`, hint: "session", run: () => openSession(s.id) })),
@@ -3507,8 +3576,8 @@ function App() {
   };
 
   // ── floating pill: condense Ares to an always-on-top mic bar ───────────────
-  const PILL_W = 320;
-  const PILL_H = 60;
+  const PILL_W = 276;
+  const PILL_H = 42;
   const enterPill = useCallback(async () => {
     if (native) {
       try {
@@ -3516,7 +3585,8 @@ function App() {
         const [size, pos] = await Promise.all([w.outerSize(), w.outerPosition()]);
         prePillGeom.current = { size, pos };
         await w.setResizable(false);
-        await w.setAlwaysOnTop(pinTop);
+        // Pill is a persistent desktop control, never a second minimize state.
+        await w.setAlwaysOnTop(true);
         await w.setSize(new LogicalSize(PILL_W, PILL_H));
         // tuck it to the top-right of where the window was
         const sf = await w.scaleFactor();
@@ -3526,7 +3596,7 @@ function App() {
       }
     }
     setPill(true);
-  }, [native, pinTop]);
+  }, [native]);
 
   const exitPill = useCallback(async () => {
     if (native) {
@@ -3548,13 +3618,53 @@ function App() {
     setPill(false);
   }, [native]);
 
-  const togglePinTop = useCallback(async () => {
-    const next = !pinTop;
-    setPinTop(next);
-    if (native && pill) {
-      try { await getCurrentWindow().setAlwaysOnTop(next); } catch { /* noop */ }
+  const launchLivingSurface = useCallback(async () => {
+    let sid = activeRef.current;
+    if (!sid) {
+      const fresh = freshSession();
+      sid = fresh.id;
+      setSessions((current) => [fresh, ...current]);
+      setActiveId(sid);
+      activeRef.current = sid;
     }
-  }, [native, pill, pinTop]);
+    let unlistenReady: (() => void) | null = null;
+    try {
+      let acknowledge: (() => void) | null = null;
+      const ready = new Promise<void>((resolve) => { acknowledge = resolve; });
+      if (native) {
+        unlistenReady = await listen<{ sessionId?: string }>("ares:living-surface-ready", ({ payload }) => {
+          if (payload?.sessionId === sid) acknowledge?.();
+        });
+        await invoke("ares_living_surface_open", { sessionId: sid });
+        await Promise.race([
+          ready,
+          new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("Living Surface did not finish booting within 8 seconds")), 8_000)),
+        ]);
+      }
+      livingSessionRef.current = sid;
+      setSettingsOpen(false);
+      await enterPill();
+    } catch (error) {
+      livingSessionRef.current = null;
+      if (native) void invoke("ares_living_surface_close").catch(() => null);
+      pushLog(`[living-surface] launch failed: ${String(error)}`);
+      apply((session) => foldEvent(session, { type: "desktop_error", text: `Living Surface failed to start: ${String(error)}` }));
+    } finally {
+      unlistenReady?.();
+    }
+  }, [apply, enterPill, native, pushLog]);
+
+  useEffect(() => {
+    if (!native) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen("ares:living-surface-closed", () => {
+      if (disposed) return;
+      livingSessionRef.current = null;
+      void exitPill();
+    }).then((un) => { if (disposed) un(); else unlisten = un; });
+    return () => { disposed = true; unlisten?.(); };
+  }, [exitPill, native]);
 
   const routedLanes = ROUTE_LANES.filter((l) => prefs.routing[l]);
   // The model that ACTUALLY handled this session's last turn (sticky/lane/
@@ -3633,6 +3743,58 @@ function App() {
     if (active?.busy && activity) setStrike((n) => n + 1);
   }, [activity]);
 
+  // In pill mode presence belongs to the DESKTOP, not inside the controller.
+  // Rust owns a monitor-sized, click-through WebView so the pulse and captions
+  // remain visible over every application without intercepting the real mouse.
+  const overlayMode: PresenceMode = convoListening
+    ? "listening"
+    : voice.speaking
+      ? "speaking"
+      : activeBusy
+        ? "working"
+        : presenceHeard
+          ? "heard"
+          : "idle";
+  const overlayCaption = convoListening
+    ? "Listening…"
+    : nowSpeaking
+      ? nowSpeaking
+      : presenceHeard
+        ? `“${presenceHeard}”`
+        : activity || (activeBusy ? "Ares is working…" : "");
+  useEffect(() => {
+    if (!native) return;
+    if (!pill || overlayMode === "idle") {
+      void invoke("ares_presence_hide").catch(() => null);
+      return;
+    }
+    void invoke("ares_presence_update", {
+      mode: overlayMode,
+      caption: overlayCaption,
+      detail: activeBusy && activity && overlayCaption !== activity ? activity : "",
+    }).catch(() => null);
+  }, [native, pill, overlayMode, overlayCaption, activeBusy, activity]);
+  useEffect(() => () => {
+    if (native) void invoke("ares_presence_hide").catch(() => null);
+  }, [native]);
+
+  // Hands-free work narration: if a tool run goes quiet, read one concise
+  // activity update. Rapid tool sequences are rate-limited so this stays useful
+  // instead of becoming a stream of implementation noise.
+  const narratedActivity = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+  useEffect(() => {
+    if (!prefs.voiceEnabled || !activeBusy || !(convoMode || pill || wakeOn) || !activity || voice.speaking) return;
+    const now = Date.now();
+    if (activity === narratedActivity.current.text || now - narratedActivity.current.at < 9_000) return;
+    const timer = window.setTimeout(() => {
+      if (spokenBuf.current.trim() || voiceRef.current.speaking) return;
+      narratedActivity.current = { text: activity, at: Date.now() };
+      const clean = activity.replace(/[…]+$/u, "").replace(/\s+/g, " ").trim();
+      if (clean) voiceRef.current.speak(`${clean}${/[.!?]$/.test(clean) ? "" : "."}`);
+    }, 850);
+    return () => window.clearTimeout(timer);
+  }, [prefs.voiceEnabled, activeBusy, convoMode, pill, wakeOn, activity, voice.speaking]);
+
   return (
     <StyleCtx.Provider value={prefs.uiStyle}>
     <div
@@ -3642,6 +3804,7 @@ function App() {
       data-flame={prefs.flameMode}
       data-style={prefs.uiStyle}
       data-panel={forge.open ? "1" : "0"}
+      data-rail={railCollapsed ? "collapsed" : "open"}
       data-dragging={forgeDragging ? "1" : "0"}
       data-working={active?.busy ? "1" : "0"}
       data-pill={pill ? "1" : "0"}
@@ -3653,10 +3816,15 @@ function App() {
           daemon={daemon}
           busy={active?.busy ?? false}
           activity={activity ?? ""}
-          pinTop={pinTop}
-          onTogglePin={togglePinTop}
+          conversation={convoMode}
+          listening={convoListening}
+          speaking={voice.speaking}
+          wakeStatus={wakeStatus}
           onExpand={exitPill}
-          onSend={(t) => send(t)}
+          onToggleConversation={() => {
+            if (!convoMode && !prefsRef.current.voiceEnabled) setVoiceEnabled(true);
+            setConvoMode((current) => !current);
+          }}
           onStop={stopTurn}
           native={native}
         />
@@ -3854,7 +4022,7 @@ function App() {
                             setPrefs(next as Prefs);
                             prefsRef.current = next as Prefs;
                             savePrefs(next as Prefs);
-                            daemonCmd({ type: "model_switch", provider: "ares", model: m.id });
+                            daemonCmd({ type: "model_switch", provider: "ares", model: m.id, sessionId: activeRef.current });
                             setAccountMenuOpen(false);
                           }}
                         >
@@ -3890,16 +4058,10 @@ function App() {
         </span>
         <div className="winControls">
           <button className="winPill" aria-label="condense to floating pill" title="Condense to a floating pill" onClick={() => void enterPill()}>
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="1.5" y="4.5" width="11" height="5" rx="2.5" />
-              <circle cx="4.2" cy="7" r="0.9" fill="currentColor" stroke="none" />
-            </svg>
+            <AresPillGlyph />
           </button>
           {native ? (
             <>
-            <button aria-label="minimize" onClick={() => void invoke("ares_window_minimize").catch(() => null)}>
-              <svg viewBox="0 0 10 10"><line x1="1" y1="5" x2="9" y2="5" /></svg>
-            </button>
             <button aria-label="maximize" onClick={() => void invoke("ares_window_toggle_maximize").catch(() => null)}>
               <svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1" /></svg>
             </button>
@@ -3912,6 +4074,10 @@ function App() {
       </header>
 
       <aside className="rail">
+        <button className="railCollapse" onClick={toggleRail} title="Collapse navigation" aria-label="Collapse navigation">
+          <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M11 4 6 9l5 5"/><path d="M15 3v12"/></svg>
+          <span>Collapse</span>
+        </button>
         <button className="primary" onClick={newSession}>
           + New session
         </button>
@@ -3975,7 +4141,7 @@ function App() {
           <button className="ghost" disabled={!native || daemon !== "running" || active?.busy} onClick={undoLastChange}>
             Undo last agent change
           </button>
-          <button className="ghost" onClick={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "sandbox" }))}>
+          <button className="ghost" onClick={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : liveTarget ? "live" : "preview" }))}>
             {forge.open ? "Close the Forge" : "Open the Forge"}
           </button>
           <button className="ghost" onClick={() => setSettingsOpen(true)}>
@@ -3990,6 +4156,11 @@ function App() {
 
       <main className="stage" data-view={view}>
         <header className="stageHead">
+          {railCollapsed ? (
+            <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
+              <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
+            </button>
+          ) : null}
           <div>
             <h2>{active?.title ?? "Session"}</h2>
             <span>
@@ -4077,15 +4248,13 @@ function App() {
             busy={active?.busy ?? false}
             model={liveModel}
             autoRouting={prefs.routingMode === "auto"}
-            reasoning={prefs.reasoning}
             routedLanes={routedLanes}
             todos={active?.todos ?? []}
             steerQueued={active?.steerQueued ?? 0}
-            onSend={send}
+            onSend={(t, imgs) => send(t, { images: imgs })}
             onSteer={steer}
             onStop={stopTurn}
             onModelChip={() => setModelPopOpen(true)}
-            onReasoningChip={cycleReasoning}
             onRoutingChip={() => setRoutingOpen(true)}
             slashActions={slashActions}
           />
@@ -4099,8 +4268,8 @@ function App() {
             <button className="statusSeg" onClick={() => setModelPopOpen(true)} title={prefs.routingMode === "auto" ? "auto-routing — model that handled the last turn" : "switch provider / model"}>
               <b>model</b><span>{liveModel}</span>
             </button>
-            <button className="statusSeg" data-ultra={prefs.ultra ? "1" : "0"} onClick={() => setReasoningOpen(true)} title="reasoning effort — slide to ULTRA to unleash the fleet">
-              <b>mode</b><span>{prefs.ultra ? "ultra" : prefs.reasoning}</span>
+            <button className="statusSeg effortStatus" onClick={() => setReasoningOpen(true)} title="Set the active model's native reasoning effort">
+              <b>effort</b><span>{EFFORT_META[prefs.reasoning].label.toLowerCase()}</span>
             </button>
             <button className="statusSeg" onClick={() => setRoutingOpen(true)} title="per-lane model routing">
               <b>route</b><span>{prefs.routingMode === "auto" ? `auto · ${routedLanes.length}` : routedLanes.length > 0 ? `ready · ${routedLanes.length}` : "off"}</span>
@@ -4122,8 +4291,8 @@ function App() {
             </button>
           </div>
           <span className="grow" />
-          <span className="hudReadout" title="tokens in / out this session">
-            ↑<SpringNumber value={active?.tokensIn ?? 0} format={fmtTokens} /> ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
+          <span className="hudReadout" title={`${fmtTokens(active?.cacheReadTokens ?? 0)} input tokens reused from cache`}>
+            ↑<SpringNumber value={Math.max(0, (active?.tokensIn ?? 0) - (active?.cacheReadTokens ?? 0))} format={fmtTokens} /> fresh ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
           </span>
           <div className="statusGroup statusActions">
             {native && daemon !== "running" && daemon !== "starting" ? (
@@ -4144,13 +4313,9 @@ function App() {
           <div className="forgeGrip" onPointerDown={onForgeGrip} />
           <header>
             <strong>THE FORGE</strong>
-            <nav className="forgeTabs">
-              {(["preview", "sandbox", "holo", "live"] as ForgeTab[]).map((t) => (
-                <button key={t} data-on={forge.tab === t ? "1" : "0"} data-live={t === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: t }))}>
-                  {t === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "● live" : t}
-                </button>
-              ))}
-            </nav>
+            <span className="forgeSurfaceState" data-live={forge.tab === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"}>
+              {forge.tab === "live" ? (embeddedActive ? "interactive canvas" : liveTarget ? "browser canvas" : "canvas ready") : forge.tab === "holo" ? "spatial artifact" : forge.artifact ? forge.artifact.label : "artifact canvas"}
+            </span>
             <button className="ghost" onClick={() => setForge((f) => ({ ...f, open: false }))}>
               Close
             </button>
@@ -4281,6 +4446,7 @@ function App() {
           onOpenModelBrowser={() => setModelPopOpen(true)}
           openaiAuth={openaiAuth}
           onOpenaiSignIn={startOpenaiSignIn}
+          onLaunchLivingSurface={() => void launchLivingSurface()}
           listProviderVoices={
             ttsProviderSkill
               ? () => skillInvoke(ttsProviderSkill.name, { op: "voices" }).then((r) => {
@@ -4378,7 +4544,7 @@ function App() {
             apply((s) => ({ ...s, turnModel: model, turnProvider: provider, turnLane: undefined }));
             if (native) {
               if (daemon === "running") {
-                void invoke("ares_daemon_command", { command: { type: "model_switch", provider, model } }).catch((err) => {
+                void invoke("ares_daemon_command", { command: { type: "model_switch", provider, model, sessionId: activeRef.current } }).catch((err) => {
                   apply((s) => foldEvent(s, { type: "desktop_error", text: `model switch failed: ${String(err)}` }));
                 });
               } else {
@@ -4387,6 +4553,16 @@ function App() {
               }
             }
           }}
+        />
+      ) : null}
+
+      {reasoningOpen ? (
+        <EffortPopover
+          provider={active?.turnProvider ?? prefs.provider}
+          model={liveModel}
+          value={prefs.reasoning}
+          onPick={chooseReasoning}
+          onClose={() => setReasoningOpen(false)}
         />
       ) : null}
 
@@ -4425,15 +4601,6 @@ function App() {
                 ))}
               </div>
             )}
-          </div>
-        </div>
-      ) : null}
-
-      {reasoningOpen ? (
-        <div className="paletteScrim" onClick={() => setReasoningOpen(false)}>
-          <div className="palette reasoningPop" onClick={(e) => e.stopPropagation()}>
-            <div className="popTitle">Reasoning effort</div>
-            <ReasoningSlider value={currentEffort} onChange={setEffort} />
           </div>
         </div>
       ) : null}
@@ -4944,6 +5111,58 @@ function BugReportModal({
           <button className="primary" onClick={() => onSend(note.trim())} disabled={busy}>
             {busy ? "Sending…" : "Send report"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EffortPopover({
+  provider,
+  model,
+  value,
+  onPick,
+  onClose,
+}: {
+  provider: string;
+  model: string;
+  value: ReasoningLevel;
+  onPick: (level: ReasoningLevel) => void;
+  onClose: () => void;
+}) {
+  const levels = effortLevelsFor(provider, model);
+  const selected = levels.includes(value) ? value : null;
+  const activeIndex = selected ? levels.indexOf(selected) : -1;
+  const fill = activeIndex < 0 || levels.length < 2 ? 0 : (activeIndex / (levels.length - 1)) * 100;
+  return (
+    <div className="paletteScrim" onClick={onClose}>
+      <div className="palette reasoningPop" onClick={(e) => e.stopPropagation()}>
+        <div className="effortHead">
+          <ProviderLogo brand={provider} className="effortProviderMark" />
+          <span>
+            <strong>Reasoning effort</strong>
+            <em>{provider} / {model}</em>
+          </span>
+          <button className="close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+        <div className="effortSignal" aria-hidden="true">
+          <i style={{ width: `${fill}%` }} />
+          {levels.map((level, index) => <b key={level} data-on={level === selected ? "1" : "0"} style={{ left: `${levels.length === 1 ? 50 : (index / (levels.length - 1)) * 100}%` }} />)}
+        </div>
+        <div className="effortChoices" style={{ "--effort-stops": levels.length } as React.CSSProperties}>
+          {levels.map((level) => {
+            const meta = EFFORT_META[level];
+            return (
+              <button key={level} data-on={level === selected ? "1" : "0"} onClick={() => onPick(level)}>
+                <span>{meta.label}</span>
+                <small>{meta.hint}</small>
+              </button>
+            );
+          })}
+        </div>
+        <div className="effortWire" data-warning={selected ? "0" : "1"}>
+          <i />
+          <span>{selected ? effortWireLabel(provider, model, selected) : `Choose a supported level for ${model}; the saved “${EFFORT_META[value].label}” setting is not valid here.`}</span>
         </div>
       </div>
     </div>
@@ -5869,45 +6088,6 @@ function FleetPanel({ fleet, onResume }: { fleet: FleetVm; onResume: (fleetId: s
 }
 
 // ─── The effort slider — low → max → ULTRA (with the fleet ignition) ─────────
-function ReasoningSlider({ value, onChange }: { value: EffortStep; onChange: (s: EffortStep) => void }) {
-  const idx = EFFORT_STEPS.indexOf(value);
-  const ignited = value === "ultra";
-  const pct = (idx / (EFFORT_STEPS.length - 1)) * 100;
-  return (
-    <div className={ignited ? "effortSlider ignited" : "effortSlider"} data-step={value}>
-      <div className="effortTrack">
-        <div className="effortFill" style={{ width: `${pct}%` }} />
-        <div className="effortFlame" aria-hidden="true" />
-        <div className="effortThumb" style={{ left: `${pct}%` }} />
-        <input
-          className="effortRange"
-          type="range"
-          min={0}
-          max={EFFORT_STEPS.length - 1}
-          step={1}
-          value={idx}
-          aria-label="reasoning effort"
-          onChange={(e) => onChange(EFFORT_STEPS[Number(e.target.value)])}
-        />
-      </div>
-      <div className="effortLabels">
-        {EFFORT_STEPS.map((s) => (
-          <button
-            key={s}
-            className="effortLabel"
-            data-on={s === value ? "1" : "0"}
-            data-ultra={s === "ultra" ? "1" : "0"}
-            onClick={() => onChange(s)}
-          >
-            {EFFORT_META[s].label}
-          </button>
-        ))}
-      </div>
-      <div className="effortHint">{EFFORT_META[value].hint}</div>
-    </div>
-  );
-}
-
 // ─── Dictation (speech → text) ───────────────────────────────────────────────
 // Mic → MediaRecorder (webm/opus) → Google Speech REST. Same public Chromium key
 // the rest of Ares uses for voice notes; the webview reaches the API directly
@@ -5930,6 +6110,19 @@ function blobToBase64(blob: Blob): Promise<string> {
 function dataUrlB64Len(dataUrl: string): number {
   const i = dataUrl.indexOf(",");
   return i >= 0 ? dataUrl.length - i - 1 : dataUrl.length;
+}
+
+/** Pull data:image URLs out of a message string so the transcript shows the
+ *  IMAGE, not a giant truncated base64 blob (which read as a "random directory").
+ *  Used for history replay; the live send path passes images out of band. */
+function splitDataImages(raw: string): { text: string; images: string[] } {
+  const images: string[] = [];
+  const text = raw
+    .replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, (m) => { images.push(m); return ""; })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { text, images };
 }
 
 // Vision-safe downscale, done in the webview with a plain <canvas> — no deps.
@@ -6015,23 +6208,34 @@ const globalSttProvider: { current: ((audioB64: string, mime: string) => Promise
 
 type DictState = "idle" | "recording" | "thinking" | "error";
 /**
- * Click to record, click to stop → transcribe → onText. Prefers the LOCAL voice
+ * Tap once, speak, then pause → transcribe → onText. Prefers the LOCAL voice
  * sidecar (faster-whisper, offline, no key, mic captured server-side so there's
  * no WebView getUserMedia dance). Falls back to the old MediaRecorder → Google
  * Speech path only when the sidecar isn't reachable, so the mic still works on a
- * machine without the sidecar running.
+ * machine without the sidecar running. Both paths use silence detection; a
+ * second click merely finishes early and is never required.
  */
 function useDictation(onText: (text: string) => void) {
   const [state, setState] = useState<DictState>("idle");
   const recRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const legacyVadFrame = useRef<number | null>(null);
+  const legacyAudioContext = useRef<AudioContext | null>(null);
   const sttRef = useRef<Awaited<ReturnType<typeof sidecarListen>> | null>(null);
   const usingSidecar = useRef(false);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
 
+  const stopLegacyVad = () => {
+    if (legacyVadFrame.current !== null) cancelAnimationFrame(legacyVadFrame.current);
+    legacyVadFrame.current = null;
+    if (legacyAudioContext.current) void legacyAudioContext.current.close().catch(() => null);
+    legacyAudioContext.current = null;
+  };
+
   const cleanupStream = () => {
+    stopLegacyVad();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   };
@@ -6069,13 +6273,50 @@ function useDictation(onText: (text: string) => void) {
     rec.start();
     recRef.current = rec;
     setState("recording");
+
+    // Even the emergency WebView recorder is one-tap now. A tiny local energy
+    // gate ends capture after the user pauses, then the existing provider/cloud
+    // transcription path receives the finished blob.
+    try {
+      const ctx = new AudioContext();
+      legacyAudioContext.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      const started = performance.now();
+      let heardSpeech = false;
+      let lastVoice = started;
+      const watchSilence = () => {
+        if (rec.state === "inactive") return;
+        analyser.getFloatTimeDomainData(samples);
+        let energy = 0;
+        for (const sample of samples) energy += sample * sample;
+        const rms = Math.sqrt(energy / samples.length);
+        const now = performance.now();
+        if (rms >= 0.014) { heardSpeech = true; lastVoice = now; }
+        if ((heardSpeech && now - lastVoice >= 650) || (!heardSpeech && now - started >= 8_000) || now - started >= 22_000) {
+          setState("thinking");
+          rec.stop();
+          return;
+        }
+        legacyVadFrame.current = requestAnimationFrame(watchSilence);
+      };
+      legacyVadFrame.current = requestAnimationFrame(watchSilence);
+    } catch {
+      // Manual early-finish remains available when Web Audio is unavailable.
+    }
   }, []);
 
   const start = useCallback(async () => {
+    setState("thinking");
     // Try the local sidecar first — in AUTO mode, so the mic also ends itself
     // when you stop talking (the transcript just lands in the composer).
     try {
-      const handle = await sidecarListen(undefined, { auto: true });
+      const handle = await sidecarListen((status) => {
+        setState(status === "listening" ? "recording" : "thinking");
+      }, { auto: true });
       sttRef.current = handle;
       usingSidecar.current = true;
       setState("recording");
@@ -6138,41 +6379,55 @@ function useDictation(onText: (text: string) => void) {
 }
 
 const MicGlyph = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5" />
-    <path d="M3.5 7.5 A4.5 4.5 0 0 0 12.5 7.5 M8 12 L8 14.5 M5.5 14.5 L10.5 14.5" />
+  <svg className="voiceAperture" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true">
+    <circle className="voiceOrbit" cx="10" cy="10" r="8" strokeWidth="1" />
+    <path className="voiceBar voiceBar1" d="M6 11V9" strokeWidth="1.8" />
+    <path className="voiceBar voiceBar2" d="M10 14V6" strokeWidth="1.8" />
+    <path className="voiceBar voiceBar3" d="M14 12V8" strokeWidth="1.8" />
   </svg>
 );
+
+function AresPillGlyph({ active = false }: { active?: boolean }) {
+  return (
+    <svg className="aresPillGlyph" data-active={active ? "1" : "0"} viewBox="0 0 28 16" fill="none" aria-hidden="true">
+      <rect x="1" y="1" width="26" height="14" rx="7" stroke="currentColor" strokeWidth="1.35" />
+      <path d="M8 8h2m2-2.5v5M15 4v8m3-4h2" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" />
+      <circle cx="23.2" cy="8" r="1.25" fill="currentColor" />
+    </svg>
+  );
+}
 
 // ─── The floating pill — Ares condensed to an always-on-top mic bar ──────────
 function PillBar({
   daemon,
   busy,
   activity,
-  pinTop,
-  onTogglePin,
+  conversation,
+  listening,
+  speaking,
+  wakeStatus,
   onExpand,
-  onSend,
+  onToggleConversation,
   onStop,
   native,
 }: {
   daemon: DaemonState;
   busy: boolean;
   activity: string;
-  pinTop: boolean;
-  onTogglePin: () => void;
+  conversation: boolean;
+  listening: boolean;
+  speaking: boolean;
+  wakeStatus: "off" | "arming" | "armed" | "offline";
   onExpand: () => void;
-  onSend: (text: string) => void;
+  onToggleConversation: () => void;
   onStop: () => void;
   native: boolean;
 }) {
-  const dictation = useDictation((t) => { if (t) onSend(t); });
   const label =
-    dictation.state === "recording" ? "listening…" :
-    dictation.state === "thinking" ? "transcribing…" :
-    dictation.state === "error" ? "mic blocked" :
+    listening ? "listening…" :
+    speaking ? "speaking" :
     busy ? (activity || "working…") :
-    daemon === "running" ? "ready" : daemon;
+    conversation ? "conversation open" : wakeStatus === "armed" ? "hey ares armed" : daemon === "running" ? "ready" : daemon;
 
   const onDrag = (e: React.MouseEvent) => {
     if (!native || e.button !== 0) return;
@@ -6181,31 +6436,26 @@ function PillBar({
   };
 
   return (
-    <div className="pillBar" data-busy={busy ? "1" : "0"} onMouseDown={onDrag}>
-      <div className="pillMark" aria-hidden="true" />
-      <span className="pillStatus">
-        <i className="dot" data-state={busy ? "running" : daemon} />
-        <em>{label}</em>
-      </span>
-      <span className="pillGrow" />
-      <button className="pillMic" data-state={dictation.state} onClick={dictation.toggle} title={dictation.state === "recording" ? "stop & send" : "speak to Ares"}>
-        {dictation.state === "thinking" ? <i className="pillSpin" /> : <MicGlyph />}
-      </button>
-      {busy ? (
-        <button className="pillBtn" onClick={onStop} title="stop the turn">
-          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5" /></svg>
+    <div className="pillBar" data-busy={busy ? "1" : "0"} data-conversation={conversation ? "1" : "0"} onMouseDown={onDrag}>
+      <div className="pillTopline">
+        <span className="pillMark"><AresPillGlyph active={listening || speaking || busy} /></span>
+        <span className="pillStatus">
+          <i className="dot" data-state={listening || speaking || busy ? "running" : daemon} />
+          <em>{label}</em>
+        </span>
+        <span className="pillGrow" />
+        <button className="pillMic" data-state={listening ? "recording" : wakeStatus === "offline" ? "error" : conversation || wakeStatus === "armed" ? "armed" : "idle"} onClick={onToggleConversation} title={conversation ? "close hands-free conversation" : "open hands-free conversation"}>
+          {listening ? <i className="pillSpin" /> : <MicGlyph />}
         </button>
-      ) : null}
-      <button className="pillBtn" data-on={pinTop ? "1" : "0"} onClick={onTogglePin} title={pinTop ? "always-on-top: ON" : "always-on-top: OFF"}>
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5 2 L11 2 L10 7 L13 10 L3 10 L6 7 Z M8 10 L8 14" />
-        </svg>
-      </button>
-      <button className="pillBtn" onClick={onExpand} title="expand Ares">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 2 L14 2 L14 7 M14 2 L8.5 7.5 M7 14 L2 14 L2 9 M2 14 L7.5 8.5" />
-        </svg>
-      </button>
+        {busy ? (
+          <button className="pillBtn" onClick={onStop} title="stop the turn">
+            <svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5" /></svg>
+          </button>
+        ) : null}
+        <button className="pillBtn" onClick={onExpand} title="expand Ares">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2 L14 2 L14 7 M14 2 L8.5 7.5 M7 14 L2 14 L2 9 M2 14 L7.5 8.5" /></svg>
+        </button>
+      </div>
     </div>
   );
 }
@@ -6218,7 +6468,6 @@ const Composer = React.memo(function Composer({
   busy,
   model,
   autoRouting,
-  reasoning,
   routedLanes,
   todos,
   steerQueued,
@@ -6226,22 +6475,19 @@ const Composer = React.memo(function Composer({
   onSteer,
   onStop,
   onModelChip,
-  onReasoningChip,
   onRoutingChip,
   slashActions,
 }: {
   busy: boolean;
   model: string;
   autoRouting: boolean;
-  reasoning: ReasoningLevel;
   routedLanes: RouteLane[];
   todos: Array<{ id: string; content: string; activeForm: string; status: string }>;
   steerQueued: number;
-  onSend: (text: string) => void;
-  onSteer: (text: string) => void;
+  onSend: (text: string, images?: string[]) => void;
+  onSteer: (text: string, images?: string[]) => void;
   onStop: () => void;
   onModelChip: () => void;
-  onReasoningChip: () => void;
   onRoutingChip: () => void;
   slashActions: SlashAction[];
 }) {
@@ -6311,16 +6557,52 @@ const Composer = React.memo(function Composer({
     }
   };
 
+  // Drop an image ANYWHERE in the window — not just on the input. Tauri's own
+  // drag-drop handler is disabled (dragDropEnabled:false) so these HTML5 events
+  // fire; without the preventDefault the webview would navigate to the file.
+  useEffect(() => {
+    const onDrop = (e: DragEvent) => {
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      if (dt.files && dt.files.length) {
+        e.preventDefault();
+        addFiles(Array.from(dt.files));
+        return;
+      }
+      // Dragged TEXT (from a page, editor, etc.) drops into the composer.
+      const dropped = dt.getData("text/plain") || dt.getData("text/uri-list") || dt.getData("text");
+      if (dropped && dropped.trim()) {
+        e.preventDefault();
+        setText((prev) => (prev.trim() ? prev.replace(/\s+$/, "") + " " : "") + dropped.trim());
+        ref.current?.focus();
+      }
+    };
+    const onOverAny = (e: DragEvent) => {
+      // Allow BOTH file and text drops (getData is empty during dragover, so
+      // check types) — without this the webview blocks the drop or navigates.
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      if (types.includes("Files") || types.includes("text/plain") || types.includes("text/uri-list") || types.includes("text")) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      }
+    };
+    window.addEventListener("dragover", onOverAny);
+    window.addEventListener("drop", onDrop);
+    return () => { window.removeEventListener("dragover", onOverAny); window.removeEventListener("drop", onDrop); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const submit = async () => {
     if (pendingReads.current.size > 0) await Promise.all(pendingReads.current);
     const t = text.trim();
     const currentAttachments = attachmentsRef.current;
     if (!t && currentAttachments.length === 0) return;
-    // The daemon's contentFromUserInput parses data:image URLs out of the goal
-    // into image blocks — so we just append them to the message text.
-    const payload = [t, ...currentAttachments.map((a) => a.dataUrl)].filter(Boolean).join("\n");
-    if (busy) onSteer(payload);
-    else onSend(payload);
+    // Images travel OUT OF BAND now (not concatenated into the message text) so
+    // the transcript renders thumbnails, not a truncated base64 blob. The daemon
+    // still gets them as image content, and send() shows them on the bubble.
+    const imgs = currentAttachments.map((a) => a.dataUrl);
+    if (busy) onSteer(t, imgs);
+    else onSend(t, imgs);
     setText("");
     setAttachments(() => []);
     if (ref.current) ref.current.style.height = "auto";
@@ -6372,13 +6654,7 @@ const Composer = React.memo(function Composer({
       <div
         className="composerRow"
         data-busy={busy ? "1" : "0"}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          if (e.dataTransfer?.files?.length) {
-            e.preventDefault();
-            addFiles(Array.from(e.dataTransfer.files));
-          }
-        }}
+        data-draft={text.trim() || attachments.length ? "1" : "0"}
       >
         <textarea
           ref={ref}
@@ -6417,7 +6693,8 @@ const Composer = React.memo(function Composer({
           data-state={dictation.state}
           onClick={dictation.toggle}
           aria-label="dictate"
-          title={dictation.state === "recording" ? "stop & transcribe" : dictation.state === "error" ? "mic unavailable" : "speak to type"}
+          aria-pressed={dictation.state === "recording"}
+          title={dictation.state === "recording" ? "listening — pauses automatically; tap to finish early" : dictation.state === "thinking" ? "decoding speech…" : dictation.state === "error" ? "mic unavailable" : "tap once, speak, and pause"}
         >
           {dictation.state === "thinking" ? <i className="micSpin" /> : <MicGlyph />}
         </button>
@@ -6776,7 +7053,16 @@ const ItemView = React.memo(function ItemView({
   if (item.kind === "user") {
     return (
       <div className="turn user">
-        <div className="bubble">{item.text}</div>
+        <div className="bubble">
+          {item.images && item.images.length > 0 ? (
+            <div className="bubbleImages">
+              {item.images.map((src, i) => (
+                <img key={i} className="bubbleImage" src={src} alt="attachment" />
+              ))}
+            </div>
+          ) : null}
+          {item.text ? <div className="bubbleText">{item.text}</div> : null}
+        </div>
       </div>
     );
   }
@@ -6828,11 +7114,12 @@ const ItemView = React.memo(function ItemView({
   }
   if (item.kind === "tools") return <ToolGroup item={item} technical={toolDisplay === "technical"} />;
   if (item.kind === "usage") {
+    const freshInput = Math.max(0, item.input - item.cacheRead);
     return (
       <div className="usage" data-status={item.status}>
         {item.status !== "completed" ? `${item.status} · ` : ""}
-        {fmtMs(item.durationMs)} · {item.modelCalls} call{item.modelCalls === 1 ? "" : "s"} · ↑{fmtTokens(item.input)} ↓{fmtTokens(item.output)}
-        {item.cacheRead > 0 ? ` · ${Math.round((item.cacheRead / Math.max(1, item.input)) * 100)}% cached` : ""}
+        {fmtMs(item.durationMs)} · {item.modelCalls} call{item.modelCalls === 1 ? "" : "s"} · ↑{fmtTokens(freshInput)} fresh ↓{fmtTokens(item.output)}
+        {item.cacheRead > 0 ? ` · ${fmtTokens(item.cacheRead)} reused (${Math.round((item.cacheRead / Math.max(1, item.input)) * 100)}%)` : ""}
         {item.model ? <span className="usageModelTag">{item.model}{item.provider ? ` (${item.provider})` : ""}{item.lane ? ` · ${item.lane}` : ""}</span> : null}
       </div>
     );
@@ -8105,6 +8392,7 @@ function Settings({
   onOpenModelBrowser,
   openaiAuth,
   onOpenaiSignIn,
+  onLaunchLivingSurface,
 }: {
   prefs: Prefs;
   onApply: (p: Prefs, keys: Record<string, string>) => void;
@@ -8129,6 +8417,7 @@ function Settings({
   onOpenModelBrowser: () => void;
   openaiAuth: { signingIn: boolean; connected: boolean; email: string | null; plan: string | null };
   onOpenaiSignIn: () => void;
+  onLaunchLivingSurface: () => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "model");
   const [draft, setDraftPrefs] = useState<Prefs>(prefs);
@@ -8196,13 +8485,10 @@ function Settings({
                 </span>
                 <span className="settingsModelBrowse">Browse models →</span>
               </button>
-              <label className="fieldLabel">Reasoning effort</label>
-              <div className="segment">
-                {REASONING_LEVELS.map((r) => (
-                  <button key={r} data-on={draft.reasoning === r ? "1" : "0"} onClick={() => setDraftPrefs({ ...draft, reasoning: r })}>
-                    {r}
-                  </button>
-                ))}
+              <label className="fieldLabel">Reasoning</label>
+              <div className="modelNativeReasoning">
+                <strong>Model-native</strong>
+                <span>Ares negotiates the real reasoning capability supported by this model. There is no simulated global thinking mode.</span>
               </div>
             </div>
           ) : null}
@@ -8255,6 +8541,15 @@ function Settings({
           {tab === "appearance" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">Appearance</h3>
+              <div className="livingLaunchCard">
+                <div className="livingLaunchSignal"><i /><i /><i /></div>
+                <div className="livingLaunchCopy">
+                  <span>EXPERIMENTAL INTERFACE</span>
+                  <strong>Self-Generating UI <b>BETA</b></strong>
+                  <p>Name your wildest dream — a chat room, a game, a control room — and Ares builds it live: working software it reshapes around you as you speak.</p>
+                </div>
+                <button onClick={onLaunchLivingSurface} disabled={!native}>LAUNCH ARES ↗</button>
+              </div>
               <label className="fieldLabel">Interface style</label>
               <div className="displayModes">
                 <button
@@ -8716,6 +9011,17 @@ function SkillDock({
   const withSurfaces = skills.filter((s) => s.enabled && (s.surfaces?.length ?? 0) > 0);
   const orbState = speaking ? "speaking" : listening ? "listening" : voiceEnabled ? "ready" : "off";
   const surfaceCount = withSurfaces.reduce((n, s) => n + (s.surfaces?.length ?? 0), 0);
+  const wakeSuffix = !wakeWord
+    ? ""
+    : voiceEngine.phase === "error" || voiceEngine.phase === "missing"
+      ? " · offline"
+      : voiceEngine.phase !== "running"
+        ? " · warming up…"
+        : wakeStatus === "armed"
+          ? " · listening"
+          : wakeStatus === "arming"
+            ? " · connecting…"
+            : "";
 
   return (
     <div className="skillDock" data-open={open ? "1" : "0"}>
@@ -8734,12 +9040,12 @@ function SkillDock({
               💬 Conversation
             </button>
             <button className="skillDockBtn" data-on={wakeWord ? "1" : "0"} onClick={() => onToggleWake(!wakeWord)} title="Say “Hey Ares”, then just talk — it sends when you stop.">
-              👂 Hey Ares{wakeWord ? (wakeStatus === "armed" ? " · listening" : wakeStatus === "arming" ? " · starting…" : "") : ""}
+              👂 Hey Ares{wakeSuffix}
             </button>
             {speaking ? <button className="skillDockBtn stop" onClick={onStopVoice}>⏹ Stop</button> : null}
           </div>
-          {(wakeWord && wakeStatus === "offline") || voiceEngine.phase === "setup" || voiceEngine.phase === "error" || voiceEngine.phase === "missing" ? (
-            voiceEngine.phase === "setup" ? (
+          {(wakeWord && wakeStatus === "offline") || voiceEngine.phase === "setup" || voiceEngine.phase === "starting" || voiceEngine.phase === "error" || voiceEngine.phase === "missing" ? (
+            voiceEngine.phase === "setup" || voiceEngine.phase === "starting" ? (
               <p className="skillDockHint">
                 <span className="skillDockSpin" aria-hidden="true" /> {voiceEngine.detail || "Setting up the local voice engine…"}
               </p>
@@ -9376,6 +9682,47 @@ class AresErrorBoundary extends React.Component<{ children: React.ReactNode }, {
   }
 }
 
+function PresenceOverlay() {
+  const [presence, setPresence] = useState<PresenceSnapshot>({ visible: false, mode: "idle", caption: "", detail: "" });
+
+  useEffect(() => {
+    document.body.dataset.presence = "1";
+    let disposed = false;
+    void invoke<PresenceSnapshot>("ares_presence_status")
+      .then((snapshot) => { if (!disposed && snapshot) setPresence(snapshot); })
+      .catch(() => null);
+    let unlisten: (() => void) | null = null;
+    void listen<PresenceSnapshot>("ares:presence-state", (event) => {
+      if (!disposed && event.payload) setPresence(event.payload);
+    }).then((un) => { if (disposed) un(); else unlisten = un; });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      delete document.body.dataset.presence;
+    };
+  }, []);
+
+  const stateLabel = presence.mode === "listening"
+    ? "HEARING"
+    : presence.mode === "speaking"
+      ? "ARES"
+      : presence.mode === "working"
+        ? "WORKING"
+        : "HEARD";
+  return (
+    <div className="presenceSurface" data-mode={presence.mode} data-visible={presence.visible ? "1" : "0"}>
+      <div className="presenceEdge" aria-hidden="true" />
+      {presence.caption ? (
+        <div className="desktopCaption" aria-live="off">
+          <span className="desktopCaptionState"><i aria-hidden="true" />{stateLabel}</span>
+          <span className="desktopCaptionText">{presence.caption}</span>
+          {presence.detail ? <span className="desktopCaptionDetail">{presence.detail}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // Catch top-level runtime errors and promise rejections so a single bad event
 // or effect doesn't hard-crash the WebView renderer.
 window.addEventListener("error", (e) => {
@@ -9389,12 +9736,20 @@ window.addEventListener("unhandledrejection", (e) => {
 
 const rootEl = document.getElementById("root");
 if (rootEl) {
+  const query = new URLSearchParams(window.location.search);
+  const isPresenceSurface = query.get("presence") === "1";
+  const livingHash = window.location.hash.match(/^#living\/([a-z0-9_-]+)$/i);
+  const isLivingSurface = query.get("living") === "1" || Boolean(livingHash);
+  const livingSessionId = livingHash?.[1] || query.get("session") || `sess_living_${Date.now()}`;
+  if (isPresenceSurface) document.body.dataset.presence = "1";
   // Vite HMR re-evaluates this module — reuse the root across hot reloads.
   const holder = window as unknown as { __aresRoot?: ReturnType<typeof createRoot> };
   holder.__aresRoot ??= createRoot(rootEl);
   holder.__aresRoot.render(
-    <AresErrorBoundary>
-      <App />
-    </AresErrorBoundary>,
+    isPresenceSurface
+      ? <PresenceOverlay />
+      : isLivingSurface
+        ? <AresErrorBoundary><LivingSurface sessionId={livingSessionId} /></AresErrorBoundary>
+        : <AresErrorBoundary><App /></AresErrorBoundary>,
   );
 }

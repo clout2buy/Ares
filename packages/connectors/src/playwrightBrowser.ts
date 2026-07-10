@@ -252,7 +252,7 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     userDataDir,
     viewport: { width: 1280, height: 800 },
   });
-  const page = acquired.page;
+  let page = acquired.page;
 
   // ── console capture: read errors/logs after an interaction, like a dev tools ──
   const consoleBuffer: Array<{ type: string; text: string; at: string }> = [];
@@ -260,13 +260,19 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     consoleBuffer.push({ type, text: String(text).slice(0, 2000), at: new Date().toISOString() });
     if (consoleBuffer.length > 600) consoleBuffer.shift();
   };
-  try {
-    page.on("console", (m: any) => pushLog(m.type?.() ?? "log", m.text?.() ?? ""));
-    page.on("pageerror", (e: any) => pushLog("error", e?.message ?? String(e)));
-    page.on("requestfailed", (r: any) => pushLog("warn", `request failed: ${r?.url?.() ?? ""}`));
-  } catch {
-    // older Playwright event shapes — capture is best-effort
-  }
+  const boundPages = new WeakSet<object>();
+  const bindConsole = (target: any) => {
+    if (!target || boundPages.has(target)) return;
+    try {
+      target.on("console", (m: any) => pushLog(m.type?.() ?? "log", m.text?.() ?? ""));
+      target.on("pageerror", (e: any) => pushLog("error", e?.message ?? String(e)));
+      target.on("requestfailed", (r: any) => pushLog("warn", `request failed: ${r?.url?.() ?? ""}`));
+      boundPages.add(target);
+    } catch {
+      // older Playwright event shapes — capture is best-effort
+    }
+  };
+  bindConsole(page);
 
   // ── Continuous live stream (CDP screencast) ──────────────────────────────
   // The old "live" view only emitted a JPEG around discrete cursor/click/nav
@@ -315,7 +321,9 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
   // ── human-like cursor: the REAL pointer moves along a curved, eased path so
   // hover states fire and the motion reads as a person, not a robot. The owner
   // watches it travel, aim, press, and click — streamed frame by frame. ──
-  const paceMs = Math.max(120, opts.paceMs ?? 460);
+  // 200ms glides read as human but don't turn a 10-field form into a minute of
+  // watching the cursor float (the old 460ms did). ARES_BROWSER_PACE_MS overrides.
+  const paceMs = Math.max(120, opts.paceMs ?? 200);
   const viewW = 1280, viewH = 800;
   let curX = viewW / 2, curY = viewH / 2; // tracked cursor position (continuous between actions)
   const sleep = (ms: number) => page.waitForTimeout?.(ms).catch(() => undefined) ?? Promise.resolve();
@@ -406,13 +414,13 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       const jitterY = (Math.random() - 0.5) * Math.min(box.height * 0.3, 6);
       const cx = box.x + box.width / 2 + jitterX, cy = box.y + box.height / 2 + jitterY;
       await humanMoveTo(cx, cy);
-      await sleep(130);            // a beat to aim
+      await sleep(70);             // a beat to aim
       await emitFrame();           // show the hover state
       await pressCursor();         // press dip
       await rippleAt(cx, cy);
     }
     await act(locator);
-    await sleep(240);              // let the result paint
+    await sleep(140);              // let the result paint
     await emitFrame();
   }
 
@@ -420,9 +428,9 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
   async function typeHuman(locator: any, value: string): Promise<void> {
     await actOnLocator(locator, (l) => l.click({ timeout: 5_000 }).catch(() => undefined));
     try { await locator.fill(""); } catch { /* ignore */ }
-    const chunks = value.match(/.{1,4}/gs) ?? [value];
+    const chunks = value.match(/.{1,6}/gs) ?? [value];
     for (const ch of chunks) {
-      try { await locator.pressSequentially(ch, { delay: 55 }); } catch { try { await locator.type(ch, { delay: 55 }); } catch { /* ignore */ } }
+      try { await locator.pressSequentially(ch, { delay: 28 }); } catch { try { await locator.type(ch, { delay: 28 }); } catch { /* ignore */ } }
       await emitFrame();
     }
   }
@@ -456,6 +464,50 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
 
   return {
     name: "playwright",
+    async tabs() {
+      const pages = page.context().pages();
+      return Promise.all(pages.map(async (candidate: any, index: number) => ({
+        index,
+        url: candidate.url(),
+        title: await candidate.title().catch(() => ""),
+        active: candidate === page,
+      })));
+    },
+    async attachToExisting(query) {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return false;
+      let requested: URL | null = null;
+      try { requested = new URL(query.includes("://") ? query : `https://${query}`); } catch { /* text query */ }
+      const pages = page.context().pages();
+      const candidates = await Promise.all(pages.map(async (candidate: any) => {
+        const url = candidate.url();
+        const title = await candidate.title().catch(() => "");
+        let score = 0;
+        if (url.toLowerCase() === needle) score = 100;
+        else if (url.toLowerCase().includes(needle) || title.toLowerCase().includes(needle)) score = 80;
+        if (requested) {
+          try {
+            const current = new URL(url);
+            if (current.origin === requested.origin) score = Math.max(score, 70);
+            else if (current.hostname === requested.hostname) score = Math.max(score, 60);
+          } catch { /* ignore non-web pages */ }
+        }
+        return { candidate, score };
+      }));
+      const best = candidates.sort((a, b) => b.score - a.score)[0];
+      if (!best || best.score === 0) return false;
+      if (best.candidate !== page) {
+        if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }
+        page = best.candidate;
+        bindConsole(page);
+        curX = viewW / 2;
+        curY = viewH / 2;
+        await page.bringToFront().catch(() => undefined);
+        await ensureCursor();
+        void startScreencast();
+      }
+      return true;
+    },
     async navigate(url) {
       // Bounded waits — a stock 30s default means every miss is a half-minute hang.
       await page.goto(url, { timeout: 15_000, waitUntil: "domcontentloaded" });

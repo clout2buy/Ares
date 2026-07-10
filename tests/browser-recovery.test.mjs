@@ -41,3 +41,46 @@ test("Browser tool reacquires a connector after its page is closed", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Browser act batches a multi-control job and verifies only the final state", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-browser-act-"));
+  const calls = [];
+  let url = "https://x.com/home";
+  const browser = {
+    name: "fake",
+    async state() { return { url, title: "Profile" }; },
+    async close() {},
+    async attachToExisting(query) { calls.push(["attach", query]); return true; },
+    async navigate(next) { calls.push(["open", next]); url = next; return { url, title: "Profile" }; },
+    async accessibilityTree() { return []; },
+    async fillByLabel(label, value) { calls.push(["fill", label, value]); },
+    async clickByRole(role, name) { calls.push(["click", role, name]); },
+    async screenshot() { calls.push(["screenshot"]); return { format: "png", bytes: "AA==" }; },
+  };
+  const tool = makeBrowserTool({ browserFilmstripRoot: root }, async () => browser);
+  const ctx = { signal: new AbortController().signal };
+  try {
+    const result = await tool.call({
+      action: "act",
+      steps: [
+        { action: "open", url: "https://x.com/example" },
+        { action: "click", role: "button", name: "Edit profile" },
+        { action: "fill", label: "Bio", value: "Ares" },
+        { action: "click", role: "button", name: "Save" },
+      ],
+    }, ctx);
+    assert.equal(result.output.status, "ok");
+    assert.equal(result.output.result.completed.length, 4);
+    assert.equal(result.images.length, 1);
+    assert.deepEqual(calls, [
+      ["attach", "https://x.com/example"],
+      ["open", "https://x.com/example"],
+      ["click", "button", "Edit profile"],
+      ["fill", "Bio", "Ares"],
+      ["click", "button", "Save"],
+      ["screenshot"],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

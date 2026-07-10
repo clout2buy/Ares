@@ -221,12 +221,17 @@ export {
   authFilePath,
   aresHome,
   deviceCodeLogin,
+  runOpenAILoginFlow,
+  refreshOpenAIToken,
+  fetchCodexModels,
+  type CodexModel,
   type AuthToken,
   type AuthStatus,
   type AuthMode,
   type AuthSource,
   type DeviceCodeChallenge,
   type DeviceCodeLoginOptions,
+  type OpenAILoginOptions,
 } from "./providers/openaiAuth.js";
 
 export {

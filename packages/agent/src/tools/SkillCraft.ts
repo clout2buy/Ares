@@ -264,6 +264,9 @@ function defaultHandlerJs(name: string): string {
 //               bare string, an object, or undefined, so parse defensively below.
 //       ctx   = { home, name }  (your Ares home dir + this skill's name)
 //   • Return any JSON-serializable value — it becomes RunSkill's \`result\`.
+//   • Network skills must bind ctx.host + ctx.port (also ARES_SKILL_HOST /
+//     ARES_SKILL_PORT and HOST / PORT). Ares leases that loopback port from the
+//     OS for this run; never hardcode a service port.
 //   • Heavy work (image/video/model calls): pass a generous \`timeout_ms\` to
 //     RunSkill (it self-caps on that — a too-small value is the only early abort).
 

@@ -286,7 +286,11 @@ export function guardVisionForTurn(live: LiveSession, content: readonly ContentB
 export async function pickHealthyFallback(
   current: ProviderSelection,
   dead: ReadonlySet<string> = new Set(),
+  options: { allowCrossProvider?: boolean } = {},
 ): Promise<ProviderSelection | null> {
+  // Manual model selection is a pin, not a suggestion. Cross-provider failover
+  // is only legal when the owner explicitly enables Auto routing.
+  if (options.allowCrossProvider !== true) return null;
   const settings = await loadUiSettings().catch(() => null);
   if (!settings) return null;
   const currentFamily = providerFamilyForSelection(current);
@@ -330,11 +334,11 @@ export function chatContextBudget(selection: ProviderSelection): number {
   const env = Number(process.env.ARES_CONTEXT_BUDGET);
   if (Number.isFinite(env) && env > 0) return Math.floor(env);
   const windowTokens = modelContextWindow(selection.model);
-  // The cap exists so a mistake in the window table can't produce an absurd
-  // prompt; at 800k it no longer strangles genuine 1M-window models (Opus 4.8,
-  // DeepSeek v4, GLM 5.1) down to a fifth of their capacity. Long sessions on
-  // 1M models cost real money — pin ARES_CONTEXT_BUDGET(_CAP) to spend less.
-  const cap = Number(process.env.ARES_CONTEXT_BUDGET_CAP) || 800_000;
+  // A large advertised window is an upper bound, not a spending target. The
+  // old 800k default let a handful of tool rounds report millions of replayed
+  // input tokens. Keep a generous working set and make giant-window sessions
+  // an explicit opt-in through ARES_CONTEXT_BUDGET(_CAP).
+  const cap = Number(process.env.ARES_CONTEXT_BUDGET_CAP) || 192_000;
   // Practical serving ceiling: ollama-cloud REJECTS or silently stalls on
   // prompts far below deepseek's marketing window — a session that grew to
   // ~335k input tokens got hard-rejected, then the retry stalled 90s×2+ (bug

@@ -232,7 +232,10 @@ class STTSettings:
 # RMS of a float32 mic block above this counts as "someone is talking".
 VAD_ENERGY = float(os.environ.get("ARES_STT_VAD_ENERGY", "0.012"))
 # After speech has been heard, this much continuous silence ends the utterance.
-VAD_SILENCE_S = float(os.environ.get("ARES_STT_VAD_SILENCE", "1.15"))
+# 1.15s made every command feel like a button-click recorder. 620ms preserves
+# ordinary phrase pauses while returning the transcript roughly half a second
+# sooner; users can still tune it through ARES_STT_VAD_SILENCE.
+VAD_SILENCE_S = float(os.environ.get("ARES_STT_VAD_SILENCE", "0.62"))
 # Nobody said anything at all within this window → give up (don't hang forever).
 VAD_NO_SPEECH_S = float(os.environ.get("ARES_STT_VAD_NOSPEECH", "8.0"))
 # Absolute utterance ceiling — send whatever we have even if they're still going.
@@ -272,7 +275,7 @@ class MockSTT:
 class WhisperSTT:
     """Local push-to-talk STT: capture the default input device with sounddevice
     while the key/button is held, then transcribe the utterance with
-    faster-whisper (small.en by default)."""
+    faster-whisper (base.en by default for low-latency command capture)."""
 
     def __init__(self, settings: STTSettings) -> None:
         import sounddevice as sd
@@ -391,7 +394,7 @@ def parse_args() -> tuple[VoiceSettings, STTSettings]:
     parser.add_argument("--mock", action="store_true")
     # Speech-to-text (push-to-talk). --mock forces the mock engine for both.
     parser.add_argument("--stt-engine", choices=["whisper", "mock"], default=os.environ.get("ARES_STT_ENGINE", os.environ.get("CRIX_STT_ENGINE", "whisper")))
-    parser.add_argument("--stt-model", default=os.environ.get("ARES_STT_MODEL", os.environ.get("CRIX_STT_MODEL", "small.en")))
+    parser.add_argument("--stt-model", default=os.environ.get("ARES_STT_MODEL", os.environ.get("CRIX_STT_MODEL", "base.en")))
     parser.add_argument("--stt-device", default=os.environ.get("ARES_STT_DEVICE", os.environ.get("CRIX_STT_DEVICE", "cuda:0")))
     parser.add_argument("--stt-input-device", default=os.environ.get("ARES_STT_INPUT_DEVICE", os.environ.get("CRIX_STT_INPUT_DEVICE")))
     parser.add_argument("--stt-lang", default=os.environ.get("ARES_STT_LANG", os.environ.get("CRIX_STT_LANG", "en")))
@@ -645,12 +648,14 @@ def wake_capture_once(stt: "WhisperSTT", stop_flag: threading.Event) -> str | No
     sd = stt._sd
     sample_rate = stt.settings.sample_rate
     frames: list[Any] = []
-    heard = {"speech": False, "last": 0.0}
+    heard = {"speech": False, "first": 0.0, "last": 0.0}
 
     def on_audio(indata: Any, _f: int, _t: Any, _s: Any) -> None:
         rms = float(np.sqrt(np.mean(np.square(indata))))
         now = time.monotonic()
         if rms >= VAD_ENERGY:
+            if not heard["speech"]:
+                heard["first"] = now
             heard["speech"] = True
             heard["last"] = now
         if heard["speech"]:
@@ -663,11 +668,13 @@ def wake_capture_once(stt: "WhisperSTT", stop_flag: threading.Event) -> str | No
         stream.start()
         t0 = time.monotonic()
         while not stop_flag.is_set() and not MIC_BUSY.is_set():
-            time.sleep(0.05)
+            time.sleep(0.02)
             now = time.monotonic()
             if heard["speech"]:
-                # Wake phrases are short — 0.7s of silence or 3s total ends the burst.
-                if now - heard["last"] >= 0.7 or now - t0 >= 6.0:
+                # Wake phrases are short. End quickly after the speaker stops,
+                # and measure the cap from first speech (not stream startup) so
+                # an idle microphone never makes a late "Hey Ares" truncate.
+                if now - heard["last"] >= 0.32 or now - heard["first"] >= 2.4:
                     break
             elif now - t0 >= 8.0:
                 return None  # recycle the stream periodically while idle

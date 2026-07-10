@@ -38,6 +38,56 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.28.0",
+    date: "July 2026",
+    title: "The Living Surface",
+    tagline: "Name your wildest dream and Ares builds it live — real working software in a sealed sandbox — plus a desktop presence that listens and speaks while pilled.",
+    highlights: [
+      {
+        icon: "🌋",
+        title: "The Living Surface",
+        tag: "New",
+        blurb: "Appearance → LAUNCH ARES: describe anything — a chat room, a game, a control room — and Ares forges it as a real interface, then reshapes it as you speak.",
+      },
+      {
+        icon: "🎮",
+        title: "Real software, sealed tight",
+        tag: "Safer",
+        blurb: "Generated worlds run full code — playable games, live tools — inside a sandbox with no network, no filesystem, and no system access. Ever.",
+      },
+      {
+        icon: "💬",
+        title: "Use it, don't just watch it",
+        tag: "New",
+        blurb: "Talk inside what it builds: chat rooms answer in the room, sliders and settings work instantly on their own, and Ares only rebuilds when you ask it to.",
+      },
+      {
+        icon: "🗣️",
+        title: "A presence while pilled",
+        tag: "New",
+        blurb: "Collapse Ares to the pill and it stays with you — a soft on-screen presence shows listening, thinking, speaking, and what it heard, without ever stealing your mouse.",
+      },
+      {
+        icon: "🎙️",
+        title: "Wake word that stays honest",
+        tag: "Polished",
+        blurb: "Hands-free wake now arms only when the voice engine is actually healthy — no more silently dead mics pretending to listen.",
+      },
+      {
+        icon: "🧠",
+        title: "A real reasoning dial",
+        tag: "Polished",
+        blurb: "Reasoning now runs the full range — off to max — mapped to each provider's native thinking, so effort goes exactly where you set it.",
+      },
+      {
+        icon: "🧹",
+        title: "Leaner, faster turns",
+        tag: "Faster",
+        blurb: "Tighter context hygiene and manual model picks that stay pinned through failover — fewer surprises, quicker replies.",
+      },
+    ],
+  },
+  {
     version: "0.27.0",
     date: "July 2026",
     title: "Sign in with ChatGPT, real logos, and a self-healing voice",

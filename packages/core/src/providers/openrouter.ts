@@ -114,7 +114,7 @@ export class OpenRouterProvider implements Provider {
         error: {
           code: `http_${response.status}`,
           message: `OpenRouter returned ${response.status}: ${text.slice(0, 500)}`,
-          retriable: response.status === 429 || response.status >= 500,
+          retriable: response.status === 408 || response.status === 409 || response.status === 425 || response.status === 429 || response.status >= 500,
           retryAfterMs: parseRetryAfterMs(response.headers),
         },
       };
@@ -348,6 +348,7 @@ function buildChatBody(model: string, req: ProviderRequest, flavor: OpenAIChatFl
             type: "function",
             function: { name: t.name, description: t.description, parameters: t.input_schema },
           })),
+          tool_choice: req.toolChoice === "any" ? "required" : "auto",
         }
       : {}),
     ...(reasoningEnabled(req.reasoningLevel)

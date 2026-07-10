@@ -25,6 +25,7 @@ import {
   type PermissionPromptDecision,
   type PermissionPromptSuggestion,
   type ReasoningLevel,
+  type WorkStatus,
   isToolUseBlock,
 } from "@ares/protocol";
 import { randomUUID } from "node:crypto";
@@ -173,6 +174,30 @@ export interface QueryEngineConfig {
    * repair loop at the engine level.
    */
   confirmTurnEnd?(): Promise<Array<{ text: string; source: "verifier" | "hook" }>>;
+  /** Require concrete successful proof after a tool reports changed files. */
+  requireVerificationEvidence?: boolean;
+  /** Host-owned automatic verifier evidence. Empty reminders alone are not
+   * proof because they also mean no checks or skipped tooling. */
+  verificationEvidence?(): {
+    mutationGeneration: number;
+    passedCommands: number;
+    failedCommands: number;
+    skippedCommands: number;
+    latestPassedAt?: number;
+    latestFailedAt?: number;
+    latestRunGeneration?: number;
+    latestRunStatus?: "passed" | "failed" | "cancelled" | "no_checks";
+    latestRunStrength?: "syntax" | "static" | "behavioral";
+    latestLabels?: string[];
+  };
+  /** Durable coding state from a previous turn still needs proof. */
+  outstandingVerificationRequired?(): boolean;
+  /** True only for debt carried into this turn (not mutations made now). */
+  persistedVerificationDebt?(): boolean;
+  /** False when durable touched-file history overflowed and tail checks are incomplete. */
+  persistedVerificationScopeComplete?(): boolean;
+  /** Latest exact mutation observed below the engine (e.g. checkpoint-derived shell diff). */
+  observedMutationAt?(): number;
   /**
    * Failure-signature recall. When a tool fails the SAME way twice in a row (an
    * approach that's about to be declared dead), the engine asks the host whether
@@ -801,6 +826,11 @@ export class QueryEngine {
     this.messages.push(...messages);
   }
 
+  /** Restore the last persisted TodoWrite snapshot on session resume. */
+  hydrateTodos(todos: readonly import("@ares/protocol").Todo[]): void {
+    this.latestTodos = todos.map((todo) => ({ ...todo }));
+  }
+
   appendUserMessage(text: string): Message {
     return this.appendUserMessageContent([{ type: "text", text }]);
   }
@@ -1118,6 +1148,74 @@ export class QueryEngine {
     let repeatBreakerFired = false;
     let oscillationFired = false;
     let ceilingNudged = false;
+    // Coding completion truth. Tool-reported mutations arm the proof gate;
+    // only a successful manual check or host verifier result AFTER the latest
+    // mutation can mark the work verified.
+    let lastMutationAt = 0;
+    let manualVerificationAt = 0;
+    let manualVerificationFailureCommand: string | null = null;
+    let latestManualVerificationCommand: string | null = null;
+    const changedFiles = new Set<string>();
+    let proofGateFired = false;
+    let unverifiedSurfaced = false;
+    let workStatus: WorkStatus = "not_applicable";
+    let verificationGenerationAtMutation = this.cfg.verificationEvidence?.().mutationGeneration ?? 0;
+    const hasOutstandingVerification = (): boolean => this.cfg.outstandingVerificationRequired?.() === true;
+    const hasPersistedVerificationDebt = (): boolean => this.cfg.persistedVerificationDebt?.() === true;
+    const hasCompletePersistedVerificationScope = (): boolean => this.cfg.persistedVerificationScopeComplete?.() !== false;
+    const requiresVerification = (): boolean => changedFiles.size > 0 || hasOutstandingVerification();
+    const hasPostMutationProof = (): boolean => {
+      const evidence = this.cfg.verificationEvidence?.();
+      if (evidence) {
+        const currentGenerationPassed =
+          evidence.latestRunStatus === "passed" &&
+          evidence.latestRunStrength === "behavioral" &&
+          evidence.latestRunGeneration === evidence.mutationGeneration;
+        if (
+          currentGenerationPassed &&
+          manualVerificationFailureCommand !== null
+        ) {
+          return false;
+        }
+        if (!currentGenerationPassed) {
+          // Some file types have no automatic checker. A single anchored manual
+          // command may satisfy that explicit no-check state, but can NEVER
+          // override a failed/cancelled/superseded host run.
+          const observedMutationAt = Math.max(lastMutationAt, this.cfg.observedMutationAt?.() ?? 0);
+          const manualCoversPersistedOverflow = hasCompletePersistedVerificationScope() ||
+            (latestManualVerificationCommand !== null && verificationCommandFamily(latestManualVerificationCommand) === latestManualVerificationCommand);
+          return evidence.latestRunStatus === "no_checks" &&
+            evidence.latestRunGeneration === evidence.mutationGeneration &&
+            manualVerificationAt > 0 &&
+            manualVerificationFailureCommand === null &&
+            manualCoversPersistedOverflow &&
+            (observedMutationAt === 0 || manualVerificationAt >= observedMutationAt);
+        }
+        // A current-turn mutation must cause a newer verifier generation. For
+        // durable outstanding work, prepareUserTurn explicitly reschedules the
+        // persisted touched files before streaming, so equality is expected.
+        const hasCurrentTurnMutation = changedFiles.size > 0 || (this.cfg.observedMutationAt?.() ?? 0) > 0;
+        if (
+          hasPersistedVerificationDebt() &&
+          !hasCompletePersistedVerificationScope()
+        ) {
+          return latestManualVerificationCommand !== null &&
+            verificationCommandFamily(latestManualVerificationCommand) === latestManualVerificationCommand &&
+            manualVerificationFailureCommand === null;
+        }
+        return hasPersistedVerificationDebt() && !hasCurrentTurnMutation
+          ? true
+          : (evidence.latestRunGeneration ?? -1) > verificationGenerationAtMutation;
+      }
+      return lastMutationAt > 0 &&
+        manualVerificationFailureCommand === null &&
+        manualVerificationAt >= lastMutationAt;
+    };
+    const resolvedWorkStatus = (): WorkStatus => {
+      if (workStatus === "blocked") return "blocked";
+      if (!requiresVerification()) return "not_applicable";
+      return hasPostMutationProof() ? "verified" : "unverified";
+    };
 
     for (let iter = 0; iter < maxIters; iter++) {
       // Honor a Stop at every iteration boundary — independent of provider
@@ -1125,7 +1223,7 @@ export class QueryEngine {
       // an interrupt during/after a non-cooperative tool wouldn't be felt until
       // the next provider stream (many seconds), so Stop appeared dead.
       if (this.liveSignal().aborted) {
-        yield { type: "turn_end", status: "interrupted", usage: totalUsage, durationMs: Date.now() - startedAt };
+        yield { type: "turn_end", status: "interrupted", workStatus: resolvedWorkStatus(), usage: totalUsage, durationMs: Date.now() - startedAt };
         return;
       }
       // ─── Stream one assistant turn from the provider ─────────────────
@@ -1349,6 +1447,7 @@ export class QueryEngine {
         yield {
           type: "turn_end",
           status: "failed",
+          workStatus: resolvedWorkStatus(),
           usage: totalUsage,
           durationMs: Date.now() - startedAt,
         };
@@ -1361,6 +1460,7 @@ export class QueryEngine {
           // A user interrupt surfaces as a provider abort error — report it as
           // interrupted, not failed.
           status: this.liveSignal().aborted ? "interrupted" : "failed",
+          workStatus: resolvedWorkStatus(),
           usage: totalUsage,
           durationMs: Date.now() - startedAt,
         };
@@ -1375,6 +1475,7 @@ export class QueryEngine {
         yield {
           type: "turn_end",
           status: "failed",
+          workStatus: resolvedWorkStatus(),
           usage: totalUsage,
           durationMs: Date.now() - startedAt,
         };
@@ -1518,6 +1619,7 @@ export class QueryEngine {
             // — escalation off the surfaced UNRESOLVED reminders is the harness's
             // job; see the C1-gate-honesty contract test.
             for (const r of gateReminders) {
+              workStatus = "blocked";
               yield {
                 type: "system_reminder_injected",
                 text: `UNRESOLVED at turn end (verification still failing): ${r.text}`,
@@ -1525,6 +1627,45 @@ export class QueryEngine {
               };
             }
           }
+        }
+        // Post-edit proof gate. The verifier's empty reminder queue is NOT a
+        // green verdict: it can also mean no command was derived or every tool
+        // was skipped. Settle the normal end gate first, then require concrete
+        // pass evidence newer than the last mutation. One retry gives the model
+        // a chance to run the right package check; a second unsupported finish
+        // ends honestly as UNVERIFIED rather than looping forever.
+        if (
+          this.cfg.requireVerificationEvidence &&
+          workStatus !== "blocked" &&
+          requiresVerification() &&
+          !hasPostMutationProof() &&
+          !this.liveSignal().aborted
+        ) {
+          workStatus = "unverified";
+          if (!proofGateFired) {
+            proofGateFired = true;
+            const sample = [...changedFiles].slice(0, 8).map((file) => file.startsWith("<") ? file : path.relative(this.cfg.workspace, file)).join(", ");
+            const scope = changedFiles.size > 0 ? `You changed ${changedFiles.size} file(s)` : "This long-running coding task still has unverified persisted changes";
+            const text = `${scope}, but Ares has no complete all-green behavior-capable verifier run for the newest mutation generation${sample ? ` (${sample})` : ""}. Static syntax/type/lint checks are useful but do not prove requested behavior. Run the narrowest meaningful affected tests or real reproduction now. A skipped tool, an older run, one passing command inside a red run, or a verbal claim is not proof.`;
+            this.messages.push({
+              id: cryptoId(),
+              role: "user",
+              content: [{ type: "system_reminder", text }],
+              createdAt: new Date().toISOString(),
+            });
+            yield { type: "system_reminder_injected", text, source: "verifier" };
+            continue;
+          }
+          if (!unverifiedSurfaced) {
+            unverifiedSurfaced = true;
+            yield {
+              type: "system_reminder_injected",
+              text: "UNVERIFIED at turn end: coding changes remain, but no complete all-green behavior-capable check run is tied to the newest mutation generation. Static checks may pass, but requested behavior is not verified complete.",
+              source: "verifier",
+            };
+          }
+        } else if (requiresVerification() && hasPostMutationProof()) {
+          workStatus = "verified";
         }
         // If we got here still capped at the output-token limit (the 3 auto-
         // continues at C3 were exhausted), the assistant's message is literally
@@ -1540,6 +1681,7 @@ export class QueryEngine {
         yield {
           type: "turn_end",
           status: this.liveSignal().aborted ? "interrupted" : "completed",
+          workStatus: resolvedWorkStatus(),
           usage: totalUsage,
           durationMs: Date.now() - startedAt,
         };
@@ -1589,10 +1731,37 @@ export class QueryEngine {
 
       let interruptedByTool = false;
       for (const batch of buildDepAwareBatches(runnable, this.cfg.workspace)) {
+        // Capture BEFORE yielding tool events to the host: Session/UI consumers
+        // schedule verification while tool_end is yielded, so reading the
+        // generation after yield would mistake the new generation for baseline.
+        const verificationGenerationBeforeBatch = this.cfg.verificationEvidence?.().mutationGeneration ?? verificationGenerationAtMutation;
         const outcomes = yield* this.runToolBatch(batch);
         for (const outcome of outcomes) {
           resultByToolUseId.set(outcome.toolUseId, outcome.result);
           interruptedByTool ||= outcome.interrupted === true;
+          if (outcome.touchedFiles?.length) {
+            verificationGenerationAtMutation = verificationGenerationBeforeBatch;
+            lastMutationAt = Math.max(lastMutationAt, outcome.finishedAt ?? Date.now());
+            for (const file of outcome.touchedFiles) changedFiles.add(file);
+            workStatus = "unverified";
+          } else if (outcome.potentialMutation) {
+            verificationGenerationAtMutation = verificationGenerationBeforeBatch;
+            lastMutationAt = Math.max(lastMutationAt, outcome.finishedAt ?? Date.now());
+            changedFiles.add("<shell-mediated workspace changes>");
+            workStatus = "unverified";
+          }
+          if (outcome.verificationPassed) {
+            if (
+              !manualVerificationFailureCommand ||
+              verificationCommandCovers(outcome.verificationCommand ?? "", manualVerificationFailureCommand)
+            ) {
+              manualVerificationAt = Math.max(manualVerificationAt, outcome.finishedAt ?? Date.now());
+              latestManualVerificationCommand = outcome.verificationCommand ?? null;
+              manualVerificationFailureCommand = null;
+            }
+          } else if (outcome.verificationAttempted) {
+            manualVerificationFailureCommand = outcome.verificationCommand ?? "unknown verification command";
+          }
         }
         if (interruptedByTool) {
           fillMissingToolResults(pendingToolUses, resultByToolUseId, "tool skipped after permission interruption");
@@ -1605,6 +1774,7 @@ export class QueryEngine {
           yield {
             type: "turn_end",
             status: "interrupted",
+            workStatus: resolvedWorkStatus(),
             usage: totalUsage,
             durationMs: Date.now() - startedAt,
           };
@@ -1826,6 +1996,7 @@ export class QueryEngine {
         yield {
           type: "turn_end",
           status: "completed",
+          workStatus: resolvedWorkStatus(),
           usage: totalUsage,
           durationMs: Date.now() - startedAt,
         };
@@ -1844,6 +2015,7 @@ export class QueryEngine {
     yield {
       type: "turn_end",
       status: "failed",
+      workStatus: resolvedWorkStatus(),
       usage: totalUsage,
       durationMs: Date.now() - startedAt,
     };
@@ -2071,6 +2243,12 @@ export class QueryEngine {
           : modelText;
       return {
         toolUseId: use.id,
+        touchedFiles: result.touchedFiles,
+        finishedAt: Date.now(),
+        verificationAttempted: isManualVerificationCall(use.name, use.input),
+        verificationCommand: manualVerificationCommand(use.name, use.input) ?? undefined,
+        verificationPassed: isSuccessfulVerificationCall(use.name, use.input, result.output),
+        potentialMutation: isPotentialCodeMutationCall(use.name, use.input),
         result: {
           type: "tool_result",
           tool_use_id: use.id,
@@ -2114,6 +2292,9 @@ export class QueryEngine {
       return {
         toolUseId: use.id,
         interrupted: this.cfg.permissionDenialInterrupts !== false && isPermissionDeniedError(err),
+        finishedAt: Date.now(),
+        verificationAttempted: isManualVerificationCall(use.name, use.input),
+        verificationCommand: manualVerificationCommand(use.name, use.input) ?? undefined,
         result: {
           type: "tool_result",
           tool_use_id: use.id,
@@ -2138,6 +2319,12 @@ interface ToolExecutionOutcome {
   toolUseId: string;
   result: ToolResultBlock;
   interrupted?: boolean;
+  touchedFiles?: string[];
+  finishedAt?: number;
+  verificationAttempted?: boolean;
+  verificationCommand?: string;
+  verificationPassed?: boolean;
+  potentialMutation?: boolean;
 }
 
 class AsyncEventQueue<T> {
@@ -2295,7 +2482,9 @@ interface ToolDeps {
 function analyzeToolDeps(use: ResolvedToolUse, workspace: string): ToolDeps {
   const name = use.tool.schema.name;
   const safety = use.tool.schema.safety;
-  const isWriteSafety = safety === "workspace-write" || safety === "destructive";
+  const taskType = String(((use.input ?? {}) as Record<string, unknown>).subagent_type ?? "");
+  const readOnlyTask = name === "Task" && taskType !== "general-purpose";
+  const isWriteSafety = !readOnlyTask && (safety === "workspace-write" || safety === "destructive");
 
   if (SOLO_TOOL_NAMES.has(name)) {
     return { target: null, isWrite: isWriteSafety, solo: true };
@@ -2801,6 +2990,56 @@ const PROGRESS_TOOLS = new Set([
   // not be nagged to "stop gathering and deliver" mid-task.
   "ComputerUse",
 ]);
+
+function manualVerificationCommand(name: string, input: unknown): string | null {
+  if (name !== "Bash" && name !== "PowerShell") return null;
+  const request = (input ?? {}) as Record<string, unknown>;
+  if (request.run_in_background === true) return null;
+  const command = String(request.command ?? "").trim().replace(/\s+/g, " ");
+  // Manual proof is a fallback only when no structured host verifier exists.
+  // Accept one anchored check command, never a substring or shell chain: this
+  // rejects `echo test`, `pnpm test; exit 0`, pipelines, and verify-then-mutate.
+  if (/[;&|><`]|\$\(/.test(command)) return null;
+  if (/(?:^|\s)(?:--collect-only|--co|--no-run|--listtests|--list-tests|--dry-run|--help|--version|--showconfig|--show-config|--print-config|--passwithnotests|--allow-no-tests)(?:\s|$)/i.test(command)) return null;
+  if (/^(?:npx\s+)?(?:tsc|eslint|vitest|jest)\s+-(?:v|h)$/i.test(command)) return null;
+  if (!/^(?:node\s+--test\b|(?:pnpm|yarn)\s+(?:test|check|lint|build|typecheck)\b|npm\s+(?:test|run\s+(?:check|lint|build|typecheck))\b|npx\s+(?:tsc|eslint|vitest|jest)\b|(?:vitest|jest|pytest|ruff|mypy|tsc|eslint)\b|cargo\s+(?:test|check|clippy)\b|go\s+(?:test|build)\b)(?:\s+[^\r\n]*)?$/i.test(command)) {
+    return null;
+  }
+  return command.toLowerCase();
+}
+
+function isManualVerificationCall(name: string, input: unknown): boolean {
+  return manualVerificationCommand(name, input) !== null;
+}
+
+function verificationCommandFamily(command: string): string | null {
+  const match = command.match(/^(node\s+--test|(?:pnpm|yarn)\s+(?:test|check|lint|build|typecheck)|npm\s+(?:test|run\s+(?:check|lint|build|typecheck))|npx\s+(?:tsc|eslint|vitest|jest)|(?:vitest|jest|pytest|ruff|mypy|tsc|eslint)|cargo\s+(?:test|check|clippy)|go\s+(?:test|build))\b/i);
+  return match?.[1].toLowerCase().replace(/\s+/g, " ") ?? null;
+}
+
+function verificationCommandCovers(passingCommand: string, failedCommand: string): boolean {
+  if (passingCommand === failedCommand) return true;
+  const passingFamily = verificationCommandFamily(passingCommand);
+  const failedFamily = verificationCommandFamily(failedCommand);
+  return passingFamily !== null && passingFamily === failedFamily && passingCommand === passingFamily;
+}
+
+function isSuccessfulVerificationCall(name: string, input: unknown, output: unknown): boolean {
+  if (!isManualVerificationCall(name, input)) return false;
+  if (!output || typeof output !== "object") return false;
+  const result = output as Record<string, unknown>;
+  return result.exitCode === 0 && result.timedOut !== true;
+}
+
+function isPotentialCodeMutationCall(name: string, input: unknown): boolean {
+  if (["Write", "Edit", "ApplyIntent", "FindAndEdit", "NotebookEdit"].includes(name)) return true;
+  if (name !== "Bash" && name !== "PowerShell") return false;
+  const command = String(((input ?? {}) as Record<string, unknown>).command ?? "");
+  // Conservative shell mutation cues. The Session checkpoint diff is the final
+  // authority and supplies exact files; this early signal merely arms the proof
+  // gate before the inner engine tries to finish.
+  return /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|sed\s+-i|git\s+(?:apply|checkout|restore|mv|rm)|npm\s+(?:install|uninstall)|pnpm\s+(?:add|remove|install)|yarn\s+(?:add|remove|install)|cargo\s+(?:add|remove)|apply_patch)\b|(?:>|>>|Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item)/i.test(command);
+}
 
 /** Consecutive gather-only tool rounds tolerated before the convergence
  *  reminder fires. Overridable for tests / unusual workloads. */

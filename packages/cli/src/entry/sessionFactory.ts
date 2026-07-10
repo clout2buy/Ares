@@ -1,6 +1,6 @@
 // Extracted from entry.ts — sessionFactory.
 
-import { Session, ContinuousVerifier, HookManager, loadStartupReminders, loadSessionSnapshot, type EngineTool, sideQuery, collectTrimmedFilePaths } from "@ares/core";
+import { Session, ContinuousVerifier, HookManager, CodingJournal, loadStartupReminders, loadSessionSnapshot, type EngineTool, sideQuery, collectTrimmedFilePaths } from "@ares/core";
 import path from "node:path";
 import { TodoStore, ShellRegistry, type FileReadStamp } from "@ares/tools";
 import type { ContentBlock, Message, PermissionPromptDecision, ReasoningLevel } from "@ares/protocol";
@@ -44,6 +44,11 @@ export interface LiveSession {
   resumed?: ResumedSessionInfo;
   /** V6: living-memory ids injected into the current turn — settled at turn end. */
   lastRecallIds?: string[];
+  /** Lazy coding-only repository cartography cadence. */
+  repositoryMapCodingTurns?: number;
+  repositoryMapLastTurn?: number;
+  repositoryMapTouchedCount?: number;
+  repositoryMapText?: string;
   /** V5: the user message of the current turn, for the Witness snapshot. */
   lastUserMessage?: string;
   /** Terminal auto-routing lane currently owning this conversation. */
@@ -54,6 +59,8 @@ export interface LiveSession {
    *  (no-arg) and /settings reported the env/persisted value, not what the engine
    *  is actually streaming with. */
   reasoningLevel: ReasoningLevel;
+  /** Structured coding state that survives compaction and process restart. */
+  codingJournal: CodingJournal;
 }
 
 /**
@@ -73,7 +80,7 @@ async function confirmTurnEndWith(
     .drainReminders()
     .map((r) => ({ text: `${r.text}
 
-Fix this before finishing — your edits this turn caused it.`, source: "verifier" as const }));
+Fix this before finishing. The edited scope is red; establish whether this change introduced the failure or it is a documented baseline issue, and provide evidence either way.`, source: "verifier" as const }));
 }
 
 export async function createSession(
@@ -478,10 +485,11 @@ export async function createSessionWithSelection(
   };
   const shellRegistry = new ShellRegistry();
   const todoStore = new TodoStore();
+  let codingJournal: CodingJournal | undefined;
   const verifier = new ContinuousVerifier({
     workspace: context.workspace,
     onEvent: (event) => {
-      void event;
+      codingJournal?.recordVerifyEvent(event);
     },
   });
   const hooks = await HookManager.load(context.workspace);
@@ -535,6 +543,7 @@ export async function createSessionWithSelection(
     const snapshot = await loadSessionSnapshot(context.workspace, resumeSessionId, {
       maxMessages: resumeMessageLimit(),
     });
+    todoStore.replace(snapshot.todos);
     const session = new Session({
       workspace: context.workspace,
       provider: selection.provider,
@@ -548,7 +557,14 @@ export async function createSessionWithSelection(
       hookManager: hooks,
       sessionMeta: snapshot.meta,
       initialMessages: snapshot.messages,
+      initialTodos: snapshot.todos,
       initialSeq: snapshot.nextSeq,
+      requireVerificationEvidence: process.env.ARES_CODING_PROOF_GATE !== "0",
+      verificationEvidence: () => verifier.evidenceSnapshot(),
+      outstandingVerificationRequired: () => codingJournal?.verificationRequiredForCurrentTurn() ?? false,
+      persistedVerificationDebt: () => codingJournal?.persistedVerificationDebtForCurrentTurn() ?? false,
+      persistedVerificationScopeComplete: () => codingJournal?.persistedVerificationScopeCompleteForCurrentTurn() ?? true,
+      observedMutationAt: () => codingJournal?.latestObservedMutationAtForCurrentTurn() ?? 0,
       selfTerritoryRoots: context.selfTerritoryRoots,
       reasoningLevel: resolveReasoningLevel(settings),
       maxOutputTokens: chatMaxOutputTokens(selection),
@@ -558,6 +574,8 @@ export async function createSessionWithSelection(
       summarizeSpan,
     });
     sessionRef = session;
+    codingJournal = await CodingJournal.open({ workspace: context.workspace, sessionId: session.meta.id });
+    session.observeEvents((event) => codingJournal?.recordTurnEvent(event));
     const live: LiveSession = {
       session,
       selection,
@@ -578,6 +596,7 @@ export async function createSessionWithSelection(
       tools,
       queueSystemReminder,
       reasoningLevel: resolveReasoningLevel(settings),
+      codingJournal,
     };
     live.agentRuntime = new AresAgentRuntime(agent, {
       workspace: context.workspace,
@@ -597,6 +616,12 @@ export async function createSessionWithSelection(
     requestPermission,
     drainSystemReminders,
     confirmTurnEnd: () => confirmTurnEndWith(verifier),
+    requireVerificationEvidence: process.env.ARES_CODING_PROOF_GATE !== "0",
+    verificationEvidence: () => verifier.evidenceSnapshot(),
+    outstandingVerificationRequired: () => codingJournal?.verificationRequiredForCurrentTurn() ?? false,
+    persistedVerificationDebt: () => codingJournal?.persistedVerificationDebtForCurrentTurn() ?? false,
+    persistedVerificationScopeComplete: () => codingJournal?.persistedVerificationScopeCompleteForCurrentTurn() ?? true,
+    observedMutationAt: () => codingJournal?.latestObservedMutationAtForCurrentTurn() ?? 0,
     recallFailureFix: (input) => recallFailureFixFromMemory(context.mind.memoryFile, input),
     hookManager: hooks,
     selfTerritoryRoots: context.selfTerritoryRoots,
@@ -608,7 +633,9 @@ export async function createSessionWithSelection(
     summarizeSpan,
   });
   sessionRef = session;
-  const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings) };
+  codingJournal = await CodingJournal.open({ workspace: context.workspace, sessionId: session.meta.id });
+  session.observeEvents((event) => codingJournal?.recordTurnEvent(event));
+  const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings), codingJournal };
   live.agentRuntime = new AresAgentRuntime(agent, {
     workspace: context.workspace,
     sessionId: session.meta.id,

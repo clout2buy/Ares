@@ -32,7 +32,7 @@ import { ParsedArgs, cliVersion } from "./runtime.js";
 import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, undoLines } from "./terminalLines.js";
-import { buildSystemPrompt, finishTurn, gatherGitRunFacts, mindSessionEnded, prepareUserTurn } from "./turnPipeline.js";
+import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, mindSessionEnded, prepareUserTurn } from "./turnPipeline.js";
 
 interface DaemonInputCommand {
   type?: string;
@@ -1517,6 +1517,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           const entry = sessions.get(id);
           if (entry && entry !== primaryEntry) {
             try { entry.live.session.interrupt?.(); } catch { /* best-effort */ }
+            await entry.live.verifier.cancel().catch(() => undefined);
+            await entry.live.shellRegistry.killAll().catch(() => 0);
+            const deadline = Date.now() + 5_000;
+            while (entry.turnActive && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            if (entry.turnActive) throw new Error("session is still quiescing after interrupt; deletion refused to prevent rollout resurrection");
+            await disposeLiveSession(entry.live);
             sessions.delete(id);
           }
           const ok = await deleteSession(live.context.workspace, id);
@@ -2045,7 +2053,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           await finishTurn(entry.live, turnState.status);
           // A completed turn may have landed a commit — reflect it into the war
           // map. Fire-and-forget; reflection never delays or breaks the turn.
-          if (turnState.status === "completed") {
+          if (turnState.status === "completed" && (entry.live.session.lastWorkStatus === "verified" || entry.live.session.lastWorkStatus === "not_applicable")) {
             void reflectAfterTurn(goal).catch(() => {});
             // Learn from the conversation too — durable facts/preferences → memory.
             void reflectConversationAfterTurn(entry, sid).catch(() => {});
@@ -2092,8 +2100,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     const allEntries = sessions.size > 0 ? [...sessions.values()] : [primaryEntry];
     for (const entry of allEntries) {
       try {
-        await entry.live.agentRuntime?.sessionEnded();
-        entry.live.agentRuntime?.stop();
+        await disposeLiveSession(entry.live);
       } catch {
         // best-effort teardown
       }

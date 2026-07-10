@@ -2,7 +2,7 @@
 
 import { AresSubagentRunner, SubagentRegistry, type EngineTool, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { DEFAULT_TOOLS, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeEnterPlanModeTool, makeExitPlanModeTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
+import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyIntentTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, FindAndEditTool, CodeModeTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeEnterPlanModeTool, makeExitPlanModeTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
 import { loadUiSettings } from "../uiSettings.js";
@@ -142,6 +142,84 @@ export async function buildEngineTools(
     enrich,
   ) as EngineTool;
   return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+}
+
+/**
+ * Focused, non-network coding profile used by isolated evaluations and other
+ * code-only workers. Keeping this builder beside the production composition
+ * prevents benchmarks from quietly testing a toy Write/Edit harness, while the
+ * explicit allow-list prevents an eval model from reaching owner memory,
+ * messaging, browser, deployment, payment, or gateway-backed tools.
+ */
+export async function buildCodingTools(
+  pathPermissions: PathPermissionStore,
+  commandPermissions: CommandPermissionStore,
+  selection: ProviderSelection,
+  runtime: AresRuntimeState,
+  context: CliRuntimeContext,
+  shellRegistry: ShellRegistry,
+  todoStore: TodoStore,
+  fileReadStamps: Map<string, FileReadStamp> = new Map(),
+  options: { subagents?: boolean; conductor?: boolean; shell?: boolean } = {},
+): Promise<EngineTool[]> {
+  const enrich = (base: ToolCallContext): RichToolContext => ({
+    ...base,
+    permissionMode: runtime.permissionMode,
+    fileReadStamps: (base.fileReadStamps as Map<string, FileReadStamp>) ?? fileReadStamps,
+    pathPermissions,
+    commandPermissions,
+    shellRegistry,
+    todoStore,
+    subModel: selection.subModel,
+  });
+  const codingDefs = [
+    ReadTool,
+    WriteTool,
+    EditTool,
+    ApplyIntentTool,
+    GlobTool,
+    GrepTool,
+    CodebaseSearchTool,
+    LspTool,
+    ...(options.shell === false ? [] : process.platform === "win32" ? [PowerShellTool, BashTool] : [BashTool, PowerShellTool]),
+    FindAndEditTool,
+    CodeModeTool,
+    makeTodoWriteTool(todoStore),
+    ...(options.shell === false ? [] : [makeBashOutputTool(shellRegistry), makeKillShellTool(shellRegistry)]),
+    makeEnterPlanModeTool(runtime),
+    makeExitPlanModeTool(runtime),
+  ];
+  const baseTools = codingDefs.map((tool) => adaptToolForEngine(tool, enrich) as EngineTool);
+  if (options.subagents === false) return baseTools;
+
+  const runner = new AresSubagentRunner({
+    registry: new SubagentRegistry(),
+    provider: selection.provider,
+    model: selection.model,
+    fastModel: fastModelFor(selection),
+    parentTools: baseTools,
+    baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
+    maxTurns: () => {
+      const value = Number(process.env.ARES_SUBAGENT_TURN_LIMIT);
+      return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+    },
+  });
+  const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
+  if (options.conductor === false) return [...baseTools, taskTool];
+  const conductorTool = adaptToolForEngine(
+    makeConductorTool({
+      provider: selection.provider,
+      model: selection.model,
+      parentTools: baseTools,
+      baseSystemPrompt: buildSystemPrompt(runtime.permissionMode, context),
+      subModel: selection.subModel,
+      defaultMaxTurns: 40,
+      leafRequestPermission: async (request) =>
+        decidePermission(request, runtime.permissions, { fleet: true }) === "allow" ? "allow_once" : "deny",
+    }),
+    enrich,
+  ) as EngineTool;
+  return [...baseTools, taskTool, conductorTool];
 }
 
 const livingMindInput = z

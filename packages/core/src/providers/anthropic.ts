@@ -473,26 +473,101 @@ export class AnthropicProvider implements Provider {
 // sanitizeToolPairs lives in ./_toolPairs.js — shared with the deepseek dialect
 // and ollama's Anthropic-compat path so a fix can't miss a sibling.
 
+/** A single Anthropic wire message: role + already-mapped content blocks. */
+interface WireMessage {
+  role: "assistant" | "user";
+  content: Record<string, unknown>[];
+}
+
+/**
+ * Enforce tool-call adjacency on the FINAL wire messages — the last line of
+ * defense against the "tool_use ids without tool_result immediately after" 400
+ * that permanently bricks a session (every resend re-emits the same body). Runs
+ * on the built structure, so it catches orphans introduced AFTER
+ * sanitizeToolPairs by mapping/filtering, not just those present in the source
+ * history.
+ *
+ * A tool_use survives only if the very next message carries its tool_result; a
+ * tool_result survives only if the previous message emitted its tool_use.
+ * Anything else becomes plain text (context preserved, request valid). Messages
+ * emptied by the rewrite are dropped, and — since dropping can itself break a
+ * newly-adjacent pair — the sweep repeats until it reaches a fixed point.
+ */
+export function stripUnpairedWireToolBlocks(messages: WireMessage[]): WireMessage[] {
+  let current = messages;
+  for (let pass = 0; pass < 6; pass++) {
+    const paired = new Set<string>();
+    for (let i = 0; i < current.length - 1; i++) {
+      const uses = new Set<string>();
+      for (const b of current[i].content) {
+        if (b.type === "tool_use" && typeof b.id === "string") uses.add(b.id);
+      }
+      if (uses.size === 0) continue;
+      for (const b of current[i + 1].content) {
+        if (b.type === "tool_result" && typeof b.tool_use_id === "string" && uses.has(b.tool_use_id)) {
+          paired.add(b.tool_use_id);
+        }
+      }
+    }
+    let changed = false;
+    const rewritten = current.map((m) => {
+      const content = m.content.map((b) => {
+        if (b.type === "tool_use" && typeof b.id === "string" && !paired.has(b.id)) {
+          changed = true;
+          return { type: "text", text: `[earlier ${String(b.name ?? "tool")} call — result not retained]` };
+        }
+        if (b.type === "tool_result" && typeof b.tool_use_id === "string" && !paired.has(b.tool_use_id)) {
+          changed = true;
+          const c = b.content;
+          const text =
+            typeof c === "string"
+              ? c
+              : Array.isArray(c)
+                ? c.map((x) => (x && typeof x === "object" && "text" in x ? String((x as { text: unknown }).text) : "[content]")).join("\n")
+                : "";
+          return { type: "text", text: `[earlier tool result]\n${text}` };
+        }
+        return b;
+      });
+      return { role: m.role, content };
+    });
+    const filtered = rewritten.filter((m) => m.content.length > 0);
+    current = filtered;
+    if (!changed) break;
+  }
+  return current;
+}
+
 function buildMessagesBody(
   req: ProviderRequest,
   dialect: AnthropicDialect = "anthropic",
 ): Record<string, unknown> {
   const isDeepseek = dialect === "deepseek";
   const outputAllowance = req.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const wireMessages = sanitizeToolPairs(req.messages)
+    .map((m) => ({
+      // Anthropic accepts only user/assistant; stray system-role history
+      // (rare — the prompt rides req.system) folds into the user turn.
+      role: m.role === "assistant" ? "assistant" : ("user" as "assistant" | "user"),
+      content: m.content
+        .map((b) => toAnthropicContentBlock(b, dialect))
+        .filter((b): b is Record<string, unknown> => b !== null),
+    }))
+    .filter((m) => m.content.length > 0);
   const body: Record<string, unknown> = {
     model: req.model,
     max_tokens: outputAllowance,
     stream: true,
-    messages: sanitizeToolPairs(req.messages)
-      .map((m) => ({
-        // Anthropic accepts only user/assistant; stray system-role history
-        // (rare — the prompt rides req.system) folds into the user turn.
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: m.content
-          .map((b) => toAnthropicContentBlock(b, dialect))
-          .filter((b): b is Record<string, unknown> => b !== null),
-      }))
-      .filter((m) => m.content.length > 0),
+    // Final adjacency sweep on the ACTUAL wire messages. sanitizeToolPairs runs
+    // on req.messages, but the .map/.filter above can still empty and DROP a
+    // message afterwards (e.g. an assistant turn whose only siblings were
+    // unsigned thinking blocks that map to null) — which re-orphans a tool_use
+    // sanitize had certified against the pre-filter layout. Anthropic then 400s
+    // on exactly this built body, permanently bricking the session because the
+    // poison is reintroduced after the repair on every resend. Sweeping the wire
+    // structure last guarantees what we send is valid no matter how upstream
+    // reshaped it.
+    messages: stripUnpairedWireToolBlocks(wireMessages),
   };
 
   // Reasoning dial → extended thinking. Fable-class models removed

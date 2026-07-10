@@ -12,6 +12,7 @@ import {
   AnthropicProvider,
   sideQuery,
   sideQueryJson,
+  stripUnpairedWireToolBlocks,
 } from "../packages/core/dist/index.js";
 
 function makeStreamFromString(s) {
@@ -555,4 +556,59 @@ test("AnthropicProvider: orphaned tool blocks are sanitized to text (no 400)", a
   assert.ok(!sent.includes("tool_use"), "orphaned tool_use must be converted, not sent");
   assert.ok(sent.includes("earlier tool result"), "orphaned result kept as context text");
   assert.ok(sent.includes("earlier") && sent.includes("Read"), "orphaned call kept as context text");
+});
+
+test("AnthropicProvider: a valid pair re-orphaned by a dropped thinking-only message is repaired (session un-brick)", async () => {
+  // The exact bricking bug: sanitizeToolPairs runs on source history, but the
+  // build step then maps unsigned thinking blocks to null and DROPS the emptied
+  // assistant message that sat between a tool_use and its result — re-orphaning
+  // the tool_use in the actual wire body, which Anthropic 400s on every resend.
+  const body = [
+    sse("message_start", { message: { id: "msg_x", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    sse("message_stop", {}),
+  ].join("");
+  const captured = {};
+  const provider = new AnthropicProvider({ apiKey: "k", fetchImpl: captureFetch(body, captured), endpointUrl: "http://x" });
+
+  const messages = [
+    { id: "a0", role: "assistant", content: [{ type: "tool_use", id: "toolu_MID", name: "Browser", input: {} }], createdAt: "now" },
+    // Unsigned thinking only → maps to null → message empties → dropped, which
+    // would strand toolu_MID next to a NON-result message on the wire.
+    { id: "a1", role: "assistant", content: [{ type: "thinking", text: "hmm", signature: "" }], createdAt: "now" },
+    { id: "u0", role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_MID", content: "ok" }], createdAt: "now" },
+    { id: "u1", role: "user", content: [{ type: "text", text: "next" }], createdAt: "now" },
+  ];
+
+  for await (const _ of provider.stream({ model: "claude-sonnet-4-6", system: "s", messages, tools: [] })) { /* drain */ }
+
+  // Every tool_use in the built body must have its tool_result in the very next
+  // message — the invariant Anthropic enforces.
+  const wire = captured.body.messages;
+  for (let i = 0; i < wire.length; i++) {
+    for (const b of wire[i].content) {
+      if (b.type === "tool_use") {
+        const next = wire[i + 1];
+        const answered = next?.content.some((c) => c.type === "tool_result" && c.tool_use_id === b.id);
+        assert.ok(answered, `tool_use ${b.id} must be answered in the immediately following message`);
+      }
+    }
+  }
+});
+
+test("stripUnpairedWireToolBlocks: converges when dropping a message re-orphans a pair", () => {
+  // A trailing tool_use with no result, plus a tool_result whose use is gone.
+  const swept = stripUnpairedWireToolBlocks([
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "GONE", content: "x" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "A", name: "Read", input: {} }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "B", name: "Read", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "B", content: "y" }] },
+  ]);
+  const flat = JSON.stringify(swept);
+  assert.ok(!flat.includes('"tool_use_id":"GONE"'), "orphaned result neutralized");
+  assert.ok(!flat.includes('"id":"A"') || !flat.includes('"type":"tool_use"') || flat.includes('"id":"B"'), "sanity");
+  // B is a valid adjacent pair — it must survive as a real tool call.
+  const bMsg = swept.find((m) => m.content.some((c) => c.type === "tool_use" && c.id === "B"));
+  assert.ok(bMsg, "valid pair B survives");
+  // A is orphaned (its next message is B's tool_use, not A's result) → text.
+  assert.ok(!flat.includes('"id":"A"'), "orphaned tool_use A converted to text");
 });

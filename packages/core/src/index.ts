@@ -46,6 +46,7 @@ export {
   ANTHROPIC_MESSAGES_URL,
   DEFAULT_ANTHROPIC_MODEL,
   fetchAnthropicModels,
+  stripUnpairedWireToolBlocks,
   type AnthropicProviderOptions,
 } from "./providers/anthropic.js";
 

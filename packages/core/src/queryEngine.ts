@@ -2951,11 +2951,16 @@ export async function* guardStreamStalls(
   let sawOutput = false;
   try {
     while (true) {
-      // The per-event deadline: pre-output silence means a hung REQUEST (short
-      // window); post-output silence usually means the model is composing a
-      // large buffered tool input (long window — a cut here can't retry, the
-      // content is committed). The thinking ceiling still clamps thinking-only.
-      let waitMs = sawOutput ? (opts.activeIdleMs ?? opts.idleMs) : opts.idleMs;
+      // The per-event deadline. Pre-output silence with NOTHING yet received
+      // means a hung REQUEST (short window). But once ANY event has arrived —
+      // committed output OR reasoning — the connection is demonstrably alive and
+      // a following pause is the model composing a large buffered block server
+      // side (a real surface build streamed thinking, then went quiet for >90s
+      // assembling a huge canvas program, and the pre-output guard cut it —
+      // orphaning the turn). So after output OR thinking, use the generous
+      // window; the thinking ceiling below still clamps a reasoning-only spin.
+      const alive = sawOutput || thinkingStartedAt > 0;
+      let waitMs = alive ? (opts.activeIdleMs ?? opts.idleMs) : opts.idleMs;
       if (!committed && thinkingStartedAt > 0) {
         waitMs = Math.min(waitMs, Math.max(0, thinkingStartedAt + opts.thinkCeilingMs - now()));
       }

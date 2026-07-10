@@ -38,6 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.28.3",
+    date: "July 2026",
+    title: "No more dead chats",
+    tagline: "The bug that could permanently freeze a conversation is gone — and long, ambitious builds stop getting cut off mid-thought.",
+    highlights: [
+      {
+        icon: "🩹",
+        title: "Bricked chats can't happen anymore",
+        tag: "Safer",
+        blurb: "A cut-off tool call could poison a conversation so every later message failed with a 400 — dead forever, even after restart. The request is now always repaired before it's sent, and existing broken chats heal themselves on the next message.",
+      },
+      {
+        icon: "⏳",
+        title: "Big builds get room to think",
+        tag: "Polished",
+        blurb: "Once Ares has started reasoning, a long pause while it composes a huge canvas program or file no longer trips the 'stalled' cutoff — ambitious surfaces finish instead of getting killed at 90 seconds.",
+      },
+    ],
+  },
+  {
     version: "0.28.2",
     date: "July 2026",
     title: "Your mouse, your rules",

@@ -40,14 +40,26 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "0.28.2",
     date: "July 2026",
-    title: "Your mouse, your call",
-    tagline: "A new owner switch lets Ares drive your real browser window with the physical mouse — off by default, on when you say so.",
+    title: "Your mouse, your rules",
+    tagline: "Drive your real browser, talk over a running turn, and make 'free' mode actually mean free.",
     highlights: [
       {
         icon: "🖱️",
         title: "Desktop control of browser windows",
         tag: "New",
         blurb: "Settings → Advanced: flip it on and Ares can click and type in your actual Chrome — post, browse, manage tabs. Off (the default) keeps web pages from ever steering your cursor.",
+      },
+      {
+        icon: "🗣️",
+        title: "Talking over Ares now steers it",
+        tag: "Polished",
+        blurb: "Saying something mid-turn used to bounce with 'a turn is already running'. Now it lands as live steering — Ares adjusts course without losing its work.",
+      },
+      {
+        icon: "🔓",
+        title: "Free mode means free",
+        tag: "Polished",
+        blurb: "With Permissions set to free (or the sensitive category allowed), ComputerUse and friends stop asking every time. Money, email, credentials, and destructive wipes still always confirm.",
       },
     ],
   },

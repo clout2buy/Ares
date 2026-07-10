@@ -784,12 +784,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     // freedom posture for ordinary tools is untouched.
     const gate = gateToolPermission(request, { attended: true });
     if (gate.kind === "deny") return Promise.resolve("deny");
-    if (gate.kind === "ask") {
+    // Owner permission policy (master/per-category toggles, read LIVE so the
+    // Permissions tab applies mid-session). A soft gate "ask" (ComputerUse,
+    // unknown categories) is subordinate to the owner's posture — otherwise
+    // "free" mode would still nag on every desktop action, which is exactly
+    // the regression the gate promises never to cause. Only a HARD block
+    // (payments, email, credentials, destructive wipes) outranks the posture.
+    const outcome = decidePermission(request, live?.runtime.permissions);
+    if (gate.kind === "ask" && (gate.hardBlocked || outcome !== "allow")) {
       return commands.waitForPermission({ ...request, reason: gate.reason ?? request.reason });
     }
-    // Owner permission policy (master/per-category toggles, read LIVE so the
-    // Permissions tab applies mid-session). "allow" flows; "ask" prompts the owner.
-    const outcome = decidePermission(request, live?.runtime.permissions);
     return outcome === "allow" ? Promise.resolve("allow_once") : commands.waitForPermission(request);
   };
   let live: LiveSession;
@@ -2181,7 +2185,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       const voiceMode = command.voice === true;
       const entry = await resolveEntry(command.sessionId);
       if (entry.turnActive) {
-        tagEmit(command.sessionId, { type: "daemon_error", error: "a turn is already running in this chat" });
+        // A send mid-turn IS steering — the owner talking over Ares ("hey
+        // Ares, no—") must never bounce with an error. Same drain as steer.
+        entry.pendingSteers.push(goal.trim());
+        tagEmit(command.sessionId, { type: "steer_queued", text: goal.trim() });
+        entry.live.session.interrupt();
         continue;
       }
       entry.turnActive = true;

@@ -38,6 +38,38 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.26.0",
+    date: "July 2026",
+    title: "The whole Ollama library, and your bill",
+    highlights: [
+      {
+        icon: "🦙",
+        title: "Every Ollama model",
+        tag: "New",
+        blurb: "The model panel now shows the entire ollama.com library — pulled or not — with pull counts, freshness, and clear local / cloud / not-pulled badges.",
+      },
+      {
+        icon: "🕊",
+        title: "No more scary timeout",
+        tag: "Polished",
+        blurb: "If local Ollama isn't running you get a gentle note and a full cloud + library catalog, instead of a connection-timed-out error.",
+      },
+      {
+        icon: "💰",
+        title: "Real usage tracking",
+        tag: "New",
+        blurb: "Usage now breaks down by provider and model with estimated spend, and the model panel shows your last 30 days for the provider you're browsing.",
+      },
+      {
+        icon: "📅",
+        title: "Accurate daily charts",
+        tag: "Polished",
+        blurb: "Daily token charts now use each turn's real timestamp, so long-running sessions no longer dump all their usage onto one day.",
+      },
+    ],
+    tagline: "Browse the full Ollama catalog with pulled/cloud states, and see what every provider actually costs you.",
+  },
+  {
     version: "0.25.0",
     date: "July 2026",
     title: "Voice that sets itself up",

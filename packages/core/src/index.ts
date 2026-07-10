@@ -234,10 +234,12 @@ export {
   DEFAULT_OLLAMA_SLOTS,
   OLLAMA_CLOUD_MODELS,
   ollamaCloudModelsFor,
+  fetchOllamaLibraryModels,
   type SlotName,
   type SlotConfig,
   type OllamaCloudPoolOptions,
   type OllamaCloudModel,
+  type OllamaLibraryModel,
 } from "./providers/ollamaCloud.js";
 
 export {

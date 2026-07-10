@@ -1111,6 +1111,13 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+/** Total estimated spend across providers with known pricing; "—" if nothing priced. */
+function fmtSpend(usage: { providers?: Array<{ costUsd?: number }> }): string {
+  const known = (usage.providers ?? []).filter((p) => p.costUsd !== undefined);
+  if (known.length === 0) return "—";
+  return `≈$${known.reduce((total, p) => total + (p.costUsd ?? 0), 0).toFixed(2)}`;
+}
+
 function fmtMs(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
@@ -1400,6 +1407,9 @@ interface ModelOption {
   contextLength?: number;
   /** $ per million tokens (OpenRouter): input = prompt, output = completion. */
   pricing?: { input?: number; output?: number };
+  /** Ollama library meta: human pull count ("225.9K") + relative updated age. */
+  pulls?: string;
+  updated?: string;
 }
 
 const OLLAMA_CLOUD_MODELS: ModelOption[] = [
@@ -1638,7 +1648,12 @@ function useModelCatalog(provider: string, native: boolean) {
           capabilities: m.capabilities ?? [],
         }));
         setModels((current) => mergeModelOptions(current, local));
-        if (found.error && !found.reachable) setError(found.error);
+        // Local daemon down is NORMAL for cloud-key users — say so gently
+        // instead of surfacing the raw "connection timed out" as an error
+        // banner over a perfectly usable cloud + library catalog.
+        if (found.error && !found.reachable) {
+          setError("Local Ollama isn't running — showing cloud + library models. Start the Ollama app to use your pulled models.");
+        }
       } catch (err) {
         if (live) setError(String(err));
       } finally {
@@ -4191,6 +4206,8 @@ function App() {
         <ModelPopover
           prefs={prefs}
           native={native}
+          usage={usageStats}
+          onRequestUsage={() => daemonCmd({ type: "usage_stats", days: 30 })}
           onClose={() => setModelPopOpen(false)}
           onPickAuto={() => {
             setModelPopOpen(false);
@@ -4749,18 +4766,44 @@ const PROVIDER_IDENTITY: Record<string, { title: string; tagline: string; mark: 
 function ModelPopover({
   prefs,
   native,
+  usage,
+  onRequestUsage,
   onPickAuto,
   onPick,
   onClose,
 }: {
   prefs: Prefs;
   native: boolean;
+  usage: UsageStats | null;
+  onRequestUsage: () => void;
   onPickAuto: () => void;
   onPick: (provider: string, model: string) => void;
   onClose: () => void;
 }) {
   const [provider, setProvider] = useState(prefs.provider);
   const { models, loading, error } = useModelCatalog(provider, native);
+  // 30-day usage for the hero strip — ask once per open.
+  useEffect(() => { onRequestUsage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  const providerUsage = usage?.providers?.find((p) => p.provider === provider);
+  // Pulled state: any Local Ollama entry with the same base name means the
+  // library model is already on this machine.
+  const localBases = useMemo(
+    () => new Set(models.filter((m) => m.group === "Local Ollama").map((m) => m.id.split(":")[0].toLowerCase())),
+    [models],
+  );
+  const groupRank = (g: string) => {
+    if (g === "Local Ollama") return 0;
+    if (g.startsWith("Ollama Cloud")) return 1;
+    if (g === "Ollama Library · cloud") return 2;
+    if (g === "Ollama Library") return 3;
+    return 4;
+  };
+  const parsePulls = (p?: string) => {
+    const m = p?.match(/([\d.]+)\s*([KMB]?)/i);
+    if (!m) return 0;
+    const mult = { k: 1e3, m: 1e6, b: 1e9 }[m[2]?.toLowerCase() as "k" | "m" | "b"] ?? 1;
+    return Number(m[1]) * mult;
+  };
   const [query, setQuery] = useState("");
   const [capability, setCapability] = useState<"all" | "tools" | "reasoning" | "vision" | "free">("all");
   const [detail, setDetail] = useState<ModelOption | null>(null);
@@ -4768,9 +4811,13 @@ function ModelPopover({
   const ident = PROVIDER_IDENTITY[provider] ?? { title: provider, tagline: "", mark: "◆", from: "#26262a", to: "#8a8f98" };
   const q = query.trim().toLowerCase();
   const byCapability = capability === "all" ? models : models.filter((m) => m.capabilities?.includes(capability));
-  const filtered = q
+  const searched = q
     ? byCapability.filter((m) => [m.id, m.label ?? "", m.hint ?? "", m.description ?? "", ...(m.capabilities ?? [])].join(" ").toLowerCase().includes(q))
     : byCapability;
+  // Ordered: local models first, then cloud, then the library by popularity.
+  const filtered = [...searched].sort((a, b) =>
+    groupRank(a.group) - groupRank(b.group) || parsePulls(b.pulls) - parsePulls(a.pulls) || a.id.localeCompare(b.id));
+  const sections = [...new Set(filtered.map((m) => m.group))];
   const capabilityCount = (name: Exclude<typeof capability, "all">) => models.filter((m) => m.capabilities?.includes(name)).length;
   const ctxLabel = (n?: number) => {
     if (!n) return null;
@@ -4821,6 +4868,15 @@ function ModelPopover({
             <span className="mdlCount">{loading ? "scanning…" : `${models.length} models`}</span>
             <button className="ghost" onClick={onClose}>Close</button>
           </header>
+          {providerUsage ? (
+            <div className="mdlUsage" title="Your last 30 days through this provider (spend estimated from live OpenRouter pricing)">
+              <span className="mdlUsageLabel">30d</span>
+              <span><b>{providerUsage.calls}</b> requests</span>
+              <span>↑ <b>{fmtTokens(providerUsage.tokensIn)}</b></span>
+              <span>↓ <b>{fmtTokens(providerUsage.tokensOut)}</b></span>
+              <span className="mdlUsageCost">{providerUsage.costUsd !== undefined ? <>≈ <b>${providerUsage.costUsd.toFixed(2)}</b></> : "cost n/a"}</span>
+            </div>
+          ) : null}
           <div className="mdlControls">
             <input
               className="modelSearch"
@@ -4854,42 +4910,68 @@ function ModelPopover({
             </div>
           ) : (
             <div className="mdlGrid">
-              {filtered.map((m, i) => {
-                const ctx = ctxLabel(m.contextLength);
-                const isFree = m.capabilities?.includes("free");
-                const price = m.pricing?.input !== undefined ? `$${m.pricing.input.toFixed(2)}/M in` : null;
-                return (
-                  <button key={m.id} className="mdlCard" data-on={m.id === value ? "1" : "0"} style={{ "--i": Math.min(i, 20) } as React.CSSProperties} onClick={() => onPick(provider, m.id)}>
-                    <span className="mdlCardTop">
-                      <span className="modelGlyph" aria-hidden="true">{modelGlyph(m)}</span>
-                      <span className="mdlCardName">
-                        <strong>{m.label ?? m.id}</strong>
-                        {m.label && m.label !== m.id ? <em>{m.id}</em> : null}
-                      </span>
-                      <span
-                        className="modelInfo"
-                        role="button"
-                        tabIndex={0}
-                        title="Details"
-                        aria-label={`Details for ${m.label ?? m.id}`}
-                        onClick={(e) => { e.stopPropagation(); setDetail(m); }}
-                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setDetail(m); } }}
-                      >ⓘ</span>
-                    </span>
-                    {m.description ? (
-                      <span className="mdlCardDesc" title={m.description}>{m.description}</span>
-                    ) : m.hint ? (
-                      <span className="mdlCardDesc thin">{m.hint}</span>
-                    ) : null}
-                    <span className="mdlCardFoot">
-                      {ctx ? <i className="mdlChip">{ctx}</i> : null}
-                      {isFree ? <i className="mdlChip free">FREE</i> : price ? <i className="mdlChip">{price}</i> : null}
-                      {m.capabilities?.filter((c) => c !== "free").slice(0, 3).map((c) => <i key={c} className="mdlChip cap">{c}</i>)}
-                      {m.id === value ? <i className="mdlChip current">✓ current</i> : null}
-                    </span>
-                  </button>
-                );
-              })}
+              {sections.map((section) => (
+                <React.Fragment key={section}>
+                  {sections.length > 1 ? (
+                    <div className="mdlSection">
+                      <span>{section}</span>
+                      <em>{filtered.filter((m) => m.group === section).length}</em>
+                    </div>
+                  ) : null}
+                  {filtered.filter((m) => m.group === section).map((m, i) => {
+                    const ctx = ctxLabel(m.contextLength);
+                    const isFree = m.capabilities?.includes("free");
+                    const price = m.pricing?.input !== undefined ? `$${m.pricing.input.toFixed(2)}/M in` : null;
+                    const isLibrary = m.group.startsWith("Ollama Library");
+                    const cloudHosted = m.group.includes("cloud") || m.group.startsWith("Ollama Cloud") || m.id.includes("cloud");
+                    const pulled = isLibrary && localBases.has((m.label ?? m.id).split(":")[0].toLowerCase());
+                    return (
+                      <button key={m.id} className="mdlCard" data-on={m.id === value ? "1" : "0"} style={{ "--i": Math.min(i, 20) } as React.CSSProperties} onClick={() => onPick(provider, m.id)}>
+                        <span className="mdlCardTop">
+                          <span className="modelGlyph" aria-hidden="true">{modelGlyph(m)}</span>
+                          <span className="mdlCardName">
+                            <strong>{m.label ?? m.id}</strong>
+                            {m.label && m.label !== m.id ? <em>{m.id}</em> : null}
+                          </span>
+                          <span
+                            className="modelInfo"
+                            role="button"
+                            tabIndex={0}
+                            title="Details"
+                            aria-label={`Details for ${m.label ?? m.id}`}
+                            onClick={(e) => { e.stopPropagation(); setDetail(m); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setDetail(m); } }}
+                          >ⓘ</span>
+                        </span>
+                        {m.description ? (
+                          <span className="mdlCardDesc" title={m.description}>{m.description}</span>
+                        ) : m.hint && !m.pulls ? (
+                          <span className="mdlCardDesc thin">{m.hint}</span>
+                        ) : null}
+                        {m.pulls || m.updated ? (
+                          <span className="mdlCardMeta">
+                            {m.pulls ? <span title="library pulls">⇩ {m.pulls}</span> : null}
+                            {m.updated ? <span title="last updated">↻ {m.updated}</span> : null}
+                          </span>
+                        ) : null}
+                        <span className="mdlCardFoot">
+                          {isLibrary ? (
+                            pulled ? <i className="mdlChip pulled">✓ pulled</i>
+                            : cloudHosted ? null
+                            : <i className="mdlChip ghosted">not pulled</i>
+                          ) : null}
+                          {cloudHosted && provider === "ollama" ? <i className="mdlChip cloud">☁ cloud</i> : null}
+                          {m.group === "Local Ollama" ? <i className="mdlChip pulled">💾 local</i> : null}
+                          {ctx ? <i className="mdlChip">{ctx}</i> : null}
+                          {isFree ? <i className="mdlChip free">FREE</i> : price ? <i className="mdlChip">{price}</i> : null}
+                          {m.capabilities?.filter((c) => c !== "free").slice(0, 3).map((c) => <i key={c} className="mdlChip cap">{c}</i>)}
+                          {m.id === value ? <i className="mdlChip current">✓ current</i> : null}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
               {!loading && filtered.length === 0 ? <div className="modelHintEmpty">no models match</div> : null}
             </div>
           )}
@@ -7499,7 +7581,9 @@ interface UsageStats {
   auxiliaryTokensIn: number;
   auxiliaryTokensOut: number;
   daily: Array<{ date: string; in: number; out: number }>;
-  models: Array<{ model: string; tokensIn: number; tokensOut: number; cacheReadTokens: number; calls: number }>;
+  models: Array<{ model: string; provider?: string; tokensIn: number; tokensOut: number; cacheReadTokens: number; calls: number; costUsd?: number }>;
+  /** Per-provider rollup with estimated spend (live OpenRouter pricing). */
+  providers?: Array<{ provider: string; tokensIn: number; tokensOut: number; cacheReadTokens: number; calls: number; costUsd?: number }>;
 }
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = [
@@ -8814,8 +8898,23 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
             <div className="usageCard"><span>Tokens in</span><strong>{fmtTokens(usage.tokensIn)}</strong></div>
             <div className="usageCard"><span>Tokens out</span><strong>{fmtTokens(usage.tokensOut)}</strong></div>
             <div className="usageCard"><span>Cache reads</span><strong>{fmtTokens(usage.cacheReadTokens)}</strong></div>
-            <div className="usageCard"><span>Agent overhead</span><strong>{fmtTokens(usage.auxiliaryTokensIn + usage.auxiliaryTokensOut)}</strong></div>
+            <div className="usageCard"><span>Est. spend</span><strong>{fmtSpend(usage)}</strong></div>
           </div>
+          {(usage.providers ?? []).length > 0 ? (
+            <>
+              <label className="fieldLabel">By provider</label>
+              <div className="usageTable">
+                {(usage.providers ?? []).map((p) => (
+                  <div key={p.provider} className="usageRow">
+                    <span className="usageModel">{p.provider}</span>
+                    <span className="usageCalls">{p.calls} calls</span>
+                    <span className="usageTok">↑{fmtTokens(p.tokensIn)} ↓{fmtTokens(p.tokensOut)}</span>
+                    <span className="usageCost">{p.costUsd !== undefined ? `≈$${p.costUsd.toFixed(2)}` : "—"}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
           {usage.daily.length > 0 ? (
             <>
               <label className="fieldLabel">Daily tokens</label>
@@ -8833,10 +8932,11 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
               <label className="fieldLabel">Top models</label>
               <div className="usageTable">
                 {usage.models.slice(0, 8).map((m) => (
-                  <div key={m.model} className="usageRow">
-                    <span className="usageModel">{m.model}</span>
+                  <div key={`${m.provider ?? ""}/${m.model}`} className="usageRow">
+                    <span className="usageModel">{m.model}{m.provider ? <em className="usageProv"> {m.provider}</em> : null}</span>
                     <span className="usageCalls">{m.calls} calls</span>
                     <span className="usageTok">↑{fmtTokens(m.tokensIn)} ↓{fmtTokens(m.tokensOut)}</span>
+                    <span className="usageCost">{m.costUsd !== undefined ? `≈$${m.costUsd.toFixed(2)}` : "—"}</span>
                   </div>
                 ))}
               </div>

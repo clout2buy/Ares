@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.28.8",
+    date: "July 2026",
+    title: "Steering that never breaks the session",
+    tagline: "Talk over Ares mid-task — by voice or by typing — and it adjusts course instead of dying with an error.",
+    highlights: [
+      {
+        icon: "🎯",
+        title: "Steer without fear",
+        tag: "Safer",
+        blurb: "Redirecting Ares mid-task no longer triggers the dreaded red provider error — your nudge lands cleanly and the work continues where it left off.",
+      },
+      {
+        icon: "🎙",
+        title: "Voice interrupts work",
+        tag: "Safer",
+        blurb: "Cutting Ares off with the wake word while it's talking or working folds your new instruction in instead of wedging the conversation.",
+      },
+      {
+        icon: "🩹",
+        title: "Old stuck chats self-heal",
+        tag: "New",
+        blurb: "Conversations that were already bricked by the steering error come back to life on their next message — no restart, no lost history.",
+      },
+    ],
+  },
+  {
     version: "0.28.7",
     date: "July 2026",
     title: "Your real browser, connected",

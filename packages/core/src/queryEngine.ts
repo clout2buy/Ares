@@ -1145,8 +1145,20 @@ export class QueryEngine {
     // turn_start. The turn_start event remains first for stable rollout/daemon
     // consumers, and reminder telemetry follows immediately after.
     const reminders = this.cfg.drainSystemReminders?.() ?? [];
+    // Reminders ride the FRONT of the pending user message — except when that
+    // message carries tool_result blocks (resuming after an interrupted tool
+    // batch, e.g. a mid-turn steer). Anthropic requires tool_result blocks to
+    // be the first content of their message: a reminder unshifted ahead of
+    // them 400s the request ("tool_use ids were found without tool_result
+    // blocks immediately after"), and because this insert mutates persisted
+    // history the same poison re-sends on every retry — a bricked session.
+    // Insert after the last tool_result instead.
+    const reminderInsertAt = userMessage.content.reduce(
+      (after, block, index) => (block.type === "tool_result" ? index + 1 : after),
+      0,
+    );
     for (const r of reminders) {
-      userMessage.content.unshift({ type: "system_reminder", text: r.text });
+      userMessage.content.splice(reminderInsertAt, 0, { type: "system_reminder", text: r.text });
     }
 
     yield { type: "turn_start", turnId, sessionId: this.sessionId, userMessage };

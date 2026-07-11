@@ -71,8 +71,35 @@ export function sanitizeToolPairs(messages: readonly Message[]): Message[] {
       }
       return [b];
     });
-    return { ...m, content };
+    return { ...m, content: toolResultsFirst(content) };
   });
+}
+
+/**
+ * Anthropic-shaped endpoints require tool_result blocks to LEAD their message.
+ * A text block sitting before a tool_result reads, to the API validator, as the
+ * previous assistant's tool_use having no result "immediately after" — the same
+ * 400 as a missing pair, and just as session-bricking once persisted. History
+ * can legitimately reach that shape (e.g. a steer reminder injected into the
+ * tool-results message of an interrupted turn by an older build), so normalize
+ * on the way out: tool_results first, everything else after, each side keeping
+ * its relative order. No-op (same array back) when the order is already valid.
+ */
+export function toolResultsFirst<T extends { type?: unknown }>(blocks: T[]): T[] {
+  let sawOther = false;
+  let misordered = false;
+  for (const block of blocks) {
+    if (block.type === "tool_result") {
+      if (sawOther) {
+        misordered = true;
+        break;
+      }
+    } else {
+      sawOther = true;
+    }
+  }
+  if (!misordered) return blocks;
+  return [...blocks.filter((b) => b.type === "tool_result"), ...blocks.filter((b) => b.type !== "tool_result")];
 }
 
 /**

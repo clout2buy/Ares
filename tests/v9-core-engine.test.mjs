@@ -359,3 +359,52 @@ test("engine: circuit-breaker fires after 3 identical tool failures, then re-arm
   assert.match(breaker.text, /Browser/);
   assert.equal(events.at(-1)?.status, "completed");
 });
+
+test("engine: steer reminder on a resumed turn lands AFTER the tool_result blocks (400-brick fix)", async () => {
+  // Post-steer resume: the interrupted turn's history tail is the tool_results
+  // user message, and the daemon queues the steer as a system reminder before
+  // resumeTurn(). The old unshift put the reminder AHEAD of the tool_results —
+  // on the Anthropic wire that's [text, tool_result], which 400s ("tool_use ids
+  // were found without tool_result blocks immediately after") and, because the
+  // unshift mutated persisted history, re-sent the same poison on every retry.
+  const requests = [];
+  const provider = {
+    name: "capture",
+    async *stream(req) {
+      requests.push(req);
+      yield {
+        type: "message_done",
+        message: { id: "a_res", role: "assistant", content: [{ type: "text", text: "adjusted course" }], createdAt: new Date().toISOString() },
+        usage: { inputTokens: 0, outputTokens: 0 },
+        stopReason: "end_turn",
+      };
+    },
+  };
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-steer-"));
+  const steers = [{ text: 'The user STEERED mid-task: "overhaul the design too". Adjust course.', source: "instructions" }];
+  const initialMessages = [
+    textMsg("user", "rebuild the extension", "u0"),
+    { id: "a0", role: "assistant", content: [{ type: "tool_use", id: "toolu_STEER", name: "Read", input: {} }], createdAt: new Date().toISOString() },
+    { id: "u1", role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_STEER", content: "file contents" }], createdAt: new Date().toISOString() },
+  ];
+  const session = new Session({
+    workspace,
+    provider,
+    model: "m",
+    systemPrompt: "s",
+    tools: [],
+    initialMessages,
+    contextBudgetTokens: 0,
+    drainSystemReminders: () => steers.splice(0),
+  });
+  const events = [];
+  for await (const e of session.resumeTurn()) events.push(e);
+
+  assert.equal(events.at(-1)?.status, "completed");
+  const sent = requests[0].messages;
+  const resultsMsg = sent.find((m) => m.content.some((b) => b.type === "tool_result"));
+  assert.ok(resultsMsg, "tool_results message reaches the provider");
+  assert.equal(resultsMsg.content[0].type, "tool_result", "tool_result must stay the FIRST block of its message");
+  const reminderIndex = resultsMsg.content.findIndex((b) => b.type === "system_reminder" && /STEERED mid-task/.test(b.text));
+  assert.ok(reminderIndex > 0, "steer reminder is present and positioned after the tool_result");
+});

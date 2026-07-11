@@ -35,7 +35,7 @@ import { anthropicReasoningEffort, deepSeekReasoningEffort, reasoningEnabled, th
 import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard.js";
 import { parseRetryAfterMs } from "./retryAfter.js";
-import { coerceToolArgs, sanitizeToolPairs, TOOL_ARGS_ERROR_KEY } from "./_toolPairs.js";
+import { coerceToolArgs, sanitizeToolPairs, toolResultsFirst, TOOL_ARGS_ERROR_KEY } from "./_toolPairs.js";
 import {
   resolveAnthropicAccessToken,
   ANTHROPIC_OAUTH_BETA,
@@ -545,7 +545,13 @@ export function stripUnpairedWireToolBlocks(messages: WireMessage[]): WireMessag
     current = filtered;
     if (!changed) break;
   }
-  return current;
+  // Ordering, not just presence: a tool_result behind a text block 400s the
+  // same way as a missing one ("tool_use ids … without tool_result blocks
+  // immediately after"). The rewrite above can itself create that shape (an
+  // orphaned result converted to text ahead of a surviving result), and
+  // poisoned histories persisted by older builds already have it — so the last
+  // touch on the wire is always results-first.
+  return current.map((m) => (m.role === "user" ? { role: m.role, content: toolResultsFirst(m.content) } : m));
 }
 
 function buildMessagesBody(

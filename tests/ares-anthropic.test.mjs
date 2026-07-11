@@ -630,3 +630,64 @@ test("stripUnpairedWireToolBlocks: a valid old pair cannot bless a replayed orph
   assert.equal(realResults[0].content, "first result");
   assert.match(JSON.stringify(swept), /orphan replay/, "orphan content is retained as neutral text");
 });
+
+test("stripUnpairedWireToolBlocks: results stay FIRST even when the sweep converts a sibling orphan to text", () => {
+  // The rewrite itself can create [text, tool_result] (an orphaned result ahead
+  // of a surviving one) — ordering is enforced as the last touch, because a
+  // tool_result behind text 400s exactly like a missing one.
+  const swept = stripUnpairedWireToolBlocks([
+    { role: "assistant", content: [{ type: "tool_use", id: "B", name: "Read", input: {} }] },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "GONE", content: "stale" },
+        { type: "tool_result", tool_use_id: "B", content: "fresh" },
+      ],
+    },
+  ]);
+  const userMsg = swept.find((m) => m.role === "user");
+  assert.equal(userMsg.content[0].type, "tool_result", "surviving tool_result must lead the message");
+  assert.equal(userMsg.content[0].tool_use_id, "B");
+  assert.match(JSON.stringify(userMsg.content.slice(1)), /stale/, "orphan text follows the real result");
+});
+
+test("AnthropicProvider: steer reminder ahead of tool_results is reordered, not 400-bait (steer brick fix)", async () => {
+  // The exact post-steer resume shape persisted by older builds: the steer's
+  // system_reminder was unshifted to the FRONT of the tool-results message, so
+  // the wire carried [text, tool_result] after an assistant tool_use — which
+  // Anthropic rejects as "tool_use ids … without tool_result blocks immediately
+  // after", permanently bricking the session on every resend. The builder must
+  // emit the results first so those histories self-heal.
+  const body = [
+    sse("message_start", { message: { id: "msg_x", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    sse("message_stop", {}),
+  ].join("");
+  const captured = {};
+  const provider = new AnthropicProvider({ apiKey: "k", fetchImpl: captureFetch(body, captured), endpointUrl: "http://x" });
+
+  const messages = [
+    { id: "u0", role: "user", content: [{ type: "text", text: "go check twitter" }], createdAt: "now" },
+    { id: "a0", role: "assistant", content: [{ type: "tool_use", id: "toolu_STEER", name: "Browser", input: {} }], createdAt: "now" },
+    {
+      id: "u1",
+      role: "user",
+      content: [
+        { type: "system_reminder", text: 'The user STEERED mid-task: "overhaul the design too".' },
+        { type: "tool_result", tool_use_id: "toolu_STEER", content: "page loaded" },
+      ],
+      createdAt: "now",
+    },
+  ];
+
+  for await (const _ of provider.stream({ model: "claude-sonnet-4-6", system: "s", messages, tools: [] })) { /* drain */ }
+
+  const wire = captured.body.messages;
+  const last = wire[wire.length - 1];
+  assert.equal(last.role, "user");
+  assert.equal(last.content[0].type, "tool_result", "tool_result must be the first block of its message");
+  assert.equal(last.content[0].tool_use_id, "toolu_STEER");
+  assert.match(JSON.stringify(last.content.slice(1)), /STEERED mid-task/, "steer reminder survives, after the result");
+  // And the pair itself survives as real tool blocks — reordering, not stripping.
+  const useMsg = wire.find((m) => m.content.some((b) => b.type === "tool_use" && b.id === "toolu_STEER"));
+  assert.ok(useMsg, "the paired tool_use must survive as a real tool block");
+});

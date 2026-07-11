@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.28.6",
+    date: "July 2026",
+    title: "Your real browser, connected",
+    tagline: "The paired Chrome bridge now starts with Ares, stays authenticated, and hands existing logged-in tabs to the fast Browser tool.",
+    highlights: [
+      {
+        icon: "🔗",
+        title: "Pairing actually connects",
+        tag: "New",
+        blurb: "The Windows native host now finds Ares in its real installed home and streams Chrome's messages correctly instead of reporting that the host is unavailable.",
+      },
+      {
+        icon: "⚡",
+        title: "Real tabs, full speed",
+        tag: "Faster",
+        blurb: "Ares starts the authenticated loopback bridge with its daemon and automatically prefers the paired extension when listing or attaching to your already-open tabs.",
+      },
+      {
+        icon: "🛡",
+        title: "No false green",
+        tag: "Safer",
+        blurb: "The bridge only reports ready after both the native host and extension finish pairing, so a half-connected setup can never masquerade as usable browser control.",
+      },
+    ],
+  },
+  {
     version: "0.28.5",
     date: "July 2026",
     title: "Browser control at full speed",

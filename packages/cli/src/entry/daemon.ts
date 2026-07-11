@@ -24,7 +24,8 @@ import { MemoryStore, reflectOnRun, detectWorkspaceProjectId, loadProjectState, 
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, runAresAccountSignin, probeAresOauth } from "@ares/core";
 import { KillSwitch } from "@ares/effects";
 import { gateToolPermission } from "../policyGate.js";
-import { embeddedBridge } from "./browserBridge.js";
+import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
+import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
@@ -797,9 +798,33 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return outcome === "allow" ? Promise.resolve("allow_once") : commands.waitForPermission(request);
   };
   let live: LiveSession;
+  let browserExtensionBridge: BrowserBridgeServer | null = null;
   try {
     live = await createSession(args, undefined, requestPermission);
+    const bridgeConfigPath = path.join(live.context.home, "browser-bridge", "config.json");
+    try {
+      const raw = JSON.parse(await readFile(bridgeConfigPath, "utf8")) as {
+        host?: string;
+        port?: number;
+        hostToken?: string;
+      };
+      if (raw.host !== "127.0.0.1") throw new Error("host must be 127.0.0.1");
+      if (!Number.isInteger(raw.port) || raw.port! < 1 || raw.port! > 65_535) throw new Error("port is invalid");
+      if (typeof raw.hostToken !== "string" || raw.hostToken.length < 32) throw new Error("host token is invalid");
+      browserExtensionBridge = new BrowserBridgeServer({ port: raw.port!, hostToken: raw.hostToken });
+      await browserExtensionBridge.start();
+      setExtensionBrowserBridge(browserExtensionBridge);
+      process.stdout.write(JSON.stringify({ type: "browser_bridge_started", host: "127.0.0.1", port: raw.port }) + "\n");
+    } catch (bridgeError) {
+      if ((bridgeError as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        process.stdout.write(JSON.stringify({
+          type: "browser_bridge_error",
+          error: bridgeError instanceof Error ? bridgeError.message : String(bridgeError),
+        }) + "\n");
+      }
+    }
   } catch (err) {
+    setExtensionBrowserBridge(null);
     commands.close();
     rl.close();
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -2415,6 +2440,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       })();
     }
   } finally {
+    setExtensionBrowserBridge(null);
+    await browserExtensionBridge?.close().catch(() => undefined);
     autotickLoop?.stop();
     uninstallCrashHandlers();
     commands.close();

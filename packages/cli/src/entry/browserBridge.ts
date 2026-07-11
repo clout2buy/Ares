@@ -13,6 +13,7 @@ import { MemoryStore } from "@ares/mind";
 import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, fillEffect, navigateEffect, challengePrompt, type BrowserConnector, type HumanCheckHandler } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
+import { BrowserBridgeServer, ExtensionBrowserConnector } from "@ares/browser-extension-connector";
 
 // ── Embedded-browser bridge: the daemon ⇄ UI request/response channel that lets
 // the agent drive Ares's OWN in-app browser (the same-origin iframe in the Forge).
@@ -50,6 +51,15 @@ class EmbeddedBrowserBridge {
 }
 
 export const embeddedBridge = new EmbeddedBrowserBridge();
+
+// One authenticated loopback server belongs to the daemon process. Browser
+// tool instances are per conversation, but each can create its own lightweight
+// tab connector over this shared transport.
+let extensionBridge: BrowserBridgeServer | null = null;
+
+export function setExtensionBrowserBridge(bridge: BrowserBridgeServer | null): void {
+  extensionBridge = bridge;
+}
 
 const browserStep = z
   .object({
@@ -129,6 +139,10 @@ export function makeBrowserTool(
   let promptApprover: RailsContext["requestApproval"] | null = null;
 
   const ensureBrowser = async (headless?: boolean, attachOnly = false, cdpUrl?: string): Promise<BrowserConnector> => {
+    if (browser?.strategy === "extension:native-messaging" && !extensionBridge?.connected()) {
+      await browser.close().catch(() => undefined);
+      browser = null;
+    }
     if (browser) {
       try {
         await browser.state();
@@ -145,6 +159,9 @@ export function makeBrowserTool(
         await browser.close().catch(() => undefined);
         browser = null;
       }
+    }
+    if (!browser && extensionBridge?.connected() && attachOnly) {
+      browser = new ExtensionBrowserConnector(extensionBridge);
     }
     if (!browser) {
       // CAPTCHA handoff: a challenge surfaces through the SAME Gate as approvals
@@ -326,11 +343,22 @@ export function makeBrowserTool(
 
       // Handshake is attach-only: it must never pretend success by quietly
       // launching a different, unauthenticated browser profile.
-      const br = await ensureBrowser(i.action === "preview" ? false : i.headless, i.action === "handshake", i.url);
+      // tabs/attach/handshake prefer the paired extension so Ares can take over
+      // a real logged-in tab without launching another profile. Once attached,
+      // the connector remains selected for subsequent act/click/fill calls.
+      const extensionAttach = extensionBridge?.connected() && ["handshake", "tabs", "attach"].includes(i.action);
+      const br = await ensureBrowser(i.action === "preview" ? false : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
 
       if (i.action === "handshake") {
-        if (!br.strategy?.startsWith("cdp:")) throw new Error("browser handshake did not produce a CDP attachment");
+        if (!br.strategy?.startsWith("cdp:") && br.strategy !== "extension:native-messaging") {
+          throw new Error("browser handshake did not attach to an owner-visible browser");
+        }
         const tabs = br.tabs ? await br.tabs() : [];
+        if (br.strategy === "extension:native-messaging") {
+          if (!tabs.length || !br.attachToExisting || !(await br.attachToExisting(""))) {
+            throw new Error("the extension is paired but no controllable web tab is open");
+          }
+        }
         const state = await br.state();
         emitTarget(state);
         return {
@@ -338,7 +366,7 @@ export function makeBrowserTool(
             action: i.action,
             status: "attached",
             browserStrategy: br.strategy,
-            result: { state, tabs, handshake: "owner-visible CDP endpoint accepted" },
+            result: { state, tabs, handshake: "owner-visible browser bridge accepted" },
             filmstripDir: filmstripDir(strip),
           },
           display: `attached to the open browser via ${br.strategy} (${tabs.length} tab${tabs.length === 1 ? "" : "s"})`,

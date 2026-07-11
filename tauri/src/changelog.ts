@@ -38,7 +38,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.28.6",
+    version: "0.28.7",
     date: "July 2026",
     title: "Your real browser, connected",
     tagline: "The paired Chrome bridge now starts with Ares, stays authenticated, and hands existing logged-in tabs to the fast Browser tool.",

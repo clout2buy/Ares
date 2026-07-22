@@ -107,6 +107,9 @@ importers:
       react:
         specifier: ^19.2.6
         version: 19.2.6
+      vanguard:
+        specifier: link:../../../Vanguard
+        version: link:../../../Vanguard
       ws:
         specifier: ^8.18.0
         version: 8.21.0

@@ -614,6 +614,8 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "sessions_list", "set_permissions", "skill_invoke", "skill_toggle",
     "skillhub_install", "skillhub_list", "skillhub_publish", "skills_list",
     "steer", "undo", "usage_stats", "webview_result",
+    "vanguard_providers", "vanguard_login", "vanguard_create", "vanguard_advance",
+    "vanguard_steer", "vanguard_cancel", "vanguard_status", "vanguard_sessions",
 ];
 
 #[tauri::command]

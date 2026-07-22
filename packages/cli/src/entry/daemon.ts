@@ -27,6 +27,7 @@ import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
 import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
+import { createVanguardHost } from "./vanguardHost.js";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion } from "./runtime.js";
@@ -1257,11 +1258,22 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   let unsubscribeGatewayMirror: (() => void) | undefined;
   startGatewayMirror(live.context, tagEmit).catch(() => {});
 
+  // Ares Code: the embedded Vanguard engine behind the desktop's second tab.
+  // Lazy — nothing loads until the first vanguard_* command arrives.
+  const vanguardHost = createVanguardHost();
+  const vanguardEmit = (obj: Record<string, unknown>): void => tagEmit(undefined, obj);
+
   try {
     while (true) {
       const command = await commands.nextCommand();
       if (!command) break;
       if (command.type === "exit") break;
+      if (vanguardHost.owns(command.type)) {
+        // Sequential handling is deliberate: engine commands are cheap and
+        // ordering (create before advance) matters more than parallelism.
+        await vanguardHost.handle(command as { type: string }, vanguardEmit);
+        continue;
+      }
       if (command.type === "reasoning") {
         const level = command.level?.toLowerCase();
         if (!isReasoningLevel(level)) {
@@ -2441,6 +2453,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }
   } finally {
     setExtensionBrowserBridge(null);
+    await vanguardHost.shutdown().catch(() => undefined);
     await browserExtensionBridge?.close().catch(() => undefined);
     autotickLoop?.stop();
     uninstallCrashHandlers();

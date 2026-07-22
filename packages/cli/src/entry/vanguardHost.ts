@@ -290,9 +290,18 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
     try {
       created = await live.create(config);
     } catch (error) {
+      // Engine swap means Vanguard works ANYWHERE, not only inside projects.
+      // When the workspace has no detectable build/test contract, fall back to
+      // the builtin adaptive verifier in "build" mode: a contract that exists
+      // still runs and still gates completion; its absence stops being fatal
+      // and completion honestly rests on tool evidence + syntax checks.
       const text = error instanceof Error ? error.message : String(error);
       if (!/detect project verification/iu.test(text)) throw error;
-      created = await live.create({ ...config, adaptiveVerification: true });
+      created = await live.create({
+        ...config,
+        verification: { command: "vanguard:adaptive-verify", args: ["--mode", "build"] },
+        executionEvidence: "syntax",
+      });
     }
     if (existing !== undefined) byVanguardId.delete(existing.vanguardSessionId);
     const binding: Binding = {

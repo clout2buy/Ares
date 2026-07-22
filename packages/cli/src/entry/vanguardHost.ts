@@ -1,203 +1,304 @@
-// Ares Code — the embedded Vanguard engine host.
+// Vanguard drive mode — a second engine behind the same Ares cockpit.
 //
-// One VanguardEngine lives inside the Ares daemon and serves the desktop's
-// "Ares Code" tab. Vanguard sessions are entirely separate from Ares chat
-// sessions: their events go out as `vanguard_event` frames keyed by
-// `vanguardSessionId`, so the existing session fold never sees them.
+// When a session's Vanguard mode is on, its sends are driven by the embedded
+// VanguardEngine instead of the legacy turn pipeline, using the SAME Ares
+// session identity, workspace, and current model selection. Vanguard's
+// sanitized public events are translated into the daemon's native event
+// vocabulary (turn_start / text_delta / thinking_delta / tool_start /
+// tool_end / turn_end) tagged with the Ares session id, so the existing
+// transcript renders a Vanguard turn exactly like any other — it just says
+// Vanguard on the tin.
 //
-// The engine is loaded lazily on the first vanguard_* command, so Ares boots
-// and runs normally even when the Vanguard package is missing or broken; the
-// tab then reports the load failure instead of the daemon dying.
-
-type EmitFn = (obj: Record<string, unknown>) => void;
-
-interface VanguardCommand {
-  readonly type: string;
-  readonly [key: string]: unknown;
-}
+// The engine loads lazily on first use, so Ares boots and runs normally when
+// the vanguard package is missing; the failure surfaces as a turn error.
 
 interface EngineModule {
   VanguardEngine: new (options: { logger?: (line: string) => void }) => VanguardEngineLike;
-  PROVIDER_CHOICES: readonly { id: string; label: string }[];
-  catalogModels: (provider: string, auth: "oauth" | "api-key") => readonly { id: string; note?: string }[];
-  defaultModel: (provider: string) => string;
   supportsOAuth: (provider: string) => boolean;
-  oauthStatus: (provider: string) => Promise<{ connected: boolean; detail?: string }>;
-  oauthLogin: (provider: string) => Promise<unknown>;
+  oauthStatus: (provider: string) => Promise<{ connected: boolean }>;
   credentialVariable: (provider: string) => string;
 }
 
 interface VanguardEngineLike {
-  create(config: Record<string, unknown>): Promise<{ sessionId: string } & Record<string, unknown>>;
+  create(config: Record<string, unknown>): Promise<{ sessionId: string }>;
   advance(sessionId: string, message?: string): Record<string, unknown>;
   steer(sessionId: string, message: string): Record<string, unknown>;
   cancel(sessionId: string): Record<string, unknown>;
-  status(sessionId: string): Record<string, unknown>;
+  status(sessionId: string): { state?: string };
   subscribe(handler: (envelope: { sessionId: string; event: Record<string, unknown> }) => void): () => void;
   shutdown(): Promise<void>;
 }
 
-export interface VanguardHost {
-  /** True for any command this host owns. */
-  owns(type: unknown): type is string;
-  handle(command: VanguardCommand, emit: EmitFn): Promise<void>;
+/** The daemon's tagEmit: events tagged with the Ares session id. */
+type TagEmit = (sessionId: string | undefined, obj: Record<string, unknown>) => void;
+
+/** Providers the Vanguard engine can drive natively. */
+const DRIVABLE = new Set(["anthropic", "openai", "deepseek", "kimi", "ollama"]);
+
+/** Ares uiSettings key fields, by provider family. */
+const SETTINGS_KEYS: Readonly<Record<string, string>> = {
+  anthropic: "anthropicKey",
+  deepseek: "deepSeekKey",
+  ollama: "ollamaApiKey",
+};
+
+interface Binding {
+  vanguardSessionId: string;
+  family: string;
+  model: string;
+  /** Ares session tag for emitted events (undefined = primary/untagged). */
+  tag: string | undefined;
+  /** FIFO of live tool-card ids, per tool name, for start/end matching. */
+  pendingTools: Map<string, string[]>;
+  /** Bytes streamed since the last committed message — dedupes agent.message. */
+  deltaBytes: number;
+  turnActive: boolean;
+  turnStartedAt: number;
+}
+
+export interface VanguardDrive {
+  isTurnActive(key: string): boolean;
+  runTurn(
+    key: string,
+    tag: string | undefined,
+    goal: string,
+    selection: { workspace: string; family: string; model: string; settingsKey?: string },
+  ): Promise<void>;
+  steerTurn(key: string, text: string): boolean;
+  interrupt(key: string): boolean;
   shutdown(): Promise<void>;
 }
 
-export function createVanguardHost(): VanguardHost {
+export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
   let modulePromise: Promise<EngineModule> | undefined;
   let engine: VanguardEngineLike | undefined;
   let unsubscribe: (() => void) | undefined;
-  // Display metadata the UI needs to re-render its session rail after reloads.
-  const known = new Map<string, { workspace: string; provider: string; model: string; createdAt: number }>();
+  const bindings = new Map<string, Binding>();
+  const byVanguardId = new Map<string, Binding>();
+  let toolCardSequence = 0;
 
   const loadModule = (): Promise<EngineModule> => {
     modulePromise ??= import("vanguard") as unknown as Promise<EngineModule>;
     return modulePromise;
   };
 
-  const ensureEngine = async (emit: EmitFn): Promise<VanguardEngineLike> => {
+  const translate = (binding: Binding, ev: Record<string, unknown>): void => {
+    const type = typeof ev.type === "string" ? ev.type : "";
+    const title = typeof ev.title === "string" ? ev.title : "";
+    const detail = typeof ev.detail === "string" ? ev.detail : undefined;
+    const message = typeof ev.message === "string" ? ev.message : "";
+    const emit = (obj: Record<string, unknown>): void => tagEmit(binding.tag, obj);
+    switch (type) {
+      case "agent.delta":
+        binding.deltaBytes += message.length;
+        emit({ type: "text_delta", text: message });
+        return;
+      case "agent.thinking":
+        emit({ type: "thinking_delta", text: message });
+        return;
+      case "agent.message":
+        // Streamed replies already went out as deltas; only surface a message
+        // that never streamed (non-streaming providers, control decisions).
+        if (binding.deltaBytes === 0 && message) emit({ type: "text_delta", text: message });
+        binding.deltaBytes = 0;
+        return;
+      case "tool.started": {
+        const tool = typeof ev.tool === "string" ? ev.tool : "tool";
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        const queue = binding.pendingTools.get(tool) ?? [];
+        queue.push(id);
+        binding.pendingTools.set(tool, queue);
+        emit({ type: "tool_start", id, name: tool, activityDescription: detail ?? title ?? tool });
+        return;
+      }
+      case "tool.completed":
+      case "tool.failed": {
+        const tool = typeof ev.tool === "string" ? ev.tool : "tool";
+        const id = binding.pendingTools.get(tool)?.shift();
+        const durationMs = typeof ev.durationMs === "number" ? ev.durationMs : undefined;
+        if (id === undefined) return;
+        if (type === "tool.completed") emit({ type: "tool_end", id, display: detail ?? "done", durationMs });
+        else emit({ type: "tool_error", id, error: detail ?? "failed", durationMs });
+        return;
+      }
+      case "run.contracted": {
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        emit({ type: "tool_start", id, name: "vanguard.contract", activityDescription: "task contracted" });
+        emit({ type: "tool_end", id, display: detail ?? title ?? "objective and success criteria locked" });
+        return;
+      }
+      case "completion.claimed": {
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        emit({ type: "tool_start", id, name: "vanguard.verify", activityDescription: "completion claimed — verifying" });
+        binding.pendingTools.set("vanguard.verify", [...(binding.pendingTools.get("vanguard.verify") ?? []), id]);
+        return;
+      }
+      case "verification.completed": {
+        const pending = binding.pendingTools.get("vanguard.verify")?.shift();
+        const passed = ev.status === "passed";
+        if (pending !== undefined) {
+          if (passed) tagEmit(binding.tag, { type: "tool_end", id: pending, display: detail ?? "verifiers accepted the completion" });
+          else tagEmit(binding.tag, { type: "tool_error", id: pending, error: detail ?? "verifiers rejected the completion" });
+          return;
+        }
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        emit({ type: "tool_start", id, name: "vanguard.verify", activityDescription: title || "independent verification" });
+        if (passed) emit({ type: "tool_end", id, display: detail ?? "passed" });
+        else emit({ type: "tool_error", id, error: detail ?? "failed" });
+        return;
+      }
+      case "run.waiting_for_user":
+        if (message && binding.deltaBytes === 0) emit({ type: "text_delta", text: message });
+        binding.deltaBytes = 0;
+        return;
+      default:
+        return; // lifecycle/usage frames feed the turn loop, not the transcript
+    }
+  };
+
+  const ensureEngine = async (): Promise<VanguardEngineLike> => {
     const mod = await loadModule();
     if (engine === undefined) {
       engine = new mod.VanguardEngine({ logger: () => {} });
       unsubscribe = engine.subscribe(({ sessionId, event }) => {
-        emit({ type: "vanguard_event", vanguardSessionId: sessionId, event });
+        const binding = byVanguardId.get(sessionId);
+        if (binding !== undefined) translate(binding, event);
       });
     }
     return engine;
   };
 
-  const fail = (emit: EmitFn, command: VanguardCommand, error: unknown): void => {
-    emit({
-      type: "vanguard_error",
-      command: command.type,
-      ...(typeof command.vanguardSessionId === "string" ? { vanguardSessionId: command.vanguardSessionId } : {}),
-      message: error instanceof Error ? error.message : String(error),
-    });
+  const resolveAuth = async (family: string, settingsKey: string | undefined): Promise<"oauth" | "api-key"> => {
+    const mod = await loadModule();
+    if (mod.supportsOAuth(family)) {
+      const status = await mod.oauthStatus(family).catch(() => ({ connected: false }));
+      if (status.connected) return "oauth";
+    }
+    const variable = mod.credentialVariable(family);
+    if ((process.env[variable] ?? "") !== "") return "api-key";
+    // Fall back to the key the owner gave Ares itself, so Vanguard mode needs
+    // zero extra setup. Injected into this process's env only.
+    if (settingsKey !== undefined && settingsKey !== "") {
+      process.env[variable] = settingsKey;
+      return "api-key";
+    }
+    if (family === "ollama") return "api-key"; // local daemon needs no key
+    throw new Error(
+      `Vanguard has no ${family} credential: sign in with \`vanguard login ${family}\` or set ${variable}.`,
+    );
   };
 
-  const text = (value: unknown, field: string): string => {
-    if (typeof value !== "string" || value.length === 0) throw new Error(`${field} is required`);
-    return value;
+  const ensureBinding = async (
+    key: string,
+    tag: string | undefined,
+    selection: { workspace: string; family: string; model: string; settingsKey?: string },
+  ): Promise<Binding> => {
+    const existing = bindings.get(key);
+    if (existing !== undefined && existing.family === selection.family && existing.model === selection.model) {
+      return existing;
+    }
+    if (!DRIVABLE.has(selection.family)) {
+      throw new Error(
+        `Vanguard drives anthropic, openai, deepseek, kimi, and ollama — the current selection is ${selection.family}. Switch model or turn Vanguard mode off.`,
+      );
+    }
+    const live = await ensureEngine();
+    const auth = await resolveAuth(selection.family, selection.settingsKey);
+    const config = {
+      workspace: selection.workspace,
+      provider: selection.family,
+      model: selection.model,
+      auth,
+      direct: true, // same trust model as the Ares agent: real tree, git undo
+      maxSteps: 240,
+    };
+    let created;
+    try {
+      created = await live.create(config);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      if (!/detect project verification/iu.test(text)) throw error;
+      created = await live.create({ ...config, adaptiveVerification: true });
+    }
+    if (existing !== undefined) byVanguardId.delete(existing.vanguardSessionId);
+    const binding: Binding = {
+      vanguardSessionId: created.sessionId,
+      family: selection.family,
+      model: selection.model,
+      tag,
+      pendingTools: new Map(),
+      deltaBytes: 0,
+      turnActive: false,
+      turnStartedAt: 0,
+    };
+    bindings.set(key, binding);
+    byVanguardId.set(created.sessionId, binding);
+    return binding;
   };
 
   return {
-    owns(type: unknown): type is string {
-      return typeof type === "string" && type.startsWith("vanguard_");
+    isTurnActive(key: string): boolean {
+      return bindings.get(key)?.turnActive === true;
     },
 
-    async handle(command, emit): Promise<void> {
+    async runTurn(key, tag, goal, selection): Promise<void> {
+      const startedAt = Date.now();
+      tagEmit(tag, { type: "turn_start" });
+      let binding: Binding | undefined;
       try {
-        switch (command.type) {
-          case "vanguard_providers": {
-            const mod = await loadModule();
-            const providers = await Promise.all(mod.PROVIDER_CHOICES.map(async (choice) => {
-              const oauth = mod.supportsOAuth(choice.id)
-                ? await mod.oauthStatus(choice.id).catch(() => ({ connected: false }))
-                : undefined;
-              const auth: "oauth" | "api-key" = oauth?.connected === true ? "oauth" : "api-key";
-              let models: readonly { id: string; note?: string }[] = [];
-              try {
-                models = mod.catalogModels(choice.id, auth);
-              } catch {
-                models = [];
-              }
-              return {
-                id: choice.id,
-                label: choice.label,
-                defaultModel: models[0]?.id ?? mod.defaultModel(choice.id),
-                credentialVariable: mod.credentialVariable(choice.id),
-                keyPresent: (process.env[mod.credentialVariable(choice.id)] ?? "") !== "",
-                oauth,
-                models,
-              };
-            }));
-            emit({ type: "vanguard_providers", providers });
-            return;
-          }
-          case "vanguard_login": {
-            const mod = await loadModule();
-            const provider = text(command.provider, "provider");
-            await mod.oauthLogin(provider);
-            const oauth = await mod.oauthStatus(provider).catch(() => ({ connected: false }));
-            emit({ type: "vanguard_login", provider, oauth });
-            return;
-          }
-          case "vanguard_create": {
-            const live = await ensureEngine(emit);
-            const workspace = text(command.workspace, "workspace");
-            const provider = text(command.provider, "provider");
-            const model = text(command.model, "model");
-            const config = {
-              workspace,
-              provider,
-              model,
-              auth: typeof command.auth === "string" ? command.auth : "api-key",
-              // Ares Code edits the real tree like the Ares agent does; git is
-              // the undo. Callers can still ask for an isolated session copy.
-              ...(command.isolated === true ? {} : { direct: true }),
-              maxSteps: typeof command.maxSteps === "number" ? command.maxSteps : 240,
-            };
-            let status;
-            try {
-              status = await live.create(config);
-            } catch (error) {
-              // A blank or unrecognized project has no detectable build/test
-              // contract; fall back to Vanguard's adaptive trusted verifier,
-              // which makes the agent establish one before completing.
-              const message = error instanceof Error ? error.message : String(error);
-              if (!/detect project verification/iu.test(message)) throw error;
-              status = await live.create({ ...config, adaptiveVerification: true });
-            }
-            known.set(status.sessionId, { workspace, provider, model, createdAt: Date.now() });
-            emit({ type: "vanguard_session", vanguardSessionId: status.sessionId, status, workspace, provider, model });
-            return;
-          }
-          case "vanguard_advance": {
-            const live = await ensureEngine(emit);
-            const sessionId = text(command.vanguardSessionId, "vanguardSessionId");
-            const status = live.advance(sessionId, typeof command.message === "string" ? command.message : undefined);
-            emit({ type: "vanguard_status", vanguardSessionId: sessionId, status });
-            return;
-          }
-          case "vanguard_steer": {
-            const live = await ensureEngine(emit);
-            const sessionId = text(command.vanguardSessionId, "vanguardSessionId");
-            const message = text(command.message, "message");
-            // One verb from the UI: a live run is steered, anything else is a
-            // fresh advance. The engine refuses steering on idle sessions.
-            const state = (live.status(sessionId) as { state?: string }).state;
-            const status = state === "running" || state === "waiting_for_user"
-              ? live.steer(sessionId, message)
-              : live.advance(sessionId, message);
-            emit({ type: "vanguard_status", vanguardSessionId: sessionId, status });
-            return;
-          }
-          case "vanguard_cancel": {
-            const live = await ensureEngine(emit);
-            const sessionId = text(command.vanguardSessionId, "vanguardSessionId");
-            const status = live.cancel(sessionId);
-            emit({ type: "vanguard_status", vanguardSessionId: sessionId, status });
-            return;
-          }
-          case "vanguard_status": {
-            const live = await ensureEngine(emit);
-            const sessionId = text(command.vanguardSessionId, "vanguardSessionId");
-            emit({ type: "vanguard_status", vanguardSessionId: sessionId, status: live.status(sessionId) });
-            return;
-          }
-          case "vanguard_sessions": {
-            emit({
-              type: "vanguard_sessions",
-              sessions: [...known.entries()].map(([id, meta]) => ({ vanguardSessionId: id, ...meta })),
+        binding = await ensureBinding(key, tag, selection);
+        binding.tag = tag;
+        binding.turnActive = true;
+        binding.turnStartedAt = startedAt;
+        binding.deltaBytes = 0;
+        const live = await ensureEngine();
+        live.advance(binding.vanguardSessionId, goal);
+        // The worker runs in the background; the turn settles when the session
+        // leaves "running". Public events stream to the transcript meanwhile.
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          const state = live.status(binding.vanguardSessionId).state;
+          if (state !== "running") {
+            tagEmit(tag, {
+              type: "turn_end",
+              status: state === "failed" ? "failed" : "ok",
+              usage: {},
+              durationMs: Date.now() - startedAt,
             });
             return;
           }
-          default:
-            emit({ type: "vanguard_error", command: command.type, message: `unknown vanguard command: ${command.type}` });
         }
       } catch (error) {
-        fail(emit, command, error);
+        tagEmit(tag, { type: "text_delta", text: `Vanguard engine: ${error instanceof Error ? error.message : String(error)}` });
+        tagEmit(tag, { type: "turn_end", status: "failed", usage: {}, durationMs: Date.now() - startedAt });
+      } finally {
+        if (binding !== undefined) binding.turnActive = false;
+      }
+    },
+
+    steerTurn(key: string, text: string): boolean {
+      const binding = bindings.get(key);
+      if (binding === undefined || !binding.turnActive || engine === undefined) return false;
+      try {
+        engine.steer(binding.vanguardSessionId, text);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    interrupt(key: string): boolean {
+      const binding = bindings.get(key);
+      if (binding === undefined || !binding.turnActive || engine === undefined) return false;
+      try {
+        engine.cancel(binding.vanguardSessionId);
+        return true;
+      } catch {
+        return false;
       }
     },
 

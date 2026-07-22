@@ -21,7 +21,7 @@
 //
 // In a plain browser (no native bridge) the app runs in DEMO mode.
 
-import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1983,7 +1983,12 @@ function App() {
   // How many chunks we've spoken this turn — the first fires small (fast start),
   // the rest batch larger to cut provider round-trips (the delay lever).
   const spokenChunkCount = useRef(0);
-  const [view, setView] = useState<"chat" | "artifacts" | "helm" | "arescode">("chat");
+  const [view, setView] = useState<"chat" | "artifacts" | "helm">("chat");
+  // Vanguard drive mode per session, confirmed by the daemon's ack — plus the
+  // one-shot shield/shockwave burst played when a session switches engines.
+  const [vgModes, setVgModes] = useState<Record<string, boolean>>({});
+  const [vgBurst, setVgBurst] = useState(false);
+  const vgBurstTimer = useRef<number | null>(null);
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -2943,14 +2948,18 @@ function App() {
       if (!mounted || buffered.seq <= lastSeq.current) return;
       lastSeq.current = buffered.seq;
       if (handleShellEvent(buffered.event)) return;
-      // Ares Code: Vanguard engine frames live in their own store, keyed by
-      // vanguardSessionId — they never touch the Ares session fold.
-      {
-        const t = (buffered.event as { type?: unknown }).type;
-        if (typeof t === "string" && t.startsWith("vanguard_")) {
-          foldVanguardFrame(buffered.event as unknown as Record<string, unknown>);
-          return;
+      // Vanguard drive-mode ack: flip the per-session badge, and play the
+      // engine-switch burst when a session powers up.
+      if ((buffered.event as { type?: unknown }).type === "vanguard_mode") {
+        const ack = buffered.event as unknown as { sessionId?: string; enabled?: boolean };
+        const owner = ack.sessionId ?? primarySessionRef.current ?? "__primary__";
+        setVgModes((prev) => ({ ...prev, [owner]: ack.enabled === true }));
+        if (ack.enabled === true) {
+          setVgBurst(true);
+          if (vgBurstTimer.current !== null) window.clearTimeout(vgBurstTimer.current);
+          vgBurstTimer.current = window.setTimeout(() => setVgBurst(false), 2200);
         }
+        return;
       }
       // Route the event to the session it belongs to (multi-session daemon
       // tags every event with sessionId). Untagged events go to the active card.
@@ -3870,6 +3879,7 @@ function App() {
         />
       ) : null}
       {!bootGone ? <Boot /> : null}
+      {vgBurst ? <VanguardBurst /> : null}
       {native && !pill ? (
         <SkillDock
           voiceEnabled={prefs.voiceEnabled ?? false}
@@ -4149,21 +4159,6 @@ function App() {
             <i className="glyph" data-glyph="file" /> Artifacts
             {vaultCount > 0 ? <em>{vaultCount}</em> : null}
           </button>
-          <button
-            className="vgNav"
-            data-on={view === "arescode" ? "1" : "0"}
-            onClick={() => {
-              setView("arescode");
-              setForge((current) => ({ ...current, open: false }));
-              daemonCmd({ type: "vanguard_providers" });
-            }}
-          >
-            <svg className="vgNavShield" viewBox="0 0 16 18" aria-hidden="true">
-              <path d="M8 1 15 3.6v5.2c0 4.4-2.9 7.1-7 8.2-4.1-1.1-7-3.8-7-8.2V3.6L8 1Z" fill="none" stroke="currentColor" strokeWidth="1.3" />
-              <path d="m5.2 6.2 2.8 5 2.8-5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            {" "}Ares Code
-          </button>
         </nav>
 
         <input
@@ -4217,18 +4212,33 @@ function App() {
             </button>
           ) : null}
           <div>
-            <h2>{view === "arescode" ? "Ares Code" : active?.title ?? "Session"}</h2>
+            <h2>{active?.title ?? "Session"}</h2>
             <span>
-              {view === "arescode"
-                ? "powered by Vanguard · verification-first engine"
-                : `${prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}${prefs.routingMode === "auto" && routedLanes.length > 0 ? ` · ${routedLanes.length} lane${routedLanes.length === 1 ? "" : "s"}` : ""}`}
+              {prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
+              {prefs.routingMode === "auto" && routedLanes.length > 0 ? ` · ${routedLanes.length} lane${routedLanes.length === 1 ? "" : "s"}` : ""}
+              {vgModes[active?.id ?? "__primary__"] ? " · engine: VANGUARD" : ""}
             </span>
           </div>
+          {view === "chat" ? (
+            <button
+              className="vgDrive"
+              data-on={vgModes[active?.id ?? "__primary__"] ? "1" : "0"}
+              title={vgModes[active?.id ?? "__primary__"] ? "Vanguard is driving — click to hand back to the Ares core" : "Switch this session's engine to Vanguard"}
+              onClick={() => {
+                const enabled = !vgModes[active?.id ?? "__primary__"];
+                daemonCmd({ type: "vanguard_mode", sessionId: active?.id, enabled });
+              }}
+            >
+              <svg viewBox="0 0 16 18" aria-hidden="true">
+                <path d="M8 1 15 3.6v5.2c0 4.4-2.9 7.1-7 8.2-4.1-1.1-7-3.8-7-8.2V3.6L8 1Z" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                <path d="m5.2 6.2 2.8 5 2.8-5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              VANGUARD
+            </button>
+          ) : null}
         </header>
 
-        {view === "arescode" ? (
-          <AresCodeView daemonCmd={daemonCmd} daemon={daemon} />
-        ) : view === "helm" ? (
+        {view === "helm" ? (
           <HelmView
             daemon={daemon}
             opStatus={opStatus}
@@ -4301,7 +4311,7 @@ function App() {
 
         {active?.codingBackend ? <CodingBackendScene vm={active.codingBackend} /> : null}
 
-        {view !== "helm" && view !== "arescode" ? (
+        {view !== "helm" ? (
           <Composer
             busy={active?.busy ?? false}
             model={liveModel}
@@ -5716,444 +5726,29 @@ function kfmt(n: number): string {
   return String(Math.round(n));
 }
 
-// ─── Ares Code — the Vanguard tab ────────────────────────────────────────────
+// ─── Vanguard drive mode ────────────────────────────────────────────────────────
 //
-// A second, independent agent surface: the embedded Vanguard engine (running
-// inside the Garrison daemon) with its own design language — gunmetal field,
-// signal-orange accent, verification chips — distinct from Ares's ember red.
-// Vanguard state lives in a module store so switching tabs never drops a
-// transcript; `foldVanguardFrame` is fed straight from the daemon event drain.
+// The one-shot engine-switch burst: shield, shockwave rings, and the banner
+// "ARES : powered by VANGUARD". Purely visual — the actual engine switch is
+// the daemon's vanguard_mode ack that triggers this overlay.
 
-type VgItem =
-  | { kind: "stream"; text: string; live: boolean }
-  | { kind: "message"; text: string }
-  | { kind: "user"; text: string }
-  | { kind: "tool"; tool: string; title: string; detail?: string; ok?: boolean; pending: boolean; durationMs?: number }
-  | { kind: "divider"; text: string; tone: "ok" | "bad" | "info" }
-  | { kind: "verdict"; passed: boolean; title: string; detail?: string };
-
-interface VgProviderInfo {
-  id: string;
-  label: string;
-  defaultModel: string;
-  credentialVariable: string;
-  keyPresent: boolean;
-  oauth?: { connected: boolean; detail?: string };
-  models: { id: string; note?: string }[];
-}
-
-interface VgSession {
-  id: string;
-  workspace: string;
-  provider: string;
-  model: string;
-  state: string;
-  items: VgItem[];
-}
-
-const vgStore = {
-  sessions: new Map<string, VgSession>(),
-  order: [] as string[],
-  activeId: "",
-  providers: [] as VgProviderInfo[],
-  providersLoaded: false,
-  lastError: "",
-  version: 0,
-  listeners: new Set<() => void>(),
-};
-
-function vgBump(): void {
-  vgStore.version += 1;
-  for (const listener of [...vgStore.listeners]) listener();
-}
-
-function vgSubscribe(listener: () => void): () => void {
-  vgStore.listeners.add(listener);
-  return () => vgStore.listeners.delete(listener);
-}
-
-function vgSession(id: string): VgSession | undefined {
-  return vgStore.sessions.get(id);
-}
-
-function vgPush(session: VgSession, item: VgItem): void {
-  session.items = [...session.items, item];
-}
-
-function vgOpenStream(session: VgSession): VgItem & { kind: "stream" } {
-  const last = session.items.at(-1);
-  if (last?.kind === "stream" && last.live) return last;
-  const stream = { kind: "stream" as const, text: "", live: true };
-  vgPush(session, stream);
-  return stream;
-}
-
-function vgCloseStream(session: VgSession): void {
-  const last = session.items.at(-1);
-  if (last?.kind === "stream" && last.live) {
-    session.items = [...session.items.slice(0, -1), { ...last, live: false }];
-  }
-}
-
-/** One sanitized engine event → transcript items. Vocabulary mirrors ui/transcript.js. */
-function vgFoldEngineEvent(session: VgSession, ev: Record<string, unknown>): void {
-  const type = typeof ev.type === "string" ? ev.type : "";
-  const title = typeof ev.title === "string" ? ev.title : "";
-  const detail = typeof ev.detail === "string" ? ev.detail : undefined;
-  const message = typeof ev.message === "string" ? ev.message : "";
-  switch (type) {
-    case "agent.stream_started": vgOpenStream(session); break;
-    case "agent.delta": {
-      const stream = vgOpenStream(session);
-      session.items = [...session.items.slice(0, -1), { ...stream, text: stream.text + message }];
-      break;
-    }
-    case "agent.stream_committed": vgCloseStream(session); break;
-    case "agent.stream_reset":
-    case "agent.stream_failed": {
-      const last = session.items.at(-1);
-      if (last?.kind === "stream" && last.live) session.items = session.items.slice(0, -1);
-      if (type === "agent.stream_failed") vgPush(session, { kind: "divider", text: detail ?? "stream failed — retrying", tone: "bad" });
-      break;
-    }
-    case "agent.message": {
-      const last = session.items.at(-1);
-      if (last?.kind === "stream") {
-        // The committed stream already carries this text; keep the richer one.
-        if (message && message !== last.text) session.items = [...session.items.slice(0, -1), { ...last, text: message, live: false }];
-        else vgCloseStream(session);
-      } else if (message) {
-        vgPush(session, { kind: "message", text: message });
-      }
-      break;
-    }
-    case "tool.started":
-      vgPush(session, { kind: "tool", tool: typeof ev.tool === "string" ? ev.tool : "tool", title: title || "tool", detail, pending: true });
-      break;
-    case "tool.completed":
-    case "tool.failed": {
-      const ok = type === "tool.completed";
-      const name = typeof ev.tool === "string" ? ev.tool : undefined;
-      const index = session.items.findIndex((item) => item.kind === "tool" && item.pending && (name === undefined || item.tool === name));
-      const durationMs = typeof ev.durationMs === "number" ? ev.durationMs : undefined;
-      if (index >= 0) {
-        const settled = { ...(session.items[index] as VgItem & { kind: "tool" }), pending: false, ok, durationMs, detail: detail ?? (session.items[index] as { detail?: string }).detail };
-        session.items = [...session.items.slice(0, index), settled, ...session.items.slice(index + 1)];
-      } else {
-        vgPush(session, { kind: "tool", tool: name ?? "tool", title: title || (name ?? "tool"), detail, pending: false, ok, durationMs });
-      }
-      break;
-    }
-    case "session.ready": session.state = "ready"; break;
-    case "run.contracted":
-      session.state = "executing";
-      vgPush(session, { kind: "divider", text: `task contracted${detail ? ` · ${detail}` : ""}`, tone: "info" });
-      break;
-    case "completion.claimed":
-      vgPush(session, { kind: "divider", text: "completion claimed — verifying", tone: "info" });
-      break;
-    case "verification.completed":
-      vgPush(session, { kind: "verdict", passed: ev.status === "passed", title: title || "verifier", detail });
-      break;
-    case "run.completed":
-      session.state = "completed";
-      vgPush(session, { kind: "divider", text: `run completed${detail ? ` · ${detail}` : ""}`, tone: "ok" });
-      break;
-    case "run.failed":
-      session.state = "failed";
-      vgPush(session, { kind: "divider", text: `run failed${detail ? ` · ${detail}` : ""}`, tone: "bad" });
-      break;
-    case "run.waiting_for_user":
-      session.state = "waiting";
-      vgPush(session, { kind: "divider", text: message || "Vanguard is waiting for your answer", tone: "info" });
-      break;
-    case "context.compacted":
-    case "recovery.scheduled":
-    case "recovery.replan_required":
-    case "recovery.exhausted":
-      vgPush(session, { kind: "divider", text: `${title || type}${detail ? ` · ${detail}` : ""}`, tone: "info" });
-      break;
-    default:
-      break; // progress-only event types stay out of the transcript
-  }
-}
-
-/** Entry point from the daemon drain: every `vanguard_*` frame lands here. */
-function foldVanguardFrame(frame: Record<string, unknown>): void {
-  const type = frame.type;
-  if (type === "vanguard_providers" && Array.isArray(frame.providers)) {
-    vgStore.providers = frame.providers as VgProviderInfo[];
-    vgStore.providersLoaded = true;
-    vgBump();
-    return;
-  }
-  if (type === "vanguard_login") {
-    // Refreshed status arrives with the frame; re-request the full roster.
-    vgStore.providersLoaded = false;
-    vgBump();
-    return;
-  }
-  if (type === "vanguard_session" && typeof frame.vanguardSessionId === "string") {
-    const id = frame.vanguardSessionId;
-    if (!vgStore.sessions.has(id)) {
-      vgStore.sessions.set(id, {
-        id,
-        workspace: typeof frame.workspace === "string" ? frame.workspace : "",
-        provider: typeof frame.provider === "string" ? frame.provider : "",
-        model: typeof frame.model === "string" ? frame.model : "",
-        state: "ready",
-        items: [],
-      });
-      vgStore.order = [id, ...vgStore.order];
-    }
-    vgStore.activeId = id;
-    vgStore.lastError = "";
-    vgBump();
-    return;
-  }
-  if (type === "vanguard_status" && typeof frame.vanguardSessionId === "string") {
-    const session = vgSession(frame.vanguardSessionId);
-    const status = frame.status as { state?: unknown } | undefined;
-    if (session && status && typeof status.state === "string") {
-      session.state = status.state;
-      vgBump();
-    }
-    return;
-  }
-  if (type === "vanguard_error") {
-    const sid = typeof frame.vanguardSessionId === "string" ? frame.vanguardSessionId : vgStore.activeId;
-    const session = sid ? vgSession(sid) : undefined;
-    const text = typeof frame.message === "string" ? frame.message : "Vanguard error";
-    if (session) vgPush(session, { kind: "divider", text, tone: "bad" });
-    else vgStore.lastError = text;
-    vgBump();
-    return;
-  }
-  if (type === "vanguard_event" && typeof frame.vanguardSessionId === "string") {
-    const session = vgSession(frame.vanguardSessionId);
-    if (session && frame.event && typeof frame.event === "object") {
-      vgFoldEngineEvent(session, frame.event as Record<string, unknown>);
-      vgBump();
-    }
-    return;
-  }
-}
-
-// Splash plays once per app launch; revisits go straight to the surface.
-let vgSplashSeen = false;
-
-function VanguardSplash({ onDone }: { onDone: () => void }) {
-  const [stage, setStage] = useState(0);
-  useEffect(() => {
-    const beats = [window.setTimeout(() => setStage(1), 120), window.setTimeout(() => setStage(2), 900), window.setTimeout(() => setStage(3), 1650), window.setTimeout(onDone, 2600)];
-    return () => beats.forEach((b) => window.clearTimeout(b));
-  }, [onDone]);
+function VanguardBurst() {
   return (
-    <div className="vgSplash" data-stage={stage} onClick={onDone} role="button" aria-label="Skip intro">
-      <div className="vgSplashGrid" />
-      <div className="vgSplashStage">
-        <div className="vgSplashEmblems">
-          <div className="vgSplashAres">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <circle cx="32" cy="32" r="27" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.55" />
-              <circle cx="32" cy="32" r="19" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.8" />
-              <path d="M32 12v14M32 38v14M12 32h14M38 32h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            <span>ARES</span>
-          </div>
-          <div className="vgSplashSpark">⨯</div>
-          <div className="vgSplashVanguard">
-            <svg viewBox="0 0 64 72" aria-hidden="true">
-              <path d="M32 4 58 14v20c0 17.6-11.6 28.4-26 32.8C17.6 62.4 6 51.6 6 34V14L32 4Z" fill="none" stroke="currentColor" strokeWidth="2.4" />
-              <path d="m20 24 12 22 12-22" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <span>VANGUARD</span>
-          </div>
-        </div>
-        <h1 className="vgSplashWordmark">ARES CODE</h1>
-        <div className="vgSplashTag">powered by <b>VANGUARD</b> — the verification-first coding engine</div>
-        <div className="vgSplashLog">
-          <span>append-only run journal · SEALED</span>
-          <span>independent verifier quorum · ARMED</span>
-          <span>Ares Garrison uplink · LIVE</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AresCodeView({ daemonCmd, daemon }: { daemonCmd: (c: Record<string, unknown>) => void; daemon: string }) {
-  useSyncExternalStore(vgSubscribe, () => vgStore.version);
-  const [splashDone, setSplashDone] = useState(vgSplashSeen);
-  const [workspace, setWorkspace] = useState(() => localStorage.getItem("ares.vanguard.workspace") ?? "");
-  const [provider, setProvider] = useState(() => localStorage.getItem("ares.vanguard.provider") ?? "");
-  const [model, setModel] = useState(() => localStorage.getItem("ares.vanguard.model") ?? "");
-  const [draft, setDraft] = useState("");
-  const [launching, setLaunching] = useState(false);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  const active = vgStore.activeId ? vgSession(vgStore.activeId) : undefined;
-  const providers = vgStore.providers;
-  const chosenProvider = providers.find((p) => p.id === provider) ?? providers[0];
-
-  useEffect(() => {
-    if (splashDone) vgSplashSeen = true;
-  }, [splashDone]);
-  useEffect(() => {
-    if (active) setLaunching(false);
-  }, [active]);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [active?.items.length, vgStore.version]);
-
-  if (!splashDone) return <VanguardSplash onDone={() => setSplashDone(true)} />;
-
-  const launch = () => {
-    if (!workspace.trim() || !chosenProvider) return;
-    const chosenModel = model || chosenProvider.defaultModel;
-    localStorage.setItem("ares.vanguard.workspace", workspace.trim());
-    localStorage.setItem("ares.vanguard.provider", chosenProvider.id);
-    localStorage.setItem("ares.vanguard.model", chosenModel);
-    setLaunching(true);
-    daemonCmd({
-      type: "vanguard_create",
-      workspace: workspace.trim(),
-      provider: chosenProvider.id,
-      model: chosenModel,
-      auth: chosenProvider.oauth?.connected ? "oauth" : "api-key",
-    });
-  };
-
-  const sendMessage = () => {
-    const text = draft.trim();
-    if (!text || !active) return;
-    vgPush(active, { kind: "user", text });
-    vgBump();
-    // The engine routes a steer to advance when the session is idle, so one
-    // verb covers first message, mid-run steering, and waiting_for_user.
-    daemonCmd({ type: "vanguard_steer", vanguardSessionId: active.id, message: text });
-    setDraft("");
-  };
-
-  return (
-    <div className="vg">
-      <div className="vgHead">
-        <svg className="vgHeadShield" viewBox="0 0 16 18" aria-hidden="true">
-          <path d="M8 1 15 3.6v5.2c0 4.4-2.9 7.1-7 8.2-4.1-1.1-7-3.8-7-8.2V3.6L8 1Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
-          <path d="m5.2 6.2 2.8 5 2.8-5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    <div className="vgBurst" aria-hidden="true">
+      <div className="vgBurstWave" />
+      <div className="vgBurstWave two" />
+      <div className="vgBurstCore">
+        <svg className="vgBurstShield" viewBox="0 0 64 72">
+          <path d="M32 4 58 14v20c0 17.6-11.6 28.4-26 32.8C17.6 62.4 6 51.6 6 34V14L32 4Z" fill="none" stroke="currentColor" strokeWidth="2.4" />
+          <path d="m20 24 12 22 12-22" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        <div className="vgHeadTitle">
-          <b>VANGUARD</b>
-          <span>verification-first coding engine · inside Ares</span>
+        <div className="vgBurstText">
+          <span className="a">ARES</span>
+          <span className="sep">:</span>
+          <span className="p">powered by</span>
+          <span className="v">VANGUARD</span>
         </div>
-        {vgStore.order.length > 0 ? (
-          <select
-            className="vgSessionPick"
-            value={vgStore.activeId}
-            onChange={(e) => { vgStore.activeId = e.target.value; vgBump(); }}
-          >
-            {vgStore.order.map((id) => {
-              const s = vgSession(id);
-              return <option key={id} value={id}>{s ? `${s.workspace.split(/[\\/]/).pop() || s.workspace} · ${s.state}` : id}</option>;
-            })}
-          </select>
-        ) : null}
-        {active ? <span className="vgState" data-state={active.state}>{active.state}</span> : null}
-        {active && (active.state === "executing" || active.state === "running") ? (
-          <button className="vgCancel" onClick={() => daemonCmd({ type: "vanguard_cancel", vanguardSessionId: active.id })}>halt</button>
-        ) : null}
-        <button className="vgNew" onClick={() => { vgStore.activeId = ""; vgBump(); }}>+ new</button>
       </div>
-
-      {!active ? (
-        <div className="vgLaunch">
-          <div className="vgLaunchCard">
-            <div className="vgLaunchTitle">Open a proving ground</div>
-            <label>
-              <span>Workspace</span>
-              <input value={workspace} placeholder="D:\path\to\project" spellCheck={false} onChange={(e) => setWorkspace(e.target.value)} />
-            </label>
-            <div className="vgLaunchRow">
-              <label>
-                <span>Provider</span>
-                <select value={chosenProvider?.id ?? ""} onChange={(e) => { setProvider(e.target.value); setModel(""); }}>
-                  {providers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}{p.oauth?.connected ? " · signed in" : p.keyPresent ? " · key" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Model</span>
-                <select value={model || chosenProvider?.defaultModel || ""} onChange={(e) => setModel(e.target.value)}>
-                  {(chosenProvider?.models.length ? chosenProvider.models : [{ id: chosenProvider?.defaultModel ?? "" }]).map((m) => (
-                    <option key={m.id} value={m.id}>{m.id}{m.note ? ` — ${m.note}` : ""}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            {chosenProvider && !chosenProvider.oauth?.connected && !chosenProvider.keyPresent ? (
-              <div className="vgLaunchHint">
-                No credential detected — set {chosenProvider.credentialVariable}
-                {["anthropic", "openai", "kimi"].includes(chosenProvider.id) ? (
-                  <> or <button className="vgLink" onClick={() => daemonCmd({ type: "vanguard_login", provider: chosenProvider.id })}>sign in</button></>
-                ) : null}
-                .
-              </div>
-            ) : null}
-            {vgStore.lastError ? <div className="vgLaunchError">{vgStore.lastError}</div> : null}
-            <button className="vgLaunchGo" disabled={daemon !== "running" || !workspace.trim() || launching || !chosenProvider} onClick={launch}>
-              {launching ? "materializing…" : "Enter the proving ground →"}
-            </button>
-            <div className="vgLaunchFoot">direct mode — edits land in the real tree, git is the undo · every completion is independently verified</div>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="vgTranscript" ref={scrollRef}>
-            {active.items.length === 0 ? (
-              <div className="vgEmpty">Session ready in {active.workspace}. Ask about the repository, or contract a task.</div>
-            ) : null}
-            {active.items.map((item, index) => {
-              if (item.kind === "user") return <div key={index} className="vgUser">{item.text}</div>;
-              if (item.kind === "stream" || item.kind === "message") {
-                const text = item.kind === "stream" ? item.text : item.text;
-                return <div key={index} className="vgAgent" data-live={item.kind === "stream" && item.live ? "1" : "0"}>{text}</div>;
-              }
-              if (item.kind === "tool") {
-                return (
-                  <div key={index} className="vgTool" data-ok={item.pending ? "pending" : item.ok ? "1" : "0"}>
-                    <i />
-                    <b>{item.tool}</b>
-                    <span>{item.detail ?? item.title}</span>
-                    {item.durationMs !== undefined ? <em>{(item.durationMs / 1000).toFixed(1)}s</em> : null}
-                  </div>
-                );
-              }
-              if (item.kind === "verdict") {
-                return (
-                  <div key={index} className="vgVerdict" data-passed={item.passed ? "1" : "0"}>
-                    {item.passed ? "✓" : "×"} {item.title}{item.detail ? ` — ${item.detail}` : ""}
-                  </div>
-                );
-              }
-              return <div key={index} className="vgDivider" data-tone={item.tone}><span>{item.text}</span></div>;
-            })}
-          </div>
-          <div className="vgComposer">
-            <input
-              value={draft}
-              placeholder={active.state === "waiting" ? "Vanguard asked a question — answer to resume…" : "Tell Vanguard what to build, or steer the run…"}
-              spellCheck={false}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-            />
-            <button disabled={!draft.trim()} onClick={sendMessage}>send</button>
-          </div>
-        </>
-      )}
     </div>
   );
 }

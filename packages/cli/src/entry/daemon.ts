@@ -27,7 +27,7 @@ import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
 import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
-import { createVanguardHost } from "./vanguardHost.js";
+import { createVanguardDrive } from "./vanguardHost.js";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion } from "./runtime.js";
@@ -847,6 +847,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     /** The lane (task domain) this session is currently on, for sticky auto
      *  routing — the model only switches when the lane actually changes. */
     lane?: string;
+    /** Vanguard drive mode: sends route through the embedded Vanguard engine
+     *  while the session keeps its Ares identity, selection, and transcript. */
+    vanguardMode?: boolean;
   }
   const DEFAULT_SID = "__primary__";
   const sessions = new Map<string, DaemonEntry>();
@@ -894,6 +897,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     eventRing.record({ at: Date.now(), ...payload });
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
+
+  // Vanguard drive mode: the second engine. Loads nothing until a session
+  // with the mode enabled actually sends.
+  const vanguardDrive = createVanguardDrive(tagEmit);
 
   // Crash safety net. The desktop bridge is a long-lived process on a coworker's
   // machine; until now an uncaught error or stray rejection could kill it with
@@ -1099,6 +1106,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   commands.onInterrupt = (command) => {
     const sid = command.sessionId || DEFAULT_SID;
     const entry = sessions.get(sid);
+    if (entry?.vanguardMode && vanguardDrive.isTurnActive(sid)) {
+      vanguardDrive.interrupt(sid);
+      tagEmit(command.sessionId, { type: "interrupted_by_user" });
+      return;
+    }
     if (!entry) {
       // Unknown/not-yet-spawned session id: do NOT silently interrupt the
       // primary (that was hitting the wrong target and leaving the real busy
@@ -1258,20 +1270,17 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   let unsubscribeGatewayMirror: (() => void) | undefined;
   startGatewayMirror(live.context, tagEmit).catch(() => {});
 
-  // Ares Code: the embedded Vanguard engine behind the desktop's second tab.
-  // Lazy — nothing loads until the first vanguard_* command arrives.
-  const vanguardHost = createVanguardHost();
-  const vanguardEmit = (obj: Record<string, unknown>): void => tagEmit(undefined, obj);
-
   try {
     while (true) {
       const command = await commands.nextCommand();
       if (!command) break;
       if (command.type === "exit") break;
-      if (vanguardHost.owns(command.type)) {
-        // Sequential handling is deliberate: engine commands are cheap and
-        // ordering (create before advance) matters more than parallelism.
-        await vanguardHost.handle(command as { type: string }, vanguardEmit);
+      if (command.type === "vanguard_mode") {
+        // Flip the drive engine for one session. The ack is what the UI's
+        // shield button and shockwave overlay key off.
+        const entry = await resolveEntry(command.sessionId);
+        entry.vanguardMode = (command as { enabled?: unknown }).enabled === true;
+        tagEmit(command.sessionId, { type: "vanguard_mode", enabled: entry.vanguardMode === true });
         continue;
       }
       if (command.type === "reasoning") {
@@ -2198,6 +2207,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           continue;
         }
         const entry = sessions.get(command.sessionId || DEFAULT_SID);
+        if (entry?.vanguardMode && vanguardDrive.isTurnActive(command.sessionId || DEFAULT_SID)) {
+          // Vanguard steering lands at the engine's next decision boundary and
+          // is journaled — no interrupt needed.
+          vanguardDrive.steerTurn(command.sessionId || DEFAULT_SID, text.trim());
+          tagEmit(command.sessionId, { type: "steer_queued", text: text.trim() });
+          continue;
+        }
         if (!entry?.turnActive) {
           tagEmit(command.sessionId, { type: "daemon_error", error: "there is no active turn to steer" });
           continue;
@@ -2221,6 +2237,29 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       const goal = command.goal;
       const voiceMode = command.voice === true;
       const entry = await resolveEntry(command.sessionId);
+      if (entry.vanguardMode) {
+        // Vanguard is driving this session. Mid-turn sends steer the live run;
+        // otherwise the goal starts a fresh Vanguard turn in the background,
+        // rendered through the normal transcript via translated events.
+        if (vanguardDrive.isTurnActive(sid)) {
+          vanguardDrive.steerTurn(sid, goal.trim());
+          tagEmit(command.sessionId, { type: "steer_queued", text: goal.trim() });
+          continue;
+        }
+        const settings = await loadUiSettings();
+        const family = providerFamilyForSelection(entry.live.selection);
+        const settingsKey = family === "anthropic" ? settings.anthropicKey
+          : family === "deepseek" ? settings.deepSeekKey
+          : family === "ollama" ? settings.ollamaApiKey
+          : undefined;
+        void vanguardDrive.runTurn(sid, command.sessionId, goal, {
+          workspace: entry.live.context.workspace,
+          family,
+          model: entry.live.selection.model,
+          ...(settingsKey ? { settingsKey } : {}),
+        });
+        continue;
+      }
       if (entry.turnActive) {
         // A send mid-turn IS steering — the owner talking over Ares ("hey
         // Ares, no—") must never bounce with an error. Same drain as steer.
@@ -2453,7 +2492,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }
   } finally {
     setExtensionBrowserBridge(null);
-    await vanguardHost.shutdown().catch(() => undefined);
+    await vanguardDrive.shutdown().catch(() => undefined);
     await browserExtensionBridge?.close().catch(() => undefined);
     autotickLoop?.stop();
     uninstallCrashHandlers();

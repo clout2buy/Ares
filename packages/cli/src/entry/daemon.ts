@@ -1994,9 +1994,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // Loopback OAuth flow: start a local callback server, open the browser,
         // catch the redirect automatically, exchange for tokens, then emit done.
         const sid = command.sessionId;
+        // force: an explicit sign-in click always re-authenticates — this is
+        // also the only way to recover from a limit-broken or stale account.
         runAnthropicLoginFlow((url) => {
           tagEmit(sid, { type: "anthropic_login_url", url });
-        })
+        }, fetch, 300_000, true)
           .then(() => {
             tagEmit(sid, { type: "anthropic_login_done", ok: true });
           })
@@ -2351,10 +2353,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             const onAssigned = !!assigned && assigned.family === providerName && assigned.model === model;
             const laneChanged = entry.lane !== undefined && entry.lane !== lane;
             const firstTurn = entry.lane === undefined;
-            // Switch ONLY when the domain genuinely changed (or on the very first
-            // turn) and there's a model assigned for the new lane. Otherwise the
-            // current model keeps the conversation — that's the stickiness.
-            if (assigned?.family && assigned.model && !onAssigned && !isProviderDead(assigned.family) && (laneChanged || firstTurn)) {
+            // A dead current provider (auth/limit-parked) forfeits stickiness:
+            // without this, a broken model owns the conversation forever and
+            // the assigned route never gets a chance to take over.
+            const currentDead = isProviderDead(providerName);
+            // Switch when the domain genuinely changed (or on the very first
+            // turn, or to escape a dead model) and there's a live assignment
+            // for the lane. Otherwise the current model keeps the conversation.
+            if (assigned?.family && assigned.model && !onAssigned && !isProviderDead(assigned.family) && (laneChanged || firstTurn || currentDead)) {
               try {
                 const sel = await selectProvider(new Map([["provider", assigned.family], ["model", assigned.model]]));
                 await preflightProviderSelection(sel);

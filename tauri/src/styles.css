@@ -3228,7 +3228,7 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .laneName strong { display: block; font-size: 13px; font-weight: 650; text-transform: capitalize; }
 .laneName em { display: block; font-style: normal; font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .laneAssign {
-  flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: none; max-width: min(380px, 52%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 600 10.5px/1 var(--mono); padding: 5px 10px; border-radius: 999px;
   color: var(--faint); border: 1px solid var(--line);
 }

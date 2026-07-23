@@ -4946,13 +4946,16 @@ function RoutingPanel({
                     <strong>{lane}</strong>
                     <em>{LANE_HINTS[lane]}</em>
                   </span>
-                  <span className="laneAssign">{entry ? `${entry.provider} · ${entry.model}` : "main model"}</span>
+                  <span className="laneAssign" title={entry ? `${entry.provider} · ${entry.model}` : "main model"}>{entry ? `${entry.provider} · ${entry.model}` : "main model"}</span>
                   <span className="laneSwitch" data-on={entry ? "1" : "0"} aria-hidden="true"><i /></span>
                 </button>
                 {entry ? (
                   <div className="laneBody">
                     <div className="segment mini">
-                      {PROVIDERS.filter((p) => p !== "mock").map((p) => (
+                      {/* MoA ensembles are themselves routers — assigning one
+                          to a lane routes a route. Lanes take concrete
+                          providers only. */}
+                      {PROVIDERS.filter((p) => p !== "mock" && p !== "moa").map((p) => (
                         <button
                           key={p}
                           data-on={entry.provider === p ? "1" : "0"}
@@ -8736,13 +8739,14 @@ function Settings({
                         <strong>{lane}</strong>
                         <em>{LANE_HINTS[lane]}</em>
                       </span>
-                      <span className="laneAssign">{entry ? `${entry.provider} · ${entry.model}` : "main model"}</span>
+                      <span className="laneAssign" title={entry ? `${entry.provider} · ${entry.model}` : "main model"}>{entry ? `${entry.provider} · ${entry.model}` : "main model"}</span>
                       <span className="laneSwitch" data-on={entry ? "1" : "0"} aria-hidden="true"><i /></span>
                     </button>
                     {entry ? (
                       <div className="laneBody">
                         <div className="segment mini">
-                          {PROVIDERS.filter((p) => p !== "mock").map((p) => (
+                          {/* Lanes take concrete providers only — no MoA (an ensemble is itself a router). */}
+                          {PROVIDERS.filter((p) => p !== "mock" && p !== "moa").map((p) => (
                             <button
                               key={p}
                               data-on={entry.provider === p ? "1" : "0"}

@@ -491,9 +491,11 @@ export function createVanguardDrive(
     key: string,
     tag: string | undefined,
     selection: { workspace: string; family: string; model: string; settings: DriveSettings },
+    options?: { forceFresh?: boolean },
   ): Promise<Binding> => {
     const existing = bindings.get(key);
     if (existing !== undefined
+      && options?.forceFresh !== true
       && existing.family === selection.family
       && existing.model === selection.model
       && existing.workspace === selection.workspace) {
@@ -527,7 +529,9 @@ export function createVanguardDrive(
     // a fresh create.
     let created: { sessionId: string; sessionRoot?: string } | undefined;
     let replayedSequenceFloor = 0;
-    const stored = bindingStore === undefined ? undefined : await bindingStore.load(tag).catch(() => undefined);
+    const stored = bindingStore === undefined || options?.forceFresh === true
+      ? undefined
+      : await bindingStore.load(tag).catch(() => undefined);
     if (stored !== undefined
       && stored.family === selection.family
       && stored.model === selection.model
@@ -656,12 +660,26 @@ export function createVanguardDrive(
         try {
           live.advance(binding.vanguardSessionId, goal);
         } catch (error) {
-          // A lingering worker from a cancelled or wedged prior turn means the
-          // session is still mid-advance. Attach instead of failing: steering
-          // delivers this message into the running run.
           const text = error instanceof Error ? error.message : String(error);
-          if (!/active advance|session_busy/iu.test(text)) throw error;
-          live.steer(binding.vanguardSessionId, goal);
+          if (/active advance|session_busy/iu.test(text)) {
+            // A lingering worker from a cancelled or wedged prior turn means
+            // the session is still mid-advance. Attach instead of failing:
+            // steering delivers this message into the running run.
+            live.steer(binding.vanguardSessionId, goal);
+          } else if (/session_completed|completed session/iu.test(text)) {
+            // The contract is fulfilled and sealed — a new message is NEW
+            // work, not an amendment. Roll a fresh Vanguard session for this
+            // Ares session instead of telling the owner "cannot be advanced".
+            byVanguardId.delete(binding.vanguardSessionId);
+            bindings.delete(key);
+            binding = await ensureBinding(key, tag, selection, { forceFresh: true });
+            binding.tag = tag;
+            binding.turnActive = true;
+            binding.turnStartedAt = startedAt;
+            live.advance(binding.vanguardSessionId, goal);
+          } else {
+            throw error;
+          }
         }
         // No-hang layer 3: the worker runs in the background and public events
         // are its heartbeat. Tool execution windows are already bounded by the

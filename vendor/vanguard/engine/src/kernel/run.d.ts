@@ -126,6 +126,15 @@ export declare class AgentKernel {
     advance(input: AdvanceInput, signal?: AbortSignal, priorEvents?: readonly RunEvent[]): Promise<RunOutcome>;
 }
 /**
+ * The retry-budget baseline for a fresh advance: everything after the last
+ * terminal failure. A run.failed the owner has already seen — and answered
+ * with a new message — is an informed retry, so exhausted transient budgets
+ * refill instead of failing the resumed run on its first hiccup. A crash
+ * restart mid-advance has no trailing terminal event, so its journal still
+ * counts in full and a hot provider/tool loop cannot launder its budget.
+ */
+export declare function recoveryBaselineEvents(events: readonly RunEvent[]): readonly RunEvent[];
+/**
  * The plan-free small-change lane: this many narrow mutations (small
  * exact-text replacements or small new-file creations) may proceed without a
  * durable plan, and a passing verify_syntax satisfies

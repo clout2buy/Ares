@@ -182,7 +182,7 @@ export class AgentKernel {
             classRetryOverrides: { provider_rate_limited: Math.max(10, Math.ceil(this.#options.maxSteps / 20)) },
             ...this.#recoveryConfiguration,
         };
-        const recovery = new RecoveryController(logicalPriorEvents, (type, data) => this.#record(type, data), scaledRecovery);
+        const recovery = new RecoveryController(recoveryBaselineEvents(logicalPriorEvents), (type, data) => this.#record(type, data), scaledRecovery);
         const emitObservationStagnationGuidance = async (repeatedBatches) => {
             const batchFingerprint = observationBatchFingerprint(observationStagnation.lastBatchFingerprints);
             const note = "[Vanguard runtime] Reconnaissance is stagnant: "
@@ -1758,6 +1758,13 @@ function hasTopLevelHistoricalElisionMarker(input) {
         && typeof input === "object"
         && !Array.isArray(input)
         && Object.prototype.hasOwnProperty.call(input, "vanguardElided");
+}
+export function recoveryBaselineEvents(events) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        if (events[index]?.type === "run.failed")
+            return events.slice(index + 1);
+    }
+    return events;
 }
 export const SMALL_CHANGE_MUTATION_BUDGET = 3;
 function syntaxCheckPassed(output) {

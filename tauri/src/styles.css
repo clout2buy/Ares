@@ -4482,3 +4482,96 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
   .vgBurstWave, .vgBurstWave.two { animation-duration: 0.01s; }
   .vgBurstShield { animation: none; }
 }
+
+/* == Vanguard boot intro ====================================================
+   Second beat of the launch sequence: plays after the Ares forge splash.
+   Shield draws in, wordmark reveals, quick clean fade. Click skips. */
+.vgIntro {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: #07090b;
+  color: #d7dde3;
+  font-family: var(--mono);
+  cursor: pointer;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 320ms ease;
+}
+.vgIntro[data-stage="1"], .vgIntro[data-stage="2"] { opacity: 1; }
+.vgIntro[data-stage="3"] { opacity: 0; }
+.vgIntroGrid {
+  position: absolute;
+  inset: -1px;
+  background-image:
+    linear-gradient(rgba(255, 122, 26, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 122, 26, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(640px 420px at 50% 46%, #000 25%, transparent 72%);
+}
+.vgIntroStage { position: relative; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.vgIntroShield {
+  width: 96px;
+  height: 108px;
+  color: #ff7a1a;
+  filter: drop-shadow(0 0 22px rgba(255, 122, 26, 0.4));
+}
+.vgIntroShield .hull {
+  stroke-dasharray: 210;
+  stroke-dashoffset: 210;
+}
+.vgIntro[data-stage="1"] .vgIntroShield .hull,
+.vgIntro[data-stage="2"] .vgIntroShield .hull,
+.vgIntro[data-stage="3"] .vgIntroShield .hull {
+  animation: vgDraw 750ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.vgIntroShield .mark {
+  stroke-dasharray: 70;
+  stroke-dashoffset: 70;
+}
+.vgIntro[data-stage="1"] .vgIntroShield .mark,
+.vgIntro[data-stage="2"] .vgIntroShield .mark,
+.vgIntro[data-stage="3"] .vgIntroShield .mark {
+  animation: vgDraw 480ms cubic-bezier(0.4, 0, 0.2, 1) 480ms forwards;
+}
+@keyframes vgDraw { to { stroke-dashoffset: 0; } }
+.vgIntroText { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.vgIntroText .pow {
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: #7d8893;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 380ms ease, transform 380ms ease;
+}
+.vgIntroText .word {
+  font-size: clamp(26px, 4.4vw, 38px);
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  margin-right: -0.3em;
+  color: #f3f6f8;
+  text-shadow: 0 0 26px rgba(255, 122, 26, 0.35);
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 420ms ease 60ms, transform 420ms cubic-bezier(0.2, 1.2, 0.4, 1) 60ms;
+}
+.vgIntroText .tag {
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #55606b;
+  opacity: 0;
+  transition: opacity 360ms ease 180ms;
+}
+.vgIntro[data-stage="2"] .vgIntroText .pow,
+.vgIntro[data-stage="3"] .vgIntroText .pow { opacity: 1; transform: none; }
+.vgIntro[data-stage="2"] .vgIntroText .word,
+.vgIntro[data-stage="3"] .vgIntroText .word { opacity: 1; transform: none; }
+.vgIntro[data-stage="2"] .vgIntroText .tag,
+.vgIntro[data-stage="3"] .vgIntroText .tag { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .vgIntroShield .hull, .vgIntroShield .mark { animation-duration: 0.01s !important; }
+}

@@ -1989,6 +1989,8 @@ function App() {
   const [vgModes, setVgModes] = useState<Record<string, boolean>>({});
   const [vgBurst, setVgBurst] = useState(false);
   const vgBurstTimer = useRef<number | null>(null);
+  // The Vanguard beat of the boot sequence — plays once, right after <Boot/>.
+  const [vgIntroDone, setVgIntroDone] = useState(false);
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -3911,6 +3913,7 @@ function App() {
         />
       ) : null}
       {!bootGone ? <Boot /> : null}
+      {bootGone && !vgIntroDone ? <VanguardBootIntro onDone={() => setVgIntroDone(true)} /> : null}
       {vgBurst ? <VanguardBurst /> : null}
       {native && !pill ? (
         <SkillDock
@@ -5765,6 +5768,38 @@ function kfmt(n: number): string {
 // The one-shot engine-switch burst: shield, shockwave rings, and the banner
 // "ARES : powered by VANGUARD". Purely visual — the actual engine switch is
 // the daemon's vanguard_mode ack that triggers this overlay.
+
+// The boot-sequence second beat: after the Ares forge splash exits, the
+// Vanguard shield draws itself in, holds one breath, and hands over to the
+// app. Click anywhere to skip; plays once per launch.
+function VanguardBootIntro({ onDone }: { onDone: () => void }) {
+  const [stage, setStage] = useState(0);
+  useEffect(() => {
+    const beats = [
+      window.setTimeout(() => setStage(1), 60),    // grid + shield draw
+      window.setTimeout(() => setStage(2), 850),   // wordmark reveal
+      window.setTimeout(() => setStage(3), 2050),  // fade out
+      window.setTimeout(onDone, 2450),
+    ];
+    return () => beats.forEach((beat) => window.clearTimeout(beat));
+  }, [onDone]);
+  return (
+    <div className="vgIntro" data-stage={stage} onClick={onDone} role="button" aria-label="Skip Vanguard intro">
+      <div className="vgIntroGrid" />
+      <div className="vgIntroStage">
+        <svg className="vgIntroShield" viewBox="0 0 64 72" aria-hidden="true">
+          <path className="hull" d="M32 4 58 14v20c0 17.6-11.6 28.4-26 32.8C17.6 62.4 6 51.6 6 34V14L32 4Z" fill="none" stroke="currentColor" strokeWidth="2.2" />
+          <path className="mark" d="m20 24 12 22 12-22" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <div className="vgIntroText">
+          <span className="pow">powered by</span>
+          <span className="word">VANGUARD</span>
+          <span className="tag">verification-first engine · armed</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function VanguardBurst() {
   return (

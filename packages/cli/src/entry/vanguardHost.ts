@@ -314,6 +314,31 @@ export function createVanguardDrive(
         const id = `vanguard-${toolCardSequence}`;
         emit({ type: "tool_start", id, name: "vanguard.contract", activityDescription: "task contracted" });
         emit({ type: "tool_end", id, display: detail ?? title ?? "objective and success criteria locked" });
+        persist?.(binding.tag, { type: "tool_start", id, name: "vanguard.contract", input: {}, activityDescription: "task contracted" });
+        persist?.(binding.tag, { type: "tool_end", id, output: detail ?? title ?? "contracted", durationMs: 0, display: detail ?? title ?? "objective and success criteria locked" });
+        return;
+      }
+      case "recovery.scheduled": {
+        // The engine is waiting out a transient provider fault (rate limit,
+        // overload). Silence here read as a hang for whole minutes — show the
+        // wait, and persist it so bug reports explain the gap.
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        const display = detail ?? "transient fault — retrying";
+        emit({ type: "tool_start", id, name: "vanguard.retry", activityDescription: "provider hiccup — waiting to retry" });
+        emit({ type: "tool_end", id, display, durationMs: 0 });
+        persist?.(binding.tag, { type: "tool_start", id, name: "vanguard.retry", input: {}, activityDescription: "provider hiccup — waiting to retry" });
+        persist?.(binding.tag, { type: "tool_end", id, output: display, durationMs: 0, display });
+        return;
+      }
+      case "recovery.exhausted": {
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        const reason = detail ?? "no safe retry remains";
+        emit({ type: "tool_start", id, name: "vanguard.retry", activityDescription: "retry budget exhausted" });
+        emit({ type: "tool_error", id, error: reason, durationMs: 0 });
+        persist?.(binding.tag, { type: "tool_start", id, name: "vanguard.retry", input: {}, activityDescription: "retry budget exhausted" });
+        persist?.(binding.tag, { type: "tool_error", id, error: reason, durationMs: 0 });
         return;
       }
       case "completion.claimed": {
@@ -373,7 +398,12 @@ export function createVanguardDrive(
         // The engine's failure REASON must reach the transcript AND the
         // durable rollout — a red turn with no text is indistinguishable from
         // a broken app, live or in a bug report.
-        const reason = detail || message || title || "the engine reported a failure without a reason";
+        const rawReason = detail || message || title || "the engine reported a failure without a reason";
+        // Rate limits are the one failure the user can actually route around
+        // right now — say so instead of leaving a bare HTTP status.
+        const reason = /\b429\b|rate.?limit/iu.test(rawReason)
+          ? `${rawReason}\nThe provider is rate-limiting this account. Switch the model or provider in the selector (or wait out the limit window), then send again — the run resumes from its journal.`
+          : rawReason;
         toolCardSequence += 1;
         const id = `vanguard-${toolCardSequence}`;
         emit({ type: "tool_start", id, name: "vanguard.engine", activityDescription: "run failed" });

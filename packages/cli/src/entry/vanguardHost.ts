@@ -306,6 +306,22 @@ export function createVanguardDrive(tagEmit: TagEmit, persist?: PersistEvent): V
         }
         binding.deltaBytes = 0;
         return;
+      case "run.failed": {
+        // The engine's failure REASON must reach the transcript — a red turn
+        // with no text is indistinguishable from a broken app.
+        const reason = detail || message || title || "the engine reported a failure without a reason";
+        toolCardSequence += 1;
+        const id = `vanguard-${toolCardSequence}`;
+        emit({ type: "tool_start", id, name: "vanguard.engine", activityDescription: "run failed" });
+        emit({ type: "tool_error", id, error: reason, durationMs: 0 });
+        if (binding.turnTextBytes === 0) {
+          const text = `Vanguard run failed: ${reason}`;
+          binding.turnTextBytes += text.length;
+          if (binding.turnText.length < 400_000) binding.turnText += `${binding.turnText.length > 0 ? "\n" : ""}${text}`;
+          emit({ type: "text_delta", text });
+        }
+        return;
+      }
       default:
         return; // lifecycle/usage frames feed the turn loop, not the transcript
     }

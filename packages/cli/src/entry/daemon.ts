@@ -2321,10 +2321,21 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             tagEmit(command.sessionId, { type: "vanguard_mode", enabled: true, workspace: target });
           }
         }
+        // Ollama Cloud models are addressed through the local daemon with a
+        // :cloud suffix; the Ares selection stores the bare id. Without the
+        // suffix the local daemon reports an unknown model and the turn dies.
+        const driveFamily = providerFamilyForSelection(entry.live.selection);
+        const rawModel = entry.live.selection.model;
+        const driveModel = driveFamily === "ollama"
+          && entry.live.selection.provider.name.startsWith("ollama-cloud")
+          && !rawModel.includes(":")
+          && !rawModel.endsWith("-cloud")
+          ? `${rawModel}:cloud`
+          : rawModel;
         void vanguardDrive.runTurn(sid, command.sessionId, goal, {
           workspace: entry.vanguardWorkspace ?? entry.live.context.workspace,
-          family: providerFamilyForSelection(entry.live.selection),
-          model: entry.live.selection.model,
+          family: driveFamily,
+          model: driveModel,
           settings,
         });
         continue;

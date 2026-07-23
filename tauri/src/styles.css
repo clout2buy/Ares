@@ -4575,3 +4575,52 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 @media (prefers-reduced-motion: reduce) {
   .vgIntroShield .hull, .vgIntroShield .mark { animation-duration: 0.01s !important; }
 }
+
+/* Vanguard engage popover — pick the build folder before switching engines */
+.vgDriveWrap { position: relative; margin-left: auto; display: flex; }
+.vgDriveWrap .vgDrive { margin-left: 0; }
+.vgEngage {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #11151a;
+  border: 1px solid rgba(255, 122, 26, 0.4);
+  border-radius: 9px;
+  padding: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 122, 26, 0.08);
+}
+.vgEngage label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #7d8893;
+}
+.vgEngage input {
+  background: #0b0d10;
+  color: #d7dde3;
+  border: 1px solid #1e242c;
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.vgEngage input:focus { outline: none; border-color: rgba(255, 122, 26, 0.55); }
+.vgEngage button {
+  align-self: flex-end;
+  background: rgba(255, 122, 26, 0.14);
+  color: #ffa04d;
+  border: 1px solid rgba(255, 122, 26, 0.5);
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.vgEngage button:hover { filter: brightness(1.25); }

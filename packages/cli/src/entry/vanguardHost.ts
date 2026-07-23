@@ -12,7 +12,7 @@
 // The engine loads lazily on first use, so Ares boots and runs normally when
 // the vanguard package is missing; the failure surfaces as a turn error.
 
-import { access } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -158,6 +158,7 @@ interface Binding {
   vanguardSessionId: string;
   family: string;
   model: string;
+  workspace: string;
   /** Ares session tag for emitted events (undefined = primary/untagged). */
   tag: string | undefined;
   /** FIFO of live tool-card ids, per tool name, for start/end matching. */
@@ -166,6 +167,11 @@ interface Binding {
   deltaBytes: number;
   turnActive: boolean;
   turnStartedAt: number;
+  /** Wall-clock of the last public event — the liveness signal the hang watchdog reads. */
+  lastEventAt: number;
+  /** Highest journal sequence rendered. A resumed worker re-presents its
+   *  journal; replayed events must not re-render as fresh tool cards. */
+  lastSequence: number;
 }
 
 export interface VanguardDrive {
@@ -195,6 +201,14 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
   };
 
   const translate = (binding: Binding, ev: Record<string, unknown>): void => {
+    binding.lastEventAt = Date.now();
+    // Journal replay dedupe: sequenced events already rendered are history,
+    // not progress. Unsequenced frames (live stream deltas) pass through.
+    const sequence = typeof ev.sequence === "number" ? ev.sequence : undefined;
+    if (sequence !== undefined) {
+      if (sequence <= binding.lastSequence) return;
+      binding.lastSequence = sequence;
+    }
     const type = typeof ev.type === "string" ? ev.type : "";
     const title = typeof ev.title === "string" ? ev.title : "";
     const detail = typeof ev.detail === "string" ? ev.detail : undefined;
@@ -312,9 +326,14 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
     selection: { workspace: string; family: string; model: string; settings: DriveSettings },
   ): Promise<Binding> => {
     const existing = bindings.get(key);
-    if (existing !== undefined && existing.family === selection.family && existing.model === selection.model) {
+    if (existing !== undefined
+      && existing.family === selection.family
+      && existing.model === selection.model
+      && existing.workspace === selection.workspace) {
       return existing;
     }
+    // "It works where I tell it": a fresh workspace may not exist yet.
+    await mkdir(selection.workspace, { recursive: true });
     const target = driveTarget(selection.family, selection.settings);
     const live = await ensureEngine();
     const auth = await resolveAuth(target, selection.family);
@@ -327,11 +346,12 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
       ...(target.credentialVariable === undefined || auth === "oauth" ? {} : { credentialVariable: target.credentialVariable }),
       direct: true, // same trust model as the Ares agent: real tree, git undo
       maxSteps: 240,
-      // Kill any agent-run command after 90s of silence (same watchdog the
-      // Vanguard TUI uses). Without it a hung command — an installer waiting
-      // on a prompt, a dev server that never exits — freezes the transcript
-      // for the full 30-minute hard cap and starves steering of a boundary.
+      // No-hang layer 1: any command silent for 90s dies (same watchdog the
+      // Vanguard TUI uses) — installers waiting on prompts, wedged spawns.
       commandIdleTimeoutMs: 90_000,
+      // No-hang layer 2: no single command may run past 10 minutes, chatty or
+      // not — a log-spewing server that never exits is still a hang.
+      commandTimeoutMs: 600_000,
     };
     let created;
     try {
@@ -355,11 +375,14 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
       vanguardSessionId: created.sessionId,
       family: selection.family,
       model: selection.model,
+      workspace: selection.workspace,
       tag,
       pendingTools: new Map(),
       deltaBytes: 0,
       turnActive: false,
       turnStartedAt: 0,
+      lastEventAt: Date.now(),
+      lastSequence: 0,
     };
     bindings.set(key, binding);
     byVanguardId.set(created.sessionId, binding);
@@ -381,10 +404,17 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
         binding.turnActive = true;
         binding.turnStartedAt = startedAt;
         binding.deltaBytes = 0;
+        binding.lastEventAt = Date.now();
         const live = await ensureEngine();
         live.advance(binding.vanguardSessionId, goal);
-        // The worker runs in the background; the turn settles when the session
-        // leaves "running". Public events stream to the transcript meanwhile.
+        // No-hang layer 3: the worker runs in the background and public events
+        // are its heartbeat. Tool execution windows are already bounded by the
+        // command watchdogs (their completions produce events), so a long
+        // event-free stretch with NO tool pending means a wedged worker or a
+        // stalled provider stream. Cancel it and restart from the session
+        // journal — Vanguard's durable execution makes the resume lossless and
+        // queued steering survives. Two restarts, then fail honestly.
+        let recoveries = 0;
         while (true) {
           await new Promise((resolve) => setTimeout(resolve, 600));
           const state = live.status(binding.vanguardSessionId).state;
@@ -396,6 +426,29 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
               durationMs: Date.now() - startedAt,
             });
             return;
+          }
+          const toolPending = [...binding.pendingTools.values()].some((queue) => queue.length > 0);
+          const idleMs = Date.now() - binding.lastEventAt;
+          if (!toolPending && idleMs > 180_000) {
+            recoveries += 1;
+            toolCardSequence += 1;
+            const cardId = `vanguard-${toolCardSequence}`;
+            if (recoveries > 2) {
+              tagEmit(tag, { type: "tool_start", id: cardId, name: "vanguard.watchdog", activityDescription: "worker unresponsive" });
+              tagEmit(tag, { type: "tool_error", id: cardId, error: "no activity for 3 minutes after two restarts — stopping this turn; send again to resume the contract" });
+              live.cancel(binding.vanguardSessionId);
+              tagEmit(tag, { type: "turn_end", status: "failed", usage: {}, durationMs: Date.now() - startedAt });
+              return;
+            }
+            tagEmit(tag, { type: "tool_start", id: cardId, name: "vanguard.watchdog", activityDescription: `no activity for ${Math.round(idleMs / 1000)}s — restarting the worker from its journal` });
+            live.cancel(binding.vanguardSessionId);
+            const cancelledAt = Date.now();
+            while (live.status(binding.vanguardSessionId).state === "running" && Date.now() - cancelledAt < 10_000) {
+              await new Promise((resolve) => setTimeout(resolve, 400));
+            }
+            live.advance(binding.vanguardSessionId);
+            binding.lastEventAt = Date.now();
+            tagEmit(tag, { type: "tool_end", id: cardId, display: `worker restarted (recovery ${recoveries}/2) — the journal replays completed work` });
           }
         }
       } catch (error) {

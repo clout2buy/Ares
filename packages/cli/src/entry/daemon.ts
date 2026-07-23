@@ -850,6 +850,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     /** Vanguard drive mode: sends route through the embedded Vanguard engine
      *  while the session keeps its Ares identity, selection, and transcript. */
     vanguardMode?: boolean;
+    /** Where the drive engine works for this session; defaults to the Ares workspace. */
+    vanguardWorkspace?: string;
   }
   const DEFAULT_SID = "__primary__";
   const sessions = new Map<string, DaemonEntry>();
@@ -1278,10 +1280,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       if (command.type === "exit") break;
       if (command.type === "vanguard_mode") {
         // Flip the drive engine for one session. The ack is what the UI's
-        // shield button and shockwave overlay key off.
+        // shield button and shockwave overlay key off. An optional workspace
+        // pins where the engine works ("build it in THIS folder").
         const entry = await resolveEntry(command.sessionId);
         entry.vanguardMode = (command as { enabled?: unknown }).enabled === true;
-        tagEmit(command.sessionId, { type: "vanguard_mode", enabled: entry.vanguardMode === true });
+        const requestedWorkspace = (command as { workspace?: unknown }).workspace;
+        if (typeof requestedWorkspace === "string" && requestedWorkspace.trim() !== "") {
+          entry.vanguardWorkspace = path.resolve(requestedWorkspace.trim());
+        }
+        tagEmit(command.sessionId, {
+          type: "vanguard_mode",
+          enabled: entry.vanguardMode === true,
+          workspace: entry.vanguardWorkspace ?? entry.live.context.workspace,
+        });
         continue;
       }
       if (command.type === "reasoning") {
@@ -2292,7 +2303,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         const settings = await loadUiSettings();
         void vanguardDrive.runTurn(sid, command.sessionId, goal, {
-          workspace: entry.live.context.workspace,
+          workspace: entry.vanguardWorkspace ?? entry.live.context.workspace,
           family: providerFamilyForSelection(entry.live.selection),
           model: entry.live.selection.model,
           settings,

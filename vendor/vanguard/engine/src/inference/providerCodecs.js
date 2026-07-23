@@ -426,7 +426,7 @@ export class OpenAIResponsesCodec {
         interpretTranscript(request.task, request.transcript, request.workingState, {
             user: (text) => input.push({ role: "user", content: text }),
             runtimeText: (text) => input.push({ role: "user", content: `[Vanguard trusted runtime]\n${text}` }),
-            task: (text) => input.push({ role: "user", content: text }),
+            task: (text) => input.push({ role: "user", content: `${TASK_ANCHOR_PREFIX}${text}` }),
             assistantContinuation: (continuation) => {
                 const replay = this.capabilities.continuationReplay
                     ? continuation
@@ -558,7 +558,7 @@ export class AnthropicMessagesCodec {
             },
             task: (text) => {
                 flushResults();
-                messages.push({ role: "user", content: [{ type: "text", text }] });
+                messages.push({ role: "user", content: [{ type: "text", text: `${TASK_ANCHOR_PREFIX}${text}` }] });
                 taskMessageIndex = messages.length - 1;
             },
             assistantContinuation: (continuation) => {
@@ -688,7 +688,7 @@ export class OpenAIChatCompletionsCodec {
         interpretTranscript(request.task, request.transcript, request.workingState, {
             user: (text) => messages.push({ role: "user", content: text }),
             runtimeText: (text) => messages.push({ role: "user", content: `[Vanguard trusted runtime]\n${text}` }),
-            task: (text) => messages.push({ role: "user", content: text }),
+            task: (text) => messages.push({ role: "user", content: `${TASK_ANCHOR_PREFIX}${text}` }),
             assistantContinuation: (continuation) => messages.push(this.capabilities.continuationReplay
                 ? continuation
                 : stripPrivateContinuation(continuation, "openai-chat-completions")),
@@ -1288,6 +1288,7 @@ function asText(content) {
     return typeof content === "string" ? content : JSON.stringify(content);
 }
 const TEXT_WIRE_IMAGE_NOTE = "inline image omitted: this provider wire is text-only; judge the render via inspect_image metrics instead";
+const TASK_ANCHOR_PREFIX = "[Vanguard task anchor — the standing objective of this run, restated by the runtime for durability. Not a new message from the user.]\n";
 function inlineImageAttachment(content) {
     const record = optionalObject(content);
     const output = optionalObject(record?.output);

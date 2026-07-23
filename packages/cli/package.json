@@ -28,7 +28,7 @@
     "@ares/tools": "workspace:*",
     "ink": "^7.0.4",
     "react": "^19.2.6",
-    "vanguard": "link:../../../Vanguard",
+    "vanguard": "file:../../vendor/vanguard",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },

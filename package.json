@@ -1,6 +1,6 @@
 {
   "name": "ares",
-  "version": "0.28.8",
+  "version": "0.28.9",
   "private": true,
   "type": "module",
   "bin": {
@@ -13,7 +13,7 @@
     "build": "tsc -b",
     "check": "tsc -b --pretty false",
     "lint": "pnpm check",
-    "test": "pnpm build && node --test tests/*.test.mjs",
+    "test": "pnpm build && node --test --test-concurrency=4 tests/*.test.mjs",
     "ares": "node packages/cli/dist/entry.js",
     "install:cli": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "uninstall:cli": "powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1",

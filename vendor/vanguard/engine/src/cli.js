@@ -357,15 +357,20 @@ function commandApprover(userChannel) {
                 message: line,
             });
         };
+        const deferred = [...userChannel.drain()];
+        const finish = (decision) => {
+            userChannel.requeue?.(deferred);
+            return decision;
+        };
         ask("Approval needed");
-        userChannel.drain();
         for (;;) {
             const answer = await userChannel.wait(signal);
             if (answer === undefined)
-                return "deny";
+                return finish("deny");
             const decision = parseApproval(answer);
             if (decision !== undefined)
-                return decision;
+                return finish(decision);
+            deferred.push(answer);
             ask("Approval needed — answer 1, 2, or 3");
         }
     };
@@ -908,6 +913,15 @@ class StdinUserChannel {
     }
     drain() {
         return this.#queue.splice(0);
+    }
+    requeue(messages) {
+        if (messages.length === 0)
+            return;
+        this.#queue.unshift(...messages);
+        while (this.#queue.length > 0 && this.#waiters.length > 0) {
+            const waiter = this.#waiters.shift();
+            waiter(this.#queue.shift());
+        }
     }
     wait(signal) {
         const queued = this.#queue.shift();

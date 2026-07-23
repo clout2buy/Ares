@@ -126,8 +126,9 @@ export declare class AgentKernel {
     advance(input: AdvanceInput, signal?: AbortSignal, priorEvents?: readonly RunEvent[]): Promise<RunOutcome>;
 }
 /**
- * The plan-free small-change lane: this many narrow exact-text replacements
- * may proceed without a durable plan, and a passing verify_syntax satisfies
+ * The plan-free small-change lane: this many narrow mutations (small
+ * exact-text replacements or small new-file creations) may proceed without a
+ * durable plan, and a passing verify_syntax satisfies
  * the pre-claim execution-evidence gate while inside it. Sealed completion
  * verification is unaffected.
  */

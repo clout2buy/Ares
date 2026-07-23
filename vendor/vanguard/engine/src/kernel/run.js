@@ -179,6 +179,7 @@ export class AgentKernel {
         const scaledRecovery = {
             maxGlobalRetries: Math.max(8, Math.ceil(this.#options.maxSteps / 15)),
             maxRetriesPerClass: Math.max(3, Math.ceil(this.#options.maxSteps / 60)),
+            classRetryOverrides: { provider_rate_limited: Math.max(10, Math.ceil(this.#options.maxSteps / 20)) },
             ...this.#recoveryConfiguration,
         };
         const recovery = new RecoveryController(logicalPriorEvents, (type, data) => this.#record(type, data), scaledRecovery);
@@ -923,7 +924,7 @@ export class AgentKernel {
                 && (context.completedMutations() >= SMALL_CHANGE_MUTATION_BUDGET
                     || mutationCalls.length !== 1
                     || !isNarrowPlanFreeMutation(call))) {
-                return this.#terminalObservation(call, `Plan-free changes are limited to ${SMALL_CHANGE_MUTATION_BUDGET} narrow exact-text replacements, one per step. Materialize a non-empty engineering plan with update_plan before changing the workspace further.`, "policy", context.recovery, context.signal, evidenceId);
+                return this.#terminalObservation(call, `Plan-free changes are limited to ${SMALL_CHANGE_MUTATION_BUDGET} narrow mutations (small exact-text edits, or small new files written without expectedSha256), one per step. Materialize a non-empty engineering plan with update_plan before changing the workspace further.`, "policy", context.recovery, context.signal, evidenceId);
             }
             if (context.mode === "execution" && this.#hasPlanTool && tool.definition.effect === "mutate"
                 && !this.#plan.isEmpty()) {
@@ -1771,16 +1772,28 @@ function mutationTargetPath(input) {
     return typeof target === "string" && target.length > 0 ? target : undefined;
 }
 function isNarrowPlanFreeMutation(call) {
-    if (call.name !== "edit_file" || call.input === null || Array.isArray(call.input)
-        || typeof call.input !== "object")
+    if (call.input === null || Array.isArray(call.input) || typeof call.input !== "object")
         return false;
-    const before = call.input.before;
-    const after = call.input.after;
-    const target = call.input.path;
-    if (typeof target !== "string" || target.length === 0
-        || typeof before !== "string" || before.length === 0 || typeof after !== "string")
-        return false;
-    return Buffer.byteLength(before) + Buffer.byteLength(after) <= 16_384;
+    if (call.name === "edit_file") {
+        const before = call.input.before;
+        const after = call.input.after;
+        const target = call.input.path;
+        if (typeof target !== "string" || target.length === 0
+            || typeof before !== "string" || before.length === 0 || typeof after !== "string")
+            return false;
+        return Buffer.byteLength(before) + Buffer.byteLength(after) <= 16_384;
+    }
+    if (call.name === "write_file") {
+        const target = call.input.path;
+        const contents = call.input.contents;
+        const sha = call.input.expectedSha256;
+        if (typeof target !== "string" || target.length === 0 || typeof contents !== "string")
+            return false;
+        if (sha !== undefined && sha !== null)
+            return false;
+        return Buffer.byteLength(contents) <= 16_384;
+    }
+    return false;
 }
 function objectKeySorter(_key, value) {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {

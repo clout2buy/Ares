@@ -16,7 +16,9 @@ import path from "node:path";
 import { QueryEngine, Session, MockEchoProvider, loadSessionSnapshot } from "../packages/core/dist/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const workspaceRoot = path.join(__dirname, "..");
+// A throwaway workspace: these tests persist REAL session rollouts, and using
+// the repo root littered D:\Ares\.ares\sessions with mock sessions every run.
+const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "ares-m0-ws-"));
 const cliEntry = path.join(__dirname, "..", "packages", "cli", "dist", "entry.js");
 const testHome = mkdtempSync(path.join(os.tmpdir(), "ares-m0-"));
 
@@ -24,6 +26,7 @@ function runAres(args) {
   return spawnSync(process.execPath, [cliEntry, ...args], {
     encoding: "utf8",
     windowsHide: true,
+    cwd: workspaceRoot,
     env: { ...process.env, ARES_HOME: testHome, ARES_AGENT_ENABLED: "0" },
   });
 }
@@ -205,7 +208,7 @@ test("M0: permission denial stops the turn instead of re-querying provider", asy
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Ares",
+      workspace: workspaceRoot,
       maxTurns: 1,
     },
     "sess_test_denial",
@@ -278,7 +281,7 @@ test("M0: interrupted multi-tool turns record output for every pending tool call
       model: "test",
       systemPrompt: "test",
       tools: [editTool, writeTool],
-      workspace: "D:\\Ares",
+      workspace: workspaceRoot,
       maxTurns: 1,
     },
     "sess_test_multi_denial",
@@ -333,7 +336,7 @@ test("M0: workspace-write tools can run without magic write wording", async () =
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Ares",
+      workspace: workspaceRoot,
       maxTurns: 1,
     },
     "sess_test_write_gate",
@@ -386,7 +389,7 @@ test("M0: explicit write intent allows workspace-write tools", async () => {
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Ares",
+      workspace: workspaceRoot,
       maxTurns: 1,
     },
     "sess_test_write_allow",
@@ -444,7 +447,7 @@ test("M3: parallel-safe tools execute concurrently and forward progress", async 
       model: "test",
       systemPrompt: "test",
       tools: [tool],
-      workspace: "D:\\Ares",
+      workspace: workspaceRoot,
       maxTurns: 1,
     },
     "sess_test_parallel",

@@ -941,10 +941,63 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // with the mode enabled actually sends. Drive events persist into the same
   // per-session rollout the native engine uses, so history, restore, and bug
   // reports treat both engines identically.
-  const vanguardDrive = createVanguardDrive(tagEmit, (sessionId, event) => {
+  let vanguardApprovalSequence = 0;
+  const vanguardDrive = createVanguardDrive(
+    tagEmit,
+    (sessionId, event) => {
+      const entry = sessions.get(sessionId ?? DEFAULT_SID) ?? primaryEntry;
+      void entry.live.session.recordExternalEvent(event as unknown as TurnEvent).catch(() => undefined);
+    },
+    async (sessionId, commandLine) => {
+      // Drive command approvals ride the Ares permission system: "free" mode
+      // approves outright; guarded mode renders the ordinary permission card
+      // and the owner's answer steers the parked Vanguard worker.
+      const approvalSettings = { ...DEFAULT_PERMISSIONS, ...((await loadUiSettings()).permissions ?? {}) };
+      if (approvalSettings.mode === "free") return "always";
+      vanguardApprovalSequence += 1;
+      const id = `vanguard-approval-${vanguardApprovalSequence}`;
+      tagEmit(sessionId, {
+        type: "permission_request",
+        id,
+        toolName: "Vanguard run_command",
+        input: { command: commandLine },
+        reason: `Vanguard wants to run: ${commandLine}`,
+      });
+      const decision = await commands.waitForPermission({ id } as ToolPermissionRequest);
+      tagEmit(sessionId, { type: "permission_response", id, decision });
+      return decision === "allow_always" ? "always" : decision === "allow_once" ? "once" : "deny";
+    },
+    {
+      // Vanguard sessions are connected to Ares sessions: the backing Vanguard
+      // session root is recorded beside the session's rollout, so reopening
+      // Ares reattaches the same contract/plan/journal instead of amnesia.
+      async load(sessionId) {
+        const file = driveBindingFile(sessionId);
+        if (file === undefined) return undefined;
+        try {
+          const parsed = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+          const { sessionRoot, family, model, workspace } = parsed;
+          if (typeof sessionRoot !== "string" || typeof family !== "string"
+            || typeof model !== "string" || typeof workspace !== "string") return undefined;
+          return { sessionRoot, family, model, workspace };
+        } catch {
+          return undefined;
+        }
+      },
+      async save(sessionId, binding) {
+        const file = driveBindingFile(sessionId);
+        if (file === undefined) return;
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, JSON.stringify(binding, null, 2), "utf8");
+      },
+    },
+  );
+  function driveBindingFile(sessionId: string | undefined): string | undefined {
     const entry = sessions.get(sessionId ?? DEFAULT_SID) ?? primaryEntry;
-    void entry.live.session.recordExternalEvent(event as unknown as TurnEvent).catch(() => undefined);
-  });
+    const sid = entry.live.session.meta.id;
+    if (typeof sid !== "string" || sid.length === 0) return undefined;
+    return path.join(entry.live.context.workspace, ".ares", "sessions", sid, "vanguard.json");
+  }
 
   // Crash safety net. The desktop bridge is a long-lived process on a coworker's
   // machine; until now an uncaught error or stray rejection could kill it with

@@ -137,7 +137,10 @@ export class HttpModelAdapter {
                     };
                     try {
                         armStallWatchdog();
-                        await consumeServerSentEvents(response, accumulator, AbortSignal.any([attemptSignal, stall.signal]), armStallWatchdog);
+                        await consumeServerSentEvents(response, accumulator, AbortSignal.any([attemptSignal, stall.signal]), () => {
+                            armStallWatchdog();
+                            observer?.activity?.();
+                        });
                     }
                     catch (error) {
                         reportPartialUsage(accumulator, observer);

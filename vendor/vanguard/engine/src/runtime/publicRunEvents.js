@@ -237,10 +237,19 @@ export function createStreamLifecyclePresenter(emit, markActivity = () => { }, c
         clearThinkingTimer();
         thinkingBuffer = "";
     };
+    let lastHeartbeatAt = 0;
     return {
         started(attempt) {
             markActivity();
             send("agent.stream_started", { detail: `attempt ${attempt}` });
+        },
+        activity() {
+            markActivity();
+            const now = Date.now();
+            if (now - lastHeartbeatAt < 15_000)
+                return;
+            lastHeartbeatAt = now;
+            send("agent.heartbeat", { detail: "model is generating" });
         },
         delta(text) {
             markActivity();

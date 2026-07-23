@@ -59,7 +59,12 @@ async function resolveWorkerCli(): Promise<string | undefined> {
 }
 
 interface VanguardEngineLike {
-  create(config: Record<string, unknown>): Promise<{ sessionId: string }>;
+  create(config: Record<string, unknown>): Promise<{ sessionId: string; sessionRoot?: string }>;
+  resume(sessionRoot: string): Promise<{ sessionId: string; sessionRoot?: string }>;
+  events(sessionId: string, afterCursor?: number, limit?: number): {
+    events: ReadonlyArray<{ cursor: number; event: { sequence?: number } }>;
+    latestCursor: number;
+  };
   advance(sessionId: string, message?: string): Record<string, unknown>;
   steer(sessionId: string, message: string): Record<string, unknown>;
   cancel(sessionId: string): Record<string, unknown>;
@@ -74,6 +79,26 @@ type TagEmit = (sessionId: string | undefined, obj: Record<string, unknown>) => 
 
 /** Persists a drive event into the owning Ares session's rollout. */
 type PersistEvent = (sessionId: string | undefined, event: Record<string, unknown>) => void;
+
+/** Resolves a command approval through the Ares permission system. */
+type ApproveCommand = (sessionId: string | undefined, commandLine: string) => Promise<"once" | "always" | "deny">;
+
+/**
+ * Durable record of which Vanguard session backs an Ares session, persisted
+ * beside the session's rollout so a daemon restart reattaches to the SAME
+ * Vanguard journal (contract, plan, history) instead of starting from scratch.
+ */
+export interface StoredDriveBinding {
+  readonly sessionRoot: string;
+  readonly family: string;
+  readonly model: string;
+  readonly workspace: string;
+}
+
+export interface DriveBindingStore {
+  load(sessionId: string | undefined): Promise<StoredDriveBinding | undefined>;
+  save(sessionId: string | undefined, binding: StoredDriveBinding): Promise<void>;
+}
 
 /** The slice of Ares uiSettings the drive needs to authenticate any family. */
 export interface DriveSettings {
@@ -184,6 +209,10 @@ interface Binding {
   /** Highest journal sequence rendered. A resumed worker re-presents its
    *  journal; replayed events must not re-render as fresh tool cards. */
   lastSequence: number;
+  /** Command lines with an unanswered approval card. While any exist the
+   *  no-event watchdog is suspended — a human deciding is not a hang — and
+   *  re-asks for the same line do not spawn duplicate cards. */
+  pendingApprovals: Set<string>;
 }
 
 export interface VanguardDrive {
@@ -199,7 +228,12 @@ export interface VanguardDrive {
   shutdown(): Promise<void>;
 }
 
-export function createVanguardDrive(tagEmit: TagEmit, persist?: PersistEvent): VanguardDrive {
+export function createVanguardDrive(
+  tagEmit: TagEmit,
+  persist?: PersistEvent,
+  approveCommand?: ApproveCommand,
+  bindingStore?: DriveBindingStore,
+): VanguardDrive {
   let modulePromise: Promise<EngineModule> | undefined;
   let engine: VanguardEngineLike | undefined;
   let unsubscribe: (() => void) | undefined;
@@ -311,18 +345,45 @@ export function createVanguardDrive(tagEmit: TagEmit, persist?: PersistEvent): V
         }
         binding.deltaBytes = 0;
         return;
+      case "approval.requested": {
+        // The worker is parked waiting for a "1/2/3" answer on its steering
+        // channel. Route the question through the Ares permission system and
+        // steer the decision back; unanswered approvals used to decay to deny
+        // with the question never shown to anyone.
+        const line = message || detail || "command";
+        // The worker re-asks the same question if a steer raced it; one card
+        // per command line is enough — the pending decision answers them all.
+        if (binding.pendingApprovals.has(line)) return;
+        binding.pendingApprovals.add(line);
+        void (async () => {
+          try {
+            const decision = approveCommand === undefined ? "deny" : await approveCommand(binding.tag, line).catch(() => "deny" as const);
+            const digit = decision === "once" ? "1" : decision === "always" ? "2" : "3";
+            engine?.steer(binding.vanguardSessionId, digit);
+          } catch {
+            // The run settled before the answer arrived; nothing to steer.
+          } finally {
+            binding.pendingApprovals.delete(line);
+            binding.lastEventAt = Date.now();
+          }
+        })();
+        return;
+      }
       case "run.failed": {
-        // The engine's failure REASON must reach the transcript — a red turn
-        // with no text is indistinguishable from a broken app.
+        // The engine's failure REASON must reach the transcript AND the
+        // durable rollout — a red turn with no text is indistinguishable from
+        // a broken app, live or in a bug report.
         const reason = detail || message || title || "the engine reported a failure without a reason";
         toolCardSequence += 1;
         const id = `vanguard-${toolCardSequence}`;
         emit({ type: "tool_start", id, name: "vanguard.engine", activityDescription: "run failed" });
         emit({ type: "tool_error", id, error: reason, durationMs: 0 });
+        persist?.(binding.tag, { type: "tool_start", id, name: "vanguard.engine", input: {}, activityDescription: "run failed" });
+        persist?.(binding.tag, { type: "tool_error", id, error: reason, durationMs: 0 });
+        const text = `Vanguard run failed: ${reason}`;
+        if (binding.turnText.length < 400_000) binding.turnText += `${binding.turnText.length > 0 ? "\n" : ""}${text}`;
         if (binding.turnTextBytes === 0) {
-          const text = `Vanguard run failed: ${reason}`;
           binding.turnTextBytes += text.length;
-          if (binding.turnText.length < 400_000) binding.turnText += `${binding.turnText.length > 0 ? "\n" : ""}${text}`;
           emit({ type: "text_delta", text });
         }
         return;
@@ -429,22 +490,64 @@ export function createVanguardDrive(tagEmit: TagEmit, persist?: PersistEvent): V
       // not — a log-spewing server that never exits is still a hang.
       commandTimeoutMs: 600_000,
     };
-    let created;
-    try {
-      created = await live.create(config);
-    } catch (error) {
-      // Engine swap means Vanguard works ANYWHERE, not only inside projects.
-      // When the workspace has no detectable build/test contract, fall back to
-      // the builtin adaptive verifier in "build" mode: a contract that exists
-      // still runs and still gates completion; its absence stops being fatal
-      // and completion honestly rests on tool evidence + syntax checks.
-      const text = error instanceof Error ? error.message : String(error);
-      if (!/detect project verification/iu.test(text)) throw error;
-      created = await live.create({
-        ...config,
-        verification: { command: "vanguard:adaptive-verify", args: ["--mode", "build"] },
-        executionEvidence: "syntax",
-      });
+    // Vanguard sessions are CONNECTED to Ares sessions: a stored binding for
+    // this Ares session that still matches the current selection resumes the
+    // same durable Vanguard journal — contract, plan, and history survive
+    // daemon and app restarts. Any mismatch or resume failure falls through to
+    // a fresh create.
+    let created: { sessionId: string; sessionRoot?: string } | undefined;
+    let replayedSequenceFloor = 0;
+    const stored = bindingStore === undefined ? undefined : await bindingStore.load(tag).catch(() => undefined);
+    if (stored !== undefined
+      && stored.family === selection.family
+      && stored.model === selection.model
+      && stored.workspace === selection.workspace) {
+      try {
+        created = await live.resume(stored.sessionRoot);
+        // Never share one Vanguard session across two live Ares sessions.
+        if (byVanguardId.has(created.sessionId)) throw new Error("session already bound");
+        // The reconstructed journal sits in the replay buffer; its highest
+        // journal sequence becomes the render-dedupe floor so history never
+        // re-renders as fresh cards in the next turn.
+        let cursor = 0;
+        while (true) {
+          const page = live.events(created.sessionId, cursor, 500);
+          for (const entry of page.events) {
+            const sequence = entry.event?.sequence;
+            if (typeof sequence === "number" && sequence > replayedSequenceFloor) replayedSequenceFloor = sequence;
+            if (entry.cursor > cursor) cursor = entry.cursor;
+          }
+          if (page.events.length === 0 || cursor >= page.latestCursor) break;
+        }
+      } catch {
+        created = undefined;
+      }
+    }
+    if (created === undefined) {
+      try {
+        created = await live.create(config);
+      } catch (error) {
+        // Engine swap means Vanguard works ANYWHERE, not only inside projects.
+        // When the workspace has no detectable build/test contract, fall back to
+        // the builtin adaptive verifier in "build" mode: a contract that exists
+        // still runs and still gates completion; its absence stops being fatal
+        // and completion honestly rests on tool evidence + syntax checks.
+        const text = error instanceof Error ? error.message : String(error);
+        if (!/detect project verification/iu.test(text)) throw error;
+        created = await live.create({
+          ...config,
+          verification: { command: "vanguard:adaptive-verify", args: ["--mode", "build"] },
+          executionEvidence: "syntax",
+        });
+      }
+      if (bindingStore !== undefined && typeof created.sessionRoot === "string" && created.sessionRoot.length > 0) {
+        await bindingStore.save(tag, {
+          sessionRoot: created.sessionRoot,
+          family: selection.family,
+          model: selection.model,
+          workspace: selection.workspace,
+        }).catch(() => undefined);
+      }
     }
     if (existing !== undefined) byVanguardId.delete(existing.vanguardSessionId);
     const binding: Binding = {
@@ -461,7 +564,8 @@ export function createVanguardDrive(tagEmit: TagEmit, persist?: PersistEvent): V
       turnActive: false,
       turnStartedAt: 0,
       lastEventAt: Date.now(),
-      lastSequence: 0,
+      lastSequence: replayedSequenceFloor,
+      pendingApprovals: new Set(),
     };
     bindings.set(key, binding);
     byVanguardId.set(created.sessionId, binding);
@@ -552,6 +656,9 @@ export function createVanguardDrive(tagEmit: TagEmit, persist?: PersistEvent): V
           }
           const toolPending = [...binding.pendingTools.values()].some((queue) => queue.length > 0);
           const idleMs = Date.now() - binding.lastEventAt;
+          // A human deciding an approval card is not a hang — never restart
+          // the worker out from under an unanswered question.
+          if (binding.pendingApprovals.size > 0) continue;
           if (!toolPending && idleMs > 180_000) {
             recoveries += 1;
             toolCardSequence += 1;

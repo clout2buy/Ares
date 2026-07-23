@@ -4,6 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { asciiLowercase, compareOrdinal } from "../deterministicText.js";
 import { SESSION_EXCLUDED_DIRECTORIES, atomicWriteJson, createFsLimiter, readTreeSnapshot, snapshotTree, } from "./treeSnapshot.js";
+async function sessionContainer() {
+    const configured = process.env.VANGUARD_SESSIONS_DIR;
+    const home = os.homedir();
+    const parent = configured !== undefined && configured !== ""
+        ? configured
+        : home === "" ? os.tmpdir() : path.join(home, ".vanguard", "sessions");
+    await mkdir(parent, { recursive: true });
+    return mkdtemp(path.join(parent, "vanguard-session-"));
+}
 export async function createCodingSession(source, options = {}) {
     return materializeSessionWorkspace(await createSessionShell(source, options));
 }
@@ -12,7 +21,7 @@ export async function createSessionShell(source, options = {}) {
     if (!(await stat(sourceRoot)).isDirectory())
         throw new Error("Workspace must be a directory.");
     const direct = options.direct === true;
-    const container = await mkdtemp(path.join(os.tmpdir(), "vanguard-session-"));
+    const container = await sessionContainer();
     const workspaceRoot = path.join(container, "workspace");
     const id = path.basename(container);
     const session = {
@@ -168,7 +177,7 @@ async function copySessionWorkspace(sourceRoot, destinationRoot) {
     await runFilePool(fileJobs);
 }
 export async function createForkedCodingSession(parent, checkpointWorkspace, lineage) {
-    const container = await mkdtemp(path.join(os.tmpdir(), "vanguard-session-"));
+    const container = await sessionContainer();
     const workspaceRoot = path.join(container, "workspace");
     const baselineFile = path.join(container, "baseline.json");
     const metadataFile = path.join(container, "session.json");

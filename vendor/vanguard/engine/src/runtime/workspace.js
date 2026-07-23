@@ -7,8 +7,13 @@ export class WorkspaceBoundary {
         this.root = realpathSync.native(path.resolve(root));
     }
     lexical(relativePath) {
-        if (relativePath.length === 0 || path.isAbsolute(relativePath)) {
-            throw new Error("Workspace paths must be non-empty and relative.");
+        if (relativePath.length === 0) {
+            throw new Error("Workspace paths must be non-empty.");
+        }
+        if (path.isAbsolute(relativePath)) {
+            const absolute = path.resolve(relativePath);
+            this.#assertContained(absolute);
+            return absolute;
         }
         const candidate = path.resolve(this.root, relativePath);
         this.#assertContained(candidate);
@@ -41,6 +46,14 @@ export class WorkspaceBoundary {
         this.#assertContained(resolvedAncestor);
         await mkdir(path.dirname(candidate), { recursive: true });
         return candidate;
+    }
+    relativize(requested) {
+        if (requested.length === 0 || !path.isAbsolute(requested))
+            return requested;
+        const absolute = path.resolve(requested);
+        this.#assertContained(absolute);
+        const relative = path.relative(this.root, absolute);
+        return relative === "" ? "." : relative;
     }
     #assertContained(candidate) {
         const relative = path.relative(this.root, candidate);

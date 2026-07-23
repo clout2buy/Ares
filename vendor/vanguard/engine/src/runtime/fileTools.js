@@ -45,7 +45,7 @@ export class ReadFileTool {
     async execute(input, _context) {
         const fields = objectInput(input);
         rejectUnknownFields(fields, ["path", "cursor", "range", "maxBytes"], this.name);
-        const relativePath = stringField(fields, "path");
+        const relativePath = this.workspace.relativize(stringField(fields, "path"));
         const cursor = optionalReadCursor(fields);
         const requestedRange = optionalReadRange(fields);
         const pageBytes = optionalIntegerField(fields, "maxBytes") ?? DEFAULT_READ_PAGE_BYTES;
@@ -132,7 +132,7 @@ export class WriteFileTool {
     }
     async execute(input, _context) {
         const fields = objectInput(input);
-        const relativePath = stringField(fields, "path");
+        const relativePath = this.workspace.relativize(stringField(fields, "path"));
         const policyDenial = this.mutationPolicy?.check(relativePath);
         if (policyDenial !== undefined)
             return policyDenial;
@@ -211,7 +211,7 @@ export class ReplaceTextTool {
     }
     async execute(input, _context) {
         const fields = objectInput(input);
-        const relativePath = stringField(fields, "path");
+        const relativePath = this.workspace.relativize(stringField(fields, "path"));
         const policyDenial = this.mutationPolicy?.check(relativePath);
         if (policyDenial !== undefined)
             return policyDenial;
@@ -277,7 +277,7 @@ export class DeleteFileTool {
     }
     async execute(input, _context) {
         const fields = objectInput(input);
-        const relativePath = stringField(fields, "path");
+        const relativePath = this.workspace.relativize(stringField(fields, "path"));
         const policyDenial = this.mutationPolicy?.check(relativePath);
         if (policyDenial !== undefined)
             return policyDenial;
@@ -316,7 +316,7 @@ export class ListFilesTool {
     }
     async execute(input, _context) {
         const fields = objectInput(input);
-        const requested = optionalWorkspacePath(fields);
+        const requested = this.workspace.relativize(optionalWorkspacePath(fields));
         const root = await this.workspace.existing(requested);
         const files = [];
         let level = [root];
@@ -395,7 +395,7 @@ export class SearchTextTool {
         const fields = objectInput(input);
         rejectUnknownFields(fields, ["query", "path", "caseSensitive", "regex", "filePattern", "context"], this.name);
         const query = stringField(fields, "query");
-        const requested = optionalWorkspacePath(fields);
+        const requested = this.workspace.relativize(optionalWorkspacePath(fields));
         const caseSensitive = optionalBooleanField(fields, "caseSensitive") ?? true;
         const useRegex = optionalBooleanField(fields, "regex") ?? false;
         const contextLines = optionalIntegerField(fields, "context") ?? 0;
@@ -551,7 +551,7 @@ export class GlobTool {
         const fields = objectInput(input);
         rejectUnknownFields(fields, ["pattern", "path"], this.name);
         const pattern = stringField(fields, "pattern");
-        const requested = optionalWorkspacePath(fields);
+        const requested = this.workspace.relativize(optionalWorkspacePath(fields));
         let matches;
         try {
             matches = compileGlob(pattern);

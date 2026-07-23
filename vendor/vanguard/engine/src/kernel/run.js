@@ -157,6 +157,7 @@ export class AgentKernel {
         const restored = restoreSession(logicalPriorEvents, this.#tools);
         const transcript = [...restored.transcript];
         const actionFailures = restored.actionFailures;
+        const observationRepeats = new Map();
         let mode = restored.mode;
         let task = restored.task;
         let failedVerificationAttempts = restored.failedVerificationAttempts;
@@ -369,6 +370,7 @@ export class AgentKernel {
             transcript.push({ role: "user", content: input.userMessage });
             await this.#record("user.message", { text: input.userMessage });
             resetObservationStagnation(observationStagnation);
+            observationRepeats.clear();
             pendingQuestion = undefined;
         }
         if (pendingQuestion !== undefined) {
@@ -400,6 +402,7 @@ export class AgentKernel {
                 transcript.push({ role: "user", content: steering });
                 consecutiveNarrations = 0;
                 resetObservationStagnation(observationStagnation);
+                observationRepeats.clear();
                 executionThrash.streaks.clear();
                 failedVerificationAttempts = 0;
                 failedCompletionEvidenceAttempts = 0;
@@ -638,6 +641,7 @@ export class AgentKernel {
                         await this.#record("user.message", { text: answer });
                         transcript.push({ role: "user", content: answer });
                         resetObservationStagnation(observationStagnation);
+                        observationRepeats.clear();
                         continue;
                     }
                     if (signal.aborted)
@@ -801,6 +805,7 @@ export class AgentKernel {
                     return { status: "completed", answer: decision.answer, steps: step, verification };
                 }
                 openVerifierRecoveryEpoch(observationStagnation);
+                observationRepeats.clear();
                 failedVerificationAttempts += 1;
                 if (failedVerificationAttempts >= this.#options.maxFailedVerificationAttempts) {
                     return this.#fail(`Verification failure budget exhausted after ${failedVerificationAttempts} failed completion claims.`, step);
@@ -832,6 +837,7 @@ export class AgentKernel {
                 completedMutations: () => completedMutations,
                 workspaceGeneration: () => workspaceGeneration,
                 workspaceBaseline: () => lastWorkspaceFingerprint,
+                observationRepeats,
                 onWorkspaceObserved: (fingerprint) => acceptWorkspaceObservation(fingerprint, "tool-batch"),
                 onMutate: () => {
                     completedMutations += 1;
@@ -933,6 +939,17 @@ export class AgentKernel {
                 if (scopeBlocker !== undefined) {
                     return this.#terminalObservation(call, scopeBlocker, "policy", context.recovery, context.signal, evidenceId);
                 }
+            }
+            const repeatGuarded = tool.definition.effect === "observe"
+                || tool.definition.effect === "execute"
+                || tool.definition.effect === "review";
+            if (repeatGuarded) {
+                const repeatKey = `${context.workspaceGeneration()}:${call.name}:${fingerprint}`;
+                const seen = context.observationRepeats.get(repeatKey) ?? 0;
+                if (seen >= IDENTICAL_OBSERVATION_LIMIT) {
+                    return this.#terminalObservation(call, `'${call.name}' already ran this exact call ${seen} times with no workspace change in between — repeating it gathers nothing new. Act on the evidence already collected, change the workspace, or change the call.`, "policy", context.recovery, context.signal, evidenceId);
+                }
+                context.observationRepeats.set(repeatKey, seen + 1);
             }
             const source = tool.definition.effect === "execute" ? "process" : "tool";
             const idempotent = tool.definition.effect === "observe";
@@ -1767,6 +1784,7 @@ export function recoveryBaselineEvents(events) {
     return events;
 }
 export const SMALL_CHANGE_MUTATION_BUDGET = 3;
+export const IDENTICAL_OBSERVATION_LIMIT = 3;
 function syntaxCheckPassed(output) {
     if (output === null || output === undefined || typeof output !== "object" || Array.isArray(output))
         return false;

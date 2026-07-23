@@ -142,3 +142,10 @@ export declare function recoveryBaselineEvents(events: readonly RunEvent[]): rea
  * verification is unaffected.
  */
 export declare const SMALL_CHANGE_MUTATION_BUDGET = 3;
+/**
+ * How many times one identical observation may execute within a single
+ * workspace generation before the kernel refuses it. Nothing changed, so the
+ * result cannot differ — re-observing is pure loop fuel (field journals show
+ * one render_artifact call repeated 18 times).
+ */
+export declare const IDENTICAL_OBSERVATION_LIMIT = 3;

@@ -900,6 +900,43 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
 
+  // OS known folders for natural-language drive-workspace rebinding. Resolved
+  // once through the shell so OneDrive-redirected Desktops resolve correctly;
+  // falls back to the conventional %USERPROFILE% layout when the query fails.
+  let knownFoldersPromise: Promise<Record<string, string>> | undefined;
+  const resolveKnownFolder = async (name: string): Promise<string | undefined> => {
+    knownFoldersPromise ??= new Promise((resolve) => {
+      const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+      const fallback = {
+        desktop: path.join(home, "Desktop"),
+        documents: path.join(home, "Documents"),
+        downloads: path.join(home, "Downloads"),
+      };
+      if (process.platform !== "win32") { resolve(fallback); return; }
+      const script = "[Console]::Out.WriteLine([Environment]::GetFolderPath('Desktop'));"
+        + "[Console]::Out.WriteLine([Environment]::GetFolderPath('MyDocuments'));"
+        + "[Console]::Out.WriteLine((New-Object -ComObject Shell.Application).Namespace('shell:Downloads').Self.Path)";
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true });
+      let out = "";
+      child.stdout.on("data", (chunk) => { out += String(chunk); });
+      const settle = (): void => {
+        const [desktop, documents, downloads] = out.split(/\r?\n/u).map((line) => line.trim());
+        resolve({
+          desktop: desktop || fallback.desktop,
+          documents: documents || fallback.documents,
+          downloads: downloads || fallback.downloads,
+        });
+      };
+      child.once("close", settle);
+      child.once("error", () => resolve(fallback));
+      setTimeout(() => { try { child.kill(); } catch { /* settled */ } }, 8_000).unref?.();
+    });
+    const folders = await knownFoldersPromise;
+    const candidate = folders[name];
+    if (!candidate) return undefined;
+    return await stat(candidate).then((s) => (s.isDirectory() ? candidate : undefined)).catch(() => undefined);
+  };
+
   // Vanguard drive mode: the second engine. Loads nothing until a session
   // with the mode enabled actually sends. Drive events persist into the same
   // per-session rollout the native engine uses, so history, restore, and bug
@@ -2312,22 +2349,50 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // "Work in C:\X" just works: an absolute path in the goal that names a
         // real directory (or a file inside one) re-pins this session's drive
         // workspace — no prompt, no toggle dance. The ack refreshes the badge.
+        // Natural-language locations work too: "on my desktop", "in my
+        // documents" resolve through the OS known folders (OneDrive-redirected
+        // desktops included), so "make a folder on my desktop called X" builds
+        // exactly there instead of stating a workspace limitation.
+        let rebindTarget: string | undefined;
         const mentioned = goal.match(/[A-Za-z]:[\\/][^\s"'`|<>*?]+/u)?.[0]?.replace(/[.,;:!?)\]]+$/u, "");
         if (mentioned) {
           const resolved = path.resolve(mentioned);
-          const target = await stat(resolved).then((s) => (s.isDirectory() ? resolved : path.dirname(resolved))).catch(() => undefined);
-          if (target && target !== (entry.vanguardWorkspace ?? entry.live.context.workspace)) {
-            entry.vanguardWorkspace = target;
-            tagEmit(command.sessionId, { type: "vanguard_mode", enabled: true, workspace: target });
+          rebindTarget = await stat(resolved).then((s) => (s.isDirectory() ? resolved : path.dirname(resolved))).catch(() => undefined);
+        }
+        if (!rebindTarget) {
+          const known = goal.match(/\b(?:on|onto|in|into|to)\s+(?:my\s+|the\s+)?(desktop|documents|downloads)\b/iu)?.[1]?.toLowerCase();
+          if (known) rebindTarget = await resolveKnownFolder(known);
+        }
+        if (rebindTarget && rebindTarget !== (entry.vanguardWorkspace ?? entry.live.context.workspace)) {
+          entry.vanguardWorkspace = rebindTarget;
+          tagEmit(command.sessionId, { type: "vanguard_mode", enabled: true, workspace: rebindTarget });
+        }
+        // Auto-routing applies to drive turns exactly like native ones: the
+        // current message decides the lane, and a live lane assignment takes
+        // the wheel. The drive rebinds its engine session on model change.
+        let driveFamily = providerFamilyForSelection(entry.live.selection);
+        let rawModel = entry.live.selection.model;
+        let driveProviderName = entry.live.selection.provider.name;
+        let routeSource: "assigned" | "main" = "main";
+        if (settings.routingMode === "auto") {
+          const goalLane = classifyLane(goal);
+          const lane = goalLane !== "chat" ? goalLane
+            : goal.trim().split(/\s+/u).length < 8 ? classifyLane([entry.lane ?? "", goal].join("\n")) : "chat";
+          const assigned = settings.routing?.[lane];
+          if (assigned?.family && assigned.model && !isProviderDead(assigned.family)) {
+            driveFamily = assigned.family;
+            rawModel = assigned.model;
+            driveProviderName = assigned.family === "ollama" ? "ollama-cloud:assigned" : assigned.family;
+            routeSource = "assigned";
           }
+          entry.lane = lane;
+          tagEmit(command.sessionId, { type: "route_resolved", model: rawModel, provider: driveFamily, lane, source: routeSource });
         }
         // Ollama Cloud models are addressed through the local daemon with a
         // :cloud suffix; the Ares selection stores the bare id. Without the
         // suffix the local daemon reports an unknown model and the turn dies.
-        const driveFamily = providerFamilyForSelection(entry.live.selection);
-        const rawModel = entry.live.selection.model;
         const driveModel = driveFamily === "ollama"
-          && entry.live.selection.provider.name.startsWith("ollama-cloud")
+          && driveProviderName.startsWith("ollama-cloud")
           && !rawModel.includes(":")
           && !rawModel.endsWith("-cloud")
           ? `${rawModel}:cloud`

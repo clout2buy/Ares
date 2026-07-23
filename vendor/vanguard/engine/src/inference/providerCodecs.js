@@ -1288,7 +1288,7 @@ function asText(content) {
     return typeof content === "string" ? content : JSON.stringify(content);
 }
 const TEXT_WIRE_IMAGE_NOTE = "inline image omitted: this provider wire is text-only; judge the render via inspect_image metrics instead";
-const TASK_ANCHOR_PREFIX = "[Vanguard task anchor — the standing objective of this run, restated by the runtime for durability. Not a new message from the user.]\n";
+const TASK_ANCHOR_PREFIX = "[Vanguard task anchor — the standing objective of this run, restated by the runtime for durability. Not a new message from the user: the same text may already appear as an earlier user message, and this restatement is NOT the user repeating or re-sending it. Never spend reasoning on the apparent repetition; just continue the work.]\n";
 function inlineImageAttachment(content) {
     const record = optionalObject(content);
     const output = optionalObject(record?.output);

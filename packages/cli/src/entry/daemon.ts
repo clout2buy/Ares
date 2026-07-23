@@ -2332,7 +2332,17 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             .filter((message) => message.role === "user" && !message.content.some((block) => block.type === "tool_result"))
             .slice(-2)
             .map((message) => messageText(message));
-          const lane = classifyLane([...recentGoals, goal].join("\n"));
+          // The CURRENT message decides the lane. Folding recent history into
+          // the classification made coding stick: two prior coding messages
+          // kept classifying a fresh chat message as "coding", so the route
+          // never flipped back. History now only breaks ties for short
+          // follow-ups ("yes do it") that carry no lane signal of their own.
+          const goalLane = classifyLane(goal);
+          const lane = goalLane !== "chat"
+            ? goalLane
+            : goal.trim().split(/\s+/u).length < 8
+              ? classifyLane([...recentGoals, goal].join("\n"))
+              : "chat";
           let model = entry.live.selection.model;
           let providerName = providerFamilyForSelection(entry.live.selection);
           let source: "assigned" | "main" | "sticky" = "main";

@@ -3901,6 +3901,7 @@ function App() {
       data-rail={railCollapsed ? "collapsed" : "open"}
       data-dragging={forgeDragging ? "1" : "0"}
       data-working={active?.busy ? "1" : "0"}
+      data-vanguard={vgModes[active?.id ?? "__primary__"] ? "1" : "0"}
       data-pill={pill ? "1" : "0"}
       data-ultra={prefs.ultra ? "1" : "0"}
       style={{ ["--forge-w" as string]: `${forgeWidth}px`, ["--heat" as string]: heat.toFixed(3), ["--draft" as string]: draft.toFixed(3) }}
@@ -4000,6 +4001,7 @@ function App() {
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />
       <ScreenFlame />
+      <div className="vgWorkFrame" aria-hidden="true"><i /><i /><i /><b className="c tl" /><b className="c tr" /><b className="c bl" /><b className="c br" /></div>
       {prefs.ultra ? <HackerRain active={active?.busy ?? false} /> : null}
       {strike > 0 ? <div className="strikeFlash" key={strike} aria-hidden="true" /> : null}
       {/* Turbulence filter that makes the composer's flame rim actually lick + flicker. */}
@@ -5856,6 +5858,8 @@ function VanguardBurst() {
     <div className="vgBurst" aria-hidden="true">
       <div className="vgBurstWave" />
       <div className="vgBurstWave two" />
+      <div className="vgBurstWire" />
+      <div className="vgBurstWire two" />
       <div className="vgBurstCore">
         <svg className="vgBurstShield" viewBox="0 0 64 72">
           <path d="M32 4 58 14v20c0 17.6-11.6 28.4-26 32.8C17.6 62.4 6 51.6 6 34V14L32 4Z" fill="none" stroke="currentColor" strokeWidth="2.4" />

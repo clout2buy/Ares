@@ -165,6 +165,8 @@ interface Binding {
   pendingTools: Map<string, string[]>;
   /** Bytes streamed since the last committed message — dedupes agent.message. */
   deltaBytes: number;
+  /** Visible text emitted this turn — the blank-reply safety net reads this. */
+  turnTextBytes: number;
   turnActive: boolean;
   turnStartedAt: number;
   /** Wall-clock of the last public event — the liveness signal the hang watchdog reads. */
@@ -217,6 +219,7 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
     switch (type) {
       case "agent.delta":
         binding.deltaBytes += message.length;
+        binding.turnTextBytes += message.length;
         emit({ type: "text_delta", text: message });
         return;
       case "agent.thinking":
@@ -225,7 +228,13 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
       case "agent.message":
         // Streamed replies already went out as deltas; only surface a message
         // that never streamed (non-streaming providers, control decisions).
-        if (binding.deltaBytes === 0 && message) emit({ type: "text_delta", text: message });
+        // Safety net: if NOTHING visible has rendered this turn, always show
+        // the committed message — a silent-looking turn is worse than a rare
+        // duplicate sentence.
+        if (message && (binding.deltaBytes === 0 || binding.turnTextBytes === 0)) {
+          binding.turnTextBytes += message.length;
+          emit({ type: "text_delta", text: message });
+        }
         binding.deltaBytes = 0;
         return;
       case "tool.started": {
@@ -278,7 +287,10 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
         return;
       }
       case "run.waiting_for_user":
-        if (message && binding.deltaBytes === 0) emit({ type: "text_delta", text: message });
+        if (message && (binding.deltaBytes === 0 || binding.turnTextBytes === 0)) {
+          binding.turnTextBytes += message.length;
+          emit({ type: "text_delta", text: message });
+        }
         binding.deltaBytes = 0;
         return;
       default:
@@ -379,6 +391,7 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
       tag,
       pendingTools: new Map(),
       deltaBytes: 0,
+      turnTextBytes: 0,
       turnActive: false,
       turnStartedAt: 0,
       lastEventAt: Date.now(),
@@ -404,6 +417,7 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
         binding.turnActive = true;
         binding.turnStartedAt = startedAt;
         binding.deltaBytes = 0;
+        binding.turnTextBytes = 0;
         binding.lastEventAt = Date.now();
         const live = await ensureEngine();
         live.advance(binding.vanguardSessionId, goal);

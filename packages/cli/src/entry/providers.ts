@@ -387,27 +387,39 @@ export async function daemonModelCatalog(provider: string): Promise<DaemonModelO
   }
 
   if (provider === "kimi") {
-    // Live discovery through the signed-in Kimi account (via the embedded
-    // Vanguard module, which owns the OAuth store); static coding models
-    // otherwise so the picker is never empty.
+    // Live discovery from the signed-in Kimi account (via the embedded
+    // Vanguard module, which owns the OAuth store) — surfaces the account's
+    // real roster (kimi-for-coding, k3, ...). Static row otherwise so the
+    // picker is never empty.
+    const KIMI_LABELS: Record<string, string> = {
+      "kimi-for-coding": "Kimi for Coding",
+      "kimi-for-coding-highspeed": "Kimi for Coding · Highspeed",
+      k3: "Kimi K3",
+    };
+    const kimiLabel = (id: string): string =>
+      KIMI_LABELS[id] ?? `Kimi ${id.replace(/^kimi-/u, "").replace(/\bk(\d)/u, "K$1")}`;
     try {
       const vanguard = await import("vanguard") as {
-        oauthStatus: (p: string) => Promise<{ connected: boolean }>;
-        catalogModels: (p: string, auth: "oauth" | "api-key") => readonly { id: string; note?: string }[];
+        fetchKimiModels: () => Promise<ReadonlyArray<{
+          id: string; contextLength?: number; supportsReasoning?: boolean; thinkingType?: string;
+        }> | null>;
       };
-      const connected = (await vanguard.oauthStatus("kimi").catch(() => ({ connected: false }))).connected;
-      const rows = vanguard.catalogModels("kimi", connected ? "oauth" : "api-key");
-      if (rows.length > 0) {
-        return rows.map((model) => ({
+      const live = await vanguard.fetchKimiModels().catch(() => null);
+      if (live !== null && live.length > 0) {
+        return live.map((model) => ({
           id: model.id,
-          label: model.id === "kimi-for-coding" ? "Kimi for Coding" : model.id,
-          hint: model.note ?? "agentic coding · 256K context",
+          label: kimiLabel(model.id),
+          hint: [
+            model.supportsReasoning === false || model.thinkingType === "no" ? "fast, no extended thinking" : "agentic coding + reasoning",
+            model.contextLength !== undefined ? `${Math.round(model.contextLength / 1024)}K context` : undefined,
+          ].filter(Boolean).join(" · "),
           group: "Kimi",
-          capabilities: ["tools", "reasoning"],
+          capabilities: model.supportsReasoning === false ? ["tools"] : ["tools", "reasoning"],
+          ...(model.contextLength !== undefined ? { contextLength: model.contextLength } : {}),
         }));
       }
     } catch {
-      // vanguard module unavailable — fall through to the static row
+      // vanguard module unavailable or signed out — fall through to static
     }
     return [{
       id: "kimi-for-coding",

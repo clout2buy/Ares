@@ -66,6 +66,14 @@ await cp(path.join(root, "voice_service"), voiceServiceOut, {
 });
 await cp(process.execPath, path.join(binOut, nodeName));
 
+// The Vanguard engine rides the bundle for in-process use, but its session
+// workers are REAL child processes spawned from a cli.js on disk — a file the
+// bundle cannot provide. Ship the vendored engine as loose files; the daemon
+// points the engine's runner at runtime/vanguard/engine/src/cli.js.
+await cp(path.join(root, "vendor", "vanguard"), path.join(runtime, "vanguard"), {
+  recursive: true,
+});
+
 const connectorRequire = createRequire(path.join(root, "packages", "connectors", "package.json"));
 const playwrightDir = path.dirname(connectorRequire.resolve("playwright/package.json"));
 const playwrightRequire = createRequire(path.join(playwrightDir, "package.json"));

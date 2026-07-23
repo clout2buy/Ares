@@ -1670,6 +1670,12 @@ function useModelCatalog(provider: string, native: boolean) {
         requestDaemonCatalog();
         return;
       }
+      if (provider === "kimi") {
+        // Static row instantly; the daemon merges the live account catalog.
+        setModels([{ id: "kimi-for-coding", label: "Kimi for Coding", hint: "agentic coding · 256K context", group: "Kimi", capabilities: ["tools", "reasoning"] }]);
+        requestDaemonCatalog();
+        return;
+      }
       if (provider === "openrouter") {
         setLoading(true);
         setModels([]);

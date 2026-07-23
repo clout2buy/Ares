@@ -12,11 +12,49 @@
 // The engine loads lazily on first use, so Ares boots and runs normally when
 // the vanguard package is missing; the failure surfaces as a turn error.
 
+import { access } from "node:fs/promises";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 interface EngineModule {
-  VanguardEngine: new (options: { logger?: (line: string) => void }) => VanguardEngineLike;
+  VanguardEngine: new (options: { logger?: (line: string) => void; runner?: unknown }) => VanguardEngineLike;
+  CliVanguardRunner: new (cliFile?: string) => unknown;
   supportsOAuth: (provider: string) => boolean;
   oauthStatus: (provider: string) => Promise<{ connected: boolean }>;
   credentialVariable: (provider: string) => string;
+}
+
+/**
+ * The engine's session workers are real child processes spawned from
+ * Vanguard's cli.js. When the daemon runs as an esbuild bundle, the engine's
+ * own relative default (next to the inlined module) does not exist on disk,
+ * so the worker entry is resolved explicitly:
+ *   1. ARES_VANGUARD_CLI — explicit override;
+ *   2. runtime/vanguard/engine/src/cli.js — shipped beside the packaged bundle;
+ *   3. the vendored node_modules copy next to the resolvable vanguard module.
+ */
+async function resolveWorkerCli(): Promise<string | undefined> {
+  const candidates: Array<string | undefined> = [
+    process.env.ARES_VANGUARD_CLI,
+    fileURLToPath(new URL("../vanguard/engine/src/cli.js", import.meta.url)),
+  ];
+  try {
+    const resolved = createRequire(import.meta.url).resolve("vanguard");
+    candidates.push(path.join(path.dirname(resolved), "cli.js"));
+  } catch {
+    // no resolvable vanguard package (fully bundled) — earlier candidates cover it
+  }
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === "") continue;
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
 }
 
 interface VanguardEngineLike {
@@ -237,7 +275,11 @@ export function createVanguardDrive(tagEmit: TagEmit): VanguardDrive {
   const ensureEngine = async (): Promise<VanguardEngineLike> => {
     const mod = await loadModule();
     if (engine === undefined) {
-      engine = new mod.VanguardEngine({ logger: () => {} });
+      const workerCli = await resolveWorkerCli();
+      engine = new mod.VanguardEngine({
+        logger: () => {},
+        ...(workerCli === undefined ? {} : { runner: new mod.CliVanguardRunner(workerCli) }),
+      });
       unsubscribe = engine.subscribe(({ sessionId, event }) => {
         const binding = byVanguardId.get(sessionId);
         if (binding !== undefined) translate(binding, event);

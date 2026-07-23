@@ -15,7 +15,7 @@
 import { access, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 interface EngineModule {
   VanguardEngine: new (options: { logger?: (line: string) => void; runner?: unknown }) => VanguardEngineLike;
@@ -36,8 +36,12 @@ interface EngineModule {
  *   3. the vendored node_modules copy next to the resolvable vanguard module.
  */
 async function resolveWorkerCli(): Promise<string | undefined> {
+  const updated = process.env.ARES_VANGUARD_ENGINE_DIR;
   const candidates: Array<string | undefined> = [
     process.env.ARES_VANGUARD_CLI,
+    // An OTA-updated engine outranks the bundled copy — and the worker MUST
+    // come from the same engine the host module was loaded from.
+    updated === undefined || updated === "" ? undefined : path.join(updated, "engine", "src", "cli.js"),
     fileURLToPath(new URL("../vanguard/engine/src/cli.js", import.meta.url)),
   ];
   try {
@@ -242,7 +246,23 @@ export function createVanguardDrive(
   let toolCardSequence = 0;
 
   const loadModule = (): Promise<EngineModule> => {
-    modulePromise ??= import("vanguard") as unknown as Promise<EngineModule>;
+    modulePromise ??= (async (): Promise<EngineModule> => {
+      // An OTA-updated engine (daemon boot sets ARES_VANGUARD_ENGINE_DIR)
+      // outranks the copy inlined into this bundle at build time; the
+      // bundled engine stays the fallback so a bad download can never
+      // brick drive mode.
+      const updated = process.env.ARES_VANGUARD_ENGINE_DIR;
+      if (updated !== undefined && updated !== "") {
+        try {
+          const entry = path.join(updated, "engine", "src", "index.js");
+          await access(entry);
+          return await import(pathToFileURL(entry).href) as unknown as EngineModule;
+        } catch {
+          // fall through to the bundled engine
+        }
+      }
+      return await import("vanguard") as unknown as EngineModule;
+    })();
     return modulePromise;
   };
 

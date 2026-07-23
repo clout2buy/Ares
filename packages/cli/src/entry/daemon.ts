@@ -28,6 +28,8 @@ import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
 import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
 import { createVanguardDrive } from "./vanguardHost.js";
+import { bundledVanguardEngineVersion, currentVanguardEngine, updateVanguardEngine } from "./vanguardEngineUpdate.js";
+import { fileURLToPath } from "node:url";
 import { cleanCommandId, normalizePermissionDecision } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion } from "./runtime.js";
@@ -936,6 +938,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     if (!candidate) return undefined;
     return await stat(candidate).then((s) => (s.isDirectory() ? candidate : undefined)).catch(() => undefined);
   };
+
+  // Vanguard engine over-the-air updates: engine fixes ship far more often
+  // than app installers. A previously downloaded engine takes effect
+  // immediately; the rolling channel is checked in the background so a fresh
+  // engine is in place before (or at worst after) the first drive use, with
+  // the bundled engine as the permanent fallback.
+  {
+    const engineLog = (line: string): void => { process.stderr.write(`[vanguard-engine] ${line}\n`); };
+    const existingEngine = await currentVanguardEngine(live.context.home).catch(() => undefined);
+    if (existingEngine !== undefined) process.env.ARES_VANGUARD_ENGINE_DIR = existingEngine.dir;
+    void (async () => {
+      const bundledPackageJson = ((): string | undefined => {
+        try { return fileURLToPath(new URL("../vanguard/package.json", import.meta.url)); } catch { return undefined; }
+      })();
+      const bundledVersion = await bundledVanguardEngineVersion(bundledPackageJson);
+      const dir = await updateVanguardEngine(live.context.home, bundledVersion, engineLog);
+      if (dir !== undefined) process.env.ARES_VANGUARD_ENGINE_DIR = dir;
+    })();
+  }
 
   // Vanguard drive mode: the second engine. Loads nothing until a session
   // with the mode enabled actually sends. Drive events persist into the same

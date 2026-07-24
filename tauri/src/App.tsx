@@ -2686,6 +2686,16 @@ function App() {
           setKimiAuth({ signingIn: false, connected: ke.configured === true, detail: typeof ke.detail === "string" ? ke.detail : null });
           return true;
         }
+        case "vanguard_engine": {
+          // Over-the-air Vanguard engine activity from the daemon: a fresh
+          // install gets a toast; a previously downloaded engine activating
+          // at boot stays quiet.
+          const ve = e as { version?: unknown; updated?: unknown };
+          if (ve.updated === true && typeof ve.version === "string") {
+            pushGatewayToast(`🛡 Vanguard engine updated to ${ve.version} — active for new drive sessions.`);
+          }
+          return true;
+        }
         case "consciousness_status": {
           const models = Array.isArray(e.models) ? (e.models as ConsciousnessModelVm[]) : [];
           setConsciousness((c) => ({

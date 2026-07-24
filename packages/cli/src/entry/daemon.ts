@@ -947,14 +947,22 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   {
     const engineLog = (line: string): void => { process.stderr.write(`[vanguard-engine] ${line}\n`); };
     const existingEngine = await currentVanguardEngine(live.context.home).catch(() => undefined);
-    if (existingEngine !== undefined) process.env.ARES_VANGUARD_ENGINE_DIR = existingEngine.dir;
+    if (existingEngine !== undefined) {
+      process.env.ARES_VANGUARD_ENGINE_DIR = existingEngine.dir;
+      tagEmit(undefined, { type: "vanguard_engine", version: existingEngine.version, updated: false });
+    }
     void (async () => {
       const bundledPackageJson = ((): string | undefined => {
         try { return fileURLToPath(new URL("../vanguard/package.json", import.meta.url)); } catch { return undefined; }
       })();
       const bundledVersion = await bundledVanguardEngineVersion(bundledPackageJson);
-      const dir = await updateVanguardEngine(live.context.home, bundledVersion, engineLog);
-      if (dir !== undefined) process.env.ARES_VANGUARD_ENGINE_DIR = dir;
+      const result = await updateVanguardEngine(live.context.home, bundledVersion, engineLog);
+      if (result !== undefined) {
+        process.env.ARES_VANGUARD_ENGINE_DIR = result.dir;
+        // The UI toasts fresh installs so an engine update is a visible
+        // moment, not a stderr whisper.
+        tagEmit(undefined, { type: "vanguard_engine", version: result.version, updated: result.installed });
+      }
     })();
   }
 

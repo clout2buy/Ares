@@ -94,25 +94,37 @@ function extractTarball(tarball: string, destination: string): Promise<void> {
   });
 }
 
+export interface EngineUpdateResult {
+  readonly dir: string;
+  readonly version: string;
+  /** True when this call downloaded and installed a NEW engine version. */
+  readonly installed: boolean;
+}
+
+async function existingResult(home: string): Promise<EngineUpdateResult | undefined> {
+  const current = await currentVanguardEngine(home);
+  return current === undefined ? undefined : { dir: current.dir, version: current.version, installed: false };
+}
+
 /**
  * Checks the rolling channel and installs a newer engine when one exists.
- * Returns the engine dir to use (fresh install or existing download), or
+ * Returns the engine to use (fresh install or existing download), or
  * undefined when the bundled engine is already the best available.
  */
 export async function updateVanguardEngine(
   home: string,
   bundledVersion: string | undefined,
   log: (line: string) => void = () => {},
-): Promise<string | undefined> {
+): Promise<EngineUpdateResult | undefined> {
   try {
     const response = await fetch(`${RELEASE_BASE}/manifest.json`, { signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) return (await currentVanguardEngine(home))?.dir;
+    if (!response.ok) return existingResult(home);
     const manifest = await response.json() as EngineManifest;
     if (typeof manifest.version !== "string" || typeof manifest.tarball !== "string" || typeof manifest.sha256 !== "string") {
-      return (await currentVanguardEngine(home))?.dir;
+      return existingResult(home);
     }
     const have = await installedVersion(home, bundledVersion);
-    if (!newer(manifest.version, have)) return (await currentVanguardEngine(home))?.dir;
+    if (!newer(manifest.version, have)) return existingResult(home);
 
     log(`vanguard engine ${manifest.version} available (have ${have}) — downloading`);
     const tarballResponse = await fetch(`${RELEASE_BASE}/${manifest.tarball}`, { signal: AbortSignal.timeout(120_000) });
@@ -139,9 +151,9 @@ export async function updateVanguardEngine(
     // engine (or the bundled one) in charge.
     await writeFile(path.join(root, "current.json"), JSON.stringify({ version: manifest.version }, null, 2), "utf8");
     log(`vanguard engine ${manifest.version} installed`);
-    return final;
+    return { dir: final, version: manifest.version, installed: true };
   } catch (error) {
     log(`vanguard engine update skipped: ${error instanceof Error ? error.message : String(error)}`);
-    return (await currentVanguardEngine(home))?.dir;
+    return existingResult(home);
   }
 }

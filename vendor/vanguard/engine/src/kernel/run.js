@@ -612,6 +612,14 @@ export class AgentKernel {
                 if (consecutiveNarrations >= this.#options.maxConsecutiveNarrations) {
                     return this.#fail("Execution stalled in narration without tool actions.", step);
                 }
+                if (consecutiveNarrations === 1 && this.#hasPlanTool && !this.#plan.isEmpty()
+                    && [...this.#plan.unproven()].length === 0) {
+                    const note = "[Vanguard runtime] Every plan milestone is proven and no new user request is pending — the reply above does not advance anything. "
+                        + "Claim completion with complete_task now (verification will confirm), or take a concrete tool action if something genuinely remains.";
+                    await this.#record("runtime.note", { text: note, kind: "proven-plan-narration" });
+                    transcript.push({ role: "runtime", content: note });
+                    continue;
+                }
                 if (consecutiveNarrations === this.#options.maxConsecutiveNarrations - 1) {
                     const note = "[Vanguard runtime] That is another reply with no tool action, and narration does not advance the contract. "
                         + "Take a concrete tool action in your next decision — read, plan, mutate, or run a check — ask the user only if genuinely blocked, "

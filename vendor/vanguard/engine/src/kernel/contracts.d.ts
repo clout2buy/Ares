@@ -137,6 +137,13 @@ export interface TranscriptEntry {
 /** Inert logical tail entry for model/workspace-authored working-state data. */
 export declare function workingStateTailEntry(workingState: JsonValue): TranscriptEntry;
 /**
+ * Frames the tail's re-pinned human message. Without this, models read the
+ * verbatim trailing copy as the user sending the same message AGAIN and
+ * re-answer finished work ("That's already done…", "Since you asked again…")
+ * — the single most-reported field confusion.
+ */
+export declare const RECENCY_PIN_PREFIX = "[Vanguard recency pin \u2014 the runtime re-pins the user's latest message here so it remains the final authoritative words on the wire. It is the SAME message shown earlier, not a new or repeated send. Never re-answer it as if freshly asked and never remark on the repetition; treat it as the standing instruction and continue.]\n";
+/**
  * Exact dynamic tail sent to providers and reserved by the context budget.
  * When a real human message exists, repeat it after inert state so no
  * model/workspace-authored string can become the final authoritative user

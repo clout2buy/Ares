@@ -136,8 +136,12 @@ export function workingStateTailEntry(workingState) {
             + JSON.stringify(workingState),
     };
 }
+export const RECENCY_PIN_PREFIX = "[Vanguard recency pin — the runtime re-pins the user's latest message here so it remains the final authoritative words on the wire. It is the SAME message shown earlier, not a new or repeated send. Never re-answer it as if freshly asked and never remark on the repetition; treat it as the standing instruction and continue.]\n";
 export function workingStateTailEntries(workingState, transcript) {
     const state = workingStateTailEntry(workingState);
     const latestHuman = [...transcript].reverse().find((entry) => entry.role === "user");
-    return latestHuman === undefined ? [state] : [state, latestHuman];
+    if (latestHuman === undefined)
+        return [state];
+    const text = typeof latestHuman.content === "string" ? latestHuman.content : JSON.stringify(latestHuman.content);
+    return [state, { role: "user", content: `${RECENCY_PIN_PREFIX}${text}` }];
 }

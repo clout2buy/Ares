@@ -901,6 +901,7 @@ export class AgentKernel {
         const allObserve = calls.every((call) => this.#tools.get(call.name)?.definition.effect === "observe");
         const effectOf = (call) => this.#tools.get(call.name)?.definition.effect;
         const mutationCalls = calls.filter((call) => this.#tools.get(call.name)?.definition.effect === "mutate");
+        const mutationsBeforeBatch = context.completedMutations();
         const monitorWorkspace = this.#workspaceState !== undefined && calls.length > 0;
         const expectedWorkspaceBefore = monitorWorkspace ? context.workspaceBaseline() : undefined;
         const workspaceBefore = monitorWorkspace ? await this.#workspaceState.fingerprint() : undefined;
@@ -935,10 +936,9 @@ export class AgentKernel {
             }
             if (context.mode === "execution" && this.#hasPlanTool && tool.definition.effect === "mutate"
                 && this.#plan.isEmpty()
-                && (context.completedMutations() >= SMALL_CHANGE_MUTATION_BUDGET
-                    || mutationCalls.length !== 1
-                    || !isNarrowPlanFreeMutation(call))) {
-                return this.#terminalObservation(call, `Plan-free changes are limited to ${SMALL_CHANGE_MUTATION_BUDGET} narrow mutations (small exact-text edits, or small new files written without expectedSha256), one per step. Materialize a non-empty engineering plan with update_plan before changing the workspace further.`, "policy", context.recovery, context.signal, evidenceId);
+                && (mutationsBeforeBatch + mutationCalls.length > SMALL_CHANGE_MUTATION_BUDGET
+                    || !mutationCalls.every((mutation) => isNarrowPlanFreeMutation(mutation)))) {
+                return this.#terminalObservation(call, `Plan-free changes are limited to ${SMALL_CHANGE_MUTATION_BUDGET} narrow mutations in total (small exact-text edits, or small new files written without expectedSha256); a single batch may carry several as long as the total fits. Materialize a non-empty engineering plan with update_plan before changing the workspace further.`, "policy", context.recovery, context.signal, evidenceId);
             }
             if (context.mode === "execution" && this.#hasPlanTool && tool.definition.effect === "mutate"
                 && !this.#plan.isEmpty()) {

@@ -33,14 +33,27 @@ pnpm test          # build + node --test
 
 Install `ares` as a global command so it works from any terminal:
 
-```powershell
-pnpm install:cli   # Windows: builds, adds `ares` to your user PATH (open a new shell)
+```bash
+pnpm build         # the installer refuses to run against an unbuilt CLI
+pnpm install:cli   # Linux/macOS: a launcher in ${XDG_BIN_HOME:-~/.local/bin}
+                   # Windows:     scripts/install.ps1 (adds `ares` to your user PATH)
+pnpm uninstall:cli # symmetric removal
 ```
 
+On Linux and macOS this never runs `sudo` and **does not edit your PATH or your shell
+config** — if the destination is not already on PATH, the installer prints a POSIX
+shell line for you to add yourself. Send it somewhere else with `pnpm install:cli --
+--dir <path>` or `ARES_CLI_BIN_DIR`. Both commands are idempotent, both refuse to
+touch a file at that path they did not create, and uninstall removes the launcher
+*only* — your `~/.ares` config, vault, and sessions are left intact. The launcher
+points at this checkout by absolute path, so re-run the installer if you move it.
+Which platforms this is actually tested on:
+[`docs/PLATFORM-SUPPORT.md`](docs/PLATFORM-SUPPORT.md).
+
 Then `ares` launches the agent anywhere — say **"connect telegram"** and it walks you
-through setup conversationally (no env vars). The desktop `.exe` installer registers the
-same `ares` command automatically using its bundled runtime, so the terminal and UI are
-the same agent over the same encrypted `~/.ares` vault.
+through setup conversationally (no env vars). On Windows the desktop `.exe` installer
+registers the same `ares` command automatically using its bundled runtime, so the
+terminal and UI are the same agent over the same encrypted `~/.ares` vault.
 
 Or run the CLI straight from the workspace (no install; on Windows you can also use `.\ares.bat`):
 

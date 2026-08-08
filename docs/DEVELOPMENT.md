@@ -2,8 +2,8 @@
 
 ## Setup
 
-```powershell
-cd D:\Ares
+```bash
+cd /path/to/Ares      # Windows: cd D:\Ares
 pnpm install
 pnpm build
 ```
@@ -12,14 +12,23 @@ The workspace uses `pnpm` and TypeScript project references. The root `tsconfig.
 
 ## Common Commands
 
-```powershell
-pnpm build    # compile all TypeScript packages
-pnpm check    # compile all packages with concise TypeScript output
-pnpm lint     # alias for pnpm check
-pnpm test     # build, then run the Node test suite
-pnpm verify   # lint, build, and test through the standard scripts
-pnpm clean    # remove generated build, Tauri, log, and smoke-test output
+```bash
+pnpm build          # compile all TypeScript packages
+pnpm check          # compile all packages with concise TypeScript output
+pnpm lint           # alias for pnpm check
+pnpm test           # build, then run the Node test suite
+pnpm verify         # lint, build, and test through the standard scripts
+pnpm clean          # remove generated build, Tauri, log, and smoke-test output
+pnpm install:cli    # put `ares` on PATH from this checkout
+pnpm uninstall:cli  # remove it again
 ```
+
+`install:cli` and `uninstall:cli` go through `scripts/install-cli.mjs` and
+`scripts/uninstall-cli.mjs`, which dispatch per platform: on Windows they run the
+existing `scripts/install.ps1` / `scripts/uninstall.ps1` unchanged; everywhere else
+they write (and remove) a launcher in `${XDG_BIN_HOME:-$HOME/.local/bin}`. Neither
+touches your PATH, your shell config, or the Ares home. `docs/PLATFORM-SUPPORT.md`
+records the exact contract and which platforms it is tested on.
 
 The default long-horizon coding benchmark is `ares eval coding --suite coding-v2`.
 It records integrity, proof, false-green, token, prompt, task-manifest, and
@@ -30,7 +39,7 @@ The CLI entrypoint is built to `packages/cli/dist/entry.js`. Use `pnpm build` be
 
 ## Permission Posture
 
-Ares is currently tuned as a local owner-operated agent. Interactive CLI sessions start in `bypass` mode unless `%USERPROFILE%\.ares\ui.json` or `$ARES_HOME\ui.json` contains `dangerousBypass: false`.
+Ares is currently tuned as a local owner-operated agent. Interactive CLI sessions start in `bypass` mode unless `~/.ares/ui.json` (`%USERPROFILE%\.ares\ui.json` on Windows) or `$ARES_HOME/ui.json` contains `dangerousBypass: false`.
 
 Permission modes:
 
@@ -45,8 +54,11 @@ Use `/plan` or `/code` to return to guarded modes. Use `/danger` or `/bypass` to
 Do not store runtime state in the repository. The default durable Ares home is:
 
 ```text
-%USERPROFILE%\.ares
+~/.ares                 # %USERPROFILE%\.ares on Windows
 ```
+
+`$ARES_HOME` overrides it. Point it at a throwaway directory when you need to run
+the CLI without touching your real home.
 
 Ignored generated output includes package `dist/`, TypeScript build-info files, Tauri build output, Tauri generated schemas, logs, and smoke-test screenshots.
 
@@ -63,11 +75,11 @@ solely because its lease is old.
 
 For cleanup and package-boundary changes, run:
 
-```powershell
+```bash
 pnpm lint
 pnpm build
 pnpm test
 pnpm clean
 ```
 
-For user-facing CLI behavior, also run the relevant `.\ares.bat ...` command or an equivalent smoke test. For desktop UI changes, take screenshots before and after the change.
+For user-facing CLI behavior, also run the relevant `pnpm ares ...` command (on Windows, `.\ares.bat ...` works too) or an equivalent smoke test. For desktop UI changes, take screenshots before and after the change.

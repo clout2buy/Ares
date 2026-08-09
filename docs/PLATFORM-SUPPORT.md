@@ -22,11 +22,29 @@ The CI matrix is `ubuntu-latest` + `windows-latest`; the tests below run on both
 
 **CPU architecture:** x86_64 only. Nothing here has been tested on aarch64.
 
-**Manual run** of the install path: Fedora 44, x86_64, Node 24 — install into a
-temporary prefix, `ares help` and `ares doctor` through the installed launcher,
-a `mock`-provider turn, reinstall, uninstall twice. One machine, one
-distribution, one run. That is the entire manual record; it is not a statement
-that Fedora — or any release of it — is a supported platform.
+**Manual run** of the install path: Fedora 44, x86_64, Node 24. Every POSIX
+claim under [What `pnpm install:cli` does](#what-pnpm-installcli-does) was
+exercised on that machine, always into a temporary prefix. Nothing about
+Windows or macOS was:
+
+- the destination chain, one level at a time — `--dir`, then
+  `ARES_CLI_BIN_DIR`, then `$XDG_BIN_HOME`, then the `$HOME/.local/bin`
+  default, confirming each beats the next and that only one file is written;
+- `ares help` and `ares doctor` through the installed launcher, plus a
+  `mock`-provider turn;
+- reinstall over an existing launcher, compared byte for byte;
+- the four refusals — a foreign regular file, a symlink, an unbuilt CLI, and
+  uninstall against a file Ares did not write. The foreign file and the symlink
+  were still intact afterwards;
+- both fallbacks in the launcher: with `node` off PATH it used the absolute
+  interpreter recorded at install time, and with that path made unreachable too
+  it named both candidates on stderr and exited 127;
+- uninstall twice — the second run reports nothing to remove and still exits 0;
+- `pnpm test` in a redirected `HOME`: 1659 tests, 1655 passing, 4 skipped,
+  matching the CI run.
+
+One machine, one distribution, one run. That is the entire manual record; it is
+not a statement that Fedora — or any release of it — is a supported platform.
 
 **macOS** takes the same POSIX branch as Linux and is expected to behave
 identically, but nothing exercises it — treat it as untested.

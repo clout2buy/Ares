@@ -60,6 +60,19 @@ Do not store runtime state in the repository. The default durable Ares home is:
 `$ARES_HOME` overrides it. Point it at a throwaway directory when you need to run
 the CLI without touching your real home.
 
+`pnpm test` is one of those times. Parts of the suite exercise code that writes to
+the durable home, so a full run leaves a real `~/.ares` behind — on a clean machine
+it creates one. Redirect `HOME` (or `ARES_HOME`) to keep your own out of it:
+
+```bash
+HOME=$(mktemp -d) pnpm test        # POSIX
+```
+
+Two traps if you isolate the environment further. `ARES_SELF_TRIAGE=0` fails
+`tests/reliability-triage.test.mjs`, which asserts the default `cadence` review
+state. And `tests/z-stabilization-smoke.test.mjs` spawns `pnpm` itself, so `pnpm`
+has to stay on PATH inside whatever environment you hand the runner.
+
 Ignored generated output includes package `dist/`, TypeScript build-info files, Tauri build output, Tauri generated schemas, logs, and smoke-test screenshots.
 
 `pnpm clean` removes generated repository outputs, including repo-local `.ares/` session artifacts created by tests or local runs. It intentionally does not delete the durable Ares home because that can contain user memory, permissions, and identity state.

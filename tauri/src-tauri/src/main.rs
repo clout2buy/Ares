@@ -1523,11 +1523,10 @@ fn presence_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, Strin
     .build()
     .map_err(|error| format!("failed to create presence overlay: {error}"))?;
 
-    // The overlay is visual presence only. Mouse and keyboard input must pass
-    // straight through so the user can keep working in every app underneath.
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|error| format!("failed to make presence overlay click-through: {error}"))?;
+    // Click-through is applied once the overlay is actually shown, not here: on
+    // GTK a window built `visible(false)` has no underlying GdkWindow yet, and
+    // the input-shape request aborts the process on that None. See
+    // `ares_presence_update`. A hidden window intercepts nothing meanwhile.
 
     // Cover the monitor containing the Ares pill. Physical coordinates avoid
     // DPI seams that leave one unlit edge on mixed-scale multi-monitor setups.
@@ -1596,6 +1595,17 @@ fn ares_presence_update(
     window
         .show()
         .map_err(|error| format!("failed to show presence overlay: {error}"))?;
+
+    // The overlay is visual presence only. Mouse and keyboard input must pass
+    // straight through so the user can keep working in every app underneath.
+    // This has to run after `show()`: the request needs a realized window, which
+    // GTK only creates when the window is mapped. Re-applying it on every wake is
+    // harmless — the flag is idempotent, and the overlay may have been hidden and
+    // shown again since it was last set.
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("failed to make presence overlay click-through: {error}"))?;
+
     let _ = app.emit_to("presence-overlay", "ares:presence-state", snapshot);
     Ok(())
 }

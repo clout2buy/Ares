@@ -456,8 +456,16 @@
   box-shadow: inset 2px 0 0 var(--accent);
 }
 .ares[data-style="modern"] .sessionMain { min-width: 0; flex: 1; }
-.ares[data-style="modern"] .sessionMain > :first-child { font-size: 13px; color: rgba(240, 227, 205, 0.92); }
-.ares[data-style="modern"] .sessionMain > :last-child { font-size: 10.5px; color: rgba(239, 227, 207, 0.38); }
+/* The row is [busy dot][title] — NOT [title][subtitle], which is what these
+ * rules were written for when keyed on :first-child / :last-child. The result
+ * was exactly inverted: the 13px/92% "title" styling landed on a 6px status
+ * dot with no text in it, and the session title — the primary navigation label
+ * in the whole app, the thing you read to choose a session — inherited the
+ * 10.5px/38% subtitle treatment and rendered at 3.0:1 contrast, under AA.
+ * Target the elements themselves so the styling follows the meaning and cannot
+ * silently swap again if a third child ever appears. */
+.ares[data-style="modern"] .sessionMain > span { font-size: 13px; color: rgba(240, 227, 205, 0.92); }
+.ares[data-style="modern"] .sessionMain > .sessionSub { font-size: 10.5px; color: rgba(239, 227, 207, 0.55); }
 
 /* Forge and Settings live in the titlebar now — the rail must not offer them
    twice. Undo stays (it has no other home) and the daemon dot closes the rail,
@@ -1036,9 +1044,27 @@
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
-  transition: border-color 160ms ease;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
-.ares[data-style="modern"] .composerRow:focus-within { border-color: rgba(255, 150, 80, 0.5); }
+/* Focus belongs to the PILL, not to the bare textarea inside it.
+ *
+ * The blanket `textarea:focus-visible` ring below outlines the focused element
+ * itself, and an outline follows that element's own border-radius — which on a
+ * bare, square-cornered textarea means a hard 2px rectangle floating inside a
+ * 26px-radius bar. The composer was the one place in the app where that read as
+ * a tacky box rather than a focus ring.
+ *
+ * So the textarea's own outline is suppressed and the whole bar lights instead:
+ * warmer rim plus a soft halo that follows the pill. That is MORE visible than
+ * the rectangle it replaces, not less — the halo is 3px on a 880px-wide bar, so
+ * keyboard focus is if anything easier to spot. It eases in over 160ms and then
+ * holds: a static rim, nothing that pulses or flashes. */
+.ares[data-style="modern"] .composerRow:focus-within {
+  border-color: rgba(255, 150, 80, 0.5);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5), 0 0 0 3px rgba(255, 150, 80, 0.14);
+}
+.ares[data-style="modern"] .composerRow textarea:focus-visible,
+.composerRow textarea:focus-visible { outline: none; }
 .ares[data-style="modern"] .composerRow textarea {
   background: transparent;
   border: none;
@@ -1468,6 +1494,64 @@
 .ares[data-style="modern"] .toolCard:hover {
   border-color: rgba(255, 150, 80, 0.45);
   box-shadow: var(--glass-spec), var(--glass-lift), 0 0 30px rgba(255, 106, 48, 0.08);
+}
+
+/* ── the agent's own traces are READOUTS, not documents ───────────────────
+ *
+ * A tool call and a thought are asides — evidence of work, glanced at and
+ * scrolled past. They were wearing the full glass slab (fill + backdrop blur +
+ * specular sheen + lift shadow + hover glow), the same material as a HELM tile
+ * or a settings pane. At one card that looks rich; at the four-to-eight a real
+ * turn produces it becomes a stack of heavy panels that outweighs the answer
+ * they belong to, and the eye reads chrome before content.
+ *
+ * So the frame goes and the SPINE stays: one hairline down the left edge,
+ * carrying the state colour the border used to carry. It is the margin-rule
+ * idiom — the mark that says "this is an aside" without drawing a box around
+ * it. The panel material is deliberately untouched everywhere else; HELM tiles,
+ * the vault, settings and the diff card are documents and still read as glass.
+ *
+ * The one thing that cannot go is legibility. There is a photographic backdrop
+ * behind the transcript, and mono rows over a picture swim — which is what the
+ * "a touch more body" fill above was defending against. So a faint wash stays,
+ * strongest at the spine and fading out across the card: enough to seat the
+ * text, far too little to read as a panel. */
+.ares[data-style="modern"] .toolCard {
+  border: none;
+  border-left: 1px solid rgba(200, 155, 94, 0.3);
+  border-radius: 0 8px 8px 0;
+  background: linear-gradient(90deg, rgba(10, 8, 7, 0.5), rgba(10, 8, 7, 0.26) 45%, rgba(10, 8, 7, 0.12));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  transition: border-left-color 160ms ease, background 160ms ease;
+}
+/* no slab, no shoulder highlight — the sheen only makes sense on glass */
+.ares[data-style="modern"] .toolCard::before { background: none; }
+.ares[data-style="modern"] .toolCard:hover {
+  border-color: transparent;
+  border-left-color: rgba(255, 150, 80, 0.55);
+  box-shadow: none;
+}
+/* state lives on the spine now that there is no rim to carry it */
+.ares[data-style="modern"] .toolCard[data-state="running"] { border-left-color: var(--ember-hi); }
+.ares[data-style="modern"] .toolCard[data-state="error"] { border-left-color: rgba(201, 86, 74, 0.6); }
+/* the head is a label over its rows, not a titlebar over a body */
+.ares[data-style="modern"] .toolCardHead { border-bottom-color: rgba(200, 155, 94, 0.08); }
+.ares[data-style="modern"] .toolStep,
+.ares[data-style="modern"] .toolCardBody .step { border-bottom-color: rgba(200, 155, 94, 0.05); }
+.ares[data-style="modern"] .toolStep:last-child,
+.ares[data-style="modern"] .toolCardBody .step:last-child { border-bottom: none; }
+
+/* A thought was already meant to read as a margin note; the dashed box was
+   still a box. Same spine, no fill — it is short italic text, so it does not
+   need a wash to stay off the backdrop. */
+.ares[data-style="modern"] .thought,
+.ares[data-style="modern"] .thinking {
+  border: none;
+  border-left: 1px solid rgba(200, 155, 94, 0.22);
+  border-radius: 0;
+  background: none;
 }
 
 /* the big floating surfaces are the same lens, thicker */

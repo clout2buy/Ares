@@ -9,7 +9,7 @@ import os from "node:os";
 import { ReadTool, GlobTool, GrepTool, EditTool, WriteTool, ApplyIntentTool, MemoryTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { completeBootstrap, createMemoryStore, recordCardMemoryOnce, ensureAgentScaffold, exportHome, importHome, listSnapshots, loadAgentConfig, restoreSnapshot, runDeepDream, runRemDream, snapshotBrain } from "@ares/agent";
-import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, CODING_GAUNTLET, CODING_GAUNTLET_V2, CODING_GAUNTLET_V3, type EvalReport, type EvalTask } from "@ares/operator";
+import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, CODING_GAUNTLET, CODING_GAUNTLET_V2, CODING_GAUNTLET_V3, parseScoreboard, parseScoreboardRow, detectRegression, renderTrend, formatCompact, type EvalReport, type EvalTask, type ScoreboardRow } from "@ares/operator";
 import { MemoryStore, withConsolidationLock } from "@ares/mind";
 import { buildCodingTools } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissions.js";
@@ -261,17 +261,25 @@ async function gauntletCommand(args: ParsedArgs): Promise<number> {
   const stamp = report.startedAt.replace(/[:.]/g, "-");
   const reportFile = path.join(dir, `${stamp}-${report.model.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`);
   await writeFile(reportFile, JSON.stringify(report, null, 2) + "\n", "utf8");
+  const scoreboardFile = path.join(dir, "scoreboard.jsonl");
+  const scoreboardEntry = { at: report.startedAt, schemaVersion: report.schemaVersion, suite: report.suite, harness: report.harness, official: report.official, isolation: report.isolation, complete: report.complete, taskManifestHash: report.taskManifestHash, systemPromptHash: report.systemPromptHash, startupReminderHash: report.startupReminderHash, toolSchemaHash: report.toolSchemaHash, toolNames: report.toolNames, environment: report.environment, harnessManifest: report.harnessManifest, provider: report.provider, model: report.model, total: report.total, durationMs: report.durationMs, usage: report.usage, metrics: report.metrics, tasks: report.tasks.map((t) => ({ id: t.id, score: t.score, workStatus: t.workStatus, usage: t.usage })) };
+  // Judge this run against its own history BEFORE appending it — a run must
+  // never be part of the baseline it is measured against.
+  const history = await readFile(scoreboardFile, "utf8").then(parseScoreboard).catch(() => [] as ScoreboardRow[]);
+  const currentRow = report.complete ? parseScoreboardRow(scoreboardEntry) : null;
+  const verdict = currentRow ? detectRegression(currentRow, history) : null;
   if (report.complete) {
-    await appendFile(
-      path.join(dir, "scoreboard.jsonl"),
-      JSON.stringify({ at: report.startedAt, schemaVersion: report.schemaVersion, suite: report.suite, harness: report.harness, official: report.official, isolation: report.isolation, complete: report.complete, taskManifestHash: report.taskManifestHash, systemPromptHash: report.systemPromptHash, startupReminderHash: report.startupReminderHash, toolSchemaHash: report.toolSchemaHash, toolNames: report.toolNames, environment: report.environment, harnessManifest: report.harnessManifest, provider: report.provider, model: report.model, total: report.total, usage: report.usage, metrics: report.metrics, tasks: report.tasks.map((t) => ({ id: t.id, score: t.score, workStatus: t.workStatus, usage: t.usage })) }) + "\n",
-      "utf8",
-    );
+    await appendFile(scoreboardFile, JSON.stringify(scoreboardEntry) + "\n", "utf8");
   }
 
+  // The score saturates at frontier tier (coding-v3, 2026-08-15) — a regression
+  // gate that only watches `total` is a gate that never closes. --gate fails on
+  // the axes that still move: cost, verification, wall-clock.
+  const gated = args.flags.has("gate") && verdict?.regressed === true;
+
   if (args.flags.has("json")) {
-    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
-    return report.complete && report.total >= 1 ? 0 : 1;
+    process.stdout.write(JSON.stringify({ ...report, regression: verdict }, null, 2) + "\n");
+    return gated ? 3 : report.complete && report.total >= 1 ? 0 : 1;
   }
   const pct = (x: number) => `${Math.round(x * 100)}%`;
   const lines = report.tasks.map((t) => {
@@ -280,14 +288,48 @@ async function gauntletCommand(args: ParsedArgs): Promise<number> {
   });
   lines.push("", `TOTAL ${pct(report.total)} — ${report.model} via ${report.provider} (${Math.round(report.durationMs / 1000)}s)`);
   lines.push(`integrity ${pct(report.metrics.integrityRate)} · verified ${pct(report.metrics.verifiedTaskRate)} · false-green ${pct(report.metrics.falseGreenRate)} · verified-mismatch ${pct(report.metrics.verifiedMismatchRate)}`);
+  lines.push(`cost ${formatCompact(report.metrics.tokensPerScorePoint)} tok/point · ${formatCompact(report.usage.inputTokens + report.usage.outputTokens)} tokens · ${report.usage.modelCalls} model calls`);
+  if (verdict && verdict.findings.length > 0) {
+    lines.push("", `REGRESSION vs ${verdict.baselineRuns} prior run${verdict.baselineRuns === 1 ? "" : "s"}${verdict.confidence === "advisory" ? " (advisory — one baseline is too noisy to gate)" : ""}:`);
+    for (const finding of verdict.findings) lines.push(`  ${finding.summary}`);
+  } else if (verdict?.confidence === "none") {
+    lines.push("no comparable history yet — this run becomes the baseline");
+  } else if (verdict) {
+    lines.push(`no regression vs ${verdict.baselineRuns} prior run${verdict.baselineRuns === 1 ? "" : "s"}`);
+  }
   if (!report.complete) lines.push("INCOMPLETE — excluded from trend history");
   lines.push(`report: ${reportFile}`);
-  process.stdout.write(notice(`Gauntlet · ${report.suite}`, lines, report.total >= 0.75 ? "success" : "warn"));
-  return report.complete && report.total >= 1 ? 0 : 1;
+  process.stdout.write(notice(`Gauntlet · ${report.suite}`, lines, gated || report.total < 0.75 ? "warn" : "success"));
+  return gated ? 3 : report.complete && report.total >= 1 ? 0 : 1;
+}
+
+/**
+ * `ares eval trend` — read the append-only scoreboard nobody was reading.
+ * Groups comparable runs into cells, trends the axes that still discriminate,
+ * and prints the harness A/B the whole benchmark exists to produce.
+ */
+async function gauntletTrendCommand(args: ParsedArgs): Promise<number> {
+  const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
+  const scoreboardFile = path.join(context.home, "gauntlet", "scoreboard.jsonl");
+  const text = await readFile(scoreboardFile, "utf8").catch(() => "");
+  let rows = parseScoreboard(text);
+  const suite = args.flags.get("suite");
+  const model = args.flags.get("model");
+  if (suite) rows = rows.filter((row) => row.suite === suite);
+  if (model) rows = rows.filter((row) => row.model === model);
+  if (args.flags.has("json")) {
+    process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
+    return 0;
+  }
+  const body = renderTrend(rows).trimEnd().split("\n");
+  body.push(`scoreboard: ${scoreboardFile}`);
+  process.stdout.write(notice("Gauntlet · trend", body, rows.length > 0 ? "success" : "warn"));
+  return 0;
 }
 
 export async function evalCommand(args: ParsedArgs): Promise<number> {
   if (args.positionals[0] === "coding") return gauntletCommand(args);
+  if (args.positionals[0] === "trend") return gauntletTrendCommand(args);
   const root = await mkdtemp(path.join(os.tmpdir(), "ares-eval-"));
   const tasks = builtInEvalTasks();
   let report: EvalReport;

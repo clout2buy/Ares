@@ -38,6 +38,50 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.38.0",
+    date: "August 2026",
+    title: "Reach and reckoning",
+    tagline: "Ares runs on Linux, watches over your shoulder from your phone, notices things without being asked, answers faster — and finally keeps an honest scorecard on itself.",
+    highlights: [
+      {
+        icon: "📱",
+        title: "Ares on your phone",
+        blurb: "Open a read-only viewer from any device on your network and watch sessions live — no keys, no controls, nothing it can break.",
+        tag: "New",
+      },
+      {
+        icon: "👁️",
+        title: "It notices things",
+        blurb: "Give Ares a condition to watch and it checks on its own, then comes to you with a proposal instead of waiting to be asked.",
+        tag: "New",
+      },
+      {
+        icon: "🐧",
+        title: "Linux, properly",
+        blurb: "A one-command installer, the right desktop folders, and browsers found wherever your distro puts them — contributed by the first outside developer.",
+        tag: "New",
+      },
+      {
+        icon: "⚡",
+        title: "Answers that don't stutter",
+        blurb: "Long replies stopped repainting the entire transcript sixty times a second, so streaming stays smooth to the last word.",
+        tag: "Faster",
+      },
+      {
+        icon: "🔌",
+        title: "Connections that admit failure",
+        blurb: "Connectors verify they actually connected, and sign-in never claims it opened a browser that didn't open — if it fails you get the link.",
+        tag: "Safer",
+      },
+      {
+        icon: "📊",
+        title: "It grades itself now",
+        blurb: "A harder coding benchmark plus a scorecard that tracks what a task really costs — so a change that makes Ares slower or pricier gets caught, not shipped.",
+        tag: "New",
+      },
+    ],
+  },
+  {
     version: "0.37.2",
     date: "August 2026",
     title: "Laws, laurels, and light",

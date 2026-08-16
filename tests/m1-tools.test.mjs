@@ -530,16 +530,24 @@ test("PowerShell: non-zero exit preserves diagnostics and declares failure", asy
 test("PowerShell: timeout preserves partial diagnostics and declares failure", async () => {
   if (process.platform !== "win32") return;
   const tmp = await makeTmp();
+  // The timeout must outlast the interpreter's cold start, or the process is
+  // killed before it reaches Write-Output and the empty stdout this test would
+  // report as a bug is simply correct. Startup is ~1.5s on a normal Windows box
+  // and worse under load, so measure it here instead of guessing a constant.
+  const startupProbe = Date.now();
+  await PowerShellTool.call({ command: "Write-Output 'warm'", description: "measure startup", timeout: 60_000 }, ctx(tmp));
+  const startupMs = Date.now() - startupProbe;
+  const timeout = startupMs + 2000;
   const r = await PowerShellTool.call(
     {
-      command: "Write-Output 'timeout-stdout'; [Console]::Error.WriteLine('timeout-stderr'); Start-Sleep -Seconds 5",
+      command: `Write-Output 'timeout-stdout'; [Console]::Error.WriteLine('timeout-stderr'); Start-Sleep -Seconds ${Math.ceil(timeout / 1000) + 20}`,
       description: "test timeout diagnostics",
-      timeout: 1000,
+      timeout,
     },
     ctx(tmp),
   );
 
-  assert.equal(r.failure, "PowerShell timed out after 1000ms");
+  assert.equal(r.failure, `PowerShell timed out after ${timeout}ms`);
   assert.equal(r.output.timedOut, true);
   assert.ok(Object.hasOwn(r.output, "exitCode"));
   assert.match(r.output.stdout, /timeout-stdout/);

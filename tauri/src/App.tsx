@@ -651,7 +651,11 @@ function App() {
   const [pill, setPill] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(() => window.localStorage.getItem("ares.rail.collapsed") === "1");
   const prePillGeom = useRef<{ size: PhysicalSize; pos: PhysicalPosition } | null>(null);
-  const [anthropicAuth, setAnthropicAuth] = useState<{ open: boolean; status: "idle" | "opening" | "waiting" | "done" | "error"; error?: string }>({ open: false, status: "idle" });
+  // `browser` tracks whether the handoff actually happened. It is not cosmetic:
+  // when opening the browser fails (headless session, no xdg-open) the user is
+  // waiting on a page that never appeared, and the only useful recovery is the
+  // URL itself.
+  const [anthropicAuth, setAnthropicAuth] = useState<{ open: boolean; status: "idle" | "opening" | "waiting" | "done" | "error"; error?: string; browser?: "opening" | "opened" | "failed"; url?: string }>({ open: false, status: "idle" });
   // ChatGPT (OpenAI) OAuth — routes GPT usage through the user's ChatGPT
   // subscription via the Codex backend; no API key.
   const [openaiAuth, setOpenaiAuth] = useState<{ signingIn: boolean; connected: boolean; email: string | null; plan: string | null }>({ signingIn: false, connected: false, email: null, plan: null });
@@ -1456,10 +1460,18 @@ function App() {
           return true;
         }
         case "anthropic_login_url": {
-          // Daemon started the loopback server and opened the browser — just
-          // show the waiting state. Code arrives automatically via the redirect.
-          if (e.url) void invoke("ares_open_url", { url: String(e.url) }).catch(() => null);
-          setAnthropicAuth({ open: true, status: "waiting" });
+          // The daemon started the loopback server and handed us the URL; the
+          // DESKTOP opens the browser. The code arrives automatically via the
+          // redirect — but only if the browser actually came up, so the result
+          // of that open is state, not a swallowed promise.
+          const url = e.url ? String(e.url) : "";
+          setAnthropicAuth({ open: true, status: "waiting", browser: url ? "opening" : "failed", url });
+          if (url) {
+            void invoke("ares_open_url", { url }).then(
+              () => setAnthropicAuth((s) => (s.open ? { ...s, browser: "opened" } : s)),
+              () => setAnthropicAuth((s) => (s.open ? { ...s, browser: "failed" } : s)),
+            );
+          }
           return true;
         }
         case "anthropic_login_done": {
@@ -4185,6 +4197,8 @@ function App() {
         <AnthropicSignIn
           status={anthropicAuth.status}
           error={anthropicAuth.error}
+          browser={anthropicAuth.browser}
+          url={anthropicAuth.url}
           onRetry={startAnthropicSignIn}
           onClose={() => setAnthropicAuth({ open: false, status: "idle" })}
         />
@@ -10305,14 +10319,19 @@ function ServicesPane({
 function AnthropicSignIn({
   status,
   error,
+  browser,
+  url,
   onRetry,
   onClose,
 }: {
   status: "idle" | "opening" | "waiting" | "done" | "error";
   error?: string;
+  browser?: "opening" | "opened" | "failed";
+  url?: string;
   onRetry: () => void;
   onClose: () => void;
 }) {
+  const browserFailed = browser === "failed";
   return (
     <div className="scrim center" onClick={onClose}>
       <div className="authModal" onClick={(e) => e.stopPropagation()}>
@@ -10331,13 +10350,23 @@ function AnthropicSignIn({
         ) : (
           <>
             <p className="authModalHint">
-              Use your Claude Pro or Max subscription — no API key, no per-token billing. Approve access in the browser window that just opened and you'll be signed in automatically.
+              {browserFailed
+                ? "Use your Claude Pro or Max subscription — no API key, no per-token billing. Ares could not open your browser, so open the link below yourself; the sign-in still completes automatically once you approve."
+                : "Use your Claude Pro or Max subscription — no API key, no per-token billing. Approve access in the browser window that just opened and you'll be signed in automatically."}
             </p>
             <ol className="authSteps">
-              <li data-on="1">Browser opened to Claude</li>
+              <li data-on={browser === "opened" ? "1" : "0"} data-failed={browserFailed ? "1" : undefined}>
+                {browserFailed ? "Could not open your browser" : browser === "opened" ? "Browser opened to Claude" : "Opening your browser…"}
+              </li>
               <li data-on={status === "waiting" ? "1" : "0"}>Approve access</li>
               <li data-on="0">Signing in automatically…</li>
             </ol>
+            {browserFailed && url ? (
+              <p className="authModalHint authManualUrl">
+                <span>Open this URL manually:</span>
+                <code>{url}</code>
+              </p>
+            ) : null}
             <div className="authActions">
               <button className="ghost" onClick={onRetry}>Reopen browser</button>
               <button className="ghost" onClick={onClose}>Cancel</button>

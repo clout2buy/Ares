@@ -6,7 +6,13 @@ import { test } from "node:test";
 import { Session, SessionKernelStore } from "../packages/core/dist/index.js";
 import { ShellRegistry } from "../packages/tools/dist/index.js";
 
-async function waitFor(check, timeoutMs = 8_000) {
+// The deadline is a FAILURE ceiling, not an expected duration: a passing run
+// returns the moment the condition holds, so a generous ceiling costs nothing
+// on green and only makes a genuine hang take longer to report. Eight seconds
+// was tight enough to lose a race on a loaded windows-latest runner — this test
+// waits on real spawned processes while --test-concurrency=4 spawns more — and
+// a CI that goes red without a regression trains you to ignore red.
+async function waitFor(check, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = check();

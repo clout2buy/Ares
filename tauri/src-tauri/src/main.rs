@@ -330,6 +330,11 @@ fn start_daemon(
     })?;
     fs::create_dir_all(&runtime.workspace)
         .map_err(|error| format!("failed to create Ares workspace: {error}"))?;
+    // One vault, not two: adopt any pre-split desktop home before anything
+    // creates an empty one at the documented path.
+    if let Some(note) = converge_desktop_vault() {
+        eprintln!("ares: {note}");
+    }
     if let Some(home) = desktop_ares_home() {
         fs::create_dir_all(&home)
             .map_err(|error| format!("failed to create Ares home: {error}"))?;
@@ -2945,13 +2950,128 @@ fn desktop_workspace_dir() -> PathBuf {
         .join("Ares Workspace")
 }
 
+/// The Ares home — `~/.ares`, the SAME vault the CLI uses.
+///
+/// This used to resolve `<config dir>/Ares/home` while the CLI resolved
+/// `~/.ares` (packages/mind/src/paths.ts). They agreed only when ARES_HOME was
+/// set, which meant that on a default install the terminal and the desktop were
+/// two agents over two vaults — different sessions, different memory, different
+/// encrypted keys — while the README promised "the same agent over the same
+/// encrypted ~/.ares vault". This is not a Linux quirk; the same split existed
+/// on Windows between %APPDATA%\Ares\home and %USERPROFILE%\.ares.
+///
+/// Reported as B6 of #5 by @BNHR-dev.
 fn desktop_ares_home() -> Option<PathBuf> {
     if let Ok(value) = env::var("ARES_HOME") {
         return Some(PathBuf::from(value));
     }
+    user_home_dir().map(|home| home.join(".ares"))
+}
+
+/// Where the desktop kept its vault before the split was closed.
+fn legacy_desktop_ares_home() -> Option<PathBuf> {
     user_config_dir()
         .or_else(|| user_home_dir().map(|home| home.join(".config")))
         .map(|dir| dir.join("Ares").join("home"))
+}
+
+/// Dropped in the legacy vault once its contents have been adopted, so a
+/// migration that could not move the directory itself still runs exactly once.
+const VAULT_MIGRATED_MARKER: &str = ".migrated-to-ares-home";
+
+/// What convergence should do, decided purely from the state of the two
+/// directories. Split out from the IO so the rules can be tested directly —
+/// this code moves someone's sessions and keys, and "probably right" is not a
+/// standard that applies to it.
+#[derive(Debug, PartialEq, Eq)]
+enum VaultPlan {
+    /// Nothing to do: an explicit ARES_HOME, or no legacy state to adopt.
+    Nothing,
+    /// The legacy vault holds the only state — adopt it at the documented path.
+    Adopt,
+    /// BOTH hold state. Never merge: use the documented vault and say so
+    /// loudly, leaving the legacy one untouched on disk.
+    Conflict,
+}
+
+fn plan_vault_convergence(explicit_home: bool, legacy_populated: bool, current_populated: bool) -> VaultPlan {
+    if explicit_home || !legacy_populated {
+        return VaultPlan::Nothing;
+    }
+    if current_populated {
+        VaultPlan::Conflict
+    } else {
+        VaultPlan::Adopt
+    }
+}
+
+fn dir_is_populated(path: &Path) -> bool {
+    fs::read_dir(path)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Run the one-time convergence. Returns a note worth logging when anything
+/// happened. Never deletes: the worst outcome is a duplicate on disk, which is
+/// recoverable, unlike the alternative.
+fn converge_desktop_vault() -> Option<String> {
+    if env::var_os("ARES_HOME").is_some() {
+        return None;
+    }
+    let current = desktop_ares_home()?;
+    let legacy = legacy_desktop_ares_home()?;
+    if current == legacy || legacy.join(VAULT_MIGRATED_MARKER).exists() {
+        return None;
+    }
+    match plan_vault_convergence(false, dir_is_populated(&legacy), dir_is_populated(&current)) {
+        VaultPlan::Nothing => None,
+        VaultPlan::Conflict => Some(format!(
+            "Ares now uses {} (the same vault as the terminal). Your older desktop-only state is still at {} — nothing was merged or deleted; move anything you want by hand.",
+            current.display(),
+            legacy.display(),
+        )),
+        VaultPlan::Adopt => {
+            // A rename is atomic and duplicates nothing; it only fails when the
+            // two paths sit on different filesystems, and then a copy is the
+            // honest fallback.
+            if let Some(parent) = current.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if fs::rename(&legacy, &current).is_ok() {
+                return Some(format!("Moved the desktop vault to {} — the terminal and the app now share one home.", current.display()));
+            }
+            match copy_dir_all(&legacy, &current) {
+                Ok(()) => {
+                    let _ = fs::write(legacy.join(VAULT_MIGRATED_MARKER), current.display().to_string());
+                    Some(format!(
+                        "Copied the desktop vault to {} — the terminal and the app now share one home. The original is still at {}.",
+                        current.display(),
+                        legacy.display(),
+                    ))
+                }
+                Err(error) => Some(format!(
+                    "Could not move the desktop vault from {} to {}: {error}. Ares is using {} — your older state is untouched.",
+                    legacy.display(),
+                    current.display(),
+                    current.display(),
+                )),
+            }
+        }
+    }
 }
 
 fn desktop_ares_home_string() -> String {
@@ -3047,6 +3167,56 @@ fn user_config_dir() -> Option<PathBuf> {
             home.join(".config")
         }
     })
+}
+
+#[cfg(test)]
+mod vault_tests {
+    use super::{copy_dir_all, plan_vault_convergence, VaultPlan};
+    use std::fs;
+
+    #[test]
+    fn an_explicit_home_is_never_second_guessed() {
+        // Someone who sets ARES_HOME has said where the vault is. Moving
+        // anything under them would be the tool overruling an explicit choice.
+        assert_eq!(plan_vault_convergence(true, true, false), VaultPlan::Nothing);
+        assert_eq!(plan_vault_convergence(true, true, true), VaultPlan::Nothing);
+    }
+
+    #[test]
+    fn nothing_to_adopt_is_nothing_to_do() {
+        assert_eq!(plan_vault_convergence(false, false, false), VaultPlan::Nothing);
+        assert_eq!(plan_vault_convergence(false, false, true), VaultPlan::Nothing);
+    }
+
+    #[test]
+    fn a_desktop_only_install_adopts_its_vault() {
+        assert_eq!(plan_vault_convergence(false, true, false), VaultPlan::Adopt);
+    }
+
+    #[test]
+    fn two_populated_vaults_are_never_merged() {
+        // The one case that could destroy something. Both hold real sessions
+        // and keys; picking a winner per-file is a guess, and a guess here
+        // costs someone their history.
+        assert_eq!(plan_vault_convergence(false, true, true), VaultPlan::Conflict);
+    }
+
+    #[test]
+    fn copying_a_vault_preserves_nested_contents() {
+        let root = std::env::temp_dir().join(format!("ares-vault-copy-{}", std::process::id()));
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(from.join("mind")).unwrap();
+        fs::write(from.join("ui.json"), "{}").unwrap();
+        fs::write(from.join("mind").join("memory.jsonl"), "{\"a\":1}\n").unwrap();
+
+        copy_dir_all(&from, &to).unwrap();
+
+        assert_eq!(fs::read_to_string(to.join("ui.json")).unwrap(), "{}");
+        assert_eq!(fs::read_to_string(to.join("mind").join("memory.jsonl")).unwrap(), "{\"a\":1}\n");
+        assert!(from.join("ui.json").exists(), "the source is never removed by a copy");
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

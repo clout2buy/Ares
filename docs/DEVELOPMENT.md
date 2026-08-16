@@ -75,6 +75,16 @@ Do not store runtime state in the repository. The default durable Ares home is:
 `$ARES_HOME` overrides it. Point it at a throwaway directory when you need to run
 the CLI without touching your real home.
 
+**One vault, both surfaces.** The desktop resolves the same `~/.ares` the CLI
+does. It used to resolve `<config dir>/Ares/home` instead — `~/.config/Ares/home`
+on Linux, `%APPDATA%\Ares\home` on Windows — so on a default install the terminal
+and the app were two agents over two vaults with separate sessions, memory, and
+encrypted keys. On first launch after the change the desktop adopts a pre-split
+vault automatically (a rename where it can, a copy where the paths sit on
+different filesystems). If BOTH homes hold state it never merges them: it uses
+`~/.ares`, leaves the old directory untouched, and logs where it is. Nothing is
+ever deleted.
+
 `pnpm test` used to be one of those times: parts of the suite exercise code that
 writes to the durable home, so a full run left a real `~/.ares` behind and created
 one on a clean machine. The `test` script now preloads `tests/_isolate-home.mjs`,

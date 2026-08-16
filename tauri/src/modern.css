@@ -526,11 +526,43 @@
      so pin it shut. */
   overflow-x: hidden;
 }
+/* ONE left edge for the whole transcript.
+ *
+ * Every child was centred with `margin: auto` — correct on its own, but each
+ * KIND carries a different max-width (assistant turns 86%, tool cards 80%, the
+ * approval gate its own fixed width). Centre things of different widths inside
+ * the same column and their left edges fan out into a staircase: measured at
+ * 341 / 367 / 393 / 480, with the answer text at 415 because it also sits past
+ * the avatar. Five edges down one conversation, so nothing lined up with
+ * anything and the agent's output had no column to read down.
+ *
+ * The measures themselves are worth keeping — they exist so a line of prose
+ * does not run 880px wide — so the widths are untouched and only the ANCHOR
+ * changes: every item is pinned to the column's left edge instead of being
+ * centred at its own width. Written as an explicit margin rather than `auto`
+ * so the same expression can be offset by the gutter below. */
+.ares[data-style="modern"] .chat {
+  --chat-col: min(880px, 92%);
+  /* the avatar column an assistant turn hangs in: 34px mark + 14px gap */
+  --turn-gutter: 48px;
+}
 .ares[data-style="modern"] .chat > * {
-  width: min(880px, 92%);
-  margin-left: auto;
-  margin-right: auto;
+  width: var(--chat-col);
+  margin-left: calc((100% - var(--chat-col)) / 2);
+  margin-right: 0;
   min-width: 0;
+}
+/* The agent's standalone cards belong to the ANSWER, not to the turn's outer
+   frame, so they align with the prose — past the avatar — rather than with the
+   avatar itself. That is the single edge everything the agent emits shares. */
+.ares[data-style="modern"] .chat > .toolCard,
+.ares[data-style="modern"] .chat > .artifact,
+.ares[data-style="modern"] .chat > .gate,
+.ares[data-style="modern"] .chat > .notice,
+.ares[data-style="modern"] .chat > .authPrompt,
+.ares[data-style="modern"] .chat > .permissionCard,
+.ares[data-style="modern"] .chat > .diffCard {
+  margin-left: calc((100% - var(--chat-col)) / 2 + var(--turn-gutter));
 }
 
 /* The sanctum is full-bleed: the helm owns the whole stage, the session header

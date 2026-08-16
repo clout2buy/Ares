@@ -54,7 +54,7 @@ jobs:
       # gate that fails at random is a gate people learn to bypass. Raise this
       # back to the CI default once those assertions no longer race.
       - name: Test
-        run: node --test --test-concurrency=2 tests/*.test.mjs
+        run: node --import ./tests/_isolate-home.mjs --test --test-concurrency=2 tests/*.test.mjs
 
       # Bundle the embedded node + CLI runtime into tauri/src-tauri/runtime/.
       # tauri-build validates this resource path exists at compile time, and the
@@ -126,7 +126,7 @@ jobs:
       # gate that fails at random is a gate people learn to bypass. Raise this
       # back to the CI default once those assertions no longer race.
       - name: Test
-        run: node --test --test-concurrency=2 tests/*.test.mjs
+        run: node --import ./tests/_isolate-home.mjs --test --test-concurrency=2 tests/*.test.mjs
 
       - name: Build embedded runtime
         run: pnpm --filter ares-tauri build:runtime

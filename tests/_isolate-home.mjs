@@ -12,6 +12,13 @@
 // ARES_HOME deliberately still wins — CI and one-off runs that want a specific
 // home keep it.
 //
+// EVERY test invocation needs this flag, not just `pnpm test`. The CI and
+// release workflows call `node --test` directly, so for a while they kept the
+// old behaviour: every test file on the runner sharing one real home while
+// running in parallel. Shared mutable state across concurrent test processes is
+// a flakiness source whatever else it is, so those invocations pass the flag
+// too. If you add a new way to run the suite, carry it across.
+//
 // Note HOME is NOT what to set here: on Windows os.homedir() reads USERPROFILE,
 // so ARES_HOME is the only lever that works on every platform.
 

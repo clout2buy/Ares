@@ -44,7 +44,7 @@ jobs:
         run: pnpm build
 
       - name: Test
-        run: node --test tests/*.test.mjs
+        run: node --import ./tests/_isolate-home.mjs --test tests/*.test.mjs
 
   coverage:
     name: Coverage (Node built-in)
@@ -73,7 +73,7 @@ jobs:
       # --experimental-test-coverage is a Node 22 feature; the matrix job above
       # already pins node-version 22, so this flag is safe to use here.
       - name: Test with coverage
-        run: node --test --experimental-test-coverage tests/*.test.mjs
+        run: node --import ./tests/_isolate-home.mjs --test --experimental-test-coverage tests/*.test.mjs
 
   rust:
     name: Build (Rust desktop shell, ${{ matrix.os }})

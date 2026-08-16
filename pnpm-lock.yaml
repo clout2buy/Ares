@@ -92,6 +92,9 @@ importers:
       '@ares/mind':
         specifier: workspace:*
         version: link:../mind
+      '@ares/mnemosyne':
+        specifier: workspace:*
+        version: link:../mnemosyne
       '@ares/operator':
         specifier: workspace:*
         version: link:../operator

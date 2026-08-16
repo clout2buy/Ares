@@ -23,6 +23,7 @@ import { agentCommand, evalCommand, missionCommand, modelsCommand } from "./entr
 import { chatCommand, launcherCommand, runCommand } from "./entry/chat.js";
 import { daemonCommand } from "./entry/daemon.js";
 import { attachCommand, garrisonCommand } from "./entry/garrisonCmd.js";
+import { mnemosyneCommand } from "./entry/mnemosyneCmd.js";
 import { holoCommand } from "./entry/holoCmd.js";
 import { checkpointsCommand, doctorCommand, frictionCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
 import { mindCommand } from "./entry/mindCmd.js";
@@ -88,6 +89,10 @@ async function main(): Promise<void> {
     }
     case "garrison": {
       process.exit(await garrisonCommand(args));
+      return;
+    }
+    case "mnemosyne": {
+      process.exit(await mnemosyneCommand(args));
       return;
     }
     case "attach": {

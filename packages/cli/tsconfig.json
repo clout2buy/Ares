@@ -17,6 +17,7 @@
     { "path": "../connectors" },
     { "path": "../mind" },
     { "path": "../garrison" },
+    { "path": "../mnemosyne" },
     { "path": "../channels" }
   ],
   "include": ["src/**/*.ts"]

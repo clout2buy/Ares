@@ -104,3 +104,21 @@ On Windows, both commands hand off to the existing `scripts/install.ps1` and
   already provides; no extra system packages were needed.
 - `/bin/sh` — the generated launcher's shebang is `#!/bin/sh`, an absolute path,
   so a `sh` found only elsewhere on PATH will not do.
+
+### Linux desktop extras
+
+The desktop shell renders through WebKitGTK, which plays media through
+GStreamer rather than bundling its own decoders. On a stock install without the
+GStreamer plugin set, audio and video elements in the WebView fail at load with
+`GStreamer element appsrc not found` and a run of `GST_IS_ELEMENT` assertion
+failures. Everything else works; only in-WebView media is affected. Install the
+usual plugin packages if you want it:
+
+```bash
+sudo dnf install gstreamer1-plugins-base gstreamer1-plugins-good   # Fedora
+sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good  # Debian/Ubuntu
+```
+
+Reported on Fedora 44 / KDE Plasma on Wayland. Ares does not bundle these — a
+media stack is the distribution's job, and shipping a second one is how you get
+two broken ones.

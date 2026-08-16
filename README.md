@@ -74,8 +74,20 @@ Desktop shell (optional):
 
 ```bash
 pnpm --filter ares-tauri dev            # run the Tauri app in dev
-pnpm desktop:installer                  # build the .exe (bundles a self-contained
+pnpm desktop:installer                  # build the Windows .exe (bundles a self-contained
                                         # runtime + registers the `ares` CLI on PATH)
+```
+
+`desktop:installer` builds the **Windows NSIS installer only** — that is what
+`tauri.conf.json` pins. Every release also ships Linux `.AppImage` and `.deb`
+artifacts, built by the `release-linux` job in `.github/workflows/release.yml`,
+which passes its own `--bundles appimage,deb` rather than going through this
+script. To produce them locally, after installing the WebKitGTK build
+dependencies that job lists:
+
+```bash
+pnpm --filter ares-tauri build:runtime
+pnpm --filter ares-tauri exec tauri build --bundles appimage,deb
 ```
 
 ## Safety & secrets

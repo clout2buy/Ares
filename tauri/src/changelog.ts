@@ -38,6 +38,50 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.39.0",
+    date: "August 2026",
+    title: "One vault, one column",
+    tagline: "The app and the terminal finally share a single memory, the transcript reads down one clean edge, and you can actually read Ares think.",
+    highlights: [
+      {
+        icon: "🗝️",
+        title: "One Ares, not two",
+        blurb: "The app and the terminal now share the same vault, so your sessions, memory and keys are the same wherever you talk to Ares. Existing app data moves itself across on first launch.",
+        tag: "New",
+      },
+      {
+        icon: "💭",
+        title: "Watch it think",
+        blurb: "Live thinking used to rewrite itself into an unreadable two-line smear. It now reads like a proper feed you can scroll back through while it works.",
+        tag: "Polished",
+      },
+      {
+        icon: "📐",
+        title: "A transcript that lines up",
+        blurb: "Answers, tool calls, artifacts and approvals all sit on one left edge instead of four, so a long conversation reads as a single column.",
+        tag: "Polished",
+      },
+      {
+        icon: "✨",
+        title: "Lighter traces",
+        blurb: "Tool calls and thoughts stopped being heavy stacked panels — they read as slim readouts now, so the answer is the thing your eye lands on.",
+        tag: "Polished",
+      },
+      {
+        icon: "🩹",
+        title: "Small things that grated",
+        blurb: "A square focus box in the round message bar, a stray orange mark under charts, and a session list you had to squint at — all gone.",
+        tag: "Polished",
+      },
+      {
+        icon: "🐧",
+        title: "Links open on Linux",
+        blurb: "Opening a link from the AppImage failed silently on some systems because the bundle's libraries leaked into the system's link handler. Fixed.",
+        tag: "Safer",
+      },
+    ],
+  },
+  {
     version: "0.38.0",
     date: "August 2026",
     title: "Reach and reckoning",

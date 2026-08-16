@@ -317,8 +317,16 @@ fn start_daemon(
     }
 
     let runtime = resolve_ares_runtime(Some(&app)).ok_or_else(|| {
-        "Could not find Ares runtime. Rebuild the desktop runtime before launching the app."
-            .to_string()
+        // "Not found" and "found but broken" are different failures and need
+        // different fixes. A truncated or half-written runtime used to look
+        // exactly like a missing one.
+        match bundled_runtime_defect(&app) {
+            Some(defect) => format!(
+                "Ares runtime is installed but unusable: {defect}. Reinstall the app or rebuild the desktop runtime.",
+            ),
+            None => "Could not find Ares runtime. Rebuild the desktop runtime before launching the app."
+                .to_string(),
+        }
     })?;
     fs::create_dir_all(&runtime.workspace)
         .map_err(|error| format!("failed to create Ares workspace: {error}"))?;
@@ -2778,7 +2786,7 @@ fn resolve_ares_runtime(app: Option<&tauri::AppHandle>) -> Option<AresRuntime> {
     None
 }
 
-fn bundled_runtime(app: &tauri::AppHandle) -> Option<AresRuntime> {
+fn bundled_runtime_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
         push_runtime_candidates(&mut candidates, resource_dir);
@@ -2788,16 +2796,24 @@ fn bundled_runtime(app: &tauri::AppHandle) -> Option<AresRuntime> {
             push_runtime_candidates(&mut candidates, parent.to_path_buf());
         }
     }
-
     let mut seen = HashSet::new();
-    for root in candidates {
-        if seen.insert(root.clone()) {
-            if let Some(runtime) = runtime_at(&root) {
-                return Some(runtime);
-            }
-        }
-    }
-    None
+    candidates.retain(|root| seen.insert(root.clone()));
+    candidates
+}
+
+fn bundled_runtime(app: &tauri::AppHandle) -> Option<AresRuntime> {
+    bundled_runtime_candidates(app)
+        .iter()
+        .find_map(|root| runtime_at(root))
+}
+
+/// The first runtime layout that is PRESENT but unusable, described. Resolution
+/// itself stays a plain Option — this exists only so a dead daemon can say why
+/// instead of leaving every button inert with a bare error.
+fn bundled_runtime_defect(app: &tauri::AppHandle) -> Option<String> {
+    bundled_runtime_candidates(app)
+        .iter()
+        .find_map(|root| runtime_defect(root))
 }
 
 fn push_runtime_candidates(candidates: &mut Vec<PathBuf>, root: PathBuf) {
@@ -2820,13 +2836,39 @@ fn simplify_path(path: &Path) -> PathBuf {
     }
 }
 
+/// A present-but-EMPTY file is worse than a missing one: `exists()` passes,
+/// Node runs the empty module, exits 0, and the daemon is dead with no
+/// diagnostic — every UI button that talks to it goes inert. The packaging
+/// script already refuses to emit zero-byte artifacts
+/// (scripts/package-tauri-runtime.mjs); the probe that consumes them has to
+/// hold the same line, or a truncated download becomes a silent brick.
+fn is_usable_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.len() > 0)
+        .unwrap_or(false)
+}
+
+fn runtime_defect(root: &Path) -> Option<String> {
+    let root = simplify_path(root);
+    let cli = root.join("cli").join("ares-cli.mjs");
+    let node = root
+        .join("bin")
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    for (label, path) in [("CLI entrypoint", &cli), ("bundled Node", &node)] {
+        if path.exists() && !is_usable_file(path) {
+            return Some(format!("{label} at {} is present but empty", path.display()));
+        }
+    }
+    None
+}
+
 fn runtime_at(root: &Path) -> Option<AresRuntime> {
     let root = simplify_path(root);
     let cli = root.join("cli").join("ares-cli.mjs");
     let node = root
         .join("bin")
         .join(if cfg!(windows) { "node.exe" } else { "node" });
-    if cli.exists() && node.exists() {
+    if is_usable_file(&cli) && is_usable_file(&node) {
         return Some(AresRuntime {
             app_root: root.to_path_buf(),
             cli_entry: cli,
@@ -2843,7 +2885,9 @@ fn cli_in_root(root: &Path) -> Option<AresRuntime> {
         .join("cli")
         .join("dist")
         .join("entry.js");
-    if cli.exists() {
+    // Same rule as the bundled probe: a zero-byte entry.js is a failed build,
+    // not a runtime.
+    if is_usable_file(&cli) {
         Some(AresRuntime {
             app_root: root.to_path_buf(),
             cli_entry: cli,

@@ -37,6 +37,19 @@ It records integrity, proof, false-green, token, prompt, task-manifest, and
 tool-schema data under the Ares home. Real-model runs execute candidate code;
 run them in a disposable VM/container and pass `--allow-unsafe-process-eval`.
 
+`ares eval trend` reads the append-only scoreboard those runs write and prints
+one line per comparable cell plus the harness on/off A/B. Two runs are only ever
+compared when the suite, task manifest, provider, model, and harness setting all
+match — the system-prompt and tool-schema hashes are deliberately excluded from
+that key, because they change exactly when the harness changes and the harness is
+what is under test.
+
+`ares eval coding --gate` exits 3 when a run regresses against its own history.
+It gates on tokens per score point, verified rate, false-green rate, wall-clock,
+and score — **not** score alone, which coding-v3 proved saturates at frontier
+tier. One prior run is reported as advisory; the gate needs two or more, because
+a single baseline is too noisy to fail a build on.
+
 The CLI entrypoint is built to `packages/cli/dist/entry.js`. Use `pnpm build` before running `pnpm ares` or before launching the desktop companion after a clean.
 
 ## Permission Posture

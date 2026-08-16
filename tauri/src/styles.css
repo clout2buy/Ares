@@ -816,6 +816,17 @@ canvas.bubbleImage { cursor: zoom-in; }
   animation: caretBlink 1s steps(1, end) infinite;
 }
 @keyframes caretBlink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.25; } }
+/* A caret only means anything while it rides TEXT. When a streamed answer ends
+   in a block — a chart, a diagram, a table, a code fence, a list — this
+   inline-block wraps onto a line of its own and sits alone underneath it,
+   which reads as a stray orange mark, not a cursor. It was the one place the
+   live signal looked like a rendering artifact.
+   Nothing is lost by dropping it there: the header "writing" chip and the
+   WRITING marker above the composer both still say the turn is live. */
+.turn.assistant[data-streaming="1"] .prose:has(> :last-child:is(
+  table, pre, figure, blockquote, ul, ol, h1, h2, h3, h4, h5, h6, img, hr,
+  .mermaidBlock, .chartBlock, .tableWrap, .diffCard, .toolCard
+))::after { content: none; }
 /* the freshest streamed text glows faintly hot as it lands.
    The glow is painted once, not pulsed. text-shadow is a paint property, so it
    is never composited: animating it repaints the entire .prose block on every
@@ -1046,6 +1057,22 @@ canvas.bubbleImage { cursor: zoom-in; }
 }
 .thinking { min-width: 0; max-width: 100%; }
 .thinkText[data-open="0"] { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* A LIVE thought is a ticker, not a clamp. The full text is in the DOM (see
+   App.tsx) and this is the viewport over it: fixed height, contents pinned to
+   the BOTTOM via column-reverse, overflow clipped off the top. New lines arrive
+   at the bottom and older ones ride up out of view — text appends and stays
+   put, which is the whole point. The old behaviour slid a 150-character window
+   over the string and then clamped it to two lines, so the visible text
+   rewrote itself on every chunk and was cut mid-sentence at both ends.
+   The fixed height also settles SpringHeight: while live the box stops
+   re-animating its height on every token. Expanding still shows everything. */
+.thinkText[data-live="1"][data-open="0"] {
+  display: flex;
+  flex-direction: column-reverse;
+  -webkit-line-clamp: none;
+  max-height: 4.65em;
+  overflow: hidden;
+}
 @media (prefers-reduced-motion: reduce) {
   .thinking[data-live="1"] .thinkSigil, .thinkEllipsis i { animation: none; }
 }

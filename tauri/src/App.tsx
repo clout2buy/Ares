@@ -94,7 +94,7 @@ import {
   MAX_ATTACHMENTS,
   supportedAttachmentMediaType,
 } from "./state/attachments";
-import { compact, liveTail, stringify, fmtTokens, fmtSpend, fmtMs, fmtBytes, escapeHtml, dataUrlB64Len, splitDataImages } from "./lib/format";
+import { compact, stringify, fmtTokens, fmtSpend, fmtMs, fmtBytes, escapeHtml, dataUrlB64Len, splitDataImages } from "./lib/format";
 import { renderMarkdown, splitRich, inlineMd, type RichSegment } from "./lib/markdown";
 import {
   type Prefs,
@@ -8351,8 +8351,14 @@ function ThinkingView({ text }: { text: string }) {
         <span className="thinkMeta">{words.toLocaleString()} word{words === 1 ? "" : "s"}</span>
         <span className="thinkChevron" data-open={open ? "1" : "0"} aria-hidden="true">▾</span>
       </button>
-      <div className="thinkText" data-open={open ? "1" : "0"}>
-        {open ? text : live ? liveTail(text, 150) : compact(text, 220)}
+      {/* A live thought renders in FULL and is windowed by CSS. It used to
+          render liveTail(text, 150) — the last 150 characters, whitespace
+          flattened — which meant every streamed chunk slid the window and
+          shifted every visible character left: the text rewrote itself instead
+          of growing, and the 2-line clamp then cut whatever survived. Keeping
+          the whole string here lets the VIEWPORT move instead of the text. */}
+      <div className="thinkText" data-open={open ? "1" : "0"} data-live={live ? "1" : "0"}>
+        {open || live ? text : compact(text, 220)}
       </div>
     </>
   );

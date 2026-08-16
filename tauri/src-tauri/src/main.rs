@@ -566,6 +566,41 @@ fn ares_set_routing(routing: Value, state: State<DaemonState>) -> Result<(), Str
 /// Used by the desktop for the read-model commands: sessions_list,
 /// session_history, engine_config, skills_list, skill_toggle, usage_stats,
 /// operator_status. The daemon replies asynchronously on the event stream.
+/// Spawn a SYSTEM helper with the bundle's library environment scrubbed.
+///
+/// An AppImage exports LD_LIBRARY_PATH (and friends) so OUR binaries find the
+/// libraries packed beside them. Every process we spawn inherits those exports,
+/// including host helpers that have nothing to do with the bundle — and then
+/// `kde-open` loads the bundle's libcurl against the host's nghttp2 and dies
+/// with `undefined symbol: nghttp2_option_set_no_rfc9113_...`, which is what
+/// "open link" failing on Linux actually was.
+///
+/// AppRun saves each pre-launch value as `<VAR>_ORIG` for exactly this purpose:
+/// restore it where it exists, and remove the variable entirely where it does
+/// not. Outside an AppImage none of these are set and this is a no-op.
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn host_command(program: &str) -> Command {
+    const BUNDLE_VARS: [&str; 9] = [
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "GST_PLUGIN_SYSTEM_PATH",
+        "GST_PLUGIN_SYSTEM_PATH_1_0",
+        "GI_TYPELIB_PATH",
+        "GSETTINGS_SCHEMA_DIR",
+        "QT_PLUGIN_PATH",
+    ];
+    let mut command = Command::new(program);
+    for var in BUNDLE_VARS {
+        match env::var(format!("{var}_ORIG")) {
+            Ok(original) => command.env(var, original),
+            Err(_) => command.env_remove(var),
+        };
+    }
+    command
+}
+
 /// Open a URL in the user's default browser (used for the Anthropic OAuth
 /// sign-in flow). Validated to http(s) so a daemon event can't open arbitrary
 /// programs.
@@ -607,7 +642,7 @@ fn ares_open_url(url: String) -> Result<(), String> {
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
-        Command::new("xdg-open").arg(&url).spawn().map_err(|e| format!("failed to open browser: {e}"))?;
+        host_command("xdg-open").arg(&url).spawn().map_err(|e| format!("failed to open browser: {e}"))?;
         Ok(())
     }
 }
@@ -633,7 +668,7 @@ fn ares_open_path(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     { Command::new("open").arg(&target).spawn().map_err(|e| format!("failed to launch artifact: {e}"))?; Ok(()) }
     #[cfg(all(not(windows), not(target_os = "macos")))]
-    { Command::new("xdg-open").arg(&target).spawn().map_err(|e| format!("failed to launch artifact: {e}"))?; Ok(()) }
+    { host_command("xdg-open").arg(&target).spawn().map_err(|e| format!("failed to launch artifact: {e}"))?; Ok(()) }
 }
 
 /// Every command `type` the daemon's loop actually handles. The webview can

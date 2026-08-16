@@ -1070,8 +1070,20 @@ canvas.bubbleImage { cursor: zoom-in; }
   display: flex;
   flex-direction: column-reverse;
   -webkit-line-clamp: none;
-  max-height: 4.65em;
-  overflow: hidden;
+  max-height: 9.3em;
+  /* SCROLLABLE, not clipped. column-reverse means scrollTop rests at the
+     bottom, so the view follows the newest line for free — but the reader can
+     still scroll back through everything that went past. Clipping it instead
+     was the wrong call: at a thousand words that hid ninety-odd lines behind no
+     affordance at all, and text appeared to stream away into nowhere. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* the transcript must not start scrolling when this hits its top */
+  overscroll-behavior: contain;
+  /* older lines dissolve at the top edge instead of being guillotined, so it
+     reads as "scrolled past" rather than "gone" */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.5em);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.5em);
 }
 @media (prefers-reduced-motion: reduce) {
   .thinking[data-live="1"] .thinkSigil, .thinkEllipsis i { animation: none; }

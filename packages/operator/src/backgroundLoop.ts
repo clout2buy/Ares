@@ -11,6 +11,8 @@ export interface OperatorBackgroundTick {
   reason: OperatorWakeReason;
   decision: AttentionDecision;
   ran: Goal[];
+  /** The wakes this tick consumed. Empty on a plain interval heartbeat. */
+  events: unknown[];
 }
 
 /** The lifecycle vocabulary the daemon surfaces for the background loop. */
@@ -20,6 +22,7 @@ export type OperatorBackgroundEvent =
   | { type: "operator_idle"; reason: OperatorWakeReason; summary: string; suggestions: string[] }
   | { type: "operator_error"; message: string }
   | { type: "operator_stopped" }
+  | { type: "operator_woken"; reason: OperatorWakeReason; events: number }
   | { type: "watcher_fired"; id: string; label: string; goalId: string; summary: string };
 
 export interface OperatorBackgroundLoopOptions {
@@ -116,14 +119,20 @@ export class OperatorBackgroundLoop {
   async tickOnce(reason: OperatorWakeReason = "manual"): Promise<OperatorBackgroundTick> {
     // Backpressure: one tick at a time. A second wake while a tick is in flight
     // is dropped (the Scheduler also guards interval/event overlap).
-    if (this.ticking) return { reason, decision: decideAttention([]), ran: [] };
+    if (this.ticking) return { reason, decision: decideAttention([]), ran: [], events: [] };
     this.ticking = true;
     try {
-      // Remote pause: skip the tick entirely, but stay alive (a /resume reactivates).
+      // Remote pause: skip the tick entirely, but stay alive (a /resume
+      // reactivates). Deliberately BEFORE the drain — a parked tick must not
+      // swallow the wakes it isn't going to act on.
       if (await this.isPaused()) {
         this.emit({ type: "operator_idle", reason, summary: "paused", suggestions: [] });
-        return { reason, decision: decideAttention([]), ran: [] };
+        return { reason, decision: decideAttention([]), ran: [], events: [] };
       }
+      // Drain what woke us. Nothing consumed this queue before, so producers had
+      // no way to hand the loop a payload and the array only ever grew.
+      const events = this.scheduler.drainEvents();
+      if (events.length > 0) this.emit({ type: "operator_woken", reason, events: events.length });
       // Materialize due standing orders into goals BEFORE reading the goal set, so
       // a recurring mission becomes runnable on the very tick it comes due.
       if (this.opts.beforeTick) {
@@ -152,17 +161,17 @@ export class OperatorBackgroundLoop {
         // next strategic moves, so idle time still knows the war map.
         const suggestions = (await this.resolveNextActions()).slice(0, 5);
         this.emit({ type: "operator_idle", reason, summary: decision.summary, suggestions });
-        return { reason, decision, ran: [] };
+        return { reason, decision, ran: [], events };
       }
 
       try {
         const next = await tickGoal({ ...this.ctx, signal: this.ctx.signal ?? this.controller.signal }, goal);
         this.emit({ type: "operator_tick", reason, goalId: next.id, status: next.status, summary: decision.summary });
-        return { reason, decision, ran: [next] };
+        return { reason, decision, ran: [next], events };
       } catch (err) {
         // A failed worker tick never kills the loop — record it and move on.
         this.emit({ type: "operator_error", message: errMessage(err) });
-        return { reason, decision, ran: [] };
+        return { reason, decision, ran: [], events };
       }
     } finally {
       this.ticking = false;

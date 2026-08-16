@@ -12,7 +12,9 @@ import type { TelegramApiLike } from "./bridge.js";
 /** Mirror of @ares/operator's OperatorBackgroundEvent (decoupled — channels must
  *  not depend on operator). Only the fields a report needs. */
 export interface OperatorEventLike {
-  type: "operator_started" | "operator_tick" | "operator_idle" | "operator_error" | "operator_stopped" | "watcher_fired";
+  // operator_woken has no formatter on purpose: a wake is bookkeeping, and the
+  // work it leads to reports itself. It falls through to null.
+  type: "operator_started" | "operator_tick" | "operator_idle" | "operator_error" | "operator_stopped" | "operator_woken" | "watcher_fired";
   everyMs?: number;
   goalId?: string;
   status?: string;

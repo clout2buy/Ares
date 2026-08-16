@@ -3926,6 +3926,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             inputId,
             continuing: settlementRecoveryScheduled || deferredCommands.length > 0 || Boolean(entry.startupRecoveryInputId),
           });
+          // Event-first autonomy, finally with a producer. A settled turn is the
+          // moment the operator should look again — the workspace just changed
+          // under it. Until now the ONLY wake was the fallback heartbeat, up to
+          // thirty minutes out, so "Ares notices" meant "Ares notices after
+          // lunch". Watcher cadences still rate-limit the probes; this only
+          // decides WHEN the loop gets to check them.
+          //
+          // If another session is still mid-turn the pause gate parks this wake,
+          // and the queue holds it for the tick that actually runs.
+          autotickLoop?.enqueueEvent({ kind: "turn_settled", sessionId: command.sessionId, inputId });
         }
       })().catch((err) => {
         // Absolute backstop: the runner's own try/catch/finally should make

@@ -38,7 +38,7 @@ export {
   type QueryEngineDispatcherOptions,
 } from "./dispatcher.js";
 
-export { Scheduler, type SchedulerOptions } from "./scheduler.js";
+export { Scheduler, MAX_QUEUED_EVENTS, type SchedulerOptions } from "./scheduler.js";
 
 export {
   decideAttention,

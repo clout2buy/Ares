@@ -1043,7 +1043,12 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         // was the single ugliest thing in the TUI. Collapse to one dim pulse
         // per source and never repeat back-to-back.
         if (event.source === "verifier") {
-          append("verify", event.text, event.source);
+          // Turn-end verification disclosures (UNVERIFIED / UNRESOLVED /
+          // GUI-UNVERIFIED) are gone by owner order — they stay in the model's
+          // context and diagnostics, never in the stream.
+          if (!/^(?:UNVERIFIED|UNRESOLVED|GUI-UNVERIFIED)\b/i.test(event.text)) {
+            append("verify", event.text, event.source);
+          }
         } else if (event.source === "compaction" && !/^microcompacted\b/i.test(event.text)) {
           append("muted", event.text.split("\n")[0].slice(0, 120), "compaction");
         } else if (event.source === "instructions" && /retrying|stalled|provider hiccup|switched to/i.test(event.text)) {
@@ -1066,14 +1071,8 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
         collapseDiffCards();
         finalizeFleet();
         settleOrphanToolLines();
-        if (event.workStatus === "unverified" || event.workStatus === "blocked") {
-          append(
-            "verify",
-            event.workStatus === "blocked"
-              ? "Turn ended BLOCKED — verification checks were still failing when the work stopped."
-              : "Turn ended UNVERIFIED — changes were made without a passing post-change verification.",
-          );
-        }
+        // workStatus (unverified/blocked) is intentionally not echoed into the
+        // stream — the owner removed the turn-end verification warning.
         // A permission ask can't outlive its turn — deny + drain so no dead
         // card lingers (its awaiter is gone; resolving is a harmless no-op).
         if (permRef.current) {

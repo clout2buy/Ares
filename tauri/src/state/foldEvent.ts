@@ -595,12 +595,12 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // operational allowlist that needs owner attention; durable state,
       // repository maps, verifier output and loop guards stay in diagnostics.
       const text = e.text ?? "";
-      // Honesty markers from the verification spine ARE owner business: a turn
-      // that ends with unresolved red checks, unverified coding changes, or an
-      // unscreenshotted GUI must not read as a clean finish in the chat.
-      const visible = /^(?:Provider failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down|UNRESOLVED at turn end|UNVERIFIED at turn end|GUI-UNVERIFIED at turn end)|retrying with a smaller recent-history window/i.test(text);
+      // Verification-spine disclosures (UNVERIFIED/UNRESOLVED/GUI-UNVERIFIED)
+      // are deliberately NOT surfaced here — the owner asked for them gone.
+      // They remain in diagnostics and in the model's own context.
+      const visible = /^(?:Provider failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down)|retrying with a smaller recent-history window/i.test(text);
       if (!visible) break;
-      const tone = /failed|couldn't run|down|UNRESOLVED|UNVERIFIED/i.test(text) ? "warn" : "dim";
+      const tone = /failed|couldn't run|down/i.test(text) ? "warn" : "dim";
       items.push({ kind: "notice", key: nextKey(), text: compact(text, 400), tone });
       break;
     }
@@ -672,20 +672,9 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         lane: session.turnLane,
         provider: session.turnProvider,
       });
-      if (e.workStatus === "unverified" || e.workStatus === "blocked") {
-        // action: "verify" renders a one-click "Verify now" on the notice. The
-        // warning fired in 5 of 8 field sessions and was never once acted on —
-        // an honest warning nobody can act on is noise; a button is a nudge.
-        items.push({
-          kind: "notice",
-          key: nextKey(),
-          text: e.workStatus === "blocked"
-            ? "Turn ended BLOCKED — verification checks were still failing when the work stopped."
-            : "Turn ended UNVERIFIED — changes were made without a passing post-change verification.",
-          tone: "warn",
-          action: "verify",
-        });
-      }
+      // workStatus (unverified/blocked) is intentionally NOT surfaced as a chat
+      // notice — the owner removed the warning + Verify-now button. The status
+      // still flows to diagnostics via the event stream.
       // An auth-class failure with NO model output ate the user's message for
       // nothing — hand it back to the composer so fixing the key is the only
       // thing standing between them and a resend (no retyping).

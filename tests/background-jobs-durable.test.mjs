@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,14 +13,33 @@ import { ShellRegistry } from "../packages/tools/dist/index.js";
 // was tight enough to lose a race on a loaded windows-latest runner — this test
 // waits on real spawned processes while --test-concurrency=4 spawns more — and
 // a CI that goes red without a regression trains you to ignore red.
-async function waitFor(check, timeoutMs = 30_000) {
+//
+// `diagnose` runs on timeout so a failure names the state it was stuck in.
+// The v0.39.0 release flake burned the full 30s and reported NOTHING — the job
+// had settled orphaned (a lost supervisor state-file write) and this loop was
+// blindly waiting for "exited". Never let a waitFor fail without evidence.
+async function waitFor(check, { timeoutMs = 30_000, diagnose } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = check();
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
-  throw new Error("timed out waiting for durable background job");
+  const detail = diagnose ? `\n${diagnose()}` : "";
+  throw new Error(`timed out waiting for durable background job${detail}`);
+}
+
+// Render everything a hung waitFor needs to be triaged from a CI log alone:
+// the durable record and the supervisor's token-bound state file.
+function describeJob(kernel, jobId) {
+  const job = kernel.getBackgroundJob(jobId);
+  let supervisorState = "<unreadable>";
+  try {
+    supervisorState = job?.statePath ? readFileSync(job.statePath, "utf8").trim() : "<no statePath>";
+  } catch (error) {
+    supervisorState = `<${error.code ?? error.message}>`;
+  }
+  return `job=${JSON.stringify(job)}\nsupervisorState=${supervisorState}`;
 }
 
 test("background shell survives registry replacement with durable output, terminal truth, and one completion", async () => {
@@ -51,8 +71,14 @@ test("background shell survives registry replacement with durable output, termin
 
     const terminal = await waitFor(() => {
       const polled = secondHost.poll(launched.id, "model", undefined, "parent");
-      return polled?.snapshot.status === "exited" ? polled : null;
-    });
+      const status = polled?.snapshot.status;
+      // A wrong TERMINAL state will never become "exited" — fail now with the
+      // actual state instead of silently burning the whole ceiling.
+      if (status && status !== "running" && status !== "exited") {
+        throw new Error(`durable job settled ${status} instead of exited\n${describeJob(kernel, launched.id)}`);
+      }
+      return status === "exited" ? polled : null;
+    }, { diagnose: () => describeJob(kernel, launched.id) });
     assert.equal(terminal.snapshot.exitCode, 0);
     // The first polling loop may have acknowledged the first chunk. A distinct
     // durable audit cursor can read the complete append-only spool once.
@@ -101,7 +127,7 @@ test("a recovered registry can terminate a durable supervisor by session-owned j
     await waitFor(() => {
       const status = recovered.get(shell.id, "owner")?.status;
       return status === "killed" || status === "errored" || status === "orphaned";
-    });
+    }, { diagnose: () => describeJob(kernel, shell.id) });
   } finally {
     kernel.close();
     await rm(workspace, { recursive: true, force: true });

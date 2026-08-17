@@ -15,6 +15,31 @@ import { build as esbuild } from "esbuild";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.join(here, "..", "packages", "cli", "dist", "entry.js");
 
+// Stop a daemon AND its whole process tree, then wait for it to be truly gone.
+// child.kill() alone terminates only the daemon: its own children (agent
+// runtime, background supervisors) survived it holding open handles inside the
+// workspace, and the v0.39.0 release gate went red on exactly that — EBUSY
+// from rmSync on a workspace a grandchild still lived in.
+function stopDaemon(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null) return resolve();
+    child.once("close", resolve);
+    if (process.platform === "win32" && child.pid) {
+      const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      killer.once("error", () => child.kill());
+    } else {
+      child.kill();
+    }
+  });
+}
+
+// Windows releases a dead tree's handles (and Defender lets go of freshly
+// written sqlite/WAL files) asynchronously. 5×100ms lost that race on a loaded
+// release runner; a longer ceiling costs nothing on a passing run.
+function cleanupWorkspace(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 250 });
+}
+
 // Resolves once `expectedTurnEnds` turn_end events arrive (the daemon is
 // kill-on-resolve), with a generous ceiling for loaded CI machines — a fixed
 // short window flakes when the full suite runs in parallel.
@@ -30,8 +55,7 @@ function runDaemon(workspace, commands, expectedTurnEnds, ms = 60000) { // CLI c
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
-      child.kill();
-      resolve(lines);
+      void stopDaemon(child).then(() => resolve(lines));
     };
     const deadline = setTimeout(finish, ms);
     child.stdout.on("data", (d) => {
@@ -258,7 +282,7 @@ test("steering UI reducer settles exact bubbles, rolls back one attempt, and res
     const hydratedImage = hydrated.items.find((item) => item.kind === "user")?.images?.[0];
     assert.equal(hydratedImage, "data:image/webp;base64,AA==", "canonical camelCase mediaType survives desktop history reload");
   } finally {
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    cleanupWorkspace(tmp);
   }
 });
 
@@ -291,11 +315,7 @@ test("active steering durably redirects the turn and dedupes its exact input ID"
         if (settled) return;
         settled = true;
         clearTimeout(deadline);
-        const complete = () => error ? reject(error) : resolve(seen);
-        if (child.exitCode === null) {
-          child.once("close", complete);
-          child.kill();
-        } else complete();
+        void stopDaemon(child).then(() => (error ? reject(error) : resolve(seen)));
       };
       const deadline = setTimeout(
         () => finish(new Error(`live steering timed out\nstderr=${stderr.slice(-1200)}\nevents=${JSON.stringify(seen.slice(-40))}`)),
@@ -420,7 +440,7 @@ test("active steering durably redirects the turn and dedupes its exact input ID"
       kernel.close();
     }
   } finally {
-    rmSync(ws, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    cleanupWorkspace(ws);
   }
 });
 
@@ -452,16 +472,7 @@ test("Stop settles its exact input before a fresh send can be treated as steerin
         if (settled) return;
         settled = true;
         clearTimeout(deadline);
-        const complete = () => {
-          if (error) reject(error);
-          else resolve(seen);
-        };
-        if (child.exitCode === null) {
-          child.once("close", complete);
-          child.kill();
-        } else {
-          complete();
-        }
+        void stopDaemon(child).then(() => (error ? reject(error) : resolve(seen)));
       };
       const deadline = setTimeout(
         () => finish(new Error(`Stop settlement timed out\nstderr=${stderr.slice(-1200)}`)),
@@ -546,6 +557,6 @@ test("Stop settles its exact input before a fresh send can be treated as steerin
       "the post-Stop input is never converted into steering",
     );
   } finally {
-    rmSync(ws, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    cleanupWorkspace(ws);
   }
 });

@@ -75,7 +75,10 @@ async function main(): Promise<void> {
   };
   const persist = () => {
     const snapshot = { ...state };
-    writeChain = writeChain.then(() => writeStateAtomic(manifest.statePath, snapshot));
+    // A failed write must reject THIS persist (settle wants the truth) without
+    // poisoning the chain: one sharing-violation loss must not doom every
+    // subsequent heartbeat and — fatally — the terminal write.
+    writeChain = writeChain.catch(() => undefined).then(() => writeStateAtomic(manifest.statePath, snapshot));
     return writeChain;
   };
   await persist();
@@ -214,12 +217,29 @@ async function writeStateAtomic(filename: string, state: ShellSupervisorState): 
   } finally {
     await handle.close();
   }
-  try {
-    await rename(temp, filename);
-  } catch {
-    await rm(filename, { force: true });
-    await rename(temp, filename);
+  // On Windows, renaming over a state file that a registry poll currently holds
+  // open fails with a sharing violation — and the rm fallback fails the same
+  // way. Readers hold the file only for a sub-millisecond readFileSync, so the
+  // collision is transient: retry briefly. Losing the TERMINAL write here is
+  // how a completed job gets misread as orphaned by the next host.
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      await rename(temp, filename);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    try {
+      await rm(filename, { force: true });
+      await rename(temp, filename);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  throw lastError;
 }
 
 async function fileSize(filename: string): Promise<number> {

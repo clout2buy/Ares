@@ -729,13 +729,27 @@ export class ShellRegistry {
       heartbeatAtMs: state.heartbeatAtMs,
       pid: state.supervisorPid,
     });
-    if (state.phase === "completed") return this.settleShellJob(job, "completed", null, state.exitCode, outputBytes);
-    if (state.phase === "failed") {
-      return this.settleShellJob(job, "failed", { message: state.error ?? `Shell exited ${state.exitCode ?? "unknown"}` }, state.exitCode, outputBytes);
-    }
-    if (state.phase === "cancelled") return this.settleShellJob(job, "cancelled", null, state.exitCode, outputBytes);
+    const settleTerminalPhase = (phase: ShellSupervisorState["phase"], terminal: ShellSupervisorState): BackgroundJobRecord | null => {
+      if (phase === "completed") return this.settleShellJob(job, "completed", null, terminal.exitCode, outputBytes);
+      if (phase === "failed") {
+        return this.settleShellJob(job, "failed", { message: terminal.error ?? `Shell exited ${terminal.exitCode ?? "unknown"}` }, terminal.exitCode, outputBytes);
+      }
+      if (phase === "cancelled") return this.settleShellJob(job, "cancelled", null, terminal.exitCode, outputBytes);
+      return null;
+    };
+    const settled = settleTerminalPhase(state.phase, state);
+    if (settled) return settled;
     const fresh = Date.now() - state.heartbeatAtMs <= SUPERVISOR_HEARTBEAT_STALE_MS;
     if (!fresh || !processAlive(state.supervisorPid)) {
+      // The supervisor publishes terminal state BEFORE it exits, so a dead pid
+      // behind a running-phase file usually means the read raced the final
+      // write by milliseconds. Re-read once before the orphaned verdict —
+      // settling a finished job as orphaned is a lie that sticks (terminal).
+      const reread = readSupervisorState(job);
+      if (reread) {
+        const late = settleTerminalPhase(reread.phase, reread);
+        if (late) return late;
+      }
       return this.settleShellJob(job, "orphaned", {
         message: fresh
           ? "Background supervisor pid is no longer alive"

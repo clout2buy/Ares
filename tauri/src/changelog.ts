@@ -38,6 +38,50 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.40.0",
+    date: "August 2026",
+    title: "Quiet confidence",
+    tagline: "The nagging is gone, memory speaks with one voice, and Ares can finally act on what it watches — with your say-so.",
+    highlights: [
+      {
+        icon: "🔕",
+        title: "No more verify nag",
+        blurb: "The end-of-turn warning banner and its Verify button are gone. Ares still checks its own work — it just stopped lecturing you about it.",
+        tag: "Polished",
+      },
+      {
+        icon: "🧠",
+        title: "One memory, one keeper",
+        blurb: "Recall now flows through a single memory keeper shared by the app, the terminal and the garrison, so they stop stepping on each other's notes.",
+        tag: "New",
+      },
+      {
+        icon: "👁️",
+        title: "Watchers that can act",
+        blurb: "Ask Ares to keep an eye on something and, when it trips, it can now ask you on the spot for permission to fix it — approve from the app or Telegram.",
+        tag: "New",
+      },
+      {
+        icon: "⚡",
+        title: "Faster reflexes",
+        blurb: "Background watchers wake seconds after a turn finishes instead of waiting for the half-hour heartbeat.",
+        tag: "Faster",
+      },
+      {
+        icon: "🔐",
+        title: "Every secret encrypted",
+        blurb: "Connector headers and older pasted tokens — the last credentials still sitting in plain text — now move themselves into the encrypted vault.",
+        tag: "Safer",
+      },
+      {
+        icon: "🧪",
+        title: "Steadier releases",
+        blurb: "The two failures that kept flaking release builds were hunted to their real causes and fixed, and a 1,800-turn stress run confirmed the app stays lean.",
+        tag: "Safer",
+      },
+    ],
+  },
+  {
     version: "0.39.0",
     date: "August 2026",
     title: "One vault, one column",

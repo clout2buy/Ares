@@ -14,6 +14,7 @@ import { buildForegroundReminder, classifyUserIntent, MemoryRouter, MemoryStore,
 import { SessionManager, GarrisonServer } from "@ares/garrison";
 import { CliRuntimeContext, cliRuntimeContext, compactLine } from "./runtime.js";
 import { LiveSession } from "./sessionFactory.js";
+import { mnemosyneRecaller } from "./mnemosyneRuntime.js";
 import { composeSystemPrompt, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
 
 // ─── live Mind bridge (v6) — wires Living Memory + learned capabilities into
@@ -294,11 +295,22 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
     // Single canonical recall: v6 living memory (source of truth) merged with the
     // legacy v4 vector store, surfaced as ONE reminder. The turn never reads the
     // two substrates as separate stores again.
+    //
+    // When Mnemosyne is reachable (or this process can host it), living recall
+    // goes through the single-writer server instead of opening memory.jsonl
+    // here — reinforcement is a WRITE, and this was the per-turn contention
+    // point. Null (disabled/unavailable) falls through to the direct open
+    // inside unifiedRecallForTurn, byte-for-byte the pre-Mnemosyne path.
+    const livingViaMnemosyne = await mnemosyneRecaller(
+      live.context.aresHome,
+      live.context.mind.memoryFile,
+    ).catch(() => null);
     const prepared = live.agentRuntime?.prepared;
     const recall = await unifiedRecallForTurn({
       query: text,
       workspace: live.context.workspace,
       livingMemoryFile: live.context.mind.memoryFile,
+      openLiving: livingViaMnemosyne ? async () => livingViaMnemosyne : undefined,
       shouldRecall: intent.shouldRecall,
       limit: 5,
       itemChars: LIVE_MEMORY_ITEM_CHARS,

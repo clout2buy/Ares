@@ -87,6 +87,15 @@ export class MnemosyneServer {
     return { host, port };
   }
 
+  /**
+   * Stop the listening server from holding the event loop open. An in-process
+   * hosted server should die WITH its host, never keep it alive: a one-shot
+   * CLI turn that ended up hosting must still exit cleanly.
+   */
+  unref(): void {
+    this.http?.unref();
+  }
+
   async close(): Promise<void> {
     for (const socket of this.authed) socket.close();
     this.authed.clear();

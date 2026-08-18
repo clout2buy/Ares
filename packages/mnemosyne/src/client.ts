@@ -56,6 +56,16 @@ export class MnemosyneClient {
     this.socket = null;
   }
 
+  /**
+   * Stop this connection from holding the event loop open. A one-shot CLI turn
+   * that adopted Mnemosyne must still exit when its work is done; the socket
+   * stays fully usable, it just no longer counts as a reason to stay alive.
+   */
+  unref(): void {
+    const socket = this.socket as (WebSocket & { _socket?: { unref?: () => void } }) | null;
+    socket?._socket?.unref?.();
+  }
+
   private onFrame(raw: string): void {
     let frame: MnemosyneServerFrame;
     try {
@@ -151,13 +161,16 @@ export class MnemosyneClient {
 
   /**
    * Adapt to the LivingRecaller structural interface unifiedRecallForTurn
-   * accepts ({remember, peek}) — the drop-in seam for CLI adoption.
+   * accepts ({remember, peek}) — the drop-in seam for CLI adoption. peek maps
+   * to reinforce:false so read-only inspection never mutates memory strength.
    */
   asLivingRecaller(): {
     remember: (cue: string, opts?: { limit?: number; scope?: string }) => Promise<RecallResult[]>;
+    peek: (cue: string, opts?: { limit?: number; scope?: string }) => Promise<RecallResult[]>;
   } {
     return {
       remember: (cue, opts = {}) => this.recall(cue, { ...opts, reinforce: true }),
+      peek: (cue, opts = {}) => this.recall(cue, { ...opts, reinforce: false }),
     };
   }
 }

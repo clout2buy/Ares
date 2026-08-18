@@ -2,8 +2,18 @@ import { decideAttention, attentionItemsFromGoals, type AttentionDecision } from
 import { tickGoal, type ControlLoopContext } from "./controlLoop.js";
 import { Scheduler } from "./scheduler.js";
 import { activeGoals } from "./store.js";
-import { checkWatchers } from "./watchers.js";
+import { checkWatchers, type WatcherExecutionRequest } from "./watchers.js";
 import type { Goal } from "./types.js";
+
+/**
+ * The composition roots' shared heartbeat: ARES_OPERATOR_TICK_MS, floored at
+ * one minute, default 30 minutes. This literal used to be duplicated across
+ * four call sites (two live loops, two report-only status frames) — the
+ * report-only copies were guaranteed to drift the day the default changed.
+ */
+export function operatorTickIntervalMs(env: Record<string, string | undefined> = process.env): number {
+  return Math.max(60_000, Number(env.ARES_OPERATOR_TICK_MS) || 30 * 60_000);
+}
 
 export type OperatorWakeReason = "manual" | "interval" | "event";
 
@@ -44,6 +54,11 @@ export interface OperatorBackgroundLoopOptions {
    * tick picks them up and executes them. Best-effort: a throw is swallowed.
    */
   beforeTick?: () => void | Promise<void>;
+  /**
+   * The live consent gate handed through to execute-mode watchers. Absent
+   * (the daemon today) every watcher trip stays plan-only.
+   */
+  requestExecution?: (request: WatcherExecutionRequest) => Promise<"allow_once" | "allow_always" | "deny">;
 }
 
 /**
@@ -138,10 +153,17 @@ export class OperatorBackgroundLoop {
       if (this.opts.beforeTick) {
         try { await this.opts.beforeTick(); } catch { /* never let a hook kill the tick */ }
       }
-      // Condition watchers: probe reality, PROPOSE (never act) when one trips.
-      // Runs before the goal read so a fresh proposal is runnable this same tick.
+      // Condition watchers: probe reality, propose — or, with live owner
+      // consent, execute — when one trips. Runs before the goal read so a
+      // fresh goal is runnable this same tick, and receives the drained wake
+      // events so wakeOn watchers probe now instead of at their next cadence.
       try {
-        const watched = await checkWatchers(this.ctx.home, { workspace: this.ctx.workspace, signal: this.controller.signal });
+        const watched = await checkWatchers(this.ctx.home, {
+          workspace: this.ctx.workspace,
+          signal: this.controller.signal,
+          requestExecution: this.opts.requestExecution,
+          wokenBy: events,
+        });
         for (const f of watched.fired) {
           this.emit({ type: "watcher_fired", id: f.watcher.id, label: f.watcher.label, goalId: f.goalId, summary: f.summary });
         }

@@ -35,7 +35,7 @@ import { recordConsciousnessObservation } from "../consciousnessContext.js";
 import { aresAgentHome, deletePersona, listPersonas, loadAgentConfig, onLifecycle, runDeepDream, runSkill, skillHubProbe, skillHubList, skillHubGet, skillHubPublish, installHubSkill, readLocalSkillFiles, writePersona } from "@ares/agent";
 import { adoptPersonaByName, applyPersonaToolResult, newPersonaGate, personaForMessage, personaToWire, type PersonaGate } from "./daemon/personas.js";
 import { assembleCognitiveState } from "./daemon/cognitiveState.js";
-import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
+import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, loadWatchers, operatorTickIntervalMs, type StandingOrder } from "@ares/operator";
 import { MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, buildConversationDigest, mergeDurableFacts, withConsolidationLock, CONVERSATION_REFLECT_SYSTEM, DURABLE_FACTS_SCHEMA_HINT, type DurableFact } from "@ares/mind";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, runAresAccountSignin, probeAresOauth } from "@ares/core";
 import { KillSwitch } from "@ares/effects";
@@ -1601,7 +1601,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             }),
           },
           {
-            everyMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+            everyMs: operatorTickIntervalMs(),
             // Park a tick whenever a live user turn is in flight (never steal the
             // foreground), the kill switch is flipped (live operator_autotick
             // toggle), or a remote /pause is set — mirrors the garrison's gates.
@@ -2930,7 +2930,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           JSON.stringify({
             type: "operator_status",
             autotick: process.env.ARES_OPERATOR_AUTOTICK !== "0",
-            intervalMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+            intervalMs: operatorTickIntervalMs(),
             goals: goals.map((g) => ({ id: g.id, statement: g.statement.slice(0, 160), status: g.status, progress: g.progress, steps: g.stepLog?.length ?? 0 })),
             activeCount: active.length,
             trust,
@@ -3009,7 +3009,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           JSON.stringify({
             type: "operator_status",
             autotick: enabled,
-            intervalMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+            intervalMs: operatorTickIntervalMs(),
             goals: (await listGoals(live.context.home).catch(() => [])).map((g) => ({ id: g.id, statement: g.statement.slice(0, 160), status: g.status, progress: g.progress, steps: g.stepLog?.length ?? 0 })),
             activeCount: (await listGoals(live.context.home).catch(() => [])).filter((g) => g.status === "active").length,
           }) + "\n",

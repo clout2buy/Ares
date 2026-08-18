@@ -12,7 +12,7 @@ import { makeTelegramRosterTool } from "../telegramRosterTool.js";
 import { BootstrapTool, MissionTool, PersonaTool, RunSkillTool, SelfEvolveTool, SelfTool, SkillCraftTool, listPersonas, makeCapabilityTool, makeSkillHubTool, renderPersonaLayer, resolveCapabilityProvider, runSkill, scanCapabilityRegistry } from "@ares/agent";
 import { registerPersonaSubagents } from "./rosterBridge.js";
 import { withMissionRunRecorded } from "./missionLiveness.js";
-import { QueryEngineDispatcher, acquireCapability, createGoal, listGoals, listAcquisitions, listCapabilities, markAcquisitionAcquired, newGoalId, novelDeltaCurve, reliabilityOf, runGoalToCompletion, saveGoal, setAcquisitionStatus, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, type StandingOrder, type Goal, type AcquisitionKind, type VerificationSpec } from "@ares/operator";
+import { QueryEngineDispatcher, acquireCapability, createGoal, listGoals, listAcquisitions, listCapabilities, markAcquisitionAcquired, newGoalId, novelDeltaCurve, reliabilityOf, runGoalToCompletion, saveGoal, setAcquisitionStatus, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, addWatcher, loadWatchers, removeWatcher, renderWatchers, type StandingOrder, type Goal, type AcquisitionKind, type VerificationSpec } from "@ares/operator";
 import { MemoryRouter, MemoryStore, withConsolidationLock } from "@ares/mind";
 import { makeBrowserTool } from "./browserBridge.js";
 import { ProviderSelection, fastModelFor } from "./providers.js";
@@ -339,6 +339,7 @@ export async function buildEngineTools(
   ) as EngineTool;
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
+  const watcherTool = adaptToolForEngine(makeWatcherTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
   capabilityWorkerTools = [
     ...childBaseTools.filter((tool) => tool.schema.name !== "Capability"),
@@ -375,7 +376,7 @@ export async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  return [...workerTools, livingMindTool, standingOrderTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  return [...workerTools, livingMindTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
 }
 
 /**
@@ -639,6 +640,94 @@ function makeStandingOrderTool(context: CliRuntimeContext) {
       }
       const orders = await loadStandingOrders(context.home);
       return { output: { action: i.action, result: renderStandingOrders(orders) }, display: `${orders.length} standing orders` };
+    },
+  });
+}
+
+const watcherInput = z
+  .object({
+    action: z.enum(["add", "list", "remove"]).describe("add a condition watcher, list them, or remove one by id"),
+    label: z.string().optional().describe("Short human name, e.g. 'build failing'. Required for add."),
+    condition: z
+      .object({
+        kind: z.enum(["always", "file", "command", "http"]),
+        met: z.boolean().optional(),
+        summary: z.string().optional(),
+        path: z.string().optional(),
+        contains: z.string().optional(),
+        cmd: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        cwd: z.string().optional(),
+        expectExit: z.number().int().optional(),
+        url: z.string().optional(),
+        expectStatus: z.number().int().optional(),
+        timeoutMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional()
+      .describe("The reality probe — file present/absent, command exit, http status. Required for add."),
+    fire_when: z.enum(["met", "unmet"]).optional().describe("Fire when the probe is red ('unmet', default) or green ('met')."),
+    proposal: z.string().optional().describe("What Ares should investigate/do when it fires. Required for add."),
+    every_minutes: z.number().int().min(1).optional().describe("How often to check, in minutes (min 1, default 15)."),
+    mode: z
+      .enum(["plan", "execute"])
+      .optional()
+      .describe("plan (default): a trip proposes for the owner's approval. execute: a trip asks the owner LIVE for consent to act; deny or no answer degrades to a proposal."),
+    wake_on: z
+      .array(z.string())
+      .optional()
+      .describe("Event kinds (e.g. 'turn_settled') that check this watcher immediately instead of waiting out its cadence."),
+    id: z.string().optional().describe("Watcher id to remove. Required for remove."),
+  })
+  .strict();
+
+interface WatcherToolOutput {
+  action: string;
+  result: string;
+  id?: string;
+}
+
+/** The natural-language path to vigilance: the agent calls this whenever the
+ *  owner asks Ares to keep an eye on a condition ("tell me if the build goes
+ *  red", "watch the site and restart it if it's down"). Plan-mode trips
+ *  propose; execute-mode trips ask the owner for live consent first. */
+function makeWatcherTool(context: CliRuntimeContext) {
+  return buildTool({
+    name: "Watcher",
+    description:
+      "Add, list, or remove CONDITION WATCHERS — reality probes Ares checks on its own schedule (file present, command exit, http status). When one trips, Ares proposes what to do about it (mode 'plan', default), or — with mode 'execute' — asks the owner for live consent to act on it. " +
+      "Call this whenever the owner expresses watch-this intent in plain language ('let me know if…', 'keep an eye on…', 'if the site goes down, restart it').",
+    safety: "workspace-write",
+    concurrency: "exclusive",
+    inputZod: watcherInput,
+    activityDescription: (i) => (i.action === "add" ? "Adding a watcher" : i.action === "remove" ? "Removing a watcher" : "Listing watchers"),
+    async call(i): Promise<{ output: WatcherToolOutput; display: string }> {
+      if (i.action === "add") {
+        const label = i.label?.trim();
+        const proposal = i.proposal?.trim();
+        if (!label || !proposal || !i.condition) throw new Error("Watcher add requires label, condition, and proposal");
+        const watcher = await addWatcher(context.home, {
+          label,
+          condition: i.condition as VerificationSpec,
+          proposal,
+          fireWhen: i.fire_when,
+          cadenceMs: (i.every_minutes ?? 15) * 60_000,
+          mode: i.mode,
+          wakeOn: i.wake_on,
+        });
+        const gated = watcher.mode === "execute" ? " Trips will ask the owner for live consent before acting; without an answer it proposes instead." : " Trips propose — never act.";
+        return {
+          output: { action: i.action, id: watcher.id, result: `Watcher added (${watcher.id}): "${label}".${gated}` },
+          display: `Watcher: ${compactLine(label, 60)} (${watcher.mode})`,
+        };
+      }
+      if (i.action === "remove") {
+        if (!i.id) throw new Error("Watcher remove requires an id");
+        const ok = await removeWatcher(context.home, i.id);
+        return { output: { action: i.action, result: ok ? `Removed watcher ${i.id}.` : `No watcher ${i.id}.` }, display: ok ? `Removed ${i.id}` : `No ${i.id}` };
+      }
+      const watchers = await loadWatchers(context.home);
+      return { output: { action: i.action, result: renderWatchers(watchers) }, display: `${watchers.length} watchers` };
     },
   });
 }

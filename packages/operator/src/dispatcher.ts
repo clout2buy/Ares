@@ -236,6 +236,9 @@ const OPERATOR_CONTROL_PLANE_TOOLS = new Set([
   "Operator",
   "Conductor",
   "StandingOrder",
+  // A worker widening its own surveillance (or minting execute-mode watchers)
+  // is the same class of escape as spawning another orchestrator.
+  "Watcher",
   "CodingBackend",
   "Capability",
   "EnterPlanMode",

@@ -125,6 +125,13 @@ export interface SessionManagerOptions {
   sessionKernel?: SessionKernelStore;
   /** Unanswered permission prompts auto-deny after this long (default 5 min). */
   permissionTimeoutMs?: number;
+  /**
+   * Called after a turn reaches its durable turn_end boundary. This is the
+   * garrison's operator wake producer — before it existed, `garrison serve`
+   * had ZERO event producers and the background loop was pure 30-minute cron.
+   * Best-effort: a throw never breaks the event stream.
+   */
+  onTurnSettled?: (sessionId: string) => void;
   now?: () => number;
 }
 
@@ -173,6 +180,7 @@ export class SessionManager {
   private readonly factory: SessionFactory;
   private readonly sessionKernel?: SessionKernelStore;
   private readonly permissionTimeoutMs: number;
+  private readonly onTurnSettled?: (sessionId: string) => void;
   private readonly now: () => number;
   private readonly bootAt: number;
   private lastSend: number | undefined;
@@ -182,6 +190,7 @@ export class SessionManager {
     this.factory = opts.factory;
     this.sessionKernel = opts.sessionKernel;
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? 5 * 60_000;
+    this.onTurnSettled = opts.onTurnSettled;
     this.now = opts.now ?? Date.now;
     this.bootAt = this.now();
   }
@@ -255,6 +264,11 @@ export class SessionManager {
         // closes a real reboot/rehydration race exposed by the front-door test.
         if (event.type === "turn_end") {
           await Promise.all([session.ioChain, ...(session.friction ? [session.friction.settle()] : [])]);
+          try {
+            this.onTurnSettled?.(session.id);
+          } catch {
+            // a wake producer must never break the event stream
+          }
         }
         this.fanOut(session, event);
       }

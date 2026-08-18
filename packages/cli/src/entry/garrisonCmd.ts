@@ -21,7 +21,7 @@ import { TodoStore, ShellRegistry, type FileReadStamp } from "@ares/tools";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
-import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
+import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
 import { MemoryStore, detectWorkspaceProjectId, loadProjectState, withConsolidationLock } from "@ares/mind";
 import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "../holotable.js";
@@ -219,6 +219,11 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const sessions = new SessionManager({
     home: context.home,
     sessionKernel,
+    // The garrison's first operator wake producer: a settled turn wakes the
+    // background loop within seconds instead of waiting out the heartbeat.
+    // Deliberately a closure — the loop is constructed later in this function,
+    // and turns can only settle after the server starts.
+    onTurnSettled: (sessionId) => operatorLoop?.enqueueEvent({ kind: "turn_settled", sessionId }),
     factory: (req) => {
       const workspace = req.workspace ?? context.workspace;
       const model = req.model ?? selection.model;
@@ -350,6 +355,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const loopActive =
     process.env.ARES_OPERATOR_AUTOTICK !== "0" &&
     (process.env.ARES_OPERATOR_LOOP === "1" || standingAtStart.length > 0 || watchersAtStart.length > 0);
+  // The approval surface: staged outward effects (a browser submit, any
+  // irreversible connector effect over its leash) pause here and broadcast to
+  // every attached client as approval.pending; the owner's approval.respond
+  // resumes or refuses them. Wired into the rails via context.approvals so
+  // runEffect actually consults it, and into the operator loop so execute-mode
+  // watchers can ask for consent. ARES_APPROVAL_TIMEOUT_MS auto-denies a
+  // forgotten prompt (default: wait for the owner).
+  const approvalTimeoutMs = Number(process.env.ARES_APPROVAL_TIMEOUT_MS) || undefined;
+  const approvals = new ApprovalQueue({ approver: "owner", timeoutMs: approvalTimeoutMs });
+  context.approvals = { requestApproval: approvals.requestApproval };
   const operatorLoop = !loopActive
     ? null
     : new OperatorBackgroundLoop(
@@ -372,7 +387,22 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           }),
         },
         {
-          everyMs: Math.max(60_000, Number(process.env.ARES_OPERATOR_TICK_MS) || 30 * 60_000),
+          everyMs: operatorTickIntervalMs(),
+          // Execute-mode watchers ask the owner through the SAME approval
+          // surface as staged effects — one queue, every attached client
+          // (desktop, Telegram) sees the prompt. The stable id joins duplicate
+          // prompts for the same watcher+fingerprint instead of racing two.
+          requestExecution: async (req) => {
+            const decision = await approvals.requestApproval({
+              id: `watcher:${req.watcherId}:${req.fingerprint}`,
+              kind: "operator.watcher-execution",
+              domain: "operator",
+              irreversibility: "recoverable",
+              reason: `Watcher "${req.label}" tripped: ${req.summary} — approve to let Ares act on: ${req.proposal}`,
+              preview: { proposal: req.proposal, fingerprint: req.fingerprint },
+            });
+            return decision.verb;
+          },
           // Materialize due standing orders into goals so the same tick runs them.
           beforeTick: async () => {
             const { fired } = await materializeDueStandingOrders(context.home).catch(() => ({ goals: [], fired: [] as StandingOrder[] }));
@@ -398,15 +428,6 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       );
 
   const requestedPort = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
-  // The approval surface: staged outward effects (a browser submit, any
-  // irreversible connector effect over its leash) pause here and broadcast to
-  // every attached client as approval.pending; the owner's approval.respond
-  // resumes or refuses them. Wired into the rails via context.approvals so
-  // runEffect actually consults it. ARES_APPROVAL_TIMEOUT_MS auto-denies a
-  // forgotten prompt (default: wait for the owner).
-  const approvalTimeoutMs = Number(process.env.ARES_APPROVAL_TIMEOUT_MS) || undefined;
-  const approvals = new ApprovalQueue({ approver: "owner", timeoutMs: approvalTimeoutMs });
-  context.approvals = { requestApproval: approvals.requestApproval };
   const server = new GarrisonServer({
     home: context.home,
     sessions,

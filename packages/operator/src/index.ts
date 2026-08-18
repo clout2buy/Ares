@@ -54,6 +54,7 @@ export {
 export {
   OperatorBackgroundLoop,
   operatorLoopEnabled,
+  operatorTickIntervalMs,
   type OperatorBackgroundLoopOptions,
   type OperatorBackgroundTick,
   type OperatorBackgroundEvent,
@@ -98,12 +99,14 @@ export {
   removeWatcher,
   setWatcherEnabled,
   dueWatchers,
+  wakeMatchedWatchers,
   checkWatchers,
   renderWatchers,
   type Watcher,
   type FiredWatcher,
   type CheckWatchersResult,
   type CheckWatchersContext,
+  type WatcherExecutionRequest,
 } from "./watchers.js";
 
 export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";

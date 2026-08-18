@@ -4,8 +4,11 @@
 // use) to a proposal. On each background tick the loop checks the DUE watchers;
 // when one's condition trips (build red, endpoint down, file gone), it
 // materializes a PLANNING-ONLY goal — "investigate and propose for the owner's
-// approval" — never an execution mission. The unattended policy gate stays the
-// wall; a watcher can only ever put a plan in front of the owner.
+// approval". An execute-mode watcher may instead materialize an EXECUTION goal,
+// but only through a LIVE consent gate (the garrison approval queue): the owner
+// answers per-trip, and any deny/timeout/absent gate degrades to plan-only.
+// Either way the unattended policy gate stays the wall underneath — consent
+// widens what the goal may be, never what the worker's tools may do.
 //
 // Re-fire discipline (what keeps this from being a nag):
 //   - fingerprint dedupe: a failing build that keeps failing the SAME way never
@@ -45,6 +48,21 @@ export interface Watcher {
   fireWhen: "met" | "unmet";
   /** What to investigate/propose when it fires. Becomes a planning-only goal. */
   proposal: string;
+  /**
+   * "plan" (default): a trip materializes a plan-only proposal — today's whole
+   * behavior. "execute": a trip may materialize an EXECUTION goal, but ONLY
+   * through a live consent gate — no gate wired, or the owner denies, and it
+   * falls back to plan-only. Consent widens what the goal may be, never what
+   * the worker's tools may do: the unattended policy gate stays underneath.
+   */
+  mode?: "plan" | "execute";
+  /**
+   * Event kinds (e.g. "turn_settled") that mark this watcher due IMMEDIATELY
+   * on a matching wake, instead of waiting out its cadence. Still floored by
+   * MIN_WATCHER_CADENCE_MS between probes — a wake storm must not become a
+   * probe storm.
+   */
+  wakeOn?: string[];
   /** How often to CHECK the condition. Clamped to >= MIN_WATCHER_CADENCE_MS. */
   cadenceMs: number;
   enabled: boolean;
@@ -81,6 +99,10 @@ export function normalizeWatcher(
     condition: input.condition,
     fireWhen: input.fireWhen ?? "unmet",
     proposal: input.proposal.trim(),
+    mode: input.mode === "execute" ? "execute" : "plan",
+    wakeOn: Array.isArray(input.wakeOn)
+      ? input.wakeOn.filter((k): k is string => typeof k === "string" && k.trim().length > 0).slice(0, 16)
+      : undefined,
     cadenceMs: Math.max(MIN_WATCHER_CADENCE_MS, Math.floor(input.cadenceMs ?? 15 * 60_000)),
     enabled: input.enabled ?? true,
     createdAt: input.createdAt ?? now.toISOString(),
@@ -120,7 +142,15 @@ export async function loadWatchers(home?: string): Promise<Watcher[]> {
 
 export async function addWatcher(
   home: string | undefined,
-  input: { label: string; condition: VerificationSpec; proposal: string; cadenceMs?: number; fireWhen?: "met" | "unmet" },
+  input: {
+    label: string;
+    condition: VerificationSpec;
+    proposal: string;
+    cadenceMs?: number;
+    fireWhen?: "met" | "unmet";
+    mode?: "plan" | "execute";
+    wakeOn?: string[];
+  },
   now = new Date(),
 ): Promise<Watcher> {
   const watcher = normalizeWatcher(input, now);
@@ -174,9 +204,59 @@ export interface CheckWatchersResult {
   fired: FiredWatcher[];
 }
 
+/** What the consent gate is asked when an execute-mode watcher trips. */
+export interface WatcherExecutionRequest {
+  watcherId: string;
+  label: string;
+  proposal: string;
+  /** The condition state this consent covers — same key as the dedupe. */
+  fingerprint: string;
+  summary: string;
+}
+
 export interface CheckWatchersContext {
   workspace?: string;
   signal?: AbortSignal;
+  /**
+   * The live consent gate for execute-mode watchers. Resolving "allow_once"
+   * materializes an execution goal; anything else — deny, timeout, throw, or
+   * simply no gate wired (the daemon today) — falls back to plan-only.
+   */
+  requestExecution?: (request: WatcherExecutionRequest) => Promise<"allow_once" | "allow_always" | "deny">;
+  /** The wake events this tick drained — routes wakeOn watchers to "due now". */
+  wokenBy?: readonly unknown[];
+}
+
+/** Event kinds present in a drained wake payload ({ kind: string } shaped). */
+function wakeKinds(events: readonly unknown[] | undefined): Set<string> {
+  const kinds = new Set<string>();
+  for (const event of events ?? []) {
+    if (event && typeof event === "object" && typeof (event as { kind?: unknown }).kind === "string") {
+      kinds.add((event as { kind: string }).kind);
+    }
+  }
+  return kinds;
+}
+
+/**
+ * Watchers made due by a matching wake event: enabled, subscribed to one of the
+ * drained kinds, and past the probe floor. This is what turns the queue from a
+ * counted-and-discarded payload into routing — a watcher on "turn_settled"
+ * probes seconds after the turn, not up to 30 minutes later.
+ */
+export function wakeMatchedWatchers(
+  watchers: readonly Watcher[],
+  events: readonly unknown[] | undefined,
+  now: Date,
+): Watcher[] {
+  const kinds = wakeKinds(events);
+  if (kinds.size === 0) return [];
+  const t = now.getTime();
+  return watchers.filter((w) => {
+    if (!w.enabled || !w.wakeOn?.some((k) => kinds.has(k))) return false;
+    if (!w.lastCheckedAt) return true;
+    return t - Date.parse(w.lastCheckedAt) >= MIN_WATCHER_CADENCE_MS;
+  });
 }
 
 /**
@@ -191,7 +271,12 @@ export async function checkWatchers(
   now = new Date(),
 ): Promise<CheckWatchersResult> {
   const resolvedHome = operatorPaths(home).home;
-  const due = dueWatchers(await loadWatchers(home), now).slice(0, MAX_PROBES_PER_TICK);
+  const all = await loadWatchers(home);
+  // Wake-matched watchers jump the cadence queue; cadence-due fill the rest.
+  const merged = new Map<string, Watcher>();
+  for (const w of wakeMatchedWatchers(all, ctx.wokenBy, now)) merged.set(w.id, w);
+  for (const w of dueWatchers(all, now)) if (!merged.has(w.id)) merged.set(w.id, w);
+  const due = [...merged.values()].slice(0, MAX_PROBES_PER_TICK);
   const goals: Goal[] = [];
   const fired: FiredWatcher[] = [];
   for (const watcher of due) {
@@ -211,11 +296,34 @@ export async function checkWatchers(
       await saveWatcher(home, watcher);
       continue;
     }
+    // Execute-mode watchers ask the LIVE consent gate; everything else — plan
+    // mode, no gate wired, a deny, a timeout, a gate crash — is plan-only.
+    // The consented statement drops the plan-only prefix; the per-tool
+    // unattended policy gate underneath is untouched either way.
+    let consented = false;
+    if (watcher.mode === "execute" && ctx.requestExecution) {
+      try {
+        const verdict = await ctx.requestExecution({
+          watcherId: watcher.id,
+          label: watcher.label,
+          proposal: watcher.proposal,
+          fingerprint,
+          summary: probe.summary,
+        });
+        consented = verdict === "allow_once" || verdict === "allow_always";
+      } catch {
+        // an unreachable gate can only ever narrow to plan-only, never widen
+      }
+    }
     const goal = createGoal({
       id: newGoalId(now),
-      statement:
-        `Plan ONLY — do NOT execute. Investigate and propose changes for the owner's approval: ` +
-        `${watcher.proposal} (watcher "${watcher.label}" tripped: ${probe.summary})`,
+      statement: consented
+        ? `Execute — the owner approved this action: ${watcher.proposal} ` +
+          `(watcher "${watcher.label}" tripped: ${probe.summary})`
+        : `Plan ONLY — do NOT execute. Investigate and propose changes for the owner's approval: ` +
+          `${watcher.proposal} (watcher "${watcher.label}" tripped: ${probe.summary})`,
+      mode: consented ? "execute" : "plan",
+      consent: consented ? { approvalId: `${watcher.id}:${fingerprint}`, at: now.toISOString() } : undefined,
       now,
     });
     await saveGoal(resolvedHome, goal);

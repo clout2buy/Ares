@@ -9,7 +9,7 @@ import os from "node:os";
 import { ReadTool, GlobTool, GrepTool, EditTool, WriteTool, ApplyIntentTool, MemoryTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { completeBootstrap, createMemoryStore, recordCardMemoryOnce, ensureAgentScaffold, exportHome, importHome, listSnapshots, loadAgentConfig, restoreSnapshot, runDeepDream, runRemDream, snapshotBrain } from "@ares/agent";
-import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, CODING_GAUNTLET, CODING_GAUNTLET_V2, CODING_GAUNTLET_V3, parseScoreboard, parseScoreboardRow, detectRegression, renderTrend, formatCompact, type EvalReport, type EvalTask, type ScoreboardRow } from "@ares/operator";
+import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, GAUNTLET_SUITES, parseScoreboard, parseScoreboardRow, detectRegression, renderTrend, formatCompact, type EvalReport, type EvalTask, type ScoreboardRow } from "@ares/operator";
 import { MemoryStore, withConsolidationLock } from "@ares/mind";
 import { buildCodingTools } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissions.js";
@@ -189,8 +189,9 @@ async function gauntletCommand(args: ParsedArgs): Promise<number> {
   const isolatedHomes: string[] = [];
   const evalShellRegistries: ShellRegistry[] = [];
   const suite = args.flags.get("suite") ?? "coding-v3";
-  if (suite !== "coding-v1" && suite !== "coding-v2" && suite !== "coding-v3") {
-    process.stderr.write("error: --suite must be coding-v1, coding-v2, or coding-v3\n");
+  const suiteTasks = GAUNTLET_SUITES[suite];
+  if (!suiteTasks) {
+    process.stderr.write(`error: --suite must be one of ${Object.keys(GAUNTLET_SUITES).join(", ")}\n`);
     return 2;
   }
   const isMockProvider = selection.provider.name === "mock" || selection.provider.name.startsWith("mock-");
@@ -217,7 +218,7 @@ async function gauntletCommand(args: ParsedArgs): Promise<number> {
     model: selection.model,
     keepWorkspaces: args.flags.has("keep"),
     suite,
-    tasks: suite === "coding-v3" ? CODING_GAUNTLET_V3 : suite === "coding-v2" ? CODING_GAUNTLET_V2 : CODING_GAUNTLET,
+    tasks: suiteTasks,
     harness: args.flags.get("harness") !== "false" && !args.flags.has("no-harness"),
     harnessManifest: {
       ...sourceIdentity,

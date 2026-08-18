@@ -184,7 +184,7 @@ export async function printHelp(): Promise<void> {
       "  ares mnemosyne [status|serve|bindings|add|retire|compliance]",
       "                              The memory server: bindings (law/pact/doctrine) and the recalled-but-violated report.",
       "  ares eval [--json]         Run the built-in harness regression eval suite.",
-      "  ares eval coding [--suite coding-v3|coding-v2|coding-v1] [--no-harness] [--gate] [--json]",
+      "  ares eval coding [--suite coding-v4|coding-v3|coding-v2|coding-v1] [--no-harness] [--gate] [--json]",
       "                              Run the coding gauntlet; real models require --allow-unsafe-process-eval inside an isolated VM/container.",
       "                              --gate exits 3 when this run regresses against its own history (cost, verification, wall-clock).",
       "  ares eval trend [--suite S] [--model M] [--json]",

@@ -9,7 +9,7 @@ import { mkdtemp, rm, stat, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { runGauntlet, CODING_GAUNTLET, CODING_GAUNTLET_V2, CODING_GAUNTLET_V3 } from "../packages/operator/dist/index.js";
+import { runGauntlet, CODING_GAUNTLET, CODING_GAUNTLET_V2, CODING_GAUNTLET_V3, CODING_GAUNTLET_V4 } from "../packages/operator/dist/index.js";
 
 /** Minimal real write tool — enough harness for a scripted solver. */
 function writeTool(workspace) {
@@ -327,6 +327,31 @@ test("coding-v3 is integrity-protected, fully gated, and baseline-red", { timeou
   });
   assert.equal(report.total, 0, "the unsolved fixtures must not already pass");
   assert.equal(report.tasks.length, CODING_GAUNTLET_V3.length);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("coding-v4 is integrity-protected, fully gated, and baseline-red", { timeout: 300_000 }, async () => {
+  for (const task of CODING_GAUNTLET_V4) {
+    assert.ok(Object.keys(task.files).length >= 6, `${task.id} must be a real miniature repo`);
+    assert.ok(task.protectedFiles?.length, `${task.id} must protect its tests`);
+    assert.ok(
+      task.protectedFiles.some((f) => f.startsWith("docs/")),
+      `${task.id} must protect its spec — the spec IS the contract`,
+    );
+    assert.ok(task.allProbesRequired, `${task.id} must gate on every probe`);
+    assert.ok(task.probes.length >= 2, `${task.id} needs hidden probes beyond the visible suite`);
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "ares-gauntlet-v4-"));
+  const report = await runGauntlet({
+    provider: talkOnlyProvider,
+    model: "talker",
+    suite: "coding-v4",
+    tasks: CODING_GAUNTLET_V4,
+    workspaceRoot: root,
+    tools: () => [],
+  });
+  assert.equal(report.total, 0, "the unsolved fixtures must not already pass");
+  assert.equal(report.tasks.length, CODING_GAUNTLET_V4.length);
   await rm(root, { recursive: true, force: true });
 });
 

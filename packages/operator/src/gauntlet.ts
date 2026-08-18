@@ -1192,3 +1192,340 @@ test("invalid legacy ports are rejected", () => { for (const port of ["zero", 0,
     maxTurns: 40,
   },
 ];
+
+// coding-v4: the spec-completeness suite. v2 AND v3 both pinned at 100% for
+// deepseek-v4-pro (2026-08-15 baselines) — once a model can iterate the visible
+// tests to green, any suite whose probes mirror those tests saturates. v4's
+// gradient comes from the gap the harness cannot close for the model: each
+// fixture ships a RICH spec document, deliberately THIN visible tests, and
+// hidden probes drawn from the spec's long tail. Iterating the visible suite
+// to green scores zero unless the implementation honored the whole spec.
+// Fixtures stay dependency-free Node; probes stay reality-only.
+export const CODING_GAUNTLET_V4: GauntletTask[] = [
+  {
+    id: "glob-contract",
+    title: "Implement the documented glob contract, not the visible tests",
+    prompt:
+      "The ignore-list feature mis-matches paths: patterns cross directory boundaries, character classes don't work, and there is no way to escape a literal star. Reimplement match() in src/glob.mjs so it satisfies docs/glob-spec.md COMPLETELY — the spec, not the test file, is the contract (the visible tests cover only a fraction of it). Keep the public API. Do not edit tests; run the suite to confirm the basics.",
+    files: {
+      "package.json": JSON.stringify({ type: "module", scripts: { test: "node --test tests/*.test.mjs" } }, null, 2),
+      "src/glob.mjs": `// match(pattern, path) — see docs/glob-spec.md for the full contract.
+export function match(pattern, path) {
+  const source = pattern.replace(/[.+^$\{\}()|]/g, "\\\\$&").replace(/\\*/g, ".*").replace(/\\?/g, ".");
+  return new RegExp("^" + source + "$").test(path);
+}
+`,
+      "src/segments.mjs": `/** Split a normalized pathspec into segments. "" has NO segments. */
+export function segmentsOf(spec) { return spec === "" ? [] : spec.split("/"); }
+`,
+      "src/pathspec.mjs": `/** Normalize a user path: strip leading/trailing slashes, collapse runs. */
+export function normalizePath(raw) { return raw.replace(/\\/+/g, "/").replace(/^\\/|\\/$/g, ""); }
+`,
+      "src/ignore.mjs": `import { match } from "./glob.mjs";
+import { normalizePath } from "./pathspec.mjs";
+/** The consumer: filter out paths matching ANY ignore pattern. */
+export function filterIgnored(paths, patterns) {
+  return paths.filter((p) => !patterns.some((pat) => match(pat, normalizePath(p))));
+}
+`,
+      "docs/glob-spec.md": `# Glob contract
+
+match(pattern, path): both arguments are already-normalized "/"-separated
+specs — no leading or trailing slash. Matching is case-sensitive. The empty
+pattern matches only the empty path.
+
+Segment semantics (the separator is sacred):
+- A pattern is split on "/" into segments; so is the path. Nothing below ever
+  matches a "/" — only the segment rules can consume separators.
+- A segment consisting EXACTLY of \`**\` matches ZERO OR MORE whole path
+  segments. \`a/**/b\` therefore matches \`a/b\`, \`a/x/b\`, and \`a/x/y/b\`.
+  A trailing \`a/**\` matches \`a\` itself. A bare \`**\` matches every path,
+  including the empty one.
+- A \`**\` that is NOT a whole segment is not special: \`a**b\` behaves exactly
+  like \`a*b\`.
+
+Within one segment:
+- \`*\` matches zero or more characters.
+- \`?\` matches exactly one character.
+- \`[...]\` matches one character from the set. \`[!...]\` negates the set.
+  \`-\` denotes an inclusive range unless it is the first or last character in
+  the set (then it is a literal \`-\`). A \`]\` as the FIRST set character
+  (after any \`!\`) is a literal \`]\`. An unclosed \`[\` is a literal \`[\`.
+- \`\\\\x\` makes the next character literal — \`\\\\*\` matches a real star,
+  \`\\\\[\` a real bracket, \`\\\\\\\\\` a real backslash.
+`,
+      "tests/glob.test.mjs": `import test from "node:test";
+import assert from "node:assert/strict";
+import { match } from "../src/glob.mjs";
+
+test("* stays inside its segment", () => {
+  assert.equal(match("*", "a"), true);
+  assert.equal(match("*", "a/b"), false);
+  assert.equal(match("src/*.mjs", "src/glob.mjs"), true);
+  assert.equal(match("src/*.mjs", "src/deep/glob.mjs"), false);
+});
+
+test("** crosses segments", () => {
+  assert.equal(match("src/**/index.mjs", "src/a/b/index.mjs"), true);
+  assert.equal(match("**", "any/path/at/all"), true);
+});
+
+test("? matches exactly one character", () => {
+  assert.equal(match("a?c", "abc"), true);
+  assert.equal(match("a?c", "ac"), false);
+});
+
+test("a simple character class", () => {
+  assert.equal(match("[ab]x", "ax"), true);
+  assert.equal(match("[ab]x", "cx"), false);
+});
+`,
+    },
+    protectedFiles: ["tests/glob.test.mjs", "docs/glob-spec.md"],
+    allProbesRequired: true,
+    probes: [
+      { kind: "command", cmd: "node", args: ["--test", "tests/glob.test.mjs"], expectExit: 0, timeoutMs: 60_000 },
+      // The long tail the visible tests never mention: ** matching zero
+      // segments, negated classes, literal ] and -, escapes, unclosed [.
+      { kind: "command", cmd: "node", args: ["-e", "import('./src/glob.mjs').then(({match})=>{const C=[['a/**/b','a/b',1],['a/**','a',1],['**','',1],['[!a]','b',1],['[!a]','a',0],['[]]',']',1],['[a-]','-',1],['[a-]','a',1],['[a-c]x','bx',1],['[a-c]x','dx',0],['a**b','axyb',1],['a**b','a/b',0],['[','[',1],['a/*','a',0]];for(const[p,s,e]of C){if(match(p,s)!==!!e){console.error('FAIL',p,s);process.exit(9)}}})"], expectExit: 0, timeoutMs: 15_000 },
+      { kind: "command", cmd: "node", args: ["-e", "import('./src/glob.mjs').then(({match})=>{const C=[['\\\\*','*',1],['\\\\*','x',0],['\\\\[a]','[a]',1],['a\\\\\\\\b','a\\\\b',1]];for(const[p,s,e]of C){if(match(p,s)!==!!e){console.error('FAIL',JSON.stringify(p),JSON.stringify(s));process.exit(9)}}})"], expectExit: 0, timeoutMs: 15_000 },
+    ],
+    maxTurns: 48,
+  },
+  {
+    id: "incremental-rebuild",
+    title: "Interface-hash cutoff for the incremental rebuild planner",
+    prompt:
+      "The build farm rebuilds the world on every commit: the planner ignores interface hashes, its ordering is nondeterministic, and a dependency cycle crashes it with a stack overflow instead of a diagnosis. Reimplement plan() in src/plan.mjs to satisfy docs/rebuild-spec.md COMPLETELY — the spec, not the visible tests, is the contract. Keep the public API. Do not edit tests.",
+    files: {
+      "package.json": JSON.stringify({ type: "module", scripts: { test: "node --test tests/*.test.mjs" } }, null, 2),
+      "src/plan.mjs": `// plan(graph, changedIds, previousIfaces) — see docs/rebuild-spec.md.
+export function plan(graph, changedIds, previousIfaces) {
+  const out = [];
+  const visit = (id) => {
+    if (!out.includes(id)) out.push(id);
+    for (const [node, deps] of Object.entries(graph.deps ?? {})) {
+      if (deps.includes(id)) visit(node);
+    }
+  };
+  for (const id of changedIds) visit(id);
+  return out;
+}
+`,
+      "src/graph.mjs": `/** Dependents index: for each node, who depends on it. */
+export function dependentsOf(graph) {
+  const rev = {};
+  for (const node of graph.nodes) rev[node.id] = [];
+  for (const [id, deps] of Object.entries(graph.deps ?? {})) {
+    for (const dep of deps) (rev[dep] ??= []).push(id);
+  }
+  return rev;
+}
+`,
+      "src/iface.mjs": `/** Current interface signature of a node, "" when undeclared. */
+export function ifaceOf(graph, id) { return graph.nodes.find((n) => n.id === id)?.iface ?? ""; }
+`,
+      "src/errors.mjs": `export class CycleError extends Error { constructor(msg) { super(msg); this.name = "CycleError"; } }
+export class UnknownNodeError extends Error { constructor(msg) { super(msg); this.name = "UnknownNodeError"; } }
+`,
+      "docs/rebuild-spec.md": `# Incremental rebuild contract
+
+plan(graph, changedIds, previousIfaces) -> string[]
+
+- graph: { nodes: [{ id, iface }], deps: { [id]: [dependencyIds] } }.
+  \`iface\` is the node's CURRENT public-interface signature.
+- previousIfaces: { [id]: string } — the signature each node had after the
+  last successful build.
+- changedIds: nodes whose sources changed.
+
+Which nodes rebuild:
+1. Every changed node rebuilds.
+2. A node rebuilds when at least one of its DIRECT dependencies rebuilt AND
+   that dependency's interface actually changed (\`graph\` iface !==
+   \`previousIfaces\` entry). This is the interface cutoff: a dependency that
+   rebuilt but kept its interface stops the wave — its dependents do NOT
+   rebuild on its account.
+3. Rule 2 cascades: a node that rebuilds this way propagates onward only per
+   rule 2 applied to ITS interface.
+
+Ordering:
+- Dependencies before dependents, always.
+- Nodes not ordered by that rule are sorted alphabetically by id. The result
+  is fully deterministic.
+
+Errors (thrown, never returned):
+- A dependency cycle among nodes that would need rebuilding throws CycleError
+  (name "CycleError") whose message contains the cycle's member ids sorted
+  alphabetically and joined with ", " (comma, space).
+- A changedId absent from graph.nodes throws UnknownNodeError (name
+  "UnknownNodeError") whose message contains the id.
+`,
+      "tests/plan.test.mjs": `import test from "node:test";
+import assert from "node:assert/strict";
+import { plan } from "../src/plan.mjs";
+
+const chain = {
+  nodes: [{ id: "a", iface: "A1" }, { id: "b", iface: "B0" }, { id: "c", iface: "C0" }],
+  deps: { b: ["a"], c: ["b"] },
+};
+
+test("an interface change propagates down a chain", () => {
+  assert.deepEqual(plan(chain, ["a"], { a: "A0", b: "B9", c: "C0" }), ["a", "b", "c"]);
+});
+
+test("an unchanged interface stops the wave immediately", () => {
+  assert.deepEqual(plan(chain, ["a"], { a: "A1", b: "B0", c: "C0" }), ["a"]);
+});
+
+test("dependencies come before dependents", () => {
+  const out = plan(chain, ["a"], { a: "A0", b: "B0", c: "C0" });
+  assert.ok(out.indexOf("a") < out.indexOf("b"));
+});
+`,
+    },
+    protectedFiles: ["tests/plan.test.mjs", "docs/rebuild-spec.md"],
+    allProbesRequired: true,
+    probes: [
+      { kind: "command", cmd: "node", args: ["--test", "tests/plan.test.mjs"], expectExit: 0, timeoutMs: 60_000 },
+      // Diamond with the cutoff on both arms: a's interface changed so b and c
+      // rebuild, but neither b nor c changed ITS interface, so d must not.
+      { kind: "command", cmd: "node", args: ["-e", "import('./src/plan.mjs').then(({plan})=>{const g={nodes:[{id:'a',iface:'A1'},{id:'b',iface:'B'},{id:'c',iface:'C'},{id:'d',iface:'D'}],deps:{b:['a'],c:['a'],d:['b','c']}};const out=plan(g,['a'],{a:'A0',b:'B',c:'C',d:'D'});if(JSON.stringify(out)!==JSON.stringify(['a','b','c']))process.exit(9)})"], expectExit: 0, timeoutMs: 15_000 },
+      // Independent changed roots order alphabetically; a changed node with an
+      // unchanged interface rebuilds itself without propagating.
+      { kind: "command", cmd: "node", args: ["-e", "import('./src/plan.mjs').then(({plan})=>{const g={nodes:[{id:'z',iface:'Z'},{id:'m',iface:'M'},{id:'q',iface:'Q'}],deps:{q:['z']}};const out=plan(g,['z','m'],{z:'Z',m:'M0',q:'Q'});if(JSON.stringify(out)!==JSON.stringify(['m','z']))process.exit(9)})"], expectExit: 0, timeoutMs: 15_000 },
+      // The error contract: CycleError with sorted members; UnknownNodeError.
+      { kind: "command", cmd: "node", args: ["-e", "import('./src/plan.mjs').then(({plan})=>{const g={nodes:[{id:'x',iface:'X1'},{id:'y',iface:'Y1'}],deps:{x:['y'],y:['x']}};try{plan(g,['x'],{x:'X0',y:'Y0'});process.exit(9)}catch(e){if(e.name!=='CycleError'||!e.message.includes('x, y'))process.exit(8)}try{plan({nodes:[{id:'a',iface:'A'}],deps:{}},['ghost'],{a:'A'});process.exit(7)}catch(e){if(e.name!=='UnknownNodeError'||!e.message.includes('ghost'))process.exit(6)}})"], expectExit: 0, timeoutMs: 15_000 },
+    ],
+    maxTurns: 48,
+  },
+  {
+    id: "deterministic-cache",
+    title: "An LRU+TTL cache whose every observable behavior is specified",
+    prompt:
+      "The session cache returns stale entries after expiry, evicts the wrong key under pressure, and peeking at a value changes the eviction order. Reimplement src/cache.mjs against docs/cache-spec.md COMPLETELY — every method's interaction with recency, expiry, and capacity is specified there, and the spec (not the thin visible tests) is the contract. Time comes ONLY from the injected clock. Do not edit tests.",
+    files: {
+      "package.json": JSON.stringify({ type: "module", scripts: { test: "node --test tests/*.test.mjs" } }, null, 2),
+      "src/cache.mjs": `// Cache — see docs/cache-spec.md for the full contract.
+export class Cache {
+  constructor({ capacity, defaultTtlMs, clock }) {
+    this.capacity = capacity; this.defaultTtlMs = defaultTtlMs; this.clock = clock ?? (() => 0);
+    this.map = new Map();
+  }
+  set(key, value, opts = {}) {
+    if (this.map.size >= this.capacity && !this.map.has(key)) {
+      const newest = [...this.map.keys()].pop();
+      this.map.delete(newest);
+    }
+    this.map.set(key, { value, at: this.clock(), ttl: opts.ttlMs ?? this.defaultTtlMs });
+  }
+  get(key) { return this.map.get(key)?.value; }
+  peek(key) { const e = this.map.get(key); if (e) { this.map.delete(key); this.map.set(key, e); } return e?.value; }
+  has(key) { return this.map.has(key); }
+  delete(key) { return this.map.delete(key); }
+  size() { return this.map.size; }
+  entries() { return [...this.map.entries()].map(([k, e]) => [k, e.value]); }
+}
+`,
+      "src/clock.mjs": `/** A manual test clock: now() reads, advance(ms) moves forward. */
+export function manualClock(start = 0) {
+  let now = start;
+  const clock = () => now;
+  clock.advance = (ms) => { now += ms; };
+  return clock;
+}
+`,
+      "src/sessionStore.mjs": `import { Cache } from "./cache.mjs";
+/** The consumer: sessions live 30 minutes unless touched. */
+export function makeSessionStore(clock) {
+  return new Cache({ capacity: 1000, defaultTtlMs: 30 * 60_000, clock });
+}
+`,
+      "src/metrics.mjs": `export function hitCounter() { let hit = 0, miss = 0; return { hit: () => hit++, miss: () => miss++, ratio: () => (hit + miss === 0 ? 0 : hit / (hit + miss)) }; }
+`,
+      "docs/cache-spec.md": `# Cache contract
+
+new Cache({ capacity, defaultTtlMs?, clock? }) — clock is () => milliseconds
+and is the ONLY source of time. capacity is the maximum number of LIVE
+(non-expired) entries.
+
+Expiry:
+- An entry's ttl is opts.ttlMs when given, else defaultTtlMs; when neither is
+  set the entry never expires. An entry is expired once clock() >= insertion
+  time + ttl. ttlMs < 0 throws RangeError; ttlMs of 0 means "expires
+  immediately".
+- Expired entries are invisible everywhere: get/peek return undefined, has()
+  is false, size() and entries() exclude them (and prune them), and they are
+  removed before any eviction decision.
+
+Recency:
+- get(key) and set(key) mark the key most-recently-used. peek(key) and
+  has(key) must NOT change recency.
+- set() on an EXISTING key updates the value, refreshes recency, and restarts
+  its expiry from now.
+
+Eviction:
+- Only inserting a NEW key can evict, and only when live size === capacity
+  after pruning expired entries: the LEAST-recently-used live entry is
+  evicted.
+
+Reads:
+- get(key): live value or undefined.
+- peek(key): live value or undefined, no recency change.
+- has(key): boolean, no recency change.
+- delete(key): true when a live entry was removed.
+- size(): count of live entries.
+- entries(): [key, value] pairs of live entries, LEAST-recently-used first.
+`,
+      "tests/cache.test.mjs": `import test from "node:test";
+import assert from "node:assert/strict";
+import { Cache } from "../src/cache.mjs";
+import { manualClock } from "../src/clock.mjs";
+
+test("expired entries are invisible to get", () => {
+  const clock = manualClock();
+  const cache = new Cache({ capacity: 4, defaultTtlMs: 100, clock });
+  cache.set("a", 1);
+  clock.advance(99);
+  assert.equal(cache.get("a"), 1);
+  clock.advance(1);
+  assert.equal(cache.get("a"), undefined);
+});
+
+test("capacity evicts the least recently used", () => {
+  const cache = new Cache({ capacity: 2, clock: manualClock() });
+  cache.set("a", 1);
+  cache.set("b", 2);
+  cache.get("a");
+  cache.set("c", 3);
+  assert.equal(cache.get("b"), undefined);
+  assert.equal(cache.get("a"), 1);
+});
+`,
+    },
+    protectedFiles: ["tests/cache.test.mjs", "docs/cache-spec.md"],
+    allProbesRequired: true,
+    probes: [
+      { kind: "command", cmd: "node", args: ["--test", "tests/cache.test.mjs"], expectExit: 0, timeoutMs: 60_000 },
+      // peek/has must not refresh recency — the eviction order proves it.
+      { kind: "command", cmd: "node", args: ["-e", "Promise.all([import('./src/cache.mjs'),import('./src/clock.mjs')]).then(([{Cache},{manualClock}])=>{const c=new Cache({capacity:2,clock:manualClock()});c.set('a',1);c.set('b',2);c.peek('a');c.has('a');c.set('x',9);if(c.get('a')!==undefined||c.get('b')!==2)process.exit(9)})"], expectExit: 0, timeoutMs: 15_000 },
+      // set() on an existing key restarts expiry; expired entries free capacity
+      // before any eviction happens.
+      { kind: "command", cmd: "node", args: ["-e", "Promise.all([import('./src/cache.mjs'),import('./src/clock.mjs')]).then(([{Cache},{manualClock}])=>{const clock=manualClock();const c=new Cache({capacity:2,defaultTtlMs:100,clock});c.set('a',1);clock.advance(60);c.set('a',2);clock.advance(60);if(c.get('a')!==2)process.exit(9);clock.advance(41);c.set('p',1);c.set('q',2);if(c.size()!==2)process.exit(8);clock.advance(200);c.set('r',3);if(c.size()!==1||c.get('r')!==3)process.exit(7)})"], expectExit: 0, timeoutMs: 15_000 },
+      // entries() order, ttlMs:0, and the RangeError contract.
+      { kind: "command", cmd: "node", args: ["-e", "Promise.all([import('./src/cache.mjs'),import('./src/clock.mjs')]).then(([{Cache},{manualClock}])=>{const c=new Cache({capacity:3,clock:manualClock()});c.set('a',1);c.set('b',2);c.set('c',3);c.get('a');if(JSON.stringify(c.entries())!==JSON.stringify([['b',2],['c',3],['a',1]]))process.exit(9);c.set('z',0,{ttlMs:0});if(c.has('z')!==false)process.exit(8);try{c.set('n',1,{ttlMs:-5});process.exit(7)}catch(e){if(e.name!=='RangeError')process.exit(6)}})"], expectExit: 0, timeoutMs: 15_000 },
+    ],
+    maxTurns: 48,
+  },
+];
+
+/**
+ * The suite registry — the ONE place a new tier is added. The CLI resolves
+ * --suite through this instead of a hardcoded allow-list + ternary, so v5+
+ * is a single-file change here.
+ */
+export const GAUNTLET_SUITES: Record<string, GauntletTask[]> = {
+  "coding-v1": CODING_GAUNTLET,
+  "coding-v2": CODING_GAUNTLET_V2,
+  "coding-v3": CODING_GAUNTLET_V3,
+  "coding-v4": CODING_GAUNTLET_V4,
+};

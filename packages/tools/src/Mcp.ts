@@ -10,7 +10,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildTool, toolError } from "./_shared.js";
-import { getMcpAccessToken } from "@ares/core";
+import { getMcpCallCredentials } from "@ares/core";
 
 const listInputSchema = z
   .object({
@@ -409,12 +409,19 @@ async function withMcpClient<T>(
   if (isRemote(cfg)) {
     const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
     // OAuth AND static vault connectors carry no secret on disk — resolve the
-    // bearer from the encrypted vault at call-time (OAuth bundles auto-refresh;
-    // static bundles come back as-is). A legacy plaintext authToken is the
-    // fallback. Either way it becomes the bearer.
+    // bearer AND any custom headers from the encrypted vault at call-time
+    // (OAuth bundles auto-refresh; static bundles come back as-is). A legacy
+    // plaintext authToken/header set (hand-authored mcp.json) is the fallback;
+    // gallery-managed entries are swept into the vault on load.
     let bearer = cfg.authToken;
-    if ((cfg.oauth || cfg.vault) && cfg.serverName) {
-      bearer = (await getMcpAccessToken(cfg.serverName).catch(() => null)) ?? bearer;
+    if (cfg.serverName) {
+      const vaulted = await getMcpCallCredentials(cfg.serverName).catch(() => null);
+      if (vaulted) {
+        for (const [key, value] of Object.entries(vaulted.headers)) {
+          if (!(key in headers)) headers[key] = value;
+        }
+        bearer = vaulted.bearer ?? bearer;
+      }
     }
     if (bearer && !headers.Authorization && !headers.authorization) {
       headers.Authorization = `Bearer ${bearer}`;

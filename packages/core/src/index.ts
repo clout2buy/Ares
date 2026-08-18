@@ -278,6 +278,7 @@ export {
   setMcpServerToken,
   probeMcpTools,
   getMcpAccessToken,
+  getMcpCallCredentials,
   loadRemoteMcpServers,
   connectorNameFromUrl,
   type RemoteMcpEntry,

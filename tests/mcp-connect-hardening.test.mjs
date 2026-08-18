@@ -27,6 +27,7 @@ import {
   disconnectMcpServer,
   setMcpServerToken,
   getMcpAccessToken,
+  getMcpCallCredentials,
   loadRemoteMcpServers,
 } from "../packages/core/dist/index.js";
 
@@ -162,7 +163,11 @@ test("reconnect preserves pause state, display name and headers", async () => {
     const entry = (await loadRemoteMcpServers(home)).fakeco;
     assert.equal(entry.enabled, false, "a paused connector must stay paused across re-auth");
     assert.equal(entry.displayName, "Custom Name");
-    assert.deepEqual(entry.headers, { "x-extra": "1" });
+    // Headers moved into the encrypted vault (they routinely carry API keys);
+    // they must survive re-auth there and never sit plaintext on disk again.
+    assert.equal(entry.headers, undefined, "custom headers no longer live on disk");
+    const creds = await getMcpCallCredentials("fakeco", home);
+    assert.deepEqual(creds.headers, { "x-extra": "1" }, "custom headers survive re-auth in the vault");
   } finally {
     await world.stop();
     await rm(home, { recursive: true, force: true });

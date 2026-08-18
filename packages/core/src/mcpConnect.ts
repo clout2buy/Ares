@@ -75,16 +75,57 @@ interface McpTokenBundle {
   clientId: string;
   clientSecret?: string;
   resource: string;
+  /** Custom request headers swept out of the on-disk entry — headers routinely
+   *  carry API keys (x-api-key et al.) and must live encrypted like tokens. */
+  headers?: Record<string, string>;
 }
 
 export async function loadRemoteMcpServers(home?: string): Promise<Record<string, RemoteMcpEntry>> {
   try {
     const raw = await fs.readFile(remoteConfigPath(home), "utf8");
     const parsed = JSON.parse(raw) as { servers?: Record<string, RemoteMcpEntry> };
-    return parsed.servers ?? {};
+    const servers = parsed.servers ?? {};
+    await sweepPlaintextSecrets(servers, home);
+    return servers;
   } catch {
     return {};
   }
+}
+
+/**
+ * One-way migration: legacy `authToken` and custom `headers` used to sit in
+ * plaintext in ~/.ares/mcp-remote.json while everything else lived in the
+ * AES-256-GCM vault. Sweep them into the connector's vault bundle and strip
+ * them from disk. Vault write FIRST, strip second — a failed encryption leaves
+ * the secret where it was rather than losing it. Idempotent: a clean file is
+ * untouched.
+ */
+async function sweepPlaintextSecrets(servers: Record<string, RemoteMcpEntry>, home?: string): Promise<void> {
+  let dirty = false;
+  for (const [name, entry] of Object.entries(servers)) {
+    if (!entry.authToken && !entry.headers) continue;
+    try {
+      const raw = await getCredential(tokenKey(name), { home });
+      let bundle: McpTokenBundle | null = null;
+      if (raw) {
+        try { bundle = JSON.parse(raw) as McpTokenBundle; } catch { bundle = null; }
+      }
+      bundle ??= { accessToken: "", tokenEndpoint: "", clientId: "", resource: entry.url };
+      // The vault is the newer authority: an already-vaulted token or header
+      // wins over the plaintext leftover it superseded.
+      if (entry.authToken && !bundle.accessToken) bundle.accessToken = entry.authToken;
+      if (entry.headers) bundle.headers = { ...entry.headers, ...(bundle.headers ?? {}) };
+      await setCredential(tokenKey(name), JSON.stringify(bundle), { home });
+      if (entry.authToken && !entry.oauth) entry.vault = true;
+      delete entry.authToken;
+      delete entry.headers;
+      dirty = true;
+    } catch {
+      // Encryption unavailable or vault unwritable: leave this entry's
+      // plaintext alone — worse than un-migrated is silently lost.
+    }
+  }
+  if (dirty) await saveRemoteMcpServers(servers, home);
 }
 
 async function saveRemoteMcpServers(servers: Record<string, RemoteMcpEntry>, home?: string): Promise<void> {
@@ -340,6 +381,8 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
   });
 
   // Persist: encrypted token bundle in the vault, secret-free entry on disk.
+  // A re-auth must not clobber the vaulted custom headers the owner configured.
+  const priorHeaders = await vaultedHeaders(name, home);
   const bundle: McpTokenBundle = {
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
@@ -348,6 +391,7 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
     clientId: ctx!.clientId,
     clientSecret: ctx!.clientSecret,
     resource: authServer.resource,
+    ...(priorHeaders ? { headers: priorHeaders } : {}),
   };
   await setCredential(tokenKey(name), JSON.stringify(bundle), { home });
   const servers = await loadRemoteMcpServers(home);
@@ -398,11 +442,13 @@ export async function setMcpServerToken(
   const name = (opts.name ?? connectorNameFromUrl(url)).trim();
   const trimmed = token.trim();
   if (!trimmed) throw new Error("a connector token can't be empty");
+  const priorHeaders = await vaultedHeaders(name, opts.home);
   const bundle: McpTokenBundle = {
     accessToken: trimmed,
     tokenEndpoint: "",
     clientId: "",
     resource: url,
+    ...(priorHeaders ? { headers: priorHeaders } : {}),
   };
   await setCredential(tokenKey(name), JSON.stringify(bundle), { home: opts.home });
   const servers = await loadRemoteMcpServers(opts.home);
@@ -462,6 +508,39 @@ export async function getMcpAccessToken(name: string, home?: string, now: () => 
   } catch {
     return bundle.accessToken; // refresh failed; hand back the stale token so the call can surface a clean 401
   }
+}
+
+/** The vault bundle's custom headers for a connector, if any. */
+async function vaultedHeaders(name: string, home?: string): Promise<Record<string, string> | undefined> {
+  try {
+    const raw = await getCredential(tokenKey(name), { home });
+    if (!raw) return undefined;
+    return (JSON.parse(raw) as McpTokenBundle).headers;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Everything the tools layer needs to authenticate one MCP call: a fresh
+ * bearer (transparently refreshed, same path as getMcpAccessToken) plus the
+ * vault-held custom headers the on-disk entry no longer carries.
+ */
+export async function getMcpCallCredentials(
+  name: string,
+  home?: string,
+  now: () => number = Date.now,
+): Promise<{ bearer: string | null; headers: Record<string, string> }> {
+  const raw = await getCredential(tokenKey(name), { home });
+  if (!raw) return { bearer: null, headers: {} };
+  let bundle: McpTokenBundle;
+  try {
+    bundle = JSON.parse(raw) as McpTokenBundle;
+  } catch {
+    return { bearer: null, headers: {} };
+  }
+  const bearer = await getMcpAccessToken(name, home, now);
+  return { bearer: bearer || (bundle.accessToken || null), headers: bundle.headers ?? {} };
 }
 
 function resultHtml(ok: boolean, msg: string): string {

@@ -77,6 +77,9 @@ export class MnemosyneServer {
     this.http = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.http });
     this.wss.on("connection", (socket) => this.handleConnection(socket));
+    // Same rule as per-socket errors: a transport hiccup must never become an
+    // uncaughtException inside whatever process is hosting this server.
+    this.wss.on("error", () => undefined);
 
     await new Promise<void>((resolve, reject) => {
       this.http!.once("error", reject);
@@ -121,6 +124,18 @@ export class MnemosyneServer {
       });
     });
     socket.on("close", () => this.authed.delete(socket));
+    // A peer that dies mid-connection (host tree-killed, ECONNRESET) emits
+    // 'error'; with no listener that is an uncaughtException that takes the
+    // HOSTING process down with it — a memory server must never be able to
+    // kill its host over a dropped client.
+    socket.on("error", () => {
+      this.authed.delete(socket);
+      try {
+        socket.close();
+      } catch {
+        // already gone
+      }
+    });
   }
 
   private send(socket: WebSocket, frame: MnemosyneServerFrame): void {

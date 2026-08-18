@@ -39,3 +39,14 @@ if (!process.env.ARES_HOME) {
     }
   });
 }
+
+// The Mnemosyne discovery port is a FIXED loopback port in production — that's
+// how sibling processes find one server. Under --test-concurrency it becomes
+// cross-test coupling: every daemon a test spawns would host-or-join the SAME
+// 7433 regardless of its isolated home. Give each test-file process its own
+// port; children a test spawns inherit it, so a test's daemon + CLI still
+// discover each other while test files stay hermetic. A deliberate caller
+// still wins, same rule as ARES_HOME.
+if (!process.env.ARES_MNEMOSYNE_PORT) {
+  process.env.ARES_MNEMOSYNE_PORT = String(20_000 + (process.pid % 20_000));
+}

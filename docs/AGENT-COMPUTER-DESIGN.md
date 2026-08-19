@@ -24,6 +24,11 @@ never becomes the computer — it calls it.**
 
 - Engine unchanged. queryEngine's tool loop IS the wire. The sandbox arrives
   as a new toolset (`AgentComputer`), not a new engine mode.
+- **Both toolsets live at once; the target is named on the call.** No
+  host-vs-sandbox session flag — real work uses both in one turn (pull a file
+  off the host, work in the sandbox, copy the result back). A flag is too
+  coarse. Host-side calls keep their existing permission gates; sandbox calls
+  don't need them. (Grok patch #1.)
 - Sandbox: headless Debian under **WSL2** (not Docker Desktop — keeps the
   installer story clean for external users; WSL2 can run Xvfb, VNC, and Chrome
   fine). A dedicated distro, e.g. `ares-computer`.
@@ -38,6 +43,11 @@ never becomes the computer — it calls it.**
 
 Verified Grok behavior, adopt as-is:
 
+- **Displays are per user-facing agent, not per nested worker.** A background
+  worker shares its parent agent's screen and takes the lease. Per-worker Xvfb
+  would pay for desktops nobody watches and make the "look, it's working" pane
+  meaningless. N Chromes only when N agents have a reason to be on screen.
+  (Grok patch #3.)
 - Per-agent **Xvfb display** (1280×800) — Chrome's single-instance rule steals
   windows onto the first display otherwise. One machine, N displays, N Chrome
   processes, one login session.
@@ -50,6 +60,12 @@ Verified Grok behavior, adopt as-is:
   one driver may own a display at a time (per-display lease/mutex).
 - **Browser work prefers page-level CDP** — it does not take the mouse, so it
   runs concurrently with other work on the same machine.
+- **Playwright rides the display's Chrome, never its own.** Reuse the existing
+  Playwright stack via `connectOverCDP` into the Chrome that already owns the
+  display; a Playwright-launched second browser splits the session from the
+  VNC pane and the screenshots, and the login story falls apart. WebFetch
+  stays what it is — no JS, no cookies, public pages — and does NOT run
+  inside the sandbox Chrome. (Grok patch #2.)
 - **exec may not drive the GUI.** No xdotool-from-shell fake clicks. Input
   goes through the desktop driver tool or not at all — this keeps the lease
   meaningful and the audit trail honest.
@@ -84,11 +100,20 @@ snapshot/reset.
   cheapest trust move in the product. The GUI screenshot gate extends to the
   sandbox unchanged.
 
+## Boundaries that are doctrine, not detail
+
+- **Per-owner sandbox.** Garrison/Telegram users never share a cookie store —
+  one sandbox per owner identity, full stop. (Grok patch #4.)
+- **The OS is disposable and we don't pretend otherwise.** A reinstall
+  manifest (packages re-applied on rebuild) is a real upgrade over Grok's
+  throw-away-and-hope, but home + logins are the only durable surface.
+
 ## Phases
 
-1. **Headless learner.** WSL2 distro + exec/fs/screenshot/CDP, one display,
-   one Chrome, persistent home. Session flag chooses host tools vs
-   AgentComputer tools. This is enough to learn everything else against.
+1. **Headless learner.** WSL2 distro + exec/fs/screenshot/CDP, ONE display,
+   ONE Chrome, persistent home. Both toolsets live, target named per call.
+   The symlink login-store trick WAITS until two user-facing agents actually
+   exist on the machine. This is enough to learn everything else against.
 2. **The pane.** noVNC stream in the desktop app, watch/drive toggle, the
    2FA handoff control, inline self-screenshots.
 3. **Crew semantics.** Per-subagent displays, the shared login store

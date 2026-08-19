@@ -86,6 +86,53 @@ test("OpenRouter: sends Bearer auth + translates tool_result to role:tool", asyn
   assert.equal(asst.tool_calls[0].function.name, "ls");
 });
 
+test("Kimi-branded instance: 401 triggers one auth refresh and a replay with the new token", async () => {
+  // A subscription token expires mid-session; the provider must exchange the
+  // refresh token once and replay transparently instead of failing the turn.
+  const auths = [];
+  const fetchImpl = async (_url, init) => {
+    auths.push(init.headers.Authorization);
+    if (auths.length === 1) {
+      return new Response('{"error":{"message":"expired"}}', { status: 401 });
+    }
+    return sse([{ choices: [{ delta: { content: "revived" }, finish_reason: "stop" }] }, "[DONE]"]);
+  };
+  let refreshed = 0;
+  const p = new OpenRouterProvider({
+    apiKey: "stale-token",
+    model: "k3",
+    baseUrl: "https://api.kimi.example/coding/v1",
+    providerName: "kimi",
+    fetchImpl,
+    apiKeySupplier: async () => "stale-token",
+    onAuthError: async () => { refreshed += 1; return "fresh-token"; },
+  });
+  const events = [];
+  for await (const e of p.stream({ model: "k3", system: "", messages: [], tools: [] })) events.push(e);
+  assert.equal(refreshed, 1);
+  assert.deepEqual(auths, ["Bearer stale-token", "Bearer fresh-token"]);
+  assert.equal(events.at(-1).type, "message_done");
+  assert.equal(events.at(-1).message.content[0].text, "revived");
+});
+
+test("Kimi-branded instance: a 401 that survives refresh surfaces as a Kimi error, not OpenRouter", async () => {
+  const fetchImpl = async () => new Response('{"error":{"message":"expired"}}', { status: 401 });
+  const p = new OpenRouterProvider({
+    apiKey: "stale-token",
+    model: "k3",
+    baseUrl: "https://api.kimi.example/coding/v1",
+    providerName: "kimi",
+    fetchImpl,
+    onAuthError: async () => null,
+  });
+  const events = [];
+  for await (const e of p.stream({ model: "k3", system: "", messages: [], tools: [] })) events.push(e);
+  const err = events.find((e) => e.type === "error");
+  assert.equal(err.error.code, "http_401");
+  assert.match(err.error.message, /Kimi subscription auth failed/);
+  assert.doesNotMatch(err.error.message, /OpenRouter/);
+});
+
 test("OpenRouter: forwards act-first tool forcing to the wire", async () => {
   let body;
   const fetchImpl = async (_url, init) => {

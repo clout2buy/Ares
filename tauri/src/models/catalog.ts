@@ -245,8 +245,14 @@ export function useModelCatalog(provider: string, native: boolean) {
         return;
       }
       if (provider === "kimi") {
-        // Static row instantly; the daemon merges the live account catalog.
-        setModels([{ id: "kimi-for-coding", label: "Kimi for Coding", hint: "agentic coding · 256K context", group: "Kimi", capabilities: ["tools", "reasoning"] }]);
+        // Static rows instantly; the daemon merges the live account catalog
+        // (which carries the endpoint's own display names and effort rungs).
+        setModels([
+          { id: "kimi-for-coding", label: "Kimi K2.7 Coding", hint: "agentic coding + reasoning · 256K context", group: "Kimi", capabilities: ["tools", "reasoning", "vision"] },
+          { id: "kimi-for-coding-highspeed", label: "Kimi K2.7 Coding · Highspeed", hint: "faster serving · 256K context", group: "Kimi", capabilities: ["tools", "reasoning", "vision"] },
+          { id: "k3", label: "Kimi K3", hint: "frontier reasoning · 1M context", group: "Kimi", capabilities: ["tools", "reasoning", "vision"] },
+          { id: "k3-256k", label: "Kimi K3 · 256K", hint: "K3 on the 256K window", group: "Kimi", capabilities: ["tools", "reasoning", "vision"] },
+        ]);
         requestDaemonCatalog();
         return;
       }

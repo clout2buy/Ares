@@ -352,6 +352,52 @@ test("setProvider updates canonical metadata without erasing subagent fields", a
   }
 });
 
+test("a session that ended on a tool result keeps its preview and stays listed", async () => {
+  // Closing the app while a tool runs leaves the projection's LAST user-role
+  // message as tool_result blocks with no prose. previewFromMessages used to
+  // read only that last message, return "", and the husk filter then dropped
+  // the whole session from the rail on relaunch — the "sessions disappear
+  // when I close and relaunch" report. The preview must walk back to the last
+  // thing the owner actually typed.
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "ares-preview-tool-tail-"));
+  const kernel = await openWorkspaceSessionKernel(workspace);
+  try {
+    kernel.createSession({
+      id: "tool-tail",
+      workspaceKey: workspace,
+      metadata: { provider: "kimi", model: "k3", createdAt },
+    });
+    const fence = fenceOf(kernel.acquireRunnerLease("tool-tail", "seed-tool-tail", 5_000));
+    kernel.appendMessage(fence, {
+      id: "tool-tail-user",
+      role: "user",
+      parts: [{ type: "text", data: { type: "text", text: "finish up coding functionality" } }],
+    });
+    kernel.appendMessage(fence, {
+      id: "tool-tail-assistant",
+      role: "assistant",
+      model: "k3",
+      parts: [
+        { type: "text", data: { type: "text", text: "on it" } },
+        { type: "tool_use", data: { type: "tool_use", id: "tool_tail_1", name: "Edit", input: {} } },
+      ],
+    });
+    kernel.appendMessage(fence, {
+      id: "tool-tail-result",
+      role: "tool",
+      parts: [{ type: "tool_result", data: { type: "tool_result", tool_use_id: "tool_tail_1", content: "ok" } }],
+    });
+    kernel.releaseRunnerLease(fence, { executionState: "completed", workOutcome: "not_applicable" });
+
+    const listed = await listSessions(workspace, 20);
+    const entry = listed.find((session) => session.id === "tool-tail");
+    assert.ok(entry, "a session whose projection ends on tool results must stay on the rail");
+    assert.equal(entry.preview, "finish up coding functionality");
+  } finally {
+    kernel.close();
+  }
+});
+
 test("superseded context epochs are pruned — only the latest two survive", async () => {
   // Every compaction appends a full message-history projection; nothing ever
   // reads any epoch but the latest. Left unpruned they grew one field

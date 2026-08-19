@@ -1968,6 +1968,19 @@ function App() {
           }
           return true;
         }
+        case "daemon_error": {
+          // A failed sessions_list (kernel open error, locked WAL, missing
+          // native sqlite) used to fall through to the per-session fold — on
+          // a cold boot there is no session to fold into, so the rail was
+          // just silently empty and read as "my sessions disappeared".
+          const detail = typeof e.error === "string" ? e.error : e.error ? stringify(e.error) : "";
+          if (detail.startsWith("sessions_list:")) {
+            pushLog(`[daemon] ${detail}`);
+            pushGatewayToast("Couldn't load the session list — your sessions are still on disk. Check the Garrison log, then relaunch.");
+            return true;
+          }
+          return false;
+        }
         default:
           return false;
       }

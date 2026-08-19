@@ -72,6 +72,7 @@ export {
   requestKimiDeviceAuthorization,
   pollKimiDeviceToken,
   refreshKimiTokens,
+  forceRefreshKimiAccessToken,
   resolveKimiTokens,
   resolveKimiAccessToken,
   loadKimiTokens,

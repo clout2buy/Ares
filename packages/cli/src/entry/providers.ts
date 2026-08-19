@@ -1,6 +1,6 @@
 // Extracted from entry.ts — providers.
 
-import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, type MoaMember, type Provider } from "@ares/core";
+import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider } from "@ares/core";
 import path from "node:path";
 import { type SubModelPool } from "@ares/tools";
 import { buildReportBody } from "./daemon/report.js";
@@ -317,7 +317,7 @@ export function defaultTerminalModel(provider: string, settings: UiSettings): st
 export function effortLadderFor(
   provider: string,
   modelId: string,
-  live?: { supportsReasoning?: boolean; supportedParameters?: string[] },
+  live?: { supportsReasoning?: boolean; supportedParameters?: string[]; validEfforts?: string[] },
 ): string[] | undefined {
   const p = provider.toLowerCase();
   const m = modelId.toLowerCase();
@@ -325,6 +325,11 @@ export function effortLadderFor(
   // Live capability wins over any table: OpenRouter publishes supported
   // parameters per model, and Kimi reports supportsReasoning per model.
   if (live?.supportsReasoning === false) return [];
+  // Kimi's K3 line publishes the exact rungs it honours (think_efforts) —
+  // the server's own list beats every heuristic below.
+  if (live?.validEfforts !== undefined && live.validEfforts.length > 0) {
+    return live.validEfforts;
+  }
   if (live?.supportedParameters) {
     return live.supportedParameters.includes("reasoning") ? ["off", "low", "medium", "high"] : [];
   }
@@ -469,45 +474,58 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
 
   if (provider === "kimi") {
     // Live discovery from the signed-in Kimi account — surfaces the account's
-    // real roster (kimi-for-coding, k3, ...). Static row otherwise so the
-    // picker is never empty when the owner is signed out or offline.
+    // real roster (kimi-for-coding = K2.7 Coding, k3, k3-256k, ...). Static
+    // rows otherwise so the picker is never empty when signed out or offline.
     const KIMI_LABELS: Record<string, string> = {
-      "kimi-for-coding": "Kimi for Coding",
-      "kimi-for-coding-highspeed": "Kimi for Coding · Highspeed",
+      "kimi-for-coding": "Kimi K2.7 Coding",
+      "kimi-for-coding-highspeed": "Kimi K2.7 Coding · Highspeed",
       k3: "Kimi K3",
+      "k3-256k": "Kimi K3 · 256K",
     };
-    const kimiLabel = (id: string): string =>
-      KIMI_LABELS[id] ?? `Kimi ${id.replace(/^kimi-/u, "").replace(/\bk(\d)/u, "K$1")}`;
+    const kimiLabel = (id: string, displayName?: string): string =>
+      displayName !== undefined
+        ? (/^kimi/iu.test(displayName) ? displayName : `Kimi ${displayName}`)
+        : KIMI_LABELS[id] ?? `Kimi ${id.replace(/^kimi-/u, "").replace(/\bk(\d)/u, "K$1")}`;
     try {
       const settings = await loadUiSettings();
       const live = await fetchKimiModels(settings.kimiKey || process.env.KIMI_API_KEY || undefined).catch(() => null);
       if (live !== null && live.length > 0) {
-        return live.map((model) => ({
-          id: model.id,
-          label: kimiLabel(model.id),
-          hint: [
-            model.supportsReasoning === false || model.thinkingType === "no" ? "fast, no extended thinking" : "agentic coding + reasoning",
-            model.contextLength !== undefined ? `${Math.round(model.contextLength / 1024)}K context` : undefined,
-          ].filter(Boolean).join(" · "),
-          group: "Kimi",
-          capabilities: model.supportsReasoning === false ? ["tools"] : ["tools", "reasoning"],
-          // Kimi reports per-model thinking support — feed it straight in so a
-          // no-think build hides the dial and a thinking build shows the two
-          // rungs it actually honours, rather than a fabricated 6-step ladder.
-          effortLevels: effortLadderFor("kimi", model.id, { supportsReasoning: model.supportsReasoning !== false && model.thinkingType !== "no" }),
-          ...(model.contextLength !== undefined ? { contextLength: model.contextLength } : {}),
-        }));
+        return live.map((model) => {
+          const thinks = model.supportsReasoning !== false && model.thinkingType !== "no";
+          return {
+            id: model.id,
+            label: kimiLabel(model.id, model.displayName),
+            hint: [
+              thinks ? "agentic coding + reasoning" : "fast, no extended thinking",
+              model.contextLength !== undefined ? `${Math.round(model.contextLength / 1024)}K context` : undefined,
+            ].filter(Boolean).join(" · "),
+            group: "Kimi",
+            capabilities: [
+              "tools",
+              ...(thinks ? ["reasoning"] : []),
+              ...(model.supportsVision === true ? ["vision"] : []),
+            ],
+            // Kimi reports per-model thinking support — and, for the K3 line,
+            // the exact effort rungs it honours (think_efforts.valid_efforts).
+            // Feed both straight in so a no-think build hides the dial and a
+            // thinking build shows its real ladder, never a fabricated one.
+            effortLevels: effortLadderFor("kimi", model.id, {
+              supportsReasoning: thinks,
+              validEfforts: model.validEfforts,
+            }),
+            ...(model.contextLength !== undefined ? { contextLength: model.contextLength } : {}),
+          };
+        });
       }
     } catch {
-      // signed out or offline — fall through to the static row
+      // signed out or offline — fall through to the static rows
     }
-    return [{
-      id: "kimi-for-coding",
-      label: "Kimi for Coding",
-      hint: "agentic coding · 256K context",
-      group: "Kimi",
-      capabilities: ["tools", "reasoning"],
-    }];
+    return [
+      { id: "kimi-for-coding", label: "Kimi K2.7 Coding", hint: "agentic coding + reasoning · 256K context", group: "Kimi", capabilities: ["tools", "reasoning", "vision"], contextLength: 262_144 },
+      { id: "kimi-for-coding-highspeed", label: "Kimi K2.7 Coding · Highspeed", hint: "faster serving · 256K context", group: "Kimi", capabilities: ["tools", "reasoning", "vision"], contextLength: 262_144 },
+      { id: "k3", label: "Kimi K3", hint: "frontier reasoning · 1M context", group: "Kimi", capabilities: ["tools", "reasoning", "vision"], contextLength: 1_048_576 },
+      { id: "k3-256k", label: "Kimi K3 · 256K", hint: "K3 on the 256K window", group: "Kimi", capabilities: ["tools", "reasoning", "vision"], contextLength: 262_144 },
+    ];
   }
 
   if (provider === "ares") {
@@ -748,7 +766,8 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
     // hardened OpenAI-compat client drives it directly. Credential order: the
     // Ares-stored key, the env key, then the subscription token minted by the
     // Kimi OAuth device flow (packages/core/src/providers/kimiAuth.ts).
-    let kimiCredential = settings.kimiKey || process.env.KIMI_API_KEY || "";
+    const staticKimiKey = settings.kimiKey || process.env.KIMI_API_KEY || "";
+    let kimiCredential = staticKimiKey;
     if (!kimiCredential) {
       kimiCredential = (await resolveKimiAccessToken().catch(() => null)) ?? "";
     }
@@ -758,6 +777,17 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
         model,
         baseUrl: "https://api.kimi.com/coding/v1",
         providerName: "kimi",
+        // Subscription tokens expire in hours while a session's provider
+        // instance lives for days: re-resolve per request (refresh-on-read
+        // renews near expiry), and when the server still 401s mid-turn,
+        // exchange the refresh token once and replay instead of failing the
+        // task. Static API keys skip both — there is nothing to refresh.
+        ...(staticKimiKey
+          ? {}
+          : {
+              apiKeySupplier: () => resolveKimiAccessToken(),
+              onAuthError: () => forceRefreshKimiAccessToken(),
+            }),
       }),
       model,
       source: explicit ? "explicit:kimi" : "settings:kimi",

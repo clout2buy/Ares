@@ -3239,7 +3239,18 @@ async function scanRolloutForListing(eventsPath: string): Promise<{ eventCount: 
 }
 
 function previewFromMessages(messages: readonly Message[]): string {
-  const lastUser = [...messages].reverse().find((message) => message.role === "user");
-  const text = lastUser ? messageText(lastUser).replace(/\s+/g, " ").trim() : "";
-  return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  // Walk PAST user-role messages that carry no prose. Tool results are
+  // projected as user messages of tool_result blocks — and a session closed
+  // mid-tool gets one appended by repairSettledToolPairs — so "the last user
+  // message" is often text-less. An empty preview here gets the whole session
+  // husk-filtered off the rail on relaunch, so keep walking back to the last
+  // thing the owner actually typed.
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    const text = messageText(message).replace(/\s+/g, " ").trim();
+    if (text.length === 0) continue;
+    return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+  return "";
 }

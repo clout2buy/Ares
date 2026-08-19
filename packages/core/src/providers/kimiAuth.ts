@@ -241,23 +241,51 @@ export async function runKimiLoginFlow(options: KimiLoginOptions = {}): Promise<
   throw new Error("Kimi sign-in timed out before the code was approved");
 }
 
+/**
+ * Single-flight guard: Kimi rotates the refresh token on use, so two
+ * concurrent refreshes race — the loser burns a now-revoked token and signs
+ * the owner out mid-task. Everyone awaits the same in-flight exchange.
+ */
+let refreshInFlight: Promise<KimiTokens | null> | null = null;
+
 export async function refreshKimiTokens(
   tokens: KimiTokens,
   fetchImpl: typeof fetch = fetch,
 ): Promise<KimiTokens | null> {
-  const { ok, body } = await postForm(TOKEN_PATH, {
-    client_id: OAUTH_CLIENT_ID,
-    grant_type: "refresh_token",
-    refresh_token: tokens.refreshToken,
-  }, fetchImpl);
-  if (!ok) return null;
-  try {
-    const refreshed = tokensFromBody(body, tokens.refreshToken);
-    await saveKimiTokens(refreshed);
-    return refreshed;
-  } catch {
-    return null;
-  }
+  if (refreshInFlight !== null) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const { ok, body } = await postForm(TOKEN_PATH, {
+        client_id: OAUTH_CLIENT_ID,
+        grant_type: "refresh_token",
+        refresh_token: tokens.refreshToken,
+      }, fetchImpl);
+      if (!ok) return null;
+      try {
+        const refreshed = tokensFromBody(body, tokens.refreshToken);
+        await saveKimiTokens(refreshed);
+        return refreshed;
+      } catch {
+        return null;
+      }
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
+
+/**
+ * The 401 escape hatch: the server just rejected the access token we hold, so
+ * skip the expiry heuristic and exchange the refresh token right now. Returns
+ * the new access token, or null when the grant itself is dead (owner must
+ * sign in again).
+ */
+export async function forceRefreshKimiAccessToken(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const stored = await loadKimiTokens();
+  if (stored === null) return null;
+  const refreshed = await refreshKimiTokens(stored, fetchImpl);
+  return refreshed?.accessToken ?? null;
 }
 
 /**
@@ -286,9 +314,15 @@ export const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1";
 
 export interface KimiModel {
   id: string;
+  /** Human name the endpoint publishes (e.g. "K2.7 Coding" for kimi-for-coding). */
+  displayName?: string;
   contextLength?: number;
   supportsReasoning?: boolean;
   thinkingType?: string;
+  /** Whether the model accepts image input (supports_image_in). */
+  supportsVision?: boolean;
+  /** Effort rungs the model actually honours (think_efforts.valid_efforts). */
+  validEfforts?: string[];
 }
 
 /**
@@ -316,12 +350,26 @@ export async function fetchKimiModels(
       const entry = row as Record<string, unknown>;
       if (typeof entry.id !== "string" || entry.id.length === 0) continue;
       const context = Number(entry.context_length ?? entry.max_context_length);
-      const thinking = typeof entry.thinking_type === "string" ? entry.thinking_type : undefined;
+      // The endpoint has renamed this field over time: `thinking_type` became
+      // `supports_thinking_type`, with a sibling `supports_reasoning` boolean.
+      // Read all three so a rename never silently degrades the picker again.
+      const thinking = typeof entry.supports_thinking_type === "string"
+        ? entry.supports_thinking_type
+        : typeof entry.thinking_type === "string" ? entry.thinking_type : undefined;
+      const reasoning = typeof entry.supports_reasoning === "boolean"
+        ? entry.supports_reasoning
+        : thinking === undefined ? undefined : thinking !== "no";
+      const efforts = (entry.think_efforts as Record<string, unknown> | undefined)?.valid_efforts;
       models.push({
         id: entry.id,
+        displayName: typeof entry.display_name === "string" && entry.display_name.length > 0 ? entry.display_name : undefined,
         contextLength: Number.isFinite(context) && context > 0 ? context : undefined,
-        supportsReasoning: thinking === undefined ? undefined : thinking !== "no",
+        supportsReasoning: reasoning,
         thinkingType: thinking,
+        supportsVision: typeof entry.supports_image_in === "boolean" ? entry.supports_image_in : undefined,
+        validEfforts: Array.isArray(efforts)
+          ? efforts.filter((value): value is string => typeof value === "string")
+          : undefined,
       });
     }
     return models.length > 0 ? models : null;

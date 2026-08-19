@@ -271,6 +271,10 @@ export function modelContextWindow(modelId: string): number {
   if (/glm-5\.1/.test(id)) return 1_000_000;
   if (/glm-5|glm-4\.7|glm-4\.6/.test(id)) return 200_000;
   if (/qwen3-coder|qwen3\.5|qwen3-next|qwen3-vl/.test(id)) return 256_000;
+  // Kimi K3 ships a 1M window; k3-256k is the clipped variant. Bare "k3"
+  // (the subscription id) matches neither "kimi" nor "moonshot", so it must
+  // be caught here or it falls to the 128k default and over-trims history.
+  if (/(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)/.test(id)) return /256k/.test(id) ? 256_000 : 1_000_000;
   if (/kimi|moonshot/.test(id)) return 256_000;
   if (/gemini-3|gemini-2/.test(id)) return 1_000_000;
   if (/claude|sonnet|opus|haiku/.test(id)) return 200_000;
@@ -320,6 +324,11 @@ export function isProviderFatalError(err: { code?: string; message?: string } | 
  */
 export function modelLikelyHasVision(modelId: string): boolean {
   const id = (modelId ?? "").toLowerCase();
+  // Kimi went multimodal at K2.5: the coding-endpoint ids (kimi-for-coding,
+  // k3, k3-256k) and K2.5+ all take image input per the live /models
+  // metadata; only the original K2 line (k2, k2-0905, k2-thinking, k2:1t)
+  // stays text-only via the blind list below.
+  if (/kimi-for-coding|kimi-k2\.[5-9]|kimi-k[3-9]|(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)/.test(id)) return true;
   // Text-only families first — some ids would otherwise match broader patterns.
   if (/deepseek|gpt-oss|glm-|kimi-k|qwen3-coder|qwen3-next|minimax|gpt-3\.5|o1-mini|o3-mini/.test(id) && !/vl|vision/.test(id)) return false;
   if (/claude|sonnet|opus|haiku|fable|mythos/.test(id)) return true;

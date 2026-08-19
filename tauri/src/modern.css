@@ -621,6 +621,12 @@
   flex: 1;
   width: 100%;
   max-width: none;
+  /* the `.chat > *` one-column rule margins every child left by
+     (100% - chat-col)/2; at width:100% that shoves the whole hero right of
+     the composer axis and clips the excess. The sanctum is full-bleed, so
+     it centres itself — zero the column anchor. */
+  margin-left: 0;
+  margin-right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;

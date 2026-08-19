@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.40.1",
+    date: "August 2026",
+    title: "Steady hands",
+    tagline: "Kimi stops dying mid-task, your sessions stop hiding after a relaunch, and the home screen stands up straight.",
+    highlights: [
+      {
+        icon: "🔑",
+        title: "Kimi stays signed in",
+        blurb: "Long coding runs no longer collapse when the subscription token expires mid-task — Ares renews it quietly and keeps going.",
+        tag: "Safer",
+      },
+      {
+        icon: "🗂️",
+        title: "Sessions stop vanishing",
+        blurb: "Closing the app while a tool was still running could hide that session from the list on relaunch. It stays put now, and a failed list load tells you instead of showing an empty rail.",
+        tag: "Safer",
+      },
+      {
+        icon: "🤖",
+        title: "The real Kimi lineup",
+        blurb: "The model picker now shows what your Kimi plan actually serves — K2.7 Coding, Highspeed, K3 with its full 1M context — with honest vision and effort settings.",
+        tag: "New",
+      },
+      {
+        icon: "🎯",
+        title: "Honest error labels",
+        blurb: "A Kimi failure now says Kimi — no more mystery OpenRouter errors when you never touched OpenRouter.",
+        tag: "Polished",
+      },
+      {
+        icon: "🏛️",
+        title: "Centered sanctum",
+        blurb: "The ARES wordmark and starter buttons sit on the same axis as the message bar again instead of drifting right.",
+        tag: "Polished",
+      },
+    ],
+  },
+  {
     version: "0.40.0",
     date: "August 2026",
     title: "Quiet confidence",

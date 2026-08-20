@@ -71,8 +71,18 @@ const BASE_PACKAGES = [
   // XFCE gives wallpaper, taskbar, file manager, and a terminal — the machine
   // reads as a computer someone could sit down at.
   "xfce4-session", "xfwm4", "xfdesktop4", "xfce4-panel", "xfce4-appfinder",
-  "thunar", "xfce4-terminal", "mousepad", "xfconf", "dbus-x11", "tango-icon-theme",
+  "thunar", "xfce4-terminal", "mousepad", "xfconf", "dbus-x11",
+  // Looks matter here: this screen is a product surface the owner watches.
+  // Stock XFCE over VNC reads as a 2009 lab machine; a dark theme, real
+  // icons, and a hinted font make it read as Ares's computer.
+  "greybird-gtk-theme", "papirus-icon-theme", "fonts-dejavu-core", "fonts-hack",
 ];
+
+/** Terminal UIs (opencode, lazygit, starship…) draw with Nerd Font glyphs that
+ *  no Debian package ships; without them the screen is full of tofu boxes.
+ *  Best-effort at provision time — a failed download never blocks setup. */
+const NERD_FONT_URL =
+  "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.zip";
 
 export interface SandboxExecResult {
   stdout: string;
@@ -316,6 +326,12 @@ export class WslSandbox {
       840_000,
     );
     if (install.exitCode !== 0) throw new Error(`package install failed: ${(install.stderr || install.stdout).slice(-800)}`);
+    progress("adding terminal glyph fonts…");
+    await this.execRoot(
+      `mkdir -p /usr/local/share/fonts/nerd && cd /usr/local/share/fonts/nerd && ` +
+        `curl -sfL -o nf.zip ${NERD_FONT_URL} && unzip -o -q nf.zip && rm -f nf.zip && fc-cache -f >/dev/null 2>&1; true`,
+      180_000,
+    );
     await this.execRoot(
       [
         `printf 'version=${PROVISION_VERSION}\\nprovisionedAt=%s\\n' "$(date -u +%FT%TZ)" > ${RELEASE_MARKER}`,
@@ -495,22 +511,47 @@ export class WslSandbox {
     const monitor = output.stdout.trim() || "screen";
     const wallpaper = `${SANDBOX_HOME}/.ares-wallpaper.png`;
     const q = `${env} xfconf-query -c xfce4-desktop`;
+    const xs = `${env} xfconf-query -c xsettings`;
+    const wm = `${env} xfconf-query -c xfwm4`;
     const base = `/backdrop/screen0/monitor${monitor}/workspace0`;
+    const theme = await this.exec(`test -d /usr/share/themes/Greybird-dark`, { timeoutMs: 15_000 });
+    const icons = await this.exec(`test -d /usr/share/icons/Papirus-Dark`, { timeoutMs: 15_000 });
     await this.exec(
       [
         // A generated wallpaper beats a color property: it always matches the
         // geometry and needs no extra package (ImageMagick is already here).
-        // Gradient first so the backdrop exists even where the wordmark step
-        // fails for want of a usable font.
-        `convert -size 1280x800 gradient:'#12161f'-'#05070a' ${shellQuote(wallpaper)} 2>/dev/null || true`,
-        `convert ${shellQuote(wallpaper)} -fill '#e28c50' -pointsize 46 -gravity center ` +
-          `-annotate +0+0 'ARES' ${shellQuote(wallpaper)} 2>/dev/null || true`,
+        // Radial base first so the backdrop exists even where the wordmark
+        // step fails for want of a usable font.
+        `convert -size 1280x800 radial-gradient:'#1c2230'-'#06080c' ${shellQuote(wallpaper)} 2>/dev/null || true`,
+        // A quiet, wide-tracked wordmark — present, not shouting.
+        `convert ${shellQuote(wallpaper)} -fill '#e28c50' -alpha set -channel A ` +
+          `-pointsize 58 -kerning 26 -gravity center -family 'DejaVu Sans' ` +
+          `-annotate +0+0 'ARES' -channel RGBA ${shellQuote(wallpaper)} 2>/dev/null || true`,
         `${q} -p ${base}/last-image -n -t string -s ${shellQuote(wallpaper)}`,
         `${q} -p ${base}/image-style -n -t int -s 5`,
         `${q} -p ${base}/color-style -n -t int -s 0`,
+        // Bare desktop: the Home/File System icons are clutter on a machine
+        // whose file manager is one menu click away.
+        `${q} -p /desktop-icons/style -n -t int -s 0`,
+        // Dark chrome + real icons + a hinted font. Applied through xsettings
+        // so it lands live on a running session, no restart.
+        ...(theme.exitCode === 0
+          ? [
+              `${xs} -p /Net/ThemeName -n -t string -s 'Greybird-dark'`,
+              `${wm} -p /general/theme -n -t string -s 'Greybird-dark'`,
+              `${wm} -p /general/title_font -n -t string -s 'DejaVu Sans Bold 9'`,
+            ]
+          : []),
+        ...(icons.exitCode === 0 ? [`${xs} -p /Net/IconThemeName -n -t string -s 'Papirus-Dark'`] : []),
+        `${xs} -p /Gtk/FontName -n -t string -s 'DejaVu Sans 10'`,
+        `${xs} -p /Gtk/MonospaceFontName -n -t string -s 'DejaVu Sans Mono 10'`,
+        `${xs} -p /Xft/Antialias -n -t int -s 1`,
+        `${xs} -p /Xft/Hinting -n -t int -s 1`,
+        `${xs} -p /Xft/HintStyle -n -t string -s 'hintslight'`,
+        `${xs} -p /Xft/RGBA -n -t string -s 'rgb'`,
         `touch ${shellQuote(marker)}`,
       ].join("; "),
-      { timeoutMs: 40_000 },
+      { timeoutMs: 60_000 },
     );
   }
 
@@ -591,7 +632,11 @@ export class WslSandbox {
         { timeoutMs: 20_000 },
       );
     }
-    const params = `autoconnect=1&resize=off${viewOnly ? "&view_only=1" : ""}`;
+    // resize=scale, not off: the guest screen is a fixed 1280x800 and the
+    // owner's window never is, so "off" greeted them with scrollbars around a
+    // clipped desktop. Scaling fits the whole machine in whatever window it
+    // opens in. quality/compression tuned for a local socket.
+    const params = `autoconnect=1&resize=scale&quality=8&compression=2${viewOnly ? "&view_only=1" : ""}`;
     return { url: `http://localhost:${novncPort}/vnc.html?${params}`, novncPort };
   }
 

@@ -38,6 +38,38 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.41.0",
+    date: "August 2026",
+    title: "A computer of its own",
+    tagline: "Ares now has its own Linux machine — it can install things, stay logged in, and work there without asking you for permission every step.",
+    highlights: [
+      {
+        icon: "🖥️",
+        title: "Ares has its own computer",
+        blurb: "A private Linux desktop running quietly inside Windows. Ares can install tools, browse, and leave files there — none of it touches your machine, so none of it needs your approval.",
+        tag: "New",
+      },
+      {
+        icon: "👀",
+        title: "Watch it work — or take over",
+        blurb: "Click the computer chip in the footer to open its screen. You can just watch, or grab the mouse and do something yourself.",
+        tag: "New",
+      },
+      {
+        icon: "🔐",
+        title: "It hands you the hard parts",
+        blurb: "When a site wants a 2FA code, a CAPTCHA, or a payment, Ares stops and passes you the screen — you finish, hand it back, and it carries on.",
+        tag: "Safer",
+      },
+      {
+        icon: "🔁",
+        title: "Logins that stick",
+        blurb: "Sign in to a site on its machine once and it stays signed in for future jobs. Its files and logins survive even a full rebuild of the system.",
+        tag: "New",
+      },
+    ],
+  },
+  {
     version: "0.40.1",
     date: "August 2026",
     title: "Steady hands",

@@ -38,6 +38,50 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.43.0",
+    date: "August 2026",
+    title: "The machine awakens",
+    tagline: "Ares's computer is now a place it knows, remembers, and keeps — not just a tool it can call.",
+    highlights: [
+      {
+        icon: "🧠",
+        title: "It knows its computer",
+        blurb: "Every conversation starts with Ares aware of its own machine — what's installed, what it did there last, and when to take work to it instead of your PC.",
+        tag: "New",
+      },
+      {
+        icon: "📓",
+        title: "The machine remembers",
+        blurb: "Its computer keeps a MACHINE.md of hard-won lessons, a journal of everything done there, and a scripts folder — so it never re-learns the same thing twice.",
+        tag: "New",
+      },
+      {
+        icon: "🌅",
+        title: "The wake ritual",
+        blurb: "Ares arrives at its machine with one call: the desktop boots, the current task is stamped onto the wallpaper, and it reads its own notes before starting.",
+        tag: "New",
+      },
+      {
+        icon: "🐧",
+        title: "A real Debian",
+        blurb: "systemd, locales, and a proper toolkit — its Linux now behaves the way Linux is supposed to, so everything Ares knows about Debian is true there.",
+        tag: "Polished",
+      },
+      {
+        icon: "⚡",
+        title: "A smoother screen",
+        blurb: "Compositing off, smarter streaming, and calmer scrolling make watching Ares's desktop feel immediate instead of laggy.",
+        tag: "Faster",
+      },
+      {
+        icon: "📸",
+        title: "Screenshots fixed",
+        blurb: "Desktop captures were silently truncated into broken images; they arrive whole now.",
+        tag: "Safer",
+      },
+    ],
+  },
+  {
     version: "0.42.0",
     date: "August 2026",
     title: "Its hands, and yours",

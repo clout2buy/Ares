@@ -2,7 +2,9 @@
 //
 //   ares computer status     availability, provisioning, leases
 //   ares computer setup      first-time provision (rootfs download + packages)
+//   ares computer wake [task] boot the desktop, stamp the task, print the boot report
 //   ares computer screen     start the watchable noVNC screen, print its URL
+//   ares computer screen-off stop streaming (desktop keeps running)
 //   ares computer exec -- …  run a command inside the sandbox
 //   ares computer snapshot   full-image export tar
 //   ares computer rebuild    fresh OS, same home, manifest replayed
@@ -91,8 +93,18 @@ export async function computerCommand(parsed: ParsedArgs): Promise<number> {
       console.log(await box.rebuild((line) => console.log(`[rebuild] ${line}`)));
       return 0;
     }
+    if (action === "wake") {
+      // The arrival ritual: boot the desktop, stamp the wallpaper, print the
+      // boot report (uptime, disk, last deeds, MACHINE.md).
+      console.log(await box.wake(args.slice(1).join(" ") || undefined));
+      return 0;
+    }
+    if (action === "screen-off") {
+      console.log(await box.screenOff(1));
+      return 0;
+    }
     console.error(
-      "usage: ares computer <status|setup|screen [--watch]|exec -- cmd|distros|use <distro>|mode <host|sandbox>|snapshot|rebuild>",
+      "usage: ares computer <status|setup|wake [task]|screen [--watch]|screen-off|exec -- cmd|distros|use <distro>|mode <host|sandbox>|snapshot|rebuild>",
     );
     return 2;
   } catch (error) {

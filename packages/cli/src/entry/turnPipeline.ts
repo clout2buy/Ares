@@ -16,6 +16,7 @@ import { SessionManager, GarrisonServer } from "@ares/garrison";
 import { CliRuntimeContext, cliRuntimeContext, compactLine } from "./runtime.js";
 import { LiveSession } from "./sessionFactory.js";
 import { mnemosyneRecaller } from "./mnemosyneRuntime.js";
+import { machineCardPromptBlock } from "@ares/tools";
 import { composeSystemPrompt, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
 
 // ─── live Mind bridge (v6) — wires Living Memory + learned capabilities into
@@ -623,7 +624,10 @@ The owner has confined you to YOUR OWN computer. Host shells, host GUI control, 
 }
 
 function promptEnvironment(permissionMode: PermissionMode, cwd: string, platform: string, today: string): string {
-  return `${sandboxModeBlock()}## Response shape
+  // The machine card: standing awareness that Ares HAS a computer of its own —
+  // what's on it, what it last did there, and the routing rule for using it.
+  // Synchronous (mtime-cached files); empty off-win32 or when nothing is known.
+  return `${machineCardPromptBlock()}${sandboxModeBlock()}## Response shape
 
 Match output length to task complexity. Most replies are ≤4 lines excluding tool calls and code. Skip preamble ("Here's what I'll do") and postamble ("I've completed the task"). Lead with the answer or the action.
 

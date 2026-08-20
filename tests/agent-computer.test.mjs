@@ -165,3 +165,90 @@ test("manifest parses, tolerates a corrupt file, and validates package names", a
   assert.deepEqual(await box.manifest(), { packages: ["ffmpeg", "jq"] });
   await assert.rejects(box.manifestInstall("bad name; rm -rf /"), /not a valid Debian package name/);
 });
+
+// ── the machine's memory of itself: journal, facts, the prompt card ──────
+
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  machineCardPromptBlock,
+  appendJournal,
+  journalTail,
+  updateFacts,
+} from "../packages/tools/dist/index.js";
+
+// Isolate every facts/journal write under a scratch home — these tests must
+// never touch the owner's real ~/.ares/computer state.
+process.env.ARES_HOME = mkdtempSync(join(tmpdir(), "ares-computer-test-"));
+
+test("machine card: unprovisioned state pitches the computer instead of hiding it", async () => {
+  // Earlier tests' status() calls may have stamped provisioned:true into the
+  // scratch facts — this test is about the UNprovisioned card, so say so.
+  await updateFacts({ provisioned: false });
+  const card = machineCardPromptBlock();
+  if (process.platform !== "win32") {
+    assert.equal(card, "");
+    return;
+  }
+  assert.match(card, /Your own computer/);
+  assert.match(card, /not set up yet/);
+  assert.match(card, /ComputerAdmin/);
+});
+
+test("machine card: provisioned state carries distro, deeds, and the routing rule", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("card is win32-only (WSL2)");
+    return;
+  }
+  await updateFacts({ distro: "ares-computer", provisioned: true, freeSpace: "41.0 GB" });
+  await appendJournal({ kind: "exec", detail: "built the mod zip", ok: true });
+  const card = machineCardPromptBlock();
+  assert.match(card, /ares-computer/);
+  assert.match(card, /41\.0 GB/);
+  assert.match(card, /built the mod zip/);
+  assert.match(card, /Routing rule/);
+  assert.match(card, /MACHINE\.md/);
+  // failed deeds are marked, not hidden
+  await appendJournal({ kind: "exec", detail: "tried the flaky build", ok: false });
+  assert.match(machineCardPromptBlock(), /tried the flaky build \(failed\)/);
+});
+
+test("journal appends, tails in order, and never throws on garbage", async () => {
+  await appendJournal({ kind: "browse", detail: "github.com/notifications", ok: true });
+  const tail = await journalTail(2);
+  assert.ok(tail.length >= 1);
+  assert.equal(tail.at(-1).detail, "github.com/notifications");
+  assert.ok(tail.every((e) => typeof e.t === "string" && e.t.includes("T")));
+});
+
+test("wake boots the machine and returns a report carrying MACHINE.md", async () => {
+  const runner = scriptedRunner([
+    ...provisionedScript,
+    { match: (a) => a.at(-1)?.includes("test -S /tmp/.X11-unix/X1"), result: { exitCode: 0 } },
+    {
+      match: (a) => a.at(-1)?.includes("UPTIME="),
+      result: { stdout: "UPTIME=3 hours\nDISK=41G\nPKGS=2\n---MACHINE---\n# MACHINE.md — this computer's own notes\nremember: chromium needs --no-sandbox\n" },
+    },
+    { match: (a) => a.at(-1)?.includes("convert"), result: { exitCode: 0 } },
+  ]);
+  const box = new WslSandbox(runner);
+  // The journal mirror writes over \wsl.localhost — a REAL path. Stub it so
+  // the test never touches a distro that happens to exist on the dev machine.
+  box.writeFile = async () => {};
+  const tools = makeAgentComputerTools({ sandbox: box });
+  const admin = tools.find((t) => t.schema.name === "ComputerAdmin");
+  const result = await admin.call({ action: "wake", task: "field test", view_only: false }, {});
+  assert.match(result.output.report, /Awake at your computer/);
+  assert.match(result.output.report, /3 hours/);
+  assert.match(result.output.report, /chromium needs --no-sandbox/);
+  assert.match(result.display, /field test/);
+});
+
+test("screen_off is registered and admin still gates rebuild as external-state", () => {
+  const tools = makeAgentComputerTools({ sandbox: new WslSandbox(scriptedRunner(provisionedScript)) });
+  const admin = tools.find((t) => t.schema.name === "ComputerAdmin");
+  assert.equal(admin.effectiveSafety({ action: "wake", view_only: false }), "workspace-write");
+  assert.equal(admin.effectiveSafety({ action: "screen_off", view_only: false }), "workspace-write");
+  assert.equal(admin.effectiveSafety({ action: "rebuild", view_only: false }), "external-state");
+});

@@ -172,6 +172,73 @@ snapshot/reset.
    the element. exec is still forbidden from faking input, so this remains
    the single sanctioned input path.
 
+## Third round (v0.43.0) — the machine becomes a PLACE, not an API
+
+The under-use had one root: the model had no standing awareness it OWNED a
+machine. Eight tool names in a schema are not a computer; a place you know,
+remember, and return to is. Five moves close it:
+
+1. **The machine card.** Every system prompt now carries a standing block
+   (`machineCardPromptBlock`, mtime+length-cached, sync — prompt composition
+   never awaits disk): distro, disk, uptime, where the browser sits, the last
+   three deeds from the journal, and the routing rule. Unprovisioned machines
+   get one pitch line instead — discovery without nagging. Facts refresh
+   opportunistically: every `status()` call (the UI chip polls it), every
+   browser navigate, every wake.
+2. **The machine remembers itself.** `~/MACHINE.md` is seeded at provision as
+   the machine's own memory file — the agent reads it on wake and extends it
+   when it learns the box the hard way. `~/.local/bin` (on PATH) is the
+   skills dir: worked-out procedures become scripts, not re-derivations. A
+   host-side journal (`~/.ares/computer/journal.jsonl`, capped at 400 lines)
+   records every exec/browse/desktop/transfer/install deed and is mirrored
+   into the box on wake so the agent can grep its own past from inside.
+3. **A real Debian.** Provision v2 installs systemd (+sysv, +libpam) and flips
+   `wsl.conf` to `systemd=true` — ONLY after the packages provably landed; a
+   boot flag pointing at a missing init would brick the distro. systemctl,
+   journalctl and timers now answer, so the model's generic Linux knowledge is
+   true on its own computer. Locale is generated (kills the apt/perl warning
+   spam), a resident CLI toolkit lands (htop, jq, ripgrep, nano…), and the
+   distro VHD is set sparse (`wsl --manage --set-sparse true`, best-effort) so
+   deleted files give disk back to the host.
+4. **The wake ritual.** `ComputerAdmin "wake"` (and `ares computer wake`) is
+   the arrival: boots the desktop, stamps the current task + timestamp onto
+   the wallpaper (every screenshot becomes self-documenting proof), syncs the
+   journal into the box, and returns a boot report that INCLUDES MACHINE.md —
+   one call leaves the agent standing at its machine already briefed.
+5. **The rest of the lag was cosmetic physics.** xfwm4 compositing OFF
+   (shadows/fades force whole-window damage x11vnc must re-encode), x11vnc
+   `-nap` (naps when the screen is idle), noVNC `quality=6&compression=1`
+   (the felt lag was JS decode + canvas blit in the webview, not bandwidth),
+   Chromium `--disable-smooth-scrolling` (a wheel tick is one damage event,
+   not thirty), and `screen_off` to stop paying for an audience of zero.
+
+Routing doctrine now rides in the card: installs, downloads, scrapes,
+untrusted code, and browser logins belong on the agent's machine; the owner's
+machine is for their repos and apps. When the owner is watching, prefer the
+visible hand (ComputerDesktop) over invisible CDP.
+
+Four more live-only lessons from this round (all fixed in the implementation):
+
+- **systemd splits the D-Bus world.** Login shells now export the USER bus
+  (`/run/user/…/bus`), but xfconfd/xfdesktop live on the SESSION bus that
+  dbus-launch created — so `xfdesktop --reload` answered "xfdesktop is not
+  running" while it ran in plain sight, and xfconf writes landed in a parallel
+  xfconfd nobody read. Fix: resolve the real bus off the running process's
+  `/proc/<pid>/environ` (via `xargs -0`, which needs no escape sequences).
+- **`xfdesktop --reload` does not re-read a same-path image.** The wallpaper
+  stamp alternates between two files and flips the xfconf `last-image`
+  property — a property CHANGE always repaints.
+- **Screenshots were silently truncated to corruption.** The exec output cap
+  (60k chars) ate every desktop PNG's base64 (~100-800k). Screenshot paths
+  now carry their own cap.
+- **A `void`'d write races CLI process exit.** Fire-and-forget journal/facts
+  appends vanished when `ares computer wake` exited before the promise
+  settled. Ritual paths await their bookkeeping.
+- (And a meta-lesson that earns a rule: complex bash for the sandbox goes in
+  a generated script FILE, not an inline `bash -lc` string — three quoting
+  layers deep is where a `\0` becomes a real NUL byte and spawn refuses the
+  whole command.)
+
 ## Boundaries that are doctrine, not detail
 
 - **Per-owner sandbox.** Garrison/Telegram users never share a cookie store —

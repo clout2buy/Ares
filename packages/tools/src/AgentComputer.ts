@@ -19,7 +19,7 @@
 //     durable surface. Rebuild = fresh rootfs + same home + manifest replay.
 
 import { spawn } from "node:child_process";
-import { promises as fs, createWriteStream } from "node:fs";
+import { promises as fs, createWriteStream, statSync, readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import os from "node:os";
@@ -51,7 +51,11 @@ const EXEC_MAX_TIMEOUT_MS = 900_000;
 const OUTPUT_CAP_CHARS = 60_000;
 const MANIFEST_PATH = `${SANDBOX_HOME}/.ares-manifest.json`;
 const RELEASE_MARKER = "/etc/ares-computer-release";
-const PROVISION_VERSION = 1;
+const PROVISION_VERSION = 2;
+/** How many journal lines the machine keeps (host-side, mirrored into the box
+ *  on wake). Small on purpose: this is a memory of DEEDS, not a debug log. */
+const JOURNAL_KEEP = 400;
+const JOURNAL_PRUNE_AT = 600;
 
 /** The Debian rootfs comes from Docker Hub's official `library/debian` image:
  *  token → manifest list → amd64 manifest → the single gzip layer, which IS a
@@ -80,7 +84,54 @@ const BASE_PACKAGES = [
   // sees results appear with no pointer ever moving — work that looks like it
   // happened by magic reads as work that might not have happened at all.
   "xdotool",
+  // A REAL Debian, not a container that happens to boot. systemd makes the
+  // machine behave the way every model's Linux knowledge assumes: systemctl
+  // answers, journalctl exists, timers can schedule work. Without it the
+  // agent hand-rolls setsid daemons and its generic Debian knowledge is
+  // quietly false on its own computer. (wsl.conf flips systemd=true only
+  // AFTER these packages land — a boot flag pointing at a missing init would
+  // brick the distro.)
+  "systemd", "systemd-sysv", "libpam-systemd", "dbus",
+  // Locale, or every apt/perl run spews "setting locale failed" warnings that
+  // eat context and read as breakage.
+  "locales",
+  // The resident toolkit a person would expect on their own machine. Small,
+  // boring, and the difference between "a rootfs" and "my computer".
+  "htop", "nano", "less", "jq", "ripgrep", "wget", "openssh-client", "file", "zip",
 ];
+
+/** Seeded at provision as the machine's OWN memory file — the agent reads it
+ *  on wake and extends it as it learns the box. Never overwritten once
+ *  present: the whole point is that its contents accrue. */
+const MACHINE_MD_SEED = `# MACHINE.md — this computer's own notes
+
+This is YOUR computer (Debian under WSL2). You maintain this file: when you
+learn something about this machine the hard way, write it down here so you
+never pay for the same discovery twice. The OS is disposable; this home
+directory — including this file — survives every rebuild.
+
+## Layout
+- ~/work            — projects live here
+- ~/.local/bin      — your own scripts (on PATH). When you work out a useful
+                      procedure, save it here as a script and note it below.
+- ~/.ares/journal.jsonl — synced copy of your action journal (grep it to
+                      recall how you did something last time)
+- ~/.ares-manifest.json — apt packages replayed on OS rebuild (use
+                      ComputerAdmin manifest_install, not bare apt, for
+                      anything you want to keep)
+
+## Known facts about this box
+- Chromium requires --no-sandbox here (WSL is the sandbox; its own cannot init).
+- No GPU behind Xvfb: software GL only. Heavy WebGL pages will be slow.
+- The screen is 1280x800. The desktop is XFCE; the panel, Thunar and a
+  terminal are real and usable.
+- systemd is live: systemctl / journalctl / systemd timers all work.
+- git identity: set user.email before pushing to GitHub (use the account's
+  noreply address — GitHub rejects pushes exposing a private email).
+
+## Procedures I have saved
+(none yet — add entries as ~/.local/bin grows)
+`;
 
 /** Terminal UIs (opencode, lazygit, starship…) draw with Nerd Font glyphs that
  *  no Debian package ships; without them the screen is full of tofu boxes.
@@ -213,6 +264,161 @@ async function loadConfig(): Promise<SandboxConfig | null> {
 async function saveConfig(config: SandboxConfig): Promise<void> {
   await fs.mkdir(path.dirname(configPath()), { recursive: true });
   await fs.writeFile(configPath(), JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
+// ── the machine's memory of itself: journal + facts + the prompt card ────
+//
+// The gap that made the computer under-used was not capability — it was that
+// the model had no standing awareness it OWNED a machine. These three pieces
+// close it: a journal of deeds (host-side, mirrored into the box on wake), a
+// facts snapshot refreshed opportunistically by every status/tool call, and a
+// synchronous prompt card composed from both so every system prompt says
+// "here is your computer, here is what you last did on it".
+
+function journalPath(): string {
+  return path.join(aresHome(), "computer", "journal.jsonl");
+}
+
+function factsPath(): string {
+  return path.join(aresHome(), "computer", "facts.json");
+}
+
+export interface JournalEntry {
+  t: string;
+  kind: string;
+  detail: string;
+  ok?: boolean;
+}
+
+/** Opportunistically-learned machine facts, for the prompt card. Every field
+ *  optional: the card renders whatever is known and omits the rest. */
+export interface MachineFacts {
+  distro?: string;
+  provisioned?: boolean;
+  provisionVersion?: number;
+  blocked?: string;
+  freeSpace?: string;
+  uptime?: string;
+  packages?: number;
+  lastUrl?: string;
+  lastTitle?: string;
+  lastWake?: string;
+  screenUrl?: string;
+  updatedAt?: string;
+}
+
+/** Fire-and-forget journal append with occasional pruning. Never throws, never
+ *  awaited by callers — a failed diary line must not fail the deed. */
+export async function appendJournal(entry: Omit<JournalEntry, "t">): Promise<void> {
+  try {
+    const file = journalPath();
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const line = JSON.stringify({ t: new Date().toISOString(), ...entry });
+    await fs.appendFile(file, line + "\n", "utf8");
+    const raw = await fs.readFile(file, "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    if (lines.length > JOURNAL_PRUNE_AT) {
+      await fs.writeFile(file, lines.slice(-JOURNAL_KEEP).join("\n") + "\n", "utf8");
+    }
+  } catch { /* the journal is memory, not a transaction log */ }
+}
+
+export async function journalTail(count = 3): Promise<JournalEntry[]> {
+  try {
+    const raw = await fs.readFile(journalPath(), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0).slice(-count);
+    return lines.map((l) => JSON.parse(l) as JournalEntry);
+  } catch {
+    return [];
+  }
+}
+
+export async function updateFacts(patch: Partial<MachineFacts>): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(factsPath()), { recursive: true });
+    let current: MachineFacts = {};
+    try {
+      current = JSON.parse(await fs.readFile(factsPath(), "utf8")) as MachineFacts;
+    } catch { /* first write */ }
+    const merged = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    await fs.writeFile(factsPath(), JSON.stringify(merged, null, 2) + "\n", "utf8");
+  } catch { /* facts are advisory */ }
+}
+
+/** mtime-cached snapshot for the SYNCHRONOUS prompt path (same pattern as
+ *  cachedUiSettings): prompt composition may never await disk. */
+let cardCache: { stamp: string; value: string } | null = null;
+
+/**
+ * The machine card: a standing block for the system prompt. This is what makes
+ * the computer a PLACE the agent knows it has, instead of eight tool names it
+ * might remember. Three states:
+ *  - no WSL/no config yet  → one line saying its computer can be set up;
+ *  - registered, provisioned → the full card (distro, disk, last deeds, rules);
+ *  - anything in between → the shortest true statement plus the fix.
+ */
+export function machineCardPromptBlock(): string {
+  if (process.platform !== "win32") return "";
+  let factsRaw = "";
+  let journalRaw = "";
+  let factsStamp = 0;
+  let journalStamp = 0;
+  try {
+    factsStamp = statSyncMs(factsPath());
+    factsRaw = readFileSyncSafe(factsPath());
+  } catch { /* absent is a valid state */ }
+  try {
+    journalStamp = statSyncMs(journalPath());
+    journalRaw = readFileSyncSafe(journalPath());
+  } catch { /* absent is a valid state */ }
+  // Content length rides along with mtime: two writes inside one mtime tick
+  // (fast successive tool calls) must still invalidate the card.
+  const stamp = `${factsStamp}:${journalStamp}:${factsRaw.length}:${journalRaw.length}`;
+  if (cardCache?.stamp === stamp) return cardCache.value;
+
+  let facts: MachineFacts = {};
+  try { facts = JSON.parse(factsRaw) as MachineFacts; } catch { /* unreadable = unknown */ }
+  let value: string;
+  if (!facts.provisioned) {
+    value = `## Your own computer
+
+You can have a computer of your own — a sandboxed Debian Linux with a desktop, browser, and persistent home, separate from the owner's machine. It is not set up yet${facts.blocked ? ` (blocked: ${facts.blocked})` : ""}. One call provisions it: ComputerAdmin action "setup" (a few minutes, ~2 GB). Offer it when a task wants installs, downloads, logins, or room to make mistakes.
+
+`;
+  } else {
+    const lines: JournalEntry[] = journalRaw
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .slice(-3)
+      .map((l) => { try { return JSON.parse(l) as JournalEntry; } catch { return null; } })
+      .filter((e): e is JournalEntry => e !== null);
+    const deeds = lines.length > 0
+      ? lines.map((e) => `- ${e.t.slice(0, 16).replace("T", " ")} ${e.kind}: ${e.detail}${e.ok === false ? " (failed)" : ""}`).join("\n")
+      : "- (nothing yet — this machine is fresh)";
+    const versionNote = facts.provisionVersion !== undefined && facts.provisionVersion < PROVISION_VERSION
+      ? `\nOS image is v${facts.provisionVersion} (current is v${PROVISION_VERSION}) — ComputerAdmin "setup" upgrades in place.`
+      : "";
+    value = `## Your own computer — \`${facts.distro ?? SANDBOX_DISTRO}\`
+
+A real Debian machine that is YOURS: XFCE desktop on display :1 (1280x800), Chromium with persistent logins, systemd, a home directory that survives OS rebuilds.${facts.freeSpace ? ` Disk: ${facts.freeSpace} free.` : ""}${facts.uptime ? ` Up ${facts.uptime}.` : ""}${facts.lastUrl ? `\nBrowser was last at: ${facts.lastTitle ? `${facts.lastTitle} — ` : ""}${facts.lastUrl}` : ""}${facts.screenUrl ? `\nWatchable screen: ${facts.screenUrl}` : ""}
+Your memory there: ~/MACHINE.md (read it on wake; extend it when you learn the box), ~/.local/bin (your saved scripts, on PATH), ~/.ares/journal.jsonl (what you did before).
+Recent deeds:
+${deeds}${versionNote}
+
+**Routing rule:** work that installs software, downloads files, scrapes, runs untrusted code, or needs a browser login belongs on YOUR computer (Computer* tools) — not the owner's machine. The owner's machine is for their repos and their apps. Start a session of real work there with ComputerAdmin "wake" (boots it, stamps the current task on the wallpaper, returns a status report). When the owner is watching your screen, prefer ComputerDesktop for GUI work — your hand should be visible; CDP (ComputerBrowser) is for headless speed. 2FA/CAPTCHA/payments: ComputerHandoff, always.
+
+`;
+  }
+  cardCache = { stamp, value };
+  return value;
+}
+
+// Sync fs shims for the prompt path only (composition may never await disk).
+function statSyncMs(file: string): number {
+  return statSync(file).mtimeMs;
+}
+function readFileSyncSafe(file: string): string {
+  return readFileSync(file, "utf8");
 }
 
 const defaultRunner: WslRunner = (args, opts = {}) =>
@@ -352,6 +558,15 @@ export class WslSandbox {
       }
     }
     const config = await loadConfig();
+    // Every status call refreshes the prompt card's facts — the UI chip polls
+    // this, so the card stays warm without any dedicated plumbing. Awaited:
+    // a void'd write races CLI process exit and silently vanishes.
+    await updateFacts({
+      distro: this.distro,
+      provisioned,
+      provisionVersion,
+      ...(blocked ? { blocked } : { blocked: undefined }),
+    });
     return {
       wslAvailable,
       distroRegistered,
@@ -452,6 +667,33 @@ export class WslSandbox {
         `curl -sfL -o nf.zip ${NERD_FONT_URL} && unzip -o -q nf.zip && rm -f nf.zip && fc-cache -f >/dev/null 2>&1; true`,
       180_000,
     );
+    progress("locale + systemd boot…");
+    // Locale first (kills the "setting locale failed" spam every apt/perl run
+    // otherwise emits), then flip wsl.conf to systemd — ONLY now, after the
+    // systemd packages are provably installed. A boot flag pointing at a
+    // missing init strands the distro; order is the safety here.
+    await this.execRoot(
+      [
+        `sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true`,
+        `locale-gen >/dev/null 2>&1 || true`,
+        `printf 'LANG=en_US.UTF-8\\n' > /etc/default/locale`,
+        `printf '[user]\\ndefault=${SANDBOX_USER}\\n[boot]\\nsystemd=true\\n' > /etc/wsl.conf`,
+      ].join("; "),
+      120_000,
+    );
+    progress("seeding the machine's home (MACHINE.md, ~/.local/bin, ~/work)…");
+    // The home layout that makes it THE AGENT'S machine rather than a rootfs:
+    // a memory file it maintains, a scripts dir on PATH, a projects dir, and a
+    // git identity. Seeded once — never overwritten (the contents accrue).
+    const seedB64 = Buffer.from(MACHINE_MD_SEED, "utf8").toString("base64");
+    await this.execRoot(
+      [
+        `su - ${SANDBOX_USER} -c 'mkdir -p ~/work ~/.local/bin ~/.ares'`,
+        `su - ${SANDBOX_USER} -c 'test -f ~/MACHINE.md || (echo ${seedB64} | base64 -d > ~/MACHINE.md)'`,
+        `su - ${SANDBOX_USER} -c 'git config --global init.defaultBranch main 2>/dev/null; git config --global user.name Ares 2>/dev/null; true'`,
+      ].join(" && "),
+      60_000,
+    );
     await this.execRoot(
       [
         `printf 'version=${PROVISION_VERSION}\\nprovisionedAt=%s\\n' "$(date -u +%FT%TZ)" > ${RELEASE_MARKER}`,
@@ -461,6 +703,10 @@ export class WslSandbox {
     );
     // Terminate so /etc/wsl.conf's default user takes effect on next start.
     await this.run(["--terminate", this.distro], { timeoutMs: 20_000 });
+    // Sparse VHD: the distro's virtual disk gives space back to the host as
+    // files are deleted, instead of growing monotonically forever. Per-distro
+    // and safe; older wsl.exe builds just don't have the flag — best-effort.
+    await this.run(["--manage", this.distro, "--set-sparse", "true"], { timeoutMs: 30_000 });
     const config = (await loadConfig())!;
     await saveConfig({ ...config, provisionedAt: new Date().toISOString(), provisionVersion: PROVISION_VERSION });
     steps.push("provisioned Debian + packages");
@@ -520,13 +766,13 @@ export class WslSandbox {
   // ── exec & files ──────────────────────────────────────────────────────
 
   /** Run a command inside the sandbox as the agent user. */
-  async exec(command: string, opts: { timeoutMs?: number; cwd?: string; user?: string } = {}): Promise<SandboxExecResult> {
+  async exec(command: string, opts: { timeoutMs?: number; cwd?: string; user?: string; maxOutputChars?: number } = {}): Promise<SandboxExecResult> {
     await this.requireProvisioned();
     const cwd = opts.cwd ?? SANDBOX_HOME;
     const wrapped = `cd ${shellQuote(cwd)} 2>/dev/null; ${command}`;
     return this.run(
       ["-d", this.distro, "-u", opts.user ?? SANDBOX_USER, "--", "bash", "-lc", wrapped],
-      { timeoutMs: opts.timeoutMs },
+      { timeoutMs: opts.timeoutMs, maxOutputChars: opts.maxOutputChars },
     );
   }
 
@@ -616,10 +862,22 @@ export class WslSandbox {
    *  unstyled black root reads as "broken" rather than "idle". Marker-guarded
    *  so the owner's own later choices are never overwritten. */
   private async styleDesktop(display: number): Promise<void> {
-    const marker = `${SANDBOX_HOME}/.ares-desktop-styled`;
+    // v2 marker: v1-styled machines restyle ONCE to pick up compositing-off
+    // and the session-bus fix below; after that the owner's choices stand.
+    const marker = `${SANDBOX_HOME}/.ares-desktop-styled-v2`;
     const done = await this.exec(`test -f ${shellQuote(marker)}`, { timeoutMs: 15_000 });
     if (done.exitCode === 0) return;
     const env = `env DISPLAY=:${display} XDG_RUNTIME_DIR=/tmp/xdg-${SANDBOX_USER}`;
+    // Under systemd, login shells export DBUS_SESSION_BUS_ADDRESS pointing at
+    // the USER bus (/run/user/…/bus) — but xfconfd/xfdesktop live on the
+    // SESSION bus dbus-launch created. xfconf-query on the wrong bus writes
+    // settings into a parallel xfconfd nobody reads. Resolve the real bus off
+    // the running window manager (xargs -0: no escape sequences to mangle
+    // through the shell layers), export it for every command in this chain.
+    const busPrelude =
+      `wmpid=$(pgrep -u ${SANDBOX_USER} -x xfwm4 | head -1); ` +
+      `if [ -n "$wmpid" ]; then sbus=$(xargs -0 -n1 < /proc/$wmpid/environ | grep '^DBUS_SESSION_BUS_ADDRESS=' | cut -d= -f2-); fi; ` +
+      `if [ -n "\${sbus:-}" ]; then export DBUS_SESSION_BUS_ADDRESS="$sbus"; else unset DBUS_SESSION_BUS_ADDRESS; fi`;
     // The backdrop property path embeds the RandR OUTPUT name, which under
     // Xvfb is "screen" — not the "monitor0" every xfce guide assumes. Read it
     // from xrandr instead of guessing, or the settings land on a path
@@ -638,6 +896,7 @@ export class WslSandbox {
     const icons = await this.exec(`test -d /usr/share/icons/Papirus-Dark`, { timeoutMs: 15_000 });
     await this.exec(
       [
+        busPrelude,
         // A generated wallpaper beats a color property: it always matches the
         // geometry and needs no extra package (ImageMagick is already here).
         // Radial base first so the backdrop exists even where the wordmark
@@ -662,6 +921,10 @@ export class WslSandbox {
               `${wm} -p /general/title_font -n -t string -s 'DejaVu Sans Bold 9'`,
             ]
           : []),
+        // Compositing OFF: shadows/fades force whole-window damage on every
+        // event, which x11vnc then re-encodes — the classic VNC lag source.
+        // Over this screen nobody can see the difference; they CAN feel it.
+        `${wm} -p /general/use_compositing -n -t bool -s false`,
         ...(icons.exitCode === 0 ? [`${xs} -p /Net/IconThemeName -n -t string -s 'Papirus-Dark'`] : []),
         `${xs} -p /Gtk/FontName -n -t string -s 'DejaVu Sans 10'`,
         `${xs} -p /Gtk/MonospaceFontName -n -t string -s 'DejaVu Sans Mono 10'`,
@@ -713,6 +976,10 @@ export class WslSandbox {
           `--no-first-run --no-default-browser-check --disable-features=TranslateUI ` +
           `--disable-session-crashed-bubble --disable-infobars --hide-crash-restore-bubble ` +
           `--no-sandbox --disable-dev-shm-usage --disable-gpu --use-gl=angle --use-angle=swiftshader ` +
+          // Smooth scrolling under software GL is dozens of interpolation
+          // frames x11vnc must re-encode per wheel tick; snap-scrolling is
+          // one damage event and reads FASTER on the streamed screen.
+          `--disable-smooth-scrolling ` +
           `--remote-debugging-port=${cdpPort} --remote-allow-origins=* ` +
           `--user-data-dir=${shellQuote(profile)} --window-size=1280,760 --window-position=0,0 ` +
           `--start-maximized about:blank </dev/null >/tmp/chromium-${display}.log 2>&1 & sleep 2.5`,
@@ -749,7 +1016,7 @@ export class WslSandbox {
       await this.exec(
         `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE -u XDG_RUNTIME_DIR DISPLAY=:${display} ` +
           `setsid nohup x11vnc -display :${display} -rfbport ${vncPort} -localhost -forever -shared -nopw ` +
-          `-threads -xdamage -wait 10 -defer 10 -cursor most -cursorpos -nolookup ` +
+          `-threads -xdamage -wait 10 -defer 10 -nap -cursor most -cursorpos -nolookup ` +
           `</dev/null >/tmp/x11vnc-${display}.log 2>&1 & sleep 1.2`,
         { timeoutMs: 25_000 },
       );
@@ -767,12 +1034,132 @@ export class WslSandbox {
     // resize=scale, not off: the guest screen is a fixed 1280x800 and the
     // owner's window never is, so "off" greeted them with scrollbars around a
     // clipped desktop. Scaling fits the whole machine in whatever window it
-    // opens in. quality/compression tuned for a local socket.
-    // Loopback has bandwidth to burn but little tolerance for CPU spent on
-    // compression, so ask for low compression and high quality; the win comes
-    // from x11vnc's damage tracking above, not from squeezing bytes.
-    const params = `autoconnect=1&resize=scale&quality=9&compression=0&show_dot=1${viewOnly ? "&view_only=1" : ""}`;
-    return { url: `http://localhost:${novncPort}/vnc.html?${params}`, novncPort };
+    // opens in.
+    // quality=6 (tight JPEG), not 9: the felt lag lives in noVNC's JS decode
+    // and canvas blit inside a webview that is already running the whole app —
+    // q6 is visually indistinguishable on a desktop and far less to decode.
+    // compression=1 keeps zlib nearly free on loopback.
+    const params = `autoconnect=1&resize=scale&quality=6&compression=1&show_dot=1${viewOnly ? "&view_only=1" : ""}`;
+    const url = `http://localhost:${novncPort}/vnc.html?${params}`;
+    await updateFacts({ screenUrl: url });
+    return { url, novncPort };
+  }
+
+  /** Stop the screen pipeline (x11vnc + websockify). The desktop keeps
+   *  running; only the streaming stops. Watching costs a full-time framebuffer
+   *  poller — when nobody is looking, the machine should not pay for an
+   *  audience of zero. */
+  async screenOff(display = DEFAULT_DISPLAY): Promise<string> {
+    await this.requireProvisioned();
+    // Kill by PORT, never `pkill -f`: this whole command runs inside a
+    // `bash -lc "<command>"` whose own cmdline contains any -f pattern — the
+    // shell would match and kill itself (the same self-match that once made
+    // every liveness probe lie). fuser is process-name-blind and port-exact.
+    await this.exec(
+      `fuser -k -TERM ${NOVNC_PORT_BASE + display}/tcp 2>/dev/null; fuser -k -TERM ${VNC_PORT_BASE + display}/tcp 2>/dev/null; true`,
+      { timeoutMs: 20_000 },
+    );
+    await updateFacts({ screenUrl: undefined });
+    return `screen streaming stopped on :${display} (desktop still running; "screen" restarts it)`;
+  }
+
+  // ── the wake ritual ───────────────────────────────────────────────────
+
+  /**
+   * Arriving at the machine, as a visible event: boot the desktop, stamp the
+   * current task onto the wallpaper, sync the journal into the box, and return
+   * a boot report that INCLUDES ~/MACHINE.md — so one call leaves the agent
+   * standing at its own computer already knowing everything it ever learned
+   * about it. Idempotent; cheap when everything is already up.
+   */
+  async wake(task?: string, display = DEFAULT_DISPLAY): Promise<string> {
+    await this.ensureDisplay(display);
+    // One combined probe: uptime, disk, package count, machine notes.
+    const probe = await this.exec(
+      [
+        `printf 'UPTIME=%s\\n' "$(uptime -p 2>/dev/null | sed 's/^up //')"`,
+        `printf 'DISK=%s\\n' "$(df -h ${SANDBOX_HOME} 2>/dev/null | awk 'NR==2 {print $4}')"`,
+        `printf 'PKGS=%s\\n' "$(jq -r '.packages | length' ${MANIFEST_PATH} 2>/dev/null || echo 0)"`,
+        `echo '---MACHINE---'`,
+        `head -c 6000 ${SANDBOX_HOME}/MACHINE.md 2>/dev/null || echo '(no MACHINE.md — old provision; run ComputerAdmin setup to upgrade)'`,
+      ].join("; "),
+      { timeoutMs: 30_000 },
+    );
+    const [meta = "", machineMd = ""] = probe.stdout.split("---MACHINE---");
+    const uptime = /UPTIME=(.*)/.exec(meta)?.[1]?.trim() || undefined;
+    const disk = /DISK=(.*)/.exec(meta)?.[1]?.trim() || undefined;
+    const pkgs = Number(/PKGS=(.*)/.exec(meta)?.[1] ?? "0") || 0;
+    // Mirror the host-side journal into the box so the agent can grep its own
+    // past from inside (`grep how-i-did ~/.ares/journal.jsonl`).
+    const tail = await journalTail(JOURNAL_KEEP);
+    if (tail.length > 0) {
+      await this.writeFile(`${SANDBOX_HOME}/.ares/journal.jsonl`, tail.map((e) => JSON.stringify(e)).join("\n") + "\n").catch(() => {});
+    }
+    await this.stampWallpaper(task, display).catch(() => { /* decoration */ });
+    await updateFacts({ uptime, packages: pkgs, lastWake: new Date().toISOString(), ...(disk ? { freeSpace: `${disk} (home)` } : {}) });
+    await appendJournal({ kind: "wake", detail: task ? `woke for: ${task}` : "woke", ok: true });
+    const deeds = tail.slice(-3).map((e) => `  - ${e.t.slice(0, 16).replace("T", " ")} ${e.kind}: ${e.detail}`).join("\n");
+    return [
+      `Awake at your computer (${this.distro}).${uptime ? ` Up ${uptime}.` : ""}${disk ? ` ${disk} free in home.` : ""} ${pkgs} manifest package(s).`,
+      task ? `Task stamped on the wallpaper: ${task}` : "",
+      deeds ? `Last deeds:\n${deeds}` : "",
+      machineMd.trim() ? `\n── ~/MACHINE.md ──\n${machineMd.trim()}` : "",
+    ].filter((s) => s.length > 0).join("\n");
+  }
+
+  /** Repaint the wallpaper as a status board: the wordmark, the current task,
+   *  and the wake timestamp — so every screenshot and every glance at the
+   *  screen answers "what is this machine doing right now" by itself.
+   *
+   *  Repaint mechanics, live-verified the hard way:
+   *  - `xfdesktop --reload` does NOT re-read an image whose path is unchanged,
+   *    so the stamp alternates between two files and flips the xfconf
+   *    `last-image` property — a property CHANGE always repaints.
+   *  - xfconf/xfdesktop live on the SESSION bus dbus-launch created, which
+   *    under systemd is NOT the login shell's user bus (/run/user/…/bus). The
+   *    real address is read off the running xfdesktop's /proc environ.
+   *  - Runs as a generated script FILE, not an inline bash -lc string: three
+   *    quoting layers deep is where a `\0` becomes a real NUL byte and spawn
+   *    refuses the whole command (also live-verified, unfortunately).
+   */
+  async stampWallpaper(task?: string, display = DEFAULT_DISPLAY): Promise<void> {
+    const when = new Date().toISOString().slice(0, 16).replace("T", " ");
+    // ImageMagick text safety: strip characters that would break -annotate.
+    const taskLine = (task ?? "").replace(/[^\w .,:;()/'"@#&+-]/g, " ").slice(0, 72);
+    const script = [
+      "#!/bin/bash",
+      "set -u",
+      `A=${SANDBOX_HOME}/.ares-wallpaper.png`,
+      `B=${SANDBOX_HOME}/.ares-wallpaper-b.png`,
+      `pid=$(pgrep -u ${SANDBOX_USER} -x xfdesktop | head -1)`,
+      `bus=""`,
+      // The \0 must reach tr as its two-character escape — this is a script
+      // FILE, so the backslash survives (no shell re-parse on the way in).
+      String.raw`[ -n "$pid" ] && bus=$(tr '\0' '\n' < /proc/$pid/environ | grep '^DBUS_SESSION_BUS_ADDRESS=' | cut -d= -f2-)`,
+      String.raw`mon=$(env DISPLAY=:` + String(display) + String.raw` xrandr --listmonitors 2>/dev/null | awk 'NR==2 {print $NF}')`,
+      `mon=\${mon:-screen}`,
+      `prop=/backdrop/screen0/monitor\$mon/workspace0/last-image`,
+      `cur=""`,
+      `[ -n "$bus" ] && cur=$(env DBUS_SESSION_BUS_ADDRESS="$bus" DISPLAY=:${display} xfconf-query -c xfce4-desktop -p $prop 2>/dev/null || true)`,
+      `target=$A; [ "$cur" = "$A" ] && target=$B`,
+      `convert -size 1280x800 radial-gradient:'#1c2230'-'#06080c' "$target"`,
+      `convert "$target" -fill '#e28c50' -pointsize 58 -kerning 26 -gravity center -family 'DejaVu Sans' -annotate +0-40 'ARES' "$target"`,
+      ...(taskLine
+        ? [`convert "$target" -fill '#c8d2e0' -pointsize 20 -gravity center -family 'DejaVu Sans' -annotate +0+30 ${shellQuote(taskLine)} "$target"`]
+        : []),
+      `convert "$target" -fill '#5a6478' -pointsize 13 -gravity southeast -family 'DejaVu Sans' -annotate +18+14 ${shellQuote(`awake ${when}`)} "$target"`,
+      `if [ -n "$bus" ]; then`,
+      `  env DBUS_SESSION_BUS_ADDRESS="$bus" DISPLAY=:${display} xfconf-query -c xfce4-desktop -p $prop -n -t string -s "$target"`,
+      `else`,
+      // No live session bus (xfdesktop died or never started): start xfdesktop
+      // detached — the fresh instance reads the property, which still points
+      // at whichever file the last successful stamp wrote.
+      `  env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY=:${display} XDG_RUNTIME_DIR=/tmp/xdg-${SANDBOX_USER} setsid nohup xfdesktop </dev/null >/tmp/xfdesktop-${display}.log 2>&1 &`,
+      `fi`,
+      `true`,
+    ].join("\n");
+    await this.writeFile("/tmp/.ares-stamp.sh", script + "\n");
+    await this.exec("bash /tmp/.ares-stamp.sh", { timeoutMs: 40_000 });
   }
 
   // ── the visible hand: pixel input under a display lease ───────────────
@@ -904,7 +1291,11 @@ export class WslSandbox {
       await client.send("Page.navigate", { url }, sessionId, 15_000);
       await Promise.race([loaded, sleep(12_000)]);
       await sleep(settleMs);
-      return this.pageIdentity(client, sessionId);
+      const identity = await this.pageIdentity(client, sessionId);
+      // The card remembers where the browser sits, so the next session opens
+      // knowing "Chrome is on github.com/notifications" instead of guessing.
+      await updateFacts({ lastUrl: identity.url, lastTitle: identity.title });
+      return identity;
     });
   }
 
@@ -1012,9 +1403,12 @@ export class WslSandbox {
   /** Whole-desktop capture (read-only) — what a human at the machine sees. */
   async desktopScreenshot(display = DEFAULT_DISPLAY): Promise<string> {
     await this.ensureDisplay(display);
+    // A 1280x800 PNG runs 100-800KB of base64 — far past the default 60k
+    // output cap, which silently truncated every capture into a corrupt image
+    // (found live: "saved exactly 60000 chars"). Screenshots get their own cap.
     const result = await this.exec(
       `DISPLAY=:${display} xwd -root -silent | convert xwd:- png:- | base64 -w0`,
-      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000, maxOutputChars: 8_000_000 },
     );
     if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
       throw toolError(`desktop capture failed: ${(result.stderr || result.stdout).slice(0, 400)}`);
@@ -1194,10 +1588,11 @@ const desktopInput = z
 const adminInput = z
   .object({
     action: z
-      .enum(["status", "setup", "screen", "manifest_list", "manifest_install", "snapshot", "rebuild", "list_distros", "use_distro"])
-      .describe("status: availability, storage, leases. setup: provision the computer. screen: start the watchable screen and return its URL. manifest_*: rebuild-surviving packages. snapshot: full-image export. rebuild: fresh OS, same home. list_distros / use_distro: see or switch which WSL Linux acts as the computer."),
+      .enum(["status", "setup", "wake", "screen", "screen_off", "manifest_list", "manifest_install", "snapshot", "rebuild", "list_distros", "use_distro"])
+      .describe("status: availability, storage, leases. setup: provision the computer. wake: arrive at your machine — boots the desktop, stamps the task on the wallpaper, returns a boot report WITH your ~/MACHINE.md notes (start real work sessions with this). screen: start the watchable screen and return its URL. screen_off: stop streaming when nobody is watching. manifest_*: rebuild-surviving packages. snapshot: full-image export. rebuild: fresh OS, same home. list_distros / use_distro: see or switch which WSL Linux acts as the computer."),
     package: z.string().optional().describe("Debian package name for manifest_install."),
     distro: z.string().optional().describe("WSL distro name for use_distro — adopt an existing Linux install as the computer."),
+    task: z.string().optional().describe("wake: what you're about to work on — stamped onto the wallpaper so the screen narrates itself."),
     view_only: z.boolean().default(false).describe("screen: open in watch mode (no input)."),
   })
   .strict();
@@ -1214,9 +1609,11 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
   const computerExec = buildTool({
     name: "ComputerExec",
     description:
-      "Run a shell command on the AGENT'S OWN COMPUTER — a sandboxed Debian Linux separate from the owner's machine. " +
+      "Run a shell command on YOUR OWN COMPUTER — a real Debian (systemd, apt, your home) separate from the owner's machine. " +
       "Files, installs, and browser logins persist there; nothing touches the host. Install tools freely (record keepers via ComputerAdmin manifest_install so they survive OS rebuilds). " +
-      "GUI input from the shell is refused — use ComputerBrowser for web work, ComputerHandoff for things only the owner may do.",
+      "Your memory lives there too: ~/MACHINE.md holds what you've learned about the box (extend it when you learn something the hard way), " +
+      "~/.local/bin is on PATH — save reusable procedures there as scripts instead of re-deriving them. " +
+      "GUI input from the shell is refused — use ComputerDesktop for the visible hand, ComputerBrowser for web work, ComputerHandoff for things only the owner may do.",
     safety: "workspace-write",
     concurrency: "parallel-safe",
     watchdogTimeoutMs: 0,
@@ -1228,6 +1625,7 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
     },
     async call(i): Promise<ToolResult<ComputerExecOutput>> {
       const result = await box.exec(i.command, { timeoutMs: i.timeout, cwd: i.cwd });
+      void appendJournal({ kind: "exec", detail: i.description || i.command.slice(0, 80), ok: result.exitCode === 0 && !result.timedOut });
       const display = result.timedOut
         ? `timed out after ${i.timeout}ms`
         : `exit ${result.exitCode}`;
@@ -1300,6 +1698,7 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
       if (i.action === "navigate") {
         if (!i.url) throw toolError("navigate requires url.");
         const page = await box.browserNavigate(i.url, i.display);
+        void appendJournal({ kind: "browse", detail: page.title ? `${page.title} — ${page.url}`.slice(0, 110) : page.url.slice(0, 110), ok: true });
         return { output: { ...page }, display: `→ ${page.title || page.url}` };
       }
       if (i.action === "read") {
@@ -1349,12 +1748,14 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
         const bytes = (await fs.stat(hostPath)).size;
         await box.exec(`mkdir -p ${shellQuote(path.posix.dirname(sandboxPath))}`, { timeoutMs: 20_000 });
         await fs.copyFile(hostPath, box.uncPath(sandboxPath));
+        void appendJournal({ kind: "transfer", detail: `${path.basename(hostPath)} → computer (${bytes} bytes)`, ok: true });
         return { output: { direction: i.direction, host: hostPath, computer: sandboxPath, bytes }, display: `${bytes} bytes → computer` };
       }
       await box.exec("true", { timeoutMs: 20_000 });
       await fs.mkdir(path.dirname(hostPath), { recursive: true });
       await fs.copyFile(box.uncPath(sandboxPath), hostPath);
       const bytes = (await fs.stat(hostPath)).size;
+      void appendJournal({ kind: "transfer", detail: `${path.posix.basename(sandboxPath)} → host (${bytes} bytes)`, ok: true });
       return {
         output: { direction: i.direction, host: hostPath, computer: sandboxPath, bytes },
         display: `${bytes} bytes → host`,
@@ -1415,6 +1816,7 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
         x: i.x, y: i.y, toX: i.to_x, toY: i.to_y,
         text: i.text, key: i.key, amount: i.amount, display: i.display,
       });
+      void appendJournal({ kind: "desktop", detail: `${i.action}${i.text ? `: ${i.text.slice(0, 40)}` : i.key ? `: ${i.key}` : ""}`, ok: true });
       return { output: { action: i.action, result }, display: result };
     },
   });
@@ -1422,8 +1824,9 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
   const computerAdmin = buildTool({
     name: "ComputerAdmin",
     description:
-      "Manage the agent's own computer: status (availability, leases), setup (first-time provision — downloads a Debian rootfs " +
-      "and installs the base kit), screen (start the watchable noVNC screen and return its URL for the owner), " +
+      "Manage YOUR OWN computer: wake (arrive — boots the desktop, stamps the task on the wallpaper, returns your ~/MACHINE.md notes; " +
+      "start real work sessions with this), status (availability, leases, disk), setup (first-time provision — downloads a Debian rootfs " +
+      "and installs the base kit), screen (start the watchable noVNC screen and return its URL for the owner) / screen_off (stop streaming), " +
       "manifest_list / manifest_install (packages that survive OS rebuilds), snapshot (full-image export), " +
       "rebuild (fresh OS, SAME home + logins, manifest replayed).",
     safety: "workspace-write",
@@ -1474,7 +1877,12 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
       if (i.action === "setup") {
         const lines: string[] = [];
         const result = await box.setup((line) => lines.push(line));
+        void appendJournal({ kind: "setup", detail: result.slice(0, 100), ok: true });
         return { output: { result, log: lines }, display: result };
+      }
+      if (i.action === "wake") {
+        const report = await box.wake(i.task);
+        return { output: { report }, display: i.task ? `awake — ${i.task.slice(0, 60)}` : "awake at the computer" };
       }
       if (i.action === "screen") {
         const screen = await box.ensureScreen(DEFAULT_DISPLAY, i.view_only);
@@ -1483,6 +1891,10 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
           display: `screen at ${screen.url}`,
         };
       }
+      if (i.action === "screen_off") {
+        const result = await box.screenOff(DEFAULT_DISPLAY);
+        return { output: { result }, display: result };
+      }
       if (i.action === "manifest_list") {
         const manifest = await box.manifest();
         return { output: { ...manifest }, display: `${manifest.packages.length} manifest package(s)` };
@@ -1490,6 +1902,7 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
       if (i.action === "manifest_install") {
         if (!i.package) throw toolError("manifest_install requires package.");
         const result = await box.manifestInstall(i.package);
+        void appendJournal({ kind: "install", detail: i.package, ok: true });
         return { output: { result }, display: result };
       }
       if (i.action === "snapshot") {
@@ -1498,6 +1911,7 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
       }
       const lines: string[] = [];
       const result = await box.rebuild((line) => lines.push(line));
+      void appendJournal({ kind: "rebuild", detail: result.slice(0, 100), ok: true });
       return { output: { result, log: lines }, display: result };
     },
   });

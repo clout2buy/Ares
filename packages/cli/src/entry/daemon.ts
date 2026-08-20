@@ -2911,7 +2911,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const status = await getAgentComputer().status().catch((err: unknown) => ({
           error: err instanceof Error ? err.message : String(err),
         }));
-        process.stdout.write(JSON.stringify({ type: "computer_status", status }) + "\n");
+        const mode = (await loadUiSettings().catch(() => null))?.computerMode ?? "host";
+        process.stdout.write(JSON.stringify({ type: "computer_status", status: { ...status, mode } }) + "\n");
         continue;
       }
       if (command.type === "computer_setup") {
@@ -2926,6 +2927,33 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             ok: false,
             error: (err instanceof Error ? err.message : String(err)).slice(0, 400),
           }));
+        continue;
+      }
+      if (command.type === "computer_mode") {
+        // The sandbox-only switch. Flipping it ON with no machine yet would
+        // strand the owner toolless, so provisioning kicks off in the same
+        // gesture and the UI narrates it.
+        const mode = command.mode === "sandbox" ? "sandbox" : "host";
+        await updateUiSettings({ computerMode: mode });
+        let setupStarted = false;
+        if (mode === "sandbox") {
+          const status = await getAgentComputer().status().catch(() => null);
+          if (status && !status.provisioned && status.blocked !== "vm-platform") {
+            setupStarted = true;
+            const sid = command.sessionId;
+            void getAgentComputer()
+              .setup((line) => tagEmit(sid, { type: "computer_setup_progress", line }))
+              .then((result) => tagEmit(sid, { type: "computer_setup_done", ok: true, result }))
+              .catch((err: unknown) => tagEmit(sid, {
+                type: "computer_setup_done",
+                ok: false,
+                error: (err instanceof Error ? err.message : String(err)).slice(0, 400),
+              }));
+          }
+        }
+        process.stdout.write(JSON.stringify({ type: "computer_mode", mode, setupStarted }) + "\n");
+        // Tools are composed per session, so the change lands on the next
+        // rebuild; tell the owner rather than letting it look like a no-op.
         continue;
       }
       if (command.type === "computer_screen") {

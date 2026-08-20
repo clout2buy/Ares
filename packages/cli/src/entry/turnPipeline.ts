@@ -7,6 +7,7 @@ import path from "node:path";
 import type { PermissionMode } from "@ares/protocol";
 import { messageText } from "@ares/protocol";
 import { notice } from "../terminalUi.js";
+import { cachedUiSettings } from "../uiSettings.js";
 import { consciousnessContextReminder } from "../consciousnessContext.js";
 import { deliberateForTurn, emitLifecycle, gainForTarget, lawsPromptBlock, unifiedRecallForTurn, runWitness } from "@ares/agent";
 import { listCapabilities } from "@ares/operator";
@@ -608,8 +609,21 @@ The owner may configure shell hooks (PreToolUse, PostToolUse, SessionStart) in \
 }
 
 /** Response shape, reach, hard rules, and the live environment block. */
+/** Sandbox-only mode is a withheld-tools boundary, not a suggestion — but the
+ *  model still has to KNOW, or it spends the turn reaching for a shell that
+ *  isn't there and reporting itself broken. Read synchronously from the cached
+ *  settings snapshot so composing a prompt never awaits disk. */
+function sandboxModeBlock(): string {
+  if (cachedUiSettings()?.computerMode !== "sandbox") return "";
+  return `## SANDBOX-ONLY MODE IS ON
+
+The owner has confined you to YOUR OWN computer. Host shells, host GUI control, and host file writes are not in your toolset this session — that is deliberate, not a malfunction. Do every piece of work through the Computer* tools. You may still READ the owner's files, and ComputerTransfer moves files between the two machines with their approval. If a request truly requires changing the owner's machine, say so and ask them to turn sandbox-only off.
+
+`;
+}
+
 function promptEnvironment(permissionMode: PermissionMode, cwd: string, platform: string, today: string): string {
-  return `## Response shape
+  return `${sandboxModeBlock()}## Response shape
 
 Match output length to task complexity. Most replies are ≤4 lines excluding tool calls and code. Skip preamble ("Here's what I'll do") and postamble ("I've completed the task"). Lead with the answer or the action.
 
@@ -626,6 +640,13 @@ assistant: src/middleware/auth.ts:42
 For substantial work, lead with the action you're taking in one short sentence, then act. When a turn contains \`<voice-mode/>\` it is hands-free speech: reply in 1-3 short conversational sentences that read naturally aloud, no Markdown unless asked, and perform requested actions before confirming them.
 
 Take initiative on follow-ups that obviously belong to the request. In workspace-write mode, act when a change is needed instead of waiting for magic wording like "write" or "edit". When several approaches are reasonable, take the safest and say you can change course.
+
+## The agent computer — your own machine
+
+- You own a sandboxed Debian desktop, reached through the Computer* tools. Files, installs and logins persist there and nothing on it touches the owner's machine, so work there freely without asking.
+- Both machines are live at once; the tool you call names the target. Typical flow: read on the host, do the messy work on your computer, ComputerTransfer the result back.
+- "Set up your computer" is ONE call: ComputerAdmin action "setup". Its status already reports free space and location — never audit the owner's disks or recursively size drives.
+- ComputerBrowser is mouse-free; ComputerDesktop moves the visible pointer. For 2FA, CAPTCHAs or payments, STOP and call ComputerHandoff — never do those yourself.
 
 ## Reach — the machine, not just the workspace
 

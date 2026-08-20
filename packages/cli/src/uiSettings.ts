@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { aresHome } from "@ares/core";
 import type { ReasoningLevel } from "@ares/protocol";
@@ -95,6 +96,14 @@ export interface UiSettings {
   lastCustomModel?: string;
   /** Last Mixture-of-Agents ensemble picked (e.g. "moa-council"). */
   lastMoaModel?: string;
+  /** Where Ares is allowed to do work.
+   *  "host" (default) — the owner's machine, gated as always, plus the agent
+   *    computer when a Computer* tool is called.
+   *  "sandbox" — the agent computer ONLY: host shells, host GUI control, and
+   *    host file writes are withheld entirely, so nothing can touch the
+   *    owner's machine even by mistake. Host reads stay so Ares can still see
+   *    the project, and ComputerTransfer remains the one sanctioned bridge. */
+  computerMode?: "host" | "sandbox";
   /** Advanced engine knobs surfaced in the desktop Advanced tab. */
   engine?: EngineConfig;
   /** Owner-toggleable permission posture (master + per-category + fleet inherit).
@@ -150,6 +159,27 @@ export async function loadUiSettings(): Promise<UiSettings> {
     };
   } catch {
     return { favoriteOllamaModels: [], favoriteOpenAIModels: [] };
+  }
+}
+
+/**
+ * Non-secret settings, read synchronously with an mtime cache. Prompt
+ * composition happens on a hot path that cannot await disk, and a toggle the
+ * owner flips must be in force on the very next turn — so this re-reads only
+ * when ui.json actually changed. Encrypted fields are NOT decrypted here;
+ * callers must only use plain fields (e.g. computerMode).
+ */
+let settingsCache: { mtimeMs: number; value: UiSettings } | null = null;
+export function cachedUiSettings(): UiSettings | null {
+  try {
+    const filePath = uiSettingsPath();
+    const stamp = statSync(filePath).mtimeMs;
+    if (settingsCache?.mtimeMs === stamp) return settingsCache.value;
+    const value = JSON.parse(readFileSync(filePath, "utf8")) as UiSettings;
+    settingsCache = { mtimeMs: stamp, value };
+    return value;
+  } catch {
+    return null;
   }
 }
 

@@ -689,7 +689,7 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "consciousness_status", "discover_custom_models", "engine_config", "exit",
     "gateway_connect", "gateway_signin", "gateway_status", "interrupt",
     "kimi_login_start", "kimi_auth_status",
-    "computer_status", "computer_setup", "computer_screen",
+    "computer_status", "computer_setup", "computer_screen", "computer_mode",
     "mcp_connect", "mcp_disconnect", "mcp_list", "mcp_search", "mcp_set_token",
     "mcp_toggle", "mcp_tools", "model_catalog", "model_switch", "oauth_disconnect",
     "oauth_set_credentials", "oauth_start", "oauth_status", "ollama_pull",

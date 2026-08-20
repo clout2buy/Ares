@@ -259,7 +259,21 @@ export async function buildEngineTools(
     makeTelegramRosterTool(),
   ];
 
-  const baseTools = baseToolDefs.map((tool) => {
+  // Sandbox-only mode: the owner said "do your work on YOUR machine". Host
+  // execution and host writes are withheld outright rather than merely
+  // discouraged — a prompt rule is not a boundary. Host READS stay (Ares must
+  // still see the project) and ComputerTransfer stays as the one sanctioned,
+  // permission-gated bridge between the two machines.
+  const sandboxOnly = (await loadUiSettings().catch(() => null))?.computerMode === "sandbox";
+  const HOST_ONLY_TOOLS = new Set([
+    "Bash", "PowerShell", "BashOutput", "KillShell", "BackgroundTasks",
+    "ComputerUse", "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "Deploy",
+  ]);
+  const admittedToolDefs = sandboxOnly
+    ? baseToolDefs.filter((tool) => !HOST_ONLY_TOOLS.has(tool.schema.name))
+    : baseToolDefs;
+
+  const baseTools = admittedToolDefs.map((tool) => {
     const adapted = adaptToolForEngine(tool, (base: ToolCallContext): RichToolContext => ({
       ...enrich(base),
     }));

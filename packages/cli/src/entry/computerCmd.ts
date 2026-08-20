@@ -8,6 +8,7 @@
 //   ares computer rebuild    fresh OS, same home, manifest replayed
 
 import { getAgentComputer } from "@ares/tools";
+import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import type { ParsedArgs } from "./args.js";
 
 export async function computerCommand(parsed: ParsedArgs): Promise<number> {
@@ -50,6 +51,38 @@ export async function computerCommand(parsed: ParsedArgs): Promise<number> {
       if (result.stderr) process.stderr.write(result.stderr);
       return result.exitCode;
     }
+    if (action === "distros") {
+      const distros = await box.listDistros();
+      const current = await box.distroName();
+      for (const name of distros) console.log(`${name === current ? "*" : " "} ${name}`);
+      if (distros.length === 0) console.log("(no WSL distros registered)");
+      return 0;
+    }
+    if (action === "use") {
+      const name = args[1];
+      if (!name) {
+        console.error("usage: ares computer use <distro>   (see: ares computer distros)");
+        return 2;
+      }
+      console.log(await box.adoptDistro(name));
+      return 0;
+    }
+    if (action === "mode") {
+      const wanted = args[1];
+      if (wanted !== "host" && wanted !== "sandbox") {
+        const current = (await loadUiSettings().catch(() => null))?.computerMode ?? "host";
+        console.log(`computer mode: ${current}`);
+        console.log("usage: ares computer mode <host|sandbox>");
+        return wanted === undefined ? 0 : 2;
+      }
+      await updateUiSettings({ computerMode: wanted });
+      console.log(
+        wanted === "sandbox"
+          ? "Sandbox only — Ares works on its own computer; host shells, GUI control and file writes are withheld."
+          : "Host mode — Ares can work on your machine (gated as usual) and on its own computer when asked.",
+      );
+      return 0;
+    }
     if (action === "snapshot") {
       console.log(await box.snapshot());
       return 0;
@@ -58,7 +91,9 @@ export async function computerCommand(parsed: ParsedArgs): Promise<number> {
       console.log(await box.rebuild((line) => console.log(`[rebuild] ${line}`)));
       return 0;
     }
-    console.error("usage: ares computer <status|setup|screen [--watch]|exec -- cmd|snapshot|rebuild>");
+    console.error(
+      "usage: ares computer <status|setup|screen [--watch]|exec -- cmd|distros|use <distro>|mode <host|sandbox>|snapshot|rebuild>",
+    );
     return 2;
   } catch (error) {
     console.error((error instanceof Error ? error.message : String(error)).replace(/<\/?tool_use_error>/g, ""));

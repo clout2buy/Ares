@@ -137,6 +137,41 @@ snapshot/reset.
   cheapest trust move in the product. The GUI screenshot gate extends to the
   sandbox unchanged.
 
+## Second field round (v0.42.0) — what the owner hit next
+
+1. **Storage default was the bug behind an 8-minute stall.** The machine
+   defaulted under ARES_HOME, i.e. C:. On a box with 9.9 GB free there, the
+   agent correctly reasoned "I need space before I can install" and spent
+   **437 seconds in one command recursively sizing C:\\** before setup could
+   start. Storage is now chosen by free space (roomiest fixed drive when the
+   home drive is tight), refuses below ~8 GB with the exact fix, and
+   `ComputerAdmin status` reports free space instantly — so nobody ever has
+   to go measure a disk to answer "can this install?". The prompt also states
+   that "set up your computer" is ONE call and forbids drive-wide scans.
+2. **The distro is swappable.** `list_distros` / `use_distro` (and
+   `ares computer distros|use`) adopt any registered WSL Linux — a custom
+   Debian, an existing Ubuntu — instead of importing ours. Adopted machines
+   reprovision on rebuild rather than being replaced.
+3. **Sandbox-only mode.** A footer chip (and `ares computer mode sandbox`)
+   confines Ares to its own machine: host shells, host GUI control, and host
+   file writes are WITHHELD from the toolset, not merely discouraged — a
+   prompt rule is not a boundary. Host reads stay; ComputerTransfer remains
+   the sanctioned bridge. Flipping it on with no machine yet starts setup in
+   the same gesture.
+4. **The lag was self-inflicted.** `-noxdamage` made x11vnc poll the entire
+   framebuffer every pass. Damage tracking is on now, with `-threads` and
+   deferred updates. `-ncache` is deliberately NOT used: it grows the
+   framebuffer vertically and noVNC renders that raw, which returned the
+   desktop as a tall garbled stack.
+5. **The invisible worker.** CDP never moves a pointer, so the owner watched
+   results appear with no mouse — work that looks like magic reads as work
+   that might not have happened. Two fixes: `-cursor most -cursorpos` draws
+   the real pointer into the stream, and **ComputerDesktop** (xdotool behind
+   the display lease) gives Ares a visible hand for GUI work, moving before
+   it clicks so the motion is legible. Browser clicks also flash a marker at
+   the element. exec is still forbidden from faking input, so this remains
+   the single sanctioned input path.
+
 ## Boundaries that are doctrine, not detail
 
 - **Per-owner sandbox.** Garrison/Telegram users never share a cookie store —

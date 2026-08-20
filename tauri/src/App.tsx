@@ -576,6 +576,10 @@ function App() {
   // Operator halt state. Optimistic on click; an operator_status frame that
   // carries `halted` is authoritative and overwrites the guess on the next poll.
   const [opHalted, setOpHalted] = useState(false);
+  /** Where Ares may work: "host" (default) or "sandbox" (its own machine only).
+   *  Seeded from the daemon's computer_status so the chip never lies after a
+   *  relaunch. */
+  const [computerMode, setComputerMode] = useState<"host" | "sandbox">("host");
   // HELM → Fleets: fleet history + background Task subagents, fed by the
   // fleets_list / subagents_list reply events on the 5s helm poll.
   const [fleetHistory, setFleetHistory] = useState<FleetSummaryWire[]>([]);
@@ -1269,6 +1273,9 @@ function App() {
     // populate the status bar's mission count + rail's disk-session log
     void invoke("ares_daemon_command", { command: { type: "operator_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
+    // The computer chip must show the REAL posture on a cold start, not the
+    // "host" default it was initialised with.
+    void invoke("ares_daemon_command", { command: { type: "computer_status" } }).catch(() => null);
     // Anything the last run left behind is suspended, not gone. Ask for it on
     // every daemon start so picking a session back up SHOWS the offer to resume
     // instead of the work quietly having never stopped.
@@ -1976,6 +1983,19 @@ function App() {
           } else if (e.error) {
             pushGatewayToast(`Agent computer: ${String(e.error)}`);
           }
+          return true;
+        }
+        case "computer_mode":
+          if (e.mode === "sandbox" || e.mode === "host") setComputerMode(e.mode);
+          pushGatewayToast(
+            e.mode === "sandbox"
+              ? `Sandbox only — Ares will work on its own computer${e.setupStarted ? "; setting that machine up now" : ""}. New sessions pick this up immediately.`
+              : "Host mode — Ares can work on your machine again (gated as usual).",
+          );
+          return true;
+        case "computer_status": {
+          const status = e.status as { mode?: string } | undefined;
+          if (status?.mode === "sandbox" || status?.mode === "host") setComputerMode(status.mode);
           return true;
         }
         case "computer_setup_progress":
@@ -3809,17 +3829,32 @@ function App() {
             <button className="statusSeg" data-seg="garrison" onClick={() => setGarrisonOpen(true)} title="Garrison panel — status, log, restart">
               <i className="dot" data-state={daemon} /><b>garrison</b><span>{daemon}</span>
             </button>
-            {/* The agent's own computer (docs/AGENT-COMPUTER-DESIGN.md): click
-                opens its live screen (drive mode — you share the pointer with
-                Ares under the display lease); shift-click opens watch-only. */}
+            {/* The agent's own computer (docs/AGENT-COMPUTER-DESIGN.md).
+                Click TOGGLES where Ares may work — same interaction the perms
+                chip uses — because "keep off my machine" is a posture the
+                owner changes often and should never have to hunt for.
+                Shift-click opens the screen (alt adds watch-only). */}
             {native ? (
               <button
                 className="statusSeg"
                 data-seg="computer"
-                onClick={(e) => daemonCmd({ type: "computer_screen", viewOnly: e.shiftKey })}
-                title="Ares's own computer — open its screen (shift-click: watch only). First use may need ComputerAdmin setup."
+                data-mode={computerMode}
+                onClick={(e) => {
+                  if (e.shiftKey) {
+                    daemonCmd({ type: "computer_screen", viewOnly: e.altKey });
+                    return;
+                  }
+                  const next = computerMode === "sandbox" ? "host" : "sandbox";
+                  setComputerMode(next);
+                  daemonCmd({ type: "computer_mode", mode: next });
+                }}
+                title={
+                  computerMode === "sandbox"
+                    ? "SANDBOX ONLY — Ares works on its own Linux machine; your PC's shell, GUI and file writes are withheld. Click for host mode. Shift-click: open its screen (add Alt to watch only)."
+                    : "Ares works on your machine (gated as usual) and on its own computer when asked. Click to confine it to its own machine. Shift-click: open its screen (add Alt to watch only)."
+                }
               >
-                <b>computer</b>
+                <b>computer</b><span>{computerMode === "sandbox" ? "sandbox only" : "host"}</span>
               </button>
             ) : null}
             {/* WHO is answering. The transcript chip scrolls away with the

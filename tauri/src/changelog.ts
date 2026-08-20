@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.42.0",
+    date: "August 2026",
+    title: "Its hands, and yours",
+    tagline: "You can see Ares's mouse now, keep it off your PC with one click, and run it on whatever Linux you like.",
+    highlights: [
+      {
+        icon: "🖱️",
+        title: "You can see it working",
+        blurb: "Ares's pointer now moves on its own screen — you watch it travel and click instead of results appearing out of nowhere. Web clicks flash a marker where they land.",
+        tag: "New",
+      },
+      {
+        icon: "🚧",
+        title: "Keep off my machine",
+        blurb: "One click on the computer chip confines Ares to its own Linux box — your shell, your apps and your files are taken out of its reach entirely, not just discouraged.",
+        tag: "Safer",
+      },
+      {
+        icon: "🐧",
+        title: "Bring your own Linux",
+        blurb: "Point Ares at any Linux you already have installed instead of the one it ships with, and switch back whenever you like.",
+        tag: "New",
+      },
+      {
+        icon: "⚡",
+        title: "A screen that keeps up",
+        blurb: "The remote desktop stopped redrawing the whole screen on every frame, so watching Ares work is smooth instead of laggy.",
+        tag: "Faster",
+      },
+      {
+        icon: "💾",
+        title: "Installs where there's room",
+        blurb: "Ares's computer now lands on a drive with free space and says where it went, instead of assuming your system drive has room to spare.",
+        tag: "Polished",
+      },
+    ],
+  },
+  {
     version: "0.41.0",
     date: "August 2026",
     title: "A computer of its own",

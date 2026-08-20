@@ -76,6 +76,10 @@ const BASE_PACKAGES = [
   // Stock XFCE over VNC reads as a 2009 lab machine; a dark theme, real
   // icons, and a hinted font make it read as Ares's computer.
   "greybird-gtk-theme", "papirus-icon-theme", "fonts-dejavu-core", "fonts-hack",
+  // The visible hand. Without a pixel driver the owner watches the screen and
+  // sees results appear with no pointer ever moving — work that looks like it
+  // happened by magic reads as work that might not have happened at all.
+  "xdotool",
 ];
 
 /** Terminal UIs (opencode, lazygit, starship…) draw with Nerd Font glyphs that
@@ -126,6 +130,20 @@ export interface SandboxConfig {
   rootfsTar?: string;
   provisionedAt?: string;
   provisionVersion?: number;
+  /** WSL distro name. Defaults to `ares-computer`; set to any registered
+   *  distro to adopt a machine the owner already built. */
+  distro?: string;
+  /** True when the distro was adopted rather than imported by us — rebuild
+   *  then means "reprovision", never "unregister and replace". */
+  adopted?: boolean;
+  /** Where the rootfs came from, for provenance in status output. */
+  rootfsSource?: string;
+}
+
+/** A drive that could hold the machine, newest disk-space reading. */
+export interface DriveSpace {
+  drive: string;
+  freeBytes: number;
 }
 
 function aresHome(): string {
@@ -134,6 +152,52 @@ function aresHome(): string {
 
 function configPath(): string {
   return path.join(aresHome(), "computer", "config.json");
+}
+
+/** Free space on the volume holding `target`, or null when unknowable. */
+export async function driveFreeBytes(target: string): Promise<number | null> {
+  try {
+    const stats = await (fs as unknown as {
+      statfs: (p: string) => Promise<{ bsize: number; bavail: number }>;
+    }).statfs(target);
+    return stats.bsize * stats.bavail;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where the machine should live. The old default — always under ARES_HOME —
+ * silently targeted C:, and on a box whose system drive is nearly full that
+ * turns "set up your computer" into a disk-space emergency (observed: the
+ * agent spent 8 minutes recursively sizing C:\ before it could even start).
+ * Pick the roomiest fixed drive instead, preferring the home drive when it
+ * has space, and never pretending a full disk is fine.
+ */
+export async function chooseDistroDir(minBytes = 12 * 1024 ** 3): Promise<{ dir: string; drives: DriveSpace[] }> {
+  const explicit = process.env.ARES_COMPUTER_DIR;
+  const homeDir = path.join(aresHome(), "computer", "distro");
+  if (explicit) return { dir: explicit, drives: [] };
+  if (process.platform !== "win32") return { dir: homeDir, drives: [] };
+
+  const drives: DriveSpace[] = [];
+  for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
+    const root = `${letter}:\\`;
+    const free = await driveFreeBytes(root);
+    if (free !== null) drives.push({ drive: letter, freeBytes: free });
+  }
+  const homeLetter = path.parse(path.resolve(homeDir)).root.slice(0, 1).toUpperCase();
+  const home = drives.find((d) => d.drive === homeLetter);
+  if (home && home.freeBytes >= minBytes) return { dir: homeDir, drives };
+  const roomiest = [...drives].sort((a, b) => b.freeBytes - a.freeBytes)[0];
+  if (roomiest && roomiest.freeBytes >= minBytes && roomiest.drive !== homeLetter) {
+    return { dir: path.join(`${roomiest.drive}:\\`, "Ares-Computer", "distro"), drives };
+  }
+  return { dir: homeDir, drives };
+}
+
+export function formatGb(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
 async function loadConfig(): Promise<SandboxConfig | null> {
@@ -210,9 +274,28 @@ export class WslSandbox {
   private readonly leases = new Map<number, DisplayLease>();
   private provisionChecked = false;
   private setupInFlight: Promise<string> | null = null;
+  /** Which WSL distro is "the computer". Owner-swappable: any registered
+   *  distro can be adopted, so a custom Debian/Ubuntu build works as-is. */
+  private distro = process.env.ARES_COMPUTER_DISTRO ?? SANDBOX_DISTRO;
+  private distroResolved = false;
 
   constructor(runner: WslRunner = defaultRunner) {
     this.run = runner;
+  }
+
+  /** Adopt whatever distro the stored config names before any call uses it. */
+  private async resolveDistro(): Promise<void> {
+    if (this.distroResolved) return;
+    this.distroResolved = true;
+    if (process.env.ARES_COMPUTER_DISTRO) return; // env wins
+    const config = await loadConfig();
+    if (config?.distro) this.distro = config.distro;
+  }
+
+  /** The distro currently acting as the computer. */
+  async distroName(): Promise<string> {
+    await this.resolveDistro();
+    return this.distro;
   }
 
   // ── status & provisioning ─────────────────────────────────────────────
@@ -222,10 +305,34 @@ export class WslSandbox {
     return result.exitCode === 0;
   }
 
+  /** Every distro registered with WSL, for "switch the computer to this one". */
+  async listDistros(): Promise<string[]> {
+    const result = await this.run(["--list", "--quiet"], { timeoutMs: 15_000 });
+    if (result.exitCode !== 0) return [];
+    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  }
+
+  /** Point the computer at an already-installed distro (the owner's own
+   *  Debian/Ubuntu/custom build). Provisioning then adds only what is
+   *  missing; rebuild will reprovision instead of replacing their OS. */
+  async adoptDistro(name: string): Promise<string> {
+    const available = await this.listDistros();
+    if (!available.includes(name)) {
+      throw new Error(`WSL has no distro named "${name}". Registered: ${available.join(", ") || "(none)"}`);
+    }
+    const existing = (await loadConfig()) ?? { distroDir: "" };
+    await saveConfig({ ...existing, distro: name, adopted: true, provisionVersion: undefined });
+    this.distro = name;
+    this.distroResolved = true;
+    this.provisionChecked = false;
+    return `The agent computer now points at "${name}". Run setup to add anything it is missing (user, desktop, browser, screen).`;
+  }
+
   async distroRegistered(): Promise<boolean> {
+    await this.resolveDistro();
     const result = await this.run(["--list", "--quiet"], { timeoutMs: 15_000 });
     return result.exitCode === 0 &&
-      result.stdout.split(/\r?\n/).map((line) => line.trim()).includes(SANDBOX_DISTRO);
+      result.stdout.split(/\r?\n/).map((line) => line.trim()).includes(this.distro);
   }
 
   async status(): Promise<SandboxStatus> {
@@ -283,14 +390,27 @@ export class WslSandbox {
     }
     const steps: string[] = [];
     if (!(await this.distroRegistered())) {
-      const config = (await loadConfig()) ?? {
-        distroDir: process.env.ARES_COMPUTER_DIR ?? path.join(aresHome(), "computer", "distro"),
-      };
+      // Choose storage BEFORE downloading anything, and say where it went.
+      // Defaulting under ARES_HOME quietly targeted C:; on a full system
+      // drive that turned setup into a disk hunt instead of an install.
+      const stored = await loadConfig();
+      const chosen = stored?.distroDir ? { dir: stored.distroDir, drives: [] as DriveSpace[] } : await chooseDistroDir();
+      const config: SandboxConfig = stored ?? { distroDir: chosen.dir };
+      config.distroDir = chosen.dir;
+      const free = await driveFreeBytes(path.parse(path.resolve(chosen.dir)).root);
+      if (free !== null && free < 8 * 1024 ** 3) {
+        throw new Error(
+          `Not enough room for the agent computer: ${formatGb(free)} free on ${path.parse(path.resolve(chosen.dir)).root} ` +
+            `(about 8 GB needed). Free some space, or point it at another drive with ARES_COMPUTER_DIR ` +
+            `(e.g. ARES_COMPUTER_DIR=D:\\Ares-Computer\\distro) and run setup again.`,
+        );
+      }
+      progress(`installing to ${chosen.dir}${free !== null ? ` (${formatGb(free)} free)` : ""}`);
       await fs.mkdir(config.distroDir, { recursive: true });
       const tar = await this.obtainRootfs(config, progress);
-      progress(`importing ${SANDBOX_DISTRO} from ${path.basename(tar)}…`);
+      progress(`importing ${this.distro} from ${path.basename(tar)}…`);
       const imported = await this.run(
-        ["--import", SANDBOX_DISTRO, config.distroDir, tar, "--version", "2"],
+        ["--import", this.distro, config.distroDir, tar, "--version", "2"],
         { timeoutMs: 300_000 },
       );
       if (imported.exitCode !== 0) {
@@ -340,7 +460,7 @@ export class WslSandbox {
       30_000,
     );
     // Terminate so /etc/wsl.conf's default user takes effect on next start.
-    await this.run(["--terminate", SANDBOX_DISTRO], { timeoutMs: 20_000 });
+    await this.run(["--terminate", this.distro], { timeoutMs: 20_000 });
     const config = (await loadConfig())!;
     await saveConfig({ ...config, provisionedAt: new Date().toISOString(), provisionVersion: PROVISION_VERSION });
     steps.push("provisioned Debian + packages");
@@ -405,20 +525,20 @@ export class WslSandbox {
     const cwd = opts.cwd ?? SANDBOX_HOME;
     const wrapped = `cd ${shellQuote(cwd)} 2>/dev/null; ${command}`;
     return this.run(
-      ["-d", SANDBOX_DISTRO, "-u", opts.user ?? SANDBOX_USER, "--", "bash", "-lc", wrapped],
+      ["-d", this.distro, "-u", opts.user ?? SANDBOX_USER, "--", "bash", "-lc", wrapped],
       { timeoutMs: opts.timeoutMs },
     );
   }
 
   /** Root exec that skips the provision gate — used BY provisioning/admin. */
   private execRoot(command: string, timeoutMs: number): Promise<SandboxExecResult> {
-    return this.run(["-d", SANDBOX_DISTRO, "-u", "root", "--", "bash", "-lc", command], { timeoutMs });
+    return this.run(["-d", this.distro, "-u", "root", "--", "bash", "-lc", command], { timeoutMs });
   }
 
   /** Map a sandbox absolute path to its \\wsl.localhost UNC equivalent. */
   uncPath(sandboxPath: string): string {
     const absolute = sandboxPath.startsWith("/") ? sandboxPath : `${SANDBOX_HOME}/${sandboxPath}`;
-    return `\\\\wsl.localhost\\${SANDBOX_DISTRO}${absolute.replace(/\//g, "\\")}`;
+    return `\\\\wsl.localhost\\${this.distro}${absolute.replace(/\//g, "\\")}`;
   }
 
   resolveSandboxPath(input: string): string {
@@ -615,9 +735,21 @@ export class WslSandbox {
       // x11vnc sniffs those, declares "Wayland session — exiting", and dies —
       // even though the display we hand it is a plain Xvfb X server. Strip
       // them for this process so it sees the X11 world it is actually serving.
+      //
+      // Performance and the cursor, both learned the hard way:
+      //   -noxdamage was making it POLL the whole 1280x800 framebuffer every
+      //     pass — the single biggest source of the lag. XDAMAGE works fine on
+      //     Xvfb, so let it tell us what actually changed.
+      //   -threads serves the client off the polling loop.
+      //   -cursor most -cursorpos DRAWS the pointer into the stream. Without
+      //     it the owner watches work happen with no visible mouse at all.
+      //   NO -ncache: it grows the framebuffer vertically for offscreen
+      //     caching, and noVNC renders that raw — the desktop came back as a
+      //     tall garbled stack. Speed has to come from damage tracking alone.
       await this.exec(
         `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE -u XDG_RUNTIME_DIR DISPLAY=:${display} ` +
-          `setsid nohup x11vnc -display :${display} -rfbport ${vncPort} -localhost -forever -shared -nopw -noxdamage ` +
+          `setsid nohup x11vnc -display :${display} -rfbport ${vncPort} -localhost -forever -shared -nopw ` +
+          `-threads -xdamage -wait 10 -defer 10 -cursor most -cursorpos -nolookup ` +
           `</dev/null >/tmp/x11vnc-${display}.log 2>&1 & sleep 1.2`,
         { timeoutMs: 25_000 },
       );
@@ -636,8 +768,83 @@ export class WslSandbox {
     // owner's window never is, so "off" greeted them with scrollbars around a
     // clipped desktop. Scaling fits the whole machine in whatever window it
     // opens in. quality/compression tuned for a local socket.
-    const params = `autoconnect=1&resize=scale&quality=8&compression=2${viewOnly ? "&view_only=1" : ""}`;
+    // Loopback has bandwidth to burn but little tolerance for CPU spent on
+    // compression, so ask for low compression and high quality; the win comes
+    // from x11vnc's damage tracking above, not from squeezing bytes.
+    const params = `autoconnect=1&resize=scale&quality=9&compression=0&show_dot=1${viewOnly ? "&view_only=1" : ""}`;
     return { url: `http://localhost:${novncPort}/vnc.html?${params}`, novncPort };
+  }
+
+  // ── the visible hand: pixel input under a display lease ───────────────
+
+  /**
+   * Real pointer/keyboard input on the sandbox desktop. This is the ONE path
+   * allowed to drive the GUI (exec is refused by doctrine), it takes the
+   * display lease because a screen has one mouse, and it is deliberately
+   * visible: the owner watching the pane sees the cursor travel and click.
+   */
+  async desktopInput(
+    action: "move" | "click" | "double_click" | "right_click" | "type" | "key" | "drag" | "scroll",
+    opts: { x?: number; y?: number; toX?: number; toY?: number; text?: string; key?: string; amount?: number; display?: number } = {},
+  ): Promise<string> {
+    const display = opts.display ?? DEFAULT_DISPLAY;
+    await this.ensureDisplay(display);
+    const held = this.leases.get(display);
+    if (held && held.holder === "owner") {
+      throw toolError(`the owner is driving display :${display} right now (${held.reason}). Wait for the hand-back before using the mouse.`);
+    }
+    const x = `env DISPLAY=:${display} xdotool`;
+    // Move visibly before acting: a cursor that teleports and clicks in the
+    // same frame is indistinguishable from nothing happening.
+    const at = opts.x !== undefined && opts.y !== undefined
+      ? `${x} mousemove --sync ${Math.round(opts.x)} ${Math.round(opts.y)}; sleep 0.15; `
+      : "";
+    let command: string;
+    switch (action) {
+      case "move":
+        command = `${x} mousemove --sync ${Math.round(opts.x ?? 0)} ${Math.round(opts.y ?? 0)}`;
+        break;
+      case "click":
+        command = `${at}${x} click 1`;
+        break;
+      case "double_click":
+        command = `${at}${x} click --repeat 2 --delay 120 1`;
+        break;
+      case "right_click":
+        command = `${at}${x} click 3`;
+        break;
+      case "type":
+        if (opts.text === undefined) throw toolError("type requires text.");
+        command = `${at}${x} type --delay 25 -- ${shellQuote(opts.text)}`;
+        break;
+      case "key":
+        if (!opts.key) throw toolError("key requires a key name, e.g. Return, ctrl+c, alt+Tab.");
+        if (!/^[A-Za-z0-9_+ -]{1,60}$/.test(opts.key)) throw toolError(`"${opts.key}" is not a valid key spec.`);
+        command = `${at}${x} key --clearmodifiers ${opts.key}`;
+        break;
+      case "scroll":
+        command = `${at}${x} click --repeat ${Math.max(1, Math.min(20, opts.amount ?? 3))} ${(opts.amount ?? 3) < 0 ? 4 : 5}`;
+        break;
+      default: {
+        if (opts.toX === undefined || opts.toY === undefined) throw toolError("drag requires toX and toY.");
+        command = `${at}${x} mousedown 1; ${x} mousemove --sync ${Math.round(opts.toX)} ${Math.round(opts.toY)}; sleep 0.15; ${x} mouseup 1`;
+      }
+    }
+    const lease = this.acquireLease(display, "agent", `desktop ${action}`);
+    try {
+      const result = await this.exec(command, { timeoutMs: 30_000 });
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr || result.stdout).slice(0, 300);
+        if (/xdotool: (command )?not found|No such file/i.test(detail)) {
+          throw toolError("xdotool is not installed on the agent computer — run ComputerAdmin manifest_install with package \"xdotool\".");
+        }
+        throw toolError(`desktop ${action} failed: ${detail}`);
+      }
+      const pos = await this.exec(`env DISPLAY=:${display} xdotool getmouselocation --shell 2>/dev/null | tr '\\n' ' '`, { timeoutMs: 15_000 });
+      return `${action} done${pos.stdout.trim() ? ` (${pos.stdout.trim()})` : ""}`;
+    } finally {
+      if (this.leases.get(display) === lease) this.releaseLease(display);
+    }
   }
 
   // ── the display lease ─────────────────────────────────────────────────
@@ -746,8 +953,28 @@ export class WslSandbox {
   }
 
   async browserClick(selector: string, display = DEFAULT_DISPLAY): Promise<string> {
+    // CDP clicks never move the pointer, so on the watched screen a page just
+    // changes by itself. Flash a marker where the click lands: the owner can
+    // see WHERE the agent acted, which is the whole value of watching.
     return this.browserEval(
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return "no element matches"; el.scrollIntoView({block:"center"}); el.click(); return "clicked"; })()`,
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return "no element matches";
+        el.scrollIntoView({ block: "center" });
+        try {
+          const r = el.getBoundingClientRect();
+          const dot = document.createElement("div");
+          dot.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;width:26px;height:26px;" +
+            "border:2px solid #e28c50;border-radius:50%;background:rgba(226,140,80,.28);" +
+            "transition:opacity .5s ease,transform .5s ease;" +
+            "left:" + (r.left + r.width / 2 - 13) + "px;top:" + (r.top + r.height / 2 - 13) + "px;";
+          document.body.appendChild(dot);
+          requestAnimationFrame(() => { dot.style.opacity = "0"; dot.style.transform = "scale(2.2)"; });
+          setTimeout(() => dot.remove(), 900);
+        } catch { /* marker is decoration; never block the click */ }
+        el.click();
+        return "clicked";
+      })()`,
       display,
     );
   }
@@ -830,7 +1057,7 @@ export class WslSandbox {
     const dir = path.join(config?.distroDir ? path.dirname(config.distroDir) : path.join(aresHome(), "computer"), "snapshots");
     await fs.mkdir(dir, { recursive: true });
     const target = path.join(dir, `ares-computer-${new Date().toISOString().replace(/[:.]/g, "-")}.tar`);
-    const result = await this.run(["--export", SANDBOX_DISTRO, target], { timeoutMs: 600_000 });
+    const result = await this.run(["--export", this.distro, target], { timeoutMs: 600_000 });
     if (result.exitCode !== 0) throw new Error(`snapshot failed: ${result.stderr || result.stdout}`);
     return target;
   }
@@ -852,9 +1079,9 @@ export class WslSandbox {
     await fs.copyFile(this.uncPath(homeTarSandbox), hostHomeTar);
     const manifest = await this.manifest();
     progress("replacing the OS…");
-    await this.run(["--unregister", SANDBOX_DISTRO], { timeoutMs: 120_000 });
+    await this.run(["--unregister", this.distro], { timeoutMs: 120_000 });
     const imported = await this.run(
-      ["--import", SANDBOX_DISTRO, config.distroDir, config.rootfsTar, "--version", "2"],
+      ["--import", this.distro, config.distroDir, config.rootfsTar, "--version", "2"],
       { timeoutMs: 300_000 },
     );
     if (imported.exitCode !== 0) throw new Error(`reimport failed: ${imported.stderr || imported.stdout}`);
@@ -948,12 +1175,29 @@ const handoffInput = z
   })
   .strict();
 
+const desktopInput = z
+  .object({
+    action: z
+      .enum(["move", "click", "double_click", "right_click", "type", "key", "drag", "scroll"])
+      .describe("Pixel-level input on the agent computer's desktop. Visible: the pointer actually moves."),
+    x: z.number().int().min(0).max(4096).optional().describe("Target X (screen is 1280x800)."),
+    y: z.number().int().min(0).max(4096).optional().describe("Target Y."),
+    to_x: z.number().int().min(0).max(4096).optional().describe("Drag destination X."),
+    to_y: z.number().int().min(0).max(4096).optional().describe("Drag destination Y."),
+    text: z.string().optional().describe("Text to type."),
+    key: z.string().optional().describe("Key spec for key, e.g. Return, ctrl+s, alt+Tab."),
+    amount: z.number().int().min(-20).max(20).optional().describe("Scroll clicks; negative scrolls up."),
+    display: z.number().int().min(1).max(9).default(DEFAULT_DISPLAY),
+  })
+  .strict();
+
 const adminInput = z
   .object({
     action: z
-      .enum(["status", "setup", "screen", "manifest_list", "manifest_install", "snapshot", "rebuild"])
-      .describe("status: availability + leases. setup: provision the computer. screen: start the watchable screen and return its URL. manifest_*: rebuild-surviving packages. snapshot: full-image export. rebuild: fresh OS, same home."),
+      .enum(["status", "setup", "screen", "manifest_list", "manifest_install", "snapshot", "rebuild", "list_distros", "use_distro"])
+      .describe("status: availability, storage, leases. setup: provision the computer. screen: start the watchable screen and return its URL. manifest_*: rebuild-surviving packages. snapshot: full-image export. rebuild: fresh OS, same home. list_distros / use_distro: see or switch which WSL Linux acts as the computer."),
     package: z.string().optional().describe("Debian package name for manifest_install."),
+    distro: z.string().optional().describe("WSL distro name for use_distro — adopt an existing Linux install as the computer."),
     view_only: z.boolean().default(false).describe("screen: open in watch mode (no input)."),
   })
   .strict();
@@ -1154,6 +1398,27 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
     },
   });
 
+  const computerDesktop = buildTool({
+    name: "ComputerDesktop",
+    description:
+      "Move the mouse, click, type, or drag on the agent computer's DESKTOP — real pixel input, so the owner watching the screen sees the pointer move and act. " +
+      "Use it for GUI apps (file manager, editors, installers) and for anything the browser tools cannot reach. " +
+      "It takes the screen's input lease for the moment it runs, so it refuses while the owner is driving. " +
+      "For web pages prefer ComputerBrowser (page-level, mouse-free, runs beside other work); this is the hand, not the highway.",
+    safety: "workspace-write",
+    concurrency: "exclusive",
+    inputZod: desktopInput,
+    activityDescription: (i) =>
+      `Computer desktop ${i.action}${i.x !== undefined ? ` @${i.x},${i.y}` : ""}${i.text ? `: ${i.text.slice(0, 30)}` : ""}`,
+    async call(i): Promise<ToolResult<{ action: string; result: string }>> {
+      const result = await box.desktopInput(i.action, {
+        x: i.x, y: i.y, toX: i.to_x, toY: i.to_y,
+        text: i.text, key: i.key, amount: i.amount, display: i.display,
+      });
+      return { output: { action: i.action, result }, display: result };
+    },
+  });
+
   const computerAdmin = buildTool({
     name: "ComputerAdmin",
     description:
@@ -1175,7 +1440,36 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
     async call(i): Promise<ToolResult<Record<string, unknown>>> {
       if (i.action === "status") {
         const status = await box.status();
-        return { output: { ...status }, display: status.provisioned ? "computer ready" : status.distroRegistered ? "registered, not provisioned" : "not set up" };
+        // Storage is reported HERE, instantly, so nobody ever needs to go
+        // measure the disk to find out whether setup can proceed.
+        const target = status.distroDir ?? (await chooseDistroDir()).dir;
+        const free = await driveFreeBytes(path.parse(path.resolve(target)).root);
+        return {
+          output: {
+            ...status,
+            distro: await box.distroName(),
+            plannedDir: target,
+            freeSpace: free !== null ? formatGb(free) : "unknown",
+          },
+          display: status.provisioned
+            ? `computer ready (${await box.distroName()})`
+            : status.blocked === "vm-platform"
+              ? "blocked: enable Virtual Machine Platform + reboot"
+              : status.distroRegistered ? "registered, not provisioned" : "not set up",
+        };
+      }
+      if (i.action === "list_distros") {
+        const distros = await box.listDistros();
+        const current = await box.distroName();
+        return {
+          output: { distros, current },
+          display: `${distros.length} WSL distro(s); current: ${current}`,
+        };
+      }
+      if (i.action === "use_distro") {
+        if (!i.distro) throw toolError("use_distro requires distro (see list_distros).");
+        const result = await box.adoptDistro(i.distro);
+        return { output: { result }, display: result };
       }
       if (i.action === "setup") {
         const lines: string[] = [];
@@ -1213,6 +1507,7 @@ export function makeAgentComputerTools(options: AgentComputerToolsOptions = {}):
     computerFile,
     computerScreenshot,
     computerBrowser,
+    computerDesktop,
     computerTransfer,
     computerHandoff,
     computerAdmin,

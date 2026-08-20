@@ -13,6 +13,8 @@ export interface AresEvent {
   line?: string;
   /** computer_setup_done / generic result payloads. */
   result?: unknown;
+  /** computer_mode — provisioning kicked off alongside the mode switch. */
+  setupStarted?: boolean;
   name?: string;
   toolName?: string;
   status?: string;

@@ -69,6 +69,7 @@ export interface DaemonInputCommand {
   invokeId?: string;
   /** computer_screen — open the agent computer's screen in watch-only mode. */
   viewOnly?: boolean;
+  /** computer_mode — "host" or "sandbox" (sandbox-only work). Reuses `mode`. */
   /** cognitive_state has no payload beyond sessionId. */
   /** fleets_list / subagents_list — read-only subagent visibility; no payload
    *  beyond sessionId. Replies are `fleets_list` / `subagents_list` events. */

@@ -3198,6 +3198,10 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 .effortSlider.ignited .effortHint { color: var(--ember-hi); }
 /* the HUD 'mode' chip glows when the fleet posture is armed */
 .statusSeg[data-ultra="1"] span { color: var(--ember-hi); text-shadow: 0 0 8px rgba(var(--ember-rgb), 0.6); }
+/* Sandbox-only is a CONFINEMENT, so the chip states it plainly rather than
+   reading like just another label the owner has to decode. */
+.statusSeg[data-seg="computer"][data-mode="sandbox"] span { color: var(--ember-hi); font-weight: 600; }
+.statusSeg[data-seg="computer"][data-mode="sandbox"] b { color: var(--bronze); }
 
 /* ── the live fleet board — Conductor agents, grouped by phase ───────────── */
 .fleetPanel {

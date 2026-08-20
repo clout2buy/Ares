@@ -9,6 +9,8 @@ import {
   SANDBOX_DISTRO,
   guiInputRefusal,
   makeAgentComputerTools,
+  chooseDistroDir,
+  formatGb,
 } from "../packages/tools/dist/index.js";
 
 /** A scripted runner: match wsl.exe argv against expectations in order. */
@@ -102,7 +104,7 @@ test("tool surface: safety classes match the sandbox-free / host-gated split", (
   const byName = new Map(tools.map((t) => [t.schema.name, t]));
   assert.deepEqual(
     [...byName.keys()].sort(),
-    ["ComputerAdmin", "ComputerBrowser", "ComputerExec", "ComputerFile", "ComputerHandoff", "ComputerScreenshot", "ComputerTransfer"],
+    ["ComputerAdmin", "ComputerBrowser", "ComputerDesktop", "ComputerExec", "ComputerFile", "ComputerHandoff", "ComputerScreenshot", "ComputerTransfer"],
   );
   assert.equal(byName.get("ComputerScreenshot").schema.safety, "read-only");
   assert.equal(byName.get("ComputerExec").schema.safety, "workspace-write");
@@ -114,6 +116,44 @@ test("tool surface: safety classes match the sandbox-free / host-gated split", (
   // admin: status reads, rebuild/snapshot ask
   assert.equal(byName.get("ComputerAdmin").effectiveSafety({ action: "status", view_only: false }), "read-only");
   assert.equal(byName.get("ComputerAdmin").effectiveSafety({ action: "rebuild", view_only: false }), "external-state");
+});
+
+test("the computer can be pointed at any registered distro, and refuses unknown ones", async () => {
+  const runner = scriptedRunner([
+    { match: (a) => a[0] === "--status", result: { exitCode: 0 } },
+    { match: (a) => a[0] === "--list", result: { stdout: `Ubuntu\n${SANDBOX_DISTRO}\nmy-custom-debian\n` } },
+  ]);
+  const box = new WslSandbox(runner);
+  assert.deepEqual(await box.listDistros(), ["Ubuntu", SANDBOX_DISTRO, "my-custom-debian"]);
+  await assert.rejects(box.adoptDistro("not-installed"), /has no distro named/);
+  assert.equal(await box.distroName(), SANDBOX_DISTRO);
+});
+
+test("desktop input refuses while the owner holds the screen", async () => {
+  const box = new WslSandbox(scriptedRunner(provisionedScript));
+  box.acquireLease(1, "owner", "entering a 2FA code");
+  await assert.rejects(box.desktopInput("click", { x: 10, y: 10 }), /owner is driving/);
+  box.releaseLease(1);
+});
+
+test("ComputerDesktop is registered and is the only GUI-input path", () => {
+  const tools = makeAgentComputerTools({ sandbox: new WslSandbox(scriptedRunner(provisionedScript)) });
+  const desktop = tools.find((t) => t.schema.name === "ComputerDesktop");
+  assert.ok(desktop, "the pixel driver must exist — a machine whose pointer never moves looks broken");
+  assert.equal(desktop.schema.concurrency, "exclusive");
+  assert.equal(desktop.schema.safety, "workspace-write");
+  // exec still refuses to fake input, so this stays the single visible hand.
+  assert.match(guiInputRefusal("xdotool click 1") ?? "", /may not drive the GUI/);
+});
+
+test("storage lands on a drive with room, and reports it in gigabytes", async () => {
+  const chosen = await chooseDistroDir(1);
+  assert.ok(chosen.dir.length > 0);
+  assert.match(formatGb(3 * 1024 ** 3), /^3\.0 GB$/);
+  // A 900GB requirement cannot be satisfied by a typical volume, so the
+  // chooser falls back to the home directory rather than inventing a drive.
+  const impossible = await chooseDistroDir(900 * 1024 ** 4);
+  assert.ok(impossible.dir.length > 0);
 });
 
 test("manifest parses, tolerates a corrupt file, and validates package names", async () => {

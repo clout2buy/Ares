@@ -1968,6 +1968,25 @@ function App() {
           }
           return true;
         }
+        case "computer_screen": {
+          // The agent computer's noVNC screen: open it in the system browser
+          // (localhost URL served from inside the sandbox).
+          if (e.ok !== false && e.url) {
+            if (native) void invoke("ares_open_url", { url: String(e.url) }).catch(() => null);
+          } else if (e.error) {
+            pushGatewayToast(`Agent computer: ${String(e.error)}`);
+          }
+          return true;
+        }
+        case "computer_setup_progress":
+          pushLog(`[computer] ${String(e.line ?? "")}`);
+          return true;
+        case "computer_setup_done":
+          pushLog(`[computer] setup ${e.ok === false ? "failed" : "done"}: ${String(e.result ?? e.error ?? "")}`);
+          pushGatewayToast(e.ok === false
+            ? `Agent computer setup failed: ${String(e.error ?? "unknown error")}`
+            : "Agent computer is ready — Ares now has its own sandboxed Linux machine.");
+          return true;
         case "daemon_error": {
           // A failed sessions_list (kernel open error, locked WAL, missing
           // native sqlite) used to fall through to the per-session fold — on
@@ -3790,6 +3809,19 @@ function App() {
             <button className="statusSeg" data-seg="garrison" onClick={() => setGarrisonOpen(true)} title="Garrison panel — status, log, restart">
               <i className="dot" data-state={daemon} /><b>garrison</b><span>{daemon}</span>
             </button>
+            {/* The agent's own computer (docs/AGENT-COMPUTER-DESIGN.md): click
+                opens its live screen (drive mode — you share the pointer with
+                Ares under the display lease); shift-click opens watch-only. */}
+            {native ? (
+              <button
+                className="statusSeg"
+                data-seg="computer"
+                onClick={(e) => daemonCmd({ type: "computer_screen", viewOnly: e.shiftKey })}
+                title="Ares's own computer — open its screen (shift-click: watch only). First use may need ComputerAdmin setup."
+              >
+                <b>computer</b>
+              </button>
+            ) : null}
             {/* WHO is answering. The transcript chip scrolls away with the
                 conversation, so after two replies there was nothing on screen
                 saying a persona was worn at all — the owner could only find out

@@ -41,6 +41,7 @@ import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, g
 import { KillSwitch } from "@ares/effects";
 import { gateToolPermission } from "../policyGate.js";
 import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
+import { getAgentComputer } from "@ares/tools";
 import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
 import { fileURLToPath } from "node:url";
@@ -2902,6 +2903,44 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           configured: status?.connected === true || apiKey,
           detail: status?.connected === true ? (status.detail ?? "subscription") : apiKey ? "api-key" : null,
         }) + "\n");
+        continue;
+      }
+      if (command.type === "computer_status") {
+        // The agent's own computer (docs/AGENT-COMPUTER-DESIGN.md): WSL2
+        // sandbox availability + display leases, for the UI chip and setup card.
+        const status = await getAgentComputer().status().catch((err: unknown) => ({
+          error: err instanceof Error ? err.message : String(err),
+        }));
+        process.stdout.write(JSON.stringify({ type: "computer_status", status }) + "\n");
+        continue;
+      }
+      if (command.type === "computer_setup") {
+        // Provision runs minutes (rootfs download + apt) — stream progress and
+        // finish asynchronously so the daemon loop never blocks on it.
+        const sid = command.sessionId;
+        void getAgentComputer()
+          .setup((line) => tagEmit(sid, { type: "computer_setup_progress", line }))
+          .then((result) => tagEmit(sid, { type: "computer_setup_done", ok: true, result }))
+          .catch((err: unknown) => tagEmit(sid, {
+            type: "computer_setup_done",
+            ok: false,
+            error: (err instanceof Error ? err.message : String(err)).slice(0, 400),
+          }));
+        continue;
+      }
+      if (command.type === "computer_screen") {
+        // Start (or reuse) the watchable noVNC screen and hand back its URL.
+        try {
+          const viewOnly = command.viewOnly === true;
+          const screen = await getAgentComputer().ensureScreen(1, viewOnly);
+          process.stdout.write(JSON.stringify({ type: "computer_screen", ok: true, url: screen.url, viewOnly }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({
+            type: "computer_screen",
+            ok: false,
+            error: (err instanceof Error ? err.message : String(err)).replace(/<\/?tool_use_error>/g, "").slice(0, 400),
+          }) + "\n");
+        }
         continue;
       }
       if (command.type === "operator_status") {

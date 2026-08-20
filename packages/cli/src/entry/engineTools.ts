@@ -2,7 +2,7 @@
 
 import { AresSubagentRunner, SubagentRegistry, openWorkspaceSessionKernel, type EngineTool, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, ApplyIntentTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, FindAndEditTool, CodeModeTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, ApplyIntentTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, FindAndEditTool, CodeModeTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
 import { loadUiSettings } from "../uiSettings.js";
@@ -232,6 +232,11 @@ export async function buildEngineTools(
 
   const baseToolDefs = [
     ...DEFAULT_TOOLS,
+    // The agent's own computer — a sandboxed Debian under WSL2 (Windows-only
+    // for now). Registered ALONGSIDE host tools; both stay live and the target
+    // is named by which tool is called. Subagents share the parent's machine
+    // and screen (displays are per user-facing agent, not per worker).
+    ...(process.platform === "win32" ? makeAgentComputerTools() : []),
     makeTodoWriteTool(todoStore),
     makeWebSearchTool(),
     makeImageSearchTool(),

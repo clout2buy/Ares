@@ -53,9 +53,22 @@ export {
   discoverCdpEndpoint,
   renderOverCdp,
   cdpRenderer,
+  CdpClient,
   type JsRenderer,
   type CdpRenderOptions,
 } from "./cdpRender.js";
+export {
+  makeAgentComputerTools,
+  getAgentComputer,
+  guiInputRefusal,
+  WslSandbox,
+  SANDBOX_DISTRO,
+  type WslRunner,
+  type SandboxExecResult,
+  type SandboxStatus,
+  type DisplayLease,
+  type AgentComputerToolsOptions,
+} from "./AgentComputer.js";
 export {
   makeWebSearchTool,
   duckDuckGoLite,

@@ -1,6 +1,23 @@
 # The Agent's Own Computer — design spec
 
-Status: SPEC (nothing built). Source: field study of xAI's Grok Bot desktop app
+Status: BUILT 2026-08-19 (all three phases; see "Implementation" below). The
+shared-login symlink store is deliberately deferred until two user-facing
+agents exist on one machine (the sidebar-agents work in
+AGENT-SOCIETY-DESIGN.md). Field verification is pending one machine
+prerequisite on the dev box: Windows' "Virtual Machine Platform" feature.
+
+Implementation map:
+- `packages/tools/src/AgentComputer.ts` — WslSandbox manager + the 7 tools
+  (ComputerExec / File / Screenshot / Browser / Transfer / Handoff / Admin),
+  registered win32-only in `packages/cli/src/entry/engineTools.ts`.
+- Daemon commands `computer_status` / `computer_setup` / `computer_screen`
+  (`packages/cli/src/entry/daemon.ts`), allow-listed in `tauri/src-tauri/src/main.rs`,
+  UI chip + events in `tauri/src/App.tsx` (footer, next to garrison).
+- CLI: `ares computer status|setup|screen|exec|snapshot|rebuild`
+  (`packages/cli/src/entry/computerCmd.ts`).
+- Tests: `tests/agent-computer.test.mjs` (scripted fake wsl.exe).
+
+Source: field study of xAI's Grok Bot desktop app
 (2026-08-19), including its agent's own description of its runtime, verified by
 it against its live machine. Treat the Grok details as *design intelligence*,
 not gospel — but the shape held up under questioning and matches what we'd

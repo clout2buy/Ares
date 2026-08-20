@@ -9,6 +9,10 @@ export interface AresEvent {
   type: string;
   id?: string;
   text?: string;
+  /** computer_setup_progress — one provisioning progress line. */
+  line?: string;
+  /** computer_setup_done / generic result payloads. */
+  result?: unknown;
   name?: string;
   toolName?: string;
   status?: string;

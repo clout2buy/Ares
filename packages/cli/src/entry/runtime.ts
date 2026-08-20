@@ -183,6 +183,8 @@ export async function printHelp(): Promise<void> {
       "                              Inspect, diagnose, or sleep-consolidate memory.",
       "  ares mnemosyne [status|serve|bindings|add|retire|compliance]",
       "                              The memory server: bindings (law/pact/doctrine) and the recalled-but-violated report.",
+      "  ares computer [status|setup|screen [--watch]|exec -- <cmd>|snapshot|rebuild]",
+      "                              The agent's own computer: a sandboxed Debian under WSL2 with a watchable screen.",
       "  ares eval [--json]         Run the built-in harness regression eval suite.",
       "  ares eval coding [--suite coding-v4|coding-v3|coding-v2|coding-v1] [--no-harness] [--gate] [--json]",
       "                              Run the coding gauntlet; real models require --allow-unsafe-process-eval inside an isolated VM/container.",

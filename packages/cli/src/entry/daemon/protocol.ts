@@ -67,6 +67,8 @@ export interface DaemonInputCommand {
   /** skill_invoke correlation id — echoed back in skill_result so the UI can
    *  match a response to the exact call (TTS utterances, surface clicks). */
   invokeId?: string;
+  /** computer_screen — open the agent computer's screen in watch-only mode. */
+  viewOnly?: boolean;
   /** cognitive_state has no payload beyond sessionId. */
   /** fleets_list / subagents_list — read-only subagent visibility; no payload
    *  beyond sessionId. Replies are `fleets_list` / `subagents_list` events. */

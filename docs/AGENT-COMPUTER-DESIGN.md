@@ -1,10 +1,30 @@
 # The Agent's Own Computer — design spec
 
-Status: BUILT 2026-08-19 (all three phases; see "Implementation" below). The
-shared-login symlink store is deliberately deferred until two user-facing
-agents exist on one machine (the sidebar-agents work in
-AGENT-SOCIETY-DESIGN.md). Field verification is pending one machine
-prerequisite on the dev box: Windows' "Virtual Machine Platform" feature.
+Status: BUILT and FIELD-VERIFIED 2026-08-19 (all three phases; see
+"Implementation" below). The owner drove the live desktop — Thunar, a
+terminal, Chromium — over the noVNC screen. The shared-login symlink store is
+deliberately deferred until two user-facing agents exist on one machine (the
+sidebar-agents work in AGENT-SOCIETY-DESIGN.md).
+
+Five things only a live run could teach, all fixed in the implementation:
+1. **Chromium needs `--no-sandbox` inside WSL** — its own namespace sandbox
+   cannot initialize, and it dies instantly without it. WSL *is* the sandbox.
+   No GPU behind Xvfb either, so software GL is forced.
+2. **`pgrep -f` self-matches.** Every liveness probe ran inside
+   `bash -lc "<the whole command>"`, whose own cmdline CONTAINS the pattern —
+   so every service read as "already running" while nothing ever launched.
+   All probes are now the real thing: the X socket, the CDP endpoint, TCP ports.
+3. **Background children are reaped** when the launching `wsl.exe` command
+   exits. Long-lived services need `setsid` + `</dev/null`.
+4. **WSLg exports Wayland env vars into every shell**, so `x11vnc` (and
+   `xfce4-session`) announce "Wayland session — exiting" even when pointed at
+   a plain Xvfb display. They launch with those variables stripped.
+5. **A viewport is not a desktop.** With only a browser on a bare X root, the
+   owner closed the browser window and saw *black*. The machine now runs a
+   real XFCE session — window manager, panel, file manager, terminal, a
+   generated wallpaper — so it reads as a computer, not a canvas. Also:
+   killed Chrome leaves stale `Singleton*` profile locks that silently block
+   the next launch, and a hard kill leaves a "Restore pages?" bubble.
 
 Implementation map:
 - `packages/tools/src/AgentComputer.ts` — WslSandbox manager + the 7 tools
@@ -131,6 +151,9 @@ snapshot/reset.
    ONE Chrome, persistent home. Both toolsets live, target named per call.
    The symlink login-store trick WAITS until two user-facing agents actually
    exist on the machine. This is enough to learn everything else against.
+   *(Shipped with a full XFCE session on the display — see finding 5 above:
+   a machine whose screen goes black when one app closes does not read as a
+   computer, and the owner cannot use the handoff protocol on a black root.)*
 2. **The pane.** noVNC stream in the desktop app, watch/drive toggle, the
    2FA handoff control, inline self-screenshots.
 3. **Crew semantics.** Per-subagent displays, the shared login store

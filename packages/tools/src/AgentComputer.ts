@@ -66,6 +66,12 @@ const BASE_PACKAGES = [
   "sudo", "curl", "ca-certificates", "git", "python3", "unzip", "procps", "psmisc",
   "xvfb", "x11-apps", "imagemagick", "x11vnc", "novnc", "websockify",
   "chromium", "fonts-liberation", "fonts-noto-color-emoji",
+  // A REAL desktop, not just a viewport. Without a window manager and a panel
+  // the screen is a bare X root: close the one app and the owner sees black.
+  // XFCE gives wallpaper, taskbar, file manager, and a terminal — the machine
+  // reads as a computer someone could sit down at.
+  "xfce4-session", "xfwm4", "xfdesktop4", "xfce4-panel", "xfce4-appfinder",
+  "thunar", "xfce4-terminal", "mousepad", "xfconf", "dbus-x11", "tango-icon-theme",
 ];
 
 export interface SandboxExecResult {
@@ -428,11 +434,83 @@ export class WslSandbox {
 
   async ensureDisplay(display = DEFAULT_DISPLAY): Promise<void> {
     await this.requireProvisioned();
-    const check = await this.exec(`pgrep -f "Xvfb :${display}( |$)" >/dev/null`, { timeoutMs: 20_000 });
+    // Probe the X socket, never `pgrep -f`: every check runs inside a
+    // `bash -lc "<the whole command>"`, whose own cmdline CONTAINS the search
+    // pattern — so pgrep -f matches the checking shell itself and every
+    // service looks permanently "already running" while nothing ever starts.
+    const check = await this.exec(`test -S /tmp/.X11-unix/X${display}`, { timeoutMs: 20_000 });
     if (check.exitCode === 0) return;
+    // setsid + </dev/null: `wsl.exe -- bash -lc "… &"` reaps plain background
+    // children when the launching command exits, so services must be fully
+    // detached from the session to outlive the call that started them.
     await this.exec(
-      `nohup Xvfb :${display} -screen 0 ${SCREEN_GEOMETRY} -nolisten tcp >/tmp/xvfb-${display}.log 2>&1 & sleep 0.6`,
+      `setsid nohup Xvfb :${display} -screen 0 ${SCREEN_GEOMETRY} -nolisten tcp </dev/null >/tmp/xvfb-${display}.log 2>&1 & sleep 0.8`,
       { timeoutMs: 20_000 },
+    );
+    await this.ensureDesktop(display);
+  }
+
+  /** Start the XFCE session on a display so the screen shows an actual desktop
+   *  — wallpaper, panel, window manager — instead of a black root window with
+   *  one app floating on it. Idempotent; a session already running is left be. */
+  async ensureDesktop(display = DEFAULT_DISPLAY): Promise<void> {
+    const session = await this.exec(`command -v xfce4-session >/dev/null`, { timeoutMs: 20_000 });
+    if (session.exitCode !== 0) return; // desktop packages absent — headless is still fine
+    const running = await this.exec(`pgrep -u ${SANDBOX_USER} -x xfwm4 >/dev/null`, { timeoutMs: 20_000 });
+    if (running.exitCode === 0) {
+      // Session is up; styling is separately marker-guarded and must still run
+      // (it was skipped entirely while this returned early).
+      await this.styleDesktop(display);
+      return;
+    }
+    // Same WSLg-Wayland strip as x11vnc: xfce4-session refuses to start a
+    // second session when it thinks a Wayland one is already live.
+    await this.exec(
+      `mkdir -p /tmp/xdg-${SANDBOX_USER} && chmod 700 /tmp/xdg-${SANDBOX_USER}; ` +
+        `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY=:${display} XDG_RUNTIME_DIR=/tmp/xdg-${SANDBOX_USER} ` +
+        `setsid nohup dbus-launch --exit-with-session xfce4-session ` +
+        `</dev/null >/tmp/xfce-${display}.log 2>&1 & sleep 3`,
+      { timeoutMs: 40_000 },
+    );
+    await this.styleDesktop(display);
+  }
+
+  /** One-time desktop dressing: a deliberate backdrop instead of bare black.
+   *  Installing xfdesktop without recommends leaves no wallpaper image, and an
+   *  unstyled black root reads as "broken" rather than "idle". Marker-guarded
+   *  so the owner's own later choices are never overwritten. */
+  private async styleDesktop(display: number): Promise<void> {
+    const marker = `${SANDBOX_HOME}/.ares-desktop-styled`;
+    const done = await this.exec(`test -f ${shellQuote(marker)}`, { timeoutMs: 15_000 });
+    if (done.exitCode === 0) return;
+    const env = `env DISPLAY=:${display} XDG_RUNTIME_DIR=/tmp/xdg-${SANDBOX_USER}`;
+    // The backdrop property path embeds the RandR OUTPUT name, which under
+    // Xvfb is "screen" — not the "monitor0" every xfce guide assumes. Read it
+    // from xrandr instead of guessing, or the settings land on a path
+    // xfdesktop never reads and the root stays black.
+    const output = await this.exec(
+      `${env} xrandr --listmonitors 2>/dev/null | awk 'NR==2 {print $NF}'`,
+      { timeoutMs: 20_000 },
+    );
+    const monitor = output.stdout.trim() || "screen";
+    const wallpaper = `${SANDBOX_HOME}/.ares-wallpaper.png`;
+    const q = `${env} xfconf-query -c xfce4-desktop`;
+    const base = `/backdrop/screen0/monitor${monitor}/workspace0`;
+    await this.exec(
+      [
+        // A generated wallpaper beats a color property: it always matches the
+        // geometry and needs no extra package (ImageMagick is already here).
+        // Gradient first so the backdrop exists even where the wordmark step
+        // fails for want of a usable font.
+        `convert -size 1280x800 gradient:'#12161f'-'#05070a' ${shellQuote(wallpaper)} 2>/dev/null || true`,
+        `convert ${shellQuote(wallpaper)} -fill '#e28c50' -pointsize 46 -gravity center ` +
+          `-annotate +0+0 'ARES' ${shellQuote(wallpaper)} 2>/dev/null || true`,
+        `${q} -p ${base}/last-image -n -t string -s ${shellQuote(wallpaper)}`,
+        `${q} -p ${base}/image-style -n -t int -s 5`,
+        `${q} -p ${base}/color-style -n -t int -s 0`,
+        `touch ${shellQuote(marker)}`,
+      ].join("; "),
+      { timeoutMs: 40_000 },
     );
   }
 
@@ -443,14 +521,40 @@ export class WslSandbox {
     await this.ensureDisplay(display);
     const cdpPort = CDP_PORT_BASE + display;
     const profile = `${SANDBOX_HOME}/.profiles/agent-${display}`;
-    const check = await this.exec(`pgrep -f "remote-debugging-port=${cdpPort}" >/dev/null`, { timeoutMs: 20_000 });
+    // Ask the debug endpoint itself — the browser answering IS the liveness
+    // test (and pgrep -f would match this very shell; see ensureDisplay).
+    const check = await this.exec(`curl -sf -m 2 http://127.0.0.1:${cdpPort}/json/version >/dev/null`, { timeoutMs: 20_000 });
     if (check.exitCode !== 0) {
+      // A killed/crashed Chrome leaves Singleton{Lock,Socket,Cookie} behind.
+      // The next launch sees them, tries to hand off to the dead instance, and
+      // exits silently — the profile looks "in use" forever. No process owns
+      // this profile right now, so the locks are stale by definition.
       await this.exec(
-        `mkdir -p ${shellQuote(profile)} && DISPLAY=:${display} nohup chromium ` +
+        `rm -f ${shellQuote(`${profile}/SingletonLock`)} ${shellQuote(`${profile}/SingletonSocket`)} ${shellQuote(`${profile}/SingletonCookie`)}`,
+        { timeoutMs: 20_000 },
+      );
+      // --no-sandbox: Chrome's own setuid/namespace sandbox can't initialize
+      //   inside the WSL container, so without this the browser dies on launch.
+      //   The sandbox IS the WSL guest; Chrome is already contained.
+      // --disable-dev-shm-usage: WSL's /dev/shm is tiny; keep tabs off it.
+      // --disable-gpu + SwiftShader: no GPU under Xvfb — force software GL so
+      //   pages render instead of hanging on a missing context.
+      // A hard kill leaves exit_type "Crashed" in Preferences, which greets the
+      // next launch (and every screenshot) with a "Restore pages?" bubble. The
+      // OS is disposable here and sessions are not; mark the profile clean.
+      await this.exec(
+        `f=${shellQuote(`${profile}/Default/Preferences`)}; [ -f "$f" ] && ` +
+          `sed -i 's/"exit_type":"[^"]*"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "$f" || true`,
+        { timeoutMs: 20_000 },
+      );
+      await this.exec(
+        `mkdir -p ${shellQuote(profile)} && DISPLAY=:${display} setsid nohup chromium ` +
           `--no-first-run --no-default-browser-check --disable-features=TranslateUI ` +
+          `--disable-session-crashed-bubble --disable-infobars --hide-crash-restore-bubble ` +
+          `--no-sandbox --disable-dev-shm-usage --disable-gpu --use-gl=angle --use-angle=swiftshader ` +
           `--remote-debugging-port=${cdpPort} --remote-allow-origins=* ` +
-          `--user-data-dir=${shellQuote(profile)} --window-size=1280,780 --window-position=0,0 ` +
-          `about:blank >/tmp/chromium-${display}.log 2>&1 & sleep 1.5`,
+          `--user-data-dir=${shellQuote(profile)} --window-size=1280,760 --window-position=0,0 ` +
+          `--start-maximized about:blank </dev/null >/tmp/chromium-${display}.log 2>&1 & sleep 2.5`,
         { timeoutMs: 30_000 },
       );
     }
@@ -463,18 +567,27 @@ export class WslSandbox {
     await this.ensureDisplay(display);
     const vncPort = VNC_PORT_BASE + display;
     const novncPort = NOVNC_PORT_BASE + display;
-    const vnc = await this.exec(`pgrep -f "x11vnc.*:${display} .*rfbport ${vncPort}" >/dev/null`, { timeoutMs: 20_000 });
+    // TCP probes over bash's /dev/tcp — same self-match reason as above.
+    const vnc = await this.exec(`(exec 3<>/dev/tcp/127.0.0.1/${vncPort}) 2>/dev/null`, { timeoutMs: 20_000 });
     if (vnc.exitCode !== 0) {
+      // WSLg exports WAYLAND_DISPLAY/XDG_SESSION_TYPE into every WSL shell.
+      // x11vnc sniffs those, declares "Wayland session — exiting", and dies —
+      // even though the display we hand it is a plain Xvfb X server. Strip
+      // them for this process so it sees the X11 world it is actually serving.
       await this.exec(
-        `nohup x11vnc -display :${display} -rfbport ${vncPort} -localhost -forever -shared -nopw ` +
-          `>/tmp/x11vnc-${display}.log 2>&1 & sleep 0.4`,
-        { timeoutMs: 20_000 },
+        `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE -u XDG_RUNTIME_DIR DISPLAY=:${display} ` +
+          `setsid nohup x11vnc -display :${display} -rfbport ${vncPort} -localhost -forever -shared -nopw -noxdamage ` +
+          `</dev/null >/tmp/x11vnc-${display}.log 2>&1 & sleep 1.2`,
+        { timeoutMs: 25_000 },
       );
     }
-    const web = await this.exec(`pgrep -f "websockify.*${novncPort}" >/dev/null`, { timeoutMs: 20_000 });
+    const web = await this.exec(`(exec 3<>/dev/tcp/127.0.0.1/${novncPort}) 2>/dev/null`, { timeoutMs: 20_000 });
     if (web.exitCode !== 0) {
+      // websockify binds all interfaces so Windows can reach it across the WSL
+      // NAT boundary (x11vnc itself stays -localhost, inside the guest).
       await this.exec(
-        `nohup websockify --web=/usr/share/novnc ${novncPort} localhost:${vncPort} >/tmp/novnc-${display}.log 2>&1 & sleep 0.5`,
+        `setsid nohup websockify --web=/usr/share/novnc ${novncPort} localhost:${vncPort} ` +
+          `</dev/null >/tmp/novnc-${display}.log 2>&1 & sleep 0.8`,
         { timeoutMs: 20_000 },
       );
     }

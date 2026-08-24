@@ -4656,11 +4656,19 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 
 /* ── linux perf-lite ─────────────────────────────────────────────────────────
    Set at boot (<html data-perf="lite">) on Linux, where WebKitGTK composites
-   backdrop-filter and the animated edge-flame on the CPU and the app crawls.
-   Strip the expensive layers, keep the look: panels go near-opaque so text
-   stays readable without the blur behind it. */
-html[data-perf="lite"] * { backdrop-filter: none !important; }
-html[data-perf="lite"] .screenFlame { display: none !important; }
+   backdrop-filter, full-viewport blur, and background-position loops on the
+   CPU and the app crawls. Strip the expensive layers, keep the look: panels
+   go near-opaque so text stays readable without the blur behind it.
+
+   display:none on .screenFlame is NOT enough for the SMIL feTurbulence
+   <animate> nodes in the 0×0 defs SVG — those keep running in WebKitGTK
+   even when nothing references them. App.tsx must not mount them on Linux. */
+html[data-perf="lite"] * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html[data-perf="lite"] .screenFlame,
+html[data-perf="lite"] .hackerRain { display: none !important; }
 html[data-perf="lite"] .palette,
 html[data-perf="lite"] .accountMenu,
 html[data-perf="lite"] .modelSwap,
@@ -4668,9 +4676,56 @@ html[data-perf="lite"] .directory,
 html[data-perf="lite"] .bugReport {
   background-color: color-mix(in srgb, var(--panel, #17151a) 97%, black);
 }
+/* Idle full-viewport paint. filter:blur on a cover photo plus an opacity
+   loop is a per-frame bitmap of the whole window. emberRise animates
+   background-position, which never composites. Astrolabe transforms often
+   fail to promote on WebKitGTK, so freeze those too. */
+html[data-perf="lite"] .backdrop::before {
+  animation: none !important;
+  filter: none !important;
+}
+html[data-perf="lite"] .backdrop::after { mix-blend-mode: normal; }
+html[data-perf="lite"] .backdrop .depthField,
+html[data-perf="lite"] .embers,
+html[data-perf="lite"] .embers::after {
+  animation: none !important;
+}
+html[data-perf="lite"] .backdrop .ringSlow,
+html[data-perf="lite"] .backdrop .ringMid,
+html[data-perf="lite"] .backdrop .ringFast {
+  animation: none !important;
+}
+html[data-perf="lite"] .empty .emptyEmblem,
+html[data-perf="lite"] .empty .emptyEmblem::before,
+html[data-perf="lite"] .empty .emptyEmblem::after,
+html[data-perf="lite"] .aboutMark {
+  animation: none !important;
+}
+html[data-perf="lite"] .helm-embers::before,
+html[data-perf="lite"] .helm-embers::after,
+html[data-perf="lite"] .helm-ring-outer,
+html[data-perf="lite"] .helm-ring-mid {
+  animation: none !important;
+}
 /* Ambient glow keyframes (pulse/shimmer style loops) repaint constantly on
-   WebKitGTK; halve their cadence rather than freezing feedback spinners. */
+   WebKitGTK; freeze chrome glows rather than feedback spinners. */
 html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation: none; }
+/* Working-state paint. forgeSweep/edgeSweep animate background-position;
+   workBreath/rageBreath pulse opacity over the whole stage. Keep the header
+   stageWork ring (transform-only) as the busy signal. */
+html[data-perf="lite"] .workGlow,
+html[data-perf="lite"] .workGlow::before,
+html[data-perf="lite"] .workingForge,
+html[data-perf="lite"] .ares[data-working="1"]::after,
+html[data-perf="lite"] .ares[data-working="1"] .workGlow,
+html[data-perf="lite"] .helm-pool,
+html[data-perf="lite"] .helm-pool-glow,
+html[data-perf="lite"] .helm-pool-rim {
+  animation: none !important;
+}
+html[data-perf="lite"] .turn.assistant[data-streaming="1"] .prose::after {
+  animation: none !important;
+}
 
 /* ── daylight — the one LIGHT war-band. The forge at high noon: warm parchment
    and iron ink instead of obsidian. Sets color-scheme:light so native controls,

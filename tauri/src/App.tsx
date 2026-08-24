@@ -110,6 +110,7 @@ import {
   type EngineConfig,
   loadPrefs,
   savePrefs,
+  IS_LINUX,
   type PermSettings,
   DEFAULT_PERMS,
 } from "./state/prefs";
@@ -345,6 +346,7 @@ function demoSession(): SessionVm {
     { type: "tool_end", id: "t3", durationMs: 141, display: "guard.ts now delegates to validateSession()" },
     { type: "text_delta", text: "Done. `guard.ts` now delegates to the canonical `validateSession()` — one source of truth.\n\n```ts\nimport { validateSession } from \"../auth/session\";\n\nexport const guard = (req) => validateSession(req.token);\n```\n\nThe verifier ran the touched tests: **green**." },
     { type: "turn_end", status: "completed", durationMs: 8400, usage: { inputTokens: 12480, outputTokens: 642 } },
+    { type: "turn_settled" },
   ];
   // Replicates the deepseek-via-ollama cadence that produced render bugs:
   // thinking-only rounds, each followed by a single tool call, reused ids.
@@ -359,6 +361,8 @@ function demoSession(): SessionVm {
     { type: "text_delta", text: "---\n" },
     { type: "text_delta", text: "Stock sites are blocking the headless browser. Let me pull image URLs from image search instead.\n\n" },
     { type: "text_delta", text: "Here's how the tools compare:\n\n| Tool | Best for | Watch out |\n|---|---|---|\n| Edit | one-line surgical fixes | fails if the string appears twice |\n| ApplyIntent | large rewrites | adds APPLY-slot latency |\n| ImageSearch | direct image URLs | no content filtering |\n\nAnd the agent's mental model:\n\n```mermaid\ngraph TD\n  USER[You] --> PLAN[Plan]\n  PLAN --> ACT[Act with tools]\n  ACT --> VERIFY{Verify}\n  VERIFY -->|green| DONE[Deliver]\n  VERIFY -->|red| ACT\n```\n\nTool-call latency, lower is better:\n\n```chart\nRead: 95\nGrep: 312\nEdit: 141\nWebFetch: 1400\n```\n" },
+    { type: "turn_end", status: "completed", durationMs: 12_400, usage: { inputTokens: 1840, outputTokens: 510 } },
+    { type: "turn_settled" },
   ];
   for (const e of [...feed, ...deepseekRounds]) s = foldEvent(s, e);
   s.items.unshift({ kind: "user", key: nextKey(), text: "unify the duplicated session validation, then make the middleware use it" });
@@ -3281,12 +3285,15 @@ function App() {
       <Backdrop />
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />
-      <ScreenFlame />
-      {prefs.ultra ? <HackerRain active={active?.busy ?? false} /> : null}
+      {IS_LINUX ? null : <ScreenFlame />}
+      {prefs.ultra && !IS_LINUX ? <HackerRain active={active?.busy ?? false} /> : null}
       {/* strikeFlash intentionally NOT rendered: a 480ms full-screen flash on
           every agent action is a photosensitive-seizure hazard. Working state
           is carried by the static glow + the header indicator instead. */}
-      {/* Turbulence filter that makes the composer's flame rim actually lick + flicker. */}
+      {/* Turbulence filter that makes the composer's flame rim actually lick + flicker.
+          Never mount this on Linux: WebKitGTK keeps running the SMIL <animate>
+          on feTurbulence even when .screenFlame is display:none. */}
+      {IS_LINUX ? null : (
       <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
         <defs>
           {/* coarse slow sway for the flame body — higher octaves for organic
@@ -3338,6 +3345,7 @@ function App() {
           </linearGradient>
         </defs>
       </svg>
+      )}
 
       <header className="titlebar" onMouseDown={dragWindow}>
         <button
@@ -6609,7 +6617,9 @@ function ScryingBasin({ heat }: { heat: number }) {
         </radialGradient>
         <filter id="boil" x="-20%" y="-20%" width="140%" height="140%">
           <feTurbulence type="fractalNoise" baseFrequency="0.012 0.02" numOctaves={2} seed={7} result="noise">
-            <animate attributeName="baseFrequency" dur={`${(9 - heat * 4).toFixed(1)}s`} values="0.010 0.018;0.020 0.030;0.010 0.018" repeatCount="indefinite" />
+            {IS_LINUX ? null : (
+              <animate attributeName="baseFrequency" dur={`${(9 - heat * 4).toFixed(1)}s`} values="0.010 0.018;0.020 0.030;0.010 0.018" repeatCount="indefinite" />
+            )}
           </feTurbulence>
           <feDisplacementMap in="SourceGraphic" in2="noise" scale={heat > 0.7 ? 26 : 16} xChannelSelector="R" yChannelSelector="G" />
         </filter>
@@ -6618,7 +6628,7 @@ function ScryingBasin({ heat }: { heat: number }) {
       <circle className="helm-ring-outer" cx="200" cy="200" r="186" />
       <circle className="helm-ring-mid" cx="200" cy="200" r="158" />
       {/* the molten surface */}
-      <circle cx="200" cy="200" r="140" fill="url(#moltenPool)" filter="url(#boil)" className="helm-pool" />
+      <circle cx="200" cy="200" r="140" fill="url(#moltenPool)" filter={IS_LINUX ? undefined : "url(#boil)"} className="helm-pool" />
       {/* fresnel rim */}
       <circle cx="200" cy="200" r="140" fill="none" stroke="var(--ember-hi, #ffd27a)" strokeOpacity={0.5} strokeWidth={2} className="helm-pool-rim" />
       {/* core light */}

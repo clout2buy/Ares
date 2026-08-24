@@ -85,8 +85,12 @@ test("fan-out: 3 independent 250ms tools finish in parallel, not ~750ms", async 
   const counter = { current: 0, max: 0 };
   const calls = ["t0", "t1", "t2"].map((id) => ({ id, input: { sleepMs: 250, id } }));
   const { elapsed } = await runTurn(batchProvider(calls), [slowTool(counter)], tmp);
-  assert.ok(elapsed < 550, `ran concurrently in ${elapsed}ms (sequential would be ~750ms)`);
-  assert.equal(counter.max, 3, "all 3 ran at once (default cap 5 >= 3)");
+  // Parallelism is proven by the in-flight counter, NOT wall-clock: a loaded
+  // CI runner ran this in 642ms and failed a `< 550ms` bound even though all
+  // three tools were verifiably in flight at once (this was the release-gate
+  // flake). A sequential run can never reach max concurrency 3, so the
+  // counter is the stronger assertion; elapsed stays in the message only.
+  assert.equal(counter.max, 3, `all 3 ran at once (default cap 5 >= 3; elapsed ${elapsed}ms)`);
 });
 
 // ── Deterministic order regardless of finish order ────────────────────────────

@@ -722,6 +722,26 @@ function estimateMessageTokens(m: Message): number {
   return t;
 }
 
+/** Approximate JSON.stringify(value).length WITHOUT serializing — string
+ *  lengths dominate real payloads (base64 images, tool outputs), so walking
+ *  the graph gives the same "what made this prompt huge" answer with zero
+ *  large allocations. Cycles (which stringify would throw on) count as 0. */
+function approxJsonChars(value: unknown, seen?: WeakSet<object>): number {
+  if (typeof value === "string") return value.length + 2;
+  if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") return 6;
+  if (typeof value !== "object") return 6;
+  const tracked = seen ?? new WeakSet();
+  if (tracked.has(value)) return 0;
+  tracked.add(value);
+  let chars = 2;
+  if (Array.isArray(value)) {
+    for (const item of value) chars += approxJsonChars(item, tracked) + 1;
+    return chars;
+  }
+  for (const [key, item] of Object.entries(value)) chars += key.length + 4 + approxJsonChars(item, tracked);
+  return chars;
+}
+
 /** A user message whose first block is a tool_result — would orphan into a
  *  function_call_output with no preceding call if it led the kept window. */
 function leadsWithToolResult(m: Message): boolean {
@@ -1302,16 +1322,13 @@ export class QueryEngine {
 
   /** Size-first block digest for the wire log: enough to answer "what made
    *  this prompt huge" (a 5MB screenshot shows its real serialized size)
-   *  without duplicating whole prompts to disk. */
+   *  without duplicating whole prompts to disk — or into the heap. This used
+   *  to JSON.stringify every block (base64 images included) per model call,
+   *  which re-materialized whole screenshots as garbage strings on the hottest
+   *  path; the size is now estimated by walking the object graph instead. */
   private wireBlockSummary(block: ContentBlock): Record<string, unknown> {
     const b = block as unknown as { type?: string; name?: string; text?: unknown };
-    let chars: number;
-    try {
-      chars = JSON.stringify(block)?.length ?? 0;
-    } catch {
-      chars = -1;
-    }
-    const out: Record<string, unknown> = { type: b.type ?? "unknown", chars };
+    const out: Record<string, unknown> = { type: b.type ?? "unknown", chars: approxJsonChars(block) };
     if (typeof b.name === "string") out.tool = b.name;
     if (typeof b.text === "string" && b.text) out.head = b.text.slice(0, 160);
     return out;
@@ -2380,7 +2397,10 @@ export class QueryEngine {
                 const providerInterrupt = AbortSignal.any([this.liveSignal(), providerAttempt.steeringAbort.signal]);
                 // Awaited so the record is durably on disk before the request
                 // is armed — a call that never returns still leaves its shape.
-                await this.logWirePrompt({
+                // The opt-out is checked HERE, not just inside logWirePrompt:
+                // the record below re-walks the whole outbound history, and
+                // building it only to discard it defeated the opt-out.
+                if (process.env.ARES_WIRE_LOG !== "0") await this.logWirePrompt({
                   at: new Date().toISOString(),
                   attemptId: providerAttempt.id,
                   provider: this.cfg.provider.name,

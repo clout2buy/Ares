@@ -38,6 +38,32 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.43.1",
+    date: "August 2026",
+    title: "Steady under load",
+    tagline: "The crash that killed long working sessions is gone — the engine room no longer eats itself while you watch it work.",
+    highlights: [
+      {
+        icon: "🛡️",
+        title: "No more mid-build crashes",
+        blurb: "Keeping the war room open during a long build used to slowly exhaust memory until Ares's backend died and restarted — that leak is found and closed.",
+        tag: "Safer",
+      },
+      {
+        icon: "⚡",
+        title: "Usage stats got instant",
+        blurb: "The usage rollup now remembers what it already counted, so refreshing costs almost nothing even with months of session history on disk.",
+        tag: "Faster",
+      },
+      {
+        icon: "🪶",
+        title: "Lighter on every reply",
+        blurb: "Ares no longer makes throwaway copies of screenshots and long transcripts on each model call, so long sessions stay snappy.",
+        tag: "Faster",
+      },
+    ],
+  },
+  {
     version: "0.43.0",
     date: "August 2026",
     title: "The machine awakens",

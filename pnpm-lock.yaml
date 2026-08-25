@@ -210,6 +210,8 @@ importers:
         specifier: workspace:*
         version: link:../mind
 
+  packages/plugins: {}
+
   packages/protocol: {}
 
   packages/tools:

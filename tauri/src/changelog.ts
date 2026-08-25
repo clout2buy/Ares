@@ -38,6 +38,44 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.44.0",
+    date: "August 2026",
+    title: "Deep maintenance, new bones",
+    tagline: "The engine room cleans up after itself now — and the foundation is laid for capabilities Ares can grow and shed at runtime.",
+    highlights: [
+      {
+        icon: "🧹",
+        title: "The database stops hoarding",
+        blurb: "Session storage used to drag a growing journal file behind it (400MB+ on busy machines) — it now folds itself down in quiet moments, automatically.",
+        tag: "Faster",
+      },
+      {
+        icon: "🗑️",
+        title: "Undo snapshots clean up",
+        blurb: "Old checkpoint data that nothing could ever restore used to pile up forever; the sweeper now finds and removes it without being asked.",
+        tag: "Safer",
+      },
+      {
+        icon: "🏃",
+        title: "Long sessions stay light",
+        blurb: "Ares stopped redoing the same size-bookkeeping over your whole conversation on every step — long working sessions no longer slow down as they grow.",
+        tag: "Faster",
+      },
+      {
+        icon: "💪",
+        title: "Recovery tries harder",
+        blurb: "If a crashed request's revival hiccups on a busy machine, Ares now retries it immediately instead of leaving it for the next restart.",
+        tag: "Safer",
+      },
+      {
+        icon: "🧩",
+        title: "New foundation: living capabilities",
+        blurb: "Under the hood, Ares gained a system for adding and removing abilities while it runs — cleanly, reversibly. The features built on it start arriving next release.",
+        tag: "New",
+      },
+    ],
+  },
+  {
     version: "0.43.1",
     date: "August 2026",
     title: "Steady under load",

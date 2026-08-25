@@ -441,6 +441,11 @@ test("M3: parallel-safe tools execute concurrently and forward progress", async 
       };
     },
   };
+  // Parallelism is proven by the in-flight counter, NOT wall-clock: a loaded
+  // machine blew a `duration < 260ms` bound with both tools verifiably
+  // concurrent (same release-gate flake class as the fan-out suite). A
+  // sequential engine can never reach max concurrency 2.
+  const counter = { current: 0, max: 0 };
   const tool = {
     schema: {
       name: "SlowRead",
@@ -450,9 +455,15 @@ test("M3: parallel-safe tools execute concurrently and forward progress", async 
       concurrency: "parallel-safe",
     },
     async call(input, ctx) {
-      ctx.emitProgress?.({ kind: "slow", id: input.id });
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      return { output: input.id };
+      counter.current++;
+      counter.max = Math.max(counter.max, counter.current);
+      try {
+        ctx.emitProgress?.({ kind: "slow", id: input.id });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return { output: input.id };
+      } finally {
+        counter.current--;
+      }
     },
   };
   const engine = QueryEngine.forTesting(
@@ -473,7 +484,7 @@ test("M3: parallel-safe tools execute concurrently and forward progress", async 
   for await (const event of engine.streamTurn()) events.push(event);
   const duration = Date.now() - started;
 
-  assert.ok(duration < 260, `expected concurrent runtime, got ${duration}ms`);
+  assert.equal(counter.max, 2, `both tools in flight at once (elapsed ${duration}ms)`);
   assert.equal(events.filter((event) => event.type === "tool_end").length, 2);
   assert.equal(events.filter((event) => event.type === "tool_progress").length, 2);
 });

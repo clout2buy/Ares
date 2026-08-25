@@ -4,6 +4,7 @@
   "references": [
     { "path": "./packages/browser-extension-connector" },
     { "path": "./packages/protocol" },
+    { "path": "./packages/plugins" },
     { "path": "./packages/core" },
     { "path": "./packages/tools" },
     { "path": "./packages/agent" },

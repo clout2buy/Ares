@@ -112,7 +112,7 @@ export async function createWorkspaceCheckpoint(opts: CreateCheckpointOptions): 
   // tax on the hottest coding path; every Nth keeps growth bounded all the same.
   if (++checkpointsSinceGc >= GC_EVERY) {
     checkpointsSinceGc = 0;
-    await gcCheckpoints(opts.workspace).catch(() => {});
+    await gcWorkspaceCheckpoints(opts.workspace).catch(() => {});
   }
   return meta;
 }
@@ -201,41 +201,83 @@ async function hashFileCached(workspace: string, full: string, mtimeMs: number, 
 }
 
 /** Prune checkpoint metas beyond the retention window (per session, newest
- *  kept), then delete blobs no surviving meta references. */
-async function gcCheckpoints(workspace: string): Promise<void> {
+ *  kept), then delete blobs no surviving meta references.
+ *
+ *  Two field lessons shaped this implementation:
+ *  1. It used to load EVERY meta simultaneously (Promise.all) and hold the
+ *     survivors — each carrying a full fileManifest — across the whole blob
+ *     sweep. On a big workspace that is a ~1GB heap spike every 25th
+ *     checkpoint. Metas are now streamed one at a time: pass 1 keeps only
+ *     identity rows, pass 2 folds survivor hashes into a Set and drops each
+ *     manifest immediately.
+ *  2. The orphan sweep was gated behind `doomed.length === 0` — so a store
+ *     whose metas vanished by any other route (session cleanup, manual
+ *     delete, workspace rename) could NEVER clean itself again. One machine
+ *     accumulated 1.2GB of permanently unreferenced blobs exactly this way.
+ *     The sweep now always runs. */
+export async function gcWorkspaceCheckpoints(workspace: string): Promise<void> {
+  const gcStartedAt = Date.now();
   const retention = checkpointRetention();
-  const metas = await listWorkspaceCheckpoints(workspace);
-  // Group by session, keep newest `retention` per session.
-  const bySession = new Map<string, CheckpointMeta[]>();
-  for (const m of metas) {
-    const arr = bySession.get(m.sessionId) ?? [];
-    arr.push(m);
-    bySession.set(m.sessionId, arr);
+  const dir = metaDir(workspace);
+  const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => name.endsWith(".json"));
+
+  // Pass 1 — rank without retaining manifests.
+  const rows: Array<{ name: string; sessionId: string; createdAt: string }> = [];
+  let unreadableMetas = false;
+  for (const name of names) {
+    try {
+      const meta = JSON.parse(await fs.readFile(path.join(dir, name), "utf8")) as CheckpointMeta;
+      rows.push({ name, sessionId: meta.sessionId, createdAt: meta.createdAt });
+    } catch {
+      // An unreadable meta may still reference blobs we cannot see. Leave the
+      // file alone and (below) skip the blob sweep entirely — deleting blobs
+      // a corrupt-but-recoverable meta points at would break its restore.
+      unreadableMetas = true;
+    }
   }
-  const survivors: CheckpointMeta[] = [];
-  const doomed: CheckpointMeta[] = [];
+  const bySession = new Map<string, Array<{ name: string; createdAt: string }>>();
+  for (const row of rows) {
+    const arr = bySession.get(row.sessionId) ?? [];
+    arr.push(row);
+    bySession.set(row.sessionId, arr);
+  }
+  const survivors: string[] = [];
   for (const arr of bySession.values()) {
     arr.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    survivors.push(...arr.slice(0, retention));
-    doomed.push(...arr.slice(retention));
+    for (const [index, row] of arr.entries()) {
+      if (index < retention) survivors.push(row.name);
+      else await fs.rm(path.join(dir, row.name), { force: true }).catch(() => {});
+    }
   }
-  if (doomed.length === 0) return;
-  for (const m of doomed) {
-    await fs.rm(path.join(metaDir(workspace), `${m.id}.json`), { force: true }).catch(() => {});
-  }
-  // Sweep orphaned blobs: keep only hashes referenced by a surviving meta.
+  if (unreadableMetas) return;
+
+  // Pass 2 — live hashes from survivors, one manifest in memory at a time.
   const live = new Set<string>();
-  for (const m of survivors) for (const ref of m.fileManifest) live.add(ref.blobHash);
+  for (const name of survivors) {
+    try {
+      const meta = JSON.parse(await fs.readFile(path.join(dir, name), "utf8")) as CheckpointMeta;
+      for (const ref of meta.fileManifest) live.add(ref.blobHash);
+    } catch {
+      return; // survivor became unreadable mid-GC — sweeping now is unsafe
+    }
+  }
+
+  // Sweep orphaned blobs — unconditionally (see note 2 above). A blob written
+  // while this GC is running belongs to a checkpoint whose meta we never read,
+  // so anything younger than the GC itself is off-limits (the old code could
+  // race a concurrent checkpoint and eat its fresh blobs).
   const blobsRoot = path.join(workspace, ".ares", "checkpoints", "blobs");
   const shards = await fs.readdir(blobsRoot).catch(() => [] as string[]);
   for (const shard of shards) {
     const shardDir = path.join(blobsRoot, shard);
     const blobs = await fs.readdir(shardDir).catch(() => [] as string[]);
     for (const hash of blobs) {
-      if (!live.has(hash)) {
-        await fs.rm(path.join(shardDir, hash), { force: true }).catch(() => {});
-        knownBlobs.delete(hash); // keep the in-memory existence set honest
-      }
+      if (live.has(hash)) continue;
+      const blobFile = path.join(shardDir, hash);
+      const stat = await fs.stat(blobFile).catch(() => null);
+      if (!stat || stat.mtimeMs >= gcStartedAt - 60_000) continue;
+      await fs.rm(blobFile, { force: true }).catch(() => {});
+      knownBlobs.delete(hash); // keep the in-memory existence set honest
     }
   }
 }

@@ -327,6 +327,7 @@ export {
   diffWorkspaceCheckpoint,
   diffWorkspaceCheckpointUnified,
   restoreWorkspaceCheckpoint,
+  gcWorkspaceCheckpoints,
   isUnsnapshotableWorkspace,
   type CreateCheckpointOptions,
 } from "./checkpoints.js";

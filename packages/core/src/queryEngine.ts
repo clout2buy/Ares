@@ -694,7 +694,29 @@ function totalImagePayloadBytes(messages: readonly Message[]): number {
   return bytes;
 }
 
+/** Memoized per-block token estimates. The engine re-estimates the FULL
+ *  history ~5 times per tool round (microcompact check, compaction check,
+ *  budgeting, image fitting, wire log) — and estimateBlockTokens used to
+ *  JSON.stringify tool inputs afresh on every pass, so a long turn generated
+ *  gigabytes of large-object garbage that grew quadratically with history
+ *  length (a contributor to the exit-134 signature). History blocks are
+ *  stable object references, so one WeakMap turns every later pass into
+ *  lookups; the single in-place mutation site (microcompact clearing a
+ *  tool_result body) explicitly invalidates its entry. */
+const blockTokenMemo = new WeakMap<object, number>();
+
 function estimateBlockTokens(b: ContentBlock): number {
+  const memoizable = typeof b === "object" && b !== null;
+  if (memoizable) {
+    const cached = blockTokenMemo.get(b);
+    if (cached !== undefined) return cached;
+  }
+  const computed = computeBlockTokens(b);
+  if (memoizable) blockTokenMemo.set(b, computed);
+  return computed;
+}
+
+function computeBlockTokens(b: ContentBlock): number {
   switch (b.type) {
     case "text":
     case "thinking":
@@ -1687,6 +1709,9 @@ export class QueryEngine {
     const clearedIds = new Set<string>();
     for (const candidate of candidates) {
       candidate.block.content = MICROCOMPACT_PLACEHOLDER;
+      // The ONE place a block mutates in place — drop its memoized estimate
+      // so the budget sees the shrink (see blockTokenMemo).
+      blockTokenMemo.delete(candidate.block);
       clearedIds.add(candidate.block.tool_use_id);
     }
     const cleared = candidates.length;

@@ -351,7 +351,12 @@ export class SessionKernelStore {
       options.migrate === false
         ? Number(db.pragma("user_version", { simple: true }) ?? 0)
         : migrateSessionKernelDatabase(db, this.now());
-    if (options.migrate !== false) this.pruneSupersededEpochs();
+    if (options.migrate !== false) {
+      this.pruneSupersededEpochs();
+      // Fold whatever WAL a previous generation left behind while we are the
+      // freshest reader there is — see maintainWal for why nobody else will.
+      this.maintainWal("TRUNCATE");
+    }
   }
 
   /** One-time-per-open sweep of the epoch bloat that predates per-append
@@ -394,6 +399,28 @@ export class SessionKernelStore {
   checkpoint(mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "PASSIVE"): unknown {
     this.assertOpen();
     return this.db.pragma(`wal_checkpoint(${mode})`);
+  }
+
+  /**
+   * Best-effort WAL upkeep. Field origin: a workspace kernel sat next to a
+   * 411MB -wal (4× the database) because wal_autocheckpoint only folds frames
+   * opportunistically on commit, and the file itself only RESETS when a
+   * checkpoint completes with no concurrent reader — with the daemon, the
+   * garrison, and agent runtimes all holding the store open, that moment never
+   * arrives by chance. So hosts ask for it deliberately in quiet moments:
+   * PASSIVE folds what it can without blocking anyone; TRUNCATE (for idle
+   * sweeps) also resets the file when no reader pins it. Never throws — WAL
+   * hygiene must not be able to take down a host.
+   */
+  maintainWal(mode: "PASSIVE" | "TRUNCATE" = "PASSIVE"): { busy: number; log: number; checkpointed: number } | null {
+    try {
+      this.assertOpen();
+      const rows = this.db.pragma(`wal_checkpoint(${mode})`) as Array<{ busy: number; log: number; checkpointed: number }>;
+      const row = Array.isArray(rows) ? rows[0] : undefined;
+      return row ? { busy: row.busy, log: row.log, checkpointed: row.checkpointed } : null;
+    } catch {
+      return null;
+    }
   }
 
   createSession(input: CreateSessionInput = {}): SessionRecord {

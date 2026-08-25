@@ -676,13 +676,27 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // Routine hygiene at a much lower frequency than the heap watch: a session
   // nobody has touched in a while is a full resident transcript (plus its tool
   // surfaces, verifier and agent runtime) held for nothing.
+  //
+  // The same sweep keeps the session-kernel WAL folded: with the daemon, the
+  // garrison, and agent runtimes all holding the store open, SQLite never gets
+  // a reader-free instant to reset the file on its own (one field workspace
+  // reached a 411MB -wal beside a 102MB database). PASSIVE folds frames every
+  // sweep; every tenth quiet sweep asks for TRUNCATE to actually shrink the
+  // file. Only while no turn is active — a checkpoint must never contend with
+  // live work.
   {
+    let sweeps = 0;
     const idleSweep = setInterval(() => {
       try {
         evictIdleSessions("idle");
       } catch {
         // best-effort
       }
+      sweeps++;
+      if ([...sessions.values()].some((entry) => entry.turnActive)) return;
+      void openWorkspaceSessionKernel(live.context.workspace)
+        .then((kernel) => kernel.maintainWal(sweeps % 10 === 0 ? "TRUNCATE" : "PASSIVE"))
+        .catch(() => undefined);
     }, 60_000);
     idleSweep.unref?.();
   }
@@ -984,6 +998,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // protocol (or trusting a client-supplied internal marker).
   const internalStartupRecoveryCommands = new WeakSet<object>();
   const suppressedInternalRecoveryReplays = new Set<string>();
+  /** Recovered inputs already granted their one same-boot stale-lease retry —
+   *  a second expiry means the machine is too starved to run this turn at all,
+   *  so it keeps its ordinary retry-next-boot value instead of looping. */
+  const staleLeaseRecoveryRetries = new Set<string>();
   const enqueueStartupRecoveryCommand = (command: DaemonInputCommand): void => {
     internalStartupRecoveryCommands.add(command);
     commands.enqueue(command);
@@ -3482,7 +3500,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         } catch {
           // best-effort — never block a turn on attribution
         }
-        const turnState = { status: "completed" as "completed" | "interrupted" | "failed", fatalProvider: null as string | null };
+        const turnState = {
+          status: "completed" as "completed" | "interrupted" | "failed",
+          fatalProvider: null as string | null,
+          // The turn's OWN runner lease expired mid-flight (STALE_GENERATION) —
+          // an event-loop starved long enough to miss heartbeats, not a
+          // provider or user failure. Re-acquiring simply mints a fresh
+          // generation, so a recovered input that dies this way earns one
+          // same-boot retry instead of waiting for the next daemon start.
+          staleGeneration: false,
+        };
         // Restore the user's pinned model after a one-turn vision escalation.
         let revertSelection: ProviderSelection | null = null;
         let escalatedSelection: ProviderSelection | null = null;
@@ -3581,6 +3608,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               if (ev.type === "turn_end" && ev.status) turnState.status = ev.status;
               if (ev.type === "error" && isProviderFatalError(ev.error)) {
                 turnState.fatalProvider = `${ev.error?.code ?? "provider_error"}: ${ev.error?.message ?? ""}`.slice(0, 200);
+              }
+              if (ev.type === "error" && /STALE_GENERATION|runner lease has expired|is stale:/i.test(String(ev.error?.message ?? ""))) {
+                turnState.staleGeneration = true;
               }
               tagEmit(sid, event as Record<string, unknown>);
             }
@@ -3966,6 +3996,36 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             } catch {
               // Couldn't cancel (e.g. claimed under a live generation) — the
               // next boot may retry once more; never break turn settlement.
+            }
+          }
+          // Stale-lease retry: the recovered turn died because ITS OWN runner
+          // lease expired mid-flight — a starved event loop missing heartbeats
+          // on a slow machine, not a provider or user failure. The input is
+          // still admitted; re-acquiring simply mints a fresh generation. Give
+          // it exactly one same-boot retry (the CI field case: a 60s test
+          // timeout waiting on a recovery this daemon never re-drove).
+          if (
+            completedStartupRecovery &&
+            !settlementRecoveryScheduled &&
+            turnState.status === "failed" &&
+            turnState.staleGeneration &&
+            !turnState.fatalProvider &&
+            !staleLeaseRecoveryRetries.has(inputId)
+          ) {
+            staleLeaseRecoveryRetries.add(inputId);
+            try {
+              const kernel = await openWorkspaceSessionKernel(entry.live.context.workspace);
+              const canonical = kernel.getInput(inputId);
+              if (canonical && (canonical.state === "admitted" || canonical.state === "claimed")) {
+                entry.startupRecoveryQueue.unshift({ inputId, goal, sessionId: command.sessionId });
+                tagEmit(command.sessionId, {
+                  type: "startup_recovery_retry",
+                  inputId,
+                  reason: "runner lease expired mid-recovery",
+                });
+              }
+            } catch {
+              // The input keeps its retry-next-boot value; never break settlement.
             }
           }
           // Same command path as a fresh owner turn: routing, vision escalation,

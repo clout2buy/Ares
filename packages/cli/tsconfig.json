@@ -8,6 +8,7 @@
   },
   "references": [
     { "path": "../browser-extension-connector" },
+    { "path": "../plugins" },
     { "path": "../protocol" },
     { "path": "../core" },
     { "path": "../tools" },

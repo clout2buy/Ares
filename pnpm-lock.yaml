@@ -98,6 +98,9 @@ importers:
       '@ares/operator':
         specifier: workspace:*
         version: link:../operator
+      '@ares/plugins':
+        specifier: workspace:*
+        version: link:../plugins
       '@ares/protocol':
         specifier: workspace:*
         version: link:../protocol

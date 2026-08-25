@@ -548,6 +548,7 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [pluginsVm, setPluginsVm] = useState<PluginsVm | null>(null);
   const [roster, setRoster] = useState<PersonaVm[]>(() => (native ? [] : demoRoster()));
   const [cognitive, setCognitive] = useState<CognitiveStateVm | null>(() => (native ? null : demoCognitive()));
   const [activePersona, setActivePersona] = useState<PersonaVm | null>(null);
@@ -1604,6 +1605,12 @@ function App() {
           return true;
         case "skills_list":
           setSkills(Array.isArray(e.skills) ? (e.skills as SkillInfo[]) : []);
+          return true;
+        case "plugins_list":
+          setPluginsVm({
+            plugins: Array.isArray(e.plugins) ? (e.plugins as PluginStatusVm[]) : [],
+            recentMaintenance: Array.isArray(e.recentMaintenance) ? (e.recentMaintenance as MaintenanceRunVm[]) : [],
+          });
           return true;
         case "cognitive_state":
           setCognitive((e.cognitive as CognitiveStateVm | undefined) ?? null);
@@ -4116,6 +4123,7 @@ function App() {
           onClose={() => setSettingsOpen(false)}
           native={native}
           skills={skills}
+          plugins={pluginsVm}
           usage={usageStats}
           keyStatus={keyStatus}
           gatewayAccount={gatewayAccount}
@@ -9152,7 +9160,7 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
   );
 }
 
-type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
+type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
 
 interface SkillSurface {
   id: string;
@@ -9215,6 +9223,23 @@ interface SkillInfo {
   runnable?: boolean;
   modifiedAt?: number;
 }
+/** The daemon's plugin host, as reported by plugins_list. */
+interface PluginStatusVm {
+  name: string;
+  state: "active" | "pending" | "failed";
+  waitingOn: string[];
+  error?: string;
+}
+interface MaintenanceRunVm {
+  job: string;
+  at: number;
+  durationMs: number;
+  note?: string;
+}
+interface PluginsVm {
+  plugins: PluginStatusVm[];
+  recentMaintenance: MaintenanceRunVm[];
+}
 interface UsageStats {
   sessions: number;
   apiCalls: number;
@@ -9236,6 +9261,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "appearance", label: "Appearance", glyph: "edit" },
   { id: "voice", label: "Voice", glyph: "dot" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
+  { id: "plugins", label: "Engine Room", glyph: "shell" },
   { id: "usage", label: "Usage", glyph: "web" },
   { id: "keys", label: "API Keys", glyph: "shell" },
   { id: "consciousness", label: "Consciousness", glyph: "dot" },
@@ -9394,6 +9420,7 @@ function Settings({
   onClose,
   native,
   skills,
+  plugins,
   usage,
   keyStatus,
   gatewayAccount,
@@ -9421,6 +9448,7 @@ function Settings({
   onClose: () => void;
   native: boolean;
   skills: SkillInfo[];
+  plugins: PluginsVm | null;
   usage: UsageStats | null;
   keyStatus: Record<string, boolean>;
   gatewayAccount: GatewayAccountVm | null;
@@ -9453,6 +9481,7 @@ function Settings({
   useEffect(() => {
     if (!native) return;
     if (tab === "skills") onDaemonCommand({ type: "skills_list" });
+    if (tab === "plugins") onDaemonCommand({ type: "plugins_list" });
     if (tab === "usage") onDaemonCommand({ type: "usage_stats", days: 30 });
     if (tab === "consciousness") onDaemonCommand({ type: "consciousness_status" });
   }, [tab, native, onDaemonCommand]);
@@ -9685,6 +9714,63 @@ function Settings({
                 </div>
               )}
               <div className="skillHubSection"><SkillHubBrowser onDaemonCommand={onDaemonCommand} /></div>
+            </div>
+          ) : null}
+
+          {tab === "plugins" ? (
+            <div className="settingsPane">
+              <h3 className="paneTitle">Engine Room</h3>
+              <p className="paneHint">The daemon's plugin host: every mounted capability, what it is waiting on, and the maintenance work that actually ran. If something here reads "failed", Ares is running without it.</p>
+              {!plugins ? (
+                <div className="paneEmpty">Waiting for the daemon…</div>
+              ) : (
+                <>
+                  <div className="skillOverview">
+                    <span><strong>{plugins.plugins.filter((p) => p.state === "active").length}</strong> active</span>
+                    <span><strong>{plugins.plugins.filter((p) => p.state === "pending").length}</strong> waiting</span>
+                    <span><strong>{plugins.plugins.filter((p) => p.state === "failed").length}</strong> failed</span>
+                  </div>
+                  <div className="skillList">
+                    {plugins.plugins.map((p) => (
+                      <div key={p.name} className="skillRow">
+                        <div className="skillInfo">
+                          <strong>
+                            {p.name}
+                            <span className="skillReady" data-ready={p.state === "active" ? "1" : "0"}>{p.state}</span>
+                          </strong>
+                          <span>
+                            {p.state === "failed"
+                              ? p.error ?? "setup failed"
+                              : p.state === "pending" && p.waitingOn.length > 0
+                                ? `waiting on ${p.waitingOn.join(", ")}`
+                                : "running"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <label className="fieldLabel">Recent maintenance</label>
+                  {plugins.recentMaintenance.length === 0 ? (
+                    <div className="paneEmpty">Nothing noteworthy yet — quiet passes stay off the ledger.</div>
+                  ) : (
+                    <div className="skillList">
+                      {plugins.recentMaintenance.map((run, i) => (
+                        <div key={`${run.job}-${run.at}-${i}`} className="skillRow">
+                          <div className="skillInfo">
+                            <strong>
+                              {run.job}
+                              <span className="skillCat">{new Date(run.at).toLocaleTimeString()}</span>
+                              <span className="skillCat">{run.durationMs}ms</span>
+                            </strong>
+                            {run.note ? <span>{run.note}</span> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button className="btn tiny ghost" onClick={() => onDaemonCommand({ type: "plugins_list" })}>↻ Refresh</button>
+                </>
+              )}
             </div>
           ) : null}
 

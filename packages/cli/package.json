@@ -25,6 +25,7 @@
     "@ares/mind": "workspace:*",
     "@ares/mnemosyne": "workspace:*",
     "@ares/operator": "workspace:*",
+    "@ares/plugins": "workspace:*",
     "@ares/protocol": "workspace:*",
     "@ares/tools": "workspace:*",
     "ink": "^7.0.4",

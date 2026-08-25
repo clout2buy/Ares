@@ -184,6 +184,42 @@ test("dispose tears everything down newest-first and seals the host", async () =
   await assert.rejects(() => host.mount(definePlugin({ name: "late", setup: () => {} })), /disposed/);
 });
 
+test("async cleanups hold reverse order ACROSS await points", async () => {
+  const host = new PluginHost();
+  const trail = [];
+  await host.mount(definePlugin({
+    name: "async-teardown",
+    setup(ctx) {
+      ctx.effect(async () => {
+        // The slow cleanup registered FIRST must still run LAST — and the
+        // fast one must have fully settled before this even starts.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        trail.push("slow-first-registered");
+      });
+      ctx.effect(() => trail.push("fast-second-registered"));
+    },
+  }));
+  await host.unmount("async-teardown");
+  assert.deepEqual(trail, ["fast-second-registered", "slow-first-registered"]);
+});
+
+test("a rejecting async cleanup is contained — the ones beneath it still run", async () => {
+  const host = new PluginHost();
+  const trail = [];
+  await host.mount(definePlugin({
+    name: "faulty-teardown",
+    setup(ctx) {
+      ctx.effect(() => trail.push("bottom"));
+      ctx.effect(async () => {
+        throw new Error("teardown exploded");
+      });
+      ctx.effect(() => trail.push("top"));
+    },
+  }));
+  assert.equal(await host.unmount("faulty-teardown"), true);
+  assert.deepEqual(trail, ["top", "bottom"], "the rejection stranded nothing");
+});
+
 test("async setups serialize — a mount arriving mid-setup observes the settled world", async () => {
   const host = new PluginHost();
   const order = [];

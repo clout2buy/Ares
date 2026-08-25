@@ -38,6 +38,38 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.45.0",
+    date: "August 2026",
+    title: "The engine room opens",
+    highlights: [
+      {
+        icon: "🛡️",
+        title: "No more restart loops",
+        blurb: "A request stuck on a model that no longer exists used to silently retry at every launch, forever — it's now cancelled once, with a note telling you what happened.",
+        tag: "Safer",
+      },
+      {
+        icon: "🫁",
+        title: "Breathing room under pressure",
+        blurb: "When memory runs critically low, Ares now forces a deep cleanup instead of quietly dying — and if it ever does go down, the crash note finally says exactly where the memory went.",
+        tag: "Safer",
+      },
+      {
+        icon: "⚙️",
+        title: "Engine Room panel",
+        blurb: "A new Settings tab shows the daemon's internal machinery live: what's mounted, what's waiting, what failed, and the maintenance work that actually ran.",
+        tag: "New",
+      },
+      {
+        icon: "🔌",
+        title: "Self-maintaining internals",
+        blurb: "Background upkeep — memory watch, session cleanup, nightly consolidation — now runs on the new plugin kernel: each job is supervised, journaled, and shuts down cleanly.",
+        tag: "Polished",
+      },
+    ],
+    tagline: "Ares's internals became visible, supervised, and reversible — and two silent ways it could die overnight are gone.",
+  },
+  {
     version: "0.44.0",
     date: "August 2026",
     title: "Deep maintenance, new bones",

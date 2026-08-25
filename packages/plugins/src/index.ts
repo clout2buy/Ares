@@ -29,8 +29,14 @@ export interface PluginContext {
    * Register a reversible side effect. The cleanup runs on unmount (or on
    * setup failure), in reverse registration order — RAII at runtime. Anything
    * a plugin changes in the outside world belongs behind one of these.
+   *
+   * Cleanups may be async: real tenants tear down real things (child
+   * processes, servers, token revocations), and a fire-and-forget teardown is
+   * exactly the bespoke-lifecycle leak this kernel exists to kill. Each
+   * cleanup is awaited before the one beneath it runs, so reverse order holds
+   * across await points too.
    */
-  effect(cleanup: () => void): void;
+  effect(cleanup: () => void | Promise<void>): void;
   /**
    * Provide a named service for other plugins. Removed automatically on
    * unmount — after every dependent has deactivated. A name can have only one
@@ -71,7 +77,7 @@ interface PluginRecord {
   state: PluginState;
   error?: string;
   /** Reverse-order teardown stack: effects, service removals, listener drops. */
-  cleanups: Array<() => void>;
+  cleanups: Array<() => void | Promise<void>>;
   /** Services this record currently provides (for dependency bookkeeping). */
   provides: Set<string>;
   /** Monotonic stamp so cascades deactivate newest-first. */
@@ -160,7 +166,7 @@ export class PluginHost {
       const active = [...this.records.values()]
         .filter((r) => r.state === "active")
         .sort((a, b) => b.activatedAt - a.activatedAt);
-      for (const record of active) this.deactivate(record);
+      for (const record of active) await this.deactivate(record);
       this.records.clear();
       this.services.clear();
       this.listeners.clear();
@@ -267,7 +273,7 @@ export class PluginHost {
       this.emit(HOST_EVENTS.activated, { name });
     } catch (error) {
       // Partial setup must leave no residue: unwind whatever it registered.
-      this.runCleanups(record);
+      await this.runCleanups(record);
       record.state = "failed";
       record.error = error instanceof Error ? error.message : String(error);
       this.emit(HOST_EVENTS.failed, { name, error: record.error });
@@ -303,20 +309,22 @@ export class PluginHost {
     const ordered = [...doomed]
       .map((doomedName) => this.records.get(doomedName)!)
       .sort((a, b) => b.activatedAt - a.activatedAt);
-    for (const record of ordered) this.deactivate(record);
+    for (const record of ordered) await this.deactivate(record);
   }
 
-  private deactivate(record: PluginRecord): void {
+  private async deactivate(record: PluginRecord): Promise<void> {
     if (record.state !== "active") return;
-    this.runCleanups(record);
+    await this.runCleanups(record);
     record.state = "pending";
     this.emit(HOST_EVENTS.deactivated, { name: record.plugin.name });
   }
 
-  private runCleanups(record: PluginRecord): void {
+  /** Reverse order holds ACROSS await points: each cleanup settles before the
+   *  one registered beneath it starts, and one failure never strands the rest. */
+  private async runCleanups(record: PluginRecord): Promise<void> {
     for (let i = record.cleanups.length - 1; i >= 0; i--) {
       try {
-        record.cleanups[i]();
+        await record.cleanups[i]();
       } catch {
         // One failing cleanup must not strand the ones beneath it.
       }

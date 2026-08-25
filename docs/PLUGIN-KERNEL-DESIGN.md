@@ -37,7 +37,9 @@ enough to adapt.
 - `PluginHost` — serialized mount/unmount/swap/dispose; lifecycle events.
 - `definePlugin({ name, inject?, setup(ctx, config) })`.
 - `ctx.effect(cleanup)` — TEMPORAL guarantee: cleanups run in reverse
-  registration order; a throwing setup unwinds its partial work.
+  registration order; a throwing setup unwinds its partial work. Cleanups may
+  be async (v0.45.0): each is awaited before the one beneath it runs, and a
+  rejection strands nothing — real tenants tear down real things.
 - `ctx.provide(name, service)` / `inject` — SPATIAL guarantee: activation
   waits for dependencies; providers never vanish under a live dependent
   (dependents deactivate first, park pending, reactivate when the service
@@ -50,7 +52,19 @@ config reconciliation, cross-process plugins, sandboxed plugin code.
 
 ## Migration plan (strangler, each step shippable)
 
-**Step 1 — extension surfaces onto the host (next release after v0.44.0).**
+**Step 0 — SHIPPED v0.45.0: maintenance as the zeroth tenant.** The daemon
+owns one `PluginHost`; its heap watch, idle sweep + WAL fold, and deep-dream
+timers run as `maintenance:*` plugins (daemonMaintenance.ts). Chosen before
+the belt on purpose — no user-facing contract, so kernel rough edges surface
+on a timer nobody is watching. What it bought immediately: a maintenance
+ledger of every noteworthy run embedded in heap-critical crash artifacts
+(the 2026-08-25 OOM night's climb was unattributable precisely because the
+timers were anonymous), per-job re-entry guards, reverse-order teardown on
+shutdown, and a live `plugins_list` wire command feeding the desktop's
+Engine Room pane (Settings). The roster smoke test drives the built daemon
+and asserts all four mounts are active.
+
+**Step 1 — extension surfaces onto the host.**
 The daemon owns one `PluginHost`. First tenants, in order of blast radius:
 1. Belt tools (`packages/tools` registrations) — each tool a plugin providing
    `tool/<Name>`; the session belt consumes the registry. Win: tools can be

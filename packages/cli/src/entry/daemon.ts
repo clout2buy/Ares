@@ -49,6 +49,8 @@ import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion, transitionPermissionMode } from "./runtime.js";
 import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
+import { PluginHost } from "@ares/plugins";
+import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, undoLines } from "./terminalLines.js";
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
@@ -631,65 +633,82 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     elevatedRatio: Number(process.env.ARES_HEAP_WARN_RATIO) || 0.72,
     criticalRatio: Number(process.env.ARES_HEAP_CRITICAL_RATIO) || 0.86,
   });
-  {
-    const heapWatch = setInterval(() => {
-      try {
-        const verdict = heapGuard.observe(readHeapSample(), Date.now());
-        let relief: { evicted: number; residentSessions: number; gcForced?: boolean; afterGcMb?: number } | undefined;
-        if (verdict.shouldRelieve) {
-          relief = { evicted: evictIdleSessions("heap-pressure"), residentSessions: sessions.size };
-          // Eviction freed nothing — the usual single-resident case, where the
-          // UI's own polling keeps the one session's lastActiveAt fresh forever.
-          // The night this was written the readings climbed 3015→3579→3799→4006MB
-          // over three of these no-op reliefs (zero active turns) and the process
-          // aborted anyway. If that climb is churn — committed pages the
-          // incremental GC never compacted — a forced Mark-Compact returns them;
-          // the stop-the-world pause is nothing against the abort a minute out.
-          if (relief.evicted === 0) {
-            relief.gcForced = forceCompactionGc();
-            if (relief.gcForced) {
-              relief.afterGcMb = Math.round(readHeapSample().usedBytes / 1024 / 1024);
-            }
-          }
-          // The last chance to leave a diagnosable trail. An abort a few
-          // seconds from now writes nothing at all.
-          writeCrashLogSync(live.context.home, {
-            at: new Date().toISOString(),
-            kind: "manual",
-            process: "daemon",
-            message: `heap pressure ${Math.round(verdict.ratio * 100)}% (${verdict.usedMb}MB / ${verdict.limitMb}MB)`,
-            context: {
-              reason: "heap-critical",
-              ...verdict,
-              ...relief,
-              activeTurns,
-              sessionIds: [...sessions.keys()],
-              // WHERE the memory sits — old-space retention vs new-space churn
-              // vs external/native — so the next climb is attributable instead
-              // of three reports that only ever said "97%".
-              heap: readHeapDiagnostics(),
-            },
-            recentEvents: eventRing.snapshot(),
-          });
+
+  // ─── Maintenance, mounted: the plugin kernel's first tenant ──────────────
+  //
+  // Heap watch, idle sweep, and deep dream used to be three anonymous
+  // setIntervals in this file. The night the heap climbed 3015→4006MB over
+  // five idle minutes, the crash artifacts could not say which of them was
+  // running — attribution was structurally impossible. Each job is now a
+  // plugin on the daemon's PluginHost: reversible teardown on shutdown, a
+  // re-entry guard per job, and every noteworthy run recorded in the
+  // maintenance ledger that the heap-critical crash artifact embeds.
+  // Maintenance went first ON PURPOSE: no user-facing contract, so kernel
+  // rough edges surface on a timer nobody is watching, not on the belt.
+  const pluginHost = new PluginHost();
+  const maintenanceLedger = (): MaintenanceLedger | undefined =>
+    pluginHost.service<MaintenanceLedger>(MAINTENANCE_LEDGER_SERVICE);
+
+  const heapWatchTask = (): string | undefined => {
+    const verdict = heapGuard.observe(readHeapSample(), Date.now());
+    let relief: { evicted: number; residentSessions: number; gcForced?: boolean; afterGcMb?: number } | undefined;
+    if (verdict.shouldRelieve) {
+      relief = { evicted: evictIdleSessions("heap-pressure"), residentSessions: sessions.size };
+      // Eviction freed nothing — the usual single-resident case, where the
+      // UI's own polling keeps the one session's lastActiveAt fresh forever.
+      // The night this was written the readings climbed 3015→3579→3799→4006MB
+      // over three of these no-op reliefs (zero active turns) and the process
+      // aborted anyway. If that climb is churn — committed pages the
+      // incremental GC never compacted — a forced Mark-Compact returns them;
+      // the stop-the-world pause is nothing against the abort a minute out.
+      if (relief.evicted === 0) {
+        relief.gcForced = forceCompactionGc();
+        if (relief.gcForced) {
+          relief.afterGcMb = Math.round(readHeapSample().usedBytes / 1024 / 1024);
         }
-        if (verdict.shouldReport) {
-          tagEmit(undefined, {
-            type: "daemon_memory_pressure",
-            pressure: verdict.pressure,
-            usedMb: verdict.usedMb,
-            limitMb: verdict.limitMb,
-            percent: Math.round(verdict.ratio * 100),
-            residentSessions: sessions.size,
-            ...(relief ? { evictedSessions: relief.evicted } : {}),
-            ...(relief?.gcForced ? { gcForced: true, afterGcMb: relief.afterGcMb } : {}),
-          });
-        }
-      } catch {
-        // A diagnostic must never be the thing that kills the process.
       }
-    }, Math.max(5_000, Number(process.env.ARES_HEAP_WATCH_MS) || 15_000));
-    heapWatch.unref?.();
-  }
+      // The last chance to leave a diagnosable trail. An abort a few
+      // seconds from now writes nothing at all.
+      writeCrashLogSync(live.context.home, {
+        at: new Date().toISOString(),
+        kind: "manual",
+        process: "daemon",
+        message: `heap pressure ${Math.round(verdict.ratio * 100)}% (${verdict.usedMb}MB / ${verdict.limitMb}MB)`,
+        context: {
+          reason: "heap-critical",
+          ...verdict,
+          ...relief,
+          activeTurns,
+          sessionIds: [...sessions.keys()],
+          // WHERE the memory sits — old-space retention vs new-space churn
+          // vs external/native — so the next climb is attributable instead
+          // of three reports that only ever said "97%".
+          heap: readHeapDiagnostics(),
+          // WHAT ran while it climbed — the question the 2026-08-25 artifacts
+          // could not answer.
+          recentMaintenance: maintenanceLedger()?.snapshot(20) ?? [],
+        },
+        recentEvents: eventRing.snapshot(),
+      });
+    }
+    if (verdict.shouldReport) {
+      tagEmit(undefined, {
+        type: "daemon_memory_pressure",
+        pressure: verdict.pressure,
+        usedMb: verdict.usedMb,
+        limitMb: verdict.limitMb,
+        percent: Math.round(verdict.ratio * 100),
+        residentSessions: sessions.size,
+        ...(relief ? { evictedSessions: relief.evicted } : {}),
+        ...(relief?.gcForced ? { gcForced: true, afterGcMb: relief.afterGcMb } : {}),
+      });
+    }
+    if (!verdict.shouldReport && !verdict.shouldRelieve) return undefined;
+    const reliefNote = relief
+      ? ` evicted=${relief.evicted}${relief.gcForced ? ` gc→${relief.afterGcMb}MB` : ""}`
+      : "";
+    return `${verdict.pressure} ${Math.round(verdict.ratio * 100)}% (${verdict.usedMb}/${verdict.limitMb}MB)${reliefNote}`;
+  };
 
   // Routine hygiene at a much lower frequency than the heap watch: a session
   // nobody has touched in a while is a full resident transcript (plus its tool
@@ -702,22 +721,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // sweep; every tenth quiet sweep asks for TRUNCATE to actually shrink the
   // file. Only while no turn is active — a checkpoint must never contend with
   // live work.
-  {
-    let sweeps = 0;
-    const idleSweep = setInterval(() => {
-      try {
-        evictIdleSessions("idle");
-      } catch {
-        // best-effort
-      }
-      sweeps++;
-      if ([...sessions.values()].some((entry) => entry.turnActive)) return;
-      void openWorkspaceSessionKernel(live.context.workspace)
-        .then((kernel) => kernel.maintainWal(sweeps % 10 === 0 ? "TRUNCATE" : "PASSIVE"))
+  let idleSweeps = 0;
+  const idleSweepTask = async (): Promise<string | undefined> => {
+    let evicted = 0;
+    try {
+      evicted = evictIdleSessions("idle");
+    } catch {
+      // best-effort
+    }
+    idleSweeps++;
+    const notes: string[] = evicted > 0 ? [`evicted ${evicted}`] : [];
+    if (![primaryEntry, ...sessions.values()].some((entry) => entry.turnActive)) {
+      const mode = idleSweeps % 10 === 0 ? "TRUNCATE" : "PASSIVE";
+      await openWorkspaceSessionKernel(live.context.workspace)
+        .then((kernel) => kernel.maintainWal(mode))
         .catch(() => undefined);
-    }, 60_000);
-    idleSweep.unref?.();
-  }
+      if (mode === "TRUNCATE") notes.push("wal truncate");
+    }
+    return notes.length > 0 ? notes.join(", ") : undefined;
+  };
 
   // ─── Deep dreaming on the DESKTOP path ───────────────────────────────────
   // The dream/reflection cadence lived only in `ares garrison`, which desktop
@@ -727,34 +749,43 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // unconsolidated filler). The daemon now dreams too: at most once per
   // interval, only while no turn is active, lock-guarded so a concurrently
   // running garrison can't consolidate the same store.
-  {
-    const DREAM_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
-    const dreamMarker = path.join(aresAgentHome(), "mind", ".last-deep-dream");
-    const maybeDream = async () => {
-      try {
-        if ([primaryEntry, ...sessions.values()].some((entry) => entry.turnActive)) return;
-        const last = await stat(dreamMarker).then((s) => s.mtimeMs).catch(() => 0);
-        if (Date.now() - last < DREAM_MIN_INTERVAL_MS) return;
-        const config = await loadAgentConfig(aresAgentHome());
-        if (!config.dreaming.enabled) return;
-        // Claim the slot BEFORE the run: a dream that crashes must not retry
-        // hot every hour — it gets its next chance after the full interval.
-        await mkdir(path.dirname(dreamMarker), { recursive: true });
-        await writeFile(dreamMarker, new Date().toISOString() + "\n", "utf8");
-        await withConsolidationLock(mindPaths(aresAgentHome()).memoryFile, () =>
-          runDeepDream({ home: aresAgentHome(), workspace: live.context.workspace, config }),
-        );
-      } catch {
-        // dreaming is maintenance — it must never touch the serving path
-      }
-    };
-    const dreamTick = setInterval(() => void maybeDream(), 60 * 60 * 1000);
-    dreamTick.unref?.();
-    // One delayed check after boot so a machine that is only on during the day
-    // (and therefore never crosses a 3am cron) still dreams regularly.
-    const bootDream = setTimeout(() => void maybeDream(), 5 * 60 * 1000);
-    bootDream.unref?.();
-  }
+  const DREAM_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+  const dreamMarker = path.join(aresAgentHome(), "mind", ".last-deep-dream");
+  const dreamTask = async (): Promise<string | undefined> => {
+    if ([primaryEntry, ...sessions.values()].some((entry) => entry.turnActive)) return undefined;
+    const last = await stat(dreamMarker).then((s) => s.mtimeMs).catch(() => 0);
+    if (Date.now() - last < DREAM_MIN_INTERVAL_MS) return undefined;
+    const config = await loadAgentConfig(aresAgentHome());
+    if (!config.dreaming.enabled) return undefined;
+    // Claim the slot BEFORE the run: a dream that crashes must not retry
+    // hot every hour — it gets its next chance after the full interval.
+    await mkdir(path.dirname(dreamMarker), { recursive: true });
+    await writeFile(dreamMarker, new Date().toISOString() + "\n", "utf8");
+    await withConsolidationLock(mindPaths(aresAgentHome()).memoryFile, () =>
+      runDeepDream({ home: aresAgentHome(), workspace: live.context.workspace, config }),
+    );
+    return "deep dream ran";
+  };
+
+  await pluginHost.mount(maintenanceLedgerPlugin());
+  await pluginHost.mount(
+    maintenanceTimerPlugin({
+      name: "heap-watch",
+      everyMs: Math.max(5_000, Number(process.env.ARES_HEAP_WATCH_MS) || 15_000),
+      task: heapWatchTask,
+    }),
+  );
+  await pluginHost.mount(maintenanceTimerPlugin({ name: "idle-sweep", everyMs: 60_000, task: idleSweepTask }));
+  await pluginHost.mount(
+    maintenanceTimerPlugin({
+      name: "deep-dream",
+      everyMs: 60 * 60 * 1000,
+      // One delayed check after boot so a machine that is only on during the
+      // day (and therefore never crosses a 3am cron) still dreams regularly.
+      initialDelayMs: 5 * 60 * 1000,
+      task: dreamTask,
+    }),
+  );
 
   // ─── Consciousness: the always-on local watcher ──────────────────────────
   const consciousnessWatch = new ConsciousnessWatch({
@@ -2142,6 +2173,18 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       // subagent work lives in the session kernel as kind:"task" jobs. Both
       // handlers are best-effort: a malformed manifest or a locked kernel DB
       // must never take the daemon down, so errors surface inside the reply.
+      if (command.type === "plugins_list") {
+        // Read-only window onto the plugin host: what is mounted, what is
+        // pending and WHY (waitingOn), what failed with which error — plus the
+        // recent maintenance ledger, so "is the engine room actually running"
+        // is a glance instead of a log dig.
+        process.stdout.write(JSON.stringify({
+          type: "plugins_list",
+          plugins: pluginHost.status(),
+          recentMaintenance: maintenanceLedger()?.snapshot(30) ?? [],
+        }) + "\n");
+        continue;
+      }
       if (command.type === "fleets_list") {
         try {
           const workspace = (await resolveEntry(command.sessionId).catch(() => undefined))?.live.context.workspace
@@ -4100,6 +4143,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     setExtensionBrowserBridge(null);
     await browserExtensionBridge?.close().catch(() => undefined);
     autotickLoop?.stop();
+    // Every maintenance timer dies with its plugin, in reverse mount order —
+    // the raw setIntervals this replaced were never cleared at all.
+    await pluginHost.dispose().catch(() => undefined);
     uninstallCrashHandlers();
     commands.close();
     rl.close();

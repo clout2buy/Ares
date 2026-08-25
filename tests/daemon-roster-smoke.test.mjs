@@ -122,4 +122,17 @@ test("the built daemon starts and serves the roster", async (t) => {
     (e) => e.type === "persona_changed" && e.active === null && !e.error,
   );
   assert.ok(released, "an empty name releases the persona");
+
+  // ── plugin host: maintenance actually mounted ──────────────────────
+  // The kernel's first tenant. If any of these reads "failed" or "pending",
+  // the daemon is running without its heap watch / idle sweep / dreams —
+  // exactly the silent degradation the Engine Room pane exists to surface.
+  daemon.send({ type: "plugins_list" });
+  const plugins = await daemon.waitFor((e) => e.type === "plugins_list");
+  assert.ok(plugins, "plugins_list answered");
+  const byName = new Map(plugins.plugins.map((p) => [p.name, p]));
+  for (const expected of ["maintenance-ledger", "maintenance:heap-watch", "maintenance:idle-sweep", "maintenance:deep-dream"]) {
+    assert.equal(byName.get(expected)?.state, "active", `${expected} is mounted and active`);
+  }
+  assert.ok(Array.isArray(plugins.recentMaintenance), "the maintenance ledger reaches the wire");
 });

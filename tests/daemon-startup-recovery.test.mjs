@@ -73,8 +73,8 @@ test("daemon restart promotes a crashed steer through visible preparation and ex
             ARES_HOME: path.join(workspace, "home"),
             ARES_OPERATOR_AUTOTICK: "0",
             ARES_REPO_MAP: "0",
-            ARES_SESSION_LEASE_TTL_MS: "250",
-            ARES_SESSION_LEASE_HEARTBEAT_MS: "50",
+            ARES_SESSION_LEASE_TTL_MS: "2000",
+            ARES_SESSION_LEASE_HEARTBEAT_MS: "200",
           },
         },
       );
@@ -312,8 +312,8 @@ test("daemon restart keeps a queue owner and later steer in one visible provider
             ARES_HOME: path.join(workspace, "home"),
             ARES_OPERATOR_AUTOTICK: "0",
             ARES_REPO_MAP: "0",
-            ARES_SESSION_LEASE_TTL_MS: "250",
-            ARES_SESSION_LEASE_HEARTBEAT_MS: "50",
+            ARES_SESSION_LEASE_TTL_MS: "2000",
+            ARES_SESSION_LEASE_HEARTBEAT_MS: "200",
           },
         },
       );

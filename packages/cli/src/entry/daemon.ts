@@ -3998,18 +3998,20 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               // next boot may retry once more; never break turn settlement.
             }
           }
-          // Stale-lease retry: the recovered turn died because ITS OWN runner
-          // lease expired mid-flight — a starved event loop missing heartbeats
-          // on a slow machine, not a provider or user failure. The input is
-          // still admitted; re-acquiring simply mints a fresh generation. Give
-          // it exactly one same-boot retry (the CI field case: a 60s test
-          // timeout waiting on a recovery this daemon never re-drove).
+          // Stale-lease retry: the turn died because ITS OWN runner lease
+          // expired mid-flight — a starved event loop missing heartbeats on a
+          // slow machine, not a provider or user failure. The input is still
+          // admitted; re-acquiring simply mints a fresh generation. Give it
+          // exactly one same-boot retry. This covers BOTH the recovery-owner
+          // path and an ordinary/promoted-steer send (the CI field cases: two
+          // sibling 60s test timeouts, one per path, each waiting on an input
+          // this daemon never re-drove).
           if (
-            completedStartupRecovery &&
             !settlementRecoveryScheduled &&
             turnState.status === "failed" &&
             turnState.staleGeneration &&
             !turnState.fatalProvider &&
+            cancelledInputId !== inputId &&
             !staleLeaseRecoveryRetries.has(inputId)
           ) {
             staleLeaseRecoveryRetries.add(inputId);
@@ -4017,11 +4019,15 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               const kernel = await openWorkspaceSessionKernel(entry.live.context.workspace);
               const canonical = kernel.getInput(inputId);
               if (canonical && (canonical.state === "admitted" || canonical.state === "claimed")) {
-                entry.startupRecoveryQueue.unshift({ inputId, goal, sessionId: command.sessionId });
+                if (completedStartupRecovery) {
+                  entry.startupRecoveryQueue.unshift({ inputId, goal, sessionId: command.sessionId });
+                } else {
+                  commands.enqueue({ type: "send", goal, sessionId: command.sessionId, inputId });
+                }
                 tagEmit(command.sessionId, {
                   type: "startup_recovery_retry",
                   inputId,
-                  reason: "runner lease expired mid-recovery",
+                  reason: "runner lease expired mid-turn",
                 });
               }
             } catch {

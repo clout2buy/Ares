@@ -314,6 +314,23 @@ export function isProviderFatalError(err: { code?: string; message?: string } | 
 }
 
 /**
+ * A recovered input that died on one of THESE will die identically on every
+ * future boot — cancel it durably instead of resurrecting it forever.
+ *
+ * The regex this replaced covered 400/401/403 and missed 404: a session whose
+ * saved model no longer exists ("model: gpt-5.6-sol" → not_found_error) failed
+ * recovery on every daemon start for three weeks, each boot re-running the
+ * doomed provider call and appending another failed turn to a 315MB audit log.
+ * Transient deaths (rate limits, capacity, network down — ENOTFOUND et al) are
+ * deliberately NOT matched; those keep their retry-next-boot value.
+ */
+export function isPermanentRecoveryPoison(fatalProvider: string): boolean {
+  return /http_40[0134]\b|\b40[0134]\b|invalid_request|not_found_error|model.{0,60}(not.{0,10}(found|exist)|does not exist)|invalid_authentication|unauthorized|forbidden|invalid.?api.?key/i.test(
+    fatalProvider,
+  );
+}
+
+/**
  * Does this model see pixels? Best-known per-model-id vision capability, same
  * pattern style as modelContextWindow above. This exists because NOTHING else
  * threads vision metadata to the live turn — a user pasted a screenshot into a

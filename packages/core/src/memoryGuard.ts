@@ -129,3 +129,50 @@ export function readHeapSample(): HeapSample {
     limitBytes: stats.heap_size_limit,
   };
 }
+
+export interface HeapDiagnostics {
+  rssMb: number;
+  externalMb: number;
+  arrayBuffersMb: number;
+  /** Per-space used/committed, MB. Old-space retention vs new-space churn vs
+   *  external buffers is the difference between "leak", "GC lag", and "native". */
+  spaces: Array<{ space: string; usedMb: number; committedMb: number }>;
+}
+
+/**
+ * The breakdown the crash artifact was missing: three heap-critical reports in
+ * one night said "4006MB / 4144MB" and nothing about WHERE. Sampled only on the
+ * critical path — this walks every heap space, so it is not for the 15s timer.
+ */
+export function readHeapDiagnostics(): HeapDiagnostics {
+  const toMb = (bytes: number): number => Math.round(bytes / 1024 / 1024);
+  const usage = process.memoryUsage();
+  return {
+    rssMb: toMb(usage.rss),
+    externalMb: toMb(usage.external),
+    arrayBuffersMb: toMb(usage.arrayBuffers),
+    spaces: v8
+      .getHeapSpaceStatistics()
+      .filter((space) => space.space_size > 0 || space.space_used_size > 0)
+      .map((space) => ({
+        space: space.space_name,
+        usedMb: toMb(space.space_used_size),
+        committedMb: toMb(space.space_size),
+      })),
+  };
+}
+
+/**
+ * Full compacting GC, available only when the process was launched with
+ * `--expose-gc`. The pressure this exists for is CHURN: committed pages the
+ * incremental GC never got around to compacting while the readings climbed
+ * 3015→3579→3799→4006MB with zero active turns and nothing evictable. A forced
+ * Mark-Compact returns those pages; the alternative a minute later is the V8
+ * abort. Returns false (and does nothing) when gc is not exposed.
+ */
+export function forceCompactionGc(): boolean {
+  const gc = (globalThis as { gc?: () => void }).gc;
+  if (typeof gc !== "function") return false;
+  gc();
+  return true;
+}

@@ -13,7 +13,7 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion, transitionPermissionMode } from "./runtime.js";
-import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
+import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, undoLines } from "./terminalLines.js";
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
@@ -635,9 +635,22 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     const heapWatch = setInterval(() => {
       try {
         const verdict = heapGuard.observe(readHeapSample(), Date.now());
-        let relief: { evicted: number; residentSessions: number } | undefined;
+        let relief: { evicted: number; residentSessions: number; gcForced?: boolean; afterGcMb?: number } | undefined;
         if (verdict.shouldRelieve) {
           relief = { evicted: evictIdleSessions("heap-pressure"), residentSessions: sessions.size };
+          // Eviction freed nothing — the usual single-resident case, where the
+          // UI's own polling keeps the one session's lastActiveAt fresh forever.
+          // The night this was written the readings climbed 3015→3579→3799→4006MB
+          // over three of these no-op reliefs (zero active turns) and the process
+          // aborted anyway. If that climb is churn — committed pages the
+          // incremental GC never compacted — a forced Mark-Compact returns them;
+          // the stop-the-world pause is nothing against the abort a minute out.
+          if (relief.evicted === 0) {
+            relief.gcForced = forceCompactionGc();
+            if (relief.gcForced) {
+              relief.afterGcMb = Math.round(readHeapSample().usedBytes / 1024 / 1024);
+            }
+          }
           // The last chance to leave a diagnosable trail. An abort a few
           // seconds from now writes nothing at all.
           writeCrashLogSync(live.context.home, {
@@ -651,6 +664,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               ...relief,
               activeTurns,
               sessionIds: [...sessions.keys()],
+              // WHERE the memory sits — old-space retention vs new-space churn
+              // vs external/native — so the next climb is attributable instead
+              // of three reports that only ever said "97%".
+              heap: readHeapDiagnostics(),
             },
             recentEvents: eventRing.snapshot(),
           });
@@ -664,6 +681,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             percent: Math.round(verdict.ratio * 100),
             residentSessions: sessions.size,
             ...(relief ? { evictedSessions: relief.evicted } : {}),
+            ...(relief?.gcForced ? { gcForced: true, afterGcMb: relief.afterGcMb } : {}),
           });
         }
       } catch {
@@ -3971,16 +3989,18 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             entry.startupRecoveryCancelRequested = false;
           }
           // Poison-pill guard: a RECOVERED input that died on a non-retriable
-          // provider rejection (400 invalid_request, 401/403 auth) will die
-          // identically on every future boot — the same GameFPS input re-ran
-          // and failed on four consecutive daemon starts across 16 hours.
+          // provider rejection (400 invalid_request, 401/403 auth, 404 model
+          // gone) will die identically on every future boot — the same GameFPS
+          // input re-ran and failed on four consecutive daemon starts across 16
+          // hours, then kept doing it for three MORE weeks because the old
+          // inline regex covered 400/401/403 and its death was a 404.
           // Cancel it durably so recovery stops resurrecting it; transient
           // failures (rate limits, capacity) keep their retry-next-boot value.
           if (
             completedStartupRecovery &&
             turnState.status === "failed" &&
             turnState.fatalProvider &&
-            /\b40[013]\b|invalid_request|invalid_authentication|unauthorized|forbidden|invalid.?api.?key/i.test(turnState.fatalProvider)
+            isPermanentRecoveryPoison(turnState.fatalProvider)
           ) {
             try {
               const kernel = await openWorkspaceSessionKernel(entry.live.context.workspace);

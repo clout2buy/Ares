@@ -287,6 +287,16 @@ fn node_heap_arg() -> String {
     format!("--max-old-space-size={mb}")
 }
 
+/// Both long-lived children get the heap ceiling AND `--expose-gc`: the heap
+/// watch's last-resort relief (memoryGuard.ts forceCompactionGc) is a forced
+/// Mark-Compact when critical pressure finds nothing evictable — three no-op
+/// reliefs in one night ended in a V8 abort because committed-but-collectable
+/// churn had nowhere to go. `--expose-gc` only defines `globalThis.gc`; nothing
+/// runs unless the guard calls it.
+fn node_runtime_args() -> [String; 2] {
+    [node_heap_arg(), "--expose-gc".to_string()]
+}
+
 fn start_daemon(
     app: tauri::AppHandle,
     state: &DaemonState,
@@ -347,7 +357,7 @@ fn start_daemon(
     let model = clean_optional(model);
     let mut command = Command::new(&runtime.node);
     command
-        .arg(node_heap_arg())
+        .args(node_runtime_args())
         .arg(&runtime.cli_entry)
         .arg("daemon")
         .arg("--json")
@@ -429,7 +439,7 @@ fn start_daemon(
         if garrison_guard.is_none() {
             let mut garrison_cmd = Command::new(&runtime.node);
             garrison_cmd
-                .arg(node_heap_arg())
+                .args(node_runtime_args())
                 .arg(&runtime.cli_entry)
                 .arg("garrison")
                 .arg("serve");

@@ -18,7 +18,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { HeapGuard, readHeapSample } from "../packages/core/dist/index.js";
+import { HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc } from "../packages/core/dist/index.js";
+import { isPermanentRecoveryPoison } from "../packages/cli/dist/entry/sessionFactory.js";
 import { explainDaemonExit, daemonExitMessage, meaningfulStderr } from "../packages/protocol/dist/index.js";
 
 const MB = 1024 * 1024;
@@ -89,6 +90,66 @@ test("readHeapSample reports this process against a real V8 limit", () => {
   const s = readHeapSample();
   assert.ok(s.limitBytes > 0, "V8 always has a heap limit");
   assert.ok(s.usedBytes > 0 && s.usedBytes < s.limitBytes, "a live test process is under its own ceiling");
+});
+
+test("readHeapDiagnostics names WHERE the memory sits, not just how much", () => {
+  const diag = readHeapDiagnostics();
+  assert.ok(diag.rssMb > 0, "a live process has resident memory");
+  assert.ok(Number.isFinite(diag.externalMb) && Number.isFinite(diag.arrayBuffersMb));
+  assert.ok(diag.spaces.length > 0, "V8 always has heap spaces");
+  const oldSpace = diag.spaces.find((space) => space.space === "old_space");
+  assert.ok(oldSpace, "old_space is where retention lives — it must be reported");
+  for (const space of diag.spaces) {
+    assert.ok(Number.isFinite(space.usedMb) && Number.isFinite(space.committedMb), space.space);
+  }
+});
+
+test("forceCompactionGc runs only when --expose-gc defined globalThis.gc", () => {
+  const original = globalThis.gc;
+  try {
+    if (typeof original !== "function") {
+      // Ordinary test process: no gc exposed → a truthful no-op, never a throw.
+      assert.equal(forceCompactionGc(), false);
+    }
+    let ran = 0;
+    globalThis.gc = () => { ran++; };
+    assert.equal(forceCompactionGc(), true);
+    assert.equal(ran, 1, "the forced compaction actually invokes gc");
+  } finally {
+    if (typeof original === "function") globalThis.gc = original;
+    else delete globalThis.gc;
+  }
+});
+
+// ─── isPermanentRecoveryPoison ────────────────────────────────────────────
+//
+// The GameFPS regression: a recovered input whose saved model no longer exists
+// died with http_404 on every daemon boot for three weeks, because the old
+// inline poison regex covered 400/401/403 and not 404.
+
+test("a 404 model-not-found death is poison — the GameFPS case verbatim", () => {
+  assert.equal(
+    isPermanentRecoveryPoison(
+      'http_404: Anthropic returned 404: {"type":"error","error":{"type":"not_found_error","message":"model: gpt-5.6-sol"}}',
+    ),
+    true,
+  );
+});
+
+test("the permanent 4xx family is poison", () => {
+  assert.equal(isPermanentRecoveryPoison("http_400: invalid_request_error: bad payload"), true);
+  assert.equal(isPermanentRecoveryPoison("provider_error: 401 unauthorized"), true);
+  assert.equal(isPermanentRecoveryPoison("http_403: forbidden"), true);
+  assert.equal(isPermanentRecoveryPoison("openai_error: The model `o9-preview` does not exist"), true);
+  assert.equal(isPermanentRecoveryPoison("bad key: invalid api key provided"), true);
+});
+
+test("transient deaths keep their retry-next-boot value", () => {
+  assert.equal(isPermanentRecoveryPoison("http_529: overloaded_error: Overloaded"), false);
+  assert.equal(isPermanentRecoveryPoison("http_500: internal server error"), false);
+  assert.equal(isPermanentRecoveryPoison("fetch failed: getaddrinfo ENOTFOUND api.anthropic.com"), false);
+  assert.equal(isPermanentRecoveryPoison("econnrefused 127.0.0.1:11434"), false);
+  assert.equal(isPermanentRecoveryPoison("http_429: rate_limit_error: slow down"), false);
 });
 
 // ─── explainDaemonExit ────────────────────────────────────────────────────

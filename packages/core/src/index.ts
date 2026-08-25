@@ -498,10 +498,13 @@ export {
 export {
   HeapGuard,
   readHeapSample,
+  readHeapDiagnostics,
+  forceCompactionGc,
   type HeapPressure,
   type HeapSample,
   type HeapVerdict,
   type HeapGuardOptions,
+  type HeapDiagnostics,
 } from "./memoryGuard.js";
 
 export {

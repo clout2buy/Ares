@@ -94,6 +94,20 @@ export function serializedForWorkspace<T>(workspace: string, fn: () => Promise<T
  * — positive AND negative — because `rev-parse` is a spawn we cannot afford
  * before every Edit. The knob is checked live (tests flip it), the lookup is not.
  */
+/** Canonical long-name form of a directory. Windows hands processes 8.3 short
+ * paths (C:/Users/RUNNER~1/… on CI runners, via TEMP) while git resolves its
+ * toplevel to the long form (C:/Users/runneradmin/…). Relative math between
+ * the two forms fabricates an ..\..\ escape chain — the exact failure the
+ * first two CI runs of this layer hit. Every root-vs-workspace comparison
+ * goes through this first. */
+async function canonicalDir(dir: string): Promise<string> {
+  try {
+    return await fs.realpath(dir);
+  } catch {
+    return path.resolve(dir);
+  }
+}
+
 export async function gitCheckpointRoot(workspace: string, opts: { ignoreKnob?: boolean } = {}): Promise<string | null> {
   if (!opts.ignoreKnob && !gitCheckpointsEnabled()) return null;
   const key = path.resolve(workspace);
@@ -103,7 +117,7 @@ export async function gitCheckpointRoot(workspace: string, opts: { ignoreKnob?: 
       .then((run) => {
         if (run.code !== 0) return null;
         const top = run.stdout.toString("utf8").trim();
-        return top ? path.resolve(top) : null;
+        return top ? canonicalDir(top) : null;
       })
       .catch(() => null);
     rootCache.set(key, pending);
@@ -375,7 +389,9 @@ export async function gitRestoreTree(
   const env = await shadowEnv(workspace);
   await stage(workspace, env);
   const rows = await nameStatus(workspace, env, tree, []);
-  const prefix = path.relative(root, workspace).replace(/\\/g, "/");
+  // Both sides canonicalized: see canonicalDir — a short-name workspace vs a
+  // long-name root must not fabricate a ../ prefix.
+  const prefix = path.relative(await canonicalDir(root), await canonicalDir(workspace)).replace(/\\/g, "/");
   const toDelete = rows.filter((row) => row.status === "A").map((row) => row.path);
   const toWrite = rows.filter((row) => row.status !== "A").map((row) => row.path);
   const blobs = await readTreeBlobs(workspace, tree, prefix, toWrite);

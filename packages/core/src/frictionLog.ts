@@ -67,12 +67,14 @@ export interface FrictionTurn {
   diagnosticsDropped?: number;
   at: string;
   sessionId: string;
-  status: "completed" | "interrupted" | "failed" | "unknown";
+  status: "completed" | "needs_verification" | "interrupted" | "failed" | "unknown";
+  /** Structured verification gap from a needs_verification turn_end. */
+  unverified?: { files: string[]; checksRun: string[]; missing: string[] } | null;
   durationMs: number;
   /** Per-tool call/error counts, keyed by tool name. */
   tools: Record<string, { calls: number; errors: number }>;
-  /** Which Edit matching tier landed (exact/whitespace/anchor) or missed. */
-  editTiers: { exact: number; whitespace: number; anchor: number; miss: number };
+  /** Which Edit matching tier landed (exact/whitespace/anchor/normalized) or missed. */
+  editTiers: { exact: number; whitespace: number; anchor: number; normalized: number; miss: number };
   /** Stream stalls cut by the effort dial this turn. */
   stalls: number;
   reasoningStalls: number;
@@ -117,7 +119,7 @@ function emptyTurn(sessionId: string, context: FrictionContext): FrictionTurn {
     status: "unknown",
     durationMs: 0,
     tools: {},
-    editTiers: { exact: 0, whitespace: 0, anchor: 0, miss: 0 },
+    editTiers: { exact: 0, whitespace: 0, anchor: 0, normalized: 0, miss: 0 },
     stalls: 0,
     reasoningStalls: 0,
     verifyReminders: 0,
@@ -217,7 +219,7 @@ export class FrictionRecorder {
           t.calls++;
           if (name === "Edit") {
             const layer = (ev.output as { layer?: string } | undefined)?.layer;
-            if (layer === "exact" || layer === "whitespace" || layer === "anchor") this.turn.editTiers[layer]++;
+            if (layer === "exact" || layer === "whitespace" || layer === "anchor" || layer === "normalized") this.turn.editTiers[layer]++;
           }
           break;
         }
@@ -257,6 +259,7 @@ export class FrictionRecorder {
         case "turn_end": {
           this.turn.status = ev.status ?? "unknown";
           this.turn.workStatus = ev.workStatus ?? null;
+          this.turn.unverified = ev.unverified ?? null;
           if (ev.provider) this.context.provider = ev.provider;
           if (ev.model) this.context.model = ev.model;
           this.turn.provider = this.context.provider;
@@ -349,6 +352,8 @@ function escapeRegExp(value: string): string {
 export interface FrictionSummary {
   turns: number;
   completed: number;
+  /** Subset of `completed` that ended needs_verification (unproven coding work). */
+  needsVerification: number;
   failed: number;
   tools: Record<string, { calls: number; errors: number }>;
   editTiers: FrictionTurn["editTiers"];
@@ -367,9 +372,10 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
   const summary: FrictionSummary = {
     turns: 0,
     completed: 0,
+    needsVerification: 0,
     failed: 0,
     tools: {},
-    editTiers: { exact: 0, whitespace: 0, anchor: 0, miss: 0 },
+    editTiers: { exact: 0, whitespace: 0, anchor: 0, normalized: 0, miss: 0 },
     stalls: 0,
     reasoningStalls: 0,
     verifyReminders: 0,
@@ -393,14 +399,15 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
       }
       if (Date.parse(turn.at) < cutoff) continue;
       summary.turns++;
-      if (turn.status === "completed") summary.completed++;
+      if (turn.status === "completed" || turn.status === "needs_verification") summary.completed++;
+      if (turn.status === "needs_verification") summary.needsVerification++;
       if (turn.status === "failed") summary.failed++;
       for (const [name, t] of Object.entries(turn.tools ?? {})) {
         const agg = (summary.tools[name] ??= { calls: 0, errors: 0 });
         agg.calls += t.calls;
         agg.errors += t.errors;
       }
-      for (const k of ["exact", "whitespace", "anchor", "miss"] as const) {
+      for (const k of ["exact", "whitespace", "anchor", "normalized", "miss"] as const) {
         summary.editTiers[k] += turn.editTiers?.[k] ?? 0;
       }
       summary.stalls += turn.stalls ?? 0;

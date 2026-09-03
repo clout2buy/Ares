@@ -351,6 +351,10 @@ export function verificationSpecSummary(spec: VerificationSpec): string {
       return `command ${[spec.cmd, ...(spec.args ?? [])].join(" ")} exits ${spec.expectExit ?? 0}`;
     case "http":
       return `http ${spec.url} status ${spec.expectStatus ?? 200}${spec.contains !== undefined ? ` contains ${JSON.stringify(spec.contains)}` : ""}`;
+    case "diffScope":
+      return `diffScope ⊆ {${spec.allowed.join(", ")}}`;
+    case "planBeforeEdit":
+      return "plan before first edit";
   }
 }
 

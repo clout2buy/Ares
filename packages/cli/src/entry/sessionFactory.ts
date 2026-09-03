@@ -12,12 +12,13 @@ import { loadUiSettings, updateUiSettings, type UiSettings } from "../uiSettings
 import { AresAgentRuntime, prepareAresAgent, readPersona, scanCapabilityRegistry, type CapabilityProvider, type PersonaDef } from "@ares/agent";
 import { listCapabilities, seedAllCapabilities, writeCapabilitiesDoc } from "@ares/operator";
 import { ManualReminderSource, applyEngineConfigEnv } from "./daemon.js";
-import { buildEngineTools } from "./engineTools.js";
+import { buildEngineTools, promptCatalogNames } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore, promptPermission } from "./permissions.js";
 import { ProviderSelection, daemonModelCatalog, providerFamilyForSelection, selectProvider } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 import { resumeMessageLimit } from "./terminalLines.js";
-import { buildSystemPrompt, loadGitContext, loadLiveMindContext, recallFailureFixFromMemory } from "./turnPipeline.js";
+import { buildSystemPrompt, loadGitContext, loadLiveMindContext, recallFailureFixFromMemory, type TurnTenant } from "./turnPipeline.js";
+import { createPlanPressure, type PlanPressure } from "./planPressure.js";
 
 function contextSourceHash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -93,6 +94,11 @@ export interface ResumedSessionInfo {
 export interface LiveSession {
   session: Session;
   selection: ProviderSelection;
+  /** Who is talking through this session (owner by default). Telegram guests
+   *  get their own memory scope; see turnPipeline.memoryScopeForTenant. */
+  tenant?: TurnTenant;
+  /** Per-turn plan-before-edit verdict the engine reads at its first model call. */
+  planPressure: PlanPressure;
   context: CliRuntimeContext;
   runtime: AresRuntimeState;
   verifier: ContinuousVerifier;
@@ -308,7 +314,10 @@ export function isProviderFatalError(err: { code?: string; message?: string } | 
   // the user's message lost. Note isPermanentlyDeadError deliberately does NOT
   // match overload: congestion is temporary, so the provider is never retired.
   if (/overloaded|capacity|\b529\b|server is busy|service unavailable|temporarily unavailable/.test(blob)) return true;
-  return /http_(401|402|403|404|5\d\d)|\b401\b|\b402\b|\b403\b|\b404\b|_throw|no_auth|unauthorized|forbidden|insufficient.?balance|out.?of.?balance|not ?found|fetch failed|unreachable|enotfound|econnrefused|etimedout/.test(
+  // `provider_not_running` / "is not running at" is the one-line local-server
+  // diagnosis (localProviderDiagnosis.ts) — non-retriable by design, and the
+  // canonical trigger for the pinned failover ladder.
+  return /http_(401|402|403|404|5\d\d)|\b401\b|\b402\b|\b403\b|\b404\b|_throw|no_auth|unauthorized|forbidden|insufficient.?balance|out.?of.?balance|not ?found|fetch failed|unreachable|enotfound|econnrefused|etimedout|provider_not_running|is not running at/.test(
     blob,
   );
 }
@@ -543,15 +552,117 @@ const COMPACTION_INSTRUCTIONS =
   "FACTS: durable specifics to remember (paths, signatures, ids, config values).\n" +
   "Be concrete and terse — no preamble, no fluff. This recap REPLACES the transcript, so omitting a fact loses it.";
 
+/** General clip for tool inputs/results/reminders in the summarizer transcript.
+ *  ARES_COMPACT_CLIP_CHARS overrides (default 1500). File paths and edit
+ *  digests are NEVER subject to it — see renderToolUseDigest. */
+export function compactClipChars(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.ARES_COMPACT_CLIP_CHARS);
+  return Number.isFinite(raw) && raw >= 200 ? Math.floor(raw) : 1500;
+}
+
+const EDIT_DIGEST_LINES = 12;
+const WRITE_DIGEST_LINES = 8;
+
+function digestLines(text: string, max: number, prefix: string): string[] {
+  const all = text.replace(/\r\n/g, "\n").split("\n");
+  const shown = all.slice(0, max).map((l) => `${prefix}${l}`);
+  if (all.length > max) shown.push(`${prefix}…(${all.length - max} more lines)`);
+  return shown;
+}
+
+function digestPath(input: Record<string, unknown>): string {
+  for (const key of ["file_path", "path", "file", "filePath"]) {
+    const v = input[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "(unknown file)";
+}
+
+/**
+ * A compact unified-diff-style digest of a file-mutating tool call. The old
+ * transcript clipped tool inputs to 1500 chars, so after compaction the agent
+ * knew a file CHANGED but not HOW — the summarizer saw `Edit({"file_path":
+ * "src/x.ts","old_string":"…[3400 more chars]` and wrote "edited x.ts". This
+ * renders the path always, then the actual -/+ lines (bounded per hunk) so the
+ * recap can carry "replaced the retry loop with X" instead of "touched x.ts".
+ * Returns null for tools that are not file mutations (caller falls back to
+ * the generic clipped JSON).
+ */
+export function renderToolUseDigest(name: string, rawInput: unknown): string | null {
+  const input = (rawInput && typeof rawInput === "object" ? rawInput : {}) as Record<string, unknown>;
+  const tool = name.toLowerCase();
+  const str = (v: unknown): string => (typeof v === "string" ? v : v === undefined ? "" : JSON.stringify(v));
+  const hunk = (h: Record<string, unknown>): string[] => {
+    const out: string[] = [];
+    out.push(...digestLines(str(h.old_string), EDIT_DIGEST_LINES, "    - "));
+    if (typeof h.new_string_from_file === "string") out.push(`    + <contents of ${h.new_string_from_file}>`);
+    else out.push(...digestLines(str(h.new_string), EDIT_DIGEST_LINES, "    + "));
+    if (h.replace_all === true) out.push("    (replace_all)");
+    return out;
+  };
+  if (tool === "edit" || tool === "multiedit" || tool === "multi_edit") {
+    const file = digestPath(input);
+    const edits = Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]) : null;
+    if (edits && edits.length > 0) {
+      // Batch mode: one line per hunk keeps a 20-hunk refactor readable —
+      // first old/new line each, so the WHAT survives without the full bodies.
+      const lines = [`  → ${name} ${file} (${edits.length} hunks)`];
+      edits.slice(0, 20).forEach((h, i) => {
+        const oldHead = str(h.old_string).split("\n")[0]?.trim() ?? "";
+        const newHead = (typeof h.new_string_from_file === "string" ? `<contents of ${h.new_string_from_file}>` : str(h.new_string).split("\n")[0]?.trim()) ?? "";
+        lines.push(`    #${i + 1} - ${oldHead.slice(0, 120)}  |  + ${newHead.slice(0, 120)}`);
+      });
+      if (edits.length > 20) lines.push(`    …(${edits.length - 20} more hunks)`);
+      return lines.join("\n");
+    }
+    return [`  → ${name} ${file}`, ...hunk(input)].join("\n");
+  }
+  if (tool === "write") {
+    const file = digestPath(input);
+    const content = str(input.content);
+    const lineCount = content ? content.replace(/\r\n/g, "\n").split("\n").length : 0;
+    return [`  → ${name} ${file} (${lineCount} lines, ${content.length} chars)`, ...digestLines(content, WRITE_DIGEST_LINES, "    + ")].join("\n");
+  }
+  if (tool === "applypatch" || tool === "apply_patch") {
+    const patch = str(input.patch ?? input.input ?? input.diff);
+    // A patch is already a diff: keep the per-file headers and the hunk
+    // headers in full, and a bounded slice of each file's -/+ lines.
+    const files = patch.match(/^\*\*\* (?:Update|Add|Delete) File: .+$/gm) ?? [];
+    const lines = [`  → ${name}${files.length ? ` ${files.map((f) => f.replace(/^\*\*\* /, "")).join("; ")}` : ""}`];
+    const body = patch.split("\n").filter((l) => /^(\*\*\* |@@|[-+])/.test(l) && !/^\*\*\* (Begin|End) Patch/.test(l));
+    lines.push(...digestLines(body.join("\n"), EDIT_DIGEST_LINES * 3, "    "));
+    return lines.join("\n");
+  }
+  return null;
+}
+
+/** Does this selection's wire dialect need the model's own thinking echoed
+ *  back on later turns? DeepSeek's /anthropic endpoint 400s a tool loop whose
+ *  history dropped its (unsigned) reasoning — so the summarizer transcript
+ *  must at least record that reasoning happened, and the kept suffix after
+ *  compaction must keep those blocks untouched (compaction-edit-digest test
+ *  locks that in). Ollama's native chat keeps `thinking` too; genuine
+ *  Anthropic strips unsigned thinking and signed blocks replay as-is. */
+export function dialectKeepsThinking(selection: Pick<ProviderSelection, "provider" | "model" | "source" | "family">): boolean {
+  const family = providerFamilyForSelection(selection as ProviderSelection);
+  if (family === "deepseek") return true;
+  if (family === "ollama") return true;
+  return /deepseek/i.test(selection.model);
+}
+
 /** Flatten a span of messages into a plain-text transcript for the summarizer. */
-function renderSpanForSummary(messages: readonly Message[]): string {
+export function renderSpanForSummary(
+  messages: readonly Message[],
+  opts: { clipChars?: number; keepThinking?: boolean } = {},
+): string {
   const lines: string[] = [];
+  const limit = opts.clipChars ?? compactClipChars();
   const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…[${s.length - n} more chars]` : s);
   for (const m of messages) {
     for (const b of m.content as ContentBlock[]) {
       switch (b.type) {
         case "text":
-          if (b.text.trim()) lines.push(`${m.role.toUpperCase()}: ${clip(b.text.trim(), 4000)}`);
+          if (b.text.trim()) lines.push(`${m.role.toUpperCase()}: ${clip(b.text.trim(), Math.max(4000, limit))}`);
           break;
         case "system_reminder":
           // A prior compaction recap is the canonical anchor for everything
@@ -559,23 +670,39 @@ function renderSpanForSummary(messages: readonly Message[]): string {
           // generational amnesia: constraints and settled decisions disappear
           // a little more on every epoch. Carry the complete anchor forward.
           lines.push(
-            `[reminder] ${b.text.startsWith("Compacted memory —") ? b.text.trim() : clip(b.text.trim(), 1500)}`,
+            `[reminder] ${b.text.startsWith("Compacted memory —") ? b.text.trim() : clip(b.text.trim(), limit)}`,
           );
           break;
         case "tool_use": {
-          const input = clip(JSON.stringify(b.input ?? {}), 1500);
-          lines.push(`  → ${b.name}(${input})`);
+          // File mutations get a diff digest (path + -/+ lines) that is never
+          // clipped; everything else is clipped JSON, but the path — the one
+          // fact every later step hangs on — is kept even when the clip bites.
+          const digest = renderToolUseDigest(b.name, b.input);
+          if (digest) {
+            lines.push(digest);
+            break;
+          }
+          const raw = JSON.stringify(b.input ?? {});
+          const input = clip(raw, limit);
+          const file = b.input && typeof b.input === "object" ? digestPath(b.input as Record<string, unknown>) : "(unknown file)";
+          lines.push(`  → ${b.name}(${input})${raw.length > limit && file !== "(unknown file)" ? ` [file: ${file}]` : ""}`);
           break;
         }
         case "tool_result": {
           const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
-          lines.push(`  result: ${clip(text, 1500)}`);
+          lines.push(`  result: ${clip(text, limit)}`);
           break;
         }
         case "image":
           lines.push(`  [image]`);
           break;
-        // thinking blocks are intentionally omitted — not durable state
+        case "thinking":
+          // Not durable state on its own — but on dialects that must echo
+          // reasoning (DeepSeek) the recap should know reasoning happened and
+          // roughly what it decided, so the kept suffix's thinking blocks are
+          // not orphaned from the summarized context.
+          if (opts.keepThinking && b.text.trim()) lines.push(`  (thinking) ${clip(b.text.trim(), Math.min(limit, 600))}`);
+          break;
       }
     }
   }
@@ -592,7 +719,7 @@ export function makeSpanSummarizer(
   onUsage?: (usage: import("@ares/protocol").Usage) => void | Promise<void>,
 ): (messages: readonly Message[], signal?: AbortSignal) => Promise<string> {
   return async (messages, signal) => {
-    const transcript = renderSpanForSummary(messages);
+    const transcript = renderSpanForSummary(messages, { keepThinking: dialectKeepsThinking(selection) });
     if (!transcript.trim()) return "";
     const configuredTimeout = Number(process.env.ARES_COMPACTION_TIMEOUT_MS);
     const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
@@ -753,9 +880,9 @@ export async function createSessionWithSelection(
     };
   };
   const composeCurrentSystemPrompt = () =>
-    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, promptModelOpts())) + promptTail;
+    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, { ...promptModelOpts(), tools: promptCatalogNames(tools) })) + promptTail;
   runtime.composeChildSystemPrompt = async () =>
-    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, promptModelOpts())) +
+    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, { ...promptModelOpts(), tools: promptCatalogNames(tools) })) +
     (await loadLiveMindContext(context)) +
     (await loadGitContext(context));
   const toolCatalogHash = contextSourceHash(JSON.stringify(tools.map((tool) => tool.schema)));
@@ -784,6 +911,7 @@ export async function createSessionWithSelection(
       maxMessages: resumeMessageLimit(),
     });
     todoStore.replace(snapshot.todos);
+    const planPressure = createPlanPressure();
     const session = new Session({
       workspace: context.workspace,
       provider: selection.provider,
@@ -793,6 +921,8 @@ export async function createSessionWithSelection(
       requestPermission,
       drainSystemReminders,
       confirmTurnEnd: () => confirmTurnEndWith(verifier),
+      subagentRunner: runtime.subagentRunner,
+      planBeforeEdit: () => planPressure.next,
       recallFailureFix: (input) => recallFailureFixFromMemory(context.mind.memoryFile, input),
       hookManager: hooks,
       sessionMeta: snapshot.meta,
@@ -836,6 +966,7 @@ export async function createSessionWithSelection(
     session.observeEvents((event) => codingJournal?.recordTurnEvent(event));
     const live: LiveSession = {
       session,
+      planPressure,
       selection,
       context,
       resumed: {
@@ -880,6 +1011,7 @@ export async function createSessionWithSelection(
     }
     return live;
   }
+  const planPressure = createPlanPressure();
   const session = new Session({
     workspace: context.workspace,
     provider: selection.provider,
@@ -890,6 +1022,8 @@ export async function createSessionWithSelection(
     requestPermission,
     drainSystemReminders,
     confirmTurnEnd: () => confirmTurnEndWith(verifier),
+    subagentRunner: runtime.subagentRunner,
+    planBeforeEdit: () => planPressure.next,
     requireVerificationEvidence: process.env.ARES_CODING_PROOF_GATE !== "0",
     verificationEvidence: () => verifier.evidenceSnapshot(),
     outstandingVerificationRequired: () => codingJournal?.verificationRequiredForCurrentTurn() ?? false,
@@ -927,7 +1061,7 @@ export async function createSessionWithSelection(
   runtime.onPlanApproved = (plan) => session.approvePlan(plan);
   codingJournal = await CodingJournal.open({ workspace: context.workspace, sessionId: session.meta.id });
   session.observeEvents((event) => codingJournal?.recordTurnEvent(event));
-  const live: LiveSession = { session, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings), codingJournal, adoptPersona: makePersonaSwap(session), activePersona: () => agent.activePersona() };
+  const live: LiveSession = { session, planPressure, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings), codingJournal, adoptPersona: makePersonaSwap(session), activePersona: () => agent.activePersona() };
   liveRef = live;
   live.agentRuntime = new AresAgentRuntime(agent, {
     workspace: context.workspace,

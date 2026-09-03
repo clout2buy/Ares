@@ -24,7 +24,17 @@ export {
   type ReflectionTrigger,
   type ReflectionPassFn,
   type ReflectionPassOutcome,
+  type SchedulerTimers,
 } from "./reflection/scheduler.js";
+export {
+  periodicConsolidationPass,
+  consolidateEveryMs,
+  consolidateMinNewNodes,
+  resetPeriodicConsolidation,
+  type PeriodicConsolidationOptions,
+  type PeriodicConsolidationSkip,
+} from "./reflection/periodicConsolidation.js";
+export { markTurnStarted, markTurnEnded, isAnyTurnActive, resetTurnActivity } from "./reflection/turnActivity.js";
 export { runLightDream, runDeepDream, runRemDream, type DreamResult } from "./dreaming.js";
 export { recallForTurn, type RecallOptions } from "./recall.js";
 export {

@@ -207,7 +207,10 @@ test("machine card: provisioned state carries distro, deeds, and the routing rul
   assert.match(card, /ares-computer/);
   assert.match(card, /41\.0 GB/);
   assert.match(card, /built the mod zip/);
-  assert.match(card, /Routing rule/);
+  // The full routing doctrine moved to the prompt Reach section; the card keeps
+  // the one-line pointer + the three verbs.
+  assert.ok(card.includes("Routing (full rule in the Reach section)"), card);
+  assert.match(card, /ComputerHandoff/);
   assert.match(card, /MACHINE\.md/);
   // failed deeds are marked, not hidden
   await appendJournal({ kind: "exec", detail: "tried the flaky build", ok: false });

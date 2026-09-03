@@ -314,6 +314,10 @@ function describeVerification(v: VerificationSpec): string {
       return `command \`${[v.cmd, ...(v.args ?? [])].join(" ")}\`${v.contains ? ` outputs "${v.contains}"` : ` exits ${v.expectExit ?? 0}`}`;
     case "http":
       return `GET ${v.url} returns ${v.expectStatus ?? 200}${v.contains ? ` containing "${v.contains}"` : ""}`;
+    case "diffScope":
+      return `only these files change: ${v.allowed.join(", ")}`;
+    case "planBeforeEdit":
+      return "a plan/todo call precedes the first edit";
   }
 }
 

@@ -74,6 +74,16 @@ export function isAllowed(data: RosterData, chatId: number): boolean {
   return data.participants.some((p) => p.chatId === chatId);
 }
 
+/**
+ * The gateway tenant for a chat. Only a roster OWNER resolves to the owner;
+ * a guest — and any chat the roster does not know, which can only reach this
+ * point through a stale allowlist — is a guest keyed by its chat id, so the
+ * owner's memory pool is never the default for an unrecognized sender.
+ */
+export function tenantForChat(data: RosterData, chatId: number): { role: "owner" } | { role: "guest"; chatId: string } {
+  return isOwner(data, chatId) ? { role: "owner" } : { role: "guest", chatId: String(chatId) };
+}
+
 export function ownerChatIds(data: RosterData): number[] {
   return data.participants.filter((p) => p.role === "owner").map((p) => p.chatId);
 }

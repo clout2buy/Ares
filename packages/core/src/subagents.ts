@@ -24,6 +24,7 @@ import { loadSessionSnapshot } from "./session.js";
 import type { BackgroundJobRecord, JsonValue, SessionKernelStore } from "./sessionKernel/index.js";
 import { withComposedVerifiedChildSession } from "./childSessionComposition.js";
 import type { VerifierOptions } from "./verifier.js";
+import { SUBAGENT_SPAWNING_TOOLS, currentSubagentDepth, runAtSubagentDepth, subagentMaxDepth } from "./subagentDepth.js";
 
 export interface SubagentTypeDef {
   name: string;
@@ -61,6 +62,9 @@ export interface SubagentRunRequest {
    *  any other prompt; the resulting dir-scope grant lands in the shared
    *  path-permission store, unblocking sibling leaves without re-prompting. */
   requestPermission?: QueryEngineConfig["requestPermission"];
+  /** Nesting depth of the CALLER (0 = top-level session). Omitted → inferred
+   * from the AsyncLocalStorage the runner enters around every child turn. */
+  depth?: number;
 }
 
 export interface SubagentRunResult {
@@ -118,12 +122,16 @@ export const SUBAGENT_SESSION_TRANSITION_TOOLS = new Set([
 export function scopeSubagentTools(
   parentTools: readonly EngineTool[],
   whitelist?: readonly string[],
+  options: { /** Depth the CHILD will run at; at the cap it loses Task/Conductor/CodingBackend. */ depth?: number } = {},
 ): EngineTool[] {
   const whitelisted = whitelist
     ? parentTools.filter((tool) => whitelist.includes(tool.schema.name))
     : parentTools;
+  const atCap = options.depth !== undefined && options.depth >= subagentMaxDepth();
   return whitelisted.filter(
-    (tool) => !SUBAGENT_SESSION_TRANSITION_TOOLS.has(tool.schema.name),
+    (tool) =>
+      !SUBAGENT_SESSION_TRANSITION_TOOLS.has(tool.schema.name) &&
+      !(atCap && SUBAGENT_SPAWNING_TOOLS.has(tool.schema.name)),
   );
 }
 
@@ -327,6 +335,10 @@ export interface SubagentRunnerOptions {
   parentTools: readonly EngineTool[];
   /** Base system prompt the subagent sees AFTER its type-specific prompt. */
   baseSystemPrompt: string | (() => string | Promise<string>);
+  /** Per-type replacement for `baseSystemPrompt` — a host can hand children a
+   *  TRIMMED prompt instead of the full parent prompt (~6.9k tokens appended to
+   *  every child today). Returns the text placed after the type prompt. */
+  systemPromptForChild?: (type: SubagentTypeDef) => string | Promise<string>;
   /** Optional global ceiling layered over each subagent type's own limit. */
   maxTurns?: number | (() => number | undefined);
   /** Production path: children become normal durable Session rows. */
@@ -362,9 +374,10 @@ export class AresSubagentRunner implements SubagentRunner {
       throw new Error("background Task requires a parent session and stable invocation id");
     }
     if (!this.has(req.subagent_type)) throw new Error(`unknown subagent_type: ${req.subagent_type}`);
+    assertSubagentDepth(req.depth ?? currentSubagentDepth());
     const taskId = req.taskId ?? stableScopedId("agent", req.parentSessionId, req.invocationId);
     const jobId = stableScopedId("taskjob", req.parentSessionId, req.invocationId);
-    const request = backgroundRequestJson(req);
+    const request = backgroundRequestJson({ ...req, depth: req.depth ?? currentSubagentDepth() });
     const { record } = kernel.createBackgroundJob({
       id: jobId,
       sessionId: req.parentSessionId,
@@ -418,7 +431,13 @@ export class AresSubagentRunner implements SubagentRunner {
       );
     }
 
-    const allowedTools = scopeSubagentTools(this.opts.parentTools, def.toolWhitelist);
+    // Recursion cap: a child at the max depth cannot spawn (Task/Conductor/
+    // CodingBackend are scoped out of its belt); a call that somehow arrives
+    // from the cap is a clear tool error, not a silent nested engine.
+    const callerDepth = req.depth ?? currentSubagentDepth();
+    assertSubagentDepth(callerDepth);
+    const childDepth = callerDepth + 1;
+    const allowedTools = scopeSubagentTools(this.opts.parentTools, def.toolWhitelist, { depth: childDepth });
 
     const replayChildId = req.parentSessionId && req.invocationId
       ? stableScopedId("agent", req.parentSessionId, req.invocationId)
@@ -471,9 +490,11 @@ export class AresSubagentRunner implements SubagentRunner {
       description: req.description,
     });
 
-    const baseSystemPrompt = typeof this.opts.baseSystemPrompt === "function"
-      ? await this.opts.baseSystemPrompt()
-      : this.opts.baseSystemPrompt;
+    const baseSystemPrompt = this.opts.systemPromptForChild
+      ? await this.opts.systemPromptForChild(def)
+      : typeof this.opts.baseSystemPrompt === "function"
+        ? await this.opts.baseSystemPrompt()
+        : this.opts.baseSystemPrompt;
     const systemPrompt = `${def.systemPrompt}\n\n---\n\n${baseSystemPrompt}`;
 
     const configuredMaxTurns =
@@ -512,8 +533,8 @@ export class AresSubagentRunner implements SubagentRunner {
     emitBoard({ event: "start" });
     let result: ForkedTurnResult;
     try {
-      result = this.opts.sessionKernel
-        ? await this.runDurableTurn({
+      result = await runAtSubagentDepth(childDepth, () => this.opts.sessionKernel
+        ? this.runDurableTurn({
           id,
           prompt: req.prompt,
           workspace: req.workspace,
@@ -529,8 +550,9 @@ export class AresSubagentRunner implements SubagentRunner {
           inputId: req.invocationId
             ? stableScopedId("task_input", req.parentSessionId ?? id, req.invocationId)
             : undefined,
+          subagentDepth: childDepth,
         })
-      : await runForkedTurn({
+      : runForkedTurn({
           config: {
             provider: this.opts.provider,
             model,
@@ -540,6 +562,7 @@ export class AresSubagentRunner implements SubagentRunner {
             signal: req.signal,
             maxTurns,
             requestPermission: req.requestPermission,
+            subagentDepth: childDepth,
           },
           sessionId: id,
           inputId: req.invocationId
@@ -547,7 +570,7 @@ export class AresSubagentRunner implements SubagentRunner {
             : undefined,
           seed: { kind: "work-item", text: req.prompt },
           onEvent,
-        });
+        }));
     } catch (error) {
       // The board never shows a ghost agent: a thrown run settles as failed.
       emitBoard({ event: "done", status: "failed" });
@@ -557,7 +580,7 @@ export class AresSubagentRunner implements SubagentRunner {
     const events = result.events;
     const usage: Usage = result.usage;
     const toolCallCount = events.filter((e) => e.type === "tool_start").length;
-    const status: SubagentRunResult["status"] = result.status === "completed" ? "completed" : "failed";
+    const status: SubagentRunResult["status"] = isCompletedTurnStatus(result.status) ? "completed" : "failed";
     emitBoard({ event: "done", status });
 
     const hasAssistant = result.history.some((m) => m.role === "assistant");
@@ -762,6 +785,7 @@ export class AresSubagentRunner implements SubagentRunner {
     onEvent(event: import("@ares/protocol").TurnEvent): void;
     resume: boolean;
     inputId?: string;
+    subagentDepth: number;
   }): Promise<ForkedTurnResult> {
     const snapshot = input.resume
       ? await loadSessionSnapshot(input.workspace, input.id, { maxMessages: 10_000 })
@@ -786,6 +810,7 @@ export class AresSubagentRunner implements SubagentRunner {
       summarizeSpan: this.opts.summarizeSpan,
       sessionKernel: this.opts.sessionKernel!,
       verifierOptions: this.opts.childVerifierOptions,
+      subagentDepth: input.subagentDepth,
     }, async ({ session }) => {
       const events: import("@ares/protocol").TurnEvent[] = [];
       let streamedText = "";
@@ -864,6 +889,7 @@ function backgroundRequestJson(req: SubagentRunRequest): JsonValue {
     invocationId: req.invocationId ?? null,
     taskId: req.taskId ?? null,
     workspace: path.resolve(req.workspace),
+    depth: req.depth ?? 0,
   };
 }
 
@@ -887,7 +913,19 @@ function parseBackgroundRequest(job: BackgroundJobRecord): SubagentRunRequest | 
     invocationId,
     ...(typeof raw.taskId === "string" ? { taskId: raw.taskId } : {}),
     workspace,
+    ...(typeof raw.depth === "number" ? { depth: raw.depth } : {}),
   };
+}
+
+/** Refuse a spawn from a caller already at the nesting cap. The message is
+ *  the tool error the model reads, so it says what to do instead. */
+function assertSubagentDepth(callerDepth: number): void {
+  const max = subagentMaxDepth();
+  if (callerDepth >= max) {
+    throw new Error(
+      `subagent depth cap: this Task was invoked from a depth-${callerDepth} subagent and ARES_SUBAGENT_MAX_DEPTH=${max} forbids nesting deeper — do the work directly instead of delegating`,
+    );
+  }
 }
 
 function taskIdForBackgroundJob(job: BackgroundJobRecord): string {
@@ -967,4 +1005,11 @@ function backgroundCompletion(
       content: [{ type: "text", text }],
     },
   };
+}
+
+/** A completed loop, with or without behavioral proof. `needs_verification`
+ * is completed-with-warning: the child's workStatus carries the truth, and the
+ * parent reads it from the handoff rather than treating the child as dead. */
+function isCompletedTurnStatus(status: ForkedTurnResult["status"]): boolean {
+  return status === "completed" || status === "needs_verification";
 }

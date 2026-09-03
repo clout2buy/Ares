@@ -1,11 +1,13 @@
 // Extracted from entry.ts — introspect.
 
-import { OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWorkspaceCheckpoint, restoreWorkspaceCheckpoint, authStatus, deviceCodeLogin, summarizeFriction, type Provider } from "@ares/core";
+import { OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWorkspaceCheckpoint, restoreWorkspaceCheckpoint, authStatus, deviceCodeLogin, summarizeFriction, connectedProviders, OAUTH_PROVIDERS, type Provider } from "@ares/core";
 import { notice, themesList } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { deliberateForTurn, loadAgentConfig, unifiedRecallForTurn } from "@ares/agent";
-import { listLearningCards, selectRelevantLessons, listGoals, listMissionContracts, summarizeContinuity, type ContinuitySummary, assembleWorldGraph, ARES_SUBSYSTEMS, type WorldGraph, rankBriefing, type DailyBriefing } from "@ares/operator";
+import { listLearningCards, selectRelevantLessons, listGoals, listMissionContracts, summarizeContinuity, type ContinuitySummary, assembleWorldGraph, ARES_SUBSYSTEMS, type WorldGraph, rankBriefing, type DailyBriefing, composeDayBrief, type DayBrief, type DayBriefSources } from "@ares/operator";
 import { MemoryStore } from "@ares/mind";
+import { GoogleCalendarTool, GmailTool, getWeatherText, type RichToolContext } from "@ares/tools";
+import { loadSchedule, listAlarms } from "@ares/channels";
 import { chatCommand } from "./chat.js";
 import { NATIVE_OLLAMA_OPTS } from "./providers.js";
 import { ParsedArgs, cliRuntimeContext, compactLine, relativeAge } from "./runtime.js";
@@ -322,6 +324,89 @@ export async function todayCommand(args: ParsedArgs): Promise<number> {
       return 0;
     }
     process.stdout.write(notice("Today", briefingLines(briefing), briefing.decisionsNeeded.length ? "warn" : "info"));
+    return 0;
+  } catch (err) {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
+}
+
+// ─── The morning brief: weather → calendar → reminders → email → missions ───
+//
+// The sources are the SAME credentialed helpers the agent's tools use (the
+// Calendar/Gmail tools' own call(), getWeatherText, the Telegram alarm file),
+// so a brief and a chat turn agree about what's connected. Every source is
+// best-effort: absent credentials mean the fetcher is simply not wired and the
+// brief prints "calendar: not connected"; a live fetcher that throws or stalls
+// is caught by composeDayBrief's per-source timeout.
+
+/** The tools read only `input`; the rich context is for permissions/streams the brief never needs. */
+const BRIEF_TOOL_CONTEXT = {} as unknown as RichToolContext;
+
+export async function defaultDayBriefSources(context = cliRuntimeContext()): Promise<DayBriefSources> {
+  const sources: DayBriefSources = {};
+
+  const location = process.env.ARES_OWNER_LOCATION;
+  if (location) {
+    sources.weather = async () => {
+      const text = await getWeatherText(location);
+      // getWeatherText swallows its own errors into prose — surface that as a
+      // failure so the brief renders the honest one-liner instead of prose.
+      if (/^Weather unavailable/i.test(text)) throw new Error(text.replace(/^Weather unavailable:\s*/i, ""));
+      return text;
+    };
+  }
+
+  const connected = await connectedProviders(OAUTH_PROVIDERS, context.home).catch(() => ({}) as Record<string, boolean>);
+  if (connected.google) {
+    sources.calendar = async () => {
+      const result = await GoogleCalendarTool.call({ action: "list_events", days: 1 }, BRIEF_TOOL_CONTEXT);
+      return (result.output.events ?? []).map((e) => ({ title: e.title, start: e.start, end: e.end, location: e.location }));
+    };
+    sources.email = async () => {
+      const [unread, important] = await Promise.all([
+        GmailTool.call({ action: "search", query: "is:unread newer_than:2d", max_results: 10 }, BRIEF_TOOL_CONTEXT),
+        GmailTool.call({ action: "search", query: "is:unread is:important newer_than:2d", max_results: 10 }, BRIEF_TOOL_CONTEXT),
+      ]);
+      const messages = unread.output.messages ?? [];
+      return {
+        unread: messages.length,
+        truncated: messages.length >= 10,
+        important: (important.output.messages ?? []).length,
+        subjects: messages.slice(0, 3).map((m) => m.subject || "(no subject)"),
+      };
+    };
+  }
+
+  // Reminders live in the Telegram alarm file; "due today" = fires later today.
+  sources.reminders = async () => {
+    const now = new Date();
+    const minutesNow = now.getHours() * 60 + now.getMinutes();
+    return listAlarms(await loadSchedule(context.home))
+      .filter((a) => (!a.days?.length || a.days.includes(now.getDay())) && a.hour * 60 + a.minute >= minutesNow)
+      .map((a) => ({ label: a.label, hour: a.hour, minute: a.minute, body: a.body }));
+  };
+
+  sources.missions = () => buildBriefing(context);
+  return sources;
+}
+
+/** Compose today's brief from the default sources (or injected ones). */
+export async function buildDayBrief(context = cliRuntimeContext(), sources?: DayBriefSources): Promise<DayBrief> {
+  return composeDayBrief({ sources: sources ?? (await defaultDayBriefSources(context)) });
+}
+
+/** `ares brief [--json]` — the morning brief on the terminal. */
+export async function briefCommand(args: ParsedArgs): Promise<number> {
+  try {
+    const brief = await buildDayBrief();
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify(brief, null, 2) + "\n");
+      return 0;
+    }
+    const lines = brief.text.split("\n");
+    const anyDown = brief.sections.some((s) => s.status === "failed" || s.status === "timeout");
+    process.stdout.write(notice("Brief", lines, anyDown ? "warn" : "info"));
     return 0;
   } catch (err) {
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);

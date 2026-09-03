@@ -64,16 +64,34 @@ function resolveFile(root: string): string {
   return root.endsWith(".jsonl") ? root : path.join(root, "memory.jsonl");
 }
 
+/** The owner's pool: unscoped nodes (everything pre-tenancy) plus "owner". */
+export const OWNER_SCOPE = "owner";
+
+/**
+ * Scopes that are ISOLATED — they see only their own nodes, never the owner's
+ * unscoped pool. A Telegram guest (`guest:<chatId>`) must not recall the
+ * owner's projects or finances; the prefix convention (rather than a flag)
+ * means every path that threads `scope` through — the Mnemosyne server, the
+ * unified recall, the router — gets the isolation without new plumbing.
+ */
+export function isIsolatedScope(scope: string | undefined): boolean {
+  return typeof scope === "string" && scope.startsWith("guest:");
+}
+
 /**
  * Filter a node pool by tenant scope. `undefined` scope (the default, backward
- * compatible) returns the pool untouched. A given `scope` keeps nodes stamped
- * with that exact scope PLUS unscoped nodes (pre-existing/owner memories) —
- * never nodes belonging to a DIFFERENT scope, which is the actual isolation.
+ * compatible) returns the pool untouched. A non-isolated `scope` keeps nodes
+ * stamped with that exact scope PLUS unscoped nodes (pre-existing/owner
+ * memories) — never nodes belonging to a DIFFERENT scope. An isolated scope
+ * (see {@link isIsolatedScope}) keeps ONLY its own nodes.
  */
-function scopedNodes(nodes: readonly MemoryNode[], scope: string | undefined): readonly MemoryNode[] {
+export function nodesInScope<N extends { scope?: string }>(nodes: readonly N[], scope: string | undefined): readonly N[] {
   if (scope === undefined) return nodes;
+  if (isIsolatedScope(scope)) return nodes.filter((n) => n.scope === scope);
   return nodes.filter((n) => n.scope === scope || n.scope === undefined);
 }
+
+const scopedNodes = nodesInScope<MemoryNode>;
 
 export class MemoryStore {
   /** V4 semantic seeds: optional embedder + sidecar index. Absent → classic store. */
@@ -337,6 +355,25 @@ export class MemoryStore {
       const evidence = [...(node.evidence ?? []), entry].slice(-EVIDENCE_CAP);
       const adjusted = outcome.won ? reinforce(node, now, 0.4) : weaken(node, now);
       this.nodes.set(id, { ...adjusted, evidence });
+      touched++;
+    }
+    if (touched > 0) await this.persist();
+    return touched;
+  }
+
+  /**
+   * Reinforce nodes WITHOUT a recall: the router calls this when a write
+   * collapsed into an existing near-duplicate, so "the owner asked the same
+   * thing again" bumps the node it already has instead of minting a twin.
+   * Unknown ids are ignored. Returns how many nodes moved.
+   */
+  async touch(ids: readonly string[], opts: { now?: Date } = {}): Promise<number> {
+    const now = opts.now ?? new Date();
+    let touched = 0;
+    for (const id of ids) {
+      const node = this.nodes.get(id);
+      if (!node) continue;
+      this.nodes.set(id, reinforce(node, now));
       touched++;
     }
     if (touched > 0) await this.persist();

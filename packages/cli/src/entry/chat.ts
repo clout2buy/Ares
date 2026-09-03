@@ -17,8 +17,8 @@ import { ParsedArgs, cliRuntimeContext, printHelp, transitionPermissionMode } fr
 import { LiveSession, createSession, createSessionWithSelection, guardVisionForTurn, handleReasoningCommand } from "./sessionFactory.js";
 import { promptPermission } from "./permissions.js";
 import type { ToolPermissionRequest } from "@ares/core";
-import type { PermissionPromptDecision } from "@ares/protocol";
-import { applyTerminalAutoRouting, applyTerminalRoutingCommand, checkpointDiffLines, checkpointLines, colorUnifiedDiff, contentFromUserInput, doctorSummaryLines, inkHelpLines, legacyProgressText, persistTerminalModelPreference, printResumed, printSessions, requireResumeSessionId, resolveResumeSessionId, resumedLines, rollbackLines, saveTheme, sessionsLines, setTerminalProviderKey, switchTerminalModel, terminalKeyLines, terminalModelCatalogLines, terminalSettingsLines, themeLines, undoLines, usageMeter } from "./terminalLines.js";
+import type { PermissionPromptDecision, TurnEndStatus } from "@ares/protocol";
+import { applyTerminalAutoRouting, applyTerminalRoutingCommand, checkpointDiffLines, checkpointLines, colorUnifiedDiff, contentFromUserInput, doctorSummaryLines, inkHelpLines, legacyProgressText, persistTerminalModelPreference, printResumed, printSessions, requireResumeSessionId, resolveResumeSessionId, resumedLines, rollbackLines, saveTheme, sessionsLines, setTerminalProviderKey, switchTerminalModel, terminalKeyLines, terminalModelCatalogLines, terminalSettingsLines, themeLines, undoLines, rewindLines, usageMeter } from "./terminalLines.js";
 import { disposeLiveSession, finishTurn, mindSessionEnded, prepareUserTurn } from "./turnPipeline.js";
 
 export async function runCommand(args: ParsedArgs): Promise<number> {
@@ -48,7 +48,7 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
     }
   });
   await prepareUserTurn(live, goal);
-  let finalStatus: "completed" | "interrupted" | "failed" = "completed";
+  let finalStatus: TurnEndStatus = "completed";
   const turnContent = await contentFromUserInput(goal, live.context.workspace);
   guardVisionForTurn(live, turnContent);
   for await (const event of live.session.sendContent(turnContent)) {
@@ -174,7 +174,7 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
         await pendingFinish;
         await applyTerminalAutoRouting(live, goal);
         await prepareUserTurn(live, goal);
-        let finalStatus: "completed" | "interrupted" | "failed" = "completed";
+        let finalStatus: TurnEndStatus = "completed";
         const turnContent = await contentFromUserInput(goal, live.context.workspace);
         guardVisionForTurn(live, turnContent);
         for await (const event of live.session.sendContent(turnContent)) {
@@ -262,6 +262,9 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
         }
         if (line === "/undo" || line.startsWith("/undo ")) {
           return { kind: "handled", lines: await undoLines(live, line.slice("/undo".length)), snapshot: snapshot() };
+        }
+        if (line === "/rewind" || line.startsWith("/rewind ")) {
+          return { kind: "handled", lines: await rewindLines(live, line.slice("/rewind".length)), snapshot: snapshot() };
         }
         if (line.startsWith("/rollback ")) {
           return { kind: "handled", lines: await rollbackLines(line.slice("/rollback ".length).trim(), live.context), snapshot: snapshot() };
@@ -473,6 +476,10 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
       process.stdout.write(notice("Undo", await undoLines(live, line.slice("/undo".length)), "success"));
       continue;
     }
+    if (line === "/rewind" || line.startsWith("/rewind ")) {
+      process.stdout.write(notice("Rewind", await rewindLines(live, line.slice("/rewind".length)), "success"));
+      continue;
+    }
     if (line.startsWith("/rollback ")) {
       await rollbackCommand(line.slice("/rollback ".length).trim());
       continue;
@@ -547,7 +554,7 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
   await prepareUserTurn(live, goal);
   let wroteText = false;
   let wroteThinking = false;
-  let finalStatus: "completed" | "interrupted" | "failed" = "completed";
+  let finalStatus: TurnEndStatus = "completed";
   const turnContent = await contentFromUserInput(goal, live.context.workspace);
   guardVisionForTurn(live, turnContent);
   for await (const event of live.session.sendContent(turnContent)) {
@@ -611,7 +618,10 @@ async function renderTurn(live: LiveSession, goal: string): Promise<void> {
       finalStatus = event.status;
       if (wroteThinking) process.stderr.write("\n");
       if (wroteText) process.stdout.write("\n");
-      if (event.status !== "completed") {
+      // needs_verification is a completed loop whose coding changes lack behavioral
+      // proof; it rides the wire for headless/eval consumers only. The owner removed
+      // the user-facing unverified notice (2026-08-17) — never echo it here.
+      if (event.status === "failed" || event.status === "interrupted") {
         process.stderr.write(notice("Turn", [`status ${event.status}`], "warn"));
       }
       if (event.workStatus === "unverified" || event.workStatus === "blocked") {

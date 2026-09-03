@@ -20,6 +20,9 @@ test("recorder folds tool calls, edit tiers, stalls, verify flags into one line"
     rec.record({ type: "tool_error", id: "b", error: "old_string not found", durationMs: 3 });
     rec.record({ type: "tool_use_start", id: "c", name: "Bash" });
     rec.record({ type: "tool_end", id: "c", output: "ok", durationMs: 9 });
+    // The 4th Edit tier (normalized) must land as a hit, not vanish between hit and miss.
+    rec.record({ type: "tool_use_start", id: "d", name: "Edit" });
+    rec.record({ type: "tool_end", id: "d", output: { layer: "normalized", layers: ["exact", "whitespace", "anchor", "normalized"] }, durationMs: 4 });
     rec.record({ type: "error", error: { code: "reasoning_stall", message: "x", retriable: true } });
     rec.record({ type: "system_reminder_injected", text: "red", source: "verifier" });
     rec.record(turnEnd());
@@ -30,10 +33,13 @@ test("recorder folds tool calls, edit tiers, stalls, verify flags into one line"
     const line = JSON.parse((await readFile(path.join(dir, files[0]), "utf8")).trim());
     assert.equal(line.sessionId, "sess_t1");
     assert.equal(line.status, "completed");
-    assert.deepEqual(line.tools.Edit, { calls: 2, errors: 1 });
+    assert.deepEqual(line.tools.Edit, { calls: 3, errors: 1 });
     assert.deepEqual(line.tools.Bash, { calls: 1, errors: 0 });
     assert.equal(line.editTiers.anchor, 1);
+    assert.equal(line.editTiers.normalized, 1);
     assert.equal(line.editTiers.miss, 1);
+    const summary = await summarizeFriction(dir, 1);
+    assert.equal(summary.editTiers.normalized, 1, "summary aggregation carries the normalized tier");
     assert.equal(line.stalls, 1);
     assert.equal(line.reasoningStalls, 1);
     assert.equal(line.verifyReminders, 1);

@@ -145,7 +145,11 @@ export class SubagentJournal {
   /** Collapse the recorder into the handoff. Awaits the final disk flush (never
    *  rejects) so journalPath is real — or '' when persistence failed. */
   async finish(status: TurnEndStatus): Promise<SubagentHandoff> {
-    this.outcome = this.turnLimitHit ? "turn-limit" : status === "completed" ? "completed" : "error";
+    this.outcome = this.turnLimitHit
+      ? "turn-limit"
+      : status === "completed" || status === "needs_verification"
+        ? "completed"
+        : "error";
     this.flush();
     await this.writeChain;
     return {

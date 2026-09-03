@@ -23,6 +23,7 @@ import { stdin, stdout, stderr } from "node:process";
 import type { ContentBlock, PermissionMode, PermissionPromptDecision, TurnEvent } from "@ares/protocol";
 import { isReasoningLevel, REASONING_LEVELS, messageText, redactSecrets } from "@ares/protocol";
 import type { ToolPermissionRequest } from "@ares/core";
+import { HeapAllocationSampler, heapSamplerEnabled } from "@ares/core";
 import { notice } from "../terminalUi.js";
 import { loadUiSettings, updateUiSettings, type UiSettings } from "../uiSettings.js";
 import { DEFAULT_PERMISSIONS, decidePermission, type PermissionSettings } from "../permissionPolicy.js";
@@ -52,8 +53,9 @@ import { LiveSession, chatContextBudget, createSession, createSessionWithSelecti
 import { PluginHost } from "@ares/plugins";
 import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
 import { startGatewayMirror } from "./telegramWiring.js";
-import { contentFromUserInput, undoLines } from "./terminalLines.js";
+import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js";
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
+import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
 // Satellite modules (extracted, closure-free helpers — command handlers and
 // their shared mutable state stay in this file):
@@ -66,6 +68,8 @@ import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, l
 //   daemon/mcp.ts          — mcpDirectorySnapshot
 import { applyEngineConfigEnv, normalizeEngineConfig } from "./daemon/engineConfig.js";
 import { normalizeRoutingCommand } from "./daemon/routing.js";
+import { resolveLiveRoute } from "./liveRoute.js";
+import { backupChain, decidePinnedFailover, pinnedFailoverEnabled, type PinnedFailoverDecision } from "./pinnedFailover.js";
 import { saveReportLocally, trimRolloutForReport } from "./daemon/report.js";
 import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
@@ -199,6 +203,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       // Never let the constructor execute recovered work behind that pipeline.
       detachedStartupRecovery: false,
     });
+    // This daemon is the desktop app's engine (ARES_SURFACE overrides for other
+    // embedders). Every session it opens is stamped so the cross-surface digest
+    // and guest isolation can tell surfaces and tenants apart on disk.
+    if (!process.env.ARES_SURFACE) setProcessSurface("desktop");
+    void stampSessionIdentity(live, { surface: currentSurface(), tenant: live.tenant ?? { role: "owner" } });
     const bridgeConfigPath = path.join(live.context.home, "browser-bridge", "config.json");
     try {
       const raw = JSON.parse(await readFile(bridgeConfigPath, "utf8")) as {
@@ -633,6 +642,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     elevatedRatio: Number(process.env.ARES_HEAP_WARN_RATIO) || 0.72,
     criticalRatio: Number(process.env.ARES_HEAP_CRITICAL_RATIO) || 0.86,
   });
+  // WHO allocated it — the one question the 2026-08-25 artifacts still could
+  // not answer after the space-level diagnostics landed. The sampling profiler
+  // runs from boot at a coarse interval (negligible overhead) so the critical
+  // artifact can list the top allocation sites by function/file/line.
+  // ARES_HEAP_PROFILE=0 disables; a host already owning the profiler just
+  // yields an empty list.
+  const heapSampler = new HeapAllocationSampler();
+  if (heapSamplerEnabled()) heapSampler.start();
 
   // ─── Maintenance, mounted: the plugin kernel's first tenant ──────────────
   //
@@ -684,6 +701,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // vs external/native — so the next climb is attributable instead
           // of three reports that only ever said "97%".
           heap: readHeapDiagnostics(),
+          // WHO allocated it — top sampled allocation sites (self bytes).
+          heapAllocTop: heapSampler.topSites(25),
+          heapSamplerActive: heapSampler.active,
           // WHAT ran while it climbed — the question the 2026-08-25 artifacts
           // could not answer.
           recentMaintenance: maintenanceLedger()?.snapshot(20) ?? [],
@@ -1014,6 +1034,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       lastActiveAt: Date.now(),
     };
     sessions.set(sid, entry);
+    // Surface + tenant stamp (owner by default; a channel frame can override
+    // per message at the send path). Best-effort, off the critical path.
+    void stampSessionIdentity(fresh, { surface: currentSurface(), tenant: fresh.tenant ?? { role: "owner" } });
     // Opening one more session is the moment to check we are not hoarding the
     // last twenty — before the new transcript is loaded on top of them.
     evictIdleSessions("idle");
@@ -1786,7 +1809,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       }
       if (command.type === "routing") {
         // Owner per-lane model assignments. Normalize {provider,model} → {family,model}
-        // and persist; the live turn resolves via @ares/core resolveRoute().
+        // and persist; the live turn (Auto routing) resolves them through
+        // resolveLiveRoute() (entry/liveRoute.ts), which merges this table with
+        // @ares/core resolveRoute() so unassigned lanes get a scored pick.
         const routing = normalizeRoutingCommand(command.routing);
         await updateUiSettings({ routing });
         process.stdout.write(JSON.stringify({ type: "routing_set", routing }) + "\n");
@@ -2096,6 +2121,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const depth = Number.isFinite(command.depth) ? String(command.depth) : "";
         const lines = await undoLines(entry.live, depth);
         tagEmit(command.sessionId, { type: "undo_result", text: lines.join("\n") });
+        continue;
+      }
+      if (command.type === "rewind") {
+        // {type:"rewind", sessionId, id?|depth?} — files AND conversation.
+        const entry = await resolveEntry(command.sessionId);
+        const arg = typeof command.id === "string" && command.id.trim()
+          ? command.id.trim()
+          : Number.isFinite(command.depth) ? String(command.depth) : "";
+        const lines = await rewindLines(entry.live, arg);
+        tagEmit(command.sessionId, { type: "rewind_result", text: lines.join("\n") });
         continue;
       }
       if (command.type === "sessions_list") {
@@ -3506,9 +3541,32 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           let model = entry.live.selection.model;
           let providerName = providerFamilyForSelection(entry.live.selection);
           let source: "assigned" | "main" | "sticky" = "main";
+          let routeReasons: string[] = [];
+          let routeWarnings: string[] = [];
+          let routeVia: "assignment" | "heuristic" | undefined;
           if (settings.routingMode === "auto") {
-            const assigned = settings.routing?.[lane];
-            const onAssigned = !!assigned && assigned.family === providerName && assigned.model === model;
+            // THE router. Owner assignment for the lane wins outright; an
+            // unassigned lane gets routeModel()'s scored pick over the
+            // providers actually configured here (sensitive-surface detection
+            // biases local/private, explore/summarize goals route cheap). A
+            // route whose provider is unconfigured or retired is advisory —
+            // its reasons are still surfaced, but nothing moves.
+            const route = resolveLiveRoute({
+              goal: semanticGoal,
+              lane,
+              routingMode: "auto",
+              current: { family: providerName, model },
+              assignments: settings.routing ?? {},
+              settings,
+              dead: liveDeadProviders(),
+              hasImages: /data:image\//i.test(goal),
+              extraAuthed: [providerName],
+            });
+            routeReasons = route.reasons;
+            routeWarnings = route.warnings;
+            routeVia = route.source === "heuristic" ? "heuristic" : "assignment";
+            const assigned = route.executable && route.family ? { family: route.family, model: route.model } : undefined;
+            const onAssigned = !!assigned && assigned.family === providerName && (!assigned.model || assigned.model === model);
             const laneChanged = entry.lane !== undefined && entry.lane !== lane;
             const firstTurn = entry.lane === undefined;
             // A dead current provider (auth/limit-parked) forfeits stickiness:
@@ -3518,10 +3576,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // Switch when the domain genuinely changed (or on the very first
             // turn, or to escape a dead model) and there's a live assignment
             // for the lane. Otherwise the current model keeps the conversation.
-            if (assigned?.family && assigned.model && !onAssigned && !isProviderDead(assigned.family) && (laneChanged || firstTurn || currentDead)) {
+            if (assigned?.family && !onAssigned && !isProviderDead(assigned.family) && (laneChanged || firstTurn || currentDead)) {
               try {
                 if (ownerCancellationPending()) throw new Error("owner cancelled before route selection");
-                const sel = await selectProvider(new Map([["provider", assigned.family], ["model", assigned.model]]));
+                const sel = await selectProvider(new Map(assigned.model
+                  ? [["provider", assigned.family], ["model", assigned.model]]
+                  : [["provider", assigned.family]]));
                 if (ownerCancellationPending()) throw new Error("owner cancelled during route selection");
                 await preflightProviderSelection(sel);
                 if (ownerCancellationPending()) throw new Error("owner cancelled during provider preflight");
@@ -3556,6 +3616,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               provider: providerName,
               ...(settings.routingMode === "auto" ? { lane } : {}),
               source,
+              // The router's cited reasons/warnings (Auto only) — "why this
+              // model" is visible per turn instead of inferred from the badge.
+              ...(routeVia ? { via: routeVia } : {}),
+              ...(routeReasons.length ? { reasons: routeReasons } : {}),
+              ...(routeWarnings.length ? { warnings: routeWarnings } : {}),
             });
           }
         } catch {
@@ -3574,9 +3639,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // Restore the user's pinned model after a one-turn vision escalation.
         let revertSelection: ProviderSelection | null = null;
         let escalatedSelection: ProviderSelection | null = null;
+        // Restore the pin after a one-turn PINNED failover (manual routing):
+        // the backup finishes this turn, the owner's choice takes the next.
+        let pinnedRestore: ProviderSelection | null = null;
         try {
           if (!ownerCancellationPending()) {
-            await prepareUserTurn(entry.live, semanticGoal);
+            // A per-message tenant on the send frame (a multi-user channel
+            // relaying through this daemon) wins over the session's stamp;
+            // otherwise prepareUserTurn resolves live.tenant → owner.
+            const frameTenant = tenantFromWire((command as { tenant?: unknown }).tenant);
+            await prepareUserTurn(entry.live, semanticGoal, frameTenant ? { tenant: frameTenant } : {});
           }
           // Persona triggers. Runs BEFORE the prompt is sent so an "auto"
           // persona is worn for the very turn that summoned it. It never
@@ -3745,6 +3817,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // Without this set, two congested siblings ping-pong A→B→A→B for all
           // four hops — four full re-runs of an already-slow turn.
           const triedCapacityModels = new Set<string>([entry.live.selection.model]);
+          // Pinned-turn rescue state (manual routing, ARES_PINNED_FAILOVER≠0):
+          // deaths counted on this turn and the families already tried, so
+          // the ladder never ping-pongs and the same-provider retry fires once.
+          const pinnedTried = new Set<string>();
+          let pinnedDeaths = 0;
+          const pinnedTurnHasImages = turnContent.some((block) => block.type === "image");
           while (turnState.status === "failed" && turnState.fatalProvider && fallbackHops < 4) {
             fallbackHops++;
             // The provider that just failed: if it's a balance/auth death, retire
@@ -3752,20 +3830,56 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             if (isPermanentlyDeadError(turnState.fatalProvider)) {
               markProviderDead(providerFamilyForSelection(entry.live.selection));
             }
-            const routingMode = (await loadUiSettings().catch(() => ({ routingMode: "manual" as const }))).routingMode;
+            const failoverSettings = await loadUiSettings().catch(() => null);
+            const routingMode = failoverSettings?.routingMode === "auto" ? "auto" : "manual";
             const overloaded = /overloaded|capacity|\b529\b|server is busy|service unavailable|temporarily unavailable/i.test(turnState.fatalProvider);
-            // The pin is SACRED on manual routing (the opencode doctrine: retry
-            // patiently, surface the wait, and let the OWNER decide any model
-            // change). The old capacity-sibling slide "respected the pin" by
-            // switching it — which read as the model changing on its own. The
-            // engine already rode out its ~95s capacity ladder before reaching
-            // here; on manual we stop and say so instead of switching.
-            const fallback = routingMode !== "auto"
-              ? null
-              : (overloaded ? await pickCapacitySibling(entry.live.selection, triedCapacityModels).catch(() => null) : null) ??
+            // The pin is SACRED across turns on manual routing (the opencode
+            // doctrine: the model never changes by itself). But a pin used to
+            // mean the TURN died too — 42 of 188 turns last month, mostly
+            // provider stream deaths. Now a pinned turn gets one same-provider
+            // retry after a transient network failure, then a walk down the
+            // backup chain, and the pin comes back next turn (pinnedRestore).
+            // Capacity pressure still stops-and-says-so: the engine already
+            // rode out its ~95s ladder, and congestion is not a dead provider.
+            let fallback: ProviderSelection | null = null;
+            let pinnedSwitch: Extract<PinnedFailoverDecision, { action: "switch" }> | null = null;
+            let pinnedStop: string | null = null;
+            if (routingMode === "auto") {
+              fallback = (overloaded ? await pickCapacitySibling(entry.live.selection, triedCapacityModels).catch(() => null) : null) ??
                 (await pickHealthyFallback(entry.live.selection, liveDeadProviders(), {
                   allowCrossProvider: true,
                 }).catch(() => null));
+            } else if (pinnedFailoverEnabled() && !overloaded) {
+              pinnedDeaths++;
+              const decision = await decidePinnedFailover({
+                current: entry.live.selection,
+                fatal: turnState.fatalProvider,
+                attempt: pinnedDeaths,
+                hasImages: pinnedTurnHasImages,
+                dead: liveDeadProviders(),
+                tried: pinnedTried,
+                chain: backupChain(failoverSettings),
+                resolve: (family) => selectProvider(new Map([["provider", family]])),
+                preflight: (sel) => preflightProviderSelection(sel),
+              }).catch((err): PinnedFailoverDecision => ({ action: "stop", reason: `failover ladder failed: ${err instanceof Error ? err.message : String(err)}` }));
+              if (decision.action === "retry") {
+                tagEmit(sid, {
+                  type: "system_reminder_injected",
+                  source: "instructions",
+                  text: `${providerFamilyForSelection(entry.live.selection)}/${entry.live.selection.model} dropped the connection (${turnState.fatalProvider}). Retrying once on the same provider before falling back.`,
+                });
+                turnState.status = "completed";
+                turnState.fatalProvider = null;
+                await streamOnce(entry.live.session.resumeTurn());
+                continue;
+              }
+              if (decision.action === "switch") {
+                fallback = decision.selection;
+                pinnedSwitch = decision;
+              } else {
+                pinnedStop = decision.reason;
+              }
+            }
             if (!fallback) {
               const onAres = providerFamilyForSelection(entry.live.selection) === "ares";
               tagEmit(sid, {
@@ -3776,7 +3890,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                   : onAres
                   ? `Your Ares account couldn't run this turn (${turnState.fatalProvider}). Check your credits and granted models at doingteam.com → Account — you won't be switched to another provider's key.`
                   : routingMode !== "auto"
-                    ? `Pinned provider ${providerFamilyForSelection(entry.live.selection)}/${entry.live.selection.model} failed (${turnState.fatalProvider}). The selection was kept. Enable Auto routing if you want cross-provider failover.`
+                    ? pinnedStop
+                      ? `Pinned provider ${providerFamilyForSelection(entry.live.selection)}/${entry.live.selection.model} failed (${turnState.fatalProvider}) and no backup could take the turn — ${pinnedStop}. The selection was kept; configure a backup chain (routing.backup / ARES_ROUTING_BACKUP) or fix the provider.`
+                      : `Pinned provider ${providerFamilyForSelection(entry.live.selection)}/${entry.live.selection.model} failed (${turnState.fatalProvider}). The selection was kept. Enable Auto routing if you want cross-provider failover.`
                     : `All configured providers failed (${turnState.fatalProvider}). Add credit or a working API key in Settings → API Keys.`,
               });
               break;
@@ -3794,6 +3910,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // replace a key that was fine.
             const failedFamily = providerFamilyForSelection(entry.live.selection);
             triedCapacityModels.add(fallback.model);
+            if (pinnedSwitch) {
+              pinnedTried.add(failedFamily);
+              pinnedTried.add(providerFamilyForSelection(fallback));
+              // The TRUE pin: if a vision detour already replaced it this turn,
+              // restore the owner's selection, not the detour.
+              pinnedRestore ??= revertSelection ?? entry.live.selection;
+            }
             entry.live.selection = fallback;
             // Deliberately NOT persisted to mainSelection: a failover is a
             // per-session rescue, never a change to the owner's default. The
@@ -3809,7 +3932,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             tagEmit(sid, {
               type: "system_reminder_injected",
               source: "instructions",
-              text: overloaded
+              text: pinnedSwitch
+                ? `Pinned ${pinnedSwitch.from} failed (${turnState.fatalProvider}) — finishing this turn on ${pinnedSwitch.to}${authDead ? ` (${failedFamily} is retired for this session until its key is fixed)` : ""}. Your pinned model is restored next turn.`
+                : overloaded
                 ? `${overloadedModel} is overloaded upstream — finishing this turn on ${fallback.model} instead. Your pinned model is unchanged and the next message will use it again.`
                 : authDead
                 ? `The ${failedFamily} API key was rejected (invalid, expired, or out of credit) — it's retired for this session and the turn is continuing on ${providerFamilyForSelection(fallback)}/${fallback.model}. To use ${failedFamily} again, paste a fresh key in Settings → API Keys.`
@@ -3820,10 +3945,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               model: fallback.model,
               provider: providerFamilyForSelection(fallback),
               ...(routingMode === "auto" ? { lane: entry.lane ?? "chat" } : {}),
-              // "failover" (not "assigned"): unlike a one-turn vision detour,
-              // a failover durably changes the session's live selection — the
-              // footer's pinned readout must follow it.
-              source: "failover",
+              // Auto: "failover" (not "assigned") — a failover durably changes
+              // the session's live selection, so the footer's pinned readout
+              // must follow it. Pinned: "assigned" — like the vision detour,
+              // this is a one-turn rescue and the pin is restored after it,
+              // so the readout must NOT follow. Either way the event carries
+              // reason/from/to so the UI can say "switched to X because Y".
+              source: pinnedSwitch ? "assigned" : "failover",
+              reason: "failover",
+              from: pinnedSwitch?.from ?? `${failedFamily}/${overloadedModel}`,
+              to: `${providerFamilyForSelection(fallback)}/${fallback.model}`,
+              because: turnState.fatalProvider,
+              reasons: pinnedSwitch?.reasons ?? [`${failedFamily}/${overloadedModel} failed: ${turnState.fatalProvider}`, `Auto routing → ${providerFamilyForSelection(fallback)}/${fallback.model}`],
+              ...(pinnedSwitch ? { restoresPin: true } : {}),
             });
             // Reset and re-run; if THIS one also fails fatally the loop continues.
             turnState.status = "completed";
@@ -3900,6 +4034,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               entry.live.selection = pinned;
             } catch {
               // keep the vision model rather than kill the session
+            }
+          }
+          // A pinned failover was for THIS turn only — the pin is a standing
+          // choice, not something a bad night gets to rewrite. Restored even
+          // when the pin's family is retired: the next turn re-probes it and,
+          // if it is still dead, fails over again visibly instead of silently
+          // living on the backup forever.
+          if (pinnedRestore && entry.live.selection !== pinnedRestore) {
+            try {
+              const pinned = pinnedRestore;
+              await entry.live.session.setProvider(pinned.provider, pinned.model, {
+                contextBudgetTokens: chatContextBudget(pinned),
+                summarizeSpan: makeSpanSummarizer(pinned, (usage) =>
+                  entry.live.session.recordAuxiliaryUsage("compaction", pinned.provider.name, pinned.model, usage),
+                ),
+              });
+              entry.live.selection = pinned;
+            } catch {
+              // keep the backup rather than kill the session
             }
           }
           // Core deliberately requeues failed inputs so explicit resumeTurn()

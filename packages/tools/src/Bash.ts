@@ -12,8 +12,10 @@ import {
   irrecoverableShellRefusal,
   resolveWorkspacePath,
   shellInputSchema,
+  shellPolicyDecision,
   shellRepositoryInstructionDecision,
 } from "./_shared.js";
+import { classifyShellFailure, shellFlavorOf, type ShellFlavor } from "./shellHints.js";
 
 const MAX_OUTPUT_CHARS = 30_000;
 // After the shell process exits, how long its stdio pipes may stay open
@@ -34,6 +36,11 @@ export interface BashOutput {
   fullOutputPath?: string;
   /** Present only when the full-output spool itself failed. Inline tails remain. */
   captureError?: string;
+  /** Which interpreter ran the command (bash / powershell 5.1 / pwsh 7+ / cmd). */
+  shell: ShellFlavor;
+  /** One-line actionable diagnosis from classifyShellFailure when the run
+   *  failed and a known signature appeared in the output tail. */
+  hint?: string;
 }
 
 export interface BashBackgroundOutput {
@@ -70,7 +77,7 @@ export const BashTool = buildTool({
     // command the user already granted. Only re-ask for destructive commands
     // that were NEVER approved.
     if (configured?.kind === "allow") return configured;
-    return destructiveShellDecision(i.command) ?? { kind: "allow" };
+    return destructiveShellDecision(i.command) ?? shellPolicyDecision(i.command) ?? { kind: "allow" };
   },
 
   async call(i, ctx): Promise<{ output: unknown; display: string }> {
@@ -120,19 +127,20 @@ export const BashTool = buildTool({
       ctx.emitProgress?.({ kind: "shell_output", stream, text });
     }, capturePath);
     const output: BashOutput | BashBackgroundOutput = result;
+    const hintLine = result.hint ? `\nhint: ${result.hint}` : "";
     const failure = result.timedOut
-      ? `Bash timed out after ${i.timeout}ms`
+      ? `Bash timed out after ${i.timeout}ms${hintLine}`
       : result.exitCode === 0
         ? undefined
-        : `Bash exited with code ${result.exitCode ?? "unknown"}`;
+        : `Bash exited with code ${result.exitCode ?? "unknown"}${hintLine}`;
     return {
       output,
       ...(failure ? { failure } : {}),
       display: result.timedOut
-        ? `Bash timed out after ${i.timeout}ms`
+        ? `Bash timed out after ${i.timeout}ms${hintLine}`
         : result.exitCode === 0
         ? `Bash exited 0 in ${result.durationMs}ms`
-        : `Bash failed with exit ${result.exitCode} in ${result.durationMs}ms`,
+        : `Bash failed with exit ${result.exitCode} in ${result.durationMs}ms${hintLine}`,
     };
   },
 });
@@ -305,6 +313,13 @@ export async function runShell(
         if (capturePath && (!truncated || captureFailed)) {
           await fs.rm(capturePath, { force: true }).catch(() => undefined);
         }
+        const shell = shellFlavorOf(program);
+        // A timeout has no signature in the output — name the fix directly.
+        // Otherwise classify the tail so a bare "exited with code N" carries
+        // the trap that caused it (see shellHints.ts for the field numbers).
+        const hint = timedOut
+          ? "raise `timeout` or run with run_in_background=true and poll with BashOutput."
+          : classifyShellFailure(code, stdout, stderr, shell);
         resolve({
           command: `${program} ${args.join(" ")}`,
           exitCode: code,
@@ -313,6 +328,8 @@ export async function runShell(
           durationMs: Date.now() - startedAt,
           timedOut,
           truncated,
+          shell,
+          ...(hint ? { hint } : {}),
           ...(truncated && capturePath && !captureFailed ? { fullOutputPath: capturePath } : {}),
           ...(captureFailureMessage ? { captureError: captureFailureMessage } : {}),
         });

@@ -287,3 +287,169 @@ function isTestPath(file: string): boolean {
 function toPosix(value: string): string {
   return value.replace(/\\/g, "/");
 }
+
+// ─── Project checks — what "run the tests" concretely means HERE ────────────
+//
+// The verifier used to decide behavioral-vs-static by regex over a command's
+// LABEL, so an unusual runner (a custom `test` script, a Makefile target)
+// degraded to static and the completion gate refused it. Derive the project's
+// own test/build/lint/typecheck commands from its manifests once, and let the
+// derived test command be behavioral regardless of how it is spelled.
+
+export type ProjectCheckKind = "test" | "build" | "lint" | "typecheck";
+
+export interface ProjectCheckCommand {
+  kind: ProjectCheckKind;
+  /** Shell-shaped command line, normalized to single spaces ("pnpm test"). */
+  command: string;
+  program: string;
+  args: string[];
+  /** Manifest the command was derived from ("package.json:test", "Cargo.toml", "Makefile:test"…). */
+  source: string;
+}
+
+export interface ProjectChecks {
+  workspace: string;
+  test?: ProjectCheckCommand;
+  build?: ProjectCheckCommand;
+  lint?: ProjectCheckCommand;
+  typecheck?: ProjectCheckCommand;
+  /** Every derived test command — a polyglot repo has several, all behavioral. */
+  tests: ProjectCheckCommand[];
+  /** Package/crate/module names (root + workspace members) — a manual
+   *  `pnpm --filter <name> test` / `cargo test -p <name>` targets one of these. */
+  packageNames: string[];
+  /** Test roots relative to the workspace, posix ("tests", "packages/core/test"). */
+  testRoots: string[];
+}
+
+const projectChecksCache = new Map<string, { at: number; checks: ProjectChecks }>();
+const PROJECT_CHECKS_TTL_MS = 5 * 60_000;
+
+/** Cached per workspace (5 min) — manifests rarely change mid-session and the
+ *  cartography walk behind packageNames/testRoots is bounded but not free. */
+export async function resolveProjectChecks(workspace: string): Promise<ProjectChecks> {
+  const key = path.resolve(workspace);
+  const cached = projectChecksCache.get(key);
+  if (cached && Date.now() - cached.at < PROJECT_CHECKS_TTL_MS) return cached.checks;
+  const checks = await deriveProjectChecks(key).catch((): ProjectChecks => ({
+    workspace: key,
+    tests: [],
+    packageNames: [],
+    testRoots: [],
+  }));
+  projectChecksCache.set(key, { at: Date.now(), checks });
+  if (projectChecksCache.size > 32) {
+    const oldest = [...projectChecksCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) projectChecksCache.delete(oldest[0]);
+  }
+  return checks;
+}
+
+/** Test-only: drop the cache so a rewritten temp workspace is re-derived. */
+export function resetProjectChecksCache(): void {
+  projectChecksCache.clear();
+}
+
+async function deriveProjectChecks(root: string): Promise<ProjectChecks> {
+  const exists = (rel: string) => fs.stat(path.join(root, rel)).then(() => true, () => false);
+  const readText = (rel: string) => fs.readFile(path.join(root, rel), "utf8").catch(() => null);
+  const checks: ProjectChecks = { workspace: root, tests: [], packageNames: [], testRoots: [] };
+  const take = (cmd: ProjectCheckCommand) => {
+    if (cmd.kind === "test") checks.tests.push(cmd);
+    if (!checks[cmd.kind]) checks[cmd.kind] = cmd;
+  };
+  const make = (kind: ProjectCheckKind, program: string, args: string[], source: string): ProjectCheckCommand => ({
+    kind,
+    command: [program, ...args].join(" "),
+    program,
+    args,
+    source,
+  });
+
+  // package.json scripts — the project's own words for test/build/lint/typecheck.
+  const pkgRaw = await readText("package.json");
+  if (pkgRaw !== null) {
+    let pkg: Record<string, unknown> = {};
+    try {
+      pkg = JSON.parse(pkgRaw) as Record<string, unknown>;
+    } catch {
+      // A malformed manifest still leaves the other ecosystems derivable.
+    }
+    const scripts = (pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {}) as Record<string, unknown>;
+    const [pnpm, yarn] = await Promise.all([exists("pnpm-lock.yaml"), exists("yarn.lock")]);
+    const pm = pnpm ? "pnpm" : yarn ? "yarn" : "npm";
+    const realScript = (name: string): boolean => {
+      const body = scripts[name];
+      return typeof body === "string" && body.trim().length > 0 && !/^(?:echo\s+)?["']?(?:no tests?|error: no test specified)/i.test(body.trim());
+    };
+    // `<pm> test` is a lifecycle alias everywhere; other scripts need `run`.
+    if (realScript("test")) take(make("test", pm, ["test"], "package.json:test"));
+    for (const name of Object.keys(scripts).sort()) {
+      if (/^test:/.test(name) && realScript(name)) take(make("test", pm, ["run", name], `package.json:${name}`));
+    }
+    for (const [name, kind] of [["build", "build"], ["lint", "lint"], ["typecheck", "typecheck"], ["check", "typecheck"]] as const) {
+      if (realScript(name)) take(make(kind, pm, ["run", name], `package.json:${name}`));
+    }
+    if (typeof pkg.name === "string") checks.packageNames.push(pkg.name);
+  }
+
+  // Cargo: `cargo test` is the behavioral bar; `cargo check`/`build` are static.
+  const cargoRaw = await readText("Cargo.toml");
+  if (cargoRaw !== null) {
+    take(make("test", "cargo", ["test"], "Cargo.toml"));
+    take(make("build", "cargo", ["build"], "Cargo.toml"));
+    take(make("typecheck", "cargo", ["check"], "Cargo.toml"));
+    const crate = cargoRaw.match(/^\s*\[package\][\s\S]*?^\s*name\s*=\s*"([^"]+)"/m);
+    if (crate) checks.packageNames.push(crate[1]);
+  }
+
+  // Python: any pytest configuration surface means `pytest` is the suite.
+  const [pyproject, pytestIni, setupCfg] = await Promise.all([
+    readText("pyproject.toml"),
+    exists("pytest.ini"),
+    readText("setup.cfg"),
+  ]);
+  if (pyproject !== null || pytestIni || (setupCfg !== null && /\[tool:pytest\]/.test(setupCfg))) {
+    take(make("test", "pytest", [], pytestIni ? "pytest.ini" : pyproject !== null ? "pyproject.toml" : "setup.cfg"));
+    const pyName = pyproject?.match(/^\s*\[project\][\s\S]*?^\s*name\s*=\s*"([^"]+)"/m)
+      ?? pyproject?.match(/^\s*\[tool\.poetry\][\s\S]*?^\s*name\s*=\s*"([^"]+)"/m);
+    if (pyName) checks.packageNames.push(pyName[1]);
+  }
+
+  // Go: package-level test + vet + build.
+  const goMod = await readText("go.mod");
+  if (goMod !== null) {
+    take(make("test", "go", ["test", "./..."], "go.mod"));
+    take(make("build", "go", ["build", "./..."], "go.mod"));
+    take(make("typecheck", "go", ["vet", "./..."], "go.mod"));
+    const mod = goMod.match(/^module\s+(\S+)/m);
+    if (mod) checks.packageNames.push(mod[1], mod[1].split("/").at(-1) ?? mod[1]);
+  }
+
+  // Makefile targets — only the conventional names; `make` itself is a build.
+  const makefile = await readText("Makefile");
+  if (makefile !== null) {
+    const targets = new Set([...makefile.matchAll(/^([A-Za-z][\w-]*)\s*:(?!=)/gm)].map((m) => m[1]));
+    if (targets.has("test")) take(make("test", "make", ["test"], "Makefile:test"));
+    if (targets.has("build")) take(make("build", "make", ["build"], "Makefile:build"));
+    if (targets.has("lint")) take(make("lint", "make", ["lint"], "Makefile:lint"));
+    if (targets.has("typecheck")) take(make("typecheck", "make", ["typecheck"], "Makefile:typecheck"));
+  }
+
+  // Cartography supplies workspace-member names and every test root, bounded.
+  const map = await buildRepositoryMap(root, { maxFiles: 4_000 }).catch(() => null);
+  if (map) {
+    for (const pkg of map.packages) {
+      if (pkg.name) checks.packageNames.push(pkg.name);
+      const prefix = pkg.path === "." ? "" : `${pkg.path}/`;
+      for (const testRoot of pkg.testRoots) checks.testRoots.push(`${prefix}${testRoot}`);
+    }
+  }
+  for (const dir of ["test", "tests", "__tests__", "spec", "specs"]) {
+    if (await exists(dir)) checks.testRoots.push(dir);
+  }
+  checks.packageNames = [...new Set(checks.packageNames)].sort();
+  checks.testRoots = [...new Set(checks.testRoots)].sort();
+  return checks;
+}

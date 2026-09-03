@@ -42,6 +42,62 @@ export function contentHash(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+/**
+ * ARES_EDIT_AUTO_READ — whether Edit/Write may read an un-Read file themselves
+ * instead of refusing with "Read <path> before editing it." Default ON.
+ *
+ * WHY: the read-before-write rule exists so the model never clobbers bytes it
+ * hasn't seen. But the CONTENT-HASH staleness check plus unique-match
+ * enforcement already carry that guarantee for Edit — the refusal only added a
+ * round-trip. Field telemetry: 62 of 68 Edit errors in a month were this
+ * refusal, each burning a turn to Read a file the model then edited exactly as
+ * it had proposed. Set ARES_EDIT_AUTO_READ=0 to restore the hard deny.
+ */
+export function editAutoReadEnabled(): boolean {
+  const raw = (process.env.ARES_EDIT_AUTO_READ ?? "").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+/**
+ * Read `filePath` on behalf of a mutation tool and stamp it EXACTLY as Read
+ * would (mtime/size/hash/lines), so the staleness tracking downstream is
+ * indistinguishable from a real Read. Returns the content so the caller does
+ * not read twice. `writtenNotRead` is set because the model never saw these
+ * bytes — the same provenance bit a post-write stamp carries.
+ *
+ * Throws a toolError (not a bare Error) on a missing/unreadable file: that is
+ * the ONE case where the old deny is still the right answer, phrased so the
+ * model reaches for Read (or Write, for a new file) instead of retrying Edit.
+ */
+export async function autoReadForMutation(
+  ctx: Pick<RichToolContext, "fileReadStamps">,
+  filePath: string,
+  verb: "editing" | "overwriting",
+): Promise<{ content: string; stamp: FileReadStamp }> {
+  let content: string;
+  let stat: import("node:fs").Stats;
+  try {
+    stat = await fs.stat(filePath);
+    content = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw toolError(
+      code === "ENOENT"
+        ? `${filePath} does not exist — Edit needs an existing file; use Write to create it.`
+        : `Could not auto-read ${filePath} before ${verb} (${code ?? String(error)}). Read it explicitly and retry.`,
+    );
+  }
+  const stamp: FileReadStamp = {
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    hash: contentHash(content),
+    lines: content.split("\n").length,
+    writtenNotRead: true,
+  };
+  ctx.fileReadStamps.set(filePath, stamp);
+  return { content, stamp };
+}
+
 export interface RichToolContext extends ToolCallContext {
   permissionMode: PermissionMode;
   fileReadStamps: Map<string, FileReadStamp>;
@@ -52,6 +108,8 @@ export interface RichToolContext extends ToolCallContext {
   shellRegistry?: import("./ShellRegistry.js").ShellRegistry;
   /** Optional todo store — used by TodoWrite. */
   todoStore?: import("./TodoWrite.js").TodoStore;
+  /** Per-session registry of deferred (ToolSearch-loadable) tools. */
+  deferredTools?: import("./ToolSearch.js").DeferredToolRegistry;
 }
 
 export const SHELL_DEFAULT_TIMEOUT_MS = 120_000;
@@ -657,10 +715,53 @@ export function irrecoverableShellRefusal(command: string): string | null {
   return null;
 }
 
-/** Commands that can erase data or discard uncommitted work. */
-export function destructiveShellDecision(command: string): PermissionDecision | null {
-  const normalized = command.replace(/\s+/g, " ").trim();
-  const destructive =
+/**
+ * What a flagged shell command can do. Distinct categories get distinct
+ * prompts so the person at the keyboard reads WHY they're being asked ("can
+ * delete data" is a very different decision from "publishes to a registry").
+ */
+export type ShellHazard = "delete" | "history" | "publish" | "remote-code";
+
+const SHELL_HAZARD_PROMPTS: Record<ShellHazard, string> = {
+  delete: "This shell command can delete data or discard uncommitted work.",
+  history: "This shell command rewrites shared git history or discards git refs/stashes (force-push, branch -D, stash drop/clear).",
+  publish: "This shell command publishes to a package registry.",
+  "remote-code": "This shell command executes remote code (downloaded script piped into a shell / Invoke-Expression).",
+};
+
+/**
+ * Peel ONE layer of "run this string in another interpreter" wrapping so the
+ * hazard patterns see the real command. Every wrapper below was a live bypass:
+ * `sh -c 'rm -rf x'`, `bash -c`, `pwsh -Command Remove-Item …`,
+ * `powershell -c`, `cmd /c rd /s /q …`, and `python -c "shutil.rmtree(…)"` all
+ * sailed past a matcher that only looked at the outer line. One level is
+ * enough in practice; deeper nesting is rare and the unwrapped text is scanned
+ * as a whole (quotes included), so a doubly-wrapped `rm -rf` still matches.
+ */
+export function unwrapShellWrappers(command: string): string[] {
+  const out: string[] = [];
+  const wrappers = [
+    /(?:^|[;&|]\s*)(?:sh|bash|zsh|dash|ksh)(?:\.exe)?\s+(?:-[a-z]+\s+)*-l?c\s+(.+)$/i,
+    /(?:^|[;&|]\s*)(?:pwsh|powershell)(?:\.exe)?\s+(?:-\w+(?:\s+\w+)?\s+)*-(?:Command|c|Comm|Com)\s+(.+)$/i,
+    /(?:^|[;&|]\s*)cmd(?:\.exe)?\s+(?:\/\w+\s+)*\/[ck]\s+(.+)$/i,
+    /(?:^|[;&|]\s*)(?:python3?|py|node)(?:\.exe)?\s+(?:-\w+\s+)*-[ce]\s+(.+)$/i,
+  ];
+  for (const re of wrappers) {
+    const m = re.exec(command);
+    if (!m) continue;
+    let inner = m[1].trim();
+    // Strip ONE matching pair of surrounding quotes; the body keeps its own.
+    if ((inner.startsWith('"') && inner.endsWith('"')) || (inner.startsWith("'") && inner.endsWith("'"))) {
+      inner = inner.slice(1, -1);
+    }
+    if (inner.length > 0) out.push(inner);
+  }
+  return out;
+}
+
+/** Which hazard (if any) a single already-normalized command line carries. */
+function shellHazardOf(normalized: string): ShellHazard | null {
+  const deletes =
     /(?:^|[;&|]\s*)rm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+/i.test(normalized) ||
     /(?:^|[;&|]\s*)(?:rmdir|unlink|shred)\b/i.test(normalized) ||
     /\bgit\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--)\b/i.test(normalized) ||
@@ -671,15 +772,133 @@ export function destructiveShellDecision(command: string): PermissionDecision | 
     /\b(?:mkfs(?:\.\w+)?|wipefs|format(?!-))\b/i.test(normalized) ||
     /\bRemove-Item\b/i.test(normalized) ||
     /(?:^|[;|]\s*)(?:del|erase|rd|rmdir)\s+(?:\/[a-z]+\s+)*/i.test(normalized) ||
-    /\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i.test(normalized);
+    /\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i.test(normalized) ||
+    // Interpreter one-liners that delete: python's shutil/os/pathlib removers,
+    // node's fs.rm*/rimraf. Scanned on the whole line so quoting doesn't matter.
+    /\b(?:shutil\.rmtree|os\.(?:remove|unlink|rmdir|removedirs)|\.unlink\(|\.rmdir\(|fs\.rm(?:Sync)?\(|fs\.rmdir(?:Sync)?\(|fs\.unlink(?:Sync)?\(|\brimraf\b)/.test(normalized) ||
+    // find's own deleter and its exec-into-rm form; xargs feeding rm.
+    (/(?:^|[;&|]\s*)find\b/i.test(normalized) && /\s-delete\b|\s-exec\s+rm\b|\s-execdir\s+rm\b/i.test(normalized)) ||
+    /\bxargs\s+(?:-[^\s]+\s+)*rm\b/i.test(normalized) ||
+    // truncate zeroes a file in place; dd of= overwrites whatever it points at.
+    /(?:^|[;&|]\s*)truncate\s/i.test(normalized) ||
+    /(?:^|[;&|]\s*)dd\s+[^;&|]*\bof=/i.test(normalized);
+  if (deletes) return "delete";
 
-  return destructive
-    ? {
-        kind: "ask",
-        prompt: "This shell command can delete data or discard uncommitted work.",
-        suggestion: "deny",
-      }
-    : null;
+  const history =
+    /\bgit\s+(?:-[^\s]+\s+)*push\b[^;&|]*\s(?:-f|--force|--force-with-lease(?:=[^\s]*)?)(?:\s|$)/i.test(normalized) ||
+    /\bgit\s+(?:-[^\s]+\s+)*branch\s+(?:-[^\s]+\s+)*-D\b/.test(normalized) ||
+    /\bgit\s+(?:-[^\s]+\s+)*stash\s+(?:drop|clear)\b/i.test(normalized);
+  if (history) return "history";
+
+  if (/\b(?:npm|pnpm|yarn|cargo)\s+publish\b/i.test(normalized)) return "publish";
+
+  const remoteCode =
+    /\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|pwsh|powershell)\b/i.test(normalized) ||
+    /\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|]*\|\s*(?:iex|Invoke-Expression)\b/i.test(normalized) ||
+    /\bInvoke-Expression\b/i.test(normalized) ||
+    /(?:^|[;&|(]\s*)iex\s/i.test(normalized);
+  if (remoteCode) return "remote-code";
+
+  return null;
+}
+
+/**
+ * Commands that can erase data, rewrite shared history, publish, or run code
+ * pulled off the network. Returns an "ask" decision with a category-specific
+ * prompt, or null when the command is fine. Wrapped forms (`sh -c '…'`,
+ * `powershell -Command …`, `cmd /c …`, `python -c "…"`) are unwrapped one level
+ * before matching — see unwrapShellWrappers for why.
+ */
+export function destructiveShellDecision(command: string): PermissionDecision | null {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  const candidates = [normalized, ...unwrapShellWrappers(normalized)];
+  for (const candidate of candidates) {
+    const hazard = shellHazardOf(candidate);
+    if (hazard) {
+      return { kind: "ask", prompt: SHELL_HAZARD_PROMPTS[hazard], suggestion: "deny" };
+    }
+  }
+  return null;
+}
+
+/**
+ * ARES_SHELL_POLICY=allowlist — when set, any shell command that is not
+ * provably read-only (isReadOnlyShellCommand) returns {kind:"ask"} instead of
+ * silently allowing. Default (unset/"default") keeps the existing behaviour:
+ * only hazard-matched commands prompt. This is the knob for running Ares
+ * against a workspace you don't fully trust the model with yet.
+ */
+export function shellPolicyDecision(command: string): PermissionDecision | null {
+  const policy = (process.env.ARES_SHELL_POLICY ?? "").trim().toLowerCase();
+  if (policy !== "allowlist") return null;
+  if (isReadOnlyShellCommand(command)) return null;
+  return {
+    kind: "ask",
+    prompt: "ARES_SHELL_POLICY=allowlist: this command is not on the read-only allowlist.",
+    suggestion: "allow_once",
+  };
+}
+
+// First tokens that only ever read. Deliberately SMALL: the cost of a missing
+// entry is one extra prompt; the cost of a wrong entry is a silent write.
+const READ_ONLY_PROGRAMS = new Set([
+  "ls", "dir", "cat", "type", "head", "tail", "wc", "echo", "pwd", "which", "where", "whoami",
+  "hostname", "date", "printenv", "file", "stat", "du", "df", "tree", "less", "more", "grep",
+  "rg", "fd", "fdfind", "true", "uname", "id", "realpath", "basename", "dirname", "nproc",
+]);
+// PowerShell cmdlets/aliases that only read or format.
+const READ_ONLY_CMDLETS = /^(?:Get-\w+|Select-String|Select-Object|Format-\w+|Measure-Object|Where-Object|Sort-Object|Group-Object|Test-Path|Resolve-Path|Out-String|Write-Output|Write-Host|ConvertTo-Json|ConvertFrom-Json|Compare-Object|Split-Path|Join-Path|Out-Host|gci|gc|gi|gl|gp|gsv|gps|gm|sls|select|where|sort|measure|ft|fl|fw|echo|pwd|cat|ls|dir|type)$/i;
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "describe",
+  "shortlog", "cat-file", "reflog", "grep", "name-rev", "for-each-ref", "count-objects", "var",
+]);
+const VERSION_FLAG = /^(?:-v|-V|--version|-version)$/;
+
+/**
+ * True when EVERY segment of the command (split on `;`, `&&`, `||`, `|`,
+ * newlines) starts with a known read-only program and carries no output
+ * redirection. Conservative by design — anything it doesn't recognise counts
+ * as NOT read-only, so `git push`, `pnpm build`, `sed -i`, `> file` all fall
+ * through to the policy prompt. `find` is allowed only without -delete/-exec.
+ */
+export function isReadOnlyShellCommand(command: string): boolean {
+  const line = command.trim();
+  if (line.length === 0) return false;
+  // Any redirection (incl. PowerShell's) can create/truncate a file.
+  if (/(?:^|[^<])>|<\(/.test(line.replace(/'[^']*'|"[^"]*"/g, ""))) return false;
+  const segments = line.split(/\r?\n|;|&&|\|\||\|/).map((s) => s.trim()).filter((s) => s.length > 0);
+  if (segments.length === 0) return false;
+  for (const seg of segments) {
+    const tokens = seg.split(/\s+/);
+    // Skip leading VAR=value assignments (bash) — they don't run anything.
+    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens.shift();
+    if (tokens.length === 0) return false;
+    const program = tokens[0].replace(/^.*[\\/]/, "").replace(/\.exe$/i, "");
+    const rest = tokens.slice(1);
+    if (READ_ONLY_PROGRAMS.has(program.toLowerCase()) || READ_ONLY_CMDLETS.test(program)) continue;
+    if (/^(?:node|npm|pnpm|npx|yarn|python3?|py|cargo|rustc|tsc|git|go|java|dotnet|pwsh|powershell|bash)$/i.test(program) && rest.length === 1 && VERSION_FLAG.test(rest[0])) continue;
+    if (program.toLowerCase() === "git") {
+      // Skip pre-subcommand options (`git -C path status`, `--no-pager log`).
+      let k = 0;
+      while (k < rest.length && rest[k].startsWith("-")) k += /^-[Cc]$|^--git-dir$|^--work-tree$/.test(rest[k]) ? 2 : 1;
+      const sub = rest[k]?.toLowerCase();
+      if (sub && READ_ONLY_GIT_SUBCOMMANDS.has(sub)) continue;
+      if (sub === "branch" && !rest.slice(k + 1).some((t) => /^-(?:[dDmMcC]|-delete|-move|-copy|-set-upstream-to|-unset-upstream|-edit-description)$/.test(t))) continue;
+      if (sub === "stash" && rest[k + 1]?.toLowerCase() === "list") continue;
+      if (sub === "remote" && (rest.length === k + 1 || rest[k + 1] === "-v" || rest[k + 1] === "show" || rest[k + 1] === "get-url")) continue;
+      if (sub === "config" && (rest[k + 1] === "--get" || rest[k + 1] === "--list" || rest[k + 1] === "-l")) continue;
+      if (sub === "tag" && (rest.length === k + 1 || rest[k + 1] === "-l" || rest[k + 1] === "--list")) continue;
+      return false;
+    }
+    if (program.toLowerCase() === "find") {
+      if (rest.some((t) => /^-(?:delete|exec|execdir|ok|okdir|fprint\w*)$/.test(t))) return false;
+      continue;
+    }
+    if (/^(?:npm|pnpm|yarn)$/i.test(program) && /^(?:ls|list|why|view|outdated|root)$/i.test(rest[0] ?? "")) continue;
+    if (program.toLowerCase() === "sed" && !rest.some((t) => /^-[a-zA-Z]*i/.test(t) || t === "--in-place")) continue;
+    return false;
+  }
+  return true;
 }
 
 function defaultPermissionDecision<I extends z.ZodTypeAny, O>(

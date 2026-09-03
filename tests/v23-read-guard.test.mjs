@@ -78,14 +78,31 @@ test("read: a read in one context does not bless another context's edit", async 
   await ReadTool.call({ file_path: file }, child); // ONLY the child reads it
   assert.equal(parent.fileReadStamps.has(path.resolve(file)), false, "parent never gained a stamp from the child's read");
 
-  // The parent, never having read it, must be refused the edit (read-before-write).
-  await assert.rejects(
-    EditTool.call({ file_path: file, old_string: "let x = 1;", new_string: "let x = 2;", replace_all: false }, parent),
-    /read/i,
-    "parent edit is blocked because it never read the file in its own context",
-  );
+  // With auto-read off (ARES_EDIT_AUTO_READ=0) the parent, never having read
+  // it, must be refused the edit (read-before-write).
+  const prevKnob = process.env.ARES_EDIT_AUTO_READ;
+  process.env.ARES_EDIT_AUTO_READ = "0";
+  try {
+    await assert.rejects(
+      EditTool.call({ file_path: file, old_string: "let x = 1;", new_string: "let x = 2;", replace_all: false }, parent),
+      /read/i,
+      "parent edit is blocked because it never read the file in its own context",
+    );
+  } finally {
+    if (prevKnob === undefined) delete process.env.ARES_EDIT_AUTO_READ;
+    else process.env.ARES_EDIT_AUTO_READ = prevKnob;
+  }
 
   // The child, which did read it, can edit.
   const ok = await EditTool.call({ file_path: file, old_string: "let x = 1;", new_string: "let x = 2;", replace_all: false }, child);
   assert.equal(ok.output.replacements, 1, "the context that actually read the file can edit it");
+
+  // Default mode: the parent auto-reads in ITS OWN context. The stamp lands in
+  // the parent's map only — the child's map is untouched, so no phantom grant
+  // crosses contexts in either direction.
+  const childStampBefore = child.fileReadStamps.get(path.resolve(file));
+  const auto = await EditTool.call({ file_path: file, old_string: "let x = 2;", new_string: "let x = 3;", replace_all: false }, parent);
+  assert.equal(auto.output.autoRead, true, "parent edit auto-read the file rather than borrowing the child's stamp");
+  assert.ok(parent.fileReadStamps.has(path.resolve(file)), "parent now holds its own stamp");
+  assert.equal(child.fileReadStamps.get(path.resolve(file)), childStampBefore, "child's stamp was not touched by the parent's auto-read");
 });

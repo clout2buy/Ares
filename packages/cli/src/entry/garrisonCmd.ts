@@ -37,6 +37,8 @@ import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startT
 import { persistTerminalModelPreference, terminalModelCatalogLines } from "./terminalLines.js";
 import { buildSystemPrompt, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
+import { promptTailForTenant } from "./sessionSurface.js";
+import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
@@ -208,9 +210,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     workspace: context.workspace,
     enabled: process.env.ARES_AGENT_ENABLED === "1" || (!isMock && process.env.ARES_AGENT_ENABLED !== "0"),
   });
-  const promptTail = (await loadLiveMindContext(context)) + (await loadGitContext(context));
+  const gitTail = await loadGitContext(context);
+  const promptTail = (await loadLiveMindContext(context)) + gitTail;
   composeGarrisonSystemPrompt = (mode) =>
     agent.composeSystemPrompt(buildSystemPrompt(mode, context)) + promptTail;
+  // Guests (Telegram strangers) get the same doctrine but none of the owner's
+  // live-mind tail — see promptTailForTenant.
+  const composeGuestSystemPrompt = (mode: AresRuntimeState["permissionMode"]) =>
+    agent.composeSystemPrompt(buildSystemPrompt(mode, context)) + gitTail;
   runtime.composeChildSystemPrompt = async () =>
     agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context)) +
     (await loadLiveMindContext(context)) +
@@ -228,8 +235,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       const workspace = req.workspace ?? context.workspace;
       const model = req.model ?? selection.model;
       planModes.refresh(req.sessionId);
+      const sessionTail = promptTailForTenant(req.tenant, promptTail, gitTail);
       const liveSystemPrompt = () =>
-        composeGarrisonSystemPrompt(planModes.stateFor(req.sessionId).permissionMode);
+        promptTailForTenant(req.tenant, composeGarrisonSystemPrompt, composeGuestSystemPrompt)(planModes.stateFor(req.sessionId).permissionMode);
       const fileReadStamps = new Map<string, FileReadStamp>();
       const requestPermission = req.requestPermission
         ? async (request: Parameters<typeof req.requestPermission>[0]) => {
@@ -267,7 +275,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         summarizeSpan: makeSpanSummarizer(selection),
         contextInputs: () => ({
           persona: agent.activePersona() ?? null,
-          livingMemoryAndGit: promptTail,
+          livingMemoryAndGit: sessionTail,
         }),
         sessionId: req.sessionId,
         initialMessages: req.initialMessages,
@@ -331,8 +339,19 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         }
         return trial;
       },
+      // The nightly referee: the coding gauntlet runs headless in the idle window
+      // and its score lands in the trend ledger; a regression becomes a triage
+      // finding + a garrison event (Telegram pushes it to the owner). Until this
+      // hook existed the gauntlet only ran when someone remembered to.
+      gauntlet: async () =>
+        (await runScheduledGauntlet({ suite: process.env.ARES_GAUNTLET_SUITE ?? "coding-v3", gate: true, trigger: "garrison", home: context.home })).nightly,
     },
     lastActivityAt: () => sessions.lastActivityAt(),
+    home: context.aresHome,
+    activeTurns: () => sessions.list().filter((s) => s.busy).length,
+  });
+  scheduler.subscribe((event) => {
+    process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
   });
 
   // Telegram reports: a voice outside the app. When ARES_TELEGRAM=1 + a bot token
@@ -645,7 +664,8 @@ export async function attachCommand(args: ParsedArgs): Promise<number> {
           streaming = false;
           if (prefix) process.stdout.write(prefix);
           process.stdout.write("\n");
-          if (event.status !== "completed") {
+          // needs_verification is not surfaced as a warning (owner order, 2026-08-17).
+          if (event.status === "failed" || event.status === "interrupted") {
             process.stderr.write(notice("Turn", [`[${frame.sessionId}] status ${String(event.status)}`], "warn"));
           }
           prompt();

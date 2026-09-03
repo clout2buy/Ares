@@ -5,11 +5,13 @@
 // wired ad hoc inside the runtime, deep-dream/witness/conversation-reflect
 // fired from their callers. This scheduler is the single owner of WHEN
 // reflection runs; the passes themselves are pure functions it calls. No
-// reflection loop may own its own timer anymore — the interval trigger here is
-// the only timer.
+// reflection loop may own its own timer anymore — the timers here are the
+// only timers.
 //
 // Guarantees:
-//   • one timer total (start() replaces any prior one; stop() clears it)
+//   • one timer per cadence, both owned here — start() owns the "interval"
+//     timer (heartbeat), startConsolidation() owns the slower "consolidate"
+//     timer; each replaces its prior; stop() clears both
 //   • single-flight per trigger — a fire() while the same trigger is already
 //     running is skipped, never queued (reflection is periodic; skipping a
 //     pass is always safe, double-running is not)
@@ -18,7 +20,7 @@
 
 import type { ReflectionResult } from "@ares/mind";
 
-export type ReflectionTrigger = "interval" | "turnEnd" | "sessionEnd";
+export type ReflectionTrigger = "interval" | "turnEnd" | "sessionEnd" | "consolidate";
 
 /** A pure reflection pass: given a timestamp, do the work, optionally report. */
 export type ReflectionPassFn = (ctx: { now: Date }) => Promise<ReflectionResult | void> | ReflectionResult | void;
@@ -36,11 +38,29 @@ interface RegisteredPass {
   run: ReflectionPassFn;
 }
 
+/** Injectable timer primitives so tests drive the cadence with a fake clock. */
+export interface SchedulerTimers {
+  setInterval(fn: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+const realTimers: SchedulerTimers = {
+  setInterval: (fn, ms) => {
+    const handle = setInterval(fn, ms);
+    (handle as { unref?: () => void }).unref?.();
+    return handle;
+  },
+  clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+};
+
 export class ReflectionScheduler {
   private readonly passes: RegisteredPass[] = [];
-  private timer: ReturnType<typeof setInterval> | undefined;
+  private timer: unknown;
+  private consolidationTimer: unknown;
   private readonly inFlight = new Set<ReflectionTrigger>();
   private onOutcomes: ((trigger: ReflectionTrigger, outcomes: ReflectionPassOutcome[]) => void) | undefined;
+
+  constructor(private readonly timers: SchedulerTimers = realTimers) {}
 
   /** Register a pass under a trigger. Passes run sequentially in registration order. */
   register(trigger: ReflectionTrigger, name: string, run: ReflectionPassFn): this {
@@ -54,23 +74,39 @@ export class ReflectionScheduler {
     return this;
   }
 
-  /** Start THE timer: fires the "interval" trigger every `everyMs`. Replaces any
-   *  prior timer; never holds the process open. */
+  /** Start THE heartbeat timer: fires the "interval" trigger every `everyMs`.
+   *  Replaces any prior timer; never holds the process open. */
   start(everyMs: number): void {
     this.stopTimer();
-    this.timer = setInterval(() => {
+    this.timer = this.timers.setInterval(() => {
       void this.fire("interval").catch(() => undefined);
     }, everyMs);
-    this.timer.unref?.();
   }
 
-  /** Stop the timer. Registered passes stay; fire() still works on demand. */
+  /** Start the slow "consolidate" cadence (memory sleep for a process that
+   *  never ends). Separate from the heartbeat so a 30-minute heartbeat and a
+   *  90-minute consolidation don't have to share a period. `everyMs <= 0`
+   *  leaves it off. Replaces any prior consolidation timer. */
+  startConsolidation(everyMs: number): void {
+    this.stopConsolidationTimer();
+    if (!(everyMs > 0)) return;
+    this.consolidationTimer = this.timers.setInterval(() => {
+      void this.fire("consolidate").catch(() => undefined);
+    }, everyMs);
+  }
+
+  /** Stop every timer. Registered passes stay; fire() still works on demand. */
   stop(): void {
     this.stopTimer();
+    this.stopConsolidationTimer();
   }
 
   get running(): boolean {
     return this.timer !== undefined;
+  }
+
+  get consolidationRunning(): boolean {
+    return this.consolidationTimer !== undefined;
   }
 
   /** Run every pass registered under `trigger`, sequentially, errors contained.
@@ -100,8 +136,15 @@ export class ReflectionScheduler {
 
   private stopTimer(): void {
     if (this.timer !== undefined) {
-      clearInterval(this.timer);
+      this.timers.clearInterval(this.timer);
       this.timer = undefined;
+    }
+  }
+
+  private stopConsolidationTimer(): void {
+    if (this.consolidationTimer !== undefined) {
+      this.timers.clearInterval(this.consolidationTimer);
+      this.consolidationTimer = undefined;
     }
   }
 }

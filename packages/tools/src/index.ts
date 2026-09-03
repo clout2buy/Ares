@@ -5,15 +5,16 @@ export * from "./_shared.js";
 
 export { ReadTool } from "./Read.js";
 export { WriteTool } from "./Write.js";
-export { EditTool, nearMissHint, looksLineNumberPrefixed } from "./Edit.js";
+export { EditTool, nearMissHint, looksLineNumberPrefixed, weakestLayer, type EditLayer, type EditOutput } from "./Edit.js";
 export { ApplyPatchTool, type ApplyPatchOutput } from "./ApplyPatch.js";
 export { ApplyIntentTool, type ApplyIntentOutput } from "./ApplyIntent.js";
 export { safeOverwrite, assessShrink, type SafeOverwriteOptions, type SafeOverwriteResult, type ShrinkVerdict } from "./safeWrite.js";
 export { GlobTool } from "./Glob.js";
 export { GrepTool, regexInputProblem } from "./Grep.js";
-export { BashTool } from "./Bash.js";
+export { BashTool, runShell, type BashOutput } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
-export { LspTool, type LspOutput, type LspLocation } from "./LSP.js";
+export { classifyShellFailure, shellFlavorOf, powerShellDialect, type ShellFlavor } from "./shellHints.js";
+export { LspTool, type LspOutput, type LspLocation, type LspSymbol } from "./LSP.js";
 export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.js";
 export {
   makeTaskTool,
@@ -101,9 +102,25 @@ export {
 } from "./ImageSearch.js";
 export {
   CodebaseSearchTool,
+  setCodebaseSearchEmbedder,
+  resetCodebaseSearchSidecars,
+  codebaseSearchSidecarIdle,
+  chunkVectorSidecarPath,
+  embedBudgetMs,
   type CodebaseSearchHit,
   type CodebaseSearchOutput,
+  type CodebaseSearchSymbolHit,
+  type CodebaseSearchEmbeddingStats,
 } from "./CodebaseSearch.js";
+export {
+  ollamaEmbedClient,
+  cosineSimilarity,
+  embedModelName,
+  embedBaseUrl,
+  DEFAULT_EMBED_MODEL,
+  type Embedder,
+  type OllamaEmbedClientOptions,
+} from "./embedClient.js";
 export { FindAndEditTool, type FindAndEditOutput, type FindAndEditChange } from "./FindAndEdit.js";
 export { CodeModeTool, type CodeModeOutput } from "./CodeMode.js";
 export {
@@ -156,6 +173,14 @@ export { ConnectTool, type ConnectOutput } from "./Connect.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, type GmailOutput } from "./Gmail.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
+export {
+  makeToolSearchTool,
+  DeferredToolRegistry,
+  TOOL_SEARCH_DESCRIPTION,
+  type DeferredToolDescriptor,
+  type ToolSearchOutput,
+  type ToolSearchOptions,
+} from "./ToolSearch.js";
 
 import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";

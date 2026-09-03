@@ -174,7 +174,8 @@ test("C1 gate cap: a permanently-red gate cannot trap the turn forever", async (
 
   assert.equal(gateCalls, 2, "the gate fires at most twice per turn");
   const end = events.find((e) => e.type === "turn_end");
-  assert.equal(end.status, "completed", "the turn still ends — escalation is the harness's job, not a hang");
+  assert.equal(end.status, "needs_verification", "the turn still ends (no hang) — but a blocked loop is never stamped completed");
+  assert.equal(end.workStatus, "blocked");
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -208,8 +209,10 @@ test("C1 gate honesty: a stuck red gate ends the turn but SURFACES the failure (
   );
   assert.ok(unresolved.length >= 1, "the still-red failure is surfaced as UNRESOLVED, not silently completed");
   const end = events.find((e) => e.type === "turn_end");
-  assert.equal(end.status, "completed");
-  assert.equal(end.workStatus, "blocked", "execution completed, but work truth remains blocked");
+  assert.equal(end.status, "needs_verification", "a completed loop over red checks is needs_verification, never completed");
+  assert.equal(end.workStatus, "blocked", "execution finished, but work truth remains blocked");
+  assert.ok(end.unverified.missing.some((m) => /never resolved/.test(m)), "the gap rides the event structurally");
+  assert.ok(!events.some((e) => e.type === "system_reminder_injected" && /VERIFICATION INCOMPLETE/.test(e.text)), "no user-facing warning line (standing order)");
   await rm(dir, { recursive: true, force: true });
 });
 

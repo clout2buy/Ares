@@ -405,7 +405,7 @@ Your memory there: ~/MACHINE.md (read it on wake; extend it when you learn the b
 Recent deeds:
 ${deeds}${versionNote}
 
-**Routing rule:** work that installs software, downloads files, scrapes, runs untrusted code, or needs a browser login belongs on YOUR computer (Computer* tools) — not the owner's machine. The owner's machine is for their repos and their apps. Start a session of real work there with ComputerAdmin "wake" (boots it, stamps the current task on the wallpaper, returns a status report). When the owner is watching your screen, prefer ComputerDesktop for GUI work — your hand should be visible; CDP (ComputerBrowser) is for headless speed. 2FA/CAPTCHA/payments: ComputerHandoff, always.
+Routing (full rule in the Reach section): installs, downloads, scraping, untrusted code and browser logins go on THIS machine (Computer* tools); ComputerAdmin "wake" starts a work session; ComputerHandoff for 2FA/CAPTCHA/payments, always.
 
 `;
   }

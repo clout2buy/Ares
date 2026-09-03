@@ -22,7 +22,7 @@ The ARES laws still bind: deterministic spine, LLM judgment, deterministic verif
 ## C2 — Repo cartography (kills #1)
 **WHAT:** Two systems, built separately (they have different staleness rules and failure modes):
 - **C2a Static cartography** — deterministic, cheap, per repo + git-hash: tree (depth-capped), package/module boundaries, entry points, build/test commands (from package.json/Makefile), detected conventions (ESM/CJS, test framework, formatter). Injected at session start, under 2k tokens.
-- **C2b Semantic cartography** — the V4 embed index over symbols/file summaries; CodebaseSearch answers "where is auth handled" by meaning. Refreshed lazily, never blocks a turn.
+- **C2b Semantic cartography** *(shipped 2026-09-02: regex symbol index for 10 languages + optional Ollama-embedding hybrid ranking in CodebaseSearch; LSP workspace_symbol/document_symbol)* — the V4 embed index over symbols/file summaries; CodebaseSearch answers "where is auth handled" by meaning. Refreshed lazily, never blocks a turn.
 **TEST:** map under 2k tokens for this repo; stale-hash rebuild; semantic hit on a paraphrase query.
 
 ## C3 — Plan pressure scaled by complexity (kills #3)

@@ -184,7 +184,9 @@ export interface LeafResult {
   agentId: string;
   role: string;
   phaseId: string;
-  status: TurnEndStatus; // raw fork status — 'completed' | 'interrupted' | 'failed'
+  /** Fork status with needs_verification folded into 'completed' — a leaf
+   *  whose loop finished is a result; `workStatus` carries the proof truth. */
+  status: TurnEndStatus;
   /** Proof-bearing outcome. A completed loop may still be unverified/blocked. */
   workStatus: WorkStatus;
   /** Raw last-assistant text. */
@@ -1085,7 +1087,7 @@ async function runLeaf(
     agentId,
     role: agent.role,
     phaseId,
-    status: first.status,
+    status: first.status === "needs_verification" ? "completed" : first.status,
     workStatus: first.workStatus ?? "not_applicable",
     text: first.finalText,
     structured,

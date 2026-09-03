@@ -13,7 +13,7 @@ const tools = [
   "WebSearch", "WebFetch", "ImageSearch", "Memory", "RequestUserAction", "ComputerUse",
   "Stripe", "Email", "Gmail", "McpCallTool", "GoogleCalendar", "Spotify", "Weather", "Remind",
   "Task", "Conductor", "CodingBackend", "Deploy", "SkillHub", "SkillsList", "SkillRead",
-  "Capability",
+  "Capability", "ToolSearch",
 ].map(tool);
 const user = (text) => [{ id: "u", role: "user", content: [{ type: "text", text }], createdAt: new Date(0).toISOString() }];
 const names = (selected) => selected.map((entry) => entry.schema.name);
@@ -22,7 +22,10 @@ test("dynamic tool working set keeps browser turns lean", () => {
   const selected = names(selectToolsForTurn(tools, user("Open YouTube and click that video")));
   assert.ok(selected.includes("Browser"));
   assert.ok(selected.includes("WebSearch"));
-  assert.ok(selected.includes("ComputerUse"));
+  // ComputerUse is a deferred-tier tool under the two-tier catalog: the model
+  // loads it through ToolSearch (always on the belt) instead of a keyword guess.
+  assert.ok(selected.includes("ToolSearch"));
+  assert.ok(!selected.includes("ComputerUse"));
   // "Lean" means the unrelated product integrations are gone — that is where the
   // schema budget actually goes.
   for (const unrelated of ["Stripe", "Gmail", "GoogleCalendar", "Spotify", "Weather", "Remind", "Deploy"]) {

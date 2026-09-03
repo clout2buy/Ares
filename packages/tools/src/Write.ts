@@ -1,7 +1,9 @@
 // Write — overwrite or create a workspace file.
 //
-// For existing files, requires a prior Read in this session (the model
-// must have seen what's there before clobbering it).
+// For existing files the model should have Read first; when it hasn't, Write
+// auto-reads (ARES_EDIT_AUTO_READ=0 restores the refusal) and echoes the head
+// of the OLD content in the result so the model sees what it replaced. The
+// shrink guard (assertSafeReplacement) and hash staleness check still apply.
 
 import { z } from "zod";
 import { promises as fs } from "node:fs";
@@ -12,7 +14,18 @@ import {
   WorkspaceMutationService,
   workspaceContentHash,
 } from "@ares/core";
-import { buildTool, contentHash, mutationInstructionBlock, mutationWorkspaceForPaths, pathInputProblem, resolveWorkspacePath, toolError, zPath } from "./_shared.js";
+import {
+  autoReadForMutation,
+  buildTool,
+  contentHash,
+  editAutoReadEnabled,
+  mutationInstructionBlock,
+  mutationWorkspaceForPaths,
+  pathInputProblem,
+  resolveWorkspacePath,
+  toolError,
+  zPath,
+} from "./_shared.js";
 import { assertSafeReplacement, createOverwriteBackup } from "./safeWrite.js";
 import { appendMutationFeedback, collectMutationFeedback } from "./postMutationFeedback.js";
 
@@ -37,12 +50,30 @@ export interface WriteOutput {
   backupPath?: string;
   /** Immediate formatter/type diagnostics, attributed to the committed SHA-256. */
   feedback?: PostMutationFeedback;
+  /** True when Write read the existing file itself because it had not been
+   *  Read this session (see ARES_EDIT_AUTO_READ). */
+  autoRead?: boolean;
+  /** First ~20 lines of the content that was REPLACED, present only on an
+   *  auto-read overwrite of a non-empty file — the model never saw those bytes. */
+  previousContentPreview?: string;
+}
+
+/** How much of the clobbered file to echo back on an auto-read overwrite. */
+const PREVIOUS_PREVIEW_LINES = 20;
+
+function previousContentPreview(previous: string): string {
+  const lines = previous.split(/\r?\n/);
+  // A trailing newline is not an extra line (matches how Read counts).
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const shown = lines.slice(0, PREVIOUS_PREVIEW_LINES);
+  const body = shown.map((line, idx) => `${(idx + 1).toString().padStart(5, " ")}\t${line}`).join("\n");
+  return lines.length > PREVIOUS_PREVIEW_LINES ? `${body}\n     …\t[${lines.length - PREVIOUS_PREVIEW_LINES} more lines]` : body;
 }
 
 export const WriteTool = buildTool({
   name: "Write",
   description:
-    "Write (overwrite or create) a file. For existing files, you must Read them first in this session.",
+    "Write (overwrite or create) a file. For existing files you should Read them first; if you have not, Write auto-reads the file and returns the head of the replaced content so you can confirm nothing was lost.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
@@ -66,7 +97,9 @@ export const WriteTool = buildTool({
   async checkPermissions(i, ctx) {
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
     const existed = await fs.stat(filePath).then(() => true).catch(() => false);
-    if (existed && !ctx.fileReadStamps.has(filePath)) {
+    // Read-first is enforced by auto-reading in call(); the deny survives only
+    // behind ARES_EDIT_AUTO_READ=0 (see editAutoReadEnabled for why).
+    if (existed && !ctx.fileReadStamps.has(filePath) && !editAutoReadEnabled()) {
       return {
         kind: "deny",
         reason: `${filePath} exists; Read it before overwriting so you've seen the current contents.`,
@@ -80,8 +113,13 @@ export const WriteTool = buildTool({
   async call(i, ctx): Promise<{ output: WriteOutput; touchedFiles: string[]; display: string }> {
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
     const existed = await fs.stat(filePath).then(() => true).catch(() => false);
+    let autoRead = false;
     if (existed && !ctx.fileReadStamps.has(filePath)) {
-      throw toolError(`${filePath} exists; Read it before overwriting so you've seen the current contents.`);
+      if (!editAutoReadEnabled()) {
+        throw toolError(`${filePath} exists; Read it before overwriting so you've seen the current contents.`);
+      }
+      await autoReadForMutation(ctx, filePath, "overwriting");
+      autoRead = true;
     }
     // Staleness guard (matches Edit's discipline): a blind overwrite must not
     // clobber changes made on disk since the last Read. New files (no stamp) are
@@ -132,10 +170,24 @@ export const WriteTool = buildTool({
     }
     const stat = await fs.stat(filePath);
     ctx.fileReadStamps.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, hash: contentHash(i.content) });
+    // An auto-read overwrite of a non-empty file replaced bytes the model never
+    // saw: echo the head of the old content so it can spot a mistaken clobber.
+    const preview = autoRead && current !== null && current.length > 0 ? previousContentPreview(current) : undefined;
+    const autoReadNote = autoRead
+      ? `\n(auto-read ${filePath} before overwriting)${preview ? `\nReplaced content began with:\n${preview}` : ""}`
+      : "";
     return {
-      output: { path: filePath, created: !existed, bytesWritten: stat.size, backupPath, feedback },
+      output: {
+        path: filePath,
+        created: !existed,
+        bytesWritten: stat.size,
+        backupPath,
+        feedback,
+        ...(autoRead ? { autoRead: true } : {}),
+        ...(preview !== undefined ? { previousContentPreview: preview } : {}),
+      },
       touchedFiles: [filePath],
-      display: appendMutationFeedback(existed ? `Updated ${filePath}` : `Created ${filePath}`, feedback),
+      display: appendMutationFeedback(`${existed ? `Updated ${filePath}` : `Created ${filePath}`}${autoReadNote}`, feedback),
     };
   },
 });

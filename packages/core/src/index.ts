@@ -14,6 +14,14 @@ export {
   collectTrimmedFilePaths,
   chooseCompactionSplit,
   stringifyModelToolOutput,
+  selectToolsForTurn,
+  selectToolsForTurnLegacy,
+  CORE_TOOL_NAMES,
+  isCoreToolName,
+  primaryEditProtocol,
+  loadedToolsFromTranscript,
+  explicitlyNamedTools,
+  type ToolSelectionContext,
   adaptiveReasoningLevel,
   guardStreamStalls,
   type QueryEngineConfig,
@@ -34,7 +42,29 @@ export {
   type ToolResultBlock,
   type ContentBlock,
   isToolUseBlock,
+  manualVerificationScoped,
+  buildVerifierSubagentPrompt,
+  parseVerifierVerdict,
+  type ProviderToolChoice,
+  type EngineSubagentRunner,
 } from "./queryEngine.js";
+
+export {
+  DEFAULT_SUBAGENT_MAX_DEPTH,
+  SUBAGENT_SPAWNING_TOOLS,
+  currentSubagentDepth,
+  runAtSubagentDepth,
+  subagentMaxDepth,
+} from "./subagentDepth.js";
+
+export {
+  estimateTextTokens,
+  estimateLineTokens,
+  estimateImageTokens,
+  imageDimensionsFromBase64,
+  base64DecodedBytes,
+  type ImageDimensions,
+} from "./tokenEstimate.js";
 
 export {
   runForkedTurn,
@@ -163,6 +193,7 @@ export {
   deriveScopedVerify,
   findRelatedTestFiles,
   triageVerifyOutput,
+  verificationStrength,
   type VerifierOptions,
   type VerifyCommand,
   type VerifyResult,
@@ -198,9 +229,14 @@ export {
   buildRepositoryMap,
   renderRepositoryMap,
   repositoryMapReminder,
+  resolveProjectChecks,
+  resetProjectChecksCache,
   type RepositoryMap,
   type RepositoryPackageMap,
   type RepositoryMapOptions,
+  type ProjectChecks,
+  type ProjectCheckCommand,
+  type ProjectCheckKind,
 } from "./repoCartography.js";
 
 export {
@@ -305,6 +341,7 @@ export {
   deleteSession,
   renameSession,
   type SessionOptions,
+  type RewindResult,
   type SessionLeaseTiming,
   type SessionSummary,
   type SessionSnapshot,
@@ -329,8 +366,10 @@ export {
   restoreWorkspaceCheckpoint,
   gcWorkspaceCheckpoints,
   isUnsnapshotableWorkspace,
+  settleGitCheckpointAnchors,
   type CreateCheckpointOptions,
 } from "./checkpoints.js";
+export { gitCheckpointRoot, gitCheckpointsEnabled, resetGitCheckpointCache, checkpointRefName } from "./checkpointGit.js";
 
 export {
   OpenAIResponsesProvider,
@@ -556,4 +595,28 @@ export {
   type PostMutationFeedbackOptions,
 } from "./postMutationFeedback.js";
 
+export {
+  buildSymbolIndex,
+  querySymbols,
+  workspaceSymbolsFor,
+  extractSymbols,
+  rankName,
+  nameWords,
+  resetSymbolIndexMemo,
+  symbolIndexCachePath,
+  symbolIndexLanguageFor,
+  symbolIndexMaxFiles,
+  type SymbolKind,
+  type IndexedSymbol,
+  type SymbolIndex,
+  type SymbolIndexStats,
+  type SymbolIndexFileEntry,
+  type SymbolMatch,
+  type BuildSymbolIndexOptions,
+  type QuerySymbolsOptions,
+} from "./symbolIndex.js";
+
 export * from "./sessionKernel/index.js";
+
+// Allocation attribution for heap-pressure artifacts (see heapSampler.ts header).
+export { HeapAllocationSampler, heapSamplerEnabled, heapSamplerIntervalBytes, summarizeSamplingProfile, type HeapAllocationSite } from "./heapSampler.js";

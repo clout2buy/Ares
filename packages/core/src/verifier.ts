@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
 
 export interface VerifyCommand {
   program: string;
@@ -142,6 +143,7 @@ export class ContinuousVerifier {
   private pendingReminders: PendingReminder[] = [];
   /** Detected once per workspace and cached. */
   private detectedSetupPromise: Promise<WorkspaceSetup> | null = null;
+  private projectChecksPromise: Promise<ProjectChecks> | null = null;
 
   /**
    * Pass-cache: fingerprint → true. A fingerprint identifies (this exact
@@ -353,6 +355,7 @@ export class ContinuousVerifier {
     const generation = this.evidence.mutationGeneration;
 
     const setup = await this.detectSetup();
+    const projectChecks = await this.projectChecks();
     // Editing a source file should exercise its tests, not just its types —
     // pull in existing sibling/related test files for everything touched.
     const related = await findRelatedTestFiles(files, this.workspace);
@@ -439,7 +442,7 @@ export class ContinuousVerifier {
           : allConcretePassed
             ? "passed"
             : "no_checks";
-      if (!superseded) this.recordRunOutcome(generation, runStatus, verificationStrength(concreteResults.map((result) => result.command)));
+      if (!superseded) this.recordRunOutcome(generation, runStatus, verificationStrength(concreteResults.map((result) => result.command), projectChecks));
       this.onEvent?.({
         type: "all_finished",
         ok: runStatus === "passed" && !superseded,
@@ -619,6 +622,12 @@ Fix the ROOT CAUSE first — one bad symbol or import usually explains a whole p
     return this.detectedSetupPromise;
   }
 
+  /** Derived project checks, resolved once per verifier (never throws). */
+  private projectChecks(): Promise<ProjectChecks | null> {
+    if (!this.projectChecksPromise) this.projectChecksPromise = resolveProjectChecks(this.workspace);
+    return this.projectChecksPromise.catch(() => null);
+  }
+
   /**
    * Content-hash the files a run covers into one stable digest. Sorted so order
    * of touched files never changes the fingerprint. A file that can't be read
@@ -720,12 +729,35 @@ function isScopedPassCacheSafe(command: VerifyCommand): boolean {
   ].includes(command.label);
 }
 
-function verificationStrength(commands: readonly VerifyCommand[]): VerificationEvidenceSnapshot["latestRunStrength"] {
+/**
+ * How much a run proves. Behavioral = the project's own tests (or a runtime
+ * reproduction) executed; static = a compile/lint/type pass; syntax = only
+ * `node --check`. The label regex is the fallback: a command that IS one of
+ * the project's derived test commands (resolveProjectChecks — package.json
+ * `test`/`test:*`, `cargo test`, `pytest`, `go test ./...`, `make test`) is
+ * behavioral no matter how its label is spelled, so an unusual runner never
+ * degrades to static and gets refused by the completion gate.
+ */
+export function verificationStrength(
+  commands: readonly VerifyCommand[],
+  checks?: ProjectChecks | null,
+): VerificationEvidenceSnapshot["latestRunStrength"] {
   if (commands.some((command) => /(?:tests?|vitest|jest|pytest|cargo-test|go-test|runtime)/i.test(command.label))) {
     return "behavioral";
   }
+  if (checks && commands.some((command) => isProjectTestCommand(command, checks))) return "behavioral";
   if (commands.some((command) => !command.label.startsWith("node-check"))) return "static";
   return commands.length > 0 ? "syntax" : undefined;
+}
+
+/** `cmd` is one of the derived project test commands, possibly with extra
+ *  flags (`cargo test --no-fail-fast` ≡ `cargo test`). */
+function isProjectTestCommand(cmd: VerifyCommand, checks: ProjectChecks): boolean {
+  const line = [cmd.program, ...cmd.args].join(" ").trim().toLowerCase();
+  return checks.tests.some((test) => {
+    const derived = test.command.toLowerCase();
+    return line === derived || line.startsWith(`${derived} `);
+  });
 }
 
 // ─── Narrow verify command derivation ──────────────────────────────────

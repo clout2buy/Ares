@@ -7,6 +7,8 @@ import { runLightDream } from "./dreaming.js";
 import { MemoryStore as LivingMemoryStore, mindPaths, withConsolidationLock } from "@ares/mind";
 import { heartbeatEveryMs, heartbeatPass } from "./heartbeat.js";
 import { ReflectionScheduler } from "./reflection/scheduler.js";
+import { consolidateEveryMs, periodicConsolidationPass } from "./reflection/periodicConsolidation.js";
+import { markTurnEnded, markTurnStarted } from "./reflection/turnActivity.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { captureUserMessage } from "./capture.js";
 import { snapshotBrain } from "./persistence.js";
@@ -111,6 +113,14 @@ export class AresAgentRuntime {
     }));
     this.registerSessionEndPasses(scheduler);
     scheduler.start(heartbeatEveryMs(this.prepared.config));
+    // Sleep for a process that never ends: the daemon's sessions never reach
+    // sessionEnd, so without this tick the store only ever grows. The pass
+    // gates itself on uptime cadence, store growth, and turn activity, and
+    // shares its record across every session's scheduler in this process.
+    scheduler.register("consolidate", "periodic-consolidate", periodicConsolidationPass({
+      memoryFile: mindPaths(this.prepared.home).memoryFile,
+    }));
+    scheduler.startConsolidation(consolidateEveryMs());
     this.scheduler = scheduler;
   }
 
@@ -147,6 +157,9 @@ export class AresAgentRuntime {
   }
 
   async beforeTurn(userMessage: string): Promise<void> {
+    // Marked before the enabled gate: the consolidation tick must yield to a
+    // live turn whether or not this session runs the agent layer.
+    markTurnStarted();
     if (!this.prepared.enabled) return;
     emitLifecycle({ type: "turn_started", sessionId: this.opts.sessionId, userMessage });
 
@@ -162,6 +175,7 @@ export class AresAgentRuntime {
   }
 
   async afterTurn(status: "completed" | "interrupted" | "failed"): Promise<void> {
+    markTurnEnded();
     if (!this.prepared.enabled) return;
     emitLifecycle({ type: "turn_ended", sessionId: this.opts.sessionId, status });
   }

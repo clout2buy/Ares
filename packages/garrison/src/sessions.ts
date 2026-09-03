@@ -53,6 +53,48 @@ import type { Session as CoreSession } from "@ares/core";
 import type { SessionSummary } from "./protocol.js";
 import { garrisonDir } from "./token.js";
 
+// ─── Surface + tenant (who opened the session, and who is talking) ──────
+//
+// Telegram, the terminal TUI and the desktop app each create their own session
+// with its own history; only lossy memory bridges them. Before this, a session
+// on disk carried NO record of which surface produced it and no record of
+// whether the sender was the owner or an authorized guest — so a cross-surface
+// digest could not tell "the owner's desktop thread" from "a guest's Telegram
+// chat", and guest memory isolation had nothing to key on. Both fields are
+// optional and additive: old meta files load untouched (absent = owner, surface
+// unknown) and every existing caller keeps compiling.
+
+export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless";
+
+export interface SessionTenant {
+  role: "owner" | "guest";
+  /** Channel-side identity for a guest (the Telegram chat id, stringified). */
+  chatId?: string;
+}
+
+const SESSION_SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless"]);
+
+/** Validate a surface arriving over the wire; anything else is dropped. */
+export function normalizeSessionSurface(value: unknown): SessionSurface | undefined {
+  return typeof value === "string" && SESSION_SURFACES.has(value) ? (value as SessionSurface) : undefined;
+}
+
+/** Validate a tenant arriving over the wire or from a meta file. A guest
+ *  without a chatId is meaningless for isolation and is rejected — the safe
+ *  miss is "no tenant", which callers treat as the owner default. */
+export function normalizeSessionTenant(value: unknown): SessionTenant | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const { role, chatId } = value as { role?: unknown; chatId?: unknown };
+  if (role === "owner") return { role: "owner" };
+  if (role !== "guest") return undefined;
+  const id = typeof chatId === "number" ? String(chatId) : typeof chatId === "string" ? chatId.trim() : "";
+  return id ? { role: "guest", chatId: id } : undefined;
+}
+
+function sameTenant(a: SessionTenant | undefined, b: SessionTenant | undefined): boolean {
+  return a?.role === b?.role && (a?.chatId ?? "") === (b?.chatId ?? "");
+}
+
 // ─── Factory (injected composition seam) ───────────────────────────────
 
 export interface SessionFactoryRequest {
@@ -61,6 +103,9 @@ export interface SessionFactoryRequest {
   provider?: string;
   model?: string;
   workspace?: string;
+  /** Which host opened the session and who is on the other end (owner default). */
+  surface?: SessionSurface;
+  tenant?: SessionTenant;
   /** Abort signal for this session's turns; interrupt() aborts it. Wire into QueryEngineConfig.signal. */
   signal: AbortSignal;
   /** Gateway-backed permission prompt; wire into QueryEngineConfig.requestPermission. */
@@ -115,6 +160,18 @@ export interface SessionSendOptions {
   inputId?: string;
   /** Queue a later turn or steer the active turn at its next safe boundary. */
   delivery?: "queue" | "steer";
+  /** Per-message tenant from the channel (the Telegram bridge stamps every
+   *  send). It becomes the session's durable stamp when it differs, so a
+   *  session created before the channel knew the sender still ends up tagged. */
+  tenant?: SessionTenant;
+}
+
+/** What a host's before-send hook sees: enough to scope memory for the turn. */
+export interface SessionSendContext {
+  sessionId: string;
+  text: string;
+  surface?: SessionSurface;
+  tenant: SessionTenant;
 }
 
 export interface SessionManagerOptions {
@@ -132,6 +189,13 @@ export interface SessionManagerOptions {
    * Best-effort: a throw never breaks the event stream.
    */
   onTurnSettled?: (sessionId: string) => void;
+  /**
+   * Runs after admission bookkeeping and BEFORE the runtime sees the text.
+   * Garrison sessions never pass through the CLI's prepareUserTurn, so this is
+   * the seam a host uses to scope recall/capture by tenant for remote turns.
+   * Best-effort: a throw never blocks the turn.
+   */
+  beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
   now?: () => number;
 }
 
@@ -143,6 +207,8 @@ interface LiveSession {
   model: string;
   workspace: string;
   createdAt: string;
+  surface?: SessionSurface;
+  tenant?: SessionTenant;
   busy: boolean;
   /** Canonical sessions may have several admitted callers while exactly one
    * runner owns provider/tool execution. busy remains true until all settle. */
@@ -181,6 +247,7 @@ export class SessionManager {
   private readonly sessionKernel?: SessionKernelStore;
   private readonly permissionTimeoutMs: number;
   private readonly onTurnSettled?: (sessionId: string) => void;
+  private readonly beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
   private readonly now: () => number;
   private readonly bootAt: number;
   private lastSend: number | undefined;
@@ -191,13 +258,21 @@ export class SessionManager {
     this.sessionKernel = opts.sessionKernel;
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? 5 * 60_000;
     this.onTurnSettled = opts.onTurnSettled;
+    this.beforeSend = opts.beforeSend;
     this.now = opts.now ?? Date.now;
     this.bootAt = this.now();
   }
 
-  create(opts: { provider?: string; model?: string; workspace?: string } = {}): SessionSummary {
+  create(
+    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant } = {},
+  ): SessionSummary {
     const session = this.spawn({ id: `sess_${randomUUID()}`, ...opts });
     return this.summarize(session);
+  }
+
+  /** The durable tenant stamp of a live session (owner when never stamped). */
+  tenantOf(sessionId: string): SessionTenant {
+    return this.get(sessionId).tenant ?? { role: "owner" };
   }
 
   has(sessionId: string): boolean {
@@ -241,6 +316,23 @@ export class SessionManager {
       session.title = deriveTitle(text);
       session.titled = true;
       this.queueMetaWrite(session);
+    }
+    // A channel that learns who is talking only per message (Telegram stamps
+    // every send) upgrades the session's durable stamp the first time it differs.
+    if (options.tenant && !sameTenant(options.tenant, session.tenant)) {
+      session.tenant = options.tenant;
+      this.queueMetaWrite(session);
+      this.stampKernelIdentity(session);
+    }
+    try {
+      await this.beforeSend?.({
+        sessionId: session.id,
+        text,
+        surface: session.surface,
+        tenant: options.tenant ?? session.tenant ?? { role: "owner" },
+      });
+    } catch {
+      // a host hook must never block the turn
     }
     try {
       let events: AsyncIterable<TurnEvent>;
@@ -342,6 +434,8 @@ export class SessionManager {
           model: p.model,
           workspace: p.workspace,
           createdAt: p.createdAt,
+          surface: p.surface,
+          tenant: p.tenant,
           title: p.title,
           titled: p.title !== FALLBACK_TITLE,
           messages: p.messages,
@@ -396,6 +490,8 @@ export class SessionManager {
           model: restored.model,
           workspace: restored.workspace,
           createdAt: restored.createdAt,
+          surface: restored.surface,
+          tenant: restored.tenant,
           title: restored.title,
           titled: restored.title !== FALLBACK_TITLE,
           messages: restored.messages,
@@ -417,6 +513,8 @@ export class SessionManager {
     model?: string;
     workspace?: string;
     createdAt?: string;
+    surface?: SessionSurface;
+    tenant?: SessionTenant;
     title?: string;
     titled?: boolean;
     messages?: readonly Message[];
@@ -428,6 +526,8 @@ export class SessionManager {
       provider: p.provider,
       model: p.model,
       workspace: p.workspace,
+      surface: p.surface,
+      tenant: p.tenant,
       signal: controller.signal,
       requestPermission: this.permissionHandlerFor(p.id),
       initialMessages: p.messages,
@@ -461,6 +561,8 @@ export class SessionManager {
       model: made.model,
       workspace: made.workspace,
       createdAt: p.createdAt ?? new Date(this.now()).toISOString(),
+      surface: p.surface,
+      tenant: p.tenant,
       busy: false,
       inFlightSends: 0,
       engine,
@@ -490,11 +592,35 @@ export class SessionManager {
     }
     this.live.set(p.id, session);
     this.queueMetaWrite(session);
+    this.stampKernelIdentity(session);
     return session;
   }
 
+  /** Mirror surface/tenant into the canonical SQLite row so the kernel-backed
+   *  rehydration path (which shadows the JSON meta) keeps the stamp. The row
+   *  is created by the factory's Core Session; a legacy engine has none. */
+  private stampKernelIdentity(session: LiveSession): void {
+    if (!this.sessionKernel || (!session.surface && !session.tenant)) return;
+    try {
+      this.sessionKernel.mergeSessionMetadata(session.id, {
+        ...(session.surface ? { surface: session.surface } : {}),
+        ...(session.tenant ? { tenant: { ...session.tenant } } : {}),
+      });
+    } catch {
+      // no canonical row (legacy engine) or archived — the JSON meta still carries it
+    }
+  }
+
   private summarize(s: LiveSession): SessionSummary {
-    return { id: s.id, title: s.title, model: s.model, provider: s.provider, busy: s.busy };
+    return {
+      id: s.id,
+      title: s.title,
+      model: s.model,
+      provider: s.provider,
+      busy: s.busy,
+      ...(s.surface ? { surface: s.surface } : {}),
+      ...(s.tenant ? { tenant: { ...s.tenant } } : {}),
+    };
   }
 
   private fanOut(session: LiveSession, event: TurnEvent): void {
@@ -526,6 +652,8 @@ export class SessionManager {
       model: session.model,
       workspace: session.workspace,
       createdAt: session.createdAt,
+      ...(session.surface ? { surface: session.surface } : {}),
+      ...(session.tenant ? { tenant: session.tenant } : {}),
     };
     session.ioChain = session.ioChain
       .then(() => fs.writeFile(file, JSON.stringify(meta, null, 2) + "\n", "utf8"))
@@ -623,6 +751,8 @@ export interface RehydratedSession {
   model?: string;
   workspace?: string;
   createdAt?: string;
+  surface?: SessionSurface;
+  tenant?: SessionTenant;
   /** Reconstructed history; empty when the rollout holds no message_done events. */
   messages: Message[];
   eventCount: number;
@@ -638,6 +768,8 @@ interface SessionMetaFile {
   model?: string;
   workspace?: string;
   createdAt?: string;
+  surface?: unknown;
+  tenant?: unknown;
 }
 
 /**
@@ -677,6 +809,8 @@ export async function rehydrateSessions(
       model: nonEmpty(meta?.model),
       workspace: nonEmpty(meta?.workspace),
       createdAt: nonEmpty(meta?.createdAt),
+      surface: normalizeSessionSurface(meta?.surface),
+      tenant: normalizeSessionTenant(meta?.tenant),
       messages,
       eventCount: events.length,
     });
@@ -712,6 +846,8 @@ export async function rehydrateSession(
     model: nonEmpty(meta?.model),
     workspace: nonEmpty(meta?.workspace),
     createdAt: nonEmpty(meta?.createdAt),
+    surface: normalizeSessionSurface(meta?.surface),
+    tenant: normalizeSessionTenant(meta?.tenant),
     messages,
     eventCount: events.length,
   };
@@ -737,6 +873,8 @@ function canonicalRehydratedSession(
     createdAt: typeof metadata.createdAt === "string"
       ? metadata.createdAt
       : new Date(session.createdAtMs).toISOString(),
+    surface: normalizeSessionSurface(metadata.surface),
+    tenant: normalizeSessionTenant(metadata.tenant),
     messages,
     eventCount: kernel.countEvents(session.id),
     canonical: true,

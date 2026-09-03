@@ -23,6 +23,8 @@
 //   2. HONEST n. A single prior run is far too noisy to fail a build on. One
 //      baseline reports findings as advisory; two or more earn the gate.
 
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import type { GauntletUsage } from "./gauntlet.js";
 
 export interface ScoreboardMetrics {
@@ -470,5 +472,118 @@ export function renderTrend(rows: readonly ScoreboardRow[]): string {
       );
     }
   }
+  return lines.join("\n") + "\n";
+}
+
+// ─── The nightly ledger ─────────────────────────────────────────────────
+//
+// scoreboard.jsonl holds full runs (usage, hashes, metrics) and is appended by
+// the `ares eval coding` path. The scheduled nightly gauntlet (garrison
+// scheduler, ARES_GAUNTLET_HOUR) reports a much smaller thing — passed/total
+// and whether the gate held — and it needs its OWN trend so a regression is
+// judged against last night, not against a hand-run from a different suite.
+// Same rules as the scoreboard: append-only JSONL, malformed lines skipped,
+// oldest-first on read.
+
+export interface GauntletTrendEntry {
+  at: string;
+  passed: number;
+  total: number;
+  /** passed ÷ total, 0..1 (0 when total is 0). */
+  rate: number;
+  /** False when the run's own regression gate (cost/verified/wall-clock axes) tripped. */
+  gateOk: boolean;
+  suite?: string;
+  provider?: string;
+  model?: string;
+  /** Judged at append time against the previous entry; kept so the trend reads without recomputing. */
+  regressed?: boolean;
+  reasons?: string[];
+  source?: "nightly" | "manual";
+}
+
+export function gauntletTrendFile(home: string): string {
+  return path.join(home, "gauntlet", "nightly.jsonl");
+}
+
+export function parseGauntletTrendEntry(value: unknown): GauntletTrendEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.at !== "string" || !row.at) return null;
+  if (!isFiniteNumber(row.passed) || !isFiniteNumber(row.total)) return null;
+  const total = row.total;
+  const passed = row.passed;
+  const rate = isFiniteNumber(row.rate) ? row.rate : total > 0 ? passed / total : 0;
+  return {
+    at: row.at,
+    passed,
+    total,
+    rate,
+    gateOk: row.gateOk !== false,
+    ...(typeof row.suite === "string" ? { suite: row.suite } : {}),
+    ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
+    ...(typeof row.model === "string" ? { model: row.model } : {}),
+    ...(typeof row.regressed === "boolean" ? { regressed: row.regressed } : {}),
+    ...(Array.isArray(row.reasons) ? { reasons: row.reasons.filter((r): r is string => typeof r === "string") } : {}),
+    ...(row.source === "nightly" || row.source === "manual" ? { source: row.source } : {}),
+  };
+}
+
+export function parseGauntletTrend(text: string): GauntletTrendEntry[] {
+  const rows: GauntletTrendEntry[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const row = parseGauntletTrendEntry(parsed);
+    if (row) rows.push(row);
+  }
+  return rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+}
+
+export async function readGauntletTrend(home: string): Promise<GauntletTrendEntry[]> {
+  const text = await readFile(gauntletTrendFile(home), "utf8").catch(() => "");
+  return parseGauntletTrend(text);
+}
+
+export async function appendGauntletTrend(home: string, entry: GauntletTrendEntry): Promise<string> {
+  const file = gauntletTrendFile(home);
+  await mkdir(path.dirname(file), { recursive: true });
+  await appendFile(file, JSON.stringify(entry) + "\n", "utf8");
+  return file;
+}
+
+/**
+ * Judge a nightly result against the previous entry of the SAME suite. Two
+ * ways to regress: the run's own gate tripped, or the pass rate fell. A missing
+ * baseline never regresses — the first night is the baseline.
+ */
+export function judgeGauntletTrend(
+  current: Pick<GauntletTrendEntry, "passed" | "total" | "gateOk" | "suite">,
+  history: readonly GauntletTrendEntry[],
+): { regressed: boolean; reasons: string[]; previous: GauntletTrendEntry | null } {
+  const previous = [...history].reverse().find((row) => (row.suite ?? "") === (current.suite ?? "")) ?? null;
+  const rate = current.total > 0 ? current.passed / current.total : 0;
+  const reasons: string[] = [];
+  if (!current.gateOk) reasons.push("regression gate tripped (cost / verified-rate / wall-clock axes)");
+  if (previous && rate < previous.rate) {
+    reasons.push(`pass rate fell ${pct(previous.rate)} → ${pct(rate)} (${previous.passed}/${previous.total} → ${current.passed}/${current.total})`);
+  }
+  return { regressed: reasons.length > 0, reasons, previous };
+}
+
+/** One line per night, newest last — the block `ares eval trend` can append. */
+export function renderGauntletTrend(entries: readonly GauntletTrendEntry[]): string {
+  if (entries.length === 0) return "no nightly gauntlet runs yet\n";
+  const lines = entries.slice(-14).map((e) => {
+    const who = [e.suite, e.model ? `${e.model}${e.provider ? ` via ${e.provider}` : ""}` : ""].filter(Boolean).join(" · ");
+    const flag = e.regressed ? "  REGRESSED" : e.gateOk ? "" : "  gate tripped";
+    return `${e.at.slice(0, 16).replace("T", " ")}  ${String(e.passed).padStart(3)}/${String(e.total).padEnd(3)} ${pct(e.rate).padStart(4)}${who ? `  ${who}` : ""}${flag}`;
+  });
   return lines.join("\n") + "\n";
 }

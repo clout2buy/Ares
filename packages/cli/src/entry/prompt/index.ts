@@ -5,9 +5,15 @@
 // Before this split the whole thing was one 33,819-char string — larger than
 // opencode's biggest per-model prompt by more than 2×, and 4× their Anthropic
 // one — with six sections restating the same doctrine and one 4,660-char block
-// paraphrasing tool descriptions the model already receives. Nothing here is
-// softened; it is de-duplicated, and the parts that vary by owner (voice) or by
-// model (failure mode) now live where they can actually vary.
+// paraphrasing tool descriptions the model already receives. The split brought
+// it to 27,095 chars measured (2026-09-01, default catalog, provisioned machine
+// card); the cut after that brought the default coding catalog under 15,000
+// (tests/prompt-size-budget.test.mjs pins it). What went: tool doctrine is now
+// keyed by tool and rides only with the tools in the turn's catalog
+// (toolDoctrine.ts); Proof/Codebase/Quality became one contract; three reach
+// sections became one. Nothing here is softened; it is de-duplicated, and the
+// parts that vary by owner (voice) or by model (failure mode) live where they
+// can actually vary.
 
 import { craftCore } from "./craft.js";
 import { renderPersona, type PersonaConfig } from "./persona.js";
@@ -15,12 +21,15 @@ import { providerOverlay, type ProviderFamily } from "./providerOverlay.js";
 
 export { renderPersona, type PersonaConfig, type PersonaStyle } from "./persona.js";
 export { providerOverlay, type ProviderFamily } from "./providerOverlay.js";
-export { craftCore } from "./craft.js";
+export { craftCore, proofContract } from "./craft.js";
+export { toolDoctrineFor, TOOL_DOCTRINE, type ToolDoctrineEntry } from "./toolDoctrine.js";
+export { buildChildSystemPrompt, childToolCatalog, type ChildPromptContext } from "./child.js";
+export { environmentBlock, promptEnvironment, promptWorkflowSurfaces } from "./surfaces.js";
 
 export interface PromptSurfaces {
   /** Tool-specific operational doctrine that is NOT in the tool schemas. */
   tools: string;
-  /** Workflow surfaces: Operator, deep research, plan mode, capabilities. */
+  /** Workflow surfaces: app loop, plan mode, hooks. */
   workflows: string;
   /** Reach, hard rules, environment block. */
   environment: string;

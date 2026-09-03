@@ -34,9 +34,15 @@ import {
   type ToolSettlementReceipt,
 } from "./queryEngine.js";
 import type { ToolPermissionRequest } from "./queryEngine.js";
-import type { PermissionPromptDecision, ReasoningLevel, Usage } from "@ares/protocol";
+import type { PermissionPromptDecision, ReasoningLevel, TurnEndStatus, Usage } from "@ares/protocol";
 import type { HookManager } from "./hooks.js";
-import { createWorkspaceCheckpoint, diffWorkspaceCheckpointUnified, isUnsnapshotableWorkspace } from "./checkpoints.js";
+import {
+  createWorkspaceCheckpoint,
+  diffWorkspaceCheckpointUnified,
+  isUnsnapshotableWorkspace,
+  loadWorkspaceCheckpoint,
+  restoreWorkspaceCheckpoint,
+} from "./checkpoints.js";
 import { FrictionRecorder } from "./frictionLog.js";
 import { WorkspaceMutationService } from "./workspaceMutation.js";
 import { planArtifactRelativePath, renderApprovedPlanBuildHandoff, writePlanArtifact } from "./planArtifact.js";
@@ -183,6 +189,19 @@ function environmentMilliseconds(name: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/** Outcome of Session.rewindTo. */
+export interface RewindResult {
+  checkpointId: string;
+  label?: string;
+  restored: number;
+  deleted: number;
+  /** Workspace-relative paths the restore touched. */
+  files: string[];
+  droppedMessages: number;
+  /** False when only the workspace could be restored (no message anchor). */
+  conversationRewound: boolean;
+}
+
 export interface SessionOptions {
   workspace: string;
   provider: Provider;
@@ -214,6 +233,12 @@ export interface SessionOptions {
   specDocs?: QueryEngineConfig["specDocs"];
   /** Failure-signature recall — see QueryEngineConfig.recallFailureFix. */
   recallFailureFix?: (input: { tool: string; signature: string; error: string }) => Promise<string | null>;
+  /** Adversarial verifier auto-spawn — see QueryEngineConfig.subagentRunner. */
+  subagentRunner?: QueryEngineConfig["subagentRunner"];
+  /** Nesting depth of this session's engine (0 = top-level). */
+  subagentDepth?: number;
+  /** Structural plan-before-edit — see QueryEngineConfig.planBeforeEdit. */
+  planBeforeEdit?: QueryEngineConfig["planBeforeEdit"];
   hookManager?: HookManager;
   requestPermission?: (request: ToolPermissionRequest) => Promise<PermissionPromptDecision>;
   /** Child/fork policy: a denied capability is an ordinary tool error when
@@ -463,6 +488,9 @@ export class Session {
         observedMutationAt: opts.observedMutationAt,
         specDocs: opts.specDocs,
         recallFailureFix: opts.recallFailureFix,
+        subagentRunner: opts.subagentRunner,
+        subagentDepth: opts.subagentDepth,
+        planBeforeEdit: opts.planBeforeEdit,
         hookManager: opts.hookManager,
         requestPermission: opts.requestPermission,
         permissionDenialInterrupts: opts.permissionDenialInterrupts,
@@ -484,6 +512,13 @@ export class Session {
           // user's entire digital life per Write is minutes of dead time and a
           // restore hazard. Tools still run; undo is unavailable there.
           if (isUnsnapshotableWorkspace(this.opts.workspace)) return null;
+          // The assistant message carrying this tool_use is already in history
+          // (QueryEngine commits it before the tool phase), so its index is the
+          // exact conversation cut for /rewind. Hook checkpoints have no
+          // message of their own and get no anchor (file-only rewind).
+          const anchorIndex = this.engine
+            .history()
+            .findIndex((message) => message.role === "assistant" && message.content.some((block) => block.type === "tool_use" && block.id === toolUseId));
           const checkpoint = await createWorkspaceCheckpoint({
             workspace: this.opts.workspace,
             sessionId: this.meta.id,
@@ -493,6 +528,8 @@ export class Session {
             // Declared-target tools (Edit/Write) snapshot incrementally — the
             // full-workspace walk only runs for shells/unknowable side effects.
             targetFiles,
+            messageIndex: anchorIndex >= 0 ? anchorIndex : undefined,
+            toolUseId,
           });
           this.lastCheckpointId = checkpoint.id;
           return { checkpointId: checkpoint.id, label: checkpoint.label };
@@ -888,7 +925,7 @@ export class Session {
         }
         for await (const event of this.streamAndPersist()) {
           if (event.type === "turn_end") {
-            executionState = event.status;
+            executionState = executionStateOf(event.status);
             workOutcome = event.workStatus ?? "not_applicable";
           }
           yield event;
@@ -1013,7 +1050,7 @@ export class Session {
       for await (const event of this.streamAndPersist()) {
         if (event.type === "turn_end") {
           terminal = event;
-          executionState = event.status;
+          executionState = executionStateOf(event.status);
           workOutcome = event.workStatus ?? "not_applicable";
           // Settle synchronously before exposing the terminal event. Most UI
           // consumers stop at turn_end; requiring one more generator advance
@@ -1099,7 +1136,7 @@ export class Session {
       for await (const event of this.streamAndPersist()) {
         if (event.type === "turn_end") {
           terminal = event;
-          executionState = event.status;
+          executionState = executionStateOf(event.status);
           workOutcome = event.workStatus ?? "not_applicable";
           if (claimed && fence) this.settleOwnedInputAtTerminal(fence, claimed.id, event);
         }
@@ -1472,12 +1509,12 @@ export class Session {
           }
           if (event.type === "turn_end") {
             terminal = event;
-            executionState = event.status;
+            executionState = executionStateOf(event.status);
             workOutcome = event.workStatus ?? "not_applicable";
           }
         }
         if (!terminal) throw new Error("detached session runner ended without a durable turn boundary");
-        if (terminal.status !== "completed") {
+        if (terminal.status !== "completed" && terminal.status !== "needs_verification") {
           throw new Error(`detached recovery for input ${inputId} ended ${terminal.status}`);
         }
 
@@ -1809,7 +1846,7 @@ export class Session {
     if (!this.kernel) return;
     const input = this.kernel.getInput(inputId);
     if (input?.state !== "claimed") return;
-    if (event.status === "completed") {
+    if (event.status === "completed" || event.status === "needs_verification") {
       this.kernel.consumeInput(fence, inputId);
       return;
     }
@@ -2157,6 +2194,108 @@ export class Session {
     return this.engine.history();
   }
 
+  /**
+   * Rewind workspace AND conversation to a checkpoint.
+   *
+   * /undo only restores files: the model keeps a history in which it already
+   * made (and got results for) the edits that just vanished from disk, so its
+   * next move is built on a lie. Rewind cuts history to just BEFORE the
+   * assistant message that carried the checkpointed tool_use — an assistant
+   * boundary, so no tool_use is ever left without its tool_result — and drops
+   * read stamps for every restored file so the next edit re-reads instead of
+   * editing blind. The truncation is persisted exactly the way compaction
+   * persists a projection change (context epoch for kernel sessions, a
+   * `rewound` rollout row carrying the messages otherwise), so resume replays
+   * the rewound history and not the discarded turn.
+   *
+   * Runs under the session's run lease: never overlaps a live turn. When the
+   * checkpoint has no reachable anchor (hook snapshot, or the message was
+   * compacted away) only the workspace is restored and `conversationRewound`
+   * is false.
+   */
+  async rewindTo(checkpointId: string): Promise<RewindResult> {
+    const release = await this.acquireRunLease();
+    let executionState: Exclude<ExecutionState, "running"> = "idle";
+    let workOutcome: WorkOutcome = "not_applicable";
+    let kernelError: JsonValue | null = null;
+    try {
+      await this.ensureSessionDir();
+      if (this.kernel) await this.beginKernelRun();
+      const meta = await loadWorkspaceCheckpoint(this.opts.workspace, checkpointId);
+      const restore = await restoreWorkspaceCheckpoint(this.opts.workspace, checkpointId);
+
+      const history = this.engine.history();
+      let cut = -1;
+      if (meta.toolUseId) {
+        cut = history.findIndex(
+          (message) => message.role === "assistant" && message.content.some((block) => block.type === "tool_use" && block.id === meta.toolUseId),
+        );
+      }
+      // The recorded index is only trusted when the message is still the one
+      // it pointed at (compaction shifts indices); the tool_use id decides.
+      if (cut < 0 && !meta.toolUseId && typeof meta.messageIndex === "number" && history[meta.messageIndex]?.role === "assistant") {
+        cut = meta.messageIndex;
+      }
+      const dropped = cut >= 0 ? history.slice(cut) : [];
+      if (cut >= 0) this.engine.hydrate(history.slice(0, cut));
+      this.invalidateReadStampsAfterRewind(restore.files, dropped);
+      this.lastCheckpointId = checkpointId;
+
+      const event: TurnEvent = {
+        type: "rewound",
+        checkpointId,
+        files: restore.files,
+        droppedMessages: dropped.length,
+        conversationRewound: cut >= 0,
+        messages: cut >= 0 ? this.engine.history().map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) })) : undefined,
+      };
+      this.persistKernelEvent(event);
+      this.persistEvent(event);
+      this.notifyEvent(event);
+      await this.flush();
+      return {
+        checkpointId,
+        label: meta.label,
+        restored: restore.restored,
+        deleted: restore.deleted,
+        files: restore.files,
+        droppedMessages: dropped.length,
+        conversationRewound: cut >= 0,
+      };
+    } catch (error) {
+      executionState = "failed";
+      workOutcome = "unverified";
+      kernelError = errorToKernelJson(error);
+      throw error;
+    } finally {
+      try {
+        if (this.kernelFence && this.kernelLease) this.finishKernelRun(executionState, workOutcome, kernelError);
+      } finally {
+        release();
+      }
+    }
+  }
+
+  /** Restored files changed under the model AND the dropped messages held the
+   *  reads that justified its edit CAS — clear both, host-side (exact paths)
+   *  and via the host's trim callback (paths mentioned in dropped messages). */
+  private invalidateReadStampsAfterRewind(files: readonly string[], dropped: readonly Message[]): void {
+    const stamps = this.opts.fileReadStamps;
+    if (stamps && files.length > 0) {
+      const targets = new Set(files.map((rel) => path.resolve(this.opts.workspace, rel).toLowerCase()));
+      for (const key of [...stamps.keys()]) {
+        if (targets.has(path.resolve(key).toLowerCase())) stamps.delete(key);
+      }
+    }
+    if (dropped.length > 0) {
+      try {
+        this.opts.onHistoryTrimmed?.(dropped);
+      } catch {
+        // host bookkeeping never fails a rewind
+      }
+    }
+  }
+
   private async ensureSessionDir(): Promise<void> {
     // ALWAYS ensure the directory exists (mkdir recursive is idempotent + cheap).
     // A resumed/opened session is constructed with metaWritten=true on the
@@ -2191,7 +2330,7 @@ export class Session {
     const persistedEvent: TurnEvent =
       event.type === "turn_end"
         ? { ...event, provider: this.meta.provider.name, model: this.meta.provider.model }
-        : event.type === "compaction" && this.kernel
+        : (event.type === "compaction" || event.type === "rewound") && this.kernel
           // SQLite is canonical for kernel-backed sessions and already stores
           // the exact projection. Duplicating the entire message history into
           // every JSONL audit event made microcompaction O(history × epochs) and
@@ -2280,6 +2419,25 @@ export class Session {
           createdAtMs: protocolMessageCreatedAtMs(event.message.createdAt),
         });
       }
+      return;
+    }
+    if (event.type === "rewound") {
+      // A rewind is a projection boundary exactly like compaction: restart must
+      // hydrate the truncated history, not re-project the discarded turn from
+      // the (still canonical) message ledger. File-only rewinds change nothing.
+      if (!event.messages) return;
+      const storedMessages = this.kernel.listMessages(this.meta.id);
+      this.kernel.appendContextEpoch(fence, {
+        reason: "context-rewind",
+        summary: toKernelJson({ checkpointId: event.checkpointId, droppedMessages: event.droppedMessages, files: event.files }),
+        projection: toKernelJson(event.messages),
+        sourceVersions: {
+          ...(this.opts.contextSourceVersions?.() ?? {}),
+          protocol: 1,
+          projection: "ares-message-v1",
+          lastMessageOrdinal: storedMessages.at(-1)?.ordinal ?? 0,
+        },
+      });
       return;
     }
     if (event.type === "compaction") {
@@ -3110,7 +3268,7 @@ function messagesFromRollout(entries: readonly RolloutEntry[]): Message[] {
       });
       continue;
     }
-    if (event.type === "compaction" && Array.isArray(event.messages)) {
+    if ((event.type === "compaction" || event.type === "rewound") && Array.isArray(event.messages)) {
       pendingToolResults = [];
       messages.length = 0;
       messages.push(...event.messages);
@@ -3253,4 +3411,11 @@ function previewFromMessages(messages: readonly Message[]): string {
     return text.length > 90 ? `${text.slice(0, 87)}...` : text;
   }
   return "";
+}
+
+/** Kernel execution state for a terminal turn status. `needs_verification` is
+ * a completed loop whose work lacks proof — the kernel records the loop as
+ * completed and the WorkOutcome carries the unverified/blocked truth. */
+function executionStateOf(status: TurnEndStatus): Exclude<ExecutionState, "running"> {
+  return status === "needs_verification" ? "completed" : status;
 }

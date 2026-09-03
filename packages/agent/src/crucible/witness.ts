@@ -61,6 +61,8 @@ export interface WitnessOptions {
   store: WitnessStore;
   ask: WitnessAsk;
   source?: string;
+  /** Tenant the reviewed turn belongs to (e.g. `guest:<chatId>`); absent = owner. */
+  scope?: string;
   maxCandidates?: number;
   signal?: AbortSignal;
 }
@@ -148,6 +150,7 @@ export async function runWitness(opts: WitnessOptions): Promise<WitnessReport> {
       source: opts.source,
       status: "candidate",
       check: verdict.check,
+      ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
     }]);
     const hit = routed.written[0];
     if (hit) {

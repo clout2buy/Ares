@@ -109,7 +109,22 @@ export {
   type WatcherExecutionRequest,
 } from "./watchers.js";
 
-export { runProbe, type ProbeResult, type ProbeContext } from "./probe.js";
+export { runProbe, fileInScope, EDITING_TOOL_NAMES, PLANNING_TOOL_NAMES, type ProbeResult, type ProbeContext, type ProbeTrace } from "./probe.js";
+
+export {
+  composeDayBrief,
+  briefSourceTimeoutMs,
+  DEFAULT_BRIEF_SOURCE_TIMEOUT_MS,
+  type DayBrief,
+  type DayBriefSection,
+  type DayBriefSectionName,
+  type DayBriefSourceStatus,
+  type DayBriefSources,
+  type DayBriefEvent,
+  type DayBriefEmail,
+  type DayBriefReminder,
+  type ComposeDayBriefOptions,
+} from "./dayBrief.js";
 
 export { WorldModel, type WorldSource, type WorldSnapshot } from "./worldModel.js";
 
@@ -370,6 +385,7 @@ export {
   type GauntletProbeOutcome,
   type GauntletUsage,
 } from "./gauntlet.js";
+export { CODING_GAUNTLET_V5 } from "./gauntletV5.js";
 export {
   parseScoreboard,
   parseScoreboardRow,
@@ -379,6 +395,14 @@ export {
   detectRegression,
   renderTrend,
   formatCompact,
+  gauntletTrendFile,
+  parseGauntletTrendEntry,
+  parseGauntletTrend,
+  readGauntletTrend,
+  appendGauntletTrend,
+  judgeGauntletTrend,
+  renderGauntletTrend,
+  type GauntletTrendEntry,
   type ScoreboardRow,
   type ScoreboardMetrics,
   type ScoreboardCell,

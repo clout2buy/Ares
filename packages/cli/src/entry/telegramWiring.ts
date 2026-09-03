@@ -10,7 +10,7 @@ import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecen
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler } from "@ares/channels";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders } from "@ares/core";
-import { briefingLines, buildBriefing } from "./introspect.js";
+import { buildDayBrief } from "./introspect.js";
 import { CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 
 /** The Telegram remote-command deps (state/control/orchestration) shared by the
@@ -371,13 +371,15 @@ export async function telegramCommand(args: ParsedArgs): Promise<number> {
 
   // Daily briefing push. Fires at ARES_BRIEFING_HOUR (local, default 8) and on
   // first boot after the hour if it hasn't gone out today — so "report to me
-  // daily" actually happens, unattended.
+  // daily" actually happens, unattended. The body is the full morning brief
+  // (weather → calendar → reminders → email → missions); a source that isn't
+  // connected costs one line, never the push.
   const briefingHour = Math.min(23, Math.max(0, Number(process.env.ARES_BRIEFING_HOUR) || 8));
   let lastBriefingDay = "";
   const pushBriefing = async () => {
     try {
-      const briefing = await buildBriefing(context);
-      const text = ["🜂 Ares — daily briefing", ...briefingLines(briefing)].join("\n");
+      const brief = await buildDayBrief(context);
+      const text = ["🜂 Ares — daily briefing", "", brief.text].join("\n");
       for (const chatId of allowedChatIds) await api.sendMessage(chatId, text).catch(() => undefined);
     } catch {
       // never let the briefing crash the channel

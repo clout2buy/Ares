@@ -198,6 +198,7 @@ export type TurnEvent =
         | "memory"
         | "instructions"
         | "undo"
+        | "rewind"
         | "heartbeat"
         | "dream"
         | "recall"
@@ -232,6 +233,19 @@ export type TurnEvent =
   | { type: "soul_rule_promoted"; ruleText: string; sourceMemoryId: number }
   | { type: "todo_updated"; todos: Todo[] }
   | { type: "checkpoint_created"; checkpointId: string; label?: string; toolUseId?: string; reason?: "manual" | "pre_tool" | "post_tool" }
+  | {
+      /** Workspace AND conversation rewound to a checkpoint (/rewind). `files`
+       * are the workspace-relative paths the restore touched — hosts drop their
+       * read stamps for them so the next edit re-reads instead of editing blind.
+       * `messages` is the exact post-rewind history for legacy rollout replay;
+       * kernel-backed sessions persist it as a context epoch instead. */
+      type: "rewound";
+      checkpointId: string;
+      files: string[];
+      droppedMessages: number;
+      conversationRewound: boolean;
+      messages?: Message[];
+    }
   | { type: "workspace_diff"; checkpointId: string; toolUseId?: string; files: string[]; diff: string; truncated: boolean }
   | { type: "subagent_start"; id: string; name: string; description: string }
   | { type: "subagent_end"; id: string; status: "completed" | "failed" | "cancelled"; summary: string }
@@ -240,6 +254,11 @@ export type TurnEvent =
       status: TurnEndStatus;
       /** Coding/work truth, independent of transport completion. */
       workStatus?: WorkStatus;
+      /** Present only with status "needs_verification": what was NOT proven,
+       * carried structurally for headless runs, evals, telemetry and
+       * diagnostics. Never rendered to the owner as a warning — the
+       * user-facing UNVERIFIED warning was removed by standing order. */
+      unverified?: TurnVerificationGap;
       usage: Usage;
       durationMs: number;
       /** Added by Session persistence for accurate historical attribution. */
@@ -247,13 +266,30 @@ export type TurnEvent =
       model?: string;
     };
 
-export type TurnEndStatus = "completed" | "interrupted" | "failed";
+/** Transport outcome of a turn. `needs_verification` is a COMPLETED loop whose
+ * coding work carries no behavioral proof (workStatus unverified/blocked): the
+ * engine stopped honestly instead of spiralling, but no consumer may read it as
+ * success. Treat it as completed-with-warning, never as failed. Legacy
+ * `completed` stamping over red work is restored by ARES_STRICT_VERIFY=0. */
+export type TurnEndStatus = "completed" | "needs_verification" | "interrupted" | "failed";
 
 /** Outcome of the requested work, separate from transport/execution status.
  * A turn can execute normally (`completed`) while its code remains red or has
  * no post-edit proof. Keeping the axes separate prevents provider failover from
  * treating an ordinary verification failure as a provider outage. */
 export type WorkStatus = "verified" | "unverified" | "blocked" | "not_applicable";
+
+/** Structured account of a needs_verification turn: which files changed,
+ * which checks actually ran (host verifier, manual commands, verifier
+ * subagent), and what proof is missing. */
+export interface TurnVerificationGap {
+  /** Workspace-relative changed files (or `<…>` placeholders for shell/provider mutations). */
+  files: string[];
+  /** Human-readable descriptions of every check that ran and its outcome. */
+  checksRun: string[];
+  /** What would have been needed to end `completed`. */
+  missing: string[];
+}
 
 // ─── Tools (schema-side; implementation lives in @ares/tools) ───────────
 
@@ -370,7 +406,23 @@ export interface CheckpointMeta {
   parentCheckpointId?: string;
   label?: string;
   createdAt: string;
+  /** Blob-layer manifest. EMPTY for git-backed checkpoints (the tree object is
+   *  the manifest there) — readers must branch on `layer`, not on length. */
   fileManifest: BlobRef[];
+  /** Which store holds the snapshot. Absent on pre-v0.46 metas = "blob". */
+  layer?: "blob" | "git";
+  /** Git-layer: the tree object of the workspace subtree at checkpoint time. */
+  gitTree?: string;
+  /** Git-layer: commit anchoring `gitTree` under refs/ares/checkpoints/… so
+   *  `git gc` keeps it. Filled in shortly after creation (anchoring is
+   *  deferred off the pre-tool hot path); may be absent for a moment. */
+  gitCommit?: string;
+  /** Conversation anchor for /rewind: index (in the session's history at
+   *  creation time) of the assistant message carrying `toolUseId`. A rewind
+   *  cuts history to just BEFORE that message so no tool_use is ever left
+   *  dangling. Absent for checkpoints with no message anchor (hook snapshots). */
+  messageIndex?: number;
+  toolUseId?: string;
 }
 
 // ─── Memory ─────────────────────────────────────────────────────────────

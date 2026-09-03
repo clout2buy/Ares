@@ -1,5 +1,12 @@
 // LSP — symbol navigation with real TypeScript language-server support
 // and deterministic static fallback.
+//
+// Two tiers, stated honestly in the tool description: TypeScript/JavaScript
+// get a full language server (types, real references) when
+// typescript-language-server is on PATH; every other language gets the regex
+// symbol index from @ares/core (names, kinds, lines — no types) for
+// workspace_symbol / document_symbol, and the static grep-style fallback for
+// definition/references/hover.
 
 import { z } from "zod";
 import { promises as fs } from "node:fs";
@@ -7,21 +14,42 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildTool, resolveWorkspacePath, zPath } from "./_shared.js";
+import {
+  buildSymbolIndex,
+  querySymbols,
+  workspaceSymbolsFor,
+  symbolIndexLanguageFor,
+  type IndexedSymbol,
+  type SymbolKind,
+} from "@ares/core";
+import { buildTool, resolveWorkspacePath, toolError, zPath } from "./_shared.js";
+
+const NAV_ACTIONS = new Set(["go_to_definition", "go_to_references", "hover"]);
 
 const inputSchema = z
   .object({
-    action: z.enum(["go_to_definition", "go_to_references", "hover"]),
-    file_path: zPath,
-    line: z.number().int().positive().describe("1-based line number."),
-    character: z.number().int().nonnegative().describe("0-based character offset."),
+    action: z.enum(["go_to_definition", "go_to_references", "hover", "workspace_symbol", "document_symbol"]),
+    file_path: zPath.optional().describe("Required for every action except workspace_symbol."),
+    line: z.number().int().positive().optional().describe("1-based line number (go_to_definition/go_to_references/hover)."),
+    character: z.number().int().nonnegative().optional().describe("0-based character offset (go_to_definition/go_to_references/hover)."),
     symbol: z
       .string()
       .optional()
       .describe("Optional explicit symbol. If omitted, Ares reads the word at file_path:line:character."),
+    query: z
+      .string()
+      .optional()
+      .describe("workspace_symbol: name to look up (exact, prefix, camel/snake fuzzy like `gud` → getUserData, substring). Falls back to `symbol`."),
+    kind: z
+      .enum(["function", "method", "class", "interface", "type", "enum", "struct", "trait", "impl", "module", "variable", "constant", "macro"])
+      .optional()
+      .describe("workspace_symbol/document_symbol: restrict to one symbol kind."),
     max_results: z.number().int().positive().max(100).default(25),
   })
   .strict();
+
+type LspInput = z.infer<typeof inputSchema>;
+type NavInput = LspInput & { line: number; character: number };
 
 export interface LspLocation {
   path: string;
@@ -30,12 +58,25 @@ export interface LspLocation {
   preview: string;
 }
 
+export interface LspSymbol {
+  name: string;
+  kind: string;
+  path: string;
+  line: number;
+  endLine?: number;
+  container?: string;
+  exported?: boolean;
+  signature: string;
+}
+
 export interface LspOutput {
-  action: "go_to_definition" | "go_to_references" | "hover";
+  action: LspInput["action"];
   symbol: string;
   locations: LspLocation[];
   hover?: string;
-  engine: "typescript-language-server" | "static-fallback";
+  /** workspace_symbol / document_symbol results. */
+  symbols?: LspSymbol[];
+  engine: "typescript-language-server" | "static-fallback" | "symbol-index";
   fallbackReason?: string;
 }
 
@@ -64,25 +105,45 @@ const lspClients = new Map<string, Promise<TsLanguageServerClient | null>>();
 export const LspTool = buildTool({
   name: "LSP",
   description:
-    "Code navigation: go_to_definition, go_to_references, and hover for a symbol at file_path:line:character. Uses typescript-language-server for JS/TS when available, with a static fallback for other languages or missing servers.",
+    "Code navigation. Actions: go_to_definition / go_to_references / hover for the symbol at file_path:line:character; workspace_symbol (find declarations by name across the repo — exact, prefix, camel/snake fuzzy); document_symbol (outline of one file: every function/class/method with lines). Engines — TypeScript/JavaScript: full LSP via typescript-language-server when installed; other languages: regex symbol index (names/kinds/lines, no types) for the symbol actions and a static text fallback for the rest.",
   safety: "read-only",
   concurrency: "parallel-safe",
   inputZod: inputSchema,
-  activityDescription: (i) => `LSP ${i.action} ${path.basename(i.file_path)}:${i.line}`,
+  activityDescription: (i) =>
+    i.action === "workspace_symbol"
+      ? `LSP workspace_symbol ${i.query ?? i.symbol ?? ""}`
+      : `LSP ${i.action} ${path.basename(i.file_path ?? "")}${i.line ? `:${i.line}` : ""}`,
+
+  async validateInput(i) {
+    if (i.action === "workspace_symbol") {
+      if (!(i.query ?? i.symbol)?.trim()) return { ok: false, message: "LSP workspace_symbol needs `query` (a symbol name or fragment)." };
+      return { ok: true };
+    }
+    if (!i.file_path) return { ok: false, message: `LSP ${i.action} needs file_path.` };
+    if (NAV_ACTIONS.has(i.action) && (i.line === undefined || i.character === undefined)) {
+      return { ok: false, message: `LSP ${i.action} needs line (1-based) and character (0-based).` };
+    }
+    return { ok: true };
+  },
 
   async call(i, ctx): Promise<{ output: LspOutput; display: string }> {
+    if (i.action === "workspace_symbol") return await workspaceSymbolAction(i, ctx);
+    if (!i.file_path) throw toolError(`LSP ${i.action} needs file_path.`);
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "read");
+    if (i.action === "document_symbol") return await documentSymbolAction(i, ctx, filePath);
+    if (i.line === undefined || i.character === undefined) throw toolError(`LSP ${i.action} needs line and character.`);
+    const nav = i as NavInput;
     const content = await fs.readFile(filePath, "utf8");
     const lines = content.split(/\r?\n/);
-    const symbol = i.symbol?.trim() || wordAt(lines[i.line - 1] ?? "", i.character);
-    if (!symbol) throw new Error(`No symbol found at ${filePath}:${i.line}:${i.character}`);
+    const symbol = i.symbol?.trim() || wordAt(lines[nav.line - 1] ?? "", nav.character);
+    if (!symbol) throw new Error(`No symbol found at ${filePath}:${nav.line}:${nav.character}`);
 
     if (TS_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
       const client = await clientForWorkspace(ctx.workspace, (data) => ctx.emitProgress?.(data));
       if (client) {
         try {
           await client.didOpen(filePath, content);
-          const output = await queryTypescriptServer(client, i, filePath, symbol);
+          const output = await queryTypescriptServer(client, nav, filePath, symbol);
           if (output) {
             return {
               output,
@@ -93,18 +154,193 @@ export const LspTool = buildTool({
             };
           }
         } catch (err) {
-          return await staticFallback(ctx.workspace, i, filePath, lines, symbol, err instanceof Error ? err.message : String(err));
+          return await staticFallback(ctx.workspace, nav, filePath, lines, symbol, err instanceof Error ? err.message : String(err));
         }
       }
     }
 
-    return await staticFallback(ctx.workspace, i, filePath, lines, symbol);
+    return await staticFallback(ctx.workspace, nav, filePath, lines, symbol);
   },
 });
 
+// ─── workspace_symbol / document_symbol ────────────────────────────────
+
+type SymbolCtx = Parameters<typeof resolveWorkspacePath>[0] & { emitProgress?: (data: unknown) => void };
+
+function toLspSymbol(workspace: string, s: IndexedSymbol): LspSymbol {
+  return {
+    name: s.name,
+    kind: s.kind,
+    path: path.join(workspace, ...s.file.split("/")),
+    line: s.line,
+    endLine: s.endLine,
+    container: s.container,
+    exported: s.exported,
+    signature: s.signature,
+  };
+}
+
+async function workspaceSymbolAction(i: LspInput, ctx: SymbolCtx): Promise<{ output: LspOutput; display: string }> {
+  const query = (i.query ?? i.symbol ?? "").trim();
+  if (!query) throw toolError("LSP workspace_symbol needs `query`.");
+  const max = i.max_results ?? 25;
+  const kind = i.kind as SymbolKind | undefined;
+  const symbols: LspSymbol[] = [];
+  const seen = new Set<string>();
+  let engine: LspOutput["engine"] = "symbol-index";
+  let fallbackReason: string | undefined;
+
+  // TypeScript server first for TS/JS files (real declarations, incl. types);
+  // the index fills in every other language and stands in when no server.
+  const client = await clientForWorkspace(ctx.workspace, (data) => ctx.emitProgress?.(data));
+  if (client) {
+    try {
+      const response = await client.request("workspace/symbol", { query });
+      for (const s of lspSymbolsFrom(response)) {
+        if (kind && s.kind !== kind) continue;
+        const key = `${s.path}:${s.line}:${s.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        symbols.push(s);
+      }
+      engine = "typescript-language-server";
+    } catch (err) {
+      fallbackReason = err instanceof Error ? err.message : String(err);
+    }
+  }
+  const index = await buildSymbolIndex(ctx.workspace, { maxAgeMs: 3_000 });
+  for (const m of querySymbols(index, query, { kind, limit: max * 2 })) {
+    if (engine === "typescript-language-server" && TS_EXTENSIONS.has(path.extname(m.file).toLowerCase())) continue;
+    const s = toLspSymbol(index.workspace, m);
+    const key = `${s.path}:${s.line}:${s.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    symbols.push(s);
+  }
+  const out = symbols.slice(0, max);
+  return {
+    output: { action: i.action, symbol: query, locations: [], symbols: out, engine, fallbackReason },
+    display: `${out.length} symbol${out.length === 1 ? "" : "s"} for ${query} via ${engine}`,
+  };
+}
+
+async function documentSymbolAction(i: LspInput, ctx: SymbolCtx, filePath: string): Promise<{ output: LspOutput; display: string }> {
+  const max = i.max_results ?? 25;
+  const kind = i.kind as SymbolKind | undefined;
+  let engine: LspOutput["engine"] = "symbol-index";
+  let fallbackReason: string | undefined;
+  let symbols: LspSymbol[] = [];
+
+  if (TS_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+    const client = await clientForWorkspace(ctx.workspace, (data) => ctx.emitProgress?.(data));
+    if (client) {
+      try {
+        const content = await fs.readFile(filePath, "utf8");
+        await client.didOpen(filePath, content);
+        const response = await client.request("textDocument/documentSymbol", { textDocument: { uri: pathToFileURL(filePath).href } });
+        symbols = documentSymbolsFrom(response, filePath);
+        engine = "typescript-language-server";
+      } catch (err) {
+        fallbackReason = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+  if (engine === "symbol-index") {
+    if (!symbolIndexLanguageFor(filePath)) {
+      throw toolError(`LSP document_symbol: no symbol extractor for ${path.extname(filePath) || "this file type"}.`);
+    }
+    const index = await buildSymbolIndex(ctx.workspace, { maxAgeMs: 3_000 });
+    symbols = workspaceSymbolsFor(index, filePath).map((s) => toLspSymbol(index.workspace, s));
+  }
+  if (kind) symbols = symbols.filter((s) => s.kind === kind);
+  const out = symbols.slice(0, max);
+  return {
+    output: { action: i.action, symbol: path.basename(filePath), locations: [], symbols: out, engine, fallbackReason },
+    display: `${out.length} symbol${out.length === 1 ? "" : "s"} in ${path.basename(filePath)} via ${engine}`,
+  };
+}
+
+/** LSP SymbolKind numbers → our kind vocabulary. */
+const LSP_KIND: Record<number, string> = {
+  2: "module",
+  3: "module",
+  5: "class",
+  6: "method",
+  7: "variable",
+  9: "method",
+  10: "enum",
+  11: "interface",
+  12: "function",
+  13: "variable",
+  14: "constant",
+  23: "struct",
+  26: "type",
+};
+
+function lspSymbolsFrom(response: unknown): LspSymbol[] {
+  if (!Array.isArray(response)) return [];
+  const out: LspSymbol[] = [];
+  for (const item of response) {
+    const obj = item as { name?: string; kind?: number; containerName?: string; location?: { uri?: string; range?: { start?: { line?: number }; end?: { line?: number } } } };
+    const uri = obj.location?.uri;
+    const start = obj.location?.range?.start?.line;
+    if (!obj.name || !uri || typeof start !== "number") continue;
+    let file: string;
+    try {
+      file = fileURLToPath(uri);
+    } catch {
+      continue;
+    }
+    out.push({
+      name: obj.name,
+      kind: LSP_KIND[obj.kind ?? 0] ?? "variable",
+      path: file,
+      line: start + 1,
+      endLine: typeof obj.location?.range?.end?.line === "number" ? obj.location.range.end.line + 1 : undefined,
+      container: obj.containerName || undefined,
+      signature: obj.name,
+    });
+  }
+  return out;
+}
+
+function documentSymbolsFrom(response: unknown, filePath: string): LspSymbol[] {
+  if (!Array.isArray(response)) return [];
+  const out: LspSymbol[] = [];
+  const visit = (items: unknown[], container?: string): void => {
+    for (const item of items) {
+      const obj = item as {
+        name?: string;
+        kind?: number;
+        detail?: string;
+        range?: { start?: { line?: number }; end?: { line?: number } };
+        selectionRange?: { start?: { line?: number } };
+        children?: unknown[];
+        location?: { range?: { start?: { line?: number }; end?: { line?: number } } };
+        containerName?: string;
+      };
+      const range = obj.range ?? obj.location?.range;
+      const start = obj.selectionRange?.start?.line ?? range?.start?.line;
+      if (!obj.name || typeof start !== "number") continue;
+      out.push({
+        name: obj.name,
+        kind: LSP_KIND[obj.kind ?? 0] ?? "variable",
+        path: filePath,
+        line: start + 1,
+        endLine: typeof range?.end?.line === "number" ? range.end.line + 1 : undefined,
+        container: container ?? obj.containerName ?? undefined,
+        signature: obj.detail ? `${obj.name} ${obj.detail}` : obj.name,
+      });
+      if (Array.isArray(obj.children)) visit(obj.children, obj.name);
+    }
+  };
+  visit(response);
+  return out.sort((a, b) => a.line - b.line);
+}
+
 async function queryTypescriptServer(
   client: TsLanguageServerClient,
-  i: z.infer<typeof inputSchema>,
+  i: NavInput,
   filePath: string,
   symbol: string,
 ): Promise<LspOutput | null> {
@@ -131,7 +367,7 @@ async function queryTypescriptServer(
 
 async function staticFallback(
   workspace: string,
-  i: z.infer<typeof inputSchema>,
+  i: NavInput,
   filePath: string,
   lines: readonly string[],
   symbol: string,
@@ -213,7 +449,9 @@ class TsLanguageServerClient {
             definition: { dynamicRegistration: false },
             references: { dynamicRegistration: false },
             hover: { dynamicRegistration: false, contentFormat: ["markdown", "plaintext"] },
+            documentSymbol: { dynamicRegistration: false, hierarchicalDocumentSymbolSupport: true },
           },
+          workspace: { symbol: { dynamicRegistration: false } },
         },
       });
       client.notify("initialized", {});

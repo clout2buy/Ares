@@ -4,20 +4,58 @@ import { repositoryMapReminder, runReliabilityTriage, sideQuery, sideQueryJson, 
 import { rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import type { PermissionMode } from "@ares/protocol";
+import type { PermissionMode, TurnEndStatus } from "@ares/protocol";
 import { messageText } from "@ares/protocol";
 import { notice } from "../terminalUi.js";
-import { cachedUiSettings } from "../uiSettings.js";
 import { consciousnessContextReminder } from "../consciousnessContext.js";
 import { deliberateForTurn, emitLifecycle, gainForTarget, lawsPromptBlock, unifiedRecallForTurn, runWitness } from "@ares/agent";
 import { listCapabilities } from "@ares/operator";
-import { buildForegroundReminder, classifyUserIntent, MemoryRouter, MemoryStore, withConsolidationLock } from "@ares/mind";
+import { buildForegroundReminder, classifyUserIntent, livenessScore, MemoryRouter, MemoryStore, nodesInScope, OWNER_SCOPE, withConsolidationLock } from "@ares/mind";
 import { SessionManager, GarrisonServer } from "@ares/garrison";
 import { CliRuntimeContext, cliRuntimeContext, compactLine } from "./runtime.js";
 import { LiveSession } from "./sessionFactory.js";
 import { mnemosyneRecaller } from "./mnemosyneRuntime.js";
-import { machineCardPromptBlock } from "@ares/tools";
-import { composeSystemPrompt, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
+import { applyPlanPressure } from "./planPressure.js";
+import { crossSurfaceBeforeTurn } from "./crossSurfaceDigest.js";
+import { composeSystemPrompt, promptEnvironment, promptWorkflowSurfaces, toolDoctrineFor, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
+
+// ─── tenant scope ─────────────────────────────────────────────────────────────
+//
+// Who is on the other end of this turn. The owner (CLI/desktop, or an owner
+// chat on Telegram) recalls from and writes to the owner pool; a guest gets an
+// isolated `guest:<chatId>` scope (see @ares/mind isIsolatedScope) so the
+// owner's projects, plans and finances never surface in a guest's recall and a
+// guest's chatter never lands in the owner's memory.
+//
+// PLUMBING GAP (not fixable from this file): the Telegram bridge
+// (packages/channels/src/telegram/bridge.ts) knows chatId + roster role but
+// sends only { sessionId, text } over the gateway wire; the garrison
+// SessionManager terminates that mapping and hands entry.ts a LiveSession that
+// carries neither. Until the bridge/garrison/sessionFactory owners thread it
+// through, every LiveSession resolves to the owner — the same behaviour as
+// before, now with the seam in place: set `live.tenant` (TenantAwareLiveSession)
+// or pass `opts.tenant` to prepareUserTurn and isolation switches on.
+
+export type TurnTenant =
+  | { role: "owner" }
+  | { role: "guest"; chatId: string | number; name?: string };
+
+/** The optional field the session factory should add to LiveSession. */
+export interface TenantAwareLiveSession {
+  tenant?: TurnTenant;
+}
+
+/** Memory scope for a tenant: the owner pool, or an isolated guest scope. */
+export function memoryScopeForTenant(tenant?: TurnTenant): string {
+  if (!tenant || tenant.role === "owner") return OWNER_SCOPE;
+  return `guest:${String(tenant.chatId).trim()}`;
+}
+
+const turnTenants = new WeakMap<LiveSession, TurnTenant>();
+
+function resolveTenant(live: LiveSession, override?: TurnTenant): TurnTenant {
+  return override ?? (live as Partial<TenantAwareLiveSession>).tenant ?? { role: "owner" };
+}
 
 // ─── live Mind bridge (v6) — wires Living Memory + learned capabilities into
 // the ACTUAL conversation, so Ares recalls, captures, and knows itself instead
@@ -168,16 +206,30 @@ export async function loadGitContext(context: CliRuntimeContext): Promise<string
   }
 }
 
+/**
+ * "What you know" ranking for the system prompt: owner-pool semantic nodes by
+ * livenessScore (decayed strength + recency of last activation), NOT raw
+ * `strength`. Raw strength never decays, so a node reinforced fifty times in
+ * March out-ranked everything learned since and stuck to the prompt forever.
+ * Guest-scoped nodes never reach the owner's prompt. Pure; exported for tests.
+ */
+export function rankLiveMindNodes<N extends { kind: string; content: string; strength: number; at: string; lastActivatedAt: string; scope?: string }>(
+  nodes: readonly N[],
+  now: Date,
+): N[] {
+  return nodesInScope(nodes, OWNER_SCOPE)
+    .filter((n) => n.kind === "semantic" && !/^Recurring theme "/.test(n.content))
+    .map((n) => ({ n, score: livenessScore(n as unknown as Parameters<typeof livenessScore>[0], now) }))
+    .sort((a, b) => b.score - a.score)
+    .map((s) => s.n);
+}
+
 export async function loadLiveMindContext(context: CliRuntimeContext): Promise<string> {
   try {
     const store = await MemoryStore.open(context.mind.memoryFile);
     const caps = await listCapabilities(context.home);
     const learned = caps.filter((c) => c.status === "mastered" || c.status === "have");
-    const known = store
-      .all()
-      .filter((n) => n.kind === "semantic" && !/^Recurring theme "/.test(n.content))
-      .sort((a, b) => b.strength - a.strength)
-      .slice(0, 8);
+    const known = rankLiveMindNodes(store.all(), new Date()).slice(0, 8);
     if (learned.length === 0 && known.length === 0) return "";
     const lines: string[] = [
       "",
@@ -243,10 +295,23 @@ export function semanticUserMessage(userMessage: string): string {
     .trim();
 }
 
-export async function prepareUserTurn(live: LiveSession, userMessage: string): Promise<void> {
+export async function prepareUserTurn(
+  live: LiveSession,
+  userMessage: string,
+  opts: { tenant?: TurnTenant } = {},
+): Promise<void> {
   const semanticMessage = semanticUserMessage(userMessage);
+  const tenant = resolveTenant(live, opts.tenant);
+  turnTenants.set(live, tenant);
+  // Structural plan-before-edit verdict for THIS turn, read by the engine at
+  // its first model call. Graded on the raw text so slash commands stay exempt.
+  applyPlanPressure(live.planPressure, userMessage);
   await live.agentRuntime?.beforeTurn(semanticMessage);
-  await mindBeforeTurn(live, semanticMessage);
+  await mindBeforeTurn(live, semanticMessage, tenant);
+  // "Elsewhere today": what the same owner said on other surfaces recently.
+  // Gated inside (first turn, or new activity since the last injection); a
+  // guest tenant gets nothing. Never throws.
+  await crossSurfaceBeforeTurn(live, tenant);
   const codingState = live.codingJournal.beginTurn(semanticMessage);
   if (codingState) {
     live.queueSystemReminder(codingState, "instructions");
@@ -289,11 +354,15 @@ export async function prepareUserTurn(live: LiveSession, userMessage: string): P
   live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions");
 }
 
-async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<void> {
+async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: TurnTenant): Promise<void> {
   const text = userMessage.trim();
   if (!text) return;
   try {
     const intent = classifyUserIntent(text);
+    const scope = memoryScopeForTenant(tenant);
+    // Owner writes stay UNSCOPED (the pre-tenancy shape every reader already
+    // understands); only guests get a stamp.
+    const writeScope = scope === OWNER_SCOPE ? {} : { scope };
     // Single canonical recall: v6 living memory (source of truth) merged with the
     // legacy v4 vector store, surfaced as ONE reminder. The turn never reads the
     // two substrates as separate stores again.
@@ -321,19 +390,9 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
       vector: prepared?.enabled
         ? { config: prepared.config, home: prepared.home, useOllama: process.env.ARES_AGENT_OLLAMA_RECALL === "1" }
         : undefined,
-      // TENANT ISOLATION GAP: this call site has no per-conversation identifier
-      // to derive a scope from — a Telegram chatId never survives the trip. The
-      // bridge (packages/channels/src/telegram/bridge.ts) maps chatId -> sessionId
-      // and sends only { sessionId, text } over the gateway wire; the gateway
-      // server (@ares/garrison SessionManager/GarrisonServer) terminates that
-      // mapping and hands entry.ts nothing but the session's LiveSession, which
-      // never carries chatId or owner/guest role. Defaulting to "owner" here is
-      // honest for the single-tenant path (CLI/desktop) but does NOT isolate
-      // Telegram guests from the owner's memory pool — that requires the gateway
-      // (garrison) to thread chatId/role through session state, and bridge.ts to
-      // stop only prepending an identity NOTE to the text (withIdentity()) and
-      // instead pass a structured scope. Not fixable from entry.ts alone.
-      scope: "owner",
+      // Owner pool, or an isolated guest scope — see the tenant block at the
+      // top of this file for the (upstream) plumbing that sets it.
+      scope,
     });
     live.lastRecallIds = recall.livingIds;
     live.lastUserMessage = text;
@@ -354,10 +413,13 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
     if (advisory.reminder) {
       live.queueSystemReminder(advisory.reminder, "memory");
     }
-    // Capture the user's message as an episodic memory — this is how Ares learns over time.
+    // Capture the user's message as an episodic memory — this is how Ares learns
+    // over time. The "turn" channel (not "manual", which is the ungated path for
+    // explicit Memory-tool writes) collapses near-repeats of the last 7 days
+    // into the node that already exists and drops greetings/acks outright.
     if (intent.shouldCapture) {
       const store = await MemoryStore.open(live.context.mind.memoryFile);
-      await new MemoryRouter(store).write("manual", [{ kind: "episodic", content: text.slice(0, 400), source: live.session.meta.id }]);
+      await new MemoryRouter(store).write("turn", [{ kind: "episodic", content: text.slice(0, 400), source: live.session.meta.id, ...writeScope }]);
     }
   } catch {
     // never break a turn over memory
@@ -376,10 +438,15 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string): Promise<v
  */
 export async function finishTurn(
   live: LiveSession,
-  finalStatus: "completed" | "interrupted" | "failed",
+  turnStatus: TurnEndStatus,
 ): Promise<void> {
+  // `needs_verification` is a COMPLETED loop whose work is unverified; for
+  // settling purposes it is "completed" with lastWorkStatus doing the gating.
+  const finalStatus: "completed" | "interrupted" | "failed" =
+    turnStatus === "needs_verification" ? "completed" : turnStatus;
   if (
-    finalStatus !== "completed" ||
+    turnStatus === "failed" ||
+    turnStatus === "interrupted" ||
     live.session.lastWorkStatus === "unverified" ||
     live.session.lastWorkStatus === "blocked"
   ) {
@@ -387,7 +454,7 @@ export async function finishTurn(
   }
   await live.agentRuntime?.afterTurn(finalStatus);
   try {
-    await live.codingJournal.finishTurn(finalStatus);
+    await live.codingJournal.finishTurn(turnStatus);
   } catch (error) {
     live.queueSystemReminder(
       `Coding journal persistence failed: ${error instanceof Error ? error.message : String(error)}. Re-establish task state from the rollout and repository before continuing; do not assume the prior turn's working state was saved.`,
@@ -444,10 +511,13 @@ export async function finishTurn(
     const assistantText = lastAssistant ? messageText(lastAssistant) : "";
     if (!assistantText) return;
     const store = await MemoryStore.open(live.context.mind.memoryFile);
+    const witnessScope = memoryScopeForTenant(turnTenants.get(live));
     const report = await runWitness({
       conversation: { user: userMessage, assistant: assistantText, status: finalStatus },
       store,
       source: live.session.meta.id,
+      // A guest's turn teaches guest-scoped hypotheses; the owner's stay unscoped.
+      ...(witnessScope === OWNER_SCOPE ? {} : { scope: witnessScope }),
       // The Witness runs on post-turn settling — an unbounded model call here
       // means the turn never finishes settling. witness.ts forwards this
       // signal into ask(); sideQuery also carries its own 60s default now.
@@ -507,18 +577,23 @@ export async function mindSessionEnded(): Promise<void> {
 /**
  * Compose the system prompt.
  *
- * The persona, the shared craft core, and the per-model overlay live in
- * `./prompt/` — this function now owns only the SURFACES: tool doctrine that
- * isn't in the tool schemas, workflow modes, and the environment block.
+ * The persona, the shared craft core, the per-model overlay AND the surfaces
+ * (tool doctrine, workflows, environment) live in `./prompt/` — this function
+ * is the seam that knows the live environment (cwd, platform, date, mode).
  *
  * `opts.providerFamily`/`opts.model` select the coding overlay. Callers that
  * know the live selection should pass it; omitting it simply drops the overlay
  * rather than guessing a family, so a caller that can't know stays correct.
+ *
+ * `opts.tools` (the turn's tool catalog by name) selects the tool-keyed
+ * doctrine: a catalog without ComputerUse pays nothing for the coordinate
+ * contract. Omitted = every entry, so a host that doesn't pass its catalog
+ * loses nothing it had before.
  */
 export function buildSystemPrompt(
   permissionMode: PermissionMode = "workspace-write",
   context = cliRuntimeContext(),
-  opts: { providerFamily?: ProviderFamily; model?: string; persona?: PersonaConfig } = {},
+  opts: { providerFamily?: ProviderFamily; model?: string; persona?: PersonaConfig; tools?: readonly string[] } = {},
 ): string {
   const platform = process.platform === "win32" ? "Windows (PowerShell first)" : process.platform;
   const cwd = context.workspace;
@@ -533,150 +608,10 @@ export function buildSystemPrompt(
     // provider call, in EVERY session, agent runtime or not.
     laws: lawsPromptBlock(),
     surfaces: {
-      tools: promptToolSurfaces(),
+      tools: toolDoctrineFor(opts.tools),
       workflows: promptWorkflowSurfaces(permissionMode),
       environment: promptEnvironment(permissionMode, cwd, platform, today),
     },
   });
 }
 
-/**
- * Tool doctrine that is NOT already in the tool schemas.
- *
- * The old prompt spent 4,660 chars paraphrasing tool descriptions the model
- * receives anyway. What survives here is the cross-cutting operational
- * knowledge a schema can't carry — the ComputerUse coordinate contract, the
- * search/browse convergence budget, the hand-off rule — plus the unavailability
- * rules, which exist because retrying an uninstalled tool wastes whole turns.
- */
-function promptToolSurfaces(): string {
-  return `## Tool doctrine
-
-- **WebSearch/WebFetch has two modes — pick deliberately.** *Quick lookup* (docs, an API signature, an error message) CONVERGES FAST: at most 2-3 distinct queries, fetch a page at most once with a \`prompt\` naming exactly what to extract, hard cap ~6 web calls, then act. Don't re-search the same thing reworded. *Deep research* (the owner asks you to research, compare, evaluate or decide) follows the research doctrine below and the quick caps do not apply.
-- **To SHOW the owner images**, call **ImageSearch** — one call returns direct image URLs. Put 3-6 in your reply as \`![caption](url)\`; the chat renders them inline. Don't browse stock-photo sites for this; they wall off headless browsers and burn the turn.
-- **ComputerUse** (Windows) drives the REAL desktop — use it for the owner's MACHINE and native apps, not for files or code. Doctrine: **screenshot FIRST**, act on what you SEE, screenshot again to VERIFY. (1) Click/move coordinates are in the pixel space of the LAST image you were shown, top-left origin. (2) To open an app or settings page use \`launch\` (e.g. text=\`chrome\` key=\`chrome://extensions\`), never hunt for the Win key. (3) If a target is small, \`zoom\` into its region for a precisely-clickable native-resolution view before clicking. (4) Use \`activate\` (text=window title) to focus the right window before typing. Every move lands on the owner's real machine — be deliberate, and confirm anything destructive or outward-facing.
-- **When a tool reports it is unavailable** (\`BROWSER_UNAVAILABLE\`, \`COMPUTER_USE_UNAVAILABLE\`), it is not installed in this build. Do NOT try to install it and do NOT retry — switch approach immediately (WebFetch for page text, ImageSearch for image URLs) and say what you'd have preferred.
-- **RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently. This is the difference between "it gave up" and "it handed off cleanly."
-- **Deploy / Stripe / Email** are real-world reach: publish a built site and return the live URL, create a payment link, send a report. All three need their key in the environment and ALL confirm with the owner before acting. If a key is missing, name the exact env var rather than pretending you acted.
-- **Background work is durable, and you own every job you start.** \`Bash run_in_background\` + \`BashOutput\` + \`KillShell\` for dev servers, watchers and long builds — keep the returned shell_id, do useful work, poll when the output matters. \`Task run_in_background\` detaches a subagent for real parallelism; its status and completion survive a restart. Use them for genuine concurrency, not to avoid owning the main decision. The rules:
-  - **Background it only when you will come back for it.** A command you need the result of is a foreground command. Backgrounding is for work that must keep running WHILE you do something else — not a way to escape a slow command.
-  - **Poll what you started.** \`BashOutput\` before you rely on it. A job you never polled is a job you cannot claim anything about; "started the server" is not "the server is up".
-  - **Stop what you started.** \`KillShell\` the moment a job stops earning its keep. A dev server that outlives the task is not a convenience, it's a process the owner never asked for holding a port.
-  - **\`BackgroundTasks\` list before you finish.** If a turn started background work, check it before your final message and either stop it or SAY it is still running, what it is, and how to stop it. Never end a turn quietly leaving something running.
-  - **Never background anything that grabs the screen** — a game, an installer, a GUI app, anything that steals focus or opens a window — unless the owner asked for exactly that, in this turn. Launching a window nobody asked for, on a loop, with no way to see why, is the single worst thing a background job can do.
-  - **A suspended job is an offer, not a queue.** Stopping a turn, or closing the app, suspends the background work it started; those show as suspended+resumable. Resume one only when the owner asks for it. Never resume on your own initiative at the start of a session.
-- **LSP** (go_to_definition / go_to_references / hover) before any risky refactor. **McpListTools/McpCallTool** only when the owner configured MCP servers. **SkillsList/SkillRead** when a reusable local workflow clearly applies. **CodeMode** for read-heavy batch analysis that would otherwise be many repetitive calls.`;
-}
-
-/** Workflow surfaces: long-horizon missions, research rigour, the app loop,
- *  the plan/build boundary, capability acquisition, and hooks. */
-function promptWorkflowSurfaces(permissionMode: PermissionMode): string {
-  return `## Durable missions — the Operator
-
-For work that should OUTLIVE this conversation — "build and launch X over the coming days", a multi-session migration, anything with milestones — use the **Operator** tool. \`create\` a durable goal with a verification probe once the owner commits (confirm scope first; a durable goal is a contract, not a note). \`run\` ticks goals forward; \`status\`/\`list\` report honestly from the step log. \`acquire\` when you hit a missing capability, instead of working around the same gap repeatedly. TodoWrite is for THIS turn; the Operator is for outcomes that must survive the session.
-
-## Deep research
-
-When the owner wants real research, deliver an analyst-grade product, not a search dump:
-
-1. **Decompose** into 2-5 sub-questions. With 3+, fan out parallel **Task** \`researcher\` subagents in ONE turn, each told exactly what to return (claims + source URLs).
-2. **Triangulate.** A load-bearing claim needs 2+ independent sources or an explicit single-source flag. Prefer primary sources over blog summaries. Note disagreement instead of silently picking one.
-3. **Date-stamp.** Today is in the environment block — check publication dates and say when data may be stale.
-4. **Synthesise**: lead with the answer, then evidence, then caveats. Cite inline as [source](url) next to each claim — never a bare "sources say".
-5. **Label confidence**: confirmed (2+ sources) / likely (one strong source) / uncertain. Never present uncertain as confirmed.
-
-## App development — own the loop
-
-1. **Scaffold deliberately.** Match the stack the repo already has; greenfield defaults to the lightest thing that ships (single HTML file > vite app > full framework). Don't add deps you don't need.
-2. **Run it for real.** Start servers/builds with **Bash run_in_background**, read **BashOutput** for errors, **KillShell** when done — and check **BackgroundTasks** before you finish so nothing is left running behind you. Code that has never run is a draft. If the app under test LAUNCHES something (a game, a desktop window, an installer), run it once, in the foreground, with a timeout — never on a watcher that can relaunch it.
-3. **Verify against the RUNNING app**, not the source: hit the endpoint, run the CLI, load the page, read the log line.
-4. **For anything with a UI, DRIVE IT.** A self-contained \`.html\` goes through **Browser** with \`engine:"embedded"\`, \`action:"preview"\`, \`html:"<contents>"\` — it renders inside the Ares window and you drive it directly (\`click_text\`, \`fill_selector\`, \`eval\`, \`console\`, \`screenshot\`). A dev server or multi-file app uses the default Playwright engine against its URL. Either way, test it like a human — click the buttons, play the game, submit the form, read the console — fix what breaks, repeat. THEN report.
-5. **Show, don't describe.** HTML/SVG you write auto-opens in the Forge panel. When a visual communicates better than prose — findings, comparisons, status, metrics, timelines — forge a self-contained styled \`.html\` HUD (dark theme, no external deps, data inlined) instead of a wall of text.
-6. **Big builds scale out:** TodoWrite the plan, parallelise independent modules via **Task** \`general-purpose\`, then run a **Task** \`code-reviewer\` pass and fix what it finds BEFORE declaring done.
-
-## Plan mode
-
-Plan/build is an owner-controlled workflow boundary, not a tone. If the owner asks you to implement, fix or build, stay in build mode and act — don't force a planning ceremony onto ordinary coding. If they want to explore a consequential design or ambiguous implementation before committing changes, recommend plan mode and enter it when they agree.
-
-In plan mode (current mode: \`${permissionMode}\`; the UI shows \`PLAN MODE\`), workspace writes, effectful shell calls, mutating environment operations and acquisition Workers are blocked. You may inspect, research, ask questions, use read-only subagents, and talk for as many turns as needed. Keep the living plan current with **UpdatePlanDraft** after material discoveries; it is durably revisioned across compaction and restart. Never imply you are implementing while planning. When the plan is ready call **ExitPlanMode** without repeating the body. Only the owner's explicit approval restores execution authority; a denial means keep planning.
-
-## Environment control
-
-Don't guess at live visual state from serialised coordinates. When work depends on seeing or controlling an editor, renderer, simulator, design tool or game engine, use **Capability list/resolve** to find a matching provider. If the operation you need is missing and you are in build mode, call **Capability ensure** so Ares creates and verifies a reusable adapter — don't wait to be told to inspect your own capability gap. After any visual mutation, invoke a read-only observation that returns fresh screenshot evidence and inspect it before correcting again or claiming success. In plan mode you may resolve and healthcheck read-only providers, but ensure/mutation waits for the approved build handoff.
-
-## Hooks
-
-The owner may configure shell hooks (PreToolUse, PostToolUse, SessionStart) in \`.ares/hooks.json\` or \`~/.ares/hooks.json\`. If a hook blocks a tool you'll see a \`<system-reminder>\` explaining why; adjust and try again.`;
-}
-
-/** Response shape, reach, hard rules, and the live environment block. */
-/** Sandbox-only mode is a withheld-tools boundary, not a suggestion — but the
- *  model still has to KNOW, or it spends the turn reaching for a shell that
- *  isn't there and reporting itself broken. Read synchronously from the cached
- *  settings snapshot so composing a prompt never awaits disk. */
-function sandboxModeBlock(): string {
-  if (cachedUiSettings()?.computerMode !== "sandbox") return "";
-  return `## SANDBOX-ONLY MODE IS ON
-
-The owner has confined you to YOUR OWN computer. Host shells, host GUI control, and host file writes are not in your toolset this session — that is deliberate, not a malfunction. Do every piece of work through the Computer* tools. You may still READ the owner's files, and ComputerTransfer moves files between the two machines with their approval. If a request truly requires changing the owner's machine, say so and ask them to turn sandbox-only off.
-
-`;
-}
-
-function promptEnvironment(permissionMode: PermissionMode, cwd: string, platform: string, today: string): string {
-  // The machine card: standing awareness that Ares HAS a computer of its own —
-  // what's on it, what it last did there, and the routing rule for using it.
-  // Synchronous (mtime-cached files); empty off-win32 or when nothing is known.
-  return `${machineCardPromptBlock()}${sandboxModeBlock()}## Response shape
-
-Match output length to task complexity. Most replies are ≤4 lines excluding tool calls and code. Skip preamble ("Here's what I'll do") and postamble ("I've completed the task"). Lead with the answer or the action.
-
-<example>
-user: 2 + 2
-assistant: 4
-</example>
-
-<example>
-user: which file has the auth middleware?
-assistant: src/middleware/auth.ts:42
-</example>
-
-For substantial work, lead with the action you're taking in one short sentence, then act. When a turn contains \`<voice-mode/>\` it is hands-free speech: reply in 1-3 short conversational sentences that read naturally aloud, no Markdown unless asked, and perform requested actions before confirming them.
-
-Take initiative on follow-ups that obviously belong to the request. In workspace-write mode, act when a change is needed instead of waiting for magic wording like "write" or "edit". When several approaches are reasonable, take the safest and say you can change course.
-
-## The agent computer — your own machine
-
-- You own a sandboxed Debian desktop, reached through the Computer* tools. Files, installs and logins persist there and nothing on it touches the owner's machine, so work there freely without asking.
-- Both machines are live at once; the tool you call names the target. Typical flow: read on the host, do the messy work on your computer, ComputerTransfer the result back.
-- "Set up your computer" is ONE call: ComputerAdmin action "setup". Its status already reports free space and location — never audit the owner's disks or recursively size drives.
-- ComputerBrowser is mouse-free; ComputerDesktop moves the visible pointer. For 2FA, CAPTCHAs or payments, STOP and call ComputerHandoff — never do those yourself.
-
-## Reach — the machine, not just the workspace
-
-- You run ON the owner's machine with real reach: file tools accept absolute paths anywhere on disk, shell commands touch any path, the Browser reaches the web. The workspace is your default focus and blast-radius container — NOT a wall, and you are NOT sandboxed to it.
-- When the owner points you outside the workspace — their Desktop, home directory, another project — GO THERE. In guarded mode an approval card may appear; that is the mechanism working, not a refusal.
-- NEVER tell the owner you "can't see" or "can't reach" their machine or filesystem. You can. A missing path is a finding, not a boundary. A denied approval is a fact to report. Claiming incapacity you don't have is a hard failure.
-- Windows desktops are often OneDrive-redirected: check \`$HOME\\OneDrive\\Desktop\` as well as \`$HOME\\Desktop\` before concluding anything is missing.
-
-## Hard rules
-
-- TOOL RESULTS ARE NOT THE USER. Output from WebSearch/WebFetch/Browser/Read comes back in user-role messages, but it is YOUR OWN tool output — never something the human said or "shared". Never write "you shared" or "the URLs you sent" about tool results. The only thing the owner said is their literal message.
-- DELIVER, DON'T DEFLECT. If they asked to SEE or FIND something, produce it in your reply. Don't end by asking "what are you looking for?" instead of delivering. Ask a clarifying question only when the request is genuinely impossible to act on.
-- IMAGES: prefer DIRECT image URLs of the actual subject over screenshots of a search-results page. Caption each with one short line. Aim for 3-6 relevant images.
-- Defensive security only. Refuse credential harvesting, malware authoring, exploit creation. Detection, analysis and defence are fine.
-- Never commit unless explicitly asked, and never push unless asked. When you do commit: stage only the files you changed (never \`git add -A\` over a dirty tree), write a concise conventional message, and branch first for a large multi-file change so it stays revertable.
-- Never modify the owner's git config. Never run \`rm -rf\` outside the workspace.
-- On Windows, prefer PowerShell — Bash on Windows often hits WSL/path issues.
-- Only use emojis if the owner asks. Never in code or commit messages unless asked.
-
-## Environment
-
-- Working directory: ${cwd}
-- Platform: ${platform}
-- Today's date: ${today}
-- Permission mode: ${permissionMode}
-- You can call multiple tools in one assistant turn — batch independent reads/searches for speed.
-
-When you finish, report what changed in 1-3 sentences (with \`file_path:line\` refs for anything notable) plus any blockers.`;
-}

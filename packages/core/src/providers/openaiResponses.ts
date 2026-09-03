@@ -390,7 +390,15 @@ export class OpenAIResponsesProvider implements Provider {
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
-function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
+/** Responses-API tool_choice: "auto" | "required" | "none" | {type:"function",name}. */
+export function responsesToolChoice(choice: ProviderRequest["toolChoice"]): unknown {
+  if (choice === "any") return "required";
+  if (choice === "none") return "none";
+  if (choice && typeof choice === "object") return { type: "function", name: choice.name };
+  return "auto";
+}
+
+export function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
   const cache = buildPromptCacheKey(req);
   const level = req.reasoningLevel;
   return {
@@ -410,7 +418,7 @@ function buildRequestBody(req: ProviderRequest): Record<string, unknown> {
       // Narrowed for the OpenAI-shaped wire — see toolSchema.ts.
       parameters: narrowToolSchema(t.input_schema),
     })),
-    ...(req.tools.length > 0 ? { tool_choice: req.toolChoice === "any" ? "required" : "auto" } : {}),
+    ...(req.tools.length > 0 ? { tool_choice: responsesToolChoice(req.toolChoice) } : {}),
     stream: true,
     // Explicitly send `none` for Off: omitting this field lets several current
     // GPT models fall back to their own default, which made Off look fake.

@@ -199,14 +199,24 @@ test("Write: create new file (no prior read required)", async () => {
   assert.ok(c.fileReadStamps.has(file));
 });
 
-test("Write: overwrite REQUIRES prior Read", async () => {
+// Auto-read is the default since the read-first refusal moved behind
+// ARES_EDIT_AUTO_READ (see tests/edit-auto-read.test.mjs); the deny is
+// preserved only when the knob is off.
+test("Write: overwrite REQUIRES prior Read when ARES_EDIT_AUTO_READ=0", async () => {
   const tmp = await makeTmp();
   const file = path.join(tmp, "existing.txt");
   await fs.writeFile(file, "original", "utf8");
   const c = ctx(tmp);
-  const decision = await WriteTool.checkPermissions({ file_path: file, content: "new" }, c);
-  assert.equal(decision.kind, "deny");
-  assert.match(decision.reason, /Read .* before overwriting/);
+  const prev = process.env.ARES_EDIT_AUTO_READ;
+  process.env.ARES_EDIT_AUTO_READ = "0";
+  try {
+    const decision = await WriteTool.checkPermissions({ file_path: file, content: "new" }, c);
+    assert.equal(decision.kind, "deny");
+    assert.match(decision.reason, /Read .* before overwriting/);
+  } finally {
+    if (prev === undefined) delete process.env.ARES_EDIT_AUTO_READ;
+    else process.env.ARES_EDIT_AUTO_READ = prev;
+  }
 });
 
 test("Write: overwrite OK after Read", async () => {
@@ -252,16 +262,25 @@ test("permissions: plan denies writes and ask does not execute headless", async 
 
 // ─── Edit ──────────────────────────────────────────────────────────────
 
-test("Edit: requires prior Read", async () => {
+// The read-first deny lives behind ARES_EDIT_AUTO_READ=0 now (default:
+// auto-read — see tests/edit-auto-read.test.mjs).
+test("Edit: requires prior Read when ARES_EDIT_AUTO_READ=0", async () => {
   const tmp = await makeTmp();
   const file = path.join(tmp, "e.txt");
   await fs.writeFile(file, "hello world", "utf8");
   const c = ctx(tmp);
-  const decision = await EditTool.checkPermissions(
-    { file_path: file, old_string: "hello", new_string: "hi", replace_all: false },
-    c,
-  );
-  assert.equal(decision.kind, "deny");
+  const prev = process.env.ARES_EDIT_AUTO_READ;
+  process.env.ARES_EDIT_AUTO_READ = "0";
+  try {
+    const decision = await EditTool.checkPermissions(
+      { file_path: file, old_string: "hello", new_string: "hi", replace_all: false },
+      c,
+    );
+    assert.equal(decision.kind, "deny");
+  } finally {
+    if (prev === undefined) delete process.env.ARES_EDIT_AUTO_READ;
+    else process.env.ARES_EDIT_AUTO_READ = prev;
+  }
 });
 
 test("Edit: rejects identical old/new strings", async () => {
@@ -443,7 +462,9 @@ test("Bash: timeout preserves partial diagnostics and declares failure", async (
     ctx(tmp),
   );
 
-  assert.equal(r.failure, "Bash timed out after 4000ms");
+  // Prefix is the contract; a `hint:` line (raise timeout / run_in_background) follows.
+  assert.match(r.failure, /^Bash timed out after 4000ms/);
+  assert.match(r.failure, /hint: .*run_in_background/);
   assert.equal(r.output.timedOut, true);
   assert.ok(Object.hasOwn(r.output, "exitCode"));
   assert.match(r.output.stdout, /timeout-stdout/);
@@ -520,7 +541,10 @@ test("PowerShell: non-zero exit preserves diagnostics and declares failure", asy
     ctx(tmp),
   );
 
-  assert.equal(r.failure, "PowerShell exited with code 9");
+  // Prefix is the contract; the dialect that ran ([pwsh 7+ / 5.1]) follows.
+  assert.match(r.failure, /^PowerShell exited with code 9 \[/);
+  assert.match(r.output.dialect, /PowerShell/);
+  assert.match(r.output.shell, /^(?:pwsh|powershell)$/);
   assert.equal(r.output.exitCode, 9);
   assert.equal(r.output.timedOut, false);
   assert.match(r.output.stdout, /stdout-marker/);
@@ -547,7 +571,9 @@ test("PowerShell: timeout preserves partial diagnostics and declares failure", a
     ctx(tmp),
   );
 
-  assert.equal(r.failure, `PowerShell timed out after ${timeout}ms`);
+  // Prefix is the contract; a `hint:` line (raise timeout / run_in_background) follows.
+  assert.match(r.failure, new RegExp(`^PowerShell timed out after ${timeout}ms`));
+  assert.match(r.failure, /hint: .*run_in_background/);
   assert.equal(r.output.timedOut, true);
   assert.ok(Object.hasOwn(r.output, "exitCode"));
   assert.match(r.output.stdout, /timeout-stdout/);

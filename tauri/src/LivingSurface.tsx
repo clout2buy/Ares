@@ -533,7 +533,7 @@ export function LivingSurface({ sessionId }: { sessionId: string }) {
       } else if (type === "turn_end") {
         busyRef.current = cancellingRef.current;
         setBusy(cancellingRef.current);
-        if (event.status === "completed") {
+        if (event.status === "completed" || event.status === "needs_verification") {
           applyResponse(turnText.current);
         } else if (event.status === "interrupted") {
           addLine("system", "Turn stopped. The current surface was left unchanged.");

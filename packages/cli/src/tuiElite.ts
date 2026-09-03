@@ -216,7 +216,7 @@ export function reduceFleet(state: FleetState | null, data: unknown, now = Date.
   if (!agentId) return { ...base, fleetId };
   const status: FleetAgentStatus =
     event === "done"
-      ? String(d.status ?? "completed") === "completed"
+      ? (String(d.status ?? "completed") === "completed" || d.status === "needs_verification")
         ? "done"
         : "failed"
       : event === "resumed"

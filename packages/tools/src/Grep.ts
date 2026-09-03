@@ -36,8 +36,22 @@ const inputSchema = z
       .default("files_with_matches"),
     case_insensitive: z.boolean().default(false),
     max_results: z.number().int().positive().default(200),
-    context_before: z.number().int().nonnegative().default(0),
-    context_after: z.number().int().nonnegative().default(0),
+    context_before: z.number().int().nonnegative().default(0).describe("Lines of context before each match (-B)."),
+    context_after: z.number().int().nonnegative().default(0).describe("Lines of context after each match (-A)."),
+    context: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Lines of context before AND after each match (-C, default 0). Overrides context_before/context_after when larger."),
+    multiline: z
+      .boolean()
+      .optional()
+      .describe("Default false. Let the pattern span lines (ripgrep -U --multiline-dotall; `.` matches newlines). Use for `struct \\w+ \\{[^}]*field`-style searches."),
+    respect_gitignore: z
+      .boolean()
+      .optional()
+      .describe("Default true. false → search files ignored by .gitignore too (ripgrep --no-ignore). The built-in node_modules/dist/.git exclusions still apply."),
   })
   .strict();
 
@@ -106,10 +120,16 @@ export function regexInputProblem(pattern: string): string | null {
   return null;
 }
 
+/** -C wins over -A/-B when larger; explicit call sites may omit the newer fields entirely. */
+function contextOf(i: z.infer<typeof inputSchema>): { before: number; after: number } {
+  const both = i.context ?? 0;
+  return { before: Math.max(i.context_before ?? 0, both), after: Math.max(i.context_after ?? 0, both) };
+}
+
 export const GrepTool = buildTool({
   name: "Grep",
   description:
-    "Regex search across the workspace (ripgrep-backed when available). Choose output_mode: `content` (matching lines), `files_with_matches` (just paths), or `count`.",
+    "Regex search across the workspace (ripgrep-backed when available). Choose output_mode: `content` (matching lines), `files_with_matches` (just paths), or `count`. Options: -A/-B/-C style context (`context_after`/`context_before`/`context`), `multiline` for patterns spanning lines, `respect_gitignore: false` to include gitignored files.",
   safety: "read-only",
   concurrency: "parallel-safe",
   inputZod: inputSchema,
@@ -151,10 +171,13 @@ async function tryRipgrep(
     args.push("--glob", `!${ignore}`);
   }
   if (i.case_insensitive) args.push("-i");
+  if (i.multiline === true) args.push("-U", "--multiline-dotall");
+  if (i.respect_gitignore === false) args.push("--no-ignore");
   for (const glob of toArray(i.glob)) args.push("--glob", glob);
+  const context = contextOf(i);
   if (i.output_mode === "content") {
-    if (i.context_before > 0) args.push("-B", String(i.context_before));
-    if (i.context_after > 0) args.push("-A", String(i.context_after));
+    if (context.before > 0) args.push("-B", String(context.before));
+    if (context.after > 0) args.push("-A", String(context.after));
   }
   args.push("-e", i.pattern, ...roots);
 
@@ -196,7 +219,7 @@ async function tryRipgrep(
         } else if (
           event.type === "context" &&
           i.output_mode === "content" &&
-          (i.context_before > 0 || i.context_after > 0) &&
+          (context.before > 0 || context.after > 0) &&
           matches.length < i.max_results
         ) {
           // rg emits "context" events for -B/-A lines, in stream order around
@@ -241,7 +264,7 @@ async function nativeGrep(
   roots: string[],
   emitProgress?: (data: unknown) => void,
 ): Promise<GrepOutput> {
-  const flags = i.case_insensitive ? "i" : "";
+  const flags = (i.case_insensitive ? "i" : "") + (i.multiline === true ? "gs" : "");
   // An invalid model-supplied pattern throws a raw JS SyntaxError here, which
   // surfaces as an opaque crash rather than something the model can correct.
   // Re-throw as a recognizable tool error (ripgrep already returns its own
@@ -259,9 +282,12 @@ async function nativeGrep(
   const files = new Set<string>();
   const counts: Record<string, number> = {};
   let total = 0;
+  const context = contextOf(i);
+  const multiline = i.multiline === true;
   // Mirror the rg path (which uses --hidden minus DEFAULT_IGNORE_GLOBS): walk
   // dot-dirs like .github/workflows, but skip the heavy/state ones explicitly
-  // so the JS fallback and ripgrep return the SAME result set.
+  // so the JS fallback and ripgrep return the SAME result set. (.gitignore is
+  // never consulted here — respect_gitignore only changes ripgrep's behavior.)
   const ignoreDirs = new Set([
     "node_modules",
     ".git",
@@ -278,6 +304,52 @@ async function nativeGrep(
     "venv",
     "coverage",
   ]);
+
+  // One scanner for both the directory walk and explicit file roots. Multiline
+  // runs the regex over the whole text (flags g+s, like rg -U --multiline-dotall)
+  // and maps match offsets back to lines; the match text spans every line the
+  // match touched, matching ripgrep's JSON `lines.text` for multiline hits.
+  function scanText(abs: string, text: string): void {
+    const lines = text.split("\n");
+    const hits: { line: number; endLine: number }[] = [];
+    if (multiline) {
+      const offsets: number[] = [0];
+      for (let k = 0; k < lines.length - 1; k++) offsets.push(offsets[k] + lines[k].length + 1);
+      regex.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = regex.exec(text)) !== null) {
+        if (m[0] === "") {
+          regex.lastIndex++;
+          continue;
+        }
+        hits.push({ line: lineAtOffset(offsets, m.index), endLine: lineAtOffset(offsets, m.index + m[0].length - 1) });
+      }
+    } else {
+      for (let k = 0; k < lines.length; k++) if (regex.test(lines[k])) hits.push({ line: k, endLine: k });
+    }
+    const emitted = new Set<number>();
+    for (const hit of hits) {
+      files.add(abs);
+      counts[abs] = (counts[abs] ?? 0) + 1;
+      total++;
+      if (total === 1 || total % 25 === 0) {
+        emitProgress?.({ kind: "grep_match", file: abs, line: hit.line + 1, total });
+      }
+      if (i.output_mode !== "content" || matches.length >= i.max_results) continue;
+      for (let b = Math.max(0, hit.line - context.before); b < hit.line; b++) {
+        if (emitted.has(b)) continue;
+        emitted.add(b);
+        matches.push({ path: abs, line: b + 1, text: lines[b], context: true });
+      }
+      for (let k = hit.line; k <= hit.endLine; k++) emitted.add(k);
+      matches.push({ path: abs, line: hit.line + 1, text: lines.slice(hit.line, hit.endLine + 1).join("\n") });
+      for (let a = hit.endLine + 1; a <= Math.min(lines.length - 1, hit.endLine + context.after); a++) {
+        if (emitted.has(a)) continue;
+        emitted.add(a);
+        matches.push({ path: abs, line: a + 1, text: lines[a], context: true });
+      }
+    }
+  }
 
   async function walk(dir: string): Promise<void> {
     let entries: import("node:fs").Dirent[];
@@ -299,20 +371,7 @@ async function nativeGrep(
         } catch {
           continue;
         }
-        const lines = text.split("\n");
-        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-          if (regex.test(lines[lineIdx])) {
-            files.add(abs);
-            counts[abs] = (counts[abs] ?? 0) + 1;
-            total++;
-            if (total === 1 || total % 25 === 0) {
-              emitProgress?.({ kind: "grep_match", file: abs, line: lineIdx + 1, total });
-            }
-            if (i.output_mode === "content" && matches.length < i.max_results) {
-              matches.push({ path: abs, line: lineIdx + 1, text: lines[lineIdx] });
-            }
-          }
-        }
+        scanText(abs, text);
       }
     }
   }
@@ -321,21 +380,7 @@ async function nativeGrep(
     const stat = await fs.stat(root).catch(() => null);
     if (stat?.isFile()) {
       if (!matchesAnyGlob(root, roots, i.glob)) continue;
-      const text = await fs.readFile(root, "utf8");
-      const lines = text.split("\n");
-      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-        if (regex.test(lines[lineIdx])) {
-          files.add(root);
-          counts[root] = (counts[root] ?? 0) + 1;
-          total++;
-          if (total === 1 || total % 25 === 0) {
-            emitProgress?.({ kind: "grep_match", file: root, line: lineIdx + 1, total });
-          }
-          if (i.output_mode === "content" && matches.length < i.max_results) {
-            matches.push({ path: root, line: lineIdx + 1, text: lines[lineIdx] });
-          }
-        }
-      }
+      scanText(root, await fs.readFile(root, "utf8"));
     } else {
       await walk(root);
     }
@@ -388,6 +433,18 @@ async function resolveSearchPaths(
   }
 
   return Promise.all(expanded.map((p) => resolveWorkspacePath(ctx, p, "path", "read")));
+}
+
+/** Binary search: index of the line containing byte offset `pos`. */
+function lineAtOffset(offsets: number[], pos: number): number {
+  let lo = 0;
+  let hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= pos) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
 }
 
 function toArray<T>(value: T | T[] | undefined): T[] {

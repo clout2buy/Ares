@@ -26,7 +26,7 @@ import { attachCommand, garrisonCommand } from "./entry/garrisonCmd.js";
 import { mnemosyneCommand } from "./entry/mnemosyneCmd.js";
 import { computerCommand } from "./entry/computerCmd.js";
 import { holoCommand } from "./entry/holoCmd.js";
-import { checkpointsCommand, doctorCommand, frictionCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
+import { briefCommand, checkpointsCommand, doctorCommand, frictionCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
 import { mindCommand } from "./entry/mindCmd.js";
 import { operatorCommand } from "./entry/operatorCmd.js";
 import { printHelp } from "./entry/runtime.js";
@@ -86,6 +86,11 @@ async function main(): Promise<void> {
     }
     case "mind": {
       process.exit(await mindCommand(args));
+      return;
+    }
+    case "brief": {
+      // The day brief: weather → calendar → reminders → email → missions, deterministic.
+      process.exit(await briefCommand(args));
       return;
     }
     case "garrison": {

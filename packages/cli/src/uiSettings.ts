@@ -60,6 +60,11 @@ export interface UiSettings {
   routing?: RouteAssignments;
   /** Explicit model selection mode. Auto applies routing lanes per turn. */
   routingMode?: "manual" | "auto";
+  /** Pinned-model failover chain: provider ids walked in order when the pinned
+   *  provider fails a turn (see entry/pinnedFailover.ts). Separate from the
+   *  per-lane `routing` map so the lane normalizer never has to special-case it.
+   *  Empty/absent = the Auto ranking; ARES_ROUTING_BACKUP overrides. */
+  routingBackup?: string[];
   /** OpenRouter API key (owner-pasted in-app). Bearer auth for openrouter.ai. */
   openRouterKey?: string;
   /** Last OpenRouter model id the owner selected. */

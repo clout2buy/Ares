@@ -25,10 +25,28 @@ export interface ProbeResult {
   fingerprint?: string;
 }
 
+/** What the candidate DID during the run — the evidence trace probes that judge
+ *  process (scope discipline, plan-before-edit) read. The gauntlet fills it;
+ *  goal probes without a run leave it absent, and trace probes then fail closed. */
+export interface ProbeTrace {
+  /** Workspace-relative files whose bytes differ from the fixture, forward slashes. */
+  changedFiles: readonly string[];
+  /** Tool calls in the order they started. */
+  toolCalls: ReadonlyArray<{ name: string; input?: unknown }>;
+}
+
 export interface ProbeContext {
   workspace?: string;
   signal?: AbortSignal;
+  trace?: ProbeTrace;
 }
+
+/** Tools whose call means "I am changing the workspace". Shell tools are
+ *  deliberately excluded: `node --test` is not an edit, and the diffScope probe
+ *  catches shell-made changes by their bytes anyway. */
+export const EDITING_TOOL_NAMES: ReadonlySet<string> = new Set(["Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "MultiEdit"]);
+/** Tools whose call means "I am planning before acting". */
+export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set(["TodoWrite", "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode"]);
 
 export async function runProbe(spec: VerificationSpec, ctx: ProbeContext = {}): Promise<ProbeResult> {
   switch (spec.kind) {
@@ -40,6 +58,10 @@ export async function runProbe(spec: VerificationSpec, ctx: ProbeContext = {}): 
       return probeCommand(spec, ctx);
     case "http":
       return probeHttp(spec, ctx);
+    case "diffScope":
+      return probeDiffScope(spec, ctx);
+    case "planBeforeEdit":
+      return probePlanBeforeEdit(ctx);
     default: {
       const exhaustive: never = spec;
       return { met: false, summary: `unknown probe ${JSON.stringify(exhaustive)}` };
@@ -116,6 +138,44 @@ function runCommand(
     child.on("error", () => finish(-1));
     child.on("close", (code) => finish(code ?? -1));
   });
+}
+
+function normalizeScopePath(file: string): string {
+  return file.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+/** Is `file` inside the allowed set? Exact match, or under an allowed directory
+ *  (`src/`, `src/**`). No other globbing — scope rules should be legible. */
+export function fileInScope(file: string, allowed: readonly string[]): boolean {
+  const target = normalizeScopePath(file);
+  return allowed.some((entry) => {
+    const rule = normalizeScopePath(entry);
+    if (rule.endsWith("/**")) return target.startsWith(rule.slice(0, -2));
+    if (rule.endsWith("/")) return target.startsWith(rule);
+    return target === rule;
+  });
+}
+
+function probeDiffScope(spec: Extract<VerificationSpec, { kind: "diffScope" }>, ctx: ProbeContext): ProbeResult {
+  if (!ctx.trace) return { met: false, summary: "diffScope: no change trace in context", fingerprint: "no-trace" };
+  const outOfScope = ctx.trace.changedFiles.filter((file) => !fileInScope(file, spec.allowed));
+  const fingerprint = [...ctx.trace.changedFiles].sort().join(",");
+  if (outOfScope.length === 0) {
+    return { met: true, summary: `diffScope: ${ctx.trace.changedFiles.length} changed file(s), all within scope`, fingerprint };
+  }
+  return { met: false, summary: `diffScope: out-of-scope change(s): ${outOfScope.slice(0, 5).join(", ")}${outOfScope.length > 5 ? ", …" : ""}`, fingerprint };
+}
+
+function probePlanBeforeEdit(ctx: ProbeContext): ProbeResult {
+  if (!ctx.trace) return { met: false, summary: "planBeforeEdit: no tool trace in context", fingerprint: "no-trace" };
+  const calls = ctx.trace.toolCalls;
+  const firstPlan = calls.findIndex((c) => PLANNING_TOOL_NAMES.has(c.name));
+  const firstEdit = calls.findIndex((c) => EDITING_TOOL_NAMES.has(c.name));
+  if (firstPlan === -1) return { met: false, summary: "planBeforeEdit: no plan/todo call in the run", fingerprint: "no-plan" };
+  if (firstEdit !== -1 && firstEdit < firstPlan) {
+    return { met: false, summary: `planBeforeEdit: ${calls[firstEdit].name} at call ${firstEdit + 1} preceded the first plan at call ${firstPlan + 1}`, fingerprint: `${firstEdit}<${firstPlan}` };
+  }
+  return { met: true, summary: `planBeforeEdit: ${calls[firstPlan].name} at call ${firstPlan + 1} preceded ${firstEdit === -1 ? "every edit (none made)" : `the first edit at call ${firstEdit + 1}`}`, fingerprint: `${firstPlan}<${firstEdit}` };
 }
 
 async function probeHttp(spec: Extract<VerificationSpec, { kind: "http" }>, ctx: ProbeContext): Promise<ProbeResult> {

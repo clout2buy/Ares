@@ -1,14 +1,31 @@
 // Workspace checkpoints — lightweight DAG snapshots for sessions.
 //
-// Stores content blobs under .ares/checkpoints/blobs and checkpoint
-// metadata under .ares/checkpoints/meta. This is intentionally local and
-// VCS-agnostic: it can checkpoint untracked files too.
+// Two storage layers behind one API, chosen per workspace:
+//   - GIT (checkpointGit.ts): inside a repository, snapshots are git tree
+//     objects built through a shadow index. No per-file size cap, .gitignore
+//     semantics, `git gc` reclaims. Anchored under refs/ares/checkpoints/.
+//   - BLOB (this file): elsewhere, content blobs under .ares/checkpoints/blobs.
+//     VCS-agnostic, can checkpoint untracked files, skips files > 2MB.
+// Metadata for both lives under .ares/checkpoints/meta (`layer` says which).
+// `ARES_CHECKPOINT_GIT=0` forces the blob layer everywhere.
 
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { BlobRef, CheckpointMeta } from "@ares/protocol";
+import {
+  checkpointRefName,
+  gitAnchorTree,
+  gitCheckpointRoot,
+  gitDeleteRefs,
+  gitDiffNames,
+  gitDiffUnified,
+  gitListCheckpointRefs,
+  gitRestoreTree,
+  gitSnapshotTree,
+  serializedForWorkspace,
+} from "./checkpointGit.js";
 
 /**
  * Is this workspace too broad to snapshot? A checkpoint of the user's HOME
@@ -73,6 +90,18 @@ function checkpointRetention(): number {
   return Number.isFinite(env) && env > 0 ? Math.floor(env) : 200;
 }
 
+/** Age cap, in addition to the per-session count. Field finding behind the
+ *  1.2GB store: retention was ONLY per-session, and sessions are never
+ *  expired — every session ever opened kept its newest 200 metas forever, each
+ *  pinning blobs, so the "orphan sweep" had nothing orphaned to sweep. Metas
+ *  older than ARES_CHECKPOINT_MAX_AGE_DAYS (default 14; 0 disables) are pruned
+ *  regardless of session. Undo/rewind across two weeks is not a real workflow. */
+function checkpointMaxAgeMs(): number {
+  const env = Number(process.env.ARES_CHECKPOINT_MAX_AGE_DAYS);
+  const days = Number.isFinite(env) && env >= 0 ? env : 14;
+  return days * 24 * 60 * 60 * 1000;
+}
+
 export interface CreateCheckpointOptions {
   workspace: string;
   sessionId: string;
@@ -85,16 +114,38 @@ export interface CreateCheckpointOptions {
    *  On a 30k-file repo that turns seconds-per-Edit into milliseconds. Tools
    *  with unknowable side effects (shells) omit this and get the full walk. */
   targetFiles?: readonly string[];
+  /** Conversation anchor for /rewind (see CheckpointMeta.messageIndex). */
+  messageIndex?: number;
+  toolUseId?: string;
 }
 
-export async function createWorkspaceCheckpoint(opts: CreateCheckpointOptions): Promise<CheckpointMeta> {
-  const manifest =
-    (await incrementalManifest(opts).catch(() => null)) ?? (await fullManifest(opts.workspace));
-  manifest.sort((a, b) => a.path.localeCompare(b.path));
+/** Create a checkpoint. Serialized per workspace in-process: the git layer
+ *  shares one shadow index, and the blob GC must never interleave with a
+ *  checkpoint that is reusing an old blob hash from the in-memory cache. */
+export function createWorkspaceCheckpoint(opts: CreateCheckpointOptions): Promise<CheckpointMeta> {
+  return serializedForWorkspace(opts.workspace, () => createCheckpointUnserialized(opts));
+}
+
+async function createCheckpointUnserialized(opts: CreateCheckpointOptions): Promise<CheckpointMeta> {
+  // Git layer first; any failure there (git vanished, corrupt shadow index,
+  // lock contention past the retries) degrades to the blob layer for THIS
+  // checkpoint rather than leaving the tool without an undo point.
+  const gitRoot = await gitCheckpointRoot(opts.workspace);
+  const gitTree = gitRoot ? await gitSnapshotTree(opts.workspace, opts.targetFiles).catch(() => undefined) : undefined;
+  let manifest: BlobRef[] = [];
+  if (!gitTree) {
+    manifest = (await incrementalManifest(opts).catch(() => null)) ?? (await fullManifest(opts.workspace));
+    manifest.sort((a, b) => a.path.localeCompare(b.path));
+  }
+  // The session is part of the identity: two sessions snapshotting an identical
+  // workspace with no parent used to hash to ONE meta file, so the second
+  // silently re-labelled the first's checkpoint as its own (and, with refs per
+  // session, GC would then reap the other session's anchor as an orphan).
   const id = sha256(
     JSON.stringify({
+      session: opts.sessionId,
       parent: opts.parentCheckpointId ?? "",
-      manifest: manifest.map((m) => `${m.path}:${m.blobHash}`).join("\n"),
+      manifest: gitTree ? `git:${gitTree}` : manifest.map((m) => `${m.path}:${m.blobHash}`).join("\n"),
     }),
   ).slice(0, 24);
   const meta: CheckpointMeta = {
@@ -105,20 +156,75 @@ export async function createWorkspaceCheckpoint(opts: CreateCheckpointOptions): 
     label: opts.label,
     createdAt: new Date().toISOString(),
     fileManifest: manifest,
+    layer: gitTree ? "git" : "blob",
+    gitTree,
+    messageIndex: opts.messageIndex,
+    toolUseId: opts.toolUseId,
   };
-  await fs.mkdir(metaDir(opts.workspace), { recursive: true });
-  await fs.writeFile(path.join(metaDir(opts.workspace), `${id}.json`), JSON.stringify(meta, null, 2) + "\n", "utf8");
+  await writeMeta(opts.workspace, meta);
+  if (gitTree) scheduleGitAnchor(opts.workspace, meta);
   // Throttled GC — a full meta+blob sweep on EVERY checkpoint was measurable
   // tax on the hottest coding path; every Nth keeps growth bounded all the same.
+  // The counter starts AT the threshold so a process that never reaches 25
+  // checkpoints (most CLI/desktop sessions) still sweeps once — deferred a few
+  // seconds so the first Edit of a session does not pay for it.
   if (++checkpointsSinceGc >= GC_EVERY) {
     checkpointsSinceGc = 0;
-    await gcWorkspaceCheckpoints(opts.workspace).catch(() => {});
+    if (startupGcScheduled.has(opts.workspace)) await gcUnserialized(opts.workspace).catch(() => {});
+    else scheduleStartupGc(opts.workspace);
   }
   return meta;
 }
 
-let checkpointsSinceGc = 0;
+let checkpointsSinceGc = 25;
 const GC_EVERY = 25;
+const startupGcScheduled = new Set<string>();
+
+/** One deferred sweep per workspace per process (ARES_CHECKPOINT_GC_DELAY_MS,
+ *  default 5s). Unref'd so a short CLI run never waits on it. */
+function scheduleStartupGc(workspace: string): void {
+  startupGcScheduled.add(workspace);
+  const delay = Number(process.env.ARES_CHECKPOINT_GC_DELAY_MS);
+  const timer = setTimeout(() => {
+    gcWorkspaceCheckpoints(workspace).catch(() => {});
+  }, Number.isFinite(delay) && delay >= 0 ? delay : 5_000);
+  timer.unref?.();
+}
+
+async function writeMeta(workspace: string, meta: CheckpointMeta): Promise<void> {
+  await fs.mkdir(metaDir(workspace), { recursive: true });
+  await fs.writeFile(path.join(metaDir(workspace), `${meta.id}.json`), JSON.stringify(meta, null, 2) + "\n", "utf8");
+}
+
+/** Last anchored commit per session (this process) — the parent link for the
+ *  next checkpoint commit without re-reading the parent meta each time. */
+const lastAnchoredCommit = new Map<string, string>();
+const anchorPending = new Map<string, Promise<void>>();
+
+/** Anchor the tree under refs/ares/checkpoints/… on the workspace chain, off
+ *  the pre-tool hot path. Fills `gitCommit` into the meta once done. */
+function scheduleGitAnchor(workspace: string, meta: CheckpointMeta): void {
+  const job = serializedForWorkspace(workspace, async () => {
+    let parent = lastAnchoredCommit.get(meta.sessionId);
+    if (!parent && meta.parentCheckpointId) {
+      parent = (await loadWorkspaceCheckpoint(workspace, meta.parentCheckpointId).catch(() => null))?.gitCommit;
+    }
+    const commit = await gitAnchorTree(workspace, meta.sessionId, meta.id, meta.gitTree!, parent);
+    lastAnchoredCommit.set(meta.sessionId, commit);
+    // Merge into the on-disk meta rather than rewrite our in-memory copy: GC
+    // may have evicted it meanwhile (resurrecting it would leak its ref).
+    const current = await loadWorkspaceCheckpoint(workspace, meta.id).catch(() => null);
+    if (current) await writeMeta(workspace, { ...current, gitCommit: commit });
+  }).catch(() => {}); // an unanchored tree survives gc's two-week prune window anyway
+  const key = path.resolve(workspace);
+  const previous = anchorPending.get(key) ?? Promise.resolve();
+  anchorPending.set(key, previous.then(() => job));
+}
+
+/** Wait for every deferred ref anchor of this workspace (tests, GC, restore). */
+export async function settleGitCheckpointAnchors(workspace: string): Promise<void> {
+  await anchorPending.get(path.resolve(workspace));
+}
 
 /** Full-walk manifest (parallel-stat; the base checkpoint + shell-tool path). */
 async function fullManifest(workspace: string): Promise<BlobRef[]> {
@@ -215,19 +321,24 @@ async function hashFileCached(workspace: string, full: string, mtimeMs: number, 
  *     delete, workspace rename) could NEVER clean itself again. One machine
  *     accumulated 1.2GB of permanently unreferenced blobs exactly this way.
  *     The sweep now always runs. */
-export async function gcWorkspaceCheckpoints(workspace: string): Promise<void> {
+export function gcWorkspaceCheckpoints(workspace: string): Promise<void> {
+  return serializedForWorkspace(workspace, () => gcUnserialized(workspace));
+}
+
+async function gcUnserialized(workspace: string): Promise<void> {
   const gcStartedAt = Date.now();
   const retention = checkpointRetention();
+  const maxAge = checkpointMaxAgeMs();
   const dir = metaDir(workspace);
   const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => name.endsWith(".json"));
 
   // Pass 1 — rank without retaining manifests.
-  const rows: Array<{ name: string; sessionId: string; createdAt: string }> = [];
+  const rows: Array<{ name: string; id: string; sessionId: string; createdAt: string }> = [];
   let unreadableMetas = false;
   for (const name of names) {
     try {
       const meta = JSON.parse(await fs.readFile(path.join(dir, name), "utf8")) as CheckpointMeta;
-      rows.push({ name, sessionId: meta.sessionId, createdAt: meta.createdAt });
+      rows.push({ name, id: meta.id, sessionId: meta.sessionId, createdAt: meta.createdAt });
     } catch {
       // An unreadable meta may still reference blobs we cannot see. Leave the
       // file alone and (below) skip the blob sweep entirely — deleting blobs
@@ -235,19 +346,33 @@ export async function gcWorkspaceCheckpoints(workspace: string): Promise<void> {
       unreadableMetas = true;
     }
   }
-  const bySession = new Map<string, Array<{ name: string; createdAt: string }>>();
+  const bySession = new Map<string, typeof rows>();
   for (const row of rows) {
     const arr = bySession.get(row.sessionId) ?? [];
     arr.push(row);
     bySession.set(row.sessionId, arr);
   }
   const survivors: string[] = [];
+  const survivingRefs = new Set<string>();
   for (const arr of bySession.values()) {
     arr.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     for (const [index, row] of arr.entries()) {
-      if (index < retention) survivors.push(row.name);
-      else await fs.rm(path.join(dir, row.name), { force: true }).catch(() => {});
+      const expired = maxAge > 0 && gcStartedAt - Date.parse(row.createdAt) > maxAge;
+      if (index < retention && !expired) {
+        survivors.push(row.name);
+        survivingRefs.add(checkpointRefName(row.sessionId, row.id));
+      } else {
+        await fs.rm(path.join(dir, row.name), { force: true }).catch(() => {});
+      }
     }
+  }
+  // Git layer: drop every anchor ref whose meta no longer exists (evicted just
+  // now OR vanished out-of-band) so the next `git gc` can reclaim the objects.
+  // Knob-independent: refs written while the layer was on still need cleaning.
+  if (!unreadableMetas && (await gitCheckpointRoot(workspace, { ignoreKnob: true }))) {
+    await settleGitCheckpointAnchors(workspace);
+    const refs = await gitListCheckpointRefs(workspace).catch(() => [] as string[]);
+    await gitDeleteRefs(workspace, refs.filter((ref) => !survivingRefs.has(ref))).catch(() => {});
   }
   if (unreadableMetas) return;
 
@@ -296,11 +421,24 @@ export async function loadWorkspaceCheckpoint(workspace: string, id: string): Pr
   return JSON.parse(await fs.readFile(path.join(metaDir(workspace), `${id}.json`), "utf8")) as CheckpointMeta;
 }
 
+/** Route a git-backed meta to the git layer. Throws when the meta is git-backed
+ *  but the workspace can no longer reach git (moved out of the repo). The knob
+ *  is deliberately ignored: a checkpoint taken while the layer was on must
+ *  stay restorable after the user flips it off. */
+async function gitLayerFor(workspace: string, checkpoint: CheckpointMeta): Promise<{ root: string; tree: string } | null> {
+  if (checkpoint.layer !== "git" || !checkpoint.gitTree) return null;
+  const root = await gitCheckpointRoot(workspace, { ignoreKnob: true });
+  if (!root) throw new Error(`checkpoint ${checkpoint.id} is git-backed but ${workspace} is not inside a git repository`);
+  return { root, tree: checkpoint.gitTree };
+}
+
 export async function diffWorkspaceCheckpoint(
   workspace: string,
   id: string,
 ): Promise<{ added: string[]; modified: string[]; deleted: string[] }> {
   const checkpoint = await loadWorkspaceCheckpoint(workspace, id);
+  const git = await gitLayerFor(workspace, checkpoint);
+  if (git) return serializedForWorkspace(workspace, () => gitDiffNames(workspace, git.tree));
   const current = new Map((await fullManifest(workspace)).map((file) => [file.path, file.blobHash]));
   const snap = new Map(checkpoint.fileManifest.map((f) => [f.path, f.blobHash]));
   const added = [...current.keys()].filter((p) => !snap.has(p)).sort();
@@ -312,15 +450,26 @@ export async function diffWorkspaceCheckpoint(
   return { added, modified, deleted };
 }
 
-export async function restoreWorkspaceCheckpoint(workspace: string, id: string): Promise<{ restored: number; deleted: number }> {
+/** Restore the workspace to a checkpoint. `files` lists every workspace-
+ *  relative path the restore touched (the git layer rewrites only what
+ *  differs; the blob layer rewrites the whole manifest) so hosts can drop
+ *  read stamps for them. */
+export async function restoreWorkspaceCheckpoint(
+  workspace: string,
+  id: string,
+): Promise<{ restored: number; deleted: number; files: string[] }> {
   const checkpoint = await loadWorkspaceCheckpoint(workspace, id);
+  const git = await gitLayerFor(workspace, checkpoint);
+  if (git) return serializedForWorkspace(workspace, () => gitRestoreTree(workspace, git.root, git.tree));
   const manifest = new Map(checkpoint.fileManifest.map((f) => [f.path, f]));
   const current = await listWorkspaceFiles(workspace);
+  const files: string[] = [];
   let deleted = 0;
   for (const file of current) {
     const rel = path.relative(workspace, file).replace(/\\/g, "/");
     if (!manifest.has(rel)) {
       await fs.rm(file, { force: true });
+      files.push(rel);
       deleted++;
     }
   }
@@ -329,9 +478,10 @@ export async function restoreWorkspaceCheckpoint(workspace: string, id: string):
     const target = path.join(workspace, ref.path);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.copyFile(blobPath(workspace, ref.blobHash), target);
+    files.push(ref.path);
     restored++;
   }
-  return { restored, deleted };
+  return { restored, deleted, files: files.sort() };
 }
 
 export async function diffWorkspaceCheckpointUnified(
@@ -341,6 +491,12 @@ export async function diffWorkspaceCheckpointUnified(
   opts: { maxChars?: number; contextLines?: number } = {},
 ): Promise<{ diff: string; files: string[]; truncated: boolean }> {
   const checkpoint = await loadWorkspaceCheckpoint(workspace, id);
+  const git = await gitLayerFor(workspace, checkpoint);
+  if (git) {
+    return serializedForWorkspace(workspace, () =>
+      gitDiffUnified(workspace, git.tree, files, { maxChars: opts.maxChars ?? 40_000, contextLines: opts.contextLines ?? 3 }),
+    );
+  }
   const manifest = new Map(checkpoint.fileManifest.map((f) => [f.path, f]));
   // When the caller names the files (the per-tool touchedFiles diff — the hot
   // path), stat ONLY those instead of walking the whole workspace again.

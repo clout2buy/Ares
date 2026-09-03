@@ -4,6 +4,7 @@ import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeek
 import path from "node:path";
 import { type SubModelPool } from "@ares/tools";
 import { buildReportBody } from "./daemon/report.js";
+import { withLocalProviderDiagnosis } from "./localProviderDiagnosis.js";
 import { loadUiSettings, type UiSettings } from "../uiSettings.js";
 
 // Ares talks to the LOCAL Ollama daemon (native /api/chat) by default — it
@@ -843,7 +844,11 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       apiKey: ollamaApiKey,
     });
     return {
-      provider: pool.provider("reasoner"),
+      // A stopped local Ollama is diagnosed ONCE ("Ollama is not running at
+      // <host>; start it or pick another provider") instead of riding the
+      // engine's retry ladder on a bare `fetch failed`. Remote hosts (ollama.com)
+      // are returned unwrapped.
+      provider: withLocalProviderDiagnosis(pool.provider("reasoner"), ollamaHost, "Ollama"),
       model: slots.reasoner.model,
       source: explicit ? "explicit:ollama" : preferred ? "settings:ollama" : "auto:ollama",
       family: "ollama",

@@ -1,6 +1,6 @@
 // Extracted from entry.ts — runtime.
 
-import { aresHome } from "@ares/core";
+import { aresHome, type SubagentRunner } from "@ares/core";
 import { TERMINAL_PROVIDERS } from "./providers.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -55,6 +55,10 @@ export interface AresRuntimeState {
    * before agent persona/memory/git context is loaded, so Task and Conductor
    * resolve this at dispatch time instead of capturing a reduced prompt. */
   composeChildSystemPrompt?(): string | Promise<string>;
+  /** The Task tool's subagent runner, published by buildEngineTools so the
+   *  Session can hand it to the engine for the adversarial verifier auto-spawn
+   *  (3+ changed files, see QueryEngineConfig.subagentRunner). */
+  subagentRunner?: SubagentRunner;
   /** Live owner permission posture (master + per-category + fleet inherit).
    *  Mutated by the set_permissions daemon command so toggles apply mid-session. */
   permissions?: PermissionSettings;
@@ -190,6 +194,8 @@ export async function printHelp(): Promise<void> {
       "  ares eval coding [--suite coding-v4|coding-v3|coding-v2|coding-v1] [--no-harness] [--gate] [--json]",
       "                              Run the coding gauntlet; real models require --allow-unsafe-process-eval inside an isolated VM/container.",
       "                              --gate exits 3 when this run regresses against its own history (cost, verification, wall-clock).",
+      "  ares eval coding --schedule <off|nightly|weekly|Nh|Nd|\"M H * * *\"> [--suite S] [--provider P] [--model M]",
+      "                              Persist a gauntlet schedule (<home>/gauntlet/schedule.json); the Garrison runs it with --gate and appends the scoreboard.",
       "  ares eval trend [--suite S] [--model M] [--json]",
       "                              Trend completed gauntlet runs and print the harness on/off A/B.",
       "  ares login                  ChatGPT OAuth device-code flow.",
@@ -211,6 +217,9 @@ export async function printHelp(): Promise<void> {
       "  ARES_SELF_TRIAGE_INTERVAL_MS Minimum automatic scan cadence (default 6 hours).",
       "  ARES_TRIAGE_WORKSPACES       Extra workspace roots (OS path-delimiter separated).",
       "  ARES_THEME                  UI theme: cyberpunk, minimal, matrix, neon, split, professional, amber, dashboard, light.",
+      "  ARES_PINNED_FAILOVER         Set to 0 to make a pinned (manual) model die in place instead of retrying once, then failing over for the turn.",
+      "  ARES_ROUTING_BACKUP          Comma-separated provider ids the pinned failover walks (default anthropic,openrouter,deepseek,ollama; ui.json routing.backup wins).",
+      "  ARES_COMPACT_CLIP_CHARS      Per-block clip for tool inputs/results in the compaction transcript (default 1500; file paths + edit diffs are never clipped).",
       "",
       "Flags:",
       "  --theme NAME                Use a UI theme for this run.",

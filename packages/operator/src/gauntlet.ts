@@ -16,8 +16,11 @@ import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Session, ContinuousVerifier, CodingJournal, repositoryMapReminder, type EngineTool, type Provider } from "@ares/core";
-import { runProbe, type ProbeResult } from "./probe.js";
+/** Whatever the journal accepts — tracks @ares/protocol's TurnEndStatus without a direct dependency. */
+type TurnEndStatus = Parameters<CodingJournal["finishTurn"]>[0];
+import { runProbe, type ProbeResult, type ProbeTrace } from "./probe.js";
 import type { VerificationSpec } from "./types.js";
+import { CODING_GAUNTLET_V5 } from "./gauntletV5.js";
 
 export const GAUNTLET_SCHEMA_VERSION = 2;
 
@@ -131,8 +134,9 @@ export interface GauntletOptions {
   now?: () => Date;
   /** Keep task workspaces on disk for post-mortems. */
   keepWorkspaces?: boolean;
-  /** Probe seam for tests. */
-  probe?: (spec: VerificationSpec, ctx: { workspace: string; signal?: AbortSignal }) => Promise<ProbeResult>;
+  /** Probe seam for tests. `trace` carries the run's changed files + tool-call
+   *  order so scope/process probes (diffScope, planBeforeEdit) can judge it. */
+  probe?: (spec: VerificationSpec, ctx: { workspace: string; signal?: AbortSignal; trace: ProbeTrace }) => Promise<ProbeResult>;
   systemPrompt?: string | ((workspace: string, task: GauntletTask) => string | Promise<string>);
   /** Caller-supplied source/provider/runtime identity for reproducible trends. */
   harnessManifest?: Record<string, unknown>;
@@ -219,6 +223,7 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
     let assistantText = "";
     let usage = emptyGauntletUsage();
     const activeToolNames = new Map<string, string>();
+    const toolTrace: Array<{ name: string; input?: unknown }> = [];
     let baseline = new Map<string, string>();
     let error: string | undefined;
     let disposeTaskTools: (() => void | Promise<void>) | undefined;
@@ -278,12 +283,13 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
             : { drainSystemReminders: () => startup.splice(0) }),
         });
       session.observeEvents((event) => journal.recordTurnEvent(event));
-      let finalStatus: "completed" | "interrupted" | "failed" = "completed";
+      let finalStatus: TurnEndStatus = "completed";
       try {
         for await (const event of session.send(task.prompt)) {
           if (event.type === "tool_start") {
             toolCalls++;
             activeToolNames.set(event.id, event.name);
+            toolTrace.push({ name: event.name, input: event.input });
             if (isVerificationToolCall(event.name, event.input)) verificationToolCalls++;
           }
           if (event.type === "tool_end") {
@@ -340,6 +346,7 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
       }
     }
     const changedFiles = changedFixtureFiles(baseline, finalFixture);
+    const trace: ProbeTrace = { changedFiles, toolCalls: toolTrace };
     const protectedFiles = (task.protectedFiles ?? []).map(normalizeRel);
     const integrityPassed = workspace !== null && gradingWorkspace !== null && protectedFiles.every((file) =>
       baseline.has(file) && finalFixture.has(file) && baseline.get(file) === finalFixture.get(file));
@@ -361,7 +368,7 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
           await copyScoredFixture(gradingWorkspace, probeWorkspace);
         }
         const result = probeWorkspace
-          ? await probe(spec, { workspace: probeWorkspace, signal: opts.signal })
+          ? await probe(spec, { workspace: probeWorkspace, signal: opts.signal, trace })
           : { met: false, summary: "workspace never materialized" };
         const afterProbe = probeWorkspace ? await snapshotFixture(probeWorkspace) : new Map<string, string>();
         const probeIntegrity = protectedFiles.every((file) =>
@@ -1528,4 +1535,7 @@ export const GAUNTLET_SUITES: Record<string, GauntletTask[]> = {
   "coding-v2": CODING_GAUNTLET_V2,
   "coding-v3": CODING_GAUNTLET_V3,
   "coding-v4": CODING_GAUNTLET_V4,
+  // coding-v5 (repo-scale) is registered but NOT the default: `--suite
+  // coding-v5` selects it explicitly, so existing trend cells stay comparable.
+  "coding-v5": CODING_GAUNTLET_V5,
 };

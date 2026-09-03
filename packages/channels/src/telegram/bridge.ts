@@ -12,6 +12,7 @@ import type { TurnEvent } from "@ares/protocol";
 import type {
   ApprovalVerb,
   ClientFrame,
+  GarrisonEventFrame,
   ServerFrame,
   StagedApprovalFrame,
   WebSocketCtor,
@@ -31,6 +32,7 @@ import {
   removeParticipant,
   renderWho,
   seedOwners,
+  tenantForChat,
   upsertParticipant,
   type RosterData,
 } from "./roster.js";
@@ -554,10 +556,13 @@ export class TelegramBridge {
     this.guestIntroSent.delete(chatId);
   }
 
+  /** Every Telegram session is stamped at creation with its surface and the
+   *  sender's tenant, and every send restates the tenant: the garrison keys
+   *  guest memory isolation and the cross-surface digest on these stamps. */
   private requestSession(chatId: number): void {
     if (this.createQueue.includes(chatId)) return;
     this.createQueue.push(chatId);
-    this.sendFrame({ type: "session.create" });
+    this.sendFrame({ type: "session.create", surface: "telegram", tenant: tenantForChat(this.roster, chatId) });
   }
 
   private handleCallback(cq: TgCallbackQuery): void {
@@ -693,6 +698,9 @@ export class TelegramBridge {
       case "approval.pending":
         this.onApprovalPending(frame.staged);
         break;
+      case "garrison.event":
+        this.onGarrisonEvent(frame.event);
+        break;
       case "error":
         this.log(`gateway error: ${frame.message}`);
         break;
@@ -744,7 +752,12 @@ export class TelegramBridge {
     if (text === undefined) return;
     this.turnInFlight.add(chatId);
     this.startTyping(chatId);
-    this.sendFrame({ type: "session.send", sessionId, text: this.withIdentity(chatId, text) });
+    this.sendFrame({
+      type: "session.send",
+      sessionId,
+      text: this.withIdentity(chatId, text),
+      tenant: tenantForChat(this.roster, chatId),
+    });
   }
 
   /** For a guest's FIRST turn, prepend a one-time note so Ares knows it is not
@@ -933,6 +946,25 @@ export class TelegramBridge {
     for (const chatId of this.owners) {
       this.enqueueSend(chatId, async () => {
         await this.api.sendMessage(chatId, text, { replyMarkup });
+      });
+    }
+  }
+
+  /** Daemon-level events. Today: the nightly gauntlet regressed — owners get one
+   *  line with the numbers and the triage id, never a guest. Everything else on
+   *  this frame is ignored here (the desktop UI renders the full stream). */
+  private onGarrisonEvent(event: GarrisonEventFrame | undefined): void {
+    if (!event || event.kind !== "gauntlet_regression") return;
+    const s = event.summary ?? {};
+    const score = typeof s.passed === "number" && typeof s.total === "number" ? `${s.passed}/${s.total}` : "?";
+    const prev = event.previous ? ` (was ${event.previous.passed}/${event.previous.total})` : "";
+    const lines = [`🜂 Nightly gauntlet regressed${s.suite ? ` — ${s.suite}` : ""}: ${score}${prev}`];
+    for (const reason of (event.reasons ?? []).slice(0, 3)) lines.push(`• ${reason}`);
+    if (event.findingId) lines.push(`triage: ${event.findingId}`);
+    const text = lines.join("\n");
+    for (const chatId of this.owners) {
+      this.enqueueSend(chatId, async () => {
+        await this.api.sendMessage(chatId, text);
       });
     }
   }

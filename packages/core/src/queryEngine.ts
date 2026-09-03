@@ -12,7 +12,6 @@
 
 import {
   type ContentBlock,
-  type ImageBlock,
   type Message,
   type StreamEvent,
   type TurnEvent,
@@ -26,6 +25,8 @@ import {
   type PermissionPromptSuggestion,
   type ReasoningLevel,
   type WorkStatus,
+  type TurnEndStatus,
+  type TurnVerificationGap,
   isToolUseBlock,
 } from "@ares/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -33,6 +34,15 @@ import * as path from "node:path";
 import { promises as fs } from "node:fs";
 import type { HookInvocation, HookManager } from "./hooks.js";
 import { verificationHintFor } from "./verifier.js";
+import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
+import { currentSubagentDepth } from "./subagentDepth.js";
+import {
+  estimateTextTokens,
+  estimateImageTokens,
+  base64DecodedBytes,
+  IMAGE_TOKEN_FLOOR,
+  IMAGE_TOKEN_CAP,
+} from "./tokenEstimate.js";
 import {
   RepositoryInstructionResolver,
   renderRepositoryInstructions,
@@ -51,11 +61,13 @@ export interface ProviderRequest {
   /** Unified reasoning dial; each provider translates it (effort vs budget). */
   reasoningLevel?: ReasoningLevel;
   maxOutputTokens?: number;
-  /** Structural act-first forcing: "any" REQUIRES a tool call this turn (used
-   *  on the first agentic turn of a goal, and right after a research fleet
-   *  returns — the two spots where "summarize and stop" wastes the work).
+  /** Structural tool forcing. "any" REQUIRES a tool call this turn (the first
+   *  agentic turn of a goal, and right after a research fleet returns — the
+   *  two spots where "summarize and stop" wastes the work); "none" forbids
+   *  tools; `{type:"tool",name}` REQUIRES that specific tool (plan-before-edit
+   *  forces TodoWrite on the opening call of a substantial coding turn).
    *  Providers that can't honor it ignore it. */
-  toolChoice?: "auto" | "any";
+  toolChoice?: ProviderToolChoice;
   /** Tactical phase hint. "routine" = a mid-loop continuation after a clean
    *  tool round — binary-dial reasoners (DeepSeek: every level is the same
    *  wire) use this to SKIP the reasoning pass entirely on such calls, which
@@ -63,10 +75,32 @@ export interface ProviderRequest {
   reasoningPhase?: "deep" | "routine";
 }
 
+export type ProviderToolChoice = "auto" | "any" | "none" | { type: "tool"; name: string };
+
 export interface ProviderToolDescriptor {
   name: string;
   description: string;
   input_schema: object;
+}
+
+/**
+ * The slice of a subagent runner the engine needs to auto-spawn the
+ * adversarial `verifier` (structurally satisfied by AresSubagentRunner — the
+ * host passes the same object the Task tool holds).
+ */
+export interface EngineSubagentRunner {
+  has(name: string): boolean;
+  run(req: {
+    subagent_type: string;
+    description: string;
+    prompt: string;
+    parentSessionId?: string;
+    invocationId?: string;
+    workspace: string;
+    signal?: AbortSignal;
+    onProgress?: (data: unknown) => void;
+    requestPermission?: QueryEngineConfig["requestPermission"];
+  }): Promise<{ status: string; workStatus?: WorkStatus; summary: string; id?: string }>;
 }
 
 export interface Provider {
@@ -444,6 +478,27 @@ export interface QueryEngineConfig {
    * event. Kernel-backed Session hosts persist directly from engine.history(),
    * so they disable this to avoid cloning and streaming megabytes of history. */
   includeCompactionProjectionInEvents?: boolean;
+  /**
+   * Host-wired subagent runner (the object the Task tool holds). When present
+   * on a TOP-LEVEL engine, the proof gate runs the adversarial `verifier`
+   * subagent once per turn before accepting "done" over ≥
+   * ARES_VERIFY_SUBAGENT_MIN_FILES (3) changed files without behavioral proof.
+   * A PASS with command evidence counts as proof at the current mutation
+   * generation; a FAIL blocks. ARES_VERIFY_SUBAGENT=0 disables.
+   */
+  subagentRunner?: EngineSubagentRunner;
+  /** Nesting depth of this engine (0 = top-level session). Children never
+   * auto-spawn verifiers; the runner also guards via AsyncLocalStorage. */
+  subagentDepth?: number;
+  /**
+   * Structural plan-before-edit. When true (or the function returns true) for
+   * a turn the host classified as SUBSTANTIAL coding work and no TodoWrite
+   * plan exists yet, the FIRST model call of the turn forces
+   * `toolChoice: {type:"tool", name:"TodoWrite"}`; every later call is auto.
+   * Interactive chat and trivial turns leave this unset. ARES_PLAN_BEFORE_EDIT=0
+   * disables globally.
+   */
+  planBeforeEdit?: boolean | (() => boolean);
 }
 
 const DURABLE_EFFECT_HOST = Symbol("ares.query-engine.durable-effect-host");
@@ -467,9 +522,242 @@ export interface ToolSelectionContext {
   providerName?: string;
   model?: string;
   workflowMode?: "plan" | "build";
+  /**
+   * Deferred tools the host's ToolSearch registry has already loaded this
+   * session (load order). Optional belt-and-braces: the engine ALSO recovers
+   * the loaded set from ToolSearch results in the transcript, which is what
+   * survives a daemon restart; this hook is what survives compaction.
+   */
+  loadedDeferredTools?: readonly string[];
 }
 
+// ─── Two-tier tool catalog ────────────────────────────────────────────
+//
+// WHY a tier split instead of the keyword router (selectToolsForTurnLegacy):
+// (1) a capability the regex missed was INVISIBLE, not merely unused — the
+// model cannot call a schema it was never sent, and it surfaces that as an
+// unknown-tool call that reads like "the agent is bad at X"; (2) the router
+// flipped the catalog turn to turn on user wording, and tool schemas are part
+// of the prompt-cache prefix, so every flip re-billed the whole prefix; (3) the
+// only reason it existed is that ~60 schemas cost thousands of tokens per
+// round. Claude Code's answer: a STATIC core catalog the model always sees, and
+// everything else DEFERRED but discoverable through a ToolSearch tool whose
+// description lists the categories. Loaded tools stay for the session and are
+// appended at the END of the catalog in load order, so the cached prefix
+// (core, in a fixed order) survives every load.
+
+/**
+ * The core tier, in the exact order it is sent. Order is part of the prompt
+ * cache key — never sort this by anything that varies per turn. Editors are
+ * listed in both protocols; `primaryEditProtocol` drops the inactive one.
+ */
+export const CORE_TOOL_NAMES: readonly string[] = [
+  "Read", "Edit", "Write", "ApplyPatch", "Glob", "Grep", "Bash", "PowerShell",
+  "BashOutput", "KillShell", "TodoWrite", "RequestUserAction", "Memory",
+  "WebSearch", "WebFetch", "Browser", "CodebaseSearch", "LSP",
+  "Task", "TaskOutput", "KillTask",
+  "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode",
+  "Capability", "ToolSearch",
+];
+const CORE_TOOL_SET = new Set(CORE_TOOL_NAMES.map((name) => name.toLowerCase()));
+
+export function isCoreToolName(name: string): boolean {
+  return CORE_TOOL_SET.has(name.toLowerCase());
+}
+
+/**
+ * Which edit contract a model gets. OpenAI-family models (Codex, gpt-*, o-series)
+ * are trained on apply_patch and produce far fewer malformed edits on it; every
+ * other family gets Edit/Write. One protocol per model, never both — asking a
+ * model to choose among overlapping edit schemas on every round is entropy.
+ */
+export function primaryEditProtocol(providerName?: string, model?: string): "apply-patch" | "edit-write" {
+  const providerModel = `${providerName ?? ""} ${model ?? ""}`.toLowerCase();
+  return /(?:openai|codex|\bgpt[-_ ]|\bo[1-9](?:\b|-))/.test(providerModel) ? "apply-patch" : "edit-write";
+}
+
+const ALL_EDIT_PROTOCOLS = ["write", "edit", "applypatch", "applyintent", "findandedit", "codemode"];
+
+/** ARES_TOOL_RECENT_WINDOW — how many trailing messages keep a used tool's
+ *  schema advertised (default 12). Terse follow-ups ("do that again") must
+ *  still find the handle they used a few rounds ago. */
+function recentToolWindow(): number {
+  const raw = Number(process.env.ARES_TOOL_RECENT_WINDOW);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 12;
+}
+
+/** ARES_TOOL_TIER=legacy restores the keyword router for one release. */
+function toolTierMode(): "tiered" | "legacy" {
+  return (process.env.ARES_TOOL_TIER ?? "").trim().toLowerCase() === "legacy" ? "legacy" : "tiered";
+}
+
+function toolResultText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
+  if (typeof content === "string") return content;
+  return content.map((block) => (block.type === "text" ? block.text ?? "" : "")).join("");
+}
+
+/**
+ * Deferred tools loaded through ToolSearch, recovered from the transcript in
+ * load order. Two sources per call: the `select:A,B` form of the query (the
+ * model named them explicitly) and the `loaded` array of the result (keyword
+ * hits). Read from the transcript rather than only from host memory so a
+ * resumed session — same transcript, fresh process — keeps what it loaded.
+ * Unknown names are harmless: the catalog filter drops them.
+ */
+export function loadedToolsFromTranscript(messages: readonly Message[]): string[] {
+  const loaded: string[] = [];
+  const push = (name: unknown) => {
+    if (typeof name === "string" && name.trim() && !loaded.includes(name.trim())) loaded.push(name.trim());
+  };
+  const searchIds = new Set<string>();
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "tool_use" && block.name === "ToolSearch") {
+        searchIds.add(block.id);
+        const query = (block.input as { query?: unknown } | null)?.query;
+        if (typeof query === "string" && /^\s*select:/i.test(query)) {
+          for (const name of query.replace(/^\s*select:/i, "").split(",")) push(name);
+        }
+      } else if (block.type === "tool_result" && searchIds.has(block.tool_use_id) && !block.is_error) {
+        try {
+          const parsed = JSON.parse(toolResultText(block.content)) as { loaded?: unknown };
+          if (Array.isArray(parsed?.loaded)) for (const name of parsed.loaded) push(name);
+        } catch {
+          // truncated / non-JSON result: the select: form above still counts
+        }
+      }
+    }
+  }
+  return loaded;
+}
+
+/**
+ * Tools the pending user text names EXACTLY — `@Spotify` or "use the Weather
+ * tool". No keyword guessing (that was the legacy router's failure mode); a
+ * name the user typed is the one signal strong enough to bypass ToolSearch.
+ */
+export function explicitlyNamedTools(userText: string, catalog: ReadonlySet<string>): string[] {
+  // Text order, so two mentions in one message land in a stable, obvious order.
+  const hits: Array<{ index: number; name: string }> = [];
+  for (const match of userText.matchAll(/(?:^|[\s(])@([A-Za-z][A-Za-z0-9_]*)/g)) hits.push({ index: match.index ?? 0, name: match[1] });
+  for (const match of userText.matchAll(/\buse\s+(?:the\s+)?([A-Za-z][A-Za-z0-9_]*)\s+tool\b/gi)) hits.push({ index: match.index ?? 0, name: match[1] });
+  hits.sort((a, b) => a.index - b.index);
+  const names: string[] = [];
+  for (const hit of hits) {
+    const name = hit.name.toLowerCase();
+    if (catalog.has(name) && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+function pendingUserText(messages: readonly Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "user") continue;
+    const text = message.content
+      .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+      .map((block) => block.text)
+      .join(" ");
+    if (text.trim()) return text;
+  }
+  return "";
+}
+
+const PLAN_MIXED_TOOLS = new Set(["webfetch", "browser", "task", "updateplandraft", "exitplanmode"]);
+
 export function selectToolsForTurn(
+  tools: readonly EngineTool[],
+  messages: readonly Message[],
+  context: ToolSelectionContext = {},
+): readonly EngineTool[] {
+  if (toolTierMode() === "legacy" || process.env.ARES_DYNAMIC_TOOLS === "0") {
+    return selectToolsForTurnLegacy(tools, messages, context);
+  }
+  const byName = new Map<string, EngineTool>();
+  for (const tool of tools) byName.set(tool.schema.name.toLowerCase(), tool);
+  // Deferral is only honest when the model can discover what was deferred. A
+  // belt without ToolSearch (evals, coding profiles, small hosts) is sent whole
+  // — hiding a tool nobody can load would recreate the invisibility bug.
+  const discoverable = byName.has("toolsearch");
+  const hasContractFilter = context.workflowMode !== undefined || !!context.providerName || !!context.model;
+  // No deferral possible and no protocol/workflow contract to enforce: the
+  // host composed exactly the belt it wants (evals, tiny profiles). Return it
+  // untouched — same as the legacy router did for a small belt.
+  if (!discoverable && !hasContractFilter) return tools;
+  const protocol = primaryEditProtocol(context.providerName, context.model);
+  const inactiveEditors = new Set(
+    protocol === "apply-patch" ? ["write", "edit", "applyintent", "findandedit", "codemode"] : ["applypatch", "applyintent", "findandedit", "codemode"],
+  );
+
+  const ordered: string[] = [];
+  const admit = (name: string) => {
+    const key = name.toLowerCase();
+    if (byName.has(key) && !ordered.includes(key)) ordered.push(key);
+  };
+  if (discoverable) {
+    for (const name of CORE_TOOL_NAMES) admit(name);
+  } else {
+    for (const tool of tools) admit(tool.schema.name);
+  }
+
+  // Transient extras: recently used tools not otherwise advertised (the model
+  // reached them via an explicit mention or before a compaction dropped the
+  // load), a GUI gate demanding a screenshot, and exact-name mentions. These
+  // sit between core and the loaded segment; they are rare and short-lived.
+  const userText = pendingUserText(messages);
+  const recentlyUsed = new Set<string>();
+  for (const message of messages.slice(-recentToolWindow())) {
+    for (const block of message.content) {
+      if (block.type === "tool_use" && typeof block.name === "string") {
+        recentlyUsed.add(block.name.toLowerCase());
+        admit(block.name);
+      }
+      if (block.type === "system_reminder" && /WINDOWED app artifact|GUI-UNVERIFIED/.test(block.text ?? "")) {
+        admit("ComputerUse");
+        admit("Browser");
+      }
+    }
+  }
+  const explicit = explicitlyNamedTools(userText, new Set(byName.keys()));
+  for (const name of explicit) admit(name);
+  // Loaded segment, load order, appended last so the prefix before it is stable.
+  for (const name of loadedToolsFromTranscript(messages)) admit(name);
+  for (const name of context.loadedDeferredTools ?? []) admit(name);
+
+  const drop = new Set<string>();
+  // One edit contract per model. An alternate protocol stays only when the
+  // model is already mid-flight on it or the user named it.
+  for (const name of inactiveEditors) {
+    if (!recentlyUsed.has(name) && !explicit.includes(name)) drop.add(name);
+  }
+  if (context.workflowMode === "build") {
+    drop.add("updateplandraft");
+    drop.add("exitplanmode");
+  }
+  if (context.workflowMode === "plan") {
+    drop.add("enterplanmode");
+    for (const name of ALL_EDIT_PROTOCOLS) drop.add(name);
+  }
+  const selected = ordered
+    .filter((name) => !drop.has(name))
+    .map((name) => byName.get(name)!)
+    .filter((tool) =>
+      context.workflowMode !== "plan" || tool.schema.safety === "read-only" || PLAN_MIXED_TOOLS.has(tool.schema.name.toLowerCase()),
+    );
+  if (selected.length > 0) return selected;
+  if (context.workflowMode === "plan") {
+    return tools.filter((tool) => tool.schema.safety === "read-only" || PLAN_MIXED_TOOLS.has(tool.schema.name.toLowerCase()));
+  }
+  return tools;
+}
+
+/**
+ * The keyword router this release retires. Reached via ARES_TOOL_TIER=legacy
+ * (and ARES_DYNAMIC_TOOLS=0, whose "send everything" meaning it already
+ * implements). Kept verbatim for one release so a regression in the tiered
+ * catalog has a one-knob rollback; delete with the knob.
+ */
+export function selectToolsForTurnLegacy(
   tools: readonly EngineTool[],
   messages: readonly Message[],
   context: ToolSelectionContext = {},
@@ -617,9 +905,9 @@ export function selectToolsForTurn(
 // cost. Good enough to keep a runaway thread from blowing the model's window —
 // the goal is "never hard-fail with context_length_exceeded," not exactness.
 
+// CHARS_PER_TOKEN survives only for the microcompact "chars freed" statistic;
+// real estimates come from tokenEstimate.ts (content-aware, per class).
 const CHARS_PER_TOKEN = 4;
-const IMAGE_TOKEN_FLOOR = 256; // a small image still costs something
-const IMAGE_TOKEN_CAP = 2000; // providers downscale — per-image token cost is bounded
 // A model only ever *charges* ~1600 tokens for a large image (it downscales),
 // but the raw base64 payload still crosses the wire and hits the request-SIZE
 // limit long before the token limit. So we bound token cost for window
@@ -651,34 +939,12 @@ const MICROCOMPACT_MIN_SAVED_TOKENS = 8_000;
 const MICROCOMPACT_PLACEHOLDER =
   "[old tool output cleared to save context — re-run the tool or Read the file if you need it again]";
 
-function estimateTextTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
-
-/** Decoded byte size of a base64 payload (base64 encodes 3 bytes per 4 chars,
- *  minus padding). Cheap and allocation-free. */
-function base64DecodedBytes(data: string): number {
-  const len = data.length;
-  if (len === 0) return 0;
-  let padding = 0;
-  if (data.endsWith("==")) padding = 2;
-  else if (data.endsWith("=")) padding = 1;
-  return Math.max(0, Math.floor((len * 3) / 4) - padding);
-}
-
-/** A base64 image's token cost for WINDOW accounting is bounded — providers
- *  downscale, so even a huge frame charges ~1600 tokens, not the base64 length.
- *  We scale gently with decoded size (so many frames still add up and trigger
- *  image-dropping) but cap it, so one screenshot never falsely evicts real text.
- *  The wire-SIZE risk (a payload too big to send) is handled separately by
- *  MAX_IMAGE_PAYLOAD_BYTES in fitImagesToBudget. */
-function estimateImageTokens(source: ImageBlock["source"]): number {
-  if (source.kind === "base64") {
-    const bytes = base64DecodedBytes(source.data);
-    return Math.min(IMAGE_TOKEN_CAP, Math.max(IMAGE_TOKEN_FLOOR, Math.ceil(bytes / 900)));
-  }
-  return IMAGE_TOKEN_FLOOR; // url image — true size unknown, rough floor
-}
+// estimateTextTokens / estimateImageTokens / base64DecodedBytes live in
+// tokenEstimate.ts: prose ~4 chars/token, code/JSON/paths ~3, CJK/emoji ~1
+// token per char, base64/hex ~2.5, indents cheap; images by pixel area when
+// the header tells us (≈ w×h/750, capped 1600), else the size-scaled guess.
+// The wire-SIZE risk (a payload too big to send) is handled separately by
+// MAX_IMAGE_PAYLOAD_BYTES in fitImagesToBudget.
 
 /** Total decoded bytes of every base64 image in a message set — the real wire
  *  payload that must stay under the provider's request-size limit. */
@@ -1124,6 +1390,8 @@ export class QueryEngine {
    * real datapoint; EWMA-smoothed and clamped so one weird turn can't wreck it.
    */
   private tokenScale = 1;
+  /** Derived project checks (resolveProjectChecks), resolved once per engine. */
+  private projectChecksPromise: Promise<ProjectChecks | null> | null = null;
   /** The provider's REAL prompt ceiling, learned from rejections/stalls at
    *  specific ladder rungs (real-token units). The configured budget can be
    *  far above what the serving layer accepts (ollama num_ctx, gateway 413s);
@@ -1251,6 +1519,27 @@ export class QueryEngine {
     return downshift(base, 1);
   }
 
+  /** Structural forcing for the FIRST model call of a turn only: TodoWrite
+   *  when the host flagged plan-before-edit and no plan exists yet, else the
+   *  act-first "any" for autonomous goals. Every later call is auto. */
+  private forcedToolChoice(iter: number, toolDescriptors: readonly ProviderToolDescriptor[]): ProviderToolChoice | undefined {
+    if (iter !== 0) return undefined;
+    if (
+      process.env.ARES_PLAN_BEFORE_EDIT !== "0" &&
+      this.planBeforeEditRequested() &&
+      this.latestTodos.length === 0 &&
+      toolDescriptors.some((tool) => tool.name === "TodoWrite")
+    ) {
+      return { type: "tool", name: "TodoWrite" };
+    }
+    return this.inGoalMode() ? "any" : undefined;
+  }
+
+  private planBeforeEditRequested(): boolean {
+    const flag = this.cfg.planBeforeEdit;
+    return typeof flag === "function" ? flag() === true : flag === true;
+  }
+
   /** True when the trailing REAL user message is an autonomous work-item (goal
    *  mode: run/mission/operator/subagent) — the act-first tool_choice forcing
    *  applies only there, never to interactive chat. */
@@ -1262,6 +1551,13 @@ export class QueryEngine {
       return m.metadata?.source === "work-item";
     }
     return false;
+  }
+
+  private projectChecks(): Promise<ProjectChecks | null> {
+    if (!this.projectChecksPromise) {
+      this.projectChecksPromise = resolveProjectChecks(this.cfg.workspace).catch(() => null);
+    }
+    return this.projectChecksPromise;
   }
 
   /** Fold a real usage datapoint into the token-scale calibration (S4). */
@@ -2099,6 +2395,16 @@ export class QueryEngine {
     let manualVerificationAt = 0;
     let manualVerificationFailureCommand: string | null = null;
     let latestManualVerificationCommand: string | null = null;
+    // A green manual command that never touched a changed file's module (the
+    // scoping heuristic in scopedManualVerification) — remembered so the
+    // disclosure can say WHY it did not count instead of "no proof".
+    let unscopedManualVerificationCommand: string | null = null;
+    // Verdict line from the auto-spawned adversarial verifier subagent, and
+    // the freshness of its PASS (evidence tick + host mutation generation).
+    let verifierSubagentVerdict: string | null = null;
+    let verifierSubagentSpawned = false;
+    let verifierSubagentProofTick = 0;
+    let verifierSubagentProofGeneration = -1;
     const changedFiles = new Set<string>();
     let proofGateFired = false;
     let unverifiedSurfaced = false;
@@ -2159,6 +2465,17 @@ export class QueryEngine {
     };
     const hasPostMutationProof = (): boolean => {
       const evidence = this.cfg.verificationEvidence?.();
+      // A verifier-subagent PASS with command evidence is behavioral proof for
+      // exactly the mutation state it inspected: any later edit (tick) or host
+      // generation bump invalidates it, as does a manual failure since.
+      if (
+        verifierSubagentProofTick > 0 &&
+        verifierSubagentProofTick >= lastMutationTick &&
+        manualVerificationFailureCommand === null &&
+        (!evidence || evidence.mutationGeneration === verifierSubagentProofGeneration)
+      ) {
+        return true;
+      }
       if (evidence) {
         const currentGenerationPassed =
           evidence.latestRunStatus === "passed" &&
@@ -2215,6 +2532,50 @@ export class QueryEngine {
       // verified, no matter how green the headless checks are.
       if (guiNeedsVisualProof()) return "unverified";
       return hasPostMutationProof() ? "verified" : "unverified";
+    };
+
+    // Terminal honesty. Field data: 79% of coding turns (49/62 in one month)
+    // ended workStatus "unverified" while the turn_end STATUS said "completed"
+    // — every UI and eval that reads status scored them as success. The loop
+    // still stops exactly where it did (the anti-spiral cap is untouched); it
+    // just refuses to stamp a completed loop over unproven coding work as
+    // "completed". ARES_STRICT_VERIFY=0 restores the legacy stamping.
+    const completionStatus = (ws: WorkStatus): TurnEndStatus =>
+      process.env.ARES_STRICT_VERIFY !== "0" && (ws === "unverified" || ws === "blocked")
+        ? "needs_verification"
+        : "completed";
+    // The structural account of what was NOT verified — files changed, checks
+    // that ran, checks that were missing — carried on turn_end for headless
+    // runs, evals and telemetry. Deliberately NOT rendered into the transcript:
+    // the owner removed the user-facing UNVERIFIED warning by standing order.
+    const verificationGap = (ws: WorkStatus): TurnVerificationGap => {
+      const rel = (file: string) => file.startsWith("<") ? file : path.relative(this.cfg.workspace, file) || file;
+      const files = [...changedFiles].map(rel);
+      const ran: string[] = [];
+      const evidence = this.cfg.verificationEvidence?.();
+      if (evidence && evidence.latestRunStatus) {
+        const fresh = evidence.latestRunGeneration === evidence.mutationGeneration ? "current" : "STALE (older than the last edit)";
+        const labels = evidence.latestLabels?.length ? evidence.latestLabels.join(", ") : "none";
+        ran.push(`host verifier: ${evidence.latestRunStatus}${evidence.latestRunStrength ? `/${evidence.latestRunStrength}` : ""} on ${fresh} generation [${labels}]`);
+      }
+      if (latestManualVerificationCommand) ran.push(`manual pass: \`${latestManualVerificationCommand}\``);
+      if (manualVerificationFailureCommand) ran.push(`manual FAIL: \`${manualVerificationFailureCommand}\``);
+      if (unscopedManualVerificationCommand && !latestManualVerificationCommand) {
+        ran.push(`manual pass NOT counted: \`${unscopedManualVerificationCommand}\` does not reference a changed file, its directory, its package, or a test root — static proof only`);
+      }
+      if (verifierSubagentVerdict) ran.push(`verifier subagent: ${verifierSubagentVerdict}`);
+      const missing: string[] = [];
+      if (ws === "blocked") missing.push("the verifier's red checks were never resolved");
+      if (guiNeedsVisualProof()) missing.push("no screenshot of the running app newer than the last change");
+      if (ws !== "blocked" && !hasPostMutationProof()) {
+        missing.push(
+          evidence && evidence.latestRunStatus === "passed" && evidence.latestRunStrength !== "behavioral"
+            ? "only static checks passed — no behavioral (test/runtime) proof"
+            : "no all-green behavioral check (tests or a real runtime reproduction) tied to the newest mutation generation",
+        );
+      }
+      if (files.length === 0) missing.push("persisted coding changes from an earlier turn still need proof");
+      return { files, checksRun: ran, missing: missing.length ? missing : ["behavioral proof"] };
     };
 
     turnLoop: for (let iter = 0; iter < maxIters; iter++) {
@@ -2453,7 +2814,9 @@ export class QueryEngine {
                   maxOutputTokens: this.cfg.maxOutputTokens,
                   // Act first: the opening call of an autonomous goal must DO
                   // something (a tool call), not produce a plan-essay and stop.
-                  toolChoice: iter === 0 && this.inGoalMode() ? "any" : undefined,
+                  // Plan first: a substantial coding turn's opening call must
+                  // write its TodoWrite plan before it edits anything.
+                  toolChoice: this.forcedToolChoice(iter, toolDescriptors),
                   // Tactical phase for binary-dial reasoners: full think on the
                   // opening call + failure recovery, skip the reasoning pass on
                   // routine continuations. ARES_TACTICAL_REASONING=0 opts out.
@@ -2987,9 +3350,8 @@ export class QueryEngine {
             // Stuck or capped: do NOT loop forever, but do NOT bless it as done.
             // Surface every unresolved failure so the turn ends with the red
             // checks visible, not a clean "completed" over a broken result. The
-            // turn STATUS stays "completed" (the loop terminated without hanging)
-            // — escalation off the surfaced UNRESOLVED reminders is the harness's
-            // job; see the C1-gate-honesty contract test.
+            // loop terminates here; the terminal status becomes
+            // needs_verification (workStatus blocked) — see completionStatus.
             for (const r of gateReminders) {
               workStatus = "blocked";
               yield {
@@ -3067,6 +3429,85 @@ export class QueryEngine {
             continue;
           }
         }
+        // Adversarial verifier auto-spawn. A turn about to end over ≥N changed
+        // files with no behavioral proof gets ONE independent verifier run
+        // (never per gate iteration, never from inside a subagent) before the
+        // proof gate nags. PASS with command evidence = proof at the current
+        // generation; FAIL blocks; PARTIAL/no-evidence is information only.
+        if (
+          this.cfg.requireVerificationEvidence &&
+          workStatus !== "blocked" &&
+          requiresVerification() &&
+          hasCurrentTurnEngagement() &&
+          !hasPostMutationProof() &&
+          !verifierSubagentSpawned &&
+          !this.liveSignal().aborted
+        ) {
+          const runner = this.cfg.subagentRunner;
+          const realChanged = [...changedFiles].filter((file) => !file.startsWith("<"));
+          if (
+            runner &&
+            process.env.ARES_VERIFY_SUBAGENT !== "0" &&
+            (this.cfg.subagentDepth ?? 0) === 0 &&
+            currentSubagentDepth() === 0 &&
+            realChanged.length >= verifySubagentMinFiles() &&
+            runner.has("verifier")
+          ) {
+            verifierSubagentSpawned = true;
+            const checks = await this.projectChecks();
+            const relFiles = realChanged.map((file) => path.relative(this.cfg.workspace, file) || file);
+            const id = `verify_${cryptoId()}`;
+            yield { type: "subagent_start", id, name: "verifier", description: `Adversarial verification of ${relFiles.length} changed file(s)` };
+            let summary = "";
+            let ran = false;
+            try {
+              const result = await runner.run({
+                subagent_type: "verifier",
+                description: `Verify ${relFiles.length} changed file(s)`,
+                prompt: buildVerifierSubagentPrompt(relFiles, checks),
+                parentSessionId: this.sessionId,
+                invocationId: id,
+                workspace: this.cfg.workspace,
+                signal: this.liveSignal(),
+                requestPermission: this.cfg.requestPermission
+                  ? (request) => this.cfg.requestPermission!(request)
+                  : undefined,
+              });
+              summary = result.summary ?? "";
+              ran = result.status === "completed" || result.status === "needs_verification";
+            } catch (err) {
+              summary = `verifier subagent failed: ${err instanceof Error ? err.message : String(err)}`;
+            }
+            const verdict = parseVerifierVerdict(summary);
+            verifierSubagentVerdict = `${verdict.verdict ?? "NO VERDICT"}${verdict.hasCommandRun ? "" : " (no Command-run evidence)"}`;
+            yield { type: "subagent_end", id, status: ran ? "completed" : "failed", summary: summary.slice(0, 4_000) };
+            const evidenceText = summary.slice(0, 6_000);
+            if (ran && verdict.verdict === "PASS" && verdict.hasCommandRun) {
+              verifierSubagentProofTick = evidenceTick;
+              verifierSubagentProofGeneration = this.cfg.verificationEvidence?.().mutationGeneration ?? -1;
+              manualVerificationFailureCommand = null;
+              yield {
+                type: "system_reminder_injected",
+                text: `Adversarial verifier subagent VERDICT: PASS with command evidence — counted as behavioral proof for the current changes.\n${evidenceText}`,
+                source: "verifier",
+              };
+            } else {
+              const failed = ran && verdict.verdict === "FAIL";
+              if (failed) workStatus = "blocked";
+              const text = failed
+                ? `Adversarial verifier subagent VERDICT: FAIL — the changes are NOT verified. Fix what it found, re-run the checks, then finish.\n${evidenceText}`
+                : `Adversarial verifier subagent returned ${verifierSubagentVerdict} — this does not count as proof. Run the project's checks yourself and show the output.\n${evidenceText}`;
+              this.messages.push({
+                id: cryptoId(),
+                role: "user",
+                content: [{ type: "system_reminder", text }],
+                createdAt: new Date().toISOString(),
+              });
+              yield { type: "system_reminder_injected", text, source: "verifier" };
+              if (failed) continue;
+            }
+          }
+        }
         // Post-edit proof gate. The verifier's empty reminder queue is NOT a
         // green verdict: it can also mean no command was derived or every tool
         // was skipped. Settle the normal end gate first, then require concrete
@@ -3089,7 +3530,10 @@ export class QueryEngine {
             // Name what would actually count for THIS project — "run the
             // affected tests" is a dead instruction in a project with none.
             const projectHint = await verificationHintFor(this.cfg.workspace).catch(() => "");
-            const text = `${scope}, but Ares has no complete all-green behavior-capable verifier run for the newest mutation generation${sample ? ` (${sample})` : ""}. Static syntax/type/lint checks are useful but do not prove requested behavior.${projectHint ? ` ${projectHint}` : " Run the narrowest meaningful affected tests or real reproduction now."} A skipped tool, an older run, one passing command inside a red run, or a verbal claim is not proof.`;
+            const unscopedNote = unscopedManualVerificationCommand && !latestManualVerificationCommand
+              ? ` Your green \`${unscopedManualVerificationCommand}\` run did NOT count: it references no changed file, its directory, its package, or a test root, so it is static proof at best — run the check that exercises the changed module, or the project's own suite.`
+              : "";
+            const text = `${scope}, but Ares has no complete all-green behavior-capable verifier run for the newest mutation generation${sample ? ` (${sample})` : ""}. Static syntax/type/lint checks are useful but do not prove requested behavior.${unscopedNote}${projectHint ? ` ${projectHint}` : " Run the narrowest meaningful affected tests or real reproduction now."} A skipped tool, an older run, one passing command inside a red run, or a verbal claim is not proof.`;
             this.messages.push({
               id: cryptoId(),
               role: "user",
@@ -3125,13 +3569,18 @@ export class QueryEngine {
           iter--;
           continue;
         }
-        yield this.terminalTurnEvent({
-          type: "turn_end",
-          status: this.liveSignal().aborted ? "interrupted" : "completed",
-          workStatus: resolvedWorkStatus(),
-          usage: totalUsage,
-          durationMs: Date.now() - startedAt,
-        });
+        {
+          const finalWorkStatus = resolvedWorkStatus();
+          const finalStatus: TurnEndStatus = this.liveSignal().aborted ? "interrupted" : completionStatus(finalWorkStatus);
+          yield this.terminalTurnEvent({
+            type: "turn_end",
+            status: finalStatus,
+            workStatus: finalWorkStatus,
+            ...(finalStatus === "needs_verification" ? { unverified: verificationGap(finalWorkStatus) } : {}),
+            usage: totalUsage,
+            durationMs: Date.now() - startedAt,
+          });
+        }
         return;
       }
 
@@ -3248,7 +3697,16 @@ export class QueryEngine {
             }
           }
           if (outcome.verificationPassed) {
-            if (
+            // A green manual command is behavioral proof only when it plausibly
+            // executed the changed module — the project's whole suite, or a
+            // command naming a changed file / its directory / its package / a
+            // test root. `tsc --noEmit` after editing feature.ts is static.
+            const realChanged = [...changedFiles].filter((file) => !file.startsWith("<"));
+            const scoped = realChanged.length === 0 ||
+              manualVerificationScoped(outcome.verificationCommand ?? "", realChanged, this.cfg.workspace, await this.projectChecks());
+            if (!scoped) {
+              unscopedManualVerificationCommand = outcome.verificationCommand ?? null;
+            } else if (
               !manualVerificationFailureCommand ||
               verificationCommandCovers(outcome.verificationCommand ?? "", manualVerificationFailureCommand)
             ) {
@@ -3681,21 +4139,25 @@ export class QueryEngine {
             : `Hit the tool-call ceiling (${totalToolCalls}/${ceiling}) — turn ends with work possibly incomplete; partial results are preserved.`,
           source: "instructions",
         };
-        // Status stays "completed" (the loop terminated without hanging) — the
-        // honesty is carried by the UNRESOLVED reminder above, consistent with
-        // the C1 end-gate contract (status reflects loop-termination; work-quality
-        // failures are surfaced via reminders, not the status field).
+        // The loop terminated without hanging, so this is a completion — but
+        // a completion over unproven coding changes is stamped
+        // needs_verification (see completionStatus), never "completed".
         if (!this.liveSignal().aborted && !(await this.closeTurnAtBoundary())) {
           iter--;
           continue;
         }
-        yield this.terminalTurnEvent({
-          type: "turn_end",
-          status: "completed",
-          workStatus: resolvedWorkStatus(),
-          usage: totalUsage,
-          durationMs: Date.now() - startedAt,
-        });
+        {
+          const finalWorkStatus = resolvedWorkStatus();
+          const finalStatus = completionStatus(finalWorkStatus);
+          yield this.terminalTurnEvent({
+            type: "turn_end",
+            status: finalStatus,
+            workStatus: finalWorkStatus,
+            ...(finalStatus === "needs_verification" ? { unverified: verificationGap(finalWorkStatus) } : {}),
+            usage: totalUsage,
+            durationMs: Date.now() - startedAt,
+          });
+        }
         return;
       }
 
@@ -5337,6 +5799,112 @@ function manualVerificationCommand(name: string, input: unknown): string | null 
 
 function isManualVerificationCall(name: string, input: unknown): boolean {
   return manualVerificationCommand(name, input) !== null;
+}
+
+/** Changed-file count at which the adversarial verifier auto-spawns. */
+function verifySubagentMinFiles(): number {
+  const raw = Number(process.env.ARES_VERIFY_SUBAGENT_MIN_FILES);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 3;
+}
+
+/** Prompt for the auto-spawned verifier: the changed files and the project's
+ *  own checks, so it runs the real build/tests instead of guessing. */
+export function buildVerifierSubagentPrompt(changedFiles: readonly string[], checks: ProjectChecks | null): string {
+  const files = changedFiles.slice(0, 40).map((file) => `- ${file}`).join("\n");
+  const more = changedFiles.length > 40 ? `\n- … +${changedFiles.length - 40} more` : "";
+  const checkLines = checks
+    ? (["typecheck", "build", "lint", "test"] as const)
+        .map((kind) => (checks[kind] ? `- ${kind}: \`${checks[kind]!.command}\` (from ${checks[kind]!.source})` : ""))
+        .filter(Boolean)
+    : [];
+  const extraTests = checks ? checks.tests.slice(1).map((test) => `- test: \`${test.command}\` (from ${test.source})`) : [];
+  const checksText = [...checkLines, ...extraTests].length
+    ? `Project checks derived from its manifests (run these first, verbatim):\n${[...checkLines, ...extraTests].join("\n")}`
+    : "No project test/build commands could be derived from manifests — find the real ones (README, package manifests, CI config) and run them; if none exist, execute the changed code directly and show its output.";
+  return `The parent agent changed these ${changedFiles.length} file(s) in the workspace and is about to claim the work is done:\n${files}${more}\n\n${checksText}\n\nThen exercise the changed behavior directly (run it / call it / reproduce the requested scenario) with at least one adversarial probe. Every check needs a **Command run:** block with real output. End with exactly one VERDICT: PASS / FAIL / PARTIAL line.`;
+}
+
+/** Parse the verifier contract: the LAST `VERDICT:` line wins; a PASS is only
+ *  evidence-backed when at least one Command-run block exists. */
+export function parseVerifierVerdict(text: string): { verdict: "PASS" | "FAIL" | "PARTIAL" | null; hasCommandRun: boolean } {
+  const matches = [...text.matchAll(/^\s*\**\s*VERDICT:\s*\**\s*(PASS|FAIL|PARTIAL)\b/gim)];
+  const last = matches.at(-1)?.[1]?.toUpperCase() as "PASS" | "FAIL" | "PARTIAL" | undefined;
+  const hasCommandRun = /\*\*Command run:\*\*|^\s*Command run:/im.test(text);
+  return { verdict: last ?? null, hasCommandRun };
+}
+
+/** Stems too generic to anchor a command to a changed file by substring. */
+const GENERIC_FILE_STEMS = new Set(["index", "main", "mod", "lib", "app", "init", "utils", "util", "types", "test", "tests"]);
+
+/**
+ * Did a green MANUAL command plausibly exercise a changed file's module? The
+ * `no_checks` hatch (file types with no automatic checker) used to accept ANY
+ * grammar-shaped command — `tsc --noEmit` after editing feature.ts "verified"
+ * it. Heuristic, exported for tests: true when the command is a bare
+ * whole-suite invocation (`pnpm test`, `cargo test`, `pytest`, a project
+ * script), one of the project's derived test commands (+ flags), or when its
+ * text references a changed file (stem, kebab/snake spellings), the file's
+ * directory, a package/crate/module name, or a test root. Otherwise the run
+ * counts as static and the gate says why.
+ */
+export function manualVerificationScoped(
+  command: string,
+  changedFiles: readonly string[],
+  workspace: string,
+  checks: ProjectChecks | null,
+): boolean {
+  const cmd = command.trim().toLowerCase().replace(/\\/g, "/").replace(/\s+/g, " ");
+  if (!cmd) return false;
+  if (cmd.startsWith("script:")) return true; // project-wide build/verify scripts
+  const tokens = cmd.split(" ");
+  // A bare family invocation (`pnpm test`, `cargo test`, `dotnet build`), with
+  // or without flags, runs the whole project — it covers every changed file.
+  const family = verificationCommandFamily(cmd);
+  if (family !== null && (family === cmd || (cmd.startsWith(`${family} `) && tokens.slice(family.split(" ").length).every((tok) => tok.startsWith("-"))))) {
+    return true;
+  }
+  const strip = (tok: string) => tok.replace(/^['"]|['"]$/g, "").replace(/^\.\//, "");
+  if (checks) {
+    for (const test of checks.tests) {
+      const derived = test.command.toLowerCase();
+      const width = derived.split(" ").length;
+      if (cmd === derived || (cmd.startsWith(`${derived} `) && tokens.slice(width).every((tok) => tok.startsWith("-")))) return true;
+    }
+    for (const name of checks.packageNames) {
+      const full = name.toLowerCase();
+      const short = full.split("/").at(-1) ?? full;
+      if (short.length < 3) continue;
+      if (tokens.some((tok) => strip(tok) === full || strip(tok) === short || strip(tok).endsWith(`/${short}`))) return true;
+    }
+    for (const root of checks.testRoots) {
+      const dir = root.toLowerCase();
+      if (tokens.some((tok) => {
+        const t = strip(tok);
+        return t === dir || t.startsWith(`${dir}/`) || t.includes(`/${dir}/`);
+      })) return true;
+    }
+  }
+  const wsRoot = path.resolve(workspace).replace(/\\/g, "/").toLowerCase();
+  for (const file of changedFiles) {
+    const abs = path.resolve(workspace, file).replace(/\\/g, "/").toLowerCase();
+    const rel = abs.startsWith(`${wsRoot}/`) ? abs.slice(wsRoot.length + 1) : abs;
+    const stem = path.posix.basename(rel).replace(/\.[^.]+$/, "").replace(/\.(?:test|spec)$/, "");
+    if (stem.length >= 3 && !GENERIC_FILE_STEMS.has(stem)) {
+      const spellings = new Set([
+        stem,
+        stem.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase(),
+        stem.replace(/[_\s]+/g, "-"),
+        stem.replace(/[-\s]+/g, "_"),
+      ]);
+      if ([...spellings].some((spelling) => spelling.length >= 3 && cmd.includes(spelling))) return true;
+    }
+    const dir = path.posix.dirname(rel);
+    if (dir !== "." && dir !== "" && tokens.some((tok) => {
+      const t = strip(tok);
+      return t === dir || t.startsWith(`${dir}/`) || t.includes(`/${dir}/`);
+    })) return true;
+  }
+  return false;
 }
 
 /** Families that invoke the package's own full JS test suite. A bare run of

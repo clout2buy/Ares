@@ -9,13 +9,18 @@ import os from "node:os";
 import { ReadTool, GlobTool, GrepTool, EditTool, WriteTool, ApplyIntentTool, MemoryTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { completeBootstrap, createMemoryStore, recordCardMemoryOnce, ensureAgentScaffold, exportHome, importHome, listSnapshots, loadAgentConfig, restoreSnapshot, runDeepDream, runRemDream, snapshotBrain } from "@ares/agent";
-import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, GAUNTLET_SUITES, parseScoreboard, parseScoreboardRow, detectRegression, renderTrend, formatCompact, type EvalReport, type EvalTask, type ScoreboardRow } from "@ares/operator";
+import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, GAUNTLET_SUITES, parseScoreboard, parseScoreboardRow, detectRegression, renderTrend, readGauntletTrend, renderGauntletTrend, formatCompact, type EvalReport, type EvalTask, type ScoreboardRow } from "@ares/operator";
 import { MemoryStore, withConsolidationLock } from "@ares/mind";
 import { buildCodingTools } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissions.js";
 import { selectProvider } from "./providers.js";
 import { AresRuntimeState, ParsedArgs, cliRuntimeContext, cliVersion, compactLine } from "./runtime.js";
 import { buildSystemPrompt } from "./turnPipeline.js";
+import { gauntletSchedulePath, nextGauntletRunDelayMs, parseGauntletSchedule, runScheduledGauntlet, saveGauntletSchedule } from "./scheduledGauntlet.js";
+
+// The headless gauntlet is the Garrison's entry point for the nightly watch —
+// re-exported here so callers that already know agentOps find it.
+export { runScheduledGauntlet, loadGauntletSchedule, saveGauntletSchedule, parseGauntletSchedule, nextGauntletRunDelayMs, type ScheduledGauntletOptions, type ScheduledGauntletResult, type GauntletSchedule } from "./scheduledGauntlet.js";
 
 export async function agentCommand(args: ParsedArgs): Promise<number> {
   const subcommand = args.positionals[0] ?? "doctor";
@@ -183,17 +188,48 @@ async function codingHarnessSourceIdentity(cwd: string): Promise<Record<string, 
 }
 
 async function gauntletCommand(args: ParsedArgs): Promise<number> {
-  const selection = await selectProvider(args.flags);
   const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
-  const runtime: AresRuntimeState = { permissionMode: "workspace-write" };
-  const isolatedHomes: string[] = [];
-  const evalShellRegistries: ShellRegistry[] = [];
   const suite = args.flags.get("suite") ?? "coding-v3";
-  const suiteTasks = GAUNTLET_SUITES[suite];
-  if (!suiteTasks) {
+  if (!GAUNTLET_SUITES[suite]) {
     process.stderr.write(`error: --suite must be one of ${Object.keys(GAUNTLET_SUITES).join(", ")}\n`);
     return 2;
   }
+  // `--schedule <spec>` persists a nightly watch instead of running now. The
+  // Garrison's gauntlet hook reads <home>/gauntlet/schedule.json and calls
+  // runScheduledGauntlet() on that cadence; `--schedule off` clears it.
+  if (args.flags.has("schedule")) {
+    const spec = args.flags.get("schedule") ?? "nightly";
+    const parsed = parseGauntletSchedule(spec);
+    if (!parsed && !/^(off|none|0)$/i.test(spec.trim())) {
+      process.stderr.write(`error: --schedule expects off | nightly | weekly | <n>h | <n>d | "M H * * *" (got "${spec}")\n`);
+      return 2;
+    }
+    const schedule = parsed
+      ? await saveGauntletSchedule(context.home, {
+          ...parsed,
+          spec,
+          suite,
+          provider: args.flags.get("provider"),
+          model: args.flags.get("model"),
+          gate: true,
+          updatedAt: new Date().toISOString(),
+        })
+      : await saveGauntletSchedule(context.home, null);
+    if (args.flags.has("json")) {
+      process.stdout.write(JSON.stringify({ schedule, file: gauntletSchedulePath(context.home) }) + "\n");
+      return 0;
+    }
+    process.stdout.write(schedule
+      ? notice("Gauntlet · schedule", [
+          `every ${Math.round(schedule.everyMs / 3_600_000)}h${schedule.atHour !== undefined ? ` at ${String(schedule.atHour).padStart(2, "0")}:${String(schedule.atMinute ?? 0).padStart(2, "0")}` : ""} · suite ${schedule.suite} · ${schedule.provider ?? "default provider"}/${schedule.model ?? "default model"} · gate on`,
+          `next run in ~${Math.round(nextGauntletRunDelayMs(schedule) / 60_000)} min (when the Garrison is serving)`,
+          `file: ${gauntletSchedulePath(context.home)}`,
+        ], "success")
+      : notice("Gauntlet · schedule", ["cleared"], "success"));
+    return 0;
+  }
+
+  const selection = await selectProvider(args.flags);
   const isMockProvider = selection.provider.name === "mock" || selection.provider.name.startsWith("mock-");
   // Host-process execution is the DEFAULT on this box (owner's call — it's a
   // personal machine). --require-isolated-eval (or ARES_REQUIRE_ISOLATED_EVAL=1)
@@ -213,70 +249,17 @@ async function gauntletCommand(args: ParsedArgs): Promise<number> {
   }
   const sourceIdentity = await codingHarnessSourceIdentity(process.cwd());
 
-  const report = await runGauntlet({
-    provider: selection.provider,
-    model: selection.model,
-    keepWorkspaces: args.flags.has("keep"),
+  const { report, regression: verdict, gated, reportFile } = await runScheduledGauntlet({
     suite,
-    tasks: suiteTasks,
+    selection,
+    home: context.home,
+    keepWorkspaces: args.flags.has("keep"),
     harness: args.flags.get("harness") !== "false" && !args.flags.has("no-harness"),
-    harnessManifest: {
-      ...sourceIdentity,
-      aresVersion: await cliVersion(),
-      providerSource: selection.source,
-      subModel: selection.subModel ?? null,
-      reasoning: "provider/default",
-      permissionMode: runtime.permissionMode,
-    },
-    systemPrompt: (workspace) => buildSystemPrompt("workspace-write", cliRuntimeContext({ workspace, home: context.home })),
-    tools: async (workspace) => {
-      // Fresh harness per workspace — gauntlet runs must not share shell or
-      // todo state across tasks.
-      const isolatedHome = await mkdtemp(path.join(os.tmpdir(), "ares-coding-eval-home-"));
-      isolatedHomes.push(isolatedHome);
-      const isolatedContext = cliRuntimeContext({ workspace, home: isolatedHome });
-      const [pathPermissions, commandPermissions] = await Promise.all([
-        AresPathPermissionStore.load(isolatedContext),
-        AresCommandPermissionStore.load(isolatedContext),
-      ]);
-      const shellRegistry = new ShellRegistry();
-      evalShellRegistries.push(shellRegistry);
-      const todoStore = new TodoStore();
-      const tools = await buildCodingTools(pathPermissions, commandPermissions, selection, runtime, isolatedContext, shellRegistry, todoStore, new Map(), { shell: !isMockProvider && allowUnsafeProcessEval });
-      return {
-        tools,
-        dispose: async () => {
-          await shellRegistry.killAll().catch(() => 0);
-          await rm(isolatedHome, { recursive: true, force: true }).catch(() => undefined);
-        },
-      };
-    },
-  }).finally(async () => {
-    await Promise.all(evalShellRegistries.map((registry) => registry.killAll().catch(() => 0)));
-    await Promise.all(isolatedHomes.map((home) => rm(home, { recursive: true, force: true }).catch(() => undefined)));
+    allowUnsafeProcessEval,
+    sourceIdentity,
+    gate: args.flags.has("gate"),
+    trigger: "cli",
   });
-
-  // Persist: one report per run, plus an append-only scoreboard for trends.
-  const dir = path.join(context.home, "gauntlet");
-  await mkdir(dir, { recursive: true });
-  const stamp = report.startedAt.replace(/[:.]/g, "-");
-  const reportFile = path.join(dir, `${stamp}-${report.model.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`);
-  await writeFile(reportFile, JSON.stringify(report, null, 2) + "\n", "utf8");
-  const scoreboardFile = path.join(dir, "scoreboard.jsonl");
-  const scoreboardEntry = { at: report.startedAt, schemaVersion: report.schemaVersion, suite: report.suite, harness: report.harness, official: report.official, isolation: report.isolation, complete: report.complete, taskManifestHash: report.taskManifestHash, systemPromptHash: report.systemPromptHash, startupReminderHash: report.startupReminderHash, toolSchemaHash: report.toolSchemaHash, toolNames: report.toolNames, environment: report.environment, harnessManifest: report.harnessManifest, provider: report.provider, model: report.model, total: report.total, durationMs: report.durationMs, usage: report.usage, metrics: report.metrics, tasks: report.tasks.map((t) => ({ id: t.id, score: t.score, workStatus: t.workStatus, usage: t.usage })) };
-  // Judge this run against its own history BEFORE appending it — a run must
-  // never be part of the baseline it is measured against.
-  const history = await readFile(scoreboardFile, "utf8").then(parseScoreboard).catch(() => [] as ScoreboardRow[]);
-  const currentRow = report.complete ? parseScoreboardRow(scoreboardEntry) : null;
-  const verdict = currentRow ? detectRegression(currentRow, history) : null;
-  if (report.complete) {
-    await appendFile(scoreboardFile, JSON.stringify(scoreboardEntry) + "\n", "utf8");
-  }
-
-  // The score saturates at frontier tier (coding-v3, 2026-08-15) — a regression
-  // gate that only watches `total` is a gate that never closes. --gate fails on
-  // the axes that still move: cost, verification, wall-clock.
-  const gated = args.flags.has("gate") && verdict?.regressed === true;
 
   if (args.flags.has("json")) {
     process.stdout.write(JSON.stringify({ ...report, regression: verdict }, null, 2) + "\n");
@@ -324,6 +307,10 @@ async function gauntletTrendCommand(args: ParsedArgs): Promise<number> {
   }
   const body = renderTrend(rows).trimEnd().split("\n");
   body.push(`scoreboard: ${scoreboardFile}`);
+  // The nightly ledger (garrison-scheduled runs) sits under the manual rows so
+  // the trend the referee actually tracks is visible in the same readout.
+  const nightly = await readGauntletTrend(context.home).catch(() => []);
+  if (nightly.length > 0) body.push("", "nightly:", ...renderGauntletTrend(nightly).trimEnd().split(String.fromCharCode(10)));
   process.stdout.write(notice("Gauntlet · trend", body, rows.length > 0 ? "success" : "warn"));
   return 0;
 }

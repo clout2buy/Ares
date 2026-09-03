@@ -87,7 +87,8 @@ export function inkHelpLines(): string[] {
     "/danger                Toggle bypass mode for tool prompts.",
     "/checkpoints           List local workspace checkpoints.",
     "/checkpoint-diff <id>  Compare current workspace to a checkpoint.",
-    "/undo [N]              Restore the latest pre-write checkpoint.",
+    "/undo [N]              Restore the latest pre-write checkpoint (files only).",
+    "/rewind [N|id]         Restore files AND cut the conversation back to that checkpoint.",
     "/rollback <id>         Restore a checkpoint snapshot.",
     "/resume [id|last]      Replay a saved session into model context.",
     "/workspace <path>      Switch the active workspace for tool calls.",
@@ -385,6 +386,45 @@ export async function undoLines(live: LiveSession, rawDepth = ""): Promise<strin
       `undid to ${target.id}`,
       `restored ${result.restored} file(s)`,
       `deleted ${result.deleted} file(s)`,
+    ];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
+}
+
+/**
+ * /rewind [N|id] — files AND conversation. Unlike /undo, only THIS session's
+ * checkpoints are candidates: cutting the conversation at another session's
+ * tool_use is meaningless. N counts back from the newest (default 1); an id
+ * prefix selects one directly (as listed by /checkpoints).
+ */
+export async function rewindLines(live: LiveSession, rawArg = ""): Promise<string[]> {
+  const arg = rawArg.trim();
+  const own = (await listWorkspaceCheckpoints(live.context.workspace)).filter((cp) => cp.sessionId === live.session.meta.id);
+  let target;
+  if (!arg || /^\d+$/.test(arg)) {
+    const depth = arg ? Number(arg) : 1;
+    if (!Number.isInteger(depth) || depth < 1) return ["Usage: /rewind [N|checkpoint-id]"];
+    target = own[depth - 1];
+    if (!target) return [`No checkpoint ${depth} step(s) back in this session.`];
+  } else {
+    target = own.find((cp) => cp.id.startsWith(arg));
+    if (!target) return [`No checkpoint in this session matches "${arg}". See /checkpoints.`];
+  }
+  try {
+    const result = await live.session.rewindTo(target.id);
+    live.queueSystemReminder(
+      result.conversationRewound
+        ? `User invoked /rewind. Workspace AND conversation were rewound to checkpoint ${target.id}${target.label ? ` (${target.label})` : ""}; ${result.droppedMessages} later message(s) were discarded and their edits undone. Re-read affected files before editing again.`
+        : `User invoked /rewind. Workspace restored to checkpoint ${target.id}; the conversation could not be cut (no message anchor). Re-read affected files before editing again.`,
+      "undo",
+    );
+    return [
+      `rewound to ${target.id}${target.label ? `  ${target.label}` : ""}`,
+      `restored ${result.restored} file(s), deleted ${result.deleted} file(s)`,
+      result.conversationRewound
+        ? `conversation cut: ${result.droppedMessages} message(s) dropped`
+        : "conversation left as-is (checkpoint has no message anchor)",
     ];
   } catch (err) {
     return [err instanceof Error ? err.message : String(err)];

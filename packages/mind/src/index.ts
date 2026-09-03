@@ -11,13 +11,18 @@ export {
   MemoryStore,
   consolidateReflectionSurface,
   synthesizeReflectionSurface,
+  nodesInScope,
+  isIsolatedScope,
+  OWNER_SCOPE,
   type AddInput,
   type ConsolidationReport,
   type SynthesisReport,
 } from "./memory/store.js";
+export { textSimilarity, isLowSignalUtterance, normalizeUtterance } from "./memory/similarity.js";
 export {
   MemoryRouter,
   MEMORY_CHANNEL_POLICIES,
+  turnSimilarityThreshold,
   type MemoryChannel,
   type ChannelPolicy,
   type DedupeRule,
@@ -48,7 +53,7 @@ export {
   type InsightCandidate,
   type Phraser,
 } from "./memory/synthesis.js";
-export { currentStrength, reinforce, weaken, HALF_LIFE_MS } from "./memory/strength.js";
+export { currentStrength, reinforce, weaken, livenessScore, recencyWeight, HALF_LIFE_MS } from "./memory/strength.js";
 export {
   compileContext,
   budgetForMessage,

@@ -19,7 +19,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { ApprovalVerb, StagedApproval } from "@ares/effects";
 import type { TurnEvent } from "@ares/protocol";
 import { constantTimeEqual, ensureToken, ensureReadToken } from "./token.js";
-import type { SessionManager } from "./sessions.js";
+import { normalizeSessionSurface, normalizeSessionTenant, type SessionManager } from "./sessions.js";
 import type { Scheduler } from "./scheduler.js";
 import { viewerHtml } from "./viewer.js";
 import {
@@ -95,6 +95,7 @@ export class GarrisonServer {
   private boundHost = "";
   private boundPort = 0;
   private unsubscribeApprovals: (() => void) | undefined;
+  private unsubscribeScheduler: (() => void) | undefined;
 
   constructor(opts: GarrisonServerOptions) {
     this.opts = opts;
@@ -114,6 +115,13 @@ export class GarrisonServer {
     if (this.opts.approvals) {
       this.unsubscribeApprovals = this.opts.approvals.subscribe((staged) =>
         this.broadcast({ type: "approval.pending", staged }),
+      );
+    }
+    // Scheduler outcomes (nightly gauntlet) ride the same fan-out as approvals:
+    // no session owns them, every attached client hears them.
+    if (this.opts.scheduler?.subscribe) {
+      this.unsubscribeScheduler = this.opts.scheduler.subscribe((event) =>
+        this.broadcast({ type: "garrison.event", event }),
       );
     }
 
@@ -140,6 +148,8 @@ export class GarrisonServer {
   async close(): Promise<void> {
     this.unsubscribeApprovals?.();
     this.unsubscribeApprovals = undefined;
+    this.unsubscribeScheduler?.();
+    this.unsubscribeScheduler = undefined;
     for (const client of [...this.clients]) this.dropClient(client, true);
     this.clients.clear();
     const wss = this.wss;
@@ -289,6 +299,8 @@ export class GarrisonServer {
             provider: frame.provider,
             model: frame.model,
             workspace: frame.workspace,
+            surface: normalizeSessionSurface(frame.surface),
+            tenant: normalizeSessionTenant(frame.tenant),
           });
           // The creator is auto-attached: a client that just made a session
           // always wants its events. Explicit session.attach stays for peers.
@@ -350,6 +362,7 @@ export class GarrisonServer {
         sessions.send(frame.sessionId, frame.text, {
           inputId: frame.inputId,
           delivery: frame.delivery,
+          tenant: normalizeSessionTenant(frame.tenant),
         }).catch((err) => this.enqueueError(client, errorMessage(err)));
         return;
       }

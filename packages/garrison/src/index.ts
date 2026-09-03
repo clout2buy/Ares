@@ -35,10 +35,30 @@ export {
   type SessionFactoryResult,
   type SessionSubscriber,
   type SessionSendOptions,
+  type SessionSendContext,
   type RehydratedSession,
+  type SessionSurface,
+  type SessionTenant,
+  normalizeSessionSurface,
+  normalizeSessionTenant,
 } from "./sessions.js";
 
-export { Scheduler, type SchedulerOptions, type SchedulerHooks } from "./scheduler.js";
+export {
+  Scheduler,
+  gauntletScheduleDefaults,
+  type SchedulerOptions,
+  type SchedulerHooks,
+  type SchedulerHookName,
+  type SchedulerEvent,
+} from "./scheduler.js";
+
+export {
+  recordNightlyGauntlet,
+  gauntletFindingId,
+  type GauntletRunSummary,
+  type NightlyGauntletOutcome,
+  type RecordNightlyGauntletOptions,
+} from "./gauntletNightly.js";
 
 export {
   GarrisonServer,

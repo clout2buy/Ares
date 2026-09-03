@@ -564,7 +564,7 @@ export function stripUnpairedWireToolBlocks(messages: WireMessage[]): WireMessag
   return current.map((m) => (m.role === "user" ? { role: m.role, content: toolResultsFirst(m.content) } : m));
 }
 
-function buildMessagesBody(
+export function buildMessagesBody(
   req: ProviderRequest,
   dialect: AnthropicDialect = "anthropic",
 ): Record<string, unknown> {
@@ -655,13 +655,18 @@ function buildMessagesBody(
         ? { cache_control: { type: "ephemeral" } }
         : {}),
     }));
-    // Act-first forcing: "any" structurally REQUIRES a tool call (the engine
-    // sets it on the first agentic turn of a goal + right after a fleet
-    // returns). Anthropic disallows forced tool use WITH extended thinking —
-    // thinking needs a free-form assistant turn — so thinking wins when both
-    // are requested EXCEPT on DeepSeek, whose /anthropic dialect accepts both.
-    if (req.toolChoice === "any" && (isDeepseek || !reasoningEnabled(req.reasoningLevel))) {
-      body.tool_choice = { type: "any" };
+    // Tool forcing: "any" structurally REQUIRES a tool call (the engine sets
+    // it on the first agentic turn of a goal + right after a fleet returns);
+    // {type:"tool",name} REQUIRES one named tool (plan-before-edit → TodoWrite);
+    // "none" forbids tools. Anthropic disallows FORCED tool use WITH extended
+    // thinking — thinking needs a free-form assistant turn — so thinking wins
+    // when both are requested EXCEPT on DeepSeek, whose /anthropic dialect
+    // accepts both. "none" is never a forced call, so it always passes.
+    const choice = req.toolChoice;
+    if (choice === "none") {
+      body.tool_choice = { type: "none" };
+    } else if (choice && choice !== "auto" && (isDeepseek || !reasoningEnabled(req.reasoningLevel))) {
+      body.tool_choice = choice === "any" ? { type: "any" } : { type: "tool", name: choice.name };
     }
   }
 

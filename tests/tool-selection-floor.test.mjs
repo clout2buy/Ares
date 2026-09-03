@@ -11,6 +11,10 @@
 //
 // The floor makes the coding core unconditional; intent may only ADD to it. These
 // cases are deliberately phrased to MISS the intent regex — that is the point.
+//
+// The two-tier catalog (tests/tool-tier.test.mjs) replaced the regex router with
+// a static core tier + ToolSearch-loaded deferrals; the floor guarantees below
+// must hold for it too, so the belt carries ToolSearch to enable deferral.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -21,7 +25,7 @@ const NAMES = [
   "Read", "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "Glob", "Grep",
   "CodebaseSearch", "LSP", "Bash", "PowerShell", "BashOutput", "KillShell",
   "TodoWrite", "Task", "TaskOutput", "KillTask", "Conductor", "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode",
-  "WebSearch", "WebFetch", "ImageSearch", "ComputerUse", "Browser",
+  "WebSearch", "WebFetch", "ImageSearch", "ComputerUse", "Browser", "ToolSearch",
   "McpListTools", "McpCallTool", "SkillsList", "SkillRead", "Memory", "Connect",
   "RequestUserAction", "Deploy", "Stripe", "Email", "Gmail", "GoogleCalendar",
   "Spotify", "Weather", "Remind", "Mission", "Self", "SkillHub", "Operator",

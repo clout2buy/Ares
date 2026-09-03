@@ -12,16 +12,33 @@ import {
   irrecoverableShellRefusal,
   resolveWorkspacePath,
   shellInputSchema,
+  shellPolicyDecision,
   shellRepositoryInstructionDecision,
 } from "./_shared.js";
 import { runShell } from "./Bash.js";
+import { powerShellDialect, shellFlavorOf } from "./shellHints.js";
 
 const inputSchema = shellInputSchema("PowerShell command line.");
+
+// The dialect the model most often gets on a stock Windows box is 5.1, and
+// every item below was a real, repeated failure in field telemetry (PowerShell
+// ran a 15% error rate; most were one of these). Kept compact so it fits the
+// description budget; the result also reports which dialect actually ran.
+const POWERSHELL_TRAPS =
+  " Windows PowerShell 5.1 traps (the result's `dialect` field says which version ran): " +
+  "(1) `&&`/`||` are NOT pipeline operators in 5.1 — chain with `;` or `if ($?) { ... }`. " +
+  "(2) No ternary (?:), `??`, or `?.` — use if/else and `$null -eq` checks. " +
+  "(3) `Set-Content`/`Add-Content` default to the ANSI codepage — pass `-Encoding utf8`; `>`/`Out-File` write UTF-8 WITH a BOM. " +
+  "(4) Avoid `2>&1` on native exes — 5.1 wraps stderr lines in NativeCommandError and sets `$?` false even on exit 0; stderr is captured anyway. " +
+  "(5) stdin is null: `Read-Host`, `Get-Credential`, `pause` and confirmation prompts hang or error — pass values as arguments and add `-Confirm:$false`/`-Force`. " +
+  "(6) `-ErrorAction SilentlyContinue` hides the message but the cmdlet failure still exits 1 — wrap in `try { ... -ErrorAction Stop } catch {}` when the failure is expected. " +
+  "(7) A here-string's closing `'@`/`\"@` must start at column 0 on its own line.";
 
 export const PowerShellTool = buildTool({
   name: "PowerShell",
   description:
-    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — an unquoted spaced path makes `cd`/`Set-Location` fail with 'positional parameter' errors; this matters most when launching a detached/new-window process where you must include the path yourself.",
+    "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — an unquoted spaced path makes `cd`/`Set-Location` fail with 'positional parameter' errors; this matters most when launching a detached/new-window process where you must include the path yourself." +
+    POWERSHELL_TRAPS,
   safety: "workspace-write",
   concurrency: "exclusive",
   // Self-capping (own per-command timeout + run_in_background) — uncapped here.
@@ -37,7 +54,7 @@ export const PowerShellTool = buildTool({
     // return the generic destructive heuristic could silently override an
     // "allow always" decision on every subsequent PowerShell invocation.
     if (configured) return configured;
-    return destructiveShellDecision(i.command) ?? { kind: "allow" };
+    return destructiveShellDecision(i.command) ?? shellPolicyDecision(i.command) ?? { kind: "allow" };
   },
 
   async call(i, ctx) {
@@ -86,20 +103,27 @@ export const PowerShellTool = buildTool({
     const result = await runShell(pwsh, args, cwd, i.timeout, ctx.signal, (stream, text) => {
       ctx.emitProgress?.({ kind: "shell_output", stream, text });
     }, capturePath);
-    const output: unknown = result;
+    // Tell the model WHICH PowerShell it got: pwsh 7+ accepts `&&`, ternaries
+    // and `??`; powershell.exe 5.1 rejects all of them. Without this the model
+    // has to guess the dialect from an error it may not recognise.
+    const dialect = powerShellDialect(shellFlavorOf(pwsh)) ?? "PowerShell (unknown version)";
+    const output: unknown = { ...result, dialect };
+    const hintLine = result.hint ? `\nhint: ${result.hint}` : "";
     const failure = result.timedOut
-      ? `PowerShell timed out after ${i.timeout}ms`
+      ? `PowerShell timed out after ${i.timeout}ms${hintLine}`
       : result.exitCode === 0
         ? undefined
-        : `PowerShell exited with code ${result.exitCode ?? "unknown"}`;
+        // Prefix is a contract (`^PowerShell exited with code N` is matched
+        // downstream); the dialect rides on the output object and the hint line.
+        : `PowerShell exited with code ${result.exitCode ?? "unknown"} [${dialect}]${hintLine}`;
     return {
       output,
       ...(failure ? { failure } : {}),
       display: result.timedOut
-        ? `PowerShell timed out after ${i.timeout}ms`
+        ? `PowerShell timed out after ${i.timeout}ms${hintLine}`
         : result.exitCode === 0
         ? `PowerShell exited 0 in ${result.durationMs}ms`
-        : `PowerShell failed with exit ${result.exitCode} in ${result.durationMs}ms`,
+        : `PowerShell failed with exit ${result.exitCode} in ${result.durationMs}ms${hintLine}`,
     };
   },
 });

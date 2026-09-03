@@ -400,7 +400,15 @@ interface ChatChunk {
 
 // ─── request building ──────────────────────────────────────────────────────
 
-function buildChatBody(model: string, req: ProviderRequest, flavor: OpenAIChatFlavor): Record<string, unknown> {
+/** Chat-completions tool_choice: "auto" | "required" | "none" | {type:"function",function:{name}}. */
+export function chatToolChoice(choice: ProviderRequest["toolChoice"]): unknown {
+  if (choice === "any") return "required";
+  if (choice === "none") return "none";
+  if (choice && typeof choice === "object") return { type: "function", function: { name: choice.name } };
+  return "auto";
+}
+
+export function buildChatBody(model: string, req: ProviderRequest, flavor: OpenAIChatFlavor): Record<string, unknown> {
   const messages: Record<string, unknown>[] = [];
   if (req.system) messages.push({ role: "system", content: req.system });
   messages.push(...toChatHistory(req.messages, flavor));
@@ -419,7 +427,7 @@ function buildChatBody(model: string, req: ProviderRequest, flavor: OpenAIChatFl
             // tool array on a single anyOf/oneOf union. See toolSchema.ts.
             function: { name: t.name, description: t.description, parameters: narrowToolSchema(t.input_schema) },
           })),
-          tool_choice: req.toolChoice === "any" ? "required" : "auto",
+          tool_choice: chatToolChoice(req.toolChoice),
         }
       : {}),
     ...(flavor === "deepseek" && req.reasoningLevel === "off"

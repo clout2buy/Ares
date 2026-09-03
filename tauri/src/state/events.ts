@@ -18,6 +18,12 @@ export interface AresEvent {
   name?: string;
   toolName?: string;
   status?: string;
+  /** plugins_list — plugin kernel status rows + recent maintenance runs. */
+  plugins?: unknown[];
+  recentMaintenance?: unknown[];
+  /** connector_result — post-connect tools/list probe outcome. */
+  toolCount?: number;
+  verifyError?: string;
   /** Stable input identity for send/steer admission and settlement events. */
   inputId?: string;
   /** Desktop-only recovery payload for an ordinary input that never crossed a

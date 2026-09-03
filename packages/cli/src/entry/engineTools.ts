@@ -1,8 +1,8 @@
 // Extracted from entry.ts — engineTools.
 
-import { AresSubagentRunner, SubagentRegistry, openWorkspaceSessionKernel, type EngineTool, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
+import { AresSubagentRunner, SubagentRegistry, isCoreToolName, loadInstructionReminders, openWorkspaceSessionKernel, type EngineTool, type SubagentTypeDef, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, ApplyIntentTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, FindAndEditTool, CodeModeTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, ApplyIntentTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, FindAndEditTool, CodeModeTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
 import { loadUiSettings } from "../uiSettings.js";
@@ -17,6 +17,7 @@ import { MemoryRouter, MemoryStore, withConsolidationLock } from "@ares/mind";
 import { makeBrowserTool } from "./browserBridge.js";
 import { ProviderSelection, fastModelFor } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, compactLine } from "./runtime.js";
+import { buildChildSystemPrompt } from "./prompt/child.js";
 import { buildSystemPrompt } from "./turnPipeline.js";
 
 export interface EngineToolStateResolver {
@@ -44,6 +45,71 @@ function childSpanSummarizer(selection: ProviderSelection): QueryEngineConfig["s
  * never enter/approve the parent's plan or mutate a shared host runtime. */
 export function scopeChildEngineTools(tools: readonly EngineTool[]): EngineTool[] {
   return tools.filter((tool) => !SESSION_TRANSITION_TOOL_NAMES.has(tool.schema.name));
+}
+
+/**
+ * The deferred tier of a catalog as ToolSearch descriptors: every tool the
+ * engine's core tier does not carry, described by the first sentence or two of
+ * its own schema description. Derived from the live catalog rather than a
+ * hand-kept list so a newly registered tool is discoverable the moment it is
+ * added — a registry that has to be edited in two places is a registry that
+ * silently forgets tools.
+ */
+export function deferredToolDescriptors(tools: readonly EngineTool[]): DeferredToolDescriptor[] {
+  return tools
+    .filter((tool) => !isCoreToolName(tool.schema.name))
+    .map((tool) => ({ name: tool.schema.name, description: leadSentences(tool.schema.description, 220) }));
+}
+
+function leadSentences(text: string, maxChars: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+  const cut = flat.slice(0, maxChars);
+  const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("; "));
+  return (stop > maxChars / 2 ? cut.slice(0, stop + 1) : cut).trim() + (stop > maxChars / 2 ? "" : "…");
+}
+
+/**
+ * Names for the system prompt's catalog-gated doctrine. The prompt is composed
+ * once per session and heads the cache prefix, so it carries doctrine for the
+ * CORE tier only; a deferred tool's guidance rides in its own schema
+ * description when ToolSearch loads it. Belts without ToolSearch are sent whole
+ * by the engine, so their doctrine covers the whole belt too.
+ */
+export function promptCatalogNames(tools: readonly EngineTool[]): string[] {
+  const names = tools.map((tool) => tool.schema.name);
+  if (!names.includes("ToolSearch")) return names;
+  return names.filter((name) => isCoreToolName(name));
+}
+
+/**
+ * Child prompt composition — the TRIMMED prompt (prompt/child.ts), not the
+ * owner's full composition. `base` is what today's core hook (baseSystemPrompt,
+ * type-blind) receives: the child-scoped catalog decides which doctrine rides.
+ * `forType` is the per-type variant core's `systemPromptForChild` hook calls
+ * (it receives the SubagentTypeDef; only the name is needed here).
+ * Project instructions (ARES.md/AGENTS.md/CLAUDE.md) are loaded once per
+ * catalog and reused: the files are the owner's standing rules, cheap to
+ * cache, and a child must not skip them just because it is a child.
+ */
+function childPromptComposer(runtime: AresRuntimeState, context: CliRuntimeContext, childTools: readonly EngineTool[]) {
+  const tools = childTools.map((tool) => tool.schema.name);
+  let instructions: Promise<string> | undefined;
+  const projectInstructions = () =>
+    (instructions ??= loadInstructionReminders(context.workspace)
+      .then((reminders) => reminders.map((r) => r.text).join("\n\n"))
+      .catch(() => ""));
+  const compose = async (type: string) =>
+    buildChildSystemPrompt(type, {
+      permissionMode: runtime.permissionMode,
+      workspace: context.workspace,
+      tools,
+      projectInstructions: await projectInstructions(),
+    });
+  return {
+    base: () => compose("general-purpose"),
+    forType: (def: SubagentTypeDef) => compose(def.name),
+  };
 }
 
 export async function buildEngineTools(
@@ -95,6 +161,20 @@ export async function buildEngineTools(
     registry.registerSession(sessionId);
     return registry;
   };
+  // One ToolSearch registry per session: a child's loads must not leak into
+  // the parent's catalog (different transcript, different cache prefix). The
+  // deferred catalog is filled at the end of this function, once the full belt
+  // exists — ToolSearch is itself one of the tools being assembled.
+  const deferredCatalog: DeferredToolDescriptor[] = [];
+  const deferredRegistries = new Map<string, DeferredToolRegistry>();
+  const deferredRegistryFor = (sessionId: string): DeferredToolRegistry => {
+    let registry = deferredRegistries.get(sessionId);
+    if (!registry) {
+      registry = new DeferredToolRegistry(deferredCatalog);
+      deferredRegistries.set(sessionId, registry);
+    }
+    return registry;
+  };
   const enrich = (base: ToolCallContext): RichToolContext => ({
     ...base,
     permissionMode: planModeStateFor(base.sessionId).permissionMode,
@@ -106,6 +186,7 @@ export async function buildEngineTools(
     shellRegistry: durableShellRegistryFor(base.sessionId),
     todoStore: stateResolver?.todoStoreFor(base.sessionId) ?? fallbackTodoStoreFor(base.sessionId),
     subModel: selection.subModel,
+    deferredTools: deferredRegistryFor(base.sessionId),
   });
 
   // One generic adaptive-provider surface for every environment. The registry
@@ -247,6 +328,7 @@ export async function buildEngineTools(
     makeEnterPlanModeTool((call) => planModeStateFor(call.sessionId)),
     makeUpdatePlanDraftTool((call) => planModeStateFor(call.sessionId)),
     makeExitPlanModeTool((call) => planModeStateFor(call.sessionId)),
+    makeToolSearchTool({ registryFor: deferredRegistryFor }),
     BootstrapTool,
     SelfEvolveTool,
     SkillCraftTool,
@@ -287,7 +369,8 @@ export async function buildEngineTools(
   const subagentRegistry = new SubagentRegistry();
   registerPersonaSubagents(subagentRegistry, await listPersonas(context.home).catch(() => []));
 
-  const runner = new AresSubagentRunner({
+  const childPrompt = childPromptComposer(runtime, context, childBaseTools);
+  const runnerOptions = {
     registry: subagentRegistry,
     provider: selection.provider,
     model: selection.model,
@@ -295,8 +378,8 @@ export async function buildEngineTools(
     // gateway-fast) — wide search shouldn't burn frontier tokens.
     fastModel: fastModelFor(selection),
     parentTools: childBaseTools,
-    baseSystemPrompt: () =>
-      runtime.composeChildSystemPrompt?.() ?? buildSystemPrompt(runtime.permissionMode, context),
+    baseSystemPrompt: childPrompt.base,
+    systemPromptForChild: childPrompt.forType,
     sessionKernel,
     summarizeSpan: childSpanSummarizer(selection),
     contextBudgetTokens: Number(process.env.ARES_SUBAGENT_CONTEXT_BUDGET) || 128_000,
@@ -304,7 +387,9 @@ export async function buildEngineTools(
       const value = Number(process.env.ARES_SUBAGENT_TURN_LIMIT);
       return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
     },
-  });
+  };
+  const runner = new AresSubagentRunner(runnerOptions);
+  runtime.subagentRunner = runner;
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const taskOutputTool = adaptToolForEngine(makeTaskOutputTool(runner), enrich) as EngineTool;
   const killTaskTool = adaptToolForEngine(makeKillTaskTool(runner), enrich) as EngineTool;
@@ -318,8 +403,7 @@ export async function buildEngineTools(
       provider: selection.provider,
       model: selection.model,
       parentTools: childBaseTools,
-      baseSystemPrompt: () =>
-        runtime.composeChildSystemPrompt?.() ?? buildSystemPrompt(runtime.permissionMode, context),
+      baseSystemPrompt: childPrompt.base,
       subModel: selection.subModel,
       // Was 20 — leaves doing several reads + producing structured output ran out
       // of turns mid-read and died, which read as "the fleet always fails." 40
@@ -395,7 +479,12 @@ export async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  return [...workerTools, livingMindTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  const all = [...workerTools, livingMindTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  // Registries created before this point (none in practice — no tool call can
+  // precede the return) share the array by reference, so filling it in place
+  // is what makes them see the catalog.
+  deferredCatalog.push(...deferredToolDescriptors(all));
+  return all;
 }
 
 /**
@@ -485,14 +574,15 @@ export async function buildCodingTools(
   const codingRegistry = new SubagentRegistry();
   registerPersonaSubagents(codingRegistry, await listPersonas(context.home).catch(() => []));
 
-  const runner = new AresSubagentRunner({
+  const childPrompt = childPromptComposer(runtime, context, childBaseTools);
+  const runnerOptions = {
     registry: codingRegistry,
     provider: selection.provider,
     model: selection.model,
     fastModel: fastModelFor(selection),
     parentTools: childBaseTools,
-    baseSystemPrompt: () =>
-      runtime.composeChildSystemPrompt?.() ?? buildSystemPrompt(runtime.permissionMode, context),
+    baseSystemPrompt: childPrompt.base,
+    systemPromptForChild: childPrompt.forType,
     sessionKernel,
     summarizeSpan: childSpanSummarizer(selection),
     contextBudgetTokens: Number(process.env.ARES_SUBAGENT_CONTEXT_BUDGET) || 128_000,
@@ -500,7 +590,9 @@ export async function buildCodingTools(
       const value = Number(process.env.ARES_SUBAGENT_TURN_LIMIT);
       return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
     },
-  });
+  };
+  const runner = new AresSubagentRunner(runnerOptions);
+  runtime.subagentRunner = runner;
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const taskOutputTool = adaptToolForEngine(makeTaskOutputTool(runner), enrich) as EngineTool;
   const killTaskTool = adaptToolForEngine(makeKillTaskTool(runner), enrich) as EngineTool;
@@ -510,8 +602,7 @@ export async function buildCodingTools(
       provider: selection.provider,
       model: selection.model,
       parentTools: childBaseTools,
-      baseSystemPrompt: () =>
-        runtime.composeChildSystemPrompt?.() ?? buildSystemPrompt(runtime.permissionMode, context),
+      baseSystemPrompt: childPrompt.base,
       subModel: selection.subModel,
       defaultMaxTurns: 40,
       sessionKernel,

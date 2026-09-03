@@ -18,6 +18,27 @@ export function currentStrength(node: MemoryNode, now: Date): number {
   return node.strength * decay;
 }
 
+/** Weight of the recency term in {@link livenessScore}. ARES_MEMORY_RECENCY_WEIGHT. */
+export function recencyWeight(): number {
+  const raw = Number(process.env.ARES_MEMORY_RECENCY_WEIGHT);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 0.5;
+}
+
+/**
+ * Ranking score for "what you know" style surfaces: decayed strength PLUS a
+ * recency bonus for the last activation. Raw `strength` never decays, so a
+ * node reinforced fifty times in March out-ranked everything learned since
+ * and stuck to the prompt forever; currentStrength() alone still lets a huge
+ * stored magnitude outlive weeks of silence. The additive recency term
+ * (0..weight, halving with HALF_LIFE_MS) is what lets a fresh node win.
+ */
+export function livenessScore(node: MemoryNode, now: Date, weight = recencyWeight()): number {
+  const ref = Date.parse(node.lastActivatedAt || node.at);
+  const elapsed = Math.max(0, now.getTime() - (Number.isNaN(ref) ? now.getTime() : ref));
+  const recency = Math.pow(0.5, elapsed / HALF_LIFE_MS);
+  return currentStrength(node, now) + weight * recency;
+}
+
 /** Using a memory strengthens it and resets its forgetting clock. */
 export function reinforce(node: MemoryNode, now: Date, amount = 0.5): MemoryNode {
   return {

@@ -87,3 +87,40 @@ itself a useful negative control).
   // or { "type": "fileEquals",   "path": "x", "value": "…" }
 }
 ```
+
+## Assistant-quality evals (`tests/eval/assistant/`)
+
+The coding evals above measure the harness. `runAssistantEval()` measures the
+**assistant**: it drives the real `MemoryStore`, the real `MemoryRouter` write
+spine, and the real spreading-activation `remember()` — no LLM, no embedder,
+no network — so a change to recall, strength decay, dedupe, or consolidation
+that quietly degrades what Ares remembers fails `pnpm test`.
+
+- **recall** (`recallPrecision.mjs`) — 60 seeded memories (20 relevant to 5
+  queries, 10 near-duplicate paraphrases, 30 distractors — a third sharing one
+  query token). Scores P@5 and R@10; the bar is P@5 ≥ 0.6, R@10 ≥ 0.7.
+- **persistence** (`longHorizon.mjs`) — a fact written on turn 1, fifty filler
+  turns through the same spine (a third gated as low-salience chatter), a
+  contradiction on turn 30, consolidation under the real lock. Asserts the
+  fact is still top-3 for a paraphrased cue and the contradiction resolves to
+  the newer value.
+
+```bash
+node tests/eval/assistant/runner.mjs          # both suites, human-readable
+node tests/eval/assistant/runner.mjs --json
+```
+
+Numbers are appended to `<ARES_HOME>/telemetry/eval-trend.jsonl` as
+`{ at, assistant: { recall, persistence } }`. Under `pnpm test` that is the
+isolated home from `tests/_isolate-home.mjs`, never the owner's `~/.ares`.
+Wired in via `tests/assistant-eval.test.mjs`.
+
+## coding-v5 mock solutions (`gauntletV5Solutions.mjs`)
+
+The repo-scale gauntlet suite (`CODING_GAUNTLET_V5` in
+`packages/operator/src/gauntletV5.ts`, selected with `ares eval coding --suite
+coding-v5`, never the default) ships scripted solutions here so
+`tests/gauntlet-v5.test.mjs` can prove the plumbing — multi-file fixtures, CRLF
+files, real `node --test`, and the `diffScope` / `planBeforeEdit` trace probes —
+with no model. Same disclaimer as above: a 100% mock score validates the
+harness, not the agent.

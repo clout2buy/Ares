@@ -126,3 +126,28 @@ pnpm clean
 ```
 
 For user-facing CLI behavior, also run the relevant `pnpm ares ...` command (on Windows, `.\ares.bat ...` works too) or an equivalent smoke test. For desktop UI changes, take screenshots before and after the change.
+
+## Env knobs (tuning surface, 2026-09 batch)
+
+Every threshold added by the September 2026 coding + assistant batch is an `ARES_*`
+variable, documented at its definition site. Quick index (default in parentheses):
+
+| Knob | Effect |
+|---|---|
+| `ARES_EDIT_AUTO_READ=0` | Restore the old "Read before editing" deny; default auto-reads and edits when the match is unique. |
+| `ARES_SHELL_POLICY=allowlist` | Every non-read-only shell command asks; default keeps the destructive-only prompt. |
+| `ARES_STRICT_VERIFY=0` | Legacy `completed` turn status even with unverified changes (default emits `needs_verification`). |
+| `ARES_VERIFY_SUBAGENT=0`, `ARES_VERIFY_SUBAGENT_MIN_FILES` (3) | Adversarial verifier subagent auto-spawn for turns touching N+ files. |
+| `ARES_SUBAGENT_MAX_DEPTH` (1) | Subagent nesting cap; at the cap children lose Task/Conductor/CodingBackend. |
+| `ARES_PLAN_BEFORE_EDIT=0` | Disable forcing TodoWrite as the first call of a substantial coding turn. |
+| `ARES_PINNED_FAILOVER=0`, `ARES_ROUTING_BACKUP` (comma list) | Failover chain for a pinned model (also `routingBackup` in ui.json). |
+| `ARES_COMPACT_CLIP_CHARS` (1500) | Compaction clip for tool bodies; edit diffs and paths are never clipped. |
+| `ARES_TURN_MEMORY_SIM` (0.85), `ARES_MEMORY_RECENCY_WEIGHT` (0.5) | Near-duplicate collapse for captured turns; liveness ranking of live-mind nodes. |
+| `ARES_CONSOLIDATE_EVERY_MIN` (90, 0 off), `ARES_CONSOLIDATE_MIN_NEW` (12) | Periodic memory consolidation in a long-lived daemon. |
+| `ARES_GAUNTLET_SCHEDULE=0`, `ARES_GAUNTLET_HOUR` (3), `ARES_GAUNTLET_WINDOW_HOURS` (3), `ARES_GAUNTLET_SUITE` (coding-v3) | Nightly gauntlet in the Garrison idle window. |
+| `ARES_BRIEF_SOURCE_TIMEOUT_MS` (8000), `ARES_BRIEFING_HOUR`, `ARES_OWNER_LOCATION` | Day brief sources (weather, calendar, reminders, email, missions). |
+| `ARES_HEAP_PROFILE=0`, `ARES_HEAP_PROFILE_INTERVAL_BYTES` (262144) | Sampling heap profiler feeding `heapAllocTop` into heap-critical crash artifacts. |
+| `ARES_SYMBOL_INDEX_MAX_FILES` (20000), `ARES_CODESEARCH_EMBED=0`, `ARES_CODESEARCH_EMBED_BUDGET_MS` (1500), `ARES_EMBED_MODEL` (nomic-embed-text) | Symbol index and optional hybrid embedding ranking for CodebaseSearch. |
+| `ARES_CROSS_SURFACE=0`, `ARES_CROSS_SURFACE_HOURS` (24), `ARES_CROSS_SURFACE_CHARS` (1200) | "Elsewhere today" digest of the owner's other sessions. |
+| `ARES_CHECKPOINT_GIT=0`, `ARES_CHECKPOINT_MAX_AGE_DAYS` (14, 0 off), `ARES_CHECKPOINT_GC_DELAY_MS` (5000) | Git-tree checkpoint layer inside repos (blobs elsewhere); age-based retention that finally lets blob GC reclaim; deferred first sweep. `/rewind` restores files AND truncates the conversation to the checkpoint. |
+| `ARES_TOOL_TIER=legacy`, `ARES_DYNAMIC_TOOLS=0` | Restore the keyword tool router / send every tool schema. |

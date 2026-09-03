@@ -42,7 +42,15 @@ export type VerificationSpec =
   | { kind: "always"; met: boolean; summary?: string }
   | { kind: "file"; path: string; contains?: string }
   | { kind: "command"; cmd: string; args?: string[]; cwd?: string; expectExit?: number; contains?: string; timeoutMs?: number }
-  | { kind: "http"; url: string; expectStatus?: number; contains?: string; timeoutMs?: number };
+  | { kind: "http"; url: string; expectStatus?: number; contains?: string; timeoutMs?: number }
+  /** The set of files the candidate changed must be a SUBSET of `allowed`
+   *  (workspace-relative, forward slashes; a trailing `/` or `/**` allows a
+   *  directory). Judged from the run's change trace, never from disk alone —
+   *  a probe with no trace in context is not met. */
+  | { kind: "diffScope"; allowed: string[] }
+  /** A plan/todo tool call must precede the first editing tool call, and at
+   *  least one plan call must exist. Judged from the run's tool-call trace. */
+  | { kind: "planBeforeEdit" };
 
 export interface Goal {
   id: string;

@@ -1,9 +1,12 @@
 // Edit — string replacement in a file, resilient to line-ending drift.
 //
-// Rules (matching Claude Code's Edit semantics):
-//   - File must have been Read in this session.
+// Rules (matching Claude Code's Edit semantics, minus the read-first refusal):
+//   - If the file was not Read this session, Edit auto-reads and stamps it
+//     (ARES_EDIT_AUTO_READ=0 restores the hard "Read it first" deny). The
+//     content-hash staleness check + unique-match rule already carry the
+//     safety the refusal was meant to provide; the refusal only cost a turn.
 //   - old_string must appear exactly once unless replace_all is true.
-//   - File mtime must match the last Read stamp (no race with disk edits).
+//   - File content hash must match the last Read stamp (no race with disk edits).
 //
 // Matching is layered because models reliably reproduce file text with LF line
 // endings even when the file on disk is CRLF (the classic Windows edit-killer),
@@ -26,7 +29,18 @@ import {
   WorkspaceMutationService,
   workspaceContentHash,
 } from "@ares/core";
-import { buildTool, contentHash, mutationInstructionBlock, mutationWorkspaceForPaths, pathInputProblem, resolveWorkspacePath, toolError, zPath } from "./_shared.js";
+import {
+  autoReadForMutation,
+  buildTool,
+  contentHash,
+  editAutoReadEnabled,
+  mutationInstructionBlock,
+  mutationWorkspaceForPaths,
+  pathInputProblem,
+  resolveWorkspacePath,
+  toolError,
+  zPath,
+} from "./_shared.js";
 import type { FileReadStamp } from "./_shared.js";
 import { appendMutationFeedback, collectMutationFeedback } from "./postMutationFeedback.js";
 
@@ -132,11 +146,35 @@ async function resolveHunks(
   return resolved;
 }
 
+/** Matching tiers from strictest to loosest. `layer` on the output is the
+ *  WEAKEST tier a batch needed — that is the number the friction meter wants
+ *  (how often did we have to fall back?), not the strongest. */
+const LAYER_ORDER = ["exact", "whitespace", "anchor", "normalized"] as const;
+export type EditLayer = (typeof LAYER_ORDER)[number];
+
+export function weakestLayer(layers: Iterable<string>): EditLayer {
+  let weakest = 0;
+  for (const l of layers) {
+    const idx = LAYER_ORDER.indexOf(l as EditLayer);
+    if (idx > weakest) weakest = idx;
+  }
+  return LAYER_ORDER[weakest];
+}
+
 export interface EditOutput {
   path: string;
   replacements: number;
-  /** Which matching layer landed the edit: "exact" | "whitespace" | "anchor". */
+  /** Matching tier that landed the edit: "exact" | "whitespace" | "anchor" |
+   *  "normalized". For a batch this is the WEAKEST tier any hunk needed — the
+   *  edit-tier friction meter (core/frictionLog) reads this field. */
+  layer: EditLayer;
+  /** Every tier used across the batch, in first-use order. */
+  layers: EditLayer[];
+  /** Legacy comma-joined form of `layers`; kept for older consumers. */
   matchedBy: string;
+  /** True when Edit read the file itself because it had not been Read this
+   *  session (see ARES_EDIT_AUTO_READ). */
+  autoRead?: boolean;
   /** cat -n style excerpt of each edited region WITH a few lines of surrounding
    *  context, so the model can verify the change landed without a follow-up Read
    *  (which would only re-read the file it just wrote). */
@@ -148,7 +186,7 @@ export interface EditOutput {
 export const EditTool = buildTool({
   name: "Edit",
   description:
-    "Replace exact text in a file (requires prior Read; tolerates CRLF/LF + trailing-whitespace drift). Single edit: old_string/new_string. Multi-site: pass `edits` — an ATOMIC, all-or-nothing batch applied in order (use this instead of many separate Edit calls on one file). Fails if an old_string is non-unique (set replace_all). Pick the SMALLEST old_string that is still unique — usually 2-4 adjacent lines with a distinctive token; over-long anchors are brittle to whitespace/edits, and single-line anchors are often non-unique. To insert LARGE content (inline a library, splice in a generated asset, merge another file's body) pass `new_string_from_file` instead of new_string: the bytes are read from disk and never pass through your output, so they cannot be truncated — this is the correct alternative to shell string-surgery.",
+    "Replace exact text in a file (auto-reads the file if you have not Read it this session; tolerates CRLF/LF + trailing-whitespace drift). Single edit: old_string/new_string. Multi-site: pass `edits` — an ATOMIC, all-or-nothing batch applied in order (use this instead of many separate Edit calls on one file). Fails if an old_string is non-unique (set replace_all). Pick the SMALLEST old_string that is still unique — usually 2-4 adjacent lines with a distinctive token; over-long anchors are brittle to whitespace/edits, and single-line anchors are often non-unique. To insert LARGE content (inline a library, splice in a generated asset, merge another file's body) pass `new_string_from_file` instead of new_string: the bytes are read from disk and never pass through your output, so they cannot be truncated — this is the correct alternative to shell string-surgery.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
@@ -214,7 +252,9 @@ export const EditTool = buildTool({
     if (i.old_string !== undefined && i.old_string === i.new_string) {
       return { kind: "deny", reason: "old_string and new_string are identical" };
     }
-    if (!ctx.fileReadStamps.has(filePath)) {
+    // Read-first is now enforced by auto-reading in call() (the hash check +
+    // unique match keep the guarantee). The deny survives only behind the knob.
+    if (!ctx.fileReadStamps.has(filePath) && !editAutoReadEnabled()) {
       return { kind: "deny", reason: `Read ${filePath} before editing it.` };
     }
     const instructionBlock = await mutationInstructionBlock(ctx, [filePath]);
@@ -224,10 +264,19 @@ export const EditTool = buildTool({
 
   async call(i, ctx): Promise<{ output: EditOutput; touchedFiles: string[]; display: string }> {
     const filePath = await resolveWorkspacePath(ctx, i.file_path, "file_path", "write");
-    const stamp = ctx.fileReadStamps.get(filePath);
-    if (!stamp) throw new Error(`${filePath}: missing read stamp`);
-
-    const content = await fs.readFile(filePath, "utf8");
+    let stamp = ctx.fileReadStamps.get(filePath);
+    let autoRead = false;
+    let content: string;
+    if (!stamp) {
+      if (!editAutoReadEnabled()) throw toolError(`Read ${filePath} before editing it.`);
+      // Auto-read: stamp exactly as Read would, so the staleness bookkeeping
+      // below (and any later Edit/Write) sees a normal read. A missing file
+      // still refuses here — that is the one case the old deny got right.
+      ({ content, stamp } = await autoReadForMutation(ctx, filePath, "editing"));
+      autoRead = true;
+    } else {
+      content = await fs.readFile(filePath, "utf8");
+    }
     // Staleness check (C2): the content hash is exact and immune to mtime
     // granularity races. Fall back to mtime only for stamps written before the
     // hash existed (resumed sessions / older rollouts).
@@ -258,7 +307,11 @@ export const EditTool = buildTool({
       const result = replaceResilient(working, h.old_string, h.new_string, h.replace_all);
       if (!result.ok) {
         const where = hunks.length > 1 ? ` (edit ${idx + 1} of ${hunks.length})` : "";
-        const batchNote = hunks.length > 1 ? " No edits were applied — the batch is all-or-nothing." : "";
+        const batchNote =
+          (hunks.length > 1 ? " No edits were applied — the batch is all-or-nothing." : "") +
+          // The model never saw this file: say so, and point it at the region
+          // so the follow-up is a targeted Read rather than a blind retry.
+          (autoRead ? ` (Edit auto-read ${filePath} — you had not Read it this session; Read the region around your target before retrying.)` : "");
         if (result.reason === "not-found") {
           // Make the dead end ACTIONABLE: name the indentation-only miss when
           // that's what happened, show the closest near-miss so the model can
@@ -325,17 +378,29 @@ export const EditTool = buildTool({
     };
     ctx.fileReadStamps.set(filePath, writtenStamp);
 
-    const matchedBy = [...matchedBys].join(",");
+    const layers = [...matchedBys] as EditLayer[];
+    const layer = weakestLayer(layers);
+    const matchedBy = layers.join(",");
     const note = matchedBy === "exact" ? "" : ` [matched via ${matchedBy}]`;
     const across = hunks.length > 1 ? ` across ${hunks.length} edits` : "";
+    const autoReadNote = autoRead ? `\n(auto-read ${filePath} before editing)` : "";
     // Return the edited region(s) with surrounding context so the model can
     // verify the change from the tool result alone (like Claude Code's Edit),
     // instead of issuing a follow-up Read that would only re-read what it wrote.
     const diff = editedExcerpt(content, working);
     return {
-      output: { path: filePath, replacements: totalReplacements, matchedBy, diff, feedback },
+      output: {
+        path: filePath,
+        replacements: totalReplacements,
+        layer,
+        layers,
+        matchedBy,
+        ...(autoRead ? { autoRead: true } : {}),
+        diff,
+        feedback,
+      },
       touchedFiles: [filePath],
-      display: appendMutationFeedback(`Edited ${filePath} (${totalReplacements} replacement${totalReplacements === 1 ? "" : "s"}${across})${note}${diff ? `\n${diff}` : ""}`, feedback),
+      display: appendMutationFeedback(`Edited ${filePath} (${totalReplacements} replacement${totalReplacements === 1 ? "" : "s"}${across})${note}${autoReadNote}${diff ? `\n${diff}` : ""}`, feedback),
     };
   },
 });

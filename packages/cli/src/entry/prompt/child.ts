@@ -30,7 +30,7 @@ export interface ChildPromptContext {
   now?: Date;
 }
 
-const EDIT_TOOLS = new Set(["Edit", "Write", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode"]);
+const EDIT_TOOLS = new Set(["Edit", "Write", "ApplyPatch"]);
 const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 
 /** Cap on inlined project instructions. ARES_CHILD_INSTRUCTIONS_CHARS (default 6000). */

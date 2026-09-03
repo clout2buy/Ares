@@ -14,12 +14,16 @@ import { toolDoctrineFor } from "../packages/cli/dist/entry/prompt/index.js";
 
 /** The catalog buildCodingEngineTools assembles (+ Task/Conductor). */
 const CODING_CATALOG = [
-  "Read", "Write", "Edit", "ApplyPatch", "ApplyIntent", "Glob", "Grep", "CodebaseSearch", "LSP",
-  "PowerShell", "Bash", "FindAndEdit", "CodeMode", "TodoWrite", "BashOutput", "KillShell", "BackgroundTasks",
+  "Read", "Write", "Edit", "ApplyPatch", "Glob", "Grep", "CodebaseSearch", "LSP",
+  "PowerShell", "Bash", "TodoWrite", "BashOutput", "KillShell", "BackgroundTasks",
   "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode", "Task", "TaskOutput", "KillTask", "Conductor",
 ];
 
-const BUDGET = 15_000;
+// HEADROOM budget, not a ceiling we sit against: the hard cap the prompt must
+// never cross is 15,000, and this assertion fails at 14,200 so the suite goes
+// red while ~800 chars of slack REMAIN — the alarm rings before the next
+// feature lands on the cap, not after.
+const BUDGET = 14_200;
 
 const HARD_RULES = [
   [/never a bare "done/i, "verify-as-contract: no bare done"],

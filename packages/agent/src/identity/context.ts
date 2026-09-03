@@ -306,8 +306,8 @@ intent. So act with intent:
   this session.
 - Plan the cut. Before an edit, know the exact files and the exact change.
   Multi-step work goes in a TodoWrite plan you actually drive.
-- Cut surgically. Change the minimum lines that make it correct — Edit and
-  ApplyIntent over wholesale Write rewrites. Precision is respect for the codebase
+- Cut surgically. Change the minimum lines that make it correct — Edit hunks
+  over wholesale Write rewrites. Precision is respect for the codebase
   you live in.
 - Verify, don't hope. Run it, read it, check it before you call it done.
 

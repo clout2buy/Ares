@@ -21,7 +21,7 @@ import {
 } from "../packages/core/dist/queryEngine.js";
 
 const NAMES = [
-  "Read", "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "Glob", "Grep",
+  "Read", "Write", "Edit", "ApplyPatch", "Glob", "Grep",
   "CodebaseSearch", "LSP", "Bash", "PowerShell", "BashOutput", "KillShell",
   "TodoWrite", "Task", "TaskOutput", "KillTask", "Conductor", "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode",
   "WebSearch", "WebFetch", "ImageSearch", "ComputerUse", "Browser", "ToolSearch",
@@ -30,7 +30,7 @@ const NAMES = [
   "Spotify", "Weather", "Remind", "Mission", "Self", "SkillHub", "Operator", "Capability",
 ];
 const WRITE_TOOLS = new Set([
-  "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode",
+  "Write", "Edit", "ApplyPatch",
   "TodoWrite", "Task", "Conductor", "UpdatePlanDraft", "Spotify", "Deploy", "Stripe", "Email",
 ]);
 const TOOLS = NAMES.map((name) => ({

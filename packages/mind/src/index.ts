@@ -14,9 +14,14 @@ export {
   nodesInScope,
   isIsolatedScope,
   OWNER_SCOPE,
+  overviewLimit,
   type AddInput,
   type ConsolidationReport,
   type SynthesisReport,
+  type MemoryOverviewRow,
+  type MemoryOverviewGroups,
+  type OverviewOptions,
+  type MemoryEditResult,
 } from "./memory/store.js";
 export { textSimilarity, isLowSignalUtterance, normalizeUtterance } from "./memory/similarity.js";
 export {

@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { ReadTool, GlobTool, GrepTool, EditTool, WriteTool, ApplyIntentTool, MemoryTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp } from "@ares/tools";
+import { ReadTool, GlobTool, GrepTool, EditTool, WriteTool, MemoryTool, TodoStore, ShellRegistry, type RichToolContext, type FileReadStamp } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { completeBootstrap, createMemoryStore, recordCardMemoryOnce, ensureAgentScaffold, exportHome, importHome, listSnapshots, loadAgentConfig, restoreSnapshot, runDeepDream, runRemDream, snapshotBrain } from "@ares/agent";
 import { distillMissionCard, learningCardId, learningCardMemoryText, listLearningCards, loadLearningCard, saveLearningCard, type LearningCard, loadGoal, loadMissionContract, runEvalSuite, runGauntlet, GAUNTLET_SUITES, parseScoreboard, parseScoreboardRow, detectRegression, renderTrend, readGauntletTrend, renderGauntletTrend, formatCompact, type EvalReport, type EvalTask, type ScoreboardRow } from "@ares/operator";
@@ -409,19 +409,6 @@ function builtInEvalTasks(): EvalTask[] {
         await EditTool.call({ file_path: "src/edit.txt", old_string: "old", new_string: "new", replace_all: false }, ctx);
         assertEval((await readFile(path.join(workspace, "src", "edit.txt"), "utf8")) === "new\n", "edit failed");
         return { evidence: ["Edit updated a previously read file."] };
-      },
-    },
-    {
-      id: "tool-apply-intent-full-file",
-      name: "ApplyIntent materializes full-file sketches",
-      category: "tools",
-      async run({ workspace }) {
-        const ctx = evalToolCtx(workspace);
-        await writeEvalFile(workspace, "src/apply.ts", "export const value = 1;\n");
-        await ReadTool.call({ file_path: "src/apply.ts" }, ctx);
-        await ApplyIntentTool.call({ file_path: "src/apply.ts", instructions: "change value", sketch: "export const value = 2;\n" }, ctx);
-        assertEval((await readFile(path.join(workspace, "src", "apply.ts"), "utf8")).includes("2"), "apply failed");
-        return { evidence: ["ApplyIntent materialized a full-file sketch."] };
       },
     },
     {

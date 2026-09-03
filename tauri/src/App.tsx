@@ -549,6 +549,7 @@ function App() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [pluginsVm, setPluginsVm] = useState<PluginsVm | null>(null);
+  const [mindVm, setMindVm] = useState<MindOverviewVm | null>(null);
   const [roster, setRoster] = useState<PersonaVm[]>(() => (native ? [] : demoRoster()));
   const [cognitive, setCognitive] = useState<CognitiveStateVm | null>(() => (native ? null : demoCognitive()));
   const [activePersona, setActivePersona] = useState<PersonaVm | null>(null);
@@ -1614,6 +1615,15 @@ function App() {
           return true;
         case "cognitive_state":
           setCognitive((e.cognitive as CognitiveStateVm | undefined) ?? null);
+          return true;
+        case "mind_overview_result":
+          setMindVm((e.groups as MindOverviewVm | undefined) ?? null);
+          return true;
+        case "mind_edit_result":
+        case "mind_forget_result":
+          // A correction/deletion landed — re-pull so the pane shows the truth
+          // on disk, not an optimistic local patch.
+          daemonCmd({ type: "mind_overview" });
           return true;
         case "roster_list":
           setRoster(Array.isArray(e.personas) ? (e.personas as PersonaVm[]) : []);
@@ -4124,6 +4134,7 @@ function App() {
           native={native}
           skills={skills}
           plugins={pluginsVm}
+          mind={mindVm}
           usage={usageStats}
           keyStatus={keyStatus}
           gatewayAccount={gatewayAccount}
@@ -9160,7 +9171,7 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
   );
 }
 
-type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
+type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "mind" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
 
 interface SkillSurface {
   id: string;
@@ -9240,6 +9251,23 @@ interface PluginsVm {
   plugins: PluginStatusVm[];
   recentMaintenance: MaintenanceRunVm[];
 }
+/** One memory row from a mind_overview_result frame — the owner's "what I know" surface. */
+interface MindRowVm {
+  id: string;
+  kind: "semantic" | "procedural" | "episodic";
+  content: string;
+  strength: number;
+  currentStrength: number;
+  activations: number;
+  ageDays: number;
+  tags?: string[];
+  confidence?: number;
+}
+interface MindOverviewVm {
+  semantic: MindRowVm[];
+  procedural: MindRowVm[];
+  episodic: MindRowVm[];
+}
 interface UsageStats {
   sessions: number;
   apiCalls: number;
@@ -9262,6 +9290,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "voice", label: "Voice", glyph: "dot" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
   { id: "plugins", label: "Engine Room", glyph: "shell" },
+  { id: "mind", label: "Mind", glyph: "dot" },
   { id: "usage", label: "Usage", glyph: "web" },
   { id: "keys", label: "API Keys", glyph: "shell" },
   { id: "consciousness", label: "Consciousness", glyph: "dot" },
@@ -9414,6 +9443,126 @@ function GatewayAccountPane({
   );
 }
 
+/** The owner's memory surface — what Ares believes, correctable in place.
+ *  Rows arrive via mind_overview_result (owner scope only; the daemon never
+ *  widens to guest pools). Edit → mind_edit, delete → mind_forget (one-step
+ *  confirm); both replies trigger a fresh mind_overview pull upstream, so this
+ *  pane never shows an optimistic guess. Strength bars are STATIC fills —
+ *  photosensitive doctrine: nothing flashes, nothing animates. */
+function MindPane({
+  mind,
+  onDaemonCommand,
+}: {
+  mind: MindOverviewVm | null;
+  onDaemonCommand: (cmd: Record<string, unknown>) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const rows = mind ? [...mind.semantic, ...mind.procedural, ...mind.episodic] : [];
+  // Scale bars against the strongest memory on screen so relative vividness
+  // reads at a glance; a lone weak row still shows a sliver, never an empty bar.
+  const maxStrength = Math.max(0.001, ...rows.map((r) => r.currentStrength));
+  const sections: Array<{ label: string; hint: string; rows: MindRowVm[] }> = mind
+    ? [
+        { label: "What I believe", hint: "semantic", rows: mind.semantic },
+        { label: "What I can do", hint: "procedural", rows: mind.procedural },
+        { label: "What happened", hint: "episodic", rows: mind.episodic },
+      ]
+    : [];
+  const renderRow = (r: MindRowVm) => {
+    const editing = editingId === r.id;
+    return (
+      <div key={r.id} className="skillRow mindRow">
+        <div className="skillInfo">
+          <strong>
+            <span className="mindKind" data-kind={r.kind}>{r.kind}</span>
+            <span className="mindBar" title={`strength ${r.currentStrength.toFixed(2)} (stored ${r.strength.toFixed(1)})`}>
+              <i style={{ width: `${Math.max(4, Math.round((r.currentStrength / maxStrength) * 100))}%` }} />
+            </span>
+            <span className="skillCat">×{r.activations} · {r.ageDays}d{r.confidence !== undefined ? ` · conf ${r.confidence.toFixed(2)}` : ""}</span>
+          </strong>
+          {editing ? (
+            <textarea
+              className="txt mindEditBox"
+              value={draft}
+              rows={3}
+              autoFocus
+              onChange={(ev) => setDraft(ev.target.value)}
+            />
+          ) : (
+            <span className="mindContent" title={r.content}>{r.content}</span>
+          )}
+        </div>
+        <div className="skillRowActions">
+          {editing ? (
+            <>
+              <button
+                className="btn tiny"
+                disabled={!draft.trim()}
+                onClick={() => {
+                  onDaemonCommand({ type: "mind_edit", id: r.id, text: draft.trim() });
+                  setEditingId(null);
+                }}
+              >
+                Save
+              </button>
+              <button className="btn tiny ghost" onClick={() => setEditingId(null)}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button
+                className="btn tiny ghost"
+                title="Correct this memory — your wording replaces it, confidence jumps to 1"
+                onClick={() => { setEditingId(r.id); setDraft(r.content); setConfirmId(null); }}
+              >
+                ✎ Edit
+              </button>
+              {confirmId === r.id ? (
+                <button
+                  className="btn tiny mindForgetConfirm"
+                  title="Really delete this memory"
+                  onClick={() => { onDaemonCommand({ type: "mind_forget", id: r.id }); setConfirmId(null); }}
+                >
+                  Forget?
+                </button>
+              ) : (
+                <button className="btn tiny ghost" title="Delete this memory" onClick={() => { setConfirmId(r.id); setEditingId(null); }}>
+                  ✕
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="settingsPane">
+      <h3 className="paneTitle">Mind</h3>
+      <p className="paneHint">
+        What I believe about you and this work, ranked by how alive each memory is.
+        Correct anything wrong in place — your word outranks mine — or delete it outright.
+      </p>
+      {!mind ? (
+        <div className="paneEmpty">Waiting for the daemon…</div>
+      ) : rows.length === 0 ? (
+        <div className="paneEmpty">I hold no owner-scoped memories yet.</div>
+      ) : (
+        sections.map((s) =>
+          s.rows.length === 0 ? null : (
+            <div key={s.hint}>
+              <label className="fieldLabel">{s.label} · {s.hint}</label>
+              <div className="skillList">{s.rows.map(renderRow)}</div>
+            </div>
+          ),
+        )
+      )}
+      <button className="btn tiny ghost" onClick={() => onDaemonCommand({ type: "mind_overview" })}>↻ Refresh</button>
+    </div>
+  );
+}
+
 function Settings({
   prefs,
   onApply,
@@ -9421,6 +9570,7 @@ function Settings({
   native,
   skills,
   plugins,
+  mind,
   usage,
   keyStatus,
   gatewayAccount,
@@ -9449,6 +9599,7 @@ function Settings({
   native: boolean;
   skills: SkillInfo[];
   plugins: PluginsVm | null;
+  mind: MindOverviewVm | null;
   usage: UsageStats | null;
   keyStatus: Record<string, boolean>;
   gatewayAccount: GatewayAccountVm | null;
@@ -9482,6 +9633,7 @@ function Settings({
     if (!native) return;
     if (tab === "skills") onDaemonCommand({ type: "skills_list" });
     if (tab === "plugins") onDaemonCommand({ type: "plugins_list" });
+    if (tab === "mind") onDaemonCommand({ type: "mind_overview" });
     if (tab === "usage") onDaemonCommand({ type: "usage_stats", days: 30 });
     if (tab === "consciousness") onDaemonCommand({ type: "consciousness_status" });
   }, [tab, native, onDaemonCommand]);
@@ -9773,6 +9925,8 @@ function Settings({
               )}
             </div>
           ) : null}
+
+          {tab === "mind" ? <MindPane mind={mind} onDaemonCommand={onDaemonCommand} /> : null}
 
           {tab === "usage" ? <UsagePane usage={usage} onDaemonCommand={onDaemonCommand} native={native} /> : null}
 

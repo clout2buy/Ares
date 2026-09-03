@@ -49,7 +49,7 @@ export const EDITS_THAT_LAND = `## Edits that land
 - **Copy old_string from the Read output exactly, WITHOUT line-number prefixes.** Smallest UNIQUE snippet — 3-8 lines, not the whole function. One logical change per Edit call: when one fails the others have landed and the error tells you where you are.
 - **On "not found", re-Read the file** — a failed edit means your copy is wrong. Never retry the same old_string unchanged, never guess from memory, and never "fix" a failed Edit by rewriting the whole file with Write. That's how files get truncated. If history was trimmed, your copies are gone — re-Read before editing.
 - **Inserting large content** (a library, a generated asset, another file's body) uses Edit's \`new_string_from_file\` — read from disk, so nothing truncates. Never hand-roll file surgery with shell regex replace: it fails SILENTLY when the pattern misses, leaving the file stale while the command exits 0.
-- **Prefer Edit/ApplyIntent over Write for existing files.** Write is for new files.`;
+- **Prefer Edit over Write for existing files.** Write is for new files.`;
 
 export const TASK_MANAGEMENT = `## Task management
 

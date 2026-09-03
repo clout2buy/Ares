@@ -31,6 +31,14 @@ export interface StandingOrder {
   /** How often to materialize it into a goal. Clamped to >= MIN_CADENCE_MS. */
   cadenceMs: number;
   enabled: boolean;
+  /**
+   * Optional payload builder key. A plain order materializes into a goal that
+   * carries only `statement`; an order with a payloadKind gets its goal built
+   * by a named in-repo builder that attaches fresh evidence at fire time
+   * (e.g. "friction-audit" → this week's friction report + gate verdict).
+   * Unknown kinds degrade to the plain statement — old orders never break.
+   */
+  payloadKind?: string;
   createdAt: string;
   lastRunAt?: string;
   runCount: number;
@@ -55,6 +63,7 @@ export function normalizeStandingOrder(input: Partial<StandingOrder> & { stateme
     statement: input.statement.trim(),
     cadenceMs: Math.max(MIN_CADENCE_MS, Math.floor(input.cadenceMs ?? 60 * 60_000)),
     enabled: input.enabled ?? true,
+    ...(input.payloadKind ? { payloadKind: input.payloadKind } : {}),
     createdAt: input.createdAt ?? now.toISOString(),
     lastRunAt: input.lastRunAt,
     runCount: input.runCount ?? 0,
@@ -143,12 +152,21 @@ export async function materializeDueStandingOrders(home: string | undefined, now
   const goals: Goal[] = [];
   const fired: StandingOrder[] = [];
   for (const order of due) {
-    const goal = createGoal({
-      id: newGoalId(now),
-      statement: order.statement,
-      now,
-    });
-    await saveGoal(resolvedHome, goal);
+    let goal: Goal;
+    if (order.payloadKind === "friction-audit") {
+      // Dynamic import breaks the static cycle (frictionReport imports this
+      // module's CRUD); the builder attaches this week's friction report +
+      // gate verdict as the goal's evidence payload and saves it plan-only.
+      const { materializeWeeklyAuditGoal } = await import("./frictionReport.js");
+      goal = await materializeWeeklyAuditGoal(order, home, now);
+    } else {
+      goal = createGoal({
+        id: newGoalId(now),
+        statement: order.statement,
+        now,
+      });
+      await saveGoal(resolvedHome, goal);
+    }
     order.lastRunAt = now.toISOString();
     order.runCount = (order.runCount ?? 0) + 1;
     await saveStandingOrder(home, order);

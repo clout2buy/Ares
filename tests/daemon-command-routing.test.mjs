@@ -28,6 +28,9 @@ function uiCommandTypes() {
   const app = read("tauri/src/App.tsx");
   const types = new Set();
   for (const m of app.matchAll(/daemonCmd\(\{\s*type:\s*"([a-z_]+)"/g)) types.add(m[1]);
+  // Settings panes send through onDaemonCommand(...) too — the Engine Room plugins_list
+  // was silently dead because this scan missed that call shape.
+  for (const m of app.matchAll(/onDaemonCommand\(\{\s*type:\s*"([a-z_]+)"/g)) types.add(m[1]);
   return types;
 }
 

@@ -81,6 +81,12 @@ export interface FrictionTurn {
   /** Verifier red-flag reminders injected (continuous verify + end gate). */
   verifyReminders: number;
   compactions: number;
+  /** Screenshot payload that rode this turn's tool_results as image blocks.
+   * Images are invisible to token usage attribution (they arrive inside
+   * tool_result content, not text), so this is the only place the "image tax"
+   * of a Browser/ComputerUse-heavy turn is measurable. approxBytes are decoded
+   * bytes (base64 length × 3/4). Zero-defaulted; absent on legacy rows. */
+  images: { blocks: number; approxBytes: number };
   usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
   /** cacheRead / input — the prompt-cache health signal (null when no input). */
   cacheReadRatio: number | null;
@@ -124,6 +130,7 @@ function emptyTurn(sessionId: string, context: FrictionContext): FrictionTurn {
     reasoningStalls: 0,
     verifyReminders: 0,
     compactions: 0,
+    images: { blocks: 0, approxBytes: 0 },
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
     cacheReadRatio: null,
   };
@@ -217,6 +224,7 @@ export class FrictionRecorder {
           const name = this.nameById.get(ev.id) ?? "unknown";
           const t = (this.turn.tools[name] ??= { calls: 0, errors: 0 });
           t.calls++;
+          this.addImageMetrics(ev.images, ev.output);
           if (name === "Edit") {
             const layer = (ev.output as { layer?: string } | undefined)?.layer;
             if (layer === "exact" || layer === "whitespace" || layer === "anchor" || layer === "normalized") this.turn.editTiers[layer]++;
@@ -228,6 +236,7 @@ export class FrictionRecorder {
           const t = (this.turn.tools[name] ??= { calls: 0, errors: 0 });
           t.calls++;
           t.errors++;
+          this.addImageMetrics(ev.images, ev.output);
           if (name === "Edit") this.turn.editTiers.miss++;
           this.addDiagnostic("tool_error", ev.error, { tool: name });
           break;
@@ -293,6 +302,20 @@ export class FrictionRecorder {
     return JSON.parse(JSON.stringify(this.turn)) as FrictionTurn;
   }
 
+  /** Fold one tool result's screenshot payload into the turn. The engine
+   * reports its own count (from result.images); when absent — a foreign host
+   * replaying events, or a tool that embeds image blocks directly in output —
+   * fall back to a bounded scan of the output for {type:"image", source:{data}}
+   * content blocks (the protocol ImageBlock shape). Never both, so an image
+   * can't be counted twice. */
+  private addImageMetrics(reported: { blocks: number; approxBytes: number } | undefined, output: unknown): void {
+    const found = reported ?? scanImageBlocks(output);
+    if (!found || found.blocks <= 0) return;
+    const images = (this.turn.images ??= { blocks: 0, approxBytes: 0 });
+    images.blocks += found.blocks;
+    images.approxBytes += found.approxBytes;
+  }
+
   private addDiagnostic(
     kind: FrictionDiagnostic["kind"],
     raw: string,
@@ -343,6 +366,33 @@ export class FrictionRecorder {
   }
 }
 
+/** Bounded recursive scan for protocol-shaped image blocks. Depth-capped so a
+ * pathological output object can't stall the (synchronous, per-event) record
+ * path; base64 length × 3/4 approximates decoded bytes without decoding. */
+function scanImageBlocks(value: unknown, depth = 0): { blocks: number; approxBytes: number } | null {
+  if (depth > 4 || value === null || typeof value !== "object") return null;
+  let blocks = 0;
+  let approxBytes = 0;
+  const fold = (candidate: unknown): void => {
+    const nested = scanImageBlocks(candidate, depth + 1);
+    if (nested) {
+      blocks += nested.blocks;
+      approxBytes += nested.approxBytes;
+    }
+  };
+  if (Array.isArray(value)) {
+    for (const item of value) fold(item);
+    return blocks > 0 ? { blocks, approxBytes } : null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type === "image" && record.source && typeof record.source === "object") {
+    const data = (record.source as Record<string, unknown>).data;
+    return { blocks: 1, approxBytes: typeof data === "string" ? Math.floor((data.length * 3) / 4) : 0 };
+  }
+  for (const item of Object.values(record)) fold(item);
+  return blocks > 0 ? { blocks, approxBytes } : null;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -361,9 +411,18 @@ export interface FrictionSummary {
   reasoningStalls: number;
   verifyReminders: number;
   compactions: number;
+  /** Aggregate screenshot payload across turns (zero for legacy rows). */
+  images: { blocks: number; approxBytes: number };
   totalInputTokens: number;
   totalCacheReadTokens: number;
   avgCacheReadRatio: number | null;
+  /** Per-workStatus turn counts (verified/unverified/blocked/not_applicable) —
+   *  the friction gate's unverified-rate numerator/denominator. */
+  workStatus: Record<string, number>;
+  /** Diagnostics folded by signature across turns, count-descending. */
+  diagnostics: Array<{ signature: string; kind: string; sample: string; count: number }>;
+  /** Median completed-turn duration; null under 5 datapoints. */
+  medianDurationMs: number | null;
 }
 
 /** Aggregate the last `days` of friction lines from a telemetry dir. */
@@ -380,10 +439,16 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
     reasoningStalls: 0,
     verifyReminders: 0,
     compactions: 0,
+    images: { blocks: 0, approxBytes: 0 },
     totalInputTokens: 0,
     totalCacheReadTokens: 0,
     avgCacheReadRatio: null,
+    workStatus: {},
+    diagnostics: [],
+    medianDurationMs: null,
   };
+  const diagBySig = new Map();
+  const durations = [];
   let ratioSum = 0;
   let ratioN = 0;
   const files = await readdir(dir).catch(() => [] as string[]);
@@ -402,6 +467,14 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
       if (turn.status === "completed" || turn.status === "needs_verification") summary.completed++;
       if (turn.status === "needs_verification") summary.needsVerification++;
       if (turn.status === "failed") summary.failed++;
+      if (turn.workStatus) summary.workStatus[turn.workStatus] = (summary.workStatus[turn.workStatus] ?? 0) + 1;
+      if (typeof turn.durationMs === "number" && turn.durationMs > 0) durations.push(turn.durationMs);
+      for (const d of turn.diagnostics ?? []) {
+        const key = `${d.kind}|${d.signature ?? d.sample ?? ""}`;
+        const row = diagBySig.get(key) ?? { signature: String(d.signature ?? key), kind: d.kind, sample: String(d.sample ?? "").slice(0, 160), count: 0 };
+        row.count += d.count ?? 1;
+        diagBySig.set(key, row);
+      }
       for (const [name, t] of Object.entries(turn.tools ?? {})) {
         const agg = (summary.tools[name] ??= { calls: 0, errors: 0 });
         agg.calls += t.calls;
@@ -414,6 +487,8 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
       summary.reasoningStalls += turn.reasoningStalls ?? 0;
       summary.verifyReminders += turn.verifyReminders ?? 0;
       summary.compactions += turn.compactions ?? 0;
+      summary.images.blocks += turn.images?.blocks ?? 0;
+      summary.images.approxBytes += turn.images?.approxBytes ?? 0;
       summary.totalInputTokens += turn.usage?.inputTokens ?? 0;
       summary.totalCacheReadTokens += turn.usage?.cacheReadTokens ?? 0;
       if (typeof turn.cacheReadRatio === "number") {
@@ -423,5 +498,8 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
     }
   }
   summary.avgCacheReadRatio = ratioN > 0 ? Math.round((ratioSum / ratioN) * 1000) / 1000 : null;
+  summary.diagnostics = [...diagBySig.values()].sort((a, b) => b.count - a.count).slice(0, 20);
+  durations.sort((a, b) => a - b);
+  summary.medianDurationMs = durations.length >= 5 ? durations[durations.length >> 1] : null;
   return summary;
 }

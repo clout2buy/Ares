@@ -22,7 +22,7 @@ import { selectToolsForTurn } from "../packages/core/dist/queryEngine.js";
 
 /** A stand-in belt big enough to trip the >12 pruning branch. */
 const NAMES = [
-  "Read", "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "Glob", "Grep",
+  "Read", "Write", "Edit", "ApplyPatch", "Glob", "Grep",
   "CodebaseSearch", "LSP", "Bash", "PowerShell", "BashOutput", "KillShell",
   "TodoWrite", "Task", "TaskOutput", "KillTask", "Conductor", "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode",
   "WebSearch", "WebFetch", "ImageSearch", "ComputerUse", "Browser", "ToolSearch",
@@ -31,7 +31,7 @@ const NAMES = [
   "Spotify", "Weather", "Remind", "Mission", "Self", "SkillHub", "Operator",
 ];
 const WRITE_TOOLS = new Set([
-  "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode",
+  "Write", "Edit", "ApplyPatch",
   "TodoWrite", "Task", "Conductor", "UpdatePlanDraft",
 ]);
 const TOOLS = NAMES.map((name) => ({
@@ -71,7 +71,7 @@ test("explicit coding intent still expands past the floor", () => {
   for (const tool of [...CORE, "LSP", "CodebaseSearch"]) {
     assert.ok(offered.includes(tool), `${tool} expected on an explicit coding turn`);
   }
-  assert.ok(!offered.includes("ApplyIntent"), "overlapping edit protocols stay off the default belt");
+  assert.ok(!offered.includes("ApplyPatch"), "the inactive edit protocol stays off the default belt");
   assert.ok(offered.includes("TaskOutput"), "detached Task status remains addressable on coding turns");
   assert.ok(offered.includes("KillTask"), "detached Task cancellation remains addressable on coding turns");
 });
@@ -92,9 +92,6 @@ test("OpenAI/Codex models receive ApplyPatch as the single primary edit protocol
   assert.ok(offered.includes("ApplyPatch"));
   assert.ok(!offered.includes("Write"));
   assert.ok(!offered.includes("Edit"));
-  assert.ok(!offered.includes("ApplyIntent"));
-  assert.ok(!offered.includes("FindAndEdit"));
-  assert.ok(!offered.includes("CodeMode"));
 });
 
 test("plan workflow pins ExitPlanMode and suppresses every editing protocol", () => {
@@ -107,7 +104,7 @@ test("plan workflow pins ExitPlanMode and suppresses every editing protocol", ()
   assert.ok(offered.includes("UpdatePlanDraft"));
   assert.ok(offered.includes("Read"));
   assert.ok(offered.includes("Task"));
-  for (const name of ["Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode"]) {
+  for (const name of ["Write", "Edit", "ApplyPatch"]) {
     assert.ok(!offered.includes(name), `${name} must stay hidden during plan mode`);
   }
 });

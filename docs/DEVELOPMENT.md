@@ -143,11 +143,14 @@ variable, documented at its definition site. Quick index (default in parentheses
 | `ARES_PINNED_FAILOVER=0`, `ARES_ROUTING_BACKUP` (comma list) | Failover chain for a pinned model (also `routingBackup` in ui.json). |
 | `ARES_COMPACT_CLIP_CHARS` (1500) | Compaction clip for tool bodies; edit diffs and paths are never clipped. |
 | `ARES_TURN_MEMORY_SIM` (0.85), `ARES_MEMORY_RECENCY_WEIGHT` (0.5) | Near-duplicate collapse for captured turns; liveness ranking of live-mind nodes. |
+| `ARES_MIND_OVERVIEW_LIMIT` (15) | Rows per kind in the owner's "what I know" surface (`ares mind about`, the desktop Mind pane). |
 | `ARES_CONSOLIDATE_EVERY_MIN` (90, 0 off), `ARES_CONSOLIDATE_MIN_NEW` (12) | Periodic memory consolidation in a long-lived daemon. |
 | `ARES_GAUNTLET_SCHEDULE=0`, `ARES_GAUNTLET_HOUR` (3), `ARES_GAUNTLET_WINDOW_HOURS` (3), `ARES_GAUNTLET_SUITE` (coding-v3) | Nightly gauntlet in the Garrison idle window. |
 | `ARES_BRIEF_SOURCE_TIMEOUT_MS` (8000), `ARES_BRIEFING_HOUR`, `ARES_OWNER_LOCATION` | Day brief sources (weather, calendar, reminders, email, missions). |
+| `ARES_MEETING_NUDGE=0`, `ARES_MEETING_PREP_MIN` (30) | Telegram meeting-prep nudges (piggyback the briefing tick): disable, and how many minutes before a meeting the nudge fires. |
 | `ARES_HEAP_PROFILE=0`, `ARES_HEAP_PROFILE_INTERVAL_BYTES` (262144) | Sampling heap profiler feeding `heapAllocTop` into heap-critical crash artifacts. |
 | `ARES_SYMBOL_INDEX_MAX_FILES` (20000), `ARES_CODESEARCH_EMBED=0`, `ARES_CODESEARCH_EMBED_BUDGET_MS` (1500), `ARES_EMBED_MODEL` (nomic-embed-text) | Symbol index and optional hybrid embedding ranking for CodebaseSearch. |
 | `ARES_CROSS_SURFACE=0`, `ARES_CROSS_SURFACE_HOURS` (24), `ARES_CROSS_SURFACE_CHARS` (1200) | "Elsewhere today" digest of the owner's other sessions. |
 | `ARES_CHECKPOINT_GIT=0`, `ARES_CHECKPOINT_MAX_AGE_DAYS` (14, 0 off), `ARES_CHECKPOINT_GC_DELAY_MS` (5000) | Git-tree checkpoint layer inside repos (blobs elsewhere); age-based retention that finally lets blob GC reclaim; deferred first sweep. `/rewind` restores files AND truncates the conversation to the checkpoint. |
 | `ARES_TOOL_TIER=legacy`, `ARES_DYNAMIC_TOOLS=0` | Restore the keyword tool router / send every tool schema. |
+| `ARES_IMAGE_KEEP_ROUNDS` (3, 0 off) | Microcompact image rung: clear screenshots from tool_results older than the last N tool rounds, replacing each with a re-take hint; 0 keeps every image forever. |

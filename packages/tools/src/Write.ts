@@ -73,7 +73,7 @@ function previousContentPreview(previous: string): string {
 export const WriteTool = buildTool({
   name: "Write",
   description:
-    "Write (overwrite or create) a file. For existing files you should Read them first; if you have not, Write auto-reads the file and returns the head of the replaced content so you can confirm nothing was lost.",
+    "Write (overwrite or create) a file. For existing files you should Read them first; if you have not, Write auto-reads the file and returns the head of the replaced content so you can confirm nothing was lost. Files beyond a few hundred lines should be written in sections or edited with Edit hunks — a single huge Write can truncate mid-stream at the output-token limit.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,

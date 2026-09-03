@@ -88,6 +88,43 @@ export {
 } from "./standingOrders.js";
 
 export {
+  DEFAULT_MEETING_LEAD_MINUTES,
+  MAX_NUDGES_PER_TICK,
+  meetingFingerprint,
+  formatMeetingNudge,
+  planMeetingNudges,
+  meetingNudgeStateFile,
+  loadNudgedFingerprints,
+  saveNudgedFingerprints,
+  runMeetingNudgeTick,
+  type MeetingEvent,
+  type MeetingNudge,
+  type PlanMeetingNudgesInput,
+  type MeetingNudgeTickOptions,
+} from "./meetingNudge.js";
+
+export {
+  FRICTION_BASELINES,
+  MIN_CODING_TURNS,
+  MIN_EDIT_CALLS,
+  MIN_TURNS,
+  buildFrictionReport,
+  judgeFrictionGate,
+  renderFrictionReport,
+  WEEKLY_SELF_AUDIT_ID,
+  WEEKLY_SELF_AUDIT_CADENCE_MS,
+  FRICTION_AUDIT_PAYLOAD_KIND,
+  installWeeklySelfAudit,
+  buildWeeklyAuditGoalStatement,
+  materializeWeeklyAuditGoal,
+  type FrictionSummaryLike,
+  type FrictionMetric,
+  type FrictionReport,
+  type FrictionVerdict,
+  type FrictionGateResult,
+} from "./frictionReport.js";
+
+export {
   WATCHER_SCHEMA,
   MIN_WATCHER_CADENCE_MS,
   MAX_PROBES_PER_TICK,

@@ -5,12 +5,12 @@ import { readFile } from "node:fs/promises";
 import { getWeatherText, setRemindScheduler } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig } from "../telegramConfig.js";
-import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders } from "@ares/operator";
+import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
 import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions } from "@ares/mind";
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler } from "@ares/channels";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders } from "@ares/core";
-import { buildDayBrief } from "./introspect.js";
+import { buildDayBrief, defaultDayBriefSources } from "./introspect.js";
 import { CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 
 /** The Telegram remote-command deps (state/control/orchestration) shared by the
@@ -385,6 +385,33 @@ export async function telegramCommand(args: ParsedArgs): Promise<number> {
       // never let the briefing crash the channel
     }
   };
+  // Meeting-prep nudges PIGGYBACK the same 5-minute briefing tick below — the
+  // scheduler owns no new setInterval, and a 5-min cadence comfortably lands a
+  // 30-min-lead nudge. Events come from the SAME calendar source the day brief
+  // uses (defaultDayBriefSources), so a nudge and the morning brief always
+  // agree about what's connected: no calendar source → silently no nudges.
+  // ARES_MEETING_NUDGE=0 disables; ARES_MEETING_PREP_MIN tunes the lead.
+  const meetingNudgesEnabled = process.env.ARES_MEETING_NUDGE !== "0";
+  const meetingLeadMinutes = Math.max(1, Number(process.env.ARES_MEETING_PREP_MIN) || DEFAULT_MEETING_LEAD_MINUTES);
+  const checkMeetingNudges = async (): Promise<void> => {
+    if (!meetingNudgesEnabled) return;
+    try {
+      const sources = await defaultDayBriefSources(context);
+      const calendar = sources.calendar;
+      if (!calendar) return; // Google not connected — stay silent, never nag
+      await runMeetingNudgeTick({
+        home: context.home,
+        leadMinutes: meetingLeadMinutes,
+        fetchEvents: async () => (await calendar()) as MeetingEvent[],
+        send: async (text) => {
+          for (const chatId of allowedChatIds) await api.sendMessage(chatId, text).catch(() => undefined);
+        },
+      });
+    } catch {
+      // best-effort: a calendar/API hiccup never touches the channel
+    }
+  };
+
   const briefingTimer = setInterval(() => {
     const now = new Date();
     const day = now.toISOString().slice(0, 10);
@@ -392,7 +419,11 @@ export async function telegramCommand(args: ParsedArgs): Promise<number> {
       lastBriefingDay = day;
       void pushBriefing();
     }
+    void checkMeetingNudges();
   }, 5 * 60_000);
+  // A restart mid-lead-window must not eat a nudge — check once at boot too
+  // (the durable fingerprint set makes this safe from duplicates).
+  void checkMeetingNudges();
 
   process.stdout.write(
     notice(

@@ -15,7 +15,7 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { writeFileAtomic } from "../io.js";
 import { mindPaths } from "../paths.js";
-import { currentStrength, reinforce, weaken } from "./strength.js";
+import { currentStrength, livenessScore, reinforce, weaken } from "./strength.js";
 import { recall, type RecallOptions, type RecallResult } from "./recall.js";
 import { contentHash, type EmbedIndex, type Embedder } from "./embedIndex.js";
 import { buildIdf } from "./idf.js";
@@ -52,6 +52,52 @@ export interface SynthesisReport {
   /** Existing synthesis nodes reinforced/extended instead of duplicated. */
   updated: number;
 }
+
+/** One row of the owner-facing "what I know" overview. */
+export interface MemoryOverviewRow {
+  id: string;
+  kind: MemoryKind;
+  /** Clipped to ~{@link OVERVIEW_CONTENT_CLIP} chars — a surface, not a dump. */
+  content: string;
+  strength: number;
+  currentStrength: number;
+  activations: number;
+  /** Days since the memory was formed (one-decimal precision). */
+  ageDays: number;
+  tags?: string[];
+  confidence?: number;
+}
+
+/** The overview grouped by kind — what I believe / what I can do / what happened. */
+export interface MemoryOverviewGroups {
+  semantic: MemoryOverviewRow[];
+  procedural: MemoryOverviewRow[];
+  episodic: MemoryOverviewRow[];
+}
+
+export interface OverviewOptions {
+  /** Tenant scope. Defaults to {@link OWNER_SCOPE} — guest:* pools are NEVER
+   *  included unless a caller asks for that scope explicitly. */
+  scope?: string;
+  /** Max rows PER GROUP. Default: {@link overviewLimit} (ARES_MIND_OVERVIEW_LIMIT). */
+  limit?: number;
+  now?: Date;
+}
+
+/** Before/after pair from an owner edit — callers print the correction. */
+export interface MemoryEditResult {
+  before: MemoryNode;
+  after: MemoryNode;
+}
+
+/** Per-group row cap for overview(). Tunable: ARES_MIND_OVERVIEW_LIMIT. */
+export function overviewLimit(): number {
+  const raw = Number(process.env.ARES_MIND_OVERVIEW_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 15;
+}
+
+/** Overview rows clip content here — enough to recognize a belief, not a dump. */
+const OVERVIEW_CONTENT_CLIP = 200;
 
 const PRUNE_FLOOR = 0.05;
 const EVIDENCE_CAP = 20;
@@ -439,6 +485,72 @@ export class MemoryStore {
   }
 
   /**
+   * Owner-initiated in-place correction — the "that's wrong, it's actually X"
+   * affordance. This is a DELIBERATE exception to the MemoryRouter-only write
+   * rule: the router exists to gate agent-originated writes (dedupe, noise
+   * filters, channel policy), and a correction the owner typed must land
+   * verbatim on the exact node — routed through dedupe it could collapse into
+   * the very content being corrected. Confidence jumps to 1 (the owner said
+   * so), `editedAt`/`editedBy:"owner"` record the provenance, and the embed
+   * sidecar goes stale automatically because it keys vectors by content hash
+   * (see EmbedIndex.staleIds) — the next refresh re-embeds the new content.
+   * Returns the before/after pair, or undefined when no node has that id.
+   */
+  async edit(id: string, content: string, opts: { now?: Date } = {}): Promise<MemoryEditResult | undefined> {
+    const before = this.nodes.get(id);
+    if (!before) return undefined;
+    const trimmed = trimMemoryContent(content);
+    if (!trimmed) return undefined;
+    const after: MemoryNode = {
+      ...before,
+      content: trimmed,
+      confidence: 1,
+      editedAt: (opts.now ?? new Date()).toISOString(),
+      editedBy: "owner",
+    };
+    this.nodes.set(id, after);
+    await this.persist();
+    this.scheduleEmbedRefresh();
+    return { before, after };
+  }
+
+  /**
+   * The owner-facing "what I know about you" surface: top nodes by
+   * {@link livenessScore} (decayed strength + recency — the same ranking the
+   * context compiler trusts), grouped by kind so beliefs, skills, and episodes
+   * read separately. Read-only by design: looking at your own memory must
+   * never reinforce it (that's peek()'s doctrine too). Scope defaults to the
+   * owner's pool — guest:* nodes never appear unless that scope is asked for
+   * explicitly, so a shared screen can't leak a Telegram guest's memories.
+   */
+  overview(opts: OverviewOptions = {}): MemoryOverviewGroups {
+    const now = opts.now ?? new Date();
+    const limit = opts.limit ?? overviewLimit();
+    const pool = scopedNodes(this.all(), opts.scope ?? OWNER_SCOPE);
+    const groups: MemoryOverviewGroups = { semantic: [], procedural: [], episodic: [] };
+    const ranked = [...pool].sort((a, b) => livenessScore(b, now) - livenessScore(a, now));
+    for (const node of ranked) {
+      const group = groups[node.kind];
+      if (!group || group.length >= limit) continue;
+      const clipped = node.content.length > OVERVIEW_CONTENT_CLIP
+        ? `${node.content.slice(0, OVERVIEW_CONTENT_CLIP - 1)}…`
+        : node.content;
+      group.push({
+        id: node.id,
+        kind: node.kind,
+        content: clipped,
+        strength: node.strength,
+        currentStrength: currentStrength(node, now),
+        activations: node.activations,
+        ageDays: ageDays(node.at, now),
+        ...(node.tags ? { tags: node.tags } : {}),
+        ...(node.confidence !== undefined ? { confidence: node.confidence } : {}),
+      });
+    }
+    return groups;
+  }
+
+  /**
    * Recall a constellation of memories AND strengthen them. Surfacing a memory
    * reinforces it (so what's used stays vivid), and the top co-activated pair is
    * linked (Hebbian association forms from use).
@@ -712,6 +824,13 @@ function trimMemoryContent(content: string): string {
   const trimmed = content.trim();
   if (trimmed.length <= MAX_MEMORY_CONTENT_CHARS) return trimmed;
   return `${trimmed.slice(0, MAX_MEMORY_CONTENT_CHARS)}\n[truncated memory: ${trimmed.length - MAX_MEMORY_CONTENT_CHARS} chars omitted]`;
+}
+
+/** Days since `at`, one-decimal precision; an unparseable timestamp reads as 0. */
+function ageDays(at: string, now: Date): number {
+  const formed = Date.parse(at);
+  if (Number.isNaN(formed)) return 0;
+  return Math.round(Math.max(0, now.getTime() - formed) / 86_400_000 * 10) / 10;
 }
 
 function normalizeForDedup(content: string): string {

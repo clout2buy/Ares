@@ -709,6 +709,10 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "sessions_list", "set_permissions", "skill_invoke", "skill_toggle",
     "skillhub_install", "skillhub_list", "skillhub_publish", "skills_list",
     "steer", "undo", "usage_stats", "webview_result",
+    // plugins_list was the same silent-dead class below: the Engine Room tab
+    // sent it via onDaemonCommand (which the routing test's regex did not scan)
+    // and this list rejected it — the pane never refreshed in a packaged app.
+    "plugins_list", "rewind",
     // The roster + workflow surfaces. These were MISSING for their whole
     // lifetime: the UI sent them, this list rejected them with a Result::Err
     // the frontend discards, and every one of those buttons was silently dead
@@ -722,6 +726,9 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "background_list", "background_stop", "background_resume",
     // Agent visibility: HELM's fleet history + durable background subagents.
     "fleets_list", "subagents_list",
+    // The owner's memory surface: read what Ares believes, correct or delete
+    // a memory in place. Owner-surface commands — never expose guest scopes.
+    "mind_overview", "mind_edit", "mind_forget",
 ];
 
 #[tauri::command]

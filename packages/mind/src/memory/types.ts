@@ -104,6 +104,14 @@ export interface MemoryNode {
   confidence?: number;
   /** Provenance: member node ids a synthesis was distilled from. */
   derivedFrom?: string[];
+  /** When the owner last corrected this node in place (ISO). Additive +
+   *  optional — no schema-version bump, same doctrine as `scope`: older
+   *  binaries simply ignore it. */
+  editedAt?: string;
+  /** Who made the in-place correction. Only "owner" exists today: edits are an
+   *  owner-surface affordance ("that's wrong, it's actually X"), never an
+   *  agent-initiated write — those go through the MemoryRouter. */
+  editedBy?: "owner";
   /** Crucible lifecycle. Absent = ordinary memory. */
   status?: HypothesisStatus;
   /** Falsifiable check for the trial (V7). */

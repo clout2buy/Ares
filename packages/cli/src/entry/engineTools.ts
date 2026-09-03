@@ -2,7 +2,7 @@
 
 import { AresSubagentRunner, SubagentRegistry, isCoreToolName, loadInstructionReminders, openWorkspaceSessionKernel, type EngineTool, type SubagentTypeDef, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, ApplyIntentTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, FindAndEditTool, CodeModeTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
 import { loadUiSettings } from "../uiSettings.js";
@@ -349,7 +349,7 @@ export async function buildEngineTools(
   const sandboxOnly = (await loadUiSettings().catch(() => null))?.computerMode === "sandbox";
   const HOST_ONLY_TOOLS = new Set([
     "Bash", "PowerShell", "BashOutput", "KillShell", "BackgroundTasks",
-    "ComputerUse", "Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "Deploy",
+    "ComputerUse", "Write", "Edit", "ApplyPatch", "Deploy",
   ]);
   const admittedToolDefs = sandboxOnly
     ? baseToolDefs.filter((tool) => !HOST_ONLY_TOOLS.has(tool.schema.name))
@@ -551,14 +551,11 @@ export async function buildCodingTools(
     WriteTool,
     EditTool,
     ApplyPatchTool,
-    ApplyIntentTool,
     GlobTool,
     GrepTool,
     CodebaseSearchTool,
     LspTool,
     ...(options.shell === false ? [] : process.platform === "win32" ? [PowerShellTool, BashTool] : [BashTool, PowerShellTool]),
-    FindAndEditTool,
-    CodeModeTool,
     makeTodoWriteTool(todoStore),
     ...(options.shell === false
       ? []

@@ -14,8 +14,8 @@ import { buildChildSystemPrompt, childToolCatalog } from "../packages/cli/dist/e
 import { buildSystemPrompt } from "../packages/cli/dist/entry/turnPipeline.js";
 
 const FULL_CHILD_CATALOG = [
-  "Read", "Write", "Edit", "ApplyPatch", "ApplyIntent", "Glob", "Grep", "CodebaseSearch", "LSP",
-  "PowerShell", "Bash", "FindAndEdit", "CodeMode", "TodoWrite", "WebSearch", "ImageSearch", "WebFetch",
+  "Read", "Write", "Edit", "ApplyPatch", "Glob", "Grep", "CodebaseSearch", "LSP",
+  "PowerShell", "Bash", "TodoWrite", "WebSearch", "ImageSearch", "WebFetch",
   "BashOutput", "KillShell", "BackgroundTasks", "ComputerUse", "Deploy", "Stripe", "Email", "Operator",
   "Capability", "Browser", "RequestUserAction",
 ];

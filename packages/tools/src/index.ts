@@ -7,7 +7,6 @@ export { ReadTool } from "./Read.js";
 export { WriteTool } from "./Write.js";
 export { EditTool, nearMissHint, looksLineNumberPrefixed, weakestLayer, type EditLayer, type EditOutput } from "./Edit.js";
 export { ApplyPatchTool, type ApplyPatchOutput } from "./ApplyPatch.js";
-export { ApplyIntentTool, type ApplyIntentOutput } from "./ApplyIntent.js";
 export { safeOverwrite, assessShrink, type SafeOverwriteOptions, type SafeOverwriteResult, type ShrinkVerdict } from "./safeWrite.js";
 export { GlobTool } from "./Glob.js";
 export { GrepTool, regexInputProblem } from "./Grep.js";
@@ -121,8 +120,6 @@ export {
   type Embedder,
   type OllamaEmbedClientOptions,
 } from "./embedClient.js";
-export { FindAndEditTool, type FindAndEditOutput, type FindAndEditChange } from "./FindAndEdit.js";
-export { CodeModeTool, type CodeModeOutput } from "./CodeMode.js";
 export {
   ShellRegistry,
   type ShellSnapshot,
@@ -186,15 +183,12 @@ import { ReadTool } from "./Read.js";
 import { WriteTool } from "./Write.js";
 import { EditTool } from "./Edit.js";
 import { ApplyPatchTool } from "./ApplyPatch.js";
-import { ApplyIntentTool } from "./ApplyIntent.js";
 import { GlobTool } from "./Glob.js";
 import { GrepTool } from "./Grep.js";
 import { BashTool } from "./Bash.js";
 import { PowerShellTool } from "./PowerShell.js";
 import { LspTool } from "./LSP.js";
 import { CodebaseSearchTool } from "./CodebaseSearch.js";
-import { FindAndEditTool } from "./FindAndEdit.js";
-import { CodeModeTool } from "./CodeMode.js";
 import { McpListToolsTool, McpCallTool } from "./Mcp.js";
 import { SkillsListTool, SkillReadTool } from "./Skills.js";
 import { MemoryTool } from "./Memory.js";
@@ -218,15 +212,12 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       WriteTool,
       EditTool,
       ApplyPatchTool,
-      ApplyIntentTool,
       GlobTool,
       GrepTool,
       CodebaseSearchTool,
       LspTool,
       PowerShellTool,
       BashTool,
-      FindAndEditTool,
-      CodeModeTool,
       McpListToolsTool,
       McpCallTool,
       SkillsListTool,
@@ -250,15 +241,12 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       WriteTool,
       EditTool,
       ApplyPatchTool,
-      ApplyIntentTool,
       GlobTool,
       GrepTool,
       CodebaseSearchTool,
       LspTool,
       BashTool,
       PowerShellTool,
-      FindAndEditTool,
-      CodeModeTool,
       McpListToolsTool,
       McpCallTool,
       SkillsListTool,

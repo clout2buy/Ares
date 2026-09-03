@@ -44,6 +44,8 @@ export interface ProbeContext {
 /** Tools whose call means "I am changing the workspace". Shell tools are
  *  deliberately excluded: `node --test` is not an edit, and the diffScope probe
  *  catches shell-made changes by their bytes anyway. */
+// ApplyIntent/FindAndEdit/CodeMode were deleted 2026-09-03, but old gauntlet
+// traces on disk still name them — classifying those as edits stays correct.
 export const EDITING_TOOL_NAMES: ReadonlySet<string> = new Set(["Write", "Edit", "ApplyPatch", "ApplyIntent", "FindAndEdit", "CodeMode", "MultiEdit"]);
 /** Tools whose call means "I am planning before acting". */
 export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set(["TodoWrite", "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode"]);

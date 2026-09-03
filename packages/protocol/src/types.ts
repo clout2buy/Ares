@@ -171,7 +171,21 @@ export type TurnEvent =
     }
   | { type: "tool_start"; id: string; name: string; input: unknown; providerHint?: ProviderHint; activityDescription: string }
   | { type: "tool_progress"; id: string; data: unknown }
-  | { type: "tool_end"; id: string; output: unknown; touchedFiles?: string[]; durationMs: number; display?: string }
+  | {
+      type: "tool_end";
+      id: string;
+      output: unknown;
+      touchedFiles?: string[];
+      durationMs: number;
+      display?: string;
+      /** Screenshot payload attached to this result as tool_result image
+       * blocks (Browser/ComputerUse). Images never appear in `output`, so
+       * without this the cost of a vision-heavy turn is invisible to friction
+       * telemetry — a real 14-minute turn burned 864k input tokens on 8
+       * Browser calls with zero image accounting. approxBytes are DECODED
+       * bytes (base64 length × 3/4). Additive and optional. */
+      images?: { blocks: number; approxBytes: number };
+    }
   | {
       type: "tool_error";
       id: string;
@@ -182,6 +196,8 @@ export type TurnEvent =
       output?: unknown;
       /** Files touched before the completed failure was reported. */
       touchedFiles?: string[];
+      /** See tool_end.images — declared failures can still carry screenshots. */
+      images?: { blocks: number; approxBytes: number };
     }
   | { type: "permission_request"; id: string; toolName: string; input: unknown; reason: string; suggestion?: PermissionPromptSuggestion }
   | { type: "permission_response"; id: string; decision: PermissionPromptDecision }

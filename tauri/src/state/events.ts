@@ -21,6 +21,13 @@ export interface AresEvent {
   /** plugins_list — plugin kernel status rows + recent maintenance runs. */
   plugins?: unknown[];
   recentMaintenance?: unknown[];
+  /** mind_overview_result — the owner's memory overview, grouped by kind. */
+  groups?: unknown;
+  /** mind_edit_result — the correction, before/after. */
+  before?: string;
+  after?: string;
+  /** mind_forget_result — whether a node with that id existed and was removed. */
+  forgotten?: boolean;
   /** connector_result — post-connect tools/list probe outcome. */
   toolCount?: number;
   verifyError?: string;

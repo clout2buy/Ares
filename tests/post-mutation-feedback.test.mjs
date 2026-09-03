@@ -120,7 +120,7 @@ test("configured tooling that is not installed is returned as actionable incompl
 
 test("all core editing tools use the single shared post-mutation feedback gateway", async () => {
   const toolsRoot = path.resolve("packages", "tools", "src");
-  for (const file of ["Write.ts", "Edit.ts", "ApplyPatch.ts", "ApplyIntent.ts", "FindAndEdit.ts", "CodeMode.ts"]) {
+  for (const file of ["Write.ts", "Edit.ts", "ApplyPatch.ts"]) {
     const source = await fs.readFile(path.join(toolsRoot, file), "utf8");
     assert.match(source, /collectMutationFeedback\(/, `${file} must return centralized post-mutation feedback`);
     assert.match(source, /appendMutationFeedback\(/, `${file} must expose bounded feedback in its model-visible result`);

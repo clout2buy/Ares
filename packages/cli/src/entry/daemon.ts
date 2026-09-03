@@ -2691,6 +2691,66 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         if (state) process.stdout.write(JSON.stringify({ type: "cognitive_state", cognitive: state }) + "\n");
         continue;
       }
+      // ─── The owner's memory surface: what Ares believes, editable in place ──
+      // Owner-surface commands (local desktop UI over the owner's own memory):
+      // no permission prompt, but the guest:* pools stay invisible — the store's
+      // overview() defaults to the owner scope and these commands never widen it.
+      // Best-effort like the other read windows: a locked/corrupt store surfaces
+      // as an error frame, never takes the daemon down.
+      if (command.type === "mind_overview") {
+        try {
+          const store = await MemoryStore.open(live.context.mind.memoryFile);
+          process.stdout.write(JSON.stringify({ type: "mind_overview_result", groups: store.overview() }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `mind_overview failed: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+        }
+        continue;
+      }
+      if (command.type === "mind_edit") {
+        const id = typeof command.id === "string" ? command.id : "";
+        const text = typeof command.text === "string" ? command.text.trim() : "";
+        if (!id || !text) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "mind_edit requires id and text" }) + "\n");
+          continue;
+        }
+        try {
+          const store = await MemoryStore.open(live.context.mind.memoryFile);
+          // Under the consolidation lock: the edit's whole-file persist must not
+          // race a consolidate() rewrite in this or any other Ares process.
+          const result = await withConsolidationLock(live.context.mind.memoryFile, () => store.edit(id, text));
+          if (result === undefined) {
+            const error = store.get(id)
+              ? "mind_edit skipped — another process holds the consolidation lock; try again"
+              : `no memory with id ${id}`;
+            process.stdout.write(JSON.stringify({ type: "daemon_error", error }) + "\n");
+            continue;
+          }
+          process.stdout.write(JSON.stringify({
+            type: "mind_edit_result",
+            id,
+            before: result.before.content,
+            after: result.after.content,
+          }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `mind_edit failed: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+        }
+        continue;
+      }
+      if (command.type === "mind_forget") {
+        const id = typeof command.id === "string" ? command.id : "";
+        if (!id) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: "mind_forget requires id" }) + "\n");
+          continue;
+        }
+        try {
+          const store = await MemoryStore.open(live.context.mind.memoryFile);
+          const forgotten = await store.forget(id);
+          process.stdout.write(JSON.stringify({ type: "mind_forget_result", id, forgotten }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "daemon_error", error: `mind_forget failed: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
+        }
+        continue;
+      }
       if (command.type === "roster_list") {
         const personas = await listPersonas(live.context.home).catch(() => []);
         const sid = typeof command.sessionId === "string" ? command.sessionId : undefined;

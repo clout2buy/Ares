@@ -111,7 +111,7 @@ export function tacticsDirective(intent: UserIntent): string {
     "1. PLAN FIRST: before any edit, state the change in one line and name the exact files. For 3+ steps, open a TodoWrite plan. Do not start editing blind.",
     "2. BATCH READS: gather everything you need in ONE parallel step — emit all the independent Read/Grep/Glob calls together, not one-at-a-time. Then act.",
     "3. NEVER re-read a file already in context this session; work from what you already have.",
-    "4. EDIT SURGICALLY: prefer Edit/ApplyIntent on the exact lines over rewriting a whole file with Write. Touch the minimum.",
+    "4. EDIT SURGICALLY: prefer Edit on the exact lines over rewriting a whole file with Write. Touch the minimum.",
     "5. Fewer, higher-signal calls beat many shallow ones — every tool call should move the task forward.",
   ].join("\n");
 }

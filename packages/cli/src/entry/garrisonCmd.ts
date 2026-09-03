@@ -35,7 +35,7 @@ import { AresRuntimeState, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, makeSpanSummarizer, resolveReasoningLevel } from "./sessionFactory.js";
 import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins } from "./telegramWiring.js";
 import { persistTerminalModelPreference, terminalModelCatalogLines } from "./terminalLines.js";
-import { buildSystemPrompt, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
+import { buildSystemPrompt, captureRemoteTurn, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
@@ -231,6 +231,17 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // Deliberately a closure — the loop is constructed later in this function,
     // and turns can only settle after the server starts.
     onTurnSettled: (sessionId) => operatorLoop?.enqueueEvent({ kind: "turn_settled", sessionId }),
+    // Remote turns skip prepareUserTurn, so tenant-scoped memory capture
+    // happens here — the seam the cross-surface batch left open.
+    // A guest stamp without a chatId still isolates (keyed by session) —
+    // ambiguity must never default a stranger into the owner pool.
+    beforeSend: ({ text, tenant, sessionId }) =>
+      captureRemoteTurn(
+        context,
+        text,
+        tenant.role === "guest" ? { role: "guest", chatId: tenant.chatId ?? sessionId } : { role: "owner" },
+        sessionId,
+      ),
     factory: (req) => {
       const workspace = req.workspace ?? context.workspace;
       const model = req.model ?? selection.model;

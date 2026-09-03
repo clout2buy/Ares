@@ -50,7 +50,7 @@ export interface SeedNativeCapabilitiesReport {
 
 export const NATIVE_CAPABILITY_SEEDS: readonly NativeCapabilitySeed[] = [
   { id: "native/read-files", name: "read local files", methods: [{ kind: "cli", ref: "Ares Read tool" }] },
-  { id: "native/write-files", name: "write and edit workspace files", methods: [{ kind: "cli", ref: "Ares Write/Edit/ApplyIntent tools" }] },
+  { id: "native/write-files", name: "write and edit workspace files", methods: [{ kind: "cli", ref: "Ares Write/Edit/ApplyPatch tools" }] },
   { id: "native/search-codebase", name: "search the codebase", methods: [{ kind: "cli", ref: "Ares Grep/Glob/CodebaseSearch tools" }] },
   { id: "native/run-shell", name: "run local shell commands", methods: [{ kind: "cli", ref: "PowerShell/Bash" }] },
   { id: "native/manage-processes", name: "launch and inspect long-running processes", methods: [{ kind: "cli", ref: "Ares BashOutput/KillShell tools" }] },

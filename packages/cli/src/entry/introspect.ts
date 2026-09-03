@@ -4,7 +4,7 @@ import { OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWo
 import { notice, themesList } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { deliberateForTurn, loadAgentConfig, unifiedRecallForTurn } from "@ares/agent";
-import { listLearningCards, selectRelevantLessons, listGoals, listMissionContracts, summarizeContinuity, type ContinuitySummary, assembleWorldGraph, ARES_SUBSYSTEMS, type WorldGraph, rankBriefing, type DailyBriefing, composeDayBrief, type DayBrief, type DayBriefSources } from "@ares/operator";
+import { listLearningCards, selectRelevantLessons, listGoals, listMissionContracts, summarizeContinuity, type ContinuitySummary, assembleWorldGraph, ARES_SUBSYSTEMS, type WorldGraph, rankBriefing, type DailyBriefing, composeDayBrief, type DayBrief, type DayBriefSources, buildFrictionReport, judgeFrictionGate, renderFrictionReport, installWeeklySelfAudit, loadStandingOrders, WEEKLY_SELF_AUDIT_ID, type FrictionSummaryLike } from "@ares/operator";
 import { MemoryStore } from "@ares/mind";
 import { GoogleCalendarTool, GmailTool, getWeatherText, type RichToolContext } from "@ares/tools";
 import { loadSchedule, listAlarms } from "@ares/channels";
@@ -441,11 +441,63 @@ export async function loginCommand(): Promise<number> {
   }
 }
 
-/** `ares friction [--days N] [--json]` — the upgrade-priority report: what
- *  actually goes wrong across every surface, aggregated from telemetry. */
+/** `ares friction [--days N] [--json|--report|--gate]` — the upgrade-priority
+ *  report: what actually goes wrong across every surface, aggregated from
+ *  telemetry. `--report` prints the headline metrics vs their Aug 2026
+ *  baselines; `--gate` adds the pass/regress verdict (exit 3 on regress, so a
+ *  release script can refuse to ship a batch that made things worse).
+ *  `ares friction audit --install` seeds the opt-in weekly self-audit
+ *  standing order (plan-only: the operator queue gets an evidence-bearing
+ *  goal each week; nothing auto-executes). */
 export async function frictionCommand(args: ParsedArgs): Promise<number> {
   const days = Math.max(1, Number(args.flags.get("days")) || 7);
+
+  if (args.positionals[0] === "audit") {
+    const context = cliRuntimeContext();
+    if (args.flags.has("install")) {
+      const order = await installWeeklySelfAudit(context.home);
+      process.stdout.write(
+        notice("Friction · weekly self-audit", [
+          `installed standing order "${order.id}" — weekly, plan-only`,
+          "Each week the operator queue gets a goal carrying the friction report,",
+          "gate verdict, and top diagnostics: Ares proposing its own next batch.",
+        ], "success"),
+      );
+      return 0;
+    }
+    const existing = (await loadStandingOrders(context.home).catch(() => [])).find((o) => o.id === WEEKLY_SELF_AUDIT_ID);
+    process.stdout.write(
+      notice("Friction · weekly self-audit", [
+        existing
+          ? `installed — runs ${existing.runCount}, last ${existing.lastRunAt ?? "never"}${existing.enabled ? "" : " (disabled)"}`
+          : "not installed",
+        "Install with: ares friction audit --install",
+      ], existing ? "info" : "warn"),
+    );
+    return 0;
+  }
+
   const summary = await summarizeFriction(undefined, days);
+
+  if (args.flags.has("gate") || args.flags.has("report")) {
+    const report = buildFrictionReport(summary as unknown as FrictionSummaryLike);
+    const lines = renderFrictionReport(report);
+    if (args.flags.has("gate")) {
+      const gate = judgeFrictionGate(report);
+      lines.push("", ...gate.lines);
+      process.stdout.write(
+        notice(
+          `Friction · gate (last ${days} day(s))`,
+          lines,
+          gate.verdict === "pass" ? "success" : gate.verdict === "regress" ? "error" : "warn",
+        ),
+      );
+      return gate.verdict === "regress" ? 3 : 0;
+    }
+    process.stdout.write(notice(`Friction · report (last ${days} day(s))`, lines, "info"));
+    return 0;
+  }
+
   if (args.flags.has("json")) {
     process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
     return 0;

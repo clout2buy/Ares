@@ -403,3 +403,40 @@ export async function gitRestoreTree(
   await stage(workspace, env);
   return { restored, deleted, files: [...toDelete, ...toWrite].sort() };
 }
+
+// ─── branch surfacing ────────────────────────────────────────────────────────
+//
+// Checkpoint anchors are already commit objects chained per session, which
+// means a session's work IS a branch in everything but name. Naming it hands
+// the task to ordinary git: review it, merge it, or delete it — no bespoke
+// merge machinery to maintain, no way for Ares to outgrow the owner's tools.
+
+/** Resolve a ref/commit-ish inside the workspace repo, or null. */
+export async function gitResolveCommit(workspace: string, ref: string): Promise<string | null> {
+  const run = await runGit(workspace, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  return run.code === 0 ? run.stdout.toString("utf8").trim() : null;
+}
+
+/** Anchor a bare tree as a parentless commit (fallback for a checkpoint whose
+ *  deferred anchor never landed — the tree still exists and is branchable). */
+export async function gitCommitTree(workspace: string, tree: string, message: string): Promise<string> {
+  const run = await runGit(workspace, ["commit-tree", tree, "-m", message], {
+    env: {
+      GIT_AUTHOR_NAME: "ares", GIT_AUTHOR_EMAIL: "ares@localhost",
+      GIT_COMMITTER_NAME: "ares", GIT_COMMITTER_EMAIL: "ares@localhost",
+    },
+  });
+  if (run.code !== 0) throw fail("commit-tree", run);
+  return run.stdout.toString("utf8").trim();
+}
+
+/** Create a real local branch at a commit. Refuses an existing branch — the
+ *  owner's branches are never force-moved by tooling. */
+export async function gitCreateBranch(workspace: string, branchName: string, commit: string): Promise<void> {
+  const check = await runGit(workspace, ["check-ref-format", "--branch", branchName]);
+  if (check.code !== 0) throw new Error(`invalid branch name: ${branchName}`);
+  const exists = await gitResolveCommit(workspace, `refs/heads/${branchName}`);
+  if (exists) throw new Error(`branch already exists: ${branchName}`);
+  const run = await runGit(workspace, ["branch", branchName, commit]);
+  if (run.code !== 0) throw fail("branch", run);
+}

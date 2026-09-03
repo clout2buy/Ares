@@ -7,10 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  ApplyIntentTool,
   LspTool,
-  FindAndEditTool,
-  CodeModeTool,
   SkillsListTool,
   SkillReadTool,
   MemoryTool,
@@ -38,32 +35,6 @@ function ctx(workspace) {
   };
 }
 
-async function stamp(c, file) {
-  const stat = await fs.stat(file);
-  c.fileReadStamps.set(file, { mtimeMs: stat.mtimeMs, size: stat.size });
-}
-
-test("ApplyIntent: full-file sketch updates a previously-read file", async () => {
-  const tmp = await makeTmp();
-  const file = path.join(tmp, "a.ts");
-  await fs.writeFile(file, "export const value = 1;\n", "utf8");
-  const c = ctx(tmp);
-  await stamp(c, file);
-
-  const result = await ApplyIntentTool.call(
-    {
-      file_path: file,
-      instructions: "Change value to 2.",
-      sketch: "export const value = 2;\n",
-    },
-    c,
-  );
-
-  assert.equal(result.output.engine, "full-file-sketch");
-  assert.equal(await fs.readFile(file, "utf8"), "export const value = 2;");
-  assert.deepEqual(result.touchedFiles, [file]);
-});
-
 test("LSP: static fallback finds definitions and references", async () => {
   const tmp = await makeTmp();
   const file = path.join(tmp, "src", "math.ts");
@@ -83,50 +54,6 @@ test("LSP: static fallback finds definitions and references", async () => {
     c,
   );
   assert.ok(refs.output.locations.length >= 2);
-});
-
-test("FindAndEdit: previews then applies regex replacements across files", async () => {
-  const tmp = await makeTmp();
-  await fs.mkdir(path.join(tmp, "src"), { recursive: true });
-  const a = path.join(tmp, "src", "a.ts");
-  const b = path.join(tmp, "src", "b.ts");
-  await fs.writeFile(a, "const name = 'old';\n", "utf8");
-  await fs.writeFile(b, "export const label = 'old';\n", "utf8");
-  const c = ctx(tmp);
-
-  const preview = await FindAndEditTool.call(
-    { pattern: "'old'", replacement: "'new'", flags: "g", file_glob: "src/**/*.ts", target_directories: [], max_files: 10, dry_run: true },
-    c,
-  );
-  assert.equal(preview.output.filesChanged, 2);
-  assert.equal(await fs.readFile(a, "utf8"), "const name = 'old';\n");
-
-  const applied = await FindAndEditTool.call(
-    { pattern: "'old'", replacement: "'new'", flags: "g", file_glob: "src/**/*.ts", target_directories: [], max_files: 10, dry_run: false },
-    c,
-  );
-  assert.equal(applied.output.replacements, 2);
-  assert.deepEqual(applied.touchedFiles.sort(), [a, b].sort());
-  assert.equal(await fs.readFile(b, "utf8"), "export const label = 'new';\n");
-});
-
-test("CodeMode: batches read/glob work and returns compact JSON", async () => {
-  const tmp = await makeTmp();
-  await fs.mkdir(path.join(tmp, "src"), { recursive: true });
-  await fs.writeFile(path.join(tmp, "src", "a.txt"), "alpha\n", "utf8");
-  await fs.writeFile(path.join(tmp, "src", "b.txt"), "beta\n", "utf8");
-
-  const result = await CodeModeTool.call(
-    {
-      code: "const files = await ares.glob('src/*.txt'); return { count: files.length, first: await ares.read(files[0]) };",
-      timeout_ms: 5000,
-      allow_writes: false,
-    },
-    ctx(tmp),
-  );
-
-  assert.equal(result.output.result.count, 2);
-  assert.match(result.output.result.first, /alpha|beta/);
 });
 
 test("SkillsList/SkillRead: discovers project skills", async () => {

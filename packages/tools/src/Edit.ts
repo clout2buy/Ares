@@ -321,7 +321,7 @@ export const EditTool = buildTool({
             `old_string not found in ${filePath}${where} (tried exact, whitespace-tolerant, and diff-anchor matching). ` +
               `Re-Read the file and copy the text exactly as it appears, without line-number prefixes.` +
               `${hint ? `\n${hint}` : ""}${batchNote} ` +
-              `If the target drifted too far, use ApplyIntent with a concise instruction + sketch instead of retrying Edit.`,
+              `If the target drifted too far, re-Read the file and rebuild old_string from the text that is actually there instead of retrying Edit.`,
           );
         }
         if (result.reason === "anchor-ambiguous") {

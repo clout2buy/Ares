@@ -136,7 +136,7 @@ export const TOOL_SEARCH_DESCRIPTION =
   "music (Spotify), email (Gmail/Email), calendar (GoogleCalendar), payments (Stripe), deploy/hosting (Deploy), weather, reminders (Remind), " +
   "Telegram setup/roster, MCP connectors (Connect, McpListTools, McpCallTool), skills (SkillsList/SkillRead/SkillHub/SkillCraft/RunSkill), " +
   "durable missions and standing orders (Mission, StandingOrder, Operator, Watcher), self-management (Self, SelfEvolve, Bootstrap, Persona, LivingMind), " +
-  "the agent computer and desktop (Computer*, ComputerUse), image search, alternate edit protocols (ApplyIntent, FindAndEdit, CodeMode), " +
+  "the agent computer and desktop (Computer*, ComputerUse), image search, " +
   "fleets and external coding harnesses (Conductor, CodingBackend), and UI effects. " +
   "Pass a few keywords (\"play a song\", \"send mail\") or `select:Name,Name` for exact names. " +
   "Matches are loaded for the rest of the session and can be called on your next step. Calling a deferred tool before loading it fails as unknown.";

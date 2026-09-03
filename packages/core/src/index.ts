@@ -49,6 +49,8 @@ export {
   type EngineSubagentRunner,
 } from "./queryEngine.js";
 
+export { TurnGuards } from "./turnGuards.js";
+
 export {
   DEFAULT_SUBAGENT_MAX_DEPTH,
   SUBAGENT_SPAWNING_TOOLS,
@@ -368,6 +370,7 @@ export {
   isUnsnapshotableWorkspace,
   settleGitCheckpointAnchors,
   type CreateCheckpointOptions,
+  branchWorkspaceCheckpoint,
 } from "./checkpoints.js";
 export { gitCheckpointRoot, gitCheckpointsEnabled, resetGitCheckpointCache, checkpointRefName } from "./checkpointGit.js";
 

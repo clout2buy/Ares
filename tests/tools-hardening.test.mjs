@@ -18,7 +18,6 @@ import {
   ReadTool,
   GrepTool,
   GlobTool,
-  ApplyIntentTool,
   makeWebFetchTool,
   makeWebSearchTool,
   makeComputerUseTool,
@@ -106,7 +105,7 @@ test("Edit: indentation-only miss is RESCUED by the normalized tier (re-indented
   assert.match(text, /^ {2}const total = 2;$/m, "replacement landed at the file's 2-space depth, not the model's 6");
 });
 
-test("Edit not-found: closest near-miss excerpt + ApplyIntent escalation", async () => {
+test("Edit not-found: closest near-miss excerpt + re-Read escalation", async () => {
   const tmp = await makeTmp();
   const file = path.join(tmp, "near.ts");
   const c = ctx(tmp);
@@ -121,7 +120,7 @@ test("Edit not-found: closest near-miss excerpt + ApplyIntent escalation", async
       assert.match(err.message, /not found/i);
       assert.match(err.message, /Closest near-miss.*line 2/s);
       assert.match(err.message, /computeTotal\(items, taxRate\)/); // shows the real text
-      assert.match(err.message, /use ApplyIntent with a concise instruction \+ sketch/);
+      assert.match(err.message, /re-Read the file and rebuild old_string/);
       return true;
     },
   );
@@ -141,7 +140,7 @@ test("Edit not-found: no plausible near-miss stays clean but still escalates", a
     (err) => {
       assert.match(err.message, /not found/i);
       assert.doesNotMatch(err.message, /Closest near-miss/);
-      assert.match(err.message, /ApplyIntent/);
+      assert.match(err.message, /rebuild old_string/);
       return true;
     },
   );
@@ -272,23 +271,6 @@ test("WebSearch: blank and page-length queries are rejected", async () => {
   assert.match(long.message, /401 chars/);
 
   const ok = await tool.validateInput({ query: "node test runner", max_results: 10 });
-  assert.equal(ok.ok, true);
-});
-
-// ─── ApplyIntent ─────────────────────────────────────────────────────────────
-
-test("ApplyIntent: whitespace-only instructions or sketch are rejected", async () => {
-  const c = ctx("D:/proj");
-  const noSketch = await ApplyIntentTool.validateInput({ file_path: "a.ts", instructions: "do it", sketch: "  \n " }, c);
-  assert.equal(noSketch.ok, false);
-  assert.match(noSketch.message, /sketch is blank/);
-  assert.match(noSketch.message, /existing code/);
-
-  const noInstr = await ApplyIntentTool.validateInput({ file_path: "a.ts", instructions: "   ", sketch: "content" }, c);
-  assert.equal(noInstr.ok, false);
-  assert.match(noInstr.message, /instructions is blank/);
-
-  const ok = await ApplyIntentTool.validateInput({ file_path: "a.ts", instructions: "rename x to y", sketch: "const y = 1;" }, c);
   assert.equal(ok.ok, true);
 });
 

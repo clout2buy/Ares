@@ -17,7 +17,7 @@ test("verifier: registered as a built-in subagent type", () => {
 test("verifier: is tool-restricted — no Edit/Write/Task (can't fix-and-pass)", () => {
   const def = new SubagentRegistry().get("verifier");
   assert.ok(def.toolWhitelist, "verifier has an explicit tool whitelist");
-  for (const banned of ["Edit", "Write", "NotebookEdit", "ApplyIntent", "Task", "Conductor", "CodingBackend"]) {
+  for (const banned of ["Edit", "Write", "NotebookEdit", "Task", "Conductor", "CodingBackend"]) {
     assert.equal(def.toolWhitelist.includes(banned), false, `verifier must NOT be able to call ${banned}`);
   }
   // It DOES get what it needs to actually run checks.

@@ -1,6 +1,6 @@
 // Extracted from entry.ts — terminalLines.
 
-import { Session, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWorkspaceCheckpoint, restoreWorkspaceCheckpoint, authStatus, listSessions, type Provider, type SessionSummary, classifyLane } from "@ares/core";
+import { Session, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, listWorkspaceCheckpoints, diffWorkspaceCheckpoint, restoreWorkspaceCheckpoint, branchWorkspaceCheckpoint, authStatus, listSessions, type Provider, type SessionSummary, classifyLane } from "@ares/core";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
@@ -89,6 +89,7 @@ export function inkHelpLines(): string[] {
     "/checkpoint-diff <id>  Compare current workspace to a checkpoint.",
     "/undo [N]              Restore the latest pre-write checkpoint (files only).",
     "/rewind [N|id]         Restore files AND cut the conversation back to that checkpoint.",
+    "/checkpoint-branch <name> [id]  Name a checkpoint as a real git branch (merge/discard with git).",
     "/rollback <id>         Restore a checkpoint snapshot.",
     "/resume [id|last]      Replay a saved session into model context.",
     "/workspace <path>      Switch the active workspace for tool calls.",
@@ -587,4 +588,24 @@ export function usageMeter(usage: { inputTokens: number; outputTokens: number; c
       ? `$${(((Math.max(0, usage.inputTokens - cached) / 1_000_000) * inputPerM) + ((usage.outputTokens / 1_000_000) * outputPerM)).toFixed(4)}`
       : "$n/a";
   return `${cost} / ${Math.round(durationMs / 1000)}s / ${usage.inputTokens + usage.outputTokens} tokens / ${cachePct}% cached`;
+}
+
+/** /checkpoint-branch <name> [id] — name a checkpoint as a real git branch.
+ *  Default target: this session's newest checkpoint (the task's endpoint). */
+export async function checkpointBranchLines(live: LiveSession, rawArg = ""): Promise<string[]> {
+  const parts = rawArg.trim().split(/\s+/).filter(Boolean);
+  const [branchName, idPrefix] = parts;
+  if (!branchName) return ["Usage: /checkpoint-branch <branch-name> [checkpoint-id]"];
+  const own = (await listWorkspaceCheckpoints(live.context.workspace)).filter((cp) => cp.sessionId === live.session.meta.id);
+  const target = idPrefix ? own.find((cp) => cp.id.startsWith(idPrefix)) : own[0];
+  if (!target) return [idPrefix ? `No checkpoint in this session matches "${idPrefix}".` : "No checkpoints in this session yet."];
+  try {
+    const { branch, commit } = await branchWorkspaceCheckpoint(live.context.workspace, target.id, branchName);
+    return [
+      `Branch ${branch} → ${commit.slice(0, 12)} (checkpoint ${target.id.slice(0, 12)}, ${target.createdAt})`,
+      `Review: git diff main...${branch}   Merge: git merge ${branch}   Discard: git branch -D ${branch}`,
+    ];
+  } catch (err) {
+    return [`checkpoint-branch failed: ${err instanceof Error ? err.message : String(err)}`];
+  }
 }

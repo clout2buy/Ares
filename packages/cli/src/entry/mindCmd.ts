@@ -2,7 +2,7 @@
 
 import { notice } from "../terminalUi.js";
 import { runCrucibleTrials, type Goal, type CapabilityNode } from "@ares/operator";
-import { diagnoseMemory, MemoryRouter, MemoryStore, withConsolidationLock, type MemoryKind } from "@ares/mind";
+import { diagnoseMemory, MemoryRouter, MemoryStore, withConsolidationLock, type MemoryKind, type MemoryOverviewRow } from "@ares/mind";
 import { ParsedArgs, cliRuntimeContext } from "./runtime.js";
 
 function glyphFor(action: "promoted" | "archived" | "demoted" | "held"): string {
@@ -81,6 +81,74 @@ export async function mindCommand(args: ParsedArgs): Promise<number> {
         : notice("Mind", [`no memory found with id ${id}`], "warn"),
     );
     return forgotten ? 0 : 1;
+  }
+
+  if (subcommand === "about") {
+    // The owner-facing "what I know" surface. Read-only (store.overview never
+    // reinforces), owner scope only — a guest:* pool never renders here.
+    const limitFlag = Number(args.flags.get("limit"));
+    const groups = store.overview(Number.isFinite(limitFlag) && limitFlag > 0 ? { limit: limitFlag } : {});
+    if (json) {
+      process.stdout.write(JSON.stringify(groups, null, 2) + "\n");
+      return 0;
+    }
+    const total = groups.semantic.length + groups.procedural.length + groups.episodic.length;
+    if (total === 0) {
+      process.stdout.write(notice("Mind · about", ["I hold no owner-scoped memories yet."], "warn"));
+      return 0;
+    }
+    const renderRow = (r: MemoryOverviewRow): string =>
+      `  ${r.id}  ${r.content}` +
+      `  · str ${r.currentStrength.toFixed(2)}/${r.strength.toFixed(1)} · ×${r.activations} · ${r.ageDays}d` +
+      (r.confidence !== undefined ? ` · conf ${r.confidence.toFixed(2)}` : "") +
+      (r.tags?.length ? ` · ${r.tags.join(",")}` : "");
+    const lines: string[] = ["what I believe about you and this work:"];
+    const sections: Array<[string, MemoryOverviewRow[]]> = [
+      ["believe (semantic)", groups.semantic],
+      ["can do (procedural)", groups.procedural],
+      ["remember happening (episodic)", groups.episodic],
+    ];
+    for (const [label, rows] of sections) {
+      if (rows.length === 0) continue;
+      lines.push(`${label}:`);
+      for (const row of rows) lines.push(renderRow(row));
+    }
+    lines.push('`ares mind edit <id> "..."` corrects · `ares mind forget <id>` deletes');
+    process.stdout.write(notice("Mind · about", lines, "info"));
+    return 0;
+  }
+
+  if (subcommand === "edit") {
+    const id = args.positionals[1] ?? "";
+    const text = (args.flags.get("content") ?? args.positionals.slice(2).join(" ")).trim();
+    if (!id || !text) {
+      process.stderr.write('error: usage: ares mind edit <id> "<corrected text>"\n');
+      return 2;
+    }
+    // Under the consolidation lock: an edit racing consolidate()'s whole-file
+    // rewrite in another process would be silently clobbered otherwise.
+    const result = await withConsolidationLock(memoryFile, () => store.edit(id, text));
+    if (result === undefined) {
+      const held = store.get(id) !== undefined;
+      process.stderr.write(
+        held
+          ? "error: edit skipped — another Ares process holds the consolidation lock; try again in a moment\n"
+          : `error: no memory found with id ${id}\n`,
+      );
+      return 1;
+    }
+    if (json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(
+      notice("Mind · corrected", [
+        `before: ${result.before.content}`,
+        `after:  ${result.after.content}`,
+        `confidence → 1 (you said so) · ${result.after.id}`,
+      ], "success"),
+    );
+    return 0;
   }
 
   if (subcommand === "crucible") {

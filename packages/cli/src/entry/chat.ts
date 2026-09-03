@@ -18,7 +18,7 @@ import { LiveSession, createSession, createSessionWithSelection, guardVisionForT
 import { promptPermission } from "./permissions.js";
 import type { ToolPermissionRequest } from "@ares/core";
 import type { PermissionPromptDecision, TurnEndStatus } from "@ares/protocol";
-import { applyTerminalAutoRouting, applyTerminalRoutingCommand, checkpointDiffLines, checkpointLines, colorUnifiedDiff, contentFromUserInput, doctorSummaryLines, inkHelpLines, legacyProgressText, persistTerminalModelPreference, printResumed, printSessions, requireResumeSessionId, resolveResumeSessionId, resumedLines, rollbackLines, saveTheme, sessionsLines, setTerminalProviderKey, switchTerminalModel, terminalKeyLines, terminalModelCatalogLines, terminalSettingsLines, themeLines, undoLines, rewindLines, usageMeter } from "./terminalLines.js";
+import { applyTerminalAutoRouting, applyTerminalRoutingCommand, checkpointDiffLines, checkpointLines, colorUnifiedDiff, contentFromUserInput, doctorSummaryLines, inkHelpLines, legacyProgressText, persistTerminalModelPreference, printResumed, printSessions, requireResumeSessionId, resolveResumeSessionId, resumedLines, rollbackLines, saveTheme, sessionsLines, setTerminalProviderKey, switchTerminalModel, terminalKeyLines, terminalModelCatalogLines, terminalSettingsLines, themeLines, undoLines, rewindLines, checkpointBranchLines, usageMeter } from "./terminalLines.js";
 import { disposeLiveSession, finishTurn, mindSessionEnded, prepareUserTurn } from "./turnPipeline.js";
 
 export async function runCommand(args: ParsedArgs): Promise<number> {
@@ -265,6 +265,9 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
         }
         if (line === "/rewind" || line.startsWith("/rewind ")) {
           return { kind: "handled", lines: await rewindLines(live, line.slice("/rewind".length)), snapshot: snapshot() };
+        }
+        if (line.startsWith("/checkpoint-branch")) {
+          return { kind: "handled", lines: await checkpointBranchLines(live, line.slice("/checkpoint-branch".length)), snapshot: snapshot() };
         }
         if (line.startsWith("/rollback ")) {
           return { kind: "handled", lines: await rollbackLines(line.slice("/rollback ".length).trim(), live.context), snapshot: snapshot() };

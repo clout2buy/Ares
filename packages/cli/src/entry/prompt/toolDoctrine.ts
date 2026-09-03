@@ -44,8 +44,8 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },
   {
-    tools: ["LSP", "McpListTools", "McpCallTool", "SkillsList", "SkillRead", "CodeMode"],
-    text: "**LSP** (go_to_definition / go_to_references / hover) before any risky refactor. **McpListTools/McpCallTool** only when the owner configured MCP servers. **SkillsList/SkillRead** when a reusable local workflow clearly applies. **CodeMode** for read-heavy batch analysis that would otherwise be many repetitive calls.",
+    tools: ["LSP", "McpListTools", "McpCallTool", "SkillsList", "SkillRead"],
+    text: "**LSP** (go_to_definition / go_to_references / hover) before any risky refactor. **McpListTools/McpCallTool** only when the owner configured MCP servers. **SkillsList/SkillRead** when a reusable local workflow clearly applies.",
   },
   {
     tools: ["PowerShell"],

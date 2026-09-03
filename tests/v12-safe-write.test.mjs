@@ -1,8 +1,9 @@
 // v12 — destructive-write safety: shrink guard + per-file pre-write backups.
 //
-// Regression coverage for the incident where an ApplyIntent full-file sketch
-// (a fragment) overwrote a 1251-line file with 23 lines, unrecoverable because
-// the file lived outside the workspace.
+// Regression coverage for the incident where a full-file sketch (a fragment,
+// via the since-deleted ApplyIntent tool) overwrote a 1251-line file with 23
+// lines, unrecoverable because the file lived outside the workspace. The guard
+// (assessShrink/safeOverwrite) outlives the tool: Write still routes through it.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -10,7 +11,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { ApplyIntentTool, WriteTool, assessShrink } from "../packages/tools/dist/index.js";
+import { WriteTool, assessShrink } from "../packages/tools/dist/index.js";
 
 async function makeTmp() {
   return await fs.mkdtemp(path.join(os.tmpdir(), "ares-safewrite-"));
@@ -47,49 +48,6 @@ test("assessShrink: allows an ordinary refactor that roughly halves a file", () 
 test("assessShrink: ignores tiny originals", () => {
   const v = assessShrink("export const value = 1;\n", "");
   assert.equal(v.catastrophic, false);
-});
-
-test("ApplyIntent: refuses a fragment that would collapse a large file", async () => {
-  const tmp = await makeTmp();
-  const file = path.join(tmp, "village.html");
-  const original = bigFile(1251);
-  await fs.writeFile(file, original, "utf8");
-  const c = ctx(tmp);
-  await stamp(c, file);
-
-  await assert.rejects(
-    ApplyIntentTool.call(
-      { file_path: file, instructions: "Add a loading screen.", sketch: "<style>body{}</style>\n" },
-      c,
-    ),
-    /refusing to replace/i,
-  );
-
-  // The file must be untouched.
-  assert.equal(await fs.readFile(file, "utf8"), original);
-});
-
-test("ApplyIntent: allow_full_replace lets a deliberate rewrite through, with a backup", async () => {
-  const tmp = await makeTmp();
-  const file = path.join(tmp, "a.ts");
-  const original = bigFile(200);
-  await fs.writeFile(file, original, "utf8");
-  const c = ctx(tmp);
-  await stamp(c, file);
-
-  const result = await ApplyIntentTool.call(
-    {
-      file_path: file,
-      instructions: "Gut the file down to a stub.",
-      sketch: "export const stub = true;\n",
-      allow_full_replace: true,
-    },
-    c,
-  );
-
-  assert.equal(await fs.readFile(file, "utf8"), "export const stub = true;");
-  assert.ok(result.output.backupPath, "a backup path is returned");
-  assert.equal(await fs.readFile(result.output.backupPath, "utf8"), original);
 });
 
 test("Write: backs up prior contents before overwriting an existing file", async () => {

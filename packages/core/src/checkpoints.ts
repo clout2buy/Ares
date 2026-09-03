@@ -25,6 +25,9 @@ import {
   gitRestoreTree,
   gitSnapshotTree,
   serializedForWorkspace,
+  gitCommitTree,
+  gitCreateBranch,
+  gitResolveCommit,
 } from "./checkpointGit.js";
 
 /**
@@ -663,4 +666,31 @@ function metaDir(workspace: string): string {
 
 function sha256(input: string | Buffer): string {
   return createHash("sha256").update(input).digest("hex");
+}
+
+/**
+ * Surface a checkpoint as a real git branch — the cheap half of
+ * branch-per-task. The checkpoint chain is already commits under
+ * refs/ares/checkpoints/<session>/…, so this only names a point in it;
+ * merge/diff/discard then belong to ordinary git. Blob-layer checkpoints
+ * (non-git workspaces) cannot be branched and say so.
+ */
+export async function branchWorkspaceCheckpoint(
+  workspace: string,
+  checkpointId: string,
+  branchName: string,
+): Promise<{ branch: string; commit: string }> {
+  const meta = await loadWorkspaceCheckpoint(workspace, checkpointId);
+  if (!(await gitCheckpointRoot(workspace, { ignoreKnob: true })) || meta.layer !== "git" || !meta.gitTree) {
+    throw new Error(`checkpoint ${checkpointId} is blob-layer — branching needs a git workspace checkpoint`);
+  }
+  // The commit anchor is written deferred; settle before trusting the meta.
+  await settleGitCheckpointAnchors(workspace);
+  let commit = meta.gitCommit ?? null;
+  if (!commit) commit = await gitResolveCommit(workspace, checkpointRefName(meta.sessionId, meta.id));
+  // Last resort: the tree survives even when the ref anchor was lost (GC race,
+  // pre-settle crash) — anchor it fresh, parentless, and branch that.
+  if (!commit) commit = await gitCommitTree(workspace, meta.gitTree, `ares checkpoint ${meta.id}`);
+  await gitCreateBranch(workspace, branchName, commit);
+  return { branch: branchName, commit };
 }

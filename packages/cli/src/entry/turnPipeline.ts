@@ -354,6 +354,35 @@ export async function prepareUserTurn(
   live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions");
 }
 
+/**
+ * Memory capture for turns that never pass prepareUserTurn — the Garrison's
+ * remote sessions (Telegram rides there). Same discipline as mindBeforeTurn's
+ * capture half: intent-gated, "turn"-channel (dedupe + salience floor), and
+ * scoped so a guest's words land in guest:<chatId>, never the owner's pool.
+ * Recall INJECTION for remote turns still needs a reminder seam into the
+ * composed child session — this closes the capture half of the gap.
+ * Best-effort by contract: a memory failure never blocks a remote turn.
+ */
+export async function captureRemoteTurn(
+  context: CliRuntimeContext,
+  userMessage: string,
+  tenant: TurnTenant | undefined,
+  source: string,
+): Promise<void> {
+  const text = userMessage.trim();
+  if (!text) return;
+  try {
+    const intent = classifyUserIntent(text);
+    if (!intent.shouldCapture) return;
+    const scope = memoryScopeForTenant(tenant);
+    const writeScope = scope === OWNER_SCOPE ? {} : { scope };
+    const store = await MemoryStore.open(context.mind.memoryFile);
+    await new MemoryRouter(store).write("turn", [{ kind: "episodic", content: text.slice(0, 400), source, ...writeScope }]);
+  } catch {
+    // never break a turn over memory
+  }
+}
+
 async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: TurnTenant): Promise<void> {
   const text = userMessage.trim();
   if (!text) return;

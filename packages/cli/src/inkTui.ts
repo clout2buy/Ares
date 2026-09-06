@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { render, useApp, useInput, useWindowSize } from "ink";
 import type { PermissionMode, Todo, TurnEvent, Usage } from "@ares/protocol";
 import { chatMainRows, mapTone, type ChatFrame } from "./ui/chat/ChatMain.js";
+import { frameDims } from "./ui/layout.js";
 import { RowsView } from "./ui/RowText.js";
 import { flattenTranscript, type LogLine as RowLine, type Row } from "./ui/rows.js";
 import { DEFAULT_TUI_THEME, TUI_THEMES, resolveTheme, tuiTheme } from "./ui/themes.js";
@@ -415,8 +416,8 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
   // Frame geometry — one column and one row short of the terminal, so the
   // last cell never pending-wraps and Ink never takes its overflow path. The
   // frame is TOP-anchored in the alternate screen: app row === terminal row.
-  const frameW = Math.max(1, columns - 1);
-  const frameH = Math.max(1, rows - 1);
+  const bleed = !termCaps().legacyConsole;
+  const { width: frameW, height: frameH } = frameDims(columns, rows, bleed);
   const ovCapacity = overlayCapacity(frameH);
   // Scroll is measured in RENDERED rows; the frame builder reports the budget.
   const frameRef = useRef<ChatFrame | null>(null);
@@ -1339,6 +1340,7 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     glyphs: GLYPHS,
     columns,
     rows,
+    bleed,
     snapshot: { model: snapshot.model, workspace: snapshot.workspace, mode: snapshot.mode },
     flat,
     stats: {

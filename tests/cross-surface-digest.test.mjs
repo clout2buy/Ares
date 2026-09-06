@@ -25,7 +25,9 @@ import { createPlanPressure } from "../packages/cli/dist/entry/planPressure.js";
 
 process.env.ARES_MNEMOSYNE = "0";
 
-const NOW = Date.parse("2026-09-02T18:00:00Z");
+// Anchored to the real clock: prepareUserTurn() reads Date.now(), and the digest
+// only covers the last ~24h — a fixed calendar date went stale after a day.
+const NOW = Date.now() - 10 * 60_000;
 const HOUR = 3_600_000;
 
 function line(ts, event) {

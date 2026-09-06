@@ -8,6 +8,7 @@ import { RowsView } from "./ui/RowText.js";
 import { LIST_FIRST_ROW, launcherRows, listCapacity, type ListItem } from "./ui/launcher.js";
 import { DEFAULT_TUI_THEME, TUI_THEMES, resolveTheme, tuiTheme } from "./ui/themes.js";
 import { glyphsFor, termCaps } from "./ui/term.js";
+import { frameDims } from "./ui/layout.js";
 
 type ProviderId = "ares" | "ollama" | "openai" | "anthropic" | "deepseek" | "openrouter" | "mock";
 type LauncherPhase = "provider" | "ollama" | "openai" | "theme" | "workspace";
@@ -145,7 +146,7 @@ function AresLauncherApp({
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama, ollamaLiveTick]);
   const selectedModel = models[Math.min(selectedOllama, Math.max(0, models.length - 1))] ?? models[0];
   const selectedOpenAIModel = providerModels[Math.min(selectedOpenAI, Math.max(0, providerModels.length - 1))] ?? defaultModelForProvider(currentProvider, options.settings);
-  const maxVisibleModels = listCapacity(Math.max(1, rows - 1));
+  const maxVisibleModels = listCapacity(frameDims(columns, rows, !termCaps().legacyConsole).height);
   const modelWindow = windowAround(selectedOllama, models.length, maxVisibleModels);
   const openAIWindow = windowAround(selectedOpenAI, providerModels.length, maxVisibleModels);
 
@@ -430,8 +431,7 @@ function AresLauncherApp({
     }
   });
 
-  const frameW = Math.max(1, columns - 1);
-  const frameH = Math.max(1, rows - 1);
+  const { width: frameW, height: frameH } = frameDims(columns, rows, !termCaps().legacyConsole);
   const g = GLYPHS;
   const status = (r: ProviderReadiness): { text: string; color: string } =>
     r === "ready" ? { text: `${g.dot} ready`, color: theme.success } : r === "oauth" ? { text: `${g.half} sign in`, color: theme.secondary } : { text: `${g.ring} no key`, color: theme.danger };

@@ -113,11 +113,11 @@ test("palette: header + bounded windowed items with the selection chevron", () =
 
 test("layout: fixed budget sums to height; strips squeeze before the transcript starves", () => {
   const l = computeLayout({ columns: 80, rows: 24, activityRows: 3, hasTodos: true, paletteRows: 9, hasPerm: true });
-  assert.equal(l.height, 23); assert.equal(l.width, 79);
-  assert.equal(layoutTotal(l), 23);
+  assert.equal(l.height, 24); assert.equal(l.width, 80);
+  assert.equal(layoutTotal(l), 24);
   assert.ok(l.transcriptRows >= 3);
   const tiny = computeLayout({ columns: 80, rows: 14, activityRows: 3, hasTodos: true, paletteRows: 9, hasPerm: true });
-  assert.equal(layoutTotal(tiny), 13);
+  assert.equal(layoutTotal(tiny), 14);
   assert.ok(tiny.paletteRows < 9 || tiny.activityRows < 3, "something was squeezed");
   assert.ok(computeLayout({ columns: 49, rows: 24, activityRows: 0, hasTodos: false, paletteRows: 0, hasPerm: false }).tooSmall);
 });

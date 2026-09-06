@@ -38,6 +38,15 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[
   {
+    version: "0.47.1",
+    date: "2026-09-06",
+    title: "Edge to edge",
+    highlights: [
+      { blurb: "The terminal app now fills the window edge to edge — no stray column or row at the border." },
+      { blurb: "The toolbar reads as one quiet row; Ultra no longer shouts." },
+    ],
+  },
+  {
     version: "0.47.0",
     date: "2026-09-06",
     title: "The terminal, rebuilt",

@@ -39,6 +39,7 @@ export interface ChatMainProps {
   glyphs: GlyphSet;
   columns: number;
   rows: number;
+  bleed?: boolean;
   snapshot: { model: string; workspace: string; mode?: string };
   git?: { branch?: string; dirty?: boolean };
   /** Either raw lines (flattened here) or pre-flattened rows (host memoizes). */
@@ -76,6 +77,7 @@ export function chatMainRows(p: ChatMainProps): ChatFrame {
   const layout = computeLayout({
     columns: p.columns,
     rows: p.rows,
+    bleed: p.bleed,
     activityRows: activityWanted,
     hasTodos: (p.todos?.length ?? 0) > 0,
     paletteRows: p.palette ? paletteWants(p.palette.items.length) : 0,

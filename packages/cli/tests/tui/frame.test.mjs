@@ -57,10 +57,11 @@ function props(over = {}) {
 function check(p) {
   const f = chatMainRows(p);
   const text = f.rows.map((r) => r.map((s) => s.text).join(""));
-  assert.equal(f.rows.length, p.rows - 1, `frame height at ${p.columns}x${p.rows}`);
+  assert.equal(f.rows.length, p.bleed === false ? p.rows - 1 : p.rows, `frame height at ${p.columns}x${p.rows}`);
   assert.equal(layoutTotal(f.layout), f.rows.length, "layout total matches drawn rows");
   for (const [i, l] of text.entries()) {
-    assert.ok(textWidth(l) <= p.columns - 1, `row ${i} width ${textWidth(l)} > ${p.columns - 1} at ${p.columns}x${p.rows}: ${JSON.stringify(l)}`);
+    const maxW = p.bleed === false ? p.columns - 1 : p.columns;
+    assert.ok(textWidth(l) <= maxW, `row ${i} width ${textWidth(l)} > ${maxW} at ${p.columns}x${p.rows}: ${JSON.stringify(l)}`);
   }
   return { f, text };
 }
@@ -76,6 +77,12 @@ test("frame: exact height + width at every size, unicode and ascii, dense conten
       assert.ok(/steer|What are we building/.test(text[text.length - 3]), `composer content row at ${columns}x${rows}`);
     }
   }
+});
+
+test("frame: legacy consoles keep a one-cell safety margin", () => {
+  const { f } = check(props({ bleed: false }));
+  assert.equal(f.layout.width, 79);
+  assert.equal(f.layout.height, 23);
 });
 
 test("frame: too-small terminals get a resize notice, never garbage", () => {
@@ -111,7 +118,7 @@ test("frame: scrolling is measured in rendered rows and clamps", () => {
 test("frame: the permission card sits directly above the status row (buttons row = H-6)", () => {
   const p = props({ palette: undefined });
   const { text } = check(p);
-  const H = p.rows - 1;
+  const H = p.rows;
   assert.match(text[H - 6 - 1], /\[1\] allow once\s+\[2\] always allow\s+\[3\] deny/, "buttons on row H-6 (0-based H-7)");
   assert.match(text[H - 5 - 1], /^╰─+╯$/, "card bottom border on H-5");
   assert.match(text[H - 4 - 1], /Working/, "status row right under the card (H-4)");

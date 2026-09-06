@@ -146,7 +146,7 @@ export function toolbarRow(p: { theme: Theme; glyphs: GlyphSet; width: number; a
   TOOLBAR_ITEMS.forEach((item, i) => {
     if (i > 0) row.push({ text: sep, color: t.line });
     const on = p.active === item.id;
-    row.push({ text: item.label, color: on ? t.primary : item.id === "ultra" ? t.purple : t.muted, bold: on || item.id === "ultra" });
+    row.push({ text: item.label, color: on ? t.primary : t.muted, bold: on });
   });
   // Keyboard hints hang off the right edge, dim — out of the way, always there.
   return justify(row, [{ text: "ctrl+p", color: t.muted }, { text: " commands  ", color: t.faint }, { text: "ctrl+o", color: t.muted }, { text: " models ", color: t.faint }], width, g.ellipsis);

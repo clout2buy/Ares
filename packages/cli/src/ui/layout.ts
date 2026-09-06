@@ -30,6 +30,9 @@ export const MIN_ROWS = 14;
 export interface LayoutInput {
   columns: number;
   rows: number;
+  /** Fill the terminal edge to edge. Off for legacy consoles, which scroll
+   *  when the last cell of the last row is written. */
+  bleed?: boolean;
   activityRows: number;
   hasTodos: boolean;
   paletteRows: number;
@@ -55,9 +58,17 @@ export interface Layout {
   toolbarRows: number;
 }
 
+/** Frame size for a terminal. Full-bleed fills every cell; the conservative
+ *  variant leaves one column and one row so a legacy console never
+ *  pending-wraps into a scroll. */
+export function frameDims(columns: number, rows: number, bleed: boolean): { width: number; height: number } {
+  return bleed ? { width: Math.max(1, columns), height: Math.max(1, rows) } : { width: Math.max(1, columns - 1), height: Math.max(1, rows - 1) };
+}
+
 export function computeLayout(input: LayoutInput): Layout {
-  const width = Math.max(1, input.columns - 1);
-  const height = Math.max(1, input.rows - 1);
+  const d = frameDims(input.columns, input.rows, input.bleed !== false);
+  const width = d.width;
+  const height = d.height;
   const tooSmall = input.columns < MIN_COLUMNS || input.rows < MIN_ROWS;
   if (tooSmall) {
     // The resize notice owns the whole frame; no chrome is drawn.

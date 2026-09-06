@@ -36,29 +36,31 @@ export interface ChangelogEntry {
 
 // Newest first. The modal showcases CHANGELOG[0]; older entries are reachable
 // from the "earlier updates" strip.
-export const CHANGELOG: ChangelogEntry[
+export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "0.47.1",
-    date: "2026-09-06",
+    date: "September 2026",
     title: "Edge to edge",
+    tagline: "The terminal app fills the window and reads as one quiet surface.",
     highlights: [
-      { blurb: "The terminal app now fills the window edge to edge — no stray column or row at the border." },
-      { blurb: "The toolbar reads as one quiet row; Ultra no longer shouts." },
+      { icon: "🖥️", title: "Fills the window", blurb: "The terminal app now reaches every edge — no stray column or row at the border.", tag: "Polished" },
+      { icon: "🧘", title: "One quiet toolbar", blurb: "The bottom row reads as one calm menu; keyboard hints sit dim on the right.", tag: "Polished" },
     ],
   },
   {
     version: "0.47.0",
-    date: "2026-09-06",
+    date: "September 2026",
     title: "The terminal, rebuilt",
+    tagline: "A ground-up `ares` terminal app that looks the same on Mac, Linux, and Windows — and never breaks.",
     highlights: [
-      { blurb: "The `ares` terminal app was rebuilt from the ground up. It renders identically on macOS, Linux, and Windows, never overflows or flickers, and drops emoji and painted backgrounds for a clean native look." },
-      { blurb: "Six terminal themes — midnight, graphite, daylight, ocean, rose, forest — that apply live on every screen and stick. Press t in the launcher or use Themes in the toolbar." },
-      { blurb: "The launcher is a fast list: providers, models, themes, workspace. No splash screen." },
-      { blurb: "Effort is a proper control now: click a level or press 1-7 and it takes effect quietly." },
-      { blurb: "Tool calls read as cards — what ran, on what, how long, and the result under it. Subagent progress shows as one calm line." },
-      { blurb: "New one-line install for macOS and Linux: `curl -fsSL https://raw.githubusercontent.com/Clout2buy/Ares/main/scripts/install.sh | bash`." },
+      { icon: "🧱", title: "Never overflows", blurb: "Rebuilt from scratch: it renders identically on macOS, Linux, and Windows, never flickers or clips, and drops emoji and painted backgrounds for a clean native look.", tag: "New" },
+      { icon: "🎨", title: "Six themes that stick", blurb: "Midnight, graphite, daylight, ocean, rose, forest — they apply live on every screen and persist. Press t in the launcher or use Themes in the toolbar.", tag: "New" },
+      { icon: "🚀", title: "Straight to the picker", blurb: "The launcher is a fast list of providers, models, themes, and workspace. No splash screen.", tag: "Faster" },
+      { icon: "🎚️", title: "Effort you can click", blurb: "Pick a level or press 1-7 and it takes effect quietly — no fake commands in your chat.", tag: "Polished" },
+      { icon: "🧾", title: "Tool calls as cards", blurb: "What ran, on what, how long, and the result underneath. Subagent progress shows as one calm line.", tag: "Polished" },
+      { icon: "🍎", title: "One-line Mac install", blurb: "curl -fsSL https://raw.githubusercontent.com/clout2buy/Ares/main/scripts/install.sh | bash", tag: "New" },
     ],
-  },] = [
+  },
   {
     version: "0.45.0",
     date: "August 2026",

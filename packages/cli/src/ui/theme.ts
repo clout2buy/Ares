@@ -1,11 +1,21 @@
-// The "slate" TUI identity — the ground-up rebuild's face.
+// The TUI's face: macOS system colors on the terminal's own background.
 //
-// Cool graphite + a single cyan-teal primary: architectural, calm, code-editor
-// adjacent. Deliberately ZERO fire-theme DNA — no crimson, ember, molten purple,
-// or forge gradients. These semantic role names are canonical for the whole
-// rebuilt TUI; every ui/* component reads colors from here, never literals.
+// Three rules that came out of the cross-platform breakage:
+//   1. NO painted backgrounds. The old face filled every cell with near-black
+//      hex — on 256-color terminals (macOS Terminal.app, most Linux defaults)
+//      those collapsed into blotchy gray bands; on light terminals it was a
+//      dark slab. The terminal owns its background; we only tint text.
+//   2. Every role has a 16-color twin. When the sink can't do truecolor the
+//      palette degrades to named ANSI colors on purpose instead of letting
+//      chalk quantize hex into mud.
+//   3. Vibrant accents, neutral text — Apple's system palette: blue for the
+//      primary action, green/orange/red for state, purple + teal for agents
+//      and secondary emphasis. Text steps are the macOS label hierarchy.
+
+import { termCaps, type ColorLevel } from "./term.js";
 
 export interface SlateTheme {
+  /** Retained for the launcher's bordered panels; never painted full-screen. */
   bg: string;
   surface: string;
   surfaceAlt: string;
@@ -20,31 +30,67 @@ export interface SlateTheme {
   success: string;
   danger: string;
   warn: string;
-  /** Text drawn ON a primary/selection background (dark-on-teal). */
   accentText: string;
+  /** macOS extras: purple (agents), teal (secondary highlights), pink. */
+  purple: string;
+  teal: string;
+  pink: string;
 }
+export type Theme = SlateTheme;
 
-export const SLATE: SlateTheme = {
-  bg: "#0e1116",
-  surface: "#161b22",
-  surfaceAlt: "#1c2230",
-  line: "#2b3240",
-  faint: "#4a5568",
-  muted: "#7d8899",
-  text: "#d7dde5",
-  primary: "#4ec9b0",
-  primaryDim: "#3a9a88",
-  secondary: "#6ea8fe",
-  active: "#e0a458",
-  success: "#54c98c",
-  danger: "#e5484d",
-  warn: "#d9a441",
-  accentText: "#0e1116",
+/** Truecolor tier — Apple system colors (dark appearance). */
+export const AQUA: Theme = {
+  bg: "#1c1c1e",
+  surface: "#2c2c2e",
+  surfaceAlt: "#3a3a3c",
+  line: "#48484a",
+  faint: "#636366",
+  muted: "#98989d",
+  text: "#e5e5ea",
+  primary: "#0a84ff",
+  primaryDim: "#0060df",
+  secondary: "#5ac8fa",
+  active: "#ff9f0a",
+  success: "#30d158",
+  danger: "#ff453a",
+  warn: "#ffd60a",
+  accentText: "#ffffff",
+  purple: "#bf5af2",
+  teal: "#64d2ff",
+  pink: "#ff375f",
 };
 
-// The wordmark gradient, top→bottom: cool blue → teal → mint. (The old face's
-// tell was purple→crimson→ember; this is deliberately the opposite temperature.)
-export const LOGO_GRADIENT = ["#6ea8fe", "#4ec9b0", "#3a9a88", "#54c98c", "#7dd3c0"];
+/** 16-color tier — named ANSI, so the theme survives any terminal. */
+export const AQUA_ANSI: Theme = {
+  bg: "black",
+  surface: "black",
+  surfaceAlt: "gray",
+  line: "gray",
+  faint: "gray",
+  muted: "white",
+  text: "whiteBright",
+  primary: "blueBright",
+  primaryDim: "blue",
+  secondary: "cyanBright",
+  active: "yellowBright",
+  success: "greenBright",
+  danger: "redBright",
+  warn: "yellow",
+  accentText: "whiteBright",
+  purple: "magentaBright",
+  teal: "cyan",
+  pink: "magenta",
+};
+
+export function themeFor(level: ColorLevel = termCaps().colorLevel): Theme {
+  return level >= 2 ? AQUA : AQUA_ANSI;
+}
+
+/** The live theme for this process (probed once). */
+export const SLATE: Theme = themeFor();
+
+// Wordmark gradient — blue → teal → mint, the macOS "vibrant" sweep.
+export const LOGO_GRADIENT = ["#0a84ff", "#5ac8fa", "#64d2ff", "#30d158", "#5ac8fa"];
 
 /** Pick a gradient stop for row `i` of `rows` total (nearest-stop mapping). */
 export function gradientAt(i: number, rows: number): string {

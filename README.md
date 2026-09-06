@@ -21,7 +21,17 @@ The repository is a pnpm workspace. Source lives under `packages/`; the optional
 
 ## Quick start
 
-Requires **Node 22+** and **pnpm 10+** (`corepack enable` will provision pnpm).
+**macOS / Linux, one line** (needs git + Node 22 — `brew install node` on a Mac):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clout2buy/Ares/main/scripts/install.sh | bash
+```
+
+That clones into `~/.ares-src`, builds, and drops an `ares` launcher in
+`~/.local/bin`. It never uses `sudo` and never edits your shell config; re-run it to
+update. Then just type `ares`.
+
+**From a checkout** — requires **Node 22+** and **pnpm 10+** (`corepack enable` will provision pnpm).
 
 ```bash
 git clone https://github.com/clout2buy/Ares.git

@@ -41,6 +41,9 @@ async function encryptSecretFields(settings: UiSettings): Promise<UiSettings> {
 
 export interface UiSettings {
   theme?: ThemeName;
+  /** The TUI face (chat screen + launcher): midnight · graphite · daylight ·
+   *  ocean · rose · forest. Separate from `theme`, which colors plain output. */
+  tuiTheme?: string;
   lastProvider?: "openai" | "ollama" | "mock" | "openrouter" | "anthropic" | "deepseek" | "ares" | "custom" | "moa";
   lastOpenAIModel?: string;
   lastOllamaModel?: string;
@@ -196,8 +199,18 @@ export async function saveUiSettings(settings: UiSettings): Promise<void> {
   await writeFile(filePath, JSON.stringify(onDisk, null, 2) + "\n", "utf8");
 }
 
+// Read-modify-write is serialized through one in-process queue. Without it two
+// quick writes interleave — the launcher's theme pick and the model-preference
+// write that follows Enter both loaded the file, and the second save dropped
+// the first patch. That was "enter doesn't save the theme".
+let settingsWriteChain: Promise<unknown> = Promise.resolve();
+
 export async function updateUiSettings(patch: Partial<UiSettings>): Promise<UiSettings> {
-  const next = { ...(await loadUiSettings()), ...patch };
-  await saveUiSettings(next);
-  return next;
+  const run = settingsWriteChain.then(async () => {
+    const next = { ...(await loadUiSettings()), ...patch };
+    await saveUiSettings(next);
+    return next;
+  });
+  settingsWriteChain = run.catch(() => undefined);
+  return run;
 }

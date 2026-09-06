@@ -95,6 +95,7 @@ export async function launcherCommand(args: ParsedArgs): Promise<number> {
   setTheme(action.theme);
   await persistTerminalModelPreference(action.provider, action.model, {
     theme: action.theme,
+    ...(action.tuiTheme ? { tuiTheme: action.tuiTheme } : {}),
     favoriteOllamaModels: action.favoriteOllamaModels,
     favoriteOpenAIModels: action.favoriteOpenAIModels,
   });
@@ -143,8 +144,13 @@ export async function chatCommand(args: ParsedArgs, resumeSessionId?: string): P
     // detached; the NEXT send awaits it first, so the cost hides in the user's
     // think-time instead of a dead spinner.
     let pendingFinish: Promise<void> = Promise.resolve();
+    const uiSettings = await loadUiSettings();
     return await runInkChat({
       snapshot,
+      initialTheme: uiSettings.tuiTheme,
+      persistSettings: (patch) => {
+        void updateUiSettings(patch);
+      },
       resumedLines: live.resumed ? resumedLines(live.resumed) : undefined,
       listModelOptions: (provider) => daemonModelCatalog(provider),
       registerPermissionHandler: (handler) => {

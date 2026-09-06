@@ -1,29 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
+import { render, useApp, useInput, useWindowSize } from "ink";
 import { OLLAMA_CLOUD_MODELS, type OllamaCloudModel } from "@ares/core";
-import { availableThemes, currentThemeName, setTheme, type ThemeName } from "./terminalUi.js";
+import { currentThemeName, type ThemeName } from "./terminalUi.js";
 import type { UiSettings } from "./uiSettings.js";
 import { motionEnabled } from "./tuiElite.js";
-import { SLATE } from "./ui/theme.js";
-import { IntroScreen } from "./ui/IntroScreen.js";
-import { ProviderSelect, providerHitTest } from "./ui/ProviderSelect.js";
-import {
-  bladeSweep,
-  emberRain,
-  fireWordmark,
-  flameLine,
-  forgeStrike,
-  introStageAt,
-  INTRO_HARD_CAP_MS,
-  INTRO_TICK_MS,
-  INTRO_TOTAL_MS,
-  STRIKE_FRAME_COUNT,
-  WORDMARK_LETTERS,
-  WORDMARK_ROWS,
-  WORDMARK_WIDTH,
-  type FxPalette,
-  type FxSpan,
-} from "./tuiFx.js";
+import { RowsView } from "./ui/RowText.js";
+import { LIST_FIRST_ROW, launcherRows, listCapacity, type ListItem } from "./ui/launcher.js";
+import { DEFAULT_TUI_THEME, TUI_THEMES, resolveTheme, tuiTheme } from "./ui/themes.js";
+import { glyphsFor, termCaps } from "./ui/term.js";
 
 type ProviderId = "ares" | "ollama" | "openai" | "anthropic" | "deepseek" | "openrouter" | "mock";
 type LauncherPhase = "provider" | "ollama" | "openai" | "theme" | "workspace";
@@ -45,6 +29,8 @@ export type LauncherAction =
       provider: ProviderId;
       model: string;
       theme: ThemeName;
+      /** The TUI face picked in the launcher — persisted with the model choice. */
+      tuiTheme?: string;
       workspace?: string;
       favoriteOllamaModels: string[];
       favoriteOpenAIModels: string[];
@@ -60,43 +46,9 @@ export interface LauncherOptions {
   onSettingsChange?: (patch: Partial<UiSettings>) => void | Promise<void>;
 }
 
-interface LauncherTheme {
-  frame: string;
-  accent: string;
-  accent2: string;
-  accent3: string;
-  text: string;
-  dim: string;
-  success: string;
-  warn: string;
-  error: string;
-}
-
 const h = React.createElement;
 
-const LAUNCHER_THEMES: Record<ThemeName, LauncherTheme> = {
-  rage: { frame: "#d6402e", accent: "#ff6a44", accent2: "#ffb24d", accent3: "#ff6a30", text: "#ece3d9", dim: "#8b756d", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
-  bronze: { frame: "#c79a4e", accent: "#e6bd72", accent2: "#ffd877", accent3: "#e0a93c", text: "#ece0cf", dim: "#8b7a5d", success: "#6dc398", warn: "#ffd877", error: "#e36258" },
-  crimson: { frame: "#c0504a", accent: "#e87a72", accent2: "#ff9a8f", accent3: "#e36258", text: "#ece0dd", dim: "#9b756d", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
-  steel: { frame: "#6fb3ae", accent: "#a6e0da", accent2: "#95e6dd", accent3: "#5fb8b0", text: "#dceae9", dim: "#6d8b87", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
-  nightfall: { frame: "#8b8bd9", accent: "#b6b6f5", accent2: "#c4b6ff", accent3: "#9a8bef", text: "#e3e3f0", dim: "#6d6d8b", success: "#6dc398", warn: "#ffb24d", error: "#ff5740" },
-  verdant: { frame: "#6dc398", accent: "#9fe7bd", accent2: "#93eab8", accent3: "#59c08c", text: "#dceae3", dim: "#6d8b7a", success: "#6dc398", warn: "#ffd877", error: "#ff5740" },
-  cyberpunk: { frame: "magenta", accent: "magenta", accent2: "cyan", accent3: "blue", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  minimal: { frame: "gray", accent: "cyan", accent2: "white", accent3: "blue", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  matrix: { frame: "green", accent: "green", accent2: "green", accent3: "yellow", text: "green", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  neon: { frame: "blue", accent: "blue", accent2: "cyan", accent3: "magenta", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  split: { frame: "magenta", accent: "magenta", accent2: "blue", accent3: "cyan", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  professional: { frame: "white", accent: "white", accent2: "gray", accent3: "green", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  amber: { frame: "yellow", accent: "yellow", accent2: "white", accent3: "cyan", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  dashboard: { frame: "cyan", accent: "cyan", accent2: "blue", accent3: "magenta", text: "white", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  light: { frame: "blue", accent: "blue", accent2: "cyan", accent3: "green", text: "black", dim: "gray", success: "green", warn: "yellow", error: "red" },
-  midnight: { frame: "blue", accent: "blueBright", accent2: "magentaBright", accent3: "cyanBright", text: "white", dim: "gray", success: "greenBright", warn: "yellowBright", error: "redBright" },
-  "mono-pro": { frame: "gray", accent: "whiteBright", accent2: "white", accent3: "whiteBright", text: "white", dim: "gray", success: "white", warn: "yellowBright", error: "redBright" },
-  solarized: { frame: "yellow", accent: "yellowBright", accent2: "cyanBright", accent3: "blueBright", text: "white", dim: "gray", success: "greenBright", warn: "yellow", error: "redBright" },
-  synthwave: { frame: "magentaBright", accent: "magentaBright", accent2: "cyanBright", accent3: "blueBright", text: "white", dim: "blueBright", success: "greenBright", warn: "yellowBright", error: "redBright" },
-  graphite: { frame: "gray", accent: "whiteBright", accent2: "cyanBright", accent3: "greenBright", text: "white", dim: "gray", success: "greenBright", warn: "yellowBright", error: "redBright" },
-  oxide: { frame: "red", accent: "redBright", accent2: "yellowBright", accent3: "cyanBright", text: "white", dim: "gray", success: "greenBright", warn: "yellowBright", error: "redBright" },
-};
+const GLYPHS = glyphsFor();
 
 type ProviderReadiness = "ready" | "needs-key" | "oauth";
 
@@ -165,48 +117,24 @@ function AresLauncherApp({
     return Math.max(0, ollamaModels().findIndex((m) => m.id === model));
   });
   const [selectedOpenAI, setSelectedOpenAI] = useState(0);
-  const [selectedTheme, setSelectedTheme] = useState<ThemeName>(currentThemeName());
+  // Plain-output theme rides along unchanged; the TUI face is `tuiThemeId`.
+  const selectedTheme: ThemeName = currentThemeName();
+  const [tuiThemeId, setTuiThemeId] = useState<string>(options.settings.tuiTheme ?? DEFAULT_TUI_THEME);
   const [favoriteOllama, setFavoriteOllama] = useState<string[]>(options.settings.favoriteOllamaModels ?? []);
   const [favoriteOpenAI, setFavoriteOpenAI] = useState<string[]>(options.settings.favoriteOpenAIModels ?? []);
   const [workspace, setWorkspace] = useState(options.workspace);
   const [workspaceDraft, setWorkspaceDraft] = useState(options.workspace);
   const previousPhase = useRef<LauncherPhase>("provider");
-  const theme =
-    process.env.ARES_TUI !== "classic"
-      ? { frame: SLATE.line, accent: SLATE.primary, accent2: SLATE.secondary, accent3: SLATE.primaryDim, text: SLATE.text, dim: SLATE.muted, success: SLATE.success, warn: SLATE.warn, error: SLATE.danger }
-      : LAUNCHER_THEMES[selectedTheme] ?? LAUNCHER_THEMES.rage;
+  const theme = resolveTheme(tuiThemeId, termCaps().colorLevel);
   const currentProvider = PROVIDER_OPTIONS[Math.min(selectedProvider, PROVIDER_OPTIONS.length - 1)]?.id ?? "ollama";
 
-  // ── Boot intro + idle fire ────────────────────────────────────────────────
-  // One clock for both: while the intro plays the interval runs at 66ms; once
-  // it ends (or is skipped) the SAME effect re-arms at 500ms for the header's
-  // subtle idle flicker. Non-TTY / ARES_NO_MOTION → zero timers, static face.
-  // ARES_NO_INTRO=1 skips the cinematic but keeps the idle flicker.
-  const introEligible = motionEnabled() && process.env.ARES_NO_INTRO !== "1";
-  const [introActive, setIntroActive] = useState(introEligible);
-  const [fxTick, setFxTick] = useState(0);
-  const introStart = useRef(Date.now());
-  const skipIntro = () => {
-    setIntroActive(false);
-    setFxTick(0); // restart the idle clock so the header lands on a calm frame
-  };
+  // One slow clock for the cursor blink (workspace input). Static without motion.
+  const [tick, setTick] = useState(0);
   useEffect(() => {
-    if (!motionEnabled()) return undefined; // static rendering: no timers to leak
-    const id = setInterval(() => {
-      if (introActive && Date.now() - introStart.current >= INTRO_HARD_CAP_MS) {
-        // Wall-clock kill switch: a stalled event loop can never hold the deck
-        // hostage past the 2.2s budget, no matter how few ticks fired.
-        skipIntro();
-        return;
-      }
-      setFxTick((tick) => tick + 1);
-    }, introActive ? INTRO_TICK_MS : 500);
-    return () => clearInterval(id); // cleared on skip (re-arm) and on unmount
-  }, [introActive]);
-  useEffect(() => {
-    // Storyboard complete → hand over to the deck (idle-flicker interval re-arms).
-    if (introActive && fxTick * INTRO_TICK_MS >= INTRO_TOTAL_MS) skipIntro();
-  }, [introActive, fxTick]);
+    if (!motionEnabled()) return undefined;
+    const id = setInterval(() => setTick((t) => t + 1), 500);
+    return () => clearInterval(id);
+  }, []);
   const [ollamaLiveTick, setOllamaLiveTick] = useState(0);
   useEffect(() => {
     void refreshLiveOllamaModels(options.settings).then((live) => {
@@ -217,10 +145,7 @@ function AresLauncherApp({
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama, ollamaLiveTick]);
   const selectedModel = models[Math.min(selectedOllama, Math.max(0, models.length - 1))] ?? models[0];
   const selectedOpenAIModel = providerModels[Math.min(selectedOpenAI, Math.max(0, providerModels.length - 1))] ?? defaultModelForProvider(currentProvider, options.settings);
-  // The fire wordmark header costs 6 extra rows (5 letters + flame divider) —
-  // only spend them on tall terminals, and shrink the model window to match.
-  const showWordmark = rows >= 28;
-  const maxVisibleModels = Math.max(8, rows - (showWordmark ? 21 : 15));
+  const maxVisibleModels = listCapacity(Math.max(1, rows - 1));
   const modelWindow = windowAround(selectedOllama, models.length, maxVisibleModels);
   const openAIWindow = windowAround(selectedOpenAI, providerModels.length, maxVisibleModels);
 
@@ -235,11 +160,8 @@ function AresLauncherApp({
   };
 
   useTerminalMouseMode();
-  // TODO(mouse): these hardcoded hitboxes move to the dedicated mouse module
-  // when it lands; until then we shift them by the fire header's extra rows.
   function handleMouseEvent(raw: TerminalMouseEvent) {
-    const headerExtra = (showWordmark ? WORDMARK_ROWS : 0) + 1; // wordmark rows + flame divider
-    const event: TerminalMouseEvent = { ...raw, y: raw.y - headerExtra };
+    const event: TerminalMouseEvent = raw;
     if (event.release) return;
     if (event.button === 64) {
       if (phase === "ollama") setSelectedOllama((prev) => Math.max(0, prev - 3));
@@ -253,40 +175,20 @@ function AresLauncherApp({
     }
     if (event.button !== 0) return;
     if (phase === "provider") {
-      if (process.env.ARES_TUI !== "classic") {
-        // Slate grid: exact flexbox-mirror hit-test on RAW terminal coords —
-        // the classic headerExtra shift and hardcoded zones belong to the old
-        // left-anchored deck and landed clicks nowhere near the centered cards.
-        const hit = providerHitTest(raw.x, raw.y, columns, rows, PROVIDER_OPTIONS.length, !!process.env.npm_package_version);
-        if (hit != null) {
-          if (hit === selectedProvider) {
-            // Second click on the selected card = confirm (the hint's contract).
-            setPhase(PROVIDER_OPTIONS[hit].id === "ollama" ? "ollama" : "openai");
-            setSelectedOpenAI(0);
-          } else {
-            setSelectedProvider(hit);
-          }
-        }
-        return;
-      }
-      if (event.y >= 8 && event.y <= 21 && event.x >= 2 && event.x <= 108) {
-        const col = event.x >= 74 ? 2 : event.x >= 38 ? 1 : 0;
-        const row = event.y >= 15 ? 1 : 0;
-        const index = row * 3 + col;
-        if (PROVIDER_OPTIONS[index]) {
-          setSelectedProvider(index);
-          setPhase(PROVIDER_OPTIONS[index].id === "ollama" ? "ollama" : "openai");
+      const hit = event.y - LIST_FIRST_ROW;
+      if (hit >= 0 && hit < PROVIDER_OPTIONS.length) {
+        if (hit === selectedProvider) {
+          // Second click on the selected row = confirm (the footer's contract).
+          setPhase(PROVIDER_OPTIONS[hit].id === "ollama" ? "ollama" : "openai");
           setSelectedOpenAI(0);
-          return;
+        } else {
+          setSelectedProvider(hit);
         }
       }
-      if (event.y >= 16 && event.y <= 22 && event.x >= 2 && event.x <= 36) finish({ kind: "login" });
-      if (event.y >= 16 && event.y <= 22 && event.x >= 38 && event.x <= 72) finish({ kind: "doctor" });
-      if (event.y >= 16 && event.y <= 22 && event.x >= 74 && event.x <= 108) finish({ kind: "help" });
       return;
     }
     if (phase === "ollama") {
-      const absolute = modelWindow.start + event.y - 11;
+      const absolute = modelWindow.start + event.y - LIST_FIRST_ROW;
       if (absolute >= 0 && absolute < models.length) {
         if (absolute === selectedOllama && models[absolute]) {
           finish({
@@ -294,6 +196,7 @@ function AresLauncherApp({
             provider: "ollama",
             model: models[absolute].id,
             theme: selectedTheme,
+            tuiTheme: tuiThemeId,
             workspace,
             favoriteOllamaModels: favoriteOllama,
             favoriteOpenAIModels: favoriteOpenAI,
@@ -305,7 +208,7 @@ function AresLauncherApp({
       return;
     }
     if (phase === "openai") {
-      const absolute = openAIWindow.start + event.y - 11;
+      const absolute = openAIWindow.start + event.y - LIST_FIRST_ROW;
       if (absolute >= 0 && absolute < providerModels.length) {
         if (absolute === selectedOpenAI) {
           finish({
@@ -313,6 +216,7 @@ function AresLauncherApp({
             provider: currentProvider,
             model: providerModels[absolute] ?? defaultModelForProvider(currentProvider, options.settings),
             theme: selectedTheme,
+            tuiTheme: tuiThemeId,
             workspace,
             favoriteOllamaModels: favoriteOllama,
             favoriteOpenAIModels: favoriteOpenAI,
@@ -324,29 +228,16 @@ function AresLauncherApp({
       return;
     }
     if (phase === "theme") {
-      const themes = availableThemes();
-      const absolute = event.y - 11;
-      const selected = themes[absolute];
-      if (selected) {
-        setSelectedTheme(selected);
-        setTheme(selected);
-        void options.onSettingsChange?.({ theme: selected });
+      const pick = TUI_THEMES[event.y - LIST_FIRST_ROW];
+      if (pick) {
+        setTuiThemeId(pick.id);
+        void options.onSettingsChange?.({ tuiTheme: pick.id });
         setPhase(previousPhase.current);
       }
     }
   }
 
   useInput((value, key) => {
-    if (introActive) {
-      // ANY key or mouse click (clicks arrive through useInput as SGR
-      // sequences) skips straight to the deck. Ctrl+C still quits.
-      if (key.ctrl && value === "c") {
-        finish({ kind: "quit" });
-        return;
-      }
-      skipIntro();
-      return;
-    }
     const mouseEvents = parseMouseEvents(value);
     if (mouseEvents.length > 0 || looksLikeMouseFragment(value)) {
       for (const event of mouseEvents) handleMouseEvent(event);
@@ -425,15 +316,21 @@ function AresLauncherApp({
     }
 
     if (phase === "theme") {
-      const themes = availableThemes();
-      const current = themes.indexOf(selectedTheme);
-      if (previousKey) setSelectedTheme(themes[(current - 1 + themes.length) % themes.length] ?? "amber");
-      if (nextKey) setSelectedTheme(themes[(current + 1) % themes.length] ?? "amber");
-      if (key.return) {
-        setTheme(selectedTheme);
-        void options.onSettingsChange?.({ theme: selectedTheme });
+      // Themes preview LIVE as you move; enter / number keys commit + persist.
+      const idx = Math.max(0, TUI_THEMES.findIndex((t) => t.id === tuiThemeId));
+      const commit = (id: string) => {
+        setTuiThemeId(id);
+        void options.onSettingsChange?.({ tuiTheme: id });
         setPhase(previousPhase.current);
+      };
+      if (/^[1-9]$/.test(value)) {
+        const pick = TUI_THEMES[Number(value) - 1];
+        if (pick) commit(pick.id);
+        return;
       }
+      if (previousKey) setTuiThemeId(TUI_THEMES[(idx - 1 + TUI_THEMES.length) % TUI_THEMES.length].id);
+      if (nextKey) setTuiThemeId(TUI_THEMES[(idx + 1) % TUI_THEMES.length].id);
+      if (key.return) commit(tuiThemeId);
       return;
     }
 
@@ -477,6 +374,7 @@ function AresLauncherApp({
           provider: "ollama",
           model: selectedModel.id,
           theme: selectedTheme,
+          tuiTheme: tuiThemeId,
           workspace,
           favoriteOllamaModels: favoriteOllama,
           favoriteOpenAIModels: favoriteOpenAI,
@@ -523,6 +421,7 @@ function AresLauncherApp({
           provider: currentProvider,
           model: selectedOpenAIModel,
           theme: selectedTheme,
+          tuiTheme: tuiThemeId,
           workspace,
           favoriteOllamaModels: favoriteOllama,
           favoriteOpenAIModels: favoriteOpenAI,
@@ -531,428 +430,78 @@ function AresLauncherApp({
     }
   });
 
-  const slateUi = process.env.ARES_TUI !== "classic";
+  const frameW = Math.max(1, columns - 1);
+  const frameH = Math.max(1, rows - 1);
+  const g = GLYPHS;
+  const status = (r: ProviderReadiness): { text: string; color: string } =>
+    r === "ready" ? { text: `${g.dot} ready`, color: theme.success } : r === "oauth" ? { text: `${g.half} sign in`, color: theme.secondary } : { text: `${g.ring} no key`, color: theme.danger };
+  const themeLabel = tuiTheme(tuiThemeId).label.toLowerCase();
+  const sep = g.sep;
+  const base = { theme, glyphs: g, width: frameW, height: frameH, workspace, themeLabel };
 
-  if (introActive) {
-    return slateUi
-      ? h(IntroScreen, { theme: SLATE, tick: fxTick, width: columns, height: rows })
-      : h(IntroCinematic, { theme, tick: fxTick, columns, rows });
-  }
-
-  // Slate provider grid (the classic model/theme/workspace decks follow for now).
-  if (slateUi && phase === "provider") {
-    return h(
-      Box,
-      { flexDirection: "column", width: columns, height: rows, justifyContent: "center" },
-      h(ProviderSelect, {
-        theme: SLATE,
-        providers: PROVIDER_OPTIONS.map((p) => ({
-          id: p.id,
-          title: p.title,
-          body: p.body,
-          readiness: providerReadiness(p.id, options.settings),
-        })),
-        selectedIndex: selectedProvider,
-        tick: fxTick,
-        width: columns,
-        version: process.env.npm_package_version,
-      }),
-    );
-  }
-
-  return h(
-    Box,
-    { flexDirection: "column", width: columns, height: rows, paddingX: 1 },
-    h(LauncherHeader, { theme, phase, selectedTheme, workspace, fxTick, columns, showWordmark }),
-    phase === "provider"
-      ? h(ProviderDeck, { theme, selectedProvider, settings: options.settings })
-      : phase === "ollama"
-        ? h(ModelDeck, {
-            theme,
-            title: "Ollama Cloud",
-            subtitle: "Cloud tags launch under the hood; clean names stay on the deck.",
-            models: models.slice(modelWindow.start, modelWindow.end),
-            offset: modelWindow.start,
-            selected: selectedOllama,
-            favorites: favoriteOllama,
-          })
-        : phase === "openai"
-          ? h(OpenAIModelDeck, {
-              theme,
-              provider: currentProvider,
-              models: providerModels.slice(openAIWindow.start, openAIWindow.end),
-              offset: openAIWindow.start,
-              selected: selectedOpenAI,
-              favorites: currentProvider === "openai" ? favoriteOpenAI : [],
-            })
-          : phase === "theme"
-            ? h(ThemeDeck, { theme, selectedTheme })
-            : h(WorkspaceDeck, { theme, workspaceDraft }),
-    h(LauncherFooter, { theme, phase }),
-  );
-}
-
-// ─── Fire FX plumbing (theme → palette, spans → Ink) ──────────────────────────
-
-/** The rage theme's frame/accent/accent2 ARE crimson/ember/gold — every other
- *  theme re-tints the fire through the same mapping instead of fighting it. */
-function paletteFromTheme(theme: LauncherTheme): FxPalette {
-  return { crimson: theme.frame, ember: theme.accent, gold: theme.accent2, steel: theme.accent3, dim: theme.dim };
-}
-
-/** Render one FX span row as nested Ink <Text> runs (dim → dimColor). */
-function FxLine({ spans }: { spans: FxSpan[] }) {
-  return h(
-    Text,
-    null,
-    ...spans.map((span, index) => h(Text, { key: index, color: span.color, bold: span.bold, dimColor: span.dim }, span.text)),
-  );
-}
-
-function LauncherHeader({
-  theme,
-  phase,
-  selectedTheme,
-  workspace,
-  fxTick,
-  columns,
-  showWordmark,
-}: {
-  theme: LauncherTheme;
-  phase: LauncherPhase;
-  selectedTheme: ThemeName;
-  workspace: string;
-  fxTick: number;
-  columns: number;
-  showWordmark: boolean;
-}) {
-  const palette = paletteFromTheme(theme);
-  // fxTick advances every ~500ms post-intro (0 forever when motion is off), so
-  // the wordmark gradient creeps and the flame divider breathes — alive, cheap.
-  const divider = flameLine(fxTick, Math.max(10, Math.min(columns - 6, 96)), palette);
-  return h(
-    Box,
-    {
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: theme.frame,
-      paddingX: 1,
-      marginTop: 1,
-      marginBottom: 1,
-    },
-    ...(showWordmark
-      ? fireWordmark(fxTick, palette).map((row, index) => h(FxLine, { key: `wm${index}`, spans: row }))
-      : []),
-    h(
-      Box,
-      { justifyContent: "space-between" },
-      h(Box, { gap: 1 }, h(Text, { color: theme.accent, bold: true }, "ARES"), h(Text, { color: theme.dim }, "launch deck"), h(Text, { color: theme.accent2 }, phase)),
-      h(Box, { gap: 1 }, h(Text, { color: theme.dim }, "theme"), h(Text, { color: theme.accent, bold: true }, selectedTheme)),
-    ),
-    h(Text, { color: theme.dim, wrap: "truncate" }, workspace),
-    h(FxLine, { spans: divider }),
-  );
-}
-
-// ─── Boot intro cinematic ─────────────────────────────────────────────────────
-
-const INTRO_TAGLINE = "GOD OF WAR // AUTONOMOUS AGENT";
-
-/** The skippable ~1.8s cinematic. Pure render of (tick) — the parent owns the
- *  single 66ms interval, the storyboard math lives in tuiFx.introStageAt, so a
- *  stalled render can never desync stages from wall time. */
-function IntroCinematic({
-  theme,
-  tick,
-  columns,
-  rows,
-}: {
-  theme: LauncherTheme;
-  tick: number;
-  columns: number;
-  rows: number;
-}) {
-  const palette = paletteFromTheme(theme);
-  const { stage, progress } = introStageAt(tick * INTRO_TICK_MS);
-  const fieldW = Math.max(24, Math.min(columns - 4, 90));
-  const fieldH = Math.max(4, Math.min(rows - 10, 10));
-  const children: React.ReactNode[] = [];
-  if (stage === "embers") {
-    // Stage 1: sparks rise out of a dark screen — the forge is waking up.
-    emberRain(tick, fieldW, fieldH, palette).forEach((row, index) => {
-      children.push(h(FxLine, { key: `em${index}`, spans: row }));
+  let screen;
+  if (phase === "provider") {
+    const ready = providerReadiness(currentProvider, options.settings);
+    screen = launcherRows({
+      ...base,
+      title: "Choose a provider",
+      section: "Providers",
+      subtitle:
+        ready === "needs-key"
+          ? `${currentProvider} needs an API key — start it and run  /key ${currentProvider} <paste>  — or pick a ready provider.`
+          : ready === "oauth"
+            ? "OpenAI uses your ChatGPT sign-in — press l to log in first."
+            : "Ready to chat. Enter opens the model list.",
+      items: PROVIDER_OPTIONS.map<ListItem>((p) => ({ key: p.id, label: p.title, detail: p.body, status: status(providerReadiness(p.id, options.settings)), current: p.id === options.settings.lastProvider })),
+      selected: selectedProvider,
+      footer: `enter open${sep}1-6 jump${sep}a/d move${sep}l login${sep}d doctor${sep}h help${sep}t theme${sep}w workspace${sep}q quit`,
+    });
+  } else if (phase === "ollama" || phase === "openai") {
+    const isOllama = phase === "ollama";
+    const win = isOllama ? modelWindow : openAIWindow;
+    const all = isOllama ? models.map((m) => ({ id: m.id, label: cleanModelName(m.id), hint: m.hint })) : providerModels.map((m) => ({ id: m, label: m, hint: "" }));
+    const favs = isOllama ? favoriteOllama : currentProvider === "openai" ? favoriteOpenAI : [];
+    const last = isOllama ? options.settings.lastOllamaModel : defaultModelForProvider(currentProvider, options.settings);
+    screen = launcherRows({
+      ...base,
+      title: isOllama ? "Ollama Cloud" : providerLabel(currentProvider),
+      section: "Models",
+      subtitle: isOllama ? "Cloud tags launch under the hood; clean names stay on the list." : providerHint(currentProvider),
+      items: all.slice(win.start, win.end).map<ListItem>((m) => ({ key: m.id, label: m.label, hint: m.hint, favorite: favs.includes(m.id), current: m.id === last })),
+      selected: (isOllama ? selectedOllama : selectedOpenAI) - win.start,
+      scroll: win.start,
+      total: all.length,
+      footer: `enter launch${sep}1-9 pick (again launches)${sep}a/d move${sep}pgup/pgdn jump${sep}f favorite${sep}p providers${sep}t theme${sep}q back`,
+    });
+  } else if (phase === "theme") {
+    screen = launcherRows({
+      ...base,
+      title: "Theme",
+      section: "Appearance",
+      subtitle: "Move to preview live. Enter keeps it — every screen wears it.",
+      items: TUI_THEMES.map<ListItem>((t) => ({
+        key: t.id,
+        label: t.label,
+        detail: t.tagline,
+        swatch: [t.truecolor.primary, t.truecolor.secondary, t.truecolor.active, t.truecolor.success, t.truecolor.danger].map((c, i) => (termCaps().colorLevel >= 2 ? c : [t.ansi.primary, t.ansi.secondary, t.ansi.active, t.ansi.success, t.ansi.danger][i])),
+        current: t.id === (options.settings.tuiTheme ?? DEFAULT_TUI_THEME),
+      })),
+      selected: Math.max(0, TUI_THEMES.findIndex((t) => t.id === tuiThemeId)),
+      footer: `enter keep${sep}1-6 pick${sep}a/d preview${sep}esc back`,
     });
   } else {
-    // A thin ember veil keeps drifting behind the metal for the whole show.
-    emberRain(tick, fieldW, 2, palette).forEach((row, index) => {
-      children.push(h(FxLine, { key: `veil${index}`, spans: row }));
+    screen = launcherRows({
+      ...base,
+      title: "Workspace",
+      section: "Workspace",
+      subtitle: "Type a folder path. Enter accepts, Esc cancels.",
+      items: [],
+      selected: 0,
+      input: { value: workspaceDraft, cursorOn: !motionEnabled() || tick % 2 === 0 },
+      footer: `enter accept${sep}esc cancel`,
     });
-    const letterCount = WORDMARK_LETTERS.length;
-    const lit = stage === "ignite" ? Math.min(letterCount, 1 + Math.floor(progress * letterCount)) : letterCount;
-    fireWordmark(tick, palette, lit).forEach((row, index) => {
-      children.push(h(FxLine, { key: `wm${index}`, spans: row }));
-    });
-    if (stage === "ignite") {
-      // Stage 2: each letter lands with a hammer strike under it. The strike
-      // clock restarts per letter: fraction-within-letter × frame count.
-      const letterIndex = Math.max(0, lit - 1);
-      const strikeTick = Math.floor(((progress * letterCount) % 1) * STRIKE_FRAME_COUNT);
-      const strike = forgeStrike(strikeTick, palette);
-      children.push(
-        h(FxLine, {
-          key: "strike",
-          spans: strike.length > 0 ? [{ text: " ".repeat(letterIndex * 7) }, ...strike] : [{ text: " " }],
-        }),
-      );
-    } else {
-      // Stage 3: the blade slash under the wordmark reveals the tagline in its
-      // wake; stage 4 keeps both fully settled while the fire calms down.
-      const sweepTick = stage === "sweep" ? Math.floor((progress * 400) / INTRO_TICK_MS) : 99;
-      children.push(h(FxLine, { key: "sweep", spans: bladeSweep(sweepTick, WORDMARK_WIDTH + 6, palette) }));
-      const revealed = stage === "sweep" ? Math.min(INTRO_TAGLINE.length, sweepTick * 5) : INTRO_TAGLINE.length;
-      children.push(h(Text, { key: "tag", color: theme.accent2, bold: true }, INTRO_TAGLINE.slice(0, revealed) || " "));
-      if (stage === "settle") {
-        // Stage 4: embers settle into the hearth line the deck header keeps.
-        children.push(h(FxLine, { key: "hearth", spans: flameLine(tick >> 1, fieldW, palette) }));
-      }
-    }
   }
-  children.push(h(Text, { key: "skip", color: theme.dim }, "any key to skip"));
-  return h(
-    Box,
-    { flexDirection: "column", width: columns, height: rows, alignItems: "center", justifyContent: "center" },
-    ...children,
-  );
-}
-
-function ProviderDeck({ theme, selectedProvider, settings }: { theme: LauncherTheme; selectedProvider: number; settings: UiSettings }) {
-  const selectedId = PROVIDER_OPTIONS[Math.min(selectedProvider, PROVIDER_OPTIONS.length - 1)]?.id ?? "ollama";
-  const selectedReady = providerReadiness(selectedId, settings);
-  return h(
-    Box,
-    { flexDirection: "column", gap: 1 },
-    h(Text, { color: theme.accent, bold: true }, "Choose a provider"),
-    h(
-      Box,
-      { flexDirection: "row", gap: 1 },
-      PROVIDER_OPTIONS.slice(0, 3).map((card, index) =>
-        h(LauncherCard, {
-          key: card.id,
-          theme,
-          hotkey: String(index + 1),
-          title: card.title,
-          body: card.body,
-          footer: card.footer,
-          active: selectedProvider === index,
-          readiness: providerReadiness(card.id, settings),
-        }),
-      ),
-    ),
-    h(
-      Box,
-      { flexDirection: "row", gap: 1 },
-      PROVIDER_OPTIONS.slice(3).map((card, index) =>
-        h(LauncherCard, {
-          key: card.id,
-          theme,
-          hotkey: String(index + 4),
-          title: card.title,
-          body: card.body,
-          footer: card.footer,
-          active: selectedProvider === index + 3,
-          readiness: providerReadiness(card.id, settings),
-        }),
-      ),
-    ),
-    // A live hint for the highlighted provider — tells a new user exactly what to
-    // do BEFORE they commit and hit an "unauthorized" wall on message one.
-    selectedReady === "needs-key"
-      ? h(Text, { color: theme.warn }, `⚠ ${selectedId} needs an API key. Start it, then run  /key ${selectedId} <paste>  — or pick a ready provider.`)
-      : selectedReady === "oauth"
-        ? h(Text, { color: theme.accent2 }, "OpenAI uses ChatGPT OAuth — press L to sign in if you haven't.")
-        : h(Text, { color: theme.success }, "✓ Ready to chat."),
-    h(Text, { color: theme.dim }, "L login OpenAI OAuth | D doctor | H help | API keys: use /key inside chat"),
-  );
-}
-
-function readinessBadge(readiness: ProviderReadiness, theme: LauncherTheme): { text: string; color: string } {
-  if (readiness === "ready") return { text: "✓ ready", color: theme.success };
-  if (readiness === "oauth") return { text: "⌁ OAuth", color: theme.accent2 };
-  return { text: "○ needs key", color: theme.warn };
-}
-
-function LauncherCard({
-  theme,
-  hotkey,
-  title,
-  body,
-  footer,
-  active,
-  readiness,
-}: {
-  theme: LauncherTheme;
-  hotkey: string;
-  title: string;
-  body: string;
-  footer: string;
-  active: boolean;
-  readiness: ProviderReadiness;
-}) {
-  const badge = readinessBadge(readiness, theme);
-  return h(
-    Box,
-    {
-      width: 32,
-      height: 7,
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: active ? theme.accent : theme.frame,
-      paddingX: 1,
-    },
-    h(Box, { gap: 1 }, h(Text, { color: active ? theme.accent : theme.dim }, `[${hotkey}]`), h(Text, { color: active ? theme.accent : theme.text, bold: true }, title)),
-    h(Text, { color: theme.text, wrap: "wrap" }, body),
-    h(Box, { justifyContent: "space-between" }, h(Text, { color: theme.dim }, footer), h(Text, { color: badge.color, bold: true }, badge.text)),
-  );
-}
-
-function ModelDeck({
-  theme,
-  title,
-  subtitle,
-  models,
-  offset,
-  selected,
-  favorites,
-}: {
-  theme: LauncherTheme;
-  title: string;
-  subtitle: string;
-  models: LauncherModel[];
-  offset: number;
-  selected: number;
-  favorites: string[];
-}) {
-  return h(
-    Box,
-    {
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: theme.frame,
-      paddingX: 1,
-      minHeight: 12,
-    },
-    h(Box, { justifyContent: "space-between" }, h(Text, { color: theme.accent, bold: true }, title), h(Text, { color: theme.dim }, "F favorite | click selected model to launch")),
-    h(Text, { color: theme.dim }, subtitle),
-    h(Text, { color: theme.dim }, ""),
-    ...models.map((model, index) => {
-      const absolute = offset + index;
-      const active = absolute === selected;
-      const fav = favorites.includes(model.id);
-      // [n] badge mirrors the 1-9 hotkeys (visible-window relative) — the
-      // owner picks models entirely by number, no arrow keys on his board.
-      // TODO(mouse): richer per-row hitboxes land with the mouse module.
-      return h(
-        Box,
-        { key: model.id, justifyContent: "space-between" },
-        h(
-          Box,
-          { gap: 1 },
-          h(Text, { color: active ? theme.accent : theme.dim }, active ? ">" : " "),
-          h(Text, { color: active ? theme.accent : theme.dim }, index < 9 ? `[${index + 1}]` : "   "),
-          h(Text, { color: fav ? theme.warn : active ? theme.accent2 : theme.text, bold: active || fav }, `${fav ? "*" : " "} ${cleanModelName(model.id)}`),
-        ),
-        h(Text, { color: theme.dim, wrap: "truncate" }, model.hint),
-      );
-    }),
-  );
-}
-
-function OpenAIModelDeck({
-  theme,
-  provider,
-  models,
-  offset,
-  selected,
-  favorites,
-}: {
-  theme: LauncherTheme;
-  provider: ProviderId;
-  models: string[];
-  offset: number;
-  selected: number;
-  favorites: string[];
-}) {
-  return h(
-    Box,
-    {
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: theme.frame,
-      paddingX: 1,
-      minHeight: 12,
-    },
-    h(Box, { justifyContent: "space-between" }, h(Text, { color: theme.accent, bold: true }, providerLabel(provider)), h(Text, { color: theme.dim }, provider === "openai" ? "F favorite | click selected model to launch" : "click selected model to launch")),
-    h(Text, { color: theme.dim }, providerHint(provider)),
-    h(Text, { color: theme.dim }, ""),
-    ...models.map((model, index) => {
-      const absolute = offset + index;
-      const active = absolute === selected;
-      const fav = favorites.includes(model);
-      // Same [n] hotkey badge as the Ollama deck — number-first navigation.
-      return h(
-        Box,
-        { key: model, gap: 1 },
-        h(Text, { color: active ? theme.accent : theme.dim }, active ? ">" : " "),
-        h(Text, { color: active ? theme.accent : theme.dim }, index < 9 ? `[${index + 1}]` : "   "),
-        h(Text, { color: fav ? theme.warn : active ? theme.accent2 : theme.text, bold: active || fav }, `${fav ? "*" : " "} ${model}`),
-      );
-    }),
-  );
-}
-
-function ThemeDeck({ theme, selectedTheme }: { theme: LauncherTheme; selectedTheme: ThemeName }) {
-  return h(
-    Box,
-    {
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: theme.frame,
-      paddingX: 1,
-    },
-    h(Text, { color: theme.accent, bold: true }, "Theme"),
-    h(Text, { color: theme.dim }, "A/D or arrows cycle. Enter applies."),
-    h(Text, { color: theme.dim }, ""),
-    ...availableThemes().map((name) =>
-      h(Text, { key: name, color: name === selectedTheme ? theme.accent : theme.text, bold: name === selectedTheme }, `${name === selectedTheme ? ">" : " "} ${name}`),
-    ),
-  );
-}
-
-function WorkspaceDeck({ theme, workspaceDraft }: { theme: LauncherTheme; workspaceDraft: string }) {
-  return h(
-    Box,
-    {
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: theme.frame,
-      paddingX: 1,
-      height: 8,
-    },
-    h(Text, { color: theme.accent, bold: true }, "Workspace"),
-    h(Text, { color: theme.dim }, "Type a folder path, Enter accepts, Esc cancels."),
-    h(Text, { color: theme.dim }, ""),
-    h(Box, { borderStyle: "single", borderColor: theme.accent, paddingX: 1 }, h(Text, { color: theme.text, wrap: "truncate" }, workspaceDraft || "D:\\Project")),
-  );
-}
-
-function LauncherFooter({ theme, phase }: { theme: LauncherTheme; phase: LauncherPhase }) {
-  const help =
-    phase === "provider"
-      ? "A/D or arrows choose | 1-6 jump | Enter open | L login | D doctor | H help | T theme | W workspace | Q quit"
-      : phase === "workspace"
-        ? "type path | Enter accept | Esc cancel"
-        : "1-9 pick (same number launches) | A/D or arrows move | PgUp/PgDn jump | F favorite where supported | Enter launch | P providers | T theme | Q back";
-  return h(Box, { marginTop: 1 }, h(Text, { color: theme.dim }, help));
+  return h(RowsView, { rows: screen, width: frameW });
 }
 
 interface LauncherModel {

@@ -36,7 +36,20 @@ export interface ChangelogEntry {
 
 // Newest first. The modal showcases CHANGELOG[0]; older entries are reachable
 // from the "earlier updates" strip.
-export const CHANGELOG: ChangelogEntry[] = [
+export const CHANGELOG: ChangelogEntry[
+  {
+    version: "0.47.0",
+    date: "2026-09-06",
+    title: "The terminal, rebuilt",
+    highlights: [
+      { blurb: "The `ares` terminal app was rebuilt from the ground up. It renders identically on macOS, Linux, and Windows, never overflows or flickers, and drops emoji and painted backgrounds for a clean native look." },
+      { blurb: "Six terminal themes — midnight, graphite, daylight, ocean, rose, forest — that apply live on every screen and stick. Press t in the launcher or use Themes in the toolbar." },
+      { blurb: "The launcher is a fast list: providers, models, themes, workspace. No splash screen." },
+      { blurb: "Effort is a proper control now: click a level or press 1-7 and it takes effect quietly." },
+      { blurb: "Tool calls read as cards — what ran, on what, how long, and the result under it. Subagent progress shows as one calm line." },
+      { blurb: "New one-line install for macOS and Linux: `curl -fsSL https://raw.githubusercontent.com/Clout2buy/Ares/main/scripts/install.sh | bash`." },
+    ],
+  },] = [
   {
     version: "0.45.0",
     date: "August 2026",

@@ -45,12 +45,15 @@ export interface ToolbarItem {
 }
 
 /** The one-line click bar pinned to the app frame's bottom row. */
+// Plain words on purpose: the old emoji labels were double-wide on some
+// terminals and single-wide on others, so the hit-test columns and the drawn
+// glyphs disagreed by platform. ASCII is the same width everywhere.
 export const TOOLBAR_ITEMS: readonly ToolbarItem[] = [
-  { id: "models", label: "⚔ Models ▾" },
-  { id: "effort", label: "🔥 Effort" },
-  { id: "themes", label: "🎨 Themes" },
-  { id: "settings", label: "⚙ Settings" },
-  { id: "ultra", label: "✦ Ultra" },
+  { id: "models", label: "Models" },
+  { id: "effort", label: "Effort" },
+  { id: "themes", label: "Themes" },
+  { id: "settings", label: "Settings" },
+  { id: "ultra", label: "Ultra" },
 ];
 
 /** Separator between toolbar buttons / modal tabs. Rendered verbatim. */
@@ -392,7 +395,7 @@ export function ultraBadgeFrame(tick: number, t: SliderTokens): StyledSpan {
  *  "Reasoning: <label> (<level>). …". Null when no level is present. */
 export function parseReasoningLevel(lines: readonly string[]): ReasoningLevel | null {
   for (const line of lines ?? []) {
-    const m = /\((off|low|medium|high|max)\)/.exec(String(line ?? ""));
+    const m = /\((off|minimal|low|medium|high|xhigh|max)\)/.exec(String(line ?? ""));
     if (m) return m[1] as ReasoningLevel;
   }
   return null;

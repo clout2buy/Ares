@@ -16,7 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$Entry = Join-Path $Root "packages\cli\dist\entry.js"
+$Entry = Join-Path $Root "packages\cli\dist\supervise.js"
 $BinDir = Join-Path $env:LOCALAPPDATA "Ares\bin"
 
 function Write-Step($msg) { Write-Host "  $msg" -ForegroundColor Cyan }

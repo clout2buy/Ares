@@ -38,6 +38,16 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.47.2",
+    date: "September 2026",
+    title: "Never leaves a mess",
+    tagline: "If the terminal app ever crashes, your terminal comes back intact.",
+    highlights: [
+      { icon: "🧯", title: "Crash-proof terminal", blurb: "A tiny supervisor now runs the terminal app. Whatever happens to it, your prompt comes back clean — no stuck mouse mode or alternate screen.", tag: "Safer" },
+      { icon: "📈", title: "Memory warning", blurb: "Long sessions warn you in the chat when memory runs high, so you can restart on your terms instead of crashing.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.47.1",
     date: "September 2026",
     title: "Edge to edge",

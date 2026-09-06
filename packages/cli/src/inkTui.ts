@@ -213,7 +213,7 @@ export async function runInkChat(options: InkChatOptions): Promise<number> {
   }
 }
 
-function AresInkApp({ options }: { options: InkChatOptions }) {
+export function AresInkApp({ options }: { options: InkChatOptions }) {
   const app = useApp();
   const { rows, columns } = useWindowSize();
   // The face — a theme id, resolved to a palette at this terminal's color tier.
@@ -469,6 +469,23 @@ function AresInkApp({ options }: { options: InkChatOptions }) {
     setAssistantDraft("");
     append("assistant", text, "reply");
   }, [append]);
+
+  // Heap guard: the engine can climb toward V8's ~4 GB ceiling over a long
+  // session; a fatal OOM kills the process with no cleanup. Warn once at 2.5 GB
+  // so the owner can restart on their terms instead of the terminal's.
+  const heapWarned = useRef(false);
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (heapWarned.current) return;
+      const used = process.memoryUsage().heapUsed;
+      if (used > 2.5 * 1024 * 1024 * 1024) {
+        heapWarned.current = true;
+        append("error", `memory is high (${(used / 1073741824).toFixed(1)} GB heap) — finish up and restart ares soon, or it will crash`, "heap");
+      }
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [append]);
+
 
   // Paired tool flow: tool_start opens a "▸ Name desc" line; tool_end/_error
   // stamps the ✓/✗ result onto that SAME line — keyed by the tool_use id, not

@@ -79,7 +79,7 @@ function Invoke-AresTs {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Args)
     Ensure-NodeModules
     Invoke-Pnpm --silent build
-    & node "packages\cli\dist\entry.js" @Args
+    & node "packages\cli\dist\supervise.js" @Args
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -103,7 +103,7 @@ function Invoke-AresWorkspace {
 function Show-Help {
     Ensure-NodeModules
     Invoke-Pnpm --silent build
-    & node "packages\cli\dist\entry.js" help
+    & node "packages\cli\dist\supervise.js" help
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Host ""
     Write-Host "Launcher examples:"

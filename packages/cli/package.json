@@ -1,13 +1,13 @@
 {
   "name": "@ares/cli",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "type": "module",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Ares v2 CLI: the `ares` binary. Ink-based TUI, slash commands, session DAG navigation.",
   "main": "dist/entry.js",
   "bin": {
-    "ares": "dist/entry.js"
+    "ares": "dist/supervise.js"
   },
   "scripts": {
     "build": "tsc -b",

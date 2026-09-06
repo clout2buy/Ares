@@ -53,7 +53,7 @@ const repoRoot = path.resolve(path.dirname(scriptPath), "..");
 
 /** Path of the built CLI entrypoint the launcher will exec. */
 export function cliEntryPath(root = repoRoot) {
-  return path.join(root, "packages", "cli", "dist", "entry.js");
+  return path.join(root, "packages", "cli", "dist", "supervise.js");
 }
 
 /**

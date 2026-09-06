@@ -1,10 +1,10 @@
 {
   "name": "ares",
-  "version": "0.47.1",
+  "version": "0.47.2",
   "private": true,
   "type": "module",
   "bin": {
-    "ares": "packages/cli/dist/entry.js"
+    "ares": "packages/cli/dist/supervise.js"
   },
   "packageManager": "pnpm@10.33.0",
   "description": "Ares: a streaming, multi-provider coding + autonomous agent (Anthropic, OpenAI, Ollama Cloud, OpenRouter, DeepSeek) with a Tauri desktop and terminal â€” continuous verifier, multi-session daemon, persistent agent mind, and real desktop control.",
@@ -14,7 +14,7 @@
     "check": "tsc -b --pretty false",
     "lint": "pnpm check",
     "test": "pnpm build && node --import ./tests/_isolate-home.mjs --test --test-concurrency=4 tests/*.test.mjs",
-    "ares": "node packages/cli/dist/entry.js",
+    "ares": "node packages/cli/dist/supervise.js",
     "install:cli": "node scripts/install-cli.mjs",
     "uninstall:cli": "node scripts/uninstall-cli.mjs",
     "link:cli": "pnpm build && pnpm link --global",

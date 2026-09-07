@@ -27,7 +27,7 @@ const NAMES = [
   "WebSearch", "WebFetch", "ImageSearch", "ComputerUse", "Browser", "ToolSearch",
   "McpListTools", "McpCallTool", "SkillsList", "SkillRead", "Memory", "Connect",
   "RequestUserAction", "Deploy", "Stripe", "Email", "Gmail", "GoogleCalendar",
-  "Spotify", "Weather", "Remind", "Mission", "Self", "SkillHub", "Operator", "Capability",
+  "Spotify", "Weather", "Remind", "Mission", "Self", "SkillHub", "Operator", "Capability", "RemotePC",
 ];
 const WRITE_TOOLS = new Set([
   "Write", "Edit", "ApplyPatch",

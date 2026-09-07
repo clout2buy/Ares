@@ -38,7 +38,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.48.3",
+    version: "0.48.4",
     date: "September 2026",
     title: "In their machine in one tap",
     tagline: "\"My friend needs help with his PC\" → a link → they tap it → you're in. And Telegram comes back for everyone who lost it.",

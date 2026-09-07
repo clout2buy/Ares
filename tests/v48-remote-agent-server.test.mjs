@@ -102,9 +102,12 @@ test("register → exec round trip → disconnect tells the connector goodbye", 
     server.notify(pcId, "hello");
     assert.equal((await agent.next()).type, "notify");
 
+    // Wait on the SERVER's disconnect event, not the client's close — the client
+    // can observe the close before the server's handler has run (seen on Linux CI).
+    const serverSawClose = new Promise((r) => server.onPcDisconnected(r));
     server.disconnect(pcId);
     assert.equal((await agent.next()).type, "bye");
-    await new Promise((r) => agent.ws.once("close", r));
+    await serverSawClose;
     assert.equal(gone.length, 1);
     assert.equal(server.listPcs().length, 0);
     // The link is dead after an owner disconnect — no silent reconnect.

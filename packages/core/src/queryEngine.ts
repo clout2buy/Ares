@@ -559,6 +559,10 @@ export const CORE_TOOL_NAMES: readonly string[] = [
   "Task", "TaskOutput", "KillTask",
   "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode",
   "Capability", "ToolSearch",
+  // Core, not deferred: "my friend needs help with his pc" has no keyword the
+  // model would think to ToolSearch for — if it can't see this tool it writes
+  // an HTML page or recommends AnyDesk.
+  "RemotePC",
 ];
 const CORE_TOOL_SET = new Set(CORE_TOOL_NAMES.map((name) => name.toLowerCase()));
 

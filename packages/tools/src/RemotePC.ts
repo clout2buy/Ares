@@ -39,31 +39,29 @@ export function getRemoteAgentServer(): RemoteAgentServerLike | null {
 
 // ─── Schema ────────────────────────────────────────────────────────────────
 
-const inputSchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("generate_link").describe(
-      "Generate a one-time connection link to send to someone so their PC can connect to Ares. " +
-      "Use this whenever the user mentions someone needing help, being at a coworker's or friend's machine, " +
-      "IT shadowing, or wanting to connect to another PC — even if they don't use exact words. " +
-      "Returns a URL to share with the person on the other machine.",
-    ),
-    label: z.string().describe("Short name for this PC, e.g. 'Sarah' or 'John laptop'. Used to identify it when it connects."),
-  }),
-  z.object({
-    action: z.literal("list_pcs").describe("List all remote PCs currently connected to Ares."),
-  }),
-  z.object({
-    action: z.literal("exec_on_pc").describe("Run a shell command on a connected remote PC and return the output."),
-    pc_id: z.string().describe("The PC id from list_pcs."),
-    command: z.string().describe("Shell command to execute on the remote PC."),
-    timeout_ms: z.number().int().min(1000).max(120_000).optional().describe("Max wait time in ms. Default 30000."),
-  }),
-  z.object({
-    action: z.literal("notify_pc").describe("Push a popup notification to a connected remote PC screen."),
-    pc_id: z.string().describe("The PC id from list_pcs."),
-    message: z.string().describe("Short message to display (e.g. 'Ares finished — restart now')."),
-  }),
-]);
+// A flat object with an `action` enum, not a discriminated union: the JSON
+// Schema for a union has no top-level `type: "object"` and Anthropic/OpenAI
+// reject it outright. Per-action requirements are enforced in superRefine.
+const inputSchema = z.object({
+  action: z.enum(["generate_link", "list_pcs", "exec_on_pc", "notify_pc"]).describe(
+    "generate_link: mint a one-time connect link for someone else's PC (REQUIRES label). " +
+    "list_pcs: what's connected right now. " +
+    "exec_on_pc: run a shell command on a connected PC (REQUIRES pc_id + command). " +
+    "notify_pc: show a popup on their screen (REQUIRES pc_id + message).",
+  ),
+  label: z.string().optional().describe("generate_link: short name for the PC, e.g. \"Sarah\" or \"Dave's laptop\" — shown when it connects."),
+  pc_id: z.string().optional().describe("exec_on_pc / notify_pc: the PC id from list_pcs (or from the connected notice)."),
+  command: z.string().optional().describe("exec_on_pc: shell command to run on the remote PC."),
+  timeout_ms: z.number().int().min(1000).max(120_000).optional().describe("exec_on_pc: max wait in ms. Default 30000."),
+  message: z.string().optional().describe("notify_pc: short text for the popup, e.g. \"Fixed — restart when you can\"."),
+}).superRefine((v, ctx) => {
+  const need = (field: "label" | "pc_id" | "command" | "message") => {
+    if (!v[field]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${v.action} requires ${field}` });
+  };
+  if (v.action === "generate_link") need("label");
+  if (v.action === "exec_on_pc") { need("pc_id"); need("command"); }
+  if (v.action === "notify_pc") { need("pc_id"); need("message"); }
+});
 
 export type RemotePCInput = z.infer<typeof inputSchema>;
 
@@ -96,8 +94,8 @@ export const RemotePCTool = buildTool({
     switch (i.action) {
       case "generate_link": return `generating remote connect link for ${i.label}`;
       case "list_pcs": return "listing connected remote PCs";
-      case "exec_on_pc": return `executing on remote PC ${i.pc_id}: ${i.command.slice(0, 60)}`;
-      case "notify_pc": return `notifying remote PC ${i.pc_id}: ${i.message.slice(0, 60)}`;
+      case "exec_on_pc": return `executing on remote PC ${i.pc_id}: ${(i.command ?? "").slice(0, 60)}`;
+      case "notify_pc": return `notifying remote PC ${i.pc_id}: ${(i.message ?? "").slice(0, 60)}`;
     }
   },
   async call(i: RemotePCInput): Promise<{ output: RemotePCOutput; display: string }> {
@@ -114,7 +112,7 @@ export const RemotePCTool = buildTool({
     switch (i.action) {
       case "generate_link": {
         let url: string, scope: "public" | "lan";
-        try { ({ url, scope } = await _server.generateToken(i.label)); }
+        try { ({ url, scope } = await _server.generateToken(i.label!)); }
         catch (err) { return fail("generate_link", err); }
         const lanNote = scope === "lan"
           ? "\n\n⚠️ LAN-only link: no internet tunnel is available, so this only works if they're on the same network as you. Tell the user plainly."
@@ -139,7 +137,7 @@ export const RemotePCTool = buildTool({
 
       case "exec_on_pc": {
         try {
-          const result = await _server.exec(i.pc_id, i.command, i.timeout_ms);
+          const result = await _server.exec(i.pc_id!, i.command!, i.timeout_ms);
           return {
             output: { action: "exec_on_pc", ok: true, output: result.output, exitCode: result.exitCode },
             display: result.output || `(exit ${result.exitCode ?? 0})`,
@@ -152,7 +150,7 @@ export const RemotePCTool = buildTool({
 
       case "notify_pc": {
         try {
-          _server.notify(i.pc_id, i.message);
+          _server.notify(i.pc_id!, i.message!);
           return { output: { action: "notify_pc", ok: true }, display: `Notification sent to ${i.pc_id}.` };
         } catch (err) {
           const note = err instanceof Error ? err.message : String(err);

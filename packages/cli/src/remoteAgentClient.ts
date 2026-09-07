@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import { tokenPath } from "@ares/garrison";
 import type { RemoteAgentServerLike } from "@ares/tools";
-import { DEFAULT_REMOTE_AGENT_PORT, type LinkScope, type RemotePcInfo, type ExecResult } from "./remoteAgentServer.js";
+import { DEFAULT_REMOTE_AGENT_PORT, type LinkScope, type RemotePcInfo, type ExecResult, type FileGetResult } from "./remoteAgentServer.js";
 
 export class RemoteAgentClient implements RemoteAgentServerLike {
   private readonly base: string;
@@ -66,6 +66,18 @@ export class RemoteAgentClient implements RemoteAgentServerLike {
 
   exec(pcId: string, command: string, timeoutMs = 30_000): Promise<ExecResult> {
     return this.call("POST", "/api/exec", { pcId, command, timeoutMs }, timeoutMs + 10_000);
+  }
+
+  screenshot(pcId: string): Promise<{ dataBase64: string }> {
+    return this.call("POST", "/api/screenshot", { pcId }, 30_000);
+  }
+
+  readFile(pcId: string, path: string): Promise<FileGetResult> {
+    return this.call("POST", "/api/readfile", { pcId, path }, 70_000);
+  }
+
+  writeFile(pcId: string, path: string, dataBase64: string): Promise<{ bytes: number }> {
+    return this.call("POST", "/api/writefile", { pcId, path, dataBase64 }, 70_000);
   }
 
   notify(pcId: string, message: string): void {

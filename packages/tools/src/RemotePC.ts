@@ -10,7 +10,22 @@
 //   notify_pc   — push a popup notification to a PC (fire-and-forget)
 
 import { z } from "zod";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 import { buildTool } from "./_shared.js";
+
+/** Cap for file transfer in either direction — keeps a stray "get the whole disk" from OOMing. */
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/** OS → the command style exec_on_pc expects, so Ares doesn't run `dir` on a Mac. */
+function shellHintForOs(os: string): string {
+  // "Darwin" contains "win" — match mac/linux before windows.
+  if (/darwin|mac|os ?x/i.test(os)) return "macOS/sh — ls, cat, grep, $VAR, forward slashes";
+  if (/linux|nix|bsd/i.test(os)) return "Linux/sh — ls, cat, grep, $VAR, forward slashes";
+  if (/win/i.test(os)) return "Windows/cmd.exe — dir, type, findstr, where, %VAR%, backslashes";
+  return "unknown OS — confirm before running shell commands";
+}
 
 // ─── Server interface (mirrors RemoteAgentServer public API) ───────────────
 // Defined here as a minimal interface so @ares/tools doesn't import @ares/cli.
@@ -21,6 +36,11 @@ export interface RemoteAgentServerLike {
   /** Out-of-process implementations can fetch a fresh list; preferred when present. */
   listPcsAsync?(): Promise<Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>>;
   exec(pcId: string, command: string, timeoutMs?: number): Promise<{ output: string; exitCode?: number }>;
+  screenshot(pcId: string): Promise<{ dataBase64: string }>;
+  /** Read a file FROM the remote PC. Owner-driven; the connector never initiates. */
+  readFile(pcId: string, path: string): Promise<{ dataBase64: string; size: number }>;
+  /** Write a file TO the remote PC. Data flows owner → remote only. */
+  writeFile(pcId: string, path: string, dataBase64: string): Promise<{ bytes: number }>;
   notify(pcId: string, message: string): void;
   disconnect?(pcId: string): void;
 }
@@ -43,23 +63,31 @@ export function getRemoteAgentServer(): RemoteAgentServerLike | null {
 // Schema for a union has no top-level `type: "object"` and Anthropic/OpenAI
 // reject it outright. Per-action requirements are enforced in superRefine.
 const inputSchema = z.object({
-  action: z.enum(["generate_link", "list_pcs", "exec_on_pc", "notify_pc"]).describe(
+  action: z.enum(["generate_link", "list_pcs", "exec_on_pc", "screenshot_pc", "get_file", "put_file", "notify_pc"]).describe(
     "generate_link: mint a one-time connect link for someone else's PC (REQUIRES label). " +
     "list_pcs: what's connected right now. " +
     "exec_on_pc: run a shell command on a connected PC (REQUIRES pc_id + command). " +
+    "screenshot_pc: capture and SEE their screen (REQUIRES pc_id) — use it to verify a fix or read a dialog. " +
+    "get_file: copy a file FROM their PC to yours (REQUIRES pc_id + remote_path). " +
+    "put_file: copy a file FROM your machine TO theirs (REQUIRES pc_id + local_path + remote_path). " +
     "notify_pc: show a popup on their screen (REQUIRES pc_id + message).",
   ),
   label: z.string().optional().describe("generate_link: short name for the PC, e.g. \"Sarah\" or \"Dave's laptop\" — shown when it connects."),
-  pc_id: z.string().optional().describe("exec_on_pc / notify_pc: the PC id from list_pcs (or from the connected notice)."),
+  pc_id: z.string().optional().describe("the PC id from list_pcs (or from the connected notice)."),
   command: z.string().optional().describe("exec_on_pc: shell command to run on the remote PC."),
   timeout_ms: z.number().int().min(1000).max(120_000).optional().describe("exec_on_pc: max wait in ms. Default 30000."),
+  remote_path: z.string().optional().describe("get_file / put_file: the absolute path ON THE REMOTE PC to read from or write to."),
+  local_path: z.string().optional().describe("put_file: the file on YOUR machine to send (absolute or workspace-relative). get_file: optional destination on your machine; defaults to a downloads folder in the workspace."),
   message: z.string().optional().describe("notify_pc: short text for the popup, e.g. \"Fixed — restart when you can\"."),
 }).superRefine((v, ctx) => {
-  const need = (field: "label" | "pc_id" | "command" | "message") => {
+  const need = (field: "label" | "pc_id" | "command" | "message" | "remote_path" | "local_path") => {
     if (!v[field]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${v.action} requires ${field}` });
   };
   if (v.action === "generate_link") need("label");
   if (v.action === "exec_on_pc") { need("pc_id"); need("command"); }
+  if (v.action === "screenshot_pc") need("pc_id");
+  if (v.action === "get_file") { need("pc_id"); need("remote_path"); }
+  if (v.action === "put_file") { need("pc_id"); need("local_path"); need("remote_path"); }
   if (v.action === "notify_pc") { need("pc_id"); need("message"); }
 });
 
@@ -72,6 +100,11 @@ export interface RemotePCOutput {
   pcs?: Array<{ id: string; label: string; hostname: string; os: string; ip: string; connectedAt: number }>;
   output?: string;
   exitCode?: number;
+  /** get_file: where the pulled file landed on the owner's machine. */
+  savedTo?: string;
+  /** screenshot_pc: where the PNG was saved (desktop preview). */
+  screenshotPath?: string;
+  bytes?: number;
   note?: string;
 }
 
@@ -85,7 +118,9 @@ export const RemotePCTool = buildTool({
     "The phrasing may be casual ('my friend is having trouble', 'helping sarah'); if the subject is another person's device, generate the link and tell the user to send it. " +
     "Do NOT use it for problems on the user's own machine, code, or servers — use the normal tools for those. " +
     "Use list_pcs to see which machines are currently connected. " +
-    "Use exec_on_pc to run shell commands (diagnostics, process lists, file ops, network checks). " +
+    "Use exec_on_pc to run shell commands — ALWAYS match the syntax to that PC's OS (list_pcs and the connect notice report it): Windows goes through cmd.exe (dir, type, findstr, %VAR%, backslashes), macOS/Linux go through sh (ls, cat, grep, $VAR, forward slashes). " +
+    "Use screenshot_pc to SEE their screen — read an error dialog, or verify a fix worked. " +
+    "Use get_file to pull a file from their PC to yours, and put_file to send one the other way (data only ever flows the direction you ask; their machine can never read yours). " +
     "Use notify_pc to push a popup to their screen.",
   safety: "external-state",
   concurrency: "exclusive",
@@ -95,10 +130,13 @@ export const RemotePCTool = buildTool({
       case "generate_link": return `generating remote connect link for ${i.label}`;
       case "list_pcs": return "listing connected remote PCs";
       case "exec_on_pc": return `executing on remote PC ${i.pc_id}: ${(i.command ?? "").slice(0, 60)}`;
+      case "screenshot_pc": return `capturing screen of remote PC ${i.pc_id}`;
+      case "get_file": return `pulling ${i.remote_path} from remote PC ${i.pc_id}`;
+      case "put_file": return `sending ${i.local_path} to remote PC ${i.pc_id}`;
       case "notify_pc": return `notifying remote PC ${i.pc_id}: ${(i.message ?? "").slice(0, 60)}`;
     }
   },
-  async call(i: RemotePCInput): Promise<{ output: RemotePCOutput; display: string }> {
+  async call(i: RemotePCInput, ctx): Promise<{ output: RemotePCOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
     if (!_server) {
       const out: RemotePCOutput = { action: i.action, ok: false, note: "Remote agent server not running. Start Ares garrison to enable remote PC connections." };
       return { output: out, display: out.note! };
@@ -131,7 +169,7 @@ export const RemotePCTool = buildTool({
         const note = pcs.length === 0 ? "No remote PCs connected. If someone needs help, generate_link and have the user send it to them." : undefined;
         const display = pcs.length === 0
           ? "No remote PCs connected."
-          : pcs.map((p) => `• ${p.hostname} (${p.os}) — ${p.ip} [${p.id}]`).join("\n");
+          : pcs.map((p) => `• ${p.hostname} — ${p.os} · ${shellHintForOs(p.os)} — ${p.ip} [${p.id}]`).join("\n");
         return { output: { action: "list_pcs", ok: true, pcs, note }, display };
       }
 
@@ -146,6 +184,54 @@ export const RemotePCTool = buildTool({
           const note = err instanceof Error ? err.message : String(err);
           return { output: { action: "exec_on_pc", ok: false, note }, display: `Error: ${note}` };
         }
+      }
+
+      case "screenshot_pc": {
+        let dataBase64: string;
+        try { ({ dataBase64 } = await _server.screenshot(i.pc_id!)); }
+        catch (err) { return fail("screenshot_pc", err); }
+        // Save a copy for the desktop preview; the model also sees it inline.
+        let screenshotPath: string | undefined;
+        try {
+          const dir = path.join(os.tmpdir(), "ares-remote");
+          await mkdir(dir, { recursive: true });
+          screenshotPath = path.join(dir, `${i.pc_id}-${Date.now()}.png`);
+          await writeFile(screenshotPath, Buffer.from(dataBase64, "base64"));
+        } catch { screenshotPath = undefined; }
+        return {
+          output: { action: "screenshot_pc", ok: true, screenshotPath },
+          display: `Captured their screen.`,
+          images: [{ mediaType: "image/png", data: dataBase64 }],
+        };
+      }
+
+      case "get_file": {
+        try {
+          const { dataBase64, size } = await _server.readFile(i.pc_id!, i.remote_path!);
+          if (size > MAX_FILE_BYTES) return fail("get_file", new Error(`file is ${(size / 1e6).toFixed(1)}MB — over the ${MAX_FILE_BYTES / 1e6}MB transfer cap`));
+          const dest = i.local_path
+            ? (path.isAbsolute(i.local_path) ? i.local_path : path.resolve(ctx.workspace, i.local_path))
+            : path.join(ctx.workspace, "ares-downloads", path.basename(i.remote_path!.replace(/[\\/]+$/, "")) || "download");
+          await mkdir(path.dirname(dest), { recursive: true });
+          await writeFile(dest, Buffer.from(dataBase64, "base64"));
+          return {
+            output: { action: "get_file", ok: true, savedTo: dest, bytes: size },
+            display: `Pulled ${i.remote_path} → ${dest} (${size.toLocaleString()} bytes). It's on your machine now.`,
+          };
+        } catch (err) { return fail("get_file", err); }
+      }
+
+      case "put_file": {
+        try {
+          const src = path.isAbsolute(i.local_path!) ? i.local_path! : path.resolve(ctx.workspace, i.local_path!);
+          const buf = await readFile(src);
+          if (buf.byteLength > MAX_FILE_BYTES) return fail("put_file", new Error(`file is ${(buf.byteLength / 1e6).toFixed(1)}MB — over the ${MAX_FILE_BYTES / 1e6}MB transfer cap`));
+          const { bytes } = await _server.writeFile(i.pc_id!, i.remote_path!, buf.toString("base64"));
+          return {
+            output: { action: "put_file", ok: true, bytes },
+            display: `Sent ${src} → ${i.remote_path} on their PC (${bytes.toLocaleString()} bytes).`,
+          };
+        } catch (err) { return fail("put_file", err); }
       }
 
       case "notify_pc": {

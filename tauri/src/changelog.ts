@@ -38,6 +38,17 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.48.6",
+    date: "September 2026",
+    title: "Fix it, don't just look at it",
+    tagline: "Ares can now move files to and from the PC it's helping — pull the broken file, fix it, push it back.",
+    highlights: [
+      { icon: "📥", title: "Pull their files to you", blurb: "Ares can copy a file off the machine it's helping straight to yours — grab the broken config, the crash log, the project that won't build. Their computer can never reach into yours; data only moves the way you ask.", tag: "New" },
+      { icon: "📤", title: "Push fixes back", blurb: "Once Ares has fixed a file on your side, it sends it back to their machine in place. Repair, not just diagnosis.", tag: "New" },
+      { icon: "👁️", title: "See their screen (Mac & Linux)", blurb: "On a Mac or Linux machine Ares can now grab a screenshot to read an error dialog or check a fix. Windows screen-view is coming with the signed connector.", tag: "New" },
+    ],
+  },
+  {
     version: "0.48.5",
     date: "September 2026",
     title: "In their machine in one tap",

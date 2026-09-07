@@ -202,3 +202,43 @@ test("client reports a helpful error when no server is listening", async () => {
   const client = new RemoteAgentClient(home, 1); // nothing listens on port 1
   await assert.rejects(client.generateToken("x"), /Remote PC server not running/);
 });
+
+// ─── Screenshot + file transfer (owner-driven) ────────────────────────────
+
+test("screenshot, get_file and put_file round-trip over the same reqId channel", async () => {
+  await withServer(async (server, base) => {
+    const { token } = await server.generateToken("Sarah's PC");
+    // A fake connector that answers screenshot/getfile/putfile like the real one.
+    const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+    const store = { "/home/sarah/notes.txt": Buffer.from("hello from sarah").toString("base64") };
+    await new Promise((r, rej) => { ws.on("open", r); ws.on("error", rej); });
+    ws.on("message", (raw) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "screenshot") ws.send(JSON.stringify({ type: "screenshot_result", reqId: m.reqId, dataBase64: Buffer.from("PNGDATA").toString("base64") }));
+      else if (m.type === "getfile") {
+        const data = store[m.path];
+        ws.send(JSON.stringify(data ? { type: "getfile_result", reqId: m.reqId, dataBase64: data, size: Buffer.from(data, "base64").length } : { type: "getfile_result", reqId: m.reqId, error: "not found" }));
+      } else if (m.type === "putfile") {
+        store[m.path] = m.dataBase64;
+        ws.send(JSON.stringify({ type: "putfile_result", reqId: m.reqId, bytes: Buffer.from(m.dataBase64, "base64").length }));
+      }
+    });
+    ws.send(JSON.stringify({ type: "register", token, hostname: "SARAH-LAPTOP", os: "Windows 11", username: "sarah", ip: "10.0.0.5" }));
+    const id = await new Promise((r) => server.onPcConnected((pc) => r(pc.id)));
+
+    const shot = await server.screenshot(id);
+    assert.equal(Buffer.from(shot.dataBase64, "base64").toString(), "PNGDATA");
+
+    const got = await server.readFile(id, "/home/sarah/notes.txt");
+    assert.equal(Buffer.from(got.dataBase64, "base64").toString(), "hello from sarah");
+    assert.equal(got.size, 16);
+
+    await assert.rejects(server.readFile(id, "/nope"), /not found/);
+
+    const put = await server.writeFile(id, "/home/sarah/fix.txt", Buffer.from("patched").toString("base64"));
+    assert.equal(put.bytes, 7);
+    assert.equal(Buffer.from(store["/home/sarah/fix.txt"], "base64").toString(), "patched");
+
+    ws.close();
+  });
+});

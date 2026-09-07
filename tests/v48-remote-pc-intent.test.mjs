@@ -53,3 +53,21 @@ describe("detectRemotePcIntent — ordinary owner chat falls through to the agen
     });
   }
 });
+
+// ─── OS → shell hint (so Ares runs dir on Windows, ls on Mac) ──────────────
+
+import { shellHintForOs } from "../packages/channels/dist/telegram/remotePC.js";
+
+describe("shellHintForOs maps reported OS to the right command style", () => {
+  const cases = [
+    ["Windows 11 Pro", /Windows.*cmd/i],
+    ["Windows 10", /cmd\.exe/i],
+    ["Darwin 23.5.0", /Mac.*sh/i],
+    ["macOS 14", /Mac/i],
+    ["Linux 6.1.0", /Linux.*sh/i],
+    ["", /Windows cmd\.exe vs Unix sh/i],
+  ];
+  for (const [os, re] of cases) {
+    it(`"${os}"`, () => assert.match(shellHintForOs(os), re));
+  }
+});

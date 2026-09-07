@@ -129,12 +129,22 @@ export function buildPcConnectedMessage(pc: { id: string; hostname: string; os: 
   };
 }
 
+/** Shell/command guidance for a remote PC based on its reported OS string, so
+ *  Ares runs the right syntax instead of guessing (dir vs ls, %VAR% vs $VAR). */
+export function shellHintForOs(os: string): string {
+  // Order matters: "Darwin" contains "win", so match mac/linux before windows.
+  if (/darwin|mac|os ?x/i.test(os)) return "It's a Mac — exec_on_pc goes through sh, so use Unix commands (ls, cat, grep, $VAR, forward-slash paths).";
+  if (/linux|nix|bsd/i.test(os)) return "It runs Linux — exec_on_pc goes through sh, so use Unix commands (ls, cat, grep, $VAR, forward-slash paths).";
+  if (/win/i.test(os)) return "It runs Windows — exec_on_pc goes through cmd.exe, so use Windows commands (dir, type, findstr, where, %VAR%, backslash paths).";
+  return "Confirm the OS from the reported value and match your command syntax to it (Windows cmd.exe vs Unix sh).";
+}
+
 /** Contextual prefix injected into garrison session messages when a PC is active. */
 export function buildPcContextPrefix(pc: { hostname: string; os: string; ip: string; id: string; label?: string }): string {
   return (
     `[Ares Remote: you are connected to ${pc.label ? `${pc.label} — ` : ""}${pc.hostname} (${pc.os}, ${pc.ip}), ` +
-    `PC id="${pc.id}". The owner is helping this person from their phone. Use the RemotePC tool: ` +
-    `exec_on_pc to run shell commands on it (explore, diagnose, edit files, build), notify_pc to show them a popup. ` +
+    `PC id="${pc.id}". ${shellHintForOs(pc.os)} The owner is helping this person from their phone. Use the RemotePC tool: ` +
+    `exec_on_pc to run shell commands on it (explore, diagnose, edit files, build), get_file/put_file to move files, notify_pc to show them a popup. ` +
     `Work on THEIR machine, not the owner's. Keep replies short — they're read on a phone.]\n\n`
   );
 }

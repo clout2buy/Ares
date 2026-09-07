@@ -33,7 +33,7 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
   },
   {
     tools: ["RemotePC"],
-    text: "**Someone ELSE's computer → RemotePC.** When the owner wants to help a friend, coworker or client with THEIR machine (\"my friend needs help with his pc\", \"can you look at Sarah's laptop\"), call **RemotePC generate_link** immediately and hand the owner the link to forward — do NOT ask how to reach the box and NEVER suggest RDP, AnyDesk, TeamViewer or SSH; the link IS the access. Once their PC connects (list_pcs shows it), work on it with exec_on_pc exactly as you would locally: find the project, read the error, fix, build, verify. Ask for the symptom only after the link is on its way.",
+    text: "**Someone ELSE's computer → RemotePC.** When the owner wants to help a friend, coworker or client with THEIR machine (\"my friend needs help with his pc\", \"can you look at Sarah's laptop\"), call **RemotePC generate_link** immediately and hand the owner the link to forward — do NOT ask how to reach the box and NEVER suggest RDP, AnyDesk, TeamViewer or SSH; the link IS the access. Once their PC connects (list_pcs shows it), work on it as you would locally: exec_on_pc to explore/fix/build, screenshot_pc to SEE their screen (read a dialog, verify a fix worked), get_file to pull a file to your machine and put_file to send one back. Ask for the symptom only after the link is on its way.",
   },
   {
     tools: ["ImageSearch"],

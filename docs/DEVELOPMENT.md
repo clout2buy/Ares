@@ -50,7 +50,7 @@ and score — **not** score alone, which coding-v3 proved saturates at frontier
 tier. One prior run is reported as advisory; the gate needs two or more, because
 a single baseline is too noisy to fail a build on.
 
-The CLI entrypoint is built to `packages/cli/dist/entry.js`. Use `pnpm build` before running `pnpm ares` or before launching the desktop companion after a clean.
+The CLI entrypoint is built to `packages/cli/dist/entry.js`; `pnpm ares` and the installed `ares` launcher go through `packages/cli/dist/supervise.js`, a tiny supervisor that runs it as a child and restores the terminal on any exit. Use `pnpm build` before running `pnpm ares` or before launching the desktop companion after a clean.
 
 ## Permission Posture
 

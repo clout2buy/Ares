@@ -19,7 +19,9 @@ test("stabilization: clean/startup contract is explicit", async () => {
   const rootPackage = JSON.parse(packageRaw);
 
   assert.equal(rootPackage.scripts.clean, "node scripts/clean.mjs");
-  assert.equal(rootPackage.scripts.ares, "node packages/cli/dist/entry.js");
+  // The front door is the supervisor (it runs entry.js as a child and restores
+  // the terminal on any exit — see packages/cli/src/supervise.ts).
+  assert.equal(rootPackage.scripts.ares, "node packages/cli/dist/supervise.js");
   assert.match(cleanRaw, /packagesDir/);
   assert.match(cleanRaw, /path\.join\(packageDir, "dist"\)/);
   assert.match(cleanRaw, /path\.join\(root, "\.ares"\)/);

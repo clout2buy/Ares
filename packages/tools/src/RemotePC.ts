@@ -16,7 +16,7 @@ import { buildTool } from "./_shared.js";
 // Defined here as a minimal interface so @ares/tools doesn't import @ares/cli.
 
 export interface RemoteAgentServerLike {
-  generateToken(label: string): { token: string; url: string };
+  generateToken(label: string): Promise<{ token: string; url: string; scope: "public" | "lan" }>;
   listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>;
   exec(pcId: string, command: string, timeoutMs?: number): Promise<{ output: string; exitCode?: number }>;
   notify(pcId: string, message: string): void;
@@ -100,10 +100,13 @@ export const RemotePCTool = buildTool({
 
     switch (i.action) {
       case "generate_link": {
-        const { url } = _server.generateToken(i.label);
+        const { url, scope } = await _server.generateToken(i.label);
+        const lanNote = scope === "lan"
+          ? "\n\n⚠️ LAN-only link: no internet tunnel is available, so this only works if they're on the same network as you. Tell the user plainly."
+          : "";
         return {
-          output: { action: "generate_link", ok: true, url },
-          display: `🔗 Remote connect link for ${i.label}:\n${url}\n\nSend this link to them — they click it, copy one command, paste in terminal. I'll notify you when their PC connects.`,
+          output: { action: "generate_link", ok: true, url, note: scope === "lan" ? "lan-only link (no tunnel)" : undefined },
+          display: `🔗 Connect link for ${i.label}:\n${url}\n\nSend it to them. They tap it, run the download, and their PC connects — no install, no account. The owner is notified the moment it's in.${lanNote}`,
         };
       }
 

@@ -27,7 +27,7 @@ import {
   detectRemotePcIntent,
   parseRemotePcCallback,
   buildLinkMessage,
-  buildPcSeenMessage,
+  buildPcConnectedMessage,
   buildPcContextPrefix,
   type RemotePcBridgeDeps,
 } from "./remotePC.js";
@@ -284,22 +284,30 @@ export class TelegramBridge {
   /** Wire up remote-PC connect/disconnect notifications so the bridge can push
    *  "I see HOSTNAME, want me to connect?" to the owner automatically. */
   private subscribeRemotePcEvents(deps: RemotePcBridgeDeps): void {
+    // The owner asked for the link and the token was one-time, so a PC dialing
+    // in IS the confirmation. Connect immediately for every owner chat.
     this.unsubRemotePcConnected = deps.onPcConnected((pc) => {
-      const { text, keyboard } = buildPcSeenMessage(pc);
+      const { text, keyboard } = buildPcConnectedMessage(pc);
       for (const ownerId of this.owners) {
+        this.chatActivePc.set(ownerId, pc);
         this.enqueueSend(ownerId, async () => {
           await this.api.sendMessage(ownerId, text, {
             replyMarkup: { inline_keyboard: keyboard },
           });
         });
       }
+      try { deps.notify(pc.id, "Ares Connected"); } catch { /* PC already gone — close follows */ }
     });
     this.unsubRemotePcDisconnected = deps.onPcDisconnected((pc) => {
-      // Remove from any active-PC maps
+      let wasActive = false;
       for (const [chatId, active] of this.chatActivePc) {
-        if (active.id === pc.id) this.chatActivePc.delete(chatId);
+        if (active.id === pc.id) {
+          this.chatActivePc.delete(chatId);
+          wasActive = true;
+        }
       }
-      const note = `Remote PC ${pc.hostname} disconnected.`;
+      if (!wasActive) return;
+      const note = `🔴 ${pc.hostname} went offline. If they're still around, send them a fresh link and I'll pick back up.`;
       for (const ownerId of this.owners) {
         this.enqueueSend(ownerId, async () => {
           await this.api.sendMessage(ownerId, note);
@@ -462,11 +470,17 @@ export class TelegramBridge {
       }
     }
 
-    // Remote PC intent — owner says "I'm at Sarah's PC" or /remote-pc → generate link.
+    // Remote PC fast path — /pcs lists what's connected; an unmistakable
+    // "I'm at Sarah's PC" / /pc generates a link. Anything vaguer goes to the
+    // agent, which has the RemotePC tool.
     if (this.remotePcDeps && this.owners.has(chatId)) {
+      if (/^\/pcs$/i.test(text.trim())) {
+        this.enqueueSend(chatId, async () => { await this.api.sendMessage(chatId, this.renderRemotePcs(chatId)); });
+        return;
+      }
       const intent = detectRemotePcIntent(text);
       if (intent) {
-        this.handleRemotePcLinkRequest(chatId, intent.label);
+        void this.handleRemotePcLinkRequest(chatId, intent.label);
         return;
       }
     }
@@ -588,13 +602,32 @@ export class TelegramBridge {
   }
 
   /** Owner triggered the remote-PC flow ("I'm at Sarah's PC"). Generate a link. */
-  private handleRemotePcLinkRequest(chatId: number, label: string): void {
+  private async handleRemotePcLinkRequest(chatId: number, label: string): Promise<void> {
     if (!this.remotePcDeps) return;
-    const { url } = this.remotePcDeps.generateToken(label);
-    const msg = buildLinkMessage(label, url);
+    // The tunnel can take a few seconds on a cold start — keep the owner posted.
+    void this.api.sendChatAction?.(chatId, "typing").catch(() => undefined);
+    let msg: string;
+    try {
+      const { url, scope } = await this.remotePcDeps.generateToken(label);
+      msg = buildLinkMessage(label, url, scope);
+    } catch (err) {
+      this.log(`remote-pc link failed: ${errText(err)}`);
+      msg = "I couldn't create a connect link right now — the remote-PC server isn't up. Try again in a moment.";
+    }
     this.enqueueSend(chatId, async () => {
       await this.api.sendMessage(chatId, msg);
     });
+  }
+
+  /** The owner's /pcs view: what's connected right now, and which one this chat is driving. */
+  private renderRemotePcs(chatId: number): string {
+    const pcs = this.remotePcDeps?.listPcs() ?? [];
+    if (pcs.length === 0) return "No remote PCs connected. Tell me who needs help and I'll make a link.";
+    const active = this.chatActivePc.get(chatId);
+    return [
+      "🖥 Remote PCs:",
+      ...pcs.map((p) => `${active?.id === p.id ? "🟢" : "⚪"} ${p.label} — ${p.hostname} (${p.os})`),
+    ].join("\n");
   }
 
   /** The owner's /activity view: who's talking, how much, and about what. */
@@ -644,31 +677,22 @@ export class TelegramBridge {
   private handleCallback(cq: TgCallbackQuery): void {
     const chatId: number | undefined = cq.message?.chat?.id ?? cq.from?.id;
 
-    // Remote PC callback: ares:remotepc:connect:<pcId> / ares:remotepc:skip:<pcId>
+    // Remote PC callback: ares:remotepc:disconnect:<pcId>
     if (cq.data && chatId !== undefined && this.owners.has(chatId) && this.remotePcDeps) {
       const rpcb = parseRemotePcCallback(cq.data);
       if (rpcb) {
-        void this.api.answerCallbackQuery(cq.id, {
-          text: rpcb.action === "connect" ? "Connecting..." : "Skipped",
-        }).catch(() => undefined);
-        if (rpcb.action === "connect") {
-          const pcs = this.remotePcDeps.listPcs();
-          const pc = pcs.find((p) => p.id === rpcb.pcId || p.hostname === rpcb.pcId);
-          if (pc) {
-            this.chatActivePc.set(chatId, pc);
-            this.remotePcDeps.notify(pc.id, "Ares Connected");
-            this.enqueueSend(chatId, async () => {
-              await this.api.sendMessage(
-                chatId,
-                `Connected to ${pc.hostname} (${pc.os}). You can now ask me to run diagnostics, check the network, view processes — whatever you need.`,
-              );
-            });
-          } else {
-            this.enqueueSend(chatId, async () => {
-              await this.api.sendMessage(chatId, "That PC has already disconnected. Have them run the script again.");
-            });
-          }
+        void this.api.answerCallbackQuery(cq.id, { text: "Disconnected" }).catch(() => undefined);
+        const pc = this.remotePcDeps.listPcs().find((p) => p.id === rpcb.pcId);
+        for (const [cid, active] of this.chatActivePc) {
+          if (active.id === rpcb.pcId) this.chatActivePc.delete(cid);
         }
+        if (pc) {
+          try { this.remotePcDeps.notify(pc.id, "Ares disconnected — you can close the connector window"); } catch { /* gone */ }
+          this.remotePcDeps.disconnect?.(pc.id);
+        }
+        this.enqueueSend(chatId, async () => {
+          await this.api.sendMessage(chatId, pc ? `Disconnected from ${pc.label}.` : "That PC was already gone.");
+        });
         return;
       }
     }

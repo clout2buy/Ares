@@ -19,6 +19,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, type FileReadStamp } from "@ares/tools";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
+import type { TelegramBridge } from "@ares/channels";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -34,7 +35,7 @@ import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissio
 import { providerFamilyForSelection, selectProvider } from "./providers.js";
 import { AresRuntimeState, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, makeSpanSummarizer, resolveReasoningLevel } from "./sessionFactory.js";
-import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins } from "./telegramWiring.js";
+import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins, keepTelegramBridgeUp } from "./telegramWiring.js";
 import { persistTerminalModelPreference, terminalModelCatalogLines } from "./terminalLines.js";
 import { buildSystemPrompt, captureRemoteTurn, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
@@ -459,12 +460,21 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       );
 
   const requestedPort = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
+  // Filled in below; /health reads them live so a client can see whether the
+  // Telegram bridge is actually up instead of inferring it from saved chat ids.
+  let telegramBridge: TelegramBridge | null = null;
+  let remoteAgentServer: RemoteAgentServer | null = null;
   const server = new GarrisonServer({
     home: context.home,
     sessions,
     scheduler,
     approvals,
     port: requestedPort,
+    status: () => ({
+      telegram: telegramBridge ? "online" : "off",
+      remotePcs: remoteAgentServer?.listPcs().length ?? 0,
+      remotePcLinks: remoteAgentServer ? remoteAgentServer.linkScope() : "off",
+    }),
     // Recorded-event replay for the /view page and any session.history client:
     // the workspace audit rollout (events.jsonl) is the source.
     history: async (sessionId, opts) => {
@@ -499,11 +509,13 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   };
   // Remote PC agent server — lets the owner connect to a coworker's PC on the fly
   // via a one-time Telegram link. Best-effort: a bind failure never touches the garrison.
-  const remoteAgentServer = await (async () => {
+  remoteAgentServer = await (async () => {
     try {
       const s = new RemoteAgentServer({
+        home: context.home,
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
-        // "auto" by default: tries cloudflared, falls back to LAN silently
+        // "auto" by default: finds or fetches cloudflared for an internet-reachable
+        // link, falls back to LAN (and says so in every link) if it can't
       });
       await s.start();
       setRemoteAgentServer(s);
@@ -514,9 +526,17 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     }
   })();
 
-  const telegramBridge = gatewayToken
-    ? await startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl, operatorLoop, remoteAgentServer).catch(() => null)
-    : null;
+  // The bridge comes up now if Telegram is configured, and keeps trying every
+  // 30s if it isn't (or if the first attempt failed) — the owner connecting
+  // Telegram from the app goes live without a restart.
+  const startBridge = () => gatewayToken
+    ? startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl, operatorLoop, remoteAgentServer)
+    : Promise.resolve(null);
+  telegramBridge = await startBridge().catch((err) => {
+    process.stderr.write(`garrison: telegram bridge failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
+    return null;
+  });
+  const stopBridgeRetry = telegramBridge ? () => {} : keepTelegramBridgeUp(startBridge, (bridge) => { telegramBridge = bridge; });
 
   // Proactive scheduled check-ins over Telegram — 9am/12pm/3pm by default.
   // Each check-in includes weather for the owner's area when configured.
@@ -529,8 +549,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         `gateway   ws://${bound.host}:${bound.port}  (health: http://${bound.host}:${bound.port}/health)`,
         `provider  ${selection.provider.name} · ${selection.model}`,
         `sessions  ${restored.length} rehydrated`,
-        `telegram  ${telegramBridge ? "bridge online" : "off"}${tgCheckinScheduler ? " + check-ins" : ""}`,
-        `remote-pc ${remoteAgentServer ? `${remoteAgentServer.linkBaseUrl()}/agent?token=<token>` : "off (port busy?)"}`,
+        `telegram  ${telegramBridge ? "bridge online" : "off — will retry every 30s once configured"}${tgCheckinScheduler ? " + check-ins" : ""}`,
+        `remote-pc ${remoteAgentServer ? `${remoteAgentServer.linkScope() === "public" ? "internet links via tunnel" : "LAN links (tunnel pending or unavailable)"} · port ${remoteAgentServer.port}` : "off (port busy?)"}`,
         `token     ${tokenPath(context.home)}`,
         `attach    ares attach${bound.port === DEFAULT_GARRISON_PORT ? "" : ` --port ${bound.port}`}`,
       ],
@@ -548,6 +568,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       scheduler.stop();
       tgCheckinScheduler?.stop();
       operatorLoop?.stop();
+      stopBridgeRetry();
       void telegramBridge?.stop().catch(() => {});
       void remoteAgentServer?.close().catch(() => {});
       setRemoteAgentServer(null);

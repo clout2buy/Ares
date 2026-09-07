@@ -4,7 +4,7 @@ import { installGlobalCrashHandlers } from "@ares/core";
 import { readFile } from "node:fs/promises";
 import { getWeatherText, setRemindScheduler } from "@ares/tools";
 import { notice } from "../terminalUi.js";
-import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig } from "../telegramConfig.js";
+import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig, adoptLegacyTelegramConfig } from "../telegramConfig.js";
 import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
 import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions } from "@ares/mind";
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
@@ -104,15 +104,20 @@ function buildRemotePcDeps(server: RemoteAgentServer): RemotePcBridgeDeps {
     listPcs: () => server.listPcs(),
     exec: (pcId, command) => server.exec(pcId, command),
     notify: (pcId, message) => server.notify(pcId, message),
+    disconnect: (pcId) => server.disconnect(pcId),
     onPcConnected: (cb) => server.onPcConnected(cb),
     onPcDisconnected: (cb) => server.onPcDisconnected(cb),
   };
 }
 
+const lifecycleLog = (line: string) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "telegram", line } }) + "\n");
+
 /** Start the Telegram bridge in-process when configured (garrison auto-start) —
  *  no second terminal. Best-effort: a Telegram failure never touches the daemon.
  *  Returns the bridge (to stop on shutdown) or null when not configured. */
 export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null, remoteAgentServer?: RemoteAgentServer | null): Promise<TelegramBridge | null> {
+  const adoption = await adoptLegacyTelegramConfig().catch((err) => ({ adopted: false, note: `legacy Telegram adoption failed: ${err instanceof Error ? err.message : String(err)}` }));
+  if (adoption.note) lifecycleLog(adoption.note);
   if (!(await telegramConfigured().catch(() => false))) return null;
   const cfg = await loadTelegramConfig();
   if (!cfg.botToken || cfg.allowedChats.length === 0) return null;
@@ -127,7 +132,7 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
     initialRoster: roster,
     persistRoster: (data) => saveRoster(context.home, data),
     reloadRoster: () => loadRoster(context.home),
-    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "telegram", line } }) + "\n"),
+    log: lifecycleLog,
     commands: telegramCommandDeps(context, modelControl, operatorLoop),
     connectDeps: {
       startOAuthFlow,
@@ -139,7 +144,41 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
     remotePcDeps: remoteAgentServer ? buildRemotePcDeps(remoteAgentServer) : undefined,
   });
   bridge.start();
+  lifecycleLog(`bridge online — ${cfg.allowedChats.length} chat(s)${remoteAgentServer ? ", remote-pc ready" : ""}`);
   return bridge;
+}
+
+/**
+ * Keep trying to bring the bridge up until it is. Telegram gets configured
+ * while the garrison is already running (the owner sets it up from the app),
+ * and a transient failure at boot must not mean "off until restart". Polls
+ * every `everyMs`; resolves the bridge through `onUp`. Returns a stop fn.
+ */
+export function keepTelegramBridgeUp(
+  start: () => Promise<TelegramBridge | null>,
+  onUp: (bridge: TelegramBridge) => void,
+  everyMs = 30_000,
+): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const bridge = await start();
+      if (bridge) {
+        if (stopped) { void bridge.stop().catch(() => {}); return; }
+        onUp(bridge);
+        return;
+      }
+    } catch (err) {
+      lifecycleLog(`bridge start failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    timer = setTimeout(() => { void tick(); }, everyMs);
+    timer.unref?.();
+  };
+  timer = setTimeout(() => { void tick(); }, everyMs);
+  timer.unref?.();
+  return () => { stopped = true; if (timer) clearTimeout(timer); };
 }
 
 export async function startTelegramCheckins(context: CliRuntimeContext): Promise<TelegramScheduler | null> {

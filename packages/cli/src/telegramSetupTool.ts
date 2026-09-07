@@ -97,14 +97,14 @@ export function makeTelegramSetupTool(deps: TelegramSetupDeps = {}) {
           await saveTelegramConfig({ allowedChats: [i.chat_id], defaultChatId: i.chat_id, enabled: true });
           let pinged = false;
           try {
-            await apiFactory(c.botToken).sendMessage(i.chat_id, "Ares Telegram link saved. Start or restart Garrison, then send /help.");
+            await apiFactory(c.botToken).sendMessage(i.chat_id, "Ares is linked to this chat. I'll be live here within 30 seconds — send /help to see what I can do.");
             pinged = true;
           } catch {
             // config is saved regardless; the ping is best-effort confirmation
           }
           return {
             output: { action: "save", ok: true, chatId: i.chat_id, note: pinged ? "test ping sent" : "saved (test ping failed — check the chat id)" },
-            display: pinged ? "Telegram connected — test ping sent. Restart the daemon (or it auto-starts) to go live." : "Telegram saved, but the test ping failed — double-check the chat id.",
+            display: pinged ? "Telegram connected — test ping sent. The bridge goes live within 30 seconds, no restart needed." : "Telegram saved, but the test ping failed — double-check the chat id.",
           };
         }
         case "disable":

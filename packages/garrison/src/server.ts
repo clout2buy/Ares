@@ -68,6 +68,8 @@ export interface GarrisonServerOptions {
   /** Recorded-event replay for session.history frames (the viewer's back-scroll).
    *  Injected by the boot site (workspace rollouts live in @ares/core). */
   history?: (sessionId: string, opts?: { limit?: number }) => Promise<Array<{ ts?: string; event: TurnEvent }>>;
+  /** Extra live fields merged into GET /health (telegram bridge state, remote PCs). */
+  status?: () => Record<string, unknown>;
 }
 
 interface ClientConn {
@@ -174,6 +176,7 @@ export class GarrisonServer {
           ok: true,
           version: this.opts.version ?? GARRISON_VERSION,
           sessions: this.opts.sessions.list().length,
+          ...(this.opts.status?.() ?? {}),
         }),
       );
       return;

@@ -38,13 +38,26 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.48.2",
+    date: "September 2026",
+    title: "In their machine in one tap",
+    tagline: "\"My friend needs help with his PC\" → a link → they tap it → you're in. And Telegram comes back for everyone who lost it.",
+    highlights: [
+      { icon: "📱", title: "Telegram is back", blurb: "If Ares stopped answering on Telegram after a summer update, it was reading the wrong vault. It now finds your old setup by itself — no re-linking — and comes online within 30 seconds of being configured, every launch.", tag: "Safer" },
+      { icon: "🌐", title: "Links that work anywhere", blurb: "Remote-help links now reach the internet, not just your wifi. Ares fetches the tunnel it needs on first use; if it can't, it tells you the link is local-only instead of letting it fail silently.", tag: "New" },
+      { icon: "⬇️", title: "Nothing for them to install", blurb: "On Windows the link auto-downloads a tiny connector — they double-click it and that's it. No Python, no account. Mac and Linux get one line to paste.", tag: "New" },
+      { icon: "⚡", title: "No confirmation tap", blurb: "The moment their PC connects, Ares tells you \"Connected to Sarah's PC\" and is ready for orders. One Disconnect button when you're done. Their wifi blips? It reconnects on its own.", tag: "Faster" },
+      { icon: "🧠", title: "Say it your way", blurb: "No magic phrase. \"My friend is having trouble\", \"can you look at John's laptop\" — Ares gets it, and your everyday \"my deploy isn't working\" is never mistaken for a remote-help request.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.48.1",
     date: "September 2026",
     title: "Reach out and fix it",
     tagline: "Ares can now help a friend's or coworker's PC — you send a link, they click, Ares connects.",
     highlights: [
       { icon: "🔗", title: "Help someone else's PC", blurb: "Tell Ares you're at a coworker's machine, or just that a friend's computer is acting up. It hands you a one-time link; they click it and Ares can look around.", tag: "New" },
-      { icon: "📱", title: "Works from Telegram", blurb: "Send the ask from your phone. When their PC connects, Ares texts you 'I see SARAH-LAPTOP — connect?' and you tap yes.", tag: "New" },
+      { icon: "📱", title: "Works from Telegram", blurb: "Send the ask from your phone. When their PC connects, Ares texts you and you're driving.", tag: "New" },
       { icon: "🧠", title: "Say it your way", blurb: "No magic phrase needed. Ares understands the intent, and your everyday 'my deploy isn't working' messages are never mistaken for a remote-help request.", tag: "Polished" },
     ],
   },

@@ -503,6 +503,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     try {
       const s = new RemoteAgentServer({
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
+        tunnelMode: args.flags.has("remote-agent-tunnel") ? "cloudflared" : undefined,
       });
       await s.start();
       setRemoteAgentServer(s);
@@ -529,7 +530,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         `provider  ${selection.provider.name} · ${selection.model}`,
         `sessions  ${restored.length} rehydrated`,
         `telegram  ${telegramBridge ? "bridge online" : "off"}${tgCheckinScheduler ? " + check-ins" : ""}`,
-        `remote-pc ${remoteAgentServer ? `http://${remoteAgentServer.lanIp()}:${remoteAgentServer.port}/agent?token=<token>` : "off (port busy?)"}`,
+        `remote-pc ${remoteAgentServer ? `${remoteAgentServer.linkBaseUrl()}/agent?token=<token>` : "off (port busy?)"}`,
         `token     ${tokenPath(context.home)}`,
         `attach    ares attach${bound.port === DEFAULT_GARRISON_PORT ? "" : ` --port ${bound.port}`}`,
       ],

@@ -7,6 +7,7 @@
 // collides with the garrison WS gateway (7421).
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
+import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket, { WebSocketServer } from "ws";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -36,6 +37,13 @@ export interface RemoteAgentServerOptions {
   /** Bind address. Defaults to 0.0.0.0 so LAN peers can reach it. */
   host?: string;
   log?: (line: string) => void;
+  /**
+   * When set to "cloudflared", spawns a Cloudflare Quick Tunnel on startup
+   * and uses its public HTTPS URL in all generated links. The real IP is never
+   * sent to the connecting PC — all traffic routes through Cloudflare's edge.
+   * Requires `cloudflared` to be installed and in PATH.
+   */
+  tunnelMode?: "cloudflared";
 }
 
 // ─── Internal connection state ─────────────────────────────────────────────
@@ -61,6 +69,8 @@ export class RemoteAgentServer {
   private readonly tokens = new Map<string, { label: string; expiresAt: number }>();
   private readonly pcs = new Map<string, RemotePcConn>();
   private boundPort = 0;
+  private tunnelProc?: ChildProcess;
+  private publicBaseUrl?: string; // set when cloudflared tunnel is active
 
   private readonly connectedListeners = new Set<(pc: RemotePcInfo) => void>();
   private readonly disconnectedListeners = new Set<(pc: RemotePcInfo) => void>();
@@ -97,10 +107,25 @@ export class RemoteAgentServer {
     const addr = http.address();
     this.boundPort = typeof addr === "object" && addr ? addr.port : port;
     this.log(`remote-agent listening on ${host}:${this.boundPort}`);
+
+    if (this.opts.tunnelMode === "cloudflared") {
+      try {
+        this.publicBaseUrl = await this.startCloudflaredTunnel();
+        this.log(`remote-agent tunnel: ${this.publicBaseUrl}`);
+      } catch (err) {
+        this.log(`remote-agent tunnel failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     return { host, port: this.boundPort };
   }
 
   get port(): number { return this.boundPort; }
+
+  /** The public base URL for generated links (tunnel URL when active, LAN URL otherwise). */
+  linkBaseUrl(): string {
+    return this.publicBaseUrl ?? `http://${this.lanIp()}:${this.boundPort}`;
+  }
 
   /** Best-effort LAN IPv4 address — embedded in download links. */
   lanIp(): string {
@@ -118,8 +143,42 @@ export class RemoteAgentServer {
     const expiresAt = Date.now() + TOKEN_TTL_MS;
     this.tokens.set(token, { label, expiresAt });
     setTimeout(() => this.tokens.delete(token), TOKEN_TTL_MS + 1_000).unref?.();
-    const url = `http://${this.lanIp()}:${this.boundPort}/agent?token=${token}`;
+    const url = `${this.linkBaseUrl()}/agent?token=${token}`;
     return { token, url };
+  }
+
+  /** Start a Cloudflare Quick Tunnel pointing at the local port. Resolves with the public HTTPS base URL. */
+  private startCloudflaredTunnel(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${this.boundPort}`], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      this.tunnelProc = proc;
+
+      const timeoutHandle = setTimeout(() => {
+        reject(new Error("cloudflared tunnel URL not found within 30s — is cloudflared installed?"));
+      }, 30_000);
+
+      let buf = "";
+      proc.stderr!.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        const match = buf.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+        if (match) {
+          clearTimeout(timeoutHandle);
+          resolve(match[0]);
+        }
+      });
+
+      proc.on("error", (err) => {
+        clearTimeout(timeoutHandle);
+        reject(new Error(`cloudflared not found: ${err.message} — install with: brew install cloudflare/cloudflare/cloudflared`));
+      });
+
+      proc.on("close", (code) => {
+        clearTimeout(timeoutHandle);
+        if (code !== 0 && code !== null) reject(new Error(`cloudflared exited early (code ${code})`));
+      });
+    });
   }
 
   /** Enumerate connected remote PCs (info only, no WS reference). */
@@ -149,6 +208,8 @@ export class RemoteAgentServer {
   }
 
   async close(): Promise<void> {
+    try { this.tunnelProc?.kill(); } catch { /* already dead */ }
+    this.tunnelProc = undefined;
     for (const pc of this.pcs.values()) {
       for (const { reject, timer } of pc.pendingCmds.values()) {
         clearTimeout(timer);
@@ -187,7 +248,38 @@ export class RemoteAgentServer {
         res.end(EXPIRED_HTML);
         return;
       }
-      const script = buildAgentScript(token, this.lanIp(), this.boundPort);
+      const accept = req.headers["accept"] ?? "";
+      const ua = req.headers["user-agent"] ?? "";
+      const isBrowser = accept.includes("text/html") && !ua.includes("python") && !ua.includes("curl") && !ua.includes("wget");
+      if (isBrowser) {
+        const scriptUrl = `${this.linkBaseUrl()}/script?token=${token}`;
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(buildConnectHtml(scriptUrl));
+        return;
+      }
+      // Non-browser (curl, python, wget): serve raw script
+      const base = this.linkBaseUrl();
+      const wsUrl = base.replace(/^http/, "ws") + "/ws";
+      const script = buildAgentScript(token, wsUrl);
+      res.writeHead(200, {
+        "content-type": "text/x-python; charset=utf-8",
+        "content-disposition": 'attachment; filename="ares-connect.py"',
+      });
+      res.end(script);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/script") {
+      const token = url.searchParams.get("token") ?? "";
+      const pending = this.tokens.get(token);
+      if (!pending || Date.now() > pending.expiresAt) {
+        res.writeHead(410, { "content-type": "text/plain" });
+        res.end("# Link expired. Ask Ares for a new one.\n");
+        return;
+      }
+      const base = this.linkBaseUrl();
+      const wsUrl = base.replace(/^http/, "ws") + "/ws";
+      const script = buildAgentScript(token, wsUrl);
       res.writeHead(200, {
         "content-type": "text/x-python; charset=utf-8",
         "content-disposition": 'attachment; filename="ares-connect.py"',
@@ -272,11 +364,10 @@ export class RemoteAgentServer {
 
 // ─── Python agent script generator ────────────────────────────────────────
 
-function buildAgentScript(token: string, host: string, port: number): string {
+function buildAgentScript(token: string, wsUrl: string): string {
   return AGENT_PY
     .replace("__ARES_TOKEN__", token)
-    .replace("__ARES_HOST__", host)
-    .replace("__ARES_PORT__", String(port));
+    .replace("__ARES_WS_URL__", wsUrl);
 }
 
 // The script is embedded as a multi-line string so it ships as part of the
@@ -297,9 +388,8 @@ except ImportError:
     import websocket  # noqa: E401
 
 # ── Connection config (embedded by Ares) ───────────────────────────────────
-_HOST  = "__ARES_HOST__"
-_PORT  = __ARES_PORT__
-_TOKEN = "__ARES_TOKEN__"
+_WS_URL = "__ARES_WS_URL__"
+_TOKEN  = "__ARES_TOKEN__"
 
 
 # ── "Ares Connected" animated popup ────────────────────────────────────────
@@ -364,13 +454,13 @@ def main():
     os_info  = f"{platform.system()} {platform.release()}"
     ip       = _get_local_ip()
 
-    print(f"Connecting to Ares at {_HOST}:{_PORT} ...")
-    ws = websocket.WebSocket()
+    print(f"Connecting to Ares ...")
+    ws = websocket.WebSocket(sslopt={"check_hostname": False} if _WS_URL.startswith("wss://") else {})
     try:
-        ws.connect(f"ws://{_HOST}:{_PORT}")
+        ws.connect(_WS_URL)
     except Exception as exc:
         print(f"\\u274c  Connection failed: {exc}")
-        print(f"Make sure you are on the same network as the Ares machine.")
+        print(f"If this link came from Telegram, make sure it hasn't expired (10 min).")
         sys.exit(1)
 
     ws.send(json.dumps({
@@ -429,6 +519,112 @@ def main():
 if __name__ == "__main__":
     main()
 `;
+
+function buildConnectHtml(scriptUrl: string): string {
+  const winCmd = `python -c "import urllib.request; exec(urllib.request.urlopen('${scriptUrl}').read())"`;
+  const macCmd = `python3 -c "import urllib.request; exec(urllib.request.urlopen('${scriptUrl}').read())"`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ares Remote Connect</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d0d;color:#ccc;font-family:'Courier New',monospace;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
+  .card{border:1px solid #1e1e1e;border-top:2px solid #00ff88;background:#111;padding:2.5rem 3rem;max-width:640px;width:100%}
+  .logo{font-size:1.4rem;font-weight:bold;color:#00ff88;letter-spacing:.12em;margin-bottom:.25rem}
+  .sub{font-size:.8rem;color:#444;margin-bottom:2rem}
+  h2{font-size:1rem;color:#ccc;margin-bottom:.5rem;letter-spacing:.06em}
+  .step{display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.5rem}
+  .num{background:#00ff88;color:#000;font-weight:bold;font-size:.8rem;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+  .cmd-box{background:#0a0a0a;border:1px solid #222;padding:.9rem 1rem;font-size:.8rem;word-break:break-all;line-height:1.5;color:#aaa;margin-top:.4rem;position:relative}
+  .copy-btn{display:block;width:100%;margin-top:.6rem;padding:.55rem;background:#00ff88;color:#000;font-family:'Courier New',monospace;font-weight:bold;font-size:.85rem;border:none;cursor:pointer;letter-spacing:.08em;transition:opacity .15s}
+  .copy-btn:hover{opacity:.85}
+  .copy-btn.copied{background:#005533}
+  .tabs{display:flex;gap:.5rem;margin-bottom:.75rem}
+  .tab{padding:.35rem .9rem;font-family:'Courier New',monospace;font-size:.78rem;background:#0a0a0a;border:1px solid #222;color:#555;cursor:pointer}
+  .tab.active{border-color:#00ff88;color:#00ff88}
+  .note{font-size:.75rem;color:#444;margin-top:1.5rem;line-height:1.6;border-top:1px solid #1e1e1e;padding-top:1rem}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">⚡ ARES</div>
+  <div class="sub">remote connect · one-time link</div>
+
+  <div class="step">
+    <div class="num">1</div>
+    <div style="flex:1">
+      <h2>OPEN A TERMINAL</h2>
+      <div style="font-size:.78rem;color:#555;margin-top:.3rem">
+        Windows: press <kbd style="background:#1a1a1a;padding:.1rem .4rem;border:1px solid #333">Win+R</kbd> → type <code>cmd</code> → Enter &nbsp;·&nbsp;
+        Mac: <kbd style="background:#1a1a1a;padding:.1rem .4rem;border:1px solid #333">⌘ Space</kbd> → type <code>terminal</code> → Enter
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="num">2</div>
+    <div style="flex:1">
+      <h2>COPY &amp; PASTE THIS COMMAND</h2>
+      <div class="tabs">
+        <div class="tab active" onclick="showOs('win',this)">Windows</div>
+        <div class="tab" onclick="showOs('mac',this)">Mac / Linux</div>
+      </div>
+      <div id="cmd-win" class="cmd-box">${winCmd}</div>
+      <div id="cmd-mac" class="cmd-box" hidden>${macCmd}</div>
+      <button class="copy-btn" id="copyBtn" onclick="doCopy()">⎘ COPY COMMAND</button>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="num">3</div>
+    <div style="flex:1">
+      <h2>PRESS ENTER</h2>
+      <div style="font-size:.78rem;color:#555;margin-top:.3rem">
+        Ares will confirm on Telegram. A notification will appear on this screen.
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    This link expires in 10 minutes and can only be used once.<br>
+    Python 3 must be installed — most work PCs already have it.
+    If not: <a href="https://python.org/downloads" style="color:#00ff88">python.org/downloads</a>
+  </div>
+</div>
+<script>
+  var os = 'win';
+  function showOs(which, el) {
+    os = which;
+    document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
+    el.classList.add('active');
+    document.getElementById('cmd-win').hidden = which !== 'win';
+    document.getElementById('cmd-mac').hidden = which !== 'mac';
+    document.getElementById('copyBtn').classList.remove('copied');
+    document.getElementById('copyBtn').textContent = '⎘ COPY COMMAND';
+  }
+  function doCopy() {
+    var cmd = document.getElementById('cmd-' + os).textContent;
+    navigator.clipboard.writeText(cmd).then(function() {
+      var btn = document.getElementById('copyBtn');
+      btn.textContent = '✓ COPIED — paste in terminal & press Enter';
+      btn.classList.add('copied');
+    }).catch(function() {
+      var cmd = document.getElementById('cmd-' + os);
+      cmd.style.background = '#001a0d';
+      setTimeout(function(){cmd.style.background='';}, 800);
+    });
+  }
+  // Auto-detect OS
+  if (!navigator.platform.toLowerCase().includes('win')) {
+    showOs('mac', document.querySelectorAll('.tab')[1]);
+  }
+</script>
+</body>
+</html>`;
+}
 
 const EXPIRED_HTML = `<!doctype html>
 <html><head><title>Ares – Link Expired</title>

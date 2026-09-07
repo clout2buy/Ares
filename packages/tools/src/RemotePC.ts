@@ -16,6 +16,7 @@ import { buildTool } from "./_shared.js";
 // Defined here as a minimal interface so @ares/tools doesn't import @ares/cli.
 
 export interface RemoteAgentServerLike {
+  generateToken(label: string): { token: string; url: string };
   listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>;
   exec(pcId: string, command: string, timeoutMs?: number): Promise<{ output: string; exitCode?: number }>;
   notify(pcId: string, message: string): void;
@@ -31,6 +32,15 @@ export function setRemoteAgentServer(server: RemoteAgentServerLike | null): void
 // ─── Schema ────────────────────────────────────────────────────────────────
 
 const inputSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("generate_link").describe(
+      "Generate a one-time connection link to send to someone so their PC can connect to Ares. " +
+      "Use this whenever the user mentions someone needing help, being at a coworker's or friend's machine, " +
+      "IT shadowing, or wanting to connect to another PC — even if they don't use exact words. " +
+      "Returns a URL to share with the person on the other machine.",
+    ),
+    label: z.string().describe("Short name for this PC, e.g. 'Sarah' or 'John laptop'. Used to identify it when it connects."),
+  }),
   z.object({
     action: z.literal("list_pcs").describe("List all remote PCs currently connected to Ares."),
   }),
@@ -52,6 +62,7 @@ export type RemotePCInput = z.infer<typeof inputSchema>;
 export interface RemotePCOutput {
   action: string;
   ok: boolean;
+  url?: string;
   pcs?: Array<{ id: string; label: string; hostname: string; os: string; ip: string; connectedAt: number }>;
   output?: string;
   exitCode?: number;
@@ -63,16 +74,18 @@ export interface RemotePCOutput {
 export const RemotePCTool = buildTool({
   name: "RemotePC",
   description:
-    "Control remote PCs connected via Ares Remote Agent. " +
-    "Use list_pcs to see connected machines. " +
-    "Use exec_on_pc to run shell commands on a remote PC (e.g. network diagnostics, process list, file operations). " +
-    "Use notify_pc to push a popup notification to a PC's screen. " +
-    "Only available when a remote PC has connected via the Ares download link.",
+    "Connect to and control remote PCs via Ares Remote Agent. " +
+    "Use generate_link when the user mentions a friend, coworker, or anyone needing help — even vaguely — to produce a one-time URL they click to let Ares in. " +
+    "Use list_pcs to see which machines are currently connected. " +
+    "Use exec_on_pc to run shell commands (diagnostics, process lists, file ops, network checks). " +
+    "Use notify_pc to push a popup to their screen. " +
+    "When in doubt whether the user wants remote access, generate_link first — it is low-cost and the other person has to actively run the script.",
   safety: "external-state",
   concurrency: "exclusive",
   inputZod: inputSchema,
   activityDescription: (i) => {
     switch (i.action) {
+      case "generate_link": return `generating remote connect link for ${i.label}`;
       case "list_pcs": return "listing connected remote PCs";
       case "exec_on_pc": return `executing on remote PC ${i.pc_id}: ${i.command.slice(0, 60)}`;
       case "notify_pc": return `notifying remote PC ${i.pc_id}: ${i.message.slice(0, 60)}`;
@@ -85,6 +98,14 @@ export const RemotePCTool = buildTool({
     }
 
     switch (i.action) {
+      case "generate_link": {
+        const { url } = _server.generateToken(i.label);
+        return {
+          output: { action: "generate_link", ok: true, url },
+          display: `🔗 Remote connect link for ${i.label}:\n${url}\n\nSend this link to them — they click it, copy one command, paste in terminal. I'll notify you when their PC connects.`,
+        };
+      }
+
       case "list_pcs": {
         const pcs = _server.listPcs().map(({ username: _u, ...rest }) => rest);
         const note = pcs.length === 0 ? "No remote PCs connected. Ask the user to run the Ares connect script on their PC." : undefined;

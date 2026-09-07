@@ -42,32 +42,30 @@ export function detectRemotePcIntent(text: string): { label: string } | null {
     return { label: label.endsWith("'s PC") || label.endsWith("'s pc") ? label : `${label}'s PC` };
   }
 
-  // Natural language: "I'm at Sarah's PC" / "at a coworker's PC" / "helping John with his laptop"
+  // Natural language — broad set of ways people describe sitting at or helping with someone's machine
+  const DEVICE = "(?:pc|computer|laptop|machine|workstation|desktop)";
+  const PERSON = "(?:coworker|colleague|friend|buddy|teammate|coworker|neighbour|neighbor|boss|client|guy|girl|person|dude)";
+  const NAME   = "(\\w+(?:\\s+\\w+)?)";
   const patterns: Array<[RegExp, (m: RegExpExecArray) => string]> = [
-    [
-      /\b(?:i'?m?\s+)?(?:at|on)\s+(?:a\s+)?(?:coworker|colleague|friend|teammate)(?:'s)?\s+(?:pc|computer|laptop|machine|workstation)\b/i,
-      () => "coworker's PC",
-    ],
-    [
-      /\b(?:i'?m?\s+)?(?:at|on)\s+(\w+(?:\s+\w+)?)'s\s+(?:pc|computer|laptop|machine|workstation)\b/i,
-      (m) => `${m[1]}'s PC`,
-    ],
-    [
-      /\bhelping\s+(\w+(?:\s+\w+)?)\s+with\s+(?:his|her|their)\s+(?:pc|computer|laptop|machine)\b/i,
-      (m) => `${m[1]}'s PC`,
-    ],
-    [
-      /\b(?:it\s+)?shadow(?:ing)?\b.*\b(?:pc|computer|laptop)\b/i,
-      () => "shadowing PC",
-    ],
-    [
-      /\b(?:remote|connect)\s+(?:to\s+)?(?:a\s+)?(?:coworker|colleague|friend|teammate)(?:'s)?\s+(?:pc|computer|laptop)\b/i,
-      () => "coworker's PC",
-    ],
-    [
-      /\bconnect\s+(?:to\s+)?(\w+(?:\s+\w+)?)'s\s+(?:pc|computer|laptop)\b/i,
-      (m) => `${m[1]}'s PC`,
-    ],
+    // "at/on a coworker's/friend's PC"
+    [new RegExp(`\\b(?:i'?m?\\s+)?(?:at|on)\\s+(?:a\\s+)?${PERSON}(?:'s)?\\s+${DEVICE}\\b`, "i"), () => "coworker's PC"],
+    // "at/on Sarah's PC"
+    [new RegExp(`\\b(?:i'?m?\\s+)?(?:at|on)\\s+${NAME}'s\\s+${DEVICE}\\b`, "i"), (m) => `${m[1]}'s PC`],
+    // "helping Sarah with her/his/their PC/laptop/issue"
+    [new RegExp(`\\bhelping\\s+${NAME}\\s+with\\s+(?:his|her|their|a)?\\s*(?:${DEVICE}|issue|problem|stuff|things?|computer stuff)\\b`, "i"), (m) => `${m[1]}'s PC`],
+    // "Sarah needs help / is having trouble / can't ..." — generic help request with a name
+    [new RegExp(`\\b${NAME}\\s+(?:needs?\\s+help|is\\s+having\\s+(?:trouble|issues?|problems?)|can'?t|doesn'?t\\s+work|isn'?t\\s+working)\\b`, "i"), (m) => `${m[1]}'s PC`],
+    // "my friend/coworker needs help / is having trouble"
+    [new RegExp(`\\bmy\\s+${PERSON}\\s+(?:needs?\\s+help|is\\s+having\\s+(?:trouble|issues?|problems?)|can'?t|has\\s+(?:a\\s+)?(?:issue|problem))\\b`, "i"), () => "friend's PC"],
+    // "Sarah's PC/laptop isn't working / has issues"
+    [new RegExp(`\\b${NAME}'s\\s+${DEVICE}\\s+(?:isn'?t|is\\s+not|won'?t|doesn'?t|has\\s+(?:an?\\s+)?(?:issue|problem)|keeps?)`, "i"), (m) => `${m[1]}'s PC`],
+    // "I'm helping my friend/coworker" (no device word needed)
+    [new RegExp(`\\b(?:i'?m?\\s+)?helping\\s+(?:a\\s+)?(?:my\\s+)?${PERSON}\\b`, "i"), () => "coworker's PC"],
+    // "IT shadowing"
+    [/\b(?:it\s+)?shadow(?:ing)?\b/i, () => "shadowing PC"],
+    // "remote/connect to a coworker/friend's PC"
+    [new RegExp(`\\b(?:remote|connect)\\s+(?:to\\s+)?(?:a\\s+)?(?:my\\s+)?${PERSON}(?:'s)?\\s+${DEVICE}\\b`, "i"), () => "coworker's PC"],
+    [new RegExp(`\\bconnect\\s+(?:to\\s+)?${NAME}'s\\s+${DEVICE}\\b`, "i"), (m) => `${m[1]}'s PC`],
   ];
 
   for (const [re, labelFn] of patterns) {

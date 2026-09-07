@@ -38,12 +38,12 @@ export interface RemoteAgentServerOptions {
   host?: string;
   log?: (line: string) => void;
   /**
-   * When set to "cloudflared", spawns a Cloudflare Quick Tunnel on startup
-   * and uses its public HTTPS URL in all generated links. The real IP is never
-   * sent to the connecting PC — all traffic routes through Cloudflare's edge.
-   * Requires `cloudflared` to be installed and in PATH.
+   * Controls tunnel behaviour for cross-network connections.
+   * - "auto" (default): tries cloudflared; falls back to LAN URL silently if not installed.
+   * - "cloudflared": requires cloudflared; throws if not available.
+   * - "none": always use LAN URL (useful for local-only setups).
    */
-  tunnelMode?: "cloudflared";
+  tunnelMode?: "auto" | "cloudflared" | "none";
 }
 
 // ─── Internal connection state ─────────────────────────────────────────────
@@ -108,12 +108,15 @@ export class RemoteAgentServer {
     this.boundPort = typeof addr === "object" && addr ? addr.port : port;
     this.log(`remote-agent listening on ${host}:${this.boundPort}`);
 
-    if (this.opts.tunnelMode === "cloudflared") {
+    const tunnelMode = this.opts.tunnelMode ?? "auto";
+    if (tunnelMode !== "none") {
       try {
         this.publicBaseUrl = await this.startCloudflaredTunnel();
         this.log(`remote-agent tunnel: ${this.publicBaseUrl}`);
       } catch (err) {
-        this.log(`remote-agent tunnel failed: ${err instanceof Error ? err.message : String(err)}`);
+        if (tunnelMode === "cloudflared") throw err; // hard requirement
+        // "auto": cloudflared not installed or failed — silently use LAN URL
+        this.log(`remote-agent tunnel unavailable (${err instanceof Error ? err.message : String(err)}), using LAN URL`);
       }
     }
 

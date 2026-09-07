@@ -503,7 +503,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     try {
       const s = new RemoteAgentServer({
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
-        tunnelMode: args.flags.has("remote-agent-tunnel") ? "cloudflared" : undefined,
+        // "auto" by default: tries cloudflared, falls back to LAN silently
       });
       await s.start();
       setRemoteAgentServer(s);

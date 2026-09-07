@@ -28,9 +28,15 @@ export interface RemotePcBridgeDeps {
 // ─── Intent detection ──────────────────────────────────────────────────────
 
 /**
- * Returns a human-readable label like "Sarah's PC" when the message sounds like
- * the owner is sitting at a coworker's machine and needs help. Returns null when
- * the message is ordinary chat.
+ * Fast path for phrasings that can ONLY mean "someone else's machine": the slash
+ * command, or a possessive + device word ("at Sarah's PC", "connect to Dave's
+ * laptop", "a coworker's computer"). Returns null for everything else.
+ *
+ * Deliberately narrow. A match here short-circuits the message — it never
+ * reaches the agent — so a false positive turns "my deploy isn't working" into
+ * a remote-connect link instead of help. Vaguer asks ("my friend needs help",
+ * "IT shadowing") fall through to the agent, which has the RemotePC tool's
+ * generate_link action and the judgment to use it.
  */
 export function detectRemotePcIntent(text: string): { label: string } | null {
   const t = text.trim();
@@ -39,38 +45,29 @@ export function detectRemotePcIntent(text: string): { label: string } | null {
   const slashMatch = /^\/(?:remote[-_]?pc|pc)(?:\s+([\s\S]+))?$/i.exec(t);
   if (slashMatch) {
     const label = slashMatch[1]?.trim() || "coworker's PC";
-    return { label: label.endsWith("'s PC") || label.endsWith("'s pc") ? label : `${label}'s PC` };
+    return { label: /'s pc$/i.test(label) ? label : `${label}'s PC` };
   }
 
-  // Natural language — broad set of ways people describe sitting at or helping with someone's machine
   const DEVICE = "(?:pc|computer|laptop|machine|workstation|desktop)";
-  const PERSON = "(?:coworker|colleague|friend|buddy|teammate|coworker|neighbour|neighbor|boss|client|guy|girl|person|dude)";
-  const NAME   = "(\\w+(?:\\s+\\w+)?)";
-  const patterns: Array<[RegExp, (m: RegExpExecArray) => string]> = [
-    // "at/on a coworker's/friend's PC"
-    [new RegExp(`\\b(?:i'?m?\\s+)?(?:at|on)\\s+(?:a\\s+)?${PERSON}(?:'s)?\\s+${DEVICE}\\b`, "i"), () => "coworker's PC"],
-    // "at/on Sarah's PC"
-    [new RegExp(`\\b(?:i'?m?\\s+)?(?:at|on)\\s+${NAME}'s\\s+${DEVICE}\\b`, "i"), (m) => `${m[1]}'s PC`],
-    // "helping Sarah with her/his/their PC/laptop/issue"
-    [new RegExp(`\\bhelping\\s+${NAME}\\s+with\\s+(?:his|her|their|a)?\\s*(?:${DEVICE}|issue|problem|stuff|things?|computer stuff)\\b`, "i"), (m) => `${m[1]}'s PC`],
-    // "Sarah needs help / is having trouble / can't ..." — generic help request with a name
-    [new RegExp(`\\b${NAME}\\s+(?:needs?\\s+help|is\\s+having\\s+(?:trouble|issues?|problems?)|can'?t|doesn'?t\\s+work|isn'?t\\s+working)\\b`, "i"), (m) => `${m[1]}'s PC`],
-    // "my friend/coworker needs help / is having trouble"
-    [new RegExp(`\\bmy\\s+${PERSON}\\s+(?:needs?\\s+help|is\\s+having\\s+(?:trouble|issues?|problems?)|can'?t|has\\s+(?:a\\s+)?(?:issue|problem))\\b`, "i"), () => "friend's PC"],
-    // "Sarah's PC/laptop isn't working / has issues"
-    [new RegExp(`\\b${NAME}'s\\s+${DEVICE}\\s+(?:isn'?t|is\\s+not|won'?t|doesn'?t|has\\s+(?:an?\\s+)?(?:issue|problem)|keeps?)`, "i"), (m) => `${m[1]}'s PC`],
-    // "I'm helping my friend/coworker" (no device word needed)
-    [new RegExp(`\\b(?:i'?m?\\s+)?helping\\s+(?:a\\s+)?(?:my\\s+)?${PERSON}\\b`, "i"), () => "coworker's PC"],
-    // "IT shadowing"
-    [/\b(?:it\s+)?shadow(?:ing)?\b/i, () => "shadowing PC"],
-    // "remote/connect to a coworker/friend's PC"
-    [new RegExp(`\\b(?:remote|connect)\\s+(?:to\\s+)?(?:a\\s+)?(?:my\\s+)?${PERSON}(?:'s)?\\s+${DEVICE}\\b`, "i"), () => "coworker's PC"],
-    [new RegExp(`\\bconnect\\s+(?:to\\s+)?${NAME}'s\\s+${DEVICE}\\b`, "i"), (m) => `${m[1]}'s PC`],
+  const PERSON = "(?:coworker|colleague|friend|buddy|teammate|neighbou?r|boss|client)";
+  const NAME = "(\\w[\\w'-]*(?:\\s+\\w[\\w'-]*)?)";
+  const POSSESSIVE = "(?:'|’)s";
+  // A captured name must be capitalised — "the server's PC" is a common noun, not a person.
+  const named = (m: RegExpExecArray) => (/^[A-Z]/.test(m[1]) ? `${m[1]}'s PC` : null);
+  const patterns: Array<[RegExp, (m: RegExpExecArray) => string | null]> = [
+    // "I'm at / on / connect to / remote into a coworker's PC"
+    [new RegExp(`\\b(?:at|on|to|into)\\s+(?:a\\s+|my\\s+)?${PERSON}${POSSESSIVE}?\\s+${DEVICE}\\b`, "i"), () => "coworker's PC"],
+    // "I'm at / on / connect to / remote into Sarah's PC"
+    [new RegExp(`\\b(?:at|on|to|into)\\s+${NAME}${POSSESSIVE}\\s+${DEVICE}\\b`, "i"), named],
+    // "Sarah's laptop isn't working / won't boot / keeps crashing"
+    [new RegExp(`\\b${NAME}${POSSESSIVE}\\s+${DEVICE}\\s+(?:isn'?t|is\\s+not|won'?t|doesn'?t|keeps?|has\\s+(?:an?\\s+)?(?:issue|problem))\\b`, "i"), named],
   ];
 
   for (const [re, labelFn] of patterns) {
     const m = re.exec(t);
-    if (m) return { label: labelFn(m) };
+    if (!m) continue;
+    const label = labelFn(m);
+    if (label) return { label };
   }
   return null;
 }

@@ -74,12 +74,13 @@ export interface RemotePCOutput {
 export const RemotePCTool = buildTool({
   name: "RemotePC",
   description:
-    "Connect to and control remote PCs via Ares Remote Agent. " +
-    "Use generate_link when the user mentions a friend, coworker, or anyone needing help — even vaguely — to produce a one-time URL they click to let Ares in. " +
+    "Connect to and control other people's PCs via Ares Remote Agent. " +
+    "Use generate_link when the user wants to help someone with THEIR computer — a friend, coworker, or client whose machine has a problem, IT shadowing, 'can you look at John's laptop'. " +
+    "The phrasing may be casual ('my friend is having trouble', 'helping sarah'); if the subject is another person's device, generate the link and tell the user to send it. " +
+    "Do NOT use it for problems on the user's own machine, code, or servers — use the normal tools for those. " +
     "Use list_pcs to see which machines are currently connected. " +
     "Use exec_on_pc to run shell commands (diagnostics, process lists, file ops, network checks). " +
-    "Use notify_pc to push a popup to their screen. " +
-    "When in doubt whether the user wants remote access, generate_link first — it is low-cost and the other person has to actively run the script.",
+    "Use notify_pc to push a popup to their screen.",
   safety: "external-state",
   concurrency: "exclusive",
   inputZod: inputSchema,

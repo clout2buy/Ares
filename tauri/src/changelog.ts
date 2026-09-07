@@ -38,6 +38,17 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.48.1",
+    date: "September 2026",
+    title: "Reach out and fix it",
+    tagline: "Ares can now help a friend's or coworker's PC — you send a link, they click, Ares connects.",
+    highlights: [
+      { icon: "🔗", title: "Help someone else's PC", blurb: "Tell Ares you're at a coworker's machine, or just that a friend's computer is acting up. It hands you a one-time link; they click it and Ares can look around.", tag: "New" },
+      { icon: "📱", title: "Works from Telegram", blurb: "Send the ask from your phone. When their PC connects, Ares texts you 'I see SARAH-LAPTOP — connect?' and you tap yes.", tag: "New" },
+      { icon: "🧠", title: "Say it your way", blurb: "No magic phrase needed. Ares understands the intent, and your everyday 'my deploy isn't working' messages are never mistaken for a remote-help request.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.47.2",
     date: "September 2026",
     title: "Never leaves a mess",

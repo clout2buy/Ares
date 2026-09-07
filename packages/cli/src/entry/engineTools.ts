@@ -2,7 +2,8 @@
 
 import { AresSubagentRunner, SubagentRegistry, isCoreToolName, loadInstructionReminders, openWorkspaceSessionKernel, type EngineTool, type SubagentTypeDef, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { getRemoteAgentServer, setRemoteAgentServer, DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
 import { loadUiSettings } from "../uiSettings.js";
@@ -127,6 +128,10 @@ export async function buildEngineTools(
   stateResolver?: EngineToolStateResolver,
 ): Promise<EngineTool[]> {
   const sessionKernel = providedSessionKernel ?? await openWorkspaceSessionKernel(context.workspace);
+  // The remote-PC server lives in the garrison process. Any other process that
+  // builds tools (the daemon behind the desktop/TUI chats) reaches it over the
+  // loopback control API; the garrison itself has already injected the real one.
+  if (!getRemoteAgentServer()) setRemoteAgentServer(new RemoteAgentClient(context.home));
   const planModeStateFor = (sessionId: string): PlanModeState =>
     stateResolver?.planModeStateFor?.(sessionId) ?? runtime;
   // The first caller is the owner Session (Task/Conductor cannot launch before

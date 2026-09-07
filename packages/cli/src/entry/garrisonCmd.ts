@@ -513,6 +513,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     try {
       const s = new RemoteAgentServer({
         home: context.home,
+        controlToken: gatewayToken || undefined,
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
         // link, falls back to LAN (and says so in every link) if it can't

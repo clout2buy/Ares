@@ -18,15 +18,23 @@ import { buildTool } from "./_shared.js";
 export interface RemoteAgentServerLike {
   generateToken(label: string): Promise<{ token: string; url: string; scope: "public" | "lan" }>;
   listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>;
+  /** Out-of-process implementations can fetch a fresh list; preferred when present. */
+  listPcsAsync?(): Promise<Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>>;
   exec(pcId: string, command: string, timeoutMs?: number): Promise<{ output: string; exitCode?: number }>;
   notify(pcId: string, message: string): void;
+  disconnect?(pcId: string): void;
 }
 
 let _server: RemoteAgentServerLike | null = null;
 
-/** Injected at daemon startup. Absent in offline/test contexts. */
+/** Injected at startup — the in-process server in the garrison, a loopback
+ *  client in the daemon. Absent in offline/test contexts. */
 export function setRemoteAgentServer(server: RemoteAgentServerLike | null): void {
   _server = server;
+}
+
+export function getRemoteAgentServer(): RemoteAgentServerLike | null {
+  return _server;
 }
 
 // ─── Schema ────────────────────────────────────────────────────────────────
@@ -98,9 +106,16 @@ export const RemotePCTool = buildTool({
       return { output: out, display: out.note! };
     }
 
+    const fail = (action: string, err: unknown): { output: RemotePCOutput; display: string } => {
+      const note = err instanceof Error ? err.message : String(err);
+      return { output: { action, ok: false, note }, display: `Error: ${note}` };
+    };
+
     switch (i.action) {
       case "generate_link": {
-        const { url, scope } = await _server.generateToken(i.label);
+        let url: string, scope: "public" | "lan";
+        try { ({ url, scope } = await _server.generateToken(i.label)); }
+        catch (err) { return fail("generate_link", err); }
         const lanNote = scope === "lan"
           ? "\n\n⚠️ LAN-only link: no internet tunnel is available, so this only works if they're on the same network as you. Tell the user plainly."
           : "";
@@ -111,8 +126,11 @@ export const RemotePCTool = buildTool({
       }
 
       case "list_pcs": {
-        const pcs = _server.listPcs().map(({ username: _u, ...rest }) => rest);
-        const note = pcs.length === 0 ? "No remote PCs connected. Ask the user to run the Ares connect script on their PC." : undefined;
+        let raw;
+        try { raw = _server.listPcsAsync ? await _server.listPcsAsync() : _server.listPcs(); }
+        catch (err) { return fail("list_pcs", err); }
+        const pcs = raw.map(({ username: _u, ...rest }) => rest);
+        const note = pcs.length === 0 ? "No remote PCs connected. If someone needs help, generate_link and have the user send it to them." : undefined;
         const display = pcs.length === 0
           ? "No remote PCs connected."
           : pcs.map((p) => `• ${p.hostname} (${p.os}) — ${p.ip} [${p.id}]`).join("\n");

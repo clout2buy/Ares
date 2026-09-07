@@ -18,7 +18,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { access, chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { networkInterfaces, tmpdir } from "node:os";
 import { createSocket as createUdpSocket } from "node:dgram";
 import path from "node:path";
@@ -58,6 +58,10 @@ export interface RemoteAgentServerOptions {
   host?: string;
   /** Ares home — where a fetched cloudflared binary is cached (~/.ares/bin). */
   home?: string;
+  /** Bearer token for the loopback control API (/api/*) that lets the daemon
+   *  process — which runs the desktop and TUI chats — drive this server. The
+   *  garrison passes its gateway token. Absent → the control API is off. */
+  controlToken?: string;
   log?: (line: string) => void;
   /**
    * Controls tunnel behaviour for cross-network connections.
@@ -299,6 +303,7 @@ export class RemoteAgentServer {
 
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
     if (req.method !== "GET") { res.writeHead(405).end(); return; }
 
     if (url.pathname === "/health") {
@@ -333,6 +338,48 @@ export class RemoteAgentServer {
 
   private wsUrl(): string {
     return this.linkBaseUrl().replace(/^http/, "ws") + "/ws";
+  }
+
+  // ─── Control API (loopback + bearer token) ─────────────────────────────
+  //
+  // The chat surfaces run in the daemon process; this server runs in the
+  // garrison. The RemotePC tool there talks to us through these routes.
+
+  private async handleControlApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(body));
+    };
+    const remote = req.socket.remoteAddress ?? "";
+    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    const expected = this.opts.controlToken;
+    const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (!expected || !loopback || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
+
+    let body: Record<string, unknown> = {};
+    if (req.method === "POST") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; }
+      catch { return json(400, { error: "bad json" }); }
+    }
+    const str = (k: string) => (typeof body[k] === "string" ? (body[k] as string) : "");
+
+    try {
+      switch (`${req.method} ${url.pathname}`) {
+        case "GET /api/pcs": return json(200, { pcs: this.listPcs(), scope: this.linkScope() });
+        case "POST /api/link": return json(200, await this.generateToken(str("label") || "their PC"));
+        case "POST /api/exec": {
+          const timeout = typeof body["timeoutMs"] === "number" ? (body["timeoutMs"] as number) : undefined;
+          return json(200, await this.exec(str("pcId"), str("command"), timeout));
+        }
+        case "POST /api/notify": this.notify(str("pcId"), str("message")); return json(200, { ok: true });
+        case "POST /api/disconnect": this.disconnect(str("pcId")); return json(200, { ok: true });
+        default: return json(404, { error: "not found" });
+      }
+    } catch (err) {
+      return json(400, { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   // ─── WebSocket ─────────────────────────────────────────────────────────
@@ -418,6 +465,12 @@ export class RemoteAgentServer {
 
     ws.on("error", () => { /* surfaces as close */ });
   }
+}
+
+function tokensMatch(a: string, b: string): boolean {
+  const ba = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  return ba.length === bb.length && ba.length > 0 && timingSafeEqual(ba, bb);
 }
 
 // ─── LAN address ───────────────────────────────────────────────────────────

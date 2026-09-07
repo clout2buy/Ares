@@ -38,7 +38,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.48.2",
+    version: "0.48.3",
     date: "September 2026",
     title: "In their machine in one tap",
     tagline: "\"My friend needs help with his PC\" → a link → they tap it → you're in. And Telegram comes back for everyone who lost it.",
@@ -47,6 +47,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "🌐", title: "Links that work anywhere", blurb: "Remote-help links now reach the internet, not just your wifi. Ares fetches the tunnel it needs on first use; if it can't, it tells you the link is local-only instead of letting it fail silently.", tag: "New" },
       { icon: "⬇️", title: "Nothing for them to install", blurb: "On Windows the link auto-downloads a tiny connector — they double-click it and that's it. No Python, no account. Mac and Linux get one line to paste.", tag: "New" },
       { icon: "⚡", title: "No confirmation tap", blurb: "The moment their PC connects, Ares tells you \"Connected to Sarah's PC\" and is ready for orders. One Disconnect button when you're done. Their wifi blips? It reconnects on its own.", tag: "Faster" },
+      { icon: "🖥️", title: "From the app, not just your phone", blurb: "Ask in the desktop or terminal chat and Ares makes the link right there — no more being told to set up AnyDesk. Once they're connected, drive from whichever screen you're on.", tag: "Polished" },
       { icon: "🧠", title: "Say it your way", blurb: "No magic phrase. \"My friend is having trouble\", \"can you look at John's laptop\" — Ares gets it, and your everyday \"my deploy isn't working\" is never mistaken for a remote-help request.", tag: "Polished" },
     ],
   },

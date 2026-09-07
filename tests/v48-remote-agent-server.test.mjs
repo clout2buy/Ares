@@ -140,3 +140,62 @@ test("a used link lets the SAME machine reconnect and refuses a different one", 
     second.ws.close();
   });
 });
+
+// ─── Control API + daemon-side client ─────────────────────────────────────
+
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { RemoteAgentClient } from "../packages/cli/dist/remoteAgentClient.js";
+
+const CONTROL_TOKEN = "fedcba9876543210fedcba9876543210";
+
+test("control API refuses without the token and serves the daemon client with it", async () => {
+  const server = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: CONTROL_TOKEN });
+  await server.start();
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    assert.equal((await fetch(`${base}/api/pcs`)).status, 401);
+    assert.equal((await fetch(`${base}/api/pcs`, { headers: { authorization: "Bearer nope" } })).status, 401);
+    assert.equal((await fetch(`${base}/api/link`, { method: "POST", body: "{}" })).status, 401);
+
+    // The client reads the garrison token from the isolated home.
+    const home = process.env.ARES_HOME;
+    mkdirSync(path.join(home, "garrison"), { recursive: true });
+    writeFileSync(path.join(home, "garrison", "token"), CONTROL_TOKEN + "\n");
+    const client = new RemoteAgentClient(home, server.port);
+
+    const link = await client.generateToken("Dave's PC");
+    assert.equal(link.scope, "lan");
+    assert.equal(link.url, `${base}/agent?token=${link.token}`);
+    assert.deepEqual(await client.listPcsAsync(), []);
+
+    const agent = await connectAgent(base, link.token, { hostname: "DAVE-PC" });
+    assert.equal((await agent.next()).type, "registered");
+    const pcs = await client.listPcsAsync();
+    assert.equal(pcs.length, 1);
+    assert.equal(pcs[0].label, "Dave's PC");
+
+    const pending = client.exec(pcs[0].id, "echo hi", 5_000);
+    const execMsg = await agent.next();
+    assert.equal(execMsg.type, "exec");
+    agent.ws.send(JSON.stringify({ type: "exec_result", reqId: execMsg.reqId, output: "hi", exitCode: 0 }));
+    assert.deepEqual(await pending, { output: "hi", exitCode: 0 });
+
+    await assert.rejects(client.exec("nope", "x", 1000), /No remote PC/);
+
+    client.disconnect(pcs[0].id);
+    assert.equal((await agent.next()).type, "bye");
+    await new Promise((r) => agent.ws.once("close", r));
+    assert.deepEqual(await client.listPcsAsync(), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("client reports a helpful error when no server is listening", async () => {
+  const home = process.env.ARES_HOME;
+  mkdirSync(path.join(home, "garrison"), { recursive: true });
+  writeFileSync(path.join(home, "garrison", "token"), CONTROL_TOKEN + "\n");
+  const client = new RemoteAgentClient(home, 1); // nothing listens on port 1
+  await assert.rejects(client.generateToken("x"), /Remote PC server not running/);
+});

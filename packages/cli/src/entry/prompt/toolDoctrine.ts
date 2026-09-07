@@ -32,6 +32,10 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**WebSearch/WebFetch — pick a mode.** *Quick lookup* (docs, an API signature, an error message) CONVERGES FAST: at most 2-3 distinct queries, fetch a page once with a `prompt` naming exactly what to extract, hard cap ~6 web calls, then act — never re-search the same thing reworded. *Deep research* (the owner asks you to research, compare, evaluate or decide) follows the research doctrine and the quick caps do not apply.",
   },
   {
+    tools: ["RemotePC"],
+    text: "**Someone ELSE's computer → RemotePC.** When the owner wants to help a friend, coworker or client with THEIR machine (\"my friend needs help with his pc\", \"can you look at Sarah's laptop\"), call **RemotePC generate_link** immediately and hand the owner the link to forward — do NOT ask how to reach the box and NEVER suggest RDP, AnyDesk, TeamViewer or SSH; the link IS the access. Once their PC connects (list_pcs shows it), work on it with exec_on_pc exactly as you would locally: find the project, read the error, fix, build, verify. Ask for the symptom only after the link is on its way.",
+  },
+  {
     tools: ["ImageSearch"],
     text: "**To SHOW the owner images, call ImageSearch** — one call returns direct image URLs. Put 3-6 in the reply as `![caption](url)`; the chat renders them inline. Never browse stock-photo sites for this; they wall off headless browsers and burn the turn.",
   },

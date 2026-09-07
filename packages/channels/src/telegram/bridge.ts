@@ -24,6 +24,14 @@ import { textToVoice } from "./edgeTts.js";
 import { parseTelegramCommand, handleTelegramCommand, type TelegramCommandDeps } from "./commands.js";
 import { sendConnectMenu, handleConnectCallback, parseConnectCallback, type ConnectFlowDeps } from "./connect.js";
 import {
+  detectRemotePcIntent,
+  parseRemotePcCallback,
+  buildLinkMessage,
+  buildPcSeenMessage,
+  buildPcContextPrefix,
+  type RemotePcBridgeDeps,
+} from "./remotePC.js";
+import {
   allowedChatIds as rosterAllowed,
   emptyRoster,
   findByChat,
@@ -110,6 +118,9 @@ export interface TelegramBridgeOptions {
   /** OAuth connect flow deps. When set, /connect shows the service menu and
    *  connect callbacks trigger OAuth flows. */
   connectDeps?: Omit<ConnectFlowDeps, "api" | "log">;
+  /** Remote PC deps. When set, Ares can connect to a coworker's PC on the fly
+   *  via a one-time download link sent over Telegram. */
+  remotePcDeps?: RemotePcBridgeDeps;
 }
 
 const RECONNECT_MIN_MS = 1_000;
@@ -214,6 +225,14 @@ export class TelegramBridge {
   /** Chats whose last inbound was a voice message — reply with a voice note. */
   private readonly voiceReplyExpected = new Set<number>();
 
+  // ─── Remote PC state ────────────────────────────────────────────────────
+  private readonly remotePcDeps?: RemotePcBridgeDeps;
+  /** chatId → active PC id for chats that have an established remote connection. */
+  private readonly chatActivePc = new Map<number, { id: string; hostname: string; os: string; ip: string; label: string }>();
+  /** Cleanup fns returned by remotePcDeps event subscriptions. */
+  private unsubRemotePcConnected?: () => void;
+  private unsubRemotePcDisconnected?: () => void;
+
   constructor(opts: TelegramBridgeOptions) {
     this.api = opts.api;
     this.gatewayUrl = opts.gateway.url;
@@ -246,6 +265,8 @@ export class TelegramBridge {
     this.log = opts.log ?? (() => undefined);
     this.commands = opts.commands;
     this.connectDeps = opts.connectDeps;
+    this.remotePcDeps = opts.remotePcDeps;
+    if (opts.remotePcDeps) this.subscribeRemotePcEvents(opts.remotePcDeps);
   }
 
   start(): void {
@@ -258,6 +279,33 @@ export class TelegramBridge {
     void this.savePersisted();
     this.connect();
     this.pollPromise = this.pollLoop();
+  }
+
+  /** Wire up remote-PC connect/disconnect notifications so the bridge can push
+   *  "I see HOSTNAME, want me to connect?" to the owner automatically. */
+  private subscribeRemotePcEvents(deps: RemotePcBridgeDeps): void {
+    this.unsubRemotePcConnected = deps.onPcConnected((pc) => {
+      const { text, keyboard } = buildPcSeenMessage(pc);
+      for (const ownerId of this.owners) {
+        this.enqueueSend(ownerId, async () => {
+          await this.api.sendMessage(ownerId, text, {
+            replyMarkup: { inline_keyboard: keyboard },
+          });
+        });
+      }
+    });
+    this.unsubRemotePcDisconnected = deps.onPcDisconnected((pc) => {
+      // Remove from any active-PC maps
+      for (const [chatId, active] of this.chatActivePc) {
+        if (active.id === pc.id) this.chatActivePc.delete(chatId);
+      }
+      const note = `Remote PC ${pc.hostname} disconnected.`;
+      for (const ownerId of this.owners) {
+        this.enqueueSend(ownerId, async () => {
+          await this.api.sendMessage(ownerId, note);
+        });
+      }
+    });
   }
 
   /** Re-read the roster from its source and re-apply owners. Lets a grant made
@@ -290,6 +338,8 @@ export class TelegramBridge {
     this.status.clear();
     for (const timer of this.typingTimers.values()) this.timers.clearTimeout(timer);
     this.typingTimers.clear();
+    this.unsubRemotePcConnected?.();
+    this.unsubRemotePcDisconnected?.();
     const socket = this.ws;
     this.ws = undefined;
     this.connected = false;
@@ -411,6 +461,16 @@ export class TelegramBridge {
         return;
       }
     }
+
+    // Remote PC intent — owner says "I'm at Sarah's PC" or /remote-pc → generate link.
+    if (this.remotePcDeps && this.owners.has(chatId)) {
+      const intent = detectRemotePcIntent(text);
+      if (intent) {
+        this.handleRemotePcLinkRequest(chatId, intent.label);
+        return;
+      }
+    }
+
     // Record real conversation activity (not commands) for the owner's /activity.
     const prior = this.activity.get(chatId);
     this.activity.set(chatId, {
@@ -419,9 +479,15 @@ export class TelegramBridge {
       lastMessage: text.replace(/\s+/g, " ").trim().slice(0, 120),
     });
 
+    // If there's an active remote PC for this chat, inject context so the agent
+    // knows it can use the RemotePC tool on this session.
+    let routedText = text;
+    const activePc = this.chatActivePc.get(chatId);
+    if (activePc) routedText = buildPcContextPrefix(activePc) + text;
+
     const queue = this.pendingTexts.get(chatId);
-    if (queue) queue.push(text);
-    else this.pendingTexts.set(chatId, [text]);
+    if (queue) queue.push(routedText);
+    else this.pendingTexts.set(chatId, [routedText]);
     this.pumpChat(chatId);
   }
 
@@ -521,6 +587,16 @@ export class TelegramBridge {
     }
   }
 
+  /** Owner triggered the remote-PC flow ("I'm at Sarah's PC"). Generate a link. */
+  private handleRemotePcLinkRequest(chatId: number, label: string): void {
+    if (!this.remotePcDeps) return;
+    const { url } = this.remotePcDeps.generateToken(label);
+    const msg = buildLinkMessage(label, url);
+    this.enqueueSend(chatId, async () => {
+      await this.api.sendMessage(chatId, msg);
+    });
+  }
+
   /** The owner's /activity view: who's talking, how much, and about what. */
   private renderActivity(): string {
     const rows = [...this.activity.entries()].sort((a, b) => b[1].lastAt - a[1].lastAt);
@@ -567,6 +643,35 @@ export class TelegramBridge {
 
   private handleCallback(cq: TgCallbackQuery): void {
     const chatId: number | undefined = cq.message?.chat?.id ?? cq.from?.id;
+
+    // Remote PC callback: ares:remotepc:connect:<pcId> / ares:remotepc:skip:<pcId>
+    if (cq.data && chatId !== undefined && this.owners.has(chatId) && this.remotePcDeps) {
+      const rpcb = parseRemotePcCallback(cq.data);
+      if (rpcb) {
+        void this.api.answerCallbackQuery(cq.id, {
+          text: rpcb.action === "connect" ? "Connecting..." : "Skipped",
+        }).catch(() => undefined);
+        if (rpcb.action === "connect") {
+          const pcs = this.remotePcDeps.listPcs();
+          const pc = pcs.find((p) => p.id === rpcb.pcId || p.hostname === rpcb.pcId);
+          if (pc) {
+            this.chatActivePc.set(chatId, pc);
+            this.remotePcDeps.notify(pc.id, "Ares Connected");
+            this.enqueueSend(chatId, async () => {
+              await this.api.sendMessage(
+                chatId,
+                `Connected to ${pc.hostname} (${pc.os}). You can now ask me to run diagnostics, check the network, view processes — whatever you need.`,
+              );
+            });
+          } else {
+            this.enqueueSend(chatId, async () => {
+              await this.api.sendMessage(chatId, "That PC has already disconnected. Have them run the script again.");
+            });
+          }
+        }
+        return;
+      }
+    }
 
     // Connect callback: ares:connect:<provider>
     if (cq.data && chatId !== undefined && this.owners.has(chatId)) {

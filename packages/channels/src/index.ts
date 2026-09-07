@@ -23,6 +23,8 @@ export type {
 
 export { TelegramBridge, chunkMessage, toTelegramText } from "./telegram/bridge.js";
 export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers } from "./telegram/bridge.js";
+export { detectRemotePcIntent, parseRemotePcCallback, buildLinkMessage, buildPcSeenMessage, buildPcContextPrefix } from "./telegram/remotePC.js";
+export type { RemotePcBridgeDeps } from "./telegram/remotePC.js";
 
 export {
   emptyRoster,

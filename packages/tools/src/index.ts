@@ -166,6 +166,7 @@ export {
 } from "./PlanMode.js";
 export { WeatherTool, getWeatherText, type WeatherOutput, type WeatherCondition, type WeatherForecast } from "./Weather.js";
 export { RemindTool, setRemindScheduler, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { RemotePCTool, setRemoteAgentServer, type RemotePCInput, type RemotePCOutput, type RemoteAgentServerLike } from "./RemotePC.js";
 export { ConnectTool, type ConnectOutput } from "./Connect.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, type GmailOutput } from "./Gmail.js";
@@ -200,6 +201,7 @@ import { RequestUserActionTool } from "./RequestUserAction.js";
 import { SetUiEffectTool } from "./SetUiEffect.js";
 import { WeatherTool } from "./Weather.js";
 import { RemindTool } from "./Remind.js";
+import { RemotePCTool } from "./RemotePC.js";
 import { ConnectTool } from "./Connect.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
@@ -231,6 +233,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       SetUiEffectTool,
       WeatherTool,
       RemindTool,
+      RemotePCTool,
       ConnectTool,
       GoogleCalendarTool,
       GmailTool,
@@ -259,6 +262,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       SetUiEffectTool,
       WeatherTool,
       RemindTool,
+      RemotePCTool,
       ConnectTool,
       GoogleCalendarTool,
       GmailTool,

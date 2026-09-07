@@ -8,7 +8,8 @@ import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegr
 import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
 import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions } from "@ares/mind";
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
-import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler } from "@ares/channels";
+import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, type RemotePcBridgeDeps } from "@ares/channels";
+import type { RemoteAgentServer } from "../remoteAgentServer.js";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders } from "@ares/core";
 import { buildDayBrief, defaultDayBriefSources } from "./introspect.js";
 import { CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
@@ -96,10 +97,22 @@ function telegramCommandDeps(context: CliRuntimeContext, modelControl?: Telegram
   };
 }
 
+/** Build the RemotePcBridgeDeps adapter from a live RemoteAgentServer. */
+function buildRemotePcDeps(server: RemoteAgentServer): RemotePcBridgeDeps {
+  return {
+    generateToken: (label) => server.generateToken(label),
+    listPcs: () => server.listPcs(),
+    exec: (pcId, command) => server.exec(pcId, command),
+    notify: (pcId, message) => server.notify(pcId, message),
+    onPcConnected: (cb) => server.onPcConnected(cb),
+    onPcDisconnected: (cb) => server.onPcDisconnected(cb),
+  };
+}
+
 /** Start the Telegram bridge in-process when configured (garrison auto-start) —
  *  no second terminal. Best-effort: a Telegram failure never touches the daemon.
  *  Returns the bridge (to stop on shutdown) or null when not configured. */
-export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null): Promise<TelegramBridge | null> {
+export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null, remoteAgentServer?: RemoteAgentServer | null): Promise<TelegramBridge | null> {
   if (!(await telegramConfigured().catch(() => false))) return null;
   const cfg = await loadTelegramConfig();
   if (!cfg.botToken || cfg.allowedChats.length === 0) return null;
@@ -123,6 +136,7 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
       connectedProviders,
       home: context.home,
     },
+    remotePcDeps: remoteAgentServer ? buildRemotePcDeps(remoteAgentServer) : undefined,
   });
   bridge.start();
   return bridge;

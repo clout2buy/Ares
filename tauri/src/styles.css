@@ -4812,3 +4812,15 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .aresosMeta { font-size: .8rem; color: var(--muted); line-height: 1.5; }
 .aresosMeta.aresosDim { color: var(--faint); }
 .aresosCardRow { display: flex; gap: .5rem; margin-top: .9rem; }
+
+/* AresOS — additions: reachability badge + live screen preview */
+.aresosHeadRight { display: flex; align-items: center; gap: .7rem; flex-shrink: 0; }
+.aresosScope { font-size: .74rem; padding: .3rem .6rem; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.aresosScope.ok { color: #3ad07a; border-color: rgba(58, 208, 122, 0.4); }
+.aresosScope.warn { color: #e0a54a; border-color: rgba(224, 165, 74, 0.4); }
+.aresosShot { margin-top: .8rem; }
+.aresosShotImg { width: 100%; border-radius: 6px; border: 1px solid var(--line); cursor: pointer; display: block; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; background: var(--bg); }
+.aresosShotImg:hover { border-color: rgba(var(--accent-rgb), 0.5); }
+.aresosShotPlaceholder { border: 1px dashed var(--line); border-radius: 6px; padding: 1.1rem; text-align: center; font-size: .78rem; color: var(--faint); background: var(--bg); }
+.aresosShotErr { color: var(--muted); }
+.aresosShotBtn { width: 100%; }

@@ -64,6 +64,18 @@ export class RemoteAgentClient implements RemoteAgentServerLike {
     return this.pcsCache;
   }
 
+  /** Fresh list plus the current link reachability (public tunnel vs LAN-only). */
+  async listWithScope(): Promise<{ pcs: RemotePcInfo[]; scope: LinkScope }> {
+    try {
+      const { pcs, scope } = await this.call<{ pcs: RemotePcInfo[]; scope: LinkScope }>("GET", "/api/pcs", undefined, 5_000);
+      this.pcsCache = pcs;
+      return { pcs, scope: scope ?? "lan" };
+    } catch {
+      this.pcsCache = [];
+      return { pcs: [], scope: "lan" };
+    }
+  }
+
   exec(pcId: string, command: string, timeoutMs = 30_000): Promise<ExecResult> {
     return this.call("POST", "/api/exec", { pcId, command, timeoutMs }, timeoutMs + 10_000);
   }

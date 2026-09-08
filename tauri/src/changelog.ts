@@ -38,6 +38,17 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.48.8",
+    date: "September 2026",
+    title: "AresOS, sharper",
+    tagline: "See their screen right in the tab, and connecting is now one copy away.",
+    highlights: [
+      { icon: "👁️", title: "Live screen preview", blurb: "Each connected device has a Preview button that pulls a shot of their screen right into the card — read the error, check the fix, click to refresh. Works on Mac and Linux today; Windows follows with the signed connector.", tag: "New" },
+      { icon: "📋", title: "Copies itself", blurb: "The moment you hit Connect, the link is already on your clipboard — just paste it to your friend. No extra click.", tag: "Polished" },
+      { icon: "🌐", title: "Know before you send", blurb: "A badge up top tells you whether your links reach the whole internet or just your local wifi, so a link you send a faraway friend actually works.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.48.7",
     date: "September 2026",
     title: "AresOS",

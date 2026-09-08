@@ -638,6 +638,9 @@ function App() {
   // connect link. Populated by the daemon's remote_pcs / remote_pc_link events.
   const [remotePcs, setRemotePcs] = useState<RemotePcRow[]>([]);
   const [remoteLink, setRemoteLink] = useState<{ url: string; scope: string; label: string } | null>(null);
+  const [remoteScope, setRemoteScope] = useState<"public" | "lan" | "unknown">("unknown");
+  // pcId → live screen preview state (image data URL, error, or loading).
+  const [remoteShots, setRemoteShots] = useState<Record<string, { data?: string; error?: string; loading?: boolean }>>({});
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1719,12 +1722,34 @@ function App() {
         case "usage_stats":
           setUsageStats((e.stats as UsageStats | null) ?? null);
           return true;
-        case "remote_pcs":
-          setRemotePcs(Array.isArray(e.pcs) ? (e.pcs as RemotePcRow[]) : []);
+        case "remote_pcs": {
+          const rows = Array.isArray(e.pcs) ? (e.pcs as RemotePcRow[]) : [];
+          setRemotePcs(rows);
+          if (e.scope === "public" || e.scope === "lan") setRemoteScope(e.scope);
+          // Drop preview state for devices that are gone.
+          setRemoteShots((prev) => {
+            const live = new Set(rows.map((r) => r.id));
+            const next: typeof prev = {};
+            for (const [id, v] of Object.entries(prev)) if (live.has(id)) next[id] = v;
+            return next;
+          });
           return true;
+        }
         case "remote_pc_link":
           if (typeof e.url === "string") setRemoteLink({ url: e.url, scope: String(e.scope ?? "public"), label: String(e.label ?? "") });
           return true;
+        case "remote_pc_screenshot": {
+          const pcId = String(e.pcId ?? "");
+          if (!pcId) return true;
+          const data = typeof (e as { dataBase64?: unknown }).dataBase64 === "string" ? (e as { dataBase64: string }).dataBase64 : undefined;
+          setRemoteShots((prev) => ({
+            ...prev,
+            [pcId]: data
+              ? { data: `data:image/png;base64,${data}`, loading: false }
+              : { error: typeof e.error === "string" ? e.error : "capture failed", loading: false },
+          }));
+          return true;
+        }
         case "model_catalog": {
           const catalogModels = Array.isArray(e.models) ? e.models : [];
           // Capture each model's NATIVE effort ladder before the event fans out
@@ -3726,10 +3751,13 @@ function App() {
           <AresOsView
             pcs={remotePcs}
             link={remoteLink}
+            scope={remoteScope}
+            shots={remoteShots}
             onConnect={(label) => { setRemoteLink(null); daemonCmd({ type: "remote_pc_link", label }); }}
             onClearLink={() => setRemoteLink(null)}
-            onDisconnect={(pcId) => daemonCmd({ type: "remote_pc_disconnect", pcId })}
+            onDisconnect={(pcId) => { daemonCmd({ type: "remote_pc_disconnect", pcId }); setRemoteShots((p) => { const n = { ...p }; delete n[pcId]; return n; }); }}
             onRefresh={() => daemonCmd({ type: "remote_pcs" })}
+            onPreview={(pcId) => { setRemoteShots((p) => ({ ...p, [pcId]: { ...p[pcId], loading: true } })); daemonCmd({ type: "remote_pc_screenshot", pcId }); }}
             onHelp={(pc) => {
               setView("chat");
               send(`Help ${pc.label || pc.hostname} with their PC. It's connected as remote PC id "${pc.id}" (${pc.os}). Use the RemotePC tool (exec_on_pc, get_file/put_file, screenshot_pc) to work on THEIR machine — match commands to their OS. Ask me what's wrong if you don't know yet.`);
@@ -5369,23 +5397,35 @@ function agoLabel(ts: number): string {
 function AresOsView({
   pcs,
   link,
+  scope,
+  shots,
   onConnect,
   onClearLink,
   onDisconnect,
   onRefresh,
+  onPreview,
   onHelp,
 }: {
   pcs: RemotePcRow[];
   link: { url: string; scope: string; label: string } | null;
+  scope: "public" | "lan" | "unknown";
+  shots: Record<string, { data?: string; error?: string; loading?: boolean }>;
   onConnect: (label: string) => void;
   onClearLink: () => void;
   onDisconnect: (pcId: string) => void;
   onRefresh: () => void;
+  onPreview: (pcId: string) => void;
   onHelp: (pc: RemotePcRow) => void;
 }) {
   const [name, setName] = useState("");
   const [copied, setCopied] = useState(false);
   const makeLink = () => { onConnect(name.trim() || "their PC"); setName(""); };
+
+  // Auto-copy the link the moment it's minted, so "Connect" → paste-to-friend is one step.
+  useEffect(() => {
+    if (!link) { setCopied(false); return; }
+    void navigator.clipboard.writeText(link.url).then(() => setCopied(true)).catch(() => setCopied(false));
+  }, [link]);
 
   return (
     <div className="aresos">
@@ -5394,7 +5434,12 @@ function AresOsView({
           <div className="aresosTitle"><Medallion glyph="shield" size={30} /> AresOS</div>
           <p className="aresosSub">Devices you're helping. Send someone a link — the moment they open it, they show up here and Ares can work on their machine.</p>
         </div>
-        <button className="aresosGhost" onClick={onRefresh} title="Refresh">↻</button>
+        <div className="aresosHeadRight">
+          <span className={`aresosScope ${scope === "public" ? "ok" : scope === "lan" ? "warn" : ""}`}>
+            {scope === "public" ? "🌐 Internet links" : scope === "lan" ? "⚠ Local network only" : "…"}
+          </span>
+          <button className="aresosGhost" onClick={onRefresh} title="Refresh">↻</button>
+        </div>
       </header>
 
       <section className="aresosConnect">
@@ -5411,7 +5456,7 @@ function AresOsView({
       {link ? (
         <div className="aresosLink">
           <div className="aresosLinkTop">
-            <b>Link{link.label ? ` for ${link.label}` : ""} — send it to them</b>
+            <b>{copied ? "✓ Copied — paste it to " : "Link for "}{link.label || "them"}</b>
             <button className="aresosX" onClick={onClearLink} title="Dismiss">✕</button>
           </div>
           <div className="aresosLinkUrl">{link.url}</div>
@@ -5420,7 +5465,7 @@ function AresOsView({
               className="aresosPrimary"
               onClick={() => { void navigator.clipboard.writeText(link.url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); }); }}
             >{copied ? "✓ Copied" : "⎘ Copy link"}</button>
-            <span className="aresosHint">They open it → a tiny connector downloads and runs → they appear below. Nothing to install.</span>
+            <span className="aresosHint">Send it to them (text, chat, email). They open it → a tiny connector runs → they appear below. Nothing to install.</span>
           </div>
           {link.scope === "lan" ? (
             <div className="aresosWarn">⚠ Local-network only right now (no internet tunnel) — this works only if they're on your wifi. Ask Ares to set up the tunnel for remote friends.</div>
@@ -5437,6 +5482,7 @@ function AresOsView({
         <div className="aresosGrid">
           {pcs.map((pc) => {
             const fam = osFamily(pc.os);
+            const shot = shots[pc.id];
             return (
               <div key={pc.id} className="aresosCard">
                 <div className="aresosCardHead">
@@ -5444,6 +5490,19 @@ function AresOsView({
                 </div>
                 <div className="aresosMeta">{fam.glyph} {pc.os} · {pc.hostname}</div>
                 <div className="aresosMeta aresosDim">{pc.ip} · connected {agoLabel(pc.connectedAt)} ago</div>
+
+                <div className="aresosShot">
+                  {shot?.data ? (
+                    <img className="aresosShotImg" src={shot.data} alt={`${pc.hostname} screen`} onClick={() => onPreview(pc.id)} title="Click to refresh" />
+                  ) : shot?.loading ? (
+                    <div className="aresosShotPlaceholder">Capturing…</div>
+                  ) : shot?.error ? (
+                    <div className="aresosShotPlaceholder aresosShotErr">{shot.error.length > 90 ? "Screen view isn't available on this device yet." : shot.error}</div>
+                  ) : (
+                    <button className="aresosGhost aresosSm aresosShotBtn" onClick={() => onPreview(pc.id)}>👁 Preview screen</button>
+                  )}
+                </div>
+
                 <div className="aresosCardRow">
                   <button className="aresosPrimary aresosSm" onClick={() => onHelp(pc)}>Help this PC</button>
                   <button className="aresosGhost aresosSm" onClick={() => onDisconnect(pc.id)}>Disconnect</button>

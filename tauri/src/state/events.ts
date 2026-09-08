@@ -188,6 +188,10 @@ export interface AresEvent {
   pcs?: unknown[];
   /** remote_pcs / remote_pc_link — reachability of the link or list. */
   scope?: string;
+  /** remote_pc_screenshot — which device the capture is for. */
+  pcId?: string;
+  /** remote_pc_screenshot — base64 PNG of the remote screen. */
+  dataBase64?: string;
 }
 
 /** One fleet from a fleets_list reply — the HELM Fleets history ledger. */

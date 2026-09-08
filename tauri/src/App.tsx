@@ -633,7 +633,11 @@ function App() {
   // How many chunks we've spoken this turn — the first fires small (fast start),
   // the rest batch larger to cut provider round-trips (the delay lever).
   const spokenChunkCount = useRef(0);
-  const [view, setView] = useState<"chat" | "artifacts" | "helm">("chat");
+  const [view, setView] = useState<"chat" | "artifacts" | "helm" | "aresos">("chat");
+  // AresOS: devices connected through the remote-PC agent, and the pending
+  // connect link. Populated by the daemon's remote_pcs / remote_pc_link events.
+  const [remotePcs, setRemotePcs] = useState<RemotePcRow[]>([]);
+  const [remoteLink, setRemoteLink] = useState<{ url: string; scope: string; label: string } | null>(null);
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1189,6 +1193,15 @@ function App() {
     return () => window.clearInterval(timer);
   }, [view, native, daemon, helmBusy, daemonCmd]);
 
+  // AresOS device list — poll while the tab is open so connects/disconnects show live.
+  useEffect(() => {
+    if (view !== "aresos" || !native || daemon === "stopped" || daemon === "error") return;
+    const poll = () => daemonCmd({ type: "remote_pcs" });
+    poll();
+    const timer = window.setInterval(poll, 4_000);
+    return () => window.clearInterval(timer);
+  }, [view, native, daemon, daemonCmd]);
+
   const restartDaemon = useCallback(
     (provider?: string, model?: string) => {
       if (!native) return;
@@ -1705,6 +1718,12 @@ function App() {
           return true;
         case "usage_stats":
           setUsageStats((e.stats as UsageStats | null) ?? null);
+          return true;
+        case "remote_pcs":
+          setRemotePcs(Array.isArray(e.pcs) ? (e.pcs as RemotePcRow[]) : []);
+          return true;
+        case "remote_pc_link":
+          if (typeof e.url === "string") setRemoteLink({ url: e.url, scope: String(e.scope ?? "public"), label: String(e.label ?? "") });
           return true;
         case "model_catalog": {
           const catalogModels = Array.isArray(e.models) ? e.models : [];
@@ -3542,6 +3561,17 @@ function App() {
             <Medallion glyph="artifacts" /><i className="glyph" data-glyph="file" /> Artifacts
             {vaultCount > 0 ? <em>{vaultCount}</em> : null}
           </button>
+          <button
+            data-on={view === "aresos" ? "1" : "0"}
+            onClick={() => {
+              setView("aresos");
+              setForge((current) => ({ ...current, open: false }));
+              daemonCmd({ type: "remote_pcs" });
+            }}
+          >
+            <Medallion glyph="shield" /><i className="glyph" data-glyph="dot" /> AresOS
+            {remotePcs.length > 0 ? <em>{remotePcs.length}</em> : null}
+          </button>
         </nav>
 
         <input
@@ -3691,6 +3721,19 @@ function App() {
             onOpenFile={(path, label) => openArtifact(path, label)}
             onReturn={() => setView("chat")}
             onJump={openSession}
+          />
+        ) : view === "aresos" ? (
+          <AresOsView
+            pcs={remotePcs}
+            link={remoteLink}
+            onConnect={(label) => { setRemoteLink(null); daemonCmd({ type: "remote_pc_link", label }); }}
+            onClearLink={() => setRemoteLink(null)}
+            onDisconnect={(pcId) => daemonCmd({ type: "remote_pc_disconnect", pcId })}
+            onRefresh={() => daemonCmd({ type: "remote_pcs" })}
+            onHelp={(pc) => {
+              setView("chat");
+              send(`Help ${pc.label || pc.hostname} with their PC. It's connected as remote PC id "${pc.id}" (${pc.os}). Use the RemotePC tool (exec_on_pc, get_file/put_file, screenshot_pc) to work on THEIR machine — match commands to their OS. Ask me what's wrong if you don't know yet.`);
+            }}
           />
         ) : (
           <div className="chat" ref={scroller} onScroll={onChatScroll}>
@@ -5296,6 +5339,122 @@ function collectVault(sessions: SessionVm[]): Vault {
     }
   }
   return { images, files, links };
+}
+
+interface RemotePcRow {
+  id: string;
+  label: string;
+  hostname: string;
+  os: string;
+  ip: string;
+  connectedAt: number;
+}
+
+/** OS → the shell family, mirrored from the RemotePC tool so the card reads
+ *  the same language Ares does. */
+function osFamily(os: string): { name: string; glyph: string } {
+  if (/darwin|mac|os ?x/i.test(os)) return { name: "macOS", glyph: "🍎" };
+  if (/linux|nix|bsd/i.test(os)) return { name: "Linux", glyph: "🐧" };
+  if (/win/i.test(os)) return { name: "Windows", glyph: "🪟" };
+  return { name: os || "Unknown", glyph: "💻" };
+}
+
+function agoLabel(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+function AresOsView({
+  pcs,
+  link,
+  onConnect,
+  onClearLink,
+  onDisconnect,
+  onRefresh,
+  onHelp,
+}: {
+  pcs: RemotePcRow[];
+  link: { url: string; scope: string; label: string } | null;
+  onConnect: (label: string) => void;
+  onClearLink: () => void;
+  onDisconnect: (pcId: string) => void;
+  onRefresh: () => void;
+  onHelp: (pc: RemotePcRow) => void;
+}) {
+  const [name, setName] = useState("");
+  const [copied, setCopied] = useState(false);
+  const makeLink = () => { onConnect(name.trim() || "their PC"); setName(""); };
+
+  return (
+    <div className="aresos">
+      <header className="aresosHead">
+        <div>
+          <div className="aresosTitle"><Medallion glyph="shield" size={30} /> AresOS</div>
+          <p className="aresosSub">Devices you're helping. Send someone a link — the moment they open it, they show up here and Ares can work on their machine.</p>
+        </div>
+        <button className="aresosGhost" onClick={onRefresh} title="Refresh">↻</button>
+      </header>
+
+      <section className="aresosConnect">
+        <input
+          className="aresosInput"
+          value={name}
+          placeholder="Who is it? e.g. Dave's laptop"
+          onChange={(ev) => setName(ev.target.value)}
+          onKeyDown={(ev) => { if (ev.key === "Enter") makeLink(); }}
+        />
+        <button className="aresosPrimary" onClick={makeLink}>+ Connect a device</button>
+      </section>
+
+      {link ? (
+        <div className="aresosLink">
+          <div className="aresosLinkTop">
+            <b>Link{link.label ? ` for ${link.label}` : ""} — send it to them</b>
+            <button className="aresosX" onClick={onClearLink} title="Dismiss">✕</button>
+          </div>
+          <div className="aresosLinkUrl">{link.url}</div>
+          <div className="aresosLinkRow">
+            <button
+              className="aresosPrimary"
+              onClick={() => { void navigator.clipboard.writeText(link.url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); }); }}
+            >{copied ? "✓ Copied" : "⎘ Copy link"}</button>
+            <span className="aresosHint">They open it → a tiny connector downloads and runs → they appear below. Nothing to install.</span>
+          </div>
+          {link.scope === "lan" ? (
+            <div className="aresosWarn">⚠ Local-network only right now (no internet tunnel) — this works only if they're on your wifi. Ask Ares to set up the tunnel for remote friends.</div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {pcs.length === 0 ? (
+        <div className="aresosEmpty">
+          <div className="aresosEmptyGlyph">🖥️</div>
+          <p>No devices connected yet. Name who you're helping above and hit Connect — you'll get a link to send them.</p>
+        </div>
+      ) : (
+        <div className="aresosGrid">
+          {pcs.map((pc) => {
+            const fam = osFamily(pc.os);
+            return (
+              <div key={pc.id} className="aresosCard">
+                <div className="aresosCardHead">
+                  <span className="aresosDot" /> <b>{pc.label || pc.hostname}</b>
+                </div>
+                <div className="aresosMeta">{fam.glyph} {pc.os} · {pc.hostname}</div>
+                <div className="aresosMeta aresosDim">{pc.ip} · connected {agoLabel(pc.connectedAt)} ago</div>
+                <div className="aresosCardRow">
+                  <button className="aresosPrimary aresosSm" onClick={() => onHelp(pc)}>Help this PC</button>
+                  <button className="aresosGhost aresosSm" onClick={() => onDisconnect(pc.id)}>Disconnect</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ArtifactsPage({

@@ -184,6 +184,10 @@ export interface AresEvent {
   running?: number;
   resumable?: number;
   from?: string;
+  /** remote_pcs — connected remote devices for the AresOS tab. */
+  pcs?: unknown[];
+  /** remote_pcs / remote_pc_link — reachability of the link or list. */
+  scope?: string;
 }
 
 /** One fleet from a fleets_list reply — the HELM Fleets history ledger. */

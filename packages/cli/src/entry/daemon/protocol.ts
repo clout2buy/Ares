@@ -43,6 +43,8 @@ export interface DaemonInputCommand {
   text?: string;
   /** New session name for session_rename (empty clears the custom label). */
   label?: string;
+  /** AresOS remote_pc_disconnect — which connected device to drop. */
+  pcId?: string;
   /** OAuth: provider id + app credentials for oauth_* commands. */
   clientId?: string;
   clientSecret?: string;

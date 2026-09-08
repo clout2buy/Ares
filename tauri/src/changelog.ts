@@ -38,6 +38,18 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.48.7",
+    date: "September 2026",
+    title: "AresOS",
+    tagline: "A home for the machines you're helping — see who's connected, send a link, and Ares takes it from there.",
+    highlights: [
+      { icon: "🖥️", title: "The AresOS tab", blurb: "A new tab shows every device connected to you right now — who it is, what OS, how long. One place to see and manage everyone you're helping.", tag: "New" },
+      { icon: "🔗", title: "Connect a device in one click", blurb: "Type who it's for, hit Connect, and you get a link to send. Copy it to them and you're done — when they open it they appear in the tab.", tag: "New" },
+      { icon: "✨", title: "Dead-simple for them", blurb: "The link they open is now one friendly page: their download starts by itself, with a single line telling them what to click. No tabs, no jargon, no choices to make.", tag: "Polished" },
+      { icon: "🩺", title: "Help, right from the tab", blurb: "Each device has a \"Help this PC\" button that drops you into a chat already set up to work on their machine — and a Disconnect button for when you're done.", tag: "New" },
+    ],
+  },
+  {
     version: "0.48.6",
     date: "September 2026",
     title: "Fix it, don't just look at it",

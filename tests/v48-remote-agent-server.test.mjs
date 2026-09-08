@@ -49,7 +49,7 @@ test("link → landing page → connector payloads", async () => {
     const page = await fetch(url);
     assert.equal(page.status, 200);
     const html = await page.text();
-    assert.match(html, /DOWNLOAD ARES CONNECT/);
+    assert.match(html, /Download Ares Connect/i);
     assert.ok(html.includes(`/agent.cmd?token=${token}`), "Windows download link present");
     assert.ok(html.includes(`/agent.py?token=${token}`), "Mac/Linux one-liner present");
 

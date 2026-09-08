@@ -45,6 +45,7 @@ import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
 import { getAgentComputer } from "@ares/tools";
 import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
+import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { fileURLToPath } from "node:url";
 import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
@@ -2286,6 +2287,23 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             fleets: [],
             error: err instanceof Error ? err.message : String(err),
           });
+        }
+        continue;
+      }
+      if (command.type === "remote_pcs" || command.type === "remote_pc_link" || command.type === "remote_pc_disconnect") {
+        const client = new RemoteAgentClient(live.context.home);
+        try {
+          if (command.type === "remote_pc_link") {
+            const link = await client.generateToken(typeof command.label === "string" && command.label ? command.label : "their PC");
+            process.stdout.write(JSON.stringify({ type: "remote_pc_link", url: link.url, scope: link.scope, label: command.label ?? "" }) + "\n");
+          } else {
+            if (command.type === "remote_pc_disconnect" && typeof command.pcId === "string") client.disconnect(command.pcId);
+            const pcs = await client.listPcsAsync();
+            process.stdout.write(JSON.stringify({ type: "remote_pcs", pcs, scope: pcs.length ? "connected" : "idle" }) + "\n");
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stdout.write(JSON.stringify({ type: command.type === "remote_pc_link" ? "remote_pc_link" : "remote_pcs", error: message, pcs: [] }) + "\n");
         }
         continue;
       }

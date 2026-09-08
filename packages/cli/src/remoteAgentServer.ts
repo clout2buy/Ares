@@ -947,10 +947,11 @@ if __name__ == "__main__":
 
 function buildLandingHtml(base: string, token: string): string {
   const cmdUrl = `${base}/agent.cmd?token=${token}`;
-  const ps1Url = `${base}/agent.ps1?token=${token}`;
   const pyUrl = `${base}/agent.py?token=${token}`;
-  const winOneLiner = `powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm '${ps1Url}')"`;
   const nixOneLiner = `curl -fsSL '${pyUrl}' | python3`;
+  // One clear action per OS. Windows auto-downloads a runnable file; Mac/Linux
+  // get one line to paste (a browser can't run a script there). Everything
+  // secondary is tucked away so the page reads "do this one thing".
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -959,68 +960,46 @@ function buildLandingHtml(base: string, token: string): string {
 <title>Ares Remote Connect</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#0d0d0d;color:#ccc;font-family:'Courier New',monospace;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}
-  .card{border:1px solid #1e1e1e;border-top:2px solid #00ff88;background:#111;padding:2.25rem 2.5rem;max-width:620px;width:100%}
-  .logo{font-size:1.4rem;font-weight:bold;color:#00ff88;letter-spacing:.12em}
-  .sub{font-size:.78rem;color:#444;margin:.25rem 0 1.75rem}
-  h2{font-size:1rem;color:#ddd;margin-bottom:.4rem;letter-spacing:.05em}
-  p{font-size:.85rem;color:#888;line-height:1.55}
-  .step{display:flex;gap:1rem;align-items:flex-start;margin-bottom:1.35rem}
-  .num{background:#00ff88;color:#000;font-weight:bold;font-size:.8rem;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
-  .big{display:block;width:100%;margin:.6rem 0 .2rem;padding:.9rem;background:#00ff88;color:#000;text-align:center;text-decoration:none;font-family:'Courier New',monospace;font-weight:bold;font-size:.95rem;letter-spacing:.08em}
-  .big:hover{opacity:.88}
-  .cmd{background:#0a0a0a;border:1px solid #222;padding:.8rem .9rem;font-size:.78rem;word-break:break-all;line-height:1.5;color:#aaa;margin-top:.4rem}
-  .copy{margin-top:.5rem;padding:.5rem .9rem;background:#161616;color:#00ff88;border:1px solid #00ff88;font-family:'Courier New',monospace;font-size:.8rem;cursor:pointer}
-  .copy.ok{background:#003d22}
-  .alt{font-size:.75rem;color:#555;margin-top:1.4rem;border-top:1px solid #1e1e1e;padding-top:1rem;line-height:1.6}
-  .alt a{color:#00ff88}
-  kbd{background:#1a1a1a;padding:.1rem .4rem;border:1px solid #333;font-size:.75rem}
+  body{background:#0d0d0d;color:#ccc;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}
+  .card{border:1px solid #1e1e1e;border-top:3px solid #00ff88;background:#111;padding:2.5rem;max-width:480px;width:100%;text-align:center}
+  .logo{font-size:1.5rem;font-weight:800;color:#00ff88;letter-spacing:.14em}
+  .sub{font-size:.8rem;color:#555;margin:.35rem 0 1.75rem;text-transform:lowercase;letter-spacing:.04em}
+  h1{font-size:1.15rem;color:#fff;margin-bottom:.6rem;font-weight:600}
+  p{font-size:.9rem;color:#9a9a9a;line-height:1.6}
+  .big{display:block;width:100%;margin:1.4rem 0 .5rem;padding:1.05rem;background:#00ff88;color:#000;text-decoration:none;font-weight:700;font-size:1rem;letter-spacing:.03em;border-radius:6px}
+  .big:hover{opacity:.9}
+  .then{font-size:.82rem;color:#777;margin-top:.4rem;line-height:1.6}
+  .then b{color:#bbb;font-weight:600}
+  .cmd{background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:.85rem;font-family:ui-monospace,monospace;font-size:.82rem;word-break:break-all;color:#bbb;margin:1rem 0 .5rem;text-align:left}
+  .copy{padding:.6rem 1rem;background:#00ff88;color:#000;border:none;border-radius:6px;font-weight:700;font-size:.85rem;cursor:pointer}
+  .copy.ok{background:#005a33;color:#fff}
+  .foot{font-size:.72rem;color:#4a4a4a;margin-top:1.6rem;border-top:1px solid #1c1c1c;padding-top:1rem;line-height:1.7}
+  a{color:#00ff88}
+  kbd{background:#1a1a1a;padding:.1rem .4rem;border:1px solid #333;border-radius:3px;font-size:.75rem}
   [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="logo">⚡ ARES</div>
-  <div class="sub">remote connect · one-time link</div>
+  <div class="sub">someone is helping you · one-time link</div>
 
   <section id="win">
-    <div class="step"><div class="num">1</div><div style="flex:1">
-      <h2>YOUR DOWNLOAD IS STARTING</h2>
-      <p>If nothing happened, use the button.</p>
-      <a class="big" href="${cmdUrl}" download="ares-connect.cmd">⬇ DOWNLOAD ARES CONNECT</a>
-    </div></div>
-    <div class="step"><div class="num">2</div><div style="flex:1">
-      <h2>OPEN <code>ares-connect.cmd</code></h2>
-      <p>Windows may say it's unrecognized — click <kbd>More info</kbd> → <kbd>Run anyway</kbd> (or <kbd>Keep</kbd> in the browser). It's a 12-line script; you can open it in Notepad first.</p>
-    </div></div>
-    <div class="step"><div class="num">3</div><div style="flex:1">
-      <h2>LEAVE THE BLACK WINDOW OPEN</h2>
-      <p>A small "Ares Connected" note appears in the corner. That's it — the person helping you takes it from here. Close the window any time to disconnect.</p>
-    </div></div>
-    <div class="alt">Prefer not to download? Press <kbd>Win</kbd>+<kbd>R</kbd>, type <code>cmd</code>, Enter, then paste:
-      <div class="cmd" id="c-win">${winOneLiner}</div>
-      <button class="copy" onclick="copy('c-win',this)">⎘ copy</button>
-    </div>
+    <h1>Your download is starting…</h1>
+    <p>Open the file when it lands, and you're connected.</p>
+    <a class="big" href="${cmdUrl}" download="ares-connect.cmd">⬇  Download Ares Connect</a>
+    <div class="then">Then: <b>open ares-connect</b> (bottom of your browser) → if Windows warns, <b>More info → Run anyway</b> → leave the little window open. Done.</div>
   </section>
 
   <section id="nix" hidden>
-    <div class="step"><div class="num">1</div><div style="flex:1">
-      <h2>OPEN A TERMINAL</h2>
-      <p>Mac: <kbd>⌘</kbd>+<kbd>Space</kbd>, type <code>terminal</code>, Enter. Linux: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd>.</p>
-    </div></div>
-    <div class="step"><div class="num">2</div><div style="flex:1">
-      <h2>PASTE THIS AND PRESS ENTER</h2>
-      <div class="cmd" id="c-nix">${nixOneLiner}</div>
-      <button class="copy" onclick="copy('c-nix',this)">⎘ copy</button>
-    </div></div>
-    <div class="step"><div class="num">3</div><div style="flex:1">
-      <h2>LEAVE THE TERMINAL OPEN</h2>
-      <p>You'll see "Connected to Ares" and a small note in the corner. Close the terminal any time to disconnect.</p>
-    </div></div>
-    <div class="alt">Needs Python 3 (built in on most Macs and Linux). If not: <a href="https://python.org/downloads">python.org/downloads</a>.</div>
+    <h1>One line to connect</h1>
+    <p>Open Terminal (Mac: <kbd>⌘</kbd>+<kbd>Space</kbd> → "terminal"), paste this, press Enter:</p>
+    <div class="cmd" id="c-nix">${nixOneLiner}</div>
+    <button class="copy" onclick="copyNix(this)">⎘  Copy the command</button>
+    <div class="then">Then leave the Terminal window open. Needs Python 3 (already on most Macs).</div>
   </section>
 
-  <div class="alt">This link works once, for one computer, and expires in 10 minutes. Nothing is installed.</div>
+  <div class="foot">Works once, for this computer, expires in 10 minutes. Nothing is installed and it closes when you close the window.</div>
 </div>
 <script>
   var isWin = /Windows/i.test(navigator.userAgent);
@@ -1028,11 +1007,11 @@ function buildLandingHtml(base: string, token: string): string {
   document.getElementById('nix').hidden = isWin;
   if (isWin) setTimeout(function () {
     var f = document.createElement('iframe'); f.hidden = true; f.src = ${JSON.stringify(cmdUrl)}; document.body.appendChild(f);
-  }, 500);
-  function copy(id, btn) {
-    navigator.clipboard.writeText(document.getElementById(id).textContent).then(function () {
-      btn.textContent = '✓ copied — paste it and press Enter'; btn.classList.add('ok');
-    }).catch(function () { btn.textContent = 'select the text above and copy it'; });
+  }, 400);
+  function copyNix(btn) {
+    navigator.clipboard.writeText(document.getElementById('c-nix').textContent).then(function () {
+      btn.textContent = '✓ Copied — paste it and press Enter'; btn.classList.add('ok');
+    }).catch(function () { btn.textContent = 'Select the text above and copy it'; });
   }
 </script>
 </body>

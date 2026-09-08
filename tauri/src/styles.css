@@ -4781,3 +4781,34 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .settingsHeroMark { width: 44px; height: 44px; }
 .artifact i { width: 32px; height: 32px; }
 .wnMark { width: 240px; height: 240px; }
+
+/* ── AresOS — remote device control surface ─────────────────────────────── */
+.aresos { flex: 1; overflow-y: auto; padding: 1.5rem 1.75rem 3rem; }
+.aresosHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.4rem; }
+.aresosTitle { display: flex; align-items: center; gap: .55rem; font-size: 1.25rem; font-weight: 700; letter-spacing: .04em; color: var(--text); }
+.aresosSub { margin-top: .4rem; max-width: 56ch; font-size: .82rem; line-height: 1.55; color: var(--muted); }
+.aresosConnect { display: flex; gap: .6rem; margin-bottom: 1.1rem; }
+.aresosInput { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .7rem .9rem; color: var(--text); font-size: .9rem; }
+.aresosInput:focus { outline: none; border-color: rgba(var(--accent-rgb), 0.55); }
+.aresosPrimary { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: .7rem 1.1rem; font-weight: 600; font-size: .88rem; cursor: pointer; white-space: nowrap; }
+.aresosPrimary:hover { background: var(--accent-hi); }
+.aresosGhost { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: .55rem .8rem; cursor: pointer; }
+.aresosGhost:hover { color: var(--text); border-color: rgba(var(--accent-rgb), 0.4); }
+.aresosSm { padding: .5rem .8rem; font-size: .82rem; }
+.aresosLink { background: var(--panel); border: 1px solid rgba(var(--accent-rgb), 0.35); border-radius: 10px; padding: 1rem 1.1rem; margin-bottom: 1.3rem; }
+.aresosLinkTop { display: flex; align-items: center; justify-content: space-between; color: var(--text); font-size: .9rem; margin-bottom: .55rem; }
+.aresosX, .aresosGhost.aresosX { background: none; border: none; color: var(--faint); cursor: pointer; font-size: .95rem; }
+.aresosLinkUrl { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: .65rem .8rem; font-family: ui-monospace, monospace; font-size: .8rem; color: var(--muted); word-break: break-all; margin-bottom: .7rem; }
+.aresosLinkRow { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.aresosHint { font-size: .78rem; color: var(--faint); line-height: 1.5; flex: 1; min-width: 12rem; }
+.aresosWarn { margin-top: .7rem; font-size: .78rem; color: #e0a54a; line-height: 1.5; }
+.aresosEmpty { text-align: center; padding: 3rem 1rem; color: var(--muted); }
+.aresosEmptyGlyph { font-size: 2.4rem; margin-bottom: .8rem; opacity: .6; }
+.aresosEmpty p { max-width: 40ch; margin: 0 auto; font-size: .86rem; line-height: 1.6; }
+.aresosGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: .9rem; }
+.aresosCard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
+.aresosCardHead { display: flex; align-items: center; gap: .5rem; color: var(--text); font-size: .98rem; margin-bottom: .5rem; }
+.aresosDot { width: 8px; height: 8px; border-radius: 50%; background: #3ad07a; box-shadow: 0 0 8px rgba(58, 208, 122, 0.6); flex-shrink: 0; }
+.aresosMeta { font-size: .8rem; color: var(--muted); line-height: 1.5; }
+.aresosMeta.aresosDim { color: var(--faint); }
+.aresosCardRow { display: flex; gap: .5rem; margin-top: .9rem; }

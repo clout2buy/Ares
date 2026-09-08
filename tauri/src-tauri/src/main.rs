@@ -729,6 +729,9 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // The owner's memory surface: read what Ares believes, correct or delete
     // a memory in place. Owner-surface commands — never expose guest scopes.
     "mind_overview", "mind_edit", "mind_forget",
+    // AresOS: list connected remote PCs, mint/disconnect a connect link, and
+    // pull a live screen preview.
+    "remote_pcs", "remote_pc_link", "remote_pc_disconnect", "remote_pc_screenshot",
 ];
 
 #[tauri::command]

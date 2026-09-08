@@ -38,7 +38,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.48.8",
+    version: "0.48.9",
     date: "September 2026",
     title: "AresOS, sharper",
     tagline: "See their screen right in the tab, and connecting is now one copy away.",

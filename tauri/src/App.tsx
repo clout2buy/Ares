@@ -7776,23 +7776,9 @@ const Composer = React.memo(function Composer({
     for (const file of files) {
       const attachmentType = supportedAttachmentMediaType(file);
       if (!attachmentType.looksLikeImage) {
-        if (looksLikeTextFile(file) && file.size <= TEXT_FILE_MAX) {
-          const read: Promise<void> = new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const text = String(reader.result ?? "");
-              // binary sneaking through the extension heuristic: NULs or a lot of replacement chars
-              if (/\u0000/.test(text) || (text.match(/\uFFFD/g)?.length ?? 0) > 8) appendDraft(`[Dropped ${file.name || "file"} (${fmtBytes(file.size)}): binary — drop it from the file explorer so Ares gets its path, or paste its contents.]`);
-              else quoteTextFile(file.name || "dropped.txt", text);
-              resolve();
-            };
-            reader.onerror = () => { appendDraft(`[Dropped ${file.name || "file"} could not be read.]`); resolve(); };
-            reader.readAsText(file);
-          });
-          pendingReads.current.add(read);
-          void read.finally(() => pendingReads.current.delete(read));
-          continue;
-        }
+        // Every non-image file — text, code, PDF, archive — is kept as a file
+        // and shown as a chip; Ares reads it with its tools. Quoting text files
+        // into the message dumped their contents into the composer.
         // Anything else (PDF, docx, zip, binaries …) is kept as a real file:
         // its bytes go to Ares's dropped-files folder and the message carries
         // the path, so Ares can open it with its tools — like dropping into

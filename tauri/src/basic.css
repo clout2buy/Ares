@@ -550,3 +550,10 @@
 
 /* A quiet status line in the model picker (not an error). */
 .modelNote { color: var(--muted, #8a8f98); font-size: 12px; padding: 4px 2px 8px; opacity: 0.85; }
+
+/* Unfinished work from a previous run: shown, never auto-run. */
+.recoveryBanner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 12px; padding: 10px 14px; border: 1px solid var(--accent, #8a8f98); border-radius: 8px; background: color-mix(in srgb, var(--accent, #8a8f98) 10%, transparent); font-size: 13px; }
+.recoveryBanner .recoveryBody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.recoveryBanner .recoveryBody span { color: var(--muted, #8a8f98); overflow: hidden; text-overflow: ellipsis; }
+.recoveryBanner .recoveryActions { display: flex; gap: 8px; flex-shrink: 0; }
+.settingsSelect { width: 100%; max-width: 520px; padding: 8px 10px; border-radius: 6px; background: var(--panel, #16171a); color: inherit; border: 1px solid var(--rule, #2a2b30); margin-bottom: 18px; }

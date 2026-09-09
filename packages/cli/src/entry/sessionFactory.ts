@@ -8,7 +8,7 @@ import type { ContentBlock, Message, PermissionPromptDecision, ReasoningLevel } 
 import { isReasoningLevel } from "@ares/protocol";
 import type { ToolPermissionRequest } from "@ares/core";
 import { notice } from "../terminalUi.js";
-import { loadUiSettings, updateUiSettings, type UiSettings } from "../uiSettings.js";
+import { cachedUiSettings, loadUiSettings, startupRecoveryMode, updateUiSettings, type UiSettings } from "../uiSettings.js";
 import { AresAgentRuntime, prepareAresAgent, readPersona, scanCapabilityRegistry, type CapabilityProvider, type PersonaDef } from "@ares/agent";
 import { listCapabilities, seedAllCapabilities, writeCapabilitiesDoc } from "@ares/operator";
 import { ManualReminderSource, applyEngineConfigEnv } from "./daemon.js";
@@ -1021,7 +1021,8 @@ export async function createSessionWithSelection(
       summarizeSpan,
       contextSourceVersions,
       sessionKernel,
-      detachedStartupRecovery: opts.detachedStartupRecovery,
+      // Detached hosts (TUI/CLI) run recovered work only when the owner chose "auto".
+      detachedStartupRecovery: opts.detachedStartupRecovery ?? startupRecoveryMode(cachedUiSettings()) === "auto",
     });
     sessionRef = session;
     shellRegistry.configureDurability({ kernel: sessionKernel, workspace: context.workspace });
@@ -1119,7 +1120,7 @@ export async function createSessionWithSelection(
     summarizeSpan,
     contextSourceVersions,
     sessionKernel,
-    detachedStartupRecovery: opts.detachedStartupRecovery,
+    detachedStartupRecovery: opts.detachedStartupRecovery ?? startupRecoveryMode(cachedUiSettings()) === "auto",
   });
   sessionRef = session;
   shellRegistry.configureDurability({ kernel: sessionKernel, workspace: context.workspace });

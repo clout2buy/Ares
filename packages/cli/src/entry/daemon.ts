@@ -25,7 +25,7 @@ import { isReasoningLevel, REASONING_LEVELS, messageText, redactSecrets } from "
 import type { ToolPermissionRequest } from "@ares/core";
 import { HeapAllocationSampler, heapSamplerEnabled } from "@ares/core";
 import { notice } from "../terminalUi.js";
-import { loadUiSettings, updateUiSettings, type UiSettings } from "../uiSettings.js";
+import { loadUiSettings, updateUiSettings, type UiSettings, startupRecoveryMode } from "../uiSettings.js";
 import { DEFAULT_PERMISSIONS, decidePermission, type PermissionSettings } from "../permissionPolicy.js";
 import { consciousnessStatus, downloadAllConsciousnessModels } from "../consciousness.js";
 import { describeImage, engineStatus } from "../visionEngine.js";
@@ -294,6 +294,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     /** Canonical crash-recovered inputs waiting to re-enter the ordinary daemon
      * send path. Only one is scheduled at a time so every turn is observable. */
     startupRecoveryQueue: Array<{ inputId: string; goal: string; sessionId?: string }>;
+    /** Unfinished durable inputs discovered on open and NOT run: the owner
+     *  decides with startup_recovery_resume / _discard (mode "ask"). */
+    startupRecoveryOffer?: Array<{ inputId: string; goal: string; sessionId?: string }>;
     /** Exact recovered input currently scheduled or executing. */
     startupRecoveryInputId?: string;
     /** The exact ID above is waiting for crashed-lease takeover, before it can
@@ -1113,6 +1116,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }
   };
 
+  type StartupRecoveryItem = { inputId: string; goal: string; sessionId?: string };
+
+  const emitStartupRecoveryDiscarded = (entry: DaemonEntry, sessionId: string | undefined, items: StartupRecoveryItem[], why: string): void => {
+    const retired = entry.live.session.discardHostManagedStartupRecovery(items.map((i) => i.inputId), why);
+    entry.startupRecoveryOffer = undefined;
+    tagEmit(sessionId, { type: "startup_recovery_discarded", inputIds: retired, count: retired.length, reason: why });
+  };
+
   const prepareDaemonStartupRecovery = async (
     entry: DaemonEntry,
     sessionId: string | undefined,
@@ -1124,18 +1135,50 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     // lets that owner reclaim the head and drain its attached steer inbox.
     const discovered = entry.live.session.pendingHostManagedStartupRecovery();
     if (discovered.length === 0) return;
-    const [first, ...rest] = discovered.map((input) => ({
+    const items: StartupRecoveryItem[] = discovered.map((input) => ({
       inputId: input.id,
       goal: startupRecoveryGoal(input.payload),
       sessionId,
     }));
+    // Unfinished work is NEVER run behind the owner's back by default. It is
+    // shown on the session with Resume / Discard; "auto" (setting or
+    // ARES_STARTUP_RECOVERY) restores the old resume-on-open behavior; "never"
+    // retires it. A field user watched old projects "reopen themselves" and
+    // had no way to stop it — this is the way.
+    const mode = startupRecoveryMode(await loadUiSettings().catch(() => null));
+    if (mode === "never") {
+      emitStartupRecoveryDiscarded(entry, sessionId, items, "startup recovery is set to never resume");
+      return;
+    }
+    if (mode === "ask") {
+      entry.startupRecoveryOffer = items;
+      tagEmit(sessionId, {
+        type: "startup_recovery_available",
+        inputIds: items.map((i) => i.inputId),
+        count: items.length,
+        previews: items.map((i) => ({ inputId: i.inputId, goal: i.goal.slice(0, 240) })),
+      });
+      return;
+    }
+    await beginDaemonStartupRecovery(entry, sessionId, items);
+  };
+
+  const beginDaemonStartupRecovery = async (
+    entry: DaemonEntry,
+    sessionId: string | undefined,
+    items: StartupRecoveryItem[],
+  ): Promise<void> => {
+    entry.startupRecoveryOffer = undefined;
+    const discovered = items;
+    const [first, ...rest] = discovered;
+    if (!first) return;
     entry.startupRecoveryInputId = first.inputId;
     entry.startupRecoveryQueue.push(...rest);
     entry.startupRecoveryPreparing = true;
     tagEmit(sessionId, {
       type: "startup_recovery_preparing",
       inputId: first.inputId,
-      inputIds: discovered.map((input) => input.id),
+      inputIds: discovered.map((input) => input.inputId),
       count: discovered.length,
     });
     try {
@@ -1146,7 +1189,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       entry.startupRecoveryPreparing = false;
       tagEmit(sessionId, {
         type: "startup_recovery_queued",
-        inputIds: discovered.map((input) => input.id),
+        inputIds: discovered.map((input) => input.inputId),
         count: discovered.length,
       });
       enqueueStartupRecoveryCommand({ type: "send", goal: first.goal, sessionId, inputId: first.inputId });
@@ -1734,6 +1777,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           },
         );
   autotickLoop?.start();
+  if (autotickLoop) {
+    const why = [
+      process.env.ARES_OPERATOR_LOOP === "1" ? "ARES_OPERATOR_LOOP=1" : "",
+      daemonStandingAtStart.length ? `${daemonStandingAtStart.length} standing order(s)` : "",
+      daemonWatchersAtStart.length ? `${daemonWatchersAtStart.length} watcher(s)` : "",
+    ].filter(Boolean).join(", ");
+    tagEmit(undefined, { type: "operator_loop_started", reason: why, note: "Halt it in Helm → Operator, or set ARES_OPERATOR_AUTOTICK=0." });
+  }
   const readySettings = await loadUiSettings();
   // "Configured" must mean USABLE, not just "pasted into ui.json". A provider is
   // configured if its key is in settings OR in the environment, plus OpenAI via
@@ -1921,6 +1972,33 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         consciousnessAbort?.abort();
         stopConsciousnessWatch();
         process.stdout.write(JSON.stringify({ type: "consciousness_set", enabled: false }) + "\n");
+        continue;
+      }
+      if (command.type === "startup_recovery_resume" || command.type === "startup_recovery_discard") {
+        const entry = await resolveEntry(typeof command.sessionId === "string" ? command.sessionId : undefined);
+        const offer = entry.startupRecoveryOffer ?? [];
+        if (!offer.length) {
+          tagEmit(command.sessionId, { type: "startup_recovery_discarded", inputIds: [], count: 0, reason: "nothing pending" });
+          continue;
+        }
+        if (command.type === "startup_recovery_discard") {
+          emitStartupRecoveryDiscarded(entry, command.sessionId, offer, "the owner discarded it");
+          continue;
+        }
+        await beginDaemonStartupRecovery(entry, command.sessionId, offer);
+        continue;
+      }
+      if (command.type === "startup_recovery_mode") {
+        const requested = typeof command.mode === "string" ? command.mode.trim().toLowerCase() : "";
+        if (requested === "ask" || requested === "auto" || requested === "never") {
+          await updateUiSettings({ startupRecovery: requested });
+        }
+        const env = (process.env.ARES_STARTUP_RECOVERY ?? "").trim().toLowerCase();
+        process.stdout.write(JSON.stringify({
+          type: "startup_recovery_mode",
+          mode: startupRecoveryMode(await loadUiSettings().catch(() => null)),
+          pinnedByEnv: env === "ask" || env === "auto" || env === "never",
+        }) + "\n");
         continue;
       }
       if (command.type === "consciousness_killswitch") {
@@ -2155,6 +2233,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const provider = typeof command.provider === "string" ? command.provider.trim().toLowerCase() : "";
         const models = await daemonModelCatalog(provider).catch(() => []);
         process.stdout.write(JSON.stringify({ type: "model_catalog", provider, models }) + "\n");
+        continue;
+      }
+      if (command.type === "session_open") {
+        // The desktop opened a session card. Materialize it so unfinished work
+        // from a previous run is DISCOVERED and offered (startup_recovery_available)
+        // — never run — before the owner types anything.
+        const sid = cleanCommandId(command.sessionId ?? command.id);
+        if (sid) await resolveEntry(sid).catch(() => undefined);
         continue;
       }
       if (command.type === "session_history") {
@@ -3429,6 +3515,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       }
       const inputId = requestedInputId || `input_${randomUUID()}`;
       const entry = await resolveEntry(command.sessionId);
+      if (entry.startupRecoveryOffer?.length && !internalStartupRecoveryCommands.has(command)) {
+        // The owner typed something new instead of pressing Resume: the old
+        // pending request is retired, visibly, so it cannot run later.
+        emitStartupRecoveryDiscarded(entry, command.sessionId, entry.startupRecoveryOffer, "replaced by a new message");
+      }
       const canonicalInput = (await openWorkspaceSessionKernel(entry.live.context.workspace)).getInput(inputId);
       if (canonicalInput && canonicalInput.sessionId !== entry.live.session.meta.id) {
         tagEmit(command.sessionId, {

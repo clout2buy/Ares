@@ -114,7 +114,30 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.codingBackend = undefined; // and last turn's delegation cut-scene (fresh elapsed clock)
       break;
     }
+    case "startup_recovery_available":
+      // Found, not run. The banner on the session offers Resume / Discard.
+      session.busy = false;
+      session.cancelling = false;
+      session.activity = undefined;
+      session.pendingRecovery = {
+        inputIds: Array.isArray(e.inputIds) ? e.inputIds : [],
+        count: typeof e.count === "number" ? e.count : 0,
+        previews: Array.isArray(e.previews) ? e.previews : [],
+      };
+      break;
+    case "startup_recovery_discarded":
+      session.pendingRecovery = undefined;
+      if (typeof e.count === "number" && e.count > 0) {
+        items.push({
+          kind: "notice",
+          key: nextKey(),
+          text: `Discarded ${e.count} unfinished request${e.count === 1 ? "" : "s"} from before Ares last closed${e.reason ? ` (${e.reason})` : ""}.`,
+          tone: "dim",
+        });
+      }
+      break;
     case "startup_recovery_preparing":
+      session.pendingRecovery = undefined;
       // The daemon has claimed visible ownership of this exact durable input,
       // even though it may still be waiting for a crashed lease to expire.
       // Keep the composer in steer/Stop mode throughout that takeover window.

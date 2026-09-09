@@ -38,6 +38,12 @@ export interface AresEvent {
   images?: string[];
   /** Startup-recovery visibility: exact durable IDs and current hand-off phase. */
   inputIds?: string[];
+  /** startup_recovery_available */
+  previews?: Array<{ inputId: string; goal: string }>;
+  /** startup_recovery_mode */
+  pinnedByEnv?: boolean;
+  /** operator_loop_started */
+  note?: string;
   count?: number;
   phase?: string;
   /** Provider stream-attempt identity. Superseded attempts are UI-rollback

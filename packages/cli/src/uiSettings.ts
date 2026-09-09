@@ -131,6 +131,14 @@ export interface UiSettings {
    *  When true, Ares pulls its local vision + embedding models and — in later
    *  stages — runs the always-on screen-watch loop. */
   consciousnessEnabled?: boolean;
+  /**
+   * What Ares does with a request that was still pending when it last closed
+   * (crash, forced quit, sleep). "ask" (default) shows it on the session with
+   * Resume / Discard and runs nothing; "auto" resumes it the moment the
+   * session is opened (the old behavior); "never" discards it. Env
+   * ARES_STARTUP_RECOVERY overrides.
+   */
+  startupRecovery?: "ask" | "auto" | "never";
 }
 
 /** Advanced run-tuning knobs. All optional; absent → engine defaults. */
@@ -178,6 +186,16 @@ export async function loadUiSettings(): Promise<UiSettings> {
  * callers must only use plain fields (e.g. computerMode).
  */
 let settingsCache: { mtimeMs: number; value: UiSettings } | null = null;
+export type StartupRecoveryMode = "ask" | "auto" | "never";
+
+/** Env wins, then the setting, then "ask". Never "auto" by accident. */
+export function startupRecoveryMode(settings?: Pick<UiSettings, "startupRecovery"> | null): StartupRecoveryMode {
+  const env = (process.env.ARES_STARTUP_RECOVERY ?? "").trim().toLowerCase();
+  if (env === "ask" || env === "auto" || env === "never") return env;
+  const s = settings?.startupRecovery;
+  return s === "ask" || s === "auto" || s === "never" ? s : "ask";
+}
+
 export function cachedUiSettings(): UiSettings | null {
   try {
     const filePath = uiSettingsPath();

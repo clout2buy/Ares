@@ -885,6 +885,124 @@ fn ares_read_text_file(path: String) -> Result<String, String> {
     fs::read_to_string(&canonical).map_err(|error| format!("cannot read file: {error}"))
 }
 
+// ─── Dropped paths ─────────────────────────────────────────────────────
+//
+// Native drag-drop (dragDropEnabled: true) hands the webview PATHS, which is
+// the only way a dropped folder, PDF, or any non-image file can reach the
+// agent as something it can act on. The webview asks this command what each
+// path is; the composer then attaches images inline, quotes small text files,
+// and drops the path itself for everything else so the agent can Read it.
+// The user dropped it on purpose, so there is no workspace-root gate here —
+// but nothing is read beyond the caps below, and nothing is written.
+
+#[derive(Serialize)]
+struct DroppedEntry {
+    path: String,
+    name: String,
+    /// "image" | "text" | "dir" | "file" | "missing"
+    kind: String,
+    size: u64,
+    /// image: a data: URL. text: the contents. Otherwise absent.
+    content: Option<String>,
+    /// dir: how many entries it holds (capped at 500).
+    entries: Option<usize>,
+    /// Why content is absent when it could have been read (too large, binary, unreadable).
+    note: Option<String>,
+}
+
+const DROPPED_IMAGE_MAX: u64 = 15 * 1024 * 1024;
+const DROPPED_TEXT_MAX: u64 = 1024 * 1024;
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+fn dropped_image_mime(ext: &str) -> Option<&'static str> {
+    match ext {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" | "jfif" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+fn looks_like_text(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+    let sample = &bytes[..bytes.len().min(8192)];
+    if sample.contains(&0) {
+        return false;
+    }
+    std::str::from_utf8(sample).is_ok() || std::str::from_utf8(&sample[..sample.len().saturating_sub(4)]).is_ok()
+}
+
+#[tauri::command]
+fn ares_inspect_paths(paths: Vec<String>) -> Vec<DroppedEntry> {
+    let mut out = Vec::new();
+    for raw in paths.into_iter().take(64) {
+        let path = PathBuf::from(&raw);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| raw.clone());
+        let meta = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => {
+                out.push(DroppedEntry { path: raw, name, kind: "missing".into(), size: 0, content: None, entries: None, note: None });
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            let entries = fs::read_dir(&path).map(|rd| rd.take(500).count()).unwrap_or(0);
+            out.push(DroppedEntry { path: raw, name, kind: "dir".into(), size: 0, content: None, entries: Some(entries), note: None });
+            continue;
+        }
+        let size = meta.len();
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if let Some(mime) = dropped_image_mime(&ext) {
+            if size > DROPPED_IMAGE_MAX {
+                out.push(DroppedEntry { path: raw, name, kind: "file".into(), size, content: None, entries: None, note: Some("image larger than 15 MB; attached as a path".into()) });
+                continue;
+            }
+            match fs::read(&path) {
+                Ok(bytes) => {
+                    let data_url = format!("data:{mime};base64,{}", base64_encode(&bytes));
+                    out.push(DroppedEntry { path: raw, name, kind: "image".into(), size, content: Some(data_url), entries: None, note: None });
+                }
+                Err(error) => out.push(DroppedEntry { path: raw, name, kind: "file".into(), size, content: None, entries: None, note: Some(format!("cannot read: {error}")) }),
+            }
+            continue;
+        }
+        if size <= DROPPED_TEXT_MAX {
+            if let Ok(bytes) = fs::read(&path) {
+                if looks_like_text(&bytes) {
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    out.push(DroppedEntry { path: raw, name, kind: "text".into(), size, content: Some(text), entries: None, note: None });
+                    continue;
+                }
+            }
+        }
+        let note = if size > DROPPED_TEXT_MAX { Some("larger than 1 MB; attached as a path the agent can read".into()) } else { Some("binary; attached as a path".into()) };
+        out.push(DroppedEntry { path: raw, name, kind: "file".into(), size, content: None, entries: None, note });
+    }
+    out
+}
+
 #[tauri::command]
 fn ares_stop_daemon(app: tauri::AppHandle, state: State<DaemonState>) -> Result<(), String> {
     stop_existing_daemon(state.inner())?;
@@ -1965,6 +2083,7 @@ fn main() {
             ares_forge_write,
             ares_export_log,
             ares_read_text_file,
+            ares_inspect_paths,
             ares_stop_daemon,
             ares_window_minimize,
             ares_window_toggle_maximize,

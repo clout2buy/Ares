@@ -715,6 +715,28 @@ export class Session {
   /** Snapshot the exact non-control inputs a host-managed recovery will own.
    * This is intentionally synchronous so an evented host can expose a Stop
    * target before waiting for a crashed runner lease to expire. */
+  /**
+   * Discard durable inputs the owner chose NOT to resume (or that a
+   * "never resume" setting retired). Cancelled rows are terminal: no drain,
+   * no replay, no synthetic follow-up turn. Returns the ids actually retired.
+   */
+  discardHostManagedStartupRecovery(inputIds: readonly string[], reason = "The owner discarded unfinished work from a previous run"): string[] {
+    if (!this.kernel) return [];
+    const retired: string[] = [];
+    for (const id of inputIds) {
+      const row = this.kernel.getInput(id);
+      if (!row || row.sessionId !== this.meta.id) continue;
+      if (row.state === "consumed" || row.state === "cancelled") continue;
+      try {
+        this.kernel.cancelInput(id, { sessionId: this.meta.id, reason: { code: "STARTUP_RECOVERY_DISCARDED", message: reason } });
+        retired.push(id);
+      } catch {
+        // a concurrent owner already settled it; nothing to retire
+      }
+    }
+    return retired;
+  }
+
   pendingHostManagedStartupRecovery(): AdmittedInputRecord[] {
     if (!this.kernel) return [];
     return this.kernel

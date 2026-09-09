@@ -25,6 +25,7 @@ import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, us
 import { createRoot } from "react-dom/client";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow, LogicalSize, PhysicalSize, PhysicalPosition } from "@tauri-apps/api/window";
 // The REAL holotable BUILD engine — same module the CLI's `ares holo` uses.
 // Any model plugged into Ares emits a HoloSpec (*.holo.json) and this renders
@@ -574,6 +575,12 @@ function App() {
   });
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [permissions, setPermissions] = useState<PermSettings>(DEFAULT_PERMS);
+  const pushNotice = (text: string, tone: "dim" | "warn" | "bad" = "dim") => {
+    setSessions((prev) => prev.map((sess, i) => (sess.id === activeRef.current || (!activeRef.current && i === 0)
+      ? { ...sess, items: [...sess.items, { kind: "notice" as const, key: `notice_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`, text, tone }] }
+      : sess)));
+  };
+  const [recoveryMode, setRecoveryMode] = useState<{ mode: "ask" | "auto" | "never"; pinnedByEnv: boolean }>({ mode: "ask", pinnedByEnv: false });
   const [opStatus, setOpStatus] = useState<{ activeCount: number; goals: Array<{ id: string; statement: string; status: string; progress: number }>; autotick: boolean; trust?: Array<{ domain: string; level: number; proven: number }> } | null>(null);
   // Operator halt state. Optimistic on click; an operator_status frame that
   // carries `halted` is authoritative and overwrites the guess on the next poll.
@@ -1761,6 +1768,12 @@ function App() {
           }));
           return true;
         }
+        case "startup_recovery_mode":
+          setRecoveryMode({ mode: e.mode === "auto" || e.mode === "never" ? e.mode : "ask", pinnedByEnv: e.pinnedByEnv === true });
+          return true;
+        case "operator_loop_started":
+          pushNotice(`Operator loop is running unattended at startup (${e.reason || "enabled"}). ${e.note || ""}`.trim(), "dim");
+          return true;
         case "operator_status":
           setOpStatus({
             activeCount: typeof e.activeCount === "number" ? e.activeCount : 0,
@@ -2250,7 +2263,7 @@ function App() {
         // The sessions_list handler merges by id, so the duplicate request on a
         // fresh spawn (where daemon_ready also fires) is harmless.
         if (state.running) {
-          for (const type of ["sessions_list", "operator_status", "oauth_status"]) {
+          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -2589,6 +2602,7 @@ function App() {
         session.id === id ? { ...session, loading: true } : session
       )));
       daemonCmd({ type: "session_history", id });
+      daemonCmd({ type: "session_open", sessionId: id });
     }
   }, [daemonCmd, native, sessions]);
 
@@ -3874,6 +3888,22 @@ function App() {
 
         {active?.codingBackend ? <CodingBackendScene vm={active.codingBackend} /> : null}
 
+        {active?.pendingRecovery && view !== "helm" ? (
+          <div className="recoveryBanner" role="status">
+            <div className="recoveryBody">
+              <b>Unfinished from last time</b>
+              <span>
+                {active.pendingRecovery.previews[0]?.goal ? `“${compact(active.pendingRecovery.previews[0].goal, 140)}”` : "a pending request"}
+                {active.pendingRecovery.count > 1 ? ` and ${active.pendingRecovery.count - 1} more` : ""}
+                {" — nothing runs until you choose."}
+              </span>
+            </div>
+            <div className="recoveryActions">
+              <button className="btn primary" onClick={() => daemonCmd({ type: "startup_recovery_resume", sessionId: active.id })}>Resume</button>
+              <button className="btn ghost" onClick={() => daemonCmd({ type: "startup_recovery_discard", sessionId: active.id })}>Discard</button>
+            </div>
+          </div>
+        ) : null}
         {/* Kept MOUNTED on HELM (hidden, not unmounted) — unmounting destroyed
             the draft text and pending attachments every time the view flipped. */}
         <Composer
@@ -4199,6 +4229,8 @@ function App() {
       ) : null}
       {settingsOpen ? (
         <Settings
+          recoveryMode={recoveryMode}
+          setRecoveryMode={setRecoveryMode}
           prefs={prefs}
           onApply={applySettings}
           onClose={() => setSettingsOpen(false)}
@@ -7592,10 +7624,46 @@ const Composer = React.memo(function Composer({
     ref.current?.focus();
   });
 
+  // Append a line to the draft without eating what is already typed.
+  const appendDraft = (line: string) => {
+    setText((current) => (current.trim() ? `${current.replace(/\s+$/, "")}\n${line}` : line));
+  };
+  // A small text file (source, notes, JSON, logs) drops in as a quoted block
+  // the model can read directly. Larger or binary files are named so the drop
+  // is never silent — with a real path (native drop) the agent can Read them.
+  const TEXT_FILE_MAX = 1024 * 1024;
+  const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|yaml|yml|toml|ini|cfg|conf|env|csv|tsv|log|xml|html?|css|scss|js|jsx|ts|tsx|mjs|cjs|py|rb|rs|go|java|kt|swift|c|h|cpp|hpp|cs|php|sh|bash|zsh|ps1|bat|cmd|sql|lua|r|m|ex|exs|erl|hs|scala|dart|vue|svelte|astro|graphql|proto|dockerfile|gitignore|editorconfig|lock)$/i;
+  const quoteTextFile = (name: string, text: string, pathHint?: string) => {
+    const fence = text.includes("```") ? "````" : "```";
+    const ext = (name.match(/\.([A-Za-z0-9]+)$/)?.[1] ?? "").toLowerCase();
+    appendDraft(`${pathHint ? `File: ${pathHint}` : `File: ${name}`}\n${fence}${ext}\n${text.replace(/\r\n/g, "\n").replace(/\s+$/, "")}\n${fence}`);
+  };
+  const looksLikeTextFile = (file: File) => file.type.startsWith("text/") || /json|xml|javascript|yaml|toml|csv|x-sh/.test(file.type) || TEXT_EXT.test(file.name) || (!file.type && file.size > 0 && file.size <= TEXT_FILE_MAX);
+
   const addFiles = (files: Iterable<File>) => {
     for (const file of files) {
       const attachmentType = supportedAttachmentMediaType(file);
-      if (!attachmentType.looksLikeImage) continue;
+      if (!attachmentType.looksLikeImage) {
+        if (looksLikeTextFile(file) && file.size <= TEXT_FILE_MAX) {
+          const read: Promise<void> = new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const text = String(reader.result ?? "");
+              // binary sneaking through the extension heuristic: NULs or a lot of replacement chars
+              if (/\u0000/.test(text) || (text.match(/\uFFFD/g)?.length ?? 0) > 8) appendDraft(`[Dropped ${file.name || "file"} (${fmtBytes(file.size)}): binary — drop it from the file explorer so Ares gets its path, or paste its contents.]`);
+              else quoteTextFile(file.name || "dropped.txt", text);
+              resolve();
+            };
+            reader.onerror = () => { appendDraft(`[Dropped ${file.name || "file"} could not be read.]`); resolve(); };
+            reader.readAsText(file);
+          });
+          pendingReads.current.add(read);
+          void read.finally(() => pendingReads.current.delete(read));
+          continue;
+        }
+        appendDraft(`[Dropped ${file.name || "file"}${file.type ? ` (${file.type}` : " ("}${file.size ? `${file.type ? ", " : ""}${fmtBytes(file.size)}` : ""}) — not a text or image file. Drop it from the file explorer so Ares gets its path.]`);
+        continue;
+      }
       if (!attachmentType.mediaType) {
         const notice = `[Attachment skipped: ${file.name || "image"} uses ${file.type || "an unknown image type"}; convert it to PNG, JPEG, WebP, or GIF.]`;
         setText((current) => current.trim() ? `${current.replace(/\s+$/, "")}\n${notice}` : notice);
@@ -7659,9 +7727,58 @@ const Composer = React.memo(function Composer({
     }
   };
 
-  // Drop an image ANYWHERE in the window — not just on the input. Tauri's own
-  // drag-drop handler is disabled (dragDropEnabled:false) so these HTML5 events
-  // fire; without the preventDefault the webview would navigate to the file.
+  // Native drops (files AND folders, with real paths). Tauri's own drag-drop
+  // handler is ON (dragDropEnabled:true): on Windows that is the only way a
+  // drop reaches the app with paths, and paths are what let the agent read a
+  // PDF, open a folder, or work in a dropped project. Images attach inline,
+  // small text files are quoted, everything else lands as its path.
+  const addPaths = async (paths: string[]) => {
+    if (!paths.length) return;
+    let entries: Array<{ path: string; name: string; kind: string; size: number; content?: string | null; entries?: number | null; note?: string | null }> = [];
+    try {
+      entries = await invoke("ares_inspect_paths", { paths });
+    } catch (err) {
+      appendDraft(`[Dropped ${paths.length} item(s) but could not read them: ${String(err)}]`);
+      return;
+    }
+    const images: File[] = [];
+    for (const e of entries) {
+      if (e.kind === "image" && e.content) {
+        try {
+          const blob = await (await fetch(e.content)).blob();
+          images.push(new File([blob], e.name, { type: blob.type || "image/png" }));
+        } catch {
+          appendDraft(`[Dropped image ${e.name} could not be decoded; path: ${e.path}]`);
+        }
+      } else if (e.kind === "text" && typeof e.content === "string") {
+        quoteTextFile(e.name, e.content, e.path);
+      } else if (e.kind === "dir") {
+        appendDraft(`Folder: ${e.path}${typeof e.entries === "number" ? ` (${e.entries}${e.entries >= 500 ? "+" : ""} entries)` : ""}`);
+      } else if (e.kind === "missing") {
+        appendDraft(`[Dropped ${e.name} but it is not there anymore: ${e.path}]`);
+      } else {
+        appendDraft(`File: ${e.path}${e.size ? ` (${fmtBytes(e.size)})` : ""}${e.note ? ` — ${e.note}` : ""}`);
+      }
+    }
+    if (images.length) addFiles(images);
+    ref.current?.focus();
+  };
+  useEffect(() => {
+    let unlisten: null | (() => void) = null;
+    let live = true;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "drop") void addPaths(event.payload.paths);
+      })
+      .then((fn) => { if (live) unlisten = fn; else fn(); })
+      .catch(() => { /* not native (browser preview) — the HTML5 path below still works */ });
+    return () => { live = false; unlisten?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // HTML5 drops (dragged text/URLs from other apps, and file drops on platforms
+  // where the native handler leaves them to the page). Still preventDefault:
+  // without it the webview navigates to the dropped file.
   useEffect(() => {
     const onDrop = (e: DragEvent) => {
       const dt = e.dataTransfer;
@@ -7688,9 +7805,25 @@ const Composer = React.memo(function Composer({
         if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
       }
     };
+    // Ctrl+V with focus on the transcript, a panel, or nothing at all: the
+    // composer still takes it. Editable targets keep their own paste.
+    const onPasteAnywhere = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const editable = !!target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
+      if (editable) return;
+      const items = Array.from(e.clipboardData?.items ?? []);
+      const files = items.filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter((f): f is File => !!f);
+      const plain = e.clipboardData?.getData("text/plain") ?? "";
+      if (!files.length && !plain.trim()) return;
+      e.preventDefault();
+      if (files.length) addFiles(files);
+      if (plain.trim()) setText((prev) => (prev.trim() ? prev.replace(/\s+$/, "") + " " : "") + plain.trim());
+      ref.current?.focus();
+    };
     window.addEventListener("dragover", onOverAny);
     window.addEventListener("drop", onDrop);
-    return () => { window.removeEventListener("dragover", onOverAny); window.removeEventListener("drop", onDrop); };
+    window.addEventListener("paste", onPasteAnywhere);
+    return () => { window.removeEventListener("dragover", onOverAny); window.removeEventListener("drop", onDrop); window.removeEventListener("paste", onPasteAnywhere); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -7791,11 +7924,17 @@ const Composer = React.memo(function Composer({
             e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;
           }}
           onPaste={(e) => {
-            const imageItems = Array.from(e.clipboardData?.items ?? []).filter((it) => it.type.startsWith("image/"));
-            if (imageItems.length) {
-              e.preventDefault();
-              addFiles(imageItems.map((it) => it.getAsFile()).filter((f): f is File => !!f));
-            }
+            // Files of any kind (copied in the file explorer, screenshots,
+            // text files) route through addFiles; plain text keeps the native
+            // path so the caret and undo behave. When both come together, the
+            // text is inserted too instead of being swallowed with the image.
+            const items = Array.from(e.clipboardData?.items ?? []);
+            const files = items.filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter((f): f is File => !!f);
+            if (!files.length) return;
+            e.preventDefault();
+            addFiles(files);
+            const plain = e.clipboardData?.getData("text/plain") ?? "";
+            if (plain.trim()) setText((prev) => (prev.trim() ? prev.replace(/\s+$/, "") + " " : "") + plain.trim());
           }}
           onKeyDown={(e) => {
             if (slashMatches.length > 0) {
@@ -7805,6 +7944,7 @@ const Composer = React.memo(function Composer({
               if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); runSlash(slashMatches[Math.min(slashSel, slashMatches.length - 1)]); return; }
             }
             if (e.key === "Enter" && !e.shiftKey) {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return; // IME candidate confirm, not a send
               e.preventDefault();
               void submit();
             }
@@ -9815,6 +9955,8 @@ function MindPane({
 }
 
 function Settings({
+  recoveryMode,
+  setRecoveryMode,
   prefs,
   onApply,
   onClose,
@@ -9844,6 +9986,8 @@ function Settings({
   onKimiSignIn,
   onLaunchLivingSurface,
 }: {
+  recoveryMode: { mode: "ask" | "auto" | "never"; pinnedByEnv: boolean };
+  setRecoveryMode: React.Dispatch<React.SetStateAction<{ mode: "ask" | "auto" | "never"; pinnedByEnv: boolean }>>;
   prefs: Prefs;
   onApply: (p: Prefs, keys: Record<string, string>) => void;
   onClose: () => void;
@@ -9930,6 +10074,23 @@ function Settings({
         <div className="settingsMain">
           {tab === "model" ? (
             <div className="settingsPane">
+              <h3 className="paneTitle">Starting up</h3>
+              <p className="paneHint">A request that was still running when Ares last closed is found again when you open that session. What happens then:</p>
+              <select
+                className="settingsSelect"
+                value={recoveryMode.mode}
+                disabled={recoveryMode.pinnedByEnv}
+                title={recoveryMode.pinnedByEnv ? "Pinned by ARES_STARTUP_RECOVERY in the environment" : "Applies to every session"}
+                onChange={(e) => {
+                  const mode = e.target.value as "ask" | "auto" | "never";
+                  setRecoveryMode((r) => ({ ...r, mode }));
+                  void invoke("ares_daemon_command", { command: { type: "startup_recovery_mode", mode } }).catch(() => null);
+                }}
+              >
+                <option value="ask">Ask me — show it with Resume / Discard, run nothing (default)</option>
+                <option value="auto">Resume it automatically when the session opens</option>
+                <option value="never">Discard it</option>
+              </select>
               <h3 className="paneTitle">Model</h3>
               <p className="paneHint">The main model for new sessions. Hot-swap the active chat from the composer.</p>
               <label className="fieldLabel">Current model</label>

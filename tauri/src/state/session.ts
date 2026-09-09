@@ -184,6 +184,10 @@ export interface SessionVm {
   tokensOut: number;
   /** Live one-liner of what the agent is doing right now (the activity ticker). */
   activity?: string;
+  /** Unfinished requests from before Ares last closed, waiting for the owner:
+   *  Resume runs them, Discard retires them, a new message replaces them.
+   *  Nothing runs until one of those happens. */
+  pendingRecovery?: { inputIds: string[]; count: number; previews: Array<{ inputId: string; goal: string }> };
   /** The agent's live plan — mirrors its TodoWrite state. */
   todos: Array<{ id: string; content: string; activeForm: string; status: string }>;
   /** Steer messages queued mid-turn, awaiting a safe injection boundary. */

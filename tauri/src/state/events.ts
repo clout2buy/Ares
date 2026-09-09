@@ -146,6 +146,7 @@ export interface AresEvent {
   hasKey?: boolean;
   keyStatus?: Record<string, boolean>;
   maps?: unknown;
+  activation?: { id?: string; at?: number } | null;
   context?: { promptTokens?: number; windowTokens?: number | null };
   errors?: Record<string, string>;
   permissions?: Partial<PermSettings>;

@@ -142,6 +142,8 @@ export interface UiSettings {
   /** Point maps for the Cyber backdrop, saved by the owner (Settings) or by
    *  Ares (its PointMap tool). Validated again in the desktop before use. */
   pointMaps?: Array<Record<string, unknown>>;
+  /** The map Ares last asked the room to switch to (the desktop applies it once). */
+  pointMapActivation?: { id: string; at: number };
 }
 
 /** Advanced run-tuning knobs. All optional; absent → engine defaults. */

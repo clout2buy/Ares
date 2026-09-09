@@ -463,6 +463,15 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: Tu
     if (advisory.reminder) {
       live.queueSystemReminder(advisory.reminder, "memory");
     }
+    // The desktop backdrop is a tool, not a file. A field session watched the
+    // model grep the workspace and write a three.js page when asked for a
+    // "pointcloud background"; name the tool the moment the ask is about it.
+    if (/(point ?clouds?|point ?maps?|backdrops?|background (?:design|look|animation|scene)s?)/i.test(text)) {
+      live.queueSystemReminder(
+        "The owner is talking about the desktop's backdrop (the Cyber point cloud). Use the PointMap tool: action \"save\" with a name, kind, colours and note (activate is on by default). Do not write HTML, three.js or shader files for this — the app cannot load them.",
+        "memory",
+      );
+    }
     // Capture the user's message as an episodic memory — this is how Ares learns
     // over time. The "turn" channel (not "manual", which is the ungated path for
     // explicit Memory-tool writes) collapses near-repeats of the last 7 days

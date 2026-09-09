@@ -26,6 +26,7 @@ const input = z
     opacity: z.number().min(0.1).max(1).optional().describe("save: overall opacity"),
     colors: z.union([z.literal("accent"), z.tuple([hex, hex])]).optional().describe("save: 'accent' follows the owner's accent dial, or two hex colours [dark, light]"),
     note: z.string().max(160).optional().describe("save: one line on what it looks like"),
+    activate: z.boolean().optional().describe("save: also make it the current backdrop (default true)"),
   })
   .strict();
 
@@ -39,10 +40,12 @@ export function makePointMapTool() {
   return buildTool({
     name: "PointMap",
     description:
-      "Design the desktop's Cyber backdrop: a GPU point cloud drawn from a small spec. " +
-      "Use when the owner asks for a new backdrop / point map look ('make me a galaxy backdrop', 'something calmer behind the chat'). " +
-      "save writes it into Settings → Appearance → Point map, where the owner picks it; list shows what is saved; delete removes one. " +
-      "Describe the look in `note`. Keep speed low — the interface never flashes.",
+      "The desktop's Cyber BACKDROP / BACKGROUND / point cloud (pointcloud) designs — Settings → Appearance → Point map. " +
+      "This is the ONLY way to add a backdrop design: the app draws them from a small spec (shape kind, motion, spread, density, size, opacity, colours) on the GPU. " +
+      "NEVER write HTML, three.js or shader files for a backdrop; the app cannot load them. " +
+      "Use whenever the owner asks for a new background / backdrop / point cloud / point map look ('generate a pointcloud background', 'surprise me with a backdrop', 'something calmer behind the chat'). " +
+      "save writes it into the Appearance list; activate:true also switches the room to it right away; list shows what is saved; delete removes one. " +
+      "Design with intent: pick the kind that fits the mood, set colours as two hex values or 'accent', keep speed low (nothing may flash), and say what it looks like in note.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: input,
@@ -79,8 +82,9 @@ export function makePointMapTool() {
         ...(i.note ? { note: i.note } : {}),
       };
       const next = [...maps.filter((m) => m.id !== id), spec];
-      await updateUiSettings({ pointMaps: next });
-      return { output: spec, display: `saved point map "${i.name}" (${id}) — the owner can pick it in Settings → Appearance → Point map` };
+      const activate = i.activate !== false;
+      await updateUiSettings({ pointMaps: next, ...(activate ? { pointMapActivation: { id, at: Date.now() } } : {}) });
+      return { output: { ...spec, activated: activate }, display: `saved point map "${i.name}" (${id})${activate ? " and switched the room to it" : ""} — it is listed in Settings → Appearance → Point map` };
     },
   });
 }

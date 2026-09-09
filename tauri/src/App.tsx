@@ -1391,6 +1391,9 @@ function App() {
           onDaemonReady(e);
           window.dispatchEvent(new CustomEvent("ares:daemon-ready"));
           return true;
+        case "tool_end":
+          if (e.name === "PointMap") daemonCmd({ type: "pointmaps_list" });
+          return false;
         case "daemon_stderr": {
           const line = e.text ?? "";
           stderrTail.current = [...stderrTail.current.slice(-19), line];
@@ -1789,9 +1792,21 @@ function App() {
           }));
           return true;
         }
-        case "pointmaps":
+        case "pointmaps": {
           setAresPointMaps(Array.isArray(e.maps) ? e.maps.map((m) => normalizePointMap(m)).filter((m): m is PointMapSpec => m !== null) : []);
+          // Ares asked the room to switch: apply once per activation, so the
+          // owner's later pick in Appearance is never overridden by a stale ask.
+          const act = e.activation;
+          if (act && typeof act.id === "string" && typeof act.at === "number") {
+            let seen = 0;
+            try { seen = Number(window.localStorage.getItem("ares.pointmap.activatedAt") ?? "0"); } catch { seen = 0; }
+            if (act.at > seen) {
+              try { window.localStorage.setItem("ares.pointmap.activatedAt", String(act.at)); } catch { /* private mode */ }
+              setPrefs((prev) => { const next = { ...prev, pointMap: act.id as string, pointMapOff: false, surface: prev.surface === "cyber" ? prev.surface : prev.surface }; savePrefs(next); return next; });
+            }
+          }
           return true;
+        }
         case "provider_usage":
           setProviderUsage({ providers: Array.isArray(e.providers) ? (e.providers as ProviderUsageView[]) : [], errors: e.errors ?? {}, at: Date.now() });
           return true;
@@ -10379,6 +10394,7 @@ function Settings({
     if (tab === "plugins") onDaemonCommand({ type: "plugins_list" });
     if (tab === "mind") onDaemonCommand({ type: "mind_overview" });
     if (tab === "usage") onDaemonCommand({ type: "usage_stats", days: 30 });
+    if (tab === "appearance") onDaemonCommand({ type: "pointmaps_list" });
     if (tab === "consciousness") onDaemonCommand({ type: "consciousness_status" });
   }, [tab, native, onDaemonCommand]);
 

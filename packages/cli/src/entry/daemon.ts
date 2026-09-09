@@ -3401,7 +3401,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           maps = maps.filter((m) => !(m && typeof m === "object" && (m as { id?: unknown }).id === id));
           await updateUiSettings({ pointMaps: maps });
         }
-        process.stdout.write(JSON.stringify({ type: "pointmaps", maps }) + "\n");
+        const activation = (await loadUiSettings().catch(() => null))?.pointMapActivation ?? null;
+        process.stdout.write(JSON.stringify({ type: "pointmaps", maps, activation }) + "\n");
         continue;
       }
       if (command.type === "provider_usage") {

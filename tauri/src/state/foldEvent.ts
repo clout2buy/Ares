@@ -734,6 +734,10 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.providerAttempt = undefined;
       session.tokensIn += input;
       session.cacheReadTokens += e.usage?.cacheReadTokens ?? 0;
+      if (e.context && typeof e.context.promptTokens === "number") {
+        session.contextPromptTokens = e.context.promptTokens;
+        session.contextWindowTokens = typeof e.context.windowTokens === "number" ? e.context.windowTokens : null;
+      }
       session.tokensOut += output;
       if (session.fleet) {
         // If any leaf failed/aborted (or never finished), keep the board up with a

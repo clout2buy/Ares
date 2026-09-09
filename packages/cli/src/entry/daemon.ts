@@ -13,7 +13,7 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -79,6 +79,7 @@ import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
 
+const providerUsageCache = new Map<string, { at: number; usage: ProviderUsage | undefined; error: string | undefined }>();
 let ollamaUsageCache: { at: number; usage: OllamaUsage | undefined; error: string | undefined } | undefined;
 
 // Back-compat re-exports: garrisonCmd.ts + sessionFactory.ts import these from
@@ -3390,6 +3391,53 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         if (action === "halt") await killSwitch.engage(typeof command.reason === "string" ? command.reason : "manual");
         else await killSwitch.release();
         process.stdout.write(JSON.stringify({ type: "operator_control_set", action, engaged: await killSwitch.engaged() }) + "\n");
+        continue;
+      }
+      if (command.type === "pointmaps_list" || command.type === "pointmap_delete") {
+        const current = (await loadUiSettings().catch(() => null))?.pointMaps ?? [];
+        let maps = Array.isArray(current) ? current : [];
+        if (command.type === "pointmap_delete") {
+          const id = typeof command.id === "string" ? command.id : "";
+          maps = maps.filter((m) => !(m && typeof m === "object" && (m as { id?: unknown }).id === id));
+          await updateUiSettings({ pointMaps: maps });
+        }
+        process.stdout.write(JSON.stringify({ type: "pointmaps", maps }) + "\n");
+        continue;
+      }
+      if (command.type === "provider_usage") {
+        // Native account usage for every linked provider that exposes it
+        // (Claude via OAuth, Ollama Cloud via key). Cached briefly per provider.
+        const force = command.force === true;
+        const out: ProviderUsage[] = [];
+        const errors: Record<string, string> = {};
+        const settingsNow = await loadUiSettings().catch(() => null);
+        const jobs: Array<Promise<void>> = [];
+        const cached = (id: string) => providerUsageCache.get(id);
+        const remember = (id: string, usage: ProviderUsage | undefined, error?: string) => {
+          providerUsageCache.set(id, { at: Date.now(), usage: usage ?? cached(id)?.usage, error });
+        };
+        const run = (id: string, fetcher: () => Promise<ProviderUsage>) => {
+          const hit = cached(id);
+          if (!force && hit && Date.now() - hit.at < 60_000) {
+            if (hit.usage) out.push(hit.usage);
+            if (hit.error) errors[id] = hit.error;
+            return;
+          }
+          jobs.push(fetcher().then((u) => { remember(id, u); out.push(u); }).catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            remember(id, undefined, message);
+            errors[id] = message;
+            const stale = cached(id)?.usage;
+            if (stale) out.push(stale);
+          }));
+        };
+        const anthropicToken = await resolveAnthropicAccessToken().catch(() => null);
+        if (anthropicToken) run("anthropic", () => fetchAnthropicUsage(anthropicToken));
+        const ollamaKey = (settingsNow?.ollamaApiKey || process.env.OLLAMA_API_KEY || "").trim();
+        if (ollamaKey) run("ollama", () => fetchOllamaUsageAsProvider(ollamaKey));
+        await Promise.all(jobs);
+        out.sort((a, b) => a.provider.localeCompare(b.provider));
+        process.stdout.write(JSON.stringify({ type: "provider_usage", providers: out, errors }) + "\n");
         continue;
       }
       if (command.type === "ollama_usage") {

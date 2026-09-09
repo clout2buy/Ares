@@ -181,6 +181,13 @@ export interface SessionVm {
   tokensIn: number;
   /** Portion of tokensIn served from the provider prompt cache. */
   cacheReadTokens: number;
+  /** Adopted from a daemon event for a session the rail never listed (a
+   *  subagent or background run). Kept out of the rail; the Forge's
+   *  Background tab is where that work is watched. */
+  background?: boolean;
+  /** Window fill after the last request: prompt size vs the budgeted window. */
+  contextPromptTokens?: number;
+  contextWindowTokens?: number | null;
   tokensOut: number;
   /** Live one-liner of what the agent is doing right now (the activity ticker). */
   activity?: string;

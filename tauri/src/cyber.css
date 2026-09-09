@@ -31,17 +31,17 @@
   --line-active: rgba(148, 170, 220, 0.42);
 
   /* the light — blue into violet */
-  --cyber-blue: #60a5fa;
-  --cyber-violet: #8b5cf6;
-  --cyber-grad: linear-gradient(135deg, #93c5fd 0%, #60a5fa 38%, #8b5cf6 100%);
-  --cyber-glow: 0 0 40px -6px rgba(99, 130, 255, 0.55);
+  --cyber-blue: var(--accent);
+  --cyber-violet: color-mix(in srgb, var(--accent) 55%, #8b5cf6);
+  --cyber-grad: linear-gradient(135deg, color-mix(in srgb, var(--accent-hi) 55%, white) 0%, var(--accent) 42%, color-mix(in srgb, var(--accent) 45%, #7c3aed) 100%);
+  --cyber-glow: 0 0 40px -6px rgba(var(--accent-rgb), 0.55);
   /* the mark: a chevron A struck in the light, drawn once as SVG */
   --cyber-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0.05' y1='0.9' x2='0.95' y2='0.1'%3E%3Cstop offset='0' stop-color='%236d4cff'/%3E%3Cstop offset='.45' stop-color='%236f9cff'/%3E%3Cstop offset='1' stop-color='%23d6ecff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='url(%23g)' stroke='url(%23g)' stroke-width='3' stroke-linejoin='round'%3E%3Cpath d='M50 8 L92 82 L78 90 L50 40 L22 90 L8 82 Z'/%3E%3Cpath d='M50 54 L66 82 L56 88 L50 77 L44 88 L34 82 Z'/%3E%3C/g%3E%3C/svg%3E");
 
   --ember: #6d8cff;
   --ember-hi: #a78bfa;
   --ember-text: #b9c8ff;
-  --ember-rim: rgba(120, 140, 255, 0.5);
+  --ember-rim: rgba(var(--accent-rgb), 0.5);
   --ember-rgb: 109, 140, 255;
   --blood: #4338ca;
   --accent: #5b7cfa;
@@ -65,7 +65,7 @@
 
   --glass-fill: linear-gradient(158deg, rgba(160, 180, 240, 0.09) 0%, rgba(160, 180, 240, 0.04) 42%, rgba(160, 180, 240, 0.02) 100%);
   --glass-edge: rgba(160, 180, 230, 0.16);
-  --glass-spec: inset 0 1px 0 rgba(220, 230, 255, 0.14), inset 0 -1px 0 rgba(120, 140, 255, 0.05);
+  --glass-spec: inset 0 1px 0 rgba(220, 230, 255, 0.14), inset 0 -1px 0 rgba(var(--accent-rgb), 0.05);
   --glass-blur: blur(28px) saturate(140%);
   --glass-lift: 0 14px 40px -14px rgba(0, 0, 0, 0.7);
 
@@ -80,8 +80,8 @@
    violet bloom bottom-right, and the diagonal band of the reference. */
 .ares[data-style="modern"][data-surface="cyber"] .backdrop::before {
   background-image:
-    radial-gradient(70% 60% at 8% 0%, rgba(59, 90, 190, 0.42), transparent 60%),
-    radial-gradient(60% 55% at 100% 100%, rgba(109, 70, 200, 0.34), transparent 60%),
+    radial-gradient(70% 60% at 8% 0%, rgba(var(--accent-rgb), 0.42), transparent 60%),
+    radial-gradient(60% 55% at 100% 100%, rgba(var(--accent-rgb), 0.34), transparent 60%),
     linear-gradient(112deg, #0a1229 0%, #070b14 42%, #070b14 62%, #101a3a 100%);
   background-position: center;
   background-size: cover;
@@ -99,7 +99,7 @@
 .ares[data-style="modern"][data-surface="cyber"] .medallion[data-tone="ember"] {
   color: #dfe7ff;
   background: var(--coin-ember);
-  border-color: rgba(120, 140, 255, 0.42);
+  border-color: rgba(var(--accent-rgb), 0.42);
 }
 
 /* ── one frame: the rail and the titlebar are flush, nothing floats ──────── */
@@ -127,7 +127,10 @@
 .ares[data-style="modern"][data-surface="cyber"] .titlebar .emblem {
   border-radius: 9px;
   border-color: rgba(148, 170, 220, 0.24);
-  background-image: var(--cyber-mark), var(--coin);
+  background: var(--cyber-grad);
+  -webkit-mask: var(--cyber-mark) center / 62% no-repeat;
+  mask: var(--cyber-mark) center / 62% no-repeat;
+  border: none;
 }
 .ares[data-style="modern"][data-surface="cyber"] .pill {
   border-color: rgba(148, 170, 220, 0.16);
@@ -139,7 +142,7 @@
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon:hover > .medallion { background: rgba(148, 170, 220, 0.08); }
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon[data-on="1"] > .medallion {
   color: #dfe7ff;
-  border-color: rgba(120, 140, 255, 0.5);
+  border-color: rgba(var(--accent-rgb), 0.5);
   box-shadow: none;
 }
 .ares[data-style="modern"][data-surface="cyber"] .winControls .winClose:hover { background: rgba(220, 60, 80, 0.75); }
@@ -169,19 +172,21 @@
   width: 26px;
   height: 26px;
   flex: none;
-  background: var(--cyber-mark) center / contain no-repeat;
-  filter: drop-shadow(0 0 10px rgba(99, 130, 255, 0.45));
+  background: var(--cyber-grad);
+  -webkit-mask: var(--cyber-mark) center / contain no-repeat;
+  mask: var(--cyber-mark) center / contain no-repeat;
+  filter: drop-shadow(0 0 10px rgba(var(--accent-rgb), 0.45));
 }
 .ares[data-style="modern"][data-surface="cyber"] .railCollapse { color: rgba(190, 205, 240, 0.45); }
 
 .ares[data-style="modern"][data-surface="cyber"] .rail > .primary {
   border-radius: var(--r-md);
-  background: rgba(91, 124, 250, 0.1);
-  border: 1px solid rgba(120, 140, 255, 0.3);
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
   box-shadow: none;
   color: var(--text-hi);
 }
-.ares[data-style="modern"][data-surface="cyber"] .rail > .primary:hover { background: rgba(91, 124, 250, 0.16); border-color: rgba(140, 160, 255, 0.55); }
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary:hover { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.55); }
 
 .ares[data-style="modern"][data-surface="cyber"] .railNav button {
   padding: 8px 12px;
@@ -191,14 +196,14 @@
 }
 .ares[data-style="modern"][data-surface="cyber"] .railNav button:hover { background: rgba(148, 170, 220, 0.07); }
 .ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] {
-  background: rgba(91, 124, 250, 0.13);
-  border-color: rgba(120, 140, 255, 0.22);
+  background: rgba(var(--accent-rgb), 0.13);
+  border-color: rgba(var(--accent-rgb), 0.22);
   box-shadow: inset 3px 0 0 var(--cyber-blue);
   color: var(--text-hi);
 }
 .ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] > .medallion {
   color: #dfe7ff;
-  border-color: rgba(120, 140, 255, 0.5);
+  border-color: rgba(var(--accent-rgb), 0.5);
   background: var(--coin-ember);
 }
 .ares[data-style="modern"][data-surface="cyber"] .railNav button em {
@@ -234,7 +239,7 @@
 .ares[data-style="modern"][data-surface="cyber"] .sessionList > * + * { border-top: none; }
 .ares[data-style="modern"][data-surface="cyber"] .sessionList > *:hover { background: rgba(148, 170, 220, 0.07); }
 .ares[data-style="modern"][data-surface="cyber"] .sessionList > *[data-on="1"] {
-  background: rgba(91, 124, 250, 0.14);
+  background: rgba(var(--accent-rgb), 0.14);
   box-shadow: none;
 }
 .ares[data-style="modern"][data-surface="cyber"] .sessionMain > span { color: rgba(229, 235, 247, 0.92); }
@@ -275,18 +280,20 @@
 .ares[data-style="modern"][data-surface="cyber"] .chat:has(> .empty)::after { content: none; }
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) {
   background:
-    radial-gradient(60% 34% at 50% 100%, rgba(80, 110, 230, 0.22), rgba(40, 60, 160, 0.08) 45%, transparent 72%),
-    radial-gradient(46% 36% at 50% 38%, rgba(99, 130, 255, 0.12), transparent 70%);
+    radial-gradient(60% 34% at 50% 100%, rgba(var(--accent-rgb), 0.22), rgba(var(--accent-rgb), 0.08) 45%, transparent 72%),
+    radial-gradient(46% 36% at 50% 38%, rgba(var(--accent-rgb), 0.12), transparent 70%);
 }
 
 .ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem {
   width: 124px;
   height: 124px;
   border-radius: 0;
-  background: var(--cyber-mark) center / contain no-repeat;
+  background: var(--cyber-grad);
+  -webkit-mask: var(--cyber-mark) center / contain no-repeat;
+  mask: var(--cyber-mark) center / contain no-repeat;
   border: none;
   box-shadow: none;
-  filter: drop-shadow(0 0 30px rgba(99, 130, 255, 0.45)) drop-shadow(0 0 60px rgba(139, 92, 246, 0.25));
+  filter: drop-shadow(0 0 30px rgba(var(--accent-rgb), 0.45)) drop-shadow(0 0 60px rgba(var(--accent-rgb), 0.25));
 }
 .ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem > svg { display: none; }
 
@@ -327,7 +334,7 @@
   box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.8);
 }
 .ares[data-style="modern"][data-surface="cyber"] .starter:hover {
-  border-color: rgba(140, 160, 255, 0.45);
+  border-color: rgba(var(--accent-rgb), 0.45);
   background: linear-gradient(158deg, rgba(26, 36, 66, 0.92), rgba(14, 21, 42, 0.92));
 }
 .ares[data-style="modern"][data-surface="cyber"] .starter > .medallion {
@@ -361,8 +368,8 @@
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
 }
 .ares[data-style="modern"][data-surface="cyber"] .composerRow:focus-within {
-  border-color: rgba(140, 160, 255, 0.5);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(120, 140, 255, 0.14);
+  border-color: rgba(var(--accent-rgb), 0.5);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(var(--accent-rgb), 0.14);
 }
 .ares[data-style="modern"][data-surface="cyber"] .composerRow textarea::placeholder { color: rgba(229, 235, 247, 0.35); }
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .composerRow { width: min(1000px, 88%); }
@@ -382,7 +389,7 @@
   align-self: center;
 }
 .ares[data-style="modern"][data-surface="cyber"] .attach svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
-.ares[data-style="modern"][data-surface="cyber"] .attach:hover { color: var(--text-hi); border-color: rgba(140, 160, 255, 0.5); background: rgba(148, 170, 220, 0.12); }
+.ares[data-style="modern"][data-surface="cyber"] .attach:hover { color: var(--text-hi); border-color: rgba(var(--accent-rgb), 0.5); background: rgba(148, 170, 220, 0.12); }
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .attach { width: 44px; height: 44px; }
 .ares[data-style="modern"][data-surface="cyber"] .mic,
 .ares[data-style="modern"][data-surface="cyber"] .send {
@@ -413,7 +420,7 @@
 }
 .ares[data-style="modern"][data-surface="cyber"] .primary:hover { border-color: transparent; box-shadow: var(--cyber-glow); filter: brightness(1.08); }
 /* …except the rail's New session, which stays a quiet tile (declared above) */
-.ares[data-style="modern"][data-surface="cyber"] .rail > .primary { color: var(--text-hi); background: rgba(91, 124, 250, 0.1); border-color: rgba(120, 140, 255, 0.3); box-shadow: none; filter: none; }
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary { color: var(--text-hi); background: rgba(var(--accent-rgb), 0.1); border-color: rgba(var(--accent-rgb), 0.3); box-shadow: none; filter: none; }
 
 /* ── status strip: one quiet full-width row, like the reference ─────────── */
 .ares[data-style="modern"][data-surface="cyber"] .statusBar {
@@ -437,7 +444,7 @@
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg > span { color: #9db4e6; }
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg:hover { background: rgba(148, 170, 220, 0.07); }
 .ares[data-style="modern"][data-surface="cyber"] .effortStatus span { color: #b9c8ff; }
-.ares[data-style="modern"][data-surface="cyber"] .segAuto { color: #b9c8ff; border-color: rgba(120, 140, 255, 0.35); }
+.ares[data-style="modern"][data-surface="cyber"] .segAuto { color: #b9c8ff; border-color: rgba(var(--accent-rgb), 0.35); }
 .ares[data-style="modern"][data-surface="cyber"] .statusBar .hudReadout { display: none; }
 .ares[data-style="modern"][data-surface="cyber"] .statusBar .statusActions,
 .ares[data-style="modern"][data-surface="cyber"] .statusBar .hudVersion { position: static; transform: none; opacity: 0.6; }
@@ -463,16 +470,16 @@
 .ares[data-style="modern"][data-surface="cyber"] .toggle[data-on="1"] { background: var(--cyber-grad); border-color: transparent; }
 
 /* selection + scrollbars follow the light */
-.ares[data-style="modern"][data-surface="cyber"] ::selection { background: rgba(99, 130, 255, 0.35); }
+.ares[data-style="modern"][data-surface="cyber"] ::selection { background: rgba(var(--accent-rgb), 0.35); }
 .ares[data-style="modern"][data-surface="cyber"] ::-webkit-scrollbar-thumb { background: rgba(148, 170, 220, 0.18); border-radius: 999px; }
 .ares[data-style="modern"][data-surface="cyber"] ::-webkit-scrollbar-thumb:hover { background: rgba(148, 170, 220, 0.3); }
 
 /* ── the Self-Generating UI card in Settings — its ember is hard-coded in the
    base sheet, so it is the one thing that stayed warm ────────────────────── */
-.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard { border-color: rgba(120, 140, 255, 0.28); background: linear-gradient(158deg, rgba(20, 28, 52, 0.9), rgba(12, 18, 36, 0.9)); }
-.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard::after { border-color: rgba(120, 140, 255, 0.18); }
-.ares[data-style="modern"][data-surface="cyber"] .livingLaunchSignal i { border-color: rgba(120, 140, 255, 0.5); animation: none; }
-.ares[data-style="modern"][data-surface="cyber"] .livingLaunchSignal i:nth-child(3) { background: var(--cyber-blue); box-shadow: 0 0 24px rgba(99, 130, 255, 0.6); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard { border-color: rgba(var(--accent-rgb), 0.28); background: linear-gradient(158deg, rgba(20, 28, 52, 0.9), rgba(12, 18, 36, 0.9)); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard::after { border-color: rgba(var(--accent-rgb), 0.18); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchSignal i { border-color: rgba(var(--accent-rgb), 0.5); animation: none; }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchSignal i:nth-child(3) { background: var(--cyber-blue); box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.6); }
 .ares[data-style="modern"][data-surface="cyber"] .livingLaunchCopy > span { color: #93a8ff; }
 .ares[data-style="modern"][data-surface="cyber"] .livingLaunchCopy > strong b { color: #0b1120; background: var(--cyber-blue); }
 .ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard > button { border-color: transparent; color: #fff; background: var(--cyber-grad); box-shadow: var(--cyber-glow); }
@@ -538,7 +545,7 @@
 }
 .ares[data-style="modern"][data-surface="cyber"] .rail > .primary:hover { background: rgba(148, 170, 220, 0.07); border-color: transparent; color: var(--text-hi); }
 /* on the sanctum Home is the place you are, so it carries the active tint */
-.ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .rail > .primary { background: rgba(91, 124, 250, 0.16); color: var(--text-hi); }
+.ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .rail > .primary { background: rgba(var(--accent-rgb), 0.16); color: var(--text-hi); }
 .ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .railNav button[data-on="1"] { background: transparent; color: rgba(229, 235, 247, 0.78); }
 .ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .railNav button[data-on="1"] > .medallion { color: rgba(190, 205, 240, 0.85); }
 .ares[data-style="modern"][data-surface="cyber"] .rail > .primary > .medallion { display: none; }
@@ -573,7 +580,7 @@
 }
 .ares[data-style="modern"][data-surface="cyber"] .railNav button > .medallion svg { width: 20px; height: 20px; }
 .ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] {
-  background: rgba(91, 124, 250, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
   border-color: transparent;
   box-shadow: none;
 }
@@ -672,7 +679,7 @@
   box-shadow: none;
 }
 .ares[data-style="modern"][data-surface="cyber"] .skillDockOrbCore { width: 12px; height: 12px; background: rgba(148, 170, 220, 0.4); }
-.ares[data-style="modern"][data-surface="cyber"] .skillDockOrb[data-state="ready"] .skillDockOrbCore { background: var(--cyber-blue); box-shadow: 0 0 10px rgba(99, 130, 255, 0.6); }
+.ares[data-style="modern"][data-surface="cyber"] .skillDockOrb[data-state="ready"] .skillDockOrbCore { background: var(--cyber-blue); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6); }
 
 /* ── composer: the reference's proportions ───────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .composerRow { width: min(900px, 86%); padding: 8px 10px 8px 10px; }
@@ -680,7 +687,7 @@
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .attach,
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .mic,
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .send { width: 40px; height: 40px; }
-.ares[data-style="modern"][data-surface="cyber"] .send:disabled { background: rgba(91, 124, 250, 0.45); color: rgba(255, 255, 255, 0.75); }
+.ares[data-style="modern"][data-surface="cyber"] .send:disabled { background: rgba(var(--accent-rgb), 0.45); color: rgba(255, 255, 255, 0.75); }
 
 /* ── hero proportions ────────────────────────────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem { width: 96px; height: 96px; }
@@ -741,3 +748,109 @@
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon > .medallion { opacity: 0.8; }
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon:hover > .medallion,
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon[data-on="1"] > .medallion { opacity: 1; }
+
+
+/* ── the point cloud ─────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .backdrop { position: fixed; inset: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .cyberField {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.9;
+  pointer-events: none;
+}
+/* the sheet is the light now; the blooms fade to a whisper behind it */
+.ares[data-style="modern"][data-surface="cyber"] .backdrop::before {
+  background-image:
+    radial-gradient(70% 60% at 8% 0%, rgba(var(--accent-rgb), 0.16), transparent 60%),
+    radial-gradient(60% 55% at 100% 100%, rgba(var(--accent-rgb), 0.12), transparent 60%),
+    linear-gradient(112deg, #0a1229 0%, #070b14 42%, #070b14 62%, #0d1530 100%);
+}
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) { background: none; }
+
+/* ── rail: line icons for the four views ─────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .railNav button > .medallion > svg { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .railNav button > .medallion {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 18px 18px;
+  opacity: 0.85;
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] > .medallion { opacity: 1; }
+.ares[data-style="modern"][data-surface="cyber"] .railNav button:nth-of-type(1) > .medallion {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dfe7ff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V16H6.5A2.5 2.5 0 0 1 4 13.5z'/%3E%3Cpath d='M8 9h8M8 12h5'/%3E%3C/svg%3E");
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button:nth-of-type(2) > .medallion {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dfe7ff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z'/%3E%3Cpath d='M12 8v5M9.5 10.5h5'/%3E%3C/svg%3E");
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button:nth-of-type(3) > .medallion {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dfe7ff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l8 4.5v9L12 21l-8-4.5v-9z'/%3E%3Cpath d='M4 7.5l8 4.5 8-4.5M12 12v9'/%3E%3C/svg%3E");
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button:nth-of-type(4) > .medallion {
+  background: var(--cyber-grad);
+  -webkit-mask: var(--cyber-mark) center / 18px 18px no-repeat;
+  mask: var(--cyber-mark) center / 18px 18px no-repeat;
+}
+
+/* ── the splash ──────────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .boot { background: #070b14; }
+.ares[data-style="modern"][data-surface="cyber"] .bootHero {
+  background:
+    radial-gradient(60% 45% at 50% 100%, rgba(var(--accent-rgb), 0.28), transparent 70%),
+    radial-gradient(50% 40% at 50% 40%, rgba(var(--accent-rgb), 0.14), transparent 70%),
+    linear-gradient(112deg, #0a1229 0%, #070b14 45%, #0d1530 100%);
+  opacity: 1;
+  filter: none;
+  animation: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .bootVignette { background: radial-gradient(120% 90% at 50% 44%, transparent 40%, rgba(7, 11, 20, 0.7) 80%); }
+.ares[data-style="modern"][data-surface="cyber"] .bootEmbers { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .bootRing { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .bootEmblem { background: none; border: none; box-shadow: none; }
+.ares[data-style="modern"][data-surface="cyber"] .bootSigil {
+  width: 104px;
+  height: 104px;
+  background: var(--cyber-grad);
+  -webkit-mask: var(--cyber-mark) center / contain no-repeat;
+  mask: var(--cyber-mark) center / contain no-repeat;
+  filter: none;
+  animation: cyberBootMark 900ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+@keyframes cyberBootMark { from { opacity: 0; transform: translateY(10px) scale(0.92); } to { opacity: 1; transform: none; } }
+.ares[data-style="modern"][data-surface="cyber"] .bootWord {
+  font: 400 40px/1 var(--display);
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: var(--text-hi);
+  text-shadow: none;
+  animation: fadeUp 600ms ease 0.25s both;
+}
+.ares[data-style="modern"][data-surface="cyber"] .bootSub {
+  font: 500 10.5px/1 var(--font);
+  letter-spacing: 0.38em;
+  text-indent: 0.38em;
+  color: rgba(190, 205, 240, 0.58);
+  font-size: 0;
+}
+.ares[data-style="modern"][data-surface="cyber"] .bootSub::before { content: "COMMAND THE MISSION."; font-size: 10.5px; }
+.ares[data-style="modern"][data-surface="cyber"] .bootBar { background: rgba(148, 170, 220, 0.14); }
+.ares[data-style="modern"][data-surface="cyber"] .bootBar i { background: var(--cyber-grad); box-shadow: none; }
+.ares[data-style="modern"][data-surface="cyber"] .bootStatus { font: 500 9px/1 var(--font); letter-spacing: 0.3em; color: rgba(190, 205, 240, 0.4); }
+
+/* ── context popover + background tab, in the room's material ────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .contextPop { background: linear-gradient(180deg, rgba(14, 21, 40, 0.98), rgba(9, 13, 26, 0.98)); border-color: rgba(148, 170, 220, 0.18); border-radius: 14px; }
+.ares[data-style="modern"][data-surface="cyber"] .contextPopSection { border-bottom-color: rgba(148, 170, 220, 0.1); }
+.ares[data-style="modern"][data-surface="cyber"] .usageMeter { background: rgba(148, 170, 220, 0.14); }
+.ares[data-style="modern"][data-surface="cyber"] .usageMeter em { background: var(--cyber-grad); }
+.ares[data-style="modern"][data-surface="cyber"] .contextMeter { background: rgba(148, 170, 220, 0.14); }
+.ares[data-style="modern"][data-surface="cyber"] .contextMeter em { background: var(--cyber-grad); }
+.ares[data-style="modern"][data-surface="cyber"] .usageCardLine,
+.ares[data-style="modern"][data-surface="cyber"] .bgCard { border-color: rgba(148, 170, 220, 0.14); background: rgba(14, 21, 40, 0.6); border-radius: 12px; }
+.ares[data-style="modern"][data-surface="cyber"] .forgeTabs { border-color: rgba(148, 170, 220, 0.16); }
+.ares[data-style="modern"][data-surface="cyber"] .forgeTabs button[data-on="1"] { background: rgba(var(--accent-rgb), 0.18); }
+
+/* off the sanctum the cloud steps back behind the work */
+.ares[data-style="modern"][data-surface="cyber"]:not(:has(.chat > .empty)) .cyberField { opacity: 0.3; }
+.ares[data-style="modern"][data-surface="cyber"] .contextPop { bottom: 46px; }

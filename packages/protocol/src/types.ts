@@ -277,6 +277,9 @@ export type TurnEvent =
       unverified?: TurnVerificationGap;
       usage: Usage;
       durationMs: number;
+      /** How full the model's window was on the last request of this turn:
+       *  the outbound prompt size against the window the engine budgets for. */
+      context?: { promptTokens: number; windowTokens: number | null };
       /** Added by Session persistence for accurate historical attribution. */
       provider?: string;
       model?: string;

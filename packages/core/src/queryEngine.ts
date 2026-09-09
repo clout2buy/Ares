@@ -1441,6 +1441,8 @@ export class QueryEngine {
   /** Did the previous tool round contain a failure? Failure recovery earns the
    *  full effort ceiling back (see tacticalReasoningLevel). */
   private lastRoundHadFailure = false;
+  /** Outbound prompt size of the most recent provider call (estimated). */
+  private lastPromptTokens = 0;
   /** Effectful engines are constructed only by a durable Session host. The
    * explicit test factory exists so unit harnesses cannot accidentally become
    * production examples of an unledgered writer. */
@@ -1917,6 +1919,10 @@ export class QueryEngine {
     event: Extract<TurnEvent, { type: "turn_end" }>,
   ): Extract<TurnEvent, { type: "turn_end" }> {
     this.markTurnTerminal();
+    if (event.context === undefined && this.lastPromptTokens > 0) {
+      const windowTokens = this.contextCeiling() ?? this.cfg.contextBudgetTokens ?? null;
+      event.context = { promptTokens: this.lastPromptTokens, windowTokens: typeof windowTokens === "number" && windowTokens > 0 ? windowTokens : null };
+    }
     return event;
   }
 
@@ -2875,6 +2881,7 @@ export class QueryEngine {
                 });
 
                 const outboundPromptTokens = overheadTokens + outboundMessages.reduce((s, m) => s + estimateMessageTokens(m), 0);
+                this.lastPromptTokens = outboundPromptTokens;
                 for await (const ev of guardStreamStalls(stream, {
                   idleMs: streamIdleMs(outboundPromptTokens),
                   activeIdleMs: streamActiveIdleMs(),

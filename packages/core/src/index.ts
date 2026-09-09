@@ -647,3 +647,4 @@ export * from "./sessionKernel/index.js";
 
 // Allocation attribution for heap-pressure artifacts (see heapSampler.ts header).
 export { HeapAllocationSampler, heapSamplerEnabled, heapSamplerIntervalBytes, summarizeSamplingProfile, type HeapAllocationSite } from "./heapSampler.js";
+export { fetchAnthropicUsage, fetchOllamaUsageAsProvider, ollamaUsageAsProvider, type ProviderUsage, type UsageWindow } from "./providers/usage.js";

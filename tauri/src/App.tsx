@@ -58,6 +58,7 @@ import {
   type FleetSummaryWire,
   type SubagentJobWire,
   type OllamaUsageView,
+  type ProviderUsageView,
 } from "./state/events";
 import {
   type ReasoningLevel,
@@ -132,6 +133,8 @@ import "./modern.css";
 import "./basic.css";
 import "./cyber.generated.css";
 import "./cyber.css";
+import { CyberField } from "./cyberField";
+import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -184,7 +187,7 @@ const SANDBOX_SEED = `<!doctype html>
 </body>
 </html>`;
 
-type ForgeTab = "preview" | "sandbox" | "holo" | "live";
+type ForgeTab = "preview" | "sandbox" | "holo" | "live" | "background";
 
 interface ForgeState {
   open: boolean;
@@ -578,6 +581,20 @@ function App() {
   });
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [ollamaUsage, setOllamaUsage] = useState<OllamaUsageState | null>(null);
+  const [aresPointMaps, setAresPointMaps] = useState<PointMapSpec[]>([]);
+  const allPointMaps = useMemo(() => {
+    const seen = new Set<string>();
+    const out: PointMapSpec[] = [];
+    for (const m of [...BUILTIN_POINT_MAPS, ...(prefs.pointMaps ?? []), ...aresPointMaps]) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push(m);
+    }
+    return out;
+  }, [prefs.pointMaps, aresPointMaps]);
+  const activePointMap = allPointMaps.find((m) => m.id === prefs.pointMap) ?? BUILTIN_POINT_MAPS[0];
+  const [providerUsage, setProviderUsage] = useState<{ providers: ProviderUsageView[]; errors: Record<string, string>; at: number } | null>(null);
+  const [contextPopOpen, setContextPopOpen] = useState(false);
   const [permissions, setPermissions] = useState<PermSettings>(DEFAULT_PERMS);
   const pushNotice = (text: string, tone: "dim" | "warn" | "bad" = "dim") => {
     setSessions((prev) => prev.map((sess, i) => (sess.id === activeRef.current || (!activeRef.current && i === 0)
@@ -755,7 +772,7 @@ function App() {
         // A background session may emit before sessions_list hydrates its rail
         // row. Adopt it as its own card; routing an unknown id into the focused
         // card is the exact cross-session bleed this registry exists to prevent.
-        const adopted = fn({ ...freshSession(), id: sessionId, title: "Background session" });
+        const adopted = fn({ ...freshSession(), id: sessionId, title: "Background session", background: true });
         return [...prev, adopted];
       }
       return prev.map((s) => (s.id === sessionId ? fn(s) : s));
@@ -1772,6 +1789,12 @@ function App() {
           }));
           return true;
         }
+        case "pointmaps":
+          setAresPointMaps(Array.isArray(e.maps) ? e.maps.map((m) => normalizePointMap(m)).filter((m): m is PointMapSpec => m !== null) : []);
+          return true;
+        case "provider_usage":
+          setProviderUsage({ providers: Array.isArray(e.providers) ? (e.providers as ProviderUsageView[]) : [], errors: e.errors ?? {}, at: Date.now() });
+          return true;
         case "ollama_usage":
           setOllamaUsage({ usage: (e.usage as OllamaUsageView | null | undefined) ?? null, error: typeof e.error === "string" ? e.error : null, at: Date.now() });
           return true;
@@ -2270,7 +2293,7 @@ function App() {
         // The sessions_list handler merges by id, so the duplicate request on a
         // fresh spawn (where daemon_ready also fires) is harmless.
         if (state.running) {
-          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage"]) {
+          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -3080,7 +3103,8 @@ function App() {
 
   // ── rail: search, pins, and the artifact vault ───────────────────────────
   const q = sessionQuery.trim().toLowerCase();
-  const visibleSessions = q ? sessions.filter((s) => s.title.toLowerCase().includes(q)) : sessions;
+  const railSessions = sessions.filter((s) => !s.background || s.id === active?.id);
+  const visibleSessions = q ? railSessions.filter((s) => s.title.toLowerCase().includes(q)) : railSessions;
   const pinnedSessions = visibleSessions.filter((s) => prefs.pinned.includes(s.id));
   const unpinnedSessions = visibleSessions.filter((s) => !prefs.pinned.includes(s.id));
   // ── projects: named, collapsible session groups (client-side, like pins) ──
@@ -3361,7 +3385,7 @@ function App() {
           setSettingsOpen(true);
         }}
       />
-      <Backdrop />
+      <Backdrop pointMap={prefs.surface === "cyber" && !prefs.pointMapOff ? activePointMap : null} />
       <div className="embers" aria-hidden="true" />
       <div className="workGlow" aria-hidden="true" />
       <ScreenFlame />
@@ -3582,7 +3606,18 @@ function App() {
         </button>
 
         <nav className="railNav">
-          <button data-on={view === "chat" ? "1" : "0"} onClick={() => setView("chat")}>
+          <button
+            data-on={view === "chat" ? "1" : "0"}
+            onClick={() => {
+              setView("chat");
+              // On the sanctum (an empty session) "Sessions" means the latest
+              // real conversation, otherwise the click did nothing visible.
+              if (prefs.surface === "cyber" && active && active.items.length === 0) {
+                const latest = sessions.find((s) => s.id !== active.id && s.items.length > 0) ?? sessions.find((s) => s.id !== active.id);
+                if (latest) openSession(latest.id);
+              }
+            }}
+          >
             <Medallion glyph="sessions" /><i className="glyph" data-glyph="task" /> Sessions
           </button>
           <button
@@ -4041,6 +4076,27 @@ function App() {
               <b>model</b><span>{liveModel}</span>
               {prefs.routingMode === "auto" ? <em className="segAuto">auto</em> : null}
             </button>
+            <button
+              className="statusSeg contextSeg"
+              data-seg="context"
+              data-tone={contextTone(active?.contextPromptTokens, active?.contextWindowTokens)}
+              onClick={() => { setContextPopOpen((v) => !v); daemonCmd({ type: "provider_usage" }); }}
+              title="Context window fill and your plan's usage limits"
+            >
+              <b>context</b>
+              <span>{contextLabel(active?.contextPromptTokens, active?.contextWindowTokens)}</span>
+              <i className="contextMeter" aria-hidden="true"><em style={{ width: `${Math.round(contextFraction(active?.contextPromptTokens, active?.contextWindowTokens) * 100)}%` }} /></i>
+            </button>
+            {contextPopOpen ? (
+              <ContextPopover
+                promptTokens={active?.contextPromptTokens}
+                windowTokens={active?.contextWindowTokens}
+                usage={providerUsage}
+                onRefresh={() => daemonCmd({ type: "provider_usage", force: true })}
+                onClose={() => setContextPopOpen(false)}
+                onDetails={() => { setContextPopOpen(false); setSettingsOpen(true); setSettingsTab("usage"); }}
+              />
+            ) : null}
             <button className="statusSeg effortStatus" data-seg="effort" onClick={() => setReasoningOpen(true)} title="Set the active model's native reasoning effort">
               <b>effort</b><span>{EFFORT_META[effectiveEffort(prefs.provider, prefs.model, prefs.reasoning)].label.toLowerCase()}</span>
             </button>
@@ -4132,6 +4188,10 @@ function App() {
           <div className="forgeGrip" onPointerDown={onForgeGrip} />
           <header>
             <strong>THE FORGE</strong>
+            <div className="forgeTabs" role="tablist">
+              <button role="tab" data-on={forge.tab !== "background" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: f.artifact ? "preview" : liveTarget ? "live" : "preview" }))}>Preview</button>
+              <button role="tab" data-on={forge.tab === "background" ? "1" : "0"} onClick={() => { setForge((f) => ({ ...f, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); }}>Background</button>
+            </div>
             <span className="forgeSurfaceState" data-live={forge.tab === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"}>
               {forge.tab === "live" ? (embeddedActive ? "interactive canvas" : liveTarget ? "browser canvas" : "canvas ready") : forge.tab === "holo" ? "spatial artifact" : forge.artifact ? forge.artifact.label : "artifact canvas"}
             </span>
@@ -4140,6 +4200,21 @@ function App() {
             </button>
           </header>
 
+          {forge.tab === "background" ? (
+            <ForgeBackgroundPanel
+              jobs={active ? bgJobs[active.id] ?? [] : []}
+              agents={subagentJobs}
+              opStatus={opStatus}
+              recovery={active?.pendingRecovery ?? null}
+              recoveryMode={recoveryMode}
+              onStop={(id) => daemonCmd({ type: "background_stop", id, sessionId: active?.id })}
+              onStopAgent={(jobId) => daemonCmd({ type: "interrupt", sessionId: jobId })}
+              onResume={() => active && daemonCmd({ type: "startup_recovery_resume", sessionId: active.id })}
+              onDiscard={() => active && daemonCmd({ type: "startup_recovery_discard", sessionId: active.id })}
+              onHalt={() => daemonCmd({ type: "operator_control", action: "halt" })}
+              onRefresh={() => { daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); }}
+            />
+          ) : null}
           {forge.tab === "preview" ? (
             forge.artifact ? (
               <div className="forgeBody">
@@ -4258,6 +4333,10 @@ function App() {
           plugins={pluginsVm}
           mind={mindVm}
           usage={usageStats}
+          pointMaps={allPointMaps}
+          onDeletePointMap={(id) => { const mine = (prefs.pointMaps ?? []).some((m) => m.id === id); if (mine) { const next = { ...prefs, pointMaps: (prefs.pointMaps ?? []).filter((m) => m.id !== id) }; setPrefs(next); savePrefs(next); } else daemonCmd({ type: "pointmap_delete", id }); }}
+          providerUsage={providerUsage}
+          anthropicSignedIn={Boolean(keyStatus["anthropic"])}
           ollamaUsage={ollamaUsage}
           keyStatus={keyStatus}
           gatewayAccount={gatewayAccount}
@@ -5832,7 +5911,7 @@ function HelmModern({
   const connected = services.filter((s) => keyStatus[s.id]).length;
   const freshIn = Math.max(0, (usage?.tokensIn ?? 0) - (usage?.cacheReadTokens ?? 0));
   const reusedPct = usage && usage.tokensIn > 0 ? Math.round((usage.cacheReadTokens / usage.tokensIn) * 100) : 0;
-  const recent = sessions.filter((s) => s.loaded !== false || s.items.length > 0).slice(0, 5);
+  const recent = sessions.filter((s) => !s.background && (s.loaded !== false || s.items.length > 0)).slice(0, 5);
 
   // Live workers for the Fleets tab badge: running fleet agents + running
   // background Task subagents.
@@ -6725,7 +6804,7 @@ function HelmView({
   const activeGoals = goals.filter((g) => g.status === "active");
   const wonGoals = goals.filter((g) => g.status === "completed" || g.status === "done");
   const todos = active?.todos ?? [];
-  const recentSessions = sessions.filter((s) => s.loaded !== false || s.items.length > 0).slice(0, 6);
+  const recentSessions = sessions.filter((s) => !s.background && (s.loaded !== false || s.items.length > 0)).slice(0, 6);
   const services = [
     { id: "anthropic", label: "Anthropic" }, { id: "openrouter", label: "OpenRouter" },
     { id: "deepseek", label: "DeepSeek" }, { id: "ollama", label: "Ollama" }, { id: "brave", label: "Brave" },
@@ -9017,9 +9096,10 @@ function ToolStepRow({ step, technical }: { step: ToolStep; technical?: boolean 
  *  a slow astrolabe of concentric rings + tick marks, the great helm at the
  *  edge of vision, crossed spears, and a drifting depth field. Pure SVG/CSS,
  *  GPU-cheap, sits behind everything at low opacity. */
-function Backdrop() {
+function Backdrop({ pointMap }: { pointMap: PointMapSpec | null }) {
   return (
     <div className="backdrop" aria-hidden="true">
+      {pointMap ? <CyberField spec={pointMap} /> : null}
       <svg className="astrolabe" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice">
         <defs>
           <radialGradient id="agrad" cx="50%" cy="50%" r="50%">
@@ -9986,27 +10066,212 @@ function MindPane({
   );
 }
 
+
+function contextFraction(prompt?: number, window?: number | null): number {
+  if (!prompt || !window || window <= 0) return 0;
+  return Math.min(1, prompt / window);
+}
+function contextLabel(prompt?: number, window?: number | null): string {
+  if (!prompt) return "fresh";
+  if (!window) return fmtTokens(prompt);
+  return `${Math.round((prompt / window) * 100)}%`;
+}
+function contextTone(prompt?: number, window?: number | null): string {
+  const f = contextFraction(prompt, window);
+  return f >= 0.9 ? "bad" : f >= 0.7 ? "warn" : "ok";
+}
+function resetsIn(iso?: string): string {
+  if (!iso) return "";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "resets now";
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  if (h >= 48) {
+    const d = new Date(iso);
+    return `Resets ${d.toLocaleDateString(undefined, { weekday: "short" })} ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }
+  return `Resets in ${h > 0 ? `${h} hr ` : ""}${m} min`;
+}
+
+/** One provider's rolling limits as rows: label · resets · percent, with a bar. */
+function UsageRows({ usage, dense }: { usage: ProviderUsageView; dense?: boolean }) {
+  return (
+    <div className="usageRows" data-dense={dense ? "1" : "0"}>
+      {usage.windows.map((w) => (
+        <div className="usageRowLine" key={w.label} data-tone={w.utilization >= 0.9 ? "bad" : w.utilization >= 0.7 ? "warn" : "ok"}>
+          <div className="usageRowHead">
+            <strong>{w.label}</strong>
+            <span>{resetsIn(w.resetsAt)}</span>
+            <b>{Math.round(w.utilization * 100)}%</b>
+          </div>
+          <i className="usageMeter"><em style={{ width: `${Math.round(w.utilization * 100)}%` }} /></i>
+        </div>
+      ))}
+      {usage.extra ? <div className="usageExtraLine">{usage.extra.currency === "USD" || !usage.extra.currency ? "$" : `${usage.extra.currency} `}{usage.extra.cost.toFixed(2)} {usage.extra.note ?? "extra"}</div> : null}
+      {usage.models?.length ? (
+        <div className="usageModelsLine">
+          {usage.models.slice(0, dense ? 3 : 6).map((m) => <span key={m.name}>{m.name} <em>{m.requestCount.toLocaleString()}</em></span>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProviderUsageCard({ usage, error, onRefresh }: { usage: ProviderUsageView | null; error: string | null; onRefresh: () => void }) {
+  if (!usage) return <div className="usageCardLine muted">{error ? `Usage unavailable — ${error}` : "Loading usage…"}<button className="usageRefreshBtn" onClick={onRefresh}>↻</button></div>;
+  return (
+    <div className="usageCardLine" title={`From ${usage.source} · ${new Date(usage.fetchedAt).toLocaleTimeString()}`}>
+      <div className="usageCardHead">
+        <span>{usage.plan ? `${usage.label} · ${usage.plan}` : usage.label}</span>
+        {error ? <em className="muted">stale — {error}</em> : null}
+        <button className="usageRefreshBtn" onClick={onRefresh} title="Refresh">↻</button>
+      </div>
+      <UsageRows usage={usage} />
+    </div>
+  );
+}
+
+/** The Claude-Desktop-style card: context fill first, then every linked
+ *  provider's plan limits, then the door to the full Usage pane. */
+function ContextPopover({ promptTokens, windowTokens, usage, onRefresh, onClose, onDetails }: {
+  promptTokens?: number;
+  windowTokens?: number | null;
+  usage: { providers: ProviderUsageView[]; errors: Record<string, string>; at: number } | null;
+  onRefresh: () => void;
+  onClose: () => void;
+  onDetails: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const onDown = (ev: MouseEvent) => { if (ref.current && !ref.current.contains(ev.target as Node)) onClose(); };
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") onClose(); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [onClose]);
+  const frac = contextFraction(promptTokens, windowTokens);
+  const providers = usage?.providers ?? [];
+  const errors = usage?.errors ?? {};
+  return (
+    <div className="contextPop" ref={ref} role="dialog" aria-label="Context and usage">
+      <div className="contextPopSection">
+        <div className="usageRowHead">
+          <strong>Context window</strong>
+          <b>{promptTokens ? `${fmtTokens(promptTokens)} / ${windowTokens ? fmtTokens(windowTokens) : "?"} (${Math.round(frac * 100)}%)` : "nothing sent yet"}</b>
+        </div>
+        <i className="usageMeter" data-tone={contextTone(promptTokens, windowTokens)}><em style={{ width: `${Math.round(frac * 100)}%` }} /></i>
+        <p className="contextPopHint">The prompt Ares sent on the last request, against the window it budgets for this model. Compaction trims history as it fills.</p>
+      </div>
+      {providers.length === 0 ? (
+        <div className="contextPopSection">
+          <div className="usageRowHead"><strong>Plan usage limits</strong><button className="usageRefreshBtn" onClick={onRefresh}>↻</button></div>
+          <p className="contextPopHint">{Object.keys(errors).length ? Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ") : usage ? "No linked provider reports plan limits. Sign in to Claude or add an Ollama Cloud key to see them here." : "Loading…"}</p>
+        </div>
+      ) : providers.map((u) => (
+        <div className="contextPopSection" key={u.provider}>
+          <div className="usageRowHead">
+            <strong>{u.label}{u.plan ? ` · ${u.plan}` : ""}</strong>
+            {errors[u.provider] ? <span className="muted">stale</span> : null}
+            <button className="usageRefreshBtn" onClick={onRefresh} title="Refresh">↻</button>
+          </div>
+          <UsageRows usage={u} dense />
+        </div>
+      ))}
+      <button className="contextPopMore" onClick={onDetails}>See detailed breakdown</button>
+    </div>
+  );
+}
+
+/** What is running behind the chat, so a restart never hides a loop. */
+function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, onStop, onStopAgent, onResume, onDiscard, onHalt, onRefresh }: {
+  jobs: BackgroundJobVm[];
+  agents: SubagentJobWire[];
+  opStatus: { activeCount?: number; halted?: boolean; running?: boolean } | null;
+  recovery: { count: number; previews: Array<{ inputId: string; goal: string }> } | null;
+  recoveryMode: { mode: "ask" | "auto" | "never"; pinnedByEnv: boolean };
+  onStop: (id: string) => void;
+  onStopAgent: (jobId: string) => void;
+  onResume: () => void;
+  onDiscard: () => void;
+  onHalt: () => void;
+  onRefresh: () => void;
+}) {
+  const live = agents.filter((a) => /run|active|working|pending|queued/i.test(a.status));
+  const done = agents.filter((a) => !live.includes(a)).slice(0, 8);
+  const running = jobs.filter((j) => j.status === "running");
+  return (
+    <div className="forgeBody bgPanel">
+      <div className="bgPanelHead">
+        <strong>Background</strong>
+        <span>{live.length} agent{live.length === 1 ? "" : "s"} · {running.length} process{running.length === 1 ? "" : "es"}</span>
+        <button className="ghost" onClick={onRefresh}>Refresh</button>
+      </div>
+      {recovery ? (
+        <div className="bgCard" data-tone="warn">
+          <div className="bgCardBody">
+            <strong>Unfinished from last time</strong>
+            <span>{recovery.previews[0]?.goal ? `“${compact(recovery.previews[0].goal, 160)}”` : "a pending request"}{recovery.count > 1 ? ` and ${recovery.count - 1} more` : ""} — found, not run.</span>
+          </div>
+          <div className="bgCardActions">
+            <button className="btn primary" onClick={onResume}>Resume</button>
+            <button className="btn ghost" onClick={onDiscard}>Discard</button>
+          </div>
+        </div>
+      ) : null}
+      <div className="bgNote">On restart Ares {recoveryMode.mode === "auto" ? "resumes unfinished work automatically" : recoveryMode.mode === "never" ? "discards unfinished work" : "asks before resuming unfinished work"}{recoveryMode.pinnedByEnv ? " (pinned by ARES_STARTUP_RECOVERY)" : ""}. Change it in Settings → Starting up.</div>
+      {opStatus && (opStatus.activeCount || opStatus.running) ? (
+        <div className="bgCard">
+          <div className="bgCardBody"><strong>Operator loop</strong><span>{opStatus.activeCount ?? 0} active mission{(opStatus.activeCount ?? 0) === 1 ? "" : "s"}{opStatus.halted ? " · halted" : " · running unattended"}</span></div>
+          {!opStatus.halted ? <div className="bgCardActions"><button className="btn ghost" onClick={onHalt}>Halt</button></div> : null}
+        </div>
+      ) : null}
+      <div className="bgSection">Agents</div>
+      {live.length === 0 ? <div className="bgEmpty">No agents working right now.</div> : live.map((a) => (
+        <div className="bgCard" key={a.jobId} data-live="1">
+          <div className="bgCardBody">
+            <strong>{a.description || a.kind || a.jobId}</strong>
+            <span>{a.status}{a.startedAt ? ` · since ${new Date(a.startedAt).toLocaleTimeString()}` : ""}</span>
+          </div>
+          <div className="bgCardActions"><button className="btn ghost" onClick={() => onStopAgent(a.jobId)}>Stop</button></div>
+        </div>
+      ))}
+      {done.length ? <div className="bgDone">{done.map((a) => <span key={a.jobId}>{a.description || a.kind || a.jobId} <em>{a.status}</em></span>)}</div> : null}
+      <div className="bgSection">Processes</div>
+      {jobs.length === 0 ? <div className="bgEmpty">No background processes for this session.</div> : jobs.map((j) => (
+        <div className="bgCard" key={j.id} data-live={j.status === "running" ? "1" : "0"}>
+          <div className="bgCardBody">
+            <strong>{j.description || j.command}</strong>
+            <span>{j.status}{j.suspended ? " · suspended" : ""}{j.cwd ? ` · ${compact(j.cwd, 48)}` : ""}</span>
+          </div>
+          {j.status === "running" ? <div className="bgCardActions"><button className="btn ghost" onClick={() => onStop(j.id)}>Stop</button></div> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 type OllamaUsageState = { usage: OllamaUsageView | null; error: string | null; at: number };
 
 /** Ollama Cloud account usage for the pasted key: session + weekly limit
  *  bars, top models this week, billed extra over four weeks. */
 function OllamaUsageLine({ state, onRefresh, detailed }: { state: OllamaUsageState | null; onRefresh?: () => void; detailed?: boolean }) {
-  if (!state) return <div className="usageLine muted">Loading usage…</div>;
+  if (!state) return <div className="ollUsage muted">Loading usage…</div>;
   const u = state.usage;
-  if (!u) return <div className="usageLine muted">Usage unavailable{state.error ? ` — ${state.error}` : ""}{onRefresh ? <button className="usageRefresh" onClick={onRefresh}>retry</button> : null}</div>;
+  if (!u) return <div className="ollUsage muted">Usage unavailable{state.error ? ` — ${state.error}` : ""}{onRefresh ? <button className="ollUsageRefresh" onClick={onRefresh}>retry</button> : null}</div>;
   const pct = (v: number) => `${Math.round(v * 1000) / 10}%`;
   const tone = (v: number) => (v >= 0.9 ? "bad" : v >= 0.7 ? "warn" : "ok");
   const top = u.weekly.models.slice(0, detailed ? 5 : 3);
   return (
-    <div className="usageLine" title={`Fetched ${new Date(u.fetchedAt).toLocaleTimeString()} from ollama.com`}>
-      <div className="usageBars">
-        <span className="usageBar" data-tone={tone(u.session.usage)}><i style={{ width: pct(u.session.usage) }} /><b>session {pct(u.session.usage)}</b></span>
-        <span className="usageBar" data-tone={tone(u.weekly.usage)}><i style={{ width: pct(u.weekly.usage) }} /><b>week {pct(u.weekly.usage)}</b></span>
-        {u.extra.cost > 0 ? <span className="usageExtra">+${u.extra.cost.toFixed(2)} billed · 4 wks</span> : null}
-        {onRefresh ? <button className="usageRefresh" onClick={onRefresh} title="Refresh from ollama.com">↻</button> : null}
+    <div className="ollUsage" title={`Fetched ${new Date(u.fetchedAt).toLocaleTimeString()} from ollama.com`}>
+      <div className="ollUsageBars">
+        <span className="ollUsageBar" data-tone={tone(u.session.usage)}><i style={{ width: pct(u.session.usage) }} /><b>session {pct(u.session.usage)}</b></span>
+        <span className="ollUsageBar" data-tone={tone(u.weekly.usage)}><i style={{ width: pct(u.weekly.usage) }} /><b>week {pct(u.weekly.usage)}</b></span>
+        {u.extra.cost > 0 ? <span className="ollUsageExtra">+${u.extra.cost.toFixed(2)} billed · 4 wks</span> : null}
+        {onRefresh ? <button className="ollUsageRefresh" onClick={onRefresh} title="Refresh from ollama.com">↻</button> : null}
       </div>
       {top.length ? (
-        <div className="usageModels">
+        <div className="ollUsageModels">
           {top.map((m) => <span key={m.name}>{m.name} <em>{m.requestCount.toLocaleString()}</em></span>)}
           {state.error ? <span className="muted">stale — {state.error}</span> : null}
         </div>
@@ -10026,6 +10291,10 @@ function Settings({
   plugins,
   mind,
   usage,
+  pointMaps,
+  onDeletePointMap,
+  providerUsage,
+  anthropicSignedIn,
   ollamaUsage,
   keyStatus,
   gatewayAccount,
@@ -10058,6 +10327,10 @@ function Settings({
   plugins: PluginsVm | null;
   mind: MindOverviewVm | null;
   usage: UsageStats | null;
+  pointMaps: PointMapSpec[];
+  onDeletePointMap: (id: string) => void;
+  providerUsage?: { providers: ProviderUsageView[]; errors: Record<string, string>; at: number } | null;
+  anthropicSignedIn?: boolean;
   ollamaUsage?: OllamaUsageState | null;
   keyStatus: Record<string, boolean>;
   gatewayAccount: GatewayAccountVm | null;
@@ -10275,6 +10548,27 @@ function Settings({
                   </button>
                 ))}
               </div>
+              {draft.surface === "cyber" ? (
+                <>
+                  <label className="fieldLabel">Point map</label>
+                  <p className="paneHint">The GPU point cloud behind the room. Pick one, switch it off, or ask Ares for a new one — “design me a point map called Aurora, calm and wide” — and it lands in this list.</p>
+                  <div className="pointMapRow">
+                    <button className="pointMapCard" data-on={draft.pointMapOff ? "1" : "0"} onClick={() => { const next = { ...draft, pointMapOff: !draft.pointMapOff }; setDraftPrefs(next); onLivePref({ pointMapOff: next.pointMapOff }); }}>
+                      <span className="pointMapPreview" data-kind="off" aria-hidden="true" />
+                      <strong>Off</strong>
+                      <em>Just the room, no cloud</em>
+                    </button>
+                    {pointMaps.map((m) => (
+                      <button key={m.id} className="pointMapCard" data-on={!draft.pointMapOff && (draft.pointMap ?? "nebula") === m.id ? "1" : "0"} onClick={() => { const next = { ...draft, pointMap: m.id, pointMapOff: false }; setDraftPrefs(next); onLivePref({ pointMap: m.id, pointMapOff: false }); }} title={m.note ?? m.name}>
+                        <span className="pointMapPreview" data-kind={m.kind} aria-hidden="true" />
+                        <strong>{m.name}{m.by === "ares" ? <i className="pointMapBy">Ares</i> : m.by === "owner" ? <i className="pointMapBy">you</i> : null}</strong>
+                        <em>{m.note ?? m.kind}</em>
+                        {m.by !== "builtin" ? <b className="pointMapDel" role="button" title="Delete this map" onClick={(ev) => { ev.stopPropagation(); onDeletePointMap(m.id); }}>✕</b> : null}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
               <label className="fieldLabel">Tool call display</label>
               <div className="displayModes">
                 <button data-on={draft.toolDisplay === "product" ? "1" : "0"} onClick={() => setDraftPrefs({ ...draft, toolDisplay: "product" })}>
@@ -10465,7 +10759,8 @@ function Settings({
                       </div>
                       <input className="keyInput" value={keys[kp.id] ?? ""} type="password" placeholder={on ? "•••••••• saved — paste to replace" : kp.placeholder} onChange={(e) => setKeys({ ...keys, [kp.id]: e.target.value })} />
                       <em className="keySub">{kp.sub}</em>
-                      {kp.id === "ollama" && on ? <OllamaUsageLine state={ollamaUsage ?? null} onRefresh={() => onDaemonCommand({ type: "ollama_usage", force: true })} detailed /> : null}
+                      {kp.id === "ollama" && on ? <ProviderUsageCard usage={(providerUsage?.providers ?? []).find((u) => u.provider === "ollama") ?? null} error={providerUsage?.errors?.ollama ?? null} onRefresh={() => onDaemonCommand({ type: "provider_usage", force: true })} /> : null}
+                      {kp.id === "anthropic" && (on || anthropicSignedIn) ? <ProviderUsageCard usage={(providerUsage?.providers ?? []).find((u) => u.provider === "anthropic") ?? null} error={providerUsage?.errors?.anthropic ?? null} onRefresh={() => onDaemonCommand({ type: "provider_usage", force: true })} /> : null}
                     </div>
                     {on ? (
                       <button className="keyClearBtn" title="Remove this key" onClick={() => onDaemonCommand({ type: "provider_key", provider: kp.id, key: "" })}>✕</button>

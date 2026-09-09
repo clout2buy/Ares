@@ -139,6 +139,9 @@ export interface UiSettings {
    * ARES_STARTUP_RECOVERY overrides.
    */
   startupRecovery?: "ask" | "auto" | "never";
+  /** Point maps for the Cyber backdrop, saved by the owner (Settings) or by
+   *  Ares (its PointMap tool). Validated again in the desktop before use. */
+  pointMaps?: Array<Record<string, unknown>>;
 }
 
 /** Advanced run-tuning knobs. All optional; absent → engine defaults. */

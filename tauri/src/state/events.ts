@@ -145,6 +145,9 @@ export interface AresEvent {
   sessionId?: string;
   hasKey?: boolean;
   keyStatus?: Record<string, boolean>;
+  maps?: unknown;
+  context?: { promptTokens?: number; windowTokens?: number | null };
+  errors?: Record<string, string>;
   permissions?: Partial<PermSettings>;
   engine?: EngineConfig;
   // anthropic oauth
@@ -371,4 +374,16 @@ export interface OllamaUsageView {
   session: { usage: number; models: Array<{ name: string; requestCount: number }> };
   weekly: { usage: number; models: Array<{ name: string; requestCount: number }> };
   extra: { cost: number; periodType: string; startingAt?: string; endingAt?: string; models: Array<{ name: string; requestCount: number; cost?: number }> };
+}
+
+/** Mirror of @ares/core ProviderUsage on the wire. */
+export interface ProviderUsageView {
+  provider: string;
+  label: string;
+  plan?: string;
+  windows: Array<{ label: string; utilization: number; resetsAt?: string }>;
+  extra?: { cost: number; currency?: string; note?: string };
+  models?: Array<{ name: string; requestCount: number }>;
+  fetchedAt: string;
+  source: string;
 }

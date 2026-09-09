@@ -2257,7 +2257,8 @@ html[data-perf="lite"] .ares[data-style="modern"][data-surface="cyber"] .compose
   top: 4px;
   bottom: 4px;
   left: 4px;
-  width: calc(50% - 4px);
+  /* four tabs now: Overview · Agents · Fleets · Mind */
+  width: calc(25% - 2px);
   border-radius: calc(var(--r-md) - 5px);
   background: linear-gradient(180deg, rgba(236, 241, 255, 0.1), rgba(236, 241, 255, 0.03));
   border: 1px solid rgba(148, 170, 220, 0.3);
@@ -2265,6 +2266,8 @@ html[data-perf="lite"] .ares[data-style="modern"][data-surface="cyber"] .compose
   transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 .ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="agents"] { transform: translateX(100%); }
+.ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="fleets"] { transform: translateX(200%); }
+.ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="mind"] { transform: translateX(300%); }
 
 .ares[data-style="modern"][data-surface="cyber"] .hmPane { animation: hmPaneIn 260ms cubic-bezier(0.32, 0.72, 0, 1) both; }
 @keyframes hmPaneIn {

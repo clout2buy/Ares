@@ -3215,7 +3215,17 @@ export async function renameSession(workspace: string, sessionId: string, label:
   }
   if (kernel?.isSessionTombstoned(sessionId)) return false;
   const meta = await readSessionMeta(sessionDir);
-  if (!meta) return false;
+  // A session that has not had a turn yet has no kernel row and no sidecar.
+  // Renaming it used to fail here, the rail reverted the title, and the owner
+  // read it as "renamed the wrong session". Materialise the sidecar instead:
+  // the first turn merges into it, and the label survives a restart.
+  if (!meta) {
+    if (!trimmed) return false;
+    const fresh: SessionMeta = { id: sessionId, workspace, provider: { name: "unknown", model: "unknown" }, createdAt: new Date().toISOString(), label: trimmed };
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, "meta.json"), JSON.stringify(fresh, null, 2) + "\n", "utf8");
+    return true;
+  }
   const next: SessionMeta = { ...meta };
   if (trimmed) next.label = trimmed;
   else delete next.label;

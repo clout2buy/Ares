@@ -56,6 +56,11 @@ export interface Prefs {
    *  "new" was the old DEFAULT (not a choice), so it migrates to "modern"
    *  once; explicit re-picks of Forged after that stick. */
   uiStyleV2?: boolean;
+  /** Cyber backdrop: which point map paints the room, whether it paints at
+   *  all, and the owner's own saved maps (Ares's arrive from the daemon). */
+  pointMap?: string;
+  pointMapOff?: boolean;
+  pointMaps?: PointMapSpec[];
   /** Advanced engine knobs (mirrors the daemon's EngineConfig). */
   engine: EngineConfig;
   /** Voice: speak Ares's replies aloud via the local sidecar (Kokoro TTS). */
@@ -73,6 +78,8 @@ export interface Prefs {
   /** Last-used models (newest first, max 6), as "provider/model" keys. */
   recentModels?: string[];
 }
+
+import { normalizePointMap, type PointMapSpec } from "../pointMaps";
 
 export type ThemeName =
   | "rage" | "bronze" | "crimson" | "steel" | "nightfall" | "verdant" | "daylight"
@@ -264,6 +271,9 @@ export function loadPrefs(): Prefs {
       // These MUST round-trip: the returned literal is the whole Prefs from
       // here on, so any stored key omitted here is erased by the next
       // savePrefs. Dropping them lost every star/recent on each launch.
+      pointMap: typeof raw.pointMap === "string" ? raw.pointMap : undefined,
+      pointMapOff: raw.pointMapOff === true,
+      pointMaps: Array.isArray(raw.pointMaps) ? raw.pointMaps.map((m) => normalizePointMap(m)).filter((m): m is PointMapSpec => m !== null) : undefined,
       favoriteModels: Array.isArray(raw.favoriteModels)
         ? raw.favoriteModels.filter((m): m is string => typeof m === "string")
         : undefined,

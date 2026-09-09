@@ -727,7 +727,8 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // Startup recovery (ask-first): open a session to surface unfinished work,
     // Resume / Discard it, read or set the mode. Ollama Cloud account usage.
     "session_open", "startup_recovery_resume", "startup_recovery_discard",
-    "startup_recovery_mode", "ollama_usage",
+    "startup_recovery_mode", "ollama_usage", "provider_usage",
+    "pointmaps_list", "pointmap_delete",
     // Agent visibility: HELM's fleet history + durable background subagents.
     "fleets_list", "subagents_list",
     // The owner's memory surface: read what Ares believes, correct or delete

@@ -560,19 +560,19 @@
 .settingsSelect { width: 100%; max-width: 520px; padding: 8px 10px; border-radius: 6px; background: var(--panel, #16171a); color: inherit; border: 1px solid var(--rule, #2a2b30); margin-bottom: 18px; }
 
 /* Ollama Cloud account usage (session / weekly limit bars). */
-.usageLine { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
-.usageLine.muted { color: var(--muted, #8a8f98); }
-.usageBars { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.usageBar { position: relative; display: inline-flex; align-items: center; min-width: 140px; height: 18px; border-radius: 4px; background: color-mix(in srgb, var(--rule, #2a2b30) 70%, transparent); overflow: hidden; }
-.usageBar i { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent, #8a8f98) 45%, transparent); }
-.usageBar[data-tone="warn"] i { background: color-mix(in srgb, #d9a03c 55%, transparent); }
-.usageBar[data-tone="bad"] i { background: color-mix(in srgb, #d24d4d 60%, transparent); }
-.usageBar b { position: relative; padding: 0 8px; font-weight: 600; white-space: nowrap; }
-.usageExtra { color: var(--muted, #8a8f98); white-space: nowrap; }
-.usageRefresh { border: 0; background: transparent; color: var(--muted, #8a8f98); cursor: pointer; padding: 0 4px; font-size: 12px; }
-.usageRefresh:hover { color: inherit; }
-.usageModels { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted, #8a8f98); }
-.usageModels em { font-style: normal; color: inherit; opacity: 0.8; }
+.ollUsage { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+.ollUsage.muted { color: var(--muted, #8a8f98); }
+.ollUsageBars { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ollUsageBar { position: relative; display: inline-flex; align-items: center; min-width: 140px; height: 18px; border-radius: 4px; background: color-mix(in srgb, var(--rule, #2a2b30) 70%, transparent); overflow: hidden; }
+.ollUsageBar i { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent, #8a8f98) 45%, transparent); }
+.ollUsageBar[data-tone="warn"] i { background: color-mix(in srgb, #d9a03c 55%, transparent); }
+.ollUsageBar[data-tone="bad"] i { background: color-mix(in srgb, #d24d4d 60%, transparent); }
+.ollUsageBar b { position: relative; padding: 0 8px; font-weight: 600; white-space: nowrap; }
+.ollUsageExtra { color: var(--muted, #8a8f98); white-space: nowrap; }
+.ollUsageRefresh { border: 0; background: transparent; color: var(--muted, #8a8f98); cursor: pointer; padding: 0 4px; font-size: 12px; }
+.ollUsageRefresh:hover { color: inherit; }
+.ollUsageModels { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted, #8a8f98); }
+.ollUsageModels em { font-style: normal; color: inherit; opacity: 0.8; }
 
 /* The starter cards' second line is a Cyber affordance; the other surfaces keep
    their one-line pills. */
@@ -584,3 +584,103 @@
 .railMemory { display: none; }
 
 .cyberHome { display: none; }
+
+
+/* ── usage rows (shared by the context popover and the Keys cards) ───────── */
+.usageRows { display: flex; flex-direction: column; gap: 10px; }
+.usageRows[data-dense="1"] { gap: 8px; }
+.usageRowLine { display: flex; flex-direction: column; gap: 5px; }
+.usageRowHead { display: flex; align-items: baseline; gap: 10px; font-size: 12.5px; }
+.usageRowHead strong { font-weight: 600; color: var(--text); }
+.usageRowHead span { margin-left: auto; font-size: 11.5px; color: var(--muted, #8a8f98); }
+.usageRowHead b { font-weight: 600; min-width: 36px; text-align: right; color: var(--text); }
+.usageMeter { position: relative; display: block; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--rule, #2a2b30) 80%, transparent); overflow: hidden; }
+.usageMeter em { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--accent, #5b7cfa); }
+.usageRowLine[data-tone="warn"] .usageMeter em, .usageMeter[data-tone="warn"] em { background: #d9a03c; }
+.usageRowLine[data-tone="bad"] .usageMeter em, .usageMeter[data-tone="bad"] em { background: #d24d4d; }
+.usageExtraLine { font-size: 11.5px; color: var(--muted, #8a8f98); }
+.usageModelsLine { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 11.5px; color: var(--muted, #8a8f98); }
+.usageModelsLine em { font-style: normal; opacity: 0.8; }
+.usageCardLine { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid var(--rule, #2a2b30); border-radius: 10px; background: color-mix(in srgb, var(--panel, #16171a) 60%, transparent); font-size: 12px; }
+.usageCardLine.muted { flex-direction: row; align-items: center; gap: 8px; color: var(--muted, #8a8f98); }
+.usageCardHead { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted, #8a8f98); }
+.usageCardHead > span { font-weight: 600; color: var(--text); }
+.usageRefreshBtn { margin-left: auto; border: 0; background: transparent; color: var(--muted, #8a8f98); cursor: pointer; font-size: 13px; padding: 0 4px; }
+.usageRefreshBtn:hover { color: var(--text); }
+.ollUsage { display: none; }
+
+/* ── the context segment + popover ──────────────────────────────────────── */
+.contextSeg { position: relative; }
+.contextMeter { position: absolute; left: 12px; right: 12px; bottom: 5px; height: 2px; border-radius: 999px; background: color-mix(in srgb, var(--rule, #2a2b30) 90%, transparent); overflow: hidden; }
+.contextMeter em { position: absolute; inset: 0 auto 0 0; background: var(--accent, #5b7cfa); border-radius: 999px; }
+.contextSeg[data-tone="warn"] .contextMeter em { background: #d9a03c; }
+.contextSeg[data-tone="bad"] .contextMeter em { background: #d24d4d; }
+.contextPop {
+  /* fixed: the status bar clips its overflow, so an absolute child never shows */
+  position: fixed;
+  bottom: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: 360px;
+  max-width: calc(100vw - 40px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rule, #2a2b30);
+  border-radius: 12px;
+  background: var(--panel, #16171a);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
+  text-align: left;
+  cursor: default;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.contextPopSection { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--rule, #2a2b30); }
+.contextPopSection .usageRowHead b { font-weight: 500; color: var(--muted, #8a8f98); }
+.contextPopHint { margin: 0; font-size: 11px; line-height: 1.45; color: var(--muted, #8a8f98); }
+.contextPopMore { border: 0; background: transparent; color: var(--text); text-align: left; padding: 11px 14px; font-size: 12.5px; cursor: pointer; }
+.contextPopMore:hover { background: color-mix(in srgb, var(--accent, #5b7cfa) 10%, transparent); }
+.statusBar { position: relative; }
+
+/* ── the Forge's Background tab ─────────────────────────────────────────── */
+.forgeTabs { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--rule, #2a2b30); border-radius: 999px; margin-left: 10px; }
+.forgeTabs button { border: 0; background: transparent; color: var(--muted, #8a8f98); font-size: 11.5px; padding: 4px 11px; border-radius: 999px; cursor: pointer; }
+.forgeTabs button[data-on="1"] { background: color-mix(in srgb, var(--accent, #5b7cfa) 18%, transparent); color: var(--text); }
+.bgPanel { display: flex; flex-direction: column; gap: 10px; padding: 14px; overflow-y: auto; }
+.bgPanelHead { display: flex; align-items: center; gap: 10px; }
+.bgPanelHead strong { font-size: 13px; }
+.bgPanelHead span { color: var(--muted, #8a8f98); font-size: 12px; }
+.bgPanelHead .ghost { margin-left: auto; }
+.bgNote { font-size: 11.5px; line-height: 1.45; color: var(--muted, #8a8f98); }
+.bgSection { margin-top: 6px; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted, #8a8f98); }
+.bgEmpty { font-size: 12px; color: var(--muted, #8a8f98); }
+.bgCard { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--rule, #2a2b30); border-radius: 10px; background: color-mix(in srgb, var(--panel, #16171a) 60%, transparent); }
+.bgCard[data-live="1"] { border-color: color-mix(in srgb, var(--accent, #5b7cfa) 45%, transparent); }
+.bgCard[data-tone="warn"] { border-color: color-mix(in srgb, #d9a03c 55%, transparent); }
+.bgCardBody { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.bgCardBody strong { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bgCardBody span { font-size: 11.5px; color: var(--muted, #8a8f98); }
+.bgCardActions { display: flex; gap: 6px; flex-shrink: 0; }
+.bgDone { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11.5px; color: var(--muted, #8a8f98); }
+.bgDone em { font-style: normal; opacity: 0.7; }
+
+/* the Cyber point cloud only paints on that surface */
+.cyberField { display: none; }
+
+
+/* ── point map picker (Appearance, Cyber) ───────────────────────────────── */
+.pointMapRow { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.pointMapCard { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--rule, #2a2b30); border-radius: 10px; background: transparent; text-align: left; cursor: pointer; color: var(--text); }
+.pointMapCard:hover { border-color: var(--line-strong, #3a3b42); }
+.pointMapCard[data-on="1"] { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
+.pointMapCard strong { font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.pointMapCard em { font-style: normal; font-size: 11px; line-height: 1.4; color: var(--faint, #777); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.pointMapBy { font-style: normal; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 5px; border-radius: 999px; background: rgba(var(--accent-rgb), 0.16); color: var(--accent-hi, var(--accent)); }
+.pointMapDel { position: absolute; top: 6px; right: 8px; font-weight: 400; font-size: 11px; color: var(--faint, #777); }
+.pointMapDel:hover { color: var(--text); }
+.pointMapPreview { height: 34px; border-radius: 6px; border: 1px solid var(--rule, #2a2b30); background: #0b1120; margin-bottom: 2px; }
+.pointMapPreview[data-kind="nebula"] { background: radial-gradient(60% 80% at 50% 50%, rgba(var(--accent-rgb), 0.55), transparent 70%), #0b1120; }
+.pointMapPreview[data-kind="horizon"] { background: radial-gradient(70% 60% at 50% 120%, rgba(var(--accent-rgb), 0.6), transparent 70%), #0b1120; }
+.pointMapPreview[data-kind="waves"] { background: repeating-linear-gradient(100deg, transparent 0 6px, rgba(var(--accent-rgb), 0.35) 6px 8px), #0b1120; }
+.pointMapPreview[data-kind="orbit"] { background: radial-gradient(circle at 50% 50%, transparent 8px, rgba(var(--accent-rgb), 0.5) 9px, transparent 10px, transparent 13px, rgba(var(--accent-rgb), 0.35) 14px, transparent 15px), #0b1120; }
+.pointMapPreview[data-kind="off"] { background: #0b1120; }

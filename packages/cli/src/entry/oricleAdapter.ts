@@ -258,6 +258,51 @@ export async function oricleAfterTurn(
   }
 }
 
+// ── mid-turn checkpoints ─────────────────────────────────────────────────────
+//
+// The long-horizon review's demand: writes at the moments a long task loses
+// the thread, not only at turn end. Every N tool completions, and on every
+// context compaction, the most recently advanced open task owned by this
+// writer gets its card re-stamped (lastAction, asOf.commit=HEAD) and a
+// `checkpoint` record linked to it. Cheap, best-effort, never blocks the loop.
+
+function checkpointEveryTools(): number {
+  const n = Number(process.env["ARES_ORICLE_CHECKPOINT_TOOLS"]);
+  return Number.isFinite(n) && n > 0 ? n : 25;
+}
+const toolCounts = new WeakMap<object, number>();
+let checkpointing: Promise<void> | null = null;
+
+export function oricleOnSessionEvent(live: OricleLive, ev: { type: string; name?: string }): void {
+  if (!oricleEnabled()) return;
+  let reason: string | null = null;
+  if (ev.type === "tool_end") {
+    const n = (toolCounts.get(live) ?? 0) + 1;
+    toolCounts.set(live, n);
+    if (n % checkpointEveryTools() === 0) reason = `${n} tool calls this turn`;
+  } else if (ev.type === "compaction") {
+    reason = "context compacted";
+  } else if (ev.type === "turn_start") {
+    toolCounts.set(live, 0);
+  }
+  if (!reason) return;
+  const why = reason;
+  // serialize: one checkpoint at a time per process
+  checkpointing = (checkpointing ?? Promise.resolve()).then(() => writeCheckpoint(live, why)).catch(() => undefined);
+}
+
+async function writeCheckpoint(live: OricleLive, reason: string): Promise<void> {
+  const est = await oricleEstate(live.selection.model);
+  if (!est || !est.writer) return;
+  const mine = est.openTasks().filter((t) => (t.data as { owner?: { writer?: string } } | undefined)?.owner?.writer === est.writer!.id);
+  const target = (mine.length ? mine : est.openTasks()).sort((a, b) => (a.ts < b.ts ? 1 : -1))[0];
+  if (!target) return;
+  const head = await workspaceHead(live.context.workspace);
+  const at = new Date().toISOString();
+  const advanced = await est.task({ id: target.id, data: { lastAction: { text: `checkpoint: ${reason}`, at, ...(head ? { commit: head } : {}) }, ...(head ? { asOf: { commit: head } } : {}) } });
+  await est.commit({ kind: "checkpoint", text: `${reason} · session ${live.session.meta.id}${head ? ` · HEAD ${head.slice(0, 10)}` : ""}`, tier: "confirmed", links: [advanced.id], source: { session: live.session.meta.id, ...(head ? { commit: head } : {}) }, tags: ["auto-checkpoint"] });
+}
+
 // ── the Estate tool ──────────────────────────────────────────────────────────
 
 const estateInput = z

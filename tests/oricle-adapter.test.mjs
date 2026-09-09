@@ -108,6 +108,27 @@ test("adapter: pack in, attest + witness + episode out, tool round-trips", { ski
     assert.equal(rep.ok, true, JSON.stringify(rep.issues));
     await check.close();
 
+    // 3b. mid-turn checkpoints: every N tool completions and every compaction
+    process.env.ARES_ORICLE_CHECKPOINT_TOOLS = "5";
+    const live2 = stubLive({ sessionId: "sess_checkpoint" });
+    adapter.oricleOnSessionEvent(live2, { type: "turn_start" });
+    for (let i = 0; i < 5; i++) adapter.oricleOnSessionEvent(live2, { type: "tool_end", name: "Bash" });
+    adapter.oricleOnSessionEvent(live2, { type: "compaction" });
+    // the hook is fire-and-forget; give the serialized writes a moment
+    await new Promise((r) => setTimeout(r, 600));
+    await adapter.closeOricle();
+    const afterCk = await Oricle.mount(dir, { principal: "owner", machineId: "check2", readOnly: true });
+    const checkpoints = afterCk.current().filter((r) => r.kind === "checkpoint");
+    assert.equal(checkpoints.length, 2, "one checkpoint per trigger (5 tools, then compaction)");
+    assert.match(checkpoints.map((c) => c.text).join("\n"), /5 tool calls/);
+    assert.match(checkpoints.map((c) => c.text).join("\n"), /context compacted/);
+    const openNow = afterCk.openTasks();
+    assert.equal(openNow.length, 1, "still exactly one open task card");
+    assert.match(openNow[0].data.lastAction.text, /checkpoint: context compacted/);
+    assert.equal(afterCk.history(openNow[0].id).chain.length, 3, "the card was advanced twice, never duplicated");
+    await afterCk.close();
+    delete process.env.ARES_ORICLE_CHECKPOINT_TOOLS;
+
     // 4. the Estate tool
     const tool = adapter.makeEstateTool(() => "test-model");
     const ctx = { permissionMode: "bypass", fileReadStamps: new Map(), workspace: root };

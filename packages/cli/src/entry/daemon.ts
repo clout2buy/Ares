@@ -56,6 +56,7 @@ import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin,
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js";
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
+import { oricleOnSessionEvent } from "./oricleAdapter.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
 // Satellite modules (extracted, closure-free helpers — command handlers and
@@ -3806,6 +3807,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               eventCount++;
               const ev = event as { type: string; status?: "completed" | "interrupted" | "failed"; error?: { code?: string; message?: string }; touchedFiles?: string[]; text?: string; id?: string; name?: string; output?: unknown };
               trackSteeringBoundary(entry, ev);
+              // Oricle: every N tool completions and every compaction re-stamp
+              // the open task card and drop a checkpoint, so a long task does
+              // not lose the thread between turn boundaries.
+              oricleOnSessionEvent(entry.live, ev);
               if (ev.type === "turn_start" && inputDelivery === "steer" && !promotedSteerApplied) {
                 promotedSteerApplied = true;
                 tagEmit(sid, { type: "steer_applied", inputId, status: "claimed" });

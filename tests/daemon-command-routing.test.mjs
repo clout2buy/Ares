@@ -31,6 +31,12 @@ function uiCommandTypes() {
   // Settings panes send through onDaemonCommand(...) too — the Engine Room plugins_list
   // was silently dead because this scan missed that call shape.
   for (const m of app.matchAll(/onDaemonCommand\(\{\s*type:\s*"([a-z_]+)"/g)) types.add(m[1]);
+  // Direct invokes and the ready-time status loop send types this scan used to
+  // miss — startup_recovery_* and session_open shipped unroutable that way.
+  for (const m of app.matchAll(/ares_daemon_command",\s*\{\s*command:\s*\{\s*type:\s*"([a-z_]+)"/g)) types.add(m[1]);
+  for (const list of app.matchAll(/for \(const type of \[([^\]]+)\]\)/g)) {
+    for (const m of list[1].matchAll(/"([a-z_]+)"/g)) types.add(m[1]);
+  }
   return types;
 }
 

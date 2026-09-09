@@ -11,6 +11,8 @@ import { cleanCommandId, normalizePermissionDecision } from "../permissions.js";
 
 export interface DaemonInputCommand {
   type?: string;
+  /** ollama_usage — bypass the short cache. */
+  force?: boolean;
   /** gateway_connect */
   token?: string;
   url?: string;

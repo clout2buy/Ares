@@ -13,7 +13,7 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -78,6 +78,8 @@ import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
+
+let ollamaUsageCache: { at: number; usage: OllamaUsage | undefined; error: string | undefined } | undefined;
 
 // Back-compat re-exports: garrisonCmd.ts + sessionFactory.ts import these from
 // "./daemon.js", and the root tests import them from the compiled
@@ -3388,6 +3390,27 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         if (action === "halt") await killSwitch.engage(typeof command.reason === "string" ? command.reason : "manual");
         else await killSwitch.release();
         process.stdout.write(JSON.stringify({ type: "operator_control_set", action, engaged: await killSwitch.engaged() }) + "\n");
+        continue;
+      }
+      if (command.type === "ollama_usage") {
+        // Account usage for the pasted Ollama Cloud key (session / weekly
+        // limit fractions, per-model requests, billed extra). Cached briefly
+        // so a picker open does not hammer ollama.com.
+        const key = ((await loadUiSettings().catch(() => null))?.ollamaApiKey || process.env.OLLAMA_API_KEY || "").trim();
+        if (!key) {
+          process.stdout.write(JSON.stringify({ type: "ollama_usage", ok: false, error: "no Ollama Cloud API key" }) + "\n");
+          continue;
+        }
+        const force = command.force === true;
+        const fresh = ollamaUsageCache && Date.now() - ollamaUsageCache.at < 60_000;
+        if (!fresh || force) {
+          try {
+            ollamaUsageCache = { at: Date.now(), usage: await fetchOllamaUsage(key), error: undefined };
+          } catch (err) {
+            ollamaUsageCache = { at: Date.now(), usage: ollamaUsageCache?.usage, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        process.stdout.write(JSON.stringify({ type: "ollama_usage", ok: !ollamaUsageCache?.error, usage: ollamaUsageCache?.usage ?? null, error: ollamaUsageCache?.error ?? null }) + "\n");
         continue;
       }
       if (command.type === "oauth_status") {

@@ -364,3 +364,11 @@ export interface PresenceSnapshot {
   caption: string;
   detail: string;
 }
+
+/** Mirror of @ares/core OllamaUsage as it crosses the daemon wire. */
+export interface OllamaUsageView {
+  fetchedAt: string;
+  session: { usage: number; models: Array<{ name: string; requestCount: number }> };
+  weekly: { usage: number; models: Array<{ name: string; requestCount: number }> };
+  extra: { cost: number; periodType: string; startingAt?: string; endingAt?: string; models: Array<{ name: string; requestCount: number; cost?: number }> };
+}

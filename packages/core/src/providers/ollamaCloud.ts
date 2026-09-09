@@ -1357,6 +1357,61 @@ export async function fetchOllamaCloudModels(
 }
 
 /** Test seam. */
+// ─── Account usage: https://ollama.com/api/usage ────────────────────────
+//
+// Key-scoped. Session and weekly limits as fractions (0..1) with per-model
+// request counts, plus billed usage outside the plan over the last four
+// weeks. No reset timestamps come back; the fractions are what the account
+// page shows. Discovered from a community dashboard that polls this endpoint.
+
+export interface OllamaUsageModelCount {
+  name: string;
+  requestCount: number;
+  cost?: number;
+}
+
+export interface OllamaUsage {
+  fetchedAt: string;
+  session: { usage: number; models: OllamaUsageModelCount[] };
+  weekly: { usage: number; models: OllamaUsageModelCount[] };
+  extra: { cost: number; periodType: string; startingAt?: string; endingAt?: string; models: OllamaUsageModelCount[] };
+}
+
+export async function fetchOllamaUsage(apiKey: string, opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}): Promise<OllamaUsage> {
+  const key = apiKey.trim();
+  if (!key) throw new Error("no Ollama Cloud API key");
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const response = await fetchImpl("https://ollama.com/api/usage", {
+    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
+  });
+  if (response.status === 401 || response.status === 403) throw new Error("Ollama Cloud rejected the API key");
+  if (!response.ok) throw new Error(`Ollama Cloud usage: HTTP ${response.status}`);
+  const raw = (await response.json()) as {
+    activity?: { cost?: string | number; period?: { type?: string; starting_at?: string; ending_at?: string }; models?: Array<{ name?: string; request_count?: number; cost?: string | number }> };
+    limits?: { session?: { usage?: number; models?: Array<{ name?: string; request_count?: number }> }; weekly?: { usage?: number; models?: Array<{ name?: string; request_count?: number }> } };
+  };
+  const num = (v: unknown): number => { const n = typeof v === "string" ? Number.parseFloat(v) : typeof v === "number" ? v : 0; return Number.isFinite(n) ? n : 0; };
+  const counts = (rows?: Array<{ name?: string; request_count?: number; cost?: string | number }>): OllamaUsageModelCount[] =>
+    (rows ?? [])
+      .filter((r) => typeof r.name === "string" && r.name)
+      .map((r) => ({ name: r.name as string, requestCount: Math.max(0, Math.floor(num(r.request_count))), ...(r.cost !== undefined ? { cost: num(r.cost) } : {}) }))
+      .sort((a, b) => b.requestCount - a.requestCount);
+  const period = raw.activity?.period ?? {};
+  return {
+    fetchedAt: new Date().toISOString(),
+    session: { usage: Math.min(1, Math.max(0, num(raw.limits?.session?.usage))), models: counts(raw.limits?.session?.models) },
+    weekly: { usage: Math.min(1, Math.max(0, num(raw.limits?.weekly?.usage))), models: counts(raw.limits?.weekly?.models) },
+    extra: {
+      cost: num(raw.activity?.cost),
+      periodType: period.type ?? "last_4_weeks",
+      ...(period.starting_at ? { startingAt: period.starting_at } : {}),
+      ...(period.ending_at ? { endingAt: period.ending_at } : {}),
+      models: counts(raw.activity?.models),
+    },
+  };
+}
+
 export function resetOllamaCloudCatalogCache(): void {
   cloudCatalogCache = null;
 }

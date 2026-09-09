@@ -557,3 +557,18 @@
 .recoveryBanner .recoveryBody span { color: var(--muted, #8a8f98); overflow: hidden; text-overflow: ellipsis; }
 .recoveryBanner .recoveryActions { display: flex; gap: 8px; flex-shrink: 0; }
 .settingsSelect { width: 100%; max-width: 520px; padding: 8px 10px; border-radius: 6px; background: var(--panel, #16171a); color: inherit; border: 1px solid var(--rule, #2a2b30); margin-bottom: 18px; }
+
+/* Ollama Cloud account usage (session / weekly limit bars). */
+.usageLine { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+.usageLine.muted { color: var(--muted, #8a8f98); }
+.usageBars { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.usageBar { position: relative; display: inline-flex; align-items: center; min-width: 140px; height: 18px; border-radius: 4px; background: color-mix(in srgb, var(--rule, #2a2b30) 70%, transparent); overflow: hidden; }
+.usageBar i { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent, #8a8f98) 45%, transparent); }
+.usageBar[data-tone="warn"] i { background: color-mix(in srgb, #d9a03c 55%, transparent); }
+.usageBar[data-tone="bad"] i { background: color-mix(in srgb, #d24d4d 60%, transparent); }
+.usageBar b { position: relative; padding: 0 8px; font-weight: 600; white-space: nowrap; }
+.usageExtra { color: var(--muted, #8a8f98); white-space: nowrap; }
+.usageRefresh { border: 0; background: transparent; color: var(--muted, #8a8f98); cursor: pointer; padding: 0 4px; font-size: 12px; }
+.usageRefresh:hover { color: inherit; }
+.usageModels { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted, #8a8f98); }
+.usageModels em { font-style: normal; color: inherit; opacity: 0.8; }

@@ -57,6 +57,7 @@ import {
   type BackgroundJobVm,
   type FleetSummaryWire,
   type SubagentJobWire,
+  type OllamaUsageView,
 } from "./state/events";
 import {
   type ReasoningLevel,
@@ -574,6 +575,7 @@ function App() {
     progress: {},
   });
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
+  const [ollamaUsage, setOllamaUsage] = useState<OllamaUsageState | null>(null);
   const [permissions, setPermissions] = useState<PermSettings>(DEFAULT_PERMS);
   const pushNotice = (text: string, tone: "dim" | "warn" | "bad" = "dim") => {
     setSessions((prev) => prev.map((sess, i) => (sess.id === activeRef.current || (!activeRef.current && i === 0)
@@ -1768,6 +1770,9 @@ function App() {
           }));
           return true;
         }
+        case "ollama_usage":
+          setOllamaUsage({ usage: (e.usage as OllamaUsageView | null | undefined) ?? null, error: typeof e.error === "string" ? e.error : null, at: Date.now() });
+          return true;
         case "startup_recovery_mode":
           setRecoveryMode({ mode: e.mode === "auto" || e.mode === "never" ? e.mode : "ask", pinnedByEnv: e.pinnedByEnv === true });
           return true;
@@ -2263,7 +2268,7 @@ function App() {
         // The sessions_list handler merges by id, so the duplicate request on a
         // fresh spawn (where daemon_ready also fires) is harmless.
         if (state.running) {
-          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode"]) {
+          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -4239,6 +4244,7 @@ function App() {
           plugins={pluginsVm}
           mind={mindVm}
           usage={usageStats}
+          ollamaUsage={ollamaUsage}
           keyStatus={keyStatus}
           gatewayAccount={gatewayAccount}
           permissions={permissions}
@@ -4321,6 +4327,7 @@ function App() {
       {modelPopOpen ? (
         <ModelPopover
           hasOllamaKey={Boolean(keyStatus["ollama"])}
+          ollamaUsage={ollamaUsage}
           prefs={prefs}
           native={native}
           usage={usageStats}
@@ -5079,6 +5086,7 @@ function ModelPopover({
   onPick,
   onClose,
   hasOllamaKey,
+  ollamaUsage,
 }: {
   prefs: Prefs;
   native: boolean;
@@ -5092,6 +5100,7 @@ function ModelPopover({
   onClose: () => void;
   /** An Ollama Cloud key is set: local Ollama is optional, never an error. */
   hasOllamaKey?: boolean;
+  ollamaUsage?: OllamaUsageState | null;
 }) {
   const [provider, setProvider] = useState(prefs.provider);
   const { models, loading, error } = useModelCatalog(provider, native);
@@ -5269,6 +5278,7 @@ function ModelPopover({
           {error && !(provider === "ollama" && hasOllamaKey) ? (
             <div className={/Local Ollama isn't running/.test(error) ? "modelNote" : "modelError"}>{error}</div>
           ) : null}
+          {provider === "ollama" && hasOllamaKey && ollamaUsage?.usage ? <OllamaUsageLine state={ollamaUsage} /> : null}
           {detail ? (
             <div className="mdlDetailWrap">
               <ModelDetail
@@ -9954,6 +9964,35 @@ function MindPane({
   );
 }
 
+type OllamaUsageState = { usage: OllamaUsageView | null; error: string | null; at: number };
+
+/** Ollama Cloud account usage for the pasted key: session + weekly limit
+ *  bars, top models this week, billed extra over four weeks. */
+function OllamaUsageLine({ state, onRefresh, detailed }: { state: OllamaUsageState | null; onRefresh?: () => void; detailed?: boolean }) {
+  if (!state) return <div className="usageLine muted">Loading usage…</div>;
+  const u = state.usage;
+  if (!u) return <div className="usageLine muted">Usage unavailable{state.error ? ` — ${state.error}` : ""}{onRefresh ? <button className="usageRefresh" onClick={onRefresh}>retry</button> : null}</div>;
+  const pct = (v: number) => `${Math.round(v * 1000) / 10}%`;
+  const tone = (v: number) => (v >= 0.9 ? "bad" : v >= 0.7 ? "warn" : "ok");
+  const top = u.weekly.models.slice(0, detailed ? 5 : 3);
+  return (
+    <div className="usageLine" title={`Fetched ${new Date(u.fetchedAt).toLocaleTimeString()} from ollama.com`}>
+      <div className="usageBars">
+        <span className="usageBar" data-tone={tone(u.session.usage)}><i style={{ width: pct(u.session.usage) }} /><b>session {pct(u.session.usage)}</b></span>
+        <span className="usageBar" data-tone={tone(u.weekly.usage)}><i style={{ width: pct(u.weekly.usage) }} /><b>week {pct(u.weekly.usage)}</b></span>
+        {u.extra.cost > 0 ? <span className="usageExtra">+${u.extra.cost.toFixed(2)} billed · 4 wks</span> : null}
+        {onRefresh ? <button className="usageRefresh" onClick={onRefresh} title="Refresh from ollama.com">↻</button> : null}
+      </div>
+      {top.length ? (
+        <div className="usageModels">
+          {top.map((m) => <span key={m.name}>{m.name} <em>{m.requestCount.toLocaleString()}</em></span>)}
+          {state.error ? <span className="muted">stale — {state.error}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Settings({
   recoveryMode,
   setRecoveryMode,
@@ -9965,6 +10004,7 @@ function Settings({
   plugins,
   mind,
   usage,
+  ollamaUsage,
   keyStatus,
   gatewayAccount,
   permissions,
@@ -9996,6 +10036,7 @@ function Settings({
   plugins: PluginsVm | null;
   mind: MindOverviewVm | null;
   usage: UsageStats | null;
+  ollamaUsage?: OllamaUsageState | null;
   keyStatus: Record<string, boolean>;
   gatewayAccount: GatewayAccountVm | null;
   permissions: PermSettings;
@@ -10399,6 +10440,7 @@ function Settings({
                       </div>
                       <input className="keyInput" value={keys[kp.id] ?? ""} type="password" placeholder={on ? "•••••••• saved — paste to replace" : kp.placeholder} onChange={(e) => setKeys({ ...keys, [kp.id]: e.target.value })} />
                       <em className="keySub">{kp.sub}</em>
+                      {kp.id === "ollama" && on ? <OllamaUsageLine state={ollamaUsage ?? null} onRefresh={() => onDaemonCommand({ type: "ollama_usage", force: true })} detailed /> : null}
                     </div>
                     {on ? (
                       <button className="keyClearBtn" title="Remove this key" onClick={() => onDaemonCommand({ type: "provider_key", provider: kp.id, key: "" })}>✕</button>

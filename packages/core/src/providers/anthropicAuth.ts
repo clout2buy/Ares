@@ -38,7 +38,12 @@ export const ANTHROPIC_OAUTH_BETA = [
   "fine-grained-tool-streaming-2025-05-14",
   "interleaved-thinking-2025-05-14",
 ].join(",");
-export const ANTHROPIC_OAUTH_USER_AGENT = "claude-cli/2.1.160";
+// The OAuth path is admitted as a Claude Code client, and the API gates newer
+// models on the client version it sees ("Claude Code 2.1.160 does not support
+// this model; version 2.1.251 or newer is required"). Track the floor Anthropic
+// last demanded; ARES_ANTHROPIC_CLIENT_VERSION lifts it without a release.
+const ANTHROPIC_CLIENT_VERSION = (process.env.ARES_ANTHROPIC_CLIENT_VERSION ?? "").trim().match(/^\d+\.\d+\.\d+$/) ? (process.env.ARES_ANTHROPIC_CLIENT_VERSION as string).trim() : "2.1.251";
+export const ANTHROPIC_OAUTH_USER_AGENT = `claude-cli/${ANTHROPIC_CLIENT_VERSION}`;
 export const ANTHROPIC_OAUTH_X_APP = "cli";
 export const ANTHROPIC_OAUTH_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 

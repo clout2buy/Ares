@@ -854,3 +854,30 @@
 /* off the sanctum the cloud steps back behind the work */
 .ares[data-style="modern"][data-surface="cyber"]:not(:has(.chat > .empty)) .cyberField { opacity: 0.3; }
 .ares[data-style="modern"][data-surface="cyber"] .contextPop { bottom: 46px; }
+
+/* ── the cloud belongs to the STAGE: it starts where the rail ends and stops
+   where the Forge begins, so its centre is the hero's centre at any width ── */
+/* a canvas is a replaced element: width:auto is its intrinsic size, so the
+   box is set explicitly from the rail and Forge widths */
+.ares[data-style="modern"][data-surface="cyber"] .cyberField { --rail-w: 0px; --panel-w: 0px; top: 56px; left: var(--rail-w); width: calc(100% - var(--rail-w) - var(--panel-w)); height: calc(100% - 56px); }
+.ares[data-style="modern"][data-surface="cyber"][data-rail="open"] .cyberField { --rail-w: 274px; }
+.ares[data-style="modern"][data-surface="cyber"][data-panel="1"] .cyberField { --panel-w: var(--forge-w, 0px); }
+
+/* ── the status row sheds, never overflows ──────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .statusBar { container-type: inline-size; overflow: hidden; }
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusGroup:first-child {
+  display: flex;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg { flex: 0 1 auto; min-width: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+@container (max-width: 1100px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="computer"] { display: none; } }
+@container (max-width: 940px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg b { display: none; } }
+@container (max-width: 780px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="perms"] { display: none; } }
+@container (max-width: 660px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="missions"], .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="route"] { display: none; } }
+@container (max-width: 520px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="effort"], .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="context"] { display: none; } }

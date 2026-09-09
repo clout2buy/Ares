@@ -578,3 +578,7 @@
    their one-line pills. */
 .starterText { display: contents; }
 .starterSub { display: none; }
+
+/* Cyber-only affordances: the composer attach button and the rail memory card. */
+.attach { display: none; }
+.railMemory { display: none; }

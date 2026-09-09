@@ -3686,6 +3686,14 @@ function App() {
         </datalist>
 
         <div className="railFoot">
+          {/* Cyber's footer card (hidden on the other surfaces via basic.css). */}
+          <div className="railMemory" onClick={() => { setSettingsOpen(true); }} role="button" title="Open settings">
+            <Medallion glyph="scroll" size={34} />
+            <div className="railMemoryText">
+              <strong>Agent Memory</strong>
+              <span><i data-state={daemon} /> {daemon === "running" ? "Live" : daemon} · Garrison</span>
+            </div>
+          </div>
           {/* data-act lets the modern skin drop the two that moved into the
               titlebar (Forge, Settings) without touching the other skins. */}
           <button className="ghost" data-act="undo" disabled={!native || daemon !== "running" || active?.busy} onClick={undoLastChange}>
@@ -7592,6 +7600,7 @@ const Composer = React.memo(function Composer({
     setAttachmentsState(attachmentsRef.current);
   };
   const ref = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   // True while submit() is in flight (it awaits pending attachment reads).
   const submittingRef = useRef(false);
   const cancellingRef = useRef(cancelling);
@@ -7926,6 +7935,10 @@ const Composer = React.memo(function Composer({
         data-cancelling={cancelling ? "1" : "0"}
         data-draft={text.trim() || attachments.length ? "1" : "0"}
       >
+        <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const list = Array.from(e.target.files ?? []); if (list.length) addFiles(list); e.target.value = ""; }} />
+        <button type="button" className="attach" onClick={() => fileRef.current?.click()} title="Attach files (or paste / drop them)" aria-label="Attach files">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
+        </button>
         <textarea
           ref={ref}
           value={text}

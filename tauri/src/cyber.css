@@ -36,7 +36,7 @@
   --cyber-grad: linear-gradient(135deg, #93c5fd 0%, #60a5fa 38%, #8b5cf6 100%);
   --cyber-glow: 0 0 40px -6px rgba(99, 130, 255, 0.55);
   /* the mark: a chevron A struck in the light, drawn once as SVG */
-  --cyber-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='.55' stop-color='%2360a5fa'/%3E%3Cstop offset='1' stop-color='%23c7d2fe'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 6 L92 88 L74 88 L50 40 L26 88 L8 88 Z'/%3E%3Cpath fill='url(%23g)' opacity='.9' d='M50 58 L64 88 L36 88 Z'/%3E%3C/svg%3E");
+  --cyber-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0.1' y1='0.95' x2='0.9' y2='0.05'%3E%3Cstop offset='0' stop-color='%237c5cff'/%3E%3Cstop offset='.5' stop-color='%236da2ff'/%3E%3Cstop offset='1' stop-color='%23c9e6ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='url(%23g)' stroke='url(%23g)' stroke-width='5' stroke-linejoin='round'%3E%3Cpath d='M50 10 L88 84 L71 84 L50 43 L29 84 L12 84 Z'/%3E%3Cpath d='M50 60 L61 84 L39 84 Z'/%3E%3C/g%3E%3C/svg%3E");
 
   --ember: #6d8cff;
   --ember-hi: #a78bfa;
@@ -102,13 +102,26 @@
   border-color: rgba(120, 140, 255, 0.42);
 }
 
+/* ── one frame: the rail and the titlebar are flush, nothing floats ──────── */
+.ares[data-style="modern"][data-surface="cyber"] { padding: 0; column-gap: 0; grid-template-rows: 56px minmax(0, 1fr); }
+.ares[data-style="modern"][data-surface="cyber"][data-panel="1"] { column-gap: 0; }
+.ares[data-style="modern"][data-surface="cyber"][data-panel="1"][data-rail="collapsed"] { column-gap: 0; }
+
 /* ── titlebar ────────────────────────────────────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .titlebar {
+  height: 56px;
+  padding: 0 10px 0 18px;
   background: rgba(10, 15, 28, 0.55);
   border-bottom: 1px solid var(--line);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
+.ares[data-style="modern"][data-surface="cyber"] .titleTools { gap: 4px; margin-left: 10px; }
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon { width: 34px; height: 34px; border-radius: 10px; }
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon > .medallion { width: 34px; height: 34px; border-radius: 10px; color: rgba(190, 205, 240, 0.8); }
+.ares[data-style="modern"][data-surface="cyber"] .winControls { margin-left: 6px; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls button { width: 34px; height: 34px; align-self: center; border-radius: 10px; color: rgba(190, 205, 240, 0.7); }
+.ares[data-style="modern"][data-surface="cyber"] .winControls button:hover { background: rgba(148, 170, 220, 0.1); color: var(--text-hi); }
 .ares[data-style="modern"][data-surface="cyber"] .titlebar .emblem {
   border-radius: 9px;
   border-color: rgba(148, 170, 220, 0.24);
@@ -131,8 +144,11 @@
 
 /* ── rail ────────────────────────────────────────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .rail {
+  padding: 14px 12px 0;
   background: linear-gradient(180deg, rgba(14, 21, 40, 0.92), rgba(9, 13, 26, 0.94));
-  border-color: rgba(148, 170, 220, 0.12);
+  border: none;
+  border-right: 1px solid rgba(148, 170, 220, 0.12);
+  border-radius: 0;
 }
 .ares[data-style="modern"][data-surface="cyber"] .railBrand {
   display: flex;
@@ -229,7 +245,21 @@
   border-radius: var(--r-md);
   background: rgba(14, 21, 40, 0.7);
 }
-.ares[data-style="modern"][data-surface="cyber"] .daemonDot { color: rgba(229, 235, 247, 0.55); }
+.ares[data-style="modern"][data-surface="cyber"] .railFoot .daemonDot { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .railMemory {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 2px 10px;
+  cursor: pointer;
+}
+.ares[data-style="modern"][data-surface="cyber"] .railMemory > .medallion { width: 40px; height: 40px; border-radius: 50%; }
+.ares[data-style="modern"][data-surface="cyber"] .railMemoryText { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .railMemoryText strong { font: 500 13px/1.2 var(--font); color: var(--text-hi); }
+.ares[data-style="modern"][data-surface="cyber"] .railMemoryText span { display: flex; align-items: center; gap: 6px; font: 400 11px/1 var(--font); color: rgba(229, 235, 247, 0.55); }
+.ares[data-style="modern"][data-surface="cyber"] .railMemoryText span i { width: 6px; height: 6px; border-radius: 50%; background: var(--crimson); }
+.ares[data-style="modern"][data-surface="cyber"] .railMemoryText span i[data-state="running"] { background: var(--steel); box-shadow: 0 0 8px var(--steel); }
+.ares[data-style="modern"][data-surface="cyber"] .railFoot .ghost[data-act="undo"] { font-size: 11.5px; padding: 6px 8px; border-top: 1px solid rgba(148, 170, 220, 0.1); border-radius: 0; }
 
 /* ── stage head ──────────────────────────────────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .railReveal {
@@ -248,10 +278,7 @@
   opacity: 1;
 }
 .ares[data-style="modern"][data-surface="cyber"] .chat:has(> .empty)::after {
-  /* the horizon: one soft curved rim of light, static */
-  background:
-    radial-gradient(60% 46% at 50% 121%, transparent 66%, rgba(140, 160, 255, 0.16) 66.4%, transparent 68%),
-    radial-gradient(115% 95% at 16% 48%, rgba(7, 11, 20, 0.3), transparent 60%);
+  background: radial-gradient(70% 55% at 50% 118%, rgba(110, 140, 255, 0.16), rgba(60, 80, 200, 0.06) 40%, transparent 68%);
 }
 
 .ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem {
@@ -342,6 +369,23 @@
 .ares[data-style="modern"][data-surface="cyber"] .composerRow textarea::placeholder { color: rgba(229, 235, 247, 0.35); }
 .ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .composerRow { width: min(1000px, 88%); }
 
+.ares[data-style="modern"][data-surface="cyber"] .composerRow { padding-left: 10px; }
+.ares[data-style="modern"][data-surface="cyber"] .attach {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 170, 220, 0.2);
+  background: rgba(148, 170, 220, 0.06);
+  color: rgba(190, 205, 240, 0.8);
+  padding: 0;
+  align-self: center;
+}
+.ares[data-style="modern"][data-surface="cyber"] .attach svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
+.ares[data-style="modern"][data-surface="cyber"] .attach:hover { color: var(--text-hi); border-color: rgba(140, 160, 255, 0.5); background: rgba(148, 170, 220, 0.12); }
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .attach { width: 44px; height: 44px; }
 .ares[data-style="modern"][data-surface="cyber"] .mic,
 .ares[data-style="modern"][data-surface="cyber"] .send {
   border-radius: 50%;
@@ -373,18 +417,33 @@
 /* …except the rail's New session, which stays a quiet tile (declared above) */
 .ares[data-style="modern"][data-surface="cyber"] .rail > .primary { color: var(--text-hi); background: rgba(91, 124, 250, 0.1); border-color: rgba(120, 140, 255, 0.3); box-shadow: none; filter: none; }
 
-/* ── status strip ────────────────────────────────────────────────────────── */
-.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusGroup:first-child {
-  border-color: rgba(148, 170, 220, 0.14);
-  background: rgba(11, 17, 32, 0.7);
-  box-shadow: var(--glass-spec);
+/* ── status strip: one quiet full-width row, like the reference ─────────── */
+.ares[data-style="modern"][data-surface="cyber"] .statusBar {
+  height: 36px;
+  padding: 0 18px;
+  justify-content: flex-start;
+  border-top: 1px solid var(--line);
+  background: rgba(10, 15, 28, 0.5);
 }
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusGroup:first-child {
+  border: none;
+  background: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg { height: 36px; padding: 0 14px; }
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg + .statusSeg::before { background: rgba(148, 170, 220, 0.16); }
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg b { color: rgba(229, 235, 247, 0.6); }
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg > span { color: #9db4e6; }
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg:hover { background: rgba(148, 170, 220, 0.07); }
 .ares[data-style="modern"][data-surface="cyber"] .effortStatus span { color: #b9c8ff; }
 .ares[data-style="modern"][data-surface="cyber"] .segAuto { color: #b9c8ff; border-color: rgba(120, 140, 255, 0.35); }
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .hudReadout { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusActions,
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .hudVersion { position: static; transform: none; opacity: 0.6; }
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusActions { margin-left: auto; }
 
 /* ── transcript: the user speaks in a blue-lit card ──────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .turn.user .bubble,

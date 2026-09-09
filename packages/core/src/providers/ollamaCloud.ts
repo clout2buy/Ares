@@ -10,8 +10,14 @@
 // SUMMARIZE is compacting an oversized tool result. End-to-end latency
 // drops below single-model harnesses because the slow steps overlap.
 //
-// Routes through local Ollama at http://127.0.0.1:11434 (which proxies
-// to the Cloud). Discovery via /api/tags at startup.
+// Two hosts, one contract. With an Ollama Cloud API key the pool talks to
+// https://ollama.com DIRECTLY — no local Ollama, no `ollama pull`, no
+// `ollama signin`. Without a key it routes through the local app at
+// http://127.0.0.1:11434 (which proxies cloud models the user signed in for).
+// Model ids are CANONICAL PLAIN cloud names everywhere ("glm-5.3",
+// "gpt-oss:120b"); the pool rewrites them for the wire per host
+// (wireModelId): ollama.com wants the plain name, a local app wants the
+// ":cloud" / "-cloud" tag. Discovery via /api/tags — ollama.com's is public.
 
 import type {
   ContentBlock,
@@ -30,7 +36,7 @@ import { sanitizeToolPairs, coerceToolArgs, TOOL_ARGS_ERROR_KEY } from "./_toolP
 export type SlotName = "reasoner" | "apply" | "summarize";
 
 export interface SlotConfig {
-  /** Ollama model id, e.g. "qwen3-coder:480b-cloud", "gpt-oss:20b-cloud". */
+  /** Plain cloud model id, e.g. "qwen3-coder:480b", "gpt-oss:20b" (see wireModelId). */
   model: string;
 }
 
@@ -67,6 +73,8 @@ export class OllamaCloudPool {
   private readonly slots: Map<SlotName, SlotState>;
   private readonly fetchImpl: typeof fetch;
   private readonly apiKey?: string;
+  /** Talking to ollama.com itself (API key) rather than a local app. */
+  readonly cloudDirect: boolean;
 
   constructor(opts: OllamaCloudPoolOptions) {
     // Anthropic-style env vars take precedence so the standard
@@ -79,6 +87,7 @@ export class OllamaCloudPool {
       process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || undefined;
 
     this.host = normalizeOllamaHost(opts.host ?? anthropicBase ?? process.env.OLLAMA_HOST);
+    this.cloudDirect = isOllamaCloudHost(this.host);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.apiKey = opts.apiKey ?? anthropicToken ?? process.env.OLLAMA_API_KEY;
     // Compat is the DEFAULT: /v1/messages streams tool-input deltas (live
@@ -163,10 +172,24 @@ export class OllamaCloudPool {
     return await this.collectText("summarize", system, req.input, req.signal);
   }
 
-  /** Probe Ollama for installed models. Returns model ids, or [] if unreachable. */
+  /**
+   * The id this host wants on the wire. ollama.com takes the plain name; a
+   * local app proxies cloud models under their ":cloud"/"-cloud" tag, so a
+   * plain id that names a KNOWN cloud model gets the tag added there. Local
+   * (pulled) models pass through untouched.
+   */
+  wireModelId(id: string): string {
+    if (this.cloudDirect) return toCloudDirectModelId(id);
+    if (/(?::cloud|-cloud)$/i.test(id.trim())) return id.trim();
+    return ollamaCloudHint(id) ? toLocalCloudModelId(id) : id.trim();
+  }
+
+  /** Probe the host for available models (plain-name normalized). [] if unreachable. */
   async listModels(signal?: AbortSignal): Promise<string[]> {
     try {
-      const res = await this.fetchImpl(`${this.host}/api/tags`, { signal });
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+      const res = await this.fetchImpl(`${this.host}/api/tags`, { headers, ...(signal ? { signal } : {}) });
       if (!res.ok) return [];
       const json = (await res.json()) as { models?: Array<{ name?: string }> };
       return (json.models ?? []).map((m) => m.name ?? "").filter((n) => n.length > 0);
@@ -175,20 +198,26 @@ export class OllamaCloudPool {
     }
   }
 
+  /** Is this model available on this host, in either spelling? */
+  hasModel(available: readonly string[], id: string): boolean {
+    return available.some((a) => sameOllamaModel(a, id));
+  }
+
   /** Probe reachable + slot-models present. Used by `ares doctor`. */
   async health(): Promise<{
     reachable: boolean;
     host: string;
     availableModels: string[];
     slots: Array<{ name: SlotName; model: string; present: boolean }>;
+    cloudDirect: boolean;
   }> {
     const available = await this.listModels();
     const reachable = available.length > 0 || (await this.ping());
     const slots = (Object.keys(Object.fromEntries(this.slots)) as SlotName[]).map((name) => {
       const model = this.modelFor(name);
-      return { name, model, present: available.includes(model) };
+      return { name, model, present: this.hasModel(available, model) };
     });
-    return { reachable, host: this.host, availableModels: available, slots };
+    return { reachable, host: this.host, availableModels: available, slots, cloudDirect: this.cloudDirect };
   }
 
   private async ping(): Promise<boolean> {
@@ -260,7 +289,7 @@ export class OllamaCloudPool {
     const estPromptTokens = Math.ceil(estPromptChars / 4) + estImageTokens;
 
     const body = {
-      model,
+      model: this.wireModelId(model),
       messages,
       tools:
         req.tools.length > 0
@@ -279,7 +308,7 @@ export class OllamaCloudPool {
         num_ctx: ollamaNumCtx(
           estPromptTokens,
           req.maxOutputTokens ?? 8_192,
-          /cloud/i.test(model) || /ollama\.com/i.test(this.host),
+          this.cloudDirect || /cloud/i.test(model) || !!ollamaCloudHint(model),
         ),
         temperature: 0.2,
       },
@@ -514,7 +543,7 @@ export class OllamaCloudPool {
     model: string,
     req: ProviderRequest,
   ): AsyncGenerator<StreamEvent> {
-    let body = buildAnthropicMessagesBody(model, req, true);
+    let body = buildAnthropicMessagesBody(this.wireModelId(model), req, true);
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -1214,6 +1243,93 @@ function normalizeOllamaHost(raw?: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
+// ─── Model id normalization ────────────────────────────────────────────
+//
+// Ollama has two spellings for every cloud model: the plain name the cloud
+// API takes ("glm-5.3", "gpt-oss:120b") and the tag a LOCAL app uses to
+// proxy it ("glm-5.3:cloud", "gpt-oss:120b-cloud"). Ares stores and shows
+// the plain name; the wire layer adds the tag only when talking to a local
+// app. Getting this wrong is exactly the "not installed — pull it" dead end
+// cloud-key users hit: the id had a tag the cloud never lists.
+
+/** Plain cloud name: strip a trailing ":cloud" tag or "-cloud" suffix. */
+export function toCloudDirectModelId(id: string): string {
+  return id.trim().replace(/:cloud$/i, "").replace(/-cloud$/i, "");
+}
+
+/** The tag a local Ollama app uses to proxy the cloud model. */
+export function toLocalCloudModelId(id: string): string {
+  const plain = toCloudDirectModelId(id);
+  if (/(?::cloud|-cloud)$/i.test(id.trim())) return id.trim();
+  return plain.includes(":") ? `${plain}-cloud` : `${plain}:cloud`;
+}
+
+/** True when two ids name the same model in either spelling. */
+export function sameOllamaModel(a: string, b: string): boolean {
+  return toCloudDirectModelId(a).toLowerCase() === toCloudDirectModelId(b).toLowerCase();
+}
+
+export function isOllamaCloudHost(host: string): boolean {
+  return /(^|\/\/)ollama\.com(\/|$)/i.test(host) || /ollama\.com$/i.test(host);
+}
+
+// ─── Live cloud catalog: https://ollama.com/api/tags ───────────────────
+//
+// Public, no key needed. This is the source of truth for "what can I run
+// on the cloud right now"; the static OLLAMA_CLOUD_MODELS list below is the
+// offline fallback and a hint dictionary, never the ceiling. Newest first,
+// the way a picker should read.
+
+export interface OllamaCloudLiveModel {
+  /** Plain cloud id. */
+  id: string;
+  modifiedAt?: string;
+  sizeBytes?: number;
+  family?: string;
+  parameterSize?: string;
+}
+
+let cloudCatalogCache: { at: number; models: OllamaCloudLiveModel[] } | null = null;
+const CLOUD_CATALOG_TTL_MS = 60 * 60 * 1000;
+
+export async function fetchOllamaCloudModels(
+  opts: { apiKey?: string; fetchImpl?: typeof fetch; force?: boolean; timeoutMs?: number } = {},
+): Promise<OllamaCloudLiveModel[]> {
+  if (!opts.force && cloudCatalogCache && Date.now() - cloudCatalogCache.at < CLOUD_CATALOG_TTL_MS) return cloudCatalogCache.models;
+  const f = opts.fetchImpl ?? fetch;
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
+  const res = await f("https://ollama.com/api/tags", { headers, signal: AbortSignal.timeout(opts.timeoutMs ?? 8_000) });
+  if (!res.ok) throw new Error(`ollama.com/api/tags ${res.status}`);
+  const json = (await res.json()) as {
+    models?: Array<{ name?: string; model?: string; modified_at?: string; size?: number; details?: { family?: string; parameter_size?: string } }>;
+  };
+  const models: OllamaCloudLiveModel[] = [];
+  for (const row of json.models ?? []) {
+    const raw = row.name ?? row.model;
+    if (!raw) continue;
+    const m: OllamaCloudLiveModel = { id: toCloudDirectModelId(raw) };
+    if (row.modified_at) m.modifiedAt = row.modified_at;
+    if (typeof row.size === "number") m.sizeBytes = row.size;
+    if (row.details?.family) m.family = row.details.family;
+    if (row.details?.parameter_size) m.parameterSize = row.details.parameter_size;
+    models.push(m);
+  }
+  models.sort((a, b) => (b.modifiedAt ?? "").localeCompare(a.modifiedAt ?? "") || a.id.localeCompare(b.id));
+  cloudCatalogCache = { at: Date.now(), models };
+  return models;
+}
+
+/** Test seam. */
+export function resetOllamaCloudCatalogCache(): void {
+  cloudCatalogCache = null;
+}
+
+/** Hint text from the curated list, matched in either spelling. */
+export function ollamaCloudHint(id: string): OllamaCloudModel | undefined {
+  return OLLAMA_CLOUD_MODELS.find((m) => sameOllamaModel(m.id, id));
+}
+
 export interface OllamaCloudModel {
   id: string;
   /** Bucket the picker groups by. */
@@ -1285,52 +1401,52 @@ export async function fetchOllamaLibraryModels(opts: { fetchImpl?: typeof fetch;
 
 export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   // Engineering / agentic reasoners.
-  { id: "qwen3-coder:480b-cloud",              role: "reasoner",  hint: "Qwen3 Coder 480B - top coding reasoner" },
-  { id: "qwen3-coder-next:cloud",              role: "reasoner",  hint: "Qwen3 Coder Next - agentic coding" },
-  { id: "qwen3.5:397b-cloud",                  role: "reasoner",  hint: "Qwen3.5 397B - large multimodal reasoner" },
-  { id: "qwen3.5:cloud",                       role: "reasoner",  hint: "Qwen3.5 - cloud default" },
-  { id: "qwen3-next:80b-cloud",                role: "reasoner",  hint: "Qwen3 Next 80B - efficient thinking" },
-  { id: "deepseek-v4-pro:cloud",               role: "reasoner",  hint: "DeepSeek V4 Pro - frontier reasoning" },
-  { id: "deepseek-v4-flash:cloud",             role: "reasoner",  hint: "DeepSeek V4 Flash - fast long-context reasoning" },
-  { id: "deepseek-v3.2:cloud",                 role: "reasoner",  hint: "DeepSeek V3.2 - efficient reasoning" },
-  { id: "deepseek-v3.1:671b-cloud",            role: "reasoner",  hint: "DeepSeek V3.1 671B - hybrid thinking" },
-  { id: "glm-5.1:cloud",                       role: "reasoner",  hint: "GLM-5.1 - flagship agentic engineering" },
-  { id: "glm-5:cloud",                         role: "reasoner",  hint: "GLM-5 - complex systems engineering" },
-  { id: "glm-4.7:cloud",                       role: "reasoner",  hint: "GLM-4.7 - coding capability" },
-  { id: "glm-4.6:cloud",                       role: "reasoner",  hint: "GLM-4.6 - agentic coding" },
-  { id: "kimi-k2.6:cloud",                     role: "reasoner",  hint: "Kimi K2.6 - multimodal agentic coding" },
-  { id: "kimi-k2.5:cloud",                     role: "reasoner",  hint: "Kimi K2.5 - multimodal agentic" },
-  { id: "kimi-k2:1t-cloud",                    role: "reasoner",  hint: "Kimi K2 1T - long-horizon coding" },
-  { id: "kimi-k2-thinking:cloud",              role: "reasoner",  hint: "Kimi K2 Thinking - thinking model" },
-  { id: "minimax-m2.7:cloud",                  role: "reasoner",  hint: "MiniMax M2.7 - coding and productivity" },
-  { id: "minimax-m2.5:cloud",                  role: "reasoner",  hint: "MiniMax M2.5 - productivity coding" },
-  { id: "minimax-m2.1:cloud",                  role: "reasoner",  hint: "MiniMax M2.1 - multilingual coding" },
-  { id: "minimax-m2:cloud",                    role: "reasoner",  hint: "MiniMax M2 - efficient agentic workflows" },
-  { id: "gpt-oss:120b-cloud",                  role: "reasoner",  hint: "GPT-OSS 120B - open reasoning" },
-  { id: "devstral-2:123b-cloud",               role: "reasoner",  hint: "Devstral 2 123B - codebase agents" },
-  { id: "mistral-large-3:675b-cloud",          role: "reasoner",  hint: "Mistral Large 3 675B - enterprise multimodal" },
-  { id: "nemotron-3-super:cloud",              role: "reasoner",  hint: "Nemotron 3 Super - multi-agent reasoning" },
-  { id: "cogito-2.1:671b-cloud",               role: "reasoner",  hint: "Cogito 2.1 671B - general reasoning" },
+  { id: "qwen3-coder:480b",              role: "reasoner",  hint: "Qwen3 Coder 480B - top coding reasoner" },
+  { id: "qwen3-coder-next",              role: "reasoner",  hint: "Qwen3 Coder Next - agentic coding" },
+  { id: "qwen3.5:397b",                  role: "reasoner",  hint: "Qwen3.5 397B - large multimodal reasoner" },
+  { id: "qwen3.5",                       role: "reasoner",  hint: "Qwen3.5 - cloud default" },
+  { id: "qwen3-next:80b",                role: "reasoner",  hint: "Qwen3 Next 80B - efficient thinking" },
+  { id: "deepseek-v4-pro",               role: "reasoner",  hint: "DeepSeek V4 Pro - frontier reasoning" },
+  { id: "deepseek-v4-flash",             role: "reasoner",  hint: "DeepSeek V4 Flash - fast long-context reasoning" },
+  { id: "deepseek-v3.2",                 role: "reasoner",  hint: "DeepSeek V3.2 - efficient reasoning" },
+  { id: "deepseek-v3.1:671b",            role: "reasoner",  hint: "DeepSeek V3.1 671B - hybrid thinking" },
+  { id: "glm-5.1",                       role: "reasoner",  hint: "GLM-5.1 - flagship agentic engineering" },
+  { id: "glm-5",                         role: "reasoner",  hint: "GLM-5 - complex systems engineering" },
+  { id: "glm-4.7",                       role: "reasoner",  hint: "GLM-4.7 - coding capability" },
+  { id: "glm-4.6",                       role: "reasoner",  hint: "GLM-4.6 - agentic coding" },
+  { id: "kimi-k2.6",                     role: "reasoner",  hint: "Kimi K2.6 - multimodal agentic coding" },
+  { id: "kimi-k2.5",                     role: "reasoner",  hint: "Kimi K2.5 - multimodal agentic" },
+  { id: "kimi-k2:1t",                    role: "reasoner",  hint: "Kimi K2 1T - long-horizon coding" },
+  { id: "kimi-k2-thinking",              role: "reasoner",  hint: "Kimi K2 Thinking - thinking model" },
+  { id: "minimax-m2.7",                  role: "reasoner",  hint: "MiniMax M2.7 - coding and productivity" },
+  { id: "minimax-m2.5",                  role: "reasoner",  hint: "MiniMax M2.5 - productivity coding" },
+  { id: "minimax-m2.1",                  role: "reasoner",  hint: "MiniMax M2.1 - multilingual coding" },
+  { id: "minimax-m2",                    role: "reasoner",  hint: "MiniMax M2 - efficient agentic workflows" },
+  { id: "gpt-oss:120b",                  role: "reasoner",  hint: "GPT-OSS 120B - open reasoning" },
+  { id: "devstral-2:123b",               role: "reasoner",  hint: "Devstral 2 123B - codebase agents" },
+  { id: "mistral-large-3:675b",          role: "reasoner",  hint: "Mistral Large 3 675B - enterprise multimodal" },
+  { id: "nemotron-3-super",              role: "reasoner",  hint: "Nemotron 3 Super - multi-agent reasoning" },
+  { id: "cogito-2.1:671b",               role: "reasoner",  hint: "Cogito 2.1 671B - general reasoning" },
 
   // Fast apply / edit models.
-  { id: "devstral-small-2:24b-cloud",          role: "apply",     hint: "Devstral Small 2 24B - codebase editing" },
-  { id: "nemotron-3-nano:30b-cloud",           role: "apply",     hint: "Nemotron 3 Nano 30B - efficient agentic work" },
-  { id: "qwen3-vl:235b-instruct-cloud",        role: "apply",     hint: "Qwen3-VL 235B Instruct - multimodal instruction" },
-  { id: "rnj-1:8b-cloud",                      role: "apply",     hint: "RNJ-1 8B - code and STEM utility" },
+  { id: "devstral-small-2:24b",          role: "apply",     hint: "Devstral Small 2 24B - codebase editing" },
+  { id: "nemotron-3-nano:30b",           role: "apply",     hint: "Nemotron 3 Nano 30B - efficient agentic work" },
+  { id: "qwen3-vl:235b-instruct",        role: "apply",     hint: "Qwen3-VL 235B Instruct - multimodal instruction" },
+  { id: "rnj-1:8b",                      role: "apply",     hint: "RNJ-1 8B - code and STEM utility" },
 
   // Summarizers / compact utility models.
-  { id: "gpt-oss:20b-cloud",                   role: "summarize", hint: "GPT-OSS 20B - quick summaries" },
-  { id: "gemma3:4b-cloud",                     role: "summarize", hint: "Gemma 3 4B - compact vision utility" },
-  { id: "ministral-3:3b-cloud",                role: "summarize", hint: "Ministral 3 3B - small utility" },
+  { id: "gpt-oss:20b",                   role: "summarize", hint: "GPT-OSS 20B - quick summaries" },
+  { id: "gemma3:4b",                     role: "summarize", hint: "Gemma 3 4B - compact vision utility" },
+  { id: "ministral-3:3b",                role: "summarize", hint: "Ministral 3 3B - small utility" },
 
   // Multimodal / general cloud choices.
-  { id: "gemini-3-flash-preview:cloud",        role: "general",   hint: "Gemini 3 Flash Preview - fast multimodal" },
-  { id: "gemma4:31b-cloud",                    role: "general",   hint: "Gemma 4 31B - multimodal reasoning" },
-  { id: "gemma3:27b-cloud",                    role: "general",   hint: "Gemma 3 27B - capable vision model" },
-  { id: "gemma3:12b-cloud",                    role: "general",   hint: "Gemma 3 12B - balanced vision model" },
-  { id: "qwen3-vl:235b-cloud",                 role: "general",   hint: "Qwen3-VL 235B - vision-language reasoning" },
-  { id: "ministral-3:14b-cloud",               role: "general",   hint: "Ministral 3 14B - edge-capable multimodal" },
-  { id: "ministral-3:8b-cloud",                role: "general",   hint: "Ministral 3 8B - small multimodal" },
+  { id: "gemini-3-flash-preview",        role: "general",   hint: "Gemini 3 Flash Preview - fast multimodal" },
+  { id: "gemma4:31b",                    role: "general",   hint: "Gemma 4 31B - multimodal reasoning" },
+  { id: "gemma3:27b",                    role: "general",   hint: "Gemma 3 27B - capable vision model" },
+  { id: "gemma3:12b",                    role: "general",   hint: "Gemma 3 12B - balanced vision model" },
+  { id: "qwen3-vl:235b",                 role: "general",   hint: "Qwen3-VL 235B - vision-language reasoning" },
+  { id: "ministral-3:14b",               role: "general",   hint: "Ministral 3 14B - edge-capable multimodal" },
+  { id: "ministral-3:8b",                role: "general",   hint: "Ministral 3 8B - small multimodal" },
 ];
 
 /** Sub-list filtered by intended role. */
@@ -1341,7 +1457,7 @@ export function ollamaCloudModelsFor(role: OllamaCloudModel["role"]): readonly O
 // ─── Defaults a fresh CLI uses if the user doesn't override ────────────
 
 export const DEFAULT_OLLAMA_SLOTS: Record<SlotName, SlotConfig> = {
-  reasoner: { model: process.env.ARES_REASONER ?? "qwen3-coder:480b-cloud" },
-  apply: { model: process.env.ARES_APPLY ?? "devstral-small-2:24b-cloud" },
-  summarize: { model: process.env.ARES_SUMMARIZE ?? "gpt-oss:20b-cloud" },
+  reasoner: { model: process.env.ARES_REASONER ?? "qwen3-coder:480b" },
+  apply: { model: process.env.ARES_APPLY ?? "devstral-small-2:24b" },
+  summarize: { model: process.env.ARES_SUMMARIZE ?? "gpt-oss:20b" },
 };

@@ -4288,6 +4288,7 @@ function App() {
 
       {modelPopOpen ? (
         <ModelPopover
+          hasOllamaKey={Boolean(keyStatus["ollama"])}
           prefs={prefs}
           native={native}
           usage={usageStats}
@@ -5045,6 +5046,7 @@ function ModelPopover({
   onPickAuto,
   onPick,
   onClose,
+  hasOllamaKey,
 }: {
   prefs: Prefs;
   native: boolean;
@@ -5056,9 +5058,15 @@ function ModelPopover({
   onPickAuto: () => void;
   onPick: (provider: string, model: string) => void;
   onClose: () => void;
+  /** An Ollama Cloud key is set: local Ollama is optional, never an error. */
+  hasOllamaKey?: boolean;
 }) {
   const [provider, setProvider] = useState(prefs.provider);
   const { models, loading, error } = useModelCatalog(provider, native);
+  // The public library is 300+ models that need a local pull. Hidden behind a
+  // chip (or a search) so the picker shows what actually runs: your local
+  // models and the cloud, newest first.
+  const [showLibrary, setShowLibrary] = useState(false);
   // 30-day usage for the hero strip — ask once per open.
   useEffect(() => { onRequestUsage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   const providerUsage = usage?.providers?.find((p) => p.provider === provider);
@@ -5086,8 +5094,7 @@ function ModelPopover({
   const groupRank = (g: string) => {
     if (g === "Local Ollama") return 0;
     if (g.startsWith("Ollama Cloud")) return 1;
-    if (g === "Ollama Library · cloud") return 2;
-    if (g === "Ollama Library") return 3;
+    if (g.startsWith("Ollama Library")) return 3;
     return 4;
   };
   const parsePulls = (p?: string) => {
@@ -5102,13 +5109,23 @@ function ModelPopover({
   const value = prefs.provider === provider ? prefs.model : "";
   const ident = PROVIDER_IDENTITY[provider] ?? { title: provider, tagline: "", mark: "◆", from: "#26262a", to: "#8a8f98" };
   const q = query.trim().toLowerCase();
-  const byCapability = capability === "all" ? models : models.filter((m) => m.capabilities?.includes(capability));
+  const isLibrary = (m: ModelOption) => m.group.startsWith("Ollama Library");
+  const libraryCount = models.filter(isLibrary).length;
+  const visible = showLibrary || q ? models : models.filter((m) => !isLibrary(m));
+  const byCapability = capability === "all" ? visible : visible.filter((m) => m.capabilities?.includes(capability));
   const searched = q
     ? byCapability.filter((m) => [m.id, m.label ?? "", m.hint ?? "", m.description ?? "", ...(m.capabilities ?? [])].join(" ").toLowerCase().includes(q))
     : byCapability;
-  // Ordered: local models first, then cloud, then the library by popularity.
+  // Ordered: local models first, then cloud, then the library. WITHIN a group
+  // the daemon's order stands — it is newest-first for the cloud and for
+  // Anthropic (their APIs list newest first) and by popularity for the
+  // library. The old id.localeCompare tiebreak alphabetized everything, so a
+  // model released yesterday sat wherever its name fell.
+  const order = new Map(models.map((m, i) => [m.id, i]));
   const filtered = [...searched].sort((a, b) =>
-    groupRank(a.group) - groupRank(b.group) || parsePulls(b.pulls) - parsePulls(a.pulls) || a.id.localeCompare(b.id));
+    groupRank(a.group) - groupRank(b.group) ||
+    (a.group.startsWith("Ollama Library") ? parsePulls(b.pulls) - parsePulls(a.pulls) : 0) ||
+    (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   const sections = [...new Set(filtered.map((m) => m.group))];
   const capabilityCount = (name: Exclude<typeof capability, "all">) => models.filter((m) => m.capabilities?.includes(name)).length;
   const ctxLabel = (n?: number) => {
@@ -5210,9 +5227,16 @@ function ModelPopover({
                   </button>
                 );
               })}
+              {libraryCount > 0 ? (
+                <button data-on={showLibrary ? "1" : "0"} onClick={() => setShowLibrary((v) => !v)} title="The public ollama.com library — needs a local Ollama and a pull">
+                  library <em>{libraryCount}</em>
+                </button>
+              ) : null}
             </div>
           </div>
-          {error ? <div className="modelError">{error}</div> : null}
+          {error && !(provider === "ollama" && hasOllamaKey) ? (
+            <div className={/Local Ollama isn't running/.test(error) ? "modelNote" : "modelError"}>{error}</div>
+          ) : null}
           {detail ? (
             <div className="mdlDetailWrap">
               <ModelDetail
@@ -9240,10 +9264,14 @@ function ModelPicker({
   const [open, setOpen] = useState(Boolean(searchOnly || compact));
   const [query, setQuery] = useState("");
   const [capability, setCapability] = useState<"all" | "tools" | "reasoning" | "vision" | "free">("all");
+  const [showLibrary, setShowLibrary] = useState(false);
   // The model DETAIL page — click a card's ⓘ to open a big, readable view.
   const [detail, setDetail] = useState<ModelOption | null>(null);
   const q = query.trim().toLowerCase();
-  const byCapability = capability === "all" ? models : models.filter((model) => model.capabilities?.includes(capability));
+  const isLibrary = (m: ModelOption) => m.group.startsWith("Ollama Library");
+  const libraryCount = models.filter(isLibrary).length;
+  const visible = showLibrary || q ? models : models.filter((m) => !isLibrary(m));
+  const byCapability = capability === "all" ? visible : visible.filter((model) => model.capabilities?.includes(capability));
   const filtered = q
     ? byCapability.filter((m) =>
         [m.id, m.label ?? "", m.hint ?? "", ...(m.capabilities ?? [])].join(" ").toLowerCase().includes(q),
@@ -9294,8 +9322,13 @@ function ModelPicker({
             </button>
           );
         })}
+        {libraryCount > 0 ? (
+          <button data-on={showLibrary ? "1" : "0"} onClick={() => setShowLibrary((v) => !v)} title="The public ollama.com library — needs a local Ollama and a pull">
+            library <em>{libraryCount}</em>
+          </button>
+        ) : null}
       </div> : null}
-      {error ? <div className="modelError">{error}</div> : null}
+      {error && !/Local Ollama isn't running/.test(error) ? <div className="modelError">{error}</div> : null}
       {open ? <div className="modelList">
         {groups.map((g) => (
           <React.Fragment key={g}>

@@ -142,6 +142,12 @@ function AresLauncherApp({
       if (live) setOllamaLiveTick((tick) => tick + 1); // force ollamaModels() re-derivation once live data lands
     });
   }, [options.settings]);
+  useEffect(() => {
+    // Every other provider: the daemon's live catalog, merged when it lands.
+    void refreshLiveProviderModels(currentProvider).then((live) => {
+      if (live) setOllamaLiveTick((tick) => tick + 1);
+    });
+  }, [currentProvider]);
   const providerModels = useMemo(() => providerModelList(currentProvider, options.settings), [currentProvider, options.settings, ollamaLiveTick]);
   const models = useMemo(() => reorderWithFavorites(ollamaModels(), favoriteOllama), [favoriteOllama, ollamaLiveTick]);
   const selectedModel = models[Math.min(selectedOllama, Math.max(0, models.length - 1))] ?? models[0];
@@ -521,10 +527,12 @@ let liveOllamaFetchStarted = false;
 function refreshLiveOllamaModels(settings: UiSettings): Promise<LauncherModel[] | null> {
   if (liveOllamaFetchStarted) return Promise.resolve(liveOllamaModels);
   liveOllamaFetchStarted = true;
+  // ollama.com/api/tags is public: the cloud catalog shows even before a key is
+  // pasted, so the picker never lags the cloud by a hand-edit.
   const apiKey = settings.ollamaApiKey || process.env.OLLAMA_API_KEY;
-  if (!apiKey) return Promise.resolve(null);
   return fetch("https://ollama.com/api/tags", {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    headers: { ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}), Accept: "application/json" },
+    signal: AbortSignal.timeout(8_000),
   })
     .then((response) => (response.ok ? response.json() : null))
     .then((payload: { models?: Array<{ name?: string; model?: string; details?: { parameter_size?: string; family?: string } }> } | null) => {
@@ -572,22 +580,44 @@ function cleanModelName(id: string): string {
   return id.replace(/-cloud$/u, "").replace(/:cloud$/u, "").replace(/:/gu, " ");
 }
 
+// Live provider catalogs for the TUI picker. The daemon's catalog is live for
+// every provider (Anthropic via key or Claude sign-in, OpenAI, DeepSeek, Kimi,
+// OpenRouter, the gateway); the hardcoded rows below are only what shows in
+// the first second and when offline. Without this, the TUI's Anthropic list
+// was a stale hand-edit that never learned about a new release.
+const liveProviderModels = new Map<string, string[]>();
+const liveProviderFetchStarted = new Set<string>();
+
+export function refreshLiveProviderModels(provider: string): Promise<string[] | null> {
+  if (provider === "ollama" || provider === "mock" || provider === "custom") return Promise.resolve(null);
+  if (liveProviderFetchStarted.has(provider)) return Promise.resolve(liveProviderModels.get(provider) ?? null);
+  liveProviderFetchStarted.add(provider);
+  return import("./entry/providers.js")
+    .then(({ daemonModelCatalog }) => daemonModelCatalog(provider))
+    .then((rows) => {
+      const ids = rows.map((r) => r.id).filter((id) => typeof id === "string" && id.length > 0);
+      if (!ids.length) return null;
+      liveProviderModels.set(provider, ids);
+      return ids;
+    })
+    .catch(() => null);
+}
+
 function providerModelList(provider: ProviderId, settings: UiSettings): string[] {
   if (provider === "ares") return unique([settings.lastAresModel, "ares-internal"]);
   if (provider === "ollama") return ollamaModels().map((model) => model.id);
   if (provider === "openai") return openAIModelList(settings);
+  const live = liveProviderModels.get(provider);
   if (provider === "anthropic") {
     return unique([
       settings.lastAnthropicModel,
-      "claude-fable-5",
-      "claude-opus-4-8",
-      "claude-sonnet-4-6",
-      "claude-haiku-4-5-20251001",
+      ...(live ?? ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]),
     ]);
   }
   if (provider === "deepseek") {
-    return unique([settings.lastDeepSeekModel, "deepseek-v4-pro", "deepseek-v4-flash"]);
+    return unique([settings.lastDeepSeekModel, ...(live ?? ["deepseek-v4-pro", "deepseek-v4-flash"])]);
   }
+  if (live && live.length) return unique([...live]);
   if (provider === "openrouter") {
     return unique([settings.lastOpenRouterModel, "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.5-pro"]);
   }

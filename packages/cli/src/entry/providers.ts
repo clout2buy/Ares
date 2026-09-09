@@ -1,6 +1,10 @@
 // Extracted from entry.ts — providers.
 
-import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider } from "@ares/core";
+import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider } from "@ares/core";
+import { promises as fsp } from "node:fs";
+import nodeOs from "node:os";
+import nodePath from "node:path";
+import { recordLiveModelContextWindow } from "./sessionFactory.js";
 import path from "node:path";
 import { type SubModelPool } from "@ares/tools";
 import { buildReportBody } from "./daemon/report.js";
@@ -416,19 +420,34 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
     // Live-fetch-with-static-fallback, same pattern as the deepseek branch below:
     // an unreachable/unauthed Anthropic API silently falls back to the curated
     // static catalog rather than returning an empty list.
+    // Live with an API key OR the Claude OAuth sign-in (most owners have only
+    // the sign-in — before this they never saw a new model until someone
+    // hand-edited the fallback list). API order is newest first; keep it.
+    // The API's max_input_tokens feeds the context budget for models this
+    // file has never heard of.
     const live = await fetchAnthropicModels(settings.anthropicKey || process.env.ANTHROPIC_API_KEY || process.env.ARES_ANTHROPIC_API_KEY || "").catch(() => []);
-    if (live.length === 0) return STATIC_MODEL_CATALOG.anthropic;
     const staticHints = new Map(STATIC_MODEL_CATALOG.anthropic.map((m) => [m.id, m]));
-    return live.map((model: { id: string; label?: string }) => {
+    if (live.length === 0) {
+      const cached = await readCatalogCache("anthropic").catch(() => null);
+      return cached?.length ? cached : STATIC_MODEL_CATALOG.anthropic;
+    }
+    const rows: DaemonModelOption[] = live.map((model) => {
       const known = staticHints.get(model.id);
+      if (model.maxInputTokens) recordLiveModelContextWindow(model.id, model.maxInputTokens);
+      const caps = known?.capabilities ?? ["tools", ...(model.thinking === false ? [] : ["reasoning"]), ...(model.vision ? ["vision"] : [])];
+      const ctx = model.maxInputTokens ? `${Math.round(model.maxInputTokens / 1000)}k ctx` : "";
       return {
         id: model.id,
         label: model.label ?? known?.hint,
-        hint: known?.hint ?? model.label ?? "",
+        hint: known?.hint ?? [model.label, ctx].filter(Boolean).join(" · "),
         group: "Anthropic",
-        capabilities: known?.capabilities ?? ["tools", "reasoning"],
+        capabilities: [...new Set(caps)],
+        ...(model.maxInputTokens ? { contextLength: model.maxInputTokens } : {}),
+        ...(model.createdAt ? { updated: model.createdAt.slice(0, 10) } : {}),
       };
     });
+    await writeCatalogCache("anthropic", rows).catch(() => undefined);
+    return rows;
   }
 
   if (provider === "openrouter") {
@@ -545,46 +564,48 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
     });
   };
 
-  for (const model of OLLAMA_CLOUD_MODELS) {
-    put({
-      id: model.id,
-      hint: model.hint,
-      group: `Ollama Cloud · ${model.role}`,
-      capabilities: model.role === "reasoner" ? ["tools", "reasoning"] : ["tools"],
-    });
-  }
-
-  if (settings.ollamaApiKey || process.env.OLLAMA_API_KEY) {
-    const apiKey = settings.ollamaApiKey || process.env.OLLAMA_API_KEY || "";
-    const response = await fetch("https://ollama.com/api/tags", {
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(8_000),
-    }).catch(() => null);
-    if (response?.ok) {
-      const payload = await response.json() as {
-        models?: Array<{
-          name?: string;
-          model?: string;
-          size?: number;
-          details?: { parameter_size?: string; family?: string };
-        }>;
-      };
-      for (const row of payload.models ?? []) {
-        const id = row.name ?? row.model;
-        if (!id) continue;
-        put({
-          id,
-          hint: [row.details?.parameter_size, row.details?.family].filter(Boolean).join(" · "),
-          group: "Ollama Cloud · live",
-          capabilities: ["tools"],
+  // The CLOUD list is live: https://ollama.com/api/tags is public, so the
+  // picker shows what the cloud runs today, newest first, whether or not a key
+  // is pasted yet and whether or not a local Ollama app exists. Ids are the
+  // plain cloud names; the pool adds a ":cloud" tag on the wire only when it
+  // routes through a local app. The curated OLLAMA_CLOUD_MODELS list is the
+  // hint dictionary and the offline fallback — never the ceiling.
+  const apiKey = settings.ollamaApiKey || process.env.OLLAMA_API_KEY || "";
+  const live = await fetchOllamaCloudModels(apiKey ? { apiKey } : {}).catch(() => null);
+  const cloudRows: DaemonModelOption[] = [];
+  if (live && live.length) {
+    for (const row of live) {
+      const known = ollamaCloudHint(row.id);
+      cloudRows.push({
+        id: row.id,
+        hint: known?.hint ?? ([row.parameterSize, row.family].filter(Boolean).join(" · ") || "Ollama Cloud"),
+        group: "Ollama Cloud",
+        capabilities: known ? (known.role === "reasoner" ? ["tools", "reasoning"] : ["tools"]) : ["tools", "reasoning"],
+        ...(row.modifiedAt ? { updated: row.modifiedAt.slice(0, 10) } : {}),
+      });
+    }
+    await writeCatalogCache("ollama", cloudRows).catch(() => undefined);
+  } else {
+    const cached = await readCatalogCache("ollama").catch(() => null);
+    if (cached?.length) cloudRows.push(...cached);
+    else {
+      for (const model of OLLAMA_CLOUD_MODELS) {
+        cloudRows.push({
+          id: toCloudDirectModelId(model.id),
+          hint: model.hint,
+          group: "Ollama Cloud",
+          capabilities: model.role === "reasoner" ? ["tools", "reasoning"] : ["tools"],
         });
       }
     }
   }
+  for (const row of cloudRows) put(row);
 
   // The FULL public library (ollama.com/library) — every model, pulled or not,
-  // with the same blurb/pulls/updated meta the website shows. Degrades to
-  // nothing on network failure; never blocks the rest of the catalog.
+  // with the same blurb/pulls/updated meta the website shows. Cloud-hosted
+  // library entries are the SAME models as above (plain id), so they only
+  // enrich; local-only entries need a local Ollama and a pull, and say so in
+  // their group name. Degrades to nothing on network failure.
   const library = await fetchOllamaLibraryModels().catch(() => []);
   for (const entry of library) {
     if (entry.capabilities.includes("embedding")) continue; // not chat-pickable
@@ -593,13 +614,12 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
       ...(entry.capabilities.includes("thinking") ? ["reasoning"] : []),
       ...(entry.capabilities.includes("vision") ? ["vision"] : []),
     ];
+    const isCloud = entry.cloud || cloudRows.some((c) => sameOllamaModel(c.id, entry.name));
     put({
-      // Cloud-hosted library models run as name:cloud; local-only ones by name
-      // (which works once pulled — the UI shows pulled state).
-      id: entry.cloud ? `${entry.name}:cloud` : entry.name,
+      id: entry.name,
       label: entry.name,
       hint: [entry.pulls ? `${entry.pulls} pulls` : "", entry.tagCount ? `${entry.tagCount} tag${entry.tagCount === 1 ? "" : "s"}` : "", entry.updated ? `updated ${entry.updated}` : ""].filter(Boolean).join(" · "),
-      group: entry.cloud ? "Ollama Library · cloud" : "Ollama Library",
+      group: isCloud ? "Ollama Cloud" : "Ollama Library · pull required",
       capabilities: caps,
       description: entry.description,
       pulls: entry.pulls,
@@ -607,7 +627,68 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
     });
   }
 
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // Order: cloud rows in the cloud's own order (newest first), then the
+  // library by popularity. Never alphabetical — a picker sorted by name buries
+  // yesterday's release under the alphabet.
+  const cloudOrder = new Map(cloudRows.map((r, i) => [r.id, i]));
+  const rows = [...byId.values()];
+  const pulls = (p?: string) => {
+    const m = p?.match(/([\d.]+)\s*([KMB]?)/i);
+    if (!m) return 0;
+    const mult = { k: 1e3, m: 1e6, b: 1e9 }[m[2]?.toLowerCase() as "k" | "m" | "b"] ?? 1;
+    return Number(m[1]) * mult;
+  };
+  rows.sort((a, b) => {
+    const ac = cloudOrder.has(a.id) ? 0 : 1;
+    const bc = cloudOrder.has(b.id) ? 0 : 1;
+    if (ac !== bc) return ac - bc;
+    if (ac === 0) return (cloudOrder.get(a.id) ?? 0) - (cloudOrder.get(b.id) ?? 0);
+    return pulls(b.pulls) - pulls(a.pulls) || a.id.localeCompare(b.id);
+  });
+  return rows;
+}
+
+// ─── Last-known live catalogs ─────────────────────────────────────────
+//
+// A provider's model list is fetched live; when the network or the key is
+// gone, the LAST live list is still better than a hand-edited fallback that
+// predates the newest release. ~/.ares/telemetry/model-catalog.json, per
+// provider, 14-day TTL.
+
+const CATALOG_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function catalogCacheFile(): string {
+  return nodePath.join(process.env.ARES_HOME ?? nodePath.join(nodeOs.homedir(), ".ares"), "telemetry", "model-catalog.json");
+}
+
+async function readCatalogCache(provider: string): Promise<DaemonModelOption[] | null> {
+  try {
+    const raw = JSON.parse(await fsp.readFile(catalogCacheFile(), "utf8")) as { version?: number; providers?: Record<string, { at: string; models: DaemonModelOption[] }> };
+    const entry = raw.providers?.[provider];
+    if (!entry || Date.now() - Date.parse(entry.at) > CATALOG_CACHE_TTL_MS) return null;
+    return Array.isArray(entry.models) ? entry.models : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCatalogCache(provider: string, models: DaemonModelOption[]): Promise<void> {
+  const file = catalogCacheFile();
+  let raw: { version: number; providers: Record<string, { at: string; models: DaemonModelOption[] }> } = { version: 1, providers: {} };
+  try {
+    const parsed = JSON.parse(await fsp.readFile(file, "utf8")) as typeof raw;
+    if (parsed && parsed.version === 1 && parsed.providers) raw = parsed;
+  } catch {
+    /* fresh */
+  }
+  raw.providers[provider] = { at: new Date().toISOString(), models };
+  await fsp.mkdir(nodePath.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(raw, null, 2) + "\n", "utf8");
+  await fsp.rename(tmp, file).catch(async () => {
+    await fsp.rm(file, { force: true }).catch(() => undefined);
+    await fsp.rename(tmp, file).catch(() => undefined);
+  });
 }
 
 export function providerFamilyForSelection(selection: ProviderSelection): string {
@@ -855,13 +936,20 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       preflight: async () => {
         const health = await pool.health();
         if (!health.reachable) {
-          return { ok: false, error: `Ollama is not reachable at ${health.host}. Start Ollama or check OLLAMA_HOST.` };
-        }
-        if (!health.availableModels.includes(slots.reasoner.model)) {
-          const available = health.availableModels.slice(0, 6).join(", ");
           return {
             ok: false,
-            error: `Ollama model \"${slots.reasoner.model}\" is not installed or available${available ? `. Available now: ${available}` : ""}. Pull it before selecting it.`,
+            error: health.cloudDirect
+              ? `Ollama Cloud (ollama.com) is not reachable. Check the network and the API key in Settings → Keys.`
+              : `Ollama is not reachable at ${health.host}. Start the Ollama app, or add an Ollama Cloud API key in Settings → Keys to run cloud models with no local install.`,
+          };
+        }
+        if (!pool.hasModel(health.availableModels, slots.reasoner.model)) {
+          const available = health.availableModels.slice(0, 6).map((m) => toCloudDirectModelId(m)).join(", ");
+          return {
+            ok: false,
+            error: health.cloudDirect
+              ? `"${toCloudDirectModelId(slots.reasoner.model)}" is not on Ollama Cloud right now${available ? `. Available: ${available}` : ""}. Pick another cloud model — nothing needs to be pulled.`
+              : `Ollama model "${slots.reasoner.model}" is not installed locally${available ? `. Installed: ${available}` : ""}. Pull it (ollama pull ${pool.wireModelId(slots.reasoner.model)}), or add an Ollama Cloud API key in Settings → Keys to run it on the cloud without pulling.`,
           };
         }
         return { ok: true };

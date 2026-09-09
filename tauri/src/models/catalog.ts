@@ -32,46 +32,29 @@ export interface ModelOption {
 }
 
 export const OLLAMA_CLOUD_MODELS: ModelOption[] = [
-  { id: "qwen3-coder:480b-cloud", hint: "top coding reasoner", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning"] },
-  { id: "qwen3-coder-next:cloud", hint: "agentic coding", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning"] },
-  { id: "qwen3.5:397b-cloud", hint: "large multimodal reasoner", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning", "vision"] },
-  { id: "qwen3.5:cloud", hint: "cloud default", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "qwen3-next:80b-cloud", hint: "efficient thinking", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "deepseek-v4-pro:cloud", hint: "frontier agentic reasoning", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "deepseek-v4-flash:cloud", hint: "fast long-context reasoning", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "deepseek-v3.2:cloud", hint: "efficient reasoning", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "deepseek-v3.1:671b-cloud", hint: "hybrid thinking", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "glm-5.1:cloud", hint: "flagship agentic engineering", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning"] },
-  { id: "glm-5:cloud", hint: "complex systems engineering", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning"] },
-  { id: "glm-4.7:cloud", hint: "coding capability", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "glm-4.6:cloud", hint: "agentic coding", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "kimi-k2.6:cloud", hint: "multimodal agentic coding", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning", "vision"] },
-  { id: "kimi-k2.5:cloud", hint: "multimodal agentic", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning", "vision"] },
-  { id: "kimi-k2:1t-cloud", hint: "long-horizon coding", group: "Ollama Cloud · coding", capabilities: ["tools", "reasoning"] },
-  { id: "kimi-k2-thinking:cloud", hint: "thinking model", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "minimax-m2.7:cloud", hint: "coding and productivity", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "minimax-m2.5:cloud", hint: "productivity coding", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "minimax-m2.1:cloud", hint: "multilingual coding", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "minimax-m2:cloud", hint: "efficient agentic workflows", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "gpt-oss:120b-cloud", hint: "open reasoning", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "devstral-2:123b-cloud", hint: "codebase agents", group: "Ollama Cloud · coding", capabilities: ["tools"] },
-  { id: "mistral-large-3:675b-cloud", hint: "enterprise multimodal", group: "Ollama Cloud · general", capabilities: ["tools", "vision"] },
-  { id: "nemotron-3-super:cloud", hint: "multi-agent reasoning", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "cogito-2.1:671b-cloud", hint: "general reasoning", group: "Ollama Cloud · reasoning", capabilities: ["tools", "reasoning"] },
-  { id: "devstral-small-2:24b-cloud", hint: "fast codebase editing", group: "Ollama Cloud · fast", capabilities: ["tools"] },
-  { id: "nemotron-3-nano:30b-cloud", hint: "efficient agentic work", group: "Ollama Cloud · fast", capabilities: ["tools"] },
-  { id: "qwen3-vl:235b-instruct-cloud", hint: "multimodal instruction", group: "Ollama Cloud · vision", capabilities: ["tools", "vision"] },
-  { id: "rnj-1:8b-cloud", hint: "code and STEM utility", group: "Ollama Cloud · fast", capabilities: ["tools"] },
-  { id: "gpt-oss:20b-cloud", hint: "quick summaries", group: "Ollama Cloud · fast", capabilities: ["tools"] },
-  { id: "gemma3:4b-cloud", hint: "compact vision utility", group: "Ollama Cloud · fast", capabilities: ["vision"] },
-  { id: "ministral-3:3b-cloud", hint: "small utility", group: "Ollama Cloud · fast", capabilities: ["tools"] },
-  { id: "gemini-3-flash-preview:cloud", hint: "fast multimodal", group: "Ollama Cloud · vision", capabilities: ["tools", "vision"] },
-  { id: "gemma4:31b-cloud", hint: "multimodal reasoning", group: "Ollama Cloud · vision", capabilities: ["reasoning", "vision"] },
-  { id: "gemma3:27b-cloud", hint: "capable vision model", group: "Ollama Cloud · vision", capabilities: ["vision"] },
-  { id: "gemma3:12b-cloud", hint: "balanced vision model", group: "Ollama Cloud · vision", capabilities: ["vision"] },
-  { id: "qwen3-vl:235b-cloud", hint: "vision-language reasoning", group: "Ollama Cloud · vision", capabilities: ["tools", "reasoning", "vision"] },
-  { id: "ministral-3:14b-cloud", hint: "edge-capable multimodal", group: "Ollama Cloud · vision", capabilities: ["tools", "vision"] },
-  { id: "ministral-3:8b-cloud", hint: "small multimodal", group: "Ollama Cloud · vision", capabilities: ["tools", "vision"] },
+  // Plain cloud ids — the names https://ollama.com/api/tags lists. Never a
+  // ":cloud"/"-cloud" tag here: that spelling belongs to a LOCAL Ollama app and
+  // the daemon adds it on the wire when (and only when) it routes through one.
+  // Seed + offline fallback; the daemon merges the live list, newest first.
+  { id: "glm-5.3", hint: "GLM-5.3 - flagship agentic engineering", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "glm-5.3-flash", hint: "GLM-5.3 Flash - fast agentic coding", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "deepseek-v4-pro:0813", hint: "DeepSeek V4 Pro - frontier reasoning", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "deepseek-v4-flash:0731", hint: "DeepSeek V4 Flash - fast long-context reasoning", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "kimi-k3", hint: "Kimi K3 - frontier multimodal reasoning", group: "Ollama Cloud", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "glm-5.2", hint: "GLM-5.2 - agentic engineering", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "kimi-k2.7-code", hint: "Kimi K2.7 Code - agentic coding", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "nemotron-3-ultra", hint: "Nemotron 3 Ultra - multi-agent reasoning", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "minimax-m3", hint: "MiniMax M3 - coding and productivity", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "kimi-k2.6", hint: "Kimi K2.6 - multimodal agentic coding", group: "Ollama Cloud", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "glm-5.1", hint: "GLM-5.1 - agentic engineering", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "gemma4:31b", hint: "Gemma 4 31B - multimodal reasoning", group: "Ollama Cloud", capabilities: ["reasoning", "vision"] },
+  { id: "minimax-m2.7", hint: "MiniMax M2.7 - coding and productivity", group: "Ollama Cloud", capabilities: ["tools"] },
+  { id: "nemotron-3-super", hint: "Nemotron 3 Super - multi-agent reasoning", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "qwen3.5:397b", hint: "Qwen3.5 397B - large multimodal reasoner", group: "Ollama Cloud", capabilities: ["tools", "reasoning", "vision"] },
+  { id: "nemotron-3-nano:30b", hint: "Nemotron 3 Nano 30B - efficient agentic work", group: "Ollama Cloud", capabilities: ["tools"] },
+  { id: "mistral-large-3:675b", hint: "Mistral Large 3 675B - enterprise multimodal", group: "Ollama Cloud", capabilities: ["tools", "vision"] },
+  { id: "gpt-oss:120b", hint: "GPT-OSS 120B - open reasoning", group: "Ollama Cloud", capabilities: ["tools", "reasoning"] },
+  { id: "gpt-oss:20b", hint: "GPT-OSS 20B - quick summaries", group: "Ollama Cloud", capabilities: ["tools"] },
 ];
 
 export const OPENAI_MODELS: ModelOption[] = [
@@ -188,7 +171,9 @@ export function useModelCatalog(provider: string, native: boolean) {
     const onCatalog = (event: Event) => {
       const detail = (event as CustomEvent<{ provider?: string; models?: ModelOption[] }>).detail;
       if (!live || detail?.provider !== provider || !Array.isArray(detail.models)) return;
-      setModels((current) => mergeModelOptions(current, detail.models ?? []));
+      // Daemon first: its order is the provider's (newest first for the cloud
+      // and Anthropic); the static seed only fills metadata for ids it knows.
+      setModels((current) => mergeModelOptions(detail.models ?? [], current.filter((m) => !(detail.models ?? []).some((d) => d.id === m.id))));
       if (provider === "ares") setLoading(false);
     };
     const requestDaemonCatalog = () => {

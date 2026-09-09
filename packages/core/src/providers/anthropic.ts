@@ -809,24 +809,61 @@ function isAbortError(err: unknown): boolean {
  *  Mirrors fetchOpenRouterModels/fetchDeepSeekModels's shape and
  *  error-handling in openrouter.ts: throws on a non-ok response so the
  *  caller can catch it and fall back to the hardcoded catalog. */
-export async function fetchAnthropicModels(apiKey: string): Promise<Array<{ id: string; label?: string }>> {
-  if (!apiKey) return [];
-  const res = await fetch("https://api.anthropic.com/v1/models", {
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": ANTHROPIC_VERSION,
-      Accept: "application/json",
-    },
-  });
+export interface AnthropicModelRow {
+  id: string;
+  label?: string;
+  /** From the API's max_input_tokens; absent when the API reports 0/null. */
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  createdAt?: string;
+  vision?: boolean;
+  thinking?: boolean;
+}
+
+/**
+ * Fetch the models available to this account. Works with an API key OR the
+ * Claude OAuth sign-in (the same token the messages path uses). The OAuth
+ * path is what makes a newly released model appear for owners who never set
+ * an API key — before, they were stuck on the hardcoded fallback list until
+ * someone edited it. Newest first, as the API returns them. Throws on a
+ * non-ok response so the caller can fall back.
+ */
+export async function fetchAnthropicModels(
+  apiKey: string,
+  opts: { fetchImpl?: typeof fetch; oauth?: boolean; limit?: number } = {},
+): Promise<AnthropicModelRow[]> {
+  const f = opts.fetchImpl ?? fetch;
+  const headers: Record<string, string> = { "anthropic-version": ANTHROPIC_VERSION, Accept: "application/json" };
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  } else if (opts.oauth !== false) {
+    const token = await resolveAnthropicAccessToken(f).catch(() => null);
+    if (!token) return [];
+    headers["Authorization"] = `Bearer ${token}`;
+    headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA;
+    headers["User-Agent"] = ANTHROPIC_OAUTH_USER_AGENT;
+    headers["x-app"] = ANTHROPIC_OAUTH_X_APP;
+  } else {
+    return [];
+  }
+  const limit = Math.min(1000, Math.max(1, opts.limit ?? 200));
+  const res = await f(`https://api.anthropic.com/v1/models?limit=${limit}`, { headers, signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`Anthropic models ${res.status}`);
   const json = (await res.json()) as { data?: Array<Record<string, unknown>> };
   const rows = Array.isArray(json.data) ? json.data : [];
   return rows
     .filter((row) => typeof row.id === "string" && row.id.length > 0)
-    .map((row) => ({
-      id: String(row.id),
-      label: typeof row.display_name === "string" ? row.display_name : undefined,
-    }));
+    .map((row) => {
+      const out: AnthropicModelRow = { id: String(row.id) };
+      if (typeof row.display_name === "string") out.label = row.display_name;
+      if (typeof row.max_input_tokens === "number" && row.max_input_tokens > 0) out.maxInputTokens = row.max_input_tokens;
+      if (typeof row.max_tokens === "number" && row.max_tokens > 0) out.maxOutputTokens = row.max_tokens;
+      if (typeof row.created_at === "string") out.createdAt = row.created_at;
+      const caps = row.capabilities as { image_input?: { supported?: boolean }; thinking?: { supported?: boolean } } | null | undefined;
+      if (caps?.image_input?.supported !== undefined) out.vision = caps.image_input.supported;
+      if (caps?.thinking?.supported !== undefined) out.thinking = caps.thinking.supported;
+      return out;
+    });
 }
 
 // ─── Anthropic SSE event shape (only the fields we read) ───────────────

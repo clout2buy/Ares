@@ -57,6 +57,7 @@ import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js";
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
 import { oricleOnSessionEvent } from "./oricleAdapter.js";
+import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
 // Satellite modules (extracted, closure-free helpers — command handlers and
@@ -2511,7 +2512,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           process.stdout.write(JSON.stringify({ type: "ollama_pull_done", model, ok: false, error: "a valid model name is required" }) + "\n");
           continue;
         }
-        if (model.toLowerCase().endsWith(":cloud")) {
+        // Plain cloud ids are what the catalog shows now; a known cloud model
+        // (either spelling) never needs a pull. With a cloud key it runs on
+        // ollama.com; without one a local app proxies it after `ollama signin`.
+        if (/(?::cloud|-cloud)$/i.test(model) || ollamaCloudHint(model) || (await fetchOllamaCloudModels().catch(() => [])).some((m) => sameOllamaModel(m.id, model))) {
           process.stdout.write(JSON.stringify({
             type: "ollama_pull_done",
             model,

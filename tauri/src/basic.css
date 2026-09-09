@@ -688,3 +688,6 @@
 .railNew { display: none; }
 .pointMapPreview[data-kind="galaxy"] { background: conic-gradient(from 0deg, transparent 0 40%, rgba(var(--accent-rgb), 0.5) 50%, transparent 60%, transparent 90%, rgba(var(--accent-rgb), 0.5) 100%), radial-gradient(circle at 50% 50%, rgba(var(--accent-rgb), 0.7), transparent 40%), #0b1120; }
 .pointMapPreview[data-kind="aurora"] { background: repeating-linear-gradient(90deg, transparent 0 10px, rgba(var(--accent-rgb), 0.45) 12px 18px), linear-gradient(180deg, transparent, #0b1120 80%), #0b1120; }
+
+/* a kept (non-image) file in the composer: an extension tile, like a document chip */
+.attachChip[data-kind="file"] .attachFile { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 4px; flex: none; background: color-mix(in srgb, var(--accent, #5b7cfa) 22%, transparent); color: var(--text); font: 600 10px/1 var(--mono, monospace); letter-spacing: 0.04em; text-transform: lowercase; }

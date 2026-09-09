@@ -7696,13 +7696,13 @@ const Composer = React.memo(function Composer({
     setSlashSel(0);
     if (ref.current) ref.current.style.height = "auto";
   };
-  const [attachments, setAttachmentsState] = useState<Array<{ name: string; dataUrl: string }>>([]);
+  const [attachments, setAttachmentsState] = useState<Array<{ name: string; dataUrl: string; path?: string; size?: number }>>([]);
   // Mirrors `attachments` synchronously. Refs update immediately (unlike state,
   // which is batched/rendered-on-a-delay) — submit() reads THIS after awaiting
   // in-flight reads below, since the `attachments` state variable itself would
   // still be the stale value captured when this render's submit closure formed.
-  const attachmentsRef = useRef<Array<{ name: string; dataUrl: string }>>([]);
-  const setAttachments = (updater: (prev: Array<{ name: string; dataUrl: string }>) => Array<{ name: string; dataUrl: string }>) => {
+  const attachmentsRef = useRef<Array<{ name: string; dataUrl: string; path?: string; size?: number }>>([]);
+  const setAttachments = (updater: (prev: Array<{ name: string; dataUrl: string; path?: string; size?: number }>) => Array<{ name: string; dataUrl: string; path?: string; size?: number }>) => {
     attachmentsRef.current = updater(attachmentsRef.current);
     setAttachmentsState(attachmentsRef.current);
   };
@@ -7805,7 +7805,7 @@ const Composer = React.memo(function Composer({
               const dataUrl = String(reader.result ?? "");
               const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
               invoke<string>("ares_stash_file", { name: file.name || "dropped.bin", base64: b64 })
-                .then((path) => appendDraft(`Attached file: ${path} (${fmtBytes(file.size)}${file.type ? `, ${file.type}` : ""})`))
+                .then((path) => setAttachments((prev) => [...prev, { name: file.name || "dropped.bin", dataUrl: "", path, size: file.size }]))
                 .catch((err) => appendDraft(`[Dropped ${file.name || "file"} could not be kept: ${String(err)}]`))
                 .finally(resolve);
             };
@@ -8007,12 +8007,14 @@ const Composer = React.memo(function Composer({
       // Images travel OUT OF BAND now (not concatenated into the message text) so
       // the transcript renders thumbnails, not a truncated base64 blob. The daemon
       // still gets them as image content, and send() shows them on the bubble.
-      const imgs = currentAttachments.map((a) => a.dataUrl);
+      const imgs = currentAttachments.filter((a) => a.dataUrl).map((a) => a.dataUrl);
+      const kept = currentAttachments.filter((a) => a.path);
+      const t2 = kept.length ? `${t}${t ? "\n\n" : ""}${kept.map((a) => `Attached file: ${a.path}${a.size ? ` (${fmtBytes(a.size)})` : ""}`).join("\n")}` : t;
       if (busy) {
         // If Stop/settlement won a local race, retain the draft. Ownership moves
         // out of the composer only after the parent accepts this exact steer.
-        if (!onSteer(t, imgs)) return;
-      } else if (!onSend(t, imgs)) return;
+        if (!onSteer(t2, imgs)) return;
+      } else if (!onSend(t2, imgs)) return;
       setText("");
       setAttachments(() => []);
       if (ref.current) ref.current.style.height = "auto";
@@ -8034,8 +8036,8 @@ const Composer = React.memo(function Composer({
       {attachments.length > 0 ? (
         <div className="attachments">
           {attachments.map((a, idx) => (
-            <span className="attachChip" key={idx} title={a.name}>
-              <img src={a.dataUrl} alt={a.name} />
+            <span className="attachChip" key={idx} title={a.path ? `${a.path}${a.size ? ` · ${fmtBytes(a.size)}` : ""}` : a.name} data-kind={a.path ? "file" : "image"}>
+              {a.path ? <span className="attachFile">{(a.name.match(/\.([a-z0-9]+)$/i)?.[1] ?? "file").slice(0, 5).toLowerCase()}</span> : <img src={a.dataUrl} alt={a.name} />}
               <span className="attachName">{a.name}</span>
               <button onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))} aria-label="remove">
                 ✕

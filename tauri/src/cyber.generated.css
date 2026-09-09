@@ -2651,15 +2651,18 @@ html[data-perf="lite"] .ares[data-style="modern"][data-surface="cyber"] .hmCard:
 
    Nothing animates in luminance. Standing photosensitive doctrine.            */
 
-/* The rail now spans three tabs. Exact geometry rather than approximate:
-   each tab is (100% - 2 gaps of 4px - 8px of container padding) / 3, and one
-   step is the element's own width + one gap. translateX percentages resolve
-   against the element's own width, so `100% + 4px` is exactly one slot. */
+/* The rail spans FOUR tabs (Overview · Agents · Fleets · Mind). Exact
+   geometry: each tab is (100% - 3 gaps of 4px - 8px of container padding) / 4,
+   and one step is the element's own width + one gap. translateX percentages
+   resolve against the element's own width, so `100% + 4px` is one slot. This
+   block is the one that wins (it is later in the sheet) — keep the count here
+   in step with the tab list in HelmView. */
 .ares[data-style="modern"][data-surface="cyber"] .hmTabRail {
-  width: calc((100% - 16px) / 3);
+  width: calc((100% - 20px) / 4);
 }
 .ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="agents"] { transform: translateX(calc(100% + 4px)); }
-.ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="mind"] { transform: translateX(calc(200% + 8px)); }
+.ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="fleets"] { transform: translateX(calc(200% + 8px)); }
+.ares[data-style="modern"][data-surface="cyber"] .hmTabRail[data-at="mind"] { transform: translateX(calc(300% + 12px)); }
 
 /* An attention count that is a warning, not an inventory. */
 .ares[data-style="modern"][data-surface="cyber"] .hmTabCount[data-alert="1"] {

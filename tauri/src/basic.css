@@ -684,3 +684,5 @@
 .pointMapPreview[data-kind="waves"] { background: repeating-linear-gradient(100deg, transparent 0 6px, rgba(var(--accent-rgb), 0.35) 6px 8px), #0b1120; }
 .pointMapPreview[data-kind="orbit"] { background: radial-gradient(circle at 50% 50%, transparent 8px, rgba(var(--accent-rgb), 0.5) 9px, transparent 10px, transparent 13px, rgba(var(--accent-rgb), 0.35) 14px, transparent 15px), #0b1120; }
 .pointMapPreview[data-kind="off"] { background: #0b1120; }
+
+.railNew { display: none; }

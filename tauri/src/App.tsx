@@ -2636,6 +2636,18 @@ function App() {
     }
   }, [daemonCmd, native, sessions]);
 
+  /** Home: the sanctum. Reuse the empty card you are on, or an existing empty
+   *  one, before ever creating another — clicking Home twice must not stack
+   *  blank sessions in the rail. */
+  const goHome = () => {
+    setView("chat");
+    const current = sessionsRef.current.find((s) => s.id === activeRef.current);
+    if (current && current.items.length === 0 && !current.busy && !current.background) return;
+    const spare = sessionsRef.current.find((s) => s.items.length === 0 && !s.busy && !s.background && s.loaded !== false && s.title === "New session");
+    if (spare) { openSession(spare.id); return; }
+    newSession();
+  };
+
   const newSession = () => {
     // A new chat is just a new card — the multi-session daemon lazily spawns an
     // isolated session for it on first message. NEVER restart the daemon here
@@ -3601,7 +3613,7 @@ function App() {
           <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M11 4 6 9l5 5"/><path d="M15 3v12"/></svg>
           <span>Collapse</span>
         </button>
-        <button className="primary" onClick={newSession}>
+        <button className="primary" onClick={prefs.surface === "cyber" ? goHome : newSession}>
           <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">New session</span>
         </button>
 
@@ -3613,7 +3625,8 @@ function App() {
               // On the sanctum (an empty session) "Sessions" means the latest
               // real conversation, otherwise the click did nothing visible.
               if (prefs.surface === "cyber" && active && active.items.length === 0) {
-                const latest = sessions.find((s) => s.id !== active.id && s.items.length > 0) ?? sessions.find((s) => s.id !== active.id);
+                // the latest real conversation — never another blank card
+                const latest = sessions.find((s) => s.id !== active.id && !s.background && (s.items.length > 0 || s.title !== "New session"));
                 if (latest) openSession(latest.id);
               }
             }}
@@ -3706,7 +3719,7 @@ function App() {
           );
         })}
 
-        <div className="railLabel">Sessions</div>
+        <div className="railLabel">Sessions<button className="railNew" onClick={newSession} title="New session" aria-label="New session">+</button></div>
         <nav className="sessionList">
           {looseSessions.map((s) => (
             <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />

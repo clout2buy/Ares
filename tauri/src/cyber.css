@@ -884,3 +884,20 @@
 @container (max-width: 780px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="perms"] { display: none; } }
 @container (max-width: 660px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="missions"], .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="route"] { display: none; } }
 @container (max-width: 520px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="effort"], .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="context"] { display: none; } }
+
+/* ── the rail's explicit "new session": a small + beside Recent sessions ─── */
+.ares[data-style="modern"][data-surface="cyber"] .railLabel { display: flex; align-items: center; }
+.ares[data-style="modern"][data-surface="cyber"] .railNew {
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 170, 220, 0.2);
+  background: transparent;
+  color: rgba(190, 205, 240, 0.7);
+  font: 400 14px/1 var(--font);
+  cursor: pointer;
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNew:hover { color: var(--text-hi); border-color: rgba(var(--accent-rgb), 0.5); background: rgba(var(--accent-rgb), 0.12); }

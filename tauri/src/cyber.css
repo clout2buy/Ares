@@ -901,3 +901,6 @@
   cursor: pointer;
 }
 .ares[data-style="modern"][data-surface="cyber"] .railNew:hover { color: var(--text-hi); border-color: rgba(var(--accent-rgb), 0.5); background: rgba(var(--accent-rgb), 0.12); }
+
+/* no helm artwork behind HELM in this room — the cloud is the backdrop */
+.ares[data-style="modern"][data-surface="cyber"] .hm::before { background-image: none; }

@@ -2691,11 +2691,13 @@ html[data-perf="lite"] .ares[data-style="modern"][data-surface="cyber"] .hmCard:
   gap: 14px;
   align-items: start;
 }
-.ares[data-style="modern"][data-surface="cyber"] .hmMindCard { display: grid; gap: 10px; align-content: start; }
+/* min-width:0 — a grid item defaults to min-width:auto, so one long goal
+   line was widening the first card past its column and over the second. */
+.ares[data-style="modern"][data-surface="cyber"] .hmMindCard { display: grid; gap: 10px; align-content: start; min-width: 0; overflow: hidden; }
 
 /* ── Pursuing ─────────────────────────────────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .hmMindObjective { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.ares[data-style="modern"][data-surface="cyber"] .hmMindObjective strong { font: 650 14px/1.35 var(--font); color: var(--text-hi); }
+.ares[data-style="modern"][data-surface="cyber"] .hmMindObjective strong { font: 650 14px/1.35 var(--font); color: var(--text-hi); min-width: 0; overflow-wrap: anywhere; }
 .ares[data-style="modern"][data-surface="cyber"] .hmMindStep {
   display: flex;
   align-items: center;

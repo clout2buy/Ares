@@ -217,7 +217,7 @@
   background: transparent;
   font: 500 11px/1 var(--font);
   letter-spacing: 0.06em;
-  text-transform: none;
+  text-transform: uppercase;
   color: var(--muted);
   animation: none;
 }

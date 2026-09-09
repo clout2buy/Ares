@@ -3517,7 +3517,7 @@ function App() {
         ) : null}
         <div className="titleDrag" />
         <span className="pill" data-state={daemon}>
-          {daemon === "running" ? "ONLINE" : daemon.toUpperCase()}
+          {daemon === "running" ? "Online" : daemon.charAt(0).toUpperCase() + daemon.slice(1)}
         </span>
         <button
           type="button"
@@ -3578,7 +3578,7 @@ function App() {
           <span>Collapse</span>
         </button>
         <button className="primary" onClick={newSession}>
-          <Medallion glyph="new-session" tone="ember" /><span className="primaryLabel">New session</span>
+          <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">New session</span>
         </button>
 
         <nav className="railNav">

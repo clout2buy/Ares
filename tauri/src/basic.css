@@ -582,3 +582,5 @@
 /* Cyber-only affordances: the composer attach button and the rail memory card. */
 .attach { display: none; }
 .railMemory { display: none; }
+
+.cyberHome { display: none; }

@@ -36,7 +36,7 @@
   --cyber-grad: linear-gradient(135deg, #93c5fd 0%, #60a5fa 38%, #8b5cf6 100%);
   --cyber-glow: 0 0 40px -6px rgba(99, 130, 255, 0.55);
   /* the mark: a chevron A struck in the light, drawn once as SVG */
-  --cyber-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0.1' y1='0.95' x2='0.9' y2='0.05'%3E%3Cstop offset='0' stop-color='%237c5cff'/%3E%3Cstop offset='.5' stop-color='%236da2ff'/%3E%3Cstop offset='1' stop-color='%23c9e6ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='url(%23g)' stroke='url(%23g)' stroke-width='5' stroke-linejoin='round'%3E%3Cpath d='M50 10 L88 84 L71 84 L50 43 L29 84 L12 84 Z'/%3E%3Cpath d='M50 60 L61 84 L39 84 Z'/%3E%3C/g%3E%3C/svg%3E");
+  --cyber-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0.05' y1='0.9' x2='0.95' y2='0.1'%3E%3Cstop offset='0' stop-color='%236d4cff'/%3E%3Cstop offset='.45' stop-color='%236f9cff'/%3E%3Cstop offset='1' stop-color='%23d6ecff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='url(%23g)' stroke='url(%23g)' stroke-width='3' stroke-linejoin='round'%3E%3Cpath d='M50 8 L92 82 L78 90 L50 40 L22 90 L8 82 Z'/%3E%3Cpath d='M50 54 L66 82 L56 88 L50 77 L44 88 L34 82 Z'/%3E%3C/g%3E%3C/svg%3E");
 
   --ember: #6d8cff;
   --ember-hi: #a78bfa;
@@ -113,8 +113,10 @@
   padding: 0 10px 0 18px;
   background: rgba(10, 15, 28, 0.55);
   border-bottom: 1px solid var(--line);
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
+  /* no backdrop-filter here: it would become the containing block for the
+     fixed-position traffic lights and drag them into the bar */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .ares[data-style="modern"][data-surface="cyber"] .titleTools { gap: 4px; margin-left: 10px; }
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon { width: 34px; height: 34px; border-radius: 10px; }
@@ -479,3 +481,217 @@
 .ares[data-style="modern"][data-surface="cyber"] .livingLaunchCopy > strong b { color: #0b1120; background: var(--cyber-blue); }
 .ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard > button { border-color: transparent; color: #fff; background: var(--cyber-grad); box-shadow: var(--cyber-glow); }
 .ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard > button:hover:not(:disabled) { box-shadow: var(--cyber-glow); }
+
+
+/* ═══ 1:1 pass ═══════════════════════════════════════════════════════════════
+   The reference, region by region: traffic lights top-left, a line-icon nav
+   with Home, "Recent sessions", the two-line Online pill with grouped icons,
+   a bare status row, and a small quiet voice orb. */
+
+/* ── traffic lights: the window controls move to the rail's top-left ─────── */
+.ares[data-style="modern"][data-surface="cyber"] { position: relative; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls {
+  /* fixed, not absolute: the titlebar is the nearest positioned ancestor and
+     would otherwise pull the dots to its own left edge */
+  position: fixed;
+  left: 18px;
+  top: 16px;
+  z-index: 5;
+  gap: 8px;
+  margin: 0;
+  align-self: auto;
+}
+.ares[data-style="modern"][data-surface="cyber"] .winControls button {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  color: transparent;
+  background: #4b5566;
+}
+.ares[data-style="modern"][data-surface="cyber"] .winControls button svg { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls .winClose { order: 1; background: #ff5f57; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls .winPill { order: 2; background: #febc2e; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls .winPill svg { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls button[aria-label="maximize"] { order: 3; background: #28c840; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls button:hover { filter: brightness(1.15); background-color: inherit; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls .winClose:hover { background: #ff5f57; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls .winPill:hover { background: #febc2e; }
+.ares[data-style="modern"][data-surface="cyber"] .winControls button[aria-label="maximize"]:hover { background: #28c840; }
+
+/* the rail makes room for them and the brand sits below */
+.ares[data-style="modern"][data-surface="cyber"] .rail { padding-top: 48px; }
+.ares[data-style="modern"][data-surface="cyber"] .railBrand { padding: 6px 8px 18px; font-size: 15px; letter-spacing: 0.3em; }
+.ares[data-style="modern"][data-surface="cyber"] .railBrand::before { width: 22px; height: 22px; }
+.ares[data-style="modern"][data-surface="cyber"] .railCollapse { margin-bottom: -22px; }
+
+/* ── the nav: line icons, no tiles; New session reads as Home ────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  margin-bottom: 2px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  color: rgba(229, 235, 247, 0.78);
+  font: 500 13.5px/1.2 var(--font);
+}
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary:hover { background: rgba(148, 170, 220, 0.07); border-color: transparent; color: var(--text-hi); }
+/* on the sanctum Home is the place you are, so it carries the active tint */
+.ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .rail > .primary { background: rgba(91, 124, 250, 0.16); color: var(--text-hi); }
+.ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .railNav button[data-on="1"] { background: transparent; color: rgba(229, 235, 247, 0.78); }
+.ares[data-style="modern"][data-surface="cyber"]:has(.chat > .empty) .railNav button[data-on="1"] > .medallion { color: rgba(190, 205, 240, 0.85); }
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary > .medallion { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary .cyberHome {
+  display: block;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  flex: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary .primaryLabel { font-size: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary .primaryLabel::after { content: "Home"; font: 500 13.5px/1.2 var(--font); }
+
+.ares[data-style="modern"][data-surface="cyber"] .railNav { gap: 2px; }
+.ares[data-style="modern"][data-surface="cyber"] .railNav button {
+  padding: 9px 12px;
+  border-radius: 10px;
+  font: 500 13.5px/1.2 var(--font);
+  color: rgba(229, 235, 247, 0.78);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button > .medallion,
+.ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] > .medallion {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: rgba(190, 205, 240, 0.85);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button > .medallion svg { width: 20px; height: 20px; }
+.ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] {
+  background: rgba(91, 124, 250, 0.16);
+  border-color: transparent;
+  box-shadow: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] > .medallion { color: var(--text-hi); }
+.ares[data-style="modern"][data-surface="cyber"] .railNav button em {
+  min-width: 20px;
+  padding: 3px 6px;
+  font: 500 10px/1 var(--font);
+  color: rgba(229, 235, 247, 0.75);
+  background: rgba(148, 170, 220, 0.16);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav::after {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 12px 4px 10px;
+  background: var(--line);
+}
+
+/* no search box in the reference; the list is the list */
+.ares[data-style="modern"][data-surface="cyber"] .railSearch { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .railLabel { padding: 6px 12px 8px; font-size: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .railLabel::before { content: "Recent sessions"; font: 600 9.5px/1 var(--font); letter-spacing: 0.16em; text-transform: uppercase; color: rgba(190, 205, 240, 0.5); }
+.ares[data-style="modern"][data-surface="cyber"] .railLabel.railProjectHeader { font-size: 11px; }
+.ares[data-style="modern"][data-surface="cyber"] .railLabel.railProjectHeader::before { content: none; }
+.ares[data-style="modern"][data-surface="cyber"] .sessionList > * { padding: 7px 12px; font-size: 12.5px; }
+.ares[data-style="modern"][data-surface="cyber"] .sessionMain > span { font-size: 12.5px; }
+
+/* ── top-right: the two-line Online pill and a grouped icon cluster ──────── */
+.ares[data-style="modern"][data-surface="cyber"] .titlebar { padding-right: 16px; }
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .pill {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 9px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 6px 12px 6px 10px;
+  border: none;
+  background: transparent;
+  font: 500 11.5px/1 var(--font);
+  letter-spacing: 0;
+  text-transform: capitalize;
+  color: var(--text-hi);
+}
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .pill::before { grid-row: 1 / span 2; width: 7px; height: 7px; }
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .pill::after {
+  content: "Agent Ready";
+  grid-column: 2;
+  font: 400 10px/1 var(--font);
+  color: rgba(229, 235, 247, 0.5);
+  text-transform: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .pill[data-state="error"]::after,
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .pill[data-state="stopped"]::after { content: "Agent Down"; }
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .pill[data-state="starting"]::after { content: "Starting"; }
+.ares[data-style="modern"][data-surface="cyber"] .titleTools {
+  gap: 2px;
+  margin-left: 4px;
+  padding: 3px 4px 3px 10px;
+  border-left: 1px solid var(--line);
+}
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon,
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon > .medallion { width: 32px; height: 32px; }
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon > .medallion { border-radius: 8px; border: none; background: none; color: rgba(229, 235, 247, 0.85); }
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon:hover > .medallion { background: rgba(148, 170, 220, 0.1); }
+/* the workflow chip reads quieter, matching the cluster */
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .workflowPill,
+.ares[data-style="modern"][data-surface="cyber"] .titlebar button[aria-label^="Workflow mode"] {
+  font: 600 9.5px/1 var(--font);
+  letter-spacing: 0.12em;
+  color: rgba(190, 205, 240, 0.8);
+  border: 1px solid rgba(148, 170, 220, 0.2);
+  background: rgba(148, 170, 220, 0.06);
+  border-radius: 999px;
+}
+
+/* ── the status row: dots, labels, values — nothing else ─────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusActions,
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .hudVersion,
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="effects"] { display: none; }
+.ares[data-style="modern"][data-surface="cyber"] .statusBar { background: transparent; border-top-color: rgba(148, 170, 220, 0.08); }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg { padding: 0 16px; font-size: 11px; }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg b { font-size: 11px; color: rgba(229, 235, 247, 0.55); }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg > span { font: 400 11px/1 var(--font); color: rgba(229, 235, 247, 0.85); }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg .dot { width: 6px; height: 6px; }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg + .statusSeg::before { height: 12px; background: rgba(148, 170, 220, 0.14); }
+
+/* ── the voice orb: small and quiet, not a black planet ──────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .skillDock { right: 22px; bottom: 50px; }
+.ares[data-style="modern"][data-surface="cyber"] .skillDockOrb {
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(148, 170, 220, 0.2);
+  background: rgba(14, 21, 40, 0.85);
+  box-shadow: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .skillDockOrbCore { width: 12px; height: 12px; background: rgba(148, 170, 220, 0.4); }
+.ares[data-style="modern"][data-surface="cyber"] .skillDockOrb[data-state="ready"] .skillDockOrbCore { background: var(--cyber-blue); box-shadow: 0 0 10px rgba(99, 130, 255, 0.6); }
+
+/* ── composer: the reference's proportions ───────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .composerRow { width: min(900px, 86%); padding: 8px 10px 8px 10px; }
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .composerRow textarea { font-size: 15px; }
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .attach,
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .mic,
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .send { width: 40px; height: 40px; }
+.ares[data-style="modern"][data-surface="cyber"] .send:disabled { background: rgba(91, 124, 250, 0.45); color: rgba(255, 255, 255, 0.75); }
+
+/* ── hero proportions ────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem { width: 96px; height: 96px; }
+.ares[data-style="modern"][data-surface="cyber"] .empty .wordmark { margin-top: 10px; font-size: clamp(34px, 3.6vw, 46px); letter-spacing: 0.46em; text-indent: 0.46em; font-weight: 400; }
+.ares[data-style="modern"][data-surface="cyber"] .empty .emptyAsk { margin-top: 10px; font-size: 11px; letter-spacing: 0.36em; text-indent: 0.36em; }
+.ares[data-style="modern"][data-surface="cyber"] .starters { margin-top: 36px; gap: 14px; }
+.ares[data-style="modern"][data-surface="cyber"] .starter { min-width: 230px; padding: 12px 14px 12px 12px; border-radius: 14px; background: rgba(18, 26, 48, 0.72); }
+.ares[data-style="modern"][data-surface="cyber"] .starter > .medallion { width: 40px; height: 40px; border-radius: 50%; }
+.ares[data-style="modern"][data-surface="cyber"] .starter .starterLabel { font-size: 13.5px; }
+.ares[data-style="modern"][data-surface="cyber"] .starter .starterSub { font-size: 10.5px; letter-spacing: 0.06em; }

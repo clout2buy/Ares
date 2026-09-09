@@ -401,6 +401,7 @@ a:hover { border-bottom-color: var(--bronze-hi); }
   border: 1px solid var(--line-strong);
   color: var(--steel);
   animation: fadeUp 300ms ease both;
+  text-transform: uppercase; /* the JSX is sentence case; Cyber shows it that way */
 }
 .pill[data-state="running"] { animation: onlineBreath 3.2s ease-in-out infinite; }
 .pill[data-state="error"], .pill[data-state="stopped"] { color: var(--crimson); border-color: rgba(194, 80, 72, 0.5); }

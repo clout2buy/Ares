@@ -267,6 +267,17 @@ export {
   type RegisterSessionLocationInput,
   type SessionRegistryOptions,
 } from "./sessionRegistry.js";
+export { streamIdleMs } from "./queryEngine.js";
+export {
+  loadContextCeiling,
+  rememberContextCeiling,
+  forgetContextCeiling,
+  contextCeilingKey,
+  contextCeilingsFile,
+  CONTEXT_CEILING_TTL_MS,
+  CONTEXT_CEILING_FLOOR,
+  type ContextCeilingEntry,
+} from "./contextCeilings.js";
 
 export {
   runReliabilityTriage,

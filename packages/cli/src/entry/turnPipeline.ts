@@ -296,6 +296,12 @@ export function semanticUserMessage(userMessage: string): string {
     .trim();
 }
 
+/** A child/task session (Task tool, verify child, operator worker) — never
+ *  the owner's chat, even when the owner types into it after the fact. */
+export function isSubagentSession(live: Pick<LiveSession, "session">): boolean {
+  return /^agent_/.test(live.session.meta.id);
+}
+
 export async function prepareUserTurn(
   live: LiveSession,
   userMessage: string,
@@ -307,12 +313,21 @@ export async function prepareUserTurn(
   // Structural plan-before-edit verdict for THIS turn, read by the engine at
   // its first model call. Graded on the raw text so slash commands stay exempt.
   applyPlanPressure(live.planPressure, userMessage);
-  await live.agentRuntime?.beforeTurn(semanticMessage);
-  await mindBeforeTurn(live, semanticMessage, tenant);
-  // "Elsewhere today": what the same owner said on other surfaces recently.
-  // Gated inside (first turn, or new activity since the last injection); a
-  // guest tenant gets nothing. Never throws.
-  await crossSurfaceBeforeTurn(live, tenant);
+  // A subagent session resumed as a chat ("ares continue" typed into a verify
+  // child) is still a subagent: it gets the owner's message and its own
+  // history, not the owner's identity, birth-conversation bootstrap, global
+  // memory, recall pack or cross-surface digest. A field report (2026-09-09)
+  // showed a verify child receiving the full identity injection on resume —
+  // several thousand tokens of the wrong context on a prompt already at the
+  // provider's ceiling.
+  if (!isSubagentSession(live)) {
+    await live.agentRuntime?.beforeTurn(semanticMessage);
+    await mindBeforeTurn(live, semanticMessage, tenant);
+    // "Elsewhere today": what the same owner said on other surfaces recently.
+    // Gated inside (first turn, or new activity since the last injection); a
+    // guest tenant gets nothing. Never throws.
+    await crossSurfaceBeforeTurn(live, tenant);
+  }
   const codingState = live.codingJournal.beginTurn(semanticMessage);
   if (codingState) {
     live.queueSystemReminder(codingState, "instructions");
@@ -352,7 +367,7 @@ export async function prepareUserTurn(
   // reminder is hard-capped in items + chars so it can't dominate the window.
   const awareness = consciousnessContextReminder();
   if (awareness) live.queueSystemReminder(awareness, "memory");
-  live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions");
+  if (!isSubagentSession(live)) live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions");
 }
 
 /**
@@ -535,6 +550,9 @@ export async function finishTurn(
   // reliable; failed turns are reviewed (failures carry feedback/belief signal).
   const userMessage = live.lastUserMessage;
   live.lastUserMessage = undefined;
+  // A subagent's turns teach nothing about the owner and write nothing to the
+  // owner's estate; see isSubagentSession in prepareUserTurn.
+  if (isSubagentSession(live)) return;
   const accepted = await witnessPass(live, finalStatus, userMessage);
   // The estate hears about every settled turn: attestation of the pack it
   // injected, the Witness's accepted candidates, and the session's episode.

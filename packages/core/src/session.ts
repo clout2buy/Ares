@@ -256,6 +256,10 @@ export interface SessionOptions {
   maxOutputTokens?: number;
   /** Trim oldest history to keep estimated input under this many tokens. */
   contextBudgetTokens?: number;
+  /** See QueryEngineConfig.knownContextCeilingTokens. */
+  knownContextCeilingTokens?: number;
+  /** See QueryEngineConfig.onContextCeilingLearned. */
+  onContextCeilingLearned?(ceilingTokens: number): void;
   /** Explicit hard ceiling on tool-calling turns. Unset = effectively
    *  unbounded (huge backstop); loop-kill detectors terminate stuck turns. */
   maxTurns?: number;
@@ -498,6 +502,8 @@ export class Session {
         reasoningLevel: opts.reasoningLevel,
         maxOutputTokens: opts.maxOutputTokens,
         contextBudgetTokens: opts.contextBudgetTokens,
+        ...(opts.knownContextCeilingTokens !== undefined ? { knownContextCeilingTokens: opts.knownContextCeilingTokens } : {}),
+        ...(opts.onContextCeilingLearned ? { onContextCeilingLearned: opts.onContextCeilingLearned } : {}),
         maxTurns: opts.maxTurns,
         fileReadStamps: opts.fileReadStamps ?? new Map(),
         repositoryInstructions,
@@ -603,7 +609,7 @@ export class Session {
   async setProvider(
     provider: Provider,
     model: string,
-    context?: Pick<SessionOptions, "contextBudgetTokens" | "compactionThresholdTokens" | "summarizeSpan">,
+    context?: Pick<SessionOptions, "contextBudgetTokens" | "compactionThresholdTokens" | "summarizeSpan" | "knownContextCeilingTokens" | "onContextCeilingLearned">,
   ): Promise<void> {
     this.engine.setProvider(provider, model, context);
     this.kernel?.mergeSessionMetadata(this.meta.id, {

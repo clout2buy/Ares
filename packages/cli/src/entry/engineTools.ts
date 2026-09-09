@@ -20,6 +20,7 @@ import { ProviderSelection, fastModelFor } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, compactLine } from "./runtime.js";
 import { buildChildSystemPrompt } from "./prompt/child.js";
 import { buildSystemPrompt } from "./turnPipeline.js";
+import { primeContextCeilings, subagentContextControls } from "./sessionFactory.js";
 
 export interface EngineToolStateResolver {
   shellRegistryFor(sessionId: string): ShellRegistry;
@@ -375,6 +376,7 @@ export async function buildEngineTools(
   registerPersonaSubagents(subagentRegistry, await listPersonas(context.home).catch(() => []));
 
   const childPrompt = childPromptComposer(runtime, context, childBaseTools);
+  await primeContextCeilings(selection);
   const runnerOptions = {
     registry: subagentRegistry,
     provider: selection.provider,
@@ -387,7 +389,7 @@ export async function buildEngineTools(
     systemPromptForChild: childPrompt.forType,
     sessionKernel,
     summarizeSpan: childSpanSummarizer(selection),
-    contextBudgetTokens: Number(process.env.ARES_SUBAGENT_CONTEXT_BUDGET) || 128_000,
+    ...subagentContextControls(selection),
     maxTurns: () => {
       const value = Number(process.env.ARES_SUBAGENT_TURN_LIMIT);
       return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
@@ -578,6 +580,7 @@ export async function buildCodingTools(
   registerPersonaSubagents(codingRegistry, await listPersonas(context.home).catch(() => []));
 
   const childPrompt = childPromptComposer(runtime, context, childBaseTools);
+  await primeContextCeilings(selection);
   const runnerOptions = {
     registry: codingRegistry,
     provider: selection.provider,
@@ -588,7 +591,7 @@ export async function buildCodingTools(
     systemPromptForChild: childPrompt.forType,
     sessionKernel,
     summarizeSpan: childSpanSummarizer(selection),
-    contextBudgetTokens: Number(process.env.ARES_SUBAGENT_CONTEXT_BUDGET) || 128_000,
+    ...subagentContextControls(selection),
     maxTurns: () => {
       const value = Number(process.env.ARES_SUBAGENT_TURN_LIMIT);
       return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;

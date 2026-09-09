@@ -327,6 +327,13 @@ export interface QueryEngineConfig {
    *  long thread can never hard-fail with context_length_exceeded. The pending
    *  user message and recent context are always kept. */
   contextBudgetTokens?: number;
+  /** A serving ceiling already learned for this provider+model (persisted by
+   *  the host between sessions). The shrink ladder starts here instead of
+   *  re-walking rungs the provider is known to reject. Ignored below 16k. */
+  knownContextCeilingTokens?: number;
+  /** Fired when a context-limit rejection teaches a new (lower) ceiling, so
+   *  the host can persist it for the next session, resume, or failover. */
+  onContextCeilingLearned?(ceilingTokens: number): void;
   /** Optional pending system-reminders to inject at next turn_start. */
   drainSystemReminders?(): Array<{
     text: string;
@@ -1765,10 +1772,16 @@ export class QueryEngine {
   setProvider(
     provider: Provider,
     model: string,
-    context?: Pick<QueryEngineConfig, "contextBudgetTokens" | "compactionThresholdTokens" | "summarizeSpan">,
+    context?: Pick<QueryEngineConfig, "contextBudgetTokens" | "compactionThresholdTokens" | "summarizeSpan" | "knownContextCeilingTokens" | "onContextCeilingLearned">,
   ): void {
     this.cfg.provider = provider;
     this.cfg.model = model;
+    // The remembered ceiling belongs to the provider+model being swapped in;
+    // absent means unknown, never "keep the old one".
+    if (context?.knownContextCeilingTokens !== undefined) this.cfg.knownContextCeilingTokens = context.knownContextCeilingTokens;
+    else delete this.cfg.knownContextCeilingTokens;
+    if (context?.onContextCeilingLearned) this.cfg.onContextCeilingLearned = context.onContextCeilingLearned;
+    else delete this.cfg.onContextCeilingLearned;
     if (context) {
       this.cfg.contextBudgetTokens = context.contextBudgetTokens;
       this.cfg.compactionThresholdTokens = context.compactionThresholdTokens;
@@ -1953,12 +1966,20 @@ export class QueryEngine {
     const base =
       this.cfg.compactionThresholdTokens ??
       (this.cfg.contextBudgetTokens ? Math.floor(this.cfg.contextBudgetTokens * 0.8) : 0);
-    const learned = this.learnedContextCeiling;
+    const learned = this.contextCeiling();
     if (learned !== null && learned > 0) {
       const cap = Math.floor(learned * 0.8);
       return base > 0 ? Math.min(base, cap) : cap;
     }
     return base;
+  }
+
+  /** The serving ceiling in force: learned this session, else what the host
+   *  remembered from an earlier one (§contextCeilings). Null = unknown. */
+  private contextCeiling(): number | null {
+    if (this.learnedContextCeiling !== null) return this.learnedContextCeiling;
+    const known = this.cfg.knownContextCeilingTokens;
+    return typeof known === "number" && Number.isFinite(known) && known >= 16_000 ? Math.floor(known) : null;
   }
 
   private microcompactIfNeeded(): {
@@ -2672,11 +2693,12 @@ export class QueryEngine {
         // budget — re-walking rungs the provider already rejected burns minutes
         // of stall watchdogs per iteration for a guaranteed failure.
         const configuredBudget = this.cfg.contextBudgetTokens ?? 0;
+        const ceiling = this.contextCeiling();
         const effectiveBudget =
-          this.learnedContextCeiling !== null
+          ceiling !== null
             ? configuredBudget > 0
-              ? Math.min(configuredBudget, this.learnedContextCeiling)
-              : this.learnedContextCeiling
+              ? Math.min(configuredBudget, ceiling)
+              : ceiling
             : configuredBudget;
         // Every rung is FLOORED at overhead + a real slice of recent history.
         // The bottom rungs (8k/4k) sat below the fixed prompt overhead (system
@@ -2852,8 +2874,9 @@ export class QueryEngine {
                       : "deep",
                 });
 
+                const outboundPromptTokens = overheadTokens + outboundMessages.reduce((s, m) => s + estimateMessageTokens(m), 0);
                 for await (const ev of guardStreamStalls(stream, {
-                  idleMs: streamIdleMs(),
+                  idleMs: streamIdleMs(outboundPromptTokens),
                   activeIdleMs: streamActiveIdleMs(),
                   thinkCeilingMs: thinkCeilingMs(),
                   onStall: () => stallAbort.abort(),
@@ -3069,10 +3092,20 @@ export class QueryEngine {
             // learning them permanently crippled hours-long sessions.
             const learnedRung = budgetPairs[attempt + 1].raw;
             if (learnedRung >= 16_000 && !isPayloadSizeError(streamError)) {
+              const before = this.learnedContextCeiling;
               this.learnedContextCeiling = Math.min(
                 this.learnedContextCeiling ?? Number.POSITIVE_INFINITY,
                 learnedRung,
               );
+              // Tell the host so the lesson outlives this engine: the next
+              // session, resume, or failover starts at a rung that fits.
+              if (before !== this.learnedContextCeiling) {
+                try {
+                  this.cfg.onContextCeilingLearned?.(this.learnedContextCeiling);
+                } catch {
+                  // persistence is best-effort; the turn continues regardless
+                }
+              }
             }
             yield {
               type: "system_reminder_injected",
@@ -5573,10 +5606,23 @@ function capacityBackoffMs(attempt: number): number {
 }
 
 // ─── Stream stall guard (the effort-dial cutoff) ───────────────────────
-/** No events at all for this long → the request is hung, not thinking. */
-function streamIdleMs(): number {
+/** No events at all for this long → the request is hung, not thinking.
+ *
+ *  Scaled by prompt size: prefill is real work the stream cannot report on.
+ *  A field verify subagent on ollama-cloud glm-5.2 (2026-09-09) sent an ~85k
+ *  prompt and was cut at a flat 90s, four times in a row, then declared the
+ *  provider unresponsive — the same endpoint had answered a 20k prompt in
+ *  seconds an hour earlier. The base window stays 90s for small prompts;
+ *  above 16k estimated tokens it grows ~1.2s per 1k, capped at 5 minutes
+ *  (ARES_STREAM_IDLE_MAX_MS). ARES_STREAM_IDLE_MS pins the base. */
+export function streamIdleMs(promptTokens = 0): number {
   const raw = Number(process.env.ARES_STREAM_IDLE_MS);
-  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 90_000;
+  const base = Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 90_000;
+  const rawMax = Number(process.env.ARES_STREAM_IDLE_MAX_MS);
+  const max = Number.isFinite(rawMax) && rawMax >= base ? Math.floor(rawMax) : Math.max(base, 300_000);
+  const extraTokens = Math.max(0, Math.floor(promptTokens) - 16_000);
+  const scaled = base + Math.floor(extraTokens / 1_000) * 1_200;
+  return Math.min(max, scaled);
 }
 /** Idle window ONCE real output has started. Providers that don't stream
  *  tool-input deltas go silent for minutes while the model writes a large

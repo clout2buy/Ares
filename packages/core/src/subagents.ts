@@ -346,6 +346,9 @@ export interface SubagentRunnerOptions {
   contextBudgetTokens?: number;
   compactionThresholdTokens?: number;
   summarizeSpan?: QueryEngineConfig["summarizeSpan"];
+  /** Remembered serving ceiling for the child's provider+model (see contextCeilings). */
+  knownContextCeilingTokens?: number;
+  onContextCeilingLearned?: QueryEngineConfig["onContextCeilingLearned"];
   /** Per-child verifier tuning/injection. A fresh ContinuousVerifier is still
    * constructed for every durable child Session. */
   childVerifierOptions?: Omit<VerifierOptions, "workspace">;
@@ -808,6 +811,8 @@ export class AresSubagentRunner implements SubagentRunner {
       contextBudgetTokens: this.opts.contextBudgetTokens,
       compactionThresholdTokens: this.opts.compactionThresholdTokens,
       summarizeSpan: this.opts.summarizeSpan,
+      ...(this.opts.knownContextCeilingTokens !== undefined ? { knownContextCeilingTokens: this.opts.knownContextCeilingTokens } : {}),
+      ...(this.opts.onContextCeilingLearned ? { onContextCeilingLearned: this.opts.onContextCeilingLearned } : {}),
       sessionKernel: this.opts.sessionKernel!,
       verifierOptions: this.opts.childVerifierOptions,
       subagentDepth: input.subagentDepth,

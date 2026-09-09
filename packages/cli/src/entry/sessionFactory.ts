@@ -1,6 +1,6 @@
 // Extracted from entry.ts — sessionFactory.
 
-import { Session, ContinuousVerifier, HookManager, CodingJournal, loadStartupReminders, loadSessionSnapshot, openWorkspaceSessionKernel, type EngineTool, sideQuery, collectTrimmedFilePaths } from "@ares/core";
+import { Session, ContinuousVerifier, HookManager, CodingJournal, loadStartupReminders, loadSessionSnapshot, openWorkspaceSessionKernel, type EngineTool, sideQuery, collectTrimmedFilePaths, contextCeilingKey, loadContextCeiling, rememberContextCeiling } from "@ares/core";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { TodoStore, ShellRegistry, type FileReadStamp } from "@ares/tools";
@@ -522,6 +522,61 @@ export function chatContextBudget(selection: ProviderSelection): number {
 }
 
 /**
+ * Everything the engine needs to size prompts for a selection, including the
+ * serving ceiling remembered from earlier sessions. A rejected rung teaches
+ * the ceiling once; this is what makes the lesson outlive the engine instance
+ * (field report 2026-09-09: a verify subagent re-learned an 85k ceiling on
+ * every resume and burned 90s stall watchdogs finding it each time).
+ *
+ * The ceiling is read synchronously from a per-process cache primed by
+ * `primeContextCeilings()`; callers on hot paths never await disk. A miss is
+ * simply "unknown" — the engine's ladder still works, it just starts high.
+ */
+export function contextControls(selection: ProviderSelection): {
+  contextBudgetTokens: number;
+  knownContextCeilingTokens?: number;
+  onContextCeilingLearned: (ceilingTokens: number) => void;
+} {
+  const budget = chatContextBudget(selection);
+  const key = contextCeilingKey(selection.provider.name, selection.model);
+  const known = ceilingCache.get(key);
+  const out: ReturnType<typeof contextControls> = {
+    contextBudgetTokens: known ? Math.min(budget, known) : budget,
+    onContextCeilingLearned: (ceilingTokens) => {
+      ceilingCache.set(key, ceilingTokens);
+      void rememberContextCeiling(selection.provider.name, selection.model, ceilingTokens, {
+        evidence: `context-limit rejection while budgeted at ${budget.toLocaleString()} tokens`,
+      }).catch(() => undefined);
+    },
+  };
+  if (known) out.knownContextCeilingTokens = known;
+  return out;
+}
+
+/** Same controls for a subagent child, whose budget is its own knob. */
+export function subagentContextControls(selection: ProviderSelection): ReturnType<typeof contextControls> {
+  const base = contextControls(selection);
+  const configured = Number(process.env.ARES_SUBAGENT_CONTEXT_BUDGET) || 128_000;
+  return { ...base, contextBudgetTokens: base.knownContextCeilingTokens ? Math.min(configured, base.knownContextCeilingTokens) : configured };
+}
+
+const ceilingCache = new Map<string, number>();
+
+/** Load the remembered ceiling for a selection into the process cache. Call
+ *  before building a session; cheap, idempotent, never throws. */
+export async function primeContextCeilings(selection: ProviderSelection): Promise<number | null> {
+  const key = contextCeilingKey(selection.provider.name, selection.model);
+  try {
+    const known = await loadContextCeiling(selection.provider.name, selection.model);
+    if (known) ceilingCache.set(key, known);
+    else ceilingCache.delete(key);
+    return known;
+  } catch {
+    return ceilingCache.get(key) ?? null;
+  }
+}
+
+/**
  * Output-token ceiling per provider call. The old flat 8192 made large file
  * writes physically impossible — a Write whose JSON exceeds ~30KB truncates
  * mid tool_use and the call silently vanishes. Modern models stream far more;
@@ -912,6 +967,7 @@ export async function createSessionWithSelection(
     });
     todoStore.replace(snapshot.todos);
     const planPressure = createPlanPressure();
+    await primeContextCeilings(selection);
     const session = new Session({
       workspace: context.workspace,
       provider: selection.provider,
@@ -939,7 +995,7 @@ export async function createSessionWithSelection(
       selfTerritoryRoots: context.selfTerritoryRoots,
       reasoningLevel: resolveReasoningLevel(settings),
       maxOutputTokens: chatMaxOutputTokens(selection),
-      contextBudgetTokens: chatContextBudget(selection),
+      ...contextControls(selection),
       maxTurns: settings.engine?.maxTurns,
       fileReadStamps,
       onHistoryTrimmed,
@@ -1012,6 +1068,7 @@ export async function createSessionWithSelection(
     return live;
   }
   const planPressure = createPlanPressure();
+  await primeContextCeilings(selection);
   const session = new Session({
     workspace: context.workspace,
     provider: selection.provider,
@@ -1036,7 +1093,7 @@ export async function createSessionWithSelection(
     selfTerritoryRoots: context.selfTerritoryRoots,
     reasoningLevel: resolveReasoningLevel(settings),
     maxOutputTokens: chatMaxOutputTokens(selection),
-    contextBudgetTokens: chatContextBudget(selection),
+    ...contextControls(selection),
     maxTurns: settings.engine?.maxTurns,
     fileReadStamps,
     onHistoryTrimmed,

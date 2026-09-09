@@ -50,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion, transitionPermissionMode } from "./runtime.js";
-import { LiveSession, chatContextBudget, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
+import { LiveSession, chatContextBudget, contextControls, primeContextCeilings, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { PluginHost } from "@ares/plugins";
 import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
 import { startGatewayMirror } from "./telegramWiring.js";
@@ -2020,8 +2020,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // The owner may have just repaired this provider; re-probe this one
           // without reviving unrelated providers that failed in other chats.
           deadProviders.delete(providerFamilyForSelection(selection));
+          await primeContextCeilings(selection);
           await entry.live.session.setProvider(selection.provider, selection.model, {
-            contextBudgetTokens: chatContextBudget(selection),
+            ...contextControls(selection),
             summarizeSpan: makeSpanSummarizer(selection, (usage) =>
               entry.live.session.recordAuxiliaryUsage("compaction", selection.provider.name, selection.model, usage),
             ),
@@ -3672,8 +3673,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 if (ownerCancellationPending()) throw new Error("owner cancelled during route selection");
                 await preflightProviderSelection(sel);
                 if (ownerCancellationPending()) throw new Error("owner cancelled during provider preflight");
+                await primeContextCeilings(sel);
                 await entry.live.session.setProvider(sel.provider, sel.model, {
-                  contextBudgetTokens: chatContextBudget(sel),
+                  ...contextControls(sel),
                   summarizeSpan: makeSpanSummarizer(sel, (usage) =>
                     entry.live.session.recordAuxiliaryUsage("compaction", sel.provider.name, sel.model, usage),
                   ),
@@ -3768,8 +3770,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             const pinned = entry.live.selection;
             const visionSel = await pickVisionFallback(pinned, liveDeadProviders()).catch(() => null);
             if (visionSel && !ownerCancellationPending()) {
+              await primeContextCeilings(visionSel);
               await entry.live.session.setProvider(visionSel.provider, visionSel.model, {
-                contextBudgetTokens: chatContextBudget(visionSel),
+                ...contextControls(visionSel),
                 summarizeSpan: makeSpanSummarizer(visionSel, (usage) =>
                   entry.live.session.recordAuxiliaryUsage("compaction", visionSel.provider.name, visionSel.model, usage),
                 ),
@@ -3988,8 +3991,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               });
               break;
             }
+            await primeContextCeilings(fallback);
             await entry.live.session.setProvider(fallback.provider, fallback.model, {
-              contextBudgetTokens: chatContextBudget(fallback),
+              ...contextControls(fallback),
               summarizeSpan: makeSpanSummarizer(fallback, (usage) =>
                 entry.live.session.recordAuxiliaryUsage("compaction", fallback.provider.name, fallback.model, usage),
               ),
@@ -4116,8 +4120,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           if (revertSelection && escalatedSelection && entry.live.selection === escalatedSelection) {
             try {
               const pinned = revertSelection;
+              await primeContextCeilings(pinned);
               await entry.live.session.setProvider(pinned.provider, pinned.model, {
-                contextBudgetTokens: chatContextBudget(pinned),
+                ...contextControls(pinned),
                 summarizeSpan: makeSpanSummarizer(pinned, (usage) =>
                   entry.live.session.recordAuxiliaryUsage("compaction", pinned.provider.name, pinned.model, usage),
                 ),
@@ -4135,8 +4140,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           if (pinnedRestore && entry.live.selection !== pinnedRestore) {
             try {
               const pinned = pinnedRestore;
+              await primeContextCeilings(pinned);
               await entry.live.session.setProvider(pinned.provider, pinned.model, {
-                contextBudgetTokens: chatContextBudget(pinned),
+                ...contextControls(pinned),
                 summarizeSpan: makeSpanSummarizer(pinned, (usage) =>
                   entry.live.session.recordAuxiliaryUsage("compaction", pinned.provider.name, pinned.model, usage),
                 ),

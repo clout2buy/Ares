@@ -67,7 +67,7 @@ void main() {
     float h = pow(hash(s * 6.3), 0.6);
     float ripple = uAmp * (0.18 * sin(x * 2.6 + uTime * 0.5 + curtain) + 0.08 * sin(x * 6.0 - uTime * 0.35));
     float sway = uAmp * 0.12 * sin(h * 4.0 + uTime * 0.3 + curtain * 1.7);
-    p = vec3(x + sway * 0.4, h * 1.5 - 0.55 + ripple * 0.3, (curtain - 1.5) * 0.35 + ripple + v * 0.15);
+    p = vec3(x + sway * 0.4, h * 1.25 - 0.6 + ripple * 0.3, (curtain - 1.5) * 0.3 + ripple * 0.6 + v * 0.1 - 0.35);
   }
   if (uKind > 2.5 && uKind < 3.5) {
     // orbit: three tilted rings and a sparse shell
@@ -134,16 +134,16 @@ function parseRgb(value: string, fallback: [number, number, number]): [number, n
 
 const KIND_INDEX = { nebula: 0, horizon: 1, waves: 2, orbit: 3, galaxy: 4, aurora: 5 } as const;
 
-export function CyberField({ spec }: { spec: PointMapSpec }) {
+export function CyberField({ spec }: { spec: PointMapSpec | null | undefined }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const specRef = useRef(spec);
   specRef.current = spec;
   // density changes rebuild the buffer; everything else is a uniform
-  const density = spec.density;
+  const density = spec?.density ?? 0;
 
   useEffect(() => {
     const canvas = ref.current;
-    if (!canvas) return;
+    if (!canvas || density <= 0) return;
     const gl = canvas.getContext("webgl", { alpha: true, antialias: false, depth: false, premultipliedAlpha: true, powerPreference: "low-power" });
     if (!gl) return;
     const vs = compile(gl, gl.VERTEX_SHADER, VERT);
@@ -192,6 +192,7 @@ export function CyberField({ spec }: { spec: PointMapSpec }) {
 
     const applySpec = () => {
       const s = specRef.current;
+      if (!s) return;
       speed = s.speed;
       gl.uniform1f(uKind, KIND_INDEX[s.kind]);
       gl.uniform1f(uAmp, s.amplitude);
@@ -280,10 +281,12 @@ export function CyberField({ spec }: { spec: PointMapSpec }) {
   // observer by bumping an attribute the component itself owns
   useEffect(() => {
     const canvas = ref.current;
+    if (!spec) return;
     canvas?.setAttribute("data-spec", `${spec.id}:${spec.kind}:${spec.amplitude}:${spec.speed}:${spec.spread}:${spec.lift}:${spec.size}:${spec.opacity}:${String(spec.colors)}`);
     const root = canvas?.closest(".ares");
     root?.setAttribute("data-pointmap", spec.id + ":" + Date.now());
   }, [spec]);
 
+  if (!spec) return null;
   return <canvas ref={ref} className="cyberField" aria-hidden="true" />;
 }

@@ -16,7 +16,7 @@ const input = z
     action: z.enum(["list", "save", "delete"]).describe("list the saved maps, save a new one, or delete one by id"),
     id: z.string().regex(/^[a-z0-9_-]{1,48}$/i).optional().describe("for delete, or to overwrite an existing map on save"),
     name: z.string().min(1).max(40).optional().describe("save: the name shown in Appearance"),
-    kind: z.enum(["nebula", "horizon", "waves", "orbit"]).optional().describe("save: nebula = volumetric drift; horizon = low bowl; waves = rolling sheet; orbit = rings + shell"),
+    kind: z.enum(["nebula", "horizon", "waves", "orbit", "galaxy", "aurora"]).optional().describe("save: nebula = volumetric drift; horizon = low bowl; waves = rolling sheet; orbit = rings + shell; galaxy = spiral arms around a bright core; aurora = tall curtains of light rippling sideways"),
     density: z.number().int().min(2000).max(16000).optional().describe("save: point count (default 8000)"),
     amplitude: z.number().min(0).max(1).optional().describe("save: surface displacement / cloud spread 0..1"),
     speed: z.number().min(0).max(1).optional().describe("save: drift speed 0..1 (0 = still). Keep it slow; nothing may flash."),
@@ -24,7 +24,7 @@ const input = z
     lift: z.number().min(-1).max(1).optional().describe("save: vertical placement, -1 floor .. 1 ceiling"),
     size: z.number().min(0.4).max(2.5).optional().describe("save: point size multiplier"),
     opacity: z.number().min(0.1).max(1).optional().describe("save: overall opacity"),
-    colors: z.union([z.literal("accent"), z.tuple([hex, hex])]).optional().describe("save: 'accent' follows the owner's accent dial, or two hex colours [dark, light]"),
+    colors: z.union([z.literal("accent"), z.array(hex).min(2).max(2)]).optional().describe("save: 'accent' follows the owner's accent dial, or exactly two hex colours [dark, light]"),
     note: z.string().max(160).optional().describe("save: one line on what it looks like"),
     activate: z.boolean().optional().describe("save: also make it the current backdrop (default true)"),
   })

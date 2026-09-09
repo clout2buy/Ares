@@ -47,7 +47,29 @@ void main() {
     // waves: a wide sheet, rolling
     float y = uAmp * (0.16 * sin(u * 4.0 + uTime * 0.4) * cos(v * 3.0 - uTime * 0.3) + 0.08 * sin((u * 2.0 - v) * 3.0 + uTime * 0.25)) - 0.1;
     p = vec3(u * 1.7, y - v * 0.42, v * 0.9);
+  } else if (uKind < 4.5) {
+    // galaxy: two log-spiral arms with scatter, a dense bulge, seen at a tilt
+    float arm = step(0.5, hash(s * 3.7));
+    float t = pow(hash(s * 5.3), 0.7) * 3.2;
+    float ang = t * 2.1 + arm * 3.1416 + uTime * 0.05 - t * 0.15;
+    float rad = 0.12 + t * 0.32;
+    float scatter = (hash(s * 8.1) - 0.5) * (0.12 + t * 0.06) * (1.0 + uAmp);
+    float bulge = step(hash(s * 2.9), 0.18);
+    vec3 disk = vec3(cos(ang) * rad + scatter, (hash(s * 6.7) - 0.5) * 0.05 * (1.0 + uAmp), sin(ang) * rad + scatter * 0.7);
+    vec3 core = vec3(hash(s * 4.1) - 0.5, (hash(s * 9.9) - 0.5) * 0.5, hash(s * 7.7) - 0.5) * 0.28;
+    vec3 g = mix(disk, core, bulge);
+    float tilt = 1.05;
+    p = vec3(g.x * 1.25, g.y * cos(tilt) - g.z * sin(tilt) * 0.55, g.y * sin(tilt) + g.z * cos(tilt));
   } else {
+    // aurora: tall curtains, each a ribbon rippling sideways, fading upward
+    float curtain = floor(hash(s * 2.2) * 4.0);
+    float x = u * 1.6 + (curtain - 1.5) * 0.12;
+    float h = pow(hash(s * 6.3), 0.6);
+    float ripple = uAmp * (0.18 * sin(x * 2.6 + uTime * 0.5 + curtain) + 0.08 * sin(x * 6.0 - uTime * 0.35));
+    float sway = uAmp * 0.12 * sin(h * 4.0 + uTime * 0.3 + curtain * 1.7);
+    p = vec3(x + sway * 0.4, h * 1.5 - 0.55 + ripple * 0.3, (curtain - 1.5) * 0.35 + ripple + v * 0.15);
+  }
+  if (uKind > 2.5 && uKind < 3.5) {
     // orbit: three tilted rings and a sparse shell
     float band = floor(hash(s * 2.3) * 4.0);
     float a = hash(s * 4.9) * 6.2831 + uTime * (0.06 + band * 0.02);
@@ -110,7 +132,7 @@ function parseRgb(value: string, fallback: [number, number, number]): [number, n
   return [Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255];
 }
 
-const KIND_INDEX = { nebula: 0, horizon: 1, waves: 2, orbit: 3 } as const;
+const KIND_INDEX = { nebula: 0, horizon: 1, waves: 2, orbit: 3, galaxy: 4, aurora: 5 } as const;
 
 export function CyberField({ spec }: { spec: PointMapSpec }) {
   const ref = useRef<HTMLCanvasElement | null>(null);

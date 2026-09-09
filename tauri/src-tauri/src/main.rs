@@ -918,6 +918,42 @@ struct DroppedEntry {
 const DROPPED_IMAGE_MAX: u64 = 15 * 1024 * 1024;
 const DROPPED_TEXT_MAX: u64 = 1024 * 1024;
 
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits = 0u32;
+    for c in input.bytes() {
+        if c == b'=' || c == b'\n' || c == b'\r' { continue; }
+        let v = T.iter().position(|&t| t == c).ok_or_else(|| "invalid base64".to_string())? as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// A file dropped or pasted into the chat is kept as a FILE (like Claude or
+/// Codex), not reduced to a path the page cannot read: its bytes land under
+/// ~/.ares/dropped and the message carries that path for Ares's tools.
+#[tauri::command]
+fn ares_stash_file(name: String, base64: String) -> Result<String, String> {
+    let bytes = base64_decode(&base64)?;
+    if bytes.len() > 200 * 1024 * 1024 { return Err("file is larger than 200 MB".into()); }
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' }).collect();
+    let safe = if safe.trim_matches('.').is_empty() { "dropped.bin".to_string() } else { safe.chars().take(120).collect() };
+    let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).map_err(|_| "no home directory".to_string())?;
+    let dir = PathBuf::from(home).join(".ares").join("dropped");
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let path = dir.join(format!("{stamp}-{safe}"));
+    fs::write(&path, &bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
@@ -2089,6 +2125,7 @@ fn main() {
             ares_export_log,
             ares_read_text_file,
             ares_inspect_paths,
+            ares_stash_file,
             ares_stop_daemon,
             ares_window_minimize,
             ares_window_toggle_maximize,

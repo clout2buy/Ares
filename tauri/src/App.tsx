@@ -7793,7 +7793,30 @@ const Composer = React.memo(function Composer({
           void read.finally(() => pendingReads.current.delete(read));
           continue;
         }
-        appendDraft(`[Dropped ${file.name || "file"}${file.type ? ` (${file.type}` : " ("}${file.size ? `${file.type ? ", " : ""}${fmtBytes(file.size)}` : ""}) — not a text or image file. Drop it from the file explorer so Ares gets its path.]`);
+        // Anything else (PDF, docx, zip, binaries …) is kept as a real file:
+        // its bytes go to Ares's dropped-files folder and the message carries
+        // the path, so Ares can open it with its tools — like dropping into
+        // Claude or Codex, not like pasting a location.
+        const inTauri = "__TAURI_INTERNALS__" in window;
+        if (inTauri && file.size <= 200 * 1024 * 1024) {
+          const stash: Promise<void> = new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const dataUrl = String(reader.result ?? "");
+              const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+              invoke<string>("ares_stash_file", { name: file.name || "dropped.bin", base64: b64 })
+                .then((path) => appendDraft(`Attached file: ${path} (${fmtBytes(file.size)}${file.type ? `, ${file.type}` : ""})`))
+                .catch((err) => appendDraft(`[Dropped ${file.name || "file"} could not be kept: ${String(err)}]`))
+                .finally(resolve);
+            };
+            reader.onerror = () => { appendDraft(`[Dropped ${file.name || "file"} could not be read.]`); resolve(); };
+            reader.readAsDataURL(file);
+          });
+          pendingReads.current.add(stash);
+          void stash.finally(() => pendingReads.current.delete(stash));
+          continue;
+        }
+        appendDraft(`[Dropped ${file.name || "file"}${file.type ? ` (${file.type}` : " ("}${file.size ? `${file.type ? ", " : ""}${fmtBytes(file.size)}` : ""}) — ${inTauri ? "too large to keep (200 MB max)" : "files are kept only in the desktop app"}.]`);
         continue;
       }
       if (!attachmentType.mediaType) {
@@ -7920,7 +7943,13 @@ const Composer = React.memo(function Composer({
       if (!dt) return;
       if (dt.files && dt.files.length) {
         e.preventDefault();
-        addFiles(Array.from(dt.files));
+        // a folder arrives as a File with no type and no readable bytes;
+        // say so instead of stashing an empty blob
+        const entries = Array.from(dt.items ?? []).map((it) => (typeof it.webkitGetAsEntry === "function" ? it.webkitGetAsEntry() : null));
+        const dirs = entries.filter((en): en is FileSystemEntry => !!en && en.isDirectory).map((en) => en.name);
+        const files = Array.from(dt.files).filter((f) => !dirs.includes(f.name));
+        if (dirs.length) appendDraft(`Folder: ${dirs.join(", ")} — drop the files inside it, or type the path so Ares can walk it.`);
+        if (files.length) addFiles(files);
         return;
       }
       // Dragged TEXT (from a page, editor, etc.) drops into the composer.

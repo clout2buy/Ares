@@ -6,7 +6,7 @@
 // (they arrive from the daemon as `pointmaps`). The same validator guards all
 // three sources so a bad spec can never blank the room.
 
-export type PointMapKind = "nebula" | "horizon" | "waves" | "orbit";
+export type PointMapKind = "nebula" | "horizon" | "waves" | "orbit" | "galaxy" | "aurora";
 
 export interface PointMapSpec {
   id: string;
@@ -38,9 +38,11 @@ export const BUILTIN_POINT_MAPS: PointMapSpec[] = [
   { id: "horizon", name: "Horizon", by: "builtin", kind: "horizon", density: 7000, amplitude: 0.5, speed: 0.3, spread: 1.1, lift: -0.5, size: 1, opacity: 0.8, colors: "accent", note: "A bowl of light low behind the composer." },
   { id: "waves", name: "Waves", by: "builtin", kind: "waves", density: 8000, amplitude: 0.6, speed: 0.35, spread: 1.3, lift: -0.25, size: 0.9, opacity: 0.75, colors: "accent", note: "A wide sheet rolling under the stage." },
   { id: "orbit", name: "Orbit", by: "builtin", kind: "orbit", density: 6000, amplitude: 0.4, speed: 0.2, spread: 0.9, lift: 0.1, size: 1.1, opacity: 0.8, colors: "accent", note: "Rings and a sparse shell, turning slowly." },
+  { id: "galaxy", name: "Galaxy", by: "builtin", kind: "galaxy", density: 12000, amplitude: 0.5, speed: 0.15, spread: 1.2, lift: -0.05, size: 0.9, opacity: 0.85, colors: "accent", note: "Spiral arms around a bright core, seen at a tilt." },
+  { id: "aurora", name: "Aurora", by: "builtin", kind: "aurora", density: 10000, amplitude: 0.7, speed: 0.3, spread: 1.3, lift: 0.15, size: 0.8, opacity: 0.75, colors: "accent", note: "Tall curtains of light rippling across the room." },
 ];
 
-const KINDS = new Set<PointMapKind>(["nebula", "horizon", "waves", "orbit"]);
+const KINDS = new Set<PointMapKind>(["nebula", "horizon", "waves", "orbit", "galaxy", "aurora"]);
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number.parseFloat(v) : NaN;
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;

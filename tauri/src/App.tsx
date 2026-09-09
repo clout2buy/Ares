@@ -10740,6 +10740,7 @@ function Settings({
                     {kimiAuth.connected ? <span className="keyPill" data-on="1">connected{kimiAuth.detail ? ` · ${kimiAuth.detail}` : ""}</span> : null}
                   </div>
                   <em>{kimiAuth.connected ? "Kimi models run on your Kimi subscription." : "Run Kimi models on your Kimi subscription — no API key."}</em>
+                  {kimiAuth.connected ? <ProviderUsageCard usage={(providerUsage?.providers ?? []).find((u) => u.provider === "kimi") ?? null} error={providerUsage?.errors?.kimi ?? null} onRefresh={() => onDaemonCommand({ type: "provider_usage", force: true })} /> : null}
                 </div>
                 <button className="keySignInBtn" disabled={kimiAuth.signingIn} onClick={onKimiSignIn}>
                   {kimiAuth.signingIn ? "Waiting…" : kimiAuth.connected ? "Re-sign in" : "Sign in with browser"}

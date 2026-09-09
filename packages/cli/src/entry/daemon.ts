@@ -13,7 +13,7 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -3435,6 +3435,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         if (anthropicToken) run("anthropic", () => fetchAnthropicUsage(anthropicToken));
         const ollamaKey = (settingsNow?.ollamaApiKey || process.env.OLLAMA_API_KEY || "").trim();
         if (ollamaKey) run("ollama", () => fetchOllamaUsageAsProvider(ollamaKey));
+        const kimiToken = await resolveKimiAccessToken().catch(() => null);
+        if (kimiToken) run("kimi", () => fetchKimiUsage(kimiToken));
         await Promise.all(jobs);
         out.sort((a, b) => a.provider.localeCompare(b.provider));
         process.stdout.write(JSON.stringify({ type: "provider_usage", providers: out, errors }) + "\n");

@@ -94,3 +94,54 @@ export function ollamaUsageAsProvider(u: OllamaUsage): ProviderUsage {
 export async function fetchOllamaUsageAsProvider(apiKey: string): Promise<ProviderUsage> {
   return ollamaUsageAsProvider(await fetchOllamaUsage(apiKey));
 }
+
+interface KimiWindow { window?: { duration?: number; timeUnit?: string }; detail?: { limit?: string | number; used?: string | number; remaining?: string | number; resetTime?: string } }
+
+/** https://api.kimi.com/coding/v1/usages — the Kimi Code subscription's
+ *  rolling windows (a 5-hour window under `limits`, the longer cycle under
+ *  `usage`), membership level, and the booster wallet. */
+export async function fetchKimiUsage(accessToken: string, opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}): Promise<ProviderUsage> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const res = await fetchImpl("https://api.kimi.com/coding/v1/usages", {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("Kimi sign-in expired — sign in again");
+  if (!res.ok) throw new Error(`Kimi usage: HTTP ${res.status}`);
+  const raw = (await res.json()) as {
+    user?: { membership?: { level?: string } };
+    usage?: { limit?: string | number; remaining?: string | number; resetTime?: string };
+    limits?: KimiWindow[];
+    boosterWallet?: { balance?: { amount?: string | number; amountLeft?: string | number }; monthlyUsed?: { currency?: string; priceInCents?: string | number } };
+  };
+  const num = (v: unknown): number => { const n = typeof v === "string" ? Number.parseFloat(v) : typeof v === "number" ? v : NaN; return Number.isFinite(n) ? n : 0; };
+  const windows: UsageWindow[] = [];
+  for (const w of raw.limits ?? []) {
+    const limit = num(w.detail?.limit);
+    if (limit <= 0) continue;
+    const used = w.detail?.used !== undefined ? num(w.detail.used) : limit - num(w.detail?.remaining);
+    const minutes = w.window?.timeUnit === "TIME_UNIT_MINUTE" ? num(w.window?.duration) : w.window?.timeUnit === "TIME_UNIT_HOUR" ? num(w.window?.duration) * 60 : w.window?.timeUnit === "TIME_UNIT_DAY" ? num(w.window?.duration) * 1440 : 0;
+    const label = minutes > 0 ? (minutes % 1440 === 0 ? `${minutes / 1440}-day limit` : minutes % 60 === 0 ? `${minutes / 60}-hour limit` : `${minutes}-minute limit`) : "Rolling limit";
+    windows.push({ label, utilization: Math.min(1, Math.max(0, used / limit)), ...(w.detail?.resetTime ? { resetsAt: w.detail.resetTime } : {}) });
+  }
+  const cycleLimit = num(raw.usage?.limit);
+  if (cycleLimit > 0) {
+    const used = cycleLimit - num(raw.usage?.remaining);
+    windows.push({ label: "Cycle", utilization: Math.min(1, Math.max(0, used / cycleLimit)), ...(raw.usage?.resetTime ? { resetsAt: raw.usage.resetTime } : {}) });
+  }
+  const booster = raw.boosterWallet?.balance;
+  const bAmount = num(booster?.amount);
+  if (bAmount > 0) windows.push({ label: "Booster wallet used", utilization: Math.min(1, Math.max(0, 1 - num(booster?.amountLeft) / bAmount)) });
+  const level = raw.user?.membership?.level ?? "";
+  const plan = level ? level.replace(/^LEVEL_/, "").toLowerCase().replace(/^./, (c) => c.toUpperCase()) : undefined;
+  const monthlyCents = num(raw.boosterWallet?.monthlyUsed?.priceInCents);
+  return {
+    provider: "kimi",
+    label: "Kimi Code",
+    ...(plan ? { plan } : {}),
+    windows,
+    ...(monthlyCents > 0 ? { extra: { cost: monthlyCents / 100, currency: raw.boosterWallet?.monthlyUsed?.currency ?? "USD", note: "booster top-ups this month" } } : {}),
+    fetchedAt: new Date().toISOString(),
+    source: "api.kimi.com/coding/v1/usages",
+  };
+}

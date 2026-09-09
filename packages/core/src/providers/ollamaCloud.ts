@@ -1269,6 +1269,42 @@ export function sameOllamaModel(a: string, b: string): boolean {
   return toCloudDirectModelId(a).toLowerCase() === toCloudDirectModelId(b).toLowerCase();
 }
 
+/** True for loopback / bind addresses: the LOCAL app, or no app at all. */
+export function isLocalOllamaHost(host?: string): boolean {
+  try {
+    const { hostname } = new URL(normalizeOllamaHost(host));
+    return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname);
+  } catch {
+    return true;
+  }
+}
+
+/** Where an Ollama request should go. A cloud key means ollama.com unless
+ *  OLLAMA_HOST names another real machine. A LOCAL OLLAMA_HOST (0.0.0.0,
+ *  127.0.0.1 — the LAN-sharing setting many Ollama users have system-wide)
+ *  must not strand a cloud model on a local app that may not even be running:
+ *  known cloud models still go to the cloud; anything else goes local. */
+export function resolveOllamaHost(opts: {
+  apiKey?: string | undefined;
+  envHost?: string | undefined;
+  model?: string | undefined;
+  cloudModels?: ReadonlyArray<{ id: string }> | undefined;
+}): string {
+  const envHost = opts.envHost?.trim() || undefined;
+  const cloud = "https://ollama.com";
+  if (!opts.apiKey) return normalizeOllamaHost(envHost);
+  if (!envHost) return cloud;
+  if (isOllamaCloudHost(envHost)) return cloud;
+  if (!isLocalOllamaHost(envHost)) return normalizeOllamaHost(envHost);
+  const model = opts.model?.trim();
+  if (!model) return cloud;
+  const isCloudModel =
+    /(?::cloud|-cloud)$/i.test(model) ||
+    Boolean(ollamaCloudHint(model)) ||
+    (opts.cloudModels ?? []).some((m) => sameOllamaModel(m.id, model));
+  return isCloudModel ? cloud : normalizeOllamaHost(envHost);
+}
+
 export function isOllamaCloudHost(host: string): boolean {
   return /(^|\/\/)ollama\.com(\/|$)/i.test(host) || /ollama\.com$/i.test(host);
 }

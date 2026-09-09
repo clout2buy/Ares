@@ -190,3 +190,23 @@ test("anthropic model listing: API key path carries context windows; no auth →
   // the context-window table consults live figures before its regexes
   assert.equal(modelContextWindow("claude-newest-9"), 200_000, "heuristic before the catalog ran");
 });
+
+test("resolveOllamaHost: a local OLLAMA_HOST does not strand a cloud model when a key is set", async () => {
+  const { resolveOllamaHost, isLocalOllamaHost } = await import("../packages/core/dist/index.js");
+  assert.equal(isLocalOllamaHost("0.0.0.0"), true);
+  assert.equal(isLocalOllamaHost("http://127.0.0.1:11434"), true);
+  assert.equal(isLocalOllamaHost("http://10.0.0.7:11434"), false);
+  // no key: env host (normalized) or the local default
+  assert.equal(resolveOllamaHost({ envHost: "0.0.0.0" }), "http://127.0.0.1:11434");
+  assert.equal(resolveOllamaHost({}), "http://127.0.0.1:11434");
+  // key, no env: cloud
+  assert.equal(resolveOllamaHost({ apiKey: "k" }), "https://ollama.com");
+  // key + LAN-sharing OLLAMA_HOST=0.0.0.0 (the owner's machine): cloud models go to the cloud
+  assert.equal(resolveOllamaHost({ apiKey: "k", envHost: "0.0.0.0", model: "glm-5.1" }), "https://ollama.com");
+  assert.equal(resolveOllamaHost({ apiKey: "k", envHost: "0.0.0.0", model: "deepseek-v4-pro:cloud" }), "https://ollama.com");
+  assert.equal(resolveOllamaHost({ apiKey: "k", envHost: "127.0.0.1:11434", model: "brand-new", cloudModels: [{ id: "brand-new" }] }), "https://ollama.com");
+  // a genuinely local-only model stays on the local app
+  assert.equal(resolveOllamaHost({ apiKey: "k", envHost: "0.0.0.0", model: "llama3.2:3b" }), "http://127.0.0.1:11434");
+  // an explicit remote box is honored
+  assert.equal(resolveOllamaHost({ apiKey: "k", envHost: "http://10.0.0.7:11434", model: "glm-5.1" }), "http://10.0.0.7:11434");
+});

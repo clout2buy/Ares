@@ -1,6 +1,6 @@
 // Extracted from entry.ts — providers.
 
-import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider } from "@ares/core";
+import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider, resolveOllamaHost } from "@ares/core";
 import { promises as fsp } from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
@@ -912,12 +912,16 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       reasoner: { model: requestedModel ?? settings.lastOllamaModel ?? DEFAULT_OLLAMA_SLOTS.reasoner.model },
     };
     const ollamaApiKey = settings.ollamaApiKey || process.env.OLLAMA_API_KEY;
-    // A cloud API key with no explicit OLLAMA_HOST means "use Ollama's CLOUD"
-    // (ollama.com) — not the local app. Without this, a user who set only an API
-    // key (no local Ollama running) times out hitting 127.0.0.1. An explicit
-    // OLLAMA_HOST, or no key at all, keeps the local-app default.
-    const ollamaHost =
-      process.env.OLLAMA_HOST ?? (ollamaApiKey ? "https://ollama.com" : "http://127.0.0.1:11434");
+    // A cloud key sends cloud models to ollama.com even when OLLAMA_HOST names
+    // a LOCAL address (0.0.0.0 is the common LAN-sharing setting): the owner
+    // hit "Ollama is not reachable at 127.0.0.1" with a key pasted because the
+    // env var won. Only a remote OLLAMA_HOST, or a non-cloud model, stays local.
+    const ollamaHost = resolveOllamaHost({
+      apiKey: ollamaApiKey,
+      envHost: process.env.OLLAMA_HOST,
+      model: slots.reasoner.model,
+      cloudModels: ollamaApiKey && process.env.OLLAMA_HOST ? await fetchOllamaCloudModels({ apiKey: ollamaApiKey }).catch(() => []) : [],
+    });
     const pool = new OllamaCloudPool({
       slots,
       useAnthropicCompat: NATIVE_OLLAMA_OPTS.useAnthropicCompat,

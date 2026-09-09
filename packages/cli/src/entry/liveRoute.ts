@@ -21,7 +21,7 @@
 //
 // Pure given its inputs (settings + env + dead-set) — no I/O, no network.
 
-import { laneForTask, resolveRoute, type Locality, type ModelProviderProfile, type ModelTask, type ModelTaskKind, type ModelTouch, type RouteAssignments, type RouteLane } from "@ares/core";
+import { laneForTask, resolveRoute, type Locality, type ModelProviderProfile, type ModelTask, type ModelTaskKind, type ModelTouch, type RouteAssignments, type RouteLane, resolveOllamaHost } from "@ares/core";
 import { isLocalProviderHost } from "./localProviderDiagnosis.js";
 import { defaultTerminalModel } from "./providers.js";
 import type { UiSettings } from "../uiSettings.js";
@@ -95,7 +95,7 @@ export function buildLiveProfiles(settings: UiSettings, opts: LiveProfileOptions
   const extra = new Set(opts.extraAuthed ?? []);
   const authed = (family: string, configured: boolean): boolean => !dead.has(family) && (configured || extra.has(family));
   const ollamaApiKey = settings.ollamaApiKey || env.OLLAMA_API_KEY;
-  const ollamaHost = env.OLLAMA_HOST ?? (ollamaApiKey ? "https://ollama.com" : "http://127.0.0.1:11434");
+  const ollamaHost = resolveOllamaHost({ apiKey: ollamaApiKey, envHost: env.OLLAMA_HOST, model: settings.lastOllamaModel });
   const ollamaLocal = isLocalProviderHost(ollamaHost);
   const customLocal = isLocalProviderHost(settings.customBaseUrl || env.ARES_CUSTOM_BASE_URL);
   const cloud = (family: string, label: string, configured: boolean, costTier: 0 | 1 | 2 | 3, strengths: ModelTaskKind[], vision: boolean, model: string): ModelProviderProfile => ({

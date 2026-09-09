@@ -418,6 +418,8 @@ export {
   fetchOllamaCloudModels,
   resetOllamaCloudCatalogCache,
   ollamaCloudHint,
+  isLocalOllamaHost,
+  resolveOllamaHost,
   toCloudDirectModelId,
   toLocalCloudModelId,
   sameOllamaModel,

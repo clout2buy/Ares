@@ -1,0 +1,422 @@
+/* ═══ ARES · CYBER ═══════════════════════════════════════════════════════════
+   A navy command deck: deep blue-black room, ice-blue hairlines, and one
+   blue→violet light for the mark, the primary action and live work. Modern's
+   layout underneath (cyber.generated.css carries its every rule recoloured);
+   this file is the hand-made layer — type, geometry, the hero, the cards.
+
+   Scoped under .ares[data-style="modern"][data-surface="cyber"]. The
+   photosensitivity doctrine holds: nothing here pulses, sweeps or flashes. */
+
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* ── tokens ──────────────────────────────────────────────────────────────── */
+
+.ares[data-style="modern"][data-surface="cyber"] {
+  --bg: #070b14;
+  --bg-raised: #0b1120;
+  --panel: #0f172a;
+  --panel-2: #0a0f1c;
+
+  --text: #e5ebf7;
+  --text-hi: #f4f7fc;
+  --muted: rgba(229, 235, 247, 0.62);
+  --faint: rgba(229, 235, 247, 0.4);
+
+  /* ice — structure, rest, labels (Modern's gold) */
+  --gold: #8ea6d6;
+  --gold-hi: #c7d6f5;
+  --gold-glyph: #9db4e6;
+  --line: rgba(148, 170, 220, 0.12);
+  --line-raised: rgba(148, 170, 220, 0.24);
+  --line-active: rgba(148, 170, 220, 0.42);
+
+  /* the light — blue into violet */
+  --cyber-blue: #60a5fa;
+  --cyber-violet: #8b5cf6;
+  --cyber-grad: linear-gradient(135deg, #93c5fd 0%, #60a5fa 38%, #8b5cf6 100%);
+  --cyber-glow: 0 0 40px -6px rgba(99, 130, 255, 0.55);
+  /* the mark: a chevron A struck in the light, drawn once as SVG */
+  --cyber-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='.55' stop-color='%2360a5fa'/%3E%3Cstop offset='1' stop-color='%23c7d2fe'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 6 L92 88 L74 88 L50 40 L26 88 L8 88 Z'/%3E%3Cpath fill='url(%23g)' opacity='.9' d='M50 58 L64 88 L36 88 Z'/%3E%3C/svg%3E");
+
+  --ember: #6d8cff;
+  --ember-hi: #a78bfa;
+  --ember-text: #b9c8ff;
+  --ember-rim: rgba(120, 140, 255, 0.5);
+  --ember-rgb: 109, 140, 255;
+  --blood: #4338ca;
+  --accent: #5b7cfa;
+  --accent-hi: #c4b5fd;
+  --accent-rgb: 91, 124, 250;
+
+  --steel: #34d399;
+  --mint-text: #a7f3d0;
+  --crimson: #f87171;
+
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+
+  --display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font: "Inter", ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", ui-monospace, Consolas, monospace;
+
+  --coin: linear-gradient(145deg, #141c31, #0b1124);
+  --coin-ember: linear-gradient(145deg, #1b2445, #0e1530);
+
+  --glass-fill: linear-gradient(158deg, rgba(160, 180, 240, 0.09) 0%, rgba(160, 180, 240, 0.04) 42%, rgba(160, 180, 240, 0.02) 100%);
+  --glass-edge: rgba(160, 180, 230, 0.16);
+  --glass-spec: inset 0 1px 0 rgba(220, 230, 255, 0.14), inset 0 -1px 0 rgba(120, 140, 255, 0.05);
+  --glass-blur: blur(28px) saturate(140%);
+  --glass-lift: 0 14px 40px -14px rgba(0, 0, 0, 0.7);
+
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+  letter-spacing: 0.005em;
+}
+
+/* ── the room ─────────────────────────────────────────────────────────────
+   No photograph: the backdrop is light itself — a blue bloom top-left, a
+   violet bloom bottom-right, and the diagonal band of the reference. */
+.ares[data-style="modern"][data-surface="cyber"] .backdrop::before {
+  background-image:
+    radial-gradient(70% 60% at 8% 0%, rgba(59, 90, 190, 0.42), transparent 60%),
+    radial-gradient(60% 55% at 100% 100%, rgba(109, 70, 200, 0.34), transparent 60%),
+    linear-gradient(112deg, #0a1229 0%, #070b14 42%, #070b14 62%, #101a3a 100%);
+  background-position: center;
+  background-size: cover;
+  opacity: 1;
+}
+.ares[data-style="modern"][data-surface="cyber"] .backdrop::after { display: none; }
+
+/* ── the sigil set: soft rounded tiles instead of struck coins ───────────── */
+.ares[data-style="modern"][data-surface="cyber"] .medallion {
+  border-radius: 11px;
+  color: #b6c6ec;
+  background: var(--coin);
+  border: 1px solid rgba(148, 170, 220, 0.2);
+}
+.ares[data-style="modern"][data-surface="cyber"] .medallion[data-tone="ember"] {
+  color: #dfe7ff;
+  background: var(--coin-ember);
+  border-color: rgba(120, 140, 255, 0.42);
+}
+
+/* ── titlebar ────────────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .titlebar {
+  background: rgba(10, 15, 28, 0.55);
+  border-bottom: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+.ares[data-style="modern"][data-surface="cyber"] .titlebar .emblem {
+  border-radius: 9px;
+  border-color: rgba(148, 170, 220, 0.24);
+  background-image: var(--cyber-mark), var(--coin);
+}
+.ares[data-style="modern"][data-surface="cyber"] .pill {
+  border-color: rgba(148, 170, 220, 0.16);
+  background: rgba(11, 17, 32, 0.5);
+  color: var(--text);
+  font-weight: 500;
+}
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon > .medallion { border-radius: 50%; background: transparent; border-color: transparent; }
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon:hover > .medallion { background: rgba(148, 170, 220, 0.08); }
+.ares[data-style="modern"][data-surface="cyber"] .titleIcon[data-on="1"] > .medallion {
+  color: #dfe7ff;
+  border-color: rgba(120, 140, 255, 0.5);
+  box-shadow: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .winControls .winClose:hover { background: rgba(220, 60, 80, 0.75); }
+
+/* ── rail ────────────────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .rail {
+  background: linear-gradient(180deg, rgba(14, 21, 40, 0.92), rgba(9, 13, 26, 0.94));
+  border-color: rgba(148, 170, 220, 0.12);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railBrand {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 10px 10px 22px;
+  font: 500 17px/1 var(--display);
+  letter-spacing: 0.34em;
+  text-indent: 0;
+  color: var(--text-hi);
+  text-shadow: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .railBrand::before {
+  content: "";
+  width: 26px;
+  height: 26px;
+  flex: none;
+  background: var(--cyber-mark) center / contain no-repeat;
+  filter: drop-shadow(0 0 10px rgba(99, 130, 255, 0.45));
+}
+.ares[data-style="modern"][data-surface="cyber"] .railCollapse { color: rgba(190, 205, 240, 0.45); }
+
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary {
+  border-radius: var(--r-md);
+  background: rgba(91, 124, 250, 0.1);
+  border: 1px solid rgba(120, 140, 255, 0.3);
+  box-shadow: none;
+  color: var(--text-hi);
+}
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary:hover { background: rgba(91, 124, 250, 0.16); border-color: rgba(140, 160, 255, 0.55); }
+
+.ares[data-style="modern"][data-surface="cyber"] .railNav button {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-weight: 500;
+  color: rgba(229, 235, 247, 0.82);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button:hover { background: rgba(148, 170, 220, 0.07); }
+.ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] {
+  background: rgba(91, 124, 250, 0.13);
+  border-color: rgba(120, 140, 255, 0.22);
+  box-shadow: inset 3px 0 0 var(--cyber-blue);
+  color: var(--text-hi);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button[data-on="1"] > .medallion {
+  color: #dfe7ff;
+  border-color: rgba(120, 140, 255, 0.5);
+  background: var(--coin-ember);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railNav button em {
+  min-width: 22px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  text-align: center;
+  font: 500 10.5px/1 var(--mono);
+  color: rgba(229, 235, 247, 0.8);
+  background: rgba(148, 170, 220, 0.14);
+}
+
+.ares[data-style="modern"][data-surface="cyber"] .railSearch {
+  border-radius: 10px;
+  border-color: rgba(148, 170, 220, 0.14);
+  background-color: rgba(255, 255, 255, 0.02);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none'%3E%3Ccircle cx='6' cy='6' r='4.6' stroke='%238ea6d6' stroke-opacity='.8'/%3E%3Cpath d='M9.4 9.4 13 13' stroke='%238ea6d6' stroke-opacity='.8' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+.ares[data-style="modern"][data-surface="cyber"] .railLabel {
+  font: 600 10px/1 var(--font);
+  letter-spacing: 0.18em;
+  color: rgba(190, 205, 240, 0.5);
+}
+.ares[data-style="modern"][data-surface="cyber"] .railLabel::after { display: none; }
+
+/* session rows: loose rows with a status dot, no slab */
+.ares[data-style="modern"][data-surface="cyber"] .sessionList {
+  border: none;
+  background: transparent;
+  gap: 2px;
+}
+.ares[data-style="modern"][data-surface="cyber"] .sessionList > * { border-radius: 10px; padding: 8px 10px; }
+.ares[data-style="modern"][data-surface="cyber"] .sessionList > * + * { border-top: none; }
+.ares[data-style="modern"][data-surface="cyber"] .sessionList > *:hover { background: rgba(148, 170, 220, 0.07); }
+.ares[data-style="modern"][data-surface="cyber"] .sessionList > *[data-on="1"] {
+  background: rgba(91, 124, 250, 0.14);
+  box-shadow: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .sessionMain > span { color: rgba(229, 235, 247, 0.92); }
+
+.ares[data-style="modern"][data-surface="cyber"] .railFoot {
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid rgba(148, 170, 220, 0.12);
+  border-top: 1px solid rgba(148, 170, 220, 0.12);
+  border-radius: var(--r-md);
+  background: rgba(14, 21, 40, 0.7);
+}
+.ares[data-style="modern"][data-surface="cyber"] .daemonDot { color: rgba(229, 235, 247, 0.55); }
+
+/* ── stage head ──────────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .railReveal {
+  border-radius: 9px;
+  border-color: rgba(148, 170, 220, 0.2);
+  color: rgba(190, 205, 240, 0.6);
+}
+
+/* ── the sanctum: mark, wordmark, tagline, three cards ───────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .chat:has(> .empty)::before {
+  background-image:
+    radial-gradient(85% 70% at 50% 118%, rgba(60, 90, 200, 0.28), rgba(30, 45, 110, 0.12) 45%, transparent 70%),
+    radial-gradient(50% 40% at 50% 34%, rgba(99, 130, 255, 0.12), transparent 70%);
+  background-position: center;
+  background-size: cover;
+  opacity: 1;
+}
+.ares[data-style="modern"][data-surface="cyber"] .chat:has(> .empty)::after {
+  /* the horizon: one soft curved rim of light, static */
+  background:
+    radial-gradient(60% 46% at 50% 121%, transparent 66%, rgba(140, 160, 255, 0.16) 66.4%, transparent 68%),
+    radial-gradient(115% 95% at 16% 48%, rgba(7, 11, 20, 0.3), transparent 60%);
+}
+
+.ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem {
+  width: 124px;
+  height: 124px;
+  border-radius: 0;
+  background: var(--cyber-mark) center / contain no-repeat;
+  border: none;
+  box-shadow: none;
+  filter: drop-shadow(0 0 30px rgba(99, 130, 255, 0.45)) drop-shadow(0 0 60px rgba(139, 92, 246, 0.25));
+}
+.ares[data-style="modern"][data-surface="cyber"] .empty .emptyEmblem > svg { display: none; }
+
+.ares[data-style="modern"][data-surface="cyber"] .empty .wordmark {
+  margin-top: 14px;
+  font: 500 clamp(40px, 5vw, 62px)/1 var(--display);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: var(--text-hi);
+  text-shadow: none;
+}
+.ares[data-style="modern"][data-surface="cyber"] .empty .emptyAsk {
+  margin-top: 14px;
+  font: 500 12.5px/1 var(--font);
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  text-transform: uppercase;
+  color: rgba(190, 205, 240, 0.58);
+}
+
+.ares[data-style="modern"][data-surface="cyber"] .starters {
+  gap: 18px;
+  margin-top: 44px;
+  max-width: min(1000px, 100%);
+}
+.ares[data-style="modern"][data-surface="cyber"] .starter {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 14px;
+  min-width: 250px;
+  padding: 14px 16px 14px 14px;
+  border-radius: 16px;
+  text-align: left;
+  color: var(--text-hi);
+  background: linear-gradient(158deg, rgba(20, 28, 52, 0.85), rgba(12, 18, 36, 0.85));
+  border: 1px solid rgba(148, 170, 220, 0.14);
+  box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.8);
+}
+.ares[data-style="modern"][data-surface="cyber"] .starter:hover {
+  border-color: rgba(140, 160, 255, 0.45);
+  background: linear-gradient(158deg, rgba(26, 36, 66, 0.92), rgba(14, 21, 42, 0.92));
+}
+.ares[data-style="modern"][data-surface="cyber"] .starter > .medallion {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+.ares[data-style="modern"][data-surface="cyber"] .starter .starterText { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .starter .starterLabel { font: 500 15px/1.2 var(--font); }
+.ares[data-style="modern"][data-surface="cyber"] .starter .starterSub {
+  display: block;
+  font: 400 12px/1.2 var(--font);
+  letter-spacing: 0.02em;
+  color: rgba(190, 205, 240, 0.55);
+}
+.ares[data-style="modern"][data-surface="cyber"] .starter::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid rgba(190, 205, 240, 0.55);
+  border-top: 1.5px solid rgba(190, 205, 240, 0.55);
+  transform: rotate(45deg);
+  margin-right: 4px;
+}
+
+/* ── composer: the pill, one blue-violet send ────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .composerRow {
+  border-radius: 999px;
+  background: rgba(11, 17, 32, 0.82);
+  border: 1px solid rgba(148, 170, 220, 0.16);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.ares[data-style="modern"][data-surface="cyber"] .composerRow:focus-within {
+  border-color: rgba(140, 160, 255, 0.5);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(120, 140, 255, 0.14);
+}
+.ares[data-style="modern"][data-surface="cyber"] .composerRow textarea::placeholder { color: rgba(229, 235, 247, 0.35); }
+.ares[data-style="modern"][data-surface="cyber"] .stage:has(.chat > .empty) .composerRow { width: min(1000px, 88%); }
+
+.ares[data-style="modern"][data-surface="cyber"] .mic,
+.ares[data-style="modern"][data-surface="cyber"] .send {
+  border-radius: 50%;
+  color: #b6c6ec;
+  background: transparent;
+  border: 1px solid transparent;
+}
+.ares[data-style="modern"][data-surface="cyber"] .mic:hover { color: var(--text-hi); background: rgba(148, 170, 220, 0.1); border-color: transparent; }
+.ares[data-style="modern"][data-surface="cyber"] .send {
+  color: #ffffff;
+  background: var(--cyber-grad);
+  border-color: transparent;
+  box-shadow: var(--cyber-glow);
+}
+.ares[data-style="modern"][data-surface="cyber"] .send:hover:not(:disabled) { color: #fff; border-color: transparent; filter: brightness(1.08); }
+.ares[data-style="modern"][data-surface="cyber"] .send:disabled { background: rgba(148, 170, 220, 0.14); box-shadow: none; color: rgba(229, 235, 247, 0.5); }
+.ares[data-style="modern"][data-surface="cyber"] .send.stop { background: rgba(220, 60, 80, 0.7); color: #fff; box-shadow: none; }
+.ares[data-style="modern"][data-surface="cyber"] .send.steer { background: rgba(148, 170, 220, 0.16); color: var(--text-hi); box-shadow: none; }
+
+/* ── the primary action everywhere ───────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .primary {
+  border-radius: var(--r-md);
+  color: #fff;
+  background: var(--cyber-grad);
+  border: 1px solid transparent;
+  box-shadow: var(--cyber-glow);
+}
+.ares[data-style="modern"][data-surface="cyber"] .primary:hover { border-color: transparent; box-shadow: var(--cyber-glow); filter: brightness(1.08); }
+/* …except the rail's New session, which stays a quiet tile (declared above) */
+.ares[data-style="modern"][data-surface="cyber"] .rail > .primary { color: var(--text-hi); background: rgba(91, 124, 250, 0.1); border-color: rgba(120, 140, 255, 0.3); box-shadow: none; filter: none; }
+
+/* ── status strip ────────────────────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .statusBar .statusGroup:first-child {
+  border-color: rgba(148, 170, 220, 0.14);
+  background: rgba(11, 17, 32, 0.7);
+  box-shadow: var(--glass-spec);
+}
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg + .statusSeg::before { background: rgba(148, 170, 220, 0.16); }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg b { color: rgba(229, 235, 247, 0.6); }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg > span { color: #9db4e6; }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg:hover { background: rgba(148, 170, 220, 0.07); }
+.ares[data-style="modern"][data-surface="cyber"] .effortStatus span { color: #b9c8ff; }
+.ares[data-style="modern"][data-surface="cyber"] .segAuto { color: #b9c8ff; border-color: rgba(120, 140, 255, 0.35); }
+
+/* ── transcript: the user speaks in a blue-lit card ──────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .turn.user .bubble,
+.ares[data-style="modern"][data-surface="cyber"] .turn.user > div {
+  border-radius: 16px;
+}
+
+/* ── panels, overlays, settings ──────────────────────────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .forge,
+.ares[data-style="modern"][data-surface="cyber"] .settings,
+.ares[data-style="modern"][data-surface="cyber"] .overlayPanel {
+  background: linear-gradient(180deg, rgba(14, 21, 40, 0.96), rgba(9, 13, 26, 0.97));
+  border-color: rgba(148, 170, 220, 0.14);
+}
+.ares[data-style="modern"][data-surface="cyber"] .slashMenu {
+  border-color: rgba(148, 170, 220, 0.18);
+  background: linear-gradient(180deg, #151d33, #0b1120);
+}
+.ares[data-style="modern"][data-surface="cyber"] .toggle[data-on="1"] { background: var(--cyber-grad); border-color: transparent; }
+
+/* selection + scrollbars follow the light */
+.ares[data-style="modern"][data-surface="cyber"] ::selection { background: rgba(99, 130, 255, 0.35); }
+.ares[data-style="modern"][data-surface="cyber"] ::-webkit-scrollbar-thumb { background: rgba(148, 170, 220, 0.18); border-radius: 999px; }
+.ares[data-style="modern"][data-surface="cyber"] ::-webkit-scrollbar-thumb:hover { background: rgba(148, 170, 220, 0.3); }
+
+/* ── the Self-Generating UI card in Settings — its ember is hard-coded in the
+   base sheet, so it is the one thing that stayed warm ────────────────────── */
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard { border-color: rgba(120, 140, 255, 0.28); background: linear-gradient(158deg, rgba(20, 28, 52, 0.9), rgba(12, 18, 36, 0.9)); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard::after { border-color: rgba(120, 140, 255, 0.18); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchSignal i { border-color: rgba(120, 140, 255, 0.5); animation: none; }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchSignal i:nth-child(3) { background: var(--cyber-blue); box-shadow: 0 0 24px rgba(99, 130, 255, 0.6); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCopy > span { color: #93a8ff; }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCopy > strong b { color: #0b1120; background: var(--cyber-blue); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard > button { border-color: transparent; color: #fff; background: var(--cyber-grad); box-shadow: var(--cyber-glow); }
+.ares[data-style="modern"][data-surface="cyber"] .livingLaunchCard > button:hover:not(:disabled) { box-shadow: var(--cyber-glow); }

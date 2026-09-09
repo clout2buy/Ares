@@ -130,6 +130,8 @@ import "./modern.css";
 // LAST on purpose: the Basic themes neutralize tokens the skins above set, so
 // they must win ties on load order as well as on specificity.
 import "./basic.css";
+import "./cyber.generated.css";
+import "./cyber.css";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -3250,6 +3252,7 @@ function App() {
       data-accent={prefs.accent}
       data-flame={prefs.flameMode}
       data-style={prefs.uiStyle}
+      data-surface={prefs.surface}
       data-panel={forge.open ? "1" : "0"}
       data-rail={railCollapsed ? "collapsed" : "open"}
       data-dragging={forgeDragging ? "1" : "0"}
@@ -3799,13 +3802,16 @@ function App() {
                 <h2 className="emptyAsk">Command the mission.</h2>
                 <div className="starters">
                   {[
-                    { label: "Audit this repository", icon: "shield" as const, q: "Audit this repository and list the top risks, ranked, with the evidence for each." },
-                    { label: "Build and verify", icon: "forge" as const, q: "Build me a landing page, preview it, and show me a screenshot proving it renders." },
-                    { label: "Design a system", icon: "artifacts" as const, q: "Design a robot arm on the holotable." },
-                  ].map(({ label, icon, q }) => (
+                    { label: "Audit this repository", sub: "Scan · Analyze · Report", icon: "shield" as const, q: "Audit this repository and list the top risks, ranked, with the evidence for each." },
+                    { label: "Build and verify", sub: "Code · Test · Validate", icon: "forge" as const, q: "Build me a landing page, preview it, and show me a screenshot proving it renders." },
+                    { label: "Design a system", sub: "Plan · Architect · Execute", icon: "artifacts" as const, q: "Design a robot arm on the holotable." },
+                  ].map(({ label, sub, icon, q }) => (
                     <button key={label} className="starter" onClick={() => send(q)} title={q}>
                       <Medallion glyph={icon} size={40} />
-                      <span className="starterLabel">{label}</span>
+                      <span className="starterText">
+                        <span className="starterLabel">{label}</span>
+                        <span className="starterSub">{sub}</span>
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -7776,6 +7782,9 @@ const Composer = React.memo(function Composer({
   useEffect(() => {
     let unlisten: null | (() => void) = null;
     let live = true;
+    // Native path drops exist only inside the Tauri shell; in a plain browser
+    // (the vite preview) getCurrentWebview() throws before any promise forms.
+    if (!("__TAURI_INTERNALS__" in window)) return;
     void getCurrentWebview()
       .onDragDropEvent((event) => {
         if (event.payload.type === "drop") void addPaths(event.payload.paths);
@@ -10221,9 +10230,12 @@ function Settings({
                     data-on={draft.surface === s.id ? "1" : "0"}
                     data-surface={s.id}
                     onClick={() => {
-                      const next = { ...draft, surface: s.id, theme: surfaceToTheme(s.id), uiStyle: surfaceToStyle(s.id) };
+                      // Cyber's light is blue→violet; landing on it with an ember
+                      // accent would fight the surface, so it brings its accent along.
+                      const accent = s.id === "cyber" ? "blue" : draft.accent;
+                      const next = { ...draft, surface: s.id, accent, theme: surfaceToTheme(s.id), uiStyle: surfaceToStyle(s.id) };
                       setDraftPrefs(next);
-                      onLivePref({ surface: s.id, theme: next.theme, uiStyle: next.uiStyle });
+                      onLivePref({ surface: s.id, accent, theme: next.theme, uiStyle: next.uiStyle });
                     }}
                   >
                     <span className="surfacePreview" aria-hidden="true" />

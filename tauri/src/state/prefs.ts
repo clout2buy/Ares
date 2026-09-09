@@ -87,8 +87,9 @@ export type ThemeName =
 
    `theme` and `uiStyle` remain the wire format the whole app already reads —
    surface/accent derive into them, so nothing downstream had to change. */
-export type SurfaceName = "legacy" | "modern" | "basic-light" | "basic-dark";
+export type SurfaceName = "cyber" | "legacy" | "modern" | "basic-light" | "basic-dark";
 export const SURFACES: Array<{ id: SurfaceName; label: string; hint: string }> = [
+  { id: "cyber", label: "Cyber", hint: "Navy command deck, blue-violet light" },
   { id: "modern", label: "Modern", hint: "Smoked glass over a cinematic canvas" },
   { id: "legacy", label: "Legacy", hint: "The classic flat obsidian shell" },
   { id: "basic-dark", label: "Basic dark", hint: "Flat neutral greys, no ornament" },
@@ -108,6 +109,8 @@ export const ACCENTS: Array<{ id: AccentName; label: string; swatch: string }> =
 
 /** The surface decides the shell; the accent is applied on top via data-accent. */
 export function surfaceToStyle(surface: SurfaceName): Prefs["uiStyle"] {
+  // Cyber rides the Modern shell (its sheet re-scopes every Modern rule under
+  // data-surface="cyber"), so the runtime style stays "modern".
   return surface === "legacy" ? "legacy" : "modern";
 }
 export function surfaceToTheme(surface: SurfaceName): ThemeName {

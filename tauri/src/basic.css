@@ -160,6 +160,7 @@
   border: 1px solid var(--line);
   margin-bottom: 4px;
 }
+.surfaceCard[data-surface="cyber"] .surfacePreview { background: linear-gradient(115deg, #0b1120 50%, #3b5bdb 80%, #8b5cf6); }
 .surfaceCard[data-surface="modern"] .surfacePreview { background: linear-gradient(115deg, #0d0b0a 55%, #241d19); }
 .surfaceCard[data-surface="legacy"] .surfacePreview { background: linear-gradient(115deg, #0a0708 55%, #1e1213); }
 .surfaceCard[data-surface="basic-dark"] .surfacePreview { background: linear-gradient(115deg, #1a1a1a 55%, #2a2a2a); }
@@ -572,3 +573,8 @@
 .usageRefresh:hover { color: inherit; }
 .usageModels { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted, #8a8f98); }
 .usageModels em { font-style: normal; color: inherit; opacity: 0.8; }
+
+/* The starter cards' second line is a Cyber affordance; the other surfaces keep
+   their one-line pills. */
+.starterText { display: contents; }
+.starterSub { display: none; }

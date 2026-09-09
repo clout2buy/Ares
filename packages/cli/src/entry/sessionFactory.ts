@@ -258,31 +258,12 @@ export async function handleReasoningCommand(
   return { level, appliedTo, clearedEnvOverride };
 }
 
-/**
- * Best-known context window (tokens) for a model id. Used to size the
- * kept-history budget so a long session is not trimmed far below what the
- * model can actually hold — the "1M-context model still forgot my project"
- * bug. Conservative families fall back to a sane modern default.
- */
-/** Context windows the providers' own model APIs reported (Anthropic
- *  max_input_tokens, OpenRouter context_length …). Filled by the catalog
- *  fetches; consulted BEFORE the regex heuristics below so a model released
- *  after this file was written is budgeted from what its API says, not from
- *  a 128k guess. */
-const liveModelContextWindows = new Map<string, number>();
-
-export function recordLiveModelContextWindow(modelId: string, tokens: number): void {
-  if (!modelId || !Number.isFinite(tokens) || tokens < 8_000) return;
-  liveModelContextWindows.set(modelId.toLowerCase(), Math.floor(tokens));
-}
-
-export function liveModelContextWindow(modelId: string): number | undefined {
-  return liveModelContextWindows.get((modelId ?? "").toLowerCase());
-}
+import { liveModelContextWindow, recordLiveModelContextWindow } from "./liveModelContext.js";
+export { liveModelContextWindow, recordLiveModelContextWindow };
 
 export function modelContextWindow(modelId: string): number {
   const id = (modelId ?? "").toLowerCase();
-  const live = liveModelContextWindows.get(id);
+  const live = liveModelContextWindow(id);
   if (live) return live;
   if (/deepseek-v4|v4-pro|v4-flash/.test(id)) return 1_000_000;
   // V3.x is a 128k family — the old 1M (v3.2) / 160k (v3.1) figures were

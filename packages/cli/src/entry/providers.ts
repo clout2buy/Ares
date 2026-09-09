@@ -4,7 +4,7 @@ import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeek
 import { promises as fsp } from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
-import { recordLiveModelContextWindow } from "./sessionFactory.js";
+import { recordLiveModelContextWindow } from "./liveModelContext.js";
 import path from "node:path";
 import { type SubModelPool } from "@ares/tools";
 import { buildReportBody } from "./daemon/report.js";

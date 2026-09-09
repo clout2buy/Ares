@@ -703,8 +703,24 @@
 .ares[data-style="modern"][data-surface="cyber"] .rail > .primary .primaryLabel::after { font-size: 13.5px; }
 
 /* ── collapsed rail: the titlebar clears the traffic lights ─────────────── */
-.ares[data-style="modern"][data-surface="cyber"][data-rail="collapsed"] .titlebar { padding-left: 84px; }
-.ares[data-style="modern"][data-surface="cyber"][data-rail="collapsed"] .railReveal { position: fixed; left: 18px; top: 40px; z-index: 5; }
+.ares[data-style="modern"][data-surface="cyber"][data-rail="collapsed"] .titlebar { padding-left: 130px; pointer-events: none; }
+/* the bar stacks above the stage, so it would swallow clicks meant for the
+   fixed reveal chevron beneath it; only its children take the pointer
+   (window drag still works anywhere on the brand, spacer and tools) */
+.ares[data-style="modern"][data-surface="cyber"][data-rail="collapsed"] .titlebar > * { pointer-events: auto; }
+/* the reveal chevron sits in the bar, right after the dots, never under it */
+.ares[data-style="modern"][data-surface="cyber"][data-rail="collapsed"] .railReveal {
+  position: fixed;
+  left: 84px;
+  top: 11px;
+  z-index: 6;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border-color: rgba(148, 170, 220, 0.24);
+  background: rgba(14, 21, 40, 0.9);
+  color: rgba(229, 235, 247, 0.85);
+}
 
 /* ── title icons: line icons, drawn once ─────────────────────────────────── */
 .ares[data-style="modern"][data-surface="cyber"] .titleIcon > .medallion > svg { display: none; }

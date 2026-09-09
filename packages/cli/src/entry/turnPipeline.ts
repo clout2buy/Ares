@@ -15,6 +15,7 @@ import { SessionManager, GarrisonServer } from "@ares/garrison";
 import { CliRuntimeContext, cliRuntimeContext, compactLine } from "./runtime.js";
 import { LiveSession } from "./sessionFactory.js";
 import { mnemosyneRecaller } from "./mnemosyneRuntime.js";
+import { oricleAfterTurn, oricleBeforeTurn, type WitnessAccepted } from "./oricleAdapter.js";
 import { applyPlanPressure } from "./planPressure.js";
 import { crossSurfaceBeforeTurn } from "./crossSurfaceDigest.js";
 import { composeSystemPrompt, promptEnvironment, promptWorkflowSurfaces, toolDoctrineFor, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
@@ -430,6 +431,11 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: Tu
       const count = recall.items.length;
       emitLifecycle({ type: "recall_surfaced", count, gain: gainForTarget("RECALL", count) });
     }
+    // The Oricle estate (permanent, inheritable memory): rules, open task
+    // cards, recent episodes and query recall as ONE budgeted pack. The living
+    // store above stays the fast working memory; the estate is where things
+    // land for good. Best-effort; a missing estate costs nothing.
+    if (intent.shouldRecall) await oricleBeforeTurn(live, text);
     // Advisory cognition (Phase 2C step 3): think WITH what was just recalled and
     // offer a non-binding suggestion. Reuses the unified recall (no second query),
     // never writes a decision, and is gated so trivial turns skip it entirely.
@@ -529,16 +535,33 @@ export async function finishTurn(
   // reliable; failed turns are reviewed (failures carry feedback/belief signal).
   const userMessage = live.lastUserMessage;
   live.lastUserMessage = undefined;
-  if (!userMessage || finalStatus === "interrupted") return;
-  if (finalStatus === "completed" && (live.session.lastWorkStatus === "unverified" || live.session.lastWorkStatus === "blocked")) return;
-  if (process.env.ARES_WITNESS === "0" || !live.agentRuntime?.prepared.enabled) return;
-  try {
-    const intent = classifyUserIntent(userMessage);
-    if (intent.lowSignal || !intent.shouldCapture) return;
+  const accepted = await witnessPass(live, finalStatus, userMessage);
+  // The estate hears about every settled turn: attestation of the pack it
+  // injected, the Witness's accepted candidates, and the session's episode.
+  {
     const history = live.session.engine.history();
     const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
     const assistantText = lastAssistant ? messageText(lastAssistant) : "";
-    if (!assistantText) return;
+    await oricleAfterTurn(live, finalStatus, { ...(userMessage ? { userMessage } : {}), assistantText, accepted });
+  }
+}
+
+/** V5 — the Witness reviews substantive turns and returns what it accepted. */
+async function witnessPass(
+  live: LiveSession,
+  finalStatus: "completed" | "interrupted" | "failed",
+  userMessage: string | undefined,
+): Promise<WitnessAccepted[]> {
+  if (!userMessage || finalStatus === "interrupted") return [];
+  if (finalStatus === "completed" && (live.session.lastWorkStatus === "unverified" || live.session.lastWorkStatus === "blocked")) return [];
+  if (process.env.ARES_WITNESS === "0" || !live.agentRuntime?.prepared.enabled) return [];
+  try {
+    const intent = classifyUserIntent(userMessage);
+    if (intent.lowSignal || !intent.shouldCapture) return [];
+    const history = live.session.engine.history();
+    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+    const assistantText = lastAssistant ? messageText(lastAssistant) : "";
+    if (!assistantText) return [];
     const store = await MemoryStore.open(live.context.mind.memoryFile);
     const witnessScope = memoryScopeForTenant(turnTenants.get(live));
     const report = await runWitness({
@@ -576,8 +599,10 @@ export async function finishTurn(
         gain: gainForTarget("MEMORY", report.accepted.length, "hypotheses"),
       });
     }
+    return report.accepted.map((n) => ({ id: n.id, content: n.content, ...(n.tags ? { tags: n.tags } : {}) }));
   } catch {
     // the Witness is opportunistic — a failed review costs nothing
+    return [];
   }
 }
 

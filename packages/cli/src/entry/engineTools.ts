@@ -446,6 +446,7 @@ export async function buildEngineTools(
     enrich,
   ) as EngineTool;
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
+  const estateTool = adaptToolForEngine(makeEstateTool(() => selection.model), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const watcherTool = adaptToolForEngine(makeWatcherTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
@@ -473,7 +474,7 @@ export async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  const operatorWorkerTools = [...childBaseTools, taskTool, livingMindTool, browserTool];
+  const operatorWorkerTools = [...childBaseTools, taskTool, livingMindTool, estateTool, browserTool];
   const operatorTool = adaptToolForEngine(
     makeOperatorChatTool({
       selection,
@@ -484,7 +485,7 @@ export async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  const all = [...workerTools, livingMindTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  const all = [...workerTools, livingMindTool, estateTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
   // Registries created before this point (none in practice — no tool call can
   // precede the return) share the array by reference, so filling it in place
   // is what makes them see the catalog.
@@ -616,6 +617,8 @@ export async function buildCodingTools(
   ) as EngineTool;
   return [...baseTools, taskTool, taskOutputTool, killTaskTool, conductorTool];
 }
+
+import { makeEstateTool } from "./oricleAdapter.js";
 
 const livingMindInput = z
   .object({

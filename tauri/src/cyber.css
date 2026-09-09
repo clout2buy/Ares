@@ -425,8 +425,8 @@
 /* ── status strip: one quiet full-width row, like the reference ─────────── */
 .ares[data-style="modern"][data-surface="cyber"] .statusBar {
   height: 36px;
-  padding: 0 18px;
-  justify-content: flex-start;
+  padding: 0 12px;
+  justify-content: stretch;
   border-top: 1px solid var(--line);
   background: rgba(10, 15, 28, 0.5);
 }
@@ -868,13 +868,16 @@
 .ares[data-style="modern"][data-surface="cyber"] .statusBar .statusGroup:first-child {
   display: flex;
   flex-wrap: nowrap;
+  justify-content: space-between;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
-.ares[data-style="modern"][data-surface="cyber"] .statusSeg { flex: 0 1 auto; min-width: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg { flex: 1 1 auto; justify-content: center; min-width: 0; }
+.ares[data-style="modern"][data-surface="cyber"] .statusSeg + .statusSeg::before { left: 0; }
 .ares[data-style="modern"][data-surface="cyber"] .statusSeg > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
 @container (max-width: 1100px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg[data-seg="computer"] { display: none; } }
 @container (max-width: 940px) { .ares[data-style="modern"][data-surface="cyber"] .statusSeg b { display: none; } }

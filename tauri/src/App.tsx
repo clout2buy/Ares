@@ -4159,24 +4159,14 @@ function App() {
             <button
               className="statusSeg contextSeg"
               data-seg="context"
-              data-tone={contextTone(active?.contextPromptTokens, active?.contextWindowTokens)}
+              data-tone={contextTone(sessionContext(active).prompt, sessionContext(active).window)}
               onClick={() => { setContextPopOpen((v) => !v); daemonCmd({ type: "provider_usage" }); }}
               title="Context window fill and your plan's usage limits"
             >
               <b>context</b>
-              <span>{contextLabel(active?.contextPromptTokens, active?.contextWindowTokens)}</span>
-              <i className="contextMeter" aria-hidden="true"><em style={{ width: `${Math.round(contextFraction(active?.contextPromptTokens, active?.contextWindowTokens) * 100)}%` }} /></i>
+              <span>{contextLabel(sessionContext(active).prompt, sessionContext(active).window)}</span>
+              <i className="contextMeter" aria-hidden="true"><em style={{ width: `${Math.round(contextFraction(sessionContext(active).prompt, sessionContext(active).window) * 100)}%` }} /></i>
             </button>
-            {contextPopOpen ? (
-              <ContextPopover
-                promptTokens={active?.contextPromptTokens}
-                windowTokens={active?.contextWindowTokens}
-                usage={providerUsage}
-                onRefresh={() => daemonCmd({ type: "provider_usage", force: true })}
-                onClose={() => setContextPopOpen(false)}
-                onDetails={() => { setContextPopOpen(false); setSettingsOpen(true); setSettingsTab("usage"); }}
-              />
-            ) : null}
             <button className="statusSeg effortStatus" data-seg="effort" onClick={() => setReasoningOpen(true)} title="Set the active model's native reasoning effort">
               <b>effort</b><span>{EFFORT_META[effectiveEffort(prefs.provider, prefs.model, prefs.reasoning)].label.toLowerCase()}</span>
             </button>
@@ -4245,6 +4235,16 @@ function App() {
               <b>effects</b><span>{prefs.flameMode}</span>
             </button>
           </div>
+            {contextPopOpen ? (
+              <ContextPopover
+                promptTokens={sessionContext(active).prompt}
+                windowTokens={sessionContext(active).window}
+                usage={providerUsage}
+                onRefresh={() => daemonCmd({ type: "provider_usage", force: true })}
+                onClose={() => setContextPopOpen(false)}
+                onDetails={() => { setContextPopOpen(false); setSettingsOpen(true); setSettingsTab("usage"); }}
+              />
+            ) : null}
           <span className="grow" />
           <span className="hudReadout" title={`${fmtTokens(active?.cacheReadTokens ?? 0)} input tokens reused from cache`}>
             ↑<SpringNumber value={Math.max(0, (active?.tokensIn ?? 0) - (active?.cacheReadTokens ?? 0))} format={fmtTokens} /> fresh ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
@@ -9939,6 +9939,18 @@ function MindPane({
   );
 }
 
+
+/** The context figure for a session: what the engine reported on its last
+ *  turn, or, for a session that predates that report, its last usage line. */
+function sessionContext(session: SessionVm | undefined): { prompt?: number; window?: number | null } {
+  if (!session) return {};
+  if (typeof session.contextPromptTokens === "number") return { prompt: session.contextPromptTokens, window: session.contextWindowTokens ?? null };
+  for (let i = session.items.length - 1; i >= 0; i--) {
+    const it = session.items[i];
+    if (it.kind === "usage" && (it.input > 0 || it.cacheRead > 0)) return { prompt: Math.round((it.input + it.cacheRead) / Math.max(1, it.modelCalls)), window: null };
+  }
+  return {};
+}
 
 function contextFraction(prompt?: number, window?: number | null): number {
   if (!prompt || !window || window <= 0) return 0;

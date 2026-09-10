@@ -322,6 +322,7 @@ export interface McpRegistryResult {
   needsKey: boolean;
   keyHeader?: string;
   website?: string;
+  icon?: string;
 }
 
 /** One curated connector from the daemon's catalog (mirrors @ares/core McpCatalogEntry). */

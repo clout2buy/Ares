@@ -56,6 +56,9 @@ export interface Prefs {
    *  "new" was the old DEFAULT (not a choice), so it migrates to "modern"
    *  once; explicit re-picks of Forged after that stick. */
   uiStyleV2?: boolean;
+  /** Marks a save made after Cyber became the default surface: older saves
+   *  land on Cyber once; a later explicit pick sticks. */
+  surfaceV3?: boolean;
   /** Cyber backdrop: which point map paints the room, whether it paints at
    *  all, and the owner's own saved maps (Ares's arrive from the daemon). */
   pointMap?: string;
@@ -189,8 +192,8 @@ export function loadPrefs(): Prefs {
     flameMode: IS_LINUX ? "minimal" : "glow",
     pinned: [],
     theme: "rage",
-    surface: "modern",
-    accent: "ember",
+    surface: "cyber",
+    accent: "blue",
     uiStyle: "modern",
     engine: {},
   };
@@ -199,10 +202,16 @@ export function loadPrefs(): Prefs {
     const themeOk = THEMES.some((t) => t.id === raw.theme);
     // Pre-split saves carry only `theme`; read a surface/accent pair out of it
     // so an existing user lands on the closest equivalent instead of a reset.
-    const surface: SurfaceName = SURFACES.some((s) => s.id === raw.surface)
-      ? (raw.surface as SurfaceName)
-      : surfaceFromLegacy(raw.theme, raw.uiStyle);
-    const accent: AccentName = ACCENTS.some((a) => a.id === raw.accent)
+    // Cyber is the default room now. A save from before that flips to it once
+    // (with the blue accent it was designed with); anything picked after this
+    // migration is respected.
+    const preCyber = !raw.surfaceV3;
+    const surface: SurfaceName = preCyber
+      ? "cyber"
+      : SURFACES.some((s) => s.id === raw.surface)
+        ? (raw.surface as SurfaceName)
+        : surfaceFromLegacy(raw.theme, raw.uiStyle);
+    const accent: AccentName = preCyber ? "blue" : ACCENTS.some((a) => a.id === raw.accent)
       ? (raw.accent as AccentName)
       : accentFromLegacy(raw.theme);
     const routing = raw.routing && typeof raw.routing === "object" ? raw.routing : {};
@@ -262,6 +271,7 @@ export function loadPrefs(): Prefs {
       // the picker, but a save that explicitly holds it still renders it.
       uiStyle: raw.uiStyleV2 && raw.uiStyle === "new" ? "new" : surfaceToStyle(surface),
       uiStyleV2: true,
+      surfaceV3: true,
       engine: raw.engine && typeof raw.engine === "object" ? raw.engine : {},
       voiceEnabled: raw.voiceEnabled === true,
       voiceId: typeof raw.voiceId === "string" ? raw.voiceId : undefined,

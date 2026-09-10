@@ -10029,7 +10029,13 @@ function ContextPopover({ promptTokens, windowTokens, usage, onRefresh, onClose,
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    const onDown = (ev: MouseEvent) => { if (ref.current && !ref.current.contains(ev.target as Node)) onClose(); };
+    // the segment that opened it toggles it; a mousedown there must not
+    // close-then-reopen
+    const onDown = (ev: MouseEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (t && t.closest(".contextSeg")) return;
+      if (ref.current && !ref.current.contains(ev.target as Node)) onClose();
+    };
     const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") onClose(); };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);

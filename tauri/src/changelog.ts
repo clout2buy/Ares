@@ -38,6 +38,22 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.49.0",
+    date: "September 2026",
+    title: "Cyber",
+    tagline: "A new room, connectors that sign in with one click, and Ares that tells you what it's using.",
+    highlights: [
+      { icon: "🌌", title: "The Cyber look, now the default", blurb: "A navy command deck with a living point cloud behind it. Pick the accent and everything follows — the mark, the buttons, the cloud. Modern and the flat looks are still one click away in Appearance.", tag: "New" },
+      { icon: "✨", title: "Backdrops Ares designs", blurb: "Six point-cloud looks ship (Nebula, Horizon, Waves, Orbit, Galaxy, Aurora), you can switch the cloud off, and you can ask Ares for a new one — it saves into your Appearance list.", tag: "New" },
+      { icon: "🔌", title: "Connectors that actually work", blurb: "/mcp is a directory now: GitHub, Vercel, Linear, Notion, Stripe, Supabase, Figma and dozens more, plus the whole public MCP registry with search. Sign in with the service itself — no keys to paste — and every tool it offers shows up by its real name.", tag: "New" },
+      { icon: "🪄", title: "Ares asks to connect", blurb: "When a task needs a service you haven't connected, a card with a Connect button appears right in the chat. If a sign-in expires, same thing — one click and you're back.", tag: "New" },
+      { icon: "📊", title: "Context and plan usage", blurb: "A context readout in the status bar shows how full the model's window is, and its popover shows your plan limits straight from Claude, Kimi and Ollama Cloud — like the desktop apps do.", tag: "New" },
+      { icon: "👀", title: "See what runs in the background", blurb: "The Forge has a Background tab: live agents, background processes, and anything unfinished from before Ares last closed, with Resume and Discard. Nothing runs behind your back.", tag: "Safer" },
+      { icon: "📎", title: "Drop any file", blurb: "Drag text, images, PDFs, archives — anything — into the chat. Files arrive as chips like in Claude or Codex, and Ares can open them. Text selections drag in too.", tag: "Polished" },
+      { icon: "☁️", title: "Cloud models with just a key", blurb: "An Ollama Cloud key runs cloud models directly, no local install and no pulling. New models from every provider show up on their own.", tag: "Faster" },
+    ],
+  },
+  {
     version: "0.48.9",
     date: "September 2026",
     title: "AresOS, sharper",

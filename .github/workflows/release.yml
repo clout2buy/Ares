@@ -75,12 +75,16 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Ares ${{ github.ref_name }}"
           releaseBody: |
-            Ares 0.35.0 fixes the two things that got worse the longer you used it: the crash, and background work that never stopped.
+            Ares 0.49.0 — Cyber.
 
-            - The Garrison ran out of memory and aborted (exit code 134). Every chat you sent to stayed fully loaded forever - nothing ever released one. Idle chats are now released and reloaded on demand, the daemon watches its own heap and sheds memory before it hits the ceiling, and it writes a crash record on the way down instead of dying silently.
-            - Background jobs no longer outlive their host. Pressing Stop ends the background work that turn started; closing Ares ends all of it; and starting Ares stops anything a previous run - or a crash - left behind. Each is recorded as suspended and resumable, and nothing ever restarts by itself. This is the fix for an app or game relaunching itself every few minutes with nothing on screen to explain it.
-            - You can see them now: a Background panel above the message box lists every job with Stop and Resume, and Ares gained a BackgroundTasks tool so it can list, stop and resume its own work instead of losing track of it.
-            - "The Garrison went down (exit code 134)" used to be followed by four lines of hex addresses. It now names the actual cause and what to do about it.
+            - A new default look: the Cyber room, a navy command deck with a live GPU point cloud behind it. The accent dial recolours everything; six backdrops ship and Ares can design more on request (they save into Appearance). Modern and the flat looks remain a click away.
+            - Connectors that actually work. /mcp is a directory: ~50 curated services (GitHub, Vercel, Linear, Notion, Stripe, Supabase, Figma, Sentry, Cloudflare, Atlassian and more) plus the whole public MCP registry with search and paging. Sign-in is OAuth with the service itself; every tool a server offers is registered under its real name, so approvals say "Vercel · deploy_to_preview". SSE servers (Linear, Atlassian, Asana, Square, Cloudflare) are supported.
+            - Ares asks to connect: when a task needs an unconnected service, or a sign-in expires, a Connect card with a button appears in the chat.
+            - A context readout in the status bar with a popover showing plan usage from Claude (OAuth), Kimi Code and Ollama Cloud, plus the same rows under each key in Settings.
+            - The Forge gained a Background tab: live agents, background processes, and unfinished work from the last run with Resume/Discard. Startup recovery asks first (Settings → Starting up).
+            - Drag and drop of any file type as chips; text selections drag in; folders explain themselves.
+            - Ollama Cloud from a key alone (no local Ollama, no pulls); live model discovery for every provider; a local OLLAMA_HOST no longer strands cloud models.
+            - Fixes: renaming a fresh session persists; Home no longer stacks blank sessions; HELM's tab highlight; the Claude client-version gate (claude_code_version_too_old); the Usage tab clipping; a PointMap tool schema Anthropic rejected.
           releaseDraft: false
           prerelease: false
           args: --bundles nsis
@@ -144,12 +148,16 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Ares ${{ github.ref_name }}"
           releaseBody: |
-            Ares 0.35.0 fixes the two things that got worse the longer you used it: the crash, and background work that never stopped.
+            Ares 0.49.0 — Cyber.
 
-            - The Garrison ran out of memory and aborted (exit code 134). Every chat you sent to stayed fully loaded forever - nothing ever released one. Idle chats are now released and reloaded on demand, the daemon watches its own heap and sheds memory before it hits the ceiling, and it writes a crash record on the way down instead of dying silently.
-            - Background jobs no longer outlive their host. Pressing Stop ends the background work that turn started; closing Ares ends all of it; and starting Ares stops anything a previous run - or a crash - left behind. Each is recorded as suspended and resumable, and nothing ever restarts by itself. This is the fix for an app or game relaunching itself every few minutes with nothing on screen to explain it.
-            - You can see them now: a Background panel above the message box lists every job with Stop and Resume, and Ares gained a BackgroundTasks tool so it can list, stop and resume its own work instead of losing track of it.
-            - "The Garrison went down (exit code 134)" used to be followed by four lines of hex addresses. It now names the actual cause and what to do about it.
+            - A new default look: the Cyber room, a navy command deck with a live GPU point cloud behind it. The accent dial recolours everything; six backdrops ship and Ares can design more on request (they save into Appearance). Modern and the flat looks remain a click away.
+            - Connectors that actually work. /mcp is a directory: ~50 curated services (GitHub, Vercel, Linear, Notion, Stripe, Supabase, Figma, Sentry, Cloudflare, Atlassian and more) plus the whole public MCP registry with search and paging. Sign-in is OAuth with the service itself; every tool a server offers is registered under its real name, so approvals say "Vercel · deploy_to_preview". SSE servers (Linear, Atlassian, Asana, Square, Cloudflare) are supported.
+            - Ares asks to connect: when a task needs an unconnected service, or a sign-in expires, a Connect card with a button appears in the chat.
+            - A context readout in the status bar with a popover showing plan usage from Claude (OAuth), Kimi Code and Ollama Cloud, plus the same rows under each key in Settings.
+            - The Forge gained a Background tab: live agents, background processes, and unfinished work from the last run with Resume/Discard. Startup recovery asks first (Settings → Starting up).
+            - Drag and drop of any file type as chips; text selections drag in; folders explain themselves.
+            - Ollama Cloud from a key alone (no local Ollama, no pulls); live model discovery for every provider; a local OLLAMA_HOST no longer strands cloud models.
+            - Fixes: renaming a fresh session persists; Home no longer stacks blank sessions; HELM's tab highlight; the Claude client-version gate (claude_code_version_too_old); the Usage tab clipping; a PointMap tool schema Anthropic rejected.
           releaseDraft: false
           prerelease: false
           args: --bundles appimage,deb

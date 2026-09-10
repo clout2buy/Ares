@@ -2638,7 +2638,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             if (!res.ok) throw new Error(`registry ${res.status}`);
             const json = await res.json() as {
               servers?: Array<{
-                server?: { name?: string; title?: string; description?: string; websiteUrl?: string; remotes?: Array<{ type?: string; url?: string; headers?: Array<{ name?: string; isRequired?: boolean; isSecret?: boolean }> }> };
+                server?: { name?: string; title?: string; description?: string; websiteUrl?: string; icons?: Array<{ src?: string; mimeType?: string; sizes?: string[] }>; remotes?: Array<{ type?: string; url?: string; headers?: Array<{ name?: string; isRequired?: boolean; isSecret?: boolean }> }> };
                 _meta?: Record<string, { isLatest?: boolean; status?: string }>;
               }>;
               metadata?: { nextCursor?: string; count?: number };
@@ -2664,6 +2664,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                   needsKey: Boolean(secret),
                   ...(secret?.name ? { keyHeader: secret.name } : {}),
                   ...(server.websiteUrl ? { website: server.websiteUrl } : {}),
+                  ...((server.icons ?? []).find((ic) => typeof ic.src === "string" && /^https:/i.test(ic.src))?.src ? { icon: (server.icons ?? []).find((ic) => typeof ic.src === "string" && /^https:/i.test(ic.src))!.src } : {}),
                 });
                 break;
               }

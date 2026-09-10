@@ -21,6 +21,29 @@ function hostOf(url: string): string {
   }
 }
 
+/** The service's own mark: the registry's icon when it publishes one,
+ *  otherwise the site favicon; the initial only when neither loads. */
+function iconFor(url: string, icon?: string): string | null {
+  if (icon && /^https:/i.test(icon)) return icon;
+  try {
+    const host = new URL(url).host.replace(/^www\./, "");
+    const root = host.split(".").slice(-2).join(".");
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(root)}&sz=64`;
+  } catch {
+    return null;
+  }
+}
+
+function Logo({ name, url, icon }: { name: string; url: string; icon?: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = failed ? null : iconFor(url, icon);
+  return (
+    <span className="dirLogo" data-img={src ? "1" : "0"} aria-hidden="true">
+      {src ? <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} /> : initialOf(name)}
+    </span>
+  );
+}
+
 function connectedByUrl(connectors: McpConnectorVm[], url: string): McpConnectorVm | undefined {
   const norm = url.replace(/\/+$/, "").toLowerCase();
   return connectors.find((c) => c.url.replace(/\/+$/, "").toLowerCase() === norm);
@@ -173,7 +196,7 @@ export function ConnectorDirectory({
                     <div key={c.name} className="dirConn" data-open={open ? "1" : "0"} data-on={on ? "1" : "0"} data-err={st?.error ? "1" : "0"}>
                       <div className="dirConnRow">
                         <button className="dirConnMain" onClick={() => { setExpanded(open ? null : c.name); if (!open && !t) onListTools(c.name); }} title={open ? "collapse" : "show tools"}>
-                          <span className="dirLogo" aria-hidden="true">{initialOf(entry?.name ?? c.displayName ?? c.name)}</span>
+                          <Logo name={entry?.name ?? c.displayName ?? c.name} url={c.url} />
                           <span className="dirConnText">
                             <span className="dirConnName">{entry?.name ?? c.displayName ?? c.name}<i className="dirAuthTag" data-auth={c.oauth ? "oauth" : "key"}>{c.oauth ? "OAuth" : "key"}</i></span>
                             <span className="dirConnMeta">
@@ -232,7 +255,7 @@ export function ConnectorDirectory({
                         }}
                         title={p.docs ?? p.url}
                       >
-                        <span className="dirLogo" aria-hidden="true">{initialOf(p.name)}</span>
+                        <Logo name={p.name} url={p.url} />
                         <span className="dirCardBody">
                           <strong>{p.name}<i className="dirAuthTag" data-auth={p.auth}>{p.auth === "oauth" ? "OAuth" : p.auth === "key" ? "API key" : "open"}</i></strong>
                           <em>{p.blurb}</em>
@@ -282,7 +305,7 @@ export function ConnectorDirectory({
                         }}
                         title={r.fullName}
                       >
-                        <span className="dirLogo" aria-hidden="true">{initialOf(r.name)}</span>
+                        <Logo name={r.name} url={r.url} icon={r.icon} />
                         <span className="dirCardBody">
                           <strong>{r.name}<i className="dirAuthTag" data-auth={r.needsKey ? "key" : "oauth"}>{r.needsKey ? "API key" : "sign in / open"}</i><small>{hostOf(r.url)}</small></strong>
                           <em>{r.description || r.fullName}</em>

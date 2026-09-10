@@ -19,6 +19,10 @@ export type LifecycleEvent =
   | { type: "session_ended"; sessionId: string }
   | { type: "session_before_compact"; sessionId: string }
   | { type: "heartbeat_tick"; reason: string }
+  /** A connected MCP server refused our token mid-turn: the desktop shows a Connect card. */
+  | { type: "mcp_auth_required"; server: string; displayName: string; url?: string }
+  /** Ares (or the turn pipeline) asks the owner to connect a catalog service. */
+  | { type: "mcp_suggest"; id: string; name: string; url: string; auth: string; reason: string; by: "ares" }
   | { type: "dream_phase_started"; phase: DreamPhase }
   | { type: "dream_phase_ended"; phase: DreamPhase; promoted: number; pruned: number; gain?: EvolutionGain }
   | { type: "skill_proposed"; name: string; gain?: EvolutionGain }

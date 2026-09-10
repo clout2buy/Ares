@@ -904,3 +904,83 @@
 
 /* no helm artwork behind HELM in this room — the cloud is the backdrop */
 .ares[data-style="modern"][data-surface="cyber"] .hm::before { background-image: none; }
+
+
+/* ── Cyber: connectors, connect cards, the gate and tool cards as holograms ── */
+.ares[data-style="modern"][data-surface="cyber"] .palette.directory { background: linear-gradient(180deg, rgba(14, 21, 40, 0.97), rgba(9, 13, 26, 0.98)); border: 1px solid rgba(148, 170, 220, 0.16); border-radius: 18px; box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(220, 230, 255, 0.08); }
+.ares[data-style="modern"][data-surface="cyber"] .dirCard,
+.ares[data-style="modern"][data-surface="cyber"] .dirConn { background: linear-gradient(158deg, rgba(20, 28, 52, 0.75), rgba(12, 18, 36, 0.75)); border-color: rgba(148, 170, 220, 0.14); border-radius: 14px; }
+.ares[data-style="modern"][data-surface="cyber"] .dirCard[data-connected="1"] { border-color: rgba(52, 211, 153, 0.35); box-shadow: inset 0 0 30px -20px rgba(52, 211, 153, 0.5); }
+.ares[data-style="modern"][data-surface="cyber"] .dirLogo { background: var(--cyber-grad); color: #fff; border: 0; box-shadow: var(--cyber-glow); }
+.ares[data-style="modern"][data-surface="cyber"] .dirCardAction { border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.12); }
+.ares[data-style="modern"][data-surface="cyber"] .dirFilters button[data-on="1"] { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.5); }
+.ares[data-style="modern"][data-surface="cyber"] .dirSearch { background: rgba(11, 17, 32, 0.8); border-color: rgba(148, 170, 220, 0.16); border-radius: 12px; }
+
+/* the connect card and the approval gate share one holographic material:
+   a glass slab, a light rim along the top, the accent as a left seam */
+.ares[data-style="modern"][data-surface="cyber"] .connectCard,
+.ares[data-style="modern"][data-surface="cyber"] .gate {
+  position: relative;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 170, 220, 0.18);
+  background: linear-gradient(158deg, rgba(20, 28, 52, 0.82), rgba(12, 18, 36, 0.82));
+  box-shadow: inset 0 1px 0 rgba(220, 230, 255, 0.1), 0 16px 40px -20px rgba(0, 0, 0, 0.8), var(--cyber-glow);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  overflow: hidden;
+}
+.ares[data-style="modern"][data-surface="cyber"] .connectCard::before,
+.ares[data-style="modern"][data-surface="cyber"] .gate::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 10%; bottom: 10%;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--cyber-grad);
+}
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateTop strong,
+.ares[data-style="modern"][data-surface="cyber"] .connectBody strong { font: 600 13.5px/1.3 var(--font); letter-spacing: 0.01em; color: var(--text-hi); text-transform: none; }
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateReason { color: rgba(229, 235, 247, 0.7); font: 400 12px/1.3 var(--font); }
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateTarget {
+  margin: 0 14px 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(7, 11, 20, 0.7);
+  border: 1px solid rgba(148, 170, 220, 0.12);
+  color: #b9c8ff;
+  font: 400 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateActions { padding: 0 14px 14px; gap: 8px; }
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateAllow,
+.ares[data-style="modern"][data-surface="cyber"] .connectActions .btn.primary { border: 0; border-radius: 999px; padding: 8px 16px; color: #fff; background: var(--cyber-grad); box-shadow: var(--cyber-glow); font: 600 12.5px/1 var(--font); }
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateAlways,
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateDeny,
+.ares[data-style="modern"][data-surface="cyber"] .connectActions .btn.ghost { border: 1px solid rgba(148, 170, 220, 0.2); border-radius: 999px; padding: 8px 14px; background: transparent; color: rgba(229, 235, 247, 0.85); font: 500 12.5px/1 var(--font); }
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateDeny { color: #f4a3a3; border-color: rgba(224, 123, 123, 0.4); }
+.ares[data-style="modern"][data-surface="cyber"] .gate .gateDecided { color: #8fd3a0; font: 500 11.5px/1 var(--font); }
+.ares[data-style="modern"][data-surface="cyber"] .gate > .gateTop > .medallion { border-radius: 12px; background: rgba(var(--accent-rgb), 0.14); border-color: rgba(var(--accent-rgb), 0.4); color: #dfe7ff; }
+
+/* tool cards: the same slab, a thin scanning rail while running, real icons */
+.ares[data-style="modern"][data-surface="cyber"] .toolCard {
+  border-radius: 14px;
+  border: 1px solid rgba(148, 170, 220, 0.14);
+  background: linear-gradient(158deg, rgba(16, 23, 44, 0.72), rgba(10, 15, 30, 0.72));
+  box-shadow: inset 0 1px 0 rgba(220, 230, 255, 0.07);
+}
+.ares[data-style="modern"][data-surface="cyber"] .toolCard[data-state="running"] { border-color: rgba(var(--accent-rgb), 0.4); }
+.ares[data-style="modern"][data-surface="cyber"] .toolCard[data-state="error"] { border-color: rgba(224, 123, 123, 0.45); }
+.ares[data-style="modern"][data-surface="cyber"] .toolCardHead { padding: 10px 14px; gap: 12px; }
+.ares[data-style="modern"][data-surface="cyber"] .toolCardIcon { width: 30px; height: 30px; border-radius: 9px; background: rgba(var(--accent-rgb), 0.14); border: 1px solid rgba(var(--accent-rgb), 0.3); display: grid; place-items: center; }
+.ares[data-style="modern"][data-surface="cyber"] .toolCardTitle { font: 600 12.5px/1.3 var(--font); color: var(--text-hi); }
+.ares[data-style="modern"][data-surface="cyber"] .toolCardSub { font: 400 11.5px/1.3 var(--font); color: rgba(229, 235, 247, 0.6); }
+.ares[data-style="modern"][data-surface="cyber"] .toolProgressRail { height: 2px; background: rgba(148, 170, 220, 0.12); }
+.ares[data-style="modern"][data-surface="cyber"] .toolProgressRail i { background: var(--cyber-grad); }
+.ares[data-style="modern"][data-surface="cyber"] .toolCard .doneLine,
+.ares[data-style="modern"][data-surface="cyber"] .toolCard[data-compact="1"] .toolCardHead { color: rgba(229, 235, 247, 0.7); font: 500 12px/1.3 var(--font); }
+.ares[data-style="modern"][data-surface="cyber"] .toolBody { border-top: 1px solid rgba(148, 170, 220, 0.1); }
+
+/* the + beside Recent sessions: centred on the label's text line */
+.ares[data-style="modern"][data-surface="cyber"] .railLabel { padding: 6px 12px 8px 12px; }
+.ares[data-style="modern"][data-surface="cyber"] .railNew { margin-left: auto; margin-right: -2px; width: 22px; height: 22px; border-radius: 7px; align-self: center; transform: translateY(-1px); }

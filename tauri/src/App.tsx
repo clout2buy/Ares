@@ -59,6 +59,8 @@ import {
   type SubagentJobWire,
   type OllamaUsageView,
   type ProviderUsageView,
+  type McpCatalogVm,
+  type McpServerStatusVm,
 } from "./state/events";
 import {
   type ReasoningLevel,
@@ -134,6 +136,7 @@ import "./basic.css";
 import "./cyber.generated.css";
 import "./cyber.css";
 import { CyberField } from "./cyberField";
+import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -688,6 +691,11 @@ function App() {
   /** MCP registry search results for the /mcp explorer. */
   const [mcpSearch, setMcpSearch] = useState<{ text: string; searching: boolean; results: McpRegistryResult[] }>({ text: "", searching: false, results: [] });
   const [mcpConnecting, setMcpConnecting] = useState<string | null>(null);
+  const [mcpCatalog, setMcpCatalog] = useState<{ catalog: McpCatalogVm[]; categories: Array<{ id: string; label: string }> }>({ catalog: [], categories: [] });
+  const [mcpServers, setMcpServers] = useState<McpServerStatusVm[]>([]);
+  const [mcpProbe, setMcpProbe] = useState<{ url: string; auth?: string; registration?: boolean; transport?: string; note?: string } | null>(null);
+  const [mcpRegistryCursor, setMcpRegistryCursor] = useState<string | null>(null);
+  const [directoryPrefill, setDirectoryPrefill] = useState<{ url: string; name: string } | null>(null);
   // Floating-pill mode: shrink the window to an always-on-top mic bar.
   const [pill, setPill] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(() => window.localStorage.getItem("ares.rail.collapsed") === "1");
@@ -1792,6 +1800,17 @@ function App() {
           }));
           return true;
         }
+        case "mcp_catalog":
+          setMcpCatalog({ catalog: Array.isArray(e.catalog) ? (e.catalog as McpCatalogVm[]) : [], categories: Array.isArray(e.categories) ? (e.categories as Array<{ id: string; label: string }>) : [] });
+          if (Array.isArray(e.connectors)) setMcpConnectors(e.connectors as McpConnectorVm[]);
+          if (Array.isArray(e.servers)) setMcpServers(e.servers as McpServerStatusVm[]);
+          return true;
+        case "mcp_tools_refreshed":
+          setMcpServers(Array.isArray(e.servers) ? (e.servers as McpServerStatusVm[]) : []);
+          return true;
+        case "mcp_probe_result":
+          setMcpProbe({ url: String(e.url ?? ""), ...(typeof e.auth === "string" ? { auth: e.auth } : {}), ...(typeof e.registration === "boolean" ? { registration: e.registration } : {}), ...(typeof e.transport === "string" ? { transport: e.transport } : {}), ...(typeof e.note === "string" ? { note: e.note } : {}) });
+          return true;
         case "pointmaps": {
           setAresPointMaps(Array.isArray(e.maps) ? e.maps.map((m) => normalizePointMap(m)).filter((m): m is PointMapSpec => m !== null) : []);
           // Ares asked the room to switch: apply once per activation, so the
@@ -1885,7 +1904,10 @@ function App() {
           }
           return true;
         }
-        case "mcp_connect_result": {
+        case "mcp_connect_result":
+          setSessions((prev) => prev.map((sess) => ({ ...sess, items: sess.items.map((it) => (it.kind === "connect" && it.state === "connecting"
+            ? { ...it, state: e.ok === false ? ("failed" as const) : ("connected" as const), ...(e.ok === false && typeof e.error === "string" ? { error: e.error } : {}) }
+            : it)) }))); {
           setMcpConnecting(null);
           // "Connected" only reads as proven when the post-connect tools/list
           // probe succeeded — an issued-but-rejected token says so out loud.
@@ -1901,7 +1923,8 @@ function App() {
           );
           return true;
         }
-        case "mcp_search_results": {
+        case "mcp_search_results":
+          setMcpRegistryCursor(typeof e.nextCursor === "string" ? e.nextCursor : null); {
           const text = typeof (e as { text?: unknown }).text === "string" ? (e as { text: string }).text : "";
           const results = Array.isArray((e as { results?: unknown }).results) ? ((e as unknown as { results: McpRegistryResult[] }).results) : [];
           setMcpSearch((prev) => (prev.text === text ? { ...prev, searching: false, results } : prev));
@@ -2037,9 +2060,21 @@ function App() {
             }));
           }
           return true;
-        case "lifecycle":
+        case "lifecycle": {
           pushLog(`[lifecycle] ${compact(stringify(e.event ?? {}), 200)}`);
+          const ev = (e.event ?? {}) as { type?: string; server?: string; displayName?: string; url?: string; id?: string; name?: string; auth?: string; reason?: string };
+          if (ev.type === "mcp_auth_required" || ev.type === "mcp_suggest") {
+            const expired = ev.type === "mcp_auth_required";
+            const id = expired ? (ev.server ?? "") : (ev.id ?? "");
+            const target = e.sessionId ?? activeRef.current;
+            if (id && target) {
+              applyTo(target, (sess) => sess.items.some((it) => it.kind === "connect" && it.id === id && it.state !== "connected" && it.state !== "failed")
+                ? sess
+                : { ...sess, items: [...sess.items, { kind: "connect" as const, key: `connect_${Date.now()}_${id}`, id, name: expired ? (ev.displayName ?? id) : (ev.name ?? id), url: ev.url ?? "", auth: ev.auth ?? "oauth", reason: ev.reason ?? "", why: expired ? ("expired" as const) : ("suggest" as const), state: "idle" as const }] });
+            }
+          }
           return true;
+        }
         case "desktop_daemon_started":
           resetSteerReplayEpoch(steerReplayEpoch.current);
           pushLog(`[shell] daemon started (${e.provider ?? "default"} / ${e.model ?? "default"})`);
@@ -2308,7 +2343,7 @@ function App() {
         // The sessions_list handler merges by id, so the duplicate request on a
         // fresh spawn (where daemon_ready also fires) is harmless.
         if (state.running) {
-          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list"]) {
+          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -2680,6 +2715,21 @@ function App() {
     });
   }, []);
 
+  /** A Connect card's button: OAuth and open servers connect right here;
+   *  key-based ones open the directory with the URL filled in. */
+  const connectService = (card: { key: string; id: string; name: string; url: string; auth: string }) => {
+    if (card.auth === "key") {
+      setDirectoryPrefill({ url: card.url, name: card.id });
+      setDirectoryOpen(true);
+      return;
+    }
+    setSessions((prev) => prev.map((sess) => ({ ...sess, items: sess.items.map((it) => (it.kind === "connect" && it.key === card.key ? { ...it, state: "connecting" as const } : it)) })));
+    setMcpConnecting(card.url);
+    daemonCmd({ type: "mcp_connect", url: card.url, name: card.id });
+  };
+  const dismissConnect = (key: string) => {
+    setSessions((prev) => prev.map((sess) => ({ ...sess, items: sess.items.filter((it) => !(it.kind === "connect" && it.key === key)) })));
+  };
   const respondPermission = (id: string, decision: string) => {
     // Route the answer to the session that actually raised this prompt (B4) —
     // a permission request from a background chat must never resolve into
@@ -3903,6 +3953,8 @@ function App() {
               : []
             ).map((item) => (
               <ItemView
+                onConnectService={connectService}
+                onDismissConnect={dismissConnect}
                 key={item.key}
                 item={item}
                 onPermission={respondPermission}
@@ -4420,28 +4472,24 @@ function App() {
       {directoryOpen ? (
         <ConnectorDirectory
           connectors={mcpConnectors}
+          servers={mcpServers}
+          catalog={mcpCatalog.catalog}
+          categories={mcpCatalog.categories}
           connecting={mcpConnecting}
           tools={mcpTools}
-          onClose={() => setDirectoryOpen(false)}
-          onConnect={(url, name) => {
-            setMcpConnecting(name);
-            daemonCmd({ type: "mcp_connect", url, name });
-          }}
-          onConnectWithToken={(url, name, token) => {
-            setMcpConnecting(name);
-            daemonCmd({ type: "mcp_set_token", url, name, token });
-          }}
+          registry={mcpSearch}
+          registryCursor={mcpRegistryCursor}
+          probe={mcpProbe}
+          prefill={directoryPrefill}
+          onConnect={(url, name) => { setMcpConnecting(url); daemonCmd({ type: "mcp_connect", url, name }); }}
+          onConnectWithToken={(url, name, token, header) => { setMcpConnecting(url); daemonCmd({ type: "mcp_set_token", url, name, token, ...(header ? { header } : {}) }); }}
           onDisconnect={(name) => daemonCmd({ type: "mcp_disconnect", name })}
           onToggle={(name, enabled) => daemonCmd({ type: "mcp_toggle", name, enabled })}
-          onListTools={(name) => {
-            setMcpTools((prev) => ({ ...prev, [name]: { loading: true, tools: prev[name]?.tools ?? [], error: null } }));
-            daemonCmd({ type: "mcp_tools", name });
-          }}
-          registry={mcpSearch}
-          onSearchRegistry={(text) => {
-            setMcpSearch({ text, searching: true, results: [] });
-            daemonCmd({ type: "mcp_search", text });
-          }}
+          onListTools={(name) => { setMcpTools((prev) => ({ ...prev, [name]: { loading: true, tools: [] } })); daemonCmd({ type: "mcp_tools", name }); }}
+          onSearchRegistry={(text, cursor) => daemonCmd({ type: "mcp_search", text, ...(cursor ? { cursor } : {}) })}
+          onProbe={(url) => { setMcpProbe(null); daemonCmd({ type: "mcp_probe", url }); }}
+          onRefreshTools={() => daemonCmd({ type: "mcp_refresh_tools" })}
+          onClose={() => { setDirectoryOpen(false); setDirectoryPrefill(null); }}
         />
       ) : null}
 
@@ -4786,259 +4834,6 @@ function RoutingPanel({
 }
 
 // ─── Model hot-swap popover ────────────────────────────────────────────────
-
-// A curated set of popular remote MCP servers. The URLs are the servers'
-// message endpoints; connecting runs the generic OAuth flow. "Add by URL"
-// below the gallery covers everything not listed (the long tail is huge).
-interface ConnectorPreset {
-  id: string;
-  label: string;
-  url: string;
-  blurb: string;
-  glyph: string;
-}
-const CONNECTOR_PRESETS: ConnectorPreset[] = [
-  { id: "notion", label: "Notion", url: "https://mcp.notion.com/mcp", blurb: "Search & update your Notion workspace", glyph: "📝" },
-  { id: "linear", label: "Linear", url: "https://mcp.linear.app/sse", blurb: "Issues, projects & team workflows", glyph: "📐" },
-  { id: "sentry", label: "Sentry", url: "https://mcp.sentry.dev/mcp", blurb: "Search, query & debug errors", glyph: "🛡️" },
-  { id: "github", label: "GitHub", url: "https://api.githubcopilot.com/mcp/", blurb: "Repos, issues, PRs & code search", glyph: "🐙" },
-  { id: "vercel", label: "Vercel", url: "https://mcp.vercel.com", blurb: "Deployments, projects & logs", glyph: "▲" },
-  { id: "atlassian", label: "Atlassian", url: "https://mcp.atlassian.com/v1/sse", blurb: "Jira & Confluence", glyph: "🔵" },
-  { id: "asana", label: "Asana", url: "https://mcp.asana.com/sse", blurb: "Tasks, projects & goals", glyph: "🎯" },
-  { id: "stripe", label: "Stripe", url: "https://mcp.stripe.com", blurb: "Payments & financial data", glyph: "💳" },
-  { id: "cloudflare", label: "Cloudflare", url: "https://docs.mcp.cloudflare.com/sse", blurb: "Docs, Workers & platform", glyph: "☁️" },
-  { id: "supabase", label: "Supabase", url: "https://mcp.supabase.com/mcp", blurb: "Databases, auth & storage", glyph: "🟢" },
-  { id: "huggingface", label: "Hugging Face", url: "https://huggingface.co/mcp", blurb: "Models, datasets & Spaces", glyph: "🤗" },
-  { id: "square", label: "Square", url: "https://mcp.squareup.com/sse", blurb: "Payments & merchant data", glyph: "⬜" },
-];
-
-function ConnectorDirectory({
-  connectors,
-  connecting,
-  tools,
-  onConnect,
-  onConnectWithToken,
-  onDisconnect,
-  onToggle,
-  onListTools,
-  registry,
-  onSearchRegistry,
-  onClose,
-}: {
-  connectors: McpConnectorVm[];
-  connecting: string | null;
-  tools: Record<string, McpToolsVm>;
-  onConnect: (url: string, name: string) => void;
-  /** API-key path: the pasted token goes to the encrypted vault via mcp_set_token. */
-  onConnectWithToken: (url: string, name: string, token: string) => void;
-  onDisconnect: (name: string) => void;
-  onToggle: (name: string, enabled: boolean) => void;
-  onListTools: (name: string) => void;
-  registry: { text: string; searching: boolean; results: McpRegistryResult[] };
-  onSearchRegistry: (text: string) => void;
-  onClose: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [customToken, setCustomToken] = useState("");
-  // Registry search rides the same box, debounced — presets filter instantly,
-  // the whole public MCP registry answers a beat later.
-  useEffect(() => {
-    const text = query.trim();
-    if (text.length < 2) return;
-    const t = window.setTimeout(() => onSearchRegistry(text), 400);
-    return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
-  const [customUrl, setCustomUrl] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const connectedNames = new Set(connectors.map((c) => c.name));
-  const q = query.trim().toLowerCase();
-  const shown = q ? CONNECTOR_PRESETS.filter((p) => `${p.label} ${p.blurb}`.toLowerCase().includes(q)) : CONNECTOR_PRESETS;
-  const glyphFor = (c: McpConnectorVm) =>
-    CONNECTOR_PRESETS.find((p) => p.id === c.name || p.label.toLowerCase() === c.name)?.glyph ?? "🔌";
-  const expand = (name: string) => {
-    const next = expanded === name ? null : name;
-    setExpanded(next);
-    if (next && !tools[next]?.tools.length && !tools[next]?.loading) onListTools(next);
-  };
-
-  return (
-    <div className="paletteScrim" onClick={onClose}>
-      <div className="palette directory" onClick={(e) => e.stopPropagation()}>
-        <header className="dirHead">
-          <div>
-            <strong>Connectors</strong>
-            <em>/mcp — Ares does the OAuth, then their tools are live for the agent.</em>
-          </div>
-          <button className="ghost" onClick={onClose}>Close</button>
-        </header>
-
-        <input className="dirSearch" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search connectors…" spellCheck={false} autoFocus />
-
-        {connectors.length ? (
-          <>
-            <div className="dirSectionLabel">Connected</div>
-            <div className="dirConnected">
-              {connectors.map((c, i) => {
-                const on = c.enabled !== false;
-                const open = expanded === c.name;
-                const t = tools[c.name];
-                return (
-                  <div key={c.name} className="dirConn" data-open={open ? "1" : "0"} data-on={on ? "1" : "0"} style={{ "--i": i } as React.CSSProperties}>
-                    <div className="dirConnRow">
-                      <button className="dirConnMain" onClick={() => expand(c.name)} title={open ? "collapse" : "show tools"}>
-                        <span className="dirConnGlyph" aria-hidden="true">{glyphFor(c)}</span>
-                        <span className="dirConnName">{c.displayName ?? c.name}</span>
-                        <span className="dirConnDot" data-on={on ? "1" : "0"} title={on ? "active" : "paused"} />
-                        <span className="dirConnUrl">{c.url}</span>
-                        <span className="dirConnChevron" data-open={open ? "1" : "0"} aria-hidden="true">▾</span>
-                      </button>
-                      <button
-                        className="dirSwitch"
-                        role="switch"
-                        aria-checked={on}
-                        data-on={on ? "1" : "0"}
-                        title={on ? "Pause — keep the connection, unload its tools" : "Resume — tools load again"}
-                        onClick={() => onToggle(c.name, !on)}
-                      >
-                        <span className="dirSwitchKnob" />
-                      </button>
-                      <button className="dirDisconnect" onClick={() => onDisconnect(c.name)}>Disconnect</button>
-                    </div>
-                    {open ? (
-                      <div className="dirTools">
-                        {t?.loading ? (
-                          <span className="dirToolsStatus"><span className="skillDockSpin" aria-hidden="true" /> asking {c.displayName ?? c.name} for its tools…</span>
-                        ) : t?.error ? (
-                          <span className="dirToolsStatus warn">{t.error}</span>
-                        ) : t && t.tools.length > 0 ? (
-                          t.tools.map((tool) => (
-                            <span key={tool.name} className="dirTool" title={tool.description ?? tool.name}>
-                              {tool.name}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="dirToolsStatus">no tools reported</span>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        ) : null}
-
-        <div className="dirSectionLabel">Popular</div>
-        <div className="dirGallery">
-          {shown.map((p) => {
-            const isConnected = connectedNames.has(p.id) || connectedNames.has(p.label.toLowerCase());
-            const isConnecting = connecting === p.id;
-            return (
-              <button
-                key={p.id}
-                className="dirCard"
-                data-connected={isConnected ? "1" : "0"}
-                disabled={isConnected || isConnecting || connecting !== null}
-                onClick={() => onConnect(p.url, p.id)}
-                title={p.url}
-              >
-                <span className="dirCardGlyph">{p.glyph}</span>
-                <span className="dirCardBody">
-                  <strong>{p.label}</strong>
-                  <em>{p.blurb}</em>
-                </span>
-                <span className="dirCardAction">{isConnected ? "✓ connected" : isConnecting ? "connecting…" : "+ connect"}</span>
-              </button>
-            );
-          })}
-          {shown.length === 0 ? <div className="dirEmpty">No preset matches — check the registry results below, or add by URL.</div> : null}
-        </div>
-
-        {query.trim().length >= 2 ? (
-          <>
-            <div className="dirSectionLabel">MCP Registry</div>
-            <div className="dirRegistry">
-              {registry.searching ? (
-                <div className="dirToolsStatus"><span className="skillDockSpin" aria-hidden="true" /> searching the public registry…</div>
-              ) : registry.results.length === 0 ? (
-                <div className="dirToolsStatus">no remote servers found for “{registry.text}”</div>
-              ) : (
-                registry.results.map((r, i) => {
-                  const isConnected = connectedNames.has(r.name);
-                  const isConnecting = connecting === r.name;
-                  return (
-                    <button
-                      key={r.url}
-                      className="dirCard wide"
-                      data-connected={isConnected ? "1" : "0"}
-                      disabled={isConnected || connecting !== null}
-                      style={{ "--i": i } as React.CSSProperties}
-                      onClick={() => onConnect(r.url, r.name)}
-                      title={`${r.fullName}\n${r.url}`}
-                    >
-                      <span className="dirCardGlyph" aria-hidden="true">🛰️</span>
-                      <span className="dirCardBody">
-                        <strong>{r.name}{r.needsKey ? <i className="dirNeedsKey"> · needs API key</i> : null}</strong>
-                        <em>{r.description || r.url}</em>
-                      </span>
-                      <span className="dirCardAction">{isConnected ? "✓ connected" : isConnecting ? "connecting…" : "+ connect"}</span>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </>
-        ) : null}
-
-        <div className="dirSectionLabel">Add any MCP server by URL</div>
-        <div className="dirCustom">
-          <input
-            className="dirSearch"
-            value={customUrl}
-            onChange={(e) => setCustomUrl(e.target.value)}
-            placeholder="https://mcp.example.com/sse"
-            spellCheck={false}
-          />
-          <button
-            className="primary"
-            disabled={!/^https?:\/\//i.test(customUrl.trim()) || connecting !== null}
-            onClick={() => {
-              const url = customUrl.trim();
-              try {
-                const host = new URL(url).host.replace(/^www\.|^mcp\.|^api\./, "").split(".")[0];
-                const token = customToken.trim();
-                if (token) onConnectWithToken(url, host || "connector", token);
-                else onConnect(url, host || "connector");
-                setCustomUrl("");
-                setCustomToken("");
-              } catch { /* invalid url ignored (button is gated anyway) */ }
-            }}
-          >
-            {customToken.trim() ? "Connect with key" : "Connect"}
-          </button>
-        </div>
-        <div className="dirCustom">
-          {/* The API-key lane: registry rows flagged "needs API key" (and any
-              server without dynamic registration) can't OAuth — paste the key
-              here instead. It lands in the encrypted vault, never on disk. */}
-          <input
-            className="dirSearch"
-            type="password"
-            value={customToken}
-            onChange={(e) => setCustomToken(e.target.value)}
-            placeholder="API key / token (optional — for servers that need one)"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </div>
-        <p className="dirFootnote">
-          A browser window opens for you to approve access — or paste an API key for servers that use one. Tokens are stored encrypted on your machine — never in plain text.
-        </p>
-      </div>
-    </div>
-  );
-}
 
 function BugReportModal({
   busy,
@@ -8440,12 +8235,16 @@ function HackerRain({ active }: { active: boolean }) {
 
 const ItemView = React.memo(function ItemView({
   item,
+  onConnectService,
+  onDismissConnect,
   onPermission,
   onArtifact,
   onSignIn,
   toolDisplay,
 }: {
   item: Item;
+  onConnectService: (card: { key: string; id: string; name: string; url: string; auth: string }) => void;
+  onDismissConnect: (key: string) => void;
   onPermission: (id: string, decision: string) => void;
   onArtifact: (path: string, label: string) => void;
   onSignIn?: () => void;
@@ -8631,6 +8430,35 @@ const ItemView = React.memo(function ItemView({
           <div className="gateActions">
             <button className="gateAllow" disabled={!!item.submitting} onClick={() => onPermission(item.id, "allow_once")}>Build this plan</button>
             <button className="gateDeny" disabled={!!item.submitting} onClick={() => onPermission(item.id, "deny")}>Keep planning</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (item.kind === "connect") {
+    const done = item.state === "connected";
+    return (
+      <div className="connectCard" data-state={item.state ?? "idle"} data-why={item.why}>
+        <div className="connectTop">
+          <Medallion glyph="shield" size={34} tone="ember" />
+          <div className="connectBody">
+            <strong>{done ? `${item.name} connected` : item.why === "expired" ? `${item.name} needs to be connected again` : `Connect ${item.name}?`}</strong>
+            <span>
+              {done
+                ? "Its tools are ready — send your request again."
+                : item.why === "expired"
+                  ? "Its authorization expired or was revoked. One click signs you back in."
+                  : item.reason || (item.auth === "key" ? `Ares can work through ${item.name} with an API key.` : `Ares can work through ${item.name}. You sign in with ${item.name} itself — no keys to paste.`)}
+              {item.state === "failed" && item.error ? ` — ${item.error}` : ""}
+            </span>
+          </div>
+        </div>
+        {done ? null : (
+          <div className="connectActions">
+            <button className="btn primary" disabled={item.state === "connecting"} onClick={() => onConnectService(item)}>
+              {item.state === "connecting" ? "Waiting for sign-in…" : item.auth === "key" ? `Add ${item.name} key` : `Connect ${item.name}`}
+            </button>
+            <button className="btn ghost" onClick={() => onDismissConnect(item.key)}>Not now</button>
           </div>
         )}
       </div>

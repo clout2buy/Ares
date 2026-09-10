@@ -13,7 +13,8 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken } from "@ares/core";
+import { liveMcpTools } from "./mcpTools.js";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken, MCP_CATALOG, MCP_CATEGORIES, discoverMcpAuth } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -2444,6 +2445,81 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         continue;
       }
+      const emitMcpToolsRefreshed = async (force = true): Promise<void> => {
+        try {
+          const status = await liveMcpTools.refresh(live.context.workspace, { force });
+          process.stdout.write(JSON.stringify({ type: "mcp_tools_refreshed", servers: status }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "mcp_tools_refreshed", servers: [], error: err instanceof Error ? err.message : String(err) }) + "\n");
+        }
+      };
+      if (command.type === "mcp_catalog") {
+        const connectors = await mcpDirectorySnapshot();
+        process.stdout.write(JSON.stringify({ type: "mcp_catalog", catalog: MCP_CATALOG, categories: MCP_CATEGORIES, connectors, servers: liveMcpTools.snapshot() }) + "\n");
+        continue;
+      }
+      if (command.type === "mcp_refresh_tools") {
+        await emitMcpToolsRefreshed(true);
+        continue;
+      }
+      if (command.type === "mcp_probe") {
+        // What does this URL need? Answered before the owner clicks Connect on
+        // an unknown server: open, OAuth (with or without self-registration),
+        // or a pasted key.
+        const url = typeof command.url === "string" ? command.url.trim() : "";
+        void (async () => {
+          const out: Record<string, unknown> = { type: "mcp_probe_result", url };
+          try {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "ares", version: "1" } } }),
+              signal: AbortSignal.timeout(8_000),
+            });
+            out.status = res.status;
+            if (res.ok) {
+              out.auth = "none";
+              out.transport = "http";
+            } else if (res.status === 401 || res.status === 403) {
+              try {
+                const meta = await discoverMcpAuth(url);
+                out.auth = "oauth";
+                out.registration = Boolean(meta.registrationEndpoint);
+              } catch (err) {
+                out.auth = "key";
+                out.note = err instanceof Error ? err.message : String(err);
+              }
+            } else if (res.status === 404 || res.status === 405 || res.status === 406) {
+              const sse = await fetch(url, { method: "GET", headers: { accept: "text/event-stream" }, signal: AbortSignal.timeout(6_000) }).catch(() => null);
+              if (sse && (sse.headers.get("content-type") ?? "").includes("text/event-stream")) {
+                out.auth = "none";
+                out.transport = "sse";
+              } else if (sse && (sse.status === 401 || sse.status === 403)) {
+                out.transport = "sse";
+                try {
+                  const meta = await discoverMcpAuth(url);
+                  out.auth = "oauth";
+                  out.registration = Boolean(meta.registrationEndpoint);
+                } catch {
+                  out.auth = "key";
+                }
+              } else {
+                out.auth = "unknown";
+                out.note = `HTTP ${res.status}`;
+              }
+              try { sse?.body?.cancel(); } catch { /* stream closed */ }
+            } else {
+              out.auth = "unknown";
+              out.note = `HTTP ${res.status}`;
+            }
+          } catch (err) {
+            out.auth = "unreachable";
+            out.note = err instanceof Error ? err.message : String(err);
+          }
+          process.stdout.write(JSON.stringify(out) + "\n");
+        })();
+        continue;
+      }
       if (command.type === "mcp_list") {
         process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
         continue;
@@ -2477,6 +2553,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               }) + "\n",
             );
             process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
+            await emitMcpToolsRefreshed();
           } catch (err) {
             process.stdout.write(JSON.stringify({ type: "mcp_connect_result", ok: false, name, error: err instanceof Error ? err.message : String(err) }) + "\n");
           }
@@ -2495,7 +2572,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         void (async () => {
           try {
-            const result = await setMcpServerToken(url, token, { name });
+            const result = await setMcpServerToken(url, token, { name, ...(typeof command.header === "string" && command.header.trim() ? { header: command.header.trim() } : {}) });
             process.stdout.write(
               JSON.stringify({
                 type: "mcp_connect_result",
@@ -2511,12 +2588,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             process.stdout.write(JSON.stringify({ type: "mcp_connect_result", ok: false, name, error: err instanceof Error ? err.message : String(err) }) + "\n");
           }
         })();
+        void emitMcpToolsRefreshed();
         continue;
       }
       if (command.type === "mcp_disconnect") {
         const name = typeof command.name === "string" ? command.name.trim() : "";
         await disconnectMcpServer(name).catch(() => false);
         process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
+        void emitMcpToolsRefreshed();
         continue;
       }
       if (command.type === "mcp_toggle") {
@@ -2525,6 +2604,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const enabled = command.enabled !== false;
         if (name) await setMcpServerEnabled(name, enabled).catch(() => false);
         process.stdout.write(JSON.stringify({ type: "mcp_directory", connectors: await mcpDirectorySnapshot() }) + "\n");
+        void emitMcpToolsRefreshed();
         continue;
       }
       if (command.type === "mcp_tools") {
@@ -2545,50 +2625,52 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         continue;
       }
       if (command.type === "mcp_search") {
-        // Search the public MCP registry for connect-able (remote HTTP) servers.
+        // The public MCP registry, paged: every active, latest, https remote.
         const text = typeof command.text === "string" ? command.text.trim() : "";
+        const cursor = typeof command.cursor === "string" ? command.cursor : "";
+        const limit = Math.min(100, Math.max(10, typeof command.limit === "number" ? command.limit : 40));
         void (async () => {
           try {
-            const res = await fetch(
-              `https://registry.modelcontextprotocol.io/v0/servers?limit=30&search=${encodeURIComponent(text)}`,
-              { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) },
-            );
+            const qs = new URLSearchParams({ limit: String(limit) });
+            if (text) qs.set("search", text);
+            if (cursor) qs.set("cursor", cursor);
+            const res = await fetch(`https://registry.modelcontextprotocol.io/v0/servers?${qs.toString()}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12_000) });
             if (!res.ok) throw new Error(`registry ${res.status}`);
             const json = await res.json() as {
               servers?: Array<{
-                server?: {
-                  name?: string;
-                  description?: string;
-                  remotes?: Array<{ type?: string; url?: string; headers?: Array<{ isRequired?: boolean; isSecret?: boolean }> }>;
-                };
+                server?: { name?: string; title?: string; description?: string; websiteUrl?: string; remotes?: Array<{ type?: string; url?: string; headers?: Array<{ name?: string; isRequired?: boolean; isSecret?: boolean }> }> };
                 _meta?: Record<string, { isLatest?: boolean; status?: string }>;
               }>;
+              metadata?: { nextCursor?: string; count?: number };
             };
-            const seen = new Set<string>();
-            const results: Array<{ name: string; fullName: string; description: string; url: string; needsKey: boolean }> = [];
+            const results: Array<{ name: string; fullName: string; title?: string; description: string; url: string; transport: string; needsKey: boolean; keyHeader?: string; website?: string }> = [];
             for (const row of json.servers ?? []) {
               const server = row.server;
               const official = row._meta?.["io.modelcontextprotocol.registry/official"];
               if (!server?.name || official?.isLatest === false || (official?.status && official.status !== "active")) continue;
               for (const remote of server.remotes ?? []) {
                 const url = remote.url ?? "";
-                if (!/^https:\/\//i.test(url) || seen.has(url)) continue;
-                if (remote.type && !/^(streamable-http|sse|http)$/i.test(remote.type)) continue;
-                seen.add(url);
+                if (!/^https:/i.test(url)) continue;
+                const type = (remote.type ?? "").toLowerCase();
+                if (type && !/^(streamable-http|sse|http)$/.test(type)) continue;
+                const secret = (remote.headers ?? []).find((h) => h.isRequired && h.isSecret);
                 results.push({
-                  name: server.name.split("/").pop() ?? server.name,
+                  name: server.title ?? (server.name.split("/").pop() ?? server.name),
                   fullName: server.name,
-                  description: (server.description ?? "").slice(0, 160),
+                  ...(server.title ? { title: server.title } : {}),
+                  description: (server.description ?? "").slice(0, 200),
                   url,
-                  needsKey: (remote.headers ?? []).some((h) => h.isRequired && h.isSecret),
+                  transport: type === "sse" ? "sse" : "http",
+                  needsKey: Boolean(secret),
+                  ...(secret?.name ? { keyHeader: secret.name } : {}),
+                  ...(server.websiteUrl ? { website: server.websiteUrl } : {}),
                 });
-                break; // one remote per server is enough for the gallery
+                break;
               }
-              if (results.length >= 12) break;
             }
-            process.stdout.write(JSON.stringify({ type: "mcp_search_results", text, results }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "mcp_search_results", text, cursor, results, nextCursor: json.metadata?.nextCursor ?? null }) + "\n");
           } catch (err) {
-            process.stdout.write(JSON.stringify({ type: "mcp_search_results", text, results: [], error: err instanceof Error ? err.message : String(err) }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "mcp_search_results", text, cursor, results: [], nextCursor: null, error: err instanceof Error ? err.message : String(err) }) + "\n");
           }
         })();
         continue;

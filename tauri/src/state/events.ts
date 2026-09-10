@@ -145,6 +145,15 @@ export interface AresEvent {
   sessionId?: string;
   hasKey?: boolean;
   keyStatus?: Record<string, boolean>;
+  auth?: string;
+  transport?: string;
+  connectors?: unknown;
+  catalog?: unknown;
+  categories?: unknown;
+  servers?: unknown;
+  nextCursor?: string | null;
+  cursor?: string;
+  registration?: boolean;
   maps?: unknown;
   activation?: { id?: string; at?: number } | null;
   context?: { promptTokens?: number; windowTokens?: number | null };
@@ -306,9 +315,38 @@ export interface SlashAction {
 export interface McpRegistryResult {
   name: string;
   fullName: string;
+  title?: string;
   description: string;
   url: string;
+  transport?: string;
   needsKey: boolean;
+  keyHeader?: string;
+  website?: string;
+}
+
+/** One curated connector from the daemon's catalog (mirrors @ares/core McpCatalogEntry). */
+export interface McpCatalogVm {
+  id: string;
+  name: string;
+  url: string;
+  auth: "oauth" | "key" | "none";
+  transport: "http" | "sse" | "auto";
+  category: string;
+  blurb: string;
+  keywords: string[];
+  keyUrl?: string;
+  keyHeader?: string;
+  docs?: string;
+}
+
+/** Live status of a connected server's tools, from mcp_tools_refreshed. */
+export interface McpServerStatusVm {
+  name: string;
+  displayName: string;
+  url?: string;
+  toolCount: number;
+  error?: string;
+  fromCache: boolean;
 }
 
 /** One connector's live tool listing, as fetched for the explorer's expand row. */

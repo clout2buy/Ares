@@ -16,6 +16,7 @@ import { CliRuntimeContext, cliRuntimeContext, compactLine } from "./runtime.js"
 import { LiveSession } from "./sessionFactory.js";
 import { mnemosyneRecaller } from "./mnemosyneRuntime.js";
 import { oricleAfterTurn, oricleBeforeTurn, type WitnessAccepted } from "./oricleAdapter.js";
+import { suggestConnectorsFor } from "./mcpTools.js";
 import { applyPlanPressure } from "./planPressure.js";
 import { crossSurfaceBeforeTurn } from "./crossSurfaceDigest.js";
 import { composeSystemPrompt, promptEnvironment, promptWorkflowSurfaces, toolDoctrineFor, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
@@ -462,6 +463,20 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: Tu
     });
     if (advisory.reminder) {
       live.queueSystemReminder(advisory.reminder, "memory");
+    }
+    // A service the owner names that is not connected gets a Connect card in
+    // the chat (once per service per process) and the model is told so it asks
+    // for the connection instead of improvising with keys or curl.
+    try {
+      const suggested = await suggestConnectorsFor(text);
+      if (suggested.length) {
+        live.queueSystemReminder(
+          `The owner mentioned ${suggested.map((s) => s.name).join(", ")}, which is not connected yet. A Connect card is already in the chat; if the task needs it, say so briefly and continue with what you can. Never ask for API keys or tokens — connecting is one click with OAuth. Once connected, its tools appear as mcp_<service>_<tool> on your next turn.`,
+          "memory",
+        );
+      }
+    } catch {
+      // never let a suggestion break a turn
     }
     // The desktop backdrop is a tool, not a file. A field session watched the
     // model grep the workspace and write a three.js page when asked for a

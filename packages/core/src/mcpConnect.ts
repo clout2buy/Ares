@@ -21,6 +21,7 @@ import { createServer, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { getCredential, setCredential, deleteCredential } from "./credentials.js";
 import {
@@ -30,6 +31,7 @@ import {
   buildMcpAuthorizeUrl,
   exchangeMcpCode,
   refreshMcpToken,
+  revokeMcpToken,
 } from "./mcpOAuth.js";
 
 const DEFAULT_PORT = 53682; // distinct from the provider-OAuth loopback (53691)
@@ -72,6 +74,8 @@ interface McpTokenBundle {
   refreshToken?: string;
   expiresAt?: number;
   tokenEndpoint: string;
+  /** RFC 7009 endpoint from discovery, so disconnect can revoke. */
+  revocationEndpoint?: string;
   clientId: string;
   clientSecret?: string;
   resource: string;
@@ -282,6 +286,29 @@ function listenWithFallback(server: Server, preferred: number): Promise<number> 
 
 /** Run the full OAuth connect for a remote MCP server. Resolves once the user
  *  authorizes in their browser and tokens are stored; rejects on denial/timeout. */
+/** Dynamic registrations are cached per registration endpoint so a reconnect
+ *  reuses the client the issuer already knows instead of minting another. */
+async function cachedClient(home: string | undefined, registrationEndpoint: string): Promise<{ clientId: string; clientSecret?: string } | null> {
+  try {
+    const raw = JSON.parse(await readFile(clientCachePath(home), "utf8")) as Record<string, { clientId?: string; clientSecret?: string }>;
+    const hit = raw[registrationEndpoint];
+    return hit && typeof hit.clientId === "string" ? { clientId: hit.clientId, ...(hit.clientSecret ? { clientSecret: hit.clientSecret } : {}) } : null;
+  } catch {
+    return null;
+  }
+}
+async function rememberClient(home: string | undefined, registrationEndpoint: string, client: { clientId: string; clientSecret?: string }): Promise<void> {
+  const file = clientCachePath(home);
+  let raw: Record<string, unknown> = {};
+  try { raw = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>; } catch { raw = {}; }
+  raw[registrationEndpoint] = { clientId: client.clientId, ...(client.clientSecret ? { clientSecret: client.clientSecret } : {}), at: new Date().toISOString() };
+  await mkdir(path.dirname(file), { recursive: true }).catch(() => undefined);
+  await writeFile(file, JSON.stringify(raw, null, 2) + "\n", "utf8").catch(() => undefined);
+}
+function clientCachePath(home: string | undefined): string {
+  return path.join(home ?? process.env.ARES_HOME ?? path.join(os.homedir(), ".ares"), "mcp-clients.json");
+}
+
 export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Promise<ConnectMcpResult> {
   const name = (opts.name ?? connectorNameFromUrl(url)).trim();
   const home = opts.home;
@@ -341,6 +368,7 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
       try {
         const tok = await exchangeMcpCode({
           tokenEndpoint: authServer.tokenEndpoint,
+          ...(authServer.revocationEndpoint ? { revocationEndpoint: authServer.revocationEndpoint } : {}),
           clientId: ctx.clientId,
           clientSecret: ctx.clientSecret,
           code,
@@ -362,7 +390,15 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
     void (async () => {
       const port = await listenWithFallback(server!, opts.port ?? DEFAULT_PORT);
       const redirectUri = `http://localhost:${port}/oauth/callback`;
-      const reg = await registerMcpClient(authServer.registrationEndpoint!, redirectUri);
+      // Reuse the client this issuer already knows for this redirect URI; the
+      // port can differ between runs, and a fresh registration per attempt
+      // litters the issuer with dead clients.
+      const cacheKey = `${authServer.registrationEndpoint}|${redirectUri}`;
+      const reg = (await cachedClient(home, cacheKey)) ?? (await (async () => {
+        const fresh = await registerMcpClient(authServer.registrationEndpoint!, redirectUri);
+        await rememberClient(home, cacheKey, fresh);
+        return fresh;
+      })());
       const pkce = generatePkce();
       const state = randomBytes(16).toString("hex");
       ctx = { state, verifier: pkce.verifier, redirectUri, clientId: reg.clientId, clientSecret: reg.clientSecret };
@@ -388,6 +424,7 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
     refreshToken: tokens.refreshToken,
     expiresAt: tokens.expiresAt,
     tokenEndpoint: authServer.tokenEndpoint,
+          ...(authServer.revocationEndpoint ? { revocationEndpoint: authServer.revocationEndpoint } : {}),
     clientId: ctx!.clientId,
     clientSecret: ctx!.clientSecret,
     resource: authServer.resource,
@@ -437,18 +474,21 @@ export interface SetMcpTokenResult {
 export async function setMcpServerToken(
   url: string,
   token: string,
-  opts: { name?: string; displayName?: string; home?: string; fetchImpl?: FetchLike } = {},
+  opts: { name?: string; displayName?: string; home?: string; fetchImpl?: FetchLike; header?: string } = {},
 ): Promise<SetMcpTokenResult> {
   const name = (opts.name ?? connectorNameFromUrl(url)).trim();
   const trimmed = token.trim();
   if (!trimmed) throw new Error("a connector token can't be empty");
   const priorHeaders = await vaultedHeaders(name, opts.home);
+  // Some servers take the key in a named header (x-api-key …) rather than as
+  // a bearer; the header name comes from the catalog or the registry entry.
+  const header = opts.header?.trim() && !/^authorization$/i.test(opts.header.trim()) ? opts.header.trim() : "";
   const bundle: McpTokenBundle = {
-    accessToken: trimmed,
+    accessToken: header ? "" : trimmed,
     tokenEndpoint: "",
     clientId: "",
     resource: url,
-    ...(priorHeaders ? { headers: priorHeaders } : {}),
+    ...(priorHeaders || header ? { headers: { ...(priorHeaders ?? {}), ...(header ? { [header]: trimmed } : {}) } } : {}),
   };
   await setCredential(tokenKey(name), JSON.stringify(bundle), { home: opts.home });
   const servers = await loadRemoteMcpServers(opts.home);
@@ -475,6 +515,18 @@ export async function setMcpServerToken(
 export async function disconnectMcpServer(name: string, home?: string): Promise<boolean> {
   const servers = await loadRemoteMcpServers(home);
   if (!servers[name]) return false;
+  // Revoke at the issuer first (best effort), then forget locally.
+  try {
+    const raw = await getCredential(tokenKey(name), { home });
+    if (raw) {
+      const bundle = JSON.parse(raw) as McpTokenBundle;
+      if (bundle.revocationEndpoint && bundle.accessToken && bundle.clientId) {
+        await revokeMcpToken(bundle.revocationEndpoint, bundle.refreshToken ?? bundle.accessToken, bundle.clientId);
+      }
+    }
+  } catch {
+    // never let a revocation hiccup block the disconnect
+  }
   delete servers[name];
   await saveRemoteMcpServers(servers, home);
   await deleteCredential(tokenKey(name), { home }).catch(() => undefined);

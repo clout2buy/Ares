@@ -163,6 +163,8 @@ export type Item =
   | { kind: "permission"; key: string; id: string; toolName: string; reason: string; input?: unknown; decided?: string; submitting?: string }
   | { kind: "notice"; key: string; text: string; tone: "dim" | "warn" | "bad" }
   | { kind: "authPrompt"; key: string; provider: string; text: string }
+  /** A Connect card: a service Ares needs (auth expired) or suggests. */
+  | { kind: "connect"; key: string; id: string; name: string; url: string; auth: string; reason: string; why: "expired" | "suggest"; state?: "idle" | "connecting" | "connected" | "failed"; error?: string }
   | { kind: "artifact"; key: string; path: string; label: string }
   | { kind: "diff"; key: string; files: string[]; diff: string; truncated: boolean }
   | { kind: "subagent"; key: string; id: string; name: string; description: string; status: "running" | "completed" | "failed" | "cancelled"; summary?: string };

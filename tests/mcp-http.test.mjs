@@ -68,5 +68,5 @@ test("surfaces a JSON-RPC error and an auth rejection", async () => {
     headers: new Headers(),
     text: async () => "",
   }));
-  await assert.rejects(() => authClient.request("tools/list", {}), /rejected auth/);
+  await assert.rejects(() => authClient.request("tools/list", {}), /rejected (auth|the connection)/);
 });

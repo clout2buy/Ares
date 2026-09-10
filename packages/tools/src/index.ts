@@ -128,7 +128,7 @@ export {
 export { makeBashOutputTool, type BashOutputResult } from "./BashOutput.js";
 export { makeKillShellTool, type KillShellOutput } from "./KillShell.js";
 export { makeBackgroundTasksTool, type BackgroundTasksOutput } from "./BackgroundTasks.js";
-export { McpListToolsTool, McpCallTool, HttpMcpClient, listMcpServerTools, type McpListOutput, type McpCallOutput } from "./Mcp.js";
+export { McpListToolsTool, McpCallTool, HttpMcpClient, SseMcpClient, McpAuthError, listMcpServerTools, listMcpServerToolsFull, listMcpServers, callMcpTool, remoteHeaders, loadMcpConfig, type McpListOutput, type McpCallOutput, type McpToolDescriptor, type McpServerConfig, type RemoteServerConfig } from "./Mcp.js";
 export { SkillsListTool, SkillReadTool, type SkillsListOutput, type SkillReadOutput, type SkillSummary } from "./Skills.js";
 export {
   MemoryTool,

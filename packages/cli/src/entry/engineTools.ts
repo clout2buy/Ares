@@ -488,7 +488,12 @@ export async function buildEngineTools(
     }),
     enrich,
   ) as EngineTool;
-  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  const connectorsTool = adaptToolForEngine(makeConnectorsTool(() => context.workspace), enrich) as EngineTool;
+  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  // Connected MCP servers' tools ride in this same array, refilled in place
+  // whenever a connector changes — the engine reads the array every turn.
+  liveMcpTools.attach(all);
+  void liveMcpTools.refresh(context.workspace).catch(() => undefined);
   // Registries created before this point (none in practice — no tool call can
   // precede the return) share the array by reference, so filling it in place
   // is what makes them see the catalog.
@@ -624,6 +629,7 @@ export async function buildCodingTools(
 
 import { makeEstateTool } from "./oricleAdapter.js";
 import { makePointMapTool } from "./pointMapTool.js";
+import { liveMcpTools, makeConnectorsTool } from "./mcpTools.js";
 
 const livingMindInput = z
   .object({

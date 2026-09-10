@@ -13,6 +13,10 @@ export interface DaemonInputCommand {
   type?: string;
   /** ollama_usage — bypass the short cache. */
   force?: boolean;
+  /** mcp_search paging; mcp_set_token custom header name. */
+  cursor?: string;
+  limit?: number;
+  header?: string;
   /** gateway_connect */
   token?: string;
   url?: string;

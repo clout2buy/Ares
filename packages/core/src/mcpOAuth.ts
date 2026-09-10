@@ -24,6 +24,7 @@ export interface McpAuthServer {
   scopesSupported?: string[];
   /** The protected resource identifier to bind tokens to (RFC 8707). */
   resource: string;
+  revocationEndpoint?: string;
 }
 
 export interface McpOAuthDeps {
@@ -57,23 +58,74 @@ async function fetchJson(url: string, fetchImpl: typeof fetch): Promise<Record<s
  *  to the well-known paths at the MCP origin when the server doesn't advertise a
  *  separate resource metadata document. Throws a readable error if nothing is
  *  discoverable (the server likely isn't an OAuth-protected MCP server). */
+/** Parse a 401's WWW-Authenticate for the RFC 9728 resource_metadata hint. */
+export function resourceMetadataFromChallenge(header: string | null | undefined): string | null {
+  if (!header) return null;
+  const m = /resource_metadata="?([^",\s]+)"?/i.exec(header);
+  return m ? m[1] : null;
+}
+
+/** The well-known URLs the MCP authorization spec allows for a resource or
+ *  issuer with a path (path-suffixed first, then the origin's). */
+function wellKnownCandidates(base: string, kind: string): string[] {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return [];
+  }
+  const origin = url.origin;
+  const pathPart = url.pathname.replace(/\/+$/, "");
+  const out: string[] = [];
+  if (pathPart && pathPart !== "/") out.push(`${origin}/.well-known/${kind}${pathPart}`);
+  out.push(`${origin}/.well-known/${kind}`);
+  return out;
+}
+
 export async function discoverMcpAuth(mcpUrl: string, deps: McpOAuthDeps = {}): Promise<McpAuthServer> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const origin = originOf(mcpUrl);
 
+  // 0. Ask the server itself: an unauthenticated POST that answers 401 with a
+  //    WWW-Authenticate carrying resource_metadata is the spec's front door.
+  let prmUrls = wellKnownCandidates(mcpUrl, "oauth-protected-resource");
+  try {
+    const probe = await fetchImpl(mcpUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "ares", version: "1" } } }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    const hinted = resourceMetadataFromChallenge(probe.headers.get("www-authenticate"));
+    if (hinted) prmUrls = [hinted, ...prmUrls];
+  } catch {
+    // unreachable or odd server — the well-known ladder below still applies
+  }
+
   // 1. Protected-resource metadata (RFC 9728). Optional — many servers skip it.
-  const prm = await fetchJson(`${origin}/.well-known/oauth-protected-resource`, fetchImpl);
+  let prm: Record<string, unknown> | null = null;
+  for (const url of prmUrls) {
+    prm = await fetchJson(url, fetchImpl);
+    if (prm) break;
+  }
   const authServers = Array.isArray(prm?.authorization_servers) ? (prm!.authorization_servers as string[]) : [];
   const resource = typeof prm?.resource === "string" ? (prm!.resource as string) : origin;
 
-  // 2. Authorization-server metadata (RFC 8414). Try each advertised server,
-  //    then the MCP origin itself (common for single-tenant servers).
+  // 2. Authorization-server metadata (RFC 8414 / OIDC). Try each advertised
+  //    issuer (path-suffixed forms first), then the MCP origin itself.
   const candidates = [...authServers, origin];
   for (const asBase of candidates) {
-    const asOrigin = originOf(asBase);
-    const meta =
-      (await fetchJson(`${asOrigin}/.well-known/oauth-authorization-server`, fetchImpl)) ??
-      (await fetchJson(`${asOrigin}/.well-known/openid-configuration`, fetchImpl));
+    const metaUrls = [
+      ...wellKnownCandidates(asBase, "oauth-authorization-server"),
+      ...wellKnownCandidates(asBase, "openid-configuration"),
+      `${originOf(asBase)}/.well-known/openid-configuration`,
+    ];
+    let meta: Record<string, unknown> | null = null;
+    for (const url of metaUrls) {
+      meta = await fetchJson(url, fetchImpl);
+      if (meta && typeof meta.authorization_endpoint === "string") break;
+      meta = null;
+    }
     const authorizationEndpoint = typeof meta?.authorization_endpoint === "string" ? meta.authorization_endpoint : "";
     const tokenEndpoint = typeof meta?.token_endpoint === "string" ? meta.token_endpoint : "";
     if (authorizationEndpoint && tokenEndpoint) {
@@ -83,6 +135,7 @@ export async function discoverMcpAuth(mcpUrl: string, deps: McpOAuthDeps = {}): 
         registrationEndpoint: typeof meta?.registration_endpoint === "string" ? meta.registration_endpoint : undefined,
         scopesSupported: Array.isArray(meta?.scopes_supported) ? (meta!.scopes_supported as string[]) : undefined,
         resource,
+        ...(typeof meta?.revocation_endpoint === "string" ? { revocationEndpoint: meta.revocation_endpoint as string } : {}),
       };
     }
   }
@@ -262,4 +315,20 @@ export async function exchangeMcpCode(
     scope: body.scope,
     tokenType: body.token_type,
   };
+}
+
+/** RFC 7009 — tell the issuer to forget a token. Best effort; never throws. */
+export async function revokeMcpToken(revocationEndpoint: string, token: string, clientId: string, deps: McpOAuthDeps = {}): Promise<boolean> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  try {
+    const res = await fetchImpl(revocationEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token, client_id: clientId }).toString(),
+      signal: AbortSignal.timeout(8_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }

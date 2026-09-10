@@ -80,6 +80,11 @@ async function runTurn(engine) {
 }
 
 test("C5: work-item first turn forces toolChoice 'any'; routine continuation relaxes + goes routine-phase", async () => {
+  // The tactical downshift is opt-in since the long-project decay fix
+  // (effort must not decay by default); this test exercises the opted-in dial.
+  const prevTactical = process.env.ARES_TACTICAL_REASONING;
+  process.env.ARES_TACTICAL_REASONING = "1";
+  try {
   const captured = [];
   const engine = QueryEngine.forTesting(
     {
@@ -105,6 +110,10 @@ test("C5: work-item first turn forces toolChoice 'any'; routine continuation rel
   assert.equal(captured[1].toolChoice, undefined);
   assert.equal(captured[1].reasoningPhase, "routine");
   assert.equal(captured[1].reasoningLevel, "medium", "tactical dial steps high→medium on routine rounds");
+  } finally {
+    if (prevTactical === undefined) delete process.env.ARES_TACTICAL_REASONING;
+    else process.env.ARES_TACTICAL_REASONING = prevTactical;
+  }
 });
 
 test("C5: interactive chat never gets toolChoice forcing", async () => {

@@ -1251,6 +1251,38 @@ export function recentFilePathsFromSpan(span: readonly Message[], max: number): 
   return out;
 }
 
+/** Every file a MUTATING tool touched in the span (most recent first), by the
+ *  path the model used. Read-only tools are excluded on purpose: the re-read
+ *  nudge is about edits the model may try to continue from memory. */
+export function editedFilePathsFromSpan(span: readonly Message[], max: number): string[] {
+  const MUTATORS = new Set(["Edit", "Write", "NotebookEdit", "ApplyPatch"]);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = span.length - 1; i >= 0 && out.length < max; i--) {
+    const m = span[i];
+    if (m.role !== "assistant") continue;
+    for (let j = m.content.length - 1; j >= 0 && out.length < max; j--) {
+      const b = m.content[j] as { type?: string; name?: string; input?: Record<string, unknown> };
+      if (b.type !== "tool_use" || !b.name || !MUTATORS.has(b.name)) continue;
+      const candidates: unknown[] = [b.input?.file_path, b.input?.notebook_path];
+      // Edit batch mode / ApplyPatch carry their targets in nested structures.
+      const edits = b.input?.edits;
+      if (Array.isArray(edits)) for (const e of edits) candidates.push((e as { file_path?: unknown })?.file_path);
+      const patch = b.input?.patch ?? b.input?.input;
+      if (typeof patch === "string") {
+        for (const mm of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) candidates.push(mm[1].trim());
+      }
+      for (const fp of candidates) {
+        if (typeof fp !== "string" || !fp.trim() || seen.has(fp)) continue;
+        seen.add(fp);
+        out.push(fp);
+        if (out.length >= max) break;
+      }
+    }
+  }
+  return out;
+}
+
 export function buildContextLedger(dropped: readonly Message[]): string {
   if (dropped.length === 0) return "";
   const asks: string[] = [];
@@ -1636,9 +1668,18 @@ export class QueryEngine {
       await fs.mkdir(dir, { recursive: true });
       const file = path.join(dir, `${toolUseId}.txt`);
       await fs.writeFile(file, full, "utf8");
-      const previewChars = Math.min(budget, 2_000);
-      const omitted = full.length - previewChars;
-      return `${full.slice(0, previewChars)}\n\n[tool result truncated for context: ${omitted} of ${full.length} chars omitted. FULL output saved to ${file} — Read that file (use offset/limit to page) for the rest.]`;
+      // Head AND tail: for shell output the failure is at the bottom, for a
+      // search the newest hit is at the bottom, for a Read the head carries
+      // the line numbers the model was after. Keep the head as the stable
+      // prefix (prompt-cache friendly) and add a short tail.
+      const headChars = Math.min(budget, 2_000);
+      const tailChars = Math.min(600, Math.max(0, Math.floor(budget * 0.25)));
+      const head = full.slice(0, headChars);
+      const tail = full.length - headChars > tailChars ? full.slice(-tailChars) : full.slice(headChars);
+      const omitted = Math.max(0, full.length - headChars - tail.length);
+      const lines = full.split("\n").length;
+      const hint = spillHintFor(schema.name);
+      return `${head}\n\n[tool result truncated for context: ${omitted} of ${full.length} chars (${lines} lines) omitted from the middle. FULL output saved to ${file} — Read that file with offset/limit to page through it.${hint}]\n\n… last ${tail.length} chars …\n${tail}`;
     } catch (err) {
       // Spill failed (read-only fs, disk full, etc.) — fall back to the prior
       // lossy truncation so the turn never dies on a bookkeeping error, but do
@@ -2269,6 +2310,7 @@ export class QueryEngine {
     // remembered (possibly stale) version. Re-pin the most recently touched
     // files from the summarized span, bounded so it can't undo the compaction.
     let filePins = "";
+    const pinnedPaths: string[] = [];
     for (const rel of recentFilePathsFromSpan(older, 5)) {
       const full = path.resolve(this.cfg.workspace, rel);
       try {
@@ -2279,11 +2321,25 @@ export class QueryEngine {
           ? `${body.slice(0, 32_000)}\n\n… [${body.length - 44_000} chars elided — Read the file for the middle] …\n\n${body.slice(-12_000)}`
           : body;
         filePins += `\n\n=== CURRENT content of ${rel} (re-read after compaction) ===\n${pinned}`;
+        pinnedPaths.push(rel);
         if (filePins.length > 120_000) break;
       } catch {
         // deleted/unreadable since — skip
       }
     }
+
+    // Files the model EDITED inside the summarized span but that are not
+    // pinned above: their bytes are gone from the window and every read stamp
+    // is cleared below. Forensics over 56 real sessions found 46 of 49 Edit
+    // failures were exactly this — a post-compaction edit against remembered
+    // (stale) content. Say it by name, so the first act on such a file is a
+    // Read of the region, not a blind old_string.
+    const pinnedFiles = new Set(pinnedPaths);
+    const unpinnedEdited = editedFilePathsFromSpan(older, 24).filter((rel) => !pinnedFiles.has(rel));
+    const rereadNudge = unpinnedEdited.length
+      ? `\n\nFILES YOU EDITED BEFORE COMPACTION WHOSE CURRENT CONTENTS ARE NOT SHOWN ABOVE: ${unpinnedEdited.join(", ")}. ` +
+        `Their bytes were removed from context and your memory of them may be stale. Before you Edit any of these, Read the region you are about to change (offset/limit is fine) and match old_string to what that Read shows — never to what you remember.`
+      : "";
 
     // Repository constraints are typed, pinned context—not lossy summary
     // material. Re-read every claimed rule and attach its current hash/body so
@@ -2313,6 +2369,7 @@ export class QueryEngine {
             (filePins
               ? `\n\nThe files you were working in, re-read AFTER compaction (this is their live current state — trust it over the summary):${filePins}`
               : "") +
+            rereadNudge +
             (instructionPins
               ? `\n\nRepository instructions re-pinned after compaction:\n\n${instructionPins}`
               : ""),
@@ -5561,6 +5618,25 @@ function stringifyToolOutput(output: unknown): string {
     return JSON.stringify(output);
   } catch {
     return String(output);
+  }
+}
+
+/** One sentence per tool family on how to ask for LESS next time, so a spill
+ *  is a one-off, not a habit that fills the window with previews. */
+function spillHintFor(toolName: string): string {
+  switch (toolName) {
+    case "Grep":
+      return " Next time narrow the pattern, add a glob/path, or use head_limit/max_results.";
+    case "Read":
+      return " Next time pass offset/limit to read only the region you need.";
+    case "Bash":
+    case "PowerShell":
+      return " Next time pipe through head/tail/Select-Object or grep for the lines you need.";
+    case "Glob":
+    case "CodebaseSearch":
+      return " Next time tighten the query so fewer entries match.";
+    default:
+      return "";
   }
 }
 

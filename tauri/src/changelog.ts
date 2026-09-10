@@ -38,6 +38,21 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.50.0",
+    date: "September 2026",
+    title: "Long Haul",
+    tagline: "Ares stays sharp on big coding projects — hour three works like minute one.",
+    highlights: [
+      { icon: "🧠", title: "No more fading on long projects", blurb: "The thing people felt — great at first, sloppier as a session grew — is fixed at the root. When Ares compresses its memory it now writes a full, structured recap (goal, every constraint you gave verbatim, files and code, errors and fixes, what's pending, the exact next step) with three times the room it had before, instead of a paragraph that trailed off mid-sentence.", tag: "New" },
+      { icon: "👁️", title: "Never edits from memory", blurb: "After compressing, Ares re-reads the files it was editing and is told, by name, which edited files it can no longer see — so it reads the region before changing it. In the field, 46 of 49 failed edits were exactly this blind-edit mistake.", tag: "Safer" },
+      { icon: "🧹", title: "Old output stops piling up", blurb: "Stale shell, edit and connector output is cleared out of the working window as it ages, and status notes replace themselves instead of stacking. The prompt stays lean at hour three instead of tripling in size.", tag: "Faster" },
+      { icon: "📄", title: "Big results, kept whole", blurb: "A huge file read, search or command output is saved to disk in full and Ares gets the head, the tail and a page-through hint — nothing is silently chopped and lost.", tag: "Polished" },
+      { icon: "🛠️", title: "Claude sessions that don't brick", blurb: "An Opus 4.6 session could get stuck on a 'thinking must be passed back' error and fail every turn after. Ares now recovers on its own, in the same turn.", tag: "Safer" },
+      { icon: "🔎", title: "Silent failures explained", blurb: "When a PowerShell command fails without printing anything, Ares is told what that usually means and how to see the real error before touching code.", tag: "Polished" },
+      { icon: "🧪", title: "Proven, not promised", blurb: "A long-horizon test now drives a full multi-turn coding session through both memory-compression stages and checks every one of these guarantees on every release.", tag: "New" },
+    ],
+  },
+  {
     version: "0.49.0",
     date: "September 2026",
     title: "Cyber",

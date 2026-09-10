@@ -102,7 +102,7 @@ test("C1: an over-budget result spills full to disk and the model gets preview +
   assert.equal(typeof r.content, "string");
   // Model-facing content: head preview (<= budget) + a recoverable note, NOT the full blob.
   assert.ok(r.content.length < payload.length, "inline content must be smaller than the full payload");
-  assert.match(r.content, /\[tool result truncated for context: \d+ of 500 chars omitted/);
+  assert.match(r.content, /\[tool result truncated for context: \d+ of 500 chars \(\d+ lines\) omitted/);
   assert.match(r.content, /b1\.txt/);
   assert.ok(r.content.startsWith("X".repeat(50)), "preview is the head of the output");
 

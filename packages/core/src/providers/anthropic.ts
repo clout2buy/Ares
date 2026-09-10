@@ -160,6 +160,7 @@ export class AnthropicProvider implements Provider {
     const guard = createStallGuard(req.signal);
     let response: Response;
     let consumedErrorText: string | undefined;
+    let passbackRetried = false;
     for (;;) {
       try {
         response = await this.fetchImpl(url, {
@@ -215,6 +216,25 @@ export class AnthropicProvider implements Provider {
       // own scratch reasoning, never required for a correct fresh answer.
       if (!response.ok && response.status === 400) {
         const errText = await response.text().catch(() => "");
+        // "The `content[].thinking` in the thinking mode must be passed back to
+        // the API": the assistant turn before the pending tool_result carries
+        // NO thinking block (a round that ran with thinking off, an aborted
+        // stream, an older rollout) and this round has thinking on. The block
+        // cannot be conjured, so the only request that can succeed is one with
+        // thinking off. Do that once, and strip thinking from history so the
+        // clean request is self-consistent. Seen 19× in field sessions on
+        // Opus 4.6 — and because the failing shape sits in persisted history,
+        // it bricked every following turn until now.
+        if (!passbackRetried && /thinking/i.test(errText) && /passed back/i.test(errText)) {
+          passbackRetried = true;
+          for (const msg of (body.messages as Array<{ content?: unknown }>)) {
+            if (Array.isArray(msg.content)) {
+              msg.content = (msg.content as Array<{ type?: string }>).filter((b) => b.type !== "thinking");
+            }
+          }
+          delete body.thinking;
+          continue;
+        }
         if (/signature/i.test(errText) && /thinking/i.test(errText)) {
           let stripped = false;
           for (const msg of (body.messages as Array<{ content?: unknown }>)) {

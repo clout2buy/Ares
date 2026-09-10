@@ -75,16 +75,20 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Ares ${{ github.ref_name }}"
           releaseBody: |
-            Ares 0.49.0 — Cyber.
+            Ares 0.50.0 — Long Haul.
 
-            - A new default look: the Cyber room, a navy command deck with a live GPU point cloud behind it. The accent dial recolours everything; six backdrops ship and Ares can design more on request (they save into Appearance). Modern and the flat looks remain a click away.
-            - Connectors that actually work. /mcp is a directory: ~50 curated services (GitHub, Vercel, Linear, Notion, Stripe, Supabase, Figma, Sentry, Cloudflare, Atlassian and more) plus the whole public MCP registry with search and paging. Sign-in is OAuth with the service itself; every tool a server offers is registered under its real name, so approvals say "Vercel · deploy_to_preview". SSE servers (Linear, Atlassian, Asana, Square, Cloudflare) are supported.
-            - Ares asks to connect: when a task needs an unconnected service, or a sign-in expires, a Connect card with a button appears in the chat.
-            - A context readout in the status bar with a popover showing plan usage from Claude (OAuth), Kimi Code and Ollama Cloud, plus the same rows under each key in Settings.
-            - The Forge gained a Background tab: live agents, background processes, and unfinished work from the last run with Resume/Discard. Startup recovery asks first (Settings → Starting up).
-            - Drag and drop of any file type as chips; text selections drag in; folders explain themselves.
-            - Ollama Cloud from a key alone (no local Ollama, no pulls); live model discovery for every provider; a local OLLAMA_HOST no longer strands cloud models.
-            - Fixes: renaming a fresh session persists; Home no longer stacks blank sessions; HELM's tab highlight; the Claude client-version gate (claude_code_version_too_old); the Usage tab clipping; a PointMap tool schema Anthropic rejected.
+            The coding-reliability release. People said Ares was great at the start of a big project and got worse as the session grew. Forensics over 56 real sessions found why, and this release fixes each cause:
+
+            - Compaction recaps were capped at 2048 tokens and every stored one ended mid-sentence. The summarizer now has a 7k budget and a structured brief (primary request, constraints verbatim, key concepts, files & code, errors & fixes, commands & results, all user messages verbatim, pending tasks, current work, next step). Recaps are also archived under ~/.ares/compactions for inspection.
+            - Blind edits after compaction (46 of 49 Edit failures in the field): the recap re-pins the files being edited with their live bytes and names, by path, every file edited in the summarized span that it could NOT pin, with an explicit instruction to Read the region before editing.
+            - Prompt growth (50k -> 104k tokens per call over a session): microcompact now clears old Bash/PowerShell/Edit/Write/ApplyPatch/LSP/MCP output, not just Read/Grep; keyed status reminders (coding state, repo map, git delta, recall, oricle) replace their previous copy instead of stacking.
+            - Oversized tool results: the spill preview now carries the head AND the tail plus a line count and a tool-specific "ask for less next time" hint; the full output is always on disk.
+            - Opus 4.6 sessions bricked by "content[].thinking must be passed back" (19 occurrences): the provider retries once with thinking off and thinking blocks stripped, in the same turn.
+            - Silent PowerShell failures (25 of 57 failing shell calls printed nothing): the tool now explains what a silent non-zero exit usually means and how to surface the real error.
+            - The context ceiling learned from a refused request is now the refused prompt size, not a fixed rung; tactical reasoning downshifts and stall downgrades are opt-in (ARES_TACTICAL_REASONING=1, ARES_STALL_DOWNGRADE=1).
+            - Verification debt no longer blocks a plain question; the post-turn verifier scopes to the last 40 touched files so it finishes inside its settle window.
+            - New long-horizon gauntlet test drives a real multi-turn session through microcompact and heavy compaction and asserts every guarantee above.
+            - Remote Connect on Mac/Linux: the connector script is pure-stdlib now (no pip install; Homebrew Python's PEP 668 refusal broke connects).
           releaseDraft: false
           prerelease: false
           args: --bundles nsis
@@ -148,16 +152,20 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Ares ${{ github.ref_name }}"
           releaseBody: |
-            Ares 0.49.0 — Cyber.
+            Ares 0.50.0 — Long Haul.
 
-            - A new default look: the Cyber room, a navy command deck with a live GPU point cloud behind it. The accent dial recolours everything; six backdrops ship and Ares can design more on request (they save into Appearance). Modern and the flat looks remain a click away.
-            - Connectors that actually work. /mcp is a directory: ~50 curated services (GitHub, Vercel, Linear, Notion, Stripe, Supabase, Figma, Sentry, Cloudflare, Atlassian and more) plus the whole public MCP registry with search and paging. Sign-in is OAuth with the service itself; every tool a server offers is registered under its real name, so approvals say "Vercel · deploy_to_preview". SSE servers (Linear, Atlassian, Asana, Square, Cloudflare) are supported.
-            - Ares asks to connect: when a task needs an unconnected service, or a sign-in expires, a Connect card with a button appears in the chat.
-            - A context readout in the status bar with a popover showing plan usage from Claude (OAuth), Kimi Code and Ollama Cloud, plus the same rows under each key in Settings.
-            - The Forge gained a Background tab: live agents, background processes, and unfinished work from the last run with Resume/Discard. Startup recovery asks first (Settings → Starting up).
-            - Drag and drop of any file type as chips; text selections drag in; folders explain themselves.
-            - Ollama Cloud from a key alone (no local Ollama, no pulls); live model discovery for every provider; a local OLLAMA_HOST no longer strands cloud models.
-            - Fixes: renaming a fresh session persists; Home no longer stacks blank sessions; HELM's tab highlight; the Claude client-version gate (claude_code_version_too_old); the Usage tab clipping; a PointMap tool schema Anthropic rejected.
+            The coding-reliability release. People said Ares was great at the start of a big project and got worse as the session grew. Forensics over 56 real sessions found why, and this release fixes each cause:
+
+            - Compaction recaps were capped at 2048 tokens and every stored one ended mid-sentence. The summarizer now has a 7k budget and a structured brief (primary request, constraints verbatim, key concepts, files & code, errors & fixes, commands & results, all user messages verbatim, pending tasks, current work, next step). Recaps are also archived under ~/.ares/compactions for inspection.
+            - Blind edits after compaction (46 of 49 Edit failures in the field): the recap re-pins the files being edited with their live bytes and names, by path, every file edited in the summarized span that it could NOT pin, with an explicit instruction to Read the region before editing.
+            - Prompt growth (50k -> 104k tokens per call over a session): microcompact now clears old Bash/PowerShell/Edit/Write/ApplyPatch/LSP/MCP output, not just Read/Grep; keyed status reminders (coding state, repo map, git delta, recall, oricle) replace their previous copy instead of stacking.
+            - Oversized tool results: the spill preview now carries the head AND the tail plus a line count and a tool-specific "ask for less next time" hint; the full output is always on disk.
+            - Opus 4.6 sessions bricked by "content[].thinking must be passed back" (19 occurrences): the provider retries once with thinking off and thinking blocks stripped, in the same turn.
+            - Silent PowerShell failures (25 of 57 failing shell calls printed nothing): the tool now explains what a silent non-zero exit usually means and how to surface the real error.
+            - The context ceiling learned from a refused request is now the refused prompt size, not a fixed rung; tactical reasoning downshifts and stall downgrades are opt-in (ARES_TACTICAL_REASONING=1, ARES_STALL_DOWNGRADE=1).
+            - Verification debt no longer blocks a plain question; the post-turn verifier scopes to the last 40 touched files so it finishes inside its settle window.
+            - New long-horizon gauntlet test drives a real multi-turn session through microcompact and heavy compaction and asserts every guarantee above.
+            - Remote Connect on Mac/Linux: the connector script is pure-stdlib now (no pip install; Homebrew Python's PEP 668 refusal broke connects).
           releaseDraft: false
           prerelease: false
           args: --bundles appimage,deb

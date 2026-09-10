@@ -120,14 +120,19 @@ test("engine: a rejected rung teaches the ceiling to the host; a seeded ceiling 
   const ev1 = await runWith(p1, { onContextCeilingLearned: (t) => learned.push(t) });
   assert.ok(ev1.some((e) => e.type === "system_reminder_injected" && /rejected the prompt as too large/.test(e.text)), "first session hits the rejection");
   assert.equal(p1.calls(), 2, "one rejection, one fit");
-  assert.deepEqual(learned, [64_000], "the host is told the rung that fit");
+  // The learned ceiling is the LARGER of the rung that fit and 90% of the
+  // refused prompt — a refusal at 75k must not teach "64k" and strand 11k of
+  // window for the rest of the session (long-project decay fix).
+  assert.equal(learned.length, 1, "the host is told once");
+  assert.ok(learned[0] >= 64_000 && learned[0] < 260_000, `learned ceiling ${learned[0]} is at least the rung that fit`);
+  const taught = learned[0];
   assert.ok(ev1.some((e) => e.type === "turn_end" && e.status === "completed"));
 
   const p2 = ceilingProvider(260_000);
-  const ev2 = await runWith(p2, { knownContextCeilingTokens: 64_000, onContextCeilingLearned: (t) => learned.push(t) });
+  const ev2 = await runWith(p2, { knownContextCeilingTokens: taught, onContextCeilingLearned: (t) => learned.push(t) });
   assert.equal(p2.calls(), 1, "seeded ceiling: the ladder starts at a rung that fits");
   assert.ok(!ev2.some((e) => e.type === "system_reminder_injected" && /rejected the prompt/.test(e.text)));
-  assert.deepEqual(learned, [64_000], "nothing new learned");
+  assert.deepEqual(learned, [taught], "nothing new learned");
   assert.ok(p2.sizes()[0] <= 260_000);
 
   // a ceiling below the floor is ignored, never trusted

@@ -66,7 +66,7 @@ export interface OricleLive {
   context: { aresHome: string; workspace: string };
   selection: { model: string; provider: { name: string } };
   session: { meta: { id: string }; engine: { history(): ReadonlyArray<{ role: string; content: unknown }> } };
-  queueSystemReminder(text: string, kind: "memory" | "instructions"): void;
+  queueSystemReminder(text: string, kind: "memory" | "instructions", key?: string): void;
 }
 
 export function oricleEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -189,7 +189,7 @@ export async function oricleBeforeTurn(live: OricleLive, userMessage: string): P
     const head = await workspaceHead(live.context.workspace);
     const pack = await est.pack({ budgetTokens: packBudget(), query: userMessage.slice(0, 400), ...(head ? { head } : {}) });
     if (pack.included.length === 0) return;
-    live.queueSystemReminder(pack.text, "memory");
+    live.queueSystemReminder(pack.text, "memory", "oricle");
     turnState.set(live, { packId: pack.packId, included: pack.included });
   } catch {
     // never break a turn over memory

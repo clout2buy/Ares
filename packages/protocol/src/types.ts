@@ -47,6 +47,10 @@ export interface ImageBlock {
 export interface SystemReminderBlock {
   type: "system_reminder";
   text: string;
+  /** Steady-state reminders (coding state, repo map, git delta, recall) carry a
+   *  key; a newer reminder with the same key retires the older one from history
+   *  instead of piling up beside it. */
+  key?: string;
 }
 
 export interface ThinkingBlock {

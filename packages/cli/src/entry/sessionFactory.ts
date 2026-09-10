@@ -1,3 +1,5 @@
+import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 // Extracted from entry.ts — sessionFactory.
 
 import { Session, ContinuousVerifier, HookManager, CodingJournal, loadStartupReminders, loadSessionSnapshot, openWorkspaceSessionKernel, type EngineTool, sideQuery, collectTrimmedFilePaths, contextCeilingKey, loadContextCeiling, rememberContextCeiling } from "@ares/core";
@@ -12,7 +14,7 @@ import { cachedUiSettings, loadUiSettings, startupRecoveryMode, updateUiSettings
 import { AresAgentRuntime, prepareAresAgent, readPersona, scanCapabilityRegistry, type CapabilityProvider, type PersonaDef } from "@ares/agent";
 import { listCapabilities, seedAllCapabilities, writeCapabilitiesDoc } from "@ares/operator";
 import { ManualReminderSource, applyEngineConfigEnv } from "./daemon.js";
-import { buildEngineTools, promptCatalogNames } from "./engineTools.js";
+import { loadedDeferredToolNames, buildEngineTools, promptCatalogNames } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore, promptPermission } from "./permissions.js";
 import { ProviderSelection, daemonModelCatalog, providerFamilyForSelection, selectProvider } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
@@ -109,7 +111,7 @@ export interface LiveSession {
    *  Operator auto-tick workers from the daemon. */
   tools: readonly EngineTool[];
   agentRuntime?: AresAgentRuntime;
-  queueSystemReminder(text: string, source?: ManualReminderSource): void;
+  queueSystemReminder(text: string, source?: ManualReminderSource, key?: string): void;
   /**
    * Wear a persona (or null to drop it) for the rest of this conversation.
    *
@@ -168,7 +170,7 @@ export async function confirmTurnEndWith(
   // A verdict that's about to land must not be abandoned: 10s was shorter than
   // a typical tsc/test run, so the gate saw "still running" twice, called
   // itself stuck, and let the turn end with the verdict never delivered.
-  const settleMs = Number(process.env.ARES_VERIFY_SETTLE_MS) > 0 ? Number(process.env.ARES_VERIFY_SETTLE_MS) : 60_000;
+  const settleMs = Number(process.env.ARES_VERIFY_SETTLE_MS) > 0 ? Number(process.env.ARES_VERIFY_SETTLE_MS) : 25_000;
   await verifier.settle(settleMs);
   return verifier
     .drainReminders()
@@ -595,16 +597,46 @@ export function chatMaxOutputTokens(selection?: ProviderSelection): number {
 }
 
 const COMPACTION_INSTRUCTIONS =
-  "You are compacting a long coding/agent session to free context. Write a dense, factual recap that lets the agent CONTINUE the work without the original transcript. This is a FACTUAL RECAP, not a continuation of the conversation — do not address the user, do not write a reply, just emit the structured recap. " +
-  "Preserve specifics verbatim: file paths, function/symbol names, commands run and their outcomes, decisions and the reasons for them, values, and URLs. " +
-  "Structure it as:\n" +
-  "GOAL: what the user ultimately wants.\n" +
-  "CONSTRAINTS: hard requirements, preferences, and explicit 'do NOT do X' rules stated earlier that must still hold. These are the first things lost across repeated compactions — carry them forward verbatim every time.\n" +
-  "DONE: files created/edited (with paths) and what changed; key commands + results; decisions made.\n" +
-  "STATE: what currently works and is verified vs. what is broken, in-progress, or unverified.\n" +
-  "OPEN: unfinished threads and the concrete next steps.\n" +
-  "FACTS: durable specifics to remember (paths, signatures, ids, config values).\n" +
-  "Be concrete and terse — no preamble, no fluff. This recap REPLACES the transcript, so omitting a fact loses it.";
+  "You are compacting a long coding/agent session to free context. Produce a recap that lets the agent CONTINUE the work exactly where it was, without the original transcript. This is a FACTUAL RECAP, not a reply — do not address the user. No tools: emit text only.\n" +
+  "First think inside <analysis>…</analysis>: walk the transcript chronologically and note every user request, every file touched, every decision and its reason, every error and how it was fixed, and what was in progress at the end. The analysis is discarded — only the <summary> is kept, so put everything that matters in the summary.\n" +
+  "Then emit <summary> with these numbered sections, all of them, in order:\n" +
+  "1. PRIMARY REQUEST & INTENT: what the user ultimately wants, and how it evolved.\n" +
+  "2. CONSTRAINTS: every hard requirement, preference and explicit 'do NOT do X' rule, quoted verbatim. These are the first things lost across repeated compactions — carry ALL of them forward every time.\n" +
+  "3. KEY TECHNICAL CONCEPTS: frameworks, patterns, invariants and vocabulary the work relies on.\n" +
+  "4. FILES & CODE: every file created, edited or read that still matters — path, why it matters, and the CURRENT relevant snippet (function signatures, the changed lines, exact identifiers). Prefer real code over prose.\n" +
+  "5. ERRORS & FIXES: each error hit, what fixed it, and any user feedback about it.\n" +
+  "6. COMMANDS & RESULTS: the commands run and what they showed (tests passing/failing, build output).\n" +
+  "7. ALL USER MESSAGES, VERBATIM: every user message in order (not tool results). Do not paraphrase.\n" +
+  "8. PENDING TASKS: what was asked for and is not done yet.\n" +
+  "9. CURRENT WORK: precisely what was being done at the moment of compaction — file, function, the last few actions.\n" +
+  "10. NEXT STEP: the single next action, with a verbatim quote of the most recent user instruction that justifies it, so the work resumes without drift.\n" +
+  "Preserve specifics verbatim: paths, symbols, commands, values, URLs, ids. Be dense; omit nothing that a continuation would need. Close with </summary>.";
+
+/** Every compaction recap is kept on disk (~/.ares/compactions) so a bad
+ *  post-compaction turn can be traced to what the model was actually told —
+ *  the forensics pass found the summaries were unauditable. */
+async function recordCompaction(text: string, selection: ProviderSelection, inputChars: number): Promise<void> {
+  try {
+    const dir = path.join(process.env.ARES_HOME || path.join(os.homedir(), ".ares"), "compactions");
+    await mkdir(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const head = `# compaction ${stamp}
+model: ${selection.model} (${providerFamilyForSelection(selection)})
+input: ~${Math.round(inputChars / 4)} tokens · output: ~${Math.round(text.length / 4)} tokens
+
+`;
+    await writeFile(path.join(dir, `${stamp}.md`), head + text, "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+/** Keep only the <summary> when the summarizer used its analysis scratchpad. */
+function stripCompactionAnalysis(text: string): string {
+  const m = /<summary>([\s\S]*?)(?:<\/summary>|$)/i.exec(text);
+  const body = (m ? m[1] : text.replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")).trim();
+  return body || text.trim();
+}
 
 /** General clip for tool inputs/results/reminders in the summarizer transcript.
  *  ARES_COMPACT_CLIP_CHARS overrides (default 1500). File paths and edit
@@ -785,25 +817,30 @@ export function makeSpanSummarizer(
       : timeoutSignal;
     try {
       if (selection.subModel?.summarize) {
-        return await selection.subModel.summarize({
+        const recap = stripCompactionAnalysis(await selection.subModel.summarize({
           input: transcript,
           instructions: COMPACTION_INSTRUCTIONS,
           signal: summarizerSignal,
-        });
+        }));
+        void recordCompaction(recap, selection, transcript.length);
+        return recap;
       }
-      return await sideQuery({
+      const recap = stripCompactionAnalysis(await sideQuery({
         provider: selection.provider,
         model: selection.model,
         system: COMPACTION_INSTRUCTIONS,
         user: transcript,
-        maxOutputTokens: 2048,
+        // 2048 was the ceiling that turned 80k tokens of work into a paragraph.
+        maxOutputTokens: Number(process.env.ARES_COMPACTION_MAX_TOKENS) > 0 ? Number(process.env.ARES_COMPACTION_MAX_TOKENS) : 7_000,
         reasoningLevel: "off",
         onUsage,
         // Honor a stop during compaction — the engine threads the live turn
         // signal in, so aborting the turn no longer runs the summarizer to
         // completion against a dead turn.
         signal: summarizerSignal,
-      });
+      }));
+      void recordCompaction(recap, selection, transcript.length);
+      return recap;
     } catch {
       return "";
     }
@@ -882,9 +919,14 @@ export async function createSessionWithSelection(
     enabled: agentEnabled,
   });
   startupReminders.push(...agent.startupReminders);
-  const manualReminders: Array<{ text: string; source: ManualReminderSource }> = [];
-  const queueSystemReminder = (text: string, source: ManualReminderSource = "hook") => {
-    manualReminders.push({ text, source });
+  const manualReminders: Array<{ text: string; source: ManualReminderSource; key?: string }> = [];
+  const queueSystemReminder = (text: string, source: ManualReminderSource = "hook", key?: string) => {
+    // the same key queued twice in one turn: the later one wins
+    if (key) {
+      const i = manualReminders.findIndex((r) => r.key === key);
+      if (i >= 0) manualReminders.splice(i, 1);
+    }
+    manualReminders.push({ text, source, ...(key ? { key } : {}) });
   };
   const drainSystemReminders = () => [
     ...startupReminders.splice(0),
@@ -967,12 +1009,14 @@ export async function createSessionWithSelection(
     todoStore.replace(snapshot.todos);
     const planPressure = createPlanPressure();
     await primeContextCeilings(selection);
+    const deferredHolder = { id: "" };
     const session = new Session({
       workspace: context.workspace,
       provider: selection.provider,
       model: selection.model,
       systemPrompt,
       tools,
+      loadedDeferredTools: () => (deferredHolder.id ? loadedDeferredToolNames(deferredHolder.id) : []),
       requestPermission,
       drainSystemReminders,
       confirmTurnEnd: () => confirmTurnEndWith(verifier),
@@ -1018,7 +1062,8 @@ export async function createSessionWithSelection(
     runtime.currentPlan = () => session.activePlanBody();
     runtime.onPlanProposed = (plan) => session.recordPlanProposal(plan);
     runtime.onPlanApproved = (plan) => session.approvePlan(plan);
-    codingJournal = await CodingJournal.open({ workspace: context.workspace, sessionId: session.meta.id });
+    deferredHolder.id = session.meta.id;
+  codingJournal = await CodingJournal.open({ workspace: context.workspace, sessionId: session.meta.id });
     session.observeEvents((event) => codingJournal?.recordTurnEvent(event));
     const live: LiveSession = {
       session,
@@ -1069,12 +1114,14 @@ export async function createSessionWithSelection(
   }
   const planPressure = createPlanPressure();
   await primeContextCeilings(selection);
+  const deferredHolder = { id: "" };
   const session = new Session({
     workspace: context.workspace,
     provider: selection.provider,
     model: selection.model,
     systemPrompt,
     tools,
+    loadedDeferredTools: () => (deferredHolder.id ? loadedDeferredToolNames(deferredHolder.id) : []),
     sessionId: opts.sessionId,
     requestPermission,
     drainSystemReminders,

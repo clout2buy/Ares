@@ -108,7 +108,16 @@ export const PowerShellTool = buildTool({
     // has to guess the dialect from an error it may not recognise.
     const dialect = powerShellDialect(shellFlavorOf(pwsh)) ?? "PowerShell (unknown version)";
     const output: unknown = { ...result, dialect };
-    const hintLine = result.hint ? `\nhint: ${result.hint}` : "";
+    // A non-zero exit with NOTHING on either stream leaves the model blind —
+    // the forensics pass found 25 of 57 failing shell calls in the owner's
+    // sessions were exactly this (verify.ps1, `… | Select-Object -Last N`,
+    // screenshot scripts). Say what it usually means and how to see the error.
+    const streams = result as { stdout?: string; stderr?: string };
+    const silent = result.exitCode !== 0 && !result.timedOut && !String(streams.stdout ?? "").trim() && !String(streams.stderr ?? "").trim();
+    const silentHint = silent
+      ? "the command exited non-zero and printed NOTHING on either stream. Usual causes: a parse error or unknown cmdlet (PowerShell 5.1 rejects `&&`, `??`, ternaries), a pipe like `| Select-Object -Last N` that dropped the error, or a script that calls `exit 1` itself. Re-run WITHOUT the trailing pipe and wrapped as `$ErrorActionPreference='Continue'; try { <command> } catch { $_ | Out-String }` so the failure is visible before you change any code."
+      : "";
+    const hintLine = result.hint || silentHint ? `\nhint: ${[result.hint, silentHint].filter(Boolean).join(" ")}` : "";
     const failure = result.timedOut
       ? `PowerShell timed out after ${i.timeout}ms${hintLine}`
       : result.exitCode === 0

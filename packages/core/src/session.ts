@@ -219,6 +219,7 @@ export interface SessionOptions {
   /** Pending system-reminders to inject at next turn_start. */
   drainSystemReminders?: () => Array<{
     text: string;
+    key?: string;
     source: ReminderSource;
     instructionClaims?: RepositoryInstructionClaim[];
   }>;
@@ -260,6 +261,8 @@ export interface SessionOptions {
   knownContextCeilingTokens?: number;
   /** See QueryEngineConfig.onContextCeilingLearned. */
   onContextCeilingLearned?(ceilingTokens: number): void;
+  /** See QueryEngineConfig.loadedDeferredTools. */
+  loadedDeferredTools?: () => readonly string[];
   /** Explicit hard ceiling on tool-calling turns. Unset = effectively
    *  unbounded (huge backstop); loop-kill detectors terminate stuck turns. */
   maxTurns?: number;
@@ -504,6 +507,7 @@ export class Session {
         contextBudgetTokens: opts.contextBudgetTokens,
         ...(opts.knownContextCeilingTokens !== undefined ? { knownContextCeilingTokens: opts.knownContextCeilingTokens } : {}),
         ...(opts.onContextCeilingLearned ? { onContextCeilingLearned: opts.onContextCeilingLearned } : {}),
+        ...(opts.loadedDeferredTools ? { loadedDeferredTools: opts.loadedDeferredTools } : {}),
         maxTurns: opts.maxTurns,
         fileReadStamps: opts.fileReadStamps ?? new Map(),
         repositoryInstructions,

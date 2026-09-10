@@ -331,12 +331,16 @@ export interface QueryEngineConfig {
    *  the host between sessions). The shrink ladder starts here instead of
    *  re-walking rungs the provider is known to reject. Ignored below 16k. */
   knownContextCeilingTokens?: number;
+  /** Deferred tools the host has loaded (ToolSearch) this session. The
+   *  transcript used to be the only memory of them, and compaction erased it. */
+  loadedDeferredTools?: () => readonly string[];
   /** Fired when a context-limit rejection teaches a new (lower) ceiling, so
    *  the host can persist it for the next session, resume, or failover. */
   onContextCeilingLearned?(ceilingTokens: number): void;
   /** Optional pending system-reminders to inject at next turn_start. */
   drainSystemReminders?(): Array<{
     text: string;
+    key?: string;
     instructionClaims?: RepositoryInstructionClaim[];
     source:
       | "verifier"
@@ -937,7 +941,15 @@ const MAX_IMAGE_PAYLOAD_BYTES = (() => {
 // reasoning and user intent are never touched.
 const MICROCOMPACT_TOOLS = new Set<string>([
   "Read", "Grep", "Glob", "WebSearch", "WebFetch", "CodebaseSearch",
+  // Shell/test/build output is the dominant token source in a long coding
+  // session and is fully re-derivable (re-run the command). Edit/Write echo
+  // the diff the model itself wrote. Leaving these out meant the cheap rung
+  // could never defer the lossy summarizer on real projects.
+  "Bash", "PowerShell", "BashOutput", "Edit", "Write", "ApplyPatch", "Lsp", "McpCallTool", "McpListTools",
 ]);
+function isMicrocompactableTool(name: string): boolean {
+  return MICROCOMPACT_TOOLS.has(name) || name.startsWith("mcp_");
+}
 const MICROCOMPACT_KEEP_RECENT = 6;
 const MICROCOMPACT_TRIGGER_RATIO = 0.72;
 const MICROCOMPACT_MIN_RESULTS = 8;
@@ -1537,7 +1549,10 @@ export class QueryEngine {
    */
   private tacticalReasoningLevel(iter: number): ReasoningLevel | undefined {
     const base = this.turnReasoningOverride ?? this.effectiveReasoningLevel();
-    if (process.env.ARES_TACTICAL_REASONING === "0") return base;
+    // Opt-in: the owner's dial is the effort. Silently thinking one notch
+    // lighter on every routine continuation is how long, hard turns late in a
+    // project ended up running at the lowest effort.
+    if (process.env.ARES_TACTICAL_REASONING !== "1") return base;
     // Only high/max have a meaningful notch below; leave lighter dials alone.
     if (!base || base === "off" || base === "low" || base === "medium") return base;
     if (iter === 0 || this.lastRoundHadFailure) return base;
@@ -2112,7 +2127,7 @@ export class QueryEngine {
     for (const m of this.messages) {
       if (m.role !== "assistant") continue;
       for (const b of m.content) {
-        if (b.type === "tool_use" && MICROCOMPACT_TOOLS.has(b.name)) compactableIds.add(b.id);
+        if (b.type === "tool_use" && isMicrocompactableTool(b.name)) compactableIds.add(b.id);
       }
     }
     if (compactableIds.size === 0) return null;
@@ -2258,9 +2273,13 @@ export class QueryEngine {
       const full = path.resolve(this.cfg.workspace, rel);
       try {
         const body = await fs.readFile(full, { encoding: "utf8", signal: maintenanceSignal });
-        if (body.length > 24_000) continue; // too big to re-pin — the model can Read it
-        filePins += `\n\n=== CURRENT content of ${rel} (re-read after compaction) ===\n${body}`;
-        if (filePins.length > 60_000) break;
+        // A big file is the one the refactor lives in; pin its head and tail
+        // rather than skipping it, so the first post-compaction edit is not blind.
+        const pinned = body.length > 48_000
+          ? `${body.slice(0, 32_000)}\n\n… [${body.length - 44_000} chars elided — Read the file for the middle] …\n\n${body.slice(-12_000)}`
+          : body;
+        filePins += `\n\n=== CURRENT content of ${rel} (re-read after compaction) ===\n${pinned}`;
+        if (filePins.length > 120_000) break;
       } catch {
         // deleted/unreadable since — skip
       }
@@ -2386,8 +2405,22 @@ export class QueryEngine {
       (after, block, index) => (block.type === "tool_result" ? index + 1 : after),
       0,
     );
+    // Steady-state reminders (coding state, repo map, git delta, recall …)
+    // replace their previous instance instead of stacking: the old copy is
+    // stripped from history so the model sees one live copy, not N stale ones.
+    const keyed = new Set(reminders.map((r) => r.key).filter((k): k is string => typeof k === "string" && k.length > 0));
+    if (keyed.size) {
+      for (const m of this.messages) {
+        if (m.role !== "user") continue;
+        const stale = m.content.filter((b) => b.type === "system_reminder" && b.key && keyed.has(b.key));
+        if (stale.length) {
+          for (const b of stale) blockTokenMemo.delete(b);
+          m.content = m.content.filter((b) => !stale.includes(b));
+        }
+      }
+    }
     for (const r of reminders) {
-      userMessage.content.splice(reminderInsertAt, 0, { type: "system_reminder", text: r.text });
+      userMessage.content.splice(reminderInsertAt, 0, { type: "system_reminder", text: r.text, ...(r.key ? { key: r.key } : {}) });
     }
 
     yield { type: "turn_start", turnId, sessionId: this.sessionId, userMessage };
@@ -2679,6 +2712,7 @@ export class QueryEngine {
           providerName: this.cfg.provider.name,
           model: this.cfg.model,
           workflowMode: this.cfg.workflowMode?.(),
+          ...(this.cfg.loadedDeferredTools ? { loadedDeferredTools: this.cfg.loadedDeferredTools() } : {}),
         });
         const toolDescriptors = activeTools.map((t) => ({
           name: t.schema.name,
@@ -3053,7 +3087,7 @@ export class QueryEngine {
                 // turn completes at reduced effort instead of spinning forever.
                 waitMs = 500;
                 const current = this.turnReasoningOverride ?? this.effectiveReasoningLevel();
-                if (process.env.ARES_STALL_DOWNGRADE !== "0" && current && current !== "off" && current !== "low") {
+                if (process.env.ARES_STALL_DOWNGRADE === "1" && current && current !== "off" && current !== "low") {
                   this.turnReasoningOverride = downshift(current, 1);
                   note = `${streamError.code === "reasoning_stall" ? "reasoning stalled" : "stream stalled"} at "${current}"; retrying at "${this.turnReasoningOverride}" — attempt ${transientRetry}/${MAX_TRANSIENT_RETRIES}`;
                 } else {
@@ -3097,7 +3131,12 @@ export class QueryEngine {
             // the body — but teach nothing: they're evidence about request
             // BYTES (usually one big image), not the model's token window, and
             // learning them permanently crippled hours-long sessions.
-            const learnedRung = budgetPairs[attempt + 1].raw;
+            // Learn from the prompt that was refused: a little under its size,
+            // not the next ladder rung — the rung is half the budget and was
+            // permanently halving the working memory of every later session
+            // after a single overflow.
+            const refusedPrompt = this.lastPromptTokens > 0 ? Math.floor(this.lastPromptTokens * 0.9) : 0;
+            const learnedRung = Math.max(budgetPairs[attempt + 1].raw, refusedPrompt);
             if (learnedRung >= 16_000 && !isPayloadSizeError(streamError)) {
               const before = this.learnedContextCeiling;
               this.learnedContextCeiling = Math.min(

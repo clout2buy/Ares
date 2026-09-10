@@ -122,6 +122,9 @@ test("engine: reasoning stall downgrades one notch and the turn completes", asyn
   const prevAdaptive = process.env.ARES_ADAPTIVE_REASONING;
   process.env.ARES_STREAM_IDLE_MS = "1000";
   process.env.ARES_THINK_CEILING_MS = "1000";
+  const prevStall = process.env.ARES_STALL_DOWNGRADE;
+  // the stall downgrade is opt-in now (the owner's dial is the effort); this test exercises the opt-in path
+  process.env.ARES_STALL_DOWNGRADE = "1";
   process.env.ARES_ADAPTIVE_REASONING = "0";
   try {
     const levels = [];
@@ -159,6 +162,8 @@ test("engine: reasoning stall downgrades one notch and the turn completes", asyn
     if (prevIdle === undefined) delete process.env.ARES_STREAM_IDLE_MS; else process.env.ARES_STREAM_IDLE_MS = prevIdle;
     if (prevCeiling === undefined) delete process.env.ARES_THINK_CEILING_MS; else process.env.ARES_THINK_CEILING_MS = prevCeiling;
     if (prevAdaptive === undefined) delete process.env.ARES_ADAPTIVE_REASONING; else process.env.ARES_ADAPTIVE_REASONING = prevAdaptive;
+    if (prevStall === undefined) delete process.env.ARES_STALL_DOWNGRADE;
+    else process.env.ARES_STALL_DOWNGRADE = prevStall;
   }
 });
 

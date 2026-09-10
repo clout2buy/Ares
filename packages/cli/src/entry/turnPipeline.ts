@@ -331,7 +331,7 @@ export async function prepareUserTurn(
   }
   const codingState = live.codingJournal.beginTurn(semanticMessage);
   if (codingState) {
-    live.queueSystemReminder(codingState, "instructions");
+    live.queueSystemReminder(codingState, "instructions", "coding-state");
     if (process.env.ARES_REPO_MAP !== "0") {
       live.repositoryMapCodingTurns = (live.repositoryMapCodingTurns ?? 0) + 1;
       const snapshot = live.codingJournal.snapshot();
@@ -348,12 +348,14 @@ export async function prepareUserTurn(
           live.repositoryMapText = map;
           live.repositoryMapLastTurn = live.repositoryMapCodingTurns;
           live.repositoryMapTouchedCount = snapshot.touchedFiles.length;
-          live.queueSystemReminder(map, "instructions");
+          live.queueSystemReminder(map, "instructions", "repo-map");
         }
       }
     }
     if (live.codingJournal.persistedVerificationDebtForCurrentTurn()) {
-      const persistedFiles = live.codingJournal.snapshot().touchedFiles.map((file) =>
+      // The last 40 touched files, not the whole 240-file tail: the verifier
+      // has to finish inside the settle window to be worth anything.
+      const persistedFiles = live.codingJournal.snapshot().touchedFiles.slice(-40).map((file) =>
         path.isAbsolute(file) ? file : path.resolve(live.context.workspace, file),
       );
       if (persistedFiles.length) live.verifier.scheduleFor(persistedFiles);
@@ -361,14 +363,14 @@ export async function prepareUserTurn(
     // Unlike the session-creation prompt, this captures the CURRENT dirty tree
     // after prior edits or external changes in a long-running task.
     const git = await loadGitContext(live.context);
-    if (git) live.queueSystemReminder(`CURRENT REPOSITORY DELTA${git}`, "instructions");
+    if (git) live.queueSystemReminder(`CURRENT REPOSITORY DELTA${git}`, "instructions", "git-delta");
   }
   // Peripheral awareness: a bounded note of what the local watcher has recently
   // seen, injected only when something fresh is buffered (usually nothing). The
   // reminder is hard-capped in items + chars so it can't dominate the window.
   const awareness = consciousnessContextReminder();
-  if (awareness) live.queueSystemReminder(awareness, "memory");
-  if (!isSubagentSession(live)) live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions");
+  if (awareness) live.queueSystemReminder(awareness, "memory", "awareness");
+  if (!isSubagentSession(live)) live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions", "foreground");
 }
 
 /**
@@ -443,7 +445,7 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: Tu
     live.lastRecallIds = recall.livingIds;
     live.lastUserMessage = text;
     if (recall.reminder) {
-      live.queueSystemReminder(recall.reminder, "memory");
+      live.queueSystemReminder(recall.reminder, "memory", "recall");
       const count = recall.items.length;
       emitLifecycle({ type: "recall_surfaced", count, gain: gainForTarget("RECALL", count) });
     }
@@ -462,7 +464,7 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: Tu
       emit: (t) => emitLifecycle({ type: "thought", kind: t.kind, text: t.text }),
     });
     if (advisory.reminder) {
-      live.queueSystemReminder(advisory.reminder, "memory");
+      live.queueSystemReminder(advisory.reminder, "memory", "advisory");
     }
     // A service the owner names that is not connected gets a Connect card in
     // the chat (once per service per process) and the model is told so it asks

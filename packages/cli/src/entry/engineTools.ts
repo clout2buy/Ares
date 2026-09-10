@@ -114,6 +114,14 @@ function childPromptComposer(runtime: AresRuntimeState, context: CliRuntimeConte
   };
 }
 
+/** Per-session ToolSearch registries. Module-level so the engine can ask
+ *  which deferred tools a session has loaded — the transcript used to be the
+ *  only record, and compaction erased it. */
+const deferredRegistries = new Map<string, DeferredToolRegistry>();
+export function loadedDeferredToolNames(sessionId: string): readonly string[] {
+  return deferredRegistries.get(sessionId)?.loaded() ?? [];
+}
+
 export async function buildEngineTools(
   pathPermissions: PathPermissionStore,
   commandPermissions: CommandPermissionStore,
@@ -172,7 +180,6 @@ export async function buildEngineTools(
   // deferred catalog is filled at the end of this function, once the full belt
   // exists — ToolSearch is itself one of the tools being assembled.
   const deferredCatalog: DeferredToolDescriptor[] = [];
-  const deferredRegistries = new Map<string, DeferredToolRegistry>();
   const deferredRegistryFor = (sessionId: string): DeferredToolRegistry => {
     let registry = deferredRegistries.get(sessionId);
     if (!registry) {

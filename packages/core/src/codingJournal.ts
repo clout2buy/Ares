@@ -181,7 +181,10 @@ export class CodingJournal {
       this.state.steering = [...this.state.steering, request].slice(-12);
     }
     this.currentTurnHasOutstandingVerification = !startingNew && priorVerificationDebt;
-    this.turnStartedWithPersistedDebt = this.currentTurnHasOutstandingVerification;
+    // A question ("does it work?", "what did you change?") inherits nothing:
+    // forcing proof gates and a 240-file verifier over it made every later
+    // turn of a long project pay for one unverified turn. Work inherits.
+    this.turnStartedWithPersistedDebt = this.currentTurnHasOutstandingVerification && !looksLikeQuestionOnly(userMessage);
     this.touch();
     return this.renderReminder();
   }
@@ -561,4 +564,12 @@ function relativeDisplay(workspace: string, file: string): string {
 function compact(text: string, max: number): string {
   const normalized = text.trim();
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
+}
+
+/** A short interrogative with no imperative verb — not a request to change anything. */
+function looksLikeQuestionOnly(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 240) return false;
+  if (!/\?\s*$/.test(t)) return false;
+  return !/\b(fix|change|add|remove|make|implement|update|refactor|write|build|create|delete|move|rename|run|deploy|install|test|verify|check)\b/i.test(t);
 }

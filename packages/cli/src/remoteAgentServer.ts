@@ -786,17 +786,117 @@ while (-not $bye -and (Get-Date) -lt $deadline) {
 // Mac/Linux connector. Reconnects on the same token; exits on "bye".
 const AGENT_PY = `#!/usr/bin/env python3
 """Ares Remote Connect — one-time connector. Keep this running while Ares helps."""
-import base64, json, os, platform, socket, subprocess, sys, tempfile, threading, time
-
-try:
-    import websocket
-except ImportError:
-    print("Installing websocket-client (one-time) ...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "websocket-client"])
-    import websocket  # noqa: E401
+import base64, json, os, platform, socket, ssl, struct, subprocess, sys, tempfile, threading, time
 
 _WS_URL = "__ARES_WS_URL__"
 _TOKEN  = "__ARES_TOKEN__"
+
+# A tiny RFC 6455 WebSocket client on pure stdlib — no pip, no venv, works on
+# any Python 3. (Homebrew/modern Python refuses "pip install" under PEP 668,
+# which is why depending on websocket-client broke Mac connects.) CRLF is built
+# from chr() so this source carries no backslash escapes through the bundler.
+_CRLF = chr(13) + chr(10)
+
+
+class _WS:
+    def __init__(self):
+        self.sock = None
+        self._buf = b""
+
+    def connect(self, url, timeout=30):
+        proto, rest = url.split("://", 1)
+        hostport, _slash, path = rest.partition("/")
+        path = "/" + path
+        if ":" in hostport:
+            host, port = hostport.rsplit(":", 1); port = int(port)
+        else:
+            host = hostport; port = 443 if proto == "wss" else 80
+        s = socket.create_connection((host, port), timeout=timeout)
+        if proto == "wss":
+            s = ssl._create_unverified_context().wrap_socket(s, server_hostname=host)
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = _CRLF.join([
+            "GET " + path + " HTTP/1.1",
+            "Host: " + host + ":" + str(port),
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Key: " + key,
+            "Sec-WebSocket-Version: 13",
+            "", "",
+        ])
+        s.sendall(req.encode())
+        sep = (_CRLF + _CRLF).encode()
+        resp = b""
+        while sep not in resp:
+            chunk = s.recv(4096)
+            if not chunk:
+                raise IOError("handshake failed")
+            resp += chunk
+        head, self._buf = resp.split(sep, 1)
+        if b" 101 " not in head.split(_CRLF.encode())[0]:
+            raise IOError("server refused the websocket upgrade")
+        s.settimeout(None)
+        self.sock = s
+
+    def _read(self, n):
+        while len(self._buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise IOError("connection closed")
+            self._buf += chunk
+        out = self._buf[:n]; self._buf = self._buf[n:]
+        return out
+
+    def _frame(self, opcode, data):
+        header = bytearray([0x80 | opcode])
+        mask = os.urandom(4); ln = len(data)
+        if ln < 126:
+            header.append(0x80 | ln)
+        elif ln < 65536:
+            header.append(0x80 | 126); header += struct.pack(">H", ln)
+        else:
+            header.append(0x80 | 127); header += struct.pack(">Q", ln)
+        header += mask
+        return bytes(header) + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+
+    def send(self, text):
+        if isinstance(text, str):
+            text = text.encode()
+        self.sock.sendall(self._frame(0x1, text))
+
+    def recv(self):
+        payload = bytearray()
+        while True:
+            b1 = self._read(1)[0]; b2 = self._read(1)[0]
+            fin = b1 & 0x80; opcode = b1 & 0x0f
+            ln = b2 & 0x7f
+            if ln == 126:
+                ln = struct.unpack(">H", self._read(2))[0]
+            elif ln == 127:
+                ln = struct.unpack(">Q", self._read(8))[0]
+            mask = self._read(4) if (b2 & 0x80) else b""
+            data = self._read(ln) if ln else b""
+            if mask:
+                data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+            if opcode == 0x8:
+                return None
+            if opcode == 0x9:
+                self.sock.sendall(self._frame(0xA, data)); continue
+            if opcode == 0xA:
+                continue
+            payload += data
+            if fin:
+                return payload.decode("utf-8", "replace")
+
+    def close(self):
+        try:
+            self.sock.sendall(self._frame(0x8, b""))
+        except Exception:
+            pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
 
 def _popup(text="ARES CONNECTED", sub="remote assistance active"):
@@ -919,7 +1019,7 @@ def main():
     deadline = time.time() + 600
     connected_once = False
     while time.time() < deadline:
-        ws = websocket.WebSocket(sslopt={"check_hostname": False} if _WS_URL.startswith("wss://") else {})
+        ws = _WS()
         try:
             ws.connect(_WS_URL)
         except Exception as exc:

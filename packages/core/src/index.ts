@@ -68,6 +68,8 @@ export {
   type ImageDimensions,
 } from "./tokenEstimate.js";
 
+export { modelLikelyHasVision } from "./modelVision.js";
+
 export {
   runForkedTurn,
   type ForkedTurnOptions,
@@ -268,6 +270,7 @@ export {
   type SessionRegistryOptions,
 } from "./sessionRegistry.js";
 export { streamIdleMs } from "./queryEngine.js";
+export { stripImagesForBlindModel, historyHasImages } from "./queryEngine.js";
 export {
   loadContextCeiling,
   rememberContextCeiling,

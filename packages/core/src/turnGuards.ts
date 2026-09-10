@@ -48,6 +48,10 @@ export class TurnGuards {
   zeroOutputStalls = 0;
   /** One-shot: the context-ledger injection notice has been surfaced. */
   ledgerAnnounced = false;
+  /** One-shot: the "this model can't see images, they were replaced with a
+   *  text note" notice has been surfaced this turn. Without the one-shot the
+   *  notice repeats on every shrink-ladder rung of the same turn. */
+  blindImageNoticeShown = false;
 
   // ── End-of-turn gates ─────────────────────────────────────────────────
   /** Times the C1 end-of-turn verification gate has pushed back this turn. */

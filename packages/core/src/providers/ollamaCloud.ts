@@ -25,6 +25,7 @@ import type {
   StreamEvent,
   Usage,
   StopReason,
+  ReasoningLevel,
 } from "@ares/protocol";
 import { thinkingBudgetTokens, reasoningEnabled } from "@ares/protocol";
 import { narrowToolSchema } from "./toolSchema.js";
@@ -287,6 +288,7 @@ export class OllamaCloudPool {
       }
     }
     const estPromptTokens = Math.ceil(estPromptChars / 4) + estImageTokens;
+    const outputAllowance = req.maxOutputTokens ?? 8_192;
 
     const body = {
       model: this.wireModelId(model),
@@ -307,10 +309,22 @@ export class OllamaCloudPool {
       options: {
         num_ctx: ollamaNumCtx(
           estPromptTokens,
-          req.maxOutputTokens ?? 8_192,
+          outputAllowance,
           this.cloudDirect || /cloud/i.test(model) || !!ollamaCloudHint(model),
         ),
         temperature: 0.2,
+        // Cap generation. Without this Ollama uses its own default (-1 —
+        // generate until the context is full), so maxOutputTokens was only ever
+        // used to SIZE num_ctx and never actually enforced: the harness believed
+        // it had bounded the reply and had not. On a reasoning model that is not
+        // a slow turn, it is a runaway — a field session on glm-5.2 spent ~1,900
+        // lines of uninterrupted thinking before its first tool call and made
+        // four tool calls in the entire session, re-deriving Windows ETW struct
+        // layouts from memory instead of acting (sess 2026-09-10). Same formula
+        // the Anthropic-compat path above has always used: reasoning models need
+        // headroom for the thinking block PLUS a visible reply, so the budget is
+        // added, not shared.
+        num_predict: ollamaNumPredict(outputAllowance, req.reasoningLevel),
       },
       // Reasoning dial → native /api/chat "think" field. Ollama's documented think
       // enum is low|medium|high (plus a boolean) — NOT "max" — so clamp max→high
@@ -942,6 +956,23 @@ function buildAnthropicMessagesBody(
  * the old default; if the serving side can't honor it, the engine's ladder
  * learns the real ceiling from the rejection.
  */
+/**
+ * Generation cap for the native /api/chat path. Ollama's own default is -1
+ * ("keep going until num_ctx is full"), so omitting this let a reasoning model
+ * spend an entire context window on a single thinking block.
+ *
+ * Mirrors buildAnthropicBody's `max_tokens = budget + outputAllowance`: the
+ * thinking budget is ADDED to the visible-reply allowance rather than shared
+ * with it, so bounding the runaway never starves the actual answer. Escape
+ * hatch matches ARES_OLLAMA_NUM_CTX's shape for an operator who needs more.
+ */
+export function ollamaNumPredict(outputAllowance: number, level: ReasoningLevel | undefined): number {
+  const raw = Number(process.env.ARES_OLLAMA_NUM_PREDICT);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  if (level === undefined || !reasoningEnabled(level)) return outputAllowance;
+  return thinkingBudgetTokens(level) + outputAllowance;
+}
+
 function ollamaNumCtx(estPromptTokens: number, maxOutputTokens: number, cloudServed: boolean): number {
   const raw = Number(process.env.ARES_OLLAMA_NUM_CTX);
   if (Number.isFinite(raw) && raw >= 8_192) return Math.floor(raw);

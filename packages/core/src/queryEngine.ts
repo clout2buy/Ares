@@ -37,6 +37,7 @@ import { verificationHintFor } from "./verifier.js";
 import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
 import { currentSubagentDepth } from "./subagentDepth.js";
 import { TurnGuards } from "./turnGuards.js";
+import { modelLikelyHasVision } from "./modelVision.js";
 import {
   estimateTextTokens,
   estimateImageTokens,
@@ -1168,6 +1169,70 @@ export function keepRecentImages(messages: readonly Message[], keepLast = 2): Me
     out.push(changed ? { ...m, content } : m);
   }
   return out.reverse();
+}
+
+const BLIND_MODEL_IMAGE_PLACEHOLDER =
+  "[an image was attached here, but the model running this turn cannot see images — " +
+  "it is stored in the conversation and becomes visible again on a vision-capable model]";
+
+/**
+ * Replace EVERY image in the outbound history with a text placeholder, for a
+ * model that cannot accept image blocks at all.
+ *
+ * This is the backstop that keeps a pasted screenshot from permanently killing
+ * a session. The daemon already escalates an image-bearing turn to a vision
+ * model, but that escalation can find nothing to escalate to (a user whose only
+ * configured provider is a local text-only model). The old no-fallback branch
+ * merely told the model to be honest and shipped the image anyway: ollama
+ * rejected the request, the turn failed, and because the image stayed in
+ * history EVERY later turn re-sent it and failed identically. The user typed
+ * "ares" into a dead session three times with no error shown (sess_76b38ed3).
+ *
+ * Like keepRecentImages, this rewrites only the OUTBOUND copy — stored history
+ * keeps the real image, so switching to a vision model restores it and a
+ * poisoned session heals itself on the very next turn.
+ */
+export function stripImagesForBlindModel(messages: readonly Message[]): Message[] {
+  let stripped = false;
+  const out = messages.map((m): Message => {
+    let changed = false;
+    const content = m.content.map((b): ContentBlock => {
+      if (b.type === "image") {
+        changed = true;
+        return { type: "text", text: BLIND_MODEL_IMAGE_PLACEHOLDER };
+      }
+      if (b.type === "tool_result" && Array.isArray(b.content)) {
+        let innerChanged = false;
+        const inner = b.content.map((c) => {
+          if (c.type === "image") {
+            innerChanged = true;
+            return { type: "text" as const, text: BLIND_MODEL_IMAGE_PLACEHOLDER };
+          }
+          return c;
+        });
+        if (innerChanged) {
+          changed = true;
+          return { ...b, content: inner };
+        }
+      }
+      return b;
+    });
+    if (!changed) return m;
+    stripped = true;
+    return { ...m, content };
+  });
+  return stripped ? out : (messages as Message[]);
+}
+
+/** Does the outbound history carry any image block at all? */
+export function historyHasImages(messages: readonly Message[]): boolean {
+  return messages.some((m) =>
+    m.content.some(
+      (b) =>
+        b.type === "image" ||
+        (b.type === "tool_result" && Array.isArray(b.content) && b.content.some((c) => c.type === "image")),
+    ),
+  );
 }
 
 /**
@@ -2903,7 +2968,27 @@ export class QueryEngine {
             // budget-aware, so a vision-heavy ComputerUse/browser loop can't ship
             // a prompt past the context limit (it keeps 2 recent frames, then 1,
             // then 0 as needed). budgetMessages already trimmed old whole messages.
-            const outboundMessages = fitImagesToBudget(budgeted.messages, budgetAttempts[attempt], overheadTokens);
+            let outboundMessages = fitImagesToBudget(budgeted.messages, budgetAttempts[attempt], overheadTokens);
+            // ── Blind-model guard (LAST thing before the wire). ──
+            // A text-only model must never receive an image block: providers
+            // hard-fail the request, and since the image lives in history the
+            // failure repeats on every subsequent turn until the session is
+            // unusable. Stripping here (not at admission) means the image stays
+            // stored — switching to a vision model brings it back, and an
+            // already-poisoned session recovers on its next turn.
+            if (!modelLikelyHasVision(this.cfg.model) && historyHasImages(outboundMessages)) {
+              outboundMessages = stripImagesForBlindModel(outboundMessages);
+              if (!guards.blindImageNoticeShown) {
+                guards.blindImageNoticeShown = true;
+                yield {
+                  type: "system_reminder_injected",
+                  text:
+                    `${this.cfg.model} cannot see images — the attached image was replaced with a text note ` +
+                    `for this model. Switch to a vision-capable model to have it read the image.`,
+                  source: "instructions",
+                };
+              }
+            }
             const estPromptTokens =
               overheadTokens + outboundMessages.reduce((s, m) => s + estimateMessageTokens(m), 0);
             // A boundary event above (for example a context-ledger notice) can

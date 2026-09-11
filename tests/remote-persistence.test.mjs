@@ -36,19 +36,53 @@ const NIX = {
   deviceId: "dev_1234567890abcdef",
 };
 
-// ─── windows ───────────────────────────────────────────────────────────────
+// --- windows ---------------------------------------------------------------
+// The owner's requirement is "it needs to execute how I would". SYSTEM has more
+// local privilege but is a DIFFERENT USER: no profile, no mapped drives, no
+// per-user PATH, no user DPAPI. Defaulting to it would mean commands behaving
+// differently under Ares than when pasted by hand -- the exact confusion the
+// feature exists to remove. So: the owner's account, at RunLevel Highest.
 
 test("windows: boot trigger, not logon", () => {
   const s = windowsInstallScript(OPTS);
   assert.match(s, /New-ScheduledTaskTrigger -AtStartup/);
-  assert.ok(!/-AtLogOn/.test(s), "AtLogOn would mean the box is unreachable until someone signs in");
+  assert.ok(!/-AtLogOn/.test(s), "AtLogOn would mean unreachable until someone signs in");
 });
 
-test("windows: runs as SYSTEM at the highest run level", () => {
+test("windows: defaults to the OWNER'S account, elevated -- not SYSTEM", () => {
   const s = windowsInstallScript(OPTS);
-  assert.match(s, /-UserId 'S-1-5-18'/, "S-1-5-18 is SYSTEM");
-  assert.match(s, /-LogonType ServiceAccount/, "ServiceAccount runs without an interactive session");
+  assert.match(s, /-RunLevel Highest/, "still elevated");
+  assert.match(s, /\$env:USERNAME/, "runs as the owner");
+  assert.ok(!/S-1-5-18/.test(s), "SYSTEM is a different user and would break fidelity");
+});
+
+test("windows: the default logon keeps NETWORK credentials", () => {
+  // S4U would silently lose mapped drives and UNC paths.
+  const s = windowsInstallScript(OPTS);
+  assert.match(s, /Get-Credential/);
+  assert.match(s, /-Password \$cred\.GetNetworkCredential\(\)\.Password/);
+  assert.ok(!/-LogonType S4U/.test(s), "the default must not be the credential-less token");
+});
+
+test("windows: the password is prompted for, never embedded in the script", () => {
+  const s = windowsInstallScript(OPTS);
+  assert.match(s, /Get-Credential -UserName \$me/, "prompted interactively");
+  assert.match(s, /never sent anywhere|never sees it/i, "and the script says so");
+});
+
+test("windows: s4u is available, and states its own limitation in the script", () => {
+  const s = windowsInstallScript({ ...OPTS, windowsLogon: "s4u" });
+  assert.match(s, /-LogonType S4U/);
   assert.match(s, /-RunLevel Highest/);
+  assert.ok(!/Get-Credential/.test(s), "s4u stores no password");
+  assert.match(s, /NO NETWORK CREDENTIALS/, "the caveat is in the script the owner reads");
+});
+
+test("windows: system is still available when a headless account is wanted", () => {
+  const s = windowsInstallScript({ ...OPTS, runAs: "system" });
+  assert.match(s, /-UserId 'S-1-5-18'/);
+  assert.match(s, /-LogonType ServiceAccount/);
+  assert.ok(!/Get-Credential/.test(s), "SYSTEM needs no password");
 });
 
 test("windows: refuses to run unelevated instead of failing halfway", () => {
@@ -57,7 +91,7 @@ test("windows: refuses to run unelevated instead of failing halfway", () => {
   assert.match(s, /ADMIN PowerShell/);
 });
 
-test("windows: battery defaults are overridden — the appliance IS a laptop", () => {
+test("windows: battery defaults are overridden -- the appliance IS a laptop", () => {
   const s = windowsInstallScript(OPTS);
   assert.match(s, /-AllowStartIfOnBatteries/);
   assert.match(s, /-DontStopIfGoingOnBatteries/);
@@ -66,7 +100,7 @@ test("windows: battery defaults are overridden — the appliance IS a laptop", (
 test("windows: restarts on failure and never times out", () => {
   const s = windowsInstallScript(OPTS);
   assert.match(s, /-RestartCount 999/);
-  assert.match(s, /-ExecutionTimeLimit \(New-TimeSpan -Seconds 0\)/, "0 = no limit; a default would kill it");
+  assert.match(s, /-ExecutionTimeLimit \(New-TimeSpan -Seconds 0\)/, "0 = no limit");
   assert.match(s, /-StartWhenAvailable/);
 });
 
@@ -152,11 +186,19 @@ test("every target names the device, so two installs are tellable apart", () => 
   }
 });
 
-test("the consent summary states privilege, boot behaviour and how to undo it", () => {
-  const win = persistenceConsentSummary("windows", OPTS);
-  assert.match(win, /SYSTEM/);
-  assert.match(win, /WITHOUT anyone logging in/);
-  assert.match(win, /unpair/, "the owner must be told the off switch");
+test("the consent summary tells the truth about WHICH account, per choice", () => {
+  const asUser = persistenceConsentSummary("windows", OPTS);
+  assert.match(asUser, /your own account, elevated/);
+  assert.match(asUser, /WITHOUT anyone logging in/);
+  assert.match(asUser, /never seen by Ares/, "password handling is stated up front");
+  assert.match(asUser, /unpair/, "the owner must be told the off switch");
+
+  const asSystem = persistenceConsentSummary("windows", { ...OPTS, runAs: "system" });
+  assert.match(asSystem, /NOT your user/, "the fidelity cost must be stated, not buried");
+  assert.match(asSystem, /no mapped drives/);
+
+  const s4u = persistenceConsentSummary("windows", { ...OPTS, windowsLogon: "s4u" });
+  assert.match(s4u, /NO network credentials/i);
 
   for (const target of ["macos", "linux"]) {
     const s = persistenceConsentSummary(target, NIX);

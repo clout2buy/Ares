@@ -24,6 +24,34 @@
 
 export type PersistenceTarget = "windows" | "macos" | "linux";
 
+/**
+ * Which account the connector runs as.
+ *
+ * - "user"   the owner's own account, elevated. Commands then behave the way
+ *            they do when the owner runs them by hand: same profile, same
+ *            mapped drives, same PATH, same DPAPI-protected secrets.
+ * - "system" the machine account. Maximum local privilege, but a DIFFERENT
+ *            user: no user profile, no mapped drives, no user DPAPI. Right for
+ *            a headless service, wrong when the point is fidelity.
+ *
+ * Unix does not need this distinction: the daemon runs as root and root can
+ * become the owner trivially (su - owner -c), so it gets both.
+ */
+export type RunAsAccount = "user" | "system";
+
+/**
+ * How Windows logs the task's user on at boot.
+ *
+ * - "password" full fidelity, including NETWORK credentials. Windows stores the
+ *              password in LSA at registration; the owner types it into their
+ *              own elevated prompt and it never reaches Ares.
+ * - "s4u"      no password stored, but the resulting token has NO network
+ *              credentials: shares, DPAPI-protected secrets and anything
+ *              needing outbound auth fail in ways that look nothing like what
+ *              the owner sees when running the same command by hand.
+ */
+export type WindowsLogon = "password" | "s4u";
+
 export interface PersistenceOptions {
   /** Task/service name. Also what the uninstall script looks for. */
   serviceName?: string;
@@ -35,6 +63,15 @@ export interface PersistenceOptions {
   deviceId: string;
   /** Where the connector should write its own log. */
   logPath?: string;
+  /** Defaults to "user": fidelity beats privilege when the owner asked for
+   *  commands that behave the way theirs do. */
+  runAs?: RunAsAccount;
+  /** Windows only. Defaults to "password" — the only option that keeps network
+   *  credentials, which is most of what "run it how I would" means. */
+  windowsLogon?: WindowsLogon;
+  /** Unix only: the account commands should run as. The daemon itself stays
+   *  root (so it can administer the box); this is who `exec` impersonates. */
+  runAsUser?: string;
 }
 
 export const DEFAULT_SERVICE_NAME = "AresRemoteConnector";
@@ -48,25 +85,36 @@ function serviceName(opts: PersistenceOptions): string {
  *
  * A real Service would need an SCM-aware wrapper binary (a plain script exits
  * immediately from the SCM's point of view and gets killed as "failed to
- * start"). A boot-triggered task as S-1-5-18 gets the same three properties
- * with no wrapper: starts at boot with no login, runs as SYSTEM, restarts on
- * failure.
+ * start"). A boot-triggered task gets what is needed with no wrapper: starts at
+ * boot with no login, elevated, restarts on failure.
  *
- * Built from cmdlets rather than a task XML on purpose: schtasks /XML wants
+ * WHICH ACCOUNT is the load-bearing decision. SYSTEM has the most local
+ * privilege but is a DIFFERENT USER: no user profile, no mapped drives, no
+ * per-user PATH, no access to the owner's DPAPI-protected secrets. A command
+ * would then behave differently under Ares than when the owner pastes it by
+ * hand -- which is precisely the confusion this feature exists to remove. So
+ * the default is the owner's own account at RunLevel Highest: elevated AND
+ * faithful.
+ *
+ * Built from cmdlets rather than task XML on purpose: schtasks /XML wants
  * UTF-16, and getting a BOM wrong here is a trap this codebase has been bitten
  * by more than once.
  */
 export function windowsInstallScript(opts: PersistenceOptions): string {
   const name = serviceName(opts);
   const log = opts.logPath ?? "$env:ProgramData\\Ares\\connector.log";
-  return [
-    "# Ares remote connector — install as a boot-time SYSTEM task.",
+  const runAs = opts.runAs ?? "user";
+  const logon = opts.windowsLogon ?? "password";
+  const asSystem = runAs === "system";
+
+  const head = [
+    `# Ares remote connector -- install as a boot-time task (${asSystem ? "SYSTEM" : "your account, elevated"}).`,
     "# Run this ONCE in an elevated PowerShell. Read it before you do.",
     "$ErrorActionPreference = 'Stop'",
     "",
     "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent())" +
       ".IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {",
-    "  throw 'Run this in an ADMIN PowerShell — registering a SYSTEM task needs elevation.'",
+    "  throw 'Run this in an ADMIN PowerShell -- registering a boot task needs elevation.'",
     "}",
     "",
     `$name = '${name}'`,
@@ -75,18 +123,16 @@ export function windowsInstallScript(opts: PersistenceOptions): string {
     `$log = "${log}"`,
     "New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null",
     "",
-    "# -u forces unbuffered output so the log is useful while the thing is running,",
-    "# not only after it exits.",
+    "# -u forces unbuffered output so the log is useful while the thing is",
+    "# running, not only after it exits.",
     "$action = New-ScheduledTaskAction -Execute $runtime -Argument \"-u `\"$script`\"\"",
     "",
     "# AtStartup, NOT AtLogOn: the box must be reachable before anyone logs in.",
     "$trigger = New-ScheduledTaskTrigger -AtStartup",
     "",
-    "# S-1-5-18 is SYSTEM. RunLevel Highest so it can actually administer the machine.",
-    "$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest",
-    "",
     "# A database box is mains-powered and expected to stay up: the battery",
     "# defaults would stop the task on a laptop, which is exactly this hardware.",
+    "# ExecutionTimeLimit 0 = never time out; the default would kill it outright.",
     "$settings = New-ScheduledTaskSettingsSet " +
       "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
       "-StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) " +
@@ -95,11 +141,52 @@ export function windowsInstallScript(opts: PersistenceOptions): string {
     "if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {",
     "  Unregister-ScheduledTask -TaskName $name -Confirm:$false",
     "}",
+    "",
+  ];
+
+  const systemTail = [
+    "# S-1-5-18 is SYSTEM: maximum local privilege, but NOT your user context.",
+    "$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest",
     "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger " +
       "-Principal $principal -Settings $settings | Out-Null",
+  ];
+
+  const s4uTail = [
+    "# S4U: runs as you at boot with no stored password -- but the token it gets",
+    "# has NO NETWORK CREDENTIALS. Mapped drives, UNC paths and anything needing",
+    "# outbound auth will fail here while working fine when you run it by hand.",
+    "$me = \"$env:USERDOMAIN\\$env:USERNAME\"",
+    "$principal = New-ScheduledTaskPrincipal -UserId $me -LogonType S4U -RunLevel Highest",
+    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger " +
+      "-Principal $principal -Settings $settings | Out-Null",
+  ];
+
+  const passwordTail = [
+    "# Runs as YOU, elevated, at boot without login -- the only combination that",
+    "# also keeps network credentials, so commands behave the way they do when",
+    "# you run them yourself.",
+    "#",
+    "# Windows stores this password in LSA at registration. You type it into",
+    "# your own elevated prompt; Ares never sees it and it is never sent",
+    "# anywhere. If this account has no password (or is a Microsoft account",
+    "# with none set), use the s4u variant instead and accept the network",
+    "# caveat it prints.",
+    "$me = \"$env:USERDOMAIN\\$env:USERNAME\"",
+    "$cred = Get-Credential -UserName $me -Message 'Password for the account the connector runs as'",
+    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger " +
+      "-Settings $settings -User $cred.UserName " +
+      "-Password $cred.GetNetworkCredential().Password -RunLevel Highest | Out-Null",
+  ];
+
+  const tail = asSystem ? systemTail : logon === "s4u" ? s4uTail : passwordTail;
+
+  return [
+    ...head,
+    ...tail,
     "Start-ScheduledTask -TaskName $name",
     "",
-    `Write-Host 'Installed. Device ${opts.deviceId} will connect at every boot, as SYSTEM.'`,
+    `Write-Host 'Installed. Device ${opts.deviceId} connects at every boot, as ` +
+      `${asSystem ? "SYSTEM" : "your account"}, elevated.'`,
     "Write-Host \"Log: $log\"",
   ].join("\n");
 }
@@ -175,6 +262,11 @@ export function macInstallScript(opts: PersistenceOptions): string {
     `launchctl unload '${plist}' 2>/dev/null || true`,
     `launchctl load -w '${plist}'`,
     `echo "Installed. Device ${opts.deviceId} will connect at every boot, as root."`,
+    // root can become the owner trivially, so unix gets privilege AND fidelity;
+    // the connector runs a command as the owner via their login shell when the
+    // device is configured that way. Windows has no cheap equivalent, which is
+    // why it has to choose an account up front.
+    `echo "Commands run as root; ARES_RUN_AS=${opts.runAsUser ?? "$SUDO_USER"} makes them run as that user instead."`,
   ].join("\n");
 }
 
@@ -235,17 +327,46 @@ export function installScriptFor(target: PersistenceTarget, opts: PersistenceOpt
 /** What the owner is actually agreeing to. Shown before the script, every time:
  *  permanent boot-time root on a machine is not a detail to bury in a diff. */
 export function persistenceConsentSummary(target: PersistenceTarget, opts: PersistenceOptions): string {
-  const who = target === "windows" ? "SYSTEM" : "root";
+  const runAs = opts.runAs ?? "user";
+  const logon = opts.windowsLogon ?? "password";
+  const who =
+    target === "windows"
+      ? runAs === "system"
+        ? "SYSTEM (the machine account, NOT your user)"
+        : "your own account, elevated"
+      : "root";
   const how =
     target === "windows"
       ? `a scheduled task named ${serviceName(opts)}, triggered at startup`
       : target === "macos"
-        ? `a LaunchDaemon in /Library/LaunchDaemons`
+        ? "a LaunchDaemon in /Library/LaunchDaemons"
         : `a systemd unit ${serviceName(opts)}.service`;
-  return [
+
+  const lines = [
     `This installs ${how}.`,
     `It starts at boot WITHOUT anyone logging in, runs as ${who}, and restarts if it stops.`,
-    `From then on Ares can run commands on this machine, elevated, whenever the machine is powered on.`,
+    "From then on Ares can run commands on this machine, elevated, whenever the machine is powered on.",
+  ];
+  if (target === "windows" && runAs === "user" && logon === "password") {
+    lines.push(
+      "You will be asked for your Windows password. It is stored by Windows in LSA at registration — " +
+        "typed into your own elevated prompt, never sent anywhere, and never seen by Ares.",
+    );
+  }
+  if (target === "windows" && runAs === "user" && logon === "s4u") {
+    lines.push(
+      "No password is stored, but the task's token has NO network credentials: mapped drives and UNC " +
+        "paths will fail under Ares while working when you run the same command by hand.",
+    );
+  }
+  if (target === "windows" && runAs === "system") {
+    lines.push(
+      "SYSTEM is a different user from you: no user profile, no mapped drives, no per-user PATH, and no " +
+        "access to your DPAPI-protected secrets. Commands may behave differently than when you run them.",
+    );
+  }
+  lines.push(
     `Undo it with the uninstall script, or by unpairing device ${opts.deviceId} (which revokes the credential immediately).`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }

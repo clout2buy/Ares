@@ -38,6 +38,22 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.51.0",
+    date: "September 2026",
+    title: "Always On",
+    tagline: "Pair a machine to Ares once — it's there for you at every boot, ready to run admin commands itself.",
+    highlights: [
+      { icon: "🔗", title: "Permanently pair your own machines", blurb: "Turn a laptop or spare PC into something Ares can always reach. Open a pairing link on that machine, run one command, and it connects itself every time it powers on — no re-linking, no keeping a window open. Perfect for a box you're turning into an always-up server.", tag: "New" },
+      { icon: "🛡️", title: "It runs admin commands for you", blurb: "A paired machine runs as you, elevated — so the things that used to stop with 'needs administrator' and get handed back for you to paste, Ares just does. It runs as your own account (not a stripped-down system one), so commands behave exactly like they do when you run them yourself.", tag: "New" },
+      { icon: "📡", title: "Finds its way home on its own", blurb: "Reboots, changing IPs, a tunnel that comes back on a new address — none of it orphans a paired device anymore. It re-discovers your Ares on the local network with nothing in the cloud, and reconnects on its own. On your own network there's no tunnel in the path at all.", tag: "New" },
+      { icon: "🔒", title: "Both sides prove who they are", blurb: "A paired device and your Ares each prove themselves to the other on every connection, and neither secret ever crosses the wire. A machine won't take an elevated command from anything that can't prove it's really your Ares — so nobody else on the network can impersonate it.", tag: "Safer" },
+      { icon: "💓", title: "Remote sessions stop dropping", blurb: "The remote link now sends a heartbeat, so a quiet session no longer gets cut every ~100 seconds by the tunnel. Reading, thinking, or just idle — the connection holds.", tag: "Safer" },
+      { icon: "⚡", title: "No more 20-second stalls", blurb: "Remote commands, screenshots and file transfers now run side by side instead of one-at-a-time, so a slow command can't make everything else time out around it.", tag: "Faster" },
+      { icon: "💳", title: "Running out of credit recovers cleanly", blurb: "If your usage runs dry mid-task, Ares now moves to another provider and keeps going instead of failing outright — and when your usage comes back, the same chat picks up rather than staying stuck.", tag: "Safer" },
+      { icon: "🧰", title: "Kimi & other models don't stall out", blurb: "A request some models rejected mid-turn (forcing a tool call while thinking) now recovers automatically instead of killing the turn and making you switch models by hand.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.50.0",
     date: "September 2026",
     title: "Long Haul",

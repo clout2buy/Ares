@@ -19,10 +19,27 @@ import { access, chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { networkInterfaces, tmpdir } from "node:os";
+import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { createSocket as createUdpSocket } from "node:dgram";
 import path from "node:path";
 import { aresHome } from "@ares/core";
+import {
+  type DeviceRegistryFile,
+  type PairedDevice,
+  loadDeviceRegistry,
+  saveDeviceRegistry,
+} from "./remoteDevices.js";
+import {
+  type AttachState,
+  enrollDevice,
+  handleDeviceAuth,
+  handleDeviceHello,
+  renameDevice as renameDeviceIn,
+  revokeDevice,
+} from "./remoteEnrollment.js";
+import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
+import { buildDeviceConnectorPs1 } from "./remoteDeviceConnector.js";
+import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -107,11 +124,18 @@ interface RemotePcConn extends RemotePcInfo {
   token: string;
   /** Last time ANY frame arrived from this PC. Drives dead-peer detection. */
   lastSeen: number;
+  /** Set when this connection is a PAIRED device rather than a one-time help
+   *  session. Paired devices survive reboots and may run elevated. */
+  deviceId?: string;
 }
 
 interface LinkToken {
   label: string;
   expiresAt: number;
+  /** "help" is the one-time assist link; "pair" enrols a permanent device.
+   *  They must not be interchangeable: a help link that could enrol would turn
+   *  a five-minute favour into permanent elevated access to that machine. */
+  kind?: "help" | "pair";
   /** Set on first register; later registers must come from the same hostname. */
   boundHostname?: string;
 }
@@ -134,6 +158,8 @@ export class RemoteAgentServer {
   /** Set by close() so tunnel supervision doesn't fight a deliberate shutdown. */
   private closing = false;
   private tunnelRestarts = 0;
+  private devices: DeviceRegistryFile = { version: 1, devices: [] };
+  private discovery?: DiscoveryResponder;
   private publicBaseUrl?: string;
   /** Resolves (to the URL or undefined) once the tunnel attempt has finished either way. */
   private tunnelReady: Promise<string | undefined> = Promise.resolve(undefined);
@@ -175,6 +201,23 @@ export class RemoteAgentServer {
     this.lanAddress = await detectLanIp();
     this.log(`remote-agent listening on ${host}:${this.boundPort}`);
     this.startHeartbeat();
+
+    // Paired devices. Machine-scoped on purpose (see remoteDevices.ts), so the
+    // desktop app and a CLI garrison see the same list.
+    this.devices = await loadDeviceRegistry();
+    const paired = this.devices.devices.filter((d) => !d.revokedAt).length;
+    if (paired > 0) this.log(`remote-agent: ${paired} paired device(s) known`);
+
+    // Answers discovery probes so a paired device can re-find this machine
+    // after the address changes. Best-effort: a bind failure leaves the other
+    // rungs of the ladder intact rather than taking the server down.
+    this.discovery = new DiscoveryResponder({
+      currentBaseUrl: () => this.linkBaseUrl(),
+      knowsDevice: (id) => this.devices.devices.some((d) => d.id === id && !d.revokedAt),
+      host: hostname(),
+      log: this.log,
+    });
+    await this.discovery.start();
 
     const tunnelMode = this.opts.tunnelMode ?? "auto";
     if (tunnelMode === "cloudflared") {
@@ -224,9 +267,81 @@ export class RemoteAgentServer {
     return { token, url: `${this.linkBaseUrl()}/agent?token=${token}`, scope: this.linkScope() };
   }
 
+  /**
+   * Mint a PAIRING link: one use, ten minutes, and it enrols a device that stays
+   * paired afterwards. Deliberately a separate kind from the help link — the
+   * two have very different consequences and must never be confused.
+   */
+  async generatePairingLink(name: string): Promise<{ token: string; url: string; scope: LinkScope; warning?: string }> {
+    if (!this.publicBaseUrl && (this.opts.tunnelMode ?? "auto") !== "none") {
+      await Promise.race([this.tunnelReady, new Promise<void>((r) => setTimeout(r, TUNNEL_WAIT_MS).unref?.())]);
+    }
+    this.sweepTokens();
+    const token = randomBytes(16).toString("hex");
+    this.tokens.set(token, { label: name, expiresAt: Date.now() + LINK_TTL_MS, kind: "pair" });
+    // A device that cannot reach this machine retries forever and says nothing,
+    // so the reachability problem is surfaced WITH the link rather than after.
+    const fw = await checkFirewall(this.boundPort, DISCOVERY_PORT).catch(() => null);
+    const warning = fw ? firewallAdvice(fw) : null;
+    return {
+      token,
+      url: `${this.linkBaseUrl()}/pair?token=${token}`,
+      scope: this.linkScope(),
+      ...(warning ? { warning } : {}),
+    };
+  }
+
+  /** Every paired device, with whether it is connected right now. */
+  listDevices(): Array<{
+    id: string; name: string; hostname: string; os: string;
+    addedAt: number; lastSeenAt?: number; elevated: boolean; online: boolean;
+  }> {
+    const online = new Set([...this.pcs.values()].map((p) => p.deviceId).filter(Boolean) as string[]);
+    return this.devices.devices
+      .filter((d) => !d.revokedAt)
+      .map((d) => ({
+        id: d.id,
+        name: d.name,
+        hostname: d.hostname,
+        os: d.os,
+        addedAt: d.addedAt,
+        ...(d.lastSeenAt ? { lastSeenAt: d.lastSeenAt } : {}),
+        elevated: d.allowElevated === true,
+        online: online.has(d.id),
+      }));
+  }
+
+  /** Revoke a device. Its connector is told WHY before the socket closes, so it
+   *  stops and uninstalls instead of retrying into silence forever. */
+  async unpairDevice(deviceId: string): Promise<PairedDevice | null> {
+    const device = await revokeDevice({ registry: this.devices, save: (r) => saveDeviceRegistry(undefined, r) }, deviceId);
+    if (!device) return null;
+    for (const [id, pc] of this.pcs) {
+      if (pc.deviceId !== deviceId) continue;
+      try { pc.ws.send(JSON.stringify({ type: "error", message: "this device was unpaired — stop and uninstall", fatal: true })); } catch { /* gone */ }
+      try { pc.ws.close(); } catch { /* gone */ }
+      this.dropPc(id);
+    }
+    this.log(`remote device unpaired: ${device.name} (${deviceId})`);
+    return device;
+  }
+
+  async renameDevice(deviceId: string, name: string): Promise<PairedDevice | null> {
+    return renameDeviceIn({ registry: this.devices, save: (r) => saveDeviceRegistry(undefined, r) }, deviceId, name);
+  }
+
   private sweepTokens(): void {
     const now = Date.now();
     for (const [t, v] of this.tokens) if (now > v.expiresAt) this.tokens.delete(t);
+  }
+
+  /** Claim a PAIRING token: valid once, and burned on use so a forwarded link
+   *  cannot enrol a second machine. */
+  private claimPairingToken(token: string): { name: string } | null {
+    const t = this.liveToken(token);
+    if (!t || t.kind !== "pair") return null;
+    this.tokens.delete(token);
+    return { name: t.label };
   }
 
   private liveToken(token: string): LinkToken | undefined {
@@ -422,6 +537,8 @@ export class RemoteAgentServer {
 
   async close(): Promise<void> {
     this.closing = true;
+    this.discovery?.close();
+    this.discovery = undefined;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
     try { this.tunnelProc?.kill(); } catch { /* already dead */ }
@@ -466,6 +583,22 @@ export class RemoteAgentServer {
       "/agent.ps1": (t) => ({ body: buildPowerShellAgent(t, this.wsUrl()), type: "text/plain; charset=utf-8" }),
       "/agent.py": (t) => ({ body: buildPythonAgent(t, this.wsUrl()), type: "text/x-python; charset=utf-8" }),
       "/script": (t) => ({ body: buildPythonAgent(t, this.wsUrl()), type: "text/x-python; charset=utf-8", filename: "ares-connect.py" }),
+      // ── permanent pairing ──
+      "/pair": (t) => ({ body: buildPairLandingHtml(this.linkBaseUrl(), t), type: "text/html; charset=utf-8" }),
+      "/pair.cmd": (t) => ({ body: buildPairCmd(this.linkBaseUrl(), t), type: "application/octet-stream", filename: "ares-remote-setup.cmd" }),
+      "/pair.ps1": (t) => ({
+        body: buildDeviceConnectorPs1({
+          token: t,
+          wsUrl: this.wsUrl(),
+          baseUrl: this.linkBaseUrl(),
+          discoveryPort: DISCOVERY_PORT,
+        }),
+        type: "text/plain; charset=utf-8",
+      }),
+      "/pair-install.ps1": (t) => ({
+        body: buildPairInstallPs1(this.linkBaseUrl(), t),
+        type: "text/plain; charset=utf-8",
+      }),
     };
     const route = routes[url.pathname];
     if (!route) { res.writeHead(404, { "content-type": "text/plain" }); res.end("not found"); return; }
@@ -541,6 +674,40 @@ export class RemoteAgentServer {
     // even a malformed frame counts — the peer is demonstrably still there.
     ws.on("pong", () => { if (pc) pc.lastSeen = Date.now(); });
 
+    // Handshake state for a PAIRED device, held only for this socket.
+    let attach: AttachState | null = null;
+    const saveDevices = (r: DeviceRegistryFile) => saveDeviceRegistry(undefined, r);
+
+    /** Adopt an authenticated device into the normal PC table, so every existing
+     *  exec / screenshot / file path works on it unchanged. */
+    const adoptDevice = (device: PairedDevice, meta: { username?: string; ip?: string }): void => {
+      // A reconnect replaces the stale entry rather than accumulating ghosts.
+      for (const [existingId, existing] of this.pcs) {
+        if (existing.deviceId !== device.id) continue;
+        this.pcs.delete(existingId);
+        try { existing.ws.close(); } catch { /* already gone */ }
+      }
+      const id = randomBytes(8).toString("hex");
+      pc = {
+        id,
+        token: "",
+        deviceId: device.id,
+        label: device.name,
+        hostname: device.hostname,
+        os: device.os,
+        username: meta.username ?? "unknown",
+        ip: meta.ip ?? "unknown",
+        connectedAt: Date.now(),
+        lastSeen: Date.now(),
+        ws,
+        pendingCmds: new Map(),
+      };
+      this.pcs.set(id, pc);
+      this.log(`paired device attached: ${device.name} (${device.hostname}) id=${id}${device.allowElevated ? " [elevated]" : ""}`);
+      const { ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, deviceId: _d, ...info } = pc;
+      for (const cb of this.connectedListeners) cb(info);
+    };
+
     ws.on("message", (raw) => {
       if (pc) pc.lastSeen = Date.now();
       let msg: Record<string, unknown>;
@@ -549,6 +716,67 @@ export class RemoteAgentServer {
 
       // Connector answering our JSON ping. No payload, purely traffic.
       if (msg["type"] === "pong") return;
+
+      // ── paired-device handshake ──
+      if (msg["type"] === "enroll") {
+        void (async () => {
+          const res = await enrollDevice(
+            {
+              claimPairingToken: (t) => this.claimPairingToken(t),
+              registry: this.devices,
+              save: saveDevices,
+            },
+            {
+              type: "enroll",
+              token: String(msg["token"] ?? ""),
+              hostname: String(msg["hostname"] ?? "unknown"),
+              os: String(msg["os"] ?? "unknown"),
+              username: String(msg["username"] ?? "unknown"),
+              elevated: msg["elevated"] === true,
+            },
+          );
+          try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
+          if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
+          this.log(`remote device paired: ${res.device.name} (${res.device.hostname})`);
+          adoptDevice(res.device, { username: String(msg["username"] ?? "") , ip: "unknown" });
+        })();
+        return;
+      }
+
+      if (msg["type"] === "device_hello") {
+        void (async () => {
+          const res = await handleDeviceHello(this.devices, {
+            type: "device_hello",
+            deviceId: String(msg["deviceId"] ?? ""),
+            nonce: String(msg["nonce"] ?? ""),
+          });
+          try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
+          if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
+          attach = res.state;
+        })();
+        return;
+      }
+
+      if (msg["type"] === "device_auth") {
+        const state = attach;
+        if (!state) {
+          // Proof without a challenge: either a confused client or someone
+          // trying to skip the half of the handshake that binds a nonce.
+          try { ws.send(JSON.stringify({ type: "error", message: "say hello first" })); } catch { /* gone */ }
+          return;
+        }
+        void (async () => {
+          const res = await handleDeviceAuth(
+            { registry: this.devices, save: saveDevices },
+            state,
+            { type: "device_auth", proof: String(msg["proof"] ?? "") },
+          );
+          try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
+          if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
+          adoptDevice(res.device, { username: String(msg["username"] ?? "") });
+        })();
+        return;
+      }
 
       if (msg["type"] === "register") {
         const token = String(msg["token"] ?? "");
@@ -1251,3 +1479,137 @@ h2{color:#ff4444;margin:0 0 .5rem}p{margin:.25rem 0;color:#666}</style>
 <h2>This link has expired</h2>
 <p>Ask the person helping you for a fresh one — it takes them two seconds.</p>
 </div></body></html>`;
+
+// â”€â”€â”€ Permanent pairing: landing page and installer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/**
+ * The page the OWNER opens on the machine they are pairing.
+ *
+ * Deliberately blunt about what is being installed. This is not the one-time
+ * help flow: it grants a machine's permanent, elevated, boot-time availability
+ * to the owner's agent, and someone should be able to decide that from the page
+ * rather than discover it afterwards.
+ */
+function buildPairLandingHtml(base: string, token: string): string {
+  const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr '${base}/pair-install.ps1?token=${token}' -UseBasicParsing | iex"`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pair this PC with Ares</title><style>
+:root{color-scheme:dark}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d10;color:#e6e9ef;
+font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.card{max-width:560px;padding:32px 28px}
+h1{font-size:21px;margin:0 0 6px}
+.sub{color:#8b93a7;margin:0 0 22px}
+ol{padding-left:20px;margin:0 0 20px}li{margin:9px 0}
+pre{background:#141821;border:1px solid #232a37;border-radius:8px;padding:13px;overflow-x:auto;
+font:12.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:#cfd6e4;white-space:pre-wrap;word-break:break-all}
+.warn{background:#1b1512;border:1px solid #4a3520;border-radius:8px;padding:13px;margin:20px 0;color:#e8d5b7;font-size:13.5px}
+.warn b{color:#f0c07a}
+button{margin-top:9px;background:#2c6fdb;color:#fff;border:0;border-radius:7px;padding:9px 15px;font-size:13.5px;cursor:pointer}
+button.ok{background:#2f7d4f}
+.foot{color:#6b7488;font-size:12.5px;margin-top:22px}
+</style></head><body><div class="card">
+<h1>Pair this PC with Ares</h1>
+<p class="sub">This is a <b>permanent</b> link, not a one-time session.</p>
+<div class="warn">
+<b>What this installs.</b> A background task that starts when this PC boots &mdash; before anyone
+logs in &mdash; and connects to your Ares. From then on Ares can run commands here,
+<b>with administrator rights</b>, whenever the machine is on.
+Only do this on a machine you own. You can undo it at any time by unpairing the device in Ares,
+which revokes the credential immediately.
+</div>
+<ol>
+<li>Open <b>PowerShell as Administrator</b> (Start &rarr; type <i>powershell</i> &rarr; right-click &rarr; Run as administrator)</li>
+<li>Paste this and press Enter:</li>
+</ol>
+<pre id="c">${cmd.replace(/</g, "&lt;")}</pre>
+<button id="b" onclick="navigator.clipboard.writeText(document.getElementById('c').innerText).then(function(){var b=document.getElementById('b');b.textContent='âœ“ Copied';b.className='ok'})">Copy command</button>
+<p class="foot">The installer asks for your Windows password so the task can run as you with full
+network access. It is typed into your own elevated prompt, stored by Windows, and never sent anywhere.
+This link works once and expires in 10 minutes.</p>
+</div></body></html>`;
+}
+
+/** A .cmd for the double-click path â€” it just relaunches the real installer elevated. */
+function buildPairCmd(base: string, token: string): string {
+  return [
+    "@echo off",
+    "echo Ares Remote - pairing this PC (needs administrator).",
+    `powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','iwr ''${base}/pair-install.ps1?token=${token}'' -UseBasicParsing | iex'"`,
+    "echo If a UAC prompt appeared, approve it and follow the window that opens.",
+    "pause",
+  ].join("\r\n");
+}
+
+/**
+ * The installer the owner actually pastes: fetch the connector, drop it on
+ * disk, register the boot task, run it once so pairing completes immediately.
+ *
+ * Deliberately NOT silent. Someone granting permanent elevated access to a
+ * machine should see each step happen and be able to stop.
+ */
+function buildPairInstallPs1(base: string, token: string): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent())" +
+      ".IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {",
+    "  throw 'Run this in an ADMIN PowerShell - installing a boot task needs elevation.'",
+    "}",
+    "$dir = Join-Path $env:ProgramData 'Ares\\remote'",
+    "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+    "$script = Join-Path $dir 'ares-remote.ps1'",
+    "Write-Host 'Downloading the Ares Remote connector...'",
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+    `Invoke-WebRequest '${base}/pair.ps1?token=${token}' -UseBasicParsing -OutFile $script`,
+    "",
+    "$name = 'AresRemoteConnector'",
+    "$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    "$action = New-ScheduledTaskAction -Execute $ps -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $script + '\"')",
+    "# AtStartup, not AtLogOn: the machine must be reachable before anyone signs in.",
+    "$trigger = New-ScheduledTaskTrigger -AtStartup",
+    "# Battery defaults would stop this on a laptop, which is exactly the hardware.",
+    "# ExecutionTimeLimit 0 = never time out; the default would kill it after days.",
+    "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
+      "-StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) " +
+      "-ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew",
+    "",
+    "if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {",
+    "  Write-Host 'Replacing the existing Ares Remote task...'",
+    "  Unregister-ScheduledTask -TaskName $name -Confirm:$false",
+    "}",
+    "",
+    "# Runs as YOU, elevated. SYSTEM would have more privilege but a different",
+    "# profile, PATH and drive mappings, so commands would behave differently",
+    "# under Ares than when you run them yourself. The password logon is the only",
+    "# option that also keeps network credentials; Windows stores it in LSA and",
+    "# it is never sent anywhere.",
+    "Write-Host ''",
+    "Write-Host 'Enter the Windows password for this account so the task can run at boot.' -ForegroundColor Cyan",
+    '$me = "$env:USERDOMAIN\\$env:USERNAME"',
+    "$cred = Get-Credential -UserName $me -Message 'Password for the account Ares Remote runs as'",
+    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings " +
+      "-User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest | Out-Null",
+    "",
+    "# The firewall blocks inbound by default, and a device that cannot be",
+    "# reached on the LAN retries forever with nothing logged to say why.",
+    "foreach ($r in @(@{n='Ares Remote (TCP 7422)';p='TCP';port=7422}, @{n='Ares Remote (UDP 7423)';p='UDP';port=7423})) {",
+    "  if (-not (Get-NetFirewallRule -DisplayName $r.n -ErrorAction SilentlyContinue)) {",
+    "    New-NetFirewallRule -DisplayName $r.n -Direction Inbound -Action Allow -Protocol $r.p -LocalPort $r.port -Profile Private | Out-Null",
+    "  }",
+    "}",
+    "",
+    "Write-Host 'Starting and pairing...'",
+    "Start-ScheduledTask -TaskName $name",
+    "Start-Sleep -Seconds 6",
+    "$state = (Get-ScheduledTask -TaskName $name).State",
+    "Write-Host ''",
+    "if ($state -eq 'Running') {",
+    "  Write-Host 'Done. This PC is paired and will reconnect on every boot.' -ForegroundColor Green",
+    "} else {",
+    "  Write-Host ('Task registered but its state is ' + $state + '. Check the log below.') -ForegroundColor Yellow",
+    "}",
+    "Write-Host ('Connector: ' + $script)",
+    "Write-Host 'To undo: unpair the device in Ares, then run  Unregister-ScheduledTask -TaskName AresRemoteConnector -Confirm:$false'",
+  ].join("\n");
+}
+

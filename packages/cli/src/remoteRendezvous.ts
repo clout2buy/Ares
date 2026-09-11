@@ -71,6 +71,51 @@ export function parseDiscoveryReply(raw: Buffer): DiscoveryAnswer | null {
   return { baseUrl, host: typeof obj["host"] === "string" ? obj["host"] : "unknown" };
 }
 
+/**
+ * Every address worth sending a probe to.
+ *
+ * The global broadcast 255.255.255.255 alone is NOT enough. Stacks differ in
+ * whether they route it, and on a multi-homed host it goes out one interface of
+ * the kernel's choosing — which is the wrong one about as often as not. The
+ * concrete case this was written for: the owner's PC is on Ethernet and the
+ * device is on WiFi. Same router, same broadcast domain, but the probing host
+ * may have several interfaces (WiFi, Ethernet, a VM switch, a VPN adapter) and
+ * only one of them faces the router.
+ *
+ * So: a subnet-directed broadcast per non-internal IPv4 interface (derived from
+ * that interface's own netmask), plus the global address as a backstop. Sending
+ * a handful of tiny UDP packets is free; missing the right interface is not.
+ */
+export function broadcastTargets(
+  interfaces: Record<string, Array<{ family: string; internal: boolean; address: string; netmask: string }> | undefined>,
+): string[] {
+  const targets: string[] = [];
+  for (const list of Object.values(interfaces)) {
+    for (const iface of list ?? []) {
+      // node <18 reports family as "IPv4"; newer as 4. Accept both.
+      const isV4 = iface.family === "IPv4" || (iface.family as unknown) === 4;
+      if (!isV4 || iface.internal) continue;
+      const bcast = subnetBroadcast(iface.address, iface.netmask);
+      if (bcast && !targets.includes(bcast)) targets.push(bcast);
+    }
+  }
+  if (!targets.includes("255.255.255.255")) targets.push("255.255.255.255");
+  return targets;
+}
+
+/** Broadcast address for an IPv4 address/netmask pair, or null if unparseable. */
+export function subnetBroadcast(address: string, netmask: string): string | null {
+  const a = address.split(".").map(Number);
+  const m = netmask.split(".").map(Number);
+  if (a.length !== 4 || m.length !== 4) return null;
+  if (a.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  if (m.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  // A /32 has no meaningful broadcast address — probing it is just a unicast
+  // to ourselves, which would look like a working discovery that never answers.
+  if (m.every((n) => n === 255)) return null;
+  return a.map((oct, i) => (oct & m[i]) | (~m[i] & 0xff)).join(".");
+}
+
 export interface DiscoveryResponderOptions {
   /** Current base URL to hand out. Called per probe, never cached: the whole
    *  point is that this value changes underneath us. */
@@ -139,4 +184,57 @@ export class DiscoveryResponder {
     try { this.sock?.close(); } catch { /* already closed */ }
     this.sock = undefined;
   }
+}
+
+export interface ProbeResult extends DiscoveryAnswer {
+  /** Which address answered — useful when diagnosing a multi-interface host. */
+  from: string;
+}
+
+/**
+ * Ask the LAN where home is. Resolves with the first answer, or null on timeout.
+ *
+ * Fires at every target concurrently rather than walking them in sequence: the
+ * timeout is the user-visible cost of a device that cannot find its owner, and
+ * probing six addresses serially at 400ms each is a connector that looks hung.
+ */
+export async function probeForServer(
+  deviceId: string,
+  opts: { targets?: string[]; port?: number; timeoutMs?: number } = {},
+): Promise<ProbeResult | null> {
+  const { networkInterfaces } = await import("node:os");
+  const targets = opts.targets ?? broadcastTargets(networkInterfaces() as never);
+  const port = opts.port ?? DISCOVERY_PORT;
+  const timeoutMs = opts.timeoutMs ?? 1_500;
+
+  return new Promise<ProbeResult | null>((resolve) => {
+    let sock: UdpSocket;
+    try { sock = createUdpSocket({ type: "udp4", reuseAddr: true }); }
+    catch { resolve(null); return; }
+
+    let settled = false;
+    const done = (value: ProbeResult | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { sock.close(); } catch { /* already closed */ }
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    timer.unref?.();
+
+    sock.on("error", () => done(null));
+    sock.on("message", (raw, rinfo) => {
+      const answer = parseDiscoveryReply(raw);
+      if (answer) done({ ...answer, from: rinfo.address });
+    });
+
+    sock.bind(() => {
+      try { sock.setBroadcast(true); } catch { /* directed targets may still work */ }
+      const probe = buildDiscoveryProbe(deviceId);
+      for (const target of targets) {
+        sock.send(probe, port, target, () => { /* a dead target is not an error */ });
+      }
+    });
+  });
 }

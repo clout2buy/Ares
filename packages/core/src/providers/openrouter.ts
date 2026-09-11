@@ -121,6 +121,7 @@ export class OpenRouterProvider implements Provider {
     // expired since it was minted (subscription tokens live ~hours). Ask the
     // host to refresh once and replay; a second rejection is a real sign-out.
     let authRetried = false;
+    let toolChoiceRetried = false;
     let response: Response;
     let guard: StallGuard;
     for (;;) {
@@ -150,6 +151,31 @@ export class OpenRouterProvider implements Provider {
         return;
       }
       guard.reset();
+
+      // Act-first forcing is best-effort here for the same reason it is on the
+      // Anthropic path: an endpoint may refuse tool_choice outright, or refuse
+      // it only in combination with reasoning. Kimi does the latter and says so
+      // plainly —
+      //   400 tool_choice 'specified' is incompatible with thinking enabled
+      // — and because nothing caught it, the whole turn died mid-task on a
+      // field machine. anthropic.ts has had this guard all along; this path
+      // (Kimi, DeepSeek, OpenRouter and every OpenAI-compat endpoint) did not.
+      //
+      // Dropping the forcing costs one nudge toward acting; failing the turn
+      // costs the turn. Reasoning is kept, since it is the more valuable half
+      // and the only one the owner chose deliberately.
+      //
+      // Only an actual FORCING is worth retrying away. chatToolChoice maps an
+      // absent choice to "auto", which is the endpoint default and cannot be
+      // what it objected to — retrying on that would burn a round trip on every
+      // unrelated 400 (context too long, bad schema) and delay the real error.
+      if (response.status === 400 && !toolChoiceRetried && isForcedToolChoice(body.tool_choice)) {
+        toolChoiceRetried = true;
+        guard.dispose();
+        await response.body?.cancel().catch(() => {});
+        delete body.tool_choice;
+        continue;
+      }
 
       if ((response.status === 401 || response.status === 403) && !authRetried && this.onAuthError) {
         authRetried = true;
@@ -401,6 +427,20 @@ interface ChatChunk {
 // ─── request building ──────────────────────────────────────────────────────
 
 /** Chat-completions tool_choice: "auto" | "required" | "none" | {type:"function",function:{name}}. */
+/**
+ * Is this wire value act-first FORCING, as opposed to the default?
+ *
+ * "auto" is what chatToolChoice emits when nothing was forced, so it is never
+ * the thing an endpoint rejected; "none" is a deliberate suppression that a
+ * retry must not quietly undo. Everything else ("required", or a named
+ * function) is the forcing worth trading away to save a turn.
+ */
+export function isForcedToolChoice(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (value === "auto" || value === "none") return false;
+  return true;
+}
+
 export function chatToolChoice(choice: ProviderRequest["toolChoice"]): unknown {
   if (choice === "any") return "required";
   if (choice === "none") return "none";

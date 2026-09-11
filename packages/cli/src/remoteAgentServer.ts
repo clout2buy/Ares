@@ -26,6 +26,21 @@ import { aresHome } from "@ares/core";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
+/**
+ * Application-level heartbeat period. Cloudflare closes any WebSocket idle for
+ * 100s on Free/Pro (quick tunnels are Free), and their documented remedy is a
+ * keepalive — which Ares had none of. A session spent READING rather than
+ * typing is exactly that idle condition, so the link died roughly every 100
+ * seconds and the connector reconnected, forever.
+ *
+ * The server drives it rather than the connectors: both connectors sit blocked
+ * in a receive call, so answering a ping is free, whereas sending one on a
+ * timer would need a cancellable receive in both PowerShell and Python.
+ */
+const HEARTBEAT_MS = 30_000;
+/** Drop a PC that has not sent a frame in this long (≈3 missed heartbeats). */
+const PEER_TIMEOUT_MS = 100_000;
+
 const LINK_TTL_MS = 10 * 60 * 1000;
 /** Once a PC has used its link, the same PC may reconnect on it for this long —
  *  a flaky wifi blip must not mean "send a new link". */
@@ -90,6 +105,8 @@ interface RemotePcConn extends RemotePcInfo {
   ws: WebSocket;
   pendingCmds: Map<string, PendingCmd>;
   token: string;
+  /** Last time ANY frame arrived from this PC. Drives dead-peer detection. */
+  lastSeen: number;
 }
 
 interface LinkToken {
@@ -113,6 +130,10 @@ export class RemoteAgentServer {
   private boundHost = "0.0.0.0";
   private lanAddress = "127.0.0.1";
   private tunnelProc?: ChildProcess;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  /** Set by close() so tunnel supervision doesn't fight a deliberate shutdown. */
+  private closing = false;
+  private tunnelRestarts = 0;
   private publicBaseUrl?: string;
   /** Resolves (to the URL or undefined) once the tunnel attempt has finished either way. */
   private tunnelReady: Promise<string | undefined> = Promise.resolve(undefined);
@@ -153,6 +174,7 @@ export class RemoteAgentServer {
     this.boundHost = host;
     this.lanAddress = await detectLanIp();
     this.log(`remote-agent listening on ${host}:${this.boundPort}`);
+    this.startHeartbeat();
 
     const tunnelMode = this.opts.tunnelMode ?? "auto";
     if (tunnelMode === "cloudflared") {
@@ -216,6 +238,41 @@ export class RemoteAgentServer {
 
   // ─── Tunnel ────────────────────────────────────────────────────────────
 
+  /**
+   * Bring a dead quick tunnel back, with capped exponential backoff.
+   *
+   * NOTE what this does and does not buy: new links get a working public URL
+   * again, and the daemon stops silently degrading to LAN for the rest of its
+   * life. It does NOT rescue a connector that is already running, because a
+   * quick tunnel comes back on a DIFFERENT random *.trycloudflare.com hostname
+   * and the connector has the old one baked in from download time. Surviving
+   * that needs a stable rendezvous the connector can re-resolve; this is the
+   * floor, not the ceiling.
+   */
+  private scheduleTunnelRestart(): void {
+    if (this.closing) return;
+    if ((this.opts.tunnelMode ?? "auto") === "none") return;
+    const attempt = ++this.tunnelRestarts;
+    const delay = Math.min(60_000, 2_000 * 2 ** Math.min(attempt - 1, 5));
+    this.log(`remote-agent tunnel died — restarting in ${Math.round(delay / 1000)}s (attempt ${attempt})`);
+    const timer = setTimeout(() => {
+      if (this.closing || this.tunnelProc) return;
+      this.tunnelReady = this.startTunnel()
+        .then((url) => {
+          this.publicBaseUrl = url;
+          this.tunnelRestarts = 0;
+          this.log(`remote-agent tunnel restored: ${url}`);
+          return url;
+        })
+        .catch((err) => {
+          this.log(`remote-agent tunnel restart failed (${err instanceof Error ? err.message : String(err)})`);
+          this.scheduleTunnelRestart();
+          return undefined;
+        });
+    }, delay);
+    timer.unref?.();
+  }
+
   private async startTunnel(): Promise<string> {
     const bin = await ensureCloudflared(this.home, this.log);
     return new Promise((resolve, reject) => {
@@ -242,8 +299,16 @@ export class RemoteAgentServer {
       proc.on("close", (code) => {
         clearTimeout(timeoutHandle);
         if (code !== 0 && code !== null) reject(new Error(`cloudflared exited early (code ${code})`));
-        // A tunnel that dies mid-flight drops us to LAN links; every link says so.
-        if (this.tunnelProc === proc) { this.publicBaseUrl = undefined; this.tunnelProc = undefined; }
+        // A tunnel that dies mid-flight used to drop us to LAN links silently and
+        // stay there for the life of the daemon: nothing ever restarted
+        // cloudflared, so the owner's next link was LAN-only with no explanation
+        // and any connector already dialled in was left calling a hostname that
+        // no longer routed. Bring it back instead.
+        if (this.tunnelProc === proc) {
+          this.publicBaseUrl = undefined;
+          this.tunnelProc = undefined;
+          this.scheduleTunnelRestart();
+        }
       });
     });
   }
@@ -251,7 +316,7 @@ export class RemoteAgentServer {
   // ─── PC control ────────────────────────────────────────────────────────
 
   listPcs(): RemotePcInfo[] {
-    return [...this.pcs.values()].map(({ ws: _w, pendingCmds: _p, token: _t, ...info }) => info);
+    return [...this.pcs.values()].map(({ ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, ...info }) => info);
   }
 
   /** Send a request to a connected PC and await its matching `*_result`. */
@@ -313,7 +378,52 @@ export class RemoteAgentServer {
     setTimeout(() => { try { pc.ws.close(); } catch { /* gone */ } }, 300).unref?.();
   }
 
+  /**
+   * Keep every live connection warm and reap the ones that stopped answering.
+   *
+   * Both a WS control ping and a JSON `{type:"ping"}` go out: the control frame
+   * is what the `ws` library and .NET answer natively, while the JSON one is
+   * guaranteed to be real application traffic through any intermediary that
+   * only counts data frames toward its idle timer. Belt and braces is cheap at
+   * one frame per 30s, and getting this wrong is a link that dies silently.
+   */
+  private startHeartbeat(): void {
+    this.heartbeatTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, pc] of this.pcs) {
+        if (now - pc.lastSeen > PEER_TIMEOUT_MS) {
+          // Unresponsive: terminate() (not close()) because a half-open socket
+          // never completes a closing handshake — close() would hang forever.
+          this.log(`remote PC ${pc.hostname} stopped answering — dropping (id=${id})`);
+          try { pc.ws.terminate(); } catch { /* already gone */ }
+          this.dropPc(id);
+          continue;
+        }
+        try { pc.ws.ping(); } catch { /* gone; the sweep above will catch it */ }
+        try { pc.ws.send(JSON.stringify({ type: "ping" })); } catch { /* same */ }
+      }
+    }, HEARTBEAT_MS);
+    this.heartbeatTimer.unref?.();
+  }
+
+  /** Remove a PC and settle anything still waiting on it. */
+  private dropPc(id: string): void {
+    const pc = this.pcs.get(id);
+    if (!pc) return;
+    this.pcs.delete(id);
+    for (const { reject, timer } of pc.pendingCmds.values()) {
+      clearTimeout(timer);
+      reject(new Error("remote PC disconnected"));
+    }
+    pc.pendingCmds.clear();
+    const { ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, ...info } = pc;
+    for (const cb of this.disconnectedListeners) cb(info);
+  }
+
   async close(): Promise<void> {
+    this.closing = true;
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
     try { this.tunnelProc?.kill(); } catch { /* already dead */ }
     this.tunnelProc = undefined;
     for (const pc of this.pcs.values()) {
@@ -427,10 +537,18 @@ export class RemoteAgentServer {
   private handleConnection(ws: WebSocket): void {
     let pc: RemotePcConn | undefined;
 
+    // A pong (or any frame at all) is proof of life. Recorded before parsing so
+    // even a malformed frame counts — the peer is demonstrably still there.
+    ws.on("pong", () => { if (pc) pc.lastSeen = Date.now(); });
+
     ws.on("message", (raw) => {
+      if (pc) pc.lastSeen = Date.now();
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()); }
       catch { return; }
+
+      // Connector answering our JSON ping. No payload, purely traffic.
+      if (msg["type"] === "pong") return;
 
       if (msg["type"] === "register") {
         const token = String(msg["token"] ?? "");
@@ -465,11 +583,12 @@ export class RemoteAgentServer {
           connectedAt: Date.now(),
           ws,
           pendingCmds: new Map(),
+          lastSeen: Date.now(),
         };
         this.pcs.set(id, pc);
         ws.send(JSON.stringify({ type: "registered", id }));
         this.log(`remote PC connected: ${pc.hostname} (${pc.os}) ip=${pc.ip} id=${id}`);
-        const { ws: _w, pendingCmds: _p, token: _t, ...info } = pc;
+        const { ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, ...info } = pc;
         for (const cb of this.connectedListeners) cb(info);
         return;
       }
@@ -496,7 +615,7 @@ export class RemoteAgentServer {
       }
       this.pcs.delete(pc.id);
       this.log(`remote PC disconnected: ${pc.hostname} id=${pc.id}`);
-      const { ws: _w, pendingCmds: _p, token: _t, ...info } = pc;
+      const { ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, ...info } = pc;
       for (const cb of this.disconnectedListeners) cb(info);
       pc = undefined;
     });
@@ -750,6 +869,7 @@ while (-not $bye -and (Get-Date) -lt $deadline) {
     if ($null -eq $raw) { break }
     try { $cmd = $raw | ConvertFrom-Json } catch { continue }
     switch ($cmd.type) {
+      'ping' { Send-Json $ws @{ type = 'pong' } }
       'exec' {
         $t = if ($cmd.timeoutMs) { [int]$cmd.timeoutMs } else { 30000 }
         $res = Invoke-Remote ([string]$cmd.command) $t
@@ -980,7 +1100,11 @@ def _session(ws):
         try: cmd = json.loads(raw)
         except Exception: continue
         t = cmd.get("type")
-        if t == "exec":
+        if t == "ping":
+            # Keepalive. Cloudflare reaps a WebSocket idle for 100s, so the
+            # reply is the whole point -- it puts a frame on the wire.
+            ws.send(json.dumps({"type": "pong"}))
+        elif t == "exec":
             timeout = max(1, int(cmd.get("timeoutMs") or 30000) / 1000)
             try:
                 r = subprocess.run(cmd.get("command", ""), shell=True, capture_output=True, text=True, timeout=timeout)

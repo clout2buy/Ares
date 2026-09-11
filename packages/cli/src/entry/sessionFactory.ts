@@ -295,9 +295,36 @@ export function modelContextWindow(modelId: string): number {
 /** A provider-level failure that retrying on the SAME provider can't fix — auth,
  *  missing model, or unreachable host. These (not tool bugs) are what made turns
  *  die mid-coding when the lane pointed at a flaky/unauthed model. */
+/**
+ * Ran out of money/quota — as opposed to sending a bad request.
+ *
+ * This exists because Anthropic reports exhaustion as a **400
+ * invalid_request_error**: `You're out of extra usage. Add more at
+ * claude.ai/settings/usage`. Every other signal in this file assumes 400 means
+ * "the payload was wrong", which is normally right and here is exactly wrong —
+ * so a quota stop was classified as a client error, failover never fired, and
+ * the turn died with zero model calls while other chats kept working.
+ *
+ * Rate limits are deliberately NOT matched: a 429 is transient congestion that
+ * the engine's retry ladder already rides out, and promoting it to fatal would
+ * abandon a provider that is about to work again in seconds.
+ */
+export function isQuotaOrBillingError(text: string): boolean {
+  const blob = text.toLowerCase();
+  if (/rate.?limit/.test(blob)) return false;
+  return /out of (?:extra )?usage|extra usage|credit balance|insufficient.?(?:credit|quota|balance|funds)|out.?of.?balance|exceeded your current quota|quota exceeded|insufficient_quota|payment required|billing/.test(
+    blob,
+  );
+}
+
 export function isProviderFatalError(err: { code?: string; message?: string } | undefined): boolean {
   if (!err) return false;
   const blob = `${err.code ?? ""} ${err.message ?? ""}`.toLowerCase();
+  // Checked BEFORE the 400 guard below, because a quota stop arrives AS a 400
+  // and would otherwise be dismissed as a payload problem. This is the same
+  // class the 402 comment calls one of the two most common unattended deaths;
+  // it simply arrives wearing the wrong status code.
+  if (isQuotaOrBillingError(blob)) return true;
   // Context-limit / bad-request (400) errors are the PAYLOAD's fault, not the
   // provider's health — failing over ships the same oversized prompt to the next
   // provider and 400s identically (the cascade the user hit). Never fail over on
@@ -335,6 +362,14 @@ export function isProviderFatalError(err: { code?: string; message?: string } | 
  * deliberately NOT matched; those keep their retry-next-boot value.
  */
 export function isPermanentRecoveryPoison(fatalProvider: string): boolean {
+  // Running out of credit is the one 400 that FIXES ITSELF — the month rolls
+  // over, or the owner tops up. Durably cancelling on it meant a session stayed
+  // dead after the balance came back ("other chats work, it's back to my usage,
+  // it's a bug"), because both `\b400\b` and `invalid_request` matched
+  // Anthropic's exhaustion message. The dead-provider cooldown three files over
+  // already says the right thing — "a balance top-up IS recoverable" — and now
+  // actually gets the chance to apply.
+  if (isQuotaOrBillingError(fatalProvider)) return false;
   return /http_40[0134]\b|\b40[0134]\b|invalid_request|not_found_error|model.{0,60}(not.{0,10}(found|exist)|does not exist)|invalid_authentication|unauthorized|forbidden|invalid.?api.?key/i.test(
     fatalProvider,
   );

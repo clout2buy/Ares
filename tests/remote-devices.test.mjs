@@ -12,8 +12,8 @@ import path from "node:path";
 
 import {
   mintDeviceCredential,
-  hashDeviceSecret,
-  deviceSecretMatches,
+  sealCredential,
+  serverProofFor,
   authenticateDevice,
   parseDeviceRegistry,
   loadDeviceRegistry,
@@ -22,6 +22,13 @@ import {
   deviceRegistryPath,
   deviceHome,
 } from "../packages/cli/dist/remoteDevices.js";
+import {
+  mintNonce,
+  proofFor,
+  proofMatches,
+  sealDeviceKey,
+  openDeviceKey,
+} from "../packages/cli/dist/remoteDeviceCrypto.js";
 import {
   buildDiscoveryProbe,
   parseDiscoveryProbe,
@@ -45,14 +52,17 @@ function registryWith(device) {
   return { version: 1, devices: [device] };
 }
 
-function pairedDevice(overrides = {}) {
+async function pairedDevice(overrides = {}) {
   const cred = mintDeviceCredential();
+  const sealed = await sealCredential(cred);
+  assert.ok(sealed, "machine key available for sealing");
   return {
     cred,
     device: {
       id: cred.deviceId,
       name: "Database Box",
-      secretHash: hashDeviceSecret(cred.deviceSecret),
+      secretEnc: sealed.secretEnc,
+      serverKeyEnc: sealed.serverKeyEnc,
       hostname: "ares-db",
       os: "Linux",
       addedAt: Date.now(),
@@ -61,61 +71,140 @@ function pairedDevice(overrides = {}) {
   };
 }
 
+/** Run the device half of the handshake. */
+function deviceProof(cred, serverNonce) {
+  return proofFor(cred.deviceSecret, serverNonce, "device");
+}
+
 // ─── credentials ───────────────────────────────────────────────────────────
 
-test("a minted credential authenticates; a near-miss secret does not", () => {
-  const { cred, device } = pairedDevice();
+test("a device proves possession without ever transmitting its secret", async () => {
+  const { cred, device } = await pairedDevice();
   const reg = registryWith(device);
+  const nonce = mintNonce();
 
-  const ok = authenticateDevice(reg, cred.deviceId, cred.deviceSecret);
+  const ok = await authenticateDevice(reg, cred.deviceId, nonce, deviceProof(cred, nonce));
   assert.equal(ok.ok, true);
   assert.equal(ok.device.name, "Database Box");
-
-  const bad = authenticateDevice(reg, cred.deviceId, cred.deviceSecret.slice(0, -1) + "x");
-  assert.equal(bad.ok, false);
-  assert.equal(bad.reason, "bad-secret");
 });
 
-test("the plaintext secret is never written to the registry", async () => {
+test("a proof for a DIFFERENT nonce is refused (no replay)", async () => {
+  const { cred, device } = await pairedDevice();
+  const captured = deviceProof(cred, mintNonce());  // sniffed from an earlier session
+  const fresh = mintNonce();                        // what we actually challenged with
+  const res = await authenticateDevice(registryWith(device), cred.deviceId, fresh, captured);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "bad-proof");
+});
+
+test("a server proof cannot be replayed back as a device proof", async () => {
+  // Both sides HMAC over a nonce; only the direction label separates them.
+  const { cred, device } = await pairedDevice();
+  const nonce = mintNonce();
+  const serverSide = proofFor(cred.serverKey, nonce, "server");
+  const res = await authenticateDevice(registryWith(device), cred.deviceId, nonce, serverSide);
+  assert.equal(res.reason, "bad-proof");
+});
+
+test("the device can verify the SERVER -- the check that makes elevation safe", async () => {
+  // Without this an attacker who answers the discovery probe first becomes the
+  // device's owner, which on an elevated connector is remote SYSTEM execution.
+  const { cred, device } = await pairedDevice();
+  const deviceNonce = mintNonce();
+
+  const proof = await serverProofFor(device, deviceNonce);
+  assert.ok(proof, "real server can prove itself");
+  assert.ok(proofMatches(proofFor(cred.serverKey, deviceNonce, "server"), proof));
+
+  const impostor = proofFor("guessed-key", deviceNonce, "server");
+  assert.ok(!proofMatches(proof, impostor), "impostor proof must not verify");
+});
+
+test("neither secret is recoverable from the stored registry", async () => {
   const dir = await home();
-  const { cred, device } = pairedDevice();
+  const { cred, device } = await pairedDevice();
   await saveDeviceRegistry(dir, registryWith(device));
   const onDisk = await readFile(deviceRegistryPath(dir), "utf8");
-  assert.ok(!onDisk.includes(cred.deviceSecret), "secret must not be recoverable from the file");
-  assert.ok(onDisk.includes(device.secretHash), "only the hash is stored");
+  assert.ok(!onDisk.includes(cred.deviceSecret), "device secret not stored in the clear");
+  assert.ok(!onDisk.includes(cred.serverKey), "server key not stored in the clear");
+  assert.match(onDisk, /encv1:/, "stored sealed");
 });
 
-test("secrets are long enough to be worth storing hashed", () => {
-  const { cred } = pairedDevice();
-  // 32 random bytes, base64url — a permanent key to the owner's machine.
-  assert.ok(cred.deviceSecret.length >= 40, `secret too short: ${cred.deviceSecret.length}`);
+test("sealing round-trips, and a tampered ciphertext opens as null not garbage", async () => {
+  const sealed = await sealDeviceKey("super-secret-value");
+  assert.equal(await openDeviceKey(sealed), "super-secret-value");
+
+  const tampered = sealed.slice(0, -4) + "AAAA";
+  assert.equal(await openDeviceKey(tampered), null, "GCM tag must reject tampering");
+  assert.equal(await openDeviceKey("not-sealed-at-all"), null);
+  assert.equal(await openDeviceKey(undefined), null);
+});
+
+test("keys are long enough to be HMAC keys worth the name", async () => {
+  const { cred } = await pairedDevice();
+  assert.ok(cred.deviceSecret.length >= 40, `device secret too short: ${cred.deviceSecret.length}`);
+  assert.ok(cred.serverKey.length >= 40, `server key too short: ${cred.serverKey.length}`);
+  assert.notEqual(cred.deviceSecret, cred.serverKey, "the two directions must not share a key");
   assert.match(cred.deviceId, /^dev_[0-9a-f]{16}$/);
 });
 
-test("a revoked device is refused, and told WHY rather than looping in silence", () => {
-  const { cred, device } = pairedDevice({ revokedAt: Date.now() });
-  const res = authenticateDevice(registryWith(device), cred.deviceId, cred.deviceSecret);
+test("a revoked device is refused, and told WHY rather than looping in silence", async () => {
+  const { cred, device } = await pairedDevice({ revokedAt: Date.now() });
+  const nonce = mintNonce();
+  const res = await authenticateDevice(registryWith(device), cred.deviceId, nonce, deviceProof(cred, nonce));
   assert.equal(res.ok, false);
   assert.equal(res.reason, "revoked");
 });
 
-test("a wrong secret on a revoked device reports bad-secret, not revoked", () => {
-  // Otherwise the reason code is an oracle: guess an id, learn whether it exists.
-  const { cred, device } = pairedDevice({ revokedAt: Date.now() });
-  const res = authenticateDevice(registryWith(device), cred.deviceId, "wrong");
-  assert.equal(res.reason, "bad-secret");
+test("a bad proof on a revoked device reports bad-proof, not revoked", async () => {
+  const { cred, device } = await pairedDevice({ revokedAt: Date.now() });
+  const res = await authenticateDevice(registryWith(device), cred.deviceId, mintNonce(), "wrong");
+  assert.equal(res.reason, "bad-proof");
 });
 
-test("an unknown device id is refused without touching secrets", () => {
-  const { cred } = pairedDevice();
-  const res = authenticateDevice({ version: 1, devices: [] }, cred.deviceId, cred.deviceSecret);
-  assert.equal(res.ok, false);
+test("an unknown device id is refused", async () => {
+  const { cred } = await pairedDevice();
+  const nonce = mintNonce();
+  const res = await authenticateDevice({ version: 1, devices: [] }, cred.deviceId, nonce, deviceProof(cred, nonce));
   assert.equal(res.reason, "unknown");
 });
 
-test("a mismatched-length hash does not throw (timingSafeEqual is strict)", () => {
-  assert.equal(deviceSecretMatches("whatever", "abcd"), false);
-  assert.equal(deviceSecretMatches("whatever", "not-hex-at-all"), false);
+test("a credential sealed under a key we no longer have says so, distinctly", async () => {
+  // Moved machine, wiped .devicekey. The owner must be told to re-pair rather
+  // than sent hunting a credential bug that isn't one.
+  const { cred, device } = await pairedDevice();
+  const foreign = { ...device, secretEnc: "encv1:" + Buffer.from("nonsense").toString("base64") };
+  const nonce = mintNonce();
+  const res = await authenticateDevice(registryWith(foreign), cred.deviceId, nonce, deviceProof(cred, nonce));
+  assert.equal(res.reason, "unreadable");
+});
+
+test("proof comparison tolerates a length mismatch instead of throwing", () => {
+  assert.equal(proofMatches("abcdef", "ab"), false);
+  assert.equal(proofMatches("abcdef", ""), false);
+  assert.equal(proofMatches("abcdef", undefined), false);
+});
+
+// --- elevation -------------------------------------------------------------
+
+test("elevation is OFF unless the owner opted in for that device", async () => {
+  const { device } = await pairedDevice();
+  assert.notEqual(device.allowElevated, true, "a permanent remote root shell is never a default");
+
+  const optedIn = parseDeviceRegistry(JSON.stringify({
+    version: 1,
+    devices: [{ ...device, allowElevated: true }],
+  }));
+  assert.equal(optedIn.devices[0].allowElevated, true);
+});
+
+test("only a literal true enables elevation -- no truthy coercion", async () => {
+  const { device } = await pairedDevice();
+  for (const sneaky of ["true", 1, "yes", {}]) {
+    const reg = parseDeviceRegistry(JSON.stringify({ version: 1, devices: [{ ...device, allowElevated: sneaky }] }));
+    assert.notEqual(reg.devices[0].allowElevated, true,
+      `allowElevated: ${JSON.stringify(sneaky)} must not enable it`);
+  }
 });
 
 // ─── registry durability ───────────────────────────────────────────────────
@@ -131,13 +220,14 @@ test("a missing registry reads as empty", async () => {
   assert.deepEqual((await loadDeviceRegistry(await home())).devices, []);
 });
 
-test("entries without a usable credential are dropped, not kept as ghosts", () => {
+test("entries without BOTH keys are dropped, not kept as ghosts", () => {
   const reg = parseDeviceRegistry(JSON.stringify({
     version: 1,
     devices: [
-      { id: "dev_1", secretHash: "aa", name: "real" },
-      { id: "dev_2" },                    // no secret — can never authenticate
-      { secretHash: "bb" },               // no id
+      { id: "dev_1", secretEnc: "aa", serverKeyEnc: "bb", name: "real" },
+      { id: "dev_2", secretEnc: "aa" },    // no server key: device could never verify US
+      { id: "dev_3", serverKeyEnc: "bb" }, // no device secret: can never authenticate
+      { secretEnc: "aa", serverKeyEnc: "bb" }, // no id
       "nonsense",
     ],
   }));
@@ -147,24 +237,25 @@ test("entries without a usable credential are dropped, not kept as ghosts", () =
 
 test("save → load round-trips a device", async () => {
   const dir = await home();
-  const { cred, device } = pairedDevice();
+  const { cred, device } = await pairedDevice();
   await saveDeviceRegistry(dir, registryWith(device));
   const reg = await loadDeviceRegistry(dir);
   assert.equal(reg.devices.length, 1);
-  assert.equal(authenticateDevice(reg, cred.deviceId, cred.deviceSecret).ok, true);
+  const nonce = mintNonce();
+  assert.equal((await authenticateDevice(reg, cred.deviceId, nonce, deviceProof(cred, nonce))).ok, true);
 });
 
 // ─── naming ────────────────────────────────────────────────────────────────
 
 test("device names stay unique and never empty", () => {
-  const reg = { version: 1, devices: [{ id: "a", name: "Database Box", secretHash: "x" }] };
+  const reg = { version: 1, devices: [{ id: "a", name: "Database Box", secretEnc: "x", serverKeyEnc: "y" }] };
   assert.equal(uniqueDeviceName(reg, "Database Box"), "Database Box 2");
   assert.equal(uniqueDeviceName(reg, "  "), "device");
   assert.equal(uniqueDeviceName(reg, "Laptop"), "Laptop");
 });
 
 test("a revoked device's name is freed for reuse", () => {
-  const reg = { version: 1, devices: [{ id: "a", name: "Database Box", secretHash: "x", revokedAt: 1 }] };
+  const reg = { version: 1, devices: [{ id: "a", name: "Database Box", secretEnc: "x", serverKeyEnc: "y", revokedAt: 1 }] };
   assert.equal(uniqueDeviceName(reg, "Database Box"), "Database Box");
 });
 
@@ -407,7 +498,7 @@ test("the test harness has isolated the device home away from the real one", () 
 
 test("an explicit home still wins over the machine default", async () => {
   const dir = await home();
-  const { device } = pairedDevice();
+  const { device } = await pairedDevice();
   await saveDeviceRegistry(dir, registryWith(device));
   assert.equal((await loadDeviceRegistry(dir)).devices.length, 1);
   // ...and did not leak into the default location.

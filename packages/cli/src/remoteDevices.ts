@@ -16,10 +16,12 @@
 // list of permanent keys to the owner's machines; if this file leaks it must
 // not be a set of working credentials. Comparison is constant-time.
 
-import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+
+import { openDeviceKey, sealDeviceKey, proofFor, proofMatches } from "./remoteDeviceCrypto.js";
 
 export const DEVICE_REGISTRY_VERSION = 1;
 
@@ -27,12 +29,28 @@ export interface PairedDevice {
   id: string;
   /** Owner-facing name ("Database Box"). Renameable; never an identifier. */
   name: string;
-  /** SHA-256 of the device secret, hex. The secret itself is never stored. */
-  secretHash: string;
+  /** Sealed device secret (device proves possession to the server). Encrypted,
+   *  not hashed: see remoteDeviceCrypto.ts — the server must be able to verify
+   *  an HMAC rather than receive the secret over a plain-ws LAN hop. */
+  secretEnc: string;
+  /** Sealed server key (server proves ITSELF to the device). Without this the
+   *  device obeys whoever answers its discovery probe first, which on an
+   *  elevated connector is remote SYSTEM execution for anyone on the wifi. */
+  serverKeyEnc: string;
   hostname: string;
   os: string;
   addedAt: number;
   lastSeenAt?: number;
+  /**
+   * May this device run commands ELEVATED (Windows: the connector installed as
+   * a highest-privileges task; unix: via the configured escalation)?
+   *
+   * Off unless the owner opts in per device at pairing time. An elevated
+   * connector is a permanent remote root shell on that machine: worth having
+   * deliberately, never worth acquiring by default because a flag defaulted to
+   * true once.
+   */
+  allowElevated?: boolean;
   /** Set when the owner unpairs. Kept (not deleted) so a revoked device that
    *  keeps dialling in can be told why, and so the name isn't silently reused. */
   revokedAt?: number;
@@ -46,7 +64,10 @@ export interface DeviceRegistryFile {
 /** A freshly enrolled device: the ONLY time the plaintext secret exists here. */
 export interface DeviceCredential {
   deviceId: string;
+  /** Device -> server proof key. Lives on the device; sealed on the server. */
   deviceSecret: string;
+  /** Server -> device proof key. Lives on BOTH, sealed on the server. */
+  serverKey: string;
 }
 
 /**
@@ -71,21 +92,6 @@ export function deviceRegistryPath(home?: string): string {
   return path.join(home ?? deviceHome(), "devices.json");
 }
 
-export function hashDeviceSecret(secret: string): string {
-  return createHash("sha256").update(secret, "utf8").digest("hex");
-}
-
-/** Constant-time compare of a presented secret against a stored hash. */
-export function deviceSecretMatches(secret: string, storedHash: string): boolean {
-  const presented = Buffer.from(hashDeviceSecret(secret), "hex");
-  let stored: Buffer;
-  try { stored = Buffer.from(storedHash, "hex"); }
-  catch { return false; }
-  // timingSafeEqual throws on a length mismatch, which would itself leak.
-  if (presented.length !== stored.length) return false;
-  return timingSafeEqual(presented, stored);
-}
-
 /** Tolerant of a missing/corrupt file: a registry that fails to parse must not
  *  take the daemon down, it must read as "no devices paired yet". */
 export function parseDeviceRegistry(raw: string): DeviceRegistryFile {
@@ -100,19 +106,24 @@ export function parseDeviceRegistry(raw: string): DeviceRegistryFile {
     if (!entry || typeof entry !== "object") continue;
     const d = entry as Record<string, unknown>;
     const id = typeof d["id"] === "string" ? d["id"] : "";
-    const secretHash = typeof d["secretHash"] === "string" ? d["secretHash"] : "";
-    // An entry without a usable credential is not a device — dropping it is
-    // better than keeping a row that can never authenticate.
-    if (!id || !secretHash) continue;
+    const secretEnc = typeof d["secretEnc"] === "string" ? d["secretEnc"] : "";
+    const serverKeyEnc = typeof d["serverKeyEnc"] === "string" ? d["serverKeyEnc"] : "";
+    // An entry without BOTH keys is not a usable device: missing secretEnc
+    // means it can never authenticate, missing serverKeyEnc means the device
+    // could never verify US — and a half-authenticated elevated connector is
+    // exactly the thing that must not exist. Dropping beats keeping a ghost.
+    if (!id || !secretEnc || !serverKeyEnc) continue;
     devices.push({
       id,
       name: typeof d["name"] === "string" && d["name"] ? d["name"] : id,
-      secretHash,
+      secretEnc,
+      serverKeyEnc,
       hostname: typeof d["hostname"] === "string" ? d["hostname"] : "unknown",
       os: typeof d["os"] === "string" ? d["os"] : "unknown",
       addedAt: typeof d["addedAt"] === "number" ? d["addedAt"] : 0,
       ...(typeof d["lastSeenAt"] === "number" ? { lastSeenAt: d["lastSeenAt"] } : {}),
       ...(typeof d["revokedAt"] === "number" ? { revokedAt: d["revokedAt"] } : {}),
+      ...(d["allowElevated"] === true ? { allowElevated: true } : {}),
     });
   }
   return { version: DEVICE_REGISTRY_VERSION, devices };
@@ -141,6 +152,7 @@ export function mintDeviceCredential(): DeviceCredential {
     // Prefixed so a value that turns up in a log is recognisable at a glance.
     deviceId: `dev_${randomBytes(8).toString("hex")}`,
     deviceSecret: randomBytes(32).toString("base64url"),
+    serverKey: randomBytes(32).toString("base64url"),
   };
 }
 
@@ -153,20 +165,52 @@ export function mintDeviceCredential(): DeviceCredential {
  */
 export type DeviceAuth =
   | { ok: true; device: PairedDevice }
-  | { ok: false; reason: "unknown" | "revoked" | "bad-secret" };
+  | { ok: false; reason: "unknown" | "revoked" | "bad-proof" | "unreadable" };
 
-export function authenticateDevice(
+export async function authenticateDevice(
   registry: DeviceRegistryFile,
   deviceId: string,
-  deviceSecret: string,
-): DeviceAuth {
+  serverNonce: string,
+  presentedProof: string,
+): Promise<DeviceAuth> {
   const device = registry.devices.find((d) => d.id === deviceId);
   if (!device) return { ok: false, reason: "unknown" };
-  // Secret is checked BEFORE revocation is reported, so a wrong guess can't be
-  // used to enumerate which device ids exist and which are merely revoked.
-  if (!deviceSecretMatches(deviceSecret, device.secretHash)) return { ok: false, reason: "bad-secret" };
+  const secret = await openDeviceKey(device.secretEnc);
+  // Sealed with a key we can no longer read (moved machine, wiped .devicekey).
+  // Reported distinctly so the owner is told to re-pair rather than hunting a
+  // credential bug that isn't one.
+  if (!secret) return { ok: false, reason: "unreadable" };
+  if (!proofMatches(proofFor(secret, serverNonce, "device"), presentedProof)) {
+    return { ok: false, reason: "bad-proof" };
+  }
+  // Checked only AFTER the proof, so the reason code can't be used to
+  // enumerate which device ids exist and which are merely revoked.
   if (device.revokedAt) return { ok: false, reason: "revoked" };
   return { ok: true, device };
+}
+
+/**
+ * Our half of the handshake: prove to the DEVICE that we are its real owner.
+ *
+ * This is what stops an attacker who answers a discovery probe first from
+ * becoming the device's server. On a connector that runs elevated, skipping it
+ * would hand remote SYSTEM execution to anyone on the same network.
+ */
+export async function serverProofFor(device: PairedDevice, deviceNonce: string): Promise<string | null> {
+  const serverKey = await openDeviceKey(device.serverKeyEnc);
+  if (!serverKey) return null;
+  return proofFor(serverKey, deviceNonce, "server");
+}
+
+/** Seal a freshly minted credential for storage. Null when no machine key can
+ *  be established — the caller must refuse to pair rather than store plaintext. */
+export async function sealCredential(
+  cred: DeviceCredential,
+): Promise<{ secretEnc: string; serverKeyEnc: string } | null> {
+  const secretEnc = await sealDeviceKey(cred.deviceSecret);
+  const serverKeyEnc = await sealDeviceKey(cred.serverKey);
+  if (!secretEnc || !serverKeyEnc) return null;
+  return { secretEnc, serverKeyEnc };
 }
 
 /** Names are for humans: unique, trimmed, and never allowed to be empty. */

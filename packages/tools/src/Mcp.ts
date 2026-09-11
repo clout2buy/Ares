@@ -455,6 +455,14 @@ export class SseMcpClient implements McpClient {
       this.resolveEndpoint = resolve;
       this.rejectEndpoint = reject;
     });
+    // close() rejects endpointReady via failAll — even on the SUCCESS path,
+    // because runSse always close()s in its finally. By then real awaiters have
+    // long since consumed the resolved value, so that rejection has no handler
+    // and surfaces as an unhandledRejection that crashes garrison (field crash
+    // loop, 2026-09-11: "MCP SSE client closed" ×4 during a background tool
+    // refresh). A permanently-attached no-op handler marks it handled without
+    // affecting genuine awaiters, which attach their own.
+    this.endpointReady.catch(() => {});
   }
 
   async open(): Promise<void> {
@@ -468,10 +476,19 @@ export class SseMcpClient implements McpClient {
     const ctype = res.headers.get("content-type") ?? "";
     if (!ctype.includes("text/event-stream")) throw new McpHttpError(res.status, `MCP SSE endpoint answered ${ctype || "no content-type"}`);
     void this.pump(res.body);
-    await Promise.race([
-      this.endpointReady,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("MCP SSE server never sent its endpoint")), 15_000).unref?.()),
-    ]);
+    // Cleared when the endpoint arrives first, so the loser of this race does
+    // not reject later with nobody listening (another unhandledRejection path).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("MCP SSE server never sent its endpoint")), 15_000);
+      timer.unref?.();
+    });
+    timeout.catch(() => {});
+    try {
+      await Promise.race([this.endpointReady, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async pump(body: ReadableStream<Uint8Array>): Promise<void> {
@@ -538,7 +555,16 @@ export class SseMcpClient implements McpClient {
   async request(method: string, params: unknown): Promise<unknown> {
     const id = this.nextId++;
     const result = new Promise<unknown>((resolve, reject) => this.pending.set(id, { resolve, reject }));
-    await this.post({ jsonrpc: "2.0", id, method, params });
+    // If post() throws we never reach `return result`, so the caller never
+    // awaits it — yet it stays in `pending` and close()/failAll later rejects
+    // it with no handler. Drop it from the map on a send failure so failAll has
+    // nothing orphaned to reject, and rethrow for the caller.
+    try {
+      await this.post({ jsonrpc: "2.0", id, method, params });
+    } catch (err) {
+      this.pending.delete(id);
+      throw err;
+    }
     return result;
   }
 

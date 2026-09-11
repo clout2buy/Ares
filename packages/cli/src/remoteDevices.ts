@@ -18,6 +18,7 @@
 
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 export const DEVICE_REGISTRY_VERSION = 1;
@@ -48,8 +49,26 @@ export interface DeviceCredential {
   deviceSecret: string;
 }
 
-export function deviceRegistryPath(home: string): string {
-  return path.join(home, "devices.json");
+/**
+ * Where paired devices live — MACHINE-scoped, deliberately not ARES_HOME.
+ *
+ * Ares has two homes in practice: the CLI's ~/.ares and the desktop app's own
+ * (ARES_HOME -> %APPDATA%/Ares/home on Windows). Every other state file follows
+ * ARES_HOME, and for sessions or auth that is right. For paired devices it is
+ * actively wrong: a device is paired to a PHYSICAL MACHINE, not to an app
+ * profile. Following ARES_HOME would mean pairing from the desktop app and then
+ * having a CLI garrison refuse the same device as `unknown` while it retries
+ * forever — the silent-failure shape this whole workstream exists to kill.
+ *
+ * ARES_DEVICES_HOME overrides, so the test harness can isolate itself the same
+ * way it isolates ARES_HOME. A deliberate caller still wins.
+ */
+export function deviceHome(): string {
+  return process.env["ARES_DEVICES_HOME"] ?? path.join(os.homedir(), ".ares");
+}
+
+export function deviceRegistryPath(home?: string): string {
+  return path.join(home ?? deviceHome(), "devices.json");
 }
 
 export function hashDeviceSecret(secret: string): string {
@@ -99,7 +118,7 @@ export function parseDeviceRegistry(raw: string): DeviceRegistryFile {
   return { version: DEVICE_REGISTRY_VERSION, devices };
 }
 
-export async function loadDeviceRegistry(home: string): Promise<DeviceRegistryFile> {
+export async function loadDeviceRegistry(home?: string): Promise<DeviceRegistryFile> {
   try {
     return parseDeviceRegistry(await readFile(deviceRegistryPath(home), "utf8"));
   } catch {
@@ -109,7 +128,7 @@ export async function loadDeviceRegistry(home: string): Promise<DeviceRegistryFi
 
 /** Atomic write — a half-written registry would lock the owner out of every
  *  paired machine at once, and this file is rewritten on every lastSeen touch. */
-export async function saveDeviceRegistry(home: string, file: DeviceRegistryFile): Promise<void> {
+export async function saveDeviceRegistry(home: string | undefined, file: DeviceRegistryFile): Promise<void> {
   const target = deviceRegistryPath(home);
   await mkdir(path.dirname(target), { recursive: true });
   const tmp = `${target}.${randomBytes(6).toString("hex")}.tmp`;

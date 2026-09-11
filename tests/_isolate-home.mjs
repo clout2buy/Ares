@@ -40,6 +40,26 @@ if (!process.env.ARES_HOME) {
   });
 }
 
+// Paired devices are MACHINE-scoped on purpose: devices.json ignores ARES_HOME
+// so that pairing from the desktop app and pairing from a CLI garrison reach
+// the same registry (a device belongs to the physical machine, not to an app
+// profile). That deliberate exemption means the ARES_HOME isolation above does
+// NOT cover it — without this, a test that writes a device would land in the
+// developer's real ~/.ares, which is the exact "72 KB of somebody else's test
+// state in the vault the product treats as sacred" problem all over again.
+// Same rule as ARES_HOME: a deliberate caller still wins.
+if (!process.env.ARES_DEVICES_HOME) {
+  const devHome = mkdtempSync(path.join(tmpdir(), "ares-test-devices-"));
+  process.env.ARES_DEVICES_HOME = devHome;
+  process.on("exit", () => {
+    try {
+      rmSync(devHome, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+}
+
 // The Mnemosyne discovery port is a FIXED loopback port in production — that's
 // how sibling processes find one server. Under --test-concurrency it becomes
 // cross-test coupling: every daemon a test spawns would host-or-join the SAME

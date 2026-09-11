@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -19,6 +20,7 @@ import {
   saveDeviceRegistry,
   uniqueDeviceName,
   deviceRegistryPath,
+  deviceHome,
 } from "../packages/cli/dist/remoteDevices.js";
 import {
   buildDiscoveryProbe,
@@ -358,4 +360,56 @@ test("advice names the ports, the symptom, and the exact command", () => {
 test("an unreadable firewall reports uncertainty rather than claiming it is fine", () => {
   const advice = firewallAdvice({ platform: "windows", allowed: false, checked: false, missing: [] });
   assert.match(advice, /[Cc]ould not read/);
+});
+
+// ─── machine-scoped registry ───────────────────────────────────────────────
+// Devices deliberately do NOT follow ARES_HOME. Ares runs with two homes in
+// practice (the CLI's ~/.ares and the desktop app's %APPDATA%/Ares/home), and a
+// device is paired to the physical MACHINE, not to an app profile. Following
+// ARES_HOME would mean pairing from the desktop app and then having a CLI
+// garrison refuse the same device as `unknown` while it retried forever.
+
+test("the registry ignores ARES_HOME so both garrisons see the same devices", () => {
+  const prevAres = process.env.ARES_HOME;
+  try {
+    process.env.ARES_HOME = path.join(tmpdir(), "some-app-profile-home");
+    const underDesktopHome = deviceRegistryPath();
+    process.env.ARES_HOME = path.join(tmpdir(), "a-completely-different-home");
+    const underCliHome = deviceRegistryPath();
+    assert.equal(underDesktopHome, underCliHome, "ARES_HOME must not move the device registry");
+  } finally {
+    if (prevAres === undefined) delete process.env.ARES_HOME;
+    else process.env.ARES_HOME = prevAres;
+  }
+});
+
+test("ARES_DEVICES_HOME is the deliberate override, so tests can isolate", () => {
+  const prev = process.env.ARES_DEVICES_HOME;
+  try {
+    process.env.ARES_DEVICES_HOME = path.join(tmpdir(), "explicit-devices-home");
+    assert.equal(deviceHome(), path.join(tmpdir(), "explicit-devices-home"));
+    assert.equal(deviceRegistryPath(), path.join(tmpdir(), "explicit-devices-home", "devices.json"));
+  } finally {
+    if (prev === undefined) delete process.env.ARES_DEVICES_HOME;
+    else process.env.ARES_DEVICES_HOME = prev;
+  }
+});
+
+test("the test harness has isolated the device home away from the real one", () => {
+  // Guards the isolation shim itself: if this ever fails, a test run is writing
+  // paired devices into the developer's actual ~/.ares.
+  assert.ok(process.env.ARES_DEVICES_HOME, "ARES_DEVICES_HOME set by _isolate-home.mjs");
+  assert.ok(
+    !deviceRegistryPath().startsWith(path.join(os.homedir(), ".ares")),
+    `device registry must not point at the real home: ${deviceRegistryPath()}`,
+  );
+});
+
+test("an explicit home still wins over the machine default", async () => {
+  const dir = await home();
+  const { device } = pairedDevice();
+  await saveDeviceRegistry(dir, registryWith(device));
+  assert.equal((await loadDeviceRegistry(dir)).devices.length, 1);
+  // ...and did not leak into the default location.
+  assert.equal((await loadDeviceRegistry()).devices.length, 0);
 });

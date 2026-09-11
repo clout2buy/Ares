@@ -122,6 +122,7 @@ export class OpenRouterProvider implements Provider {
     // host to refresh once and replay; a second rejection is a real sign-out.
     let authRetried = false;
     let toolChoiceRetried = false;
+    let creditRetried = false;
     let response: Response;
     let guard: StallGuard;
     for (;;) {
@@ -175,6 +176,32 @@ export class OpenRouterProvider implements Provider {
         await response.body?.cancel().catch(() => {});
         delete body.tool_choice;
         continue;
+      }
+
+      // Credit-shaped 402: the request's max_tokens costs more than the
+      // remaining balance. The provider tells us what it CAN afford, so shrink
+      // to fit and retry once instead of failing the turn. This is the exact
+      // dead end a pinned session hits when it fails over onto a nearly-empty
+      // OpenRouter key: opus-5 asks for a flat 32768 output tokens (every
+      // Claude-class session does), the fallback can only afford ~10k, and the
+      // turn died with nothing tried. A shorter reply beats no reply.
+      if (response.status === 402 && !creditRetried && body.max_tokens) {
+        creditRetried = true;
+        guard.dispose();
+        const text = await response.text().catch(() => "");
+        await response.body?.cancel().catch(() => {});
+        const affordable = affordableMaxTokens(text);
+        const current = Number(body.max_tokens);
+        // Leave headroom under the stated affordable amount (prompt tokens count
+        // too, so "afford N" is optimistic); fall back to halving when the
+        // provider named no number.
+        const next = affordable ? Math.floor(affordable * 0.9) : Math.floor(current / 2);
+        // 256 is a GATE, not a clamp: if the affordable reply is smaller than a
+        // useful answer, retrying at that size just 402s again — report instead.
+        if (next >= 256 && next < current) {
+          body.max_tokens = next;
+          continue;
+        }
       }
 
       if ((response.status === 401 || response.status === 403) && !authRetried && this.onAuthError) {
@@ -435,6 +462,19 @@ interface ChatChunk {
  * retry must not quietly undo. Everything else ("required", or a named
  * function) is the forcing worth trading away to save a turn.
  */
+/**
+ * Pull the affordable token count out of a credit-shaped 402 body, if the
+ * provider named one. OpenRouter says: "You requested up to 32768 tokens, but
+ * can only afford 10033." We want the 10033. Returns null when no such number
+ * is present, so the caller falls back to halving.
+ */
+export function affordableMaxTokens(body: string): number | null {
+  const m = /can only afford\s+(\d+)/i.exec(body);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export function isForcedToolChoice(value: unknown): boolean {
   if (value === undefined || value === null) return false;
   if (value === "auto" || value === "none") return false;

@@ -738,6 +738,8 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // AresOS: list connected remote PCs, mint/disconnect a connect link, and
     // pull a live screen preview.
     "remote_pcs", "remote_pc_link", "remote_pc_disconnect", "remote_pc_screenshot",
+    // Permanent pairing: mint a pairing link, list paired devices, unpair one.
+    "remote_pc_pair", "remote_devices", "remote_device_unpair",
 ];
 
 #[tauri::command]

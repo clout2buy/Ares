@@ -154,6 +154,17 @@ export interface RemoteAgentServerOptions {
    */
   publicUrl?: string;
   /**
+   * A NAMED cloudflared tunnel to run for `publicUrl`, e.g. "ares-remote".
+   * Env: ARES_REMOTE_TUNNEL_NAME.
+   *
+   * Without this, a permanent address assumes something ELSE keeps cloudflared
+   * alive — a service, a scheduled task, a terminal someone closed. That is a
+   * second thing to forget, and forgetting it is indistinguishable from the
+   * ghosting this whole feature exists to end. With it, the tunnel shares the
+   * garrison's lifecycle exactly: same start, same supervision, same exit.
+   */
+  tunnelName?: string;
+  /**
    * Bring a device up to THIS build's connector the moment it attaches,
    * without asking. Default on: the owner's own machines are supposed to just
    * work, and a device pinned on an old connector silently lacks capabilities.
@@ -235,6 +246,8 @@ export class RemoteAgentServer {
   private publicBaseUrl?: string;
   /** Set from opts/env: a permanent origin, so nothing ever re-homes off it. */
   private stableBaseUrl?: string;
+  /** The named cloudflared tunnel this garrison supervises, if any. */
+  private namedTunnel?: string;
   /** Resolves (to the URL or undefined) once the tunnel attempt has finished either way. */
   private tunnelReady: Promise<string | undefined> = Promise.resolve(undefined);
 
@@ -314,7 +327,18 @@ export class RemoteAgentServer {
       this.stableBaseUrl = stable;
       this.publicBaseUrl = stable;
       this.tunnelReady = Promise.resolve(stable);
-      this.log(`remote-agent: permanent public address ${stable} (no quick tunnel; links survive restarts)`);
+      const named = (this.opts.tunnelName ?? process.env["ARES_REMOTE_TUNNEL_NAME"] ?? "").trim();
+      if (named && (this.opts.tunnelMode ?? "auto") !== "none") {
+        this.namedTunnel = named;
+        // Not awaited: a tunnel that is slow to dial must not hold up boot, and
+        // the address is already known — unlike a quick tunnel, there is no URL
+        // to wait for.
+        void this.startNamedTunnel(named);
+      }
+      this.log(
+        `remote-agent: permanent public address ${stable}` +
+        `${named ? ` via named tunnel "${named}"` : " (external tunnel assumed)"}`,
+      );
       return { host, port: this.boundPort };
     }
 
@@ -508,6 +532,74 @@ export class RemoteAgentServer {
         });
     }, delay);
     timer.unref?.();
+  }
+
+  /**
+   * Run a named tunnel and keep it running.
+   *
+   * Simpler than the quick-tunnel path in the one way that matters: the
+   * hostname is already known, so there is no stderr to scrape and no window
+   * where the address is undefined. Restarts are the same capped backoff, and
+   * because the address never changes there is nothing to re-home afterwards.
+   */
+  private async startNamedTunnel(name: string, attempt = 0): Promise<void> {
+    if (this.closing) return;
+    // Somebody else may already be running it — a Windows service, a logon
+    // task, a terminal. Two runners of one named tunnel both register and
+    // Cloudflare splits traffic between them; harmless, since they proxy to
+    // the same origin, but it wastes a process and muddies the logs. Only the
+    // first attempt checks: after a restart we are the one who died, so the
+    // address answering would be our own replacement, not a reason to give up.
+    if (attempt === 0 && this.publicBaseUrl && await this.alreadyFronted(this.publicBaseUrl)) {
+      this.log(`remote-agent: ${this.publicBaseUrl} already answers — leaving tunnel "${name}" to whoever is running it`);
+      return;
+    }
+    let bin: string;
+    try { bin = await ensureCloudflared(this.home, this.log); }
+    catch (err) {
+      this.log(`remote-agent: cloudflared unavailable for tunnel "${name}" (${err instanceof Error ? err.message : String(err)})`);
+      return;
+    }
+    if (this.closing) return;
+    const proc = spawn(bin, ["tunnel", "--no-autoupdate", "run", name], {
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+    });
+    this.tunnelProc = proc;
+    let registered = false;
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      if (!registered && /Registered tunnel connection/.test(text)) {
+        registered = true;
+        this.log(`remote-agent: tunnel "${name}" connected — ${this.publicBaseUrl} is live`);
+      }
+      // A named tunnel fails in ways a quick one cannot: no credentials, a
+      // deleted tunnel, a name that does not exist. Those are silent forever
+      // otherwise, and look exactly like "my laptop went offline".
+      const fatal = text.match(/tunnel credentials file .*not found|Couldn't find.*tunnel|not authorized|failed to parse.*credentials/i);
+      if (fatal) this.log(`remote-agent: tunnel "${name}" cannot start — ${fatal[0]}`);
+    });
+    proc.on("error", (err) => this.log(`remote-agent: tunnel "${name}" failed to spawn (${err.message})`));
+    proc.on("close", (code) => {
+      if (this.tunnelProc !== proc) return;
+      this.tunnelProc = undefined;
+      if (this.closing) return;
+      const next = Math.min(60_000, 2_000 * 2 ** Math.min(attempt, 5));
+      this.log(`remote-agent: tunnel "${name}" exited (code ${code}) — restarting in ${Math.round(next / 1000)}s`);
+      const timer = setTimeout(() => { void this.startNamedTunnel(name, attempt + 1); }, next);
+      timer.unref?.();
+    });
+  }
+
+  /** Is something already serving this origin? A tunnel that is down answers
+   *  with Cloudflare's own 5xx (530/1033), not with ours. */
+  private async alreadyFronted(base: string): Promise<boolean> {
+    try {
+      const res = await fetch(base, { method: "GET", signal: AbortSignal.timeout(8_000), redirect: "manual" });
+      return res.status < 500;
+    } catch {
+      return false;
+    }
   }
 
   private async startTunnel(): Promise<string> {
@@ -2164,8 +2256,13 @@ function buildPairInstallPs1(base: string, token: string): string {
     "# never restarted — the machine then sits there paired and unreachable",
     "# until the next logon. With MultipleInstances IgnoreNew this tick is free",
     "# while the connector is alive, and is the whole recovery when it is not.",
+    "# NO -RepetitionDuration: omitting it IS indefinite. [TimeSpan]::MaxValue",
+    "# serialises to P99999999DT23H59M59S and Register-ScheduledTask rejects it",
+    "# outright ('value which is incorrectly formatted or out of range') — which",
+    "# a parse check cannot see, because the script parses perfectly and then",
+    "# fails at registration time on the machine being paired.",
     "$heal = New-ScheduledTaskTrigger -Once -At (Get-Date) " +
-      "-RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)",
+      "-RepetitionInterval (New-TimeSpan -Minutes 5)",
     "$triggers = @($trigger, $heal)",
     "# ExecutionTimeLimit 0 = never time out; the default would kill it after days.",
     "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +

@@ -215,3 +215,52 @@ test("a device that attaches over the LAN is still told the permanent address", 
     } finally { ws.close(); }
   });
 });
+
+test("the installer's boot-task triggers are actually REGISTRABLE, not just parseable", { skip: !isWindows }, async () => {
+  // A parse gate proved the installer is syntactically fine and it still
+  // failed on contact with the machine: `-RepetitionDuration ([TimeSpan]::
+  // MaxValue)` serialises to P99999999DT23H59M59S, which Register-ScheduledTask
+  // rejects as "incorrectly formatted or out of range". Parsing is not working.
+  //
+  // Registering needs admin, which a test run does not have — but Windows
+  // validates the trigger XML BEFORE it checks permissions, so an unelevated
+  // attempt still tells the two apart: "Access is denied" means the triggers
+  // were accepted, a format complaint means they were not.
+  await withServer({}, async (server, base) => {
+    const { token } = await server.generatePairingLink("my laptop");
+    const script = await (await fetch(`${base}/pair-install.ps1?token=${token}`)).text();
+
+    const triggerLines = script.split("\n").filter((l) =>
+      /New-ScheduledTaskTrigger|New-ScheduledTaskSettingsSet|^\$triggers\s*=/.test(l) && !l.trim().startsWith("#"));
+    assert.ok(triggerLines.length >= 3, "the installer no longer builds the triggers it used to");
+    // Use, not mention: the installer carries a comment explaining this trap.
+    const active = script.split("\n").filter((l) => !l.trim().startsWith("#"));
+    assert.ok(
+      !active.some((l) => l.includes("-RepetitionDuration")),
+      "an explicit repetition duration is what got rejected at registration time; omitting it is indefinite",
+    );
+
+    const probe = [
+      ...triggerLines,
+      // The separator must survive into PowerShell as a real backslash, or the
+      // principal becomes "NOAHSPCClout" and Windows reports the confusing
+      // "No mapping between account names and security IDs was done".
+      "$me = $env:USERDOMAIN + '\\' + $env:USERNAME",
+      "$principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest",
+      "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command exit'",
+      "try {",
+      "  Register-ScheduledTask -TaskName 'AresTriggerProbe' -Action $action -Trigger $triggers -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null",
+      "  Unregister-ScheduledTask -TaskName 'AresTriggerProbe' -Confirm:$false",
+      "  'REGISTERED'",
+      "} catch { 'ERR: ' + $_.Exception.Message }",
+    ].join("\n");
+
+    const { stdout } = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", probe]);
+    assert.doesNotMatch(
+      stdout,
+      /incorrectly formatted|out of range/i,
+      `the boot-task triggers would be rejected on the paired machine:\n${stdout}`,
+    );
+    assert.match(stdout, /REGISTERED|Access is denied/i, `unexpected registration outcome:\n${stdout}`);
+  });
+});

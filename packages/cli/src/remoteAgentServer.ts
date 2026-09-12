@@ -133,6 +133,26 @@ export interface RemoteAgentServerOptions {
    * - "none": always use LAN URL (tests, local-only setups).
    */
   tunnelMode?: "auto" | "cloudflared" | "none";
+  /**
+   * A PERMANENT public origin that fronts this port (e.g. a named Cloudflare
+   * tunnel on a domain the owner controls). Env: ARES_REMOTE_PUBLIC_URL.
+   *
+   * This is what makes an off-LAN pairing survive a restart. A quick tunnel
+   * comes back on a new random *.trycloudflare.com hostname every time, so a
+   * connector that was installed against the old one is dialling an address
+   * that no longer routes — and if it is not on this LAN, discovery cannot
+   * rescue it either. It then retries forever against three dead candidates:
+   * permanently paired on paper, a ghost in practice. A fixed origin never
+   * goes stale, so the seed baked into the connector is good for its lifetime.
+   */
+  publicUrl?: string;
+  /**
+   * Bring a device up to THIS build's connector the moment it attaches,
+   * without asking. Default on: the owner's own machines are supposed to just
+   * work, and a device pinned on an old connector silently lacks capabilities.
+   * ARES_REMOTE_AUTO_UPDATE=0 turns it off.
+   */
+  autoUpdateDevices?: boolean;
 }
 
 // ─── Internal state ────────────────────────────────────────────────────────
@@ -142,6 +162,8 @@ interface PendingCmd {
   resolve: (r: Record<string, unknown>) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
+  /** The op this is waiting on, so a bulk rejection can say what it killed. */
+  op: string;
 }
 
 export interface FileGetResult {
@@ -181,6 +203,18 @@ export class RemoteAgentServer {
   private wss?: WebSocketServer;
   private readonly tokens = new Map<string, LinkToken>();
   private readonly pcs = new Map<string, RemotePcConn>();
+  /**
+   * Retired pcId → the deviceId it belonged to.
+   *
+   * A pcId identifies a CONNECTION, and a paired machine mints a fresh one on
+   * every reconnect — sleep, wifi blip, garrison restart, the 100s idle close,
+   * a connector update. Anything holding an id from five minutes ago (a chat
+   * that was told "use this pc_id from here on", a queued step) then failed
+   * with `No remote PC with id "…" connected` even though the machine was
+   * sitting right there under a new id. Remembering the mapping lets a stale
+   * id resolve forward to the device's current connection.
+   */
+  private readonly retiredPcIds = new Map<string, string>();
   private boundPort = 0;
   private boundHost = "0.0.0.0";
   private lanAddress = "127.0.0.1";
@@ -192,6 +226,8 @@ export class RemoteAgentServer {
   private devices: DeviceRegistryFile = { version: 1, devices: [] };
   private discovery?: DiscoveryResponder;
   private publicBaseUrl?: string;
+  /** Set from opts/env: a permanent origin, so nothing ever re-homes off it. */
+  private stableBaseUrl?: string;
   /** Resolves (to the URL or undefined) once the tunnel attempt has finished either way. */
   private tunnelReady: Promise<string | undefined> = Promise.resolve(undefined);
 
@@ -215,6 +251,13 @@ export class RemoteAgentServer {
   }
 
   async start(): Promise<{ host: string; port: number }> {
+    // Config is validated before ANYTHING is bound. A throw further down leaves
+    // the caller with a half-started server it has no handle to close — a held
+    // TCP port and a live UDP discovery socket for the life of the process.
+    const stable = (this.opts.publicUrl ?? process.env["ARES_REMOTE_PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
+    if (stable && !/^https?:\/\//i.test(stable)) {
+      throw new Error(`ARES_REMOTE_PUBLIC_URL must be an http(s) origin, got "${stable}"`);
+    }
     const port = this.opts.port ?? (Number(process.env["ARES_REMOTE_AGENT_PORT"]) || DEFAULT_REMOTE_AGENT_PORT);
     const host = this.opts.host ?? "0.0.0.0";
     const http = createServer((req, res) => this.handleHttp(req, res));
@@ -257,6 +300,17 @@ export class RemoteAgentServer {
     });
     await this.discovery.start();
 
+    // A stable origin beats a quick tunnel outright: same reachability, and it
+    // is still correct after a restart. When one is configured, don't spend a
+    // cloudflared process on a hostname nobody would use.
+    if (stable) {
+      this.stableBaseUrl = stable;
+      this.publicBaseUrl = stable;
+      this.tunnelReady = Promise.resolve(stable);
+      this.log(`remote-agent: permanent public address ${stable} (no quick tunnel; links survive restarts)`);
+      return { host, port: this.boundPort };
+    }
+
     const tunnelMode = this.opts.tunnelMode ?? "auto";
     if (tunnelMode === "cloudflared") {
       // Hard requirement: surface the failure to the caller.
@@ -266,7 +320,7 @@ export class RemoteAgentServer {
       // Background: a 60MB first-time download must not hold up garrison boot.
       // generateToken awaits this (bounded) so the first link still gets the tunnel.
       this.tunnelReady = this.startTunnel()
-        .then((url) => { this.publicBaseUrl = url; return url; })
+        .then((url) => { this.publicBaseUrl = url; this.broadcastHome(); return url; })
         .catch((err) => {
           this.log(`remote-agent tunnel unavailable (${err instanceof Error ? err.message : String(err)}) — links are LAN-only`);
           return undefined;
@@ -284,6 +338,26 @@ export class RemoteAgentServer {
   /** The base URL for generated links (tunnel URL when active, LAN URL otherwise). */
   linkBaseUrl(): string {
     return this.publicBaseUrl ?? `http://${this.lanIp()}:${this.boundPort}`;
+  }
+
+  /**
+   * Tell every attached device where home is NOW.
+   *
+   * The address a connector dials is the one it last connected on. When a
+   * quick tunnel dies and returns on a different hostname, that stored address
+   * is already dead — the connector just doesn't know yet, and finds out at
+   * the worst moment: the next disconnect, off-LAN, with nothing left to try.
+   * Sending the new one while the socket is still up means the ladder's first
+   * rung is never stale. v3 connectors act on it; older ones ignore it.
+   */
+  private broadcastHome(): void {
+    const wsUrl = this.linkBaseUrl().replace(/^http/, "ws") + "/ws";
+    let told = 0;
+    for (const pc of this.pcs.values()) {
+      if (!pc.deviceId) continue;
+      try { pc.ws.send(JSON.stringify({ type: "home", wsUrl })); told++; } catch { /* the sweep will drop it */ }
+    }
+    if (told) this.log(`remote-agent: re-homed ${told} device(s) to ${wsUrl}`);
   }
 
   /** The address a LAN peer should use: the explicit bind host when there is
@@ -415,6 +489,9 @@ export class RemoteAgentServer {
           this.publicBaseUrl = url;
           this.tunnelRestarts = 0;
           this.log(`remote-agent tunnel restored: ${url}`);
+          // The whole point of restoring it: hand the new hostname to anyone
+          // still attached, before they need it.
+          this.broadcastHome();
           return url;
         })
         .catch((err) => {
@@ -472,10 +549,67 @@ export class RemoteAgentServer {
     return [...this.pcs.values()].map(({ ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, ...info }) => info);
   }
 
+  /** Remember which device a connection belonged to, so its id stays resolvable
+   *  after the connection is gone. Bounded: a machine that flaps for weeks must
+   *  not grow this without limit. */
+  private retirePcId(id: string, deviceId?: string): void {
+    if (!deviceId) return;
+    this.retiredPcIds.set(id, deviceId);
+    while (this.retiredPcIds.size > 256) {
+      const oldest = this.retiredPcIds.keys().next();
+      if (oldest.done) break;
+      this.retiredPcIds.delete(oldest.value);
+    }
+  }
+
+  /**
+   * Map whatever the caller is holding onto a live connection.
+   *
+   * Accepts, in order: a live pcId; a deviceId (stable for the life of the
+   * pairing, so callers can pin THAT instead); a retired pcId whose device is
+   * connected again. Returns undefined when nothing matches, and the callers
+   * raise the error — with the reason, because "that id is stale and the
+   * machine is offline" and "that id never existed" want different answers.
+   */
+  resolvePcId(id: string): string | undefined {
+    if (this.pcs.has(id)) return id;
+    const liveFor = (deviceId: string): string | undefined => {
+      for (const [pcId, pc] of this.pcs) if (pc.deviceId === deviceId) return pcId;
+      return undefined;
+    };
+    return liveFor(id) ?? (() => {
+      const deviceId = this.retiredPcIds.get(id);
+      return deviceId ? liveFor(deviceId) : undefined;
+    })();
+  }
+
+  /** The resolved id, or a precise Error explaining which kind of miss it was. */
+  private requirePc(id: string): RemotePcConn {
+    const resolved = this.resolvePcId(id);
+    const pc = resolved ? this.pcs.get(resolved) : undefined;
+    if (pc) return pc;
+    const knownDevice = this.devices.devices.find(
+      (d) => !d.revokedAt && (d.id === id || this.retiredPcIds.get(id) === d.id),
+    );
+    if (knownDevice) {
+      const seen = knownDevice.lastSeenAt ? new Date(knownDevice.lastSeenAt).toISOString().replace("T", " ").slice(0, 16) : "never";
+      throw new Error(
+        `"${knownDevice.name}" (${knownDevice.hostname}) is paired but not connected right now — last seen ${seen}. ` +
+        `It reconnects by itself when the machine is on and can reach this one; check it is awake, or use device id "${knownDevice.id}" once it is back.`,
+      );
+    }
+    throw new Error(
+      `No remote PC with id "${id}" connected. ` +
+      `A pc_id belongs to one connection and changes whenever the machine reconnects — ` +
+      `run list_pcs for current ids, or pass the device id from list_devices, which never changes.`,
+    );
+  }
+
   /** Send a request to a connected PC and await its matching `*_result`. */
-  private request(pcId: string, msg: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
-    const pc = this.pcs.get(pcId);
-    if (!pc) return Promise.reject(new Error(`No remote PC with id "${pcId}" connected`));
+  private request(rawPcId: string, msg: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
+    let pc: RemotePcConn;
+    try { pc = this.requirePc(rawPcId); }
+    catch (err) { return Promise.reject(err instanceof Error ? err : new Error(String(err))); }
     return new Promise((resolve, reject) => {
       const reqId = randomBytes(8).toString("hex");
       const timer = setTimeout(() => {
@@ -483,7 +617,7 @@ export class RemoteAgentServer {
         reject(new Error(`remote ${String(msg["type"])} timed out after ${Math.round(timeoutMs / 1000)}s`));
       }, timeoutMs + 2_000);
       timer.unref?.();
-      pc.pendingCmds.set(reqId, { resolve, reject, timer });
+      pc.pendingCmds.set(reqId, { resolve, reject, timer, op: String(msg["type"]) });
       try { pc.ws.send(JSON.stringify({ ...msg, reqId })); }
       catch (err) { clearTimeout(timer); pc.pendingCmds.delete(reqId); reject(err instanceof Error ? err : new Error(String(err))); }
     });
@@ -532,14 +666,14 @@ export class RemoteAgentServer {
 
   /** Connector version a PC is running (1 = pre-versioning). */
   connectorVersionOf(pcId: string): number {
-    return this.pcs.get(pcId)?.connectorVersion ?? 1;
+    const resolved = this.resolvePcId(pcId);
+    return (resolved ? this.pcs.get(resolved)?.connectorVersion : undefined) ?? 1;
   }
 
   /** Fail fast, with the fix, rather than letting an old connector time out in
    *  silence on an op it has never heard of. */
   private requireConnector(pcId: string, minVersion: number, op: string): void {
-    const pc = this.pcs.get(pcId);
-    if (!pc) throw new Error(`No remote PC with id "${pcId}" connected`);
+    const pc = this.requirePc(pcId);
     const have = pc.connectorVersion ?? 1;
     if (have < minVersion) {
       throw new Error(
@@ -595,6 +729,7 @@ export class RemoteAgentServer {
    * for the reconnect and reports the version that shows up.
    */
   async updateAgent(pcId: string, opts: string | { waitMs?: number; scriptPath?: string } = {}): Promise<{
+    deviceId: string;
     ok: boolean;
     from: number;
     to: number;
@@ -605,8 +740,7 @@ export class RemoteAgentServer {
     // The tool passes a script path positionally; the control API passes an
     // options object. Accept both rather than making callers care.
     const options = typeof opts === "string" ? { scriptPath: opts } : opts;
-    const pc = this.pcs.get(pcId);
-    if (!pc) throw new Error(`No remote PC with id "${pcId}" connected`);
+    const pc = this.requirePc(pcId);
     if (!pc.deviceId) throw new Error("update_agent only applies to permanently paired devices, not one-time help links.");
     const from = pc.connectorVersion ?? 1;
     const deviceId = pc.deviceId;
@@ -662,12 +796,48 @@ export class RemoteAgentServer {
       to,
       reconnected: !!reconnected,
       ...(reconnected ? { newPcId: reconnected } : {}),
+      // The stable handle. newPcId is already obsolete the next time this
+      // machine reconnects; deviceId is good for the life of the pairing.
+      deviceId,
       detail: reconnected
         ? to >= DEVICE_CONNECTOR_VERSION
           ? `connector updated v${from} → v${to} and reattached`
           : `device came back still on v${to} — either its rollback watchdog reverted the update, or its connector runs from somewhere other than ProgramData\\Ares\\remote (check update.log there)`
         : `device did not reattach within ${Math.round(waitMs / 1000)}s — its watchdog rolls back to the previous connector automatically`,
     };
+  }
+
+  /**
+   * Bring a just-attached device up to this build's connector, unasked.
+   *
+   * The owner's standing instruction for their OWN machines is "it should just
+   * work — no need to mess with it". A device that stays on an old connector
+   * is not obviously broken, it just silently cannot do the newest things, and
+   * nobody finds out until an op fails. So the garrison does it on sight.
+   *
+   * Safety is the device's, unchanged: it verifies the sha256, keeps the old
+   * script, and its watchdog rolls back if the new one fails to reconnect. The
+   * guard here is against REPEAT pushes — one attempt per device per target
+   * version per process. If an update lands and the device still comes back on
+   * the old version (a rollback), it is not tried again in a loop; that is a
+   * real fault and it belongs in the log, not in an infinite retry.
+   */
+  private readonly autoUpdateTried = new Set<string>();
+  private autoUpdateOnAttach(pcId: string, deviceId: string, have: number): void {
+    const enabled = this.opts.autoUpdateDevices ?? process.env["ARES_REMOTE_AUTO_UPDATE"] !== "0";
+    if (!enabled || have >= DEVICE_CONNECTOR_VERSION) return;
+    const key = `${deviceId}@${DEVICE_CONNECTOR_VERSION}`;
+    if (this.autoUpdateTried.has(key)) return;
+    this.autoUpdateTried.add(key);
+    // Let the attach settle first — updateAgent talks to this same socket.
+    const timer = setTimeout(() => {
+      if (this.closing) return;
+      this.log(`remote-agent: auto-updating connector v${have} -> v${DEVICE_CONNECTOR_VERSION} on ${deviceId}`);
+      void this.updateAgent(pcId)
+        .then((r) => this.log(`remote-agent: auto-update ${r.ok ? "succeeded" : "did not take"} — ${r.detail}`))
+        .catch((err) => this.log(`remote-agent: auto-update failed (${err instanceof Error ? err.message : String(err)})`));
+    }, 3_000);
+    timer.unref?.();
   }
 
   /** v1 devices have no update op; drive one through putfile + exec instead. */
@@ -739,7 +909,7 @@ export class RemoteAgentServer {
     const existing = [...this.forwards.values()].find((f) => f.info.pcId === pcId && f.info.target === origin);
     if (existing) return { ...existing.info };
 
-    const deviceId = this.pcs.get(pcId)?.deviceId;
+    const deviceId = this.pcs.get(this.resolvePcId(pcId) ?? pcId)?.deviceId;
     const id = randomBytes(6).toString("hex");
     const server = createServer((req, res) => {
       void (async () => {
@@ -792,7 +962,7 @@ export class RemoteAgentServer {
       port, createdAt: Date.now(), requests: 0,
     };
     this.forwards.set(id, { info, server, ...(deviceId ? { deviceId } : {}) });
-    this.log(`remote forward ${info.localUrl} → ${origin} on ${this.pcs.get(pcId)?.label ?? pcId}`);
+    this.log(`remote forward ${info.localUrl} → ${origin} on ${this.pcs.get(this.resolvePcId(pcId) ?? pcId)?.label ?? pcId}`);
     return { ...info };
   }
 
@@ -806,12 +976,14 @@ export class RemoteAgentServer {
   }
 
   notify(pcId: string, message: string): void {
-    this.pcs.get(pcId)?.ws.send(JSON.stringify({ type: "notify", message }));
+    const resolved = this.resolvePcId(pcId);
+    if (resolved) this.pcs.get(resolved)?.ws.send(JSON.stringify({ type: "notify", message }));
   }
 
   /** Owner-initiated: tell the connector to exit (so it doesn't auto-reconnect) and drop it. */
   disconnect(pcId: string): void {
-    const pc = this.pcs.get(pcId);
+    const resolved = this.resolvePcId(pcId);
+    const pc = resolved ? this.pcs.get(resolved) : undefined;
     if (!pc) return;
     this.tokens.delete(pc.token);
     try { pc.ws.send(JSON.stringify({ type: "bye" })); } catch { /* gone */ }
@@ -851,6 +1023,7 @@ export class RemoteAgentServer {
     const pc = this.pcs.get(id);
     if (!pc) return;
     this.pcs.delete(id);
+    this.retirePcId(id, pc.deviceId);
     for (const { reject, timer } of pc.pendingCmds.values()) {
       clearTimeout(timer);
       reject(new Error("remote PC disconnected"));
@@ -872,9 +1045,9 @@ export class RemoteAgentServer {
     // the process keeps listening on ports for machines it can no longer reach.
     for (const id of [...this.forwards.keys()]) await this.stopForward(id);
     for (const pc of this.pcs.values()) {
-      for (const { reject, timer } of pc.pendingCmds.values()) {
+      for (const { reject, timer, op } of pc.pendingCmds.values()) {
         clearTimeout(timer);
-        reject(new Error("server closed"));
+        reject(new Error(`server closed while waiting for ${op}`));
       }
       try { pc.ws.send(JSON.stringify({ type: "bye" })); } catch { /* gone */ }
       try { pc.ws.close(); } catch { /* already dead */ }
@@ -1052,6 +1225,7 @@ export class RemoteAgentServer {
       for (const [existingId, existing] of this.pcs) {
         if (existing.deviceId !== device.id) continue;
         this.pcs.delete(existingId);
+        this.retirePcId(existingId, existing.deviceId);
         try { existing.ws.close(); } catch { /* already gone */ }
       }
       const id = randomBytes(8).toString("hex");
@@ -1071,6 +1245,10 @@ export class RemoteAgentServer {
         ...(meta.connectorVersion ? { connectorVersion: meta.connectorVersion } : {}),
       };
       this.pcs.set(id, pc);
+      // No "home" frame here on purpose: a connector already persists the URL
+      // it just connected on. The broadcast exists for the address CHANGING
+      // under a live socket, which is the case nothing else covers.
+      this.autoUpdateOnAttach(id, device.id, meta.connectorVersion ?? 1);
       this.log(
         `paired device attached: ${device.name} (${device.hostname}) id=${id}` +
         `${device.allowElevated ? " [elevated]" : ""} connector v${meta.connectorVersion ?? 1}` +
@@ -1216,14 +1394,11 @@ export class RemoteAgentServer {
       if (!pc) return;
       // A replaced (reconnected) entry already left the map — don't announce it twice.
       if (this.pcs.get(pc.id) !== pc) { pc = undefined; return; }
-      for (const { reject, timer } of pc.pendingCmds.values()) {
-        clearTimeout(timer);
-        reject(new Error("remote PC disconnected"));
-      }
-      this.pcs.delete(pc.id);
       this.log(`remote PC disconnected: ${pc.hostname} id=${pc.id}`);
-      const { ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, ...info } = pc;
-      for (const cb of this.disconnectedListeners) cb(info);
+      // Through dropPc, not a copy of it: this used to inline the same four
+      // steps and so missed retiring the id, which is exactly the path a
+      // sleeping laptop takes — the common case for a pc_id going stale.
+      this.dropPc(pc.id);
       pc = undefined;
     });
 
@@ -1952,6 +2127,15 @@ function buildPairInstallPs1(base: string, token: string): string {
     "# The trade is it starts at logon rather than before it — fine for a machine",
     "# someone signs into; exec/files/admin all still work, plus GUI control.",
     "$trigger = New-ScheduledTaskTrigger -AtLogOn",
+    "# A second trigger that fires every 5 minutes, forever. RestartCount only",
+    "# covers a task the scheduler considers FAILED; a connector that exits 0",
+    "# (killed, a clean throw, an antivirus stop) counts as completed and is",
+    "# never restarted — the machine then sits there paired and unreachable",
+    "# until the next logon. With MultipleInstances IgnoreNew this tick is free",
+    "# while the connector is alive, and is the whole recovery when it is not.",
+    "$heal = New-ScheduledTaskTrigger -Once -At (Get-Date) " +
+      "-RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)",
+    "$triggers = @($trigger, $heal)",
     "# ExecutionTimeLimit 0 = never time out; the default would kill it after days.",
     "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
       "-StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) " +
@@ -1968,7 +2152,7 @@ function buildPairInstallPs1(base: string, token: string): string {
     "# have more privilege but no desktop and a different profile.",
     '$me = "$env:USERDOMAIN\\$env:USERNAME"',
     "$principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest",
-    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null",
+    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $triggers -Settings $settings -Principal $principal | Out-Null",
     "",
     "# The firewall blocks inbound by default, and a device that cannot be",
     "# reached on the LAN retries forever with nothing logged to say why.",

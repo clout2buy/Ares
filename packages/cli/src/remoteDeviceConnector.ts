@@ -40,7 +40,7 @@
  *       with hash verification and on-device rollback, heartbeat file,
  *       explicit "unsupported op" replies instead of silence.
  */
-export const DEVICE_CONNECTOR_VERSION = 2;
+export const DEVICE_CONNECTOR_VERSION = 3;
 
 /** Ops v2 understands. Sent at attach so the server never has to guess. */
 export const DEVICE_CONNECTOR_CAPS = [
@@ -774,6 +774,17 @@ function Connect-Once($Cred, [string]$WsUrl) {
       if ($null -ne $cmd) {
         switch ($cmd.type) {
           'ping' { Send-Json $ws @{ type = 'pong' }; Write-Heartbeat }
+          # The server moved (a quick tunnel came back on a new hostname, or we
+          # reached it by LAN discovery). Persist the address NOW, while we can
+          # still hear it -- the alternative is finding out at the next
+          # disconnect, off-LAN, with only dead candidates left to try.
+          'home' {
+            if ($cmd.wsUrl -and $Cred.lastWsUrl -ne $cmd.wsUrl) {
+              $Cred | Add-Member -NotePropertyName lastWsUrl -NotePropertyValue ([string]$cmd.wsUrl) -Force
+              Save-Credential $Cred
+              Write-Log ('home moved to ' + $cmd.wsUrl)
+            }
+          }
           'exec' {
             $t = if ($cmd.timeoutMs) { [int]$cmd.timeoutMs } else { 30000 }
             $immediate = Start-Exec ([string]$cmd.reqId) ([string]$cmd.command) $t ([string]$cmd.shell)

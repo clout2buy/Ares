@@ -2417,7 +2417,17 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          process.stdout.write(JSON.stringify({ type: command.type === "remote_pc_link" ? "remote_pc_link" : "remote_pcs", error: message, pcs: [] }) + "\n");
+          // Answer on the channel that was asked, and WITHOUT a list. A failed
+          // device lookup used to reply `remote_pcs: { pcs: [] }`, which both
+          // misfiled the error and blanked the connected-PCs pane — the same
+          // "couldn't ask" rendered as "nothing is there" that made a live
+          // paired laptop look like it had never been paired. The panes keep
+          // their last-known rows and the next poll refreshes them.
+          const channel =
+            command.type === "remote_pc_link" || command.type === "remote_pc_pair" ? "remote_pc_link"
+            : command.type === "remote_devices" || command.type === "remote_device_unpair" ? "remote_devices"
+            : "remote_pcs";
+          process.stdout.write(JSON.stringify({ type: channel, error: message }) + "\n");
         }
         continue;
       }

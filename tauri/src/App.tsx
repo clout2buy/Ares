@@ -1767,7 +1767,12 @@ function App() {
           setUsageStats((e.stats as UsageStats | null) ?? null);
           return true;
         case "remote_pcs": {
-          const rows = Array.isArray(e.pcs) ? (e.pcs as RemotePcRow[]) : [];
+          // No list means the daemon could not ask (garrison down, restarting,
+          // slow) — keep the last-known rows and let the next poll refresh.
+          // Rendering that as an empty pane is the UI version of telling
+          // someone their paired machine was never paired.
+          if (!Array.isArray(e.pcs)) return true;
+          const rows = e.pcs as RemotePcRow[];
           setRemotePcs(rows);
           if (e.scope === "public" || e.scope === "lan") setRemoteScope(e.scope);
           // Drop preview state for devices that are gone.

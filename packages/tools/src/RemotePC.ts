@@ -51,6 +51,13 @@ export interface RemoteAgentServerLike {
     id: string; name: string; hostname: string; os: string;
     addedAt: number; lastSeenAt?: number; elevated: boolean; online: boolean;
   }>;
+  /** Out-of-process implementations can fetch a fresh list; preferred when
+   *  present, because the sync one is a cache that reads empty before its first
+   *  refresh lands — indistinguishable from "nothing is paired". */
+  listDevicesAsync?(): Promise<Array<{
+    id: string; name: string; hostname: string; os: string;
+    addedAt: number; lastSeenAt?: number; elevated: boolean; online: boolean;
+  }>>;
   unpairDevice?(deviceId: string): Promise<{ name: string } | null>;
   renameDevice?(deviceId: string, name: string): Promise<{ name: string } | null>;
   listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number; connectorVersion?: number }>;
@@ -63,7 +70,7 @@ export interface RemoteAgentServerLike {
     req: { url: string; method?: string; headers?: Record<string, string>; bodyBase64?: string; timeoutMs?: number },
   ): Promise<{ status: number; headers: Record<string, string>; dataBase64: string; size: number }>;
   /** Push this build's connector script to a paired device. */
-  updateAgent?(pcId: string, scriptPath?: string): Promise<{ ok: boolean; from: number; to: number; reconnected: boolean; newPcId?: string; detail: string }>;
+  updateAgent?(pcId: string, scriptPath?: string): Promise<{ ok: boolean; from: number; to: number; reconnected: boolean; newPcId?: string; deviceId?: string; detail: string }>;
   /** The connector version this build ships, for "is that device current?". */
   availableConnectorVersion?(): Promise<number> | number;
   /** Serve a remote HTTP service on a local loopback port. */
@@ -126,7 +133,11 @@ const inputSchema = z.object({
     "update_agent: push THIS build's connector to a paired machine (REQUIRES pc_id) so it gains the newest capabilities — the owner approves it, the device verifies the hash, keeps the old script, and rolls itself back if the new one fails to reconnect.",
   ),
   label: z.string().optional().describe("generate_link: short name for the PC, e.g. \"Sarah\" or \"Dave's laptop\" — shown when it connects."),
-  pc_id: z.string().optional().describe("the PC id from list_pcs (or from the connected notice)."),
+  pc_id: z.string().optional().describe(
+    "the PC id from list_pcs (or from the connected notice). A pc_id belongs to one CONNECTION and changes " +
+    "every time the machine reconnects — for a permanently paired device, pass its device id from list_devices " +
+    "instead: that one never changes and is resolved to the live connection for you.",
+  ),
   command: z.string().optional().describe("exec_on_pc: shell command to run on the remote PC."),
   shell: z.enum(["cmd", "powershell"]).optional().describe("exec_on_pc: which shell. 'cmd' (default) or 'powershell' to run cmdlets."),
   control: z.object({
@@ -353,7 +364,12 @@ export const RemotePCTool = buildTool({
         if (!_server.listDevices) {
           return fail("list_devices", new Error("this Ares build has no device pairing — update the daemon"));
         }
-        const devices = _server.listDevices();
+        let devices;
+        // Async when the implementation offers it: the sync path is a cache
+        // that is empty until its first refresh returns, and reporting that as
+        // ok/[] told a chat its paired laptop had never existed.
+        try { devices = _server.listDevicesAsync ? await _server.listDevicesAsync() : _server.listDevices(); }
+        catch (err) { return fail("list_devices", err); }
         if (devices.length === 0) {
           return {
             output: { action: "list_devices", ok: true, devices: [] },
@@ -585,11 +601,15 @@ export const RemotePCTool = buildTool({
             output: {
               action: "update_agent", ok: r.ok,
               connectorVersion: r.to, availableVersion: r.to,
-              updated: { from: r.from, to: r.to, reconnected: r.reconnected, ...(r.newPcId ? { newPcId: r.newPcId } : {}) },
+              updated: {
+                from: r.from, to: r.to, reconnected: r.reconnected,
+                ...(r.newPcId ? { newPcId: r.newPcId } : {}),
+                ...(r.deviceId ? { deviceId: r.deviceId } : {}),
+              },
               note: r.detail,
             },
             display: r.ok
-              ? `✅ ${r.detail}.${r.newPcId ? ` Its pc_id is now ${r.newPcId} — use that from here on.` : ""}`
+              ? `✅ ${r.detail}.${r.deviceId ? ` Use device id ${r.deviceId} from here on — it survives every reconnect.` : r.newPcId ? ` Its pc_id is now ${r.newPcId}.` : ""}`
               : `⚠️ ${r.detail}`,
           };
         } catch (err) { return fail("update_agent", err); }

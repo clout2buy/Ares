@@ -65,6 +65,13 @@ const HEARTBEAT_MS = 2_000;
 /** Drop a PC that has not sent a frame in this long (≈3 missed heartbeats). */
 const PEER_TIMEOUT_MS = 100_000;
 
+/** Headers a reverse proxy or tunnel adds. Their presence means the request
+ *  reached us through something, so its source address is that something's. */
+const PROXY_HEADERS = [
+  "cf-connecting-ip", "cf-ray", "cf-warp-tag-id", "cf-ipcountry",
+  "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-real-ip", "forwarded",
+] as const;
+
 const LINK_TTL_MS = 10 * 60 * 1000;
 /** Once a PC has used its link, the same PC may reconnect on it for this long —
  *  a flaky wifi blip must not mean "send a new link". */
@@ -1132,7 +1139,24 @@ export class RemoteAgentServer {
       res.end(JSON.stringify(body));
     };
     const remote = req.socket.remoteAddress ?? "";
-    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    const onThisMachine = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    // ...but a tunnelled request LOOKS like it came from this machine, because
+    // cloudflared runs here and dials the origin over loopback. So the check
+    // above passed for anything arriving from the internet, and the only thing
+    // between a stranger and POST /api/exec on a paired machine was one static
+    // token that never rotates. Proved in the field: a curl to 127.0.0.1 with
+    // cf-connecting-ip set returned the full device list.
+    //
+    // A proxied request did not originate here, whatever the socket says.
+    // Nothing legitimate on the control API is ever proxied — the daemon is a
+    // sibling process on the same box — so any forwarding header disqualifies
+    // it. This matters more the moment the address stops being a random
+    // trycloudflare hostname and becomes one someone could guess.
+    const proxied = PROXY_HEADERS.some((h) => req.headers[h] !== undefined);
+    const loopback = onThisMachine && !proxied;
+    if (proxied && onThisMachine) {
+      this.log(`remote-agent: refused a tunnelled control-API call to ${url.pathname}`);
+    }
     const expected = this.opts.controlToken;
     const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     if (!expected || !loopback || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
@@ -1245,9 +1269,16 @@ export class RemoteAgentServer {
         ...(meta.connectorVersion ? { connectorVersion: meta.connectorVersion } : {}),
       };
       this.pcs.set(id, pc);
-      // No "home" frame here on purpose: a connector already persists the URL
-      // it just connected on. The broadcast exists for the address CHANGING
-      // under a live socket, which is the case nothing else covers.
+      // A connector already persists the URL it connected ON, so there is
+      // normally nothing to tell it here. The exception is the permanent
+      // address: a device that attaches over the LAN stores a LAN URL, and the
+      // day it leaves the house that is the first dead candidate and the seed
+      // is the second. It has to be TOLD the permanent address while it is
+      // here, or "paired 24/7" only means "paired at home".
+      if (this.stableBaseUrl) {
+        const homeUrl = this.stableBaseUrl.replace(/^http/, "ws") + "/ws";
+        try { ws.send(JSON.stringify({ type: "home", wsUrl: homeUrl, permanent: true })); } catch { /* gone */ }
+      }
       this.autoUpdateOnAttach(id, device.id, meta.connectorVersion ?? 1);
       this.log(
         `paired device attached: ${device.name} (${device.hostname}) id=${id}` +

@@ -284,7 +284,11 @@ function Find-Home($Cred) {
     } catch { }
   }
 
-  $candidates += (($SeedBase -replace '^http', 'ws') + '/ws')   # 3. the address we were installed with
+  # 3. the permanent address, if the server has ever told us one. Ahead of the
+  #    seed because the seed can be a quick-tunnel hostname that expired.
+  if ($Cred -and $Cred.homeUrl) { $candidates += $Cred.homeUrl }
+
+  $candidates += (($SeedBase -replace '^http', 'ws') + '/ws')   # 4. the address we were installed with
   if ($SeedWs) { $candidates += $SeedWs }
   return ($candidates | Where-Object { $_ } | Select-Object -Unique)
 }
@@ -779,7 +783,17 @@ function Connect-Once($Cred, [string]$WsUrl) {
           # still hear it -- the alternative is finding out at the next
           # disconnect, off-LAN, with only dead candidates left to try.
           'home' {
-            if ($cmd.wsUrl -and $Cred.lastWsUrl -ne $cmd.wsUrl) {
+            # permanent = an address that fronts the server for good (a named
+            # tunnel on the owner's own domain). Kept SEPARATELY from
+            # lastWsUrl: the fast path stays whatever we last reached, and this
+            # is the one that still works from a coffee shop.
+            if ($cmd.wsUrl -and $cmd.permanent) {
+              if ($Cred.homeUrl -ne $cmd.wsUrl) {
+                $Cred | Add-Member -NotePropertyName homeUrl -NotePropertyValue ([string]$cmd.wsUrl) -Force
+                Save-Credential $Cred
+                Write-Log ('permanent home is ' + $cmd.wsUrl)
+              }
+            } elseif ($cmd.wsUrl -and $Cred.lastWsUrl -ne $cmd.wsUrl) {
               $Cred | Add-Member -NotePropertyName lastWsUrl -NotePropertyValue ([string]$cmd.wsUrl) -Force
               Save-Credential $Cred
               Write-Log ('home moved to ' + $cmd.wsUrl)

@@ -172,3 +172,46 @@ test("the install script the machine downloads parses on real PowerShell", { ski
     assert.match(stdout, /PARSE_OK/, `the pairing installer does not parse:\n${stdout}`);
   });
 });
+
+test("a tunnelled request cannot reach the control API, token or not", async () => {
+  // cloudflared runs on this machine and dials the origin over loopback, so a
+  // request from the internet arrives with remoteAddress 127.0.0.1 and the
+  // loopback gate passes. That left one static token between a stranger and
+  // POST /api/exec on a paired machine — and it stops being obscure the moment
+  // the address is a permanent hostname instead of a random one.
+  const controlToken = "a".repeat(32);
+  await withServer({ controlToken }, async (server, base) => {
+    const auth = { authorization: `Bearer ${controlToken}` };
+
+    const direct = await fetch(`${base}/api/pcs`, { headers: auth });
+    assert.equal(direct.status, 200, "a genuine local call must still work");
+
+    for (const header of ["cf-connecting-ip", "cf-ray", "x-forwarded-for", "x-real-ip", "forwarded"]) {
+      const viaTunnel = await fetch(`${base}/api/pcs`, { headers: { ...auth, [header]: "203.0.113.9" } });
+      assert.equal(viaTunnel.status, 401, `${header} still reached the control API`);
+      assert.deepEqual(await viaTunnel.json(), { error: "unauthorized" });
+    }
+
+    // The connector's own endpoints are meant to be public and stay reachable —
+    // the fix must not lock the devices out of their own front door.
+    const { token } = await server.generatePairingLink("my laptop");
+    const pairPage = await fetch(`${base}/pair?token=${token}`, { headers: { "cf-connecting-ip": "203.0.113.9" } });
+    assert.equal(pairPage.status, 200, "pairing over the tunnel is the whole point of the tunnel");
+  });
+});
+
+test("a device that attaches over the LAN is still told the permanent address", async () => {
+  // The failure this prevents: the laptop attaches at home, stores a 192.168.*
+  // URL, and the day it leaves the house its candidates are that dead LAN
+  // address and a seed that may be an expired quick tunnel. Paired 24/7 has to
+  // mean away from home too.
+  await withServer({ publicUrl: "https://remote.example.com" }, async (server, base) => {
+    const { ws, waitFor } = await enrol(server, base, { connectorVersion: DEVICE_CONNECTOR_VERSION });
+    try {
+      const home = await waitFor("home");
+      assert.ok(home, "the device was never told the permanent address");
+      assert.equal(home.wsUrl, "wss://remote.example.com/ws");
+      assert.equal(home.permanent, true, "it must be stored apart from the address it connected on");
+    } finally { ws.close(); }
+  });
+});

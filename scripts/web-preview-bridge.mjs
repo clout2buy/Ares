@@ -154,6 +154,12 @@ async function invoke(cmd, args = {}) {
     case "ares_send":
       writeDaemon({ type: "send", goal: String(args.goal ?? "") });
       return null;
+    // The generic daemon-command channel — how the UI drives everything from
+    // remote_pcs / remote_pc_pair to sessions_list. Without this the preview
+    // bridge could send a chat message but nothing else reached the daemon.
+    case "ares_daemon_command":
+      writeDaemon(args.command ?? {});
+      return null;
     case "ares_set_reasoning":
       writeDaemon({ type: "reasoning", level: String(args.level ?? "") });
       return null;

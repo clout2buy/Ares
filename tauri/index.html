@@ -8,6 +8,55 @@
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      Dev-only bridge shim. When the page is opened with ?bridge=<port> it
+      installs a __TAURI_INTERNALS__ that forwards invoke() to the web-preview
+      bridge (scripts/web-preview-bridge.mjs), so the browser UI runs against a
+      REAL daemon instead of demo mode. isTauri() then reports true and every
+      ares_* command reaches the daemon; events arrive via ares_drain_events
+      polling (the push listener is a no-op here, which the app already tolerates).
+      Inert without the query param — production and the packaged app never hit it.
+    -->
+    <script>
+      (function () {
+        var m = /[?&]bridge=(\d+)/.exec(location.search);
+        if (!m) return;
+        var base = "http://127.0.0.1:" + m[1];
+        // Commands the bridge doesn't implement (window/webview/updater plugins)
+        // get benign local answers so @tauri-apps/api doesn't throw — only the
+        // ares_* surface and event listen actually need the daemon.
+        var noop = {
+          "plugin:event|unlisten": null,
+          "plugin:updater|check": null,
+          "plugin:window|internal_toggle_maximize": null,
+        };
+        window.__TAURI_INTERNALS__ = {
+          // getCurrentWindow()/getCurrentWebview() read these; without them the
+          // Composer (and anything touching the window API) crashes on mount.
+          metadata: {
+            currentWindow: { label: "main" },
+            currentWebview: { windowLabel: "main", label: "main" },
+          },
+          invoke: function (cmd, args) {
+            if (Object.prototype.hasOwnProperty.call(noop, cmd)) return Promise.resolve(noop[cmd]);
+            return fetch(base + "/invoke", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ cmd: cmd, args: args || {} }),
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (j) { if (j && j.ok) return j.value; throw new Error((j && j.error) || "bridge error"); });
+          },
+          // Events arrive via ares_drain_events polling, so listener registration
+          // is inert — but the API still calls these, so they must exist.
+          transformCallback: function () { return Math.floor(Math.random() * 1e9); },
+          unregisterListener: function () { return Promise.resolve(); },
+          convertFileSrc: function (p) { return base + "/file?path=" + encodeURIComponent(p); },
+        };
+        window.isTauri = true;
+        console.info("[ares] bridge shim active →", base);
+      })();
+    </script>
     <script type="module" src="/src/App.tsx"></script>
   </body>
 </html>

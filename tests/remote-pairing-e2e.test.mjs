@@ -261,21 +261,24 @@ test("the pairing page states the cost plainly before anything is installed", as
     const html = await (await fetch(`${base}/pair?token=${link.token}`)).text();
     assert.match(html, /permanent/i);
     assert.match(html, /administrator rights/i);
-    assert.match(html, /before anyone\s*\n?\s*logs in/i);
+    assert.match(html, /when you sign in/i, "AtLogOn: it runs in the signed-in session, not before login");
     assert.match(html, /machine you own/i);
     assert.match(html, /unpair/i, "the off switch is on the page");
   });
 });
 
-test("the installer registers a boot task as the owner, elevated", async () => {
+test("the installer registers an interactive-session task as the owner, elevated", async () => {
   await withServer(async (server, base) => {
     const link = await server.generatePairingLink("Laptop DB");
     const ps = await (await fetch(`${base}/pair-install.ps1?token=${link.token}`)).text();
-    assert.match(ps, /-AtStartup/);
-    assert.ok(!/-AtLogOn/.test(ps), "must not wait for a login");
-    assert.match(ps, /-RunLevel Highest/);
-    assert.match(ps, /Get-Credential/, "runs as the owner, with network credentials");
-    assert.ok(!/S-1-5-18/.test(ps), "SYSTEM would not match how the owner runs commands");
+    // AtLogOn + Interactive: runs in the user's DESKTOP session so GUI control
+    // (mouse/keyboard/screen) works — a boot/session-0 task can't touch the GUI.
+    assert.match(ps, /-AtLogOn/);
+    assert.ok(!/-AtStartup/.test(ps), "session-0 boot task can't drive the desktop");
+    assert.match(ps, /-LogonType Interactive/);
+    assert.match(ps, /-RunLevel Highest/, "still elevated");
+    assert.ok(!/Get-Credential/.test(ps), "Interactive needs no stored password");
+    assert.ok(!/S-1-5-18/.test(ps), "SYSTEM has no desktop and the wrong profile");
     assert.match(ps, /New-NetFirewallRule/, "opens the ports the device needs");
     assert.match(ps, /IsInRole/, "refuses to run unelevated");
   });

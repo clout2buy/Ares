@@ -11,6 +11,18 @@ import { tokenPath } from "@ares/garrison";
 import type { RemoteAgentServerLike } from "@ares/tools";
 import { DEFAULT_REMOTE_AGENT_PORT, type LinkScope, type RemotePcInfo, type ExecResult, type FileGetResult } from "./remoteAgentServer.js";
 
+/** A permanently paired device, as the control API reports it. */
+export interface PairedDeviceRow {
+  id: string;
+  name: string;
+  hostname: string;
+  os: string;
+  addedAt: number;
+  lastSeenAt?: number;
+  elevated: boolean;
+  online: boolean;
+}
+
 export class RemoteAgentClient implements RemoteAgentServerLike {
   private readonly base: string;
 
@@ -39,6 +51,38 @@ export class RemoteAgentClient implements RemoteAgentServerLike {
 
   generateToken(label: string): Promise<{ token: string; url: string; scope: LinkScope }> {
     return this.call("POST", "/api/link", { label });
+  }
+
+  /** Permanent pairing link — distinct from the one-time help link. */
+  generatePairingLink(label: string): Promise<{ token: string; url: string; scope: LinkScope; warning?: string }> {
+    return this.call("POST", "/api/pair-link", { label });
+  }
+
+  /** Sync by interface (mirrors listPcs): cached snapshot, refreshed async. */
+  listDevices(): PairedDeviceRow[] {
+    void this.refreshDevices();
+    return this.devicesCache;
+  }
+
+  private devicesCache: PairedDeviceRow[] = [];
+  private async refreshDevices(): Promise<void> {
+    try {
+      const { devices } = await this.call<{ devices: PairedDeviceRow[] }>("GET", "/api/devices", undefined, 5_000);
+      this.devicesCache = devices;
+    } catch {
+      this.devicesCache = [];
+    }
+  }
+
+  /** Fresh list — the daemon prefers this when it can await. */
+  async listDevicesAsync(): Promise<PairedDeviceRow[]> {
+    await this.refreshDevices();
+    return this.devicesCache;
+  }
+
+  async unpairDevice(deviceId: string): Promise<{ name: string } | null> {
+    const res = await this.call<{ ok: boolean; name?: string }>("POST", "/api/unpair", { deviceId });
+    return res.ok && res.name ? { name: res.name } : null;
   }
 
   /** Synchronous by interface; the tool reads it once per call, so this is a
@@ -76,8 +120,13 @@ export class RemoteAgentClient implements RemoteAgentServerLike {
     }
   }
 
-  exec(pcId: string, command: string, timeoutMs = 30_000): Promise<ExecResult> {
-    return this.call("POST", "/api/exec", { pcId, command, timeoutMs }, timeoutMs + 10_000);
+  exec(pcId: string, command: string, timeoutMs = 30_000, shell?: "cmd" | "powershell"): Promise<ExecResult> {
+    return this.call("POST", "/api/exec", { pcId, command, timeoutMs, ...(shell ? { shell } : {}) }, timeoutMs + 10_000);
+  }
+
+  /** Drive the remote desktop (click/type/key/move/scroll/drag). */
+  input(pcId: string, ev: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+    return this.call("POST", "/api/input", { pcId, ...ev }, 20_000);
   }
 
   screenshot(pcId: string): Promise<{ dataBase64: string }> {

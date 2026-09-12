@@ -54,7 +54,14 @@ export const DEFAULT_REMOTE_AGENT_PORT = 7422;
  * in a receive call, so answering a ping is free, whereas sending one on a
  * timer would need a cancellable receive in both PowerShell and Python.
  */
-const HEARTBEAT_MS = 30_000;
+// 2s, not 30s. A connector that runs exec ASYNC only flushes a finished
+// command's result when its next inbound frame arrives — so the heartbeat
+// interval is also the worst-case exec-result latency. At 30s that made exec
+// technically-working but unusable (~25s per command in a live test). 2s keeps
+// exec responsive; the traffic is one tiny frame per device per 2s, nothing.
+// (A connector that runs exec synchronously and replies inline wouldn't need
+// this — that is the proper connector-side fix, tracked for the release.)
+const HEARTBEAT_MS = 2_000;
 /** Drop a PC that has not sent a frame in this long (≈3 missed heartbeats). */
 const PEER_TIMEOUT_MS = 100_000;
 
@@ -451,9 +458,16 @@ export class RemoteAgentServer {
     });
   }
 
-  async exec(pcId: string, command: string, timeoutMs = 30_000): Promise<ExecResult> {
-    const r = await this.request(pcId, { type: "exec", command, timeoutMs }, timeoutMs);
+  async exec(pcId: string, command: string, timeoutMs = 30_000, shell?: "cmd" | "powershell"): Promise<ExecResult> {
+    const r = await this.request(pcId, { type: "exec", command, timeoutMs, ...(shell ? { shell } : {}) }, timeoutMs);
     return { output: String(r["output"] ?? ""), exitCode: typeof r["exitCode"] === "number" ? (r["exitCode"] as number) : undefined };
+  }
+
+  /** Drive the remote desktop: click / type / key / move / scroll / drag.
+   *  The remote mirror of the local AgentComputer input tools. */
+  async input(pcId: string, ev: Record<string, unknown>, timeoutMs = 15_000): Promise<{ ok: boolean; error?: string }> {
+    const r = await this.request(pcId, { type: "input", ...ev }, timeoutMs);
+    return { ok: r["ok"] === true, ...(typeof r["error"] === "string" ? { error: r["error"] as string } : {}) };
   }
 
   /** Capture the remote screen; returns a base64 PNG. */
@@ -649,9 +663,26 @@ export class RemoteAgentServer {
       switch (`${req.method} ${url.pathname}`) {
         case "GET /api/pcs": return json(200, { pcs: this.listPcs(), scope: this.linkScope() });
         case "POST /api/link": return json(200, await this.generateToken(str("label") || "their PC"));
+        // Permanent pairing — a DIFFERENT link kind from the one-time help
+        // link above, so the UI can offer the two as distinct buttons.
+        case "POST /api/pair-link": return json(200, await this.generatePairingLink(str("label") || "my device"));
+        case "GET /api/devices": return json(200, { devices: this.listDevices() });
+        case "POST /api/unpair": {
+          const device = await this.unpairDevice(str("deviceId"));
+          return json(200, { ok: !!device, name: device?.name });
+        }
+        case "POST /api/rename-device": {
+          const device = await this.renameDevice(str("deviceId"), str("name"));
+          return json(200, { ok: !!device, name: device?.name });
+        }
         case "POST /api/exec": {
           const timeout = typeof body["timeoutMs"] === "number" ? (body["timeoutMs"] as number) : undefined;
-          return json(200, await this.exec(str("pcId"), str("command"), timeout));
+          const shell = str("shell") === "powershell" ? "powershell" : str("shell") === "cmd" ? "cmd" : undefined;
+          return json(200, await this.exec(str("pcId"), str("command"), timeout, shell));
+        }
+        case "POST /api/input": {
+          const { pcId: _p, ...ev } = body as Record<string, unknown>;
+          return json(200, await this.input(str("pcId"), ev));
         }
         case "POST /api/screenshot": return json(200, await this.screenshot(str("pcId")));
         case "POST /api/readfile": return json(200, await this.readFile(str("pcId"), str("path")));
@@ -1512,9 +1543,10 @@ button.ok{background:#2f7d4f}
 <h1>Pair this PC with Ares</h1>
 <p class="sub">This is a <b>permanent</b> link, not a one-time session.</p>
 <div class="warn">
-<b>What this installs.</b> A background task that starts when this PC boots &mdash; before anyone
-logs in &mdash; and connects to your Ares. From then on Ares can run commands here,
-<b>with administrator rights</b>, whenever the machine is on.
+<b>What this installs.</b> A task that starts when you sign in to this PC and connects to your
+Ares, running in your own desktop session <b>with administrator rights</b>. From then on Ares can
+run commands here and, because it runs in your session, see the screen and drive the mouse and
+keyboard &mdash; the whole machine, whenever you are signed in.
 Only do this on a machine you own. You can undo it at any time by unpairing the device in Ares,
 which revokes the credential immediately.
 </div>
@@ -1524,9 +1556,8 @@ which revokes the credential immediately.
 </ol>
 <pre id="c">${cmd.replace(/</g, "&lt;")}</pre>
 <button id="b" onclick="navigator.clipboard.writeText(document.getElementById('c').innerText).then(function(){var b=document.getElementById('b');b.textContent='âœ“ Copied';b.className='ok'})">Copy command</button>
-<p class="foot">The installer asks for your Windows password so the task can run as you with full
-network access. It is typed into your own elevated prompt, stored by Windows, and never sent anywhere.
-This link works once and expires in 10 minutes.</p>
+<p class="foot">No password needed &mdash; it runs inside your own signed-in session. This link works once and
+expires in 10 minutes.</p>
 </div></body></html>`;
 }
 
@@ -1565,9 +1596,14 @@ function buildPairInstallPs1(base: string, token: string): string {
     "$name = 'AresRemoteConnector'",
     "$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
     "$action = New-ScheduledTaskAction -Execute $ps -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $script + '\"')",
-    "# AtStartup, not AtLogOn: the machine must be reachable before anyone signs in.",
-    "$trigger = New-ScheduledTaskTrigger -AtStartup",
-    "# Battery defaults would stop this on a laptop, which is exactly the hardware.",
+    "# AtLogOn + Interactive, NOT AtStartup. A boot task runs in Windows session 0,",
+    "# which has no desktop — so mouse, keyboard and screen capture do nothing there",
+    "# (SetCursorPos silently no-ops, CopyFromScreen returns black). To DRIVE the",
+    "# GUI the connector must run in the real logged-on session, which AtLogOn +",
+    "# LogonType Interactive gives. Bonus: Interactive needs no stored password.",
+    "# The trade is it starts at logon rather than before it — fine for a machine",
+    "# someone signs into; exec/files/admin all still work, plus GUI control.",
+    "$trigger = New-ScheduledTaskTrigger -AtLogOn",
     "# ExecutionTimeLimit 0 = never time out; the default would kill it after days.",
     "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
       "-StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) " +
@@ -1578,17 +1614,13 @@ function buildPairInstallPs1(base: string, token: string): string {
     "  Unregister-ScheduledTask -TaskName $name -Confirm:$false",
     "}",
     "",
-    "# Runs as YOU, elevated. SYSTEM would have more privilege but a different",
-    "# profile, PATH and drive mappings, so commands would behave differently",
-    "# under Ares than when you run them yourself. The password logon is the only",
-    "# option that also keeps network credentials; Windows stores it in LSA and",
-    "# it is never sent anywhere.",
-    "Write-Host ''",
-    "Write-Host 'Enter the Windows password for this account so the task can run at boot.' -ForegroundColor Cyan",
+    "# Runs as YOU, in your interactive desktop session, elevated. Interactive",
+    "# logon means Windows runs it inside your logged-on session (so it can see",
+    "# the screen and move the mouse) and needs NO password stored. SYSTEM would",
+    "# have more privilege but no desktop and a different profile.",
     '$me = "$env:USERDOMAIN\\$env:USERNAME"',
-    "$cred = Get-Credential -UserName $me -Message 'Password for the account Ares Remote runs as'",
-    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings " +
-      "-User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest | Out-Null",
+    "$principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest",
+    "Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null",
     "",
     "# The firewall blocks inbound by default, and a device that cannot be",
     "# reached on the LAN retries forever with nothing logged to say why.",

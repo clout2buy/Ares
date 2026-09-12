@@ -8,20 +8,22 @@
 //   * finds home again when the address changes (rendezvous ladder)
 //   * proves the SERVER is really its owner before obeying anything
 //   * never gives up reconnecting
-//   * runs commands CONCURRENTLY
+//   * starts exec commands async so a long one doesn't stall the loop
 //
-// That last one is a bug fix, not a nicety. The one-time connector's loop is
-// `recv -> handle -> recv`, strictly sequential, so while a 30-second exec runs
-// every other request sits unserviced in the socket buffer while the server's
-// own timers expire. In the field that produced a run of failures at 20.6s,
-// 20.3s, 20.6s — the screenshot timeout — and the diagnosis "reads time out,
-// writes land". Here the receive loop never blocks on work: commands are
-// started, tracked, and reaped as they finish.
-//
-// PowerShell 5.1 has no async/await and runspace pools are a large amount of
-// fragile machinery for this, so the loop is an explicit event loop: a receive
-// with a short timeout, then a sweep of in-flight processes. Same effect, far
-// less to go wrong.
+// A CORRECTION lives here, learned in a live test. The first cut chased the
+// one-time connector's 20s-timeout bug (a long exec starving other requests)
+// by polling ReceiveAsync with a 250ms cancellation timeout so it could reap
+// finished jobs between frames. But in .NET, CANCELLING a WebSocket ReceiveAsync
+// ABORTS the socket -- it cannot be reused -- so the socket died on the first
+// idle tick and the connector reconnected forever (30 cycles in the field,
+// spamming the owner). The receive is now a BLOCKING ReceiveAsync
+// (CancellationToken.None), which keeps the socket healthy. Exec still runs
+// async via the Jobs dict, so a long command doesn't block the loop; finished
+// jobs are reaped whenever a frame arrives, and the server's 30s heartbeat
+// guarantees that happens at least that often even when idle. Full
+// fire-and-forget concurrency (a process-exit callback that sends results the
+// instant they finish) is the right next step, but it needs real device
+// testing before it ships -- stability first.
 
 export interface DeviceConnectorOptions {
   /** Enrollment token — only used on the very first run. */
@@ -178,10 +180,38 @@ function Send-Json($Ws, $Obj) {
   $Ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 }
 
-# Receive with a TIMEOUT. This is what makes the loop non-blocking: the old
-# connector blocked forever here, which is why a long exec starved every other
-# request until the server timed it out.
-function Receive-Json($Ws, [int]$TimeoutMs) {
+# BLOCKING receive. A hard-won correction: the first cut cancelled ReceiveAsync
+# on a 250ms timer to poll for finished jobs, but in .NET cancelling a WebSocket
+# ReceiveAsync ABORTS the socket -- it cannot be reused. So the socket died on
+# the first idle tick, the loop exited, and the connector reconnected forever
+# (30 reconnect cycles in a field test, spamming the owner's notifications).
+# ReceiveAsync with CancellationToken.None blocks until a frame arrives and
+# leaves the socket healthy. The server's 30s heartbeat guarantees the loop
+# wakes at least that often even when idle, which is when finished jobs are
+# reaped. A long exec no longer starves the loop because exec runs async (the
+# Jobs dict) -- we start it and return to the receive immediately.
+function Receive-Json($Ws) {
+  $buf = New-Object byte[] 65536
+  $ms = New-Object IO.MemoryStream
+  try {
+    do {
+      $seg = [ArraySegment[byte]]::new($buf)
+      $r = $Ws.ReceiveAsync($seg, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      if ($r.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) { return 'CLOSED' }
+      $ms.Write($buf, 0, $r.Count)
+    } while (-not $r.EndOfMessage)
+  } catch {
+    return 'CLOSED'
+  }
+  if ($ms.Length -eq 0) { return $null }
+  try { return ([Text.Encoding]::UTF8.GetString($ms.ToArray()) | ConvertFrom-Json) } catch { return $null }
+}
+
+# Timed receive for the HANDSHAKE only. Here aborting the socket on timeout is
+# fine: a handshake that stalls means the server is wrong or gone, and we tear
+# the socket down and reconnect anyway -- so the abort that breaks the steady
+# state is harmless during setup.
+function Receive-JsonTimeout($Ws, [int]$TimeoutMs) {
   $cts = New-Object Threading.CancellationTokenSource($TimeoutMs)
   $buf = New-Object byte[] 65536
   $ms = New-Object IO.MemoryStream
@@ -192,8 +222,6 @@ function Receive-Json($Ws, [int]$TimeoutMs) {
       if ($r.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) { return 'CLOSED' }
       $ms.Write($buf, 0, $r.Count)
     } while (-not $r.EndOfMessage)
-  } catch [OperationCanceledException] {
-    return $null                      # nothing waiting — normal, not an error
   } catch {
     return 'CLOSED'
   } finally { $cts.Dispose() }
@@ -207,10 +235,18 @@ function Receive-Json($Ws, [int]$TimeoutMs) {
 # longer starve a screenshot or a file read.
 $script:Jobs = @{}
 
-function Start-Exec([string]$ReqId, [string]$Command, [int]$TimeoutMs) {
+function Start-Exec([string]$ReqId, [string]$Command, [int]$TimeoutMs, [string]$Shell) {
   $psi = New-Object Diagnostics.ProcessStartInfo
-  $psi.FileName = 'cmd.exe'
-  $psi.Arguments = '/d /s /c "' + $Command + '"'
+  # cmd (default) or powershell. PowerShell lets Ares run real cmdlets remotely
+  # (Get-Service, Get-Process, etc.) instead of only cmd builtins, and removes
+  # the shell-dialect guessing that produced pasted-cmd-into-PowerShell errors.
+  if ($Shell -eq 'powershell') {
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' + '"' + ($Command -replace '"', '\"') + '"'
+  } else {
+    $psi.FileName = 'cmd.exe'
+    $psi.Arguments = '/d /s /c "' + $Command + '"'
+  }
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
   $psi.UseShellExecute = $false
@@ -253,8 +289,93 @@ function Reap-Jobs($Ws) {
   }
 }
 
+# ─── input injection (mouse + keyboard) ────────────────────────────────────
+# The remote mirror of AgentComputer: Ares can now DRIVE the desktop, not just
+# see it. Uses user32 SetCursorPos + mouse_event (simpler and multi-monitor-safe
+# in raw pixels, no SendInput normalization) and WinForms SendKeys for text.
+# The C# is a single-quoted here-string so nothing in it is expanded, and it
+# contains no backtick or dollar-brace (which would break the generating template).
+$script:InputReady = $false
+function Ensure-Input {
+  if ($script:InputReady) { return $true }
+  try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    if (-not ([System.Management.Automation.PSTypeName]'AresInput').Type) {
+      Add-Type -Namespace '' -Name 'AresInput' -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool SetCursorPos(int x, int y);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, System.IntPtr dwExtraInfo);
+'@ -ErrorAction Stop
+    }
+    $script:InputReady = $true
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Invoke-Input($cmd) {
+  # Session 0 has NO DESKTOP. A boot-triggered task runs there even as the right
+  # user, so SetCursorPos succeeds and moves nothing — the worst possible
+  # outcome, an ok:true that did not happen. Refuse loudly instead, and say what
+  # to change (an AtLogOn/Interactive task runs in the real desktop session).
+  if (-not [Environment]::UserInteractive) {
+    return @{ ok = $false; error = 'no interactive desktop: this connector is running in Windows session 0 (a boot task), where no screen or cursor exists. Re-install it as an interactive (AtLogOn) task to control the GUI.' }
+  }
+  if (-not (Ensure-Input)) { return @{ ok = $false; error = 'input injection unavailable on this desktop' } }
+  $LEFTDOWN = 0x0002; $LEFTUP = 0x0004; $RIGHTDOWN = 0x0008; $RIGHTUP = 0x0010
+  $MIDDLEDOWN = 0x0020; $MIDDLEUP = 0x0040; $WHEEL = 0x0800
+  try {
+    switch ([string]$cmd.kind) {
+      'move'  { [void][AresInput]::SetCursorPos([int]$cmd.x, [int]$cmd.y) }
+      'click' {
+        [void][AresInput]::SetCursorPos([int]$cmd.x, [int]$cmd.y)
+        Start-Sleep -Milliseconds 20
+        $btn = [string]$cmd.button
+        if ($btn -eq 'right') { [AresInput]::mouse_event($RIGHTDOWN,0,0,0,[IntPtr]::Zero); [AresInput]::mouse_event($RIGHTUP,0,0,0,[IntPtr]::Zero) }
+        elseif ($btn -eq 'middle') { [AresInput]::mouse_event($MIDDLEDOWN,0,0,0,[IntPtr]::Zero); [AresInput]::mouse_event($MIDDLEUP,0,0,0,[IntPtr]::Zero) }
+        else {
+          [AresInput]::mouse_event($LEFTDOWN,0,0,0,[IntPtr]::Zero); [AresInput]::mouse_event($LEFTUP,0,0,0,[IntPtr]::Zero)
+          if ($cmd.double) { Start-Sleep -Milliseconds 40; [AresInput]::mouse_event($LEFTDOWN,0,0,0,[IntPtr]::Zero); [AresInput]::mouse_event($LEFTUP,0,0,0,[IntPtr]::Zero) }
+        }
+      }
+      'drag'  {
+        [void][AresInput]::SetCursorPos([int]$cmd.x, [int]$cmd.y); Start-Sleep -Milliseconds 30
+        [AresInput]::mouse_event($LEFTDOWN,0,0,0,[IntPtr]::Zero); Start-Sleep -Milliseconds 40
+        [void][AresInput]::SetCursorPos([int]$cmd.x2, [int]$cmd.y2); Start-Sleep -Milliseconds 40
+        [AresInput]::mouse_event($LEFTUP,0,0,0,[IntPtr]::Zero)
+      }
+      'scroll' { $amt = if ($cmd.amount) { [int]$cmd.amount } else { 120 }; [AresInput]::mouse_event($WHEEL,0,0,$amt,[IntPtr]::Zero) }
+      'type'  { [System.Windows.Forms.SendKeys]::SendWait((Escape-SendKeys ([string]$cmd.text))) }
+      'key'   { [System.Windows.Forms.SendKeys]::SendWait([string]$cmd.keys) }  # SendKeys notation, e.g. {ENTER} ^c %{F4}
+      default { return @{ ok = $false; error = 'unknown input kind: ' + [string]$cmd.kind } }
+    }
+    return @{ ok = $true }
+  } catch {
+    return @{ ok = $false; error = $_.Exception.Message }
+  }
+}
+
+# Literal text must not be read as SendKeys control chars (+ ^ % ~ ( ) { } [ ]).
+function Escape-SendKeys([string]$t) {
+  if ($null -eq $t) { return '' }
+  $sb = New-Object Text.StringBuilder
+  foreach ($ch in $t.ToCharArray()) {
+    if ('+^%~(){}[]'.IndexOf($ch) -ge 0) { [void]$sb.Append('{').Append($ch).Append('}') }
+    else { [void]$sb.Append($ch) }
+  }
+  return $sb.ToString()
+}
+
 # ─── screen capture ────────────────────────────────────────────────────────
 function Get-ScreenPng {
+  # Same session-0 trap as input: CopyFromScreen in session 0 returns a black
+  # rectangle rather than failing, so a caller would "see" a screen that is not
+  # the user's. Say so instead of shipping a convincing lie.
+  if (-not [Environment]::UserInteractive) {
+    return @{ ok = $false; error = 'no interactive desktop: this connector runs in Windows session 0 (a boot task), so there is no screen to capture. Re-install it as an interactive (AtLogOn) task to see the desktop.' }
+  }
   try {
     Add-Type -AssemblyName System.Drawing, System.Windows.Forms -ErrorAction Stop
     $b = [Windows.Forms.SystemInformation]::VirtualScreen
@@ -292,7 +413,7 @@ function Connect-Once($Cred, [string]$WsUrl) {
         hostname = $env:COMPUTERNAME; os = 'Windows'; username = $env:USERNAME
         elevated = (Test-IsElevated)
       }
-      $reply = Receive-Json $ws 30000
+      $reply = Receive-JsonTimeout $ws 30000
       if ($null -eq $reply -or $reply -eq 'CLOSED' -or $reply.type -ne 'enrolled') {
         $why = if ($reply -and $reply.message) { $reply.message } else { 'no response' }
         Write-Log "pairing failed: $why"
@@ -310,7 +431,7 @@ function Connect-Once($Cred, [string]$WsUrl) {
       # Every later run: mutual proof. We verify the SERVER before obeying it.
       $myNonce = New-Nonce
       Send-Json $ws @{ type = 'device_hello'; deviceId = $Cred.deviceId; nonce = $myNonce }
-      $sp = Receive-Json $ws 30000
+      $sp = Receive-JsonTimeout $ws 30000
       if ($null -eq $sp -or $sp -eq 'CLOSED') { try { $ws.Dispose() } catch { }; return @{ ok = $false; retry = $true } }
       if ($sp.type -ne 'server_proof') {
         Write-Log "refused: $($sp.message)"
@@ -327,7 +448,7 @@ function Connect-Once($Cred, [string]$WsUrl) {
         return @{ ok = $false; retry = $true }
       }
       Send-Json $ws @{ type = 'device_auth'; proof = (Get-Proof $Cred.deviceSecret $sp.nonce 'device') }
-      $ready = Receive-Json $ws 30000
+      $ready = Receive-JsonTimeout $ws 30000
       if ($null -eq $ready -or $ready -eq 'CLOSED' -or $ready.type -ne 'device_ready') {
         $why = if ($ready -and $ready.message) { $ready.message } else { 'no response' }
         Write-Log "attach refused: $why"
@@ -345,17 +466,22 @@ function Connect-Once($Cred, [string]$WsUrl) {
     # Receive with a short timeout, then sweep finished commands. Neither half
     # can starve the other, which is the whole fix.
     while ($ws.State -eq 'Open') {
-      $cmd = Receive-Json $ws 250
+      $cmd = Receive-Json $ws
       if ($cmd -eq 'CLOSED') { break }
       if ($null -ne $cmd) {
         switch ($cmd.type) {
           'ping' { Send-Json $ws @{ type = 'pong' } }
           'exec' {
             $t = if ($cmd.timeoutMs) { [int]$cmd.timeoutMs } else { 30000 }
-            $immediate = Start-Exec ([string]$cmd.reqId) ([string]$cmd.command) $t
+            $immediate = Start-Exec ([string]$cmd.reqId) ([string]$cmd.command) $t ([string]$cmd.shell)
             if ($immediate) {
               Send-Json $ws @{ type = 'exec_result'; reqId = $cmd.reqId; output = $immediate.output; exitCode = $immediate.exitCode }
             }
+          }
+          'input' {
+            $r = Invoke-Input $cmd
+            if ($r.ok) { Send-Json $ws @{ type = 'input_result'; reqId = $cmd.reqId; ok = $true } }
+            else { Send-Json $ws @{ type = 'input_result'; reqId = $cmd.reqId; ok = $false; error = $r.error } }
           }
           'screenshot' {
             $shot = Get-ScreenPng

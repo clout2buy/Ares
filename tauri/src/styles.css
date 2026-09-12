@@ -4803,6 +4803,18 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .aresosLinkRow { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
 .aresosHint { font-size: .78rem; color: var(--faint); line-height: 1.5; flex: 1; min-width: 12rem; }
 .aresosWarn { margin-top: .7rem; font-size: .78rem; color: #e0a54a; line-height: 1.5; }
+
+/* Permanent pairing — visually distinct (amber/lock) from the temp connect (accent). */
+.aresosPair { background: transparent; color: #e0a54a; border: 1px solid rgba(224, 165, 74, 0.5); border-radius: 8px; padding: .7rem 1.1rem; font-weight: 600; font-size: .88rem; cursor: pointer; white-space: nowrap; }
+.aresosPair:hover { background: rgba(224, 165, 74, 0.12); border-color: #e0a54a; }
+.aresosPairLink { border-color: rgba(224, 165, 74, 0.5); background: linear-gradient(180deg, rgba(224,165,74,0.06), var(--panel)); }
+.aresosPairNote { margin: .5rem 0 .8rem; font-size: .8rem; color: var(--muted); line-height: 1.55; }
+.aresosDevices { margin-bottom: 1.3rem; }
+.aresosDevicesHead { font-size: .82rem; font-weight: 600; color: var(--text); margin-bottom: .6rem; }
+.aresosDeviceRow { display: flex; align-items: center; gap: .55rem; padding: .5rem .2rem; border-bottom: 1px solid var(--line); font-size: .84rem; }
+.aresosDeviceRow:last-child { border-bottom: none; }
+.aresosDotOff { background: var(--faint); box-shadow: none; }
+.aresosUnpair { margin-left: auto; padding: .35rem .7rem; font-size: .78rem; }
 .aresosEmpty { text-align: center; padding: 3rem 1rem; color: var(--muted); }
 .aresosEmptyGlyph { font-size: 2.4rem; margin-bottom: .8rem; opacity: .6; }
 .aresosEmpty p { max-width: 40ch; margin: 0 auto; font-size: .86rem; line-height: 1.6; }

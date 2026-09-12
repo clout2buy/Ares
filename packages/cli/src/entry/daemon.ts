@@ -2383,12 +2383,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         continue;
       }
-      if (command.type === "remote_pcs" || command.type === "remote_pc_link" || command.type === "remote_pc_disconnect" || command.type === "remote_pc_screenshot") {
+      if (command.type === "remote_pcs" || command.type === "remote_pc_link" || command.type === "remote_pc_pair" || command.type === "remote_devices" || command.type === "remote_device_unpair" || command.type === "remote_pc_disconnect" || command.type === "remote_pc_screenshot") {
         const client = new RemoteAgentClient(live.context.home);
         try {
           if (command.type === "remote_pc_link") {
             const link = await client.generateToken(typeof command.label === "string" && command.label ? command.label : "their PC");
             process.stdout.write(JSON.stringify({ type: "remote_pc_link", url: link.url, scope: link.scope, label: command.label ?? "" }) + "\n");
+          } else if (command.type === "remote_pc_pair") {
+            // The permanent-pairing link — a separate event so the UI can render
+            // it distinctly from the one-time help link, with its warning.
+            const link = await client.generatePairingLink(typeof command.label === "string" && command.label ? command.label : "my device");
+            process.stdout.write(JSON.stringify({ type: "remote_pc_pair_link", url: link.url, scope: link.scope, label: command.label ?? "", warning: link.warning ?? "" }) + "\n");
+          } else if (command.type === "remote_devices") {
+            const devices = await client.listDevicesAsync();
+            process.stdout.write(JSON.stringify({ type: "remote_devices", devices }) + "\n");
+          } else if (command.type === "remote_device_unpair") {
+            const deviceId = typeof (command as { deviceId?: unknown }).deviceId === "string" ? (command as { deviceId: string }).deviceId : "";
+            const res = await client.unpairDevice(deviceId);
+            const devices = await client.listDevicesAsync();
+            process.stdout.write(JSON.stringify({ type: "remote_devices", devices, unpaired: res?.name ?? "" }) + "\n");
           } else if (command.type === "remote_pc_screenshot") {
             const pcId = typeof command.pcId === "string" ? command.pcId : "";
             try {

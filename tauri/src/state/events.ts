@@ -205,6 +205,10 @@ export interface AresEvent {
   from?: string;
   /** remote_pcs — connected remote devices for the AresOS tab. */
   pcs?: unknown[];
+  /** remote_devices — permanently paired devices for the AresOS tab. */
+  devices?: unknown[];
+  /** remote_pc_pair_link — reachability/firewall advice for a pairing link. */
+  warning?: string;
   /** remote_pcs / remote_pc_link — reachability of the link or list. */
   scope?: string;
   /** remote_pc_screenshot — which device the capture is for. */

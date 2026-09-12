@@ -669,6 +669,11 @@ function App() {
   // connect link. Populated by the daemon's remote_pcs / remote_pc_link events.
   const [remotePcs, setRemotePcs] = useState<RemotePcRow[]>([]);
   const [remoteLink, setRemoteLink] = useState<{ url: string; scope: string; label: string } | null>(null);
+  // Permanent pairing is a SEPARATE flow from the one-time help link above:
+  // its own link (with a permanence warning) and the list of devices already
+  // paired to this machine.
+  const [remotePairLink, setRemotePairLink] = useState<{ url: string; scope: string; label: string; warning: string } | null>(null);
+  const [remoteDevices, setRemoteDevices] = useState<PairedDeviceRow[]>([]);
   const [remoteScope, setRemoteScope] = useState<"public" | "lan" | "unknown">("unknown");
   // pcId → live screen preview state (image data URL, error, or loading).
   const [remoteShots, setRemoteShots] = useState<Record<string, { data?: string; error?: string; loading?: boolean }>>({});
@@ -1235,7 +1240,7 @@ function App() {
   // AresOS device list — poll while the tab is open so connects/disconnects show live.
   useEffect(() => {
     if (view !== "aresos" || !native || daemon === "stopped" || daemon === "error") return;
-    const poll = () => daemonCmd({ type: "remote_pcs" });
+    const poll = () => { daemonCmd({ type: "remote_pcs" }); daemonCmd({ type: "remote_devices" }); };
     poll();
     const timer = window.setInterval(poll, 4_000);
     return () => window.clearInterval(timer);
@@ -1776,6 +1781,12 @@ function App() {
         }
         case "remote_pc_link":
           if (typeof e.url === "string") setRemoteLink({ url: e.url, scope: String(e.scope ?? "public"), label: String(e.label ?? "") });
+          return true;
+        case "remote_pc_pair_link":
+          if (typeof e.url === "string") setRemotePairLink({ url: e.url, scope: String(e.scope ?? "public"), label: String(e.label ?? ""), warning: String(e.warning ?? "") });
+          return true;
+        case "remote_devices":
+          if (Array.isArray(e.devices)) setRemoteDevices(e.devices as PairedDeviceRow[]);
           return true;
         case "remote_pc_screenshot": {
           const pcId = String(e.pcId ?? "");
@@ -3894,9 +3905,14 @@ function App() {
           <AresOsView
             pcs={remotePcs}
             link={remoteLink}
+            pairLink={remotePairLink}
+            devices={remoteDevices}
             scope={remoteScope}
             shots={remoteShots}
             onConnect={(label) => { setRemoteLink(null); daemonCmd({ type: "remote_pc_link", label }); }}
+            onPair={(label) => { setRemotePairLink(null); daemonCmd({ type: "remote_pc_pair", label }); }}
+            onClearPairLink={() => setRemotePairLink(null)}
+            onUnpair={(deviceId) => daemonCmd({ type: "remote_device_unpair", deviceId })}
             onClearLink={() => setRemoteLink(null)}
             onDisconnect={(pcId) => { daemonCmd({ type: "remote_pc_disconnect", pcId }); setRemoteShots((p) => { const n = { ...p }; delete n[pcId]; return n; }); }}
             onRefresh={() => daemonCmd({ type: "remote_pcs" })}
@@ -5360,6 +5376,18 @@ interface RemotePcRow {
   connectedAt: number;
 }
 
+/** A permanently paired device (mirrors PairedDeviceRow from the CLI). */
+interface PairedDeviceRow {
+  id: string;
+  name: string;
+  hostname: string;
+  os: string;
+  addedAt: number;
+  lastSeenAt?: number;
+  elevated: boolean;
+  online: boolean;
+}
+
 /** OS → the shell family, mirrored from the RemotePC tool so the card reads
  *  the same language Ares does. */
 function osFamily(os: string): { name: string; glyph: string } {
@@ -5379,9 +5407,14 @@ function agoLabel(ts: number): string {
 function AresOsView({
   pcs,
   link,
+  pairLink,
+  devices,
   scope,
   shots,
   onConnect,
+  onPair,
+  onClearPairLink,
+  onUnpair,
   onClearLink,
   onDisconnect,
   onRefresh,
@@ -5390,9 +5423,14 @@ function AresOsView({
 }: {
   pcs: RemotePcRow[];
   link: { url: string; scope: string; label: string } | null;
+  pairLink: { url: string; scope: string; label: string; warning: string } | null;
+  devices: PairedDeviceRow[];
   scope: "public" | "lan" | "unknown";
   shots: Record<string, { data?: string; error?: string; loading?: boolean }>;
   onConnect: (label: string) => void;
+  onPair: (label: string) => void;
+  onClearPairLink: () => void;
+  onUnpair: (deviceId: string) => void;
   onClearLink: () => void;
   onDisconnect: (pcId: string) => void;
   onRefresh: () => void;
@@ -5401,7 +5439,9 @@ function AresOsView({
 }) {
   const [name, setName] = useState("");
   const [copied, setCopied] = useState(false);
+  const [pairCopied, setPairCopied] = useState(false);
   const makeLink = () => { onConnect(name.trim() || "their PC"); setName(""); };
+  const makePair = () => { onPair(name.trim() || "my device"); setName(""); };
 
   // Auto-copy the link the moment it's minted, so "Connect" → paste-to-friend is one step.
   useEffect(() => {
@@ -5432,7 +5472,8 @@ function AresOsView({
           onChange={(ev) => setName(ev.target.value)}
           onKeyDown={(ev) => { if (ev.key === "Enter") makeLink(); }}
         />
-        <button className="aresosPrimary" onClick={makeLink}>+ Connect a device</button>
+        <button className="aresosPrimary" onClick={makeLink} title="One-time link — connects while the window is open. For helping someone else.">+ Connect (temporary)</button>
+        <button className="aresosPair" onClick={makePair} title="Permanent link for YOUR OWN machine — installs a boot connector so Ares can reach it with admin rights whenever it's on.">🔒 Pair permanently</button>
       </section>
 
       {link ? (
@@ -5453,6 +5494,46 @@ function AresOsView({
             <div className="aresosWarn">⚠ Local-network only right now (no internet tunnel) — this works only if they're on your wifi. Ask Ares to set up the tunnel for remote friends.</div>
           ) : null}
         </div>
+      ) : null}
+
+      {pairLink ? (
+        <div className="aresosLink aresosPairLink">
+          <div className="aresosLinkTop">
+            <b>🔒 Permanent pairing link{pairLink.label ? ` for ${pairLink.label}` : ""}</b>
+            <button className="aresosX" onClick={onClearPairLink} title="Dismiss">✕</button>
+          </div>
+          <div className="aresosPairNote">
+            Open this <b>on the machine you're pairing</b>, in an <b>admin</b> PowerShell. It installs a
+            boot-time connector so that machine reconnects on its own — with your admin rights — every time it's on.
+            Only do this on a machine you own.
+          </div>
+          <div className="aresosLinkUrl">{pairLink.url}</div>
+          <div className="aresosLinkRow">
+            <button
+              className="aresosPair"
+              onClick={() => { void navigator.clipboard.writeText(pairLink.url).then(() => { setPairCopied(true); setTimeout(() => setPairCopied(false), 1800); }); }}
+            >{pairCopied ? "✓ Copied" : "⎘ Copy pairing link"}</button>
+            <span className="aresosHint">This link works once and expires in 10 minutes.</span>
+          </div>
+          {pairLink.warning ? <div className="aresosWarn">⚠ {pairLink.warning}</div> : null}
+          {pairLink.scope === "lan" ? (
+            <div className="aresosWarn">⚠ Local-network only (no internet tunnel) — the device must be on the same network as this machine.</div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {devices.length > 0 ? (
+        <section className="aresosDevices">
+          <div className="aresosDevicesHead">🔒 Paired devices <span className="aresosDim">(reconnect on their own)</span></div>
+          {devices.map((d) => (
+            <div key={d.id} className="aresosDeviceRow">
+              <span className={`aresosDot ${d.online ? "" : "aresosDotOff"}`} />
+              <b>{d.name}</b>
+              <span className="aresosMeta aresosDim">{d.hostname} · {d.os}{d.elevated ? " · admin" : ""} · {d.online ? "online" : "offline"}</span>
+              <button className="aresosGhost aresosUnpair" onClick={() => onUnpair(d.id)} title="Revoke this device — its connector stops and the credential is invalidated">Unpair</button>
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {pcs.length === 0 ? (

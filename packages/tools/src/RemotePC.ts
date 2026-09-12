@@ -44,8 +44,12 @@ export interface RemoteAgentServerLike {
   listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>;
   /** Out-of-process implementations can fetch a fresh list; preferred when present. */
   listPcsAsync?(): Promise<Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>>;
-  exec(pcId: string, command: string, timeoutMs?: number): Promise<{ output: string; exitCode?: number }>;
+  exec(pcId: string, command: string, timeoutMs?: number, shell?: "cmd" | "powershell"): Promise<{ output: string; exitCode?: number }>;
   screenshot(pcId: string): Promise<{ dataBase64: string }>;
+  /** Drive the remote desktop (click/type/key/move/scroll/drag). Optional so an
+   *  older daemon still satisfies the interface — the tool reports "update the
+   *  daemon" instead of throwing. */
+  input?(pcId: string, ev: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
   /** Read a file FROM the remote PC. Owner-driven; the connector never initiates. */
   readFile(pcId: string, path: string): Promise<{ dataBase64: string; size: number }>;
   /** Write a file TO the remote PC. Data flows owner → remote only. */
@@ -73,13 +77,14 @@ export function getRemoteAgentServer(): RemoteAgentServerLike | null {
 // reject it outright. Per-action requirements are enforced in superRefine.
 const inputSchema = z.object({
   action: z.enum([
-    "generate_link", "list_pcs", "exec_on_pc", "screenshot_pc", "get_file", "put_file", "notify_pc",
+    "generate_link", "list_pcs", "exec_on_pc", "control_pc", "screenshot_pc", "get_file", "put_file", "notify_pc",
     "pair_device", "list_devices", "unpair_device", "rename_device",
   ]).describe(
     "generate_link: mint a one-time connect link for someone else's PC (REQUIRES label). " +
     "list_pcs: what's connected right now. " +
-    "exec_on_pc: run a shell command on a connected PC (REQUIRES pc_id + command). " +
-    "screenshot_pc: capture and SEE their screen (REQUIRES pc_id) — use it to verify a fix or read a dialog. " +
+    "exec_on_pc: run a shell command on a connected PC (REQUIRES pc_id + command; optional shell: 'cmd' [default] or 'powershell' for cmdlets). " +
+    "control_pc: DRIVE the remote desktop — move/click/type/key/scroll/drag (REQUIRES pc_id + control). Use it with screenshot_pc to operate a GUI: read the screen, then click/type. This is how you get through installers, dialogs, anything not scriptable. " +
+    "screenshot_pc: capture and SEE their screen (REQUIRES pc_id) — use it to verify a fix, read a dialog, or find where to click. " +
     "get_file: copy a file FROM their PC to yours (REQUIRES pc_id + remote_path). " +
     "put_file: copy a file FROM your machine TO theirs (REQUIRES pc_id + local_path + remote_path). " +
     "notify_pc: show a popup on their screen (REQUIRES pc_id + message). " +
@@ -91,6 +96,19 @@ const inputSchema = z.object({
   label: z.string().optional().describe("generate_link: short name for the PC, e.g. \"Sarah\" or \"Dave's laptop\" — shown when it connects."),
   pc_id: z.string().optional().describe("the PC id from list_pcs (or from the connected notice)."),
   command: z.string().optional().describe("exec_on_pc: shell command to run on the remote PC."),
+  shell: z.enum(["cmd", "powershell"]).optional().describe("exec_on_pc: which shell. 'cmd' (default) or 'powershell' to run cmdlets."),
+  control: z.object({
+    kind: z.enum(["move", "click", "drag", "scroll", "type", "key"]).describe("move/click/drag/scroll aim the mouse; type sends literal text; key sends SendKeys notation like {ENTER}, ^c, %{F4}."),
+    x: z.number().int().optional().describe("click/move/drag: X pixel on the remote screen (from a screenshot_pc)."),
+    y: z.number().int().optional().describe("click/move/drag: Y pixel."),
+    x2: z.number().int().optional().describe("drag: destination X."),
+    y2: z.number().int().optional().describe("drag: destination Y."),
+    button: z.enum(["left", "right", "middle"]).optional().describe("click: mouse button, default left."),
+    double: z.boolean().optional().describe("click: true for a double-click."),
+    amount: z.number().int().optional().describe("scroll: wheel delta, +up / -down (120 = one notch)."),
+    text: z.string().optional().describe("type: the literal text to type."),
+    keys: z.string().optional().describe("key: SendKeys notation, e.g. {ENTER}, {TAB}, ^c (Ctrl+C), %{F4} (Alt+F4)."),
+  }).optional().describe("control_pc: one input event to send to the remote desktop."),
   device_id: z.string().optional().describe("unpair_device / rename_device: the device id from list_devices."),
   timeout_ms: z.number().int().min(1000).max(120_000).optional().describe("exec_on_pc: max wait in ms. Default 30000."),
   remote_path: z.string().optional().describe("get_file / put_file: the absolute path ON THE REMOTE PC to read from or write to."),
@@ -102,6 +120,10 @@ const inputSchema = z.object({
   };
   if (v.action === "generate_link") need("label");
   if (v.action === "exec_on_pc") { need("pc_id"); need("command"); }
+  if (v.action === "control_pc") {
+    need("pc_id");
+    if (!v.control) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["control"], message: "control_pc requires control" });
+  }
   if (v.action === "screenshot_pc") need("pc_id");
   if (v.action === "get_file") { need("pc_id"); need("remote_path"); }
   if (v.action === "put_file") { need("pc_id"); need("local_path"); need("remote_path"); }
@@ -143,8 +165,9 @@ export const RemotePCTool = buildTool({
     "The phrasing may be casual ('my friend is having trouble', 'helping sarah'); if the subject is another person's device, generate the link and tell the user to send it. " +
     "Do NOT use it for problems on the user's own machine, code, or servers — use the normal tools for those. " +
     "Use list_pcs to see which machines are currently connected. " +
-    "Use exec_on_pc to run shell commands — ALWAYS match the syntax to that PC's OS (list_pcs and the connect notice report it): Windows goes through cmd.exe (dir, type, findstr, %VAR%, backslashes), macOS/Linux go through sh (ls, cat, grep, $VAR, forward slashes). " +
-    "Use screenshot_pc to SEE their screen — read an error dialog, or verify a fix worked. " +
+    "Use exec_on_pc to run shell commands — match syntax to that PC's OS (list_pcs reports it): Windows defaults to cmd.exe (dir, type, findstr, %VAR%, backslashes) — pass shell:'powershell' to run cmdlets instead; macOS/Linux go through sh (ls, cat, grep, $VAR). Prefer scripting a task over clicking it. " +
+    "Use control_pc when there is NO scriptable way — a GUI installer, a dialog, an app with no CLI. The loop is: screenshot_pc to see the screen and find the target, then control_pc to move/click/type there, then screenshot_pc again to confirm. Coordinates are pixels from the screenshot. This is how you finish things exec can't touch. " +
+    "Use screenshot_pc to SEE their screen — read an error dialog, verify a fix, or find where to click. " +
     "Use get_file to pull a file from their PC to yours, and put_file to send one the other way (data only ever flows the direction you ask; their machine can never read yours). " +
     "Use notify_pc to push a popup to their screen. " +
     "PERMANENT PAIRING is a different thing from the one-time help link above, and is for the OWNER'S OWN machines: " +
@@ -161,7 +184,8 @@ export const RemotePCTool = buildTool({
     switch (i.action) {
       case "generate_link": return `generating remote connect link for ${i.label}`;
       case "list_pcs": return "listing connected remote PCs";
-      case "exec_on_pc": return `executing on remote PC ${i.pc_id}: ${(i.command ?? "").slice(0, 60)}`;
+      case "exec_on_pc": return `executing on remote PC ${i.pc_id}${i.shell === "powershell" ? " (powershell)" : ""}: ${(i.command ?? "").slice(0, 60)}`;
+      case "control_pc": return `${i.control?.kind ?? "input"} on remote PC ${i.pc_id}${i.control?.kind === "type" ? `: ${(i.control?.text ?? "").slice(0, 40)}` : i.control?.x != null ? ` @${i.control.x},${i.control.y}` : ""}`;
       case "pair_device": return `creating a permanent pairing link for ${i.label}`;
       case "list_devices": return "listing permanently paired devices";
       case "unpair_device": return `unpairing device ${i.device_id}`;
@@ -283,7 +307,7 @@ export const RemotePCTool = buildTool({
 
       case "exec_on_pc": {
         try {
-          const result = await _server.exec(i.pc_id!, i.command!, i.timeout_ms);
+          const result = await _server.exec(i.pc_id!, i.command!, i.timeout_ms, i.shell);
           return {
             output: { action: "exec_on_pc", ok: true, output: result.output, exitCode: result.exitCode },
             display: result.output || `(exit ${result.exitCode ?? 0})`,
@@ -291,6 +315,24 @@ export const RemotePCTool = buildTool({
         } catch (err) {
           const note = err instanceof Error ? err.message : String(err);
           return { output: { action: "exec_on_pc", ok: false, note }, display: `Error: ${note}` };
+        }
+      }
+
+      case "control_pc": {
+        if (!_server.input) {
+          return fail("control_pc", new Error("this Ares build can't drive the remote desktop — update the daemon"));
+        }
+        try {
+          const r = await _server.input(i.pc_id!, i.control as Record<string, unknown>);
+          if (!r.ok) return { output: { action: "control_pc", ok: false, note: r.error }, display: `Input failed: ${r.error ?? "unknown"}` };
+          const k = i.control!.kind;
+          return {
+            output: { action: "control_pc", ok: true },
+            display: `✓ ${k}${k === "type" ? ` "${(i.control!.text ?? "").slice(0, 40)}"` : i.control!.x != null ? ` at ${i.control!.x},${i.control!.y}` : ""} sent`,
+          };
+        } catch (err) {
+          const note = err instanceof Error ? err.message : String(err);
+          return { output: { action: "control_pc", ok: false, note }, display: `Error: ${note}` };
         }
       }
 

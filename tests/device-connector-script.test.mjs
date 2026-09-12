@@ -112,12 +112,19 @@ test("proof comparison is not short-circuiting", () => {
   assert.match(SCRIPT, /-bor \(\[int\]\[char\]/);
 });
 
-test("the receive loop does not block on work — the 20s-timeout fix", () => {
-  // The old connector blocked forever in receive, so a long exec starved every
-  // other request until the server's own timer expired (20.6s in the field).
-  assert.match(SCRIPT, /Receive-Json \$ws 250/, "short receive timeout drives an event loop");
-  assert.match(SCRIPT, /Reap-Jobs/, "finished commands are swept, not awaited");
-  assert.match(SCRIPT, /CancellationTokenSource/);
+test("the steady-state receive is BLOCKING, never a cancellation timeout", () => {
+  // The load-bearing fix: cancelling a .NET WebSocket ReceiveAsync ABORTS the
+  // socket, so a per-frame cancellation timeout made the connector reconnect
+  // forever (30 cycles in a live test, spamming the owner). The event loop must
+  // block on CancellationToken.None; only the handshake may use a timed receive
+  // (where an abort-on-timeout is harmless because it tears down and reconnects).
+  const evLoop = SCRIPT.slice(SCRIPT.indexOf("while ($ws.State -eq 'Open')"));
+  assert.match(evLoop, /\$cmd = Receive-Json \$ws\b/, "event loop uses the blocking receive");
+  assert.ok(!/\$cmd = Receive-Json \$ws \d/.test(SCRIPT), "no timeout arg on the steady-state receive");
+  assert.match(SCRIPT, /CancellationToken\]::None/, "blocking receive keeps the socket alive");
+  assert.match(SCRIPT, /Reap-Jobs/, "finished commands are still swept, not awaited inline");
+  // The handshake keeps its timed receive — abort-on-timeout is fine there.
+  assert.match(SCRIPT, /Receive-JsonTimeout \$ws 30000/, "handshake still bounded");
 });
 
 test("both output pipes are drained concurrently", () => {

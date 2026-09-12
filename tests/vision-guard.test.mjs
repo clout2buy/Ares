@@ -11,7 +11,10 @@ test("vision: text-only reasoners are blind", () => {
   for (const id of [
     "deepseek-v4-pro",
     "deepseek-v4-pro:cloud",
+    // Ollama Cloud's V4 Flash is a different, older model from DeepSeek's own
+    // V4.1 Flash (deepseek-flash) — no evidence it sees, so it stays blind.
     "deepseek-v4-flash",
+    "deepseek-v4-flash:0731",
     "deepseek-v3.1:671b-cloud",
     "gpt-oss:120b-cloud",
     "glm-5.1",
@@ -35,6 +38,9 @@ test("vision: frontier multimodal models see", () => {
     "models/gemini-2.0-flash",
     "gemma3:27b-cloud",
     "qwen3-vl:235b-cloud",
+    // DeepSeek V4.1 Flash — native vision per DeepSeek's model table.
+    "deepseek-flash",
+    "deepseek-flash:latest",
   ]) {
     assert.equal(modelLikelyHasVision(id), true, `${id} must be treated as vision-capable`);
   }

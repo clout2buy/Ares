@@ -1,6 +1,6 @@
 // Extracted from entry.ts — providers.
 
-import { MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider, resolveOllamaHost } from "@ares/core";
+import { modelLikelyHasVision, MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider, resolveOllamaHost } from "@ares/core";
 import { promises as fsp } from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
@@ -66,6 +66,11 @@ interface DaemonModelOption {
    *  a "low" it will silently ignore is a lie about what the dial does.
    *  Omitted = unknown; the client falls back to its heuristic ladder. */
   effortLevels?: string[];
+  /** Set when this row came from the provider's LIVE model API rather than a
+   *  static fallback. The picker treats a live list as authoritative and drops
+   *  its own seeds for ids the provider no longer serves — otherwise a retired
+   *  id (deepseek-v4-flash) stays pickable and fails preflight when chosen. */
+  discovered?: boolean;
 }
 
 export const TERMINAL_PROVIDERS = ["ollama", "openai", "anthropic", "deepseek", "kimi", "openrouter", "ares", "custom", "moa", "mock"] as const;
@@ -398,6 +403,7 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
           group: "OpenAI",
           capabilities: known?.capabilities ?? ["tools", "reasoning", "vision"],
           description: m.description,
+          discovered: true,
         };
       });
     }
@@ -442,6 +448,7 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
         hint: known?.hint ?? [model.label, ctx].filter(Boolean).join(" · "),
         group: "Anthropic",
         capabilities: [...new Set(caps)],
+        discovered: true,
         ...(model.maxInputTokens ? { contextLength: model.maxInputTokens } : {}),
         ...(model.createdAt ? { updated: model.createdAt.slice(0, 10) } : {}),
       };
@@ -479,17 +486,35 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
   }
 
   if (provider === "deepseek") {
-    const live = await fetchDeepSeekModels({ apiKey: settings.deepSeekKey }).catch(() => []);
-    const rows = live.length > 0
-      ? live
-      : [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }];
-    return rows.map((model) => ({
-      id: model.id,
-      label: model.id === "deepseek-flash" ? "DeepSeek V4.1 Flash (vision)" : model.id === "deepseek-v4-pro" ? "DeepSeek V4 Pro" : model.id,
-      hint: model.id.includes("flash") ? "fast agentic reasoning · 1M context" : "frontier coding + reasoning · 1M context",
-      group: "DeepSeek",
-      capabilities: ["tools", "reasoning"],
-    }));
+    // `||` not `??`: an unset key in ui.json is the empty STRING, which `??`
+    // happily passes through as "a key" and suppresses the env fallback. That
+    // alone made discovery return nothing on a machine configured by env.
+    const key = settings.deepSeekKey || process.env.DEEPSEEK_API_KEY || process.env.ARES_DEEPSEEK_API_KEY || "";
+    const live = await fetchDeepSeekModels({ apiKey: key }).catch(() => []);
+    const discovered = live.length > 0;
+    const rows = discovered ? live : [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }];
+    const labels: Record<string, string> = {
+      "deepseek-flash": "DeepSeek V4.1 Flash",
+      "deepseek-v4-pro": "DeepSeek V4 Pro",
+    };
+    return rows.map((model) => {
+      // DeepSeek's /models returns bare ids with no capability flags, so vision
+      // comes from the one table that knows (modelLikelyHasVision) rather than
+      // from a guess repeated here.
+      const vision = modelLikelyHasVision(model.id);
+      return {
+        id: model.id,
+        label: labels[model.id] ?? model.id,
+        hint: [
+          model.id.includes("flash") ? "fast agentic reasoning" : "frontier coding + reasoning",
+          vision ? "vision" : "",
+          "1M context",
+        ].filter(Boolean).join(" · "),
+        group: "DeepSeek",
+        capabilities: ["tools", "reasoning", ...(vision ? ["vision"] : [])],
+        ...(discovered ? { discovered: true } : {}),
+      };
+    });
   }
 
   if (provider === "kimi") {
@@ -534,6 +559,7 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
               validEfforts: model.validEfforts,
             }),
             ...(model.contextLength !== undefined ? { contextLength: model.contextLength } : {}),
+            discovered: true,
           };
         });
       }

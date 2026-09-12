@@ -220,6 +220,13 @@ export class RemoteAgentServer {
     const http = createServer((req, res) => this.handleHttp(req, res));
     const wss = new WebSocketServer({ server: http, maxPayload: 64 * 1024 * 1024 });
     wss.on("connection", (ws) => this.handleConnection(ws));
+    // `ws` forwards the HTTP server's errors onto the WebSocketServer, and an
+    // "error" event with no listener THROWS. That made the listen guard below
+    // a lie: the promise rejected and the caller caught it, but the re-emit
+    // still took the process down as an uncaughtException. Cost: a second
+    // garrison (or anything else already on 7422) crashed the whole daemon at
+    // boot instead of coming up without the remote server.
+    wss.on("error", (err) => this.log(`remote-agent socket error: ${err instanceof Error ? err.message : String(err)}`));
     this.http = http;
     this.wss = wss;
     await new Promise<void>((resolve, reject) => {
@@ -658,7 +665,7 @@ export class RemoteAgentServer {
       detail: reconnected
         ? to >= DEVICE_CONNECTOR_VERSION
           ? `connector updated v${from} → v${to} and reattached`
-          : `device came back still on v${to} — its rollback watchdog likely reverted the update (see ProgramData\\Ares\\remote\\update.log)`
+          : `device came back still on v${to} — either its rollback watchdog reverted the update, or its connector runs from somewhere other than ProgramData\\Ares\\remote (check update.log there)`
         : `device did not reattach within ${Math.round(waitMs / 1000)}s — its watchdog rolls back to the previous connector automatically`,
     };
   }
@@ -700,10 +707,29 @@ export class RemoteAgentServer {
   // what makes "preview the UI you are editing against the real backend"
   // possible when the backend is on another machine.
 
-  private readonly forwards = new Map<string, { info: ForwardInfo; server: HttpServer }>();
+  private readonly forwards = new Map<string, { info: ForwardInfo; server: HttpServer; deviceId?: string }>();
 
   listForwards(): ForwardInfo[] {
     return [...this.forwards.values()].map((f) => ({ ...f.info }));
+  }
+
+  /**
+   * The pcId to send this forward's next request to.
+   *
+   * A pcId belongs to a CONNECTION, not a machine: every reconnect mints a new
+   * one, and `update_agent` deliberately causes a reconnect. A forward pinned
+   * to the id it was opened with would therefore break exactly when the owner
+   * updates the machine it points at. For a paired device the durable identity
+   * is the deviceId, so re-resolve through that and keep the info row honest.
+   */
+  private forwardTarget(id: string): string {
+    const entry = this.forwards.get(id);
+    if (!entry) return "";
+    if (this.pcs.has(entry.info.pcId)) return entry.info.pcId;
+    if (!entry.deviceId) return entry.info.pcId;
+    const current = [...this.pcs.values()].find((p) => p.deviceId === entry.deviceId);
+    if (current) entry.info.pcId = current.id;
+    return entry.info.pcId;
   }
 
   async startForward(pcId: string, target: string, localPort = 0): Promise<ForwardInfo> {
@@ -713,6 +739,7 @@ export class RemoteAgentServer {
     const existing = [...this.forwards.values()].find((f) => f.info.pcId === pcId && f.info.target === origin);
     if (existing) return { ...existing.info };
 
+    const deviceId = this.pcs.get(pcId)?.deviceId;
     const id = randomBytes(6).toString("hex");
     const server = createServer((req, res) => {
       void (async () => {
@@ -727,7 +754,7 @@ export class RemoteAgentServer {
             if (typeof v === "string") headers[k] = v;
             else if (Array.isArray(v)) headers[k] = v.join(", ");
           }
-          const out = await this.fetchVia(pcId, {
+          const out = await this.fetchVia(this.forwardTarget(id) || pcId, {
             url: origin + (req.url ?? "/"),
             method: req.method ?? "GET",
             headers,
@@ -764,7 +791,7 @@ export class RemoteAgentServer {
       localUrl: `http://127.0.0.1:${port}`,
       port, createdAt: Date.now(), requests: 0,
     };
-    this.forwards.set(id, { info, server });
+    this.forwards.set(id, { info, server, ...(deviceId ? { deviceId } : {}) });
     this.log(`remote forward ${info.localUrl} → ${origin} on ${this.pcs.get(pcId)?.label ?? pcId}`);
     return { ...info };
   }

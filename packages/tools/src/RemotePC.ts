@@ -238,6 +238,15 @@ export const RemotePCTool = buildTool({
     "unpair_device revokes it immediately and tells the connector to stop.",
   safety: "external-state",
   concurrency: "exclusive",
+  // Self-capping, so no outer watchdog. Every path here already carries its
+  // own deadline — the server's request() timer, the client's
+  // AbortSignal.timeout, exec's timeout_ms — and the external-state DEFAULT is
+  // 20s, which is shorter than the things this tool legitimately does: a 30s
+  // exec (the documented default!), a 120s fetch, a file transfer, and an
+  // update that waits for a machine to restart and reattach. Every one of
+  // those was being severed at 20s with the work still running on the remote
+  // machine, which reads as "the remote is flaky" and is really us hanging up.
+  watchdogTimeoutMs: 0,
   inputZod: inputSchema,
   activityDescription: (i) => {
     switch (i.action) {

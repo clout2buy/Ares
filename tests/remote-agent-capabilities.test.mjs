@@ -334,3 +334,43 @@ test("the v1 bootstrap leaves behind a watchdog that itself parses", { skip: !is
   assert.match(body, /rolling back/, "the bootstrap watchdog must be able to roll back");
   await assertParses(body, "v1-watchdog");
 });
+
+test("a forward keeps working after the device reconnects with a new pc id", async () => {
+  await withServer(async (server, base) => {
+    // update_agent reconnects the device on purpose, and every reconnect mints
+    // a new pcId. A forward pinned to the old one would break exactly when the
+    // owner updates the machine it points at.
+    const answer = (msg) => ({
+      type: "fetch_result",
+      status: 200,
+      headers: { "content-type": "text/plain" },
+      dataBase64: Buffer.from(`served ${msg.url}`).toString("base64"),
+    });
+    const first = await attachDevice(server, base, { connectorVersion: 2, ops: { fetch: answer } });
+    const f = await server.startForward(first.pc.id, "http://localhost:8090");
+    assert.equal(await (await fetch(`${f.localUrl}/a`)).text(), "served http://localhost:8090/a");
+
+    first.ws.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const again = await reattach(server, base, first.cred(), 2);
+    again.ws.on("message", (raw) => {
+      const msg = JSON.parse(String(raw));
+      if (msg.type === "fetch") again.ws.send(JSON.stringify({ ...answer(msg), reqId: msg.reqId }));
+    });
+    for (let i = 0; i < 100 && server.listPcs().length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.notEqual(server.listPcs()[0].id, first.pc.id, "a reconnect must mint a new pcId");
+
+    assert.equal(await (await fetch(`${f.localUrl}/b`)).text(), "served http://localhost:8090/b");
+    assert.equal(server.listForwards()[0].pcId, server.listPcs()[0].id, "the forward should report the id it now uses");
+    await server.stopForward(f.id);
+    again.ws.close();
+  });
+});
+
+test("RemotePC caps itself instead of being severed by the 20s external-state watchdog", async () => {
+  const { RemotePCTool } = await import("../packages/tools/dist/index.js");
+  // exec_on_pc documents a 30s default and accepts up to 120s; fetch and
+  // update_agent run longer still. The class default would abort all of them
+  // at 20s while the work kept running on the remote machine.
+  assert.equal(RemotePCTool.schema.watchdogTimeoutMs, 0);
+});

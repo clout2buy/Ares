@@ -29,6 +29,10 @@ export interface ModelOption {
    *  never a hardcoded ladder. [] = no extended thinking, so the dial hides;
    *  undefined = not yet discovered, client falls back to its heuristic. */
   effortLevels?: string[];
+  /** True when the daemon got this row from the provider's LIVE model API
+   *  rather than a static fallback. A live list is authoritative: ids missing
+   *  from it have been retired and must disappear from the picker. */
+  discovered?: boolean;
 }
 
 export const OLLAMA_CLOUD_MODELS: ModelOption[] = [
@@ -79,9 +83,14 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
   { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", hint: "fastest — cheap + capable", group: "Anthropic", capabilities: ["tools", "vision"] },
 ];
 
+// Seeds only — the daemon's live /models list replaces these outright (see the
+// `discovered` handling in useModelCatalog). `deepseek-v4-flash` used to sit
+// here and no longer exists: DeepSeek retired it for `deepseek-flash` (V4.1),
+// and a stale seed is worse than no seed, because picking it fails preflight
+// with "not enabled for this API key".
 export const DEEPSEEK_MODELS: ModelOption[] = [
+  { id: "deepseek-flash", label: "DeepSeek V4.1 Flash", hint: "fast agentic reasoning · vision · 1M context", group: "DeepSeek", capabilities: ["tools", "reasoning", "vision"] },
   { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", hint: "frontier coding + reasoning · 1M context", group: "DeepSeek", capabilities: ["tools", "reasoning"] },
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "fast agentic reasoning · 1M context", group: "DeepSeek", capabilities: ["tools", "reasoning"] },
 ];
 
 export const MOCK_MODELS: ModelOption[] = [{ id: "mock-echo", hint: "offline echo provider for UI testing", group: "Mock" }];
@@ -173,7 +182,20 @@ export function useModelCatalog(provider: string, native: boolean) {
       if (!live || detail?.provider !== provider || !Array.isArray(detail.models)) return;
       // Daemon first: its order is the provider's (newest first for the cloud
       // and Anthropic); the static seed only fills metadata for ids it knows.
-      setModels((current) => mergeModelOptions(detail.models ?? [], current.filter((m) => !(detail.models ?? []).some((d) => d.id === m.id))));
+      //
+      // When the daemon says its list came from the provider's LIVE API
+      // (`discovered`), that list is the whole truth and seeds it does not
+      // contain are RETIRED IDS — drop them. Keeping them is how a model the
+      // provider deleted (deepseek-v4-flash) stayed pickable for months and
+      // failed preflight when chosen. A fallback list (unauthed, offline)
+      // carries no such authority, so there the old union still applies.
+      const daemon = detail.models ?? [];
+      const authoritative = daemon.some((m) => m.discovered);
+      setModels((current) =>
+        authoritative
+          ? mergeModelOptions(daemon, current.filter((m) => daemon.some((d) => d.id === m.id)))
+          : mergeModelOptions(daemon, current.filter((m) => !daemon.some((d) => d.id === m.id))),
+      );
       if (provider === "ares") setLoading(false);
     };
     const requestDaemonCatalog = () => {

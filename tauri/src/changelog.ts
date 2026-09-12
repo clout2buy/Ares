@@ -38,6 +38,19 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.51.1",
+    date: "September 2026",
+    title: "Hands On",
+    tagline: "Ares can now drive a paired machine — click, type, run PowerShell — not just look at it.",
+    highlights: [
+      { icon: "🖱️", title: "Ares can use a paired machine, not just watch it", blurb: "On a machine you've paired, Ares can now move the mouse, click, type, scroll and drag — the same control it has locally. Paired with the screen view, it can finally get through things there's no command for: an installer, a settings dialog, any app. It runs in your own signed-in session, so it acts exactly as you would.", tag: "New" },
+      { icon: "⌨️", title: "Real PowerShell on a paired machine", blurb: "Remote commands can run through PowerShell now, not just the old command prompt — so Ares can use proper cmdlets (services, processes, the works) instead of guessing at shell syntax.", tag: "New" },
+      { icon: "🔗", title: "Remote sessions that don't drop", blurb: "The remote link no longer gets cut every ~100 seconds when a session is quiet, and a dropped tunnel restarts itself instead of silently going local-only. Reading or idle, the connection holds.", tag: "Safer" },
+      { icon: "🛡️", title: "A stuck connector can't take Ares down", blurb: "A connected service dropping its stream used to be able to crash the agent in a loop. It's caught now — the agent stays up.", tag: "Safer" },
+      { icon: "💳", title: "Low on credit? It keeps going", blurb: "If a request is too big for a provider's remaining balance, Ares trims it to fit and retries instead of failing the turn outright.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.51.0",
     date: "September 2026",
     title: "Always On",

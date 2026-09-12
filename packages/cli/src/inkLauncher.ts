@@ -615,7 +615,7 @@ function providerModelList(provider: ProviderId, settings: UiSettings): string[]
     ]);
   }
   if (provider === "deepseek") {
-    return unique([settings.lastDeepSeekModel, ...(live ?? ["deepseek-v4-pro", "deepseek-v4-flash"])]);
+    return unique([settings.lastDeepSeekModel, ...(live ?? ["deepseek-flash", "deepseek-v4-pro"])]);
   }
   if (live && live.length) return unique([...live]);
   if (provider === "openrouter") {

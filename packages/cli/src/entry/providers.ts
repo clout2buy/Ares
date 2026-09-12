@@ -39,7 +39,7 @@ export interface ProviderSelection {
  *  when the family has no cheaper sibling (fan-out then inherits the parent). */
 export function fastModelFor(selection: ProviderSelection): string | undefined {
   const m = selection.model.toLowerCase();
-  if (m.includes("deepseek") && !m.includes("flash")) return "deepseek-v4-flash";
+  if (m.includes("deepseek") && !m.includes("flash")) return "deepseek-flash";
   if (m.startsWith("claude-") && !m.includes("haiku")) return "claude-haiku-4-5-20251001";
   if (m === "ares-internal" || m === "balanced" || m === "max") return "fast"; // gateway tier
   return undefined;
@@ -292,7 +292,7 @@ export function defaultTerminalModel(provider: string, settings: UiSettings): st
     case "anthropic":
       return settings.lastAnthropicModel ?? STATIC_MODEL_CATALOG.anthropic[0].id;
     case "deepseek":
-      return settings.lastDeepSeekModel ?? "deepseek-v4-pro";
+      return settings.lastDeepSeekModel ?? "deepseek-flash";
     case "ares":
       return settings.lastAresModel ?? "ares-internal";
     case "openrouter":
@@ -482,10 +482,10 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
     const live = await fetchDeepSeekModels({ apiKey: settings.deepSeekKey }).catch(() => []);
     const rows = live.length > 0
       ? live
-      : [{ id: "deepseek-v4-pro" }, { id: "deepseek-v4-flash" }];
+      : [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }];
     return rows.map((model) => ({
       id: model.id,
-      label: model.id === "deepseek-v4-pro" ? "DeepSeek V4 Pro" : model.id === "deepseek-v4-flash" ? "DeepSeek V4 Flash" : model.id,
+      label: model.id === "deepseek-flash" ? "DeepSeek V4.1 Flash (vision)" : model.id === "deepseek-v4-pro" ? "DeepSeek V4 Pro" : model.id,
       hint: model.id.includes("flash") ? "fast agentic reasoning · 1M context" : "frontier coding + reasoning · 1M context",
       group: "DeepSeek",
       capabilities: ["tools", "reasoning"],
@@ -808,7 +808,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
   }
 
   if (preferred === "deepseek") {
-    const model = requestedModel ?? settings.lastDeepSeekModel ?? "deepseek-v4-pro";
+    const model = requestedModel ?? settings.lastDeepSeekModel ?? "deepseek-flash";
     // Default: DeepSeek's Anthropic-compatible endpoint via the hardened
     // AnthropicProvider — proper thinking<->tool interleaving, unsigned-reasoning
     // echo on tool loops (DeepSeek 400s otherwise), no wasted cache_control /

@@ -15,10 +15,10 @@
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { access, chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { createSocket as createUdpSocket } from "node:dgram";
 import path from "node:path";
@@ -38,7 +38,7 @@ import {
   revokeDevice,
 } from "./remoteEnrollment.js";
 import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
-import { buildDeviceConnectorPs1 } from "./remoteDeviceConnector.js";
+import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
@@ -82,6 +82,30 @@ export interface RemotePcInfo {
   username: string;
   ip: string;
   connectedAt: number;
+  /** Connector protocol version this machine is running, when it reports one.
+   *  Absent means a pre-versioning connector — treat as 1. */
+  connectorVersion?: number;
+}
+
+/** One HTTP round trip performed FROM a remote machine. */
+export interface RemoteFetchResult {
+  status: number;
+  headers: Record<string, string>;
+  dataBase64: string;
+  size: number;
+}
+
+/** A live local→remote HTTP forward. */
+export interface ForwardInfo {
+  id: string;
+  pcId: string;
+  /** Origin on the remote machine, e.g. http://127.0.0.1:8090 */
+  target: string;
+  /** Where it is served on the owner's machine. */
+  localUrl: string;
+  port: number;
+  createdAt: number;
+  requests: number;
 }
 
 export interface ExecResult {
@@ -494,6 +518,266 @@ export class RemoteAgentServer {
     return { bytes: typeof r["bytes"] === "number" ? (r["bytes"] as number) : 0 };
   }
 
+  /** The connector version THIS build ships — what a device gets if updated. */
+  availableConnectorVersion(): number {
+    return DEVICE_CONNECTOR_VERSION;
+  }
+
+  /** Connector version a PC is running (1 = pre-versioning). */
+  connectorVersionOf(pcId: string): number {
+    return this.pcs.get(pcId)?.connectorVersion ?? 1;
+  }
+
+  /** Fail fast, with the fix, rather than letting an old connector time out in
+   *  silence on an op it has never heard of. */
+  private requireConnector(pcId: string, minVersion: number, op: string): void {
+    const pc = this.pcs.get(pcId);
+    if (!pc) throw new Error(`No remote PC with id "${pcId}" connected`);
+    const have = pc.connectorVersion ?? 1;
+    if (have < minVersion) {
+      throw new Error(
+        `${pc.label} is running connector v${have}; "${op}" needs v${minVersion}. ` +
+        `Update it first: RemotePC { action: "update_agent", pc_id: "${pcId}" } (asks the owner to approve).`,
+      );
+    }
+  }
+
+  /**
+   * Perform an HTTP request FROM the remote machine.
+   *
+   * The point is network position, not the bytes: services bound to that
+   * machine's localhost, hosts inside its LAN or VPN, a container's published
+   * port. None of it is reachable from the owner's desk, and all of it is one
+   * hop from the connector.
+   */
+  async fetchVia(
+    pcId: string,
+    req: { url: string; method?: string; headers?: Record<string, string>; bodyBase64?: string; timeoutMs?: number },
+  ): Promise<RemoteFetchResult> {
+    this.requireConnector(pcId, 2, "fetch");
+    const timeoutMs = Math.max(1_000, Math.min(120_000, req.timeoutMs ?? 30_000));
+    const r = await this.request(pcId, {
+      type: "fetch",
+      url: req.url,
+      method: (req.method ?? "GET").toUpperCase(),
+      ...(req.headers ? { headers: req.headers } : {}),
+      ...(req.bodyBase64 ? { bodyBase64: req.bodyBase64 } : {}),
+      timeoutMs,
+    }, timeoutMs);
+    if (r["error"]) throw new Error(String(r["error"]));
+    const dataBase64 = String(r["dataBase64"] ?? "");
+    return {
+      status: typeof r["status"] === "number" ? (r["status"] as number) : 0,
+      headers: (r["headers"] && typeof r["headers"] === "object" ? r["headers"] : {}) as Record<string, string>,
+      dataBase64,
+      size: typeof r["size"] === "number" ? (r["size"] as number) : Buffer.byteLength(dataBase64, "base64"),
+    };
+  }
+
+  /**
+   * Replace a paired device's connector script with the one THIS build ships.
+   *
+   * Two delivery paths, because the interesting case is a device too old to
+   * know the word "update":
+   *   v2+ — send the script over the live channel; the connector verifies the
+   *         hash, arms its rollback watchdog, swaps and restarts itself.
+   *   v1  — no update op exists, so bootstrap through primitives it does have:
+   *         putfile the script, then exec an elevated PowerShell that performs
+   *         the same verify → backup → swap → restart.
+   * Either way the device drops its socket and comes back; the caller waits
+   * for the reconnect and reports the version that shows up.
+   */
+  async updateAgent(pcId: string, opts: string | { waitMs?: number; scriptPath?: string } = {}): Promise<{
+    ok: boolean;
+    from: number;
+    to: number;
+    reconnected: boolean;
+    newPcId?: string;
+    detail: string;
+  }> {
+    // The tool passes a script path positionally; the control API passes an
+    // options object. Accept both rather than making callers care.
+    const options = typeof opts === "string" ? { scriptPath: opts } : opts;
+    const pc = this.pcs.get(pcId);
+    if (!pc) throw new Error(`No remote PC with id "${pcId}" connected`);
+    if (!pc.deviceId) throw new Error("update_agent only applies to permanently paired devices, not one-time help links.");
+    const from = pc.connectorVersion ?? 1;
+    const deviceId = pc.deviceId;
+    const waitMs = options.waitMs ?? 150_000;
+
+    // An enrolled device authenticates from its stored credential, so the
+    // token placeholder is inert here — never mint a fresh pairing token for
+    // an update, or a leaked script would be a pairing link.
+    //
+    // scriptPath lets Ares push a connector it just WROTE rather than only the
+    // one this build compiled — the difference between "the remote gains a
+    // capability next release" and "it gains one this afternoon". The device
+    // still verifies the hash, parses before trusting, and rolls itself back,
+    // and the owner still approves the push; what changes is only who authored
+    // the bytes.
+    const script = options.scriptPath
+      ? await readFile(options.scriptPath, "utf8")
+      : buildDeviceConnectorPs1({
+        token: "",
+        wsUrl: `${this.linkBaseUrl().replace(/^http/, "ws")}/ws`,
+        baseUrl: this.linkBaseUrl(),
+        discoveryPort: DISCOVERY_PORT,
+      });
+    if (options.scriptPath) {
+      // A template that never went through buildDeviceConnectorPs1 still has
+      // its placeholders, and would come up with no address to call home to —
+      // a bricked device whose only fix is walking over to it.
+      const leftover = script.match(/__ARES_[A-Z_]+__/);
+      if (leftover) throw new Error(`${options.scriptPath} still contains the placeholder ${leftover[0]} — render it with buildDeviceConnectorPs1 before pushing.`);
+      if (!/Ares Remote/.test(script)) throw new Error(`${options.scriptPath} does not look like an Ares connector.`);
+      if (script.length < 4000) throw new Error(`${options.scriptPath} is only ${script.length} bytes — too small to be a connector.`);
+    }
+    const bytes = Buffer.from(script, "utf8");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+
+    if (from >= 2) {
+      const r = await this.request(pcId, {
+        type: "update",
+        scriptBase64: bytes.toString("base64"),
+        sha256,
+        version: DEVICE_CONNECTOR_VERSION,
+      }, 60_000);
+      if (r["ok"] !== true) throw new Error(String(r["error"] ?? "the device refused the update"));
+    } else {
+      await this.bootstrapUpdateV1(pcId, bytes, sha256);
+    }
+
+    const reconnected = await this.waitForDevice(deviceId, waitMs);
+    const to = reconnected ? (this.pcs.get(reconnected)?.connectorVersion ?? 1) : from;
+    return {
+      ok: reconnected ? to >= DEVICE_CONNECTOR_VERSION : false,
+      from,
+      to,
+      reconnected: !!reconnected,
+      ...(reconnected ? { newPcId: reconnected } : {}),
+      detail: reconnected
+        ? to >= DEVICE_CONNECTOR_VERSION
+          ? `connector updated v${from} → v${to} and reattached`
+          : `device came back still on v${to} — its rollback watchdog likely reverted the update (see ProgramData\\Ares\\remote\\update.log)`
+        : `device did not reattach within ${Math.round(waitMs / 1000)}s — its watchdog rolls back to the previous connector automatically`,
+    };
+  }
+
+  /** v1 devices have no update op; drive one through putfile + exec instead. */
+  private async bootstrapUpdateV1(pcId: string, bytes: Buffer, sha256: string): Promise<void> {
+    const stagePath = "C:\\ProgramData\\Ares\\remote\\ares-remote.new.ps1";
+    await this.writeFile(pcId, stagePath, bytes.toString("base64"), 120_000);
+    // One elevated PowerShell: verify the transfer, parse the script, keep the
+    // old one, swap, then restart the task from a DETACHED process — the task
+    // restart kills this very connector, and a child of the dying process
+    // would go with it.
+    const ps = buildV1UpdateScript(sha256);
+    const res = await this.exec(pcId, ps, 60_000, "powershell");
+    if (!/staged/.test(res.output)) {
+      throw new Error(`bootstrap update failed on the device: ${res.output.slice(0, 400)}`);
+    }
+  }
+
+  /** Resolve with the new pcId once a device reattaches, or "" on timeout. */
+  private waitForDevice(deviceId: string, timeoutMs: number): Promise<string> {
+    const existing = [...this.pcs.values()].find((p) => p.deviceId === deviceId);
+    const before = existing?.id;
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        const now = [...this.pcs.values()].find((p) => p.deviceId === deviceId);
+        if (now && now.id !== before) { clearInterval(timer); resolve(now.id); return; }
+        if (Date.now() - started > timeoutMs) { clearInterval(timer); resolve(""); }
+      }, 500);
+      timer.unref?.();
+    });
+  }
+
+  // ─── HTTP forwarding ──────────────────────────────────────────────────────
+  // A local port on the owner's machine that answers with a service living on
+  // the remote one. Every request is relayed through the connector's `fetch`,
+  // so it needs no new protocol and no inbound port on the device — and it is
+  // what makes "preview the UI you are editing against the real backend"
+  // possible when the backend is on another machine.
+
+  private readonly forwards = new Map<string, { info: ForwardInfo; server: HttpServer }>();
+
+  listForwards(): ForwardInfo[] {
+    return [...this.forwards.values()].map((f) => ({ ...f.info }));
+  }
+
+  async startForward(pcId: string, target: string, localPort = 0): Promise<ForwardInfo> {
+    this.requireConnector(pcId, 2, "forward_http");
+    const origin = target.replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(origin)) throw new Error(`forward target must be an http(s) origin, got "${target}"`);
+    const existing = [...this.forwards.values()].find((f) => f.info.pcId === pcId && f.info.target === origin);
+    if (existing) return { ...existing.info };
+
+    const id = randomBytes(6).toString("hex");
+    const server = createServer((req, res) => {
+      void (async () => {
+        const entry = this.forwards.get(id);
+        if (entry) entry.info.requests += 1;
+        try {
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(req.headers)) {
+            if (/^(host|connection|content-length|accept-encoding)$/i.test(k)) continue;
+            if (typeof v === "string") headers[k] = v;
+            else if (Array.isArray(v)) headers[k] = v.join(", ");
+          }
+          const out = await this.fetchVia(pcId, {
+            url: origin + (req.url ?? "/"),
+            method: req.method ?? "GET",
+            headers,
+            ...(chunks.length ? { bodyBase64: Buffer.concat(chunks).toString("base64") } : {}),
+            timeoutMs: 60_000,
+          });
+          const body = Buffer.from(out.dataBase64, "base64");
+          const outHeaders: Record<string, string> = {};
+          for (const [k, v] of Object.entries(out.headers)) {
+            // The relay re-frames the body, so the remote's transfer encoding
+            // and length no longer describe what goes out on this socket.
+            if (/^(transfer-encoding|content-length|content-encoding|connection)$/i.test(k)) continue;
+            outHeaders[k] = v;
+          }
+          outHeaders["content-length"] = String(body.length);
+          res.writeHead(out.status || 502, outHeaders);
+          res.end(body);
+        } catch (err) {
+          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          res.end(`Ares remote forward failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    });
+    // Loopback only. This port is an unauthenticated door onto a service on
+    // another machine; it must not be one the LAN can walk through.
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(localPort, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : localPort;
+    const info: ForwardInfo = {
+      id, pcId, target: origin,
+      localUrl: `http://127.0.0.1:${port}`,
+      port, createdAt: Date.now(), requests: 0,
+    };
+    this.forwards.set(id, { info, server });
+    this.log(`remote forward ${info.localUrl} → ${origin} on ${this.pcs.get(pcId)?.label ?? pcId}`);
+    return { ...info };
+  }
+
+  async stopForward(id: string): Promise<boolean> {
+    const entry = this.forwards.get(id);
+    if (!entry) return false;
+    this.forwards.delete(id);
+    await new Promise<void>((resolve) => entry.server.close(() => resolve()));
+    this.log(`remote forward ${entry.info.localUrl} closed`);
+    return true;
+  }
+
   notify(pcId: string, message: string): void {
     this.pcs.get(pcId)?.ws.send(JSON.stringify({ type: "notify", message }));
   }
@@ -557,6 +841,9 @@ export class RemoteAgentServer {
     this.heartbeatTimer = undefined;
     try { this.tunnelProc?.kill(); } catch { /* already dead */ }
     this.tunnelProc = undefined;
+    // Forwards outlive individual requests, so they have to be closed here or
+    // the process keeps listening on ports for machines it can no longer reach.
+    for (const id of [...this.forwards.keys()]) await this.stopForward(id);
     for (const pc of this.pcs.values()) {
       for (const { reject, timer } of pc.pendingCmds.values()) {
         clearTimeout(timer);
@@ -689,6 +976,28 @@ export class RemoteAgentServer {
         case "POST /api/writefile": return json(200, await this.writeFile(str("pcId"), str("path"), str("dataBase64")));
         case "POST /api/notify": this.notify(str("pcId"), str("message")); return json(200, { ok: true });
         case "POST /api/disconnect": this.disconnect(str("pcId")); return json(200, { ok: true });
+        case "POST /api/fetch": {
+          const headers = (body["headers"] && typeof body["headers"] === "object" ? body["headers"] : undefined) as
+            Record<string, string> | undefined;
+          return json(200, await this.fetchVia(str("pcId"), {
+            url: str("url"),
+            method: str("method") || "GET",
+            ...(headers ? { headers } : {}),
+            ...(str("bodyBase64") ? { bodyBase64: str("bodyBase64") } : {}),
+            ...(typeof body["timeoutMs"] === "number" ? { timeoutMs: body["timeoutMs"] as number } : {}),
+          }));
+        }
+        case "POST /api/update-agent":
+          return json(200, await this.updateAgent(str("pcId"), str("scriptPath") ? { scriptPath: str("scriptPath") } : {}));
+        case "GET /api/agent-version":
+          return json(200, { available: DEVICE_CONNECTOR_VERSION });
+        case "GET /api/forwards": return json(200, { forwards: this.listForwards() });
+        case "POST /api/forward": {
+          const port = typeof body["localPort"] === "number" ? (body["localPort"] as number) : 0;
+          return json(200, await this.startForward(str("pcId"), str("target"), port));
+        }
+        case "POST /api/forward-stop":
+          return json(200, { ok: await this.stopForward(str("id")) });
         default: return json(404, { error: "not found" });
       }
     } catch (err) {
@@ -711,7 +1020,7 @@ export class RemoteAgentServer {
 
     /** Adopt an authenticated device into the normal PC table, so every existing
      *  exec / screenshot / file path works on it unchanged. */
-    const adoptDevice = (device: PairedDevice, meta: { username?: string; ip?: string }): void => {
+    const adoptDevice = (device: PairedDevice, meta: { username?: string; ip?: string; connectorVersion?: number }): void => {
       // A reconnect replaces the stale entry rather than accumulating ghosts.
       for (const [existingId, existing] of this.pcs) {
         if (existing.deviceId !== device.id) continue;
@@ -732,9 +1041,14 @@ export class RemoteAgentServer {
         lastSeen: Date.now(),
         ws,
         pendingCmds: new Map(),
+        ...(meta.connectorVersion ? { connectorVersion: meta.connectorVersion } : {}),
       };
       this.pcs.set(id, pc);
-      this.log(`paired device attached: ${device.name} (${device.hostname}) id=${id}${device.allowElevated ? " [elevated]" : ""}`);
+      this.log(
+        `paired device attached: ${device.name} (${device.hostname}) id=${id}` +
+        `${device.allowElevated ? " [elevated]" : ""} connector v${meta.connectorVersion ?? 1}` +
+        `${(meta.connectorVersion ?? 1) < DEVICE_CONNECTOR_VERSION ? ` (update available: v${DEVICE_CONNECTOR_VERSION})` : ""}`,
+      );
       const { ws: _w, pendingCmds: _p, token: _t, lastSeen: _l, deviceId: _d, ...info } = pc;
       for (const cb of this.connectedListeners) cb(info);
     };
@@ -769,7 +1083,11 @@ export class RemoteAgentServer {
           try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
           if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
           this.log(`remote device paired: ${res.device.name} (${res.device.hostname})`);
-          adoptDevice(res.device, { username: String(msg["username"] ?? "") , ip: "unknown" });
+          adoptDevice(res.device, {
+            username: String(msg["username"] ?? ""),
+            ip: "unknown",
+            ...(typeof msg["connectorVersion"] === "number" ? { connectorVersion: msg["connectorVersion"] as number } : {}),
+          });
         })();
         return;
       }
@@ -804,7 +1122,10 @@ export class RemoteAgentServer {
           );
           try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
           if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
-          adoptDevice(res.device, { username: String(msg["username"] ?? "") });
+          adoptDevice(res.device, {
+            username: String(msg["username"] ?? ""),
+            ...(typeof msg["connectorVersion"] === "number" ? { connectorVersion: msg["connectorVersion"] as number } : {}),
+          });
         })();
         return;
       }

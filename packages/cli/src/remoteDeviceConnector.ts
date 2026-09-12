@@ -25,6 +25,28 @@
 // instant they finish) is the right next step, but it needs real device
 // testing before it ships -- stability first.
 
+/**
+ * The connector protocol version this build of Ares ships.
+ *
+ * BUMP THIS whenever DEVICE_PS1 gains or changes an op. Every device reports
+ * the version it is running at attach time, so the server can (a) fail a call
+ * fast with "that device's connector is too old" instead of hanging until the
+ * request times out, and (b) offer the owner a one-click update. A device in
+ * the field is only as capable as the script on its disk; the version is how
+ * Ares knows which script that is.
+ *
+ *   1 — exec, input, screenshot, getfile, putfile, notify (v0.51)
+ *   2 — + fetch (HTTP from the device's own network position), self-update
+ *       with hash verification and on-device rollback, heartbeat file,
+ *       explicit "unsupported op" replies instead of silence.
+ */
+export const DEVICE_CONNECTOR_VERSION = 2;
+
+/** Ops v2 understands. Sent at attach so the server never has to guess. */
+export const DEVICE_CONNECTOR_CAPS = [
+  "exec", "input", "screenshot", "getfile", "putfile", "notify", "fetch", "update",
+] as const;
+
 export interface DeviceConnectorOptions {
   /** Enrollment token — only used on the very first run. */
   token: string;
@@ -46,7 +68,80 @@ export function buildDeviceConnectorPs1(opts: DeviceConnectorOptions): string {
     .replace(/__ARES_WS_URL__/g, opts.wsUrl)
     .replace(/__ARES_BASE_URL__/g, opts.baseUrl)
     .replace(/__ARES_DISCOVERY_PORT__/g, String(opts.discoveryPort))
+    .replace(/__ARES_CONNECTOR_VERSION__/g, String(DEVICE_CONNECTOR_VERSION))
     .replace(/__ARES_STATE_DIR__/g, stateDir);
+}
+
+/**
+ * The elevated PowerShell that updates a v1 connector — one that predates the
+ * `update` op and so can only be reached through exec + putfile.
+ *
+ * Runs through exec_on_pc's `powershell -Command "<this>"`, which escapes
+ * double quotes on the way in, so this script uses SINGLE quotes only and
+ * spells the relaunch as a file rather than a nested quoted command line.
+ * Everything it does, the v2 in-connector path also does: verify the hash,
+ * parse before trusting, keep the outgoing script, then restart detached (the
+ * restart kills the connector running this, so a child process would die too).
+ */
+/** A PowerShell single-quoted literal (the only quote style safe in transit). */
+function psQuote(line: string): string {
+  return `'${line.replace(/'/g, "''")}'`;
+}
+
+/**
+ * The relaunch-and-verify script the v1 bootstrap leaves behind.
+ *
+ * v1 connectors have no rollback of their own, and the first push to a machine
+ * is exactly the one that cannot be recovered remotely if it fails — so the
+ * bootstrap arms the same watchdog the v2 path uses. It works because the
+ * script being installed is v2, which writes a heartbeat as soon as it
+ * attaches: no fresh heartbeat inside two minutes means the new connector
+ * never came home, and the old one goes back.
+ */
+const V1_WATCHDOG_LINES = [
+  "$dir = 'C:\\ProgramData\\Ares\\remote'",
+  "$cur = Join-Path $dir 'ares-remote.ps1'",
+  "$prev = Join-Path $dir 'ares-remote.prev.ps1'",
+  "$hb = Join-Path $dir 'heartbeat.txt'",
+  "$log = Join-Path $dir 'update.log'",
+  "$mark = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
+  "Start-Sleep -Seconds 3",
+  "try { Stop-ScheduledTask -TaskName AresRemoteConnector } catch {}",
+  "Start-Sleep -Seconds 2",
+  "try { Start-ScheduledTask -TaskName AresRemoteConnector } catch {}",
+  "$ok = $false",
+  "for ($i = 0; $i -lt 120; $i++) { Start-Sleep -Seconds 1; try { $h = Get-Content $hb -Raw | ConvertFrom-Json; if ($h.at -ge $mark) { $ok = $true; break } } catch {} }",
+  "if ($ok) { Add-Content -Path $log -Value ((Get-Date -Format u) + ' bootstrap update verified - new connector attached'); exit 0 }",
+  "Add-Content -Path $log -Value ((Get-Date -Format u) + ' bootstrap update did not attach in 120s - rolling back')",
+  "try { Copy-Item $prev $cur -Force } catch {}",
+  "try { Stop-ScheduledTask -TaskName AresRemoteConnector } catch {}",
+  "Start-Sleep -Seconds 2",
+  "try { Start-ScheduledTask -TaskName AresRemoteConnector } catch {}",
+];
+
+export function buildV1UpdateScript(sha256: string, stateDir = "C:\\ProgramData\\Ares\\remote"): string {
+  return [
+    "$ErrorActionPreference='Stop'",
+    `$dir='${stateDir}'`,
+    "$new=Join-Path $dir 'ares-remote.new.ps1'",
+    "$cur=Join-Path $dir 'ares-remote.ps1'",
+    "$prev=Join-Path $dir 'ares-remote.prev.ps1'",
+    `$want='${sha256}'`,
+    "$got=(Get-FileHash $new -Algorithm SHA256).Hash.ToLower()",
+    "if ($got -ne $want) { throw ('hash mismatch: ' + $got) }",
+    "$text=[IO.File]::ReadAllText($new)",
+    "[void][ScriptBlock]::Create($text)",
+    "if ($text -notmatch 'Ares Remote') { throw 'not an Ares connector' }",
+    "if (Test-Path $cur) { Copy-Item $cur $prev -Force }",
+    "Copy-Item $new $cur -Force",
+    "Remove-Item $new -Force -ErrorAction SilentlyContinue",
+    "$relaunchFile=Join-Path $dir 'ares-relaunch.ps1'",
+    `$lines=@(${V1_WATCHDOG_LINES.map(psQuote).join(", ")})`,
+    "Set-Content -Path $relaunchFile -Value $lines -Encoding UTF8",
+    "$ps=Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    "Start-Process -FilePath $ps -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$relaunchFile)",
+    "Write-Output 'staged'",
+  ].join("; ");
 }
 
 const DEVICE_PS1 = String.raw`
@@ -61,11 +156,32 @@ $Token     = '__ARES_TOKEN__'
 $SeedWs    = '__ARES_WS_URL__'
 $SeedBase  = '__ARES_BASE_URL__'
 $DiscoPort = __ARES_DISCOVERY_PORT__
+$ConnectorVersion = __ARES_CONNECTOR_VERSION__
+$TaskName  = 'AresRemoteConnector'
+
+# Where this script lives, so it can replace itself. $PSCommandPath is the file
+# the task actually launched — never assume the conventional path, because a
+# hand-installed connector may live somewhere else entirely.
+$SelfPath  = $PSCommandPath
+if (-not $SelfPath) { $SelfPath = Join-Path $StateDir 'ares-remote.ps1' }
+$HeartFile = Join-Path $StateDir 'heartbeat.txt'
+$PrevFile  = Join-Path $StateDir 'ares-remote.prev.ps1'
 
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Force -Path $StateDir | Out-Null }
 
 function Write-Log([string]$m) {
   Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $m)
+}
+
+# Proof of life on DISK, not just on the wire. An update's rollback watchdog
+# runs in a separate process with no socket of its own, so this file is the
+# only way it can tell "the new connector came up and attached" from "the new
+# connector is broken and nothing is talking to home any more".
+function Write-Heartbeat {
+  try {
+    $payload = @{ at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); version = $ConnectorVersion; pid = $PID } | ConvertTo-Json -Compress
+    Set-Content -Path $HeartFile -Value $payload -Encoding UTF8 -Force
+  } catch { }
 }
 
 # ─── crypto: HMAC-SHA256, direction-bound (see remoteDeviceCrypto.ts) ───────
@@ -394,6 +510,190 @@ function Get-ScreenPng {
   }
 }
 
+# ─── HTTP from HERE ────────────────────────────────────────────────────────
+# The single most useful thing a remote machine can do that its owner cannot:
+# reach the services bound to ITS localhost. A dashboard on 127.0.0.1:8090, a
+# Docker socket proxy, an internal host behind this machine's VPN — all of it
+# is one hop away from the connector and unreachable from the owner's desk.
+#
+# Async, through a Tasks table reaped by the main loop, for the same reason
+# exec is: a 30s fetch must not stall heartbeats and starve every other
+# request. HttpClient's default completion option buffers the whole body, so
+# one completed task is a finished response — no second blocking read.
+$script:Fetches = @{}
+
+function Start-Fetch([string]$ReqId, $cmd) {
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $handler = New-Object Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    try { $handler.UseCookies = $false } catch { }
+    $client = New-Object Net.Http.HttpClient($handler)
+    $ms = if ($cmd.timeoutMs) { [int]$cmd.timeoutMs } else { 30000 }
+    $client.Timeout = [TimeSpan]::FromMilliseconds([Math]::Max(1000, $ms))
+    $method = New-Object Net.Http.HttpMethod(([string]$cmd.method).ToUpper())
+    $req = New-Object Net.Http.HttpRequestMessage($method, [string]$cmd.url)
+    if ($cmd.bodyBase64) {
+      $bytes = [Convert]::FromBase64String([string]$cmd.bodyBase64)
+      $req.Content = New-Object Net.Http.ByteArrayContent(@(,$bytes))
+    }
+    if ($cmd.headers) {
+      foreach ($p in $cmd.headers.PSObject.Properties) {
+        $name = [string]$p.Name; $value = [string]$p.Value
+        # Content-* headers belong to the body, not the request, and .NET
+        # refuses them on the wrong collection rather than ignoring them.
+        if ($name -match '^(?i)content-') {
+          if ($null -eq $req.Content) { $req.Content = New-Object Net.Http.ByteArrayContent(@(,([byte[]]@()))) }
+          try { [void]$req.Content.Headers.TryAddWithoutValidation($name, $value) } catch { }
+        } else {
+          try { [void]$req.Headers.TryAddWithoutValidation($name, $value) } catch { }
+        }
+      }
+    }
+    $script:Fetches[$ReqId] = @{
+      task = $client.SendAsync($req)
+      client = $client
+      deadline = (Get-Date).AddMilliseconds([Math]::Max(1000, $ms) + 5000)
+    }
+    return $null
+  } catch {
+    return @{ error = $_.Exception.Message }
+  }
+}
+
+function Reap-Fetches($Ws) {
+  if ($script:Fetches.Count -eq 0) { return }
+  foreach ($reqId in @($script:Fetches.Keys)) {
+    $f = $script:Fetches[$reqId]
+    $timedOut = (Get-Date) -gt $f.deadline
+    if (-not ($f.task.IsCompleted -or $timedOut)) { continue }
+    try {
+      if ($timedOut -and -not $f.task.IsCompleted) {
+        Send-Json $Ws @{ type = 'fetch_result'; reqId = $reqId; error = 'request timed out' }
+      } elseif ($f.task.IsFaulted) {
+        $ex = $f.task.Exception
+        $m = if ($ex -and $ex.GetBaseException()) { $ex.GetBaseException().Message } else { 'request failed' }
+        Send-Json $Ws @{ type = 'fetch_result'; reqId = $reqId; error = [string]$m }
+      } else {
+        $resp = $f.task.Result
+        $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+        $hdrs = @{}
+        foreach ($h in $resp.Headers) { $hdrs[$h.Key] = ($h.Value -join ', ') }
+        foreach ($h in $resp.Content.Headers) { $hdrs[$h.Key] = ($h.Value -join ', ') }
+        Send-Json $Ws @{
+          type = 'fetch_result'; reqId = $reqId
+          status = [int]$resp.StatusCode
+          headers = $hdrs
+          dataBase64 = [Convert]::ToBase64String($bytes)
+          size = $bytes.Length
+        }
+        try { $resp.Dispose() } catch { }
+      }
+    } catch {
+      Send-Json $Ws @{ type = 'fetch_result'; reqId = $reqId; error = $_.Exception.Message }
+    }
+    try { $f.client.Dispose() } catch { }
+    $script:Fetches.Remove($reqId)
+  }
+}
+
+# ─── self-update ───────────────────────────────────────────────────────────
+# Ares can replace THIS SCRIPT with a newer one, so a capability gap in the
+# field is a push away instead of a re-install. Three things make that safe
+# enough to do to a machine you cannot walk over to:
+#
+#   1. The bytes are verified against a SHA-256 the server sent separately,
+#      and parsed (never executed) before they are allowed to become the
+#      connector. A truncated transfer cannot brick the device.
+#   2. The outgoing script is kept as ares-remote.prev.ps1.
+#   3. A WATCHDOG is armed BEFORE the swap, in its own process. It restarts the
+#      task, then waits for the new connector to write a fresh heartbeat. If
+#      that never lands, it puts the previous script back and restarts again.
+#      The rollback has to live on the device: if the new script cannot attach,
+#      there is no channel left for the owner to fix it through.
+function Invoke-SelfUpdate($cmd) {
+  try {
+    if (-not $cmd.scriptBase64) { return @{ ok = $false; error = 'no script in update' } }
+    $bytes = [Convert]::FromBase64String([string]$cmd.scriptBase64)
+    if ($bytes.Length -lt 4000) { return @{ ok = $false; error = 'refusing update: script is implausibly small (' + $bytes.Length + ' bytes)' } }
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $got = (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+    $sha.Dispose()
+    $want = ([string]$cmd.sha256).ToLower()
+    if ($want -and $got -ne $want) { return @{ ok = $false; error = 'refusing update: hash mismatch (got ' + $got + ')' } }
+
+    $newFile = Join-Path $StateDir 'ares-remote.new.ps1'
+    [IO.File]::WriteAllBytes($newFile, $bytes)
+
+    # Parse, do not run. [ScriptBlock]::Create compiles and throws on a syntax
+    # error without executing a single statement.
+    $text = [IO.File]::ReadAllText($newFile)
+    try { [void][ScriptBlock]::Create($text) }
+    catch { return @{ ok = $false; error = 'refusing update: new script does not parse (' + $_.Exception.Message + ')' } }
+    if ($text -notmatch 'Ares Remote') { return @{ ok = $false; error = 'refusing update: this does not look like an Ares connector' } }
+
+    Copy-Item -Path $SelfPath -Destination $PrevFile -Force
+
+    # Arm the watchdog before swapping, so a crash between here and the restart
+    # still gets rolled back.
+    $wd = Join-Path $StateDir 'ares-update-watchdog.ps1'
+    $wdBody = @'
+param([string]$StateDir, [string]$SelfPath, [string]$PrevFile, [string]$HeartFile, [string]$TaskName, [int]$OldPid)
+$ErrorActionPreference = 'SilentlyContinue'
+function Log([string]$m) { Add-Content -Path (Join-Path $StateDir 'update.log') -Value ((Get-Date -Format 'u') + ' ' + $m) }
+function Restart-Connector {
+  try { Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop; return $true } catch { }
+  try {
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Start-Process -FilePath $ps -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', $SelfPath) -WindowStyle Hidden
+    return $true
+  } catch { return $false }
+}
+# Let the outgoing process finish exiting; the task will not start a second
+# instance while the first is still running.
+for ($i = 0; $i -lt 30; $i++) {
+  if (-not (Get-Process -Id $OldPid -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Seconds 1
+}
+$mark = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+Log ('restarting connector after update (old pid ' + $OldPid + ')')
+[void](Restart-Connector)
+$ok = $false
+for ($i = 0; $i -lt 120; $i++) {
+  Start-Sleep -Seconds 1
+  try {
+    $h = Get-Content $HeartFile -Raw | ConvertFrom-Json
+    if ($h.at -ge $mark) { $ok = $true; break }
+  } catch { }
+}
+if ($ok) { Log 'update verified: new connector attached'; exit 0 }
+Log 'update FAILED to attach within 120s - rolling back'
+try {
+  Copy-Item -Path $PrevFile -Destination $SelfPath -Force
+  Get-Process -Id $OldPid -ErrorAction SilentlyContinue | Out-Null
+  [void](Restart-Connector)
+  Log 'rolled back to previous connector'
+} catch { Log ('rollback failed: ' + $_.Exception.Message) }
+'@
+    Set-Content -Path $wd -Value $wdBody -Encoding UTF8 -Force
+
+    Copy-Item -Path $newFile -Destination $SelfPath -Force
+    Remove-Item -Path $newFile -Force -ErrorAction SilentlyContinue
+
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Start-Process -FilePath $ps -WindowStyle Hidden -ArgumentList @(
+      '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File', $wd,
+      '-StateDir', $StateDir, '-SelfPath', $SelfPath, '-PrevFile', $PrevFile,
+      '-HeartFile', $HeartFile, '-TaskName', $TaskName, '-OldPid', $PID
+    )
+    return @{ ok = $true; version = [int]$cmd.version; path = $SelfPath }
+  } catch {
+    return @{ ok = $false; error = $_.Exception.Message }
+  }
+}
+
 # ─── the connection ────────────────────────────────────────────────────────
 function Connect-Once($Cred, [string]$WsUrl) {
   $ws = New-Object Net.WebSockets.ClientWebSocket
@@ -412,6 +712,7 @@ function Connect-Once($Cred, [string]$WsUrl) {
         type = 'enroll'; token = $Token
         hostname = $env:COMPUTERNAME; os = 'Windows'; username = $env:USERNAME
         elevated = (Test-IsElevated)
+        connectorVersion = $ConnectorVersion
       }
       $reply = Receive-JsonTimeout $ws 30000
       if ($null -eq $reply -or $reply -eq 'CLOSED' -or $reply.type -ne 'enrolled') {
@@ -447,7 +748,7 @@ function Connect-Once($Cred, [string]$WsUrl) {
         try { $ws.Dispose() } catch { }
         return @{ ok = $false; retry = $true }
       }
-      Send-Json $ws @{ type = 'device_auth'; proof = (Get-Proof $Cred.deviceSecret $sp.nonce 'device') }
+      Send-Json $ws @{ type = 'device_auth'; proof = (Get-Proof $Cred.deviceSecret $sp.nonce 'device'); connectorVersion = $ConnectorVersion; username = $env:USERNAME }
       $ready = Receive-JsonTimeout $ws 30000
       if ($null -eq $ready -or $ready -eq 'CLOSED' -or $ready.type -ne 'device_ready') {
         $why = if ($ready -and $ready.message) { $ready.message } else { 'no response' }
@@ -461,6 +762,8 @@ function Connect-Once($Cred, [string]$WsUrl) {
       }
       Write-Log "attached as '$($ready.name)'"
     }
+    # Attached: from here the update watchdog can see this connector is alive.
+    Write-Heartbeat
 
     # ── event loop ──
     # Receive with a short timeout, then sweep finished commands. Neither half
@@ -470,7 +773,7 @@ function Connect-Once($Cred, [string]$WsUrl) {
       if ($cmd -eq 'CLOSED') { break }
       if ($null -ne $cmd) {
         switch ($cmd.type) {
-          'ping' { Send-Json $ws @{ type = 'pong' } }
+          'ping' { Send-Json $ws @{ type = 'pong' }; Write-Heartbeat }
           'exec' {
             $t = if ($cmd.timeoutMs) { [int]$cmd.timeoutMs } else { 30000 }
             $immediate = Start-Exec ([string]$cmd.reqId) ([string]$cmd.command) $t ([string]$cmd.shell)
@@ -502,10 +805,38 @@ function Connect-Once($Cred, [string]$WsUrl) {
               Send-Json $ws @{ type = 'putfile_result'; reqId = $cmd.reqId; bytes = ([Convert]::FromBase64String($cmd.dataBase64)).Length }
             } catch { Send-Json $ws @{ type = 'putfile_result'; reqId = $cmd.reqId; error = $_.Exception.Message } }
           }
+          'fetch' {
+            $err = Start-Fetch ([string]$cmd.reqId) $cmd
+            if ($err) { Send-Json $ws @{ type = 'fetch_result'; reqId = $cmd.reqId; error = $err.error } }
+          }
+          'update' {
+            $r = Invoke-SelfUpdate $cmd
+            Send-Json $ws @{ type = 'update_result'; reqId = $cmd.reqId; ok = $r.ok; error = $r.error; version = $r.version; path = $r.path }
+            if ($r.ok) {
+              # The watchdog owns the restart from here. Exit cleanly so the
+              # task is free to start the new script; if it never attaches, the
+              # watchdog puts the old one back.
+              Write-Log ('updated to connector v' + [string]$cmd.version + ' - restarting')
+              Start-Sleep -Milliseconds 400
+              try { $ws.Dispose() } catch { }
+              exit 0
+            }
+          }
           'bye' { Write-Log 'owner closed the link'; try { $ws.Dispose() } catch { }; return @{ ok = $true; retry = $true } }
+          default {
+            # Silence here reads as a hung device. Name the gap instead: the
+            # owner's Ares is newer than this script, and can push the fix.
+            if ($cmd.reqId) {
+              Send-Json $ws @{
+                type = ([string]$cmd.type + '_result'); reqId = $cmd.reqId
+                error = ("this device's connector (v" + $ConnectorVersion + ") does not support '" + [string]$cmd.type + "' - update it with RemotePC update_agent")
+              }
+            }
+          }
         }
       }
       Reap-Jobs $ws
+      Reap-Fetches $ws
     }
   } catch {
     Write-Log "connection error: $($_.Exception.Message)"
@@ -525,7 +856,7 @@ function Test-IsElevated {
 # No deadline. The one-time connector gives up after 12 hours, which is correct
 # for helping a friend once and wrong for a machine the owner expects to be
 # reachable whenever it is powered on.
-Write-Log "Ares Remote starting (elevated=$(Test-IsElevated))"
+Write-Log "Ares Remote v$ConnectorVersion starting (elevated=$(Test-IsElevated)) from $SelfPath"
 $backoff = 2
 while ($true) {
   $cred = Get-Credential-Stored

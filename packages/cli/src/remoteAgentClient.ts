@@ -9,7 +9,15 @@
 import { readFile } from "node:fs/promises";
 import { tokenPath } from "@ares/garrison";
 import type { RemoteAgentServerLike } from "@ares/tools";
-import { DEFAULT_REMOTE_AGENT_PORT, type LinkScope, type RemotePcInfo, type ExecResult, type FileGetResult } from "./remoteAgentServer.js";
+import {
+  DEFAULT_REMOTE_AGENT_PORT,
+  type ExecResult,
+  type FileGetResult,
+  type ForwardInfo,
+  type LinkScope,
+  type RemoteFetchResult,
+  type RemotePcInfo,
+} from "./remoteAgentServer.js";
 
 /** A permanently paired device, as the control API reports it. */
 export interface PairedDeviceRow {
@@ -139,6 +147,41 @@ export class RemoteAgentClient implements RemoteAgentServerLike {
 
   writeFile(pcId: string, path: string, dataBase64: string): Promise<{ bytes: number }> {
     return this.call("POST", "/api/writefile", { pcId, path, dataBase64 }, 70_000);
+  }
+
+  /** HTTP performed from the remote machine's own network position. */
+  fetchVia(
+    pcId: string,
+    req: { url: string; method?: string; headers?: Record<string, string>; bodyBase64?: string; timeoutMs?: number },
+  ): Promise<RemoteFetchResult> {
+    const timeoutMs = req.timeoutMs ?? 30_000;
+    return this.call("POST", "/api/fetch", { pcId, ...req, timeoutMs }, timeoutMs + 15_000);
+  }
+
+  /** Push this build's connector to a paired device (owner-approved). Slow by
+   *  nature: the device swaps its script, restarts and re-attaches. */
+  updateAgent(pcId: string, scriptPath?: string): Promise<{ ok: boolean; from: number; to: number; reconnected: boolean; newPcId?: string; detail: string }> {
+    return this.call("POST", "/api/update-agent", { pcId, ...(scriptPath ? { scriptPath } : {}) }, 200_000);
+  }
+
+  /** The connector version this build of Ares ships. */
+  async availableConnectorVersion(): Promise<number> {
+    const r = await this.call<{ available?: number }>("GET", "/api/agent-version", undefined, 5_000);
+    return typeof r.available === "number" ? r.available : 1;
+  }
+
+  startForward(pcId: string, target: string, localPort?: number): Promise<ForwardInfo> {
+    return this.call("POST", "/api/forward", { pcId, target, ...(localPort ? { localPort } : {}) }, 30_000);
+  }
+
+  async listForwards(): Promise<ForwardInfo[]> {
+    const r = await this.call<{ forwards?: ForwardInfo[] }>("GET", "/api/forwards", undefined, 5_000);
+    return r.forwards ?? [];
+  }
+
+  async stopForward(id: string): Promise<boolean> {
+    const r = await this.call<{ ok?: boolean }>("POST", "/api/forward-stop", { id }, 15_000);
+    return r.ok === true;
   }
 
   notify(pcId: string, message: string): void {

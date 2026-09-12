@@ -13,6 +13,7 @@ import { z } from "zod";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import type { PermissionDecision } from "@ares/protocol";
 import { buildTool } from "./_shared.js";
 
 /** Cap for file transfer in either direction — keeps a stray "get the whole disk" from OOMing. */
@@ -30,6 +31,17 @@ function shellHintForOs(os: string): string {
 // ─── Server interface (mirrors RemoteAgentServer public API) ───────────────
 // Defined here as a minimal interface so @ares/tools doesn't import @ares/cli.
 
+/** A live local→remote HTTP forward, as the tool reports it. */
+export interface ForwardRow {
+  id: string;
+  pcId: string;
+  target: string;
+  localUrl: string;
+  port: number;
+  createdAt: number;
+  requests: number;
+}
+
 export interface RemoteAgentServerLike {
   generateToken(label: string): Promise<{ token: string; url: string; scope: "public" | "lan" }>;
   // Optional so an older daemon still satisfies the interface — the tool reports
@@ -41,9 +53,23 @@ export interface RemoteAgentServerLike {
   }>;
   unpairDevice?(deviceId: string): Promise<{ name: string } | null>;
   renameDevice?(deviceId: string, name: string): Promise<{ name: string } | null>;
-  listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>;
+  listPcs(): Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number; connectorVersion?: number }>;
   /** Out-of-process implementations can fetch a fresh list; preferred when present. */
-  listPcsAsync?(): Promise<Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number }>>;
+  listPcsAsync?(): Promise<Array<{ id: string; label: string; hostname: string; os: string; username: string; ip: string; connectedAt: number; connectorVersion?: number }>>;
+  /** HTTP from the remote machine's own network position — its localhost, its
+   *  LAN, its VPN. Optional so an older garrison still satisfies the interface. */
+  fetchVia?(
+    pcId: string,
+    req: { url: string; method?: string; headers?: Record<string, string>; bodyBase64?: string; timeoutMs?: number },
+  ): Promise<{ status: number; headers: Record<string, string>; dataBase64: string; size: number }>;
+  /** Push this build's connector script to a paired device. */
+  updateAgent?(pcId: string, scriptPath?: string): Promise<{ ok: boolean; from: number; to: number; reconnected: boolean; newPcId?: string; detail: string }>;
+  /** The connector version this build ships, for "is that device current?". */
+  availableConnectorVersion?(): Promise<number> | number;
+  /** Serve a remote HTTP service on a local loopback port. */
+  startForward?(pcId: string, target: string, localPort?: number): Promise<ForwardRow>;
+  listForwards?(): Promise<ForwardRow[]> | ForwardRow[];
+  stopForward?(id: string): Promise<boolean>;
   exec(pcId: string, command: string, timeoutMs?: number, shell?: "cmd" | "powershell"): Promise<{ output: string; exitCode?: number }>;
   screenshot(pcId: string): Promise<{ dataBase64: string }>;
   /** Drive the remote desktop (click/type/key/move/scroll/drag). Optional so an
@@ -79,6 +105,7 @@ const inputSchema = z.object({
   action: z.enum([
     "generate_link", "list_pcs", "exec_on_pc", "control_pc", "screenshot_pc", "get_file", "put_file", "notify_pc",
     "pair_device", "list_devices", "unpair_device", "rename_device",
+    "fetch_on_pc", "forward_http", "list_forwards", "stop_forward", "agent_status", "update_agent",
   ]).describe(
     "generate_link: mint a one-time connect link for someone else's PC (REQUIRES label). " +
     "list_pcs: what's connected right now. " +
@@ -91,7 +118,12 @@ const inputSchema = z.object({
     "pair_device: PERMANENTLY pair one of the OWNER'S OWN machines (REQUIRES label) — it reconnects at every boot and can run ADMIN commands. " +
     "list_devices: the owner's permanently paired machines and whether each is online right now. " +
     "unpair_device: revoke a paired machine (REQUIRES device_id) — its connector is told to stop. " +
-    "rename_device: relabel a paired machine (REQUIRES device_id + label).",
+    "rename_device: relabel a paired machine (REQUIRES device_id + label). " +
+    "fetch_on_pc: make an HTTP request FROM that machine (REQUIRES pc_id + url) — this is how you reach a service bound to ITS localhost (a dashboard on 127.0.0.1:8090, an API behind its VPN). Use it to pull real data, real JSON, real HTML from a server you cannot route to. " +
+    "forward_http: serve a remote HTTP service on a loopback port of THIS machine (REQUIRES pc_id + target, e.g. \"http://localhost:8090\") — returns a local URL you can open in the browser preview, so a UI can be edited here and rendered against the real backend there. " +
+    "list_forwards / stop_forward: manage those (stop_forward REQUIRES forward_id). " +
+    "agent_status: what connector version each paired machine runs and whether a newer one is available. " +
+    "update_agent: push THIS build's connector to a paired machine (REQUIRES pc_id) so it gains the newest capabilities — the owner approves it, the device verifies the hash, keeps the old script, and rolls itself back if the new one fails to reconnect.",
   ),
   label: z.string().optional().describe("generate_link: short name for the PC, e.g. \"Sarah\" or \"Dave's laptop\" — shown when it connects."),
   pc_id: z.string().optional().describe("the PC id from list_pcs (or from the connected notice)."),
@@ -114,8 +146,16 @@ const inputSchema = z.object({
   remote_path: z.string().optional().describe("get_file / put_file: the absolute path ON THE REMOTE PC to read from or write to."),
   local_path: z.string().optional().describe("put_file: the file on YOUR machine to send (absolute or workspace-relative). get_file: optional destination on your machine; defaults to a downloads folder in the workspace."),
   message: z.string().optional().describe("notify_pc: short text for the popup, e.g. \"Fixed — restart when you can\"."),
+  url: z.string().optional().describe("fetch_on_pc: the URL to request FROM the remote machine, e.g. http://localhost:8090/api/overview."),
+  method: z.string().optional().describe("fetch_on_pc: HTTP method. Default GET."),
+  headers: z.record(z.string()).optional().describe("fetch_on_pc: request headers, e.g. { \"Cookie\": \"mkey=…\" }."),
+  body: z.string().optional().describe("fetch_on_pc: request body as text (JSON, form data). Sent as UTF-8."),
+  target: z.string().optional().describe("forward_http: the origin ON THE REMOTE MACHINE to serve locally, e.g. http://localhost:8090."),
+  local_port: z.number().int().min(1024).max(65535).optional().describe("forward_http: loopback port to listen on here. Default: any free port."),
+  forward_id: z.string().optional().describe("stop_forward: the forward id from forward_http or list_forwards."),
+  script_path: z.string().optional().describe("update_agent: push a connector script YOU rendered (an absolute .ps1 path) instead of the one this build ships — how you give a paired machine a new capability without waiting for a release. Omit to push the built-in one."),
 }).superRefine((v, ctx) => {
-  const need = (field: "label" | "pc_id" | "command" | "message" | "remote_path" | "local_path" | "device_id") => {
+  const need = (field: "label" | "pc_id" | "command" | "message" | "remote_path" | "local_path" | "device_id" | "url" | "target" | "forward_id") => {
     if (!v[field]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${v.action} requires ${field}` });
   };
   if (v.action === "generate_link") need("label");
@@ -131,6 +171,10 @@ const inputSchema = z.object({
   if (v.action === "pair_device") need("label");
   if (v.action === "unpair_device") need("device_id");
   if (v.action === "rename_device") { need("device_id"); need("label"); }
+  if (v.action === "fetch_on_pc") { need("pc_id"); need("url"); }
+  if (v.action === "forward_http") { need("pc_id"); need("target"); }
+  if (v.action === "stop_forward") need("forward_id");
+  if (v.action === "update_agent") need("pc_id");
 });
 
 export type RemotePCInput = z.infer<typeof inputSchema>;
@@ -153,6 +197,21 @@ export interface RemotePCOutput {
   screenshotPath?: string;
   bytes?: number;
   note?: string;
+  /** fetch_on_pc */
+  status?: number;
+  headers?: Record<string, string>;
+  body?: string;
+  truncated?: boolean;
+  /** forward_http / list_forwards */
+  forward?: ForwardRow;
+  forwards?: ForwardRow[];
+  localUrl?: string;
+  /** agent_status / update_agent */
+  connectorVersion?: number;
+  availableVersion?: number;
+  agents?: Array<{ pcId: string; label: string; version: number; updateAvailable: boolean }>;
+  updated?: { from: number; to: number; reconnected: boolean; newPcId?: string };
+  error?: string;
 }
 
 // ─── Tool ─────────────────────────────────────────────────────────────────
@@ -194,7 +253,33 @@ export const RemotePCTool = buildTool({
       case "get_file": return `pulling ${i.remote_path} from remote PC ${i.pc_id}`;
       case "put_file": return `sending ${i.local_path} to remote PC ${i.pc_id}`;
       case "notify_pc": return `notifying remote PC ${i.pc_id}: ${(i.message ?? "").slice(0, 60)}`;
+      case "fetch_on_pc": return `${(i.method ?? "GET").toUpperCase()} ${(i.url ?? "").slice(0, 80)} from remote PC ${i.pc_id}`;
+      case "forward_http": return `forwarding ${i.target} on remote PC ${i.pc_id} to a local port`;
+      case "list_forwards": return "listing remote HTTP forwards";
+      case "stop_forward": return `closing remote forward ${i.forward_id}`;
+      case "agent_status": return "checking remote connector versions";
+      case "update_agent": return `pushing ${i.script_path ? "a freshly written" : "the current"} Ares connector to remote PC ${i.pc_id}`;
     }
+  },
+  // update_agent REPLACES the script that gives Ares access to that machine.
+  // Everything else here acts through the connector; this one acts ON it, so
+  // it asks in every mode — including bypass, where the owner has otherwise
+  // said "stop asking". The owner wanted exactly this shape: Ares proposes the
+  // update, they approve the push.
+  async checkPermissions(i, ctx): Promise<PermissionDecision> {
+    if (i.action !== "update_agent") {
+      // Mirror the default external-state gate for every other action, so this
+      // override changes nothing but the one case it exists for.
+      if (ctx.permissionMode === "plan") return { kind: "deny", reason: "RemotePC is disabled in plan mode." };
+      if (ctx.permissionMode === "bypass") return { kind: "allow" };
+      return { kind: "ask", prompt: "RemotePC wants to perform a external-state action.", suggestion: "allow_once" };
+    }
+    if (ctx.permissionMode === "plan") return { kind: "deny", reason: "RemotePC is disabled in plan mode." };
+    return {
+      kind: "ask",
+      prompt: `Ares wants to replace the Ares Remote connector on ${i.pc_id} with ${i.script_path ? `a connector it wrote itself (${i.script_path})` : "the version this build ships"}. The device verifies the download, keeps the old script, and rolls itself back if the new one fails to reconnect.`,
+      suggestion: "allow_once",
+    };
   },
   async call(i: RemotePCInput, ctx): Promise<{ output: RemotePCOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
     if (!_server) {
@@ -392,6 +477,113 @@ export const RemotePCTool = buildTool({
           const note = err instanceof Error ? err.message : String(err);
           return { output: { action: "notify_pc", ok: false, note }, display: `Error: ${note}` };
         }
+      }
+
+      case "fetch_on_pc": {
+        if (!_server.fetchVia) return fail("fetch_on_pc", new Error("This garrison is too old for fetch_on_pc — restart Ares to pick up the new build."));
+        try {
+          const r = await _server.fetchVia(i.pc_id!, {
+            url: i.url!,
+            method: i.method ?? "GET",
+            ...(i.headers ? { headers: i.headers } : {}),
+            ...(i.body ? { bodyBase64: Buffer.from(i.body, "utf8").toString("base64") } : {}),
+            ...(i.timeout_ms ? { timeoutMs: i.timeout_ms } : {}),
+          });
+          const raw = Buffer.from(r.dataBase64, "base64");
+          const type = r.headers["Content-Type"] ?? r.headers["content-type"] ?? "";
+          const textual = !type || /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|.*\+json)/i.test(type);
+          // A response body is for reading, not for carrying a disk image
+          // through the context window.
+          const LIMIT = 200_000;
+          const truncated = raw.length > LIMIT;
+          const body = textual ? raw.subarray(0, LIMIT).toString("utf8") : `<${raw.length} bytes of ${type || "binary"}>`;
+          const head = `${r.status} ${type || "no content-type"} · ${raw.length} bytes from ${i.pc_id}`;
+          return {
+            output: {
+              action: "fetch_on_pc", ok: r.status > 0 && r.status < 400,
+              status: r.status, headers: r.headers, body, bytes: raw.length,
+              ...(truncated ? { truncated: true } : {}),
+            },
+            display: `${head}\n\n${body}${truncated ? `\n\n… truncated at ${LIMIT} bytes.` : ""}`,
+          };
+        } catch (err) { return fail("fetch_on_pc", err); }
+      }
+
+      case "forward_http": {
+        if (!_server.startForward) return fail("forward_http", new Error("This garrison is too old for forward_http — restart Ares to pick up the new build."));
+        try {
+          const f = await _server.startForward(i.pc_id!, i.target!, i.local_port);
+          return {
+            output: { action: "forward_http", ok: true, forward: f, localUrl: f.localUrl },
+            display:
+              `${f.localUrl} now serves ${f.target} from ${i.pc_id}.\n` +
+              `Open it in the browser preview — it is the real remote service, with real data. ` +
+              `Loopback only, and it lasts until stop_forward (id ${f.id}) or Ares restarts.`,
+          };
+        } catch (err) { return fail("forward_http", err); }
+      }
+
+      case "list_forwards": {
+        if (!_server.listForwards) return fail("list_forwards", new Error("This garrison is too old for forwards — restart Ares."));
+        try {
+          const forwards = await Promise.resolve(_server.listForwards());
+          return {
+            output: { action: "list_forwards", ok: true, forwards },
+            display: forwards.length
+              ? forwards.map((f) => `${f.localUrl} → ${f.target} (${f.pcId}) · ${f.requests} requests · id ${f.id}`).join("\n")
+              : "No remote HTTP forwards are open.",
+          };
+        } catch (err) { return fail("list_forwards", err); }
+      }
+
+      case "stop_forward": {
+        if (!_server.stopForward) return fail("stop_forward", new Error("This garrison is too old for forwards — restart Ares."));
+        try {
+          const ok = await _server.stopForward(i.forward_id!);
+          return {
+            output: { action: "stop_forward", ok },
+            display: ok ? `Forward ${i.forward_id} closed.` : `No forward with id ${i.forward_id}.`,
+          };
+        } catch (err) { return fail("stop_forward", err); }
+      }
+
+      case "agent_status": {
+        try {
+          const pcs = _server.listPcsAsync ? await _server.listPcsAsync() : _server.listPcs();
+          const available = _server.availableConnectorVersion ? await Promise.resolve(_server.availableConnectorVersion()) : 1;
+          const agents = pcs.map((p) => ({
+            pcId: p.id,
+            label: p.label,
+            version: p.connectorVersion ?? 1,
+            updateAvailable: (p.connectorVersion ?? 1) < available,
+          }));
+          const stale = agents.filter((a) => a.updateAvailable);
+          return {
+            output: { action: "agent_status", ok: true, agents, availableVersion: available },
+            display: agents.length
+              ? agents.map((a) => `${a.label} (${a.pcId}) — connector v${a.version}${a.updateAvailable ? ` → v${available} available` : " (current)"}`).join("\n") +
+                (stale.length ? `\n\n${stale.length} machine${stale.length > 1 ? "s" : ""} can be updated with update_agent (the owner approves the push).` : "")
+              : "No machines connected right now.",
+          };
+        } catch (err) { return fail("agent_status", err); }
+      }
+
+      case "update_agent": {
+        if (!_server.updateAgent) return fail("update_agent", new Error("This garrison is too old to push connector updates — restart Ares to pick up the new build."));
+        try {
+          const r = await _server.updateAgent(i.pc_id!, i.script_path);
+          return {
+            output: {
+              action: "update_agent", ok: r.ok,
+              connectorVersion: r.to, availableVersion: r.to,
+              updated: { from: r.from, to: r.to, reconnected: r.reconnected, ...(r.newPcId ? { newPcId: r.newPcId } : {}) },
+              note: r.detail,
+            },
+            display: r.ok
+              ? `✅ ${r.detail}.${r.newPcId ? ` Its pc_id is now ${r.newPcId} — use that from here on.` : ""}`
+              : `⚠️ ${r.detail}`,
+          };
+        } catch (err) { return fail("update_agent", err); }
       }
     }
   },

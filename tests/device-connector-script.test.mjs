@@ -139,7 +139,14 @@ test("a timed-out command is killed and reported, not leaked", () => {
 });
 
 test("it answers the server's heartbeat", () => {
-  assert.match(SCRIPT, /'ping' \{ Send-Json \$ws @\{ type = 'pong' \} \}/);
+  assert.match(SCRIPT, /'ping' \{ Send-Json \$ws @\{ type = 'pong' \}/);
+});
+
+test("a heartbeat lands on disk too, so the update watchdog can see it is alive", () => {
+  // The watchdog that rolls back a failed connector update runs in its own
+  // process with no socket. A file is the only proof of life it can read.
+  assert.match(SCRIPT, /'ping' \{ Send-Json \$ws @\{ type = 'pong' \}; Write-Heartbeat \}/);
+  assert.match(SCRIPT, /function Write-Heartbeat/);
 });
 
 test("the credential is stored with a tightened ACL", () => {

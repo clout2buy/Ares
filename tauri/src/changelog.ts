@@ -38,6 +38,21 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.52.0",
+    date: "September 2026",
+    title: "Stays Found",
+    tagline: "A machine you've paired stops going missing — and stops getting hung up on mid-command.",
+    highlights: [
+      { icon: "⏱️", title: "Long remote commands finish", blurb: "A command on a paired machine was being cut off after 20 seconds even when Ares had asked for two minutes — so anything real (a big copy, restarting services, a slow install) died looking like a flaky connection. Remote work now runs for as long as it was given.", tag: "Faster" },
+      { icon: "🔎", title: "Your paired machines stop vanishing", blurb: "Ares could tell you a machine had never been paired while it was sitting there online — it couldn't tell \"I couldn't check\" apart from \"there's nothing there\". It now says which one it means, so a moment's hiccup no longer reads as your laptop having disappeared.", tag: "Safer" },
+      { icon: "🔗", title: "A machine keeps working after it reconnects", blurb: "Every time a paired machine woke from sleep or blipped on wifi it got a new internal id, and anything Ares was in the middle of started failing with \"no such machine\". Ares now follows it across reconnects without missing a beat.", tag: "Safer" },
+      { icon: "🌍", title: "Reachable away from home", blurb: "Give Ares a permanent web address for itself and a paired machine can find its way back from anywhere — not just on your own network. It keeps that address for good, so a restart can't strand it.", tag: "New" },
+      { icon: "⬆️", title: "Paired machines update themselves", blurb: "A machine running an older connector is brought up to date the moment it connects, with no prompt and nothing to approve. If an update doesn't take, it puts the old one back by itself.", tag: "New" },
+      { icon: "🔒", title: "The remote control channel is closed to the internet", blurb: "The command channel was only ever meant to be reachable from your own computer, but a tunnelled request looked local and slipped through. It's shut now — twice over.", tag: "Safer" },
+      { icon: "💪", title: "A connector that stops comes back", blurb: "If the helper on a paired machine exits cleanly, Windows never restarted it and the machine quietly went dark until the next sign-in. It's now checked every few minutes and restarted.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.51.1",
     date: "September 2026",
     title: "Hands On",

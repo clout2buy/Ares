@@ -153,7 +153,14 @@ const inputSchema = z.object({
     keys: z.string().optional().describe("key: SendKeys notation, e.g. {ENTER}, {TAB}, ^c (Ctrl+C), %{F4} (Alt+F4)."),
   }).optional().describe("control_pc: one input event to send to the remote desktop."),
   device_id: z.string().optional().describe("unpair_device / rename_device: the device id from list_devices."),
-  timeout_ms: z.number().int().min(1000).max(120_000).optional().describe("exec_on_pc: max wait in ms. Default 30000."),
+  timeout_ms: z.coerce.number().int().min(1000).max(120_000).optional().describe("exec_on_pc: max wait in ms. Default 30000."),
+  // Bash and PowerShell both name this `timeout`, so that is what gets written
+  // here too — 67 times against 16 in one field session. An unknown key is
+  // silently dropped by the schema, so a deliberate 120s budget became the 30s
+  // default with nothing said, and the long command died looking like a flaky
+  // remote. Accept the name people actually use. Coerced because it arrives as
+  // a string about as often as a number.
+  timeout: z.coerce.number().int().min(1000).max(120_000).optional().describe("alias for timeout_ms."),
   remote_path: z.string().optional().describe("get_file / put_file: the absolute path ON THE REMOTE PC to read from or write to."),
   local_path: z.string().optional().describe("put_file: the file on YOUR machine to send (absolute or workspace-relative). get_file: optional destination on your machine; defaults to a downloads folder in the workspace."),
   message: z.string().optional().describe("notify_pc: short text for the popup, e.g. \"Fixed — restart when you can\"."),
@@ -417,7 +424,7 @@ export const RemotePCTool = buildTool({
 
       case "exec_on_pc": {
         try {
-          const result = await _server.exec(i.pc_id!, i.command!, i.timeout_ms, i.shell);
+          const result = await _server.exec(i.pc_id!, i.command!, i.timeout_ms ?? i.timeout, i.shell);
           return {
             output: { action: "exec_on_pc", ok: true, output: result.output, exitCode: result.exitCode },
             display: result.output || `(exit ${result.exitCode ?? 0})`,
@@ -512,7 +519,7 @@ export const RemotePCTool = buildTool({
             method: i.method ?? "GET",
             ...(i.headers ? { headers: i.headers } : {}),
             ...(i.body ? { bodyBase64: Buffer.from(i.body, "utf8").toString("base64") } : {}),
-            ...(i.timeout_ms ? { timeoutMs: i.timeout_ms } : {}),
+            ...((i.timeout_ms ?? i.timeout) ? { timeoutMs: (i.timeout_ms ?? i.timeout)! } : {}),
           });
           const raw = Buffer.from(r.dataBase64, "base64");
           const type = r.headers["Content-Type"] ?? r.headers["content-type"] ?? "";

@@ -184,3 +184,107 @@ test("loopback is not probed", () => {
 test("a learned address is cached so the next boot skips discovery", () => {
   assert.match(SCRIPT, /lastWsUrl -ne \$WsUrl/);
 });
+
+// ─── link awareness ────────────────────────────────────────────────────────
+//
+// Field report (2026-09-13): "it took a while to boot up remote connect to u --
+// make sure it auto connects when the internet is hit". The laptop powered on
+// before its WiFi associated, so every attempt failed fast, the backoff climbed
+// to its 60s ceiling, and the connector then served out that blind timer after
+// the link was already back.
+
+test("the loop waits for the link before spending an attempt", () => {
+  assert.match(SCRIPT, /function Test-NetworkUp/);
+  assert.match(SCRIPT, /GetIsNetworkAvailable/);
+  assert.match(
+    SCRIPT,
+    /if \(-not \(Test-NetworkUp\)\) \{/,
+    "the reconnect loop must gate on the link, not just sleep",
+  );
+});
+
+test("waiting for the link cannot wedge the connector forever", () => {
+  // GetIsNetworkAvailable can return a false negative. An unbounded wait on it
+  // would strand a reachable machine, which is the exact failure this whole
+  // file exists to prevent.
+  assert.match(SCRIPT, /\$waited -lt 300/, "the link wait must be bounded");
+});
+
+test("a local outage does not inflate the backoff", () => {
+  // The home never refused us, so the backoff learned nothing and must not
+  // punish the next attempt.
+  const gate = SCRIPT.indexOf("network down - waiting for link");
+  const reset = SCRIPT.indexOf("$backoff = 2", gate);
+  assert.ok(gate > 0, "the link gate must exist");
+  assert.ok(reset > gate && reset - gate < 400, "the backoff resets after a link outage");
+});
+
+test("Test-NetworkUp fails open", () => {
+  // A throwing API must never stop the connector from trying.
+  assert.match(SCRIPT, /GetIsNetworkAvailable\(\) \} catch \{ return \$true \}/);
+});
+
+// ─── it actually parses ────────────────────────────────────────────────────
+//
+// This file's own header says a script that cannot parse is "a device that
+// never connects and never says why" -- but every test above only pattern
+// matches the text. TypeScript will compile a syntactically broken PowerShell
+// program without a murmur. Hand it to PowerShell's real parser.
+
+import { execFileSync } from "node:child_process";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+function findPowershell() {
+  for (const exe of ["pwsh", "powershell"]) {
+    try {
+      execFileSync(exe, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
+        stdio: "ignore",
+        timeout: 30000,
+      });
+      return exe;
+    } catch {
+      /* try the next one */
+    }
+  }
+  return null;
+}
+
+const PS_EXE = findPowershell();
+
+const CHECKER = [
+  "param([string]$Target)",
+  "$errs = $null; $toks = $null",
+  "[void][System.Management.Automation.Language.Parser]::ParseFile($Target, [ref]$toks, [ref]$errs)",
+  "if ($errs -and $errs.Count -gt 0) {",
+  "  $errs | ForEach-Object { Write-Output ('line ' + $_.Extent.StartLineNumber + ': ' + $_.Message) }",
+  "  exit 1",
+  "}",
+  "Write-Output ('tokens=' + $toks.Count)",
+  "exit 0",
+].join("\n");
+
+test(
+  "the generated script parses cleanly under PowerShell's own parser",
+  { skip: PS_EXE ? false : "no PowerShell on this host" },
+  () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ares-connparse-"));
+    const target = path.join(dir, "connector.ps1");
+    const checker = path.join(dir, "check.ps1");
+    writeFileSync(target, SCRIPT, "utf8");
+    writeFileSync(checker, CHECKER, "utf8");
+
+    let out;
+    try {
+      out = execFileSync(
+        PS_EXE,
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", checker, target],
+        { encoding: "utf8", timeout: 180000 },
+      );
+    } catch (err) {
+      assert.fail(`the connector does not parse:\n${err.stdout ?? ""}${err.stderr ?? ""}`);
+    }
+    assert.match(out, /tokens=\d+/, "the parser must report a token count");
+  },
+);

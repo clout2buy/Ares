@@ -39,8 +39,14 @@
  *   2 — + fetch (HTTP from the device's own network position), self-update
  *       with hash verification and on-device rollback, heartbeat file,
  *       explicit "unsupported op" replies instead of silence.
+ *   3 — + re-home broadcast: a device that cannot reach its stored address
+ *       rediscovers the home on the LAN instead of waiting to be re-paired.
+ *   4 — + link awareness: the reconnect loop waits for the network interface
+ *       instead of spending attempts (and inflating its backoff) while the
+ *       machine is offline, so a laptop reconnects within a second of its
+ *       WiFi associating rather than serving out a blind 60s timer.
  */
-export const DEVICE_CONNECTOR_VERSION = 3;
+export const DEVICE_CONNECTOR_VERSION = 4;
 
 /** Ops v2 understands. Sent at attach so the server never has to guess. */
 export const DEVICE_CONNECTOR_CAPS = [
@@ -870,6 +876,12 @@ function Connect-Once($Cred, [string]$WsUrl) {
   return @{ ok = $true; retry = $true }
 }
 
+function Test-NetworkUp {
+  # Cheap, always present, no network traffic. True when any non-loopback
+  # interface has a link. Fails OPEN: a broken API must never wedge the loop.
+  try { return [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable() } catch { return $true }
+}
+
 function Test-IsElevated {
   try {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -884,6 +896,20 @@ function Test-IsElevated {
 Write-Log "Ares Remote v$ConnectorVersion starting (elevated=$(Test-IsElevated)) from $SelfPath"
 $backoff = 2
 while ($true) {
+  # Wait for the LINK instead of burning the backoff on attempts that cannot
+  # possibly succeed. A laptop powered on before its WiFi associates used to
+  # fail fast, climb the backoff to its 60s ceiling, and then serve out that
+  # blind timer after the network was already back -- the owner saw a minute of
+  # dead time on every boot. Now it reconnects within a second of the link
+  # appearing. Bounded so a false negative from the API can never wedge us.
+  if (-not (Test-NetworkUp)) {
+    Write-Log 'network down - waiting for link'
+    $waited = 0
+    while (-not (Test-NetworkUp) -and $waited -lt 300) { Start-Sleep -Seconds 1; $waited++ }
+    Write-Log ('network wait ended after ' + $waited + 's')
+    # The outage was local, so the backoff learned nothing about the home.
+    $backoff = 2
+  }
   $cred = Get-Credential-Stored
   $tried = $false
   foreach ($url in (Find-Home $cred)) {

@@ -437,9 +437,15 @@ export function replaceResilient(
     if (occurrences > 1 && !replaceAll) {
       return { ok: false, reason: "not-unique", occurrences };
     }
+    // The replacement MUST go in as a function. String.prototype.replace treats
+    // a string replacement as a PATTERN: $& $` $' and $1..$9 are substitutions,
+    // so a new_string containing $' (bash quoting, regex replacements, any code
+    // that itself calls .replace) silently splices the rest of the file back in
+    // and corrupts the source. A replacer function is taken literally. The
+    // replaceAll branch is already safe because split/join never interprets.
     const text = replaceAll
       ? haystack.split(needle).join(replacement)
-      : haystack.replace(needle, replacement);
+      : haystack.replace(needle, () => replacement);
     return {
       ok: true,
       text: fromLf(text, eol),

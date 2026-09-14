@@ -38,6 +38,21 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.53.0",
+    date: "September 2026",
+    title: "One Mind",
+    tagline: "Ares now has one memory across every machine, and it can see, show, and act from your phone.",
+    highlights: [
+      { icon: "🜂", title: "The Ares Network", blurb: "Connect any Ares to the memory estate hosted on your own server: one memory for the desktop, the laptop, and Telegram, synced within a minute.", tag: "New" },
+      { icon: "🏠", title: "Host it yourself", blurb: "Flip Host here on the machine that stays up and its own tunnel serves the network under /oricle. One domain, one token that only you hold.", tag: "Safer" },
+      { icon: "🧠", title: "Every session learns", blurb: "Desktop turns, checkpoints, and Telegram conversations all land in the estate as they happen, so nothing Ares does for you is forgotten.", tag: "New" },
+      { icon: "📷", title: "Send photos on Telegram", blurb: "Ares actually sees the pictures you send it (albums too) and reads the files you drop in the chat.", tag: "New" },
+      { icon: "🖼", title: "It shows you", blurb: "Screenshots from the browser or your PC come back as photos, and Ares can send you any image or file on request.", tag: "New" },
+      { icon: "✅", title: "One tap, not forty", blurb: "Permission prompts on your phone now have Always, so a long browser task asks once.", tag: "Polished" },
+      { icon: "💬", title: "Readable replies", blurb: "Bold, code, and links render on Telegram; long answers arrive as a file instead of eight bubbles; /new starts a fresh thread.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.52.0",
     date: "September 2026",
     title: "Stays Found",

@@ -196,7 +196,9 @@ test("inbound Telegram text becomes session.send on a freshly created session", 
     ctx.tg.pushMessage(42, "hello ares");
     const send = await waitFor(() => ctx.gateway.framesOf("session.send")[0], "session.send frame");
     assert.equal(send.sessionId, "s1");
-    assert.equal(send.text, "hello ares");
+    // The first turn of every Telegram session carries the one-time surface
+    // preamble (v0.53); the owner's words are intact at the end.
+    assert.ok(send.text.endsWith("hello ares"), send.text);
     assert.equal(ctx.gateway.framesOf("session.create").length, 1);
 
     const hello = ctx.gateway.framesOf("hello")[0];
@@ -216,7 +218,7 @@ test("multiple Telegram texts for one chat are serialized until turn_end", async
 
     const first = await waitFor(() => ctx.gateway.framesOf("session.send")[0], "first session.send");
     assert.equal(first.sessionId, "s1");
-    assert.equal(first.text, "first");
+    assert.ok(first.text.endsWith("first"), first.text);
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(ctx.gateway.framesOf("session.send").length, 1, "second text waits while first turn is busy");
 
@@ -228,7 +230,7 @@ test("multiple Telegram texts for one chat are serialized until turn_end", async
     });
 
     const second = await waitFor(
-      () => ctx.gateway.framesOf("session.send").find((f) => f.text === "second"),
+      () => ctx.gateway.framesOf("session.send").find((f) => f.text.endsWith("second")),
       "second session.send after turn_end",
     );
     assert.equal(second.sessionId, "s1");
@@ -374,7 +376,7 @@ test("gateway drop → backoff reconnect → fresh session continues the chat", 
 
     ctx.tg.pushMessage(42, "second");
     const second = await waitFor(
-      () => ctx.gateway.framesOf("session.send").find((f) => f.text === "second"),
+      () => ctx.gateway.framesOf("session.send").find((f) => f.text.endsWith("second")),
       "session.send after reconnect",
     );
     assert.equal(second.sessionId, "s2", "session is recreated, not the dead one");

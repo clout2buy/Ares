@@ -694,6 +694,7 @@ fn ares_open_path(path: String) -> Result<(), String> {
 const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "anthropic_login_finish", "anthropic_login_start", "bug_report",
     "openai_login_start", "openai_auth_status",
+    "ares_network_connect", "ares_network_disconnect", "ares_network_host", "ares_network_status", "ares_network_sync",
     "consciousness_cancel", "consciousness_disable", "consciousness_enable",
     "consciousness_killswitch", "consciousness_look_away", "consciousness_resume",
     "consciousness_status", "discover_custom_models", "engine_config", "exit",

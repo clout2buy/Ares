@@ -25,13 +25,33 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { buildTool } from "@ares/tools";
+import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 
 // The library's surface, typed structurally so this file compiles without the
-// package being resolvable at build time (it lives on another drive).
+// package being resolvable at build time (it lives in its own repo).
 interface OricleLib {
   Oricle: {
     mount(dir: string, o: { principal: string; agent?: string; model?: string; readOnly?: boolean }): Promise<OricleEstate>;
   };
+  OricleClient: new (url: string, token: string, o?: { timeoutMs?: number }) => OricleNetClient;
+  sync(dir: string, client: OricleNetClient, o?: { direction?: "both" | "push" | "pull"; log?: (l: string) => void }): Promise<OricleSyncReport>;
+  clone(dir: string, client: OricleNetClient, o?: { log?: (l: string) => void }): Promise<OricleSyncReport>;
+}
+interface OricleNetClient {
+  base: string;
+  health(): Promise<{ ok: true; estate: string }>;
+  manifest(): Promise<{ manifest: { id: string; name: string } }>;
+  writers(): Promise<{ writers: Record<string, unknown> }>;
+}
+interface OricleSyncReport {
+  estate: string;
+  pushed: number;
+  pulled: number;
+  redactionsApplied: number;
+  diverged: { writer: string; reason: string }[];
+  errors: string[];
+  pulledRecords: OricleRecordLike[];
+  at: string;
 }
 interface OricleRecordLike {
   id: string;
@@ -59,6 +79,10 @@ interface OricleEstate {
   render(months?: Set<string>): Promise<string[]>;
   status(): unknown;
   close(): Promise<void>;
+  /** v1.1: fold records another writer appended (a sync just pulled them). */
+  absorb?(records: OricleRecordLike[]): number;
+  refresh?(): Promise<void>;
+  manifest: { id: string; name: string };
 }
 
 /** The slice of LiveSession this adapter reads. Structural, so tests pass a stub. */
@@ -90,7 +114,8 @@ let libPromise: Promise<OricleLib | null> | null = null;
 async function lib(): Promise<OricleLib | null> {
   if (!libPromise) {
     libPromise = (async () => {
-      const candidates = [process.env["ARES_ORICLE_LIB"], "F:/Oricle/dist/index.js", "oricle"].filter((c): c is string => !!c);
+      const configured = await loadUiSettings().then((s) => s.oricleLibPath).catch(() => undefined);
+      const candidates = [process.env["ARES_ORICLE_LIB"], configured, "D:/Oricle/dist/index.js", "F:/Oricle/dist/index.js", "oricle"].filter((c): c is string => !!c);
       for (const c of candidates) {
         try {
           const spec = c.includes("/") || c.includes("\\") ? pathToFileURL(path.resolve(c)).href : c;
@@ -253,8 +278,38 @@ export async function oricleAfterTurn(
       episodeState.set(sid, ep);
     }
     await est.render(new Set([new Date().toISOString().slice(0, 7)])).catch(() => undefined);
+    scheduleNetworkPush();
   } catch {
     // never break the loop over memory
+  }
+}
+
+/**
+ * A garrison (remote/Telegram) turn: those sessions never pass through
+ * prepareUserTurn/finishTurn, so the estate would never hear them. The owner's
+ * remote sends get the same per-session episode card as desktop turns; a
+ * guest's conversation stays out of the owner's estate (memory isolation).
+ */
+export async function oricleRemoteTurn(text: string, tenant: { role: "owner" | "guest" } | undefined, sessionId: string, model?: string, surfaceName = "telegram"): Promise<void> {
+  try {
+    if (tenant && tenant.role !== "owner") return;
+    const clean = text.replace(/^\(System:[\s\S]*?\)\s*/m, "").trim();
+    if (!clean) return;
+    const est = await oricleEstate(model);
+    if (!est || !est.writer) return;
+    const ep = episodeState.get(sessionId) ?? { recordId: "", userMessages: [], turns: 0 };
+    ep.userMessages.push(clean.slice(0, 220));
+    ep.turns += 1;
+    const title = ep.userMessages[0]!.slice(0, 80);
+    const body = [`Session ${sessionId} (${surfaceName}) · ${ep.turns} turn(s)${model ? ` · ${model}` : ""}.`, ``, `The owner said, in order:`, ...ep.userMessages.slice(-12).map((m, i) => `${Math.max(1, ep.userMessages.length - 11) + i}. ${m}`)].join("\n").slice(0, 2000);
+    const [rec] = await est
+      .commit({ kind: "episode", title, text: body, tier: "confirmed", tags: ["ares-session", surfaceName], source: { foreign: { system: "ares-session", id: sessionId }, session: sessionId }, ...(ep.recordId ? { supersedes: [ep.recordId] } : {}) })
+      .catch(() => [] as OricleRecordLike[]);
+    if (rec) ep.recordId = rec.id;
+    episodeState.set(sessionId, ep);
+    scheduleNetworkPush();
+  } catch {
+    // never break a remote turn over memory
   }
 }
 
@@ -301,6 +356,244 @@ async function writeCheckpoint(live: OricleLive, reason: string): Promise<void> 
   const at = new Date().toISOString();
   const advanced = await est.task({ id: target.id, data: { lastAction: { text: `checkpoint: ${reason}`, at, ...(head ? { commit: head } : {}) }, ...(head ? { asOf: { commit: head } } : {}) } });
   await est.commit({ kind: "checkpoint", text: `${reason} · session ${live.session.meta.id}${head ? ` · HEAD ${head.slice(0, 10)}` : ""}`, tier: "confirmed", links: [advanced.id], source: { session: live.session.meta.id, ...(head ? { commit: head } : {}) }, tags: ["auto-checkpoint"] });
+  scheduleNetworkPush();
+}
+
+// ── the Ares network ─────────────────────────────────────────────────────────
+//
+// One hosted estate (`oricle serve` on the owner's laptop, tunneled to his
+// domain) that every Ares instance plugs into. Connect = verify the door,
+// clone the estate if this machine has none, otherwise sync; then keep
+// syncing: a debounced push a few seconds after every write this process
+// makes, and a full push+pull on a timer so other instances' records arrive.
+// All best-effort and off the turn path: memory never blocks a reply.
+
+export interface AresNetworkStatus {
+  configured: boolean;
+  enabled: boolean;
+  connected: boolean;
+  busy: boolean;
+  url: string;
+  estateDir: string;
+  estateId?: string;
+  estateName?: string;
+  records?: number;
+  writers?: number;
+  lastSyncAt?: number;
+  lastPushed?: number;
+  lastPulled?: number;
+  totalPushed: number;
+  totalPulled: number;
+  error?: string;
+  libFound: boolean;
+}
+
+interface NetState {
+  url: string;
+  token: string;
+  client: OricleNetClient;
+  timer?: ReturnType<typeof setInterval>;
+  pushTimer?: ReturnType<typeof setTimeout>;
+  syncing: Promise<void> | null;
+  connected: boolean;
+  estateId?: string;
+  estateName?: string;
+  writers?: number;
+  lastSyncAt?: number;
+  lastPushed?: number;
+  lastPulled?: number;
+  totalPushed: number;
+  totalPulled: number;
+  error?: string;
+}
+let net: NetState | null = null;
+let netEnabled = false;
+let netUrl = "";
+const netListeners = new Set<(s: AresNetworkStatus) => void>();
+
+function syncEveryMs(): number {
+  const n = Number(process.env["ARES_NETWORK_SYNC_MS"]);
+  return Number.isFinite(n) && n >= 5_000 ? n : 60_000;
+}
+const PUSH_DEBOUNCE_MS = 4_000;
+
+/** Subscribe to status changes (the daemon forwards them to the UI). */
+export function onAresNetworkStatus(fn: (s: AresNetworkStatus) => void): () => void {
+  netListeners.add(fn);
+  return () => netListeners.delete(fn);
+}
+
+async function emitNetStatus(): Promise<void> {
+  const s = await aresNetworkStatus();
+  for (const fn of netListeners) {
+    try {
+      fn(s);
+    } catch {
+      /* a listener never breaks the loop */
+    }
+  }
+}
+
+export async function aresNetworkStatus(): Promise<AresNetworkStatus> {
+  const dir = oricleDir();
+  const L = await lib();
+  let records: number | undefined;
+  let estateId = net?.estateId;
+  let estateName = net?.estateName;
+  if (handle) {
+    const st = handle.est.status() as { records?: number; id?: string; name?: string };
+    records = st.records;
+    estateId ??= st.id;
+    estateName ??= st.name;
+  }
+  return {
+    configured: netUrl.length > 0,
+    enabled: netEnabled,
+    connected: net?.connected === true,
+    busy: net?.syncing !== null && net?.syncing !== undefined,
+    url: net?.url ?? netUrl,
+    estateDir: dir,
+    ...(estateId ? { estateId } : {}),
+    ...(estateName ? { estateName } : {}),
+    ...(records !== undefined ? { records } : {}),
+    ...(net?.writers !== undefined ? { writers: net.writers } : {}),
+    ...(net?.lastSyncAt ? { lastSyncAt: net.lastSyncAt } : {}),
+    ...(net?.lastPushed !== undefined ? { lastPushed: net.lastPushed } : {}),
+    ...(net?.lastPulled !== undefined ? { lastPulled: net.lastPulled } : {}),
+    totalPushed: net?.totalPushed ?? 0,
+    totalPulled: net?.totalPulled ?? 0,
+    ...(net?.error ? { error: net.error } : {}),
+    libFound: L !== null,
+  };
+}
+
+/**
+ * Connect this instance to the network. Verifies the door, clones the estate
+ * when this machine has none, syncs, mounts, and starts the sync loop. The
+ * url/token persist (token encrypted) so the next boot reconnects itself.
+ */
+export async function aresNetworkConnect(o: { url: string; token: string; persist?: boolean }): Promise<AresNetworkStatus> {
+  const url = o.url.trim().replace(/\/+$/, "");
+  const token = o.token.trim();
+  if (!/^https?:\/\//.test(url)) throw new Error("the network URL must start with http:// or https://");
+  if (token.length < 8) throw new Error("the network token looks too short");
+  const L = await lib();
+  if (!L) throw new Error("the Oricle library is not installed on this machine (set the library path in Settings → Consciousness, or ARES_ORICLE_LIB)");
+  if (typeof L.OricleClient !== "function" || typeof L.sync !== "function") throw new Error("this Oricle library predates the network layer; update D:/Oricle (git pull && pnpm test)");
+  await aresNetworkDisconnect({ persist: false });
+  const client = new L.OricleClient(url, token, { timeoutMs: 60_000 });
+  const health = await client.health();
+  const remote = await client.manifest();
+  const dir = oricleDir();
+  let hasLocal = true;
+  try {
+    await fs.access(path.join(dir, "manifest.json"));
+  } catch {
+    hasLocal = false;
+  }
+  const state: NetState = { url, token, client, syncing: null, connected: false, totalPushed: 0, totalPulled: 0, estateId: remote.manifest.id, estateName: remote.manifest.name };
+  net = state;
+  netUrl = url;
+  netEnabled = true;
+  if (!hasLocal) {
+    const rep = await L.clone(dir, client, { log: netLog });
+    state.totalPulled += rep.pulled;
+    state.lastPulled = rep.pulled;
+    state.lastSyncAt = Date.now();
+    netLog(`cloned ${health.estate} (${rep.pulled} records) into ${dir}`);
+  }
+  state.connected = true;
+  if (o.persist !== false) await updateUiSettings({ aresNetworkUrl: url, aresNetworkToken: token, aresNetworkEnabled: true }).catch(() => undefined);
+  await runSync("connect");
+  state.timer = setInterval(() => void runSync("timer"), syncEveryMs());
+  state.timer.unref?.();
+  return aresNetworkStatus();
+}
+
+export async function aresNetworkDisconnect(o: { persist?: boolean } = {}): Promise<AresNetworkStatus> {
+  if (net) {
+    if (net.timer) clearInterval(net.timer);
+    if (net.pushTimer) clearTimeout(net.pushTimer);
+    await (net.syncing ?? Promise.resolve()).catch(() => undefined);
+    net = null;
+  }
+  netEnabled = false;
+  if (o.persist !== false) await updateUiSettings({ aresNetworkEnabled: false }).catch(() => undefined);
+  await emitNetStatus();
+  return aresNetworkStatus();
+}
+
+/** A full push+pull now (the "Sync now" button). */
+export async function aresNetworkSyncNow(): Promise<AresNetworkStatus> {
+  await runSync("manual");
+  return aresNetworkStatus();
+}
+
+/** Boot: reconnect if the owner left the network on. Never throws. */
+export async function startAresNetworkFromSettings(): Promise<void> {
+  try {
+    const s = await loadUiSettings();
+    netUrl = s.aresNetworkUrl ?? "";
+    if (s.aresNetworkEnabled !== true || !s.aresNetworkUrl || !s.aresNetworkToken) return;
+    await aresNetworkConnect({ url: s.aresNetworkUrl, token: s.aresNetworkToken, persist: false });
+  } catch (err) {
+    if (net) net.error = (err as Error).message;
+    netLog(`reconnect failed: ${(err as Error).message}`);
+    await emitNetStatus();
+  }
+}
+
+/** Called after every local write: push a few seconds later, coalescing bursts. */
+export function scheduleNetworkPush(): void {
+  if (!net || !net.connected) return;
+  if (net.pushTimer) clearTimeout(net.pushTimer);
+  net.pushTimer = setTimeout(() => void runSync("push"), PUSH_DEBOUNCE_MS);
+  net.pushTimer.unref?.();
+}
+
+async function runSync(reason: "connect" | "timer" | "manual" | "push"): Promise<void> {
+  const state = net;
+  if (!state) return;
+  if (state.syncing) {
+    if (reason === "push") return; // a running sync will carry the write
+    await state.syncing.catch(() => undefined);
+  }
+  const L = await lib();
+  if (!L) return;
+  const job = (async () => {
+    try {
+      const rep = await L.sync(oricleDir(), state.client, { direction: reason === "push" ? "push" : "both", log: netLog });
+      state.lastSyncAt = Date.now();
+      state.lastPushed = rep.pushed;
+      state.lastPulled = rep.pulled;
+      state.totalPushed += rep.pushed;
+      state.totalPulled += rep.pulled;
+      state.connected = true;
+      state.error = rep.errors[0] ?? (rep.diverged[0] ? `writer ${rep.diverged[0].writer} diverged: ${rep.diverged[0].reason}` : undefined);
+      if (rep.pulled > 0 && handle) {
+        // Fold what arrived into the live mount so the next pack sees it.
+        if (typeof handle.est.absorb === "function") handle.est.absorb(rep.pulledRecords);
+        else if (typeof handle.est.refresh === "function") await handle.est.refresh();
+      }
+      try {
+        state.writers = Object.keys((await state.client.writers()).writers).length;
+      } catch {
+        /* status only */
+      }
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.connected = false;
+      netLog(`sync (${reason}) failed: ${(err as Error).message}`);
+    }
+  })();
+  state.syncing = job;
+  await job;
+  if (net === state) state.syncing = null;
+  await emitNetStatus();
+}
+
+function netLog(line: string): void {
+  process.stderr.write(`ares-network: ${line}\n`);
 }
 
 // ── the Estate tool ──────────────────────────────────────────────────────────

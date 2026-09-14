@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const ORICLE_LIB = process.env.ARES_ORICLE_LIB ?? "F:/Oricle/dist/index.js";
+const ORICLE_LIB = process.env.ARES_ORICLE_LIB ?? "D:/Oricle/dist/index.js";
 
 let libAvailable = true;
 try {

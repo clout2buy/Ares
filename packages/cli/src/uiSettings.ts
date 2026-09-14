@@ -21,6 +21,7 @@ const SECRET_FIELDS = [
   "ollamaApiKey",
   "customApiKey",
   "telegramBotToken",
+  "aresNetworkToken",
 ] as const;
 
 async function decryptSecretFields(settings: UiSettings): Promise<UiSettings> {
@@ -131,6 +132,16 @@ export interface UiSettings {
    *  When true, Ares pulls its local vision + embedding models and — in later
    *  stages — runs the always-on screen-watch loop. */
   consciousnessEnabled?: boolean;
+  /** The Ares network: a hosted Oricle memory estate every instance plugs
+   *  into. URL of the `oricle serve` door (tunneled to the owner's domain). */
+  aresNetworkUrl?: string;
+  /** Bearer token for that door — encrypted at rest. */
+  aresNetworkToken?: string;
+  /** Reconnect at boot and keep syncing while true. */
+  aresNetworkEnabled?: boolean;
+  /** Where the Oricle library lives (dist/index.js). Absent → ARES_ORICLE_LIB,
+   *  then the known install folders. */
+  oricleLibPath?: string;
   /**
    * What Ares does with a request that was still pending when it last closed
    * (crash, forced quit, sleep). "ask" (default) shows it on the session with

@@ -262,6 +262,28 @@ export interface BackgroundJobVm {
   sessionId?: string;
 }
 
+/** The Ares network card: a hosted Oricle estate this instance syncs with. */
+export interface AresNetworkVm {
+  configured: boolean;
+  enabled: boolean;
+  connected: boolean;
+  busy: boolean;
+  url: string;
+  /** Local estate folder (mounted) and the estate it belongs to. */
+  estateDir?: string;
+  estateId?: string;
+  estateName?: string;
+  records?: number;
+  writers?: number;
+  lastSyncAt?: number;
+  lastPushed?: number;
+  lastPulled?: number;
+  totalPushed?: number;
+  totalPulled?: number;
+  error?: string;
+  libFound: boolean;
+}
+
 export interface ConsciousnessModelVm {
   id: string;
   role: string;

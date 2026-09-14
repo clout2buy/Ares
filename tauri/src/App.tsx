@@ -44,6 +44,7 @@ import {
   type AresEvent,
   type ConsciousnessModelVm,
   type ConsciousnessVm,
+  type AresNetworkVm,
   type OAuthProviderVm,
   type McpConnectorVm,
   type SlashAction,
@@ -582,6 +583,7 @@ function App() {
     models: [],
     progress: {},
   });
+  const [aresNetwork, setAresNetwork] = useState<AresNetworkVm>({ configured: false, enabled: false, connected: false, busy: false, url: "", libFound: false });
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [ollamaUsage, setOllamaUsage] = useState<OllamaUsageState | null>(null);
   const [aresPointMaps, setAresPointMaps] = useState<PointMapSpec[]>([]);
@@ -1595,6 +1597,29 @@ function App() {
         case "kimi_auth_status": {
           const ke = e as { configured?: unknown; detail?: unknown };
           setKimiAuth({ signingIn: false, connected: ke.configured === true, detail: typeof ke.detail === "string" ? ke.detail : null });
+          return true;
+        }
+        case "ares_network_status": {
+          const n = e as unknown as Partial<AresNetworkVm>;
+          setAresNetwork({
+            configured: n.configured === true,
+            enabled: n.enabled === true,
+            connected: n.connected === true,
+            busy: n.busy === true,
+            url: typeof n.url === "string" ? n.url : "",
+            libFound: n.libFound === true,
+            ...(typeof n.estateDir === "string" ? { estateDir: n.estateDir } : {}),
+            ...(typeof n.estateId === "string" ? { estateId: n.estateId } : {}),
+            ...(typeof n.estateName === "string" ? { estateName: n.estateName } : {}),
+            ...(typeof n.records === "number" ? { records: n.records } : {}),
+            ...(typeof n.writers === "number" ? { writers: n.writers } : {}),
+            ...(typeof n.lastSyncAt === "number" ? { lastSyncAt: n.lastSyncAt } : {}),
+            ...(typeof n.lastPushed === "number" ? { lastPushed: n.lastPushed } : {}),
+            ...(typeof n.lastPulled === "number" ? { lastPulled: n.lastPulled } : {}),
+            ...(typeof n.totalPushed === "number" ? { totalPushed: n.totalPushed } : {}),
+            ...(typeof n.totalPulled === "number" ? { totalPulled: n.totalPulled } : {}),
+            ...(typeof n.error === "string" && n.error ? { error: n.error } : {}),
+          });
           return true;
         }
         case "consciousness_status": {
@@ -4448,6 +4473,7 @@ function App() {
           }}
           oauthProviders={oauthProviders}
           consciousness={consciousness}
+          aresNetwork={aresNetwork}
           onDaemonCommand={daemonCmd}
           onLivePref={(patch) => {
             const next = { ...prefs, ...patch };
@@ -10279,6 +10305,7 @@ function Settings({
   onPermissions,
   oauthProviders,
   consciousness,
+  aresNetwork,
   onDaemonCommand,
   onLivePref,
   onAnthropicSignIn,
@@ -10315,6 +10342,7 @@ function Settings({
   onPermissions: (next: PermSettings) => void;
   oauthProviders: OAuthProviderVm[];
   consciousness: ConsciousnessVm;
+  aresNetwork: AresNetworkVm;
   onDaemonCommand: (cmd: Record<string, unknown>) => void;
   onLivePref: (patch: Partial<Prefs>) => void;
   onAnthropicSignIn: () => void;
@@ -10344,7 +10372,10 @@ function Settings({
     if (tab === "mind") onDaemonCommand({ type: "mind_overview" });
     if (tab === "usage") onDaemonCommand({ type: "usage_stats", days: 30 });
     if (tab === "appearance") onDaemonCommand({ type: "pointmaps_list" });
-    if (tab === "consciousness") onDaemonCommand({ type: "consciousness_status" });
+    if (tab === "consciousness") {
+      onDaemonCommand({ type: "consciousness_status" });
+      onDaemonCommand({ type: "ares_network_status" });
+    }
   }, [tab, native, onDaemonCommand]);
 
   const setEngine = (patch: Partial<EngineConfig>) => setDraftPrefs({ ...draft, engine: { ...draft.engine, ...patch } });
@@ -10850,7 +10881,7 @@ function Settings({
           ) : null}
 
           {tab === "consciousness" ? (
-            <ConsciousnessPane native={native} state={consciousness} onDaemonCommand={onDaemonCommand} />
+            <ConsciousnessPane native={native} state={consciousness} network={aresNetwork} onDaemonCommand={onDaemonCommand} />
           ) : null}
 
           {tab === "updates" ? (
@@ -11447,12 +11478,19 @@ function AnthropicSignIn({
 function ConsciousnessPane({
   native,
   state,
+  network,
   onDaemonCommand,
 }: {
   native: boolean;
   state: ConsciousnessVm;
+  network: AresNetworkVm;
   onDaemonCommand: (cmd: Record<string, unknown>) => void;
 }) {
+  const [netUrl, setNetUrl] = useState(network.url);
+  const [netToken, setNetToken] = useState("");
+  useEffect(() => {
+    if (network.url && !netUrl) setNetUrl(network.url);
+  }, [network.url, netUrl]);
   const readyCount = state.models.filter((m) => m.present).length;
   const totalCount = state.models.length || 3;
   const phase = !state.enabled
@@ -11582,6 +11620,82 @@ function ConsciousnessPane({
         Local + private: screen frames are read by the on-device model and never leave the machine. It stays silent
         unless something's genuinely worth a word.
       </p>
+
+      <div className="consciousWatch" style={{ marginTop: 18 }}>
+        <div className="consciousModelHead">
+          <strong>Ares Network</strong>
+          <span className="paneHint">
+            {network.busy
+              ? "syncing…"
+              : network.connected
+                ? `connected · ${network.records ?? "?"} records · ${network.writers ?? "?"} writers`
+                : network.enabled
+                  ? "reconnecting…"
+                  : network.configured
+                    ? "off"
+                    : "not connected"}
+          </span>
+        </div>
+        <p className="paneHint">
+          One memory for every Ares: the Oricle estate hosted on your server. Connecting pulls the whole estate
+          here, then every session on this machine uploads as it happens and every other instance's memories
+          arrive within a minute. Same memory on the desktop, on Telegram, on the laptop — and it survives any
+          model, machine, or version of Ares.
+        </p>
+        {!network.libFound ? (
+          <p className="paneHint" style={{ color: "var(--crimson)" }}>
+            The Oricle library isn't installed on this machine (expected at D:\Oricle\dist or ARES_ORICLE_LIB).
+          </p>
+        ) : null}
+        <div className="consciousBtns" style={{ marginTop: 8, flexWrap: "wrap", gap: 8 }}>
+          <input
+            className="keyInput"
+            style={{ flex: "1 1 260px", minWidth: 200 }}
+            placeholder="https://memory.yourdomain.com"
+            value={netUrl}
+            disabled={!native || network.busy}
+            onChange={(ev) => setNetUrl(ev.target.value)}
+            spellCheck={false}
+          />
+          <input
+            className="keyInput"
+            style={{ flex: "1 1 200px", minWidth: 160 }}
+            type="password"
+            placeholder={network.configured ? "token (saved)" : "network token"}
+            value={netToken}
+            disabled={!native || network.busy}
+            onChange={(ev) => setNetToken(ev.target.value)}
+            spellCheck={false}
+          />
+        </div>
+        <div className="consciousBtns" style={{ marginTop: 8 }}>
+          <button
+            className="provChip"
+            data-on={network.connected ? "1" : "0"}
+            disabled={!native || network.busy || !netUrl.trim() || (!netToken.trim() && !network.configured)}
+            onClick={() => onDaemonCommand({ type: "ares_network_connect", url: netUrl.trim(), token: netToken.trim() || undefined })}
+          >
+            {network.connected ? "Reconnect" : "Connect to Ares Network"}
+          </button>
+          <button className="provChip" disabled={!native || network.busy || !network.connected} onClick={() => onDaemonCommand({ type: "ares_network_sync" })}>
+            Sync now
+          </button>
+          {network.enabled ? (
+            <button className="provChip" data-danger="1" disabled={!native || network.busy} onClick={() => onDaemonCommand({ type: "ares_network_disconnect" })}>
+              Disconnect
+            </button>
+          ) : null}
+        </div>
+        {network.connected || network.lastSyncAt ? (
+          <p className="paneHint">
+            {network.estateName ? `${network.estateName} (${network.estateId ?? ""})` : network.estateId ?? ""}
+            {network.estateDir ? ` · local copy ${network.estateDir}` : ""}
+            {network.lastSyncAt ? ` · last sync ${new Date(network.lastSyncAt).toLocaleTimeString()} (+${network.lastPushed ?? 0} up, +${network.lastPulled ?? 0} down)` : ""}
+            {typeof network.totalPushed === "number" ? ` · session total ${network.totalPushed} up / ${network.totalPulled ?? 0} down` : ""}
+          </p>
+        ) : null}
+        {network.error ? <p className="paneHint" style={{ color: "var(--crimson)" }}>{network.error}</p> : null}
+      </div>
     </div>
   );
 }

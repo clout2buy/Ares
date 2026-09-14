@@ -57,7 +57,7 @@ import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin,
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js";
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
-import { oricleOnSessionEvent } from "./oricleAdapter.js";
+import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetworkSyncNow, onAresNetworkStatus, oricleOnSessionEvent, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
@@ -884,6 +884,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       if (s.consciousnessEnabled === true) startConsciousnessWatch();
     })
     .catch(() => {});
+  // The Ares network: reconnect to the hosted estate if the owner left it on,
+  // and forward every status change to the UI as it happens.
+  onAresNetworkStatus((s) => process.stdout.write(JSON.stringify({ type: "ares_network_status", ...s }) + "\n"));
+  void startAresNetworkFromSettings();
 
   // After-action reflection trigger: when a turn lands a NEW commit, summarize it
   // into the war map. Seed with the current HEAD so existing history isn't
@@ -1953,6 +1957,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         await updateUiSettings({ permissions, dangerousBypass: permissions.mode === "free" });
         process.stdout.write(JSON.stringify({ type: "permissions_set", permissions }) + "\n");
+        continue;
+      }
+      if (command.type === "ares_network_status" || command.type === "ares_network_connect" || command.type === "ares_network_disconnect" || command.type === "ares_network_sync") {
+        // The Ares network: the hosted Oricle estate. Every verb answers with
+        // one ares_network_status frame; a failure rides in `error`.
+        let status;
+        try {
+          if (command.type === "ares_network_connect") {
+            // An empty token means "use the one already saved" (the UI shows "token (saved)").
+            const given = typeof command.token === "string" ? command.token.trim() : "";
+            const token = given || ((await loadUiSettings()).aresNetworkToken ?? "");
+            status = await aresNetworkConnect({ url: String(command.url ?? ""), token });
+          } else if (command.type === "ares_network_disconnect") status = await aresNetworkDisconnect();
+          else if (command.type === "ares_network_sync") status = await aresNetworkSyncNow();
+          else status = await aresNetworkStatus();
+        } catch (err) {
+          status = { ...(await aresNetworkStatus()), error: err instanceof Error ? err.message : String(err) };
+        }
+        process.stdout.write(JSON.stringify({ type: "ares_network_status", ...status }) + "\n");
         continue;
       }
       if (command.type === "consciousness_status") {

@@ -38,6 +38,7 @@ import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, ma
 import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins, keepTelegramBridgeUp } from "./telegramWiring.js";
 import { persistTerminalModelPreference, terminalModelCatalogLines } from "./terminalLines.js";
 import { buildSystemPrompt, captureRemoteTurn, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
+import { oricleRemoteTurn, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
@@ -140,6 +141,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const pathPermissions = await AresPathPermissionStore.load(context);
   const commandPermissions = await AresCommandPermissionStore.load(context);
   const settings = await loadUiSettings();
+  // The Ares network: a garrison serving Telegram all day keeps the hosted
+  // estate in sync too (reconnects if the owner left it on; never throws).
+  void startAresNetworkFromSettings();
   applyEngineConfigEnv(settings.engine ?? {});
   const runtime: AresRuntimeState = { permissionMode: settings.dangerousBypass === true ? "bypass" : "workspace-write" };
   // Crash safety for the gateway process (Telegram + any garrison clients). It
@@ -237,13 +241,17 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // happens here — the seam the cross-surface batch left open.
     // A guest stamp without a chatId still isolates (keyed by session) —
     // ambiguity must never default a stranger into the owner pool.
-    beforeSend: ({ text, tenant, sessionId }) =>
-      captureRemoteTurn(
+    beforeSend: ({ text, tenant, sessionId, surface }) => {
+      // The estate hears the owner's remote turns too (Telegram, attach);
+      // fire-and-forget so the network never delays a reply.
+      void oricleRemoteTurn(text, tenant, sessionId, selection.model, surface ?? "garrison");
+      return captureRemoteTurn(
         context,
         text,
         tenant.role === "guest" ? { role: "guest", chatId: tenant.chatId ?? sessionId } : { role: "owner" },
         sessionId,
-      ),
+      );
+    },
     factory: (req) => {
       const workspace = req.workspace ?? context.workspace;
       const model = req.model ?? selection.model;

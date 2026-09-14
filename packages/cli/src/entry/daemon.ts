@@ -1959,12 +1959,17 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         process.stdout.write(JSON.stringify({ type: "permissions_set", permissions }) + "\n");
         continue;
       }
-      if (command.type === "ares_network_status" || command.type === "ares_network_connect" || command.type === "ares_network_disconnect" || command.type === "ares_network_sync") {
+      if (command.type === "ares_network_status" || command.type === "ares_network_connect" || command.type === "ares_network_disconnect" || command.type === "ares_network_sync" || command.type === "ares_network_host") {
         // The Ares network: the hosted Oricle estate. Every verb answers with
         // one ares_network_status frame; a failure rides in `error`.
         let status;
         try {
-          if (command.type === "ares_network_connect") {
+          if (command.type === "ares_network_host") {
+            // Hosting is a garrison-start decision (the door mounts in the
+            // tunneled remote server); persist the wish and report it.
+            await updateUiSettings({ aresNetworkHost: command.enabled === true });
+            status = await aresNetworkStatus();
+          } else if (command.type === "ares_network_connect") {
             // An empty token means "use the one already saved" (the UI shows "token (saved)").
             const given = typeof command.token === "string" ? command.token.trim() : "";
             const token = given || ((await loadUiSettings()).aresNetworkToken ?? "");

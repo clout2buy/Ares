@@ -36,10 +36,18 @@ interface OricleLib {
   OricleClient: new (url: string, token: string, o?: { timeoutMs?: number }) => OricleNetClient;
   sync(dir: string, client: OricleNetClient, o?: { direction?: "both" | "push" | "pull"; log?: (l: string) => void }): Promise<OricleSyncReport>;
   clone(dir: string, client: OricleNetClient, o?: { log?: (l: string) => void }): Promise<OricleSyncReport>;
+  /** Host: a mountable door on this machine's estate (inside the tunneled remote server). */
+  createDoor(o: { dir: string; token: string; prefix?: string; log?: (l: string) => void }): Promise<OricleDoor>;
+  netToken(rotate?: boolean): Promise<string>;
+}
+export interface OricleDoor {
+  handle(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<boolean>;
+  estate: { id: string; name: string };
+  close(): Promise<void>;
 }
 interface OricleNetClient {
   base: string;
-  health(): Promise<{ ok: true; estate: string }>;
+  health(): Promise<{ ok: true }>;
   manifest(): Promise<{ manifest: { id: string; name: string } }>;
   writers(): Promise<{ writers: Record<string, unknown> }>;
 }
@@ -386,6 +394,68 @@ export interface AresNetworkStatus {
   totalPulled: number;
   error?: string;
   libFound: boolean;
+  /** This machine is HOSTING the network (the door is mounted in the remote server). */
+  hosting?: { active: boolean; url?: string; token?: string; estateId?: string; estateName?: string; error?: string };
+}
+
+// ── hosting: this machine IS the network ─────────────────────────────────────
+//
+// The laptop that already runs a tunneled remote-agent server mounts the
+// estate door under /oricle on that same origin, so one domain and one token
+// serve every instance and nothing new needs deploying. The token is minted
+// once on the host (~/.oricle/net-token) and shown in Settings so the owner
+// can paste it on his other machines — only he ever holds it.
+
+let hostDoor: OricleDoor | null = null;
+let hostInfo: { url?: string; token?: string; error?: string } = {};
+
+/** Build (once) the door for this machine's estate, or null when hosting is off / impossible. */
+export async function aresNetworkHostDoor(publicUrl?: string): Promise<OricleDoor | null> {
+  if (hostDoor) return hostDoor;
+  try {
+    const s = await loadUiSettings();
+    if (s.aresNetworkHost !== true) return null;
+    const L = await lib();
+    if (!L || typeof L.createDoor !== "function") {
+      hostInfo = { error: "the Oricle library on this machine has no network layer" };
+      return null;
+    }
+    const dir = oricleDir();
+    await fs.access(path.join(dir, "manifest.json"));
+    const token = await L.netToken();
+    hostDoor = await L.createDoor({ dir, token, prefix: "/oricle", log: netLog });
+    hostInfo = { token, ...(publicUrl ? { url: `${publicUrl.replace(/\/+$/, "")}/oricle` } : {}) };
+    netLog(`hosting ${hostDoor.estate.name} (${hostDoor.estate.id}) at ${hostInfo.url ?? "/oricle (no public url yet)"}`);
+    return hostDoor;
+  } catch (err) {
+    hostInfo = { error: (err as Error).message };
+    netLog(`host door failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** The host learned its public origin (tunnel up) — remember it for the status card. */
+export function aresNetworkHostPublicUrl(publicUrl: string): void {
+  hostInfo.url = `${publicUrl.replace(/\/+$/, "")}/oricle`;
+  void emitNetStatus();
+}
+
+export async function aresNetworkHostStop(): Promise<void> {
+  if (hostDoor) await hostDoor.close().catch(() => undefined);
+  hostDoor = null;
+  hostInfo = {};
+}
+
+async function hostingStatus(): Promise<AresNetworkStatus["hosting"]> {
+  const s = await loadUiSettings().catch(() => ({}) as { aresNetworkHost?: boolean });
+  if (s.aresNetworkHost !== true && !hostDoor) return undefined;
+  return {
+    active: hostDoor !== null,
+    ...(hostInfo.url ? { url: hostInfo.url } : {}),
+    ...(hostInfo.token ? { token: hostInfo.token } : {}),
+    ...(hostDoor ? { estateId: hostDoor.estate.id, estateName: hostDoor.estate.name } : {}),
+    ...(hostInfo.error ? { error: hostInfo.error } : {}),
+  };
 }
 
 interface NetState {
@@ -464,6 +534,7 @@ export async function aresNetworkStatus(): Promise<AresNetworkStatus> {
     totalPulled: net?.totalPulled ?? 0,
     ...(net?.error ? { error: net.error } : {}),
     libFound: L !== null,
+    ...(await hostingStatus().then((h) => (h ? { hosting: h } : {}))),
   };
 }
 
@@ -500,7 +571,7 @@ export async function aresNetworkConnect(o: { url: string; token: string; persis
     state.totalPulled += rep.pulled;
     state.lastPulled = rep.pulled;
     state.lastSyncAt = Date.now();
-    netLog(`cloned ${health.estate} (${rep.pulled} records) into ${dir}`);
+    netLog(`cloned ${remote.manifest.id} (${rep.pulled} records) into ${dir}${health.ok ? "" : " (health degraded)"}`);
   }
   state.connected = true;
   if (o.persist !== false) await updateUiSettings({ aresNetworkUrl: url, aresNetworkToken: token, aresNetworkEnabled: true }).catch(() => undefined);

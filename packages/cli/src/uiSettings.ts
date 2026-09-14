@@ -139,6 +139,9 @@ export interface UiSettings {
   aresNetworkToken?: string;
   /** Reconnect at boot and keep syncing while true. */
   aresNetworkEnabled?: boolean;
+  /** This machine HOSTS the network: the garrison's tunneled remote server
+   *  mounts the estate door under /oricle. Takes effect when the garrison starts. */
+  aresNetworkHost?: boolean;
   /** Where the Oricle library lives (dist/index.js). Absent → ARES_ORICLE_LIB,
    *  then the known install folders. */
   oricleLibPath?: string;

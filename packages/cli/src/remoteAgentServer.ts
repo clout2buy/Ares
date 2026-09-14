@@ -171,6 +171,13 @@ export interface RemoteAgentServerOptions {
    * ARES_REMOTE_AUTO_UPDATE=0 turns it off.
    */
   autoUpdateDevices?: boolean;
+  /**
+   * A mountable door on this machine's memory estate (Oricle), answered under
+   * /oricle/… on this same origin — so the tunnel that already fronts the
+   * remote server fronts the Ares network too. The door does its own auth
+   * (its own token) and returns false for paths that are not its own.
+   */
+  estateDoor?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 }
 
 // ─── Internal state ────────────────────────────────────────────────────────
@@ -1168,6 +1175,18 @@ export class RemoteAgentServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
+    // The Ares network: the estate door lives on this origin under /oricle.
+    if (url.pathname.startsWith("/oricle/")) {
+      const door = this.opts.estateDoor;
+      if (!door) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "this machine does not host the Ares network", code: "not_found" })); return; }
+      void door(req, res).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "not found", code: "not_found" })); }
+      }).catch((err) => {
+        this.log(`oricle door error: ${err instanceof Error ? err.message : String(err)}`);
+        if (!res.headersSent) { res.writeHead(500); res.end(); }
+      });
+      return;
+    }
     if (req.method !== "GET") { res.writeHead(405).end(); return; }
 
     if (url.pathname === "/health") {

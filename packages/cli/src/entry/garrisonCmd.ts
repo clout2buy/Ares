@@ -38,7 +38,7 @@ import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, ma
 import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins, keepTelegramBridgeUp } from "./telegramWiring.js";
 import { persistTerminalModelPreference, terminalModelCatalogLines } from "./terminalLines.js";
 import { buildSystemPrompt, captureRemoteTurn, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
-import { oricleRemoteTurn, startAresNetworkFromSettings } from "./oricleAdapter.js";
+import { aresNetworkHostDoor, aresNetworkHostPublicUrl, aresNetworkHostStop, oricleRemoteTurn, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
@@ -519,15 +519,22 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // via a one-time Telegram link. Best-effort: a bind failure never touches the garrison.
   remoteAgentServer = await (async () => {
     try {
+      // The Ares network door rides this same origin under /oricle when the
+      // owner turned "host the network" on for this machine (null otherwise).
+      const door = await aresNetworkHostDoor();
       const s = new RemoteAgentServer({
         home: context.home,
         controlToken: gatewayToken || undefined,
+        ...(door ? { estateDoor: (req, res) => door.handle(req, res) } : {}),
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
         // link, falls back to LAN (and says so in every link) if it can't
       });
       await s.start();
       setRemoteAgentServer(s);
+      // Tell the status card where the network answers (the tunnel's origin +
+      // /oricle); a quick tunnel that arrives later updates it via lifecycle.
+      if (door) aresNetworkHostPublicUrl(s.linkBaseUrl());
       return s;
     } catch (err) {
       process.stderr.write(`garrison: remote-agent server failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -582,6 +589,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       setTelegramChannel(null);
       void remoteAgentServer?.close().catch(() => {});
       setRemoteAgentServer(null);
+      void aresNetworkHostStop();
       approvals.dispose();
       const cancelVerifiers = Promise.all(
         [...verifiedSessions.values()].map((verified) => verified.dispose()),

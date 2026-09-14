@@ -282,6 +282,8 @@ export interface AresNetworkVm {
   totalPulled?: number;
   error?: string;
   libFound: boolean;
+  /** This machine hosts the network (door mounted in the tunneled remote server). */
+  hosting?: { active: boolean; url?: string; token?: string; estateId?: string; estateName?: string; error?: string };
 }
 
 export interface ConsciousnessModelVm {

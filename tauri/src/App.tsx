@@ -1619,6 +1619,7 @@ function App() {
             ...(typeof n.totalPushed === "number" ? { totalPushed: n.totalPushed } : {}),
             ...(typeof n.totalPulled === "number" ? { totalPulled: n.totalPulled } : {}),
             ...(typeof n.error === "string" && n.error ? { error: n.error } : {}),
+            ...(n.hosting && typeof n.hosting === "object" ? { hosting: n.hosting } : {}),
           });
           return true;
         }
@@ -11695,6 +11696,38 @@ function ConsciousnessPane({
           </p>
         ) : null}
         {network.error ? <p className="paneHint" style={{ color: "var(--crimson)" }}>{network.error}</p> : null}
+
+        <div className="consciousModelHead" style={{ marginTop: 14 }}>
+          <strong>Host the network from this machine</strong>
+          <span className="paneHint">{network.hosting?.active ? "hosting" : network.hosting ? "on · starts with the garrison" : "off"}</span>
+        </div>
+        <p className="paneHint">
+          Turn this on for the machine that stays up (the laptop server). Its tunneled origin then answers the
+          network under <code>/oricle</code> — same domain, one token that only you hold. Other machines paste
+          that URL and token above.
+        </p>
+        <div className="consciousBtns" style={{ marginTop: 6 }}>
+          <button
+            className="provChip"
+            data-on={network.hosting ? "1" : "0"}
+            disabled={!native}
+            onClick={() => onDaemonCommand({ type: "ares_network_host", enabled: !network.hosting })}
+          >
+            {network.hosting ? "Stop hosting" : "Host here"}
+          </button>
+        </div>
+        {network.hosting?.active ? (
+          <p className="paneHint" style={{ userSelect: "text" }}>
+            {network.hosting.estateName ? `${network.hosting.estateName} · ` : ""}
+            URL: <code>{network.hosting.url ?? "(waiting for the tunnel)"}</code>
+            {network.hosting.token ? (
+              <>
+                {" "}· token: <code>{network.hosting.token}</code>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {network.hosting?.error ? <p className="paneHint" style={{ color: "var(--crimson)" }}>{network.hosting.error}</p> : null}
       </div>
     </div>
   );

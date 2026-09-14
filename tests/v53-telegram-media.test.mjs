@@ -356,6 +356,32 @@ test("bridge: /new drops the session; the next message starts a fresh one", asyn
   }
 });
 
+// ── 9b. permission card: Always ──────────────────────────────────────────────
+
+test("bridge: the permission card offers Always, which answers allow_always", async () => {
+  const ctx = await boot();
+  try {
+    ctx.tg.pushMessage(42, "click through the listing");
+    await waitFor(() => ctx.gateway.framesOf("session.send")[0], "send");
+    ctx.gateway.event("s1", { type: "permission_request", id: "req-1", toolName: "ComputerUse", reason: "ComputerUse wants to perform an external-state action." });
+    const card = await waitFor(() => ctx.tg.sent.find((m) => /Permission needed/.test(m.text)), "card");
+    const buttons = card.replyMarkup.inline_keyboard[0].map((b) => b.text);
+    assert.deepEqual(buttons, ["✅ Allow", "✅ Always", "🚫 Deny"]);
+    assert.match(card.text, /Auto-denies in 5 min/);
+    const always = card.replyMarkup.inline_keyboard[0][1].callback_data;
+    // Tap Always.
+    const w = ctx.tg.waiters.shift();
+    const cq = { update_id: 999, callback_query: { id: "cq1", from: { id: 42 }, message: { message_id: 1, chat: { id: 42, type: "private" } }, data: always } };
+    if (w) w([cq]); else ctx.tg.pending = [...(ctx.tg.pending ?? []), cq];
+    const respond = await waitFor(() => ctx.gateway.framesOf("permission.respond")[0], "permission.respond");
+    assert.equal(respond.decision, "allow_always");
+    assert.equal(respond.sessionId, "s1");
+    assert.equal(respond.requestId, "req-1");
+  } finally {
+    await ctx.stop();
+  }
+});
+
 // ── 10. the Telegram tool ────────────────────────────────────────────────────
 
 function toolCtx(sessionId, workspace) {

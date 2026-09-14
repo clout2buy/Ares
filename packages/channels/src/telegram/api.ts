@@ -40,13 +40,36 @@ export interface TgFile {
   file_path?: string;
 }
 
+export interface TgPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
+export interface TgDocument {
+  file_id: string;
+  file_unique_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
 export interface TgMessage {
   message_id: number;
   chat: TgChat;
   from?: TgUser;
   text?: string;
+  /** Caption on a photo/document/video message (the user's text about it). */
+  caption?: string;
   voice?: TgVoice;
   audio?: TgAudio;
+  /** Photo sizes, smallest first — send the LAST one for full resolution. */
+  photo?: TgPhotoSize[];
+  document?: TgDocument;
+  /** Album id: photos sent together share it, and arrive as separate updates. */
+  media_group_id?: string;
   date?: number;
 }
 
@@ -75,6 +98,16 @@ export interface InlineKeyboardMarkup {
 export interface SendMessageOptions {
   replyMarkup?: InlineKeyboardMarkup;
   parseMode?: "MarkdownV2" | "HTML";
+  signal?: AbortSignal;
+}
+
+export interface SendMediaOptions {
+  caption?: string;
+  /** Filename shown in the chat (documents) — defaults to "file". */
+  filename?: string;
+  /** MIME type for the multipart part; sniffed from the filename when absent. */
+  contentType?: string;
+  parseMode?: "HTML";
   signal?: AbortSignal;
 }
 
@@ -205,27 +238,57 @@ export class TelegramApi {
   /** Send a voice note (OGG/Opus buffer). Uses multipart/form-data since Telegram
    *  requires file uploads for voice messages. */
   async sendVoice(chatId: number, voice: Buffer, opts: { caption?: string; signal?: AbortSignal } = {}): Promise<TgMessage> {
-    const boundary = `----AresVoice${Date.now()}`;
+    return this.upload("sendVoice", chatId, "voice", voice, { ...opts, filename: "voice.ogg", contentType: "audio/ogg" });
+  }
+
+  /** Send a photo (PNG/JPEG/WebP/GIF bytes). Telegram re-encodes photos, caps
+   *  them at 10MB, and shows them inline — the "show me" primitive. */
+  async sendPhoto(chatId: number, image: Buffer, opts: SendMediaOptions = {}): Promise<TgMessage> {
+    return this.upload("sendPhoto", chatId, "photo", image, { filename: "photo.png", contentType: "image/png", ...opts });
+  }
+
+  /** Send any file as a document (up to 50MB). Filenames survive intact, so a
+   *  report, log, PDF, or an oversized reply lands on the phone as a real file. */
+  async sendDocument(chatId: number, file: Buffer, opts: SendMediaOptions = {}): Promise<TgMessage> {
+    return this.upload("sendDocument", chatId, "document", file, { filename: "file", ...opts });
+  }
+
+  /** One multipart uploader for every media method; the field name is the only
+   *  thing Telegram varies (voice / photo / document). */
+  private async upload(
+    method: "sendVoice" | "sendPhoto" | "sendDocument",
+    chatId: number,
+    field: "voice" | "photo" | "document",
+    bytes: Buffer,
+    opts: SendMediaOptions,
+  ): Promise<TgMessage> {
+    const filename = opts.filename ?? "file";
+    const contentType = opts.contentType ?? mediaTypeForName(filename);
+    const boundary = `----AresMedia${Date.now()}${Math.random().toString(16).slice(2)}`;
     const parts: Buffer[] = [];
+    const CRLF = "\r\n";
     const addField = (name: string, value: string) => {
-      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+      parts.push(Buffer.from(`--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${value}${CRLF}`));
     };
     addField("chat_id", String(chatId));
-    if (opts.caption) addField("caption", opts.caption);
+    if (opts.caption) addField("caption", opts.caption.slice(0, 1024));
+    if (opts.parseMode) addField("parse_mode", opts.parseMode);
+    const safeName = filename.replace(/["\r\n]/g, "_");
     parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="voice.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`,
+      `--${boundary}${CRLF}Content-Disposition: form-data; name="${field}"; filename="${safeName}"${CRLF}Content-Type: ${contentType}${CRLF}${CRLF}`,
     ));
-    parts.push(voice);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+    parts.push(bytes);
+    parts.push(Buffer.from(`${CRLF}--${boundary}--${CRLF}`));
     const body = Buffer.concat(parts);
-    const res = await this.fetchImpl(`${this.base}/bot${this.token}/sendVoice`, {
+    const res = await this.fetchImpl(`${this.base}/bot${this.token}/${method}`, {
       method: "POST",
       headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
       body: body as unknown as string,
-      signal: opts.signal,
+      // Uploads of a few MB on a phone-grade uplink can take a while; 120s.
+      signal: this.deadline(opts.signal, 120_000),
     });
     const raw = await res.json() as TgEnvelope<TgMessage>;
-    if (!raw.ok) throw new TelegramApiError("sendVoice", raw.error_code ?? res.status, raw.description ?? "unknown");
+    if (!raw.ok) throw new TelegramApiError(method, raw.error_code ?? res.status, raw.description ?? "unknown");
     return raw.result as TgMessage;
   }
 
@@ -281,4 +344,30 @@ export class TelegramApi {
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** MIME type from a filename extension; the multipart part needs one. */
+export function mediaTypeForName(name: string): string {
+  const ext = name.toLowerCase().replace(/^.*\./, "");
+  switch (ext) {
+    case "png": return "image/png";
+    case "jpg": case "jpeg": return "image/jpeg";
+    case "webp": return "image/webp";
+    case "gif": return "image/gif";
+    case "pdf": return "application/pdf";
+    case "txt": case "md": case "log": return "text/plain";
+    case "json": return "application/json";
+    case "csv": return "text/csv";
+    case "html": return "text/html";
+    case "zip": return "application/zip";
+    case "mp3": return "audio/mpeg";
+    case "ogg": return "audio/ogg";
+    case "mp4": return "video/mp4";
+    default: return "application/octet-stream";
+  }
+}
+
+/** True when a MIME type is one the model providers accept as an image block. */
+export function isVisionImageType(mime: string | undefined): mime is "image/png" | "image/jpeg" | "image/webp" | "image/gif" {
+  return mime === "image/png" || mime === "image/jpeg" || mime === "image/webp" || mime === "image/gif";
 }

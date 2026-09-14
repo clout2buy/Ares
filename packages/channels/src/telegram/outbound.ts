@@ -83,33 +83,49 @@ export class TelegramOutbound {
 
   /** Low-level: send a voice note (OGG/Opus buffer) to one chat. */
   private async sendVoice(chatId: number, voice: Buffer, caption?: string): Promise<void> {
-    const boundary = `----AresVoice${Date.now()}`;
-    const parts: Buffer[] = [];
+    await this.api.sendVoice(chatId, voice, { caption });
+  }
 
-    const addField = (name: string, value: string) => {
-      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
-    };
-    addField("chat_id", String(chatId));
-    if (caption) addField("caption", caption);
-
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="checkin.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`,
-    ));
-    parts.push(voice);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-    const token = (this.api as any).token as string;
-    const base = (this.api as any).base as string || "https://api.telegram.org";
-    const res = await fetch(`${base}/bot${token}/sendVoice`, {
-      method: "POST",
-      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
-      body,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`sendVoice failed (${res.status}): ${text}`);
+  /** Send a photo to specific chats (inline image on the phone). */
+  async sendPhotoToChats(chatIds: number[], image: Buffer, opts: { caption?: string; filename?: string } = {}): Promise<{ sent: number; failed: number }> {
+    let sent = 0;
+    let failed = 0;
+    for (const id of chatIds) {
+      try {
+        await this.api.sendPhoto(id, image, opts);
+        sent++;
+      } catch {
+        failed++;
+      }
     }
+    return { sent, failed };
+  }
+
+  /** Send a photo to every owner. */
+  async sendPhotoToOwners(image: Buffer, opts: { caption?: string; filename?: string } = {}): Promise<{ sent: number; failed: number }> {
+    const roster = await loadRoster(this.home);
+    return this.sendPhotoToChats(ownerChatIds(roster), image, opts);
+  }
+
+  /** Send a file (document) to specific chats. */
+  async sendDocumentToChats(chatIds: number[], file: Buffer, opts: { caption?: string; filename?: string } = {}): Promise<{ sent: number; failed: number }> {
+    let sent = 0;
+    let failed = 0;
+    for (const id of chatIds) {
+      try {
+        await this.api.sendDocument(id, file, opts);
+        sent++;
+      } catch {
+        failed++;
+      }
+    }
+    return { sent, failed };
+  }
+
+  /** Send a file to every owner. */
+  async sendDocumentToOwners(file: Buffer, opts: { caption?: string; filename?: string } = {}): Promise<{ sent: number; failed: number }> {
+    const roster = await loadRoster(this.home);
+    return this.sendDocumentToChats(ownerChatIds(roster), file, opts);
   }
 }
 

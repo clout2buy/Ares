@@ -14,6 +14,7 @@ export {
   type GatewayClientFrame,
   type GatewayServerFrame,
   type SessionSummary,
+  type SessionAttachment,
   type GarrisonStatus,
 } from "./protocol.js";
 
@@ -41,6 +42,9 @@ export {
   type SessionTenant,
   normalizeSessionSurface,
   normalizeSessionTenant,
+  normalizeSessionAttachments,
+  inputContent,
+  MAX_ATTACHMENTS_PER_INPUT,
 } from "./sessions.js";
 
 export {

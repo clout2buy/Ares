@@ -169,6 +169,8 @@ const HELP = [
   "/standing add 2h <mission> · /standing cancel <id>",
   "/who /activity — who can talk + who's saying what (owner)",
   "/allow <id> <name> · /revoke <id|name> — manage people (owner)",
+  "/new — start a fresh thread",
+  "Send photos, files, or voice notes — Ares sees, reads, and hears them.",
   "Anything else talks to Ares directly.",
 ].join("\n");
 

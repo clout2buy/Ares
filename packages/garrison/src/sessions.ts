@@ -33,6 +33,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   messageText,
+  type ContentBlock,
   type Message,
   type PermissionPromptDecision,
   type ToolResultBlock,
@@ -50,7 +51,7 @@ import {
   type ToolPermissionRequest,
 } from "@ares/core";
 import type { Session as CoreSession } from "@ares/core";
-import type { SessionSummary } from "./protocol.js";
+import type { SessionAttachment, SessionSummary } from "./protocol.js";
 import { garrisonDir } from "./token.js";
 
 // ─── Surface + tenant (who opened the session, and who is talking) ──────
@@ -164,6 +165,51 @@ export interface SessionSendOptions {
    *  send). It becomes the session's durable stamp when it differs, so a
    *  session created before the channel knew the sender still ends up tagged. */
   tenant?: SessionTenant;
+  /** Inline images for this input (already validated by the gateway). */
+  attachments?: SessionAttachment[];
+}
+
+/** Bounds for inline attachments: per-image and per-input base64 budgets that
+ *  mirror the desktop's contentFromUserInput, so a phone photo can never push
+ *  a request past the provider's body cap. */
+export const MAX_ATTACHMENTS_PER_INPUT = 8;
+export const MAX_ATTACHMENT_BASE64_CHARS = 2_000_000;
+export const MAX_TOTAL_ATTACHMENT_BASE64_CHARS = 4_000_000;
+const ATTACHMENT_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+/** Validate a client-supplied attachments array. Returns the clean list, or
+ *  a string describing the first violation (the gateway answers with it). */
+export function normalizeSessionAttachments(value: unknown): SessionAttachment[] | string {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return "session.send attachments must be an array";
+  if (value.length > MAX_ATTACHMENTS_PER_INPUT) return `session.send accepts at most ${MAX_ATTACHMENTS_PER_INPUT} attachments`;
+  const out: SessionAttachment[] = [];
+  let total = 0;
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return "session.send attachment must be an object";
+    const a = entry as Record<string, unknown>;
+    if (a.kind !== "image") return "session.send attachment kind must be image";
+    if (typeof a.mediaType !== "string" || !ATTACHMENT_MEDIA_TYPES.has(a.mediaType)) {
+      return "session.send attachment mediaType must be image/png, image/jpeg, image/webp, or image/gif";
+    }
+    if (typeof a.data !== "string" || a.data.length === 0) return "session.send attachment data must be non-empty base64";
+    if (a.data.length > MAX_ATTACHMENT_BASE64_CHARS) return "session.send attachment is too large; each image must be about 1.5 MB or smaller";
+    total += a.data.length;
+    if (total > MAX_TOTAL_ATTACHMENT_BASE64_CHARS) return "session.send attachments exceed the request budget; send fewer or smaller images";
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(a.data)) return "session.send attachment data is not base64";
+    out.push({ kind: "image", mediaType: a.mediaType as SessionAttachment["mediaType"], data: a.data });
+  }
+  return out;
+}
+
+/** The user content for one input: text first, then each attachment as an
+ *  image block — the canonical shape every surface produces. */
+export function inputContent(text: string, attachments: SessionAttachment[] | undefined): ContentBlock[] {
+  const blocks: ContentBlock[] = [{ type: "text", text }];
+  for (const a of attachments ?? []) {
+    blocks.push({ type: "image", source: { kind: "base64", mediaType: a.mediaType, data: a.data } });
+  }
+  return blocks;
 }
 
 /** What a host's before-send hook sees: enough to scope memory for the turn. */
@@ -336,13 +382,11 @@ export class SessionManager {
     }
     try {
       let events: AsyncIterable<TurnEvent>;
+      const content = inputContent(text, options.attachments);
       if (session.coreSession) {
-        events = session.coreSession.sendContent(
-          [{ type: "text", text }],
-          { inputId, delivery },
-        );
+        events = session.coreSession.sendContent(content, { inputId, delivery });
       } else {
-        session.engine.appendUserMessage(text);
+        session.engine.appendUserMessageContent(content);
         events = session.engine.streamTurn();
       }
       for await (const event of events) {

@@ -2,7 +2,7 @@
 // A channel holds zero entity state: it renders TurnEvents, forwards intents,
 // and never imports from the daemon. First channel: Telegram.
 
-export { TelegramApi, TelegramApiError } from "./telegram/api.js";
+export { TelegramApi, TelegramApiError, mediaTypeForName, isVisionImageType } from "./telegram/api.js";
 export type {
   TelegramApiOptions,
   FetchLike,
@@ -16,13 +16,16 @@ export type {
   TgVoice,
   TgAudio,
   TgFile,
+  TgPhotoSize,
+  TgDocument,
   InlineKeyboardButton,
   InlineKeyboardMarkup,
   SendMessageOptions,
+  SendMediaOptions,
 } from "./telegram/api.js";
 
-export { TelegramBridge, chunkMessage, toTelegramText } from "./telegram/bridge.js";
-export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers } from "./telegram/bridge.js";
+export { TelegramBridge, chunkMessage, toTelegramText, toTelegramHtml, screenshotPathOf } from "./telegram/bridge.js";
+export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers, PendingInput } from "./telegram/bridge.js";
 export { detectRemotePcIntent, parseRemotePcCallback, buildLinkMessage, buildPcConnectedMessage, buildPcContextPrefix } from "./telegram/remotePC.js";
 export type { RemotePcBridgeDeps } from "./telegram/remotePC.js";
 
@@ -137,6 +140,7 @@ export type {
   GatewaySessionInfo,
   GatewaySurface,
   GatewayTenant,
+  GatewayAttachment,
   GarrisonStatus,
   GarrisonEventFrame,
   StagedApprovalFrame,

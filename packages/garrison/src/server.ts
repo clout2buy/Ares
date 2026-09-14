@@ -19,7 +19,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { ApprovalVerb, StagedApproval } from "@ares/effects";
 import type { TurnEvent } from "@ares/protocol";
 import { constantTimeEqual, ensureToken, ensureReadToken } from "./token.js";
-import { normalizeSessionSurface, normalizeSessionTenant, type SessionManager } from "./sessions.js";
+import { normalizeSessionAttachments, normalizeSessionSurface, normalizeSessionTenant, type SessionManager } from "./sessions.js";
 import type { Scheduler } from "./scheduler.js";
 import { viewerHtml } from "./viewer.js";
 import {
@@ -360,12 +360,18 @@ export class GarrisonServer {
           this.enqueueError(client, "session.send delivery must be queue or steer");
           return;
         }
+        const attachments = normalizeSessionAttachments(frame.attachments);
+        if (typeof attachments === "string") {
+          this.enqueueError(client, attachments);
+          return;
+        }
         // Fire-and-forget: the turn streams to subscribers; failures (busy,
         // unknown session, engine throw) come back as one error frame.
         sessions.send(frame.sessionId, frame.text, {
           inputId: frame.inputId,
           delivery: frame.delivery,
           tenant: normalizeSessionTenant(frame.tenant),
+          ...(attachments.length > 0 ? { attachments } : {}),
         }).catch((err) => this.enqueueError(client, errorMessage(err)));
         return;
       }

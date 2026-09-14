@@ -237,7 +237,11 @@ test("bridge: a guest's first turn carries an identity note; the owner's does no
       () => ctx.gateway.framesOf("session.send").find((f) => f.text.includes("status check")),
       "owner send",
     );
-    assert.equal(ownerSend.text, "status check please", "the owner's turn is verbatim — no preamble");
+    // The owner gets the one-time "you're on Telegram" surface note (every
+    // session does) but NEVER the guest identity note.
+    assert.ok(ownerSend.text.endsWith("status check please"), "the owner's text is intact at the end");
+    assert.ok(!/a guest .* authorized/.test(ownerSend.text), "the owner's turn carries no guest note");
+    assert.ok(!/Noah/.test(ownerSend.text), "the owner is not described to themselves");
   } finally {
     await ctx.bridge.stop();
     await ctx.gateway.close();

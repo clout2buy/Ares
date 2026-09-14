@@ -14,6 +14,13 @@ import type { SchedulerEvent } from "./scheduler.js";
 export const PROTO_VERSION = 1 as const;
 export const DEFAULT_GARRISON_PORT = 7421;
 
+/** An inline image riding a session.send: base64 bytes plus MIME type. */
+export interface SessionAttachment {
+  kind: "image";
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  data: string;
+}
+
 /** One live (or rehydrated) session as clients see it. */
 export interface SessionSummary {
   id: string;
@@ -64,6 +71,10 @@ export type GatewayClientFrame =
       delivery?: "queue" | "steer";
       /** Per-message sender identity from a multi-user channel (Telegram). */
       tenant?: SessionSummary["tenant"];
+      /** Images attached to this input (a Telegram photo). Each becomes an
+       * image block beside the text — the same shape a pasted desktop image
+       * takes — so the model sees pixels, never a data URL hidden in text. */
+      attachments?: SessionAttachment[];
     }
   | { type: "session.interrupt"; sessionId: string }
   | { type: "sessions.list" }

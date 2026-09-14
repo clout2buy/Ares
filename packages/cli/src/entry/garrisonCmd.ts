@@ -17,7 +17,7 @@ import {
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { TodoStore, ShellRegistry, setRemoteAgentServer, type FileReadStamp } from "@ares/tools";
+import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, type FileReadStamp } from "@ares/tools";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import type { TelegramBridge } from "@ares/channels";
 import { dim, notice } from "../terminalUi.js";
@@ -571,6 +571,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       operatorLoop?.stop();
       stopBridgeRetry();
       void telegramBridge?.stop().catch(() => {});
+      setTelegramChannel(null);
       void remoteAgentServer?.close().catch(() => {});
       setRemoteAgentServer(null);
       approvals.dispose();

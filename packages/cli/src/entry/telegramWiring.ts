@@ -2,7 +2,7 @@
 
 import { installGlobalCrashHandlers } from "@ares/core";
 import { readFile } from "node:fs/promises";
-import { getWeatherText, setRemindScheduler } from "@ares/tools";
+import { getWeatherText, setRemindScheduler, setTelegramChannel } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig, adoptLegacyTelegramConfig } from "../telegramConfig.js";
 import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
@@ -142,9 +142,13 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
       home: context.home,
     },
     remotePcDeps: remoteAgentServer ? buildRemotePcDeps(remoteAgentServer) : undefined,
+    home: context.home,
   });
   bridge.start();
-  lifecycleLog(`bridge online — ${cfg.allowedChats.length} chat(s)${remoteAgentServer ? ", remote-pc ready" : ""}`);
+  // The agent's Telegram tool (photo/file/message to the phone) sends through
+  // this live bridge — from a Telegram session OR the desktop.
+  setTelegramChannel(bridge);
+  lifecycleLog(`bridge online — ${cfg.allowedChats.length} chat(s)${remoteAgentServer ? ", remote-pc ready" : ""}, media in/out ready`);
   return bridge;
 }
 
@@ -419,6 +423,7 @@ export async function telegramCommand(args: ParsedArgs): Promise<number> {
     reloadRoster: () => loadRoster(context.home),
     log: (line: string) => process.stdout.write(`telegram: ${line}\n`),
     commands: telegramCommandDeps(context),
+    home: context.home,
   });
   bridge.start();
 

@@ -28,6 +28,13 @@ export interface GatewayTenant {
   chatId?: string;
 }
 
+/** An inline image riding a session.send — base64 bytes plus MIME type. */
+export interface GatewayAttachment {
+  kind: "image";
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  data: string;
+}
+
 /** Mirrors @ares/effects ApprovalVerb without taking the dependency. */
 export type ApprovalVerb = "allow_once" | "allow_always" | "deny";
 
@@ -58,6 +65,9 @@ export type ClientFrame =
       inputId?: string;
       delivery?: "queue" | "steer";
       tenant?: GatewayTenant;
+      /** Images the sender attached (a Telegram photo). Become image blocks
+       *  beside the text, exactly like a pasted desktop image. */
+      attachments?: GatewayAttachment[];
     }
   | { type: "session.interrupt"; sessionId: string }
   | { type: "sessions.list" }

@@ -389,24 +389,47 @@ export class SessionManager {
     // ── stuck-turn watchdog ──────────────────────────────────────────────
     let lastEventAt = Date.now();
     let watchdogFires = 0;
-    const stuckTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
+    const turnStartedAt = Date.now();
+    let stuckTimer: ReturnType<typeof setInterval> | null = null;
+    stuckTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
       if (!session.busy) return;
       const silent = Date.now() - lastEventAt;
       if (silent < STUCK_TURN_SILENCE_MS) { watchdogFires = 0; return; }
       watchdogFires++;
-      const interrupted = this.interrupt(sessionId);
-      if (!interrupted && watchdogFires >= 3) {
-        console.error(
-          `stuck-turn watchdog (garrison): session ${sessionId} silent for ` +
-          `${Math.round(silent / 1000)}s — interrupt failed ${watchdogFires}x, force-aborting controller`,
-        );
-        session.controller.abort();
-      } else {
-        console.error(
-          `stuck-turn watchdog (garrison): session ${sessionId} silent for ` +
-          `${Math.round(silent / 1000)}s — auto-interrupting`,
-        );
+      const prefix = `stuck-turn watchdog (garrison): session ${sessionId} silent for ${Math.round(silent / 1000)}s`;
+      if (watchdogFires < 3) {
+        console.error(`${prefix} — auto-interrupting`);
+        this.interrupt(sessionId);
+        return;
       }
+      if (watchdogFires < 5) {
+        console.error(`${prefix} — interrupt ignored ${watchdogFires}x, force-aborting controller`);
+        session.controller.abort();
+        return;
+      }
+      // Nothing observes the abort (an await that ignores signals). Evict the
+      // live session: settle the turn for every subscriber, release the durable
+      // run lease, and let the next message rehydrate it from disk — the same
+      // recovery a process restart gives, without the restart.
+      console.error(`${prefix} — abort ignored, evicting live session`);
+      if (stuckTimer) clearInterval(stuckTimer);
+      try {
+        session.coreSession?.abandon(`stuck-turn watchdog evicted after ${Math.round(silent / 1000)}s of silence`);
+      } catch {
+        // best effort — the lease expires on its own once the heartbeat stops
+      }
+      const end: TurnEvent = {
+        type: "turn_end",
+        status: "interrupted",
+        workStatus: "unverified",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        durationMs: Date.now() - turnStartedAt,
+      };
+      this.appendRollout(session, end);
+      this.fanOut(session, end);
+      session.busy = false;
+      session.inFlightSends = 0;
+      if (this.live.get(sessionId) === session) this.live.delete(sessionId);
     }, STUCK_TURN_CHECK_MS) : null;
     stuckTimer?.unref?.();
     try {

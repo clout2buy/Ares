@@ -85,7 +85,7 @@ export interface GateOptions {
 // destructiveShellDecision in @ares/tools (kept local so the gate is
 // self-contained and independently testable).
 const DESTRUCTIVE_SHELL =
-  /(?:^|[;&|]\s*)rm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+|(?:^|[;&|]\s*)(?:rmdir|unlink|shred)\b|\bgit\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--)\b|\b(?:mkfs(?:\.\w+)?|wipefs|format)\b|\bRemove-Item\b|(?:^|[;|]\s*)(?:del|erase|rd|rmdir)\s+|\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i;
+  /(?:^|[;&|]\s*)rm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+|(?:^|[;&|]\s*)(?:rmdir|unlink|shred)\b|\bgit\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--)\b|\b(?:mkfs(?:\.\w+)?|wipefs)\b|(?<![-.])\bformat\b|\bRemove-Item\b|(?:^|[;|]\s*)(?:del|erase|rd|rmdir)\s+|\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i;
 
 // Leading commands that only read. Anything not on this list is treated as
 // mutating (safer default). git/PowerShell read verbs handled separately.

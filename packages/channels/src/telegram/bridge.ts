@@ -193,6 +193,10 @@ const TYPING_REFRESH_MS = 4_000;
 const CHUNK_LIMIT = 4_000;
 const MAX_CHUNKS = 8;
 const TRUNCATION_MARKER = "…[truncated]";
+/** How often accumulated text is flushed to the chat mid-turn so the user
+ *  sees replies streaming instead of one dump at turn_end. */
+const STREAM_FLUSH_MS = 3_000;
+const STREAM_FLUSH_MIN_CHARS = 80;
 /** Replies longer than this go out as a short preview plus a .md document —
  *  a wall of eight 4k bubbles is unreadable on a phone. */
 const FILE_FALLBACK_CHARS = CHUNK_LIMIT * 2;
@@ -282,8 +286,11 @@ export class TelegramBridge {
    *  no events yet).  A turn silent for BRIDGE_TURN_SILENCE_MS is
    *  force-released so the chat is not blocked forever. */
   private readonly turnInFlight = new Map<number, number>();
-  /** Accumulated text_delta per session for the in-flight turn. */
+  /** Accumulated text_delta per session since the last stream flush. */
   private readonly turnText = new Map<string, string>();
+  /** Per-session timer that flushes accumulated text to the chat periodically
+   *  so the user sees replies arriving instead of one dump at turn_end. */
+  private readonly streamFlushTimers = new Map<string, unknown>();
   /** Last error reported by the engine this turn — surfaced on a failed turn_end
    *  so a provider failure (bad/missing key, rate limit, network) is never a
    *  silent "typing… then nothing". */
@@ -476,6 +483,8 @@ export class TelegramBridge {
     this.status.clear();
     for (const timer of this.typingTimers.values()) this.timers.clearTimeout(timer);
     this.typingTimers.clear();
+    for (const timer of this.streamFlushTimers.values()) this.timers.clearTimeout(timer);
+    this.streamFlushTimers.clear();
     for (const album of this.albums.values()) if (album.timer !== undefined) this.timers.clearTimeout(album.timer);
     this.albums.clear();
     this.unsubRemotePcConnected?.();
@@ -1087,6 +1096,8 @@ export class TelegramBridge {
     this.turnText.clear();
     this.turnError.clear();
     this.turnInFlight.clear();
+    for (const timer of this.streamFlushTimers.values()) this.timers.clearTimeout(timer);
+    this.streamFlushTimers.clear();
     // New sessions after a reconnect → re-introduce guests to the fresh session.
     this.guestIntroSent.clear();
     this.surfaceIntroSent.clear();
@@ -1206,8 +1217,10 @@ export class TelegramBridge {
     switch (event.type) {
       case "text_delta":
         this.turnText.set(sessionId, (this.turnText.get(sessionId) ?? "") + event.text);
+        this.scheduleStreamFlush(sessionId, chatId);
         break;
       case "tool_start":
+        this.doStreamFlush(sessionId, chatId);
         this.pushStatus(chatId, `⚙ ${event.activityDescription}`);
         break;
       case "tool_end": {
@@ -1226,6 +1239,7 @@ export class TelegramBridge {
         this.turnError.set(sessionId, errorEventText(event));
         break;
       case "turn_end": {
+        this.cancelStreamFlush(sessionId);
         const text = (this.turnText.get(sessionId) ?? "").trim();
         const err = this.turnError.get(sessionId);
         const shot = this.turnScreenshot.get(sessionId);
@@ -1253,6 +1267,37 @@ export class TelegramBridge {
       default:
         break;
     }
+  }
+
+  // ─── Mid-turn streaming ────────────────────────────────────────────────
+
+  private scheduleStreamFlush(sessionId: string, chatId: number): void {
+    if (this.streamFlushTimers.has(sessionId)) return;
+    this.streamFlushTimers.set(
+      sessionId,
+      this.timers.setTimeout(() => {
+        this.streamFlushTimers.delete(sessionId);
+        this.doStreamFlush(sessionId, chatId);
+      }, STREAM_FLUSH_MS),
+    );
+  }
+
+  private cancelStreamFlush(sessionId: string): void {
+    const timer = this.streamFlushTimers.get(sessionId);
+    if (timer !== undefined) {
+      this.timers.clearTimeout(timer);
+      this.streamFlushTimers.delete(sessionId);
+    }
+  }
+
+  private doStreamFlush(sessionId: string, chatId: number): void {
+    this.cancelStreamFlush(sessionId);
+    const text = (this.turnText.get(sessionId) ?? "").trim();
+    if (text.length < STREAM_FLUSH_MIN_CHARS) return;
+    this.turnText.delete(sessionId);
+    this.enqueueSend(chatId, async () => {
+      await this.deliverText(chatId, text);
+    });
   }
 
   private flushTurn(chatId: number, text: string): void {

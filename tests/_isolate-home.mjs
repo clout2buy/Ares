@@ -8,9 +8,14 @@
 // bad thing to require: the isolation belongs in the tests.
 //
 // Loaded via `node --import` from the `test` script, which runs it once per
-// test-file process, before any test module is evaluated. A caller who sets
-// ARES_HOME deliberately still wins — CI and one-off runs that want a specific
-// home keep it.
+// test-file process, before any test module is evaluated.
+//
+// A caller who wants a SPECIFIC home must ask for it: ARES_TEST_SHARED_HOME=1.
+// Merely having ARES_HOME set is not intent. The doingbox garrison exports
+// ARES_HOME into every shell it spawns, so a plain `pnpm test` there inherited
+// the operator's live home and ran the suite against it instead of a temp one —
+// the prompt-budget and telegram-adopt tests then failed on his real content,
+// and any test that writes would have written into the live vault.
 //
 // EVERY test invocation needs this flag, not just `pnpm test`. The CI and
 // release workflows call `node --test` directly, so for a while they kept the
@@ -26,7 +31,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-if (!process.env.ARES_HOME) {
+if (!process.env.ARES_HOME || process.env.ARES_TEST_SHARED_HOME !== "1") {
   const home = mkdtempSync(path.join(tmpdir(), "ares-test-home-"));
   process.env.ARES_HOME = home;
   // Best-effort: the OS reclaims temp anyway, and a failed cleanup must never

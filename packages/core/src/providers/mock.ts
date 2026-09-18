@@ -20,6 +20,12 @@ export class MockEchoProvider implements Provider {
     if (inputText.includes("__mock_fail_provider__")) {
       throw new Error("injected mock provider failure");
     }
+    if (inputText.includes("__mock_stall__")) {
+      await new Promise<void>((_, reject) => {
+        req.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+      return;
+    }
     if (inputText.includes("__mock_request_stats__")) {
       const totalChars = req.messages.reduce((sum, message) => sum + messageText(message).length, 0);
       const replyText = [

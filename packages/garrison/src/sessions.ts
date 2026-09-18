@@ -282,6 +282,12 @@ interface PendingPermission {
 const FALLBACK_TITLE = "untitled session";
 const TITLE_MAX_CHARS = 64;
 
+/** Garrison-side stuck-turn watchdog — same idea as the daemon's. If no event
+ *  is yielded for this long, the turn is auto-interrupted. The engine's own
+ *  stall guards top out at ~3 min; 5 min gives them room to fire first. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 300_000);
+const STUCK_TURN_CHECK_MS = 30_000;
+
 export class SessionManager {
   private readonly live = new Map<string, LiveSession>();
   /** In-flight lazy rehydrations, deduped by id so two concurrent sends for the
@@ -380,6 +386,19 @@ export class SessionManager {
     } catch {
       // a host hook must never block the turn
     }
+    // ── stuck-turn watchdog ──────────────────────────────────────────────
+    let lastEventAt = Date.now();
+    const stuckTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
+      if (!session.busy) return;
+      const silent = Date.now() - lastEventAt;
+      if (silent < STUCK_TURN_SILENCE_MS) return;
+      console.error(
+        `stuck-turn watchdog (garrison): session ${sessionId} silent for ` +
+        `${Math.round(silent / 1000)}s — auto-interrupting`,
+      );
+      this.interrupt(sessionId);
+    }, STUCK_TURN_CHECK_MS) : null;
+    stuckTimer?.unref?.();
     try {
       let events: AsyncIterable<TurnEvent>;
       const content = inputContent(text, options.attachments);
@@ -390,6 +409,7 @@ export class SessionManager {
         events = session.engine.streamTurn();
       }
       for await (const event of events) {
+        lastEventAt = Date.now();
         if (event.type === "input_admitted" && session.mirroredAdmissionIds.delete(event.inputId)) {
           continue;
         }
@@ -409,6 +429,7 @@ export class SessionManager {
         this.fanOut(session, event);
       }
     } finally {
+      if (stuckTimer) clearInterval(stuckTimer);
       session.inFlightSends = Math.max(0, session.inFlightSends - 1);
       session.busy = session.inFlightSends > 0;
       session.mirroredAdmissionIds.delete(inputId);

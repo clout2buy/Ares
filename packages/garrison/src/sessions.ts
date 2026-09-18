@@ -388,15 +388,25 @@ export class SessionManager {
     }
     // ── stuck-turn watchdog ──────────────────────────────────────────────
     let lastEventAt = Date.now();
+    let watchdogFires = 0;
     const stuckTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
       if (!session.busy) return;
       const silent = Date.now() - lastEventAt;
-      if (silent < STUCK_TURN_SILENCE_MS) return;
-      console.error(
-        `stuck-turn watchdog (garrison): session ${sessionId} silent for ` +
-        `${Math.round(silent / 1000)}s — auto-interrupting`,
-      );
-      this.interrupt(sessionId);
+      if (silent < STUCK_TURN_SILENCE_MS) { watchdogFires = 0; return; }
+      watchdogFires++;
+      const interrupted = this.interrupt(sessionId);
+      if (!interrupted && watchdogFires >= 3) {
+        console.error(
+          `stuck-turn watchdog (garrison): session ${sessionId} silent for ` +
+          `${Math.round(silent / 1000)}s — interrupt failed ${watchdogFires}x, force-aborting controller`,
+        );
+        session.controller.abort();
+      } else {
+        console.error(
+          `stuck-turn watchdog (garrison): session ${sessionId} silent for ` +
+          `${Math.round(silent / 1000)}s — auto-interrupting`,
+        );
+      }
     }, STUCK_TURN_CHECK_MS) : null;
     stuckTimer?.unref?.();
     try {

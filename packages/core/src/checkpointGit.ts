@@ -41,9 +41,22 @@ interface GitRun {
   stderr: string;
 }
 
+/** Hard cap on one git spawn (ARES_CHECKPOINT_GIT_TIMEOUT_MS, default 60s). A
+ *  checkpoint is a safety net; a git that never exits must not become a hang. */
+function gitTimeoutMs(): number {
+  const raw = Number(process.env.ARES_CHECKPOINT_GIT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 60_000;
+}
+
+// After git exits, how long its stdio may stay open (a grandchild draining
+// inherited handles) before the run is settled with what was captured.
+const EXIT_STREAM_GRACE_MS = 1_500;
+
 function runGit(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string | Buffer } = {}): Promise<GitRun> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, {
+    // gc.auto=0: no checkpoint command may fork a detached `git gc` that
+    // inherits these pipes and holds `close` hostage for minutes.
+    const child = spawn("git", ["-c", "gc.auto=0", ...args], {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...opts.env },
       windowsHide: true,
@@ -51,10 +64,39 @@ function runGit(cwd: string, args: string[], opts: { env?: Record<string, string
     });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
+    let settled = false;
+    let exitCode: number | null = null;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (code: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      clearTimeout(graceTimer);
+      resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8") });
+    };
+    const killTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(graceTimer);
+      child.kill("SIGKILL");
+      reject(new Error(`git ${args[0]} timed out after ${Math.round(gitTimeoutMs() / 1000)}s`));
+    }, gitTimeoutMs());
+    killTimer.unref?.();
     child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8") }));
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      clearTimeout(graceTimer);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      exitCode = code ?? -1;
+      graceTimer = setTimeout(() => finish(exitCode ?? -1), EXIT_STREAM_GRACE_MS);
+      graceTimer.unref?.();
+    });
+    child.on("close", (code) => finish(code ?? exitCode ?? -1));
     child.stdin.on("error", () => {}); // git may exit before reading stdin
     child.stdin.end(opts.input ?? "");
   });
@@ -83,9 +125,28 @@ const chains = new Map<string, Promise<unknown>>();
 export function serializedForWorkspace<T>(workspace: string, fn: () => Promise<T>): Promise<T> {
   const key = path.resolve(workspace);
   const previous = chains.get(key) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(fn);
+  // One job that never settles must not poison the chain for the life of the
+  // process (ARES_CHECKPOINT_JOB_TIMEOUT_MS, default 120s). Past the deadline
+  // the chain moves on and this job's result is dropped; it keeps running
+  // detached, and shadow-index contention degrades to a retried `index.lock`.
+  const next = previous.catch(() => undefined).then(() => {
+    const job = fn();
+    void job.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      const ms = checkpointJobTimeoutMs();
+      timer = setTimeout(() => reject(new Error(`checkpoint job timed out after ${Math.round(ms / 1000)}s`)), ms);
+      timer.unref?.();
+    });
+    return Promise.race([job, deadline]).finally(() => clearTimeout(timer));
+  });
   chains.set(key, next.catch(() => undefined));
   return next;
+}
+
+function checkpointJobTimeoutMs(): number {
+  const raw = Number(process.env.ARES_CHECKPOINT_JOB_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 120_000;
 }
 
 /**

@@ -4687,13 +4687,18 @@ export class QueryEngine {
       // EPERM before this guard existed.
       let checkpoint: { checkpointId: string; label?: string } | null = null;
       try {
-        checkpoint = await this.cfg.beforeToolUseCheckpoint({
-          toolUseId: use.id,
-          toolName: use.name,
-          input: use.input,
-          safety: use.safety,
-          targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
-        });
+        // A snapshot that never returns (a wedged git, a poisoned workspace
+        // chain) must degrade exactly like one that fails: the tool still runs.
+        checkpoint = await withCheckpointDeadline(
+          this.cfg.beforeToolUseCheckpoint({
+            toolUseId: use.id,
+            toolName: use.name,
+            input: use.input,
+            safety: use.safety,
+            targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
+          }),
+          this.liveSignal(),
+        );
       } catch (err) {
         emit({
           type: "system_reminder_injected",
@@ -5269,6 +5274,27 @@ const DEFAULT_TOOL_CONCURRENCY = 5;
 function toolConcurrencyLimit(): number {
   const raw = Number(process.env.ARES_MAX_TOOL_CONCURRENCY);
   return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_TOOL_CONCURRENCY;
+}
+
+function checkpointTimeoutMs(): number {
+  const raw = Number(process.env.ARES_CHECKPOINT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 20_000;
+}
+
+/** Bound a pre-tool checkpoint by wall time and by the turn's abort signal. */
+function withCheckpointDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const ms = checkpointTimeoutMs();
+    const timer = setTimeout(() => reject(new Error(`checkpoint timed out after ${Math.round(ms / 1000)}s`)), ms);
+    timer.unref?.();
+    const onAbort = () => reject(new Error("checkpoint abandoned: turn aborted"));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 /** Error tag for a watchdog-aborted tool — distinct from a user/turn abort. */
@@ -6290,7 +6316,10 @@ function isPotentialCodeMutationCall(name: string, input: unknown): boolean {
   // Conservative shell mutation cues. The Session checkpoint diff is the final
   // authority and supplies exact files; this early signal merely arms the proof
   // gate before the inner engine tries to finish.
-  return /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|sed\s+-i|git\s+(?:apply|checkout|restore|mv|rm)|npm\s+(?:install|uninstall)|pnpm\s+(?:add|remove|install)|yarn\s+(?:add|remove|install)|cargo\s+(?:add|remove)|apply_patch)\b|(?:>|>>|Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item)/i.test(command);
+  // A redirect only counts when it can land in a file: `2>/dev/null`, `2>&1`,
+  // `>/dev/null` and `&>/dev/null` are stderr/stdout plumbing on nearly every
+  // read-only command and used to arm proof debt on a plain `ls`.
+  return /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|sed\s+-i|git\s+(?:apply|checkout|restore|mv|rm)|npm\s+(?:install|uninstall)|pnpm\s+(?:add|remove|install)|yarn\s+(?:add|remove|install)|cargo\s+(?:add|remove)|apply_patch)\b|(?<![0-9&])>{1,2}(?!\s*(?:\/dev\/null|&[0-9]))|Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item/i.test(command);
 }
 
 /** Consecutive gather-only tool rounds tolerated before the convergence

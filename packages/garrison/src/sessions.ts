@@ -282,10 +282,13 @@ interface PendingPermission {
 const FALLBACK_TITLE = "untitled session";
 const TITLE_MAX_CHARS = 64;
 
-/** Garrison-side stuck-turn watchdog — same idea as the daemon's. If no event
- *  is yielded for this long, the turn is auto-interrupted. The engine's own
- *  stall guards top out at ~3 min; 5 min gives them room to fire first. */
-const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 300_000);
+/** Turn-level stuck-turn watchdog. OFF by default: a turn is allowed to take
+ *  as long as the work takes. This fired on legitimate long tool calls (a test
+ *  run emits no events for minutes), interrupted real work, and raced three
+ *  other timeout layers that each had a different opinion about liveness.
+ *  Timeouts belong on bounded I/O — the git spawn and checkpoint deadlines —
+ *  not on turns. Set ARES_TURN_SILENCE_MS to a positive value to re-enable. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 0);
 const STUCK_TURN_CHECK_MS = 30_000;
 
 export class SessionManager {

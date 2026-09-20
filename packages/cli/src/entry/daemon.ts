@@ -13,13 +13,13 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-/** How long a turn may go silent — no events yielded to the surface —
- *  before the daemon auto-cancels it, same as pressing Stop then force-Stop.
- *  Covers the class of hangs the engine's own stall guards miss: a stuck
- *  await in compaction, a provider stream that slips past the fetch-level
- *  watchdog, a TCP connection the OS never RSTs. The engine's guards top out
- *  at ~3 min; 5 min gives them room to fire first. 0 disables. */
-const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 300_000);
+/** Daemon-side turn watchdog. OFF by default — a turn takes as long as the
+ *  work takes, and silence is not evidence of a hang (a test run or a long
+ *  build emits nothing for minutes). The hang class this was built for was a
+ *  real checkpoint-layer deadlock, since fixed at the source; the bounded I/O
+ *  deadlines (git spawn, checkpoint chain job) cover the rest without ever
+ *  killing legitimate work. Set ARES_TURN_SILENCE_MS>0 to re-enable. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 0);
 
 /** How often the stuck-turn watchdog samples. 30 s keeps overhead trivial
  *  while adding at most 30 s of latency on top of STUCK_TURN_SILENCE_MS. */

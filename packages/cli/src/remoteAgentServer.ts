@@ -38,6 +38,11 @@ import {
   revokeDevice,
 } from "./remoteEnrollment.js";
 import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
+import { type ChannelKeys, sealFrame, openFrame } from "./remoteChannelCrypto.js";
+
+/** Direction bytes for the channel MAC framing (never strings on the wire). */
+const DIR_S2D = 0x01 as const;
+const DIR_D2S = 0x02 as const;
 import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
 
@@ -200,6 +205,13 @@ interface RemotePcConn extends RemotePcInfo {
   ws: WebSocket;
   pendingCmds: Map<string, PendingCmd>;
   token: string;
+  /**
+   * Channel-sealed send for v5 sessions, set at adopt time. When present this
+   * is the ONLY valid way to send to this connection — the device enforces
+   * the MAC and kills the socket on any unMACed frame. Falls back to the raw
+   * socket for legacy (v4) sessions, where it is undefined.
+   */
+  sealedSend?: (obj: Record<string, unknown>) => void;
   /** Last time ANY frame arrived from this PC. Drives dead-peer detection. */
   lastSeen: number;
   /** Set when this connection is a PAIRED device rather than a one-time help
@@ -393,7 +405,7 @@ export class RemoteAgentServer {
     let told = 0;
     for (const pc of this.pcs.values()) {
       if (!pc.deviceId) continue;
-      try { pc.ws.send(JSON.stringify({ type: "home", wsUrl })); told++; } catch { /* the sweep will drop it */ }
+      try { if (pc.sealedSend) pc.sealedSend({ type: "home", wsUrl }); else pc.ws.send(JSON.stringify({ type: "home", wsUrl })); told++; } catch { /* the sweep will drop it */ }
     }
     if (told) this.log(`remote-agent: re-homed ${told} device(s) to ${wsUrl}`);
   }
@@ -468,7 +480,7 @@ export class RemoteAgentServer {
     if (!device) return null;
     for (const [id, pc] of this.pcs) {
       if (pc.deviceId !== deviceId) continue;
-      try { pc.ws.send(JSON.stringify({ type: "error", message: "this device was unpaired — stop and uninstall", fatal: true })); } catch { /* gone */ }
+      try { const bye = { type: "error", message: "this device was unpaired — stop and uninstall", fatal: true }; if (pc.sealedSend) pc.sealedSend(bye); else pc.ws.send(JSON.stringify(bye)); } catch { /* gone */ }
       try { pc.ws.close(); } catch { /* gone */ }
       this.dropPc(id);
     }
@@ -724,7 +736,10 @@ export class RemoteAgentServer {
       }, timeoutMs + 2_000);
       timer.unref?.();
       pc.pendingCmds.set(reqId, { resolve, reject, timer, op: String(msg["type"]) });
-      try { pc.ws.send(JSON.stringify({ ...msg, reqId })); }
+      try {
+        if (pc.sealedSend) pc.sealedSend({ ...msg, reqId });
+        else pc.ws.send(JSON.stringify({ ...msg, reqId }));
+      }
       catch (err) { clearTimeout(timer); pc.pendingCmds.delete(reqId); reject(err instanceof Error ? err : new Error(String(err))); }
     });
   }
@@ -1083,7 +1098,11 @@ export class RemoteAgentServer {
 
   notify(pcId: string, message: string): void {
     const resolved = this.resolvePcId(pcId);
-    if (resolved) this.pcs.get(resolved)?.ws.send(JSON.stringify({ type: "notify", message }));
+    const pc = resolved ? this.pcs.get(resolved) : undefined;
+    if (!pc) return;
+    const frame = { type: "notify", message };
+    if (pc.sealedSend) pc.sealedSend(frame);
+    else pc.ws.send(JSON.stringify(frame));
   }
 
   /** Owner-initiated: tell the connector to exit (so it doesn't auto-reconnect) and drop it. */
@@ -1092,7 +1111,7 @@ export class RemoteAgentServer {
     const pc = resolved ? this.pcs.get(resolved) : undefined;
     if (!pc) return;
     this.tokens.delete(pc.token);
-    try { pc.ws.send(JSON.stringify({ type: "bye" })); } catch { /* gone */ }
+    try { if (pc.sealedSend) pc.sealedSend({ type: "bye" }); else pc.ws.send(JSON.stringify({ type: "bye" })); } catch { /* gone */ }
     setTimeout(() => { try { pc.ws.close(); } catch { /* gone */ } }, 300).unref?.();
   }
 
@@ -1118,7 +1137,7 @@ export class RemoteAgentServer {
           continue;
         }
         try { pc.ws.ping(); } catch { /* gone; the sweep above will catch it */ }
-        try { pc.ws.send(JSON.stringify({ type: "ping" })); } catch { /* same */ }
+        try { if (pc.sealedSend) pc.sealedSend({ type: "ping" }); else pc.ws.send(JSON.stringify({ type: "ping" })); } catch { /* same */ }
       }
     }, HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
@@ -1155,7 +1174,7 @@ export class RemoteAgentServer {
         clearTimeout(timer);
         reject(new Error(`server closed while waiting for ${op}`));
       }
-      try { pc.ws.send(JSON.stringify({ type: "bye" })); } catch { /* gone */ }
+      try { if (pc.sealedSend) pc.sealedSend({ type: "bye" }); else pc.ws.send(JSON.stringify({ type: "bye" })); } catch { /* gone */ }
       try { pc.ws.close(); } catch { /* already dead */ }
     }
     this.pcs.clear();
@@ -1351,12 +1370,83 @@ export class RemoteAgentServer {
 
     // Handshake state for a PAIRED device, held only for this socket.
     let attach: AttachState | null = null;
+    let handshakePhase: "open" | "hello" | "challenge" | "auth" | "adopted" | "failed" = "open";
+    let channelFailed = false;
+    // Channel-MAC state for this socket, set at adopt time. Null = the device
+    // authenticated with the legacy proof (v4 connector): the session stays
+    // unauthenticated, exactly as before, and gets a log line saying so.
+    let channel: { keys: ChannelKeys; s2dSeq: number; d2sSeq: number } | null = null;
+
+    /**
+     * Send a server→device frame, sealing it when this session is MACed.
+     * Every s2d byte on a v5 session goes through here — command frames,
+     * heartbeats, home moves — or the device (rightly) kills the channel.
+     */
+    const send = (obj: Record<string, unknown>): void => {
+      if (channelFailed) return;
+      let text = JSON.stringify(obj);
+      if (channel) {
+        const sealed = sealFrame(channel.keys.s2d, DIR_S2D, channel.s2dSeq, text);
+        if (!sealed) { try { ws.close(); } catch { /* gone */ } return; }
+        channel.s2dSeq += 1;
+        text = sealed;
+      }
+      try { ws.send(text); } catch { /* gone; close handler cleans up */ }
+    };
+
+    /**
+     * Open a device→server frame. On a MACed session this is the ONLY path to
+     * dispatch: an unMACed or mis-sequenced frame is an injected or replayed
+     * one, and the channel dies rather than executing it. Returns the parsed
+     * message or null (caller closes the socket).
+     */
+    const receive = (text: string): Record<string, unknown> | null => {
+      if (!channel) {
+        try { return JSON.parse(text); } catch { return null; }
+      }
+      const opened = openFrame(channel.keys.d2s, DIR_D2S, channel.d2sSeq, text);
+      if (!opened) return null;
+      channel.d2sSeq += 1;
+      try { return JSON.parse(opened.payload); } catch { return null; }
+    };
+
+    const failChannel = (why: string): void => {
+      if (channelFailed) return;
+      channelFailed = true;
+      handshakePhase = "failed";
+      attach = null;
+      this.log(`remote-agent: dropping device connection — ${why}`);
+      // terminate(), not graceful close(): no queued frame may dispatch after an
+      // authentication failure. The close handler owns PC/pending cleanup.
+      try { ws.terminate(); } catch { /* gone */ }
+    };
+
+    /** Send a handshake error, then close without accepting another frame. */
+    const refuseHandshake = (why: string): void => {
+      if (channelFailed) return;
+      channelFailed = true;
+      handshakePhase = "failed";
+      attach = null;
+      this.log(`remote-agent: refusing device handshake — ${why}`);
+      setImmediate(() => { try { ws.close(); } catch { /* gone */ } });
+    };
+
     const saveDevices = (r: DeviceRegistryFile) => saveDeviceRegistry(undefined, r);
 
     /** Adopt an authenticated device into the normal PC table, so every existing
      *  exec / screenshot / file path works on it unchanged. */
-    const adoptDevice = (device: PairedDevice, meta: { username?: string; ip?: string; connectorVersion?: number }): void => {
-      // A reconnect replaces the stale entry rather than accumulating ghosts.
+    const adoptDevice = (
+      device: PairedDevice,
+      meta: { username?: string; ip?: string; connectorVersion?: number },
+      channelKeysForSession?: ChannelKeys | null,
+    ): void => {
+      // The proof form decided the channel: v5 keys mean MACs on; a v4 device
+      // keeps the legacy unauthenticated channel until it updates.
+      if (channelKeysForSession && !channel) {
+        channel = { keys: channelKeysForSession, s2dSeq: 0, d2sSeq: 0 };
+      } else if (!channelKeysForSession) {
+        channel = null;
+      }
       for (const [existingId, existing] of this.pcs) {
         if (existing.deviceId !== device.id) continue;
         this.pcs.delete(existingId);
@@ -1368,6 +1458,10 @@ export class RemoteAgentServer {
         id,
         token: "",
         deviceId: device.id,
+        // v5: every server->device byte on this connection is MACed. The
+        // command path (request()), the heartbeat, unpair and disconnect all
+        // send through this hook, so none of them can bypass the channel.
+        ...(channel ? { sealedSend: (o: Record<string, unknown>) => send(o) } : {}),
         label: device.name,
         hostname: device.hostname,
         os: device.os,
@@ -1388,7 +1482,7 @@ export class RemoteAgentServer {
       // here, or "paired 24/7" only means "paired at home".
       if (this.stableBaseUrl) {
         const homeUrl = this.stableBaseUrl.replace(/^http/, "ws") + "/ws";
-        try { ws.send(JSON.stringify({ type: "home", wsUrl: homeUrl, permanent: true })); } catch { /* gone */ }
+        try { send({ type: "home", wsUrl: homeUrl, permanent: true }); } catch { /* gone */ }
       }
       this.autoUpdateOnAttach(id, device.id, meta.connectorVersion ?? 1);
       this.log(
@@ -1401,16 +1495,29 @@ export class RemoteAgentServer {
     };
 
     ws.on("message", (raw) => {
+      if (channelFailed) return;
       if (pc) pc.lastSeen = Date.now();
+      const text = raw.toString();
+      // Handshake frames arrive before the channel exists, so they parse as
+      // plain JSON. Once adopted with channel keys, EVERYTHING goes through
+      // receive() — a frame that fails the MAC never reaches dispatch.
       let msg: Record<string, unknown>;
-      try { msg = JSON.parse(raw.toString()); }
-      catch { return; }
+      if (channel && pc) {
+        const opened = receive(text);
+        if (!opened) { failChannel("frame failed channel MAC or sequence"); return; }
+        msg = opened;
+      } else {
+        try { msg = JSON.parse(text); }
+        catch { return; }
+      }
 
       // Connector answering our JSON ping. No payload, purely traffic.
       if (msg["type"] === "pong") return;
 
       // ── paired-device handshake ──
       if (msg["type"] === "enroll") {
+        if (handshakePhase !== "open") { failChannel("duplicate or out-of-phase enrollment"); return; }
+        handshakePhase = "auth";
         void (async () => {
           const res = await enrollDevice(
             {
@@ -1427,52 +1534,82 @@ export class RemoteAgentServer {
               elevated: msg["elevated"] === true,
             },
           );
-          try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
-          if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
+          try { send(res.reply); } catch { /* gone */ }
+          if (!res.ok) { refuseHandshake("enrollment refused"); return; }
           this.log(`remote device paired: ${res.device.name} (${res.device.hostname})`);
-          adoptDevice(res.device, {
-            username: String(msg["username"] ?? ""),
-            ip: "unknown",
-            ...(typeof msg["connectorVersion"] === "number" ? { connectorVersion: msg["connectorVersion"] as number } : {}),
-          });
+          // Enrollment disclosed the permanent secrets on this socket, so it
+          // can never be promoted into an authenticated command channel. Close
+          // it after the reply; both old and v5 connectors reconnect with the
+          // credential and complete the proof exchange before appearing in pcs.
+          handshakePhase = "failed";
+          channelFailed = true;
+          setImmediate(() => { try { ws.close(); } catch { /* gone */ } });
         })();
         return;
       }
 
       if (msg["type"] === "device_hello") {
+        if (handshakePhase !== "open") { failChannel("duplicate or out-of-phase device hello"); return; }
+        handshakePhase = "hello";
         void (async () => {
           const res = await handleDeviceHello(this.devices, {
             type: "device_hello",
             deviceId: String(msg["deviceId"] ?? ""),
             nonce: String(msg["nonce"] ?? ""),
           });
-          try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
-          if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
+          try { send(res.reply); } catch { /* gone */ }
+          if (!res.ok) { refuseHandshake("device hello refused"); return; }
           attach = res.state;
+          handshakePhase = "challenge";
         })();
         return;
       }
 
       if (msg["type"] === "device_auth") {
         const state = attach;
-        if (!state) {
-          // Proof without a challenge: either a confused client or someone
-          // trying to skip the half of the handshake that binds a nonce.
-          try { ws.send(JSON.stringify({ type: "error", message: "say hello first" })); } catch { /* gone */ }
+        if (!state || handshakePhase !== "challenge") {
+          // Proof without a challenge, or a duplicate proof while auth is in
+          // flight. Consume the challenge synchronously so two copies of the
+          // same genuine auth frame cannot race and reset channel sequences.
+          failChannel("device auth without a live challenge");
           return;
         }
+        attach = null;
+        handshakePhase = "auth";
         void (async () => {
           const res = await handleDeviceAuth(
             { registry: this.devices, save: saveDevices },
             state,
-            { type: "device_auth", proof: String(msg["proof"] ?? "") },
+            {
+              type: "device_auth",
+              proof: String(msg["proof"] ?? ""),
+              ...(typeof msg["connectorVersion"] === "number" ? { connectorVersion: msg["connectorVersion"] as number } : {}),
+            },
           );
-          try { ws.send(JSON.stringify(res.reply)); } catch { /* gone */ }
-          if (!res.ok) { try { ws.close(); } catch { /* gone */ } return; }
+          if (!res.ok) {
+            try { send(res.reply); } catch { /* gone */ }
+            refuseHandshake("device authentication refused");
+            return;
+          }
+          // Authentication opens sealed credentials asynchronously. The peer
+          // may disappear during that await; never adopt a socket after its
+          // close event already ran (or evict a healthy prior connection with
+          // a dead replacement).
+          if (channelFailed || ws.readyState !== WebSocket.OPEN || handshakePhase !== "auth") return;
+          // Arm the channel BEFORE the ready reply: on a v5 session
+          // device_ready is s2d frame 0, sealed — the device refuses any
+          // unMACed ready frame, so the reply must never go out raw.
+          if (res.channel) channel = { keys: res.channel, s2dSeq: 0, d2sSeq: 0 };
+          send(res.reply);
+          const reportedVersion = typeof msg["connectorVersion"] === "number" ? msg["connectorVersion"] as number : 0;
+          // mac1 binds connectorVersion into its HMAC proof; legacy metadata is
+          // plaintext and therefore clamped below the protected-channel floor.
+          const trustedVersion = res.channel ? res.connectorVersion ?? 5 : Math.min(4, reportedVersion || 4);
           adoptDevice(res.device, {
             username: String(msg["username"] ?? ""),
-            ...(typeof msg["connectorVersion"] === "number" ? { connectorVersion: msg["connectorVersion"] as number } : {}),
-          });
+            connectorVersion: trustedVersion,
+          }, res.channel);
+          handshakePhase = "adopted";
         })();
         return;
       }
@@ -1533,6 +1670,9 @@ export class RemoteAgentServer {
     });
 
     ws.on("close", () => {
+      channelFailed = true;
+      handshakePhase = "failed";
+      attach = null;
       if (!pc) return;
       // A replaced (reconnected) entry already left the map — don't announce it twice.
       if (this.pcs.get(pc.id) !== pc) { pc = undefined; return; }

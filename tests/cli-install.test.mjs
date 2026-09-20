@@ -693,8 +693,17 @@ test("install: with no Node anywhere, the launcher explains itself", { skip: isW
     env: { PATH: "" },
   });
 
-  // PATH emptied so `command -v node` also misses: both strategies fail.
-  const result = spawnSync(target, ["help"], { encoding: "utf8", env: { PATH: "" } });
+  // PATH points at a real-but-empty directory so `command -v node` also misses:
+  // both strategies fail. Not the empty string, for two reasons — POSIX reads a
+  // zero-length PATH as the *current directory*, and handing spawnSync an env of
+  // only PATH replaces the whole environment, which on NixOS makes the /bin/sh
+  // wrapper rebuild a fallback PATH covering the system profile. Either way a
+  // `node` comes back and the fallback branch under test is never reached.
+  const emptyBin = tempDir("emptybin");
+  const result = spawnSync(target, ["help"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: emptyBin },
+  });
 
   assert.equal(result.status, 127, "a missing interpreter must exit 127");
   assert.match(result.stderr, /no usable Node found/);
@@ -702,4 +711,5 @@ test("install: with no Node anywhere, the launcher explains itself", { skip: isW
 
   fs.rmSync(bin, { recursive: true, force: true });
   fs.rmSync(src, { recursive: true, force: true });
+  fs.rmSync(emptyBin, { recursive: true, force: true });
 });

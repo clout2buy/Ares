@@ -9,6 +9,25 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliEntry = path.join(here, "..", "packages", "cli", "dist", "entry.js");
 
+/**
+ * Remove a temp dir a spawned daemon was using. Windows keeps directory
+ * handles open for a moment after the child exits, so a plain rmSync races the
+ * OS and throws EBUSY — from inside `finally`, which replaced the test's real
+ * outcome with a cleanup error and hid whether the watchdog actually worked.
+ * Retry briefly, then leave it: an abandoned temp dir is the runner's to reap,
+ * and must never decide a test.
+ */
+async function removeTemp(dir) {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
+
 test("stuck-turn watchdog auto-cancels a silent turn and frees the session", { timeout: 60_000 }, async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-stuck-turn-guard-workspace-"));
   const home = mkdtempSync(path.join(os.tmpdir(), "ares-stuck-turn-guard-home-"));
@@ -137,8 +156,8 @@ test("stuck-turn watchdog auto-cancels a silent turn and frees the session", { t
         new Promise((resolve) => setTimeout(resolve, 5_000)),
       ]);
     }
-    rmSync(workspace, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    await removeTemp(workspace);
+    await removeTemp(home);
   }
 
   assert.ok(stallSettled, "the stalled turn was auto-settled by the watchdog");

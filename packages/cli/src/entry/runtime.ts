@@ -153,6 +153,7 @@ export async function printHelp(): Promise<void> {
       "  ares launcher                                Open the provider/model launch deck.",
       `  ares chat [--provider ${providerList}] [--model X]`,
       "                              Open an interactive terminal prompt.",
+      "  ares version                Print the version (also --version, -v).",
       "  ares sessions               List saved workspace sessions.",
       "  ares checkpoints            List workspace checkpoints.",
       "  ares resume [session-id]     Resume a saved session (defaults to latest).",

@@ -34,13 +34,19 @@ function waitFor(check, timeoutMs, label) {
 
 test("garrison serve: boot, health, create, send, stream, detach-survival", { timeout: 90_000 }, async () => {
   const home = await mkdtemp(path.join(tmpdir(), "ares-serve-home-"));
+  // Sessions are WORKSPACE-scoped (<cwd>/.ares), which ARES_HOME does not move.
+  // Booting the daemon from the repo root wrote a "hello garrison" session into
+  // the checkout's own .ares on every run — it showed up in the developer's
+  // real `ares sessions`. Same "somebody else's test state" problem
+  // _isolate-home.mjs exists for, one directory over.
+  const workspace = await mkdtemp(path.join(tmpdir(), "ares-serve-ws-"));
   const port = 18_400 + Math.floor(Math.random() * 1_000);
 
   const daemon = spawn(
     process.execPath,
     [entry, "garrison", "serve", "--provider", "mock", "--port", String(port)],
     {
-      cwd: root,
+      cwd: workspace,
       env: { ...process.env, ARES_HOME: home, ARES_AGENT_ENABLED: "0", ARES_WITNESS: "0", NO_COLOR: "1" },
       windowsHide: true,
     },
@@ -107,5 +113,6 @@ test("garrison serve: boot, health, create, send, stream, detach-survival", { ti
     daemon.kill();
     await new Promise((resolve) => daemon.once("close", resolve));
     await rm(home, { recursive: true, force: true });
+    await rm(workspace, { recursive: true, force: true });
   }
 });

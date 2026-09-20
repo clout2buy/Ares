@@ -43,39 +43,25 @@ async function withServer(fn) {
   }
 }
 
-function wire(ws, ops) {
-  ws.on("message", (raw) => {
-    const msg = JSON.parse(String(raw));
-    if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
-    const handler = ops[msg.type];
-    if (handler) ws.send(JSON.stringify({ ...handler(msg), reqId: msg.reqId }));
-  });
-}
-
 const echoExec = { exec: (msg) => ({ type: "exec_result", output: `ran: ${msg.command}`, exitCode: 0 }) };
 
 async function enroll(server, base, ops = echoExec) {
   const { token } = await server.generatePairingLink("my laptop");
-  const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
-  let cred = null;
-  await new Promise((res, rej) => { ws.once("open", res); ws.once("error", rej); });
-  ws.on("message", (raw) => {
+  const enrollWs = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+  await new Promise((res, rej) => { enrollWs.once("open", res); enrollWs.once("error", rej); });
+  const credPromise = new Promise((resolve) => enrollWs.on("message", (raw) => {
     const msg = JSON.parse(String(raw));
-    if (msg.type === "enrolled") cred = msg;
-  });
-  wire(ws, ops);
-  ws.send(JSON.stringify({
+    if (msg.type === "enrolled") resolve(msg);
+  }));
+  enrollWs.send(JSON.stringify({
     type: "enroll", token, hostname: "TRICKFOOL", os: "Windows",
     username: "Clout", elevated: true, connectorVersion: 2,
   }));
-  // Wait for BOTH sides: the server adopting the device, and this socket having
-  // actually processed the `enrolled` frame that carries the credential.
-  for (let i = 0; i < 400 && (server.listPcs().length === 0 || !cred); i++) {
-    await new Promise((r) => setTimeout(r, 20));
-  }
+  const cred = await credPromise;
+  enrollWs.close();
+  const { ws } = await reattach(server, base, cred, ops);
   const pc = server.listPcs()[0];
   assert.ok(pc, "device never attached");
-  assert.ok(cred, "no credential issued");
   return { ws, pc, cred: () => cred };
 }
 

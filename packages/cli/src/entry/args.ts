@@ -8,7 +8,7 @@ export interface ParsedArgs {
 export function parseArgs(argv: string[]): ParsedArgs {
   let command = "launcher";
   let rest = argv;
-  if (argv[0] === "--help" || argv[0] === "-h") {
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "--version") {
     command = argv[0];
     rest = argv.slice(1);
   } else if (argv[0] && !argv[0].startsWith("--")) {

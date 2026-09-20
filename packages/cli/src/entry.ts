@@ -29,7 +29,7 @@ import { holoCommand } from "./entry/holoCmd.js";
 import { briefCommand, checkpointsCommand, doctorCommand, frictionCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
 import { mindCommand } from "./entry/mindCmd.js";
 import { operatorCommand } from "./entry/operatorCmd.js";
-import { printHelp } from "./entry/runtime.js";
+import { cliVersion, printHelp } from "./entry/runtime.js";
 import { telegramCommand } from "./entry/telegramWiring.js";
 import { loadSavedTheme, saveTheme } from "./entry/terminalLines.js";
 import { triageCommand } from "./entry/triage.js";
@@ -189,6 +189,13 @@ async function main(): Promise<void> {
     case "--help":
     case "-h": {
       await printHelp();
+      return;
+    }
+    case "version":
+    case "--version":
+    case "-v":
+    case "-V": {
+      process.stdout.write(`ares v${await cliVersion()}\n`);
       return;
     }
     default:

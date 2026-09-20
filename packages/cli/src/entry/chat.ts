@@ -67,6 +67,20 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
 }
 
 export async function launcherCommand(args: ParsedArgs): Promise<number> {
+  // The launch deck is an Ink app. Without a TTY on both ends Ink throws from
+  // inside React ("Raw mode is not supported"), so a piped or scripted `ares`
+  // used to die with a reconciler stack trace for what is really "you piped
+  // me". Bare `ares` and any unrecognised leading --flag both land here, which
+  // makes this the default failure mode in CI and cron — say it in words.
+  // chatCommand has its own line-mode fallback; the deck has nothing to fall
+  // back to, so it refuses.
+  if (!stdin.isTTY || !stdout.isTTY) {
+    process.stderr.write(
+      "error: the launch deck needs an interactive terminal. " +
+        "Run `ares help` for commands, or `ares run --goal \"<text>\"` for non-interactive use.\n",
+    );
+    return 2;
+  }
   const context = cliRuntimeContext();
   const settings = await loadUiSettings();
   const action = await runInkLauncher({

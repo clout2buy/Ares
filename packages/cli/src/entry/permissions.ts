@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stderr } from "node:process";
-import { type PathAccess, type PathGrantScope, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
+import { TOOL_WIDE_GRANT, type PathAccess, type PathGrantScope, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
 import type { PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@ares/protocol";
 import type { ToolPermissionRequest } from "@ares/core";
 import { permissionPrompt } from "../terminalUi.js";
@@ -196,12 +196,20 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
    *  next variant of the same command; destructive commands stay literal. */
   async grant(toolName: string, command: string, scope: PathGrantScope): Promise<void> {
     if (scope !== "always") return;
+    // A tool-wide grant (a tool with no command to scope to — ComputerUse,
+    // Browser…) is stored as the bare `Tool(*)`, never run through the command
+    // prefix machinery, which has nothing to generalize from.
+    if (command === TOOL_WIDE_GRANT) return this.store(`${toolName}(${TOOL_WIDE_GRANT})`, false);
     const prefix = commandPrefixPattern(command);
-    const pattern = `${toolName}(${prefix ?? command})`;
+    return this.store(`${toolName}(${prefix ?? command})`, prefix !== null);
+  }
+
+  /** Add one allow rule: live this session, and on disk for the next one. */
+  private async store(pattern: string, isPrefix: boolean): Promise<void> {
     if (this.rules.some((r) => r.pattern === pattern && r.effect === "allow")) return;
     // Effective immediately this session…
     this.rules.push({ pattern, effect: "allow", source: "user-global" });
-    if (prefix) this.prefixPatterns.add(pattern);
+    if (isPrefix) this.prefixPatterns.add(pattern);
     // …and written to the user-global store so the next session won't re-ask.
     let stored: StoredCommandPermissions = { rules: [] };
     try {
@@ -211,7 +219,7 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
     }
     const existing = stored.rules ?? [];
     if (!existing.some((r) => r.pattern === pattern && r.effect === "allow")) {
-      stored.rules = [...existing, { pattern, effect: "allow", ...(prefix ? { prefix: true } : {}) }];
+      stored.rules = [...existing, { pattern, effect: "allow", ...(isPrefix ? { prefix: true } : {}) }];
       await mkdir(path.dirname(this.userGlobalPath), { recursive: true });
       await writeFile(this.userGlobalPath, JSON.stringify(stored, null, 2) + "\n", "utf8");
     }

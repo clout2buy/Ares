@@ -484,9 +484,31 @@ function markPreEffectError(error: unknown): Error {
 }
 
 /** Tool names the user clicked "Allow always" on this process run. Backs the
- *  non-command allow_always path in adaptToolForEngine — session-scoped on
- *  purpose (a fresh daemon starts guarded again). */
+ *  non-command allow_always path in adaptToolForEngine for the cases that are
+ *  deliberately NOT persisted (see TOOL_WIDE_GRANT). */
 const toolAlwaysGrants = new Set<string>();
+
+/**
+ * The command a tool-wide "Allow always" is stored under, for tools that have
+ * no command to scope the grant to (ComputerUse, Browser, RemotePC…).
+ *
+ * Without this, "Always" on such a tool lived in a process-local Set: every
+ * garrison restart re-asked everything the owner had already permanently
+ * allowed, which is most of what makes the prompts feel like spam. Destructive
+ * tools are excluded on purpose — "always" on an irreversible action stays
+ * scoped to the run it was granted in.
+ */
+export const TOOL_WIDE_GRANT = "*";
+
+/** A tool's safety for this specific input, falling back to its declared class
+ *  when the dynamic classifier throws on an edge-case input. */
+function safetyOf(tool: Tool<z.ZodTypeAny, unknown>, input: unknown): SafetyClass {
+  try {
+    return tool.effectiveSafety(input as never);
+  } catch {
+    return tool.schema.safety;
+  }
+}
 
 export function adaptToolForEngine(
   tool: Tool<z.ZodTypeAny, unknown>,
@@ -546,12 +568,16 @@ export function adaptToolForEngine(
         throw markPreEffectError(error);
       }
       // "Allow always" for non-command tools (ComputerUse, Browser, …) grants
-      // the TOOL for the rest of the process. Before this, allow_always was a
-      // silent no-op for any tool without commandFor — the user clicked Always
-      // and got re-prompted on the very next action (mid-automation, moving
-      // their mouse to the dialog and wrecking the run).
-      if (decision.kind === "ask" && toolAlwaysGrants.has(tool.schema.name)) {
-        decision = { kind: "allow" };
+      // the TOOL. Before this, allow_always was a silent no-op for any tool
+      // without commandFor — the user clicked Always and got re-prompted on the
+      // very next action (mid-automation, moving their mouse to the dialog and
+      // wrecking the run). The grant is honored from the persistent store first,
+      // so it also survives a restart.
+      if (decision.kind === "ask" && tool.commandFor === undefined) {
+        const stored = rich.commandPermissions?.decide(tool.schema.name, TOOL_WIDE_GRANT);
+        if (stored?.kind === "allow" || toolAlwaysGrants.has(tool.schema.name)) {
+          decision = { kind: "allow" };
+        }
       }
       if (decision.kind === "deny") {
         // A policy deny ("Read the file first", "disabled in plan mode") is a
@@ -585,15 +611,19 @@ export function adaptToolForEngine(
         // here. Non-command tools get a process-lifetime tool-name grant.
         if (answer === "allow_always") {
           const command = tool.commandFor?.(parsed);
-          if (command !== undefined) {
+          // A destructive tool's "always" never outlives the process: the owner
+          // approved an irreversible action, not a standing licence for one.
+          const persistable = command !== undefined || safetyOf(tool, parsed) !== "destructive";
+          if (persistable) {
             try {
-              await rich.commandPermissions?.grant?.(tool.schema.name, command, "always");
+              await rich.commandPermissions?.grant?.(tool.schema.name, command ?? TOOL_WIDE_GRANT, "always");
             } catch (error) {
               throw markPreEffectError(error);
             }
-          } else {
-            toolAlwaysGrants.add(tool.schema.name);
           }
+          // Also hold it in-process: the host may have no writable store, and
+          // the grant must take effect for THIS run either way.
+          if (command === undefined) toolAlwaysGrants.add(tool.schema.name);
         }
       }
       const result = await tool.call(parsed, rich);

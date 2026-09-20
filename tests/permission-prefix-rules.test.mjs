@@ -13,6 +13,7 @@ import {
   isDestructiveCommand,
   hasShellChaining,
 } from "../packages/cli/dist/entry/permissions.js";
+import { TOOL_WIDE_GRANT } from "../packages/tools/dist/index.js";
 
 async function context() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ares-perm-"));
@@ -124,4 +125,40 @@ test("store: among non-deny matches the last rule still wins (later rules refine
   const store = await AresCommandPermissionStore.load(ctx);
   assert.equal(store.decide("Bash", "git status")?.kind, "allow");
   assert.equal(store.decide("Bash", "git fetch")?.kind, "ask");
+});
+
+// ── tool-wide grants (v54) ───────────────────────────────────────────────────
+//
+// "Allow always" on a tool with no command to scope to (ComputerUse, Browser,
+// RemotePC…) used to live in a process-local Set: every garrison restart
+// re-asked everything the owner had already permanently allowed. It now lands
+// in the same persistent store, under the bare `Tool(*)` pattern.
+
+test("store: a tool-wide grant persists and covers that tool only", async () => {
+  const ctx = await context();
+  const store = await AresCommandPermissionStore.load(ctx);
+  assert.equal(store.decide("ComputerUse", TOOL_WIDE_GRANT), null, "guarded until granted");
+
+  await store.grant("ComputerUse", TOOL_WIDE_GRANT, "always");
+  assert.equal(store.decide("ComputerUse", TOOL_WIDE_GRANT)?.kind, "allow");
+  assert.equal(store.decide("Deploy", TOOL_WIDE_GRANT), null, "one tool's Always is not every tool's");
+
+  const persisted = JSON.parse(await fs.readFile(path.join(ctx.aresHome, "command-permissions.json"), "utf8"));
+  assert.deepEqual(persisted.rules, [{ pattern: "ComputerUse(*)", effect: "allow" }]);
+  assert.ok(!persisted.rules[0].prefix, "not a generated command prefix — nothing to generalise from");
+
+  // The point of persisting: a fresh process still honours it.
+  const reloaded = await AresCommandPermissionStore.load(ctx);
+  assert.equal(reloaded.decide("ComputerUse", TOOL_WIDE_GRANT)?.kind, "allow");
+});
+
+test("store: a tool-wide grant is still subject to an explicit deny", async () => {
+  const ctx = await context();
+  await fs.writeFile(
+    path.join(ctx.aresHome, "command-permissions.json"),
+    JSON.stringify({ rules: [{ pattern: "ComputerUse(*)", effect: "deny" }] }),
+  );
+  const store = await AresCommandPermissionStore.load(ctx);
+  await store.grant("ComputerUse", TOOL_WIDE_GRANT, "always");
+  assert.equal(store.decide("ComputerUse", TOOL_WIDE_GRANT)?.kind, "deny", "deny wins, as everywhere else");
 });

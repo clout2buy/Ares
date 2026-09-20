@@ -88,7 +88,11 @@ export interface TgUpdate {
 
 export interface InlineKeyboardButton {
   text: string;
-  callback_data: string;
+  /** Exactly one of callback_data / url. A `url` button opens the link
+   *  directly — what a "Sign in with Google" button has to be, since an
+   *  OAuth consent page can't be reached through a callback round-trip. */
+  callback_data?: string;
+  url?: string;
 }
 
 export interface InlineKeyboardMarkup {
@@ -197,14 +201,17 @@ export class TelegramApi {
     return this.call<TgMessage>("sendMessage", params, opts.signal);
   }
 
+  /** Omitting `replyMarkup` clears the message's inline keyboard — how an
+   *  answered permission prompt stops being tappable. */
   async editMessageText(
     chatId: number,
     messageId: number,
     text: string,
-    opts: { replyMarkup?: InlineKeyboardMarkup; signal?: AbortSignal } = {},
+    opts: { replyMarkup?: InlineKeyboardMarkup; parseMode?: "HTML"; signal?: AbortSignal } = {},
   ): Promise<void> {
     const params: Record<string, unknown> = { chat_id: chatId, message_id: messageId, text };
     if (opts.replyMarkup) params.reply_markup = opts.replyMarkup;
+    if (opts.parseMode) params.parse_mode = opts.parseMode;
     await this.call<unknown>("editMessageText", params, opts.signal);
   }
 

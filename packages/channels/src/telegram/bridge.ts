@@ -1,17 +1,31 @@
 // TelegramBridge — a channel that is a pure Garrison gateway client.
 // Telegram DMs in, sessions out: one session per allowed chat (created lazily,
-// recreated after reconnect), text deltas buffered per turn and flushed on
-// turn_end in 4000-char chunks (hard cap + truncation marker until sideQuery
-// summarization lands), tool_start throttled to one status edit per 3s, and
-// approval.pending rendered as the Gate over inline keyboards. Everything is
-// injectable — api, websocket ctor, timers, clock — so tests run hermetic.
+// recreated after reconnect).
+//
+// The surface is built around one rule: a turn costs the owner ONE notification.
+//   • The reply streams into a single message that is EDITED in place. Telegram
+//     pushes on a new message, not on an edit, so a long answer arrives as one
+//     growing bubble instead of a paragraph (and a buzz) every three seconds.
+//     Only a reply too long to read as bubbles splits — into a preview plus the
+//     full .md as a document.
+//   • Tool calls accumulate on one activity card (activity.ts): every step with
+//     its duration, failures included, collapsing at turn_end into a receipt.
+//   • Permission prompts (prompts.ts) show the actual command/path/URL, collapse
+//     duplicate questions onto one card, go to the owner who is in the
+//     conversation, and close out into a record once answered.
+//   • A tool that trips over an unconnected service gets its sign-in offered
+//     in-thread rather than failing with an OAUTH error nobody sees.
+//   • A message typed mid-turn STEERS the live turn; /stop interrupts it.
+//
+// Everything is injectable — api, websocket ctor, timers, clock — so tests run
+// hermetic.
 
 import WebSocket from "ws";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { TurnEvent } from "@ares/protocol";
+import type { PermissionPromptDecision, TurnEvent } from "@ares/protocol";
 import type {
   ApprovalVerb,
   ClientFrame,
@@ -27,7 +41,21 @@ import { isVisionImageType, mediaTypeForName, TelegramApiError } from "./api.js"
 import { voiceToText } from "./stt.js";
 import { textToVoice } from "./edgeTts.js";
 import { parseTelegramCommand, handleTelegramCommand, type TelegramCommandDeps } from "./commands.js";
-import { sendConnectMenu, handleConnectCallback, parseConnectCallback, type ConnectFlowDeps } from "./connect.js";
+import { sendConnectMenu, sendConnectOffer, handleConnectCallback, parseConnectCallback, type ConnectFlowDeps } from "./connect.js";
+import {
+  newActivityCard,
+  renderActivityCard,
+  renderActivitySummary,
+  shortFailureDetail,
+  type ActivityCardState,
+} from "./activity.js";
+import {
+  describePermissionInput,
+  oauthProviderFromError,
+  permissionKey,
+  renderPermissionOutcome,
+  renderPermissionPrompt,
+} from "./prompts.js";
 import {
   detectRemotePcIntent,
   parseRemotePcCallback,
@@ -54,7 +82,12 @@ import {
 export interface TelegramApiLike {
   getUpdates(offset: number, timeoutS: number, signal?: AbortSignal): Promise<TgUpdate[]>;
   sendMessage(chatId: number, text: string, opts?: SendMessageOptions): Promise<TgMessage>;
-  editMessageText(chatId: number, messageId: number, text: string): Promise<void>;
+  editMessageText(
+    chatId: number,
+    messageId: number,
+    text: string,
+    opts?: { replyMarkup?: InlineKeyboardMarkup; parseMode?: "HTML" },
+  ): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<void>;
   /** Optional "typing…" hint. Absent on old fakes → the bridge skips it. */
   sendChatAction?(chatId: number, action?: "typing", signal?: AbortSignal): Promise<void>;
@@ -181,22 +214,31 @@ export interface TelegramBridgeOptions {
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
 
-/** If no event arrives for a turn within this window, assume the turn is stuck
- *  or the turn_end event was lost — force-release the chat so the next message
- *  can go through.  Keyed off the LAST event received, not the dispatch time,
- *  so a busy turn with flowing deltas never triggers early. */
+/** Force-release a chat whose turn has been silent this long, so a genuinely
+ *  lost turn_end can't block the chat forever. OFF by default — a turn may
+ *  legitimately go quiet for a long tool call, and releasing early lets a
+ *  second turn start underneath the first. Keyed off the LAST event received,
+ *  not dispatch time. Set ARES_BRIDGE_TURN_SILENCE_MS>0 to re-enable. */
 const BRIDGE_TURN_SILENCE_MS =
-  Math.max(0, Number(process.env.ARES_BRIDGE_TURN_SILENCE_MS) || 120_000);
+  Math.max(0, Number(process.env.ARES_BRIDGE_TURN_SILENCE_MS) || 0);
 const STATUS_EDIT_EVERY_MS = 3_000;
 /** Telegram clears "typing…" after ~5s; refresh just under that. */
 const TYPING_REFRESH_MS = 4_000;
 const CHUNK_LIMIT = 4_000;
 const MAX_CHUNKS = 8;
 const TRUNCATION_MARKER = "…[truncated]";
-/** How often accumulated text is flushed to the chat mid-turn so the user
- *  sees replies streaming instead of one dump at turn_end. */
+/** How often the live reply bubble is re-edited mid-turn. Telegram pushes a
+ *  notification for a NEW message but not for an edit, so streaming in place
+ *  costs one buzz per turn instead of one per paragraph. */
 const STREAM_FLUSH_MS = 3_000;
 const STREAM_FLUSH_MIN_CHARS = 80;
+/** How long an answered permission prompt stays deduplicated. A tool that
+ *  re-asks the identical question inside this window reuses the live prompt
+ *  instead of posting a second one. */
+const PERM_DEDUPE_MS = 10 * 60_000;
+/** Don't offer the same connector twice in a row inside this window — a tool
+ *  retrying against an unconnected service must not paper the chat. */
+const CONNECT_OFFER_COOLDOWN_MS = 5 * 60_000;
 /** Replies longer than this go out as a short preview plus a .md document —
  *  a wall of eight 4k bubbles is unreadable on a phone. */
 const FILE_FALLBACK_CHARS = CHUNK_LIMIT * 2;
@@ -227,12 +269,71 @@ export function chunkMessage(text: string, limit = CHUNK_LIMIT, maxChunks = MAX_
   return chunks;
 }
 
-interface StatusState {
+/**
+ * Where to seal a bubble that has grown past Telegram's limit: the last
+ * paragraph break, else the last line break, else the last space. Splitting on
+ * a boundary keeps the continuation from starting mid-word.
+ */
+export function splitPoint(slice: string): number {
+  for (const sep of ["\n\n", "\n", " "]) {
+    const at = slice.lastIndexOf(sep);
+    // Refuse a boundary so early that the bubble would be mostly empty.
+    if (at > slice.length / 2) return at + sep.length;
+  }
+  return slice.length;
+}
+
+/**
+ * The longest prefix of `markdown` whose Telegram rendering fits `limit`,
+ * ending on a paragraph/line/word boundary. Rendering is not length-preserving
+ * (markers are stripped, entities escaped), so the fit is found by search over
+ * the rendered length rather than assumed from the source.
+ */
+export function fitMarkdown(markdown: string, limit: number): string {
+  if (toTelegramText(markdown).length <= limit) return markdown;
+  let lo = 0;
+  let hi = markdown.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (toTelegramText(markdown.slice(0, mid)).length <= limit) lo = mid;
+    else hi = mid - 1;
+  }
+  return markdown.slice(0, splitPoint(markdown.slice(0, lo))).trimEnd();
+}
+
+/** The live activity card for one chat's in-flight turn (see activity.ts). */
+interface CardState extends ActivityCardState {
   messageId?: number;
-  sending: boolean;
   lastEditAt: number;
-  pendingText?: string;
+  /** An edit is wanted but the throttle hasn't let it through yet. */
+  dirty: boolean;
   timer?: unknown;
+}
+
+/**
+ * One reply being streamed into Telegram in place: the message it lives in,
+ * what was last written there, and the edit throttle's bookkeeping.
+ */
+interface ReplyStream {
+  chatId: number;
+  messageId?: number;
+  lastEditAt: number;
+  /** Markdown last written to the bubble — skips no-op edits. */
+  lastSent: string;
+  dirty: boolean;
+  timer?: unknown;
+}
+
+/** A permission question on the owner's phone, and every request it answers. */
+interface PermPrompt {
+  token: string;
+  key: string;
+  sessionId: string;
+  toolName: string;
+  detail?: string;
+  requestIds: string[];
+  messages: Array<{ chatId: number; messageId: number }>;
+  askedAt: number;
 }
 
 export class TelegramBridge {
@@ -286,16 +387,19 @@ export class TelegramBridge {
    *  no events yet).  A turn silent for BRIDGE_TURN_SILENCE_MS is
    *  force-released so the chat is not blocked forever. */
   private readonly turnInFlight = new Map<number, number>();
-  /** Accumulated text_delta per session since the last stream flush. */
+  /** All text_delta accumulated this turn, per session. Never truncated
+   *  mid-turn: the live bubble is re-rendered from it on every edit. */
   private readonly turnText = new Map<string, string>();
-  /** Per-session timer that flushes accumulated text to the chat periodically
-   *  so the user sees replies arriving instead of one dump at turn_end. */
+  /** The reply message each session is currently streaming into. */
+  private readonly replyStreams = new Map<string, ReplyStream>();
+  /** Per-session timer that re-renders the live bubble on the throttle. */
   private readonly streamFlushTimers = new Map<string, unknown>();
   /** Last error reported by the engine this turn — surfaced on a failed turn_end
    *  so a provider failure (bad/missing key, rate limit, network) is never a
    *  silent "typing… then nothing". */
   private readonly turnError = new Map<string, string>();
-  private readonly status = new Map<number, StatusState>();
+  /** Live activity card per chat — replaces the old single-line ⚙ status. */
+  private readonly cards = new Map<number, CardState>();
   private readonly refused = new Set<number>();
   /** Per-chat "typing…" refreshers, live while a turn is in flight. */
   private readonly typingTimers = new Map<number, unknown>();
@@ -311,9 +415,14 @@ export class TelegramBridge {
   /** Short callback tokens for approval ids too long for callback_data (64 bytes). */
   private readonly approvalTokens = new Map<string, string>();
   private approvalTokenSeq = 0;
-  /** Tool-permission prompts routed to Telegram: token → {sessionId, requestId}. */
-  private readonly permTokens = new Map<string, { sessionId: string; requestId: string }>();
+  /** Live tool-permission prompts by callback token. */
+  private readonly permPrompts = new Map<string, PermPrompt>();
+  /** tool+input identity → the token already asking it, so a retrying tool
+   *  reuses one prompt instead of posting the same question again. */
+  private readonly permByKey = new Map<string, string>();
   private permTokenSeq = 0;
+  /** chat|provider → when we last offered that connector, for the cooldown. */
+  private readonly connectOffers = new Map<string, number>();
   /** Chats whose last inbound was a voice message — reply with a voice note. */
   private readonly voiceReplyExpected = new Set<number>();
 
@@ -477,10 +586,10 @@ export class TelegramBridge {
       this.timers.clearTimeout(this.staleTurnTimer);
       this.staleTurnTimer = undefined;
     }
-    for (const state of this.status.values()) {
-      if (state.timer !== undefined) this.timers.clearTimeout(state.timer);
+    for (const card of this.cards.values()) {
+      if (card.timer !== undefined) this.timers.clearTimeout(card.timer);
     }
-    this.status.clear();
+    this.cards.clear();
     for (const timer of this.typingTimers.values()) this.timers.clearTimeout(timer);
     this.typingTimers.clear();
     for (const timer of this.streamFlushTimers.values()) this.timers.clearTimeout(timer);
@@ -688,6 +797,14 @@ export class TelegramBridge {
   }
 
   private onChatText(chatId: number, text: string): void {
+    // /stop while a turn is running means "stop what you're doing" — that has
+    // to beat the operator's mission-level /stop, which is what it meant when
+    // nothing was in flight.
+    if (this.turnInFlight.has(chatId) && /^\/(stop|cancel|abort)(?:@\w+)?$/i.test(text.trim())) {
+      this.interruptTurn(chatId);
+      return;
+    }
+
     // /new — drop this chat's session so the next message starts clean. Any
     // allowed chat may reset its OWN thread; it touches nobody else's.
     if (/^\/(new|reset)(?:@\w+)?$/i.test(text.trim())) {
@@ -745,10 +862,51 @@ export class TelegramBridge {
     if (activePc) routedText = buildPcContextPrefix(activePc) + text;
 
     const input: PendingInput = attachments?.length ? { text: routedText, attachments } : { text: routedText };
+    // Steering: a message typed while Ares is mid-turn is a CORRECTION, not the
+    // next conversation. It used to sit in the queue until the turn it was
+    // meant to change had already finished; now it goes into the live turn at
+    // the engine's next safe boundary.
+    if (this.steerInput(chatId, input)) return;
     const queue = this.pendingInputs.get(chatId);
     if (queue) queue.push(input);
     else this.pendingInputs.set(chatId, [input]);
     this.pumpChat(chatId);
+  }
+
+  /** Route one input into the turn already running for this chat. Returns false
+   *  when there's nothing live to steer, so the caller queues it normally. */
+  private steerInput(chatId: number, input: PendingInput): boolean {
+    if (!this.connected) return false;
+    if (!this.turnInFlight.has(chatId)) return false;
+    const sessionId = this.chatToSession.get(chatId);
+    if (sessionId === undefined) return false;
+    // Keep the silence watchdog honest: the turn just received work.
+    this.turnInFlight.set(chatId, Date.now());
+    this.sendFrame({
+      type: "session.send",
+      sessionId,
+      text: this.withIdentity(chatId, input.text),
+      delivery: "steer",
+      tenant: tenantForChat(this.roster, chatId),
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+    });
+    // Show it landed immediately; steer_routed upgrades the card when the
+    // engine confirms the boundary it took effect at.
+    const card = this.card(chatId);
+    card.steering = true;
+    this.touchCard(chatId);
+    return true;
+  }
+
+  /** Stop the turn this chat has in flight. */
+  private interruptTurn(chatId: number): void {
+    const sessionId = this.chatToSession.get(chatId);
+    if (sessionId === undefined || !this.connected) {
+      this.enqueueSend(chatId, async () => { await this.api.sendMessage(chatId, "Nothing running right now."); });
+      return;
+    }
+    this.sendFrame({ type: "session.interrupt", sessionId });
+    this.enqueueSend(chatId, async () => { await this.api.sendMessage(chatId, "⏹ Stopping."); });
   }
 
   private runCommand(chatId: number, kind: NonNullable<ReturnType<typeof parseTelegramCommand>>["kind"], arg?: string): void {
@@ -963,14 +1121,12 @@ export class TelegramBridge {
         void this.api.answerCallbackQuery(cq.id, { text: "Gateway offline — try again shortly." }).catch(() => undefined);
         return;
       }
-      const entry = this.permTokens.get(permMatch[2]);
-      if (!entry) {
+      const decision: PermissionPromptDecision =
+        permMatch[1] === "allow" ? "allow_once" : permMatch[1] === "always" ? "allow_always" : "deny";
+      if (!this.resolvePermission(permMatch[2], decision)) {
         void this.api.answerCallbackQuery(cq.id, { text: "Expired — already decided." }).catch(() => undefined);
         return;
       }
-      this.permTokens.delete(permMatch[2]);
-      const decision = permMatch[1] === "allow" ? "allow_once" : permMatch[1] === "always" ? "allow_always" : "deny";
-      this.sendFrame({ type: "permission.respond", sessionId: entry.sessionId, requestId: entry.requestId, decision });
       const ack = decision === "allow_once" ? "Allowed" : decision === "allow_always" ? "Allowed — no more prompts for this tool" : "Denied";
       void this.api.answerCallbackQuery(cq.id, { text: ack }).catch(() => undefined);
       return;
@@ -1219,40 +1375,66 @@ export class TelegramBridge {
         this.turnText.set(sessionId, (this.turnText.get(sessionId) ?? "") + event.text);
         this.scheduleStreamFlush(sessionId, chatId);
         break;
-      case "tool_start":
-        this.doStreamFlush(sessionId, chatId);
-        this.pushStatus(chatId, `⚙ ${event.activityDescription}`);
+      case "tool_start": {
+        // The reply is NOT flushed into a new bubble here any more: a tool call
+        // mid-sentence used to split the answer across messages, which is what
+        // made a single reply arrive as four paragraphs and four buzzes.
+        const card = this.card(chatId);
+        card.steps.push({ id: event.id, label: event.activityDescription, startedAt: this.now(), state: "running" });
+        this.touchCard(chatId);
         break;
+      }
       case "tool_end": {
+        this.finishStep(chatId, event.id, "ok");
         // ComputerUse / RemotePC write their screenshot to disk and report the
         // path; remember the latest so turn_end can forward it as a photo.
         const shot = screenshotPathOf(event.output);
         if (shot) this.turnScreenshot.set(sessionId, shot);
+        // A tool can report a service it can't reach as a completed failure
+        // rather than a throw — catch the connector offer on both paths.
+        this.offerConnectorFor(chatId, event.output);
         break;
       }
+      case "tool_error":
+        // Before this, tool_error had no renderer at all: a failed tool call
+        // was invisible on the phone, which is most of "it went quiet on me".
+        this.finishStep(chatId, event.id, "failed", shortFailureDetail(event.error));
+        this.offerConnectorFor(chatId, event.error);
+        break;
       case "permission_request":
         this.onPermissionRequest(sessionId, event);
         break;
+      case "steer_routed": {
+        // The correction landed in the live turn — say so on the card rather
+        // than in a message of its own.
+        const card = this.card(chatId);
+        card.steering = true;
+        this.touchCard(chatId);
+        break;
+      }
       case "error":
         // Remember the failure; turn_end decides whether to surface it (a turn
         // can recover after a retriable error and still produce text).
         this.turnError.set(sessionId, errorEventText(event));
+        this.offerConnectorFor(chatId, errorEventText(event));
         break;
       case "turn_end": {
-        this.cancelStreamFlush(sessionId);
         const text = (this.turnText.get(sessionId) ?? "").trim();
         const err = this.turnError.get(sessionId);
         const shot = this.turnScreenshot.get(sessionId);
+        this.finalizeCard(chatId);
+        this.stopTyping(chatId);
+        this.turnInFlight.delete(chatId);
+        if (text.length > 0) {
+          this.flushTurn(sessionId, chatId, text);
+        }
+        this.cancelStreamFlush(sessionId);
         this.turnText.delete(sessionId);
         this.turnError.delete(sessionId);
         this.turnScreenshot.delete(sessionId);
-        this.clearStatus(chatId);
-        this.stopTyping(chatId);
-        this.turnInFlight.delete(chatId);
+        this.replyStreams.delete(sessionId);
         if (shot) this.forwardScreenshot(chatId, shot);
-        if (text.length > 0) {
-          this.flushTurn(chatId, text);
-        } else if (event.status === "failed") {
+        if (text.length === 0 && event.status === "failed") {
           // No text produced and the turn failed — tell the owner what broke
           // instead of leaving them staring at a stopped "typing…".
           const reason = err ?? "the model didn't return a reply";
@@ -1271,14 +1453,14 @@ export class TelegramBridge {
 
   // ─── Mid-turn streaming ────────────────────────────────────────────────
 
-  private scheduleStreamFlush(sessionId: string, chatId: number): void {
+  private scheduleStreamFlush(sessionId: string, chatId: number, delayMs = STREAM_FLUSH_MS): void {
     if (this.streamFlushTimers.has(sessionId)) return;
     this.streamFlushTimers.set(
       sessionId,
       this.timers.setTimeout(() => {
         this.streamFlushTimers.delete(sessionId);
         this.doStreamFlush(sessionId, chatId);
-      }, STREAM_FLUSH_MS),
+      }, delayMs),
     );
   }
 
@@ -1290,17 +1472,78 @@ export class TelegramBridge {
     }
   }
 
+  /**
+   * Re-render the live reply bubble from everything said so far. The bubble is
+   * EDITED, not re-sent: a normal reply is one message that grows, instead of
+   * a new message every three seconds. Only when the current bubble would pass
+   * Telegram's size limit is it sealed and a fresh one opened.
+   */
   private doStreamFlush(sessionId: string, chatId: number): void {
     this.cancelStreamFlush(sessionId);
-    const text = (this.turnText.get(sessionId) ?? "").trim();
-    if (text.length < STREAM_FLUSH_MIN_CHARS) return;
-    this.turnText.delete(sessionId);
+    // A voice reply is spoken whole at turn_end — streaming text under it would
+    // say everything twice.
+    if (this.voiceReplyExpected.has(chatId)) return;
+    const full = this.turnText.get(sessionId) ?? "";
+    if (full.trim().length < STREAM_FLUSH_MIN_CHARS) return;
+    const stream = this.stream(sessionId, chatId);
+    const since = this.now() - stream.lastEditAt;
+    if (stream.lastEditAt > 0 && since < STREAM_FLUSH_MS) {
+      stream.dirty = true;
+      this.scheduleStreamFlush(sessionId, chatId, STREAM_FLUSH_MS - since);
+      return;
+    }
+    stream.dirty = false;
+    stream.lastEditAt = this.now();
+    // Mid-turn the bubble carries as much as fits; a reply that outgrows one
+    // message is finished as a preview plus the .md at turn_end, never as a
+    // run of bubbles.
+    this.writeBubble(stream, fitMarkdown(full, CHUNK_LIMIT));
+  }
+
+  private stream(sessionId: string, chatId: number): ReplyStream {
+    let stream = this.replyStreams.get(sessionId);
+    if (!stream) {
+      stream = { chatId, lastEditAt: 0, lastSent: "", dirty: false };
+      this.replyStreams.set(sessionId, stream);
+    }
+    return stream;
+  }
+
+  /** Send-or-edit the live bubble, ordered behind the chat's other sends so a
+   *  screenshot can't overtake the text it belongs to. */
+  private writeBubble(stream: ReplyStream, markdown: string): void {
+    const trimmed = markdown.trim();
+    if (trimmed.length === 0 || trimmed === stream.lastSent) return;
+    stream.lastSent = trimmed;
+    const chatId = stream.chatId;
     this.enqueueSend(chatId, async () => {
-      await this.deliverText(chatId, text);
+      const plain = toTelegramText(trimmed);
+      const html = toTelegramHtml(trimmed);
+      // Markup can outgrow the limit even when the text fits — then send plain.
+      const body = html.length <= CHUNK_LIMIT ? html : plain;
+      const asHtml = body === html;
+      if (stream.messageId === undefined) {
+        const msg = await this.sendFormatted(chatId, body, plain);
+        if (msg) stream.messageId = msg.message_id;
+        return;
+      }
+      try {
+        await this.api.editMessageText(chatId, stream.messageId, body, asHtml ? { parseMode: "HTML" } : {});
+      } catch (err) {
+        if (isNoopStatusEditError(err)) return;
+        // A partial stream can carry half an entity; plain text always lands.
+        try {
+          await this.api.editMessageText(chatId, stream.messageId, plain);
+        } catch (plainErr) {
+          if (!isNoopStatusEditError(plainErr)) this.log(`reply edit failed: ${errText(plainErr)}`);
+        }
+      }
     });
   }
 
-  private flushTurn(chatId: number, text: string): void {
+  /** Close out a turn's reply: a voice note when one was asked for, the final
+   *  edit of the live bubble otherwise — plus the .md when it ran long. */
+  private flushTurn(sessionId: string, chatId: number, text: string): void {
     const wantVoice = this.voiceReplyExpected.has(chatId);
     this.voiceReplyExpected.delete(chatId);
     if (wantVoice && this.api.sendVoice) {
@@ -1313,10 +1556,40 @@ export class TelegramBridge {
           await this.deliverText(chatId, text);
         }
       });
-    } else {
+      return;
+    }
+    this.cancelStreamFlush(sessionId);
+    const stream = this.stream(sessionId, chatId);
+    const plain = toTelegramText(text);
+    if (plain.length <= CHUNK_LIMIT) {
+      this.writeBubble(stream, text);
+      return;
+    }
+    // Too long to read as bubbles on a phone: the live bubble becomes the
+    // preview, and the whole answer rides along as a document.
+    if (this.api.sendDocument) {
+      const preview = `${fitMarkdown(text, CHUNK_LIMIT - 200)}\n\n…full reply attached.`;
+      this.writeBubble(stream, preview);
       this.enqueueSend(chatId, async () => {
-        await this.deliverText(chatId, text);
+        try {
+          await this.api.sendDocument!(chatId, Buffer.from(text, "utf8"), {
+            filename: `ares-reply-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.md`,
+            contentType: "text/markdown",
+          });
+        } catch (err) {
+          this.log(`long reply as document failed, chunking instead: ${errText(err)}`);
+          for (const chunk of chunkMessage(plain).slice(1)) {
+            await this.api.sendMessage(chatId, chunk).catch(() => undefined);
+          }
+        }
       });
+      return;
+    }
+    // No document support (an older host): the historical chunked fallback.
+    const chunks = chunkMessage(plain);
+    this.writeBubble(stream, chunks[0]);
+    for (const chunk of chunks.slice(1)) {
+      this.enqueueSend(chatId, async () => { await this.api.sendMessage(chatId, chunk); });
     }
   }
 
@@ -1345,17 +1618,20 @@ export class TelegramBridge {
     for (const chunk of chunkMessage(plain)) await this.api.sendMessage(chatId, chunk);
   }
 
-  /** Try HTML mode once; on any rejection send the plain rendering. */
-  private async sendFormatted(chatId: number, html: string, plain: string): Promise<void> {
+  /** Try HTML mode once; on any rejection send the plain rendering. Returns the
+   *  message when exactly one went out, so a streamed reply can keep editing it. */
+  private async sendFormatted(chatId: number, html: string, plain: string): Promise<TgMessage | undefined> {
     if (html.length <= CHUNK_LIMIT) {
       try {
-        await this.api.sendMessage(chatId, html, { parseMode: "HTML" });
-        return;
+        return await this.api.sendMessage(chatId, html, { parseMode: "HTML" });
       } catch (err) {
         this.log(`HTML reply rejected, sending plain: ${errText(err)}`);
       }
     }
-    for (const chunk of chunkMessage(plain)) await this.api.sendMessage(chatId, chunk);
+    const chunks = chunkMessage(plain);
+    let last: TgMessage | undefined;
+    for (const chunk of chunks) last = await this.api.sendMessage(chatId, chunk);
+    return chunks.length === 1 ? last : undefined;
   }
 
   /** Forward the turn's last screenshot as a photo so the phone sees what
@@ -1383,69 +1659,93 @@ export class TelegramBridge {
     });
   }
 
-  // ─── Status throttle (one ⚙ message per turn, ≤1 edit per 3s) ──────────
+  // ─── The activity card (one message per turn, ≤1 edit per 3s) ──────────
 
-  private pushStatus(chatId: number, text: string): void {
-    let state = this.status.get(chatId);
-    if (!state) {
-      state = { sending: false, lastEditAt: 0 };
-      this.status.set(chatId, state);
+  /** This chat's live card, created on first use. */
+  private card(chatId: number): CardState {
+    let card = this.cards.get(chatId);
+    if (!card) {
+      card = { ...newActivityCard(this.now()), lastEditAt: 0, dirty: false };
+      this.cards.set(chatId, card);
     }
-    const st = state;
+    return card;
+  }
 
-    if (st.messageId === undefined) {
-      if (st.sending) {
-        st.pendingText = text;
-        return;
-      }
-      st.sending = true;
-      st.lastEditAt = this.now();
-      void this.api
-        .sendMessage(chatId, text)
-        .then((msg) => {
-          st.sending = false;
-          st.messageId = msg.message_id;
-          if (st.pendingText !== undefined) this.scheduleStatusFlush(chatId, st);
-        })
-        .catch((err) => {
-          st.sending = false;
-          this.log(`status message failed: ${errText(err)}`);
-        });
+  private finishStep(chatId: number, id: string, state: "ok" | "failed", detail?: string): void {
+    const card = this.cards.get(chatId);
+    if (!card) return;
+    // Last match wins: a retried tool_use id should close its newest attempt.
+    for (let i = card.steps.length - 1; i >= 0; i--) {
+      const step = card.steps[i];
+      if (step.id !== id || step.state !== "running") continue;
+      step.state = state;
+      step.endedAt = this.now();
+      if (detail) step.detail = detail;
+      this.touchCard(chatId);
       return;
     }
+  }
 
-    const elapsed = this.now() - st.lastEditAt;
-    if (elapsed >= STATUS_EDIT_EVERY_MS) {
-      st.lastEditAt = this.now();
-      st.pendingText = undefined;
-      void this.api
-        .editMessageText(chatId, st.messageId, text)
-        .catch((err) => { if (!isNoopStatusEditError(err)) this.log(`status edit failed: ${errText(err)}`); });
-    } else {
-      st.pendingText = text;
-      this.scheduleStatusFlush(chatId, st, STATUS_EDIT_EVERY_MS - elapsed);
+  /** Re-render the card, throttled. The first render creates the message. */
+  private touchCard(chatId: number): void {
+    const card = this.cards.get(chatId);
+    if (!card) return;
+    const elapsed = this.now() - card.lastEditAt;
+    if (card.lastEditAt > 0 && elapsed < STATUS_EDIT_EVERY_MS) {
+      card.dirty = true;
+      if (card.timer === undefined) {
+        card.timer = this.timers.setTimeout(() => {
+          card.timer = undefined;
+          if (!card.dirty) return;
+          card.dirty = false;
+          card.lastEditAt = this.now();
+          this.writeCard(chatId, card, renderActivityCard(card, this.now()));
+        }, STATUS_EDIT_EVERY_MS - elapsed);
+      }
+      return;
     }
+    card.dirty = false;
+    card.lastEditAt = this.now();
+    this.writeCard(chatId, card, renderActivityCard(card, this.now()));
   }
 
-  private scheduleStatusFlush(chatId: number, st: StatusState, delayMs = STATUS_EDIT_EVERY_MS): void {
-    if (st.timer !== undefined) return;
-    st.timer = this.timers.setTimeout(() => {
-      st.timer = undefined;
-      if (st.messageId === undefined || st.pendingText === undefined) return;
-      const text = st.pendingText;
-      st.pendingText = undefined;
-      st.lastEditAt = this.now();
-      void this.api
-        .editMessageText(chatId, st.messageId, text)
-        .catch((err) => { if (!isNoopStatusEditError(err)) this.log(`status edit failed: ${errText(err)}`); });
-    }, delayMs);
+  private writeCard(chatId: number, card: CardState, text: string): void {
+    this.enqueueSend(chatId, async () => {
+      if (card.messageId === undefined) {
+        const msg = await this.api.sendMessage(chatId, text);
+        card.messageId = msg.message_id;
+        return;
+      }
+      try {
+        await this.api.editMessageText(chatId, card.messageId, text);
+      } catch (err) {
+        if (!isNoopStatusEditError(err)) this.log(`activity card edit failed: ${errText(err)}`);
+      }
+    });
   }
 
-  private clearStatus(chatId: number): void {
-    const st = this.status.get(chatId);
-    if (!st) return;
-    if (st.timer !== undefined) this.timers.clearTimeout(st.timer);
-    this.status.delete(chatId);
+  /**
+   * Collapse the card into its receipt at turn_end. The old status line was
+   * simply abandoned, leaving a stale "⚙ Reading foo.ts" in the chat forever;
+   * this leaves "✓ 6 steps · 41s" — or what failed, and why.
+   */
+  private finalizeCard(chatId: number): void {
+    const card = this.cards.get(chatId);
+    this.cards.delete(chatId);
+    if (!card) return;
+    if (card.timer !== undefined) this.timers.clearTimeout(card.timer);
+    if (card.messageId === undefined && card.steps.length === 0) return;
+    const now = this.now();
+    for (const step of card.steps) {
+      // A turn can end with a tool still open (interrupt, steer, crash) —
+      // don't leave it spinning in the receipt.
+      if (step.state === "running") {
+        step.state = "failed";
+        step.endedAt = now;
+        step.detail ??= "never finished";
+      }
+    }
+    this.writeCard(chatId, card, renderActivitySummary(card, now));
   }
 
   // ─── The Gate over Telegram ────────────────────────────────────────────
@@ -1499,20 +1799,45 @@ export class TelegramBridge {
    *  tool's watchdog (~20s) — miss it and it auto-denies, the safe failure. */
   private onPermissionRequest(
     sessionId: string,
-    event: { id: string; toolName: string; reason: string },
+    event: { id: string; toolName: string; reason: string; input?: unknown },
   ): void {
     if (!sessionId || typeof event.id !== "string" || event.id.length === 0) return;
-    const token = `p${++this.permTokenSeq}`;
-    this.permTokens.set(token, { sessionId, requestId: event.id });
-    // Bound the token map so a long-running daemon never leaks entries.
-    if (this.permTokens.size > 200) {
-      const oldest = this.permTokens.keys().next().value;
-      if (oldest !== undefined) this.permTokens.delete(oldest);
+
+    // Same tool, same input, same session = the same question. A retrying tool
+    // used to post it again every time; now the live prompt absorbs the repeat
+    // and one tap answers all of them.
+    const key = permissionKey(sessionId, event.toolName, event.input);
+    const existingToken = this.permByKey.get(key);
+    const existing = existingToken ? this.permPrompts.get(existingToken) : undefined;
+    if (existing && this.now() - existing.askedAt < PERM_DEDUPE_MS) {
+      if (!existing.requestIds.includes(event.id)) existing.requestIds.push(event.id);
+      return;
     }
-    const lines = ["🛡 Permission needed", event.toolName];
-    if (typeof event.reason === "string" && event.reason.length > 0) lines.push(event.reason);
-    lines.push("Always = no more prompts for this tool until the garrison restarts. Auto-denies in 5 min.");
-    const text = lines.join("\n");
+
+    const token = `p${++this.permTokenSeq}`;
+    const detail = describePermissionInput(event.input);
+    const prompt: PermPrompt = {
+      token,
+      key,
+      sessionId,
+      toolName: event.toolName,
+      detail,
+      requestIds: [event.id],
+      messages: [],
+      askedAt: this.now(),
+    };
+    this.permPrompts.set(token, prompt);
+    this.permByKey.set(key, token);
+    // Bound both maps so a long-running daemon never leaks entries.
+    while (this.permPrompts.size > 200) {
+      const oldest = this.permPrompts.keys().next().value;
+      if (oldest === undefined) break;
+      const dropped = this.permPrompts.get(oldest);
+      this.permPrompts.delete(oldest);
+      if (dropped && this.permByKey.get(dropped.key) === oldest) this.permByKey.delete(dropped.key);
+    }
+
+    const text = renderPermissionPrompt({ toolName: event.toolName, reason: event.reason, detail });
     // "Always" is what makes a phone-driven browser/PC run bearable: the first
     // click asks once, and the other forty clicks of the task never ping.
     const replyMarkup: InlineKeyboardMarkup = {
@@ -1524,11 +1849,75 @@ export class TelegramBridge {
         ],
       ],
     };
-    for (const chatId of this.owners) {
+    // Ask the owner who is actually in this conversation. Fanning every prompt
+    // to every owner chat meant two owners saw two copies of everything, and
+    // only the first tap ever mattered.
+    for (const chatId of this.permissionAudience(sessionId)) {
       this.enqueueSend(chatId, async () => {
-        await this.api.sendMessage(chatId, text, { replyMarkup });
+        const msg = await this.api.sendMessage(chatId, text, { replyMarkup });
+        prompt.messages.push({ chatId, messageId: msg.message_id });
       });
     }
+  }
+
+  /**
+   * A tool just tripped over a service that isn't connected. Offer the sign-in
+   * right here, in the thread, instead of failing with an OAUTH_NOT_AUTHORIZED
+   * the owner never sees and a "run /connect" they have to go find.
+   */
+  private offerConnectorFor(chatId: number, source: unknown): void {
+    if (!this.connectDeps || !this.owners.has(chatId)) return;
+    const hit = oauthProviderFromError(source);
+    if (!hit) return;
+    const key = `${chatId}|${hit.provider}`;
+    const last = this.connectOffers.get(key);
+    if (last !== undefined && this.now() - last < CONNECT_OFFER_COOLDOWN_MS) return;
+    this.connectOffers.set(key, this.now());
+    this.enqueueSend(chatId, async () => {
+      try {
+        const offered = await sendConnectOffer(
+          { ...this.connectDeps!, api: this.api, log: this.log },
+          chatId,
+          hit.provider,
+          { expired: hit.expired },
+        );
+        if (!offered) this.connectOffers.delete(key);
+      } catch (err) {
+        this.connectOffers.delete(key);
+        this.log(`connect offer failed: ${errText(err)}`);
+      }
+    });
+  }
+
+  /** The owner chat a permission question belongs to: the one driving this
+   *  session when it's an owner's, otherwise every owner. */
+  private permissionAudience(sessionId: string): number[] {
+    const chatId = this.sessionToChat.get(sessionId);
+    if (chatId !== undefined && this.owners.has(chatId)) return [chatId];
+    return [...this.owners];
+  }
+
+  /** Answer a prompt: respond for every request it collapsed, then close the
+   *  message out so it stops being a live button in the owner's history. */
+  private resolvePermission(token: string, decision: PermissionPromptDecision): boolean {
+    const prompt = this.permPrompts.get(token);
+    if (!prompt) return false;
+    this.permPrompts.delete(token);
+    if (this.permByKey.get(prompt.key) === token) this.permByKey.delete(prompt.key);
+    for (const requestId of prompt.requestIds) {
+      this.sendFrame({ type: "permission.respond", sessionId: prompt.sessionId, requestId, decision });
+    }
+    const outcome = renderPermissionOutcome(decision, { toolName: prompt.toolName, detail: prompt.detail });
+    for (const { chatId, messageId } of prompt.messages) {
+      this.enqueueSend(chatId, async () => {
+        try {
+          await this.api.editMessageText(chatId, messageId, outcome);
+        } catch (err) {
+          if (!isNoopStatusEditError(err)) this.log(`permission prompt close failed: ${errText(err)}`);
+        }
+      });
+    }
+    return true;
   }
 
   /** Telegram caps callback_data at 64 bytes; oversized ids get a short token. */

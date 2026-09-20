@@ -27,7 +27,8 @@ import path from "node:path";
 
 import { RemoteAgentServer } from "../packages/cli/dist/remoteAgentServer.js";
 import { DEVICE_CONNECTOR_VERSION } from "../packages/cli/dist/remoteDeviceConnector.js";
-import { _resetDeviceKeyCache } from "../packages/cli/dist/remoteDeviceCrypto.js";
+import { proofFor, mintNonce, _resetDeviceKeyCache } from "../packages/cli/dist/remoteDeviceCrypto.js";
+import { channelAuthProof, channelKeys, openFrame, sealFrame } from "../packages/cli/dist/remoteChannelCrypto.js";
 
 const run = promisify(execFile);
 const isWindows = process.platform === "win32";
@@ -51,21 +52,72 @@ async function withServer(opts, fn) {
 /** A connector double that records what the server pushes at it. */
 async function enrol(server, base, { connectorVersion, answer = {} } = {}) {
   const { token } = await server.generatePairingLink("my laptop");
-  const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
-  await new Promise((res, rej) => { ws.once("open", res); ws.once("error", rej); });
-  const seen = [];
-  ws.on("message", (raw) => {
+  const enrollWs = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+  await new Promise((res, rej) => { enrollWs.once("open", res); enrollWs.once("error", rej); });
+  const credPromise = new Promise((resolve) => enrollWs.on("message", (raw) => {
     const msg = JSON.parse(String(raw));
-    if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
-    seen.push(msg);
-    const reply = answer[msg.type];
-    if (reply) ws.send(JSON.stringify({ ...reply(msg), reqId: msg.reqId }));
-  });
-  ws.send(JSON.stringify({
+    if (msg.type === "enrolled") resolve(msg);
+  }));
+  enrollWs.send(JSON.stringify({
     type: "enroll", token, hostname: "TRICKFOOL", os: "Windows",
     username: "Clout", elevated: true, ...(connectorVersion ? { connectorVersion } : {}),
   }));
-  for (let i = 0; i < 300 && server.listPcs().length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+  const cred = await credPromise;
+  enrollWs.close();
+
+  const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+  await new Promise((res, rej) => { ws.once("open", res); ws.once("error", rej); });
+  const inbox = [];
+  const waiters = [];
+  const handshakeListener = (raw) => {
+    const text = String(raw);
+    const w = waiters.shift();
+    if (w) w(text); else inbox.push(text);
+  };
+  ws.on("message", handshakeListener);
+  const next = () => (inbox.length ? Promise.resolve(inbox.shift()) : new Promise((r) => waiters.push(r)));
+  const nonce = mintNonce();
+  ws.send(JSON.stringify({ type: "device_hello", deviceId: cred.deviceId, nonce }));
+  const sp = JSON.parse(await next());
+  assert.equal(sp.proof, proofFor(cred.serverKey, nonce, "server"));
+
+  let keys = null;
+  let s2dSeq = 0;
+  let d2sSeq = 0;
+  if (connectorVersion >= 5) {
+    keys = channelKeys(cred.deviceSecret, cred.serverKey, nonce, sp.nonce);
+    assert.ok(keys);
+    ws.send(JSON.stringify({ type: "device_auth", proof: channelAuthProof(cred.deviceSecret, sp.nonce), connectorVersion }));
+    const ready = openFrame(keys.s2d, 0x01, s2dSeq++, await next());
+    assert.ok(ready);
+  } else {
+    ws.send(JSON.stringify({ type: "device_auth", proof: proofFor(cred.deviceSecret, sp.nonce, "device"), connectorVersion }));
+    assert.equal(JSON.parse(await next()).type, "device_ready");
+  }
+  ws.off("message", handshakeListener);
+
+  const seen = [];
+  const sendObj = (obj) => {
+    const json = JSON.stringify(obj);
+    ws.send(keys ? sealFrame(keys.d2s, 0x02, d2sSeq++, json) : json);
+  };
+  const handleRuntimeRaw = (raw) => {
+    let msg;
+    if (keys) {
+      const opened = openFrame(keys.s2d, 0x01, s2dSeq++, String(raw));
+      assert.ok(opened, "server push was not channel-authenticated");
+      msg = JSON.parse(opened.payload);
+    } else {
+      msg = JSON.parse(String(raw));
+    }
+    if (msg.type === "ping") { sendObj({ type: "pong" }); return; }
+    seen.push(msg);
+    const reply = answer[msg.type];
+    if (reply) sendObj({ ...reply(msg), reqId: msg.reqId });
+  };
+  ws.on("message", handleRuntimeRaw);
+  for (const queued of inbox.splice(0)) handleRuntimeRaw(queued);
+  for (let i = 0; i < 200 && server.listPcs().length === 0; i++) await new Promise((r) => setTimeout(r, 20));
   assert.ok(server.listPcs()[0], "device never attached");
   return { ws, seen, waitFor: async (type, ms = 12_000) => {
     const until = Date.now() + ms;

@@ -91,7 +91,7 @@ test("a pairing link enrols a device and hands back a permanent credential", asy
   });
 });
 
-test("the paired device appears in list_devices, and as a PC once attached", async () => {
+test("the paired device appears in list_devices, and as a PC after proof attach", async () => {
   await withServer(async (server, base) => {
     const { reply, c } = await enrol(server, base);
 
@@ -99,13 +99,16 @@ test("the paired device appears in list_devices, and as a PC once attached", asy
     assert.equal(listed.length, 1);
     assert.equal(listed[0].name, "Laptop DB");
     assert.equal(listed[0].elevated, true, "the install reported elevation");
-    assert.equal(listed[0].online, true, "enrolling also attaches it");
+    assert.equal(listed[0].online, false, "enrollment never becomes a plaintext command session");
+    c.ws.close();
+    await new Promise((r) => setTimeout(r, 40));
 
-    // The whole point of adopting it into the PC table: everything else works.
+    const { c: attached } = await attach(base, reply);
     const pcs = server.listPcs();
     assert.equal(pcs.length, 1);
     assert.equal(pcs[0].label, "Laptop DB");
-    c.ws.close();
+    assert.equal(server.listDevices()[0].online, true);
+    attached.ws.close();
   });
 });
 
@@ -198,11 +201,10 @@ test("authenticating without a challenge is refused", async () => {
     await new Promise((r) => setTimeout(r, 60));
 
     const c2 = await connect(base);
+    const closed = new Promise((resolve) => c2.ws.once("close", resolve));
     c2.send({ type: "device_auth", proof: proofFor(reply.deviceSecret, "anything", "device") });
-    const res = await c2.next();
-    assert.equal(res.type, "error");
-    assert.match(res.message, /hello first/);
-    c2.ws.close();
+    await closed;
+    assert.equal(server.listPcs().length, 0);
   });
 });
 

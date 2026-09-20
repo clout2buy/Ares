@@ -42,6 +42,11 @@ export interface PairedDevice {
   addedAt: number;
   lastSeenAt?: number;
   /**
+   * Highest channel-auth mode this device has successfully used. Once mac1 is
+   * pinned, a later legacy proof is a downgrade attempt and must be refused.
+   */
+  channelAuth?: "mac1";
+  /**
    * May this device run commands ELEVATED (Windows: the connector installed as
    * a highest-privileges task; unix: via the configured escalation)?
    *
@@ -122,6 +127,7 @@ export function parseDeviceRegistry(raw: string): DeviceRegistryFile {
       os: typeof d["os"] === "string" ? d["os"] : "unknown",
       addedAt: typeof d["addedAt"] === "number" ? d["addedAt"] : 0,
       ...(typeof d["lastSeenAt"] === "number" ? { lastSeenAt: d["lastSeenAt"] } : {}),
+      ...(d["channelAuth"] === "mac1" ? { channelAuth: "mac1" as const } : {}),
       ...(typeof d["revokedAt"] === "number" ? { revokedAt: d["revokedAt"] } : {}),
       ...(d["allowElevated"] === true ? { allowElevated: true } : {}),
     });

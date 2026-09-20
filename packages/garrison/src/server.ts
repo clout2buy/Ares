@@ -14,6 +14,7 @@
 // the option, then ARES_GARRISON_PORT, then 7421. Tests pass port 0 and read
 // the bound port from start()'s return value.
 
+import { statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { ApprovalVerb, StagedApproval } from "@ares/effects";
@@ -297,6 +298,24 @@ export class GarrisonServer {
         return;
       }
       case "session.create": {
+        // Sessions materialise LAZILY (first send), so a bad hint accepted here
+        // comes back much later as a raw errno on a session that can never run
+        // — after session.created has already been broadcast to every client.
+        // Every other frame is checked at this boundary; this one was not. A
+        // bad workspace also made the factory mkdir the requested path, so a
+        // typo could quietly become a new directory full of .ares state. The
+        // CLI front door (applyWorkspaceFlag) has always refused a
+        // non-directory; the gateway now agrees with it.
+        for (const field of ["provider", "model", "workspace"] as const) {
+          if (frame[field] !== undefined && typeof frame[field] !== "string") {
+            this.enqueueError(client, `session.create: ${field} must be a string`);
+            return;
+          }
+        }
+        if (frame.workspace !== undefined && !isDirectory(frame.workspace)) {
+          this.enqueueError(client, `session.create: workspace is not a directory: ${frame.workspace}`);
+          return;
+        }
         try {
           const session = sessions.create({
             provider: frame.provider,
@@ -565,4 +584,12 @@ function rawToString(data: RawData): string {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isDirectory(target: string): boolean {
+  try {
+    return statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
 }

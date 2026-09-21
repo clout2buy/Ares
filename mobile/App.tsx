@@ -7,6 +7,7 @@ import { PairScreen } from "./src/screens/PairScreen";
 import { ChatScreen } from "./src/screens/ChatScreen";
 import { clearSettings, httpOriginOf, loadSettings, saveSettings, type Settings } from "./src/store";
 import { theme } from "./src/theme";
+import { watchForUpdates } from "./src/updates";
 
 export default function App() {
   const [settings, setSettings] = React.useState<Settings | null | undefined>(undefined);
@@ -15,6 +16,7 @@ export default function App() {
 
   React.useEffect(() => {
     void loadSettings().then((loaded) => setSettings(loaded));
+    return watchForUpdates();
   }, []);
 
   React.useEffect(() => {

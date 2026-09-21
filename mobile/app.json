@@ -41,6 +41,15 @@
     ],
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/PROJECT_ID_FROM_eas_init"
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
     }
   }
 }

@@ -125,6 +125,7 @@ export {
   transcribe,
   voiceToText,
   type TranscribeResult,
+  type TranscribeAudio,
 } from "./telegram/stt.js";
 
 export {

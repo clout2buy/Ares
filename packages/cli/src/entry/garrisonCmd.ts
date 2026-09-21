@@ -15,11 +15,12 @@ import {
   type VerifierOptions,
 } from "@ares/core";
 import { readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, type FileReadStamp } from "@ares/tools";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
-import type { TelegramBridge } from "@ares/channels";
+import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -528,6 +529,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         ...(door ? { estateDoor: (req, res) => door.handle(req, res) } : {}),
         // The phone app's way in: wss://<origin>/gateway → this loopback gateway.
         gatewayUrl: `ws://127.0.0.1:${bound.port}`,
+        // Voice in/out and screenshot bytes for the phone, on the same origin.
+        phoneApi: {
+          transcribe: async (audio, format) =>
+            (await transcribe(audio, "en-US", 20_000, {
+              encoding: format.encoding as "LINEAR16" | "WEBM_OPUS" | "OGG_OPUS" | "FLAC",
+              sampleRateHertz: format.sampleRateHertz,
+            })).text,
+          synthesize: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
+          screenshotRoots: [path.join(context.home, "screenshots"), path.join(os.tmpdir(), "ares-screenshots")],
+        },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
         // link, falls back to LAN (and says so in every link) if it can't

@@ -8,11 +8,17 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0b0d10",
-    "splash": { "backgroundColor": "#0b0d10", "resizeMode": "contain", "image": "./assets/splash-icon.png" },
+    "splash": {
+      "backgroundColor": "#0b0d10",
+      "resizeMode": "contain",
+      "image": "./assets/splash-icon.png"
+    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.doingteam.ares",
-      "infoPlist": { "NSCameraUsageDescription": "Scan the pairing QR from your Ares box." }
+      "infoPlist": {
+        "NSCameraUsageDescription": "Scan the pairing QR from your Ares box."
+      }
     },
     "android": {
       "package": "com.doingteam.ares",
@@ -24,7 +30,17 @@
       },
       "predictiveBackGestureEnabled": false
     },
-    "plugins": [["expo-camera", { "cameraPermission": "Scan the pairing QR from your Ares box." }]],
-    "web": { "favicon": "./assets/favicon.png" }
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan the pairing QR from your Ares box."
+        }
+      ],
+      "expo-audio"
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
   }
 }

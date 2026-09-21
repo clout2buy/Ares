@@ -111,3 +111,93 @@ test("/ws is still the remote-PC path — the proxy takes only /gateway", async 
     await gw.close();
   }
 });
+
+// ── the phone's HTTP side-channel ────────────────────────────────────────────
+
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+async function phoneServer(extra = {}) {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-shots-"));
+  const server = new RemoteAgentServer({
+    port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "phone-token",
+    phoneApi: {
+      screenshotRoots: [root],
+      transcribe: async (audio, format) => `heard ${audio.byteLength} bytes as ${format.encoding}@${format.sampleRateHertz}`,
+      synthesize: async (text) => Buffer.from(`mp3:${text}`),
+      ...extra,
+    },
+  });
+  await server.start();
+  const base = `http://127.0.0.1:${server.port}`;
+  const auth = { authorization: "Bearer phone-token" };
+  return { server, base, root, auth, close: async () => { await server.close(); await fsp.rm(root, { recursive: true, force: true }); } };
+}
+
+test("phone api: the token is the gate, and /gateway/health needs none", async () => {
+  const ctx = await phoneServer();
+  try {
+    assert.equal((await fetch(`${ctx.base}/gateway/health`)).status, 200);
+    assert.equal((await fetch(`${ctx.base}/gateway/shot?path=/etc/passwd`)).status, 401, "no token → 401");
+    assert.equal((await fetch(`${ctx.base}/gateway/shot?path=/etc/passwd`, { headers: { authorization: "Bearer nope" } })).status, 401);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("phone api: /gateway/shot serves only images under a screenshot root", async () => {
+  const ctx = await phoneServer();
+  try {
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    await fsp.writeFile(path.join(ctx.root, "shot-1.png"), png);
+    await fsp.writeFile(path.join(ctx.root, "notes.txt"), "secret");
+    const ok = await fetch(`${ctx.base}/gateway/shot?path=${encodeURIComponent(path.join(ctx.root, "shot-1.png"))}`, { headers: ctx.auth });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get("content-type"), "image/png");
+    assert.deepEqual(Buffer.from(await ok.arrayBuffer()), png);
+    // Wrong extension, outside the root, and a traversal are all "not found".
+    for (const p of [path.join(ctx.root, "notes.txt"), "/etc/passwd", path.join(ctx.root, "..", "x.png"), path.join(ctx.root, "../../etc/passwd.png")]) {
+      const res = await fetch(`${ctx.base}/gateway/shot?path=${encodeURIComponent(p)}`, { headers: ctx.auth });
+      assert.equal(res.status, 404, `refused: ${p}`);
+    }
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("phone api: voice in and voice out go through the hooks", async () => {
+  const ctx = await phoneServer();
+  try {
+    const stt = await fetch(`${ctx.base}/gateway/stt`, {
+      method: "POST", headers: { ...ctx.auth, "content-type": "application/json" },
+      body: JSON.stringify({ audio: Buffer.from("abcdef").toString("base64"), encoding: "LINEAR16", sampleRateHertz: 16000 }),
+    });
+    assert.equal(stt.status, 200);
+    assert.deepEqual(await stt.json(), { text: "heard 6 bytes as LINEAR16@16000" });
+
+    const tts = await fetch(`${ctx.base}/gateway/tts`, {
+      method: "POST", headers: { ...ctx.auth, "content-type": "application/json" },
+      body: JSON.stringify({ text: "hello" }),
+    });
+    assert.equal(tts.status, 200);
+    const body = await tts.json();
+    assert.equal(Buffer.from(body.audio, "base64").toString(), "mp3:hello");
+    assert.equal(body.contentType, "audio/mpeg");
+
+    const empty = await fetch(`${ctx.base}/gateway/stt`, { method: "POST", headers: { ...ctx.auth, "content-type": "application/json" }, body: "{}" });
+    assert.equal(empty.status, 400);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("phone api: a machine without voice hooks says so instead of crashing", async () => {
+  const ctx = await phoneServer({ transcribe: undefined, synthesize: undefined });
+  try {
+    const res = await fetch(`${ctx.base}/gateway/tts`, { method: "POST", headers: { ...ctx.auth, "content-type": "application/json" }, body: JSON.stringify({ text: "x" }) });
+    assert.equal(res.status, 501);
+  } finally {
+    await ctx.close();
+  }
+});

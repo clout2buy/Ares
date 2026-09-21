@@ -15,6 +15,13 @@ export interface SessionSummary {
   tenant?: { role: "owner" | "guest"; chatId?: string };
 }
 
+/** An image riding a session.send: base64 bytes plus MIME type. */
+export interface SessionAttachment {
+  kind: "image";
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  data: string;
+}
+
 export type PermissionDecision = "allow_once" | "allow_always" | "deny";
 
 export interface StagedApproval {
@@ -30,7 +37,7 @@ export type ClientFrame =
   | { type: "hello"; token: string; client: string; proto: 1 }
   | { type: "session.create"; surface?: SessionSurface }
   | { type: "session.attach"; sessionId: string }
-  | { type: "session.send"; sessionId: string; text: string; inputId?: string; delivery?: "queue" | "steer" }
+  | { type: "session.send"; sessionId: string; text: string; inputId?: string; delivery?: "queue" | "steer"; attachments?: SessionAttachment[] }
   | { type: "session.interrupt"; sessionId: string }
   | { type: "sessions.list" }
   | { type: "session.history"; sessionId: string; limit?: number }

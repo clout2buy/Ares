@@ -70,3 +70,14 @@ export function parsePairPayload(data: string): { url: string; token: string } |
   }
   return null;
 }
+
+/** wss://host/gateway → https://host — where the phone API lives. */
+export function httpOriginOf(gatewayUrl: string): string {
+  try {
+    const url = new URL(gatewayUrl);
+    const scheme = url.protocol === "ws:" ? "http:" : "https:";
+    return `${scheme}//${url.host}`;
+  } catch {
+    return "";
+  }
+}

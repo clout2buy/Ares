@@ -5,7 +5,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GatewayClient } from "./src/gateway";
 import { PairScreen } from "./src/screens/PairScreen";
 import { ChatScreen } from "./src/screens/ChatScreen";
-import { clearSettings, loadSettings, saveSettings, type Settings } from "./src/store";
+import { clearSettings, httpOriginOf, loadSettings, saveSettings, type Settings } from "./src/store";
 import { theme } from "./src/theme";
 
 export default function App() {
@@ -64,7 +64,16 @@ export default function App() {
   } else if (!settings || !client || pairError) {
     body = <PairScreen initialUrl={settings?.url} initialToken={settings?.token} error={pairError} onPair={pair} />;
   } else {
-    body = <ChatScreen client={client} initialSessionId={settings.lastSessionId} onSessionChange={rememberSession} onForget={forget} />;
+    body = (
+      <ChatScreen
+        client={client}
+        origin={httpOriginOf(settings.url)}
+        token={settings.token}
+        initialSessionId={settings.lastSessionId}
+        onSessionChange={rememberSession}
+        onForget={forget}
+      />
+    );
   }
 
   return (

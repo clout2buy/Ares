@@ -187,6 +187,21 @@ export interface RemoteAgentServerOptions {
    * is the only authentication — exactly what a client on the LAN gets.
    */
   gatewayUrl?: string;
+  /**
+   * The phone's HTTP side-channel, on the same origin as /gateway and
+   * guarded by the same token (Bearer). Hooks rather than imports so this
+   * server stays free of the channels package and tests can stub them.
+   *  - transcribe: voice in (the app records 16 kHz mono LINEAR16 WAV)
+   *  - synthesize: voice out (mp3)
+   *  - screenshotRoots: the only directories /gateway/shot may serve from
+   */
+  phoneApi?: PhoneApiHooks;
+}
+
+export interface PhoneApiHooks {
+  transcribe?: (audio: Buffer, format: { encoding: string; sampleRateHertz: number }) => Promise<string>;
+  synthesize?: (text: string, voice?: string) => Promise<Buffer>;
+  screenshotRoots?: string[];
 }
 
 // ─── Internal state ────────────────────────────────────────────────────────
@@ -1188,6 +1203,7 @@ export class RemoteAgentServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
+    if (url.pathname.startsWith("/gateway/")) { void this.handlePhoneApi(req, res, url); return; }
     // The Ares network: the estate door lives on this origin under /oricle.
     if (url.pathname.startsWith("/oricle/")) {
       const door = this.opts.estateDoor;
@@ -1256,6 +1272,68 @@ export class RemoteAgentServer {
   //
   // The chat surfaces run in the daemon process; this server runs in the
   // garrison. The RemotePC tool there talks to us through these routes.
+
+  // ─── Phone API (same origin as /gateway, Bearer = the gateway token) ────
+  //
+  // Unlike the control API this is MEANT to arrive through the tunnel: it is
+  // the companion app's side-channel for the things a WebSocket frame is the
+  // wrong shape for — a screenshot's bytes, a voice note in, spoken audio out.
+
+  private async handlePhoneApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(body));
+    };
+    if (url.pathname === "/gateway/health") return json(200, { ok: true, gateway: !!this.opts.gatewayUrl });
+    const expected = this.opts.controlToken;
+    const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
+    const api = this.opts.phoneApi ?? {};
+
+    try {
+      switch (`${req.method} ${url.pathname}`) {
+        case "GET /gateway/shot": {
+          // Only a file under a screenshot root, only an image: the token is
+          // the owner's, but a path parameter is still a path parameter.
+          const wanted = path.resolve(url.searchParams.get("path") ?? "");
+          const roots = (api.screenshotRoots ?? []).map((r) => path.resolve(r));
+          const inside = roots.some((root) => wanted === root || wanted.startsWith(root + path.sep));
+          const ext = path.extname(wanted).toLowerCase();
+          const types: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
+          if (!inside || !types[ext]) return json(404, { error: "not found" });
+          let bytes: Buffer;
+          try { bytes = await readFile(wanted); } catch { return json(404, { error: "not found" }); }
+          res.writeHead(200, { "content-type": types[ext], "content-length": bytes.byteLength, "cache-control": "private, max-age=3600" });
+          res.end(bytes);
+          return;
+        }
+        case "POST /gateway/stt": {
+          if (!api.transcribe) return json(501, { error: "no transcriber on this machine" });
+          const body = await readJson(req, 12 * 1024 * 1024);
+          const audio = typeof body.audio === "string" ? Buffer.from(body.audio, "base64") : Buffer.alloc(0);
+          if (audio.byteLength === 0) return json(400, { error: "audio (base64) required" });
+          const encoding = typeof body.encoding === "string" ? body.encoding : "LINEAR16";
+          const sampleRateHertz = typeof body.sampleRateHertz === "number" ? body.sampleRateHertz : 16_000;
+          const text = await api.transcribe(audio, { encoding, sampleRateHertz });
+          return json(200, { text });
+        }
+        case "POST /gateway/tts": {
+          if (!api.synthesize) return json(501, { error: "no voice on this machine" });
+          const body = await readJson(req, 64 * 1024);
+          const text = typeof body.text === "string" ? body.text.trim() : "";
+          if (!text) return json(400, { error: "text required" });
+          const voice = typeof body.voice === "string" ? body.voice : undefined;
+          const mp3 = await api.synthesize(text.slice(0, 4_000), voice);
+          return json(200, { audio: mp3.toString("base64"), contentType: "audio/mpeg" });
+        }
+        default:
+          return json(404, { error: "not found" });
+      }
+    } catch (err) {
+      this.log(`phone api ${url.pathname} failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (!res.headersSent) json(500, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   private async handleControlApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const json = (status: number, body: unknown) => {
@@ -1616,6 +1694,20 @@ export class RemoteAgentServer {
 
     ws.on("error", () => { /* surfaces as close */ });
   }
+}
+
+/** Body as JSON, bounded — a phone upload is a few hundred KB, never more. */
+async function readJson(req: IncomingMessage, limit: number): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).byteLength;
+    if (total > limit) throw new Error("body too large");
+    chunks.push(c as Buffer);
+  }
+  if (chunks.length === 0) return {};
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
 }
 
 function tokensMatch(a: string, b: string): boolean {

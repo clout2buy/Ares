@@ -1,24 +1,32 @@
 // The conversation. One session at a time; the transcript folds every
-// gateway event (live or replayed history) through the same reducer.
+// gateway event (live or replayed history) through one pure reducer. Voice,
+// photos and screenshots ride the phone API on the same origin.
 
 import React from "react";
-import { FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, FlatList, Image, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
+import { useAudioRecorder } from "expo-audio";
 import { ActivityCard, ApprovalCard, Button, ConnectCard, PermissionCard } from "../components/Cards";
-import { Composer } from "../components/Composer";
+import { Composer, type Draft } from "../components/Composer";
 import type { GatewayClient, GatewayStatus } from "../gateway";
 import { Markdown } from "../Markdown";
 import { PROVIDER_LABELS } from "../prompts";
 import { theme } from "../theme";
 import { emptyTranscript, fold, nextKey, stripSystemNotes, type Item, type Transcript } from "../transcript";
-import type { ServerFrame, SessionSummary, StagedApproval } from "../wire";
+import { RECORDING, afterRecording, ensureMicrophone, speak, stopSpeaking, transcribeFile } from "../voice";
+import type { PermissionDecision, ServerFrame, SessionAttachment, SessionSummary, StagedApproval, TurnEvent } from "../wire";
 
 const HISTORY_LIMIT = 300;
+/** The garrison caps each image at ~1.5 MB of base64. */
+const MAX_IMAGE_BASE64 = 1_500_000;
 
 /** The one-time note the model gets on a session this phone opened. */
 const PHONE_PREAMBLE =
   "(System: This conversation is over the Ares iPhone app; the user is on their phone, away from the computer. " +
   "They cannot see your screen, tool output, or files — describe what matters, briefly. Keep replies phone-sized. " +
+  "Screenshots you take with ComputerUse are shown to them automatically. " +
   "Do the task end-to-end and report the result; ask only when genuinely blocked.)";
 
 interface Approval {
@@ -26,7 +34,24 @@ interface Approval {
   verb?: "allow_once" | "deny";
 }
 
-export function ChatScreen({ client, initialSessionId, onSessionChange, onForget }: { client: GatewayClient; initialSessionId?: string; onSessionChange: (id: string) => void; onForget: () => void }) {
+const EMPTY_DRAFT: Draft = { text: "", images: [] };
+
+export function ChatScreen({
+  client,
+  origin,
+  token,
+  initialSessionId,
+  onSessionChange,
+  onForget,
+}: {
+  client: GatewayClient;
+  /** https origin of the phone API (screenshots, voice). */
+  origin: string;
+  token: string;
+  initialSessionId?: string;
+  onSessionChange: (id: string) => void;
+  onForget: () => void;
+}) {
   const insets = useSafeAreaInsets();
   const [status, setStatus] = React.useState<GatewayStatus>(client.status);
   const [statusDetail, setStatusDetail] = React.useState<string | undefined>();
@@ -35,17 +60,37 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
   const [transcript, setTranscript] = React.useState<Transcript>(emptyTranscript());
   const [approvals, setApprovals] = React.useState<Approval[]>([]);
   const [picker, setPicker] = React.useState(false);
+  const [draft, setDraft] = React.useState<Draft>(EMPTY_DRAFT);
+  const [speakReplies, setSpeakReplies] = React.useState(false);
+  const [listening, setListening] = React.useState(false);
   const [now, setNow] = React.useState(Date.now());
   const preambleSent = React.useRef(new Set<string>());
   const sessionRef = React.useRef(sessionId);
   sessionRef.current = sessionId;
+  const speakRef = React.useRef(speakReplies);
+  speakRef.current = speakReplies;
+  const recorder = useAudioRecorder(RECORDING);
+  const pulse = React.useRef(new Animated.Value(1)).current;
 
-  // A running card wants its clock ticking.
+  // A running card wants its clock ticking, and the flame breathes.
   React.useEffect(() => {
-    if (!transcript.busy) return;
+    if (!transcript.busy) {
+      pulse.setValue(1);
+      return;
+    }
     const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [transcript.busy]);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.35, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => {
+      clearInterval(timer);
+      loop.stop();
+    };
+  }, [transcript.busy, pulse]);
 
   const attach = React.useCallback(
     (id: string) => {
@@ -95,7 +140,7 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
           return;
         }
         case "session.history": {
-          const f = frame as { sessionId: string; entries: Array<{ ts?: string; event: import("../wire").TurnEvent }> };
+          const f = frame as { sessionId: string; entries: Array<{ ts?: string; event: TurnEvent }> };
           if (f.sessionId !== sessionRef.current) return;
           let state = emptyTranscript();
           for (const entry of f.entries) {
@@ -108,13 +153,32 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
           return;
         }
         case "event": {
-          const f = frame as { sessionId: string; event: import("../wire").TurnEvent };
+          const f = frame as { sessionId: string; event: TurnEvent };
           if (f.sessionId !== sessionRef.current) return;
-          setTranscript((prev) => fold(prev, f.event));
+          const event = f.event;
+          if (event.type === "permission_request") void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          if (event.type === "turn_end") void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          setTranscript((prev) => {
+            const next = fold(prev, event);
+            if (event.type === "turn_end" && speakRef.current) {
+              // Speak what this turn said — every assistant bubble since the
+              // owner's last message, joined.
+              const said: string[] = [];
+              for (let i = next.items.length - 1; i >= 0; i--) {
+                const item = next.items[i];
+                if (item.kind === "user") break;
+                if (item.kind === "assistant") said.unshift(item.text);
+              }
+              const text = said.join("\n").trim();
+              if (text) void speak(origin, token, text).catch(() => undefined);
+            }
+            return next;
+          });
           return;
         }
         case "approval.pending": {
           const staged = (frame as { staged: StagedApproval }).staged;
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
           setApprovals((prev) => (prev.some((a) => a.staged.id === staged.id) ? prev : [...prev, { staged }]));
           return;
         }
@@ -131,32 +195,105 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
       offStatus();
       offFrame();
     };
-  }, [client, attach, createSession]);
+  }, [client, attach, createSession, origin, token]);
 
-  const send = (text: string) => {
+  const sendText = (text: string, images: Draft["images"] = []) => {
     const id = sessionRef.current;
     if (!id) return;
     const steer = transcript.busy;
-    let wire = text;
+    let wire = text || (images.length > 0 ? "(The user sent a photo. Look at it and respond to what it shows.)" : "");
+    if (!wire) return;
     if (!steer && !preambleSent.current.has(id) && !transcript.items.some((i) => i.kind === "assistant")) {
       preambleSent.current.add(id);
-      wire = `${PHONE_PREAMBLE}\n\n${text}`;
+      wire = `${PHONE_PREAMBLE}\n\n${wire}`;
     }
-    setTranscript((prev) => ({ ...prev, items: [...prev.items, { kind: "user", key: nextKey("u"), text, steer: steer || undefined }], busy: true }));
-    client.send({ type: "session.send", sessionId: id, text: wire, delivery: steer ? "steer" : "queue" });
+    const attachments: SessionAttachment[] = images.map((img) => ({ kind: "image", mediaType: img.mediaType, data: img.base64 }));
+    setTranscript((prev) => ({
+      ...prev,
+      items: [...prev.items, { kind: "user", key: nextKey("u"), text, steer: steer || undefined, images: images.length ? images.map((i) => i.uri) : undefined }],
+      busy: true,
+    }));
+    client.send({
+      type: "session.send",
+      sessionId: id,
+      text: wire,
+      delivery: steer ? "steer" : "queue",
+      ...(attachments.length ? { attachments } : {}),
+    });
     if (steer) setTranscript((prev) => fold(prev, { type: "steer_routed", inputId: "", disposition: "local" }));
+    stopSpeaking();
+  };
+
+  const sendDraft = () => {
+    const text = draft.text.trim();
+    if (!text && draft.images.length === 0) return;
+    sendText(text, draft.images);
+    setDraft(EMPTY_DRAFT);
   };
 
   const stop = () => {
     const id = sessionRef.current;
     if (id) client.send({ type: "session.interrupt", sessionId: id });
+    stopSpeaking();
   };
 
-  const decidePermission = (requestId: string, decision: import("../wire").PermissionDecision) => {
+  const pickPhoto = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return;
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 0.55, allowsMultipleSelection: true, selectionLimit: 4 });
+    if (result.canceled) return;
+    const picked: Draft["images"] = [];
+    for (const asset of result.assets) {
+      if (!asset.base64 || asset.base64.length > MAX_IMAGE_BASE64) continue;
+      const mediaType = asset.mimeType === "image/png" ? "image/png" : asset.mimeType === "image/webp" ? "image/webp" : asset.mimeType === "image/gif" ? "image/gif" : "image/jpeg";
+      picked.push({ uri: asset.uri, base64: asset.base64, mediaType });
+    }
+    if (picked.length < result.assets.length) {
+      setTranscript((prev) => ({ ...prev, items: [...prev.items, { kind: "notice", key: nextKey("n"), text: "Some photos were too large to send (1.5 MB cap).", tone: "info" }] }));
+    }
+    setDraft((prev) => ({ ...prev, images: [...prev.images, ...picked].slice(0, 4) }));
+  };
+
+  const holdMicStart = async () => {
+    if (listening) return;
+    if (!(await ensureMicrophone())) return;
+    try {
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setListening(true);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch {
+      setListening(false);
+    }
+  };
+
+  const holdMicEnd = async () => {
+    if (!listening) return;
+    setListening(false);
+    try {
+      await recorder.stop();
+      await afterRecording();
+      const uri = recorder.uri;
+      if (!uri) return;
+      const text = await transcribeFile(origin, token, uri);
+      if (!text) {
+        setTranscript((prev) => ({ ...prev, items: [...prev.items, { kind: "notice", key: nextKey("n"), text: "Couldn't make that out — try again.", tone: "info" }] }));
+        return;
+      }
+      // Spoken words go straight out; typing first was the point of the mic.
+      sendText(text, draft.images);
+      setDraft(EMPTY_DRAFT);
+    } catch (err) {
+      setTranscript((prev) => ({ ...prev, items: [...prev.items, { kind: "notice", key: nextKey("n"), text: `Voice failed: ${err instanceof Error ? err.message : String(err)}`, tone: "error" }] }));
+    }
+  };
+
+  const decidePermission = (requestId: string, decision: PermissionDecision) => {
     const id = sessionRef.current;
     if (!id) return;
     client.send({ type: "permission.respond", sessionId: id, requestId, decision });
     setTranscript((prev) => fold(prev, { type: "permission_response", id: requestId, decision }));
+    void Haptics.selectionAsync();
   };
 
   const decideApproval = (approvalId: string, verb: "allow_once" | "deny") => {
@@ -166,12 +303,13 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
 
   const connect = (provider: string) => {
     const label = PROVIDER_LABELS[provider] ?? provider;
-    send(`Connect ${label}: start the OAuth flow with the Connect tool and give me the sign-in link.`);
+    sendText(`Connect ${label}: start the OAuth flow with the Connect tool and give me the sign-in link.`);
   };
 
   const current = sessions.find((s) => s.id === sessionId);
   const connected = status === "open";
   const statusLine = status === "open" ? undefined : status === "connecting" ? "Connecting…" : status === "unauthorized" ? `Rejected: ${statusDetail ?? "bad token"}` : `Offline — retrying (${statusDetail ?? "…"})`;
+  const authHeaders = React.useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
   const renderItem = ({ item }: { item: Item }) => {
     switch (item.kind) {
@@ -180,7 +318,14 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
           <View style={styles.userRow}>
             <View style={styles.userBubble}>
               {item.steer ? <Text style={styles.steerTag}>↪ steer</Text> : null}
-              <Text style={styles.userText}>{stripSystemNotes(item.text)}</Text>
+              {item.images?.length ? (
+                <View style={styles.userImages}>
+                  {item.images.map((uri) => (
+                    <Image key={uri} source={{ uri }} style={styles.userImage} />
+                  ))}
+                </View>
+              ) : null}
+              {item.text ? <Text style={styles.userText}>{stripSystemNotes(item.text)}</Text> : null}
             </View>
           </View>
         );
@@ -189,6 +334,13 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
           <View style={styles.assistantRow}>
             <Markdown text={item.text} />
             {item.streaming ? <Text style={styles.cursor}>▍</Text> : null}
+          </View>
+        );
+      case "image":
+        return (
+          <View style={styles.shotWrap}>
+            <Image source={{ uri: `${origin}/gateway/shot?path=${encodeURIComponent(item.path)}`, headers: authHeaders }} style={styles.shot} resizeMode="contain" />
+            <Text style={styles.shotLabel}>{item.label}</Text>
           </View>
         );
       case "activity":
@@ -211,11 +363,21 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
     <View style={[styles.wrap, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => setPicker(true)} style={styles.headerTitleWrap}>
-          <Text style={styles.headerGlyph}>🜂</Text>
+          <Animated.Text style={[styles.headerGlyph, { opacity: pulse }]}>🜂</Animated.Text>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {current?.title && current.title !== "untitled session" ? current.title : "Ares"}
           </Text>
           <Text style={styles.headerChevron}>▾</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => {
+            setSpeakReplies((v) => !v);
+            if (speakReplies) stopSpeaking();
+            void Haptics.selectionAsync();
+          }}
+          style={[styles.headerButton, speakReplies ? styles.headerButtonOn : null]}
+        >
+          <Text style={styles.headerButtonText}>{speakReplies ? "🔊" : "🔈"}</Text>
         </Pressable>
         <Pressable onPress={() => void createSession()} style={styles.headerButton}>
           <Text style={styles.headerButtonText}>＋</Text>
@@ -246,7 +408,18 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
           ListEmptyComponent={<Text style={styles.empty}>{connected ? "What's next?" : ""}</Text>}
         />
         <View style={{ paddingBottom: insets.bottom }}>
-          <Composer busy={transcript.busy} connected={connected && !!sessionId} onSend={send} onStop={stop} />
+          <Composer
+            busy={transcript.busy}
+            connected={connected && !!sessionId}
+            draft={draft}
+            onDraft={setDraft}
+            onSend={sendDraft}
+            onStop={stop}
+            onPickPhoto={() => void pickPhoto()}
+            onHoldMicStart={() => void holdMicStart()}
+            onHoldMicEnd={() => void holdMicEnd()}
+            listening={listening}
+          />
         </View>
       </KeyboardAvoidingView>
 
@@ -292,24 +465,30 @@ export function ChatScreen({ client, initialSessionId, onSessionChange, onForget
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg },
-  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.border },
+  header: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.border },
   headerTitleWrap: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },
-  headerGlyph: { color: theme.accent, fontSize: 20 },
+  headerGlyph: { color: theme.accent, fontSize: 22 },
   headerTitle: { color: theme.text, fontSize: 18, fontWeight: "700", flexShrink: 1 },
   headerChevron: { color: theme.muted },
   headerButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.panel, alignItems: "center", justifyContent: "center" },
+  headerButtonOn: { backgroundColor: theme.accentSoft },
   headerButtonText: { color: theme.text, fontSize: 18 },
   statusBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: theme.panelRaised, paddingHorizontal: 14, paddingVertical: 8 },
   statusText: { color: theme.muted, fontSize: 13, flexShrink: 1 },
   approvals: { padding: 12, gap: 8 },
   body: { flex: 1 },
-  list: { padding: 14, gap: 0 },
+  list: { padding: 14 },
   userRow: { flexDirection: "row", justifyContent: "flex-end" },
-  userBubble: { maxWidth: "85%", backgroundColor: theme.userBubble, borderRadius: 16, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10 },
+  userBubble: { maxWidth: "85%", backgroundColor: theme.userBubble, borderRadius: 16, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10, gap: 6 },
   userText: { color: theme.text, fontSize: 16, lineHeight: 22 },
-  steerTag: { color: theme.accent, fontSize: 11, fontWeight: "700", marginBottom: 2 },
+  userImages: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  userImage: { width: 120, height: 120, borderRadius: 10, backgroundColor: theme.panel },
+  steerTag: { color: theme.accent, fontSize: 11, fontWeight: "700" },
   assistantRow: { paddingRight: 8 },
   cursor: { color: theme.accent, fontSize: 16 },
+  shotWrap: { gap: 4 },
+  shot: { width: "100%", aspectRatio: 16 / 10, borderRadius: 12, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.border },
+  shotLabel: { color: theme.muted, fontSize: 12 },
   notice: { color: theme.muted, fontSize: 13, textAlign: "center" },
   empty: { color: theme.muted, textAlign: "center", marginTop: 40, transform: [{ scaleY: -1 }] },
   sessionRow: { backgroundColor: theme.panel, borderRadius: 12, borderWidth: 1, borderColor: theme.border, padding: 12, gap: 4 },

@@ -7,7 +7,8 @@ import { describePermissionInput, oauthProviderFromError } from "./prompts";
 import { messageText, type PermissionDecision, type TurnEvent } from "./wire";
 
 export type Item =
-  | { kind: "user"; key: string; text: string; steer?: boolean }
+  | { kind: "user"; key: string; text: string; steer?: boolean; images?: string[] }
+  | { kind: "image"; key: string; path: string; label: string }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "activity"; key: string; card: ActivityCardState }
   | { kind: "permission"; key: string; id: string; toolName: string; detail?: string; reason: string; decision?: PermissionDecision }
@@ -25,6 +26,14 @@ let keySeq = 0;
 export function nextKey(prefix = "i"): string {
   keySeq += 1;
   return `${prefix}${keySeq}`;
+}
+
+/** A screenshot path on a tool result, image extensions only. */
+export function screenshotPathOf(output: unknown): string | undefined {
+  if (!output || typeof output !== "object") return undefined;
+  const candidate = (output as { screenshotPath?: unknown }).screenshotPath;
+  if (typeof candidate !== "string" || candidate.length === 0) return undefined;
+  return /\.(png|jpe?g|webp|gif)$/i.test(candidate) ? candidate : undefined;
 }
 
 export function emptyTranscript(): Transcript {
@@ -112,6 +121,10 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
     case "tool_end": {
       const e = event as Extract<TurnEvent, { type: "tool_end" }>;
       if (state.activityKey) finishStep(activityOf(state), e.id, "ok", now);
+      // ComputerUse / RemotePC report the screenshot they took — show it, so
+      // the phone sees what Ares saw.
+      const shot = screenshotPathOf(e.output);
+      if (shot) items.push({ kind: "image", key: nextKey("s"), path: shot, label: "What Ares saw" });
       const hit = oauthProviderFromError(e.output);
       if (hit) items.push({ kind: "connect", key: nextKey("c"), provider: hit.provider, expired: hit.expired });
       return state;

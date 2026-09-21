@@ -282,13 +282,19 @@ interface PendingPermission {
 const FALLBACK_TITLE = "untitled session";
 const TITLE_MAX_CHARS = 64;
 
-/** Turn-level stuck-turn watchdog. OFF by default: a turn is allowed to take
- *  as long as the work takes. This fired on legitimate long tool calls (a test
- *  run emits no events for minutes), interrupted real work, and raced three
- *  other timeout layers that each had a different opinion about liveness.
- *  Timeouts belong on bounded I/O — the git spawn and checkpoint deadlines —
- *  not on turns. Set ARES_TURN_SILENCE_MS to a positive value to re-enable. */
-const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 0);
+/** Turn-level stuck-turn watchdog — a LONG backstop, not a primary timeout.
+ *  `lastEventAt` resets on every event including tool_progress, so a healthy
+ *  long command that streams output never trips it; and any foreground shell is
+ *  already bounded by its own ≤10-min tool timeout. This only fires on a turn
+ *  that has gone truly silent past that — i.e. a tool wedged in a way its own
+ *  timeout could not catch. Turning it fully off (the prior default) is what
+ *  let a hung `docker exec … | tail` freeze a Telegram turn forever on
+ *  2026-09-21: the shell timeout killed the shell but an orphaned grandchild
+ *  held the output pipe, so no terminal event ever came and nothing recovered
+ *  it. The orphan-pipe bug is now fixed at the source (ShellSupervisor kills
+ *  the process group), and this stands behind it as defense in depth. 0
+ *  disables; ARES_TURN_SILENCE_MS overrides. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 900_000);
 const STUCK_TURN_CHECK_MS = 30_000;
 
 export class SessionManager {

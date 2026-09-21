@@ -13,13 +13,15 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
-/** Daemon-side turn watchdog. OFF by default — a turn takes as long as the
- *  work takes, and silence is not evidence of a hang (a test run or a long
- *  build emits nothing for minutes). The hang class this was built for was a
- *  real checkpoint-layer deadlock, since fixed at the source; the bounded I/O
- *  deadlines (git spawn, checkpoint chain job) cover the rest without ever
- *  killing legitimate work. Set ARES_TURN_SILENCE_MS>0 to re-enable. */
-const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 0);
+/** Daemon-side turn watchdog — a LONG backstop (15 min), the sibling of the
+ *  garrison one. It resets on every event (tool_progress included), so a
+ *  streaming long build/test never trips it; foreground shells are already
+ *  bounded by their own ≤10-min tool timeout. It only catches a turn wedged
+ *  past that — the class that froze a Telegram turn on 2026-09-21 when a hung
+ *  `docker exec … | tail` orphaned a grandchild that held the output pipe.
+ *  That orphan-pipe bug is fixed at the source now (ShellSupervisor group-kill);
+ *  this stands behind it. 0 disables; ARES_TURN_SILENCE_MS overrides. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 900_000);
 
 /** How often the stuck-turn watchdog samples. 30 s keeps overhead trivial
  *  while adding at most 30 s of latency on top of STUCK_TURN_SILENCE_MS. */

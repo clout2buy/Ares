@@ -526,6 +526,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         home: context.home,
         controlToken: gatewayToken || undefined,
         ...(door ? { estateDoor: (req, res) => door.handle(req, res) } : {}),
+        // The phone app's way in: wss://<origin>/gateway → this loopback gateway.
+        gatewayUrl: `ws://127.0.0.1:${bound.port}`,
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
         // link, falls back to LAN (and says so in every link) if it can't

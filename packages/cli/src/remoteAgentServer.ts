@@ -178,6 +178,15 @@ export interface RemoteAgentServerOptions {
    * (its own token) and returns false for paths that are not its own.
    */
   estateDoor?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+  /**
+   * The garrison's loopback WebSocket gateway (ws://127.0.0.1:7421). When set,
+   * a companion client — the phone app — reaches it as wss://<origin>/gateway
+   * on this same tunneled origin, so one tunnel fronts remote PCs, the Ares
+   * network AND the owner's own chat. The proxy is deliberately dumb: bytes
+   * both ways, and the garrison's own hello handshake (control or read token)
+   * is the only authentication — exactly what a client on the LAN gets.
+   */
+  gatewayUrl?: string;
 }
 
 // ─── Internal state ────────────────────────────────────────────────────────
@@ -289,7 +298,11 @@ export class RemoteAgentServer {
     const host = this.opts.host ?? "0.0.0.0";
     const http = createServer((req, res) => this.handleHttp(req, res));
     const wss = new WebSocketServer({ server: http, maxPayload: 64 * 1024 * 1024 });
-    wss.on("connection", (ws) => this.handleConnection(ws));
+    wss.on("connection", (ws, req) => {
+      const pathname = (req.url ?? "/").split("?")[0];
+      if (pathname === "/gateway") this.proxyGateway(ws, req);
+      else this.handleConnection(ws);
+    });
     // `ws` forwards the HTTP server's errors onto the WebSocketServer, and an
     // "error" event with no listener THROWS. That made the listen guard below
     // a lie: the promise rejected and the caller caught it, but the re-emit
@@ -1341,6 +1354,63 @@ export class RemoteAgentServer {
   }
 
   // ─── WebSocket ─────────────────────────────────────────────────────────
+
+  /**
+   * Pipe one companion socket to the garrison gateway. Cloudflare closes a
+   * WebSocket idle for 100s, and the garrison's own 30s ping only reaches the
+   * upstream leg (`ws` answers it here), so this leg gets its own ping.
+   */
+  private proxyGateway(client: WebSocket, req: IncomingMessage): void {
+    const target = this.opts.gatewayUrl;
+    if (!target) {
+      client.close(1011, "no gateway on this machine");
+      return;
+    }
+    const peer = req.headers["cf-connecting-ip"] ?? req.socket.remoteAddress ?? "?";
+    const upstream = new WebSocket(target);
+    // Frames the client sends before the upstream leg is open are held, not
+    // dropped: the very first one is the hello, and losing it means the
+    // garrison's handshake timer closes a connection that looked healthy.
+    const backlog: Array<{ data: WebSocket.RawData; isBinary: boolean }> = [];
+    let open = false;
+    // A close code read off one leg is not always legal to SEND on the other:
+    // 1005/1006 (no status / abnormal) are receive-only, and `ws` throws on
+    // them — inside a catch, which left the far side open forever. Forward
+    // only codes a peer may send; everything else becomes a plain 1000.
+    const sendable = (code: number): number =>
+      (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999) ? code : 1000;
+    const closeBoth = (code: number, reason: string) => {
+      const safeCode = sendable(code);
+      const safeReason = reason.slice(0, 120);
+      try { if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) client.close(safeCode, safeReason); } catch { /* already gone */ }
+      try { if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close(safeCode, safeReason); } catch { /* already gone */ }
+    };
+    upstream.on("open", () => {
+      open = true;
+      for (const { data, isBinary } of backlog.splice(0)) upstream.send(data, { binary: isBinary });
+      this.log(`gateway proxy: companion connected from ${peer}`);
+    });
+    upstream.on("message", (data, isBinary) => {
+      if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+    });
+    client.on("message", (data, isBinary) => {
+      if (open && upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+      else backlog.push({ data, isBinary });
+    });
+    upstream.on("close", (code, reason) => closeBoth(code, reason.toString()));
+    client.on("close", () => closeBoth(1000, "companion left"));
+    upstream.on("error", (err) => {
+      this.log(`gateway proxy: upstream error (${err.message})`);
+      closeBoth(1011, "gateway unavailable");
+    });
+    client.on("error", () => closeBoth(1011, "companion error"));
+    const ping = setInterval(() => {
+      if (client.readyState === WebSocket.OPEN) client.ping();
+      else clearInterval(ping);
+    }, 30_000);
+    ping.unref?.();
+    client.once("close", () => clearInterval(ping));
+  }
 
   private handleConnection(ws: WebSocket): void {
     let pc: RemotePcConn | undefined;

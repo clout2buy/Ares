@@ -66,3 +66,7 @@ holo-arm.html
 # Generated audit/scratch artifacts (kept local, never committed)
 .ares-*-report.md
 .codex-*.png
+
+# Expo (mobile/) local state
+mobile/.expo/
+mobile/dist/

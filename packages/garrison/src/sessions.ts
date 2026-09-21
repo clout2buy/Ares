@@ -65,7 +65,7 @@ import { garrisonDir } from "./token.js";
 // optional and additive: old meta files load untouched (absent = owner, surface
 // unknown) and every existing caller keeps compiling.
 
-export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless";
+export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
 
 export interface SessionTenant {
   role: "owner" | "guest";
@@ -73,7 +73,7 @@ export interface SessionTenant {
   chatId?: string;
 }
 
-const SESSION_SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless"]);
+const SESSION_SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless", "mobile"]);
 
 /** Validate a surface arriving over the wire; anything else is dropped. */
 export function normalizeSessionSurface(value: unknown): SessionSurface | undefined {

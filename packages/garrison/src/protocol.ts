@@ -29,7 +29,7 @@ export interface SessionSummary {
   provider: string;
   busy: boolean;
   /** Which host opened it (absent on sessions created before surfaces existed). */
-  surface?: "desktop" | "tui" | "telegram" | "garrison" | "headless";
+  surface?: "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
   /** Who is on the other end; absent means the owner. */
   tenant?: { role: "owner" | "guest"; chatId?: string };
 }

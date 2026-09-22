@@ -22,6 +22,7 @@ import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, typ
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
+import { TunnelOAuth } from "../oauthTunnel.js";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -527,6 +528,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
   );
 
+  // Connectors the owner can finish on their phone: the provider redirects
+  // back to the tunnel, not to a localhost that only exists on this box.
+  const tunnelOAuth = new TunnelOAuth(
+    () => remoteAgentServer?.linkBaseUrl(),
+    context.home,
+    (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "oauth", line } }) + "\n"),
+  );
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -551,6 +560,11 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           // the workspace it is building in (pages, dashboards). The phone has to
           // open both, or "show me what you made" 404s on every file it wrote.
           artifactRoots: [context.home, context.workspace],
+          oauth: {
+            handleCallback: (req, res, url) => tunnelOAuth.handleCallback(req, res, url),
+            begin: (provider, scopes) => tunnelOAuth.begin(provider, scopes),
+            callbackUrlForSetup: () => tunnelOAuth.callbackUrlForSetup(),
+          },
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,

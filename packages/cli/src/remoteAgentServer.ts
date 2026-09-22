@@ -204,6 +204,13 @@ export interface PhoneApiHooks {
   screenshotRoots?: string[];
   /** Register/forget a phone for push notifications. Absent → the endpoint
    *  reports that push is not set up on this machine. */
+  /** Connector OAuth that finishes on the phone: the provider redirects to
+   *  this origin instead of localhost. */
+  oauth?: {
+    handleCallback: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+    begin: (providerId: string, scopes?: string[]) => Promise<{ authorizeUrl: string; state: string }>;
+    callbackUrlForSetup: () => string | null;
+  };
   registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
   unregisterPush?: (token: string) => Promise<void>;
   pushConfigured?: () => boolean;
@@ -1242,6 +1249,12 @@ export class RemoteAgentServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
+    if (url.pathname === "/oauth/callback" && this.opts.phoneApi?.oauth) {
+      void this.opts.phoneApi.oauth.handleCallback(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
     if (url.pathname.startsWith("/gateway/")) { void this.handlePhoneApi(req, res, url); return; }
     // The Ares network: the estate door lives on this origin under /oricle.
     if (url.pathname.startsWith("/oricle/")) {
@@ -1351,6 +1364,21 @@ export class RemoteAgentServer {
           res.writeHead(200, headers);
           res.end(bytes);
           return;
+        }
+        case "POST /gateway/connect/start": {
+          if (!api.oauth) return json(501, { error: "connectors are not set up on this machine" });
+          const body = await readJson(req, 4 * 1024);
+          const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+          if (!provider) return json(400, { error: "provider required" });
+          try {
+            const { authorizeUrl } = await api.oauth.begin(provider, Array.isArray(body.scopes) ? (body.scopes as string[]) : undefined);
+            return json(200, { authorizeUrl });
+          } catch (err) {
+            return json(400, { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        case "GET /gateway/connect/callback-url": {
+          return json(200, { callbackUrl: api.oauth?.callbackUrlForSetup() ?? null });
         }
         case "POST /gateway/push/register": {
           const body = await readJson(req, 16 * 1024);

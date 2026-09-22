@@ -1019,6 +1019,42 @@ function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * A garrison session's recorded events, timestamps and all — what a
+ * session.history frame replays.
+ *
+ * The garrison keeps its own rollout at <home>/garrison/sessions/<id>.jsonl,
+ * which is NOT the workspace rollout store. History was being served from the
+ * workspace one, so it answered every request with zero entries and the phone
+ * showed an empty chat every time it re-attached: leave the screen, come back,
+ * the conversation was gone. It was all on disk the whole time, in the other
+ * file.
+ */
+export async function loadGarrisonRollout(
+  home: string,
+  sessionId: string,
+  opts?: { limit?: number },
+): Promise<Array<{ ts?: string; event: TurnEvent }>> {
+  // A session id is a filename here; refuse anything that could escape the dir.
+  if (!sessionId || path.basename(sessionId) !== sessionId) return [];
+  const text = await fs.readFile(rolloutPath(home, sessionId), "utf8").catch(() => null);
+  if (text === null) return [];
+  const entries: Array<{ ts?: string; event: TurnEvent }> = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line) as { ts?: unknown; event?: TurnEvent };
+      if (entry && typeof entry === "object" && entry.event && typeof entry.event.type === "string") {
+        entries.push({ ...(typeof entry.ts === "string" ? { ts: entry.ts } : {}), event: entry.event });
+      }
+    } catch {
+      // Torn/corrupt tail line — skip it; the rest of the history still loads.
+    }
+  }
+  const limit = opts?.limit;
+  return limit && limit > 0 ? entries.slice(-limit) : entries;
+}
+
 function parseRolloutLines(text: string): TurnEvent[] {
   const events: TurnEvent[] = [];
   for (const line of text.split(/\r?\n/)) {

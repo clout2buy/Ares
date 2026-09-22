@@ -29,7 +29,7 @@ import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
 import { MemoryStore, detectWorkspaceProjectId, loadProjectState, withConsolidationLock } from "@ares/mind";
-import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
+import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, loadGarrisonRollout, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "../holotable.js";
 import { runEffect } from "@ares/effects";
 import { gateToolPermission, remoteAutonomyDecision } from "../policyGate.js";
@@ -493,8 +493,20 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // Recorded-event replay for the /view page and any session.history client:
     // the workspace audit rollout (events.jsonl) is the source.
     history: async (sessionId, opts) => {
-      const rollout = await loadSessionRollout(context.workspace, sessionId);
-      return opts?.limit ? rollout.entries.slice(-opts.limit) : rollout.entries;
+      // The garrison's OWN rollout first. Gateway sessions are recorded to
+      // <home>/garrison/sessions/<id>.jsonl, not the workspace store, so
+      // reading only the workspace answered every request with zero entries —
+      // the phone re-attached to a live conversation and showed an empty
+      // screen, as if leaving the chat had erased it.
+      const own = await loadGarrisonRollout(context.home, sessionId, opts);
+      if (own.length > 0) return own;
+      // A session started in a workspace (TUI, coding) still lives there.
+      try {
+        const rollout = await loadSessionRollout(context.workspace, sessionId);
+        return opts?.limit ? rollout.entries.slice(-opts.limit) : rollout.entries;
+      } catch {
+        return [];
+      }
     },
   });
   const bound = await server.start();

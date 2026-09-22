@@ -26,6 +26,7 @@ export {
   SessionManager,
   rehydrateSessions,
   rehydrateSession,
+  loadGarrisonRollout,
   sessionsDir,
   rolloutPath,
   SessionBusyError,

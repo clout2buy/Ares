@@ -159,7 +159,22 @@ export async function runShell(
     // Own abort handling instead of passing `signal` to spawn. On Windows the
     // built-in path kills only PowerShell/cmd, leaving grandchildren alive with
     // inherited stdout handles so the Promise never reaches `close`.
-    const child = spawn(program, args, { cwd, windowsHide: true });
+    const child = spawn(program, args, {
+      cwd,
+      windowsHide: true,
+      // Lead a new process group (POSIX) so killTree can signal the whole
+      // pipeline at once. Without this, child.kill() reaches only the shell:
+      // `docker exec -i … <<'PY'` leaves the exec orphaned to PID 1 still
+      // holding our stdout pipe, `close` never fires, and the turn wedges
+      // until the 15-minute watchdog. The background supervisor was fixed for
+      // this in ShellSupervisor; the foreground path was not, and froze the
+      // same way.
+      detached: process.platform !== "win32",
+    });
+    // Nothing ever writes to this command's stdin, so leaving it open means a
+    // command that reads stdin (an unexpected prompt, `cat` with no file)
+    // blocks forever instead of seeing EOF. Close it immediately.
+    try { child.stdin?.end(); } catch { /* already gone */ }
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let stdoutBytes = 0;
@@ -199,6 +214,18 @@ export async function runShell(
       }
     };
 
+    /** Signal the child's whole process GROUP, falling back to the bare child
+     *  (already gone, or Windows, where the group has no meaning). */
+    const signalGroup = (sig: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try {
+        if (process.platform !== "win32") process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        try { child.kill(sig); } catch { /* already gone */ }
+      }
+    };
+
     const killTree = () => {
       if (process.platform === "win32" && child.pid) {
         spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {
@@ -209,12 +236,20 @@ export async function runShell(
           }
         });
       } else {
-        try {
-          child.kill();
-        } catch {
-          /* ignore */
-        }
+        signalGroup("SIGTERM");
+        const force = setTimeout(() => signalGroup("SIGKILL"), KILL_ESCALATE_MS);
+        force.unref();
       }
+      // Last resort. A survivor in another PID namespace — a container process
+      // reached through `docker exec` — can keep our stdout pipe open even
+      // after SIGKILL lands on everything we can see, and `close` would never
+      // arrive. Settle with the output we have rather than hang the turn.
+      const giveUp = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        void finish(null, "a surviving child held the output pipe open");
+      }, FORCE_SETTLE_MS);
+      giveUp.unref();
     };
     const onAbort = () => killTree();
     signal.addEventListener("abort", onAbort, { once: true });
@@ -222,19 +257,7 @@ export async function runShell(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      // On win32 kill the whole tree — child.kill() leaves grandchildren (dev
-      // servers, watchers) alive holding ports. taskkill /T /F reaps them.
-      if (process.platform === "win32" && child.pid) {
-        spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => {
-          try {
-            child.kill();
-          } catch {
-            /* ignore */
-          }
-        });
-      } else {
-        child.kill();
-      }
+      killTree();
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
@@ -288,7 +311,8 @@ export async function runShell(
       //
       // On the timeout/abort path we DID kill the tree — `close` arrives when
       // the tree actually dies, and settling early would race the reap (the
-      // caller must be able to trust that a timed-out tree is gone).
+      // caller must be able to trust that a timed-out tree is gone). That path
+      // has its own backstop in killTree, so a survivor cannot hang us either.
       if (timedOut || signal.aborted) return;
       const grace = setTimeout(() => {
         child.stdout.destroy();
@@ -297,8 +321,13 @@ export async function runShell(
       grace.unref();
       child.once("close", () => clearTimeout(grace));
     });
-    child.on("close", (code) => {
-      void (async () => {
+    // One exit for both the normal `close` and the force-settle backstop, so a
+    // wedged grandchild can never leave this promise unresolved.
+    let settled = false;
+    const finish = async (code: number | null, forcedReason?: string) => {
+      if (settled) return;
+      settled = true;
+      {
         clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);
         if (capture) {
@@ -317,9 +346,11 @@ export async function runShell(
         // A timeout has no signature in the output — name the fix directly.
         // Otherwise classify the tail so a bare "exited with code N" carries
         // the trap that caused it (see shellHints.ts for the field numbers).
-        const hint = timedOut
-          ? "raise `timeout` or run with run_in_background=true and poll with BashOutput."
-          : classifyShellFailure(code, stdout, stderr, shell);
+        const hint = forcedReason
+          ? `the command was killed but ${forcedReason}; treat the output as partial. Prefer run_in_background=true for anything that can hang.`
+          : timedOut
+            ? "raise `timeout` or run with run_in_background=true and poll with BashOutput."
+            : classifyShellFailure(code, stdout, stderr, shell);
         resolve({
           command: `${program} ${args.join(" ")}`,
           exitCode: code,
@@ -333,10 +364,21 @@ export async function runShell(
           ...(truncated && capturePath && !captureFailed ? { fullOutputPath: capturePath } : {}),
           ...(captureFailureMessage ? { captureError: captureFailureMessage } : {}),
         });
-      })();
+      }
+    };
+
+    child.on("close", (code) => {
+      void finish(code);
     });
   });
 }
+
+/** SIGTERM → SIGKILL grace for a killed process group. */
+const KILL_ESCALATE_MS = 2_000;
+/** How long after a kill we wait for `close` before settling with partial
+ *  output. A survivor in another PID namespace can hold the pipe forever; the
+ *  turn must not wait for it. */
+const FORCE_SETTLE_MS = 5_000;
 
 let cachedBashProgram: Promise<string> | null = null;
 

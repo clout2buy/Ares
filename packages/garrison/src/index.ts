@@ -27,6 +27,8 @@ export {
   rehydrateSessions,
   rehydrateSession,
   loadGarrisonRollout,
+  compactRolloutEvent,
+  ROLLOUT_PROGRESS_TEXT_CAP,
   sessionsDir,
   rolloutPath,
   SessionBusyError,

@@ -29,8 +29,9 @@
 //   tool output was a string or JSON that round-trips stably.
 
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import {
   messageText,
   type ContentBlock,
@@ -759,7 +760,7 @@ export class SessionManager {
   }
 
   private appendRollout(session: LiveSession, event: TurnEvent): void {
-    const line = JSON.stringify({ ts: new Date(this.now()).toISOString(), event }) + "\n";
+    const line = JSON.stringify({ ts: new Date(this.now()).toISOString(), event: compactRolloutEvent(event) }) + "\n";
     const file = rolloutPath(this.home, session.id);
     session.ioChain = session.ioChain
       .then(() => fs.appendFile(file, line, "utf8"))
@@ -932,8 +933,7 @@ export async function rehydrateSessions(
     if (!name.endsWith(".jsonl")) continue;
     const id = name.slice(0, -".jsonl".length);
     if (!id || canonicalIds.has(id)) continue;
-    const text = await fs.readFile(path.join(dir, name), "utf8").catch(() => "");
-    const events = parseRolloutLines(text);
+    const events = (await readRolloutEvents(path.join(dir, name))) ?? [];
     const messages = messagesFromRollout(events);
     const meta = await readMetaFile(metaPath(home, id));
     const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
@@ -968,9 +968,8 @@ export async function rehydrateSession(
     if (canonical.archived) return null;
     return canonicalRehydratedSession(kernel!, canonical);
   }
-  const text = await fs.readFile(rolloutPath(home, sessionId), "utf8").catch(() => null);
-  if (text === null) return null;
-  const events = parseRolloutLines(text);
+  const events = await readRolloutEvents(rolloutPath(home, sessionId));
+  if (events === null) return null;
   const messages = messagesFromRollout(events);
   const meta = await readMetaFile(metaPath(home, sessionId));
   const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
@@ -1047,38 +1046,91 @@ export async function loadGarrisonRollout(
 ): Promise<Array<{ ts?: string; event: TurnEvent }>> {
   // A session id is a filename here; refuse anything that could escape the dir.
   if (!sessionId || path.basename(sessionId) !== sessionId) return [];
-  const text = await fs.readFile(rolloutPath(home, sessionId), "utf8").catch(() => null);
-  if (text === null) return [];
+  // Keep only the newest `limit` entries while streaming, so a long
+  // history request never holds the whole session in memory.
+  const limit = opts?.limit && opts.limit > 0 ? opts.limit : Infinity;
   const entries: Array<{ ts?: string; event: TurnEvent }> = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line) as { ts?: unknown; event?: TurnEvent };
-      if (entry && typeof entry === "object" && entry.event && typeof entry.event.type === "string") {
-        entries.push({ ...(typeof entry.ts === "string" ? { ts: entry.ts } : {}), event: entry.event });
-      }
-    } catch {
-      // Torn/corrupt tail line — skip it; the rest of the history still loads.
-    }
-  }
-  const limit = opts?.limit;
-  return limit && limit > 0 ? entries.slice(-limit) : entries;
+  const found = await forEachRolloutEntry(rolloutPath(home, sessionId), (entry) => {
+    entries.push(entry);
+    if (entries.length > limit) entries.shift();
+  });
+  return found ? entries : [];
 }
 
-function parseRolloutLines(text: string): TurnEvent[] {
-  const events: TurnEvent[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line) as { event?: TurnEvent };
-      if (entry && typeof entry === "object" && entry.event && typeof entry.event.type === "string") {
-        events.push(entry.event);
-      }
-    } catch {
-      // Torn/corrupt tail line — skip it; the file stays usable.
+/**
+ * Longest string a tool_progress payload keeps on disk. Progress is a live
+ * view — the finished output rides on tool_end — but it was persisted whole:
+ * one session's Bash progress reached 224MB of a 240MB rollout, and the
+ * garrison died with a JavaScript heap OOM (2026-09-22) reading that file
+ * back whole to serve the phone its history. Keep the tail: the newest
+ * output is what a re-attaching client wants to see.
+ */
+export const ROLLOUT_PROGRESS_TEXT_CAP = 2_000;
+
+/** The form an event takes on disk. Only tool_progress is reduced; every
+ *  other event is stored exactly as emitted. */
+export function compactRolloutEvent(event: TurnEvent): TurnEvent {
+  if (event.type !== "tool_progress") return event;
+  const data = event.data;
+  if (typeof data === "string") {
+    return data.length > ROLLOUT_PROGRESS_TEXT_CAP ? { ...event, data: data.slice(-ROLLOUT_PROGRESS_TEXT_CAP) } : event;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return event;
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > ROLLOUT_PROGRESS_TEXT_CAP) {
+      out[key] = value.slice(-ROLLOUT_PROGRESS_TEXT_CAP);
+      out.truncatedChars = value.length - ROLLOUT_PROGRESS_TEXT_CAP;
+      changed = true;
+    } else {
+      out[key] = value;
     }
   }
-  return events;
+  return changed ? { ...event, data: out } : event;
+}
+
+/**
+ * Stream a rollout line by line, handing each well-formed entry (already
+ * compacted) to `visit`. Never reads the file into one string — a rollout can
+ * be hundreds of MB. Resolves false when the file does not exist.
+ */
+async function forEachRolloutEntry(
+  file: string,
+  visit: (entry: { ts?: string; event: TurnEvent }) => void,
+): Promise<boolean> {
+  const stream = createReadStream(file, { encoding: "utf8" });
+  const opened = await new Promise<boolean>((resolve) => {
+    stream.once("open", () => resolve(true));
+    stream.once("error", () => resolve(false));
+  });
+  if (!opened) return false;
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as { ts?: unknown; event?: TurnEvent };
+        if (entry && typeof entry === "object" && entry.event && typeof entry.event.type === "string") {
+          visit({ ...(typeof entry.ts === "string" ? { ts: entry.ts } : {}), event: compactRolloutEvent(entry.event) });
+        }
+      } catch {
+        // Torn/corrupt tail line — skip it; the rest of the history still loads.
+      }
+    }
+  } catch {
+    // Read error mid-file: keep what loaded, boot never fails on a damaged rollout.
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  return true;
+}
+
+async function readRolloutEvents(file: string): Promise<TurnEvent[] | null> {
+  const events: TurnEvent[] = [];
+  const found = await forEachRolloutEntry(file, (entry) => events.push(entry.event));
+  return found ? events : null;
 }
 
 /**

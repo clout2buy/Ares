@@ -202,6 +202,11 @@ export interface PhoneApiHooks {
   transcribe?: (audio: Buffer, format: { encoding: string; sampleRateHertz: number }) => Promise<string>;
   synthesize?: (text: string, voice?: string) => Promise<Buffer>;
   screenshotRoots?: string[];
+  /** Register/forget a phone for push notifications. Absent → the endpoint
+   *  reports that push is not set up on this machine. */
+  registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
+  unregisterPush?: (token: string) => Promise<void>;
+  pushConfigured?: () => boolean;
   /** Where Ares writes the things it MAKES (renders, pages, reports) — its
    *  home. /gateway/file serves these so the phone can see, not just read
    *  about, what it built. Same containment rule as screenshots. */
@@ -1346,6 +1351,22 @@ export class RemoteAgentServer {
           res.writeHead(200, headers);
           res.end(bytes);
           return;
+        }
+        case "POST /gateway/push/register": {
+          const body = await readJson(req, 16 * 1024);
+          const token = typeof body.token === "string" ? body.token.trim() : "";
+          if (!token) return json(400, { error: "token required" });
+          if (body.remove === true) {
+            if (api.unregisterPush) await api.unregisterPush(token);
+            return json(200, { ok: true, removed: true });
+          }
+          if (!api.registerPush) return json(501, { error: "push is not set up on this machine", configured: false });
+          await api.registerPush({
+            token,
+            platform: typeof body.platform === "string" ? body.platform : "ios",
+            ...(typeof body.label === "string" ? { label: body.label } : {}),
+          });
+          return json(200, { ok: true, configured: api.pushConfigured ? api.pushConfigured() : true });
         }
         case "POST /gateway/stt": {
           if (!api.transcribe) return json(501, { error: "no transcriber on this machine" });

@@ -21,6 +21,7 @@ import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, type FileReadStamp } from "@ares/tools";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
+import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -518,6 +519,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   };
   // Remote PC agent server — lets the owner connect to a coworker's PC on the fly
   // via a one-time Telegram link. Best-effort: a bind failure never touches the garrison.
+  // Push to the owner's phone, straight to Apple — set up only when an APNs
+  // key is configured (ARES_APNS_KEY_PATH/KEY_ID/TEAM_ID).
+  const phonePush = new PhonePush(
+    path.join(context.home, "phone-push.json"),
+    apnsFromEnv("com.doingteam.ares"),
+    (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
+  );
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -542,6 +551,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           // the workspace it is building in (pages, dashboards). The phone has to
           // open both, or "show me what you made" 404s on every file it wrote.
           artifactRoots: [context.home, context.workspace],
+          registerPush: (d) => phonePush.register(d),
+          unregisterPush: (tok) => phonePush.unregister(tok),
+          pushConfigured: () => phonePush.configured,
         },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
@@ -558,6 +570,20 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       return null;
     }
   })();
+
+  // Watch for the things worth waking the owner for. Only runs when an APNs
+  // key is configured; otherwise registrations are still accepted so the app
+  // can say "notifications are not set up on this garrison".
+  const phoneNotifier = phonePush.configured && gatewayToken
+    ? new PhoneNotifier({
+        gatewayUrl: `ws://127.0.0.1:${bound.port}`,
+        token: gatewayToken,
+        push: phonePush,
+        log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
+      })
+    : null;
+  phoneNotifier?.start();
+  if (phonePush.configured) process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line: "phone push armed (APNs)" } }) + "\n");
 
   // The bridge comes up now if Telegram is configured, and keeps trying every
   // 30s if it isn't (or if the first attempt failed) — the owner connecting
@@ -604,6 +630,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       stopBridgeRetry();
       void telegramBridge?.stop().catch(() => {});
       setTelegramChannel(null);
+      phoneNotifier?.stop();
       void remoteAgentServer?.close().catch(() => {});
       setRemoteAgentServer(null);
       void aresNetworkHostStop();

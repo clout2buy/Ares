@@ -70,3 +70,12 @@ holo-arm.html
 # Expo (mobile/) local state
 mobile/.expo/
 mobile/dist/
+
+# Apple App Store Connect API key — NEVER commit
+AuthKey_*.p8
+*.p8
+mobile/credentials.json
+*.p12
+*.mobileprovision
+*.cer
+*.csr

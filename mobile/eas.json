@@ -18,7 +18,8 @@
       "autoIncrement": true,
       "ios": {
         "credentialsSource": "local"
-      }
+      },
+      "channel": "production"
     }
   },
   "submit": {

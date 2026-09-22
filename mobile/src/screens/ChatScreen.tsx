@@ -8,12 +8,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useAudioRecorder } from "expo-audio";
-import { ActivityCard, ApprovalCard, Button, ConnectCard, PermissionCard } from "../components/Cards";
+import { ActivityCard, ApprovalCard, Button, ConnectCard, PermissionCard, ThinkingBubble } from "../components/Cards";
 import { Composer, type Draft } from "../components/Composer";
 import type { GatewayClient, GatewayStatus } from "../gateway";
 import { Markdown } from "../Markdown";
 import { PROVIDER_LABELS } from "../prompts";
-import { theme } from "../theme";
+import { radius, theme } from "../theme";
 import { emptyTranscript, fold, nextKey, stripSystemNotes, type Item, type Transcript } from "../transcript";
 import { RECORDING, afterRecording, ensureMicrophone, speak, stopSpeaking, transcribeFile } from "../voice";
 import type { PermissionDecision, ServerFrame, SessionAttachment, SessionSummary, StagedApproval, TurnEvent } from "../wire";
@@ -311,7 +311,26 @@ export function ChatScreen({
   const statusLine = status === "open" ? undefined : status === "connecting" ? "Connecting…" : status === "unauthorized" ? `Rejected: ${statusDetail ?? "bad token"}` : `Offline — retrying (${statusDetail ?? "…"})`;
   const authHeaders = React.useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
-  const renderItem = ({ item }: { item: Item }) => {
+  // Consecutive agent items (thinking → tools → text) read as one reply: the
+  // avatar sits beside the first of the run, the rest hang under it.
+  const AGENT = new Set(["assistant", "thinking", "activity", "image"]);
+  type Row = { item: Item; first: boolean; lastOfRun: boolean };
+  const rows = React.useMemo<Row[]>(() => {
+    const list = transcript.items;
+    return list.map((item, i) => {
+      const prev = list[i - 1];
+      const next = list[i + 1];
+      const agent = AGENT.has(item.kind);
+      return {
+        item,
+        first: agent && !(prev && AGENT.has(prev.kind)),
+        lastOfRun: agent && !(next && AGENT.has(next.kind)),
+      };
+    }).reverse();
+  }, [transcript.items]);
+
+  const renderRow = ({ item: row }: { item: Row }) => {
+    const { item } = row;
     switch (item.kind) {
       case "user":
         return (
@@ -320,9 +339,7 @@ export function ChatScreen({
               {item.steer ? <Text style={styles.steerTag}>↪ steer</Text> : null}
               {item.images?.length ? (
                 <View style={styles.userImages}>
-                  {item.images.map((uri) => (
-                    <Image key={uri} source={{ uri }} style={styles.userImage} />
-                  ))}
+                  {item.images.map((uri) => <Image key={uri} source={{ uri }} style={styles.userImage} />)}
                 </View>
               ) : null}
               {item.text ? <Text style={styles.userText}>{stripSystemNotes(item.text)}</Text> : null}
@@ -330,25 +347,44 @@ export function ChatScreen({
           </View>
         );
       case "assistant":
-        return (
-          <View style={styles.assistantRow}>
-            <Markdown text={item.text} />
-            {item.streaming ? <Text style={styles.cursor}>▍</Text> : null}
-          </View>
-        );
-      case "image":
-        return (
-          <View style={styles.shotWrap}>
-            <Image source={{ uri: `${origin}/gateway/shot?path=${encodeURIComponent(item.path)}`, headers: authHeaders }} style={styles.shot} resizeMode="contain" />
-            <Text style={styles.shotLabel}>{item.label}</Text>
-          </View>
-        );
+      case "thinking":
       case "activity":
-        return <ActivityCard card={item.card} now={now} />;
+      case "image": {
+        let body: React.ReactNode;
+        if (item.kind === "assistant") {
+          body = (
+            <View style={styles.assistantBubble}>
+              <Markdown text={item.text} />
+              {item.streaming ? <Animated.Text style={[styles.cursor, { opacity: pulse }]}>▍</Animated.Text> : null}
+            </View>
+          );
+        } else if (item.kind === "thinking") {
+          body = <ThinkingBubble text={item.text} streaming={item.streaming} startedAt={item.startedAt} endedAt={item.endedAt} now={now} />;
+        } else if (item.kind === "activity") {
+          body = <ActivityCard card={item.card} now={now} />;
+        } else {
+          body = (
+            <View style={styles.shotWrap}>
+              <Image source={{ uri: `${origin}/gateway/shot?path=${encodeURIComponent(item.path)}`, headers: authHeaders }} style={styles.shot} resizeMode="contain" />
+              <Text style={styles.shotLabel}>{item.label}</Text>
+            </View>
+          );
+        }
+        return (
+          <View style={[styles.agentRow, row.first ? styles.agentRowFirst : null]}>
+            <View style={styles.avatarCol}>
+              {row.first ? (
+                <View style={styles.avatar}><Text style={styles.avatarGlyph}>🜂</Text></View>
+              ) : null}
+            </View>
+            <View style={styles.agentBody}>{body}</View>
+          </View>
+        );
+      }
       case "permission":
-        return <PermissionCard toolName={item.toolName} detail={item.detail} reason={item.reason} decision={item.decision} onDecide={(d) => decidePermission(item.id, d)} />;
+        return <View style={styles.fullRow}><PermissionCard toolName={item.toolName} detail={item.detail} reason={item.reason} decision={item.decision} onDecide={(d) => decidePermission(item.id, d)} /></View>;
       case "connect":
-        return <ConnectCard provider={item.provider} expired={item.expired} onConnect={() => connect(item.provider)} />;
+        return <View style={styles.fullRow}><ConnectCard provider={item.provider} expired={item.expired} onConnect={() => connect(item.provider)} /></View>;
       case "notice":
         return <Text style={[styles.notice, item.tone === "error" ? { color: theme.bad } : null]}>{item.text}</Text>;
       default:
@@ -356,17 +392,17 @@ export function ChatScreen({
     }
   };
 
-  // Newest at the bottom, with the list inverted so it sticks there.
-  const data = React.useMemo(() => [...transcript.items].reverse(), [transcript.items]);
-
   return (
     <View style={[styles.wrap, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => setPicker(true)} style={styles.headerTitleWrap}>
-          <Animated.Text style={[styles.headerGlyph, { opacity: pulse }]}>🜂</Animated.Text>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {current?.title && current.title !== "untitled session" ? current.title : "Ares"}
-          </Text>
+          <Animated.View style={[styles.headerAvatar, { opacity: pulse }]}><Text style={styles.headerAvatarGlyph}>🜂</Text></Animated.View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerTitle} numberOfLines={1}>Ares</Text>
+            <Text style={styles.headerSub} numberOfLines={1}>
+              {transcript.busy ? "working…" : current?.title && current.title !== "untitled session" ? current.title : connected ? "online" : "offline"}
+            </Text>
+          </View>
           <Text style={styles.headerChevron}>▾</Text>
         </Pressable>
         <Pressable
@@ -398,12 +434,12 @@ export function ChatScreen({
       ) : null}
       <KeyboardAvoidingView style={styles.body} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={insets.top}>
         <FlatList
-          data={data}
+          data={rows}
           inverted
-          keyExtractor={(item) => item.key}
-          renderItem={renderItem}
+          keyExtractor={(row) => row.item.key}
+          renderItem={renderRow}
           contentContainerStyle={styles.list}
-          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          ItemSeparatorComponent={() => <View style={{ height: 6 }} />}
           keyboardDismissMode="interactive"
           ListEmptyComponent={<Text style={styles.empty}>{connected ? "What's next?" : ""}</Text>}
         />
@@ -465,33 +501,42 @@ export function ChatScreen({
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg },
-  header: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.border },
-  headerTitleWrap: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },
-  headerGlyph: { color: theme.accent, fontSize: 22 },
-  headerTitle: { color: theme.text, fontSize: 18, fontWeight: "700", flexShrink: 1 },
-  headerChevron: { color: theme.muted },
-  headerButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.panel, alignItems: "center", justifyContent: "center" },
-  headerButtonOn: { backgroundColor: theme.accentSoft },
-  headerButtonText: { color: theme.text, fontSize: 18 },
+  header: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.border },
+  headerTitleWrap: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  headerAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.accentDim, alignItems: "center", justifyContent: "center" },
+  headerAvatarGlyph: { color: theme.accent, fontSize: 18 },
+  headerTitle: { color: theme.textStrong, fontSize: 17, fontWeight: "700", letterSpacing: -0.2 },
+  headerSub: { color: theme.muted, fontSize: 12, marginTop: 1 },
+  headerChevron: { color: theme.faint, marginRight: 4 },
+  headerButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.panel, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: theme.border },
+  headerButtonOn: { backgroundColor: theme.accentDim, borderColor: "rgba(255,122,26,0.4)" },
+  headerButtonText: { color: theme.text, fontSize: 17 },
   statusBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: theme.panelRaised, paddingHorizontal: 14, paddingVertical: 8 },
   statusText: { color: theme.muted, fontSize: 13, flexShrink: 1 },
   approvals: { padding: 12, gap: 8 },
   body: { flex: 1 },
-  list: { padding: 14 },
-  userRow: { flexDirection: "row", justifyContent: "flex-end" },
-  userBubble: { maxWidth: "85%", backgroundColor: theme.userBubble, borderRadius: 16, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10, gap: 6 },
-  userText: { color: theme.text, fontSize: 16, lineHeight: 22 },
+  list: { paddingHorizontal: 12, paddingVertical: 14 },
+  fullRow: { paddingVertical: 4 },
+  userRow: { flexDirection: "row", justifyContent: "flex-end", paddingLeft: 48, paddingVertical: 4 },
+  userBubble: { maxWidth: "100%", backgroundColor: theme.userBubble, borderWidth: 1, borderColor: theme.userBorder, borderRadius: radius.bubble, borderBottomRightRadius: 6, paddingHorizontal: 14, paddingVertical: 10, gap: 6 },
+  userText: { color: theme.textStrong, fontSize: 15.5, lineHeight: 22 },
   userImages: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   userImage: { width: 120, height: 120, borderRadius: 10, backgroundColor: theme.panel },
-  steerTag: { color: theme.accent, fontSize: 11, fontWeight: "700" },
-  assistantRow: { paddingRight: 8 },
-  cursor: { color: theme.accent, fontSize: 16 },
-  shotWrap: { gap: 4 },
-  shot: { width: "100%", aspectRatio: 16 / 10, borderRadius: 12, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.border },
-  shotLabel: { color: theme.muted, fontSize: 12 },
-  notice: { color: theme.muted, fontSize: 13, textAlign: "center" },
-  empty: { color: theme.muted, textAlign: "center", marginTop: 40, transform: [{ scaleY: -1 }] },
-  sessionRow: { backgroundColor: theme.panel, borderRadius: 12, borderWidth: 1, borderColor: theme.border, padding: 12, gap: 4 },
+  steerTag: { color: theme.accent, fontSize: 11, fontWeight: "700", letterSpacing: 0.3 },
+  agentRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingRight: 24 },
+  agentRowFirst: { marginTop: 6 },
+  avatarCol: { width: 30 },
+  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: theme.accentDim, alignItems: "center", justifyContent: "center", marginTop: 2 },
+  avatarGlyph: { color: theme.accent, fontSize: 15 },
+  agentBody: { flex: 1 },
+  assistantBubble: { backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.border, borderRadius: radius.bubble, borderTopLeftRadius: 6, paddingHorizontal: 14, paddingVertical: 11 },
+  cursor: { color: theme.accent, fontSize: 15, marginTop: 2 },
+  shotWrap: { gap: 5 },
+  shot: { width: "100%", aspectRatio: 16 / 10, borderRadius: radius.card, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.border },
+  shotLabel: { color: theme.faint, fontSize: 12 },
+  notice: { color: theme.faint, fontSize: 12.5, textAlign: "center", paddingVertical: 6 },
+  empty: { color: theme.faint, textAlign: "center", marginTop: 40, transform: [{ scaleY: -1 }] },
+  sessionRow: { backgroundColor: theme.panel, borderRadius: radius.card, borderWidth: 1, borderColor: theme.border, padding: 12, gap: 4 },
   sessionTitle: { color: theme.text, fontSize: 15, fontWeight: "600" },
   sessionMeta: { color: theme.muted, fontSize: 12 },
 });

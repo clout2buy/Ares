@@ -10,6 +10,7 @@ export type Item =
   | { kind: "user"; key: string; text: string; steer?: boolean; images?: string[] }
   | { kind: "image"; key: string; path: string; label: string }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
+  | { kind: "thinking"; key: string; text: string; streaming: boolean; startedAt: number; endedAt?: number }
   | { kind: "activity"; key: string; card: ActivityCardState }
   | { kind: "permission"; key: string; id: string; toolName: string; detail?: string; reason: string; decision?: PermissionDecision }
   | { kind: "connect"; key: string; provider: string; expired: boolean }
@@ -63,6 +64,18 @@ export function stripSystemNotes(text: string): string {
   return text.replace(/^\(System:[\s\S]*?\)\n\n/, "");
 }
 
+/** The model stopped reasoning and started doing — close the thinking bubble. */
+function sealThinking(items: Item[], now: number): void {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "thinking") {
+      if (item.streaming) items[i] = { ...item, streaming: false, endedAt: now };
+      return;
+    }
+    if (item.kind === "user") return;
+  }
+}
+
 function activityOf(state: Transcript): ActivityCardState {
   if (state.activityKey) {
     const item = state.items.find((i) => i.key === state.activityKey);
@@ -97,11 +110,24 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
       state.activityKey = undefined;
       return state;
     }
+    case "thinking_delta": {
+      const text = String((event as { text?: string }).text ?? "");
+      if (!text) return state;
+      if (last && last.kind === "thinking" && last.streaming) {
+        items[items.length - 1] = { ...last, text: last.text + text };
+      } else {
+        items.push({ kind: "thinking", key: nextKey("t"), text, streaming: true, startedAt: now });
+      }
+      state.busy = true;
+      return state;
+    }
     case "text_delta": {
       const text = String((event as { text?: string }).text ?? "");
       if (!text) return state;
-      if (last && last.kind === "assistant" && last.streaming) {
-        items[items.length - 1] = { ...last, text: last.text + text };
+      sealThinking(items, now);
+      const tail = items[items.length - 1];
+      if (tail && tail.kind === "assistant" && tail.streaming) {
+        items[items.length - 1] = { ...tail, text: tail.text + text };
       } else {
         items.push({ kind: "assistant", key: nextKey("m"), text, streaming: true });
       }
@@ -113,6 +139,7 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
       // Seal the paragraph before the tool so later text starts a new bubble
       // under the card — the chat reads in the order things happened.
       if (last && last.kind === "assistant" && last.streaming) items[items.length - 1] = { ...last, streaming: false };
+      sealThinking(items, now);
       const card = activityOf(state);
       card.steps.push({ id: e.id, label: e.activityDescription || e.name, startedAt: now, state: "running" });
       state.busy = true;
@@ -166,6 +193,7 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
     }
     case "turn_end": {
       if (last && last.kind === "assistant" && last.streaming) items[items.length - 1] = { ...last, streaming: false };
+      sealThinking(items, now);
       if (state.activityKey) sealCard(activityOf(state), now);
       state.activityKey = undefined;
       state.busy = false;

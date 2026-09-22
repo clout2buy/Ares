@@ -1,6 +1,6 @@
 // Markdown-lite for the reply bubble: headings, bullets, fenced and inline
-// code, bold, links. Small on purpose — it's what the model actually emits,
-// and a phone screen rewards restraint.
+// code, bold, links. Typography tuned for a phone: 15.5/22 body, real
+// hierarchy, code that reads as code.
 
 import React from "react";
 import { Linking, StyleSheet, Text, View } from "react-native";
@@ -43,9 +43,10 @@ function InlineText({ line, style }: { line: string; style?: object }) {
   );
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, muted = false }: { text: string; muted?: boolean }) {
   const blocks: React.ReactNode[] = [];
   const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const base = muted ? styles.mutedText : undefined;
   let i = 0;
   let key = 0;
   while (i < lines.length) {
@@ -64,7 +65,7 @@ export function Markdown({ text }: { text: string }) {
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
-      blocks.push(<InlineText key={key++} line={heading[2]} style={styles.h} />);
+      blocks.push(<InlineText key={key++} line={heading[2]} style={[styles.h, base]} />);
       i += 1;
       continue;
     }
@@ -74,7 +75,20 @@ export function Markdown({ text }: { text: string }) {
         <View key={key++} style={styles.bulletRow}>
           <Text style={styles.bulletDot}>•</Text>
           <View style={{ flex: 1 }}>
-            <InlineText line={bullet[1]} />
+            <InlineText line={bullet[1]} style={base} />
+          </View>
+        </View>,
+      );
+      i += 1;
+      continue;
+    }
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+    if (numbered) {
+      blocks.push(
+        <View key={key++} style={styles.bulletRow}>
+          <Text style={styles.bulletNum}>{numbered[1]}.</Text>
+          <View style={{ flex: 1 }}>
+            <InlineText line={numbered[2]} style={base} />
           </View>
         </View>,
       );
@@ -85,24 +99,25 @@ export function Markdown({ text }: { text: string }) {
       i += 1;
       continue;
     }
-    // A paragraph runs until a blank line or a block opener.
     const para: string[] = [line];
     i += 1;
-    while (i < lines.length && lines[i].trim() !== "" && !/^(```|#{1,6}\s|\s*[-*]\s)/.test(lines[i])) para.push(lines[i++]);
-    blocks.push(<InlineText key={key++} line={para.join(" ")} />);
+    while (i < lines.length && lines[i].trim() !== "" && !/^(```|#{1,6}\s|\s*[-*]\s|\s*\d+[.)]\s)/.test(lines[i])) para.push(lines[i++]);
+    blocks.push(<InlineText key={key++} line={para.join(" ")} style={base} />);
   }
   return <View style={styles.wrap}>{blocks}</View>;
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 8 },
-  p: { color: theme.text, fontSize: 16, lineHeight: 22 },
-  h: { fontWeight: "700", fontSize: 17 },
-  bold: { fontWeight: "700" },
-  link: { color: theme.accent, textDecorationLine: "underline" },
-  inlineCode: { fontFamily: "Menlo", backgroundColor: theme.code, color: "#ffd9b8", fontSize: 14 },
-  codeBlock: { backgroundColor: theme.code, borderRadius: 8, padding: 10 },
-  code: { fontFamily: "Menlo", color: "#e6e9ef", fontSize: 13, lineHeight: 18 },
-  bulletRow: { flexDirection: "row", gap: 8 },
-  bulletDot: { color: theme.muted, fontSize: 16, lineHeight: 22 },
+  wrap: { gap: 9 },
+  p: { color: theme.text, fontSize: 15.5, lineHeight: 22.5, letterSpacing: -0.1 },
+  mutedText: { color: theme.thinking, fontStyle: "italic" },
+  h: { fontWeight: "700", fontSize: 16.5, color: theme.textStrong, marginTop: 2 },
+  bold: { fontWeight: "600", color: theme.textStrong },
+  link: { color: theme.accentText, textDecorationLine: "underline" },
+  inlineCode: { fontFamily: "Menlo", backgroundColor: theme.code, color: theme.accentText, fontSize: 13.5, borderRadius: 4 },
+  codeBlock: { backgroundColor: theme.code, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: theme.border },
+  code: { fontFamily: "Menlo", color: theme.text, fontSize: 13, lineHeight: 18.5 },
+  bulletRow: { flexDirection: "row", gap: 9, paddingLeft: 2 },
+  bulletDot: { color: theme.accent, fontSize: 15.5, lineHeight: 22.5 },
+  bulletNum: { color: theme.muted, fontSize: 14.5, lineHeight: 22.5, minWidth: 18 },
 });

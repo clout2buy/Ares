@@ -36,6 +36,7 @@ import {
   type ContentBlock,
   type Message,
   type PermissionPromptDecision,
+  type ReasoningLevel,
   type ToolResultBlock,
   type TurnEvent,
 } from "@ares/protocol";
@@ -342,6 +343,23 @@ export class SessionManager {
 
   list(): SessionSummary[] {
     return [...this.live.values()].map((s) => this.summarize(s));
+  }
+
+  /**
+   * Re-dial reasoning effort on every open session. The dial is one owner-level
+   * setting, so a change made anywhere (the phone's settings sheet, /reasoning
+   * in the TUI) has to reach the sessions already running or the owner turns it
+   * up and the live conversation keeps thinking at the old level. Returns how
+   * many sessions it reached. Engines that predate the dial are skipped.
+   */
+  setReasoningLevel(level: ReasoningLevel): number {
+    let applied = 0;
+    for (const session of this.live.values()) {
+      if (!session.coreSession) continue;
+      session.coreSession.setReasoningLevel(level);
+      applied++;
+    }
+    return applied;
   }
 
   /** Subscribe to a session's TurnEvents. Returns the detach function. */

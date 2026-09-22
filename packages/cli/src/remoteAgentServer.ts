@@ -218,6 +218,41 @@ export interface PhoneApiHooks {
    *  home. /gateway/file serves these so the phone can see, not just read
    *  about, what it built. Same containment rule as screenshots. */
   artifactRoots?: string[];
+  /**
+   * The cockpit the app renders: which providers and models exist, what
+   * reasoning effort each one honours, and which standing permission grants
+   * are in force. Hooks rather than imports so this server keeps knowing
+   * nothing about the provider registry or the permission store, and tests
+   * can stub the lot.
+   */
+  control?: {
+    providers: () => string[];
+    /** Models for one provider. May hit that provider's API, so it is a
+     *  separate call from the cheap overview. */
+    models: (provider: string) => Promise<ModelOption[]>;
+    effort: () => { current: string; levels: string[] };
+    setEffort: (level: string) => Promise<void>;
+    permissions: () => PermissionEntry[];
+    /** false when the pattern wasn't found or isn't the owner's to revoke. */
+    revokePermission: (pattern: string) => Promise<boolean>;
+  };
+}
+
+/** One row in the model picker. */
+export interface ModelOption {
+  id: string;
+  label?: string;
+  /** The effort rungs this model actually honours; absent means it has no dial. */
+  effortLevels?: string[];
+  contextWindow?: number;
+}
+
+/** One standing permission grant, as the app lists it. */
+export interface PermissionEntry {
+  pattern: string;
+  effect: string;
+  /** user-global rules are revocable from the phone; project rules are not. */
+  source: string;
 }
 
 /** What /gateway/file will hand a phone, by extension: things you LOOK at.
@@ -1395,6 +1430,43 @@ export class RemoteAgentServer {
             ...(typeof body.label === "string" ? { label: body.label } : {}),
           });
           return json(200, { ok: true, configured: api.pushConfigured ? api.pushConfigured() : true });
+        }
+        case "GET /gateway/control": {
+          // One cheap round trip for everything the settings sheet opens with.
+          // Models are deliberately NOT here: they can cost a provider API
+          // call each, and the sheet only needs them once a provider is picked.
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const effort = api.control.effort();
+          return json(200, { providers: api.control.providers(), effort, permissions: api.control.permissions() });
+        }
+        case "GET /gateway/control/models": {
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const provider = (url.searchParams.get("provider") ?? "").trim();
+          if (!provider) return json(400, { error: "provider required" });
+          try {
+            return json(200, { provider, models: await api.control.models(provider) });
+          } catch (err) {
+            // A provider that is unreachable or unauthed is a normal state to
+            // render ("no models — check the key"), not a 500 for the app.
+            return json(200, { provider, models: [], error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        case "POST /gateway/control/effort": {
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const body = await readJson(req, 4 * 1024);
+          const level = typeof body.level === "string" ? body.level.trim().toLowerCase() : "";
+          const { levels } = api.control.effort();
+          if (!levels.includes(level)) return json(400, { error: `level must be one of: ${levels.join(", ")}` });
+          await api.control.setEffort(level);
+          return json(200, { ok: true, effort: api.control.effort() });
+        }
+        case "POST /gateway/control/permissions/revoke": {
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const body = await readJson(req, 4 * 1024);
+          const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
+          if (!pattern) return json(400, { error: "pattern required" });
+          const removed = await api.control.revokePermission(pattern);
+          return json(removed ? 200 : 404, { ok: removed, permissions: api.control.permissions() });
         }
         case "POST /gateway/stt": {
           if (!api.transcribe) return json(501, { error: "no transcriber on this machine" });

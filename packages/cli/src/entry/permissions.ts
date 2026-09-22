@@ -231,6 +231,31 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
   }
 
   /**
+   * Undo an always-allow grant: drop it from this session AND from the
+   * user-global store. Without this, one hasty "allow always" at a prompt was
+   * permanent — the only way back was hand-editing command-permissions.json,
+   * which the owner cannot do from a phone. Only user-global rules are
+   * revocable here; a project rule lives in the repo and is the repo's to
+   * change. Returns whether anything was actually removed.
+   */
+  async revoke(pattern: string): Promise<boolean> {
+    const index = this.rules.findIndex((r) => r.pattern === pattern && r.source === "user-global");
+    if (index < 0) return false;
+    this.rules.splice(index, 1);
+    this.prefixPatterns.delete(pattern);
+    let stored: StoredCommandPermissions = { rules: [] };
+    try {
+      stored = JSON.parse(await readFile(this.userGlobalPath, "utf8")) as StoredCommandPermissions;
+    } catch {
+      // Nothing on disk: the live removal above is the whole job.
+      return true;
+    }
+    stored.rules = (stored.rules ?? []).filter((r) => r.pattern !== pattern);
+    await writeFile(this.userGlobalPath, JSON.stringify(stored, null, 2) + "\n", "utf8");
+    return true;
+  }
+
+  /**
    * Precedence: an explicit deny wins over any allow/ask regardless of order —
    * "last matching rule" let a later allow-always grant silently override an
    * owner's deny. Among the rest, the last match still wins (later rules refine

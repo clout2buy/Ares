@@ -19,12 +19,13 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, type FileReadStamp } from "@ares/tools";
+import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
 import { dim, notice } from "../terminalUi.js";
-import { loadUiSettings } from "../uiSettings.js";
+import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
 import { MemoryStore, detectWorkspaceProjectId, loadProjectState, withConsolidationLock } from "@ares/mind";
@@ -35,7 +36,7 @@ import { gateToolPermission, remoteAutonomyDecision } from "../policyGate.js";
 import { applyEngineConfigEnv } from "./daemon.js";
 import { buildEngineTools } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissions.js";
-import { providerFamilyForSelection, selectProvider } from "./providers.js";
+import { daemonModelCatalog, providerFamilyForSelection, selectProvider, TERMINAL_PROVIDERS } from "./providers.js";
 import { AresRuntimeState, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, makeSpanSummarizer, resolveReasoningLevel } from "./sessionFactory.js";
 import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins, keepTelegramBridgeUp } from "./telegramWiring.js";
@@ -144,6 +145,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const pathPermissions = await AresPathPermissionStore.load(context);
   const commandPermissions = await AresCommandPermissionStore.load(context);
   const settings = await loadUiSettings();
+  // The dial the phone can turn: `settings` is the boot snapshot, so keep a
+  // mutable view of it or a level set from the app reads back as the old one.
+  let latestSettings = settings;
   // The Ares network: a garrison serving Telegram all day keeps the hosted
   // estate in sync too (reconnects if the owner left it on; never throws).
   void startAresNetworkFromSettings();
@@ -568,6 +572,32 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,
+          // The phone's settings sheet: which brains exist, how hard they
+          // think, and what they have been given standing permission to do.
+          // The owner could set all three from a terminal and none of them
+          // from the device they actually carry.
+          control: {
+            providers: () => [...TERMINAL_PROVIDERS],
+            models: async (provider) =>
+              (await daemonModelCatalog(provider)).map((row) => ({
+                id: row.id,
+                ...(row.label ? { label: row.label } : {}),
+                ...(row.effortLevels ? { effortLevels: row.effortLevels } : {}),
+              })),
+            effort: () => ({ current: resolveReasoningLevel(latestSettings), levels: [...REASONING_LEVELS] }),
+            setEffort: async (level) => {
+              if (!isReasoningLevel(level)) return;
+              // An explicit choice must outrank ARES_REASONING_LEVEL for the
+              // rest of this process, or the next fresh session snaps back to
+              // the env value and the dial looks broken from the phone.
+              delete process.env.ARES_REASONING_LEVEL;
+              latestSettings = { ...latestSettings, reasoningLevel: level };
+              await updateUiSettings({ reasoningLevel: level });
+              sessions.setReasoningLevel(level);
+            },
+            permissions: () => commandPermissions.list().map((r) => ({ pattern: r.pattern, effect: r.effect, source: r.source })),
+            revokePermission: (pattern) => commandPermissions.revoke(pattern),
+          },
         },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable

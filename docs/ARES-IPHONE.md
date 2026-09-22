@@ -31,6 +31,11 @@ updates itself** (OTA), and push notifications. This is the one to use.
 5. Pair: gateway `ares.mistiqueai.com`, token from `~/.ares/garrison/token`
    (or scan the pairing QR).
 
+**Day to day (from the box):**
+- JS/UI change → `scripts/mobile-ota.sh "what changed"` → installed phones pull it on next open. Seconds, no rebuild.
+- Native change (new SDK, new native module) → `scripts/mobile-build.sh` → new TestFlight build.
+- Always use these scripts, never `eas build`/`eas update` by hand: the runtime fingerprint hashes `eas.json`, and the scripts keep it byte-identical between build and update (the ASC submit fields are wired in for the run and restored after). An update published against a different `eas.json` targets a runtime no build has and is silently never fetched.
+
 **From then on — auto-update on push:**
 - In the GitHub repo: Settings → Secrets and variables → Actions
   - Variable `IOS_SIGNING_ENABLED` = `true`

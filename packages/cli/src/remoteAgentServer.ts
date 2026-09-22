@@ -208,8 +208,10 @@ export interface PhoneApiHooks {
   artifactRoots?: string[];
 }
 
-/** What /gateway/file will hand a phone, by extension. Anything else is 404 —
- *  the owner's token is not a licence to read arbitrary files. */
+/** What /gateway/file will hand a phone, by extension: things you LOOK at.
+ *  Anything else is 404 — the owner's token is not a licence to read
+ *  arbitrary files. JSON is deliberately absent: nothing Ares makes for the
+ *  owner to see is JSON, and credentials.json / ui.json are. */
 const ARTIFACT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -222,11 +224,17 @@ const ARTIFACT_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
   ".txt": "text/plain; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
 };
 
+/** Places under an artifact root that hold secrets or machinery, never
+ *  artifacts — refused whatever the extension. The workspace is a root now
+ *  (Ares builds pages there), and the workspace holds the signing key dir,
+ *  a .git, and node_modules. */
+const NEVER_SERVE = /(^|[\\/])(\.git|node_modules|asc|\.ssh|\.gnupg|garrison)([\\/]|$)|(^|[\\/])[^\\/]*\.(env|pem|p8|p12|key|mobileprovision)$|credentials\.json$|ui\.json$/i;
+
 function insideAny(wanted: string, roots: string[]): boolean {
+  if (NEVER_SERVE.test(wanted)) return false;
   return roots.map((r) => path.resolve(r)).some((root) => wanted === root || wanted.startsWith(root + path.sep));
 }
 

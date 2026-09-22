@@ -237,3 +237,59 @@ test("phone api: /gateway/file serves what Ares made (html, images) under an art
     await fsp.rm(shots, { recursive: true, force: true });
   }
 });
+
+test("phone api: a page built in the workspace opens only when the workspace is an artifact root", async () => {
+  // Ares writes pages into the workspace it is building in, not just into its
+  // own home — if `garrison serve` forgets that root the phone gets {"error":
+  // "not found"} for every artifact, so pin both halves of the rule here.
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-home-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-ws-"));
+  const page = path.join(workspace, "house.html");
+  await fsp.writeFile(page, "<canvas></canvas>");
+  const auth = { authorization: "Bearer phone-token" };
+  const wired = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "phone-token", phoneApi: { artifactRoots: [home, workspace] } });
+  const homeOnly = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "phone-token", phoneApi: { artifactRoots: [home] } });
+  await wired.start();
+  await homeOnly.start();
+  try {
+    const ok = await fetch(`http://127.0.0.1:${wired.port}/gateway/file?path=${encodeURIComponent(page)}`, { headers: auth });
+    assert.equal(ok.status, 200, "a workspace artifact is served once the workspace is a root");
+    assert.match(ok.headers.get("content-type"), /text\/html/);
+
+    const refused = await fetch(`http://127.0.0.1:${homeOnly.port}/gateway/file?path=${encodeURIComponent(page)}`, { headers: auth });
+    assert.equal(refused.status, 404, "without the workspace root the same file is the bug the owner hit");
+  } finally {
+    await wired.close();
+    await homeOnly.close();
+    await fsp.rm(home, { recursive: true, force: true });
+    await fsp.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("phone api: secrets under an artifact root are refused whatever the root says", async () => {
+  // The workspace and the home are both roots now. Both hold things that are
+  // not artifacts: the signing key dir, credentials.json, ui.json (API keys),
+  // a .git. A token that opens the house must not open those.
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-home-"));
+  await fsp.mkdir(path.join(home, "asc"), { recursive: true });
+  await fsp.mkdir(path.join(home, "forge"), { recursive: true });
+  await fsp.mkdir(path.join(home, "mobile"), { recursive: true });
+  await fsp.writeFile(path.join(home, "asc", "AuthKey_X.p8"), "-----BEGIN PRIVATE KEY-----");
+  await fsp.writeFile(path.join(home, "asc", "key.env"), "EXPO_TOKEN=x");
+  await fsp.writeFile(path.join(home, "ui.json"), "{\"deepSeekKey\":\"sk\"}");
+  await fsp.writeFile(path.join(home, "mobile", "credentials.json"), "{\"password\":\"p\"}");
+  await fsp.writeFile(path.join(home, "forge", "report.md"), "# fine");
+  const server = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "phone-token", phoneApi: { artifactRoots: [home] } });
+  await server.start();
+  const auth = { authorization: "Bearer phone-token" };
+  const get = (p) => fetch(`http://127.0.0.1:${server.port}/gateway/file?path=${encodeURIComponent(p)}`, { headers: auth });
+  try {
+    for (const p of ["asc/AuthKey_X.p8", "asc/key.env", "ui.json", "mobile/credentials.json"]) {
+      assert.equal((await get(path.join(home, p))).status, 404, `refused: ${p}`);
+    }
+    assert.equal((await get(path.join(home, "forge", "report.md"))).status, 200, "a report Ares wrote still opens");
+  } finally {
+    await server.close();
+    await fsp.rm(home, { recursive: true, force: true });
+  }
+});

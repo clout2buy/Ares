@@ -538,8 +538,10 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             })).text,
           synthesize: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
           screenshotRoots: [path.join(context.home, "screenshots"), path.join(os.tmpdir(), "ares-screenshots")],
-          // Everything Ares makes lands under its home (forge/, reports…).
-          artifactRoots: [context.home],
+          // What Ares MAKES lands in two places: its home (forge/, reports…) and
+          // the workspace it is building in (pages, dashboards). The phone has to
+          // open both, or "show me what you made" 404s on every file it wrote.
+          artifactRoots: [context.home, context.workspace],
         },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable

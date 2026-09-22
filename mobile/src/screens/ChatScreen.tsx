@@ -19,6 +19,9 @@ import { artifactPathsInText, emptyTranscript, fold, mediaOf, nextKey, stripSyst
 import { RECORDING, afterRecording, ensureMicrophone, speak, stopSpeaking, transcribeFile } from "../voice";
 import type { PermissionDecision, ServerFrame, SessionAttachment, SessionSummary, StagedApproval, TurnEvent } from "../wire";
 
+// Hoisted: RN warns when the viewability config object is rebuilt between renders.
+const VIEWABILITY = { itemVisiblePercentThreshold: 20 };
+
 const HISTORY_LIMIT = 300;
 /** The garrison caps each image at ~1.5 MB of base64. */
 const MAX_IMAGE_BASE64 = 1_500_000;
@@ -339,6 +342,30 @@ export function ChatScreen({
     }).reverse();
   }, [transcript.items]);
 
+  // The newest thing Ares made stays reachable: an artifact card scrolls away
+  // with the conversation, and hunting back through the chat to find the page
+  // again is how a finished page goes unopened.
+  const latest = React.useMemo(() => {
+    const items = transcript.items;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "artifact") return { key: it.key, path: it.path, name: it.name, media: it.media };
+      if (it.kind === "assistant" && !it.streaming) {
+        const p = artifactPathsInText(it.text).filter((x) => x.startsWith("/home/") || x.startsWith("/tmp/")).pop();
+        if (p) return { key: it.key, path: p, name: p.split("/").pop() ?? p, media: mediaOf(p) };
+      }
+    }
+    return null;
+  }, [transcript.items]);
+
+  // null until the list has reported what is on screen — better to show nothing
+  // than to stack a second Open button under a card that is already visible.
+  const [onScreen, setOnScreen] = React.useState<string[] | null>(null);
+  const onViewable = React.useRef(({ viewableItems }: { viewableItems: Array<{ item: Row }> }) => {
+    const keys = viewableItems.map((v) => v.item.item.key);
+    setOnScreen((prev) => (prev && prev.length === keys.length && prev.every((k, i) => k === keys[i]) ? prev : keys));
+  }).current;
+
   const renderRow = ({ item: row }: { item: Row }) => {
     const { item } = row;
     switch (item.kind) {
@@ -462,12 +489,21 @@ export function ChatScreen({
           inverted
           keyExtractor={(row) => row.item.key}
           renderItem={renderRow}
+          onViewableItemsChanged={onViewable}
+          viewabilityConfig={VIEWABILITY}
           contentContainerStyle={styles.list}
           ItemSeparatorComponent={() => <View style={{ height: 6 }} />}
           keyboardDismissMode="interactive"
           ListEmptyComponent={<Text style={styles.empty}>{connected ? "What's next?" : ""}</Text>}
         />
         <View style={{ paddingBottom: insets.bottom }}>
+          {latest && onScreen && !onScreen.includes(latest.key) ? (
+            <Pressable onPress={() => setViewing({ path: latest.path, name: latest.name })} style={({ pressed }) => [styles.resurface, { opacity: pressed ? 0.85 : 1 }]}>
+              <Text style={styles.resurfaceIcon}>{latest.media === "image" ? "▤" : "◈"}</Text>
+              <Text style={styles.resurfaceName} numberOfLines={1}>{latest.name}</Text>
+              <Text style={styles.resurfaceOpen}>Open ›</Text>
+            </Pressable>
+          ) : null}
           <Composer
             busy={transcript.busy}
             connected={connected && !!sessionId}
@@ -544,6 +580,10 @@ const styles = StyleSheet.create({
   approvals: { padding: 12, gap: 8 },
   body: { flex: 1 },
   list: { paddingHorizontal: 12, paddingVertical: 14 },
+  resurface: { flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: 12, marginBottom: 6, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: theme.panelRaised, borderWidth: 1, borderColor: theme.borderStrong, borderRadius: radius.card },
+  resurfaceIcon: { color: theme.accent, fontSize: 15 },
+  resurfaceName: { flex: 1, color: theme.textStrong, fontSize: 13.5, fontWeight: "600" },
+  resurfaceOpen: { color: theme.accent, fontSize: 13, fontWeight: "600" },
   fullRow: { paddingVertical: 4 },
   userRow: { flexDirection: "row", justifyContent: "flex-end", paddingLeft: 48, paddingVertical: 4 },
   userBubble: { maxWidth: "100%", backgroundColor: theme.userBubble, borderWidth: 1, borderColor: theme.userBorder, borderRadius: radius.bubble, borderBottomRightRadius: 6, paddingHorizontal: 14, paddingVertical: 10, gap: 6 },

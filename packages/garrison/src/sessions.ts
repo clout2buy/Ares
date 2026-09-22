@@ -849,8 +849,18 @@ function permissionKey(sessionId: string, requestId: string): string {
   return `${sessionId}\0${requestId}`;
 }
 
+/** A title already written to disk with the briefing in it — every phone
+ *  session before this fix. Strip it on read so old threads stop reading
+ *  "(System: This conversa…" without needing a migration. */
+function healTitle(stored: string | undefined): string | undefined {
+  const value = nonEmpty(stored);
+  if (value === undefined) return undefined;
+  const cleaned = stripSystemPreamble(value);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 function deriveTitle(text: string): string {
-  const collapsed = text.replace(/\s+/g, " ").trim();
+  const collapsed = stripSystemPreamble(text.replace(/\s+/g, " ").trim());
   if (!collapsed) return FALLBACK_TITLE;
   return collapsed.length > TITLE_MAX_CHARS ? `${collapsed.slice(0, TITLE_MAX_CHARS - 1)}…` : collapsed;
 }
@@ -926,7 +936,7 @@ export async function rehydrateSessions(
     const events = parseRolloutLines(text);
     const messages = messagesFromRollout(events);
     const meta = await readMetaFile(metaPath(home, id));
-    const title = nonEmpty(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
+    const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
     out.push({
       id,
       title,
@@ -963,7 +973,7 @@ export async function rehydrateSession(
   const events = parseRolloutLines(text);
   const messages = messagesFromRollout(events);
   const meta = await readMetaFile(metaPath(home, sessionId));
-  const title = nonEmpty(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
+  const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
   return {
     id: sessionId,
     title,
@@ -1129,10 +1139,34 @@ function messagesFromRollout(events: readonly TurnEvent[]): Message[] {
   return messages;
 }
 
+/**
+ * Strip a leading "(System: …)" note a client prepended to the owner's first
+ * message.
+ *
+ * The iPhone app opens a session by prefixing a briefing — "the user is on
+ * their phone, away from the computer…" — to the first thing the owner types.
+ * That message is also what names the session, so every phone conversation was
+ * titled with the briefing: the chat header read "(System: This conversa…" and
+ * the session list was a column of identical rows. Scans parentheses rather
+ * than regex-matching, so a ")" inside the note cannot end it early.
+ */
+function stripSystemPreamble(text: string): string {
+  if (!/^\(\s*system\s*:/i.test(text)) return text;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return text.slice(i + 1).trim();
+    }
+  }
+  return text; // unbalanced — leave it alone rather than truncate the message
+}
+
 function titleFromMessages(messages: readonly Message[]): string | undefined {
   const firstUser = messages.find((m) => m.role === "user");
   if (!firstUser) return undefined;
-  const text = messageText(firstUser).replace(/\s+/g, " ").trim();
+  const text = stripSystemPreamble(messageText(firstUser).replace(/\s+/g, " ").trim());
   if (!text) return undefined;
   return text.length > TITLE_MAX_CHARS ? `${text.slice(0, TITLE_MAX_CHARS - 1)}…` : text;
 }

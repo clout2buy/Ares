@@ -15,7 +15,7 @@
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -1390,8 +1390,15 @@ export class RemoteAgentServer {
           const type = ARTIFACT_TYPES[ext];
           const imageOnly = url.pathname === "/gateway/shot";
           if (!insideAny(wanted, roots) || !type || (imageOnly && !type.startsWith("image/"))) return json(404, { error: "not found" });
+          // …and again after following symlinks. The extension check reads the
+          // PATH, so `served-root/report.html` symlinked at an ssh key would
+          // otherwise pass every gate above and be handed straight out. Matters
+          // most for the temp root, which is world-writable.
+          let real: string;
+          try { real = await realpath(wanted); } catch { return json(404, { error: "not found" }); }
+          if (real !== wanted && !insideAny(real, roots)) return json(404, { error: "not found" });
           let bytes: Buffer;
-          try { bytes = await readFile(wanted); } catch { return json(404, { error: "not found" }); }
+          try { bytes = await readFile(real); } catch { return json(404, { error: "not found" }); }
           const headers: Record<string, string | number> = { "content-type": type, "content-length": bytes.byteLength, "cache-control": "private, max-age=60" };
           // A page Ares wrote runs in the phone's viewer with no network: it
           // may draw (WebGL, canvas, inline scripts) but never phone home.

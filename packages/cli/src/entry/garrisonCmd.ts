@@ -575,7 +575,12 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           // What Ares MAKES lands in two places: its home (forge/, reports…) and
           // the workspace it is building in (pages, dashboards). The phone has to
           // open both, or "show me what you made" 404s on every file it wrote.
-          artifactRoots: [context.home, context.workspace],
+          // Ares builds throwaway pages in the system temp dir — /tmp/dbx-grid/
+          // index.html and friends — and linked them in replies that opened to
+          // "not found", because temp was not a served root. Only the
+          // look-at-able extensions are servable from anywhere, the bearer
+          // token is still required, and symlinks out are refused.
+          artifactRoots: [context.home, context.workspace, os.tmpdir()],
           oauth: {
             handleCallback: (req, res, url) => tunnelOAuth.handleCallback(req, res, url),
             begin: (provider, scopes) => tunnelOAuth.begin(provider, scopes),

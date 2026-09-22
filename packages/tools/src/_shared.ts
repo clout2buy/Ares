@@ -115,6 +115,28 @@ export interface RichToolContext extends ToolCallContext {
 export const SHELL_DEFAULT_TIMEOUT_MS = 120_000;
 export const SHELL_MAX_TIMEOUT_MS = 600_000;
 
+/** How much longer than its own declared timeout a foreground shell may take
+ *  before the ENGINE gives up on it. Covers the kill escalation (2s) and the
+ *  force-settle backstop (5s) with room to spare, so this deadline only ever
+ *  fires when runShell's own settlement machinery has itself failed — which is
+ *  exactly the case that wedged three production turns. */
+export const SHELL_WATCHDOG_GRACE_MS = 20_000;
+/** A backgrounded command returns a shell_id immediately; if THAT takes half a
+ *  minute, something is wrong with the supervisor, not with the command. */
+export const SHELL_BACKGROUND_WATCHDOG_MS = 30_000;
+
+/** The engine-level deadline for one shell call, derived from what the call
+ *  itself asked for. A shell is "self-capping", but 2026-09-22 proved a
+ *  self-cap can fire and still never settle — so the engine keeps its own. */
+export function shellWatchdogFor(input: { timeout?: number; run_in_background?: boolean }): number {
+  if (input.run_in_background === true) return SHELL_BACKGROUND_WATCHDOG_MS;
+  const declared = typeof input.timeout === "number" && input.timeout > 0
+    ? Math.min(input.timeout, SHELL_MAX_TIMEOUT_MS)
+    : SHELL_DEFAULT_TIMEOUT_MS;
+  return declared + SHELL_WATCHDOG_GRACE_MS;
+}
+
+
 /** One model-facing command contract for every platform shell. Bash and
  * PowerShell differ only in interpreter selection; cwd, timeout, detached-job
  * behavior, permission semantics, and output recovery stay identical. */
@@ -284,9 +306,16 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
   concurrency: Concurrency;
   providerHint?: ProviderHint;
   deferLoading?: boolean;
-  /** Per-tool execution watchdog (ms). 0 = uncapped (self-capping tools);
+  /** Per-tool execution watchdog (ms). 0 = no STATIC cap (the engine then
+   *  applies UNCAPPED_TOOL_CEILING_MS — nothing is ever unbounded);
    *  omitted = engine picks a class default from `safety`. */
   watchdogTimeoutMs?: number;
+  /** A deadline derived from this call's input, for tools whose honest budget
+   *  depends on their arguments. Wins over watchdogTimeoutMs. This is how a
+   *  "self-capping" tool stays bounded by the ENGINE rather than by trusting
+   *  its own internals — a shell whose kill fails to settle is exactly how
+   *  three production turns wedged. */
+  watchdogFor?: (input: z.infer<I>) => number | undefined;
   /** Max chars of result kept inline before the engine spills to disk (Phase 4). */
   maxResultSizeChars?: number;
   inputZod: I;
@@ -325,6 +354,7 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     providerHint: def.providerHint,
     deferLoading: def.deferLoading,
     watchdogTimeoutMs: def.watchdogTimeoutMs,
+    ...(def.watchdogFor ? { watchdogFor: (input: unknown) => def.watchdogFor!(input as z.infer<I>) } : {}),
     maxResultSizeChars: def.maxResultSizeChars,
   };
 

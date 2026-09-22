@@ -344,6 +344,12 @@ export interface ToolSchema {
    *  `safety`. Bounds a single tool call so a hung network fetch can't stall the
    *  whole turn for minutes. */
   watchdogTimeoutMs?: number;
+  /** A deadline derived from THIS call's input, for tools whose honest budget
+   *  depends on their arguments (a shell command's own `timeout`, a remote
+   *  transfer's size). Wins over watchdogTimeoutMs. Returning 0/undefined falls
+   *  back to the static value — but never to "unbounded": see
+   *  UNCAPPED_TOOL_CEILING_MS. */
+  watchdogFor?: (input: unknown) => number | undefined;
   /** Max characters of this tool's result kept inline in the model's context.
    *  When the result exceeds it, the engine spills the full output to disk and
    *  hands the model a preview + a path it can re-Read — so a giant file read or

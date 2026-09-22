@@ -14,6 +14,7 @@ import {
   shellInputSchema,
   shellPolicyDecision,
   shellRepositoryInstructionDecision,
+  shellWatchdogFor,
 } from "./_shared.js";
 import { classifyShellFailure, shellFlavorOf, type ShellFlavor } from "./shellHints.js";
 
@@ -59,9 +60,11 @@ export const BashTool = buildTool({
     "Run a bash/POSIX command. By default runs foreground until completion. Set run_in_background=true to launch it in the background — the tool returns a shell_id immediately; use BashOutput to poll new output and KillShell to terminate. On Windows, prefer PowerShell unless POSIX shell syntax is specifically required. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — unquoted spaced paths break the shell; this matters most when launching a detached/new-window process where you must include the path yourself.",
   safety: "workspace-write",
   concurrency: "exclusive",
-  // Self-capping: Bash has its own per-command timeout + run_in_background.
-  // Uncapped so a legit long build/test isn't severed by the class default.
+  // Self-capping, but the ENGINE keeps its own deadline derived from the
+  // command's declared timeout: a self-cap that fires and still fails to
+  // settle is how turns wedged. Uncapped here would mean the 13-min ceiling.
   watchdogTimeoutMs: 0,
+  watchdogFor: shellWatchdogFor,
   inputZod: inputSchema,
   activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   commandFor: (i) => i.command,

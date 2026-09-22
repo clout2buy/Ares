@@ -4945,7 +4945,7 @@ export class QueryEngine {
       // ctx.signal so the tool's own fetch/child aborts on timeout — turning the
       // 5-minute hang into a fast, correctable is_error the model can adapt to.
       const result = await withWatchdog(
-        watchdogTimeoutMsFor(use.tool.schema),
+        watchdogTimeoutMsFor(use.tool.schema, use.input),
         this.liveSignal(),
         (signal, control) => {
           watchdog = control;
@@ -5317,15 +5317,41 @@ export class ToolWatchdogError extends Error {
 }
 
 /**
- * The watchdog deadline for one tool call. An explicit `watchdogTimeoutMs` on
- * the schema wins (including 0 = uncapped, for self-capping tools like
- * Bash/Task). Otherwise a class default by safety: networked external-state is
- * the tightest (a hung fetch is the classic stall), reads next, and
- * workspace-write/destructive get the most room. ARES_TOOL_WATCHDOG_MS overrides
- * the default globally (0 disables the watchdog everywhere).
+ * The last line against a wedged turn: no tool call may run forever.
+ *
+ * Every freeze this daemon has had was one shape — a tool promise that could
+ * never settle, with nothing above it to give up. withWatchdog already races
+ * every call against a deadline, so a bounded tool CANNOT hang a turn however
+ * broken its internals are. The hole was the opt-out: `watchdogTimeoutMs: 0`
+ * meant "no deadline at all", and it was set on precisely the tools that can
+ * hang — shells, remote exec, sub-agents.
+ *
+ * So 0 no longer means unbounded. It means "no fixed number is right for this
+ * tool", and the tool either derives one from its input (watchdogFor) or falls
+ * to this ceiling. Chosen to sit just under the turn watchdog
+ * (STUCK_TURN_SILENCE_MS, 15 min) so a hung tool surfaces as a correctable
+ * is_error the model can react to, instead of the whole turn being killed.
  */
-function watchdogTimeoutMsFor(schema: ToolSchema): number {
-  if (typeof schema.watchdogTimeoutMs === "number") return Math.max(0, Math.floor(schema.watchdogTimeoutMs));
+const UNCAPPED_TOOL_CEILING_MS = 13 * 60_000;
+
+/**
+ * The watchdog deadline for one tool call. A deadline derived from this call's
+ * input wins (watchdogFor), then an explicit `watchdogTimeoutMs`, then a class
+ * default by safety: networked external-state is the tightest (a hung fetch is
+ * the classic stall), reads next, and workspace-write/destructive get the most
+ * room. ARES_TOOL_WATCHDOG_MS overrides the default globally, and remains the
+ * only way to disable the watchdog (0) — a deliberate debugging escape hatch,
+ * never a per-tool one.
+ */
+function watchdogTimeoutMsFor(schema: ToolSchema, input?: unknown): number {
+  const derived = schema.watchdogFor?.(input);
+  if (typeof derived === "number" && Number.isFinite(derived) && derived > 0) {
+    return Math.floor(derived);
+  }
+  if (typeof schema.watchdogTimeoutMs === "number") {
+    const fixed = Math.max(0, Math.floor(schema.watchdogTimeoutMs));
+    return fixed > 0 ? fixed : UNCAPPED_TOOL_CEILING_MS;
+  }
   const env = Number(process.env.ARES_TOOL_WATCHDOG_MS);
   if (Number.isFinite(env) && env >= 0) return Math.floor(env);
   switch (schema.safety) {

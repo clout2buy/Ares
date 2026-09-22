@@ -202,6 +202,32 @@ export interface PhoneApiHooks {
   transcribe?: (audio: Buffer, format: { encoding: string; sampleRateHertz: number }) => Promise<string>;
   synthesize?: (text: string, voice?: string) => Promise<Buffer>;
   screenshotRoots?: string[];
+  /** Where Ares writes the things it MAKES (renders, pages, reports) — its
+   *  home. /gateway/file serves these so the phone can see, not just read
+   *  about, what it built. Same containment rule as screenshots. */
+  artifactRoots?: string[];
+}
+
+/** What /gateway/file will hand a phone, by extension. Anything else is 404 —
+ *  the owner's token is not a licence to read arbitrary files. */
+const ARTIFACT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+};
+
+function insideAny(wanted: string, roots: string[]): boolean {
+  return roots.map((r) => path.resolve(r)).some((root) => wanted === root || wanted.startsWith(root + path.sep));
 }
 
 // ─── Internal state ────────────────────────────────────────────────────────
@@ -1292,18 +1318,24 @@ export class RemoteAgentServer {
 
     try {
       switch (`${req.method} ${url.pathname}`) {
-        case "GET /gateway/shot": {
-          // Only a file under a screenshot root, only an image: the token is
-          // the owner's, but a path parameter is still a path parameter.
+        case "GET /gateway/shot":
+        case "GET /gateway/file": {
+          // Only a file under a root Ares itself writes to, only a type we'd
+          // show: the token is the owner's, but a path parameter is still a
+          // path parameter. /shot is the image-only alias the app used first.
           const wanted = path.resolve(url.searchParams.get("path") ?? "");
-          const roots = (api.screenshotRoots ?? []).map((r) => path.resolve(r));
-          const inside = roots.some((root) => wanted === root || wanted.startsWith(root + path.sep));
+          const roots = [...(api.screenshotRoots ?? []), ...(api.artifactRoots ?? [])];
           const ext = path.extname(wanted).toLowerCase();
-          const types: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
-          if (!inside || !types[ext]) return json(404, { error: "not found" });
+          const type = ARTIFACT_TYPES[ext];
+          const imageOnly = url.pathname === "/gateway/shot";
+          if (!insideAny(wanted, roots) || !type || (imageOnly && !type.startsWith("image/"))) return json(404, { error: "not found" });
           let bytes: Buffer;
           try { bytes = await readFile(wanted); } catch { return json(404, { error: "not found" }); }
-          res.writeHead(200, { "content-type": types[ext], "content-length": bytes.byteLength, "cache-control": "private, max-age=3600" });
+          const headers: Record<string, string | number> = { "content-type": type, "content-length": bytes.byteLength, "cache-control": "private, max-age=60" };
+          // A page Ares wrote runs in the phone's viewer with no network: it
+          // may draw (WebGL, canvas, inline scripts) but never phone home.
+          if (type.startsWith("text/html")) headers["content-security-policy"] = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'";
+          res.writeHead(200, headers);
           res.end(bytes);
           return;
         }

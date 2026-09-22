@@ -9,6 +9,7 @@ import { messageText, type PermissionDecision, type TurnEvent } from "./wire";
 export type Item =
   | { kind: "user"; key: string; text: string; steer?: boolean; images?: string[] }
   | { kind: "image"; key: string; path: string; label: string }
+  | { kind: "artifact"; key: string; path: string; name: string; media: "html" | "image" | "file"; updatedAt: number }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "thinking"; key: string; text: string; streaming: boolean; startedAt: number; endedAt?: number }
   | { kind: "activity"; key: string; card: ActivityCardState }
@@ -21,6 +22,9 @@ export interface Transcript {
   busy: boolean;
   /** Where this turn's activity card lives, so tool events find it. */
   activityKey?: string;
+  /** tool_use id → the input it started with, so tool_end can tell what file
+   *  a Read/Write touched and surface it as an artifact. */
+  toolInputs?: Record<string, unknown>;
 }
 
 let keySeq = 0;
@@ -38,7 +42,41 @@ export function screenshotPathOf(output: unknown): string | undefined {
 }
 
 export function emptyTranscript(): Transcript {
-  return { items: [], busy: false };
+  return { items: [], busy: false, toolInputs: {} };
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif|svg)$/i;
+const PAGE_EXT = /\.(html?|pdf)$/i;
+/** An absolute path Ares wrote or read that the owner would want to SEE. */
+export function artifactPathOf(input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const r = input as Record<string, unknown>;
+  const p = [r.file_path, r.path, r.output, r.outputPath, r.screenshotPath].find((v) => typeof v === "string" && v.startsWith("/")) as string | undefined;
+  if (!p) return undefined;
+  return IMAGE_EXT.test(p) || PAGE_EXT.test(p) ? p : undefined;
+}
+export function mediaOf(p: string): "html" | "image" | "file" {
+  return IMAGE_EXT.test(p) ? "image" : /\.html?$/i.test(p) ? "html" : "file";
+}
+/** Absolute paths mentioned in a reply that point at something viewable. */
+export function artifactPathsInText(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/\/(?:[\w.@-]+\/)+[\w.@-]+\.(?:html?|png|jpe?g|webp|gif|svg|pdf)/gi)) out.add(m[0]);
+  return [...out];
+}
+
+/** Show a made thing once per turn; a re-edit refreshes it instead of stacking. */
+function addArtifact(items: Item[], p: string, now: number): void {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "user") break;
+    if (item.kind === "artifact" && item.path === p) {
+      items[i] = { ...item, updatedAt: now };
+      return;
+    }
+    if (item.kind === "image" && item.path === p) return;
+  }
+  items.push({ kind: "artifact", key: nextKey("f"), path: p, name: p.split("/").pop() ?? p, media: mediaOf(p), updatedAt: now });
 }
 
 function lastUserText(items: Item[]): string | undefined {
@@ -142,6 +180,7 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
       sealThinking(items, now);
       const card = activityOf(state);
       card.steps.push({ id: e.id, label: e.activityDescription || e.name, startedAt: now, state: "running" });
+      state.toolInputs = { ...(state.toolInputs ?? {}), [e.id]: e.input };
       state.busy = true;
       return state;
     }
@@ -152,6 +191,10 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
       // the phone sees what Ares saw.
       const shot = screenshotPathOf(e.output);
       if (shot) items.push({ kind: "image", key: nextKey("s"), path: shot, label: "What Ares saw" });
+      // A Read of a render, a Write of a page: the owner should see the thing,
+      // not a sentence about it.
+      const touched = artifactPathOf(state.toolInputs?.[e.id]) ?? artifactPathOf(e.output);
+      if (touched && touched !== shot) addArtifact(items, touched, now);
       const hit = oauthProviderFromError(e.output);
       if (hit) items.push({ kind: "connect", key: nextKey("c"), provider: hit.provider, expired: hit.expired });
       return state;
@@ -197,6 +240,7 @@ export function fold(prev: Transcript, event: TurnEvent, now = Date.now()): Tran
       if (state.activityKey) sealCard(activityOf(state), now);
       state.activityKey = undefined;
       state.busy = false;
+      state.toolInputs = {};
       return state;
     }
     default:

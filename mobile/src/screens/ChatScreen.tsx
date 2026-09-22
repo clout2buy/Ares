@@ -10,11 +10,12 @@ import * as ImagePicker from "expo-image-picker";
 import { useAudioRecorder } from "expo-audio";
 import { ActivityCard, ApprovalCard, Button, ConnectCard, PermissionCard, ThinkingBubble } from "../components/Cards";
 import { Composer, type Draft } from "../components/Composer";
+import { ArtifactCard, ArtifactViewer, Enter } from "../components/Artifacts";
 import type { GatewayClient, GatewayStatus } from "../gateway";
 import { Markdown } from "../Markdown";
 import { PROVIDER_LABELS } from "../prompts";
 import { radius, theme } from "../theme";
-import { emptyTranscript, fold, nextKey, stripSystemNotes, type Item, type Transcript } from "../transcript";
+import { artifactPathsInText, emptyTranscript, fold, mediaOf, nextKey, stripSystemNotes, type Item, type Transcript } from "../transcript";
 import { RECORDING, afterRecording, ensureMicrophone, speak, stopSpeaking, transcribeFile } from "../voice";
 import type { PermissionDecision, ServerFrame, SessionAttachment, SessionSummary, StagedApproval, TurnEvent } from "../wire";
 
@@ -60,6 +61,7 @@ export function ChatScreen({
   const [transcript, setTranscript] = React.useState<Transcript>(emptyTranscript());
   const [approvals, setApprovals] = React.useState<Approval[]>([]);
   const [picker, setPicker] = React.useState(false);
+  const [viewing, setViewing] = React.useState<{ path: string; name: string } | null>(null);
   const [draft, setDraft] = React.useState<Draft>(EMPTY_DRAFT);
   const [speakReplies, setSpeakReplies] = React.useState(false);
   const [listening, setListening] = React.useState(false);
@@ -313,7 +315,7 @@ export function ChatScreen({
 
   // Consecutive agent items (thinking → tools → text) read as one reply: the
   // avatar sits beside the first of the run, the rest hang under it.
-  const AGENT = new Set(["assistant", "thinking", "activity", "image"]);
+  const AGENT = new Set(["assistant", "thinking", "activity", "image", "artifact"]);
   type Row = { item: Item; first: boolean; lastOfRun: boolean };
   const rows = React.useMemo<Row[]>(() => {
     const list = transcript.items;
@@ -334,7 +336,7 @@ export function ChatScreen({
     switch (item.kind) {
       case "user":
         return (
-          <View style={styles.userRow}>
+          <Enter><View style={styles.userRow}>
             <View style={styles.userBubble}>
               {item.steer ? <Text style={styles.steerTag}>↪ steer</Text> : null}
               {item.images?.length ? (
@@ -344,20 +346,31 @@ export function ChatScreen({
               ) : null}
               {item.text ? <Text style={styles.userText}>{stripSystemNotes(item.text)}</Text> : null}
             </View>
-          </View>
+          </View></Enter>
         );
       case "assistant":
       case "thinking":
       case "activity":
-      case "image": {
+      case "image":
+      case "artifact": {
         let body: React.ReactNode;
         if (item.kind === "assistant") {
+          // A reply that names a file it made gets that file as a card under
+          // it — the house, not the sentence about the house.
+          const mentioned = item.streaming ? [] : artifactPathsInText(item.text).filter((p) => p.startsWith("/home/") || p.startsWith("/tmp/"));
           body = (
-            <View style={styles.assistantBubble}>
-              <Markdown text={item.text} />
-              {item.streaming ? <Animated.Text style={[styles.cursor, { opacity: pulse }]}>▍</Animated.Text> : null}
+            <View style={{ gap: 8 }}>
+              <View style={styles.assistantBubble}>
+                <Markdown text={item.text} />
+                {item.streaming ? <Animated.Text style={[styles.cursor, { opacity: pulse }]}>▍</Animated.Text> : null}
+              </View>
+              {mentioned.map((p) => (
+                <ArtifactCard key={p} path={p} name={p.split("/").pop() ?? p} media={mediaOf(p)} origin={origin} headers={authHeaders} onOpen={() => setViewing({ path: p, name: p.split("/").pop() ?? p })} />
+              ))}
             </View>
           );
+        } else if (item.kind === "artifact") {
+          body = <ArtifactCard path={item.path} name={item.name} media={item.media} origin={origin} headers={authHeaders} onOpen={() => setViewing({ path: item.path, name: item.name })} />;
         } else if (item.kind === "thinking") {
           body = <ThinkingBubble text={item.text} streaming={item.streaming} startedAt={item.startedAt} endedAt={item.endedAt} now={now} />;
         } else if (item.kind === "activity") {
@@ -371,14 +384,16 @@ export function ChatScreen({
           );
         }
         return (
-          <View style={[styles.agentRow, row.first ? styles.agentRowFirst : null]}>
-            <View style={styles.avatarCol}>
-              {row.first ? (
-                <View style={styles.avatar}><Text style={styles.avatarGlyph}>🜂</Text></View>
-              ) : null}
+          <Enter>
+            <View style={[styles.agentRow, row.first ? styles.agentRowFirst : null]}>
+              <View style={styles.avatarCol}>
+                {row.first ? (
+                  <View style={styles.avatar}><Text style={styles.avatarGlyph}>🜂</Text></View>
+                ) : null}
+              </View>
+              <View style={styles.agentBody}>{body}</View>
             </View>
-            <View style={styles.agentBody}>{body}</View>
-          </View>
+          </Enter>
         );
       }
       case "permission":
@@ -458,6 +473,8 @@ export function ChatScreen({
           />
         </View>
       </KeyboardAvoidingView>
+
+      <ArtifactViewer path={viewing?.path ?? null} name={viewing?.name ?? ""} origin={origin} headers={authHeaders} onClose={() => setViewing(null)} />
 
       <Modal visible={picker} animationType="slide" onRequestClose={() => setPicker(false)}>
         <View style={[styles.wrap, { paddingTop: insets.top }]}>

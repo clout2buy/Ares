@@ -201,3 +201,39 @@ test("phone api: a machine without voice hooks says so instead of crashing", asy
     await ctx.close();
   }
 });
+
+test("phone api: /gateway/file serves what Ares made (html, images) under an artifact root only", async () => {
+  const shots = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-shots-"));
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-home-"));
+  const server = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "phone-token", phoneApi: { screenshotRoots: [shots], artifactRoots: [home] } });
+  await server.start();
+  const ctx = { auth: { authorization: "Bearer phone-token" } };
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await fsp.mkdir(path.join(home, "forge"), { recursive: true });
+    await fsp.writeFile(path.join(home, "forge", "house.html"), "<canvas></canvas><script>1</script>");
+    await fsp.writeFile(path.join(home, "forge", "house.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+    await fsp.writeFile(path.join(home, "forge", "secret.key"), "nope");
+
+    const page = await fetch(`${base}/gateway/file?path=${encodeURIComponent(path.join(home, "forge", "house.html"))}`, { headers: ctx.auth });
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-type"), /text\/html/);
+    assert.match(page.headers.get("content-security-policy"), /connect-src 'none'/, "a page Ares wrote can draw but never phone home");
+    assert.equal(await page.text(), "<canvas></canvas><script>1</script>");
+
+    const img = await fetch(`${base}/gateway/shot?path=${encodeURIComponent(path.join(home, "forge", "house.png"))}`, { headers: ctx.auth });
+    assert.equal(img.status, 200, "/shot now also reaches images under the artifact root");
+
+    for (const p of [path.join(home, "forge", "secret.key"), "/etc/passwd", path.join(home, "..", "x.html")]) {
+      const res = await fetch(`${base}/gateway/file?path=${encodeURIComponent(p)}`, { headers: ctx.auth });
+      assert.equal(res.status, 404, `refused: ${p}`);
+    }
+    // /shot stays image-only even for an allowed html.
+    const notImg = await fetch(`${base}/gateway/shot?path=${encodeURIComponent(path.join(home, "forge", "house.html"))}`, { headers: ctx.auth });
+    assert.equal(notImg.status, 404);
+  } finally {
+    await server.close();
+    await fsp.rm(home, { recursive: true, force: true });
+    await fsp.rm(shots, { recursive: true, force: true });
+  }
+});

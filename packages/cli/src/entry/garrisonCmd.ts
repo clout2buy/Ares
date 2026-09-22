@@ -538,6 +538,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             })).text,
           synthesize: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
           screenshotRoots: [path.join(context.home, "screenshots"), path.join(os.tmpdir(), "ares-screenshots")],
+          // Everything Ares makes lands under its home (forge/, reports…).
+          artifactRoots: [context.home],
         },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable

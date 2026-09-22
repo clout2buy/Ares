@@ -19,7 +19,7 @@ updates itself** (OTA), and push notifications. This is the one to use.
 2. Free Expo account: <https://expo.dev> → create one.
 3. On the box (or any machine with the repo):
    ```bash
-   cd mobile
+   cd ~/ares-app
    npm i -g eas-cli
    eas login                 # your Expo account
    eas init                  # creates the EAS project, fills app.json projectId
@@ -31,10 +31,11 @@ updates itself** (OTA), and push notifications. This is the one to use.
 5. Pair: gateway `ares.mistiqueai.com`, token from `~/.ares/garrison/token`
    (or scan the pairing QR).
 
-**Day to day (from the box):**
-- JS/UI change → `scripts/mobile-ota.sh "what changed"` → installed phones pull it on next open. Seconds, no rebuild.
-- Native change (new SDK, new native module) → `scripts/mobile-build.sh` → new TestFlight build.
-- Always use these scripts, never `eas build`/`eas update` by hand: the runtime fingerprint hashes `eas.json`, and the scripts keep it byte-identical between build and update (the ASC submit fields are wired in for the run and restored after). An update published against a different `eas.json` targets a runtime no build has and is silently never fetched.
+**Day to day — the app lives in its own repo now: `~/ares-app` (see its `AGENTS.md`).**
+- JS/UI change → `cd ~/ares-app && ./ota.sh "what changed"` → installed phones pull it on next open. Seconds, no rebuild.
+- Native change (new SDK, new native module, icon) → `./build.sh` → new TestFlight build.
+- `./doctor.sh` tells you which one your change needs.
+- Always use those scripts, never `eas build`/`eas update` by hand: the runtime fingerprint hashes `eas.json` and `.gitignore`, and the scripts keep them byte-identical between build and update. An update published against a different fingerprint targets a runtime no build has and is silently never fetched — `ota.sh` now refuses rather than publishing a dud.
 
 **From then on — auto-update on push:**
 - In the GitHub repo: Settings → Secrets and variables → Actions

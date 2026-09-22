@@ -285,6 +285,67 @@ function insideAny(wanted: string, roots: string[]): boolean {
   return roots.map((r) => path.resolve(r)).some((root) => wanted === root || wanted.startsWith(root + path.sep));
 }
 
+/** The privacy policy for the AgentAres companion app, served publicly so the
+ *  URL given to App Store Connect resolves. Kept inline rather than read from
+ *  disk: a review fetch must never depend on a file being present. */
+const PRIVACY_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentAres — Privacy</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:40px 22px 72px; background:#07090c; color:#e8ebf0;
+         font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  main { max-width:660px; margin:0 auto; }
+  h1 { font-size:27px; margin:0 0 6px; }
+  h2 { font-size:17px; margin:34px 0 8px; color:#ff7a1a; }
+  p, li { color:#c3c9d4; }
+  .sub { color:#5c6472; font-size:14px; margin:0 0 8px; }
+  code { background:#181d25; padding:1px 6px; border-radius:5px; font-size:14px; }
+</style></head>
+<body><main>
+<h1>AgentAres — Privacy</h1>
+<p class="sub">Last updated 22 September 2026</p>
+
+<p>AgentAres is a companion app for an Ares assistant that <strong>you</strong> run on
+<strong>your own</strong> computer. It is not a service. There is no account, no sign-up,
+and no backend operated by us.</p>
+
+<h2>What we collect</h2>
+<p>Nothing. We operate no servers that this app talks to, so there is nothing for us
+to collect, store, sell, or hand to anyone.</p>
+
+<h2>Where your data goes</h2>
+<p>The app connects only to the address you pair it with — your own machine. Your
+messages, the assistant&#39;s replies, any photos you attach, and any voice recording
+travel between your phone and that machine and nowhere else. Pairing details are kept
+on your device.</p>
+
+<h2>Permissions the app asks for</h2>
+<ul>
+<li><strong>Camera</strong> — to scan the pairing QR code, and to take a photo you
+choose to send. Images go only to your own machine.</li>
+<li><strong>Photo library</strong> — only for photos you pick to send.</li>
+<li><strong>Microphone</strong> — only while you hold the record button. Audio is sent
+to your machine to be transcribed there.</li>
+<li><strong>Notifications</strong> — so your machine can tell you a task finished or
+needs your approval, delivered through Apple Push Notification service.</li>
+</ul>
+
+<h2>Third parties</h2>
+<p>Apple delivers push notifications and distributes the app. Whatever your own
+assistant is configured to use on your machine — a model provider, a connector you
+authorized — is governed by that provider&#39;s policy and your configuration, not by
+this app.</p>
+
+<h2>Deleting your data</h2>
+<p>Delete the app to remove pairing details from your phone. Everything else lives on
+your machine and is yours to delete there.</p>
+
+<h2>Contact</h2>
+<p><code>clout2buy@gmail.com</code></p>
+</main></body></html>`;
+
 // ─── Internal state ────────────────────────────────────────────────────────
 
 interface PendingCmd {
@@ -1288,6 +1349,16 @@ export class RemoteAgentServer {
       void this.opts.phoneApi.oauth.handleCallback(req, res, url).then((handled) => {
         if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
       }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
+    // Public, unauthenticated, and deliberately so: Apple fetches this during
+    // TestFlight/App Store review, and it is the page a tester follows from the
+    // listing. It states what is true of this app — the only server it talks to
+    // is the one the owner runs.
+    if (url.pathname === "/privacy") {
+      const page = PRIVACY_PAGE;
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(page), "cache-control": "public, max-age=3600" });
+      res.end(page);
       return;
     }
     if (url.pathname.startsWith("/gateway/")) { void this.handlePhoneApi(req, res, url); return; }

@@ -8,9 +8,10 @@ import { Button } from "../components/Cards";
 import { normalizeGatewayUrl, parsePairPayload } from "../store";
 import { theme } from "../theme";
 
-export function PairScreen({ initialUrl, initialToken, error, onPair }: { initialUrl?: string; initialToken?: string; error?: string; onPair: (url: string, token: string) => void }) {
+export function PairScreen({ initialUrl, initialToken, error, canCancel, onCancel, onPair }: { initialUrl?: string; initialToken?: string; error?: string; canCancel?: boolean; onCancel?: () => void; onPair: (url: string, token: string, name?: string) => void }) {
   const [url, setUrl] = React.useState(initialUrl ?? "");
   const [token, setToken] = React.useState(initialToken ?? "");
+  const [name, setName] = React.useState("");
   const [scanning, setScanning] = React.useState(false);
   const [problem, setProblem] = React.useState<string | undefined>();
   const [permission, requestPermission] = useCameraPermissions();
@@ -20,7 +21,7 @@ export function PairScreen({ initialUrl, initialToken, error, onPair }: { initia
     if (!normalized) return setProblem("That doesn't look like a gateway address (ares.example.com or wss://…/gateway).");
     if (!token.trim()) return setProblem("The token is in ~/.ares/garrison/token on the box.");
     setProblem(undefined);
-    onPair(normalized, token.trim());
+    onPair(normalized, token.trim(), name);
   };
 
   const startScan = async () => {
@@ -43,7 +44,7 @@ export function PairScreen({ initialUrl, initialToken, error, onPair }: { initia
             setScanning(false);
             setUrl(pair.url);
             setToken(pair.token);
-            onPair(pair.url, pair.token);
+            onPair(pair.url, pair.token, pair.name ?? name);
           }}
         />
         <View style={styles.scanFooter}>
@@ -59,8 +60,10 @@ export function PairScreen({ initialUrl, initialToken, error, onPair }: { initia
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.glyph}>🜂</Text>
         <Text style={styles.title}>Ares</Text>
-        <Text style={styles.sub}>Pair this phone with your garrison.</Text>
+        <Text style={styles.sub}>Pair an Ares instance.</Text>
 
+        <Text style={styles.label}>Name</Text>
+        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="doingbox, laptop, …  (optional)" placeholderTextColor={theme.muted} autoCorrect={false} />
         <Text style={styles.label}>Gateway</Text>
         <TextInput style={styles.input} value={url} onChangeText={setUrl} placeholder="ares.mistiqueai.com" placeholderTextColor={theme.muted} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
         <Text style={styles.label}>Token</Text>
@@ -71,6 +74,7 @@ export function PairScreen({ initialUrl, initialToken, error, onPair }: { initia
         <View style={styles.buttons}>
           <Button label="Connect" onPress={submit} />
           <Button label="Scan QR" tone="muted" onPress={() => void startScan()} />
+          {canCancel && onCancel ? <Button label="Cancel" tone="muted" onPress={onCancel} /> : null}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

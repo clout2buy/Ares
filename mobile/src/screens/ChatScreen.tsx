@@ -41,16 +41,24 @@ export function ChatScreen({
   client,
   origin,
   token,
+  instanceName,
+  instanceColor,
   initialSessionId,
   onSessionChange,
+  onBack,
   onForget,
 }: {
   client: GatewayClient;
   /** https origin of the phone API (screenshots, voice). */
   origin: string;
   token: string;
+  /** Which Ares this is — the header wears its name and color. */
+  instanceName: string;
+  instanceColor: string;
   initialSessionId?: string;
   onSessionChange: (id: string) => void;
+  /** Back to the instances list. */
+  onBack: () => void;
   onForget: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -388,7 +396,7 @@ export function ChatScreen({
             <View style={[styles.agentRow, row.first ? styles.agentRowFirst : null]}>
               <View style={styles.avatarCol}>
                 {row.first ? (
-                  <View style={styles.avatar}><Text style={styles.avatarGlyph}>🜂</Text></View>
+                  <View style={[styles.avatar, { backgroundColor: `${instanceColor}26` }]}><Text style={[styles.avatarGlyph, { color: instanceColor }]}>🜂</Text></View>
                 ) : null}
               </View>
               <View style={styles.agentBody}>{body}</View>
@@ -410,10 +418,11 @@ export function ChatScreen({
   return (
     <View style={[styles.wrap, { paddingTop: insets.top }]}>
       <View style={styles.header}>
+        <Pressable onPress={onBack} style={styles.back} hitSlop={8}><Text style={styles.backText}>‹</Text></Pressable>
         <Pressable onPress={() => setPicker(true)} style={styles.headerTitleWrap}>
-          <Animated.View style={[styles.headerAvatar, { opacity: pulse }]}><Text style={styles.headerAvatarGlyph}>🜂</Text></Animated.View>
+          <Animated.View style={[styles.headerAvatar, { opacity: pulse, backgroundColor: `${instanceColor}26` }]}><Text style={[styles.headerAvatarGlyph, { color: instanceColor }]}>🜂</Text></Animated.View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle} numberOfLines={1}>Ares</Text>
+            <Text style={styles.headerTitle} numberOfLines={1}>{instanceName}</Text>
             <Text style={styles.headerSub} numberOfLines={1}>
               {transcript.busy ? "working…" : current?.title && current.title !== "untitled session" ? current.title : connected ? "online" : "offline"}
             </Text>
@@ -520,6 +529,8 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.bg },
   header: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.border },
   headerTitleWrap: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  back: { width: 32, height: 36, alignItems: "center", justifyContent: "center", marginLeft: -6 },
+  backText: { color: theme.accent, fontSize: 30, lineHeight: 32, marginTop: -3 },
   headerAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.accentDim, alignItems: "center", justifyContent: "center" },
   headerAvatarGlyph: { color: theme.accent, fontSize: 18 },
   headerTitle: { color: theme.textStrong, fontSize: 17, fontWeight: "700", letterSpacing: -0.2 },

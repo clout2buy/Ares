@@ -679,3 +679,4 @@ export {
   handleSite,
   type SecretHandleScope,
 } from "./secretHandles.js";
+export { appendAudit, readAudit, redactForAudit, auditDir, type AuditEntry } from "./audit.js";

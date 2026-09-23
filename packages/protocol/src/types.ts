@@ -373,7 +373,16 @@ export type PermissionPromptSuggestion = PermissionPromptDecision;
 
 export type PermissionDecision =
   | { kind: "allow"; reason?: string }
-  | { kind: "ask"; prompt: string; suggestion?: PermissionPromptSuggestion }
+  | {
+      kind: "ask";
+      prompt: string;
+      suggestion?: PermissionPromptSuggestion;
+      /** A fresh, per-call owner decision (a checkout total, a vault fill on a
+       *  named site): it reaches a human even in YOLO/auto modes, a tool-wide
+       *  "always" grant never answers it, and an "always" answer is honoured
+       *  only as "once". See ToolPermissionRequest.ownerDecision. */
+      ownerDecision?: boolean;
+    }
   | { kind: "deny"; reason: string };
 
 export type PermissionRuleEffect = "allow" | "ask" | "deny";

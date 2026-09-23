@@ -26,6 +26,7 @@ import { loadTokens } from "./oauth.js";
 import { getCredential } from "./credentials.js";
 import { loadRemoteMcpServers } from "./mcpConnect.js";
 import { LIFE_SERVICES } from "./lifeServices.js";
+import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
 
 export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
 
@@ -331,6 +332,10 @@ function adHocBrowserService(query: string): ConnectService | null {
  * domain nobody registered becomes a browser sign-in for that site.
  */
 export function resolveConnectService(query: string): ConnectService | null {
+  // "login:<domain>" first: its domain would otherwise keyword-match a
+  // registered browser site ("login:amazon.com" → the Amazon session flow).
+  const loginDomain = siteLoginDomain(query);
+  if (loginDomain) return siteLoginService(loginDomain);
   const q = normalize(query);
   if (!q) return null;
   const byId = CONNECT_SERVICES.find((s) => s.id === q || s.id === q.replace(/ /g, "-"));

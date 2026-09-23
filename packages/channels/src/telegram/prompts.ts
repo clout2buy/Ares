@@ -47,6 +47,8 @@ function flatten(value: unknown): string | undefined {
 export function describePermissionInput(input: unknown): string | undefined {
   if (input === null || typeof input !== "object") return flatten(input)?.slice(0, MAX_DETAIL_CHARS);
   const record = input as Record<string, unknown>;
+  const receipt = describeReceipt(record);
+  if (receipt) return receipt;
   for (const key of DETAIL_KEYS) {
     const shown = flatten(record[key]);
     if (shown === undefined) continue;
@@ -54,6 +56,41 @@ export function describePermissionInput(input: unknown): string | undefined {
     return clipped.length > MAX_DETAIL_CHARS ? `${clipped.slice(0, MAX_DETAIL_CHARS - 1)}…` : clipped;
   }
   return undefined;
+}
+
+const MAX_RECEIPT_LINES = 10;
+
+/**
+ * A Checkout review is a receipt, not one line: the owner is approving an
+ * exact total, so they must see what it buys. Merchant, each item, the money
+ * lines, and the total last and bold-ish (on its own line). Undefined for any
+ * input that isn't a receipt shape.
+ */
+export function describeReceipt(record: Record<string, unknown>): string | undefined {
+  const str = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim().slice(0, 80) : undefined);
+  const merchant = str(record.merchant);
+  const total = str(record.total);
+  if (!merchant || !total || !Array.isArray(record.items)) return undefined;
+  const lines = [`🧾 ${merchant}`];
+  const items = record.items.filter((item): item is Record<string, unknown> => item !== null && typeof item === "object");
+  for (const item of items.slice(0, MAX_RECEIPT_LINES)) {
+    const name = str(item.name) ?? "item";
+    const quantity = typeof item.quantity === "number" && item.quantity > 1 ? `${item.quantity}× ` : "";
+    const price = str(item.price);
+    lines.push(`• ${quantity}${name}${price ? ` — ${price}` : ""}`);
+  }
+  if (items.length > MAX_RECEIPT_LINES) lines.push(`• …and ${items.length - MAX_RECEIPT_LINES} more`);
+  for (const [key, label] of [["subtotal", "Subtotal"], ["fees", "Fees"], ["tax", "Tax"], ["tip", "Tip"]] as const) {
+    const value = str(record[key]);
+    if (value) lines.push(`${label}: ${value}`);
+  }
+  const currency = str(record.currency);
+  lines.push(`TOTAL: ${total}${currency && !total.includes(currency) ? ` ${currency}` : ""}`);
+  const payment = str(record.paymentMethod);
+  if (payment) lines.push(`Paying with ${payment}`);
+  const deliver = str(record.deliveryTo);
+  if (deliver) lines.push(`To: ${deliver}`);
+  return lines.join("\n");
 }
 
 /**
@@ -78,7 +115,8 @@ export function renderPermissionPrompt(opts: { toolName: string; reason?: string
   const lines = ["🛡 Permission needed", opts.toolName];
   if (opts.detail) lines.push(`↳ ${opts.detail}`);
   if (opts.reason && opts.reason.trim()) lines.push(opts.reason.trim());
-  lines.push("Always = stop asking for this tool. Auto-denies in 5 min.");
+  // A checkout is approved one receipt at a time — "Always" can't pre-approve the next one.
+  lines.push(opts.toolName === "Checkout" ? "Allow = pay this exact total, once. Auto-denies in 5 min." : "Always = stop asking for this tool. Auto-denies in 5 min.");
   return lines.join("\n");
 }
 

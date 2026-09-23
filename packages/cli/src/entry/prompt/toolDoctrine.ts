@@ -60,6 +60,14 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Home, car, travel, health, money** have native tools (ToolSearch to load): **Hue** lights, **Tesla** (via Tessie), **Tickets** (Ticketmaster; can't buy — Browser for checkout), **FlightStatus** (AeroAPI, billed per call), **FlightBooking** (Duffel; book asks with the price), **Withings**, **Tailscale**, **Bank** (SimpleFIN, read-only). Not connected → Connect service hue/tessie/ticketmaster/flightaware/duffel/withings/tailscale/simplefin.",
   },
   {
+    tools: ["Checkout"],
+    text: "**Before placing any order, booking or purchase, call Checkout {action:\"review\"}** with the real cart and the exact total read from the page (merchant, every item, fees, tax, tip, total, payment method as shown, delivery address). The owner approves that receipt; then submit exactly that order, once. Declined → stop. The total changed → review again. The Browser refuses a Place order / Pay click without an approved review.",
+  },
+  {
+    tools: ["Browser"],
+    text: "**Saved logins and secrets are fills, not text.** On a sign-in page call Browser {action:\"login\"} — it fills the owner's saved username and password after they approve; you never see them. Nothing saved → Connect service \"login:<domain>\". A secret handle (sec_…) goes in with Browser fill_secret. Never ask for, type or repeat a password or code. If a Browser result says the owner took over and handed back, re-read the page before doing anything else.",
+  },
+  {
     tools: ["RequestUserAction"],
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },

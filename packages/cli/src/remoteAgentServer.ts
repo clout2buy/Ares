@@ -219,6 +219,9 @@ export interface PhoneApiHooks {
   /** The Today tab's routes (tracking, feed, ideas — see lifeApi.ts). Asked
    *  after the built-in routes, already authenticated; false = not mine. */
   life?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
+   *  like /connect/ — the token is the capability for one page. */
+  watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
   unregisterPush?: (token: string) => Promise<void>;
   pushConfigured?: () => boolean;
@@ -1359,6 +1362,12 @@ export class RemoteAgentServer {
     if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
     if (url.pathname.startsWith("/connect/") && this.opts.phoneApi?.connect) {
       void this.opts.phoneApi.connect(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
+    if (url.pathname.startsWith("/watch/") && this.opts.phoneApi?.watch) {
+      void this.opts.phoneApi.watch(req, res, url).then((handled) => {
         if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
       }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
       return;

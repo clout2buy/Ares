@@ -7,6 +7,7 @@ import {
   loadSessionRollout,
   openWorkspaceSessionKernel,
   runReliabilityTriage,
+  setConnectBroker,
   writeCrashLogSync,
   type ChildVerificationDebt,
   type ChildSessionCompositionOptions,
@@ -24,6 +25,7 @@ import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
+import { ConnectHub } from "../connectHub.js";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -552,6 +554,15 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "oauth", line } }) + "\n"),
   );
 
+  // "Check my email" → a Connect card on the phone. The hub is the broker the
+  // Connect tool hands flows to; its links live on the same public origin.
+  const connectHub = new ConnectHub({
+    publicUrl: () => remoteAgentServer?.linkBaseUrl(),
+    home: context.home,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "connect", line } }) + "\n"),
+  });
+  setConnectBroker(connectHub);
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -582,10 +593,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           // token is still required, and symlinks out are refused.
           artifactRoots: [context.home, context.workspace, os.tmpdir()],
           oauth: {
-            handleCallback: (req, res, url) => tunnelOAuth.handleCallback(req, res, url),
+            // The hub's flows first; a state it doesn't own is a legacy
+            // /gateway/connect/start flow.
+            handleCallback: async (req, res, url) =>
+              (await connectHub.handleCallback(req, res, url)) || tunnelOAuth.handleCallback(req, res, url),
             begin: (provider, scopes) => tunnelOAuth.begin(provider, scopes),
             callbackUrlForSetup: () => tunnelOAuth.callbackUrlForSetup(),
           },
+          connect: (req, res, url) => connectHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,
@@ -693,6 +708,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       setTelegramChannel(null);
       phoneNotifier?.stop();
       void remoteAgentServer?.close().catch(() => {});
+      void connectHub.close().catch(() => {});
       setRemoteAgentServer(null);
       void aresNetworkHostStop();
       approvals.dispose();

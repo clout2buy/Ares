@@ -423,6 +423,8 @@ export class TelegramBridge {
   private permTokenSeq = 0;
   /** chat|provider → when we last offered that connector, for the cooldown. */
   private readonly connectOffers = new Map<string, number>();
+  /** Live connect cards by flow id, so the result edits the card in place. */
+  private readonly connectCards = new Map<string, { chatId: number; messageId?: number; label: string }>();
   /** Chats whose last inbound was a voice message — reply with a voice note. */
   private readonly voiceReplyExpected = new Set<number>();
 
@@ -1395,6 +1397,9 @@ export class TelegramBridge {
         this.offerConnectorFor(chatId, event.output);
         break;
       }
+      case "tool_progress":
+        this.onConnectProgress(chatId, event.data);
+        break;
       case "tool_error":
         // Before this, tool_error had no renderer at all: a failed tool call
         // was invisible on the phone, which is most of "it went quiet on me".
@@ -1861,6 +1866,38 @@ export class TelegramBridge {
   }
 
   /**
+   * Connect {action:"connect"} is waiting on the owner: put the one link in
+   * front of them as a URL button (a new message — like a permission prompt,
+   * it needs the owner, so it may buzz), then edit it into a record when the
+   * flow settles so a spent link never stays tappable.
+   */
+  private onConnectProgress(chatId: number, data: unknown): void {
+    const connect = connectProgressOf(data);
+    if (!connect) return;
+    if (connect.kind === "connect_request") {
+      if (!this.owners.has(chatId) || this.connectCards.has(connect.flowId)) return;
+      const entry: { chatId: number; messageId?: number; label: string } = { chatId, label: connect.label };
+      this.connectCards.set(connect.flowId, entry);
+      const text = `🔗 Connect ${connect.label}${connect.reason ? ` — ${connect.reason}` : ""}\n${connect.instructions}`;
+      this.enqueueSend(chatId, async () => {
+        const sent = await this.api.sendMessage(chatId, text, {
+          replyMarkup: { inline_keyboard: [[{ text: `Connect ${connect.label.split(" (")[0]}`, url: connect.url }]] },
+        });
+        entry.messageId = sent.message_id;
+      });
+      return;
+    }
+    const entry = this.connectCards.get(connect.flowId);
+    if (!entry) return;
+    this.connectCards.delete(connect.flowId);
+    this.enqueueSend(entry.chatId, async () => {
+      if (entry.messageId === undefined) return;
+      const text = connect.ok ? `✅ ${entry.label} connected` : `✕ ${entry.label} not connected — ${connect.detail}`;
+      await this.api.editMessageText(entry.chatId, entry.messageId, text).catch(() => undefined);
+    });
+  }
+
+  /**
    * A tool just tripped over a service that isn't connected. Offer the sign-in
    * right here, in the thread, instead of failing with an OAUTH_NOT_AUTHORIZED
    * the owner never sees and a "run /connect" they have to go find.
@@ -1998,4 +2035,29 @@ function errorEventText(event: { error?: { code?: string; message?: string } }):
   if (message) return message;
   const code = event.error?.code;
   return code ? `error (${code})` : "the model returned an error";
+}
+
+type ConnectProgress =
+  | { kind: "connect_request"; flowId: string; label: string; url: string; instructions: string; reason?: string }
+  | { kind: "connect_result"; flowId: string; ok: boolean; detail: string };
+
+/** The Connect tool's progress payloads, validated — anything else is null. */
+export function connectProgressOf(data: unknown): ConnectProgress | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  if (typeof d.flowId !== "string") return null;
+  if (d.kind === "connect_request" && typeof d.url === "string" && /^https:\/\//.test(d.url)) {
+    return {
+      kind: "connect_request",
+      flowId: d.flowId,
+      label: typeof d.label === "string" ? d.label : "service",
+      url: d.url,
+      instructions: typeof d.instructions === "string" ? d.instructions : "",
+      ...(typeof d.reason === "string" && d.reason ? { reason: d.reason } : {}),
+    };
+  }
+  if (d.kind === "connect_result") {
+    return { kind: "connect_result", flowId: d.flowId, ok: d.ok === true, detail: typeof d.detail === "string" ? d.detail : "" };
+  }
+  return null;
 }

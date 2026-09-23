@@ -171,9 +171,43 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       return "file_write";
     case "Browser":
       return /\b(submit|checkout|buy|pay|purchase|order|confirm)\b/.test(hay) ? "browser_submit" : "browser_navigate";
+    // Ares's own phone numbers: buying/releasing bills the owner's Twilio
+    // account monthly; a text is outbound communication like an email.
+    case "Phone": {
+      const action = actionOf(request);
+      if (action === "buy_number" || action === "release_number") return "payment_or_purchase";
+      return action === "send_sms" ? "email_send" : null;
+    }
+    case "McpCallTool":
+      return mcpMoneyCategory(mcpToolOf(request));
     default:
-      return null;
+      // A connected MCP server's tools arrive as mcp_<server>_<tool>. Stripe,
+      // PayPal and Square expose real money movers (refunds, charges, invoices,
+      // payment links) that were classified null — i.e. auto-allowed on the
+      // phone. Anything money-shaped that isn't a read now asks the owner.
+      return request.toolName.startsWith("mcp_") ? mcpMoneyCategory(request.toolName) : null;
   }
+}
+
+const MCP_READ = /(^|_)(list|get|search|retrieve|fetch|read|describe|find|lookup|query)(_|$)/;
+const MCP_MONEY = /(payment|(^|_)pay(_|$)|charge|refund|payout|transfer|purchase|(^|_)buy(_|$)|checkout|invoice|subscription|(^|_)order(s)?(_|$)|price|coupon|dispute)/;
+
+/** payment_or_purchase for an MCP tool that moves money, else null. */
+export function mcpMoneyCategory(toolName: string | undefined): ActionCategory | null {
+  if (!toolName) return null;
+  const name = toolName.toLowerCase().replace(/^mcp_/, "");
+  if (!MCP_MONEY.test(name)) return null;
+  // The verb decides: list_payment_intents reads, create_refund moves money.
+  const verb = name.split("_").find((part) => /^(list|get|search|retrieve|fetch|read|describe|find|lookup|query|create|update|cancel|delete|send|finalize|void|capture|confirm|refund|pay|buy|issue|make)$/.test(part));
+  if (verb && MCP_READ.test(`_${verb}_`)) return null;
+  return "payment_or_purchase";
+}
+
+function mcpToolOf(request: ToolPermissionRequest): string | undefined {
+  const input = request.input;
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  return typeof record.tool === "string" ? `${String(record.server ?? "")}_${record.tool}` : undefined;
 }
 
 /**

@@ -46,6 +46,10 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**A tool that reports itself unavailable** (`BROWSER_UNAVAILABLE`, `COMPUTER_USE_UNAVAILABLE`) is not installed in this build. Do NOT install it and do NOT retry — switch approach immediately (WebFetch for page text, ImageSearch for image URLs) and say what you'd have preferred.",
   },
   {
+    tools: ["Connect"],
+    text: "**Missing account → Connect, immediately.** When a request needs a service you can't reach yet — email/Gmail, calendar, Stripe, Supabase, Vercel, GitHub, Notion, a phone number (Twilio), DoorDash/Uber Eats/Instacart/Amazon, or any site behind a login — call **Connect {action:\"connect\", service, reason}** as your FIRST move, before explaining anything. The owner gets a one-tap card on their phone (OAuth sign-in, a secure key form, or a live browser to sign in on); the call waits until they finish and tells you how to use the connection — then finish the original request in the same turn. Never ask for passwords, API keys or codes in chat, never tell the owner to go register an app themselves (the card walks them through it), and never improvise around a missing connection with Bash or scraping. Buying things (a phone number, an order, a checkout) always goes through the owner's approval — show what it costs.",
+  },
+  {
     tools: ["RequestUserAction"],
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },

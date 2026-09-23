@@ -10,7 +10,33 @@ import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecen
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, type RemotePcBridgeDeps } from "@ares/channels";
 import type { RemoteAgentServer } from "../remoteAgentServer.js";
-import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders } from "@ares/core";
+import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getConnectBroker, resolveConnectService, type OAuthTokens } from "@ares/core";
+
+/**
+ * The Telegram "Connect X" button's flow. core's startOAuthFlow redirects to
+ * localhost:53691 — on the box, not on the phone the owner is holding — so
+ * the button could never finish. With a connect hub installed (the garrison)
+ * the button gets the hub's public link instead, and completes like any other
+ * Connect card. Without one (a desktop run) it keeps the loopback flow.
+ */
+const phoneOAuthFlow: typeof startOAuthFlow = async (opts) => {
+  const broker = getConnectBroker();
+  const service = resolveConnectService(opts.provider.provider);
+  if (!broker || !service) return startOAuthFlow(opts);
+  try {
+    const prompt = await broker.start(service);
+    await opts.onAuthorizeUrl?.(prompt.url);
+    const outcome = await broker.wait(prompt.flowId, { signal: new AbortController().signal, timeoutMs: 10 * 60_000 });
+    if (!outcome.ok) throw new Error(outcome.detail);
+    const tokens: OAuthTokens = { accessToken: "" };
+    await opts.onSuccess?.(tokens);
+    return tokens;
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    await opts.onError?.(error);
+    throw error;
+  }
+};
 import { buildDayBrief, defaultDayBriefSources } from "./introspect.js";
 import { CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 
@@ -135,7 +161,7 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
     log: lifecycleLog,
     commands: telegramCommandDeps(context, modelControl, operatorLoop),
     connectDeps: {
-      startOAuthFlow,
+      startOAuthFlow: phoneOAuthFlow,
       providers: OAUTH_PROVIDERS,
       providerLabels: PROVIDER_LABELS,
       connectedProviders,

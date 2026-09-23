@@ -329,6 +329,7 @@ export {
   disconnectMcpServer,
   setMcpServerEnabled,
   setMcpServerToken,
+  beginMcpConnect,
   probeMcpTools,
   getMcpAccessToken,
   getMcpCallCredentials,
@@ -653,3 +654,18 @@ export { HeapAllocationSampler, heapSamplerEnabled, heapSamplerIntervalBytes, su
 export { fetchAnthropicUsage, fetchKimiUsage, fetchOllamaUsageAsProvider, ollamaUsageAsProvider, type ProviderUsage, type UsageWindow } from "./providers/usage.js";
 export { MCP_CATALOG, MCP_CATEGORIES, catalogById, catalogByUrl, catalogMentions, type McpCatalogEntry, type McpAuthKind, type McpCategory, type McpTransportKind } from "./mcpCatalog.js";
 export { resourceMetadataFromChallenge, revokeMcpToken } from "./mcpOAuth.js";
+export {
+  CONNECT_SERVICES,
+  resolveConnectService,
+  isServiceConnected,
+  browserSessionsDir,
+  browserSessionFile,
+  setConnectBroker,
+  getConnectBroker,
+  type ConnectKind,
+  type ConnectField,
+  type ConnectService,
+  type ConnectPrompt,
+  type ConnectOutcome,
+  type ConnectBroker,
+} from "./connectServices.js";

@@ -183,14 +183,14 @@ export async function getValidAccessToken(cfg: OAuthProviderConfig, deps: OAuthD
   const tokens = await loadTokens(cfg.provider, deps);
   if (!tokens) {
     throw new Error(
-      `OAUTH_NOT_AUTHORIZED: ${cfg.provider} is not connected. The owner must authorize it once ` +
-        `(register an OAuth app, then run the connect flow). No ${cfg.provider} access token on file.`,
+      `OAUTH_NOT_AUTHORIZED: ${cfg.provider} is not connected. Call Connect with action "connect" and ` +
+        `service "${cfg.provider}" — the owner gets a one-tap card that walks them through it. No ${cfg.provider} access token on file.`,
     );
   }
   if (!isExpired(tokens, now)) return tokens.accessToken;
 
   if (!tokens.refreshToken) {
-    throw new Error(`OAUTH_EXPIRED: ${cfg.provider} access token expired and no refresh token is stored — re-authorize.`);
+    throw new Error(`OAUTH_EXPIRED: ${cfg.provider} access token expired and no refresh token is stored — call Connect with action "connect" and service "${cfg.provider}" to re-authorize.`);
   }
   const clientId = await getCredential(clientIdName(cfg), { home: deps.home });
   const clientSecret = await getCredential(clientSecretName(cfg), { home: deps.home });

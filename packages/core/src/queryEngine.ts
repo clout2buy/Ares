@@ -575,6 +575,10 @@ export const CORE_TOOL_NAMES: readonly string[] = [
   // model would think to ToolSearch for — if it can't see this tool it writes
   // an HTML page or recommends AnyDesk.
   "RemotePC",
+  // Core, not deferred: "check my email" / "order me DoorDash" never names a
+  // tool — hidden behind ToolSearch, the model lectured about OAuth apps or
+  // asked for passwords in chat instead of showing a one-tap connect card.
+  "Connect",
 ];
 const CORE_TOOL_SET = new Set(CORE_TOOL_NAMES.map((name) => name.toLowerCase()));
 

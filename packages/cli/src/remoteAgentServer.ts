@@ -211,6 +211,10 @@ export interface PhoneApiHooks {
     begin: (providerId: string, scopes?: string[]) => Promise<{ authorizeUrl: string; state: string }>;
     callbackUrlForSetup: () => string | null;
   };
+  /** The connect hub's pages (/connect/<flow>…): OAuth landings, secure key
+   *  forms, and the live sign-in browser. Unauthenticated — the flow id is
+   *  the capability. Returns false for a path it doesn't own. */
+  connect?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
   unregisterPush?: (token: string) => Promise<void>;
   pushConfigured?: () => boolean;
@@ -278,7 +282,8 @@ const ARTIFACT_TYPES: Record<string, string> = {
  *  artifacts — refused whatever the extension. The workspace is a root now
  *  (Ares builds pages there), and the workspace holds the signing key dir,
  *  a .git, and node_modules. */
-const NEVER_SERVE = /(^|[\\/])(\.git|node_modules|asc|\.ssh|\.gnupg|garrison)([\\/]|$)|(^|[\\/])[^\\/]*\.(env|pem|p8|p12|key|mobileprovision)$|credentials\.json$|ui\.json$/i;
+// browser-sessions holds live sign-in cookies (Connect → browser); never serve it.
+const NEVER_SERVE = /(^|[\\/])(\.git|node_modules|asc|\.ssh|\.gnupg|garrison|browser-sessions|browser-profile)([\\/]|$)|(^|[\\/])[^\\/]*\.(env|pem|p8|p12|key|mobileprovision)$|credentials\.json$|ui\.json$/i;
 
 function insideAny(wanted: string, roots: string[]): boolean {
   if (NEVER_SERVE.test(wanted)) return false;
@@ -1345,6 +1350,12 @@ export class RemoteAgentServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
+    if (url.pathname.startsWith("/connect/") && this.opts.phoneApi?.connect) {
+      void this.opts.phoneApi.connect(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
     if (url.pathname === "/oauth/callback" && this.opts.phoneApi?.oauth) {
       void this.opts.phoneApi.oauth.handleCallback(req, res, url).then((handled) => {
         if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }

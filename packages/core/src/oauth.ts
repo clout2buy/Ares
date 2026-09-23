@@ -28,6 +28,16 @@ export interface OAuthProviderConfig {
   clientSecretCredential?: string;
   /** Extra params some providers require (Google: access_type=offline&prompt=consent). */
   extraAuthorizeParams?: Record<string, string>;
+  /** Scope list separator in the authorize URL. RFC 6749 says space; Withings
+   *  wants commas (`user.info,user.metrics`). */
+  scopeSeparator?: string;
+  /** Extra form fields on EVERY token call (code exchange and refresh).
+   *  Withings routes its token endpoint by `action=requesttoken`. */
+  extraTokenParams?: Record<string, string>;
+  /** Turn a provider's non-standard token response into the RFC 6749 shape,
+   *  throwing on an in-band error. Withings answers HTTP 200 with
+   *  `{status, body:{access_token…}}` and signals failure by a non-zero status. */
+  unwrapTokenResponse?: (json: Record<string, unknown>) => Record<string, unknown>;
 }
 
 export interface OAuthTokens {
@@ -70,7 +80,7 @@ export function buildAuthorizeUrl(
     client_id: input.clientId,
     redirect_uri: input.redirectUri,
     response_type: "code",
-    scope: (input.scopes ?? cfg.scopes).join(" "),
+    scope: (input.scopes ?? cfg.scopes).join(cfg.scopeSeparator ?? " "),
     state: input.state,
     ...(cfg.extraAuthorizeParams ?? {}),
   };
@@ -95,19 +105,20 @@ async function postForm(
   url: string,
   form: Record<string, string>,
   deps: OAuthDeps,
+  cfg?: OAuthProviderConfig,
 ): Promise<Record<string, unknown>> {
   const doFetch = deps.fetchImpl ?? fetch;
   const res = await doFetch(url, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body: new URLSearchParams(form).toString(),
+    body: new URLSearchParams({ ...(cfg?.extraTokenParams ?? {}), ...form }).toString(),
   });
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const detail = (json.error_description as string) ?? (json.error as string) ?? `HTTP ${res.status}`;
     throw new Error(`OAuth token request failed: ${detail}`);
   }
-  return json;
+  return cfg?.unwrapTokenResponse ? cfg.unwrapTokenResponse(json) : json;
 }
 
 /** Exchange the one-time authorization code for the first token pair. */
@@ -127,6 +138,7 @@ export async function exchangeCodeForTokens(
       redirect_uri: input.redirectUri,
     },
     deps,
+    cfg,
   );
   return parseTokenResponse(json, now);
 }
@@ -148,6 +160,7 @@ export async function refreshTokens(
       client_secret: input.clientSecret,
     },
     deps,
+    cfg,
   );
   return parseTokenResponse(json, now, prev ?? { accessToken: "", refreshToken: input.refreshToken });
 }
@@ -183,14 +196,14 @@ export async function getValidAccessToken(cfg: OAuthProviderConfig, deps: OAuthD
   const tokens = await loadTokens(cfg.provider, deps);
   if (!tokens) {
     throw new Error(
-      `OAUTH_NOT_AUTHORIZED: ${cfg.provider} is not connected. The owner must authorize it once ` +
-        `(register an OAuth app, then run the connect flow). No ${cfg.provider} access token on file.`,
+      `OAUTH_NOT_AUTHORIZED: ${cfg.provider} is not connected. Call Connect with action "connect" and ` +
+        `service "${cfg.provider}" — the owner gets a one-tap card that walks them through it. No ${cfg.provider} access token on file.`,
     );
   }
   if (!isExpired(tokens, now)) return tokens.accessToken;
 
   if (!tokens.refreshToken) {
-    throw new Error(`OAUTH_EXPIRED: ${cfg.provider} access token expired and no refresh token is stored — re-authorize.`);
+    throw new Error(`OAUTH_EXPIRED: ${cfg.provider} access token expired and no refresh token is stored — call Connect with action "connect" and service "${cfg.provider}" to re-authorize.`);
   }
   const clientId = await getCredential(clientIdName(cfg), { home: deps.home });
   const clientSecret = await getCredential(clientSecretName(cfg), { home: deps.home });

@@ -29,18 +29,23 @@
 //   tool output was a string or JSON that round-trips stably.
 
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import {
   messageText,
   type ContentBlock,
   type Message,
   type PermissionPromptDecision,
+  type ReasoningLevel,
   type ToolResultBlock,
   type TurnEvent,
 } from "@ares/protocol";
 import {
   FrictionRecorder,
+  ToolAuditTracker,
+  appendAudit,
+  ownerPause,
   projectMessagesFromKernel,
   registerSessionLocation,
   stringifyModelToolOutput,
@@ -53,6 +58,7 @@ import {
 import type { Session as CoreSession } from "@ares/core";
 import type { SessionAttachment, SessionSummary } from "./protocol.js";
 import { garrisonDir } from "./token.js";
+import { canonicalActionKey, repeatDenialError } from "./ownerGuards.js";
 
 // ─── Surface + tenant (who opened the session, and who is talking) ──────
 //
@@ -65,7 +71,7 @@ import { garrisonDir } from "./token.js";
 // optional and additive: old meta files load untouched (absent = owner, surface
 // unknown) and every existing caller keeps compiling.
 
-export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless";
+export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
 
 export interface SessionTenant {
   role: "owner" | "guest";
@@ -73,7 +79,7 @@ export interface SessionTenant {
   chatId?: string;
 }
 
-const SESSION_SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless"]);
+const SESSION_SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless", "mobile"]);
 
 /** Validate a surface arriving over the wire; anything else is dropped. */
 export function normalizeSessionSurface(value: unknown): SessionSurface | undefined {
@@ -117,6 +123,9 @@ export interface SessionFactoryRequest {
   initialEventCount?: number;
   title?: string;
   createdAt?: string;
+  /** Set when this session is being created as a persona's thread (the host's
+   *  persona hooks know which persona; the factory adds its prompt layer). */
+  personaId?: string;
 }
 
 interface SessionFactoryMetadata {
@@ -242,7 +251,34 @@ export interface SessionManagerOptions {
    * Best-effort: a throw never blocks the turn.
    */
   beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
+  /** The owner's personal agents (see packages/cli/src/personas.ts). Absent →
+   *  session.create's personaId is ignored and summaries carry none. */
+  personas?: SessionPersonaHooks;
   now?: () => number;
+  /** Write every tool outcome and permission decision to the audit trail
+   *  (<home>/audit). Default true — this loop is the one place every
+   *  garrison turn passes through. */
+  audit?: boolean;
+}
+
+/** One in-flight turn as the owner's control panel shows it. */
+export interface RunningTurn {
+  sessionId: string;
+  title: string;
+  startedAt: string;
+  currentTool?: string;
+  /** Waiting at the door because the owner paused Ares. */
+  waitingForResume?: boolean;
+}
+
+/** How the manager learns about personas without knowing what one is. */
+export interface SessionPersonaHooks {
+  /** The persona's brain hints, or null when no such persona exists. */
+  resolve(personaId: string): { provider?: string; model?: string } | null;
+  /** A new thread was created for this persona — it becomes its thread. */
+  bind(personaId: string, sessionId: string): void;
+  /** Which persona owns this session, if any. */
+  personaOf(sessionId: string): string | undefined;
 }
 
 interface LiveSession {
@@ -272,15 +308,42 @@ interface LiveSession {
   ioChain: Promise<void>;
   /** Original client hints, replayed when the engine is rebuilt after an interrupt. */
   requested: { provider?: string; model?: string; workspace?: string };
+  /** Owner control plane: tool starts awaiting their outcome (audit), the
+   *  tool running now, when the current turn began, the inputs of every
+   *  in-flight send (so stop-all can cancel queued ones too), and the actions
+   *  the owner denied this turn (the circuit breaker). */
+  audit: ToolAuditTracker;
+  currentTool?: string;
+  turnStartedAt?: number;
+  inFlightInputIds: Set<string>;
+  deniedThisTurn: Set<string>;
 }
 
 interface PendingPermission {
   resolve: (decision: PermissionPromptDecision) => void;
   timer: ReturnType<typeof setTimeout>;
+  sessionId: string;
+  /** canonicalActionKey of what was asked — tripped on an owner deny. */
+  action: string;
 }
 
 const FALLBACK_TITLE = "untitled session";
 const TITLE_MAX_CHARS = 64;
+
+/** Turn-level stuck-turn watchdog — a LONG backstop, not a primary timeout.
+ *  `lastEventAt` resets on every event including tool_progress, so a healthy
+ *  long command that streams output never trips it; and any foreground shell is
+ *  already bounded by its own ≤10-min tool timeout. This only fires on a turn
+ *  that has gone truly silent past that — i.e. a tool wedged in a way its own
+ *  timeout could not catch. Turning it fully off (the prior default) is what
+ *  let a hung `docker exec … | tail` freeze a Telegram turn forever on
+ *  2026-09-21: the shell timeout killed the shell but an orphaned grandchild
+ *  held the output pipe, so no terminal event ever came and nothing recovered
+ *  it. The orphan-pipe bug is now fixed at the source (ShellSupervisor kills
+ *  the process group), and this stands behind it as defense in depth. 0
+ *  disables; ARES_TURN_SILENCE_MS overrides. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 900_000);
+const STUCK_TURN_CHECK_MS = 30_000;
 
 export class SessionManager {
   private readonly live = new Map<string, LiveSession>();
@@ -294,9 +357,14 @@ export class SessionManager {
   private readonly permissionTimeoutMs: number;
   private readonly onTurnSettled?: (sessionId: string) => void;
   private readonly beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
+  private readonly personas?: SessionPersonaHooks;
   private readonly now: () => number;
   private readonly bootAt: number;
   private lastSend: number | undefined;
+  private readonly auditEnabled: boolean;
+  /** Aborted by stopAll() to release sends waiting out an owner pause. */
+  private stopController = new AbortController();
+  private readonly waitingSends = new Map<string, number>();
 
   constructor(opts: SessionManagerOptions) {
     this.home = opts.home;
@@ -305,15 +373,63 @@ export class SessionManager {
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? 5 * 60_000;
     this.onTurnSettled = opts.onTurnSettled;
     this.beforeSend = opts.beforeSend;
+    this.personas = opts.personas;
     this.now = opts.now ?? Date.now;
     this.bootAt = this.now();
+    this.auditEnabled = opts.audit !== false;
   }
 
   create(
-    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant } = {},
+    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant; personaId?: string } = {},
   ): SessionSummary {
-    const session = this.spawn({ id: `sess_${randomUUID()}`, ...opts });
+    const { personaId: askedPersona, ...rest } = opts;
+    // A persona thread: its brain comes from the persona unless the frame
+    // named one; an unknown persona id is an error, never a silent default.
+    const personaId = askedPersona && this.personas ? askedPersona : undefined;
+    const brain = personaId ? this.personas!.resolve(personaId) : undefined;
+    if (personaId && !brain) throw new Error(`unknown persona: ${personaId}`);
+    const session = this.spawn({
+      id: `sess_${randomUUID()}`,
+      ...rest,
+      provider: rest.provider ?? brain?.provider,
+      model: rest.model ?? brain?.model,
+      ...(personaId ? { personaId } : {}),
+    });
+    if (personaId) this.personas!.bind(personaId, session.id);
     return this.summarize(session);
+  }
+
+  /**
+   * Retire a session: interrupt it, drop it from the live table, hide it from
+   * every future rehydration. The rollout stays on disk untouched — archive is
+   * never delete. Returns false for an id that is neither live nor on disk.
+   */
+  async archive(sessionId: string): Promise<boolean> {
+    const session = this.live.get(sessionId);
+    if (session?.busy) {
+      try { this.interrupt(sessionId); } catch { /* already settling */ }
+    }
+    this.live.delete(sessionId);
+    let known = Boolean(session);
+    if (this.sessionKernel) {
+      try {
+        if (this.sessionKernel.getSession(sessionId)) {
+          this.sessionKernel.prepareSessionDeletion(sessionId);
+          known = true;
+        }
+      } catch {
+        // an active lease/job — the JSON marker below still hides it
+      }
+    }
+    if (session) await session.ioChain.catch(() => undefined);
+    const file = metaPath(this.home, sessionId);
+    const meta = await readMetaFile(file);
+    if (meta || known) {
+      await fs.mkdir(sessionsDir(this.home), { recursive: true }).catch(() => undefined);
+      await fs.writeFile(file, JSON.stringify({ ...(meta ?? { id: sessionId }), archived: true }, null, 2) + "\n", "utf8").catch(() => undefined);
+      known = true;
+    }
+    return known;
   }
 
   /** The durable tenant stamp of a live session (owner when never stamped). */
@@ -327,6 +443,23 @@ export class SessionManager {
 
   list(): SessionSummary[] {
     return [...this.live.values()].map((s) => this.summarize(s));
+  }
+
+  /**
+   * Re-dial reasoning effort on every open session. The dial is one owner-level
+   * setting, so a change made anywhere (the phone's settings sheet, /reasoning
+   * in the TUI) has to reach the sessions already running or the owner turns it
+   * up and the live conversation keeps thinking at the old level. Returns how
+   * many sessions it reached. Engines that predate the dial are skipped.
+   */
+  setReasoningLevel(level: ReasoningLevel): number {
+    let applied = 0;
+    for (const session of this.live.values()) {
+      if (!session.coreSession) continue;
+      session.coreSession.setReasoningLevel(level);
+      applied++;
+    }
+    return applied;
   }
 
   /** Subscribe to a session's TurnEvents. Returns the detach function. */
@@ -355,7 +488,26 @@ export class SessionManager {
     if (!session.coreSession && delivery === "steer") {
       throw new Error("steer delivery requires a canonical Core Session");
     }
+    // Owner pause: a new turn is admitted at the door but does not start
+    // until resume. A stop-all while it waits drops it — nothing was admitted.
+    if (ownerPause.paused) {
+      const stop = this.stopController.signal;
+      this.waitingSends.set(session.id, (this.waitingSends.get(session.id) ?? 0) + 1);
+      try {
+        await ownerPause.wait({ signal: stop });
+      } finally {
+        const left = (this.waitingSends.get(session.id) ?? 1) - 1;
+        if (left > 0) this.waitingSends.set(session.id, left);
+        else this.waitingSends.delete(session.id);
+      }
+      if (stop.aborted) throw new Error("stopped by owner before this turn started");
+      // A legacy engine has no input queue: another send may have won the
+      // race out of the same pause.
+      if (!session.coreSession && session.busy) throw new SessionBusyError(sessionId);
+    }
     session.inFlightSends += 1;
+    session.inFlightInputIds.add(inputId);
+    session.turnStartedAt ??= this.now();
     session.busy = true;
     this.lastSend = this.now();
     if (!session.titled) {
@@ -380,6 +532,52 @@ export class SessionManager {
     } catch {
       // a host hook must never block the turn
     }
+    // ── stuck-turn watchdog ──────────────────────────────────────────────
+    let lastEventAt = Date.now();
+    let watchdogFires = 0;
+    const turnStartedAt = Date.now();
+    let stuckTimer: ReturnType<typeof setInterval> | null = null;
+    stuckTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
+      if (!session.busy) return;
+      const silent = Date.now() - lastEventAt;
+      if (silent < STUCK_TURN_SILENCE_MS) { watchdogFires = 0; return; }
+      watchdogFires++;
+      const prefix = `stuck-turn watchdog (garrison): session ${sessionId} silent for ${Math.round(silent / 1000)}s`;
+      if (watchdogFires < 3) {
+        console.error(`${prefix} — auto-interrupting`);
+        this.interrupt(sessionId);
+        return;
+      }
+      if (watchdogFires < 5) {
+        console.error(`${prefix} — interrupt ignored ${watchdogFires}x, force-aborting controller`);
+        session.controller.abort();
+        return;
+      }
+      // Nothing observes the abort (an await that ignores signals). Evict the
+      // live session: settle the turn for every subscriber, release the durable
+      // run lease, and let the next message rehydrate it from disk — the same
+      // recovery a process restart gives, without the restart.
+      console.error(`${prefix} — abort ignored, evicting live session`);
+      if (stuckTimer) clearInterval(stuckTimer);
+      try {
+        session.coreSession?.abandon(`stuck-turn watchdog evicted after ${Math.round(silent / 1000)}s of silence`);
+      } catch {
+        // best effort — the lease expires on its own once the heartbeat stops
+      }
+      const end: TurnEvent = {
+        type: "turn_end",
+        status: "interrupted",
+        workStatus: "unverified",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        durationMs: Date.now() - turnStartedAt,
+      };
+      this.appendRollout(session, end);
+      this.fanOut(session, end);
+      session.busy = false;
+      session.inFlightSends = 0;
+      if (this.live.get(sessionId) === session) this.live.delete(sessionId);
+    }, STUCK_TURN_CHECK_MS) : null;
+    stuckTimer?.unref?.();
     try {
       let events: AsyncIterable<TurnEvent>;
       const content = inputContent(text, options.attachments);
@@ -390,11 +588,13 @@ export class SessionManager {
         events = session.engine.streamTurn();
       }
       for await (const event of events) {
+        lastEventAt = Date.now();
         if (event.type === "input_admitted" && session.mirroredAdmissionIds.delete(event.inputId)) {
           continue;
         }
         this.appendRollout(session, event);
         session.friction?.record(event);
+        this.observeForOwner(session, event);
         // Match Core Session's turn boundary: when a client observes turn_end,
         // the complete rollout and friction envelope are already durable. This
         // closes a real reboot/rehydration race exposed by the front-door test.
@@ -409,9 +609,16 @@ export class SessionManager {
         this.fanOut(session, event);
       }
     } finally {
+      if (stuckTimer) clearInterval(stuckTimer);
       session.inFlightSends = Math.max(0, session.inFlightSends - 1);
       session.busy = session.inFlightSends > 0;
       session.mirroredAdmissionIds.delete(inputId);
+      session.inFlightInputIds.delete(inputId);
+      if (!session.busy) {
+        session.turnStartedAt = undefined;
+        session.currentTool = undefined;
+        session.deniedThisTurn.clear();
+      }
       if (!session.coreSession && session.controller.signal.aborted) this.rebuildEngine(session);
       // Turn completion is the durability boundary for the shared telemetry
       // plane, matching core Session. Recording stays off the streaming path.
@@ -444,8 +651,82 @@ export class SessionManager {
     if (!pending) return false;
     this.pendingPermissions.delete(key);
     clearTimeout(pending.timer);
+    if (decision === "deny") this.live.get(pending.sessionId)?.deniedThisTurn.add(pending.action);
     pending.resolve(decision);
     return true;
+  }
+
+  // ─── Owner control plane ────────────────────────────────────────────────
+
+  /**
+   * Stop every in-flight turn in every session — the /stop path, for all of
+   * them at once — plus every send still waiting out a pause, and every
+   * queued input a canonical session had admitted behind the active one.
+   * Returns how many turns were live and how many waiting sends were dropped.
+   */
+  interruptAll(): { turns: number; waiting: number } {
+    let turns = 0;
+    for (const session of this.live.values()) {
+      if (!session.busy) continue;
+      turns += 1;
+      try {
+        if (session.coreSession) {
+          for (const inputId of [...session.inFlightInputIds]) {
+            try {
+              session.coreSession.interrupt(inputId);
+            } catch {
+              // already settled or not cancellable — the active interrupt below still lands
+            }
+          }
+          session.coreSession.interrupt();
+        } else {
+          session.controller.abort();
+        }
+      } catch {
+        // one wedged session must not shield the others from the stop
+      }
+    }
+    const waiting = [...this.waitingSends.values()].reduce((sum, n) => sum + n, 0);
+    this.stopController.abort();
+    this.stopController = new AbortController();
+    return { turns, waiting };
+  }
+
+  /** Deny every unanswered permission prompt. Returns how many. */
+  denyAllPendingPermissions(): number {
+    const pending = [...this.pendingPermissions.entries()];
+    for (const [key, entry] of pending) {
+      this.pendingPermissions.delete(key);
+      clearTimeout(entry.timer);
+      entry.resolve("deny");
+    }
+    return pending.length;
+  }
+
+  /** Every turn running (or waiting at the door) right now. */
+  runningTurns(): RunningTurn[] {
+    const out: RunningTurn[] = [];
+    for (const session of this.live.values()) {
+      const waiting = this.waitingSends.has(session.id);
+      if (!session.busy && !waiting) continue;
+      out.push({
+        sessionId: session.id,
+        title: session.title,
+        startedAt: new Date(session.turnStartedAt ?? this.now()).toISOString(),
+        ...(session.currentTool ? { currentTool: session.currentTool } : {}),
+        ...(waiting && !session.busy ? { waitingForResume: true } : {}),
+      });
+    }
+    return out;
+  }
+
+  /** Track the running tool and write the audit line an outcome completes. */
+  private observeForOwner(session: LiveSession, event: TurnEvent): void {
+    if (event.type === "tool_start") session.currentTool = event.name;
+    else if ((event.type === "tool_end" || event.type === "tool_error") && session.currentTool) session.currentTool = undefined;
+    if (!this.auditEnabled) return;
+    const entry = session.audit.observe(event);
+    if (entry) void appendAudit({ ...entry, actor: "ares", sessionId: session.id }, this.home);
   }
 
   /** Epoch ms of the last send anywhere (boot time before the first send). */
@@ -563,9 +844,11 @@ export class SessionManager {
     titled?: boolean;
     messages?: readonly Message[];
     eventCount?: number;
+    personaId?: string;
   }): LiveSession {
     const controller = new AbortController();
     const made = this.factory({
+      ...(p.personaId ? { personaId: p.personaId } : {}),
       sessionId: p.id,
       provider: p.provider,
       model: p.model,
@@ -615,6 +898,9 @@ export class SessionManager {
       mirroredAdmissionIds: new Set(),
       controller,
       subscribers: new Set(),
+      audit: new ToolAuditTracker(),
+      inFlightInputIds: new Set(),
+      deniedThisTurn: new Set(),
       ioChain: fs
         .mkdir(sessionsDir(this.home), { recursive: true })
         .then(() => undefined)
@@ -664,7 +950,16 @@ export class SessionManager {
       busy: s.busy,
       ...(s.surface ? { surface: s.surface } : {}),
       ...(s.tenant ? { tenant: { ...s.tenant } } : {}),
+      ...(this.personaIdOf(s.id) ? { personaId: this.personaIdOf(s.id) } : {}),
     };
+  }
+
+  private personaIdOf(sessionId: string): string | undefined {
+    try {
+      return this.personas?.personaOf(sessionId);
+    } catch {
+      return undefined;
+    }
   }
 
   private fanOut(session: LiveSession, event: TurnEvent): void {
@@ -678,7 +973,7 @@ export class SessionManager {
   }
 
   private appendRollout(session: LiveSession, event: TurnEvent): void {
-    const line = JSON.stringify({ ts: new Date(this.now()).toISOString(), event }) + "\n";
+    const line = JSON.stringify({ ts: new Date(this.now()).toISOString(), event: compactRolloutEvent(event) }) + "\n";
     const file = rolloutPath(this.home, session.id);
     session.ioChain = session.ioChain
       .then(() => fs.appendFile(file, line, "utf8"))
@@ -705,8 +1000,20 @@ export class SessionManager {
   }
 
   private permissionHandlerFor(sessionId: string) {
-    return (request: ToolPermissionRequest): Promise<PermissionPromptDecision> =>
-      new Promise((resolve) => {
+    return (request: ToolPermissionRequest): Promise<PermissionPromptDecision> => {
+      // Circuit breaker: the owner already said no to this exact action this
+      // turn — refuse without asking again (ownerGuards.ts).
+      const action = canonicalActionKey(request.toolName, request.input);
+      if (this.live.get(sessionId)?.deniedThisTurn.has(action)) {
+        if (this.auditEnabled) {
+          void appendAudit(
+            { actor: "ares", sessionId, action: `permission:${request.toolName}`, params: request.input, result: "denied (repeat of an owner denial)" },
+            this.home,
+          );
+        }
+        return Promise.reject(repeatDenialError(request.toolName));
+      }
+      return new Promise((resolve) => {
         const requestId = request.id ?? `perm_${randomUUID()}`;
         const key = permissionKey(sessionId, requestId);
         const timer = setTimeout(() => {
@@ -714,8 +1021,9 @@ export class SessionManager {
           resolve("deny");
         }, this.permissionTimeoutMs);
         timer.unref?.();
-        this.pendingPermissions.set(key, { resolve, timer });
+        this.pendingPermissions.set(key, { resolve, timer, sessionId, action });
       });
+    };
   }
 
   /**
@@ -768,8 +1076,18 @@ function permissionKey(sessionId: string, requestId: string): string {
   return `${sessionId}\0${requestId}`;
 }
 
+/** A title already written to disk with the briefing in it — every phone
+ *  session before this fix. Strip it on read so old threads stop reading
+ *  "(System: This conversa…" without needing a migration. */
+function healTitle(stored: string | undefined): string | undefined {
+  const value = nonEmpty(stored);
+  if (value === undefined) return undefined;
+  const cleaned = stripSystemPreamble(value);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 function deriveTitle(text: string): string {
-  const collapsed = text.replace(/\s+/g, " ").trim();
+  const collapsed = stripSystemPreamble(text.replace(/\s+/g, " ").trim());
   if (!collapsed) return FALLBACK_TITLE;
   return collapsed.length > TITLE_MAX_CHARS ? `${collapsed.slice(0, TITLE_MAX_CHARS - 1)}…` : collapsed;
 }
@@ -814,6 +1132,8 @@ interface SessionMetaFile {
   createdAt?: string;
   surface?: unknown;
   tenant?: unknown;
+  /** Set by SessionManager.archive — the rollout stays, the session doesn't come back. */
+  archived?: boolean;
 }
 
 /**
@@ -841,11 +1161,11 @@ export async function rehydrateSessions(
     if (!name.endsWith(".jsonl")) continue;
     const id = name.slice(0, -".jsonl".length);
     if (!id || canonicalIds.has(id)) continue;
-    const text = await fs.readFile(path.join(dir, name), "utf8").catch(() => "");
-    const events = parseRolloutLines(text);
-    const messages = messagesFromRollout(events);
     const meta = await readMetaFile(metaPath(home, id));
-    const title = nonEmpty(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
+    if (meta?.archived === true) continue;
+    const events = (await readRolloutEvents(path.join(dir, name))) ?? [];
+    const messages = messagesFromRollout(events);
+    const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
     out.push({
       id,
       title,
@@ -877,12 +1197,12 @@ export async function rehydrateSession(
     if (canonical.archived) return null;
     return canonicalRehydratedSession(kernel!, canonical);
   }
-  const text = await fs.readFile(rolloutPath(home, sessionId), "utf8").catch(() => null);
-  if (text === null) return null;
-  const events = parseRolloutLines(text);
-  const messages = messagesFromRollout(events);
   const meta = await readMetaFile(metaPath(home, sessionId));
-  const title = nonEmpty(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
+  if (meta?.archived === true) return null;
+  const events = await readRolloutEvents(rolloutPath(home, sessionId));
+  if (events === null) return null;
+  const messages = messagesFromRollout(events);
+  const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
   return {
     id: sessionId,
     title,
@@ -938,20 +1258,109 @@ function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function parseRolloutLines(text: string): TurnEvent[] {
-  const events: TurnEvent[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line) as { event?: TurnEvent };
-      if (entry && typeof entry === "object" && entry.event && typeof entry.event.type === "string") {
-        events.push(entry.event);
-      }
-    } catch {
-      // Torn/corrupt tail line — skip it; the file stays usable.
+/**
+ * A garrison session's recorded events, timestamps and all — what a
+ * session.history frame replays.
+ *
+ * The garrison keeps its own rollout at <home>/garrison/sessions/<id>.jsonl,
+ * which is NOT the workspace rollout store. History was being served from the
+ * workspace one, so it answered every request with zero entries and the phone
+ * showed an empty chat every time it re-attached: leave the screen, come back,
+ * the conversation was gone. It was all on disk the whole time, in the other
+ * file.
+ */
+export async function loadGarrisonRollout(
+  home: string,
+  sessionId: string,
+  opts?: { limit?: number },
+): Promise<Array<{ ts?: string; event: TurnEvent }>> {
+  // A session id is a filename here; refuse anything that could escape the dir.
+  if (!sessionId || path.basename(sessionId) !== sessionId) return [];
+  // Keep only the newest `limit` entries while streaming, so a long
+  // history request never holds the whole session in memory.
+  const limit = opts?.limit && opts.limit > 0 ? opts.limit : Infinity;
+  const entries: Array<{ ts?: string; event: TurnEvent }> = [];
+  const found = await forEachRolloutEntry(rolloutPath(home, sessionId), (entry) => {
+    entries.push(entry);
+    if (entries.length > limit) entries.shift();
+  });
+  return found ? entries : [];
+}
+
+/**
+ * Longest string a tool_progress payload keeps on disk. Progress is a live
+ * view — the finished output rides on tool_end — but it was persisted whole:
+ * one session's Bash progress reached 224MB of a 240MB rollout, and the
+ * garrison died with a JavaScript heap OOM (2026-09-22) reading that file
+ * back whole to serve the phone its history. Keep the tail: the newest
+ * output is what a re-attaching client wants to see.
+ */
+export const ROLLOUT_PROGRESS_TEXT_CAP = 2_000;
+
+/** The form an event takes on disk. Only tool_progress is reduced; every
+ *  other event is stored exactly as emitted. */
+export function compactRolloutEvent(event: TurnEvent): TurnEvent {
+  if (event.type !== "tool_progress") return event;
+  const data = event.data;
+  if (typeof data === "string") {
+    return data.length > ROLLOUT_PROGRESS_TEXT_CAP ? { ...event, data: data.slice(-ROLLOUT_PROGRESS_TEXT_CAP) } : event;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return event;
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > ROLLOUT_PROGRESS_TEXT_CAP) {
+      out[key] = value.slice(-ROLLOUT_PROGRESS_TEXT_CAP);
+      out.truncatedChars = value.length - ROLLOUT_PROGRESS_TEXT_CAP;
+      changed = true;
+    } else {
+      out[key] = value;
     }
   }
-  return events;
+  return changed ? { ...event, data: out } : event;
+}
+
+/**
+ * Stream a rollout line by line, handing each well-formed entry (already
+ * compacted) to `visit`. Never reads the file into one string — a rollout can
+ * be hundreds of MB. Resolves false when the file does not exist.
+ */
+async function forEachRolloutEntry(
+  file: string,
+  visit: (entry: { ts?: string; event: TurnEvent }) => void,
+): Promise<boolean> {
+  const stream = createReadStream(file, { encoding: "utf8" });
+  const opened = await new Promise<boolean>((resolve) => {
+    stream.once("open", () => resolve(true));
+    stream.once("error", () => resolve(false));
+  });
+  if (!opened) return false;
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as { ts?: unknown; event?: TurnEvent };
+        if (entry && typeof entry === "object" && entry.event && typeof entry.event.type === "string") {
+          visit({ ...(typeof entry.ts === "string" ? { ts: entry.ts } : {}), event: compactRolloutEvent(entry.event) });
+        }
+      } catch {
+        // Torn/corrupt tail line — skip it; the rest of the history still loads.
+      }
+    }
+  } catch {
+    // Read error mid-file: keep what loaded, boot never fails on a damaged rollout.
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  return true;
+}
+
+async function readRolloutEvents(file: string): Promise<TurnEvent[] | null> {
+  const events: TurnEvent[] = [];
+  const found = await forEachRolloutEntry(file, (entry) => events.push(entry.event));
+  return found ? events : null;
 }
 
 /**
@@ -1012,10 +1421,34 @@ function messagesFromRollout(events: readonly TurnEvent[]): Message[] {
   return messages;
 }
 
+/**
+ * Strip a leading "(System: …)" note a client prepended to the owner's first
+ * message.
+ *
+ * The iPhone app opens a session by prefixing a briefing — "the user is on
+ * their phone, away from the computer…" — to the first thing the owner types.
+ * That message is also what names the session, so every phone conversation was
+ * titled with the briefing: the chat header read "(System: This conversa…" and
+ * the session list was a column of identical rows. Scans parentheses rather
+ * than regex-matching, so a ")" inside the note cannot end it early.
+ */
+function stripSystemPreamble(text: string): string {
+  if (!/^\(\s*system\s*:/i.test(text)) return text;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return text.slice(i + 1).trim();
+    }
+  }
+  return text; // unbalanced — leave it alone rather than truncate the message
+}
+
 function titleFromMessages(messages: readonly Message[]): string | undefined {
   const firstUser = messages.find((m) => m.role === "user");
   if (!firstUser) return undefined;
-  const text = messageText(firstUser).replace(/\s+/g, " ").trim();
+  const text = stripSystemPreamble(messageText(firstUser).replace(/\s+/g, " ").trim());
   if (!text) return undefined;
   return text.length > TITLE_MAX_CHARS ? `${text.slice(0, TITLE_MAX_CHARS - 1)}…` : text;
 }

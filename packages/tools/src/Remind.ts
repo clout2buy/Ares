@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import { buildTool } from "./_shared.js";
+import { requireScheduleApproval } from "./scheduleApproval.js";
 
 const inputSchema = z
   .object({
@@ -19,8 +20,12 @@ const inputSchema = z
     hour: z.number().int().min(0).max(23).optional().describe("Hour in 24h format (0–23). Required for 'add'."),
     minute: z.number().int().min(0).max(59).default(0).optional().describe("Minute (0–59). Default 0."),
     days: z.array(z.number().int().min(0).max(6)).optional().describe("Which days to fire: 0=Sun, 1=Mon, ..., 6=Sat. Omit for every day."),
-    once: z.boolean().optional().describe("If true, fire once then auto-remove. Default false (recurring)."),
+    once: z.boolean().optional().describe("If true, fire once then auto-remove — use this for any one-off 'remind me at 5'. Default false (recurring); a recurring alarm is only armed after the owner approves its schedule."),
     body: z.string().optional().describe("Extra text to include in the notification body."),
+    prompt: z.string().max(2_000).optional().describe(
+      "A task to RUN when the alarm fires instead of a static ping (e.g. 'check my bank for new charges since yesterday and tell me about any'). " +
+        "It runs as a turn in THIS conversation, so the result lands in this thread in your voice. Use it for recurring checks a role implies.",
+    ),
     alarm_id: z.string().optional().describe("Alarm ID to remove. Required for 'remove'."),
   })
   .strict();
@@ -38,7 +43,22 @@ export interface RemindOutput {
 let schedulerRef: SchedulerLike | null = null;
 
 export interface SchedulerLike {
-  addAlarm(input: { label: string; hour: number; minute: number; days?: number[]; once?: boolean; body?: string }): Promise<{ id: string; label: string; hour: number; minute: number }>;
+  addAlarm(input: {
+    label: string;
+    hour: number;
+    minute: number;
+    days?: number[];
+    once?: boolean;
+    body?: string;
+    /** Who armed it — the jobs list shows the owner which ones Ares made. */
+    createdBy?: "owner" | "ares";
+    /** A recurring alarm the agent made carries the owner's explicit yes. */
+    approved?: boolean;
+    /** The conversation that asked for it: a fired alarm with a `prompt`
+     *  (or one from a persona's thread) runs back IN that conversation. */
+    prompt?: string;
+    sessionId?: string;
+  }): Promise<{ id: string; label: string; hour: number; minute: number }>;
   removeAlarm(id: string): Promise<{ id: string } | undefined>;
   renderAlarms(): Promise<string>;
 }
@@ -63,7 +83,7 @@ export const RemindTool = buildTool({
     return "Listing alarms";
   },
 
-  async call(i): Promise<{ output: RemindOutput; display: string }> {
+  async call(i, ctx): Promise<{ output: RemindOutput; display: string }> {
     if (!schedulerRef) {
       return {
         output: { action: i.action, ok: false, note: "Scheduler not running — Telegram must be configured and the daemon must be active." },
@@ -89,13 +109,27 @@ export const RemindTool = buildTool({
     // add
     if (i.label === undefined) throw new Error("add needs a label.");
     if (i.hour === undefined) throw new Error("add needs an hour (0–23).");
+    // One-time: this call is its one authorization. Recurring: the owner must
+    // approve the schedule itself before it is armed (scheduleApproval.ts).
+    if (!i.once) {
+      await requireScheduleApproval(ctx, {
+        toolName: "Remind",
+        input: i,
+        what: `reminder "${i.label}"`,
+        schedule: describeAlarmSchedule(i.hour, i.minute ?? 0, i.days),
+      });
+    }
     const alarm = await schedulerRef.addAlarm({
+      createdBy: "ares",
+      approved: true,
       label: i.label,
       hour: i.hour,
       minute: i.minute ?? 0,
       days: i.days,
       once: i.once,
       body: i.body,
+      ...(i.prompt?.trim() ? { prompt: i.prompt.trim() } : {}),
+      ...(ctx?.sessionId ? { sessionId: ctx.sessionId } : {}),
     });
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const time = `${String(alarm.hour).padStart(2, "0")}:${String(alarm.minute).padStart(2, "0")}`;
@@ -107,3 +141,10 @@ export const RemindTool = buildTool({
     };
   },
 });
+
+/** "daily at 09:00" / "Mon, Wed at 17:30" — the words the owner approves. */
+export function describeAlarmSchedule(hour: number, minute: number, days?: readonly number[]): string {
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  return `${days?.length ? days.map((d) => names[d]).join(", ") : "daily"} at ${time}`;
+}

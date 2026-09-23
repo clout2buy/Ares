@@ -66,3 +66,16 @@ holo-arm.html
 # Generated audit/scratch artifacts (kept local, never committed)
 .ares-*-report.md
 .codex-*.png
+
+# Expo (mobile/) local state
+mobile/.expo/
+mobile/dist/
+
+# Apple App Store Connect API key — NEVER commit
+AuthKey_*.p8
+*.p8
+mobile/credentials.json
+*.p12
+*.mobileprovision
+*.cer
+*.csr

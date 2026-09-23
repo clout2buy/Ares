@@ -20,7 +20,9 @@
 // regress the freedom posture the owner chose.
 
 import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effects";
-import type { ToolPermissionRequest } from "@ares/core";
+import { vaultAccessReason, type ToolPermissionRequest } from "@ares/core";
+import { connectorCategory } from "./connectorGate.js";
+import { lifeToolCategory } from "./policyGateLife.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -54,6 +56,9 @@ export function remoteAutonomyDecision(request: ToolPermissionRequest): "allow" 
   // durable plan revision. A remote model can propose it, but only the owner
   // can cross this boundary; never let the autonomy default self-approve it.
   if (request.toolName === "ExitPlanMode") return "ask";
+  // A per-call owner decision (a checkout total, a vault fill on a named site)
+  // is the owner's by definition — never the autonomy default's.
+  if (request.ownerDecision) return "ask";
   const category = classifyToolRequest(request);
   // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
   if (category === null) return "allow";
@@ -85,7 +90,7 @@ export interface GateOptions {
 // destructiveShellDecision in @ares/tools (kept local so the gate is
 // self-contained and independently testable).
 const DESTRUCTIVE_SHELL =
-  /(?:^|[;&|]\s*)rm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+|(?:^|[;&|]\s*)(?:rmdir|unlink|shred)\b|\bgit\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--)\b|\b(?:mkfs(?:\.\w+)?|wipefs|format)\b|\bRemove-Item\b|(?:^|[;|]\s*)(?:del|erase|rd|rmdir)\s+|\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i;
+  /(?:^|[;&|]\s*)rm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+)+|(?:^|[;&|]\s*)(?:rmdir|unlink|shred)\b|\bgit\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--)\b|\b(?:mkfs(?:\.\w+)?|wipefs)\b|(?<![-.])\bformat\b|\bRemove-Item\b|(?:^|[;|]\s*)(?:del|erase|rd|rmdir)\s+|\b(?:Clear-Disk|Format-Volume|Remove-Partition)\b/i;
 
 // Leading commands that only read. Anything not on this list is treated as
 // mutating (safer default). git/PowerShell read verbs handled separately.
@@ -105,6 +110,13 @@ function commandOf(request: ToolPermissionRequest): string {
   return typeof input?.command === "string" ? input.command : "";
 }
 
+/** The path a file tool acts on (file_path or path), if any. */
+function pathOf(request: ToolPermissionRequest): string {
+  const input = request.input as { file_path?: unknown; path?: unknown } | null | undefined;
+  const value = typeof input?.file_path === "string" ? input.file_path : input?.path;
+  return typeof value === "string" ? value : "";
+}
+
 /** The `action` discriminator for action-style tools (Gmail/Calendar/Connect). */
 function actionOf(request: ToolPermissionRequest): string {
   const input = request.input as { action?: unknown } | null | undefined;
@@ -115,6 +127,9 @@ function actionOf(request: ToolPermissionRequest): string {
 export function classifyShell(rawCommand: string): ActionCategory {
   const cmd = rawCommand.replace(/\s+/g, " ").trim();
   if (!cmd) return "shell_mutating";
+  // Reading the credential vault by script is a credential action whatever
+  // the verb — `cat` is read-only to the disk and a leak to the owner.
+  if (vaultAccessReason(cmd)) return "credential_or_secret";
   if (DESTRUCTIVE_SHELL.test(cmd)) return "shell_destructive";
   if (/\bgit\s+push\b/i.test(cmd)) return "git_push";
   if (GIT_READONLY.test(cmd)) return "shell_readonly";
@@ -139,10 +154,23 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
   if (/\b(credential|secret|api[ _-]?key|password|passphrase|private key|oauth token)\b/.test(hay)) {
     return "credential_or_secret";
   }
+  // Gmail / Google Workspace / Outlook: per-action table in connectorGate.ts.
+  const connector = connectorCategory(request.toolName, actionOf(request));
+  if (connector !== undefined) return connector;
   switch (request.toolName) {
     case "Bash":
     case "PowerShell":
       return classifyShell(commandOf(request));
+    // File tools pointed at the vault are credential reads too (the same
+    // locations the shell guard knows, checked as a path).
+    case "Read":
+    case "Grep":
+    case "Glob":
+    case "Edit":
+    case "Write": {
+      const target = pathOf(request);
+      return target && vaultAccessReason(`cat ${JSON.stringify(target)}`) ? "credential_or_secret" : null;
+    }
     // ComputerUse drives the REAL desktop (mouse/keyboard/screen). No dedicated
     // category — treat as "unknown" so it's conservatively staged, never silent,
     // but never a hard block (the owner legitimately uses it).
@@ -169,11 +197,58 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       return "git_push";
     case "Filesystem":
       return "file_write";
+    // Checkout review: the owner approves the exact total before any order.
+    case "Checkout":
+      return "payment_or_purchase";
     case "Browser":
+      // Filling a vault login or a secret handle into a page touches secrets.
+      if (actionOf(request) === "login" || actionOf(request) === "fill_secret") return "credential_or_secret";
       return /\b(submit|checkout|buy|pay|purchase|order|confirm)\b/.test(hay) ? "browser_submit" : "browser_navigate";
-    default:
-      return null;
+    // Ares's own phone numbers: buying/releasing bills the owner's Twilio
+    // account monthly; a text is outbound communication like an email.
+    case "Phone": {
+      const action = actionOf(request);
+      if (action === "buy_number" || action === "release_number") return "payment_or_purchase";
+      return action === "send_sms" ? "email_send" : null;
+    }
+    // A generated video costs dollars on the owner's Gemini bill; images are
+    // cents and run freely. Without this the tool's own "ask" was auto-allowed
+    // on the phone like any unclassified tool.
+    case "Imagine":
+      return actionOf(request) === "video" ? "payment_or_purchase" : null;
+    case "McpCallTool":
+      return mcpMoneyCategory(mcpToolOf(request));
+    default: {
+      const life = lifeToolCategory(request.toolName, actionOf(request));
+      if (life !== undefined) return life;
+      // A connected MCP server's tools arrive as mcp_<server>_<tool>. Stripe,
+      // PayPal and Square expose real money movers (refunds, charges, invoices,
+      // payment links) that were classified null — i.e. auto-allowed on the
+      // phone. Anything money-shaped that isn't a read now asks the owner.
+      return request.toolName.startsWith("mcp_") ? mcpMoneyCategory(request.toolName) : null;
+    }
   }
+}
+
+const MCP_READ = /(^|_)(list|get|search|retrieve|fetch|read|describe|find|lookup|query)(_|$)/;
+const MCP_MONEY = /(payment|(^|_)pay(_|$)|charge|refund|payout|transfer|purchase|(^|_)buy(_|$)|checkout|invoice|subscription|(^|_)order(s)?(_|$)|price|coupon|dispute)/;
+
+/** payment_or_purchase for an MCP tool that moves money, else null. */
+export function mcpMoneyCategory(toolName: string | undefined): ActionCategory | null {
+  if (!toolName) return null;
+  const name = toolName.toLowerCase().replace(/^mcp_/, "");
+  if (!MCP_MONEY.test(name)) return null;
+  // The verb decides: list_payment_intents reads, create_refund moves money.
+  const verb = name.split("_").find((part) => /^(list|get|search|retrieve|fetch|read|describe|find|lookup|query|create|update|cancel|delete|send|finalize|void|capture|confirm|refund|pay|buy|issue|make)$/.test(part));
+  if (verb && MCP_READ.test(`_${verb}_`)) return null;
+  return "payment_or_purchase";
+}
+
+function mcpToolOf(request: ToolPermissionRequest): string | undefined {
+  const input = request.input;
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  return typeof record.tool === "string" ? `${String(record.server ?? "")}_${record.tool}` : undefined;
 }
 
 /**
@@ -181,6 +256,16 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
  * attended axis. PURE — no I/O.
  */
 export function gateToolPermission(request: ToolPermissionRequest, opts: GateOptions): GateOutcome {
+  // An owner decision is never deferred to a legacy auto-allow: ask when the
+  // owner is there, refuse when nobody is.
+  if (request.ownerDecision) {
+    return {
+      kind: opts.attended ? "ask" : "deny",
+      category: null,
+      hardBlocked: true,
+      reason: opts.attended ? "only the owner can answer this" : "denied: needs the owner's decision and no owner is present (unattended)",
+    };
+  }
   const category = classifyToolRequest(request);
   if (category === null) return { kind: "defer", category: null, hardBlocked: false };
 

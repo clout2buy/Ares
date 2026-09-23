@@ -83,6 +83,12 @@ test("manual Claude OAuth completion rejects a mismatched state", async () => {
 });
 
 test("Ares does not import credentials owned by Claude Code or Crypt", async () => {
+  // resolveAnthropicAccessToken() deliberately honours these two env vars, so a
+  // machine that exports them (doingbox does, via ~/.profile) short-circuits
+  // before any file is read and this assertion fails for the wrong reason.
+  // This test is about FILE imports only, so it scrubs its own inputs.
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete process.env.ARES_ANTHROPIC_OAUTH_TOKEN;
   await clearAnthropicTokens();
   await writeFile(path.join(sandbox, "claude-credentials.json"), JSON.stringify({
     claudeAiOauth: {

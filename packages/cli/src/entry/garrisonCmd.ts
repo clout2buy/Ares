@@ -1,12 +1,16 @@
 // Extracted from entry.ts — garrisonCmd.
 
 import {
+  appendAudit,
+  ownerPause,
+  setAuditSink,
   composeVerifiedChildSessionSync,
   installGlobalCrashHandlers,
   loadChildVerificationDebt,
   loadSessionRollout,
   openWorkspaceSessionKernel,
   runReliabilityTriage,
+  setConnectBroker,
   writeCrashLogSync,
   type ChildVerificationDebt,
   type ChildSessionCompositionOptions,
@@ -15,24 +19,30 @@ import {
   type VerifierOptions,
 } from "@ares/core";
 import { readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, type FileReadStamp } from "@ares/tools";
+import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
-import type { TelegramBridge } from "@ares/channels";
+import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
+import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
+import { TunnelOAuth } from "../oauthTunnel.js";
+import { ConnectHub } from "../connectHub.js";
+import { BrowserWatchHub, setBrowserWatchHub } from "../browserWatch.js";
 import { dim, notice } from "../terminalUi.js";
-import { loadUiSettings } from "../uiSettings.js";
+import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
 import { MemoryStore, detectWorkspaceProjectId, loadProjectState, withConsolidationLock } from "@ares/mind";
-import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
+import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, loadGarrisonRollout, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "../holotable.js";
 import { runEffect } from "@ares/effects";
 import { gateToolPermission, remoteAutonomyDecision } from "../policyGate.js";
 import { applyEngineConfigEnv } from "./daemon.js";
 import { buildEngineTools } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissions.js";
-import { providerFamilyForSelection, selectProvider } from "./providers.js";
+import { daemonModelCatalog, providerFamilyForSelection, selectProvider, TERMINAL_PROVIDERS } from "./providers.js";
 import { AresRuntimeState, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, makeSpanSummarizer, resolveReasoningLevel } from "./sessionFactory.js";
 import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins, keepTelegramBridgeUp } from "./telegramWiring.js";
@@ -42,6 +52,10 @@ import { aresNetworkHostDoor, aresNetworkHostPublicUrl, aresNetworkHostStop, ori
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
+import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
+import { startLifeSurfaces } from "./lifeWiring.js";
+import { PersonaRuntime } from "./personaRuntime.js";
+import type { ProviderSelection } from "./providers.js";
 
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
@@ -141,6 +155,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const pathPermissions = await AresPathPermissionStore.load(context);
   const commandPermissions = await AresCommandPermissionStore.load(context);
   const settings = await loadUiSettings();
+  // The dial the phone can turn: `settings` is the boot snapshot, so keep a
+  // mutable view of it or a level set from the app reads back as the old one.
+  let latestSettings = settings;
   // The Ares network: a garrison serving Telegram all day keeps the hosted
   // estate in sync too (reconnects if the owner left it on; never throws).
   void startAresNetworkFromSettings();
@@ -160,6 +177,10 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // The immutable catalog is shared, but mutable shell/todo state is routed by
   // ToolCallContext.sessionId. This keeps gateway sessions and their child
   // Workers from reading, polling, killing, or overwriting each other's state.
+  // The audit trail: subagents and operator workers record through this sink
+  // (the session loop writes its own). Installed only here — a desktop or test
+  // process never writes audit lines into a home that didn't ask for them.
+  setAuditSink((entry) => void appendAudit(entry, context.home));
   const shellRegistry = new ShellRegistry();
   const todoStore = new TodoStore();
   const sessionShellRegistries = new Map<string, ShellRegistry>();
@@ -169,12 +190,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const verifiedSessions = new Map<string, VerifiedGarrisonCoreSession>();
   let composeGarrisonSystemPrompt = (mode: AresRuntimeState["permissionMode"]) =>
     buildSystemPrompt(mode, context);
+  // Each session's full prompt builder (tenant tail + texting/persona layers).
+  // A plan-mode transition re-composes through it, or the swap would silently
+  // drop a guest's isolation and a persona's role mid-conversation.
+  const sessionPromptBuilders = new Map<string, (mode: AresRuntimeState["permissionMode"]) => string>();
   const planModes = new SessionPlanModeRegistry({
     kernel: sessionKernel,
     defaultPermissionMode:
       runtime.permissionMode === "plan" ? "workspace-write" : runtime.permissionMode,
     sessionFor: (sessionId) => verifiedSessions.get(sessionId)?.session,
-    systemPromptFor: (mode) => composeGarrisonSystemPrompt(mode),
+    systemPromptFor: (mode, sessionId) => sessionPromptBuilders.get(sessionId)?.(mode) ?? composeGarrisonSystemPrompt(mode),
   });
   const canonicalVerificationDebt = await loadCanonicalGarrisonVerificationDebt(
     sessionKernel,
@@ -229,9 +254,49 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     (await loadLiveMindContext(context)) +
     (await loadGitContext(context));
 
+  // The owner's personal agents: each has its own thread, brain and role
+  // (personaRuntime.ts). Booted before rehydration so persona threads come
+  // back on their own model with their own layer.
+  const personaRuntime = new PersonaRuntime<ProviderSelection>({
+    home: context.home,
+    resolveBrain: (provider, model) => selectProvider(new Map([["provider", provider], ["model", model]])),
+    live: {
+      setBrain: async (sessionId, brain) => {
+        const verified = verifiedSessions.get(sessionId);
+        if (!verified) return;
+        await verified.session.setProvider(brain.provider, brain.model, {
+          contextBudgetTokens: chatContextBudget(brain),
+          summarizeSpan: makeSpanSummarizer(brain),
+        });
+      },
+      setReasoningLevel: (sessionId, level) => {
+        if (isReasoningLevel(level)) verifiedSessions.get(sessionId)?.session.setReasoningLevel(level);
+      },
+      refreshPrompt: (sessionId) => {
+        const build = sessionPromptBuilders.get(sessionId);
+        if (build) verifiedSessions.get(sessionId)?.session.setSystemPrompt(build(planModes.stateFor(sessionId).permissionMode));
+      },
+    },
+    catalog: {
+      providers: () => [...TERMINAL_PROVIDERS],
+      models: async (provider) => (await daemonModelCatalog(provider)).map((row) => ({ id: row.id })),
+      reasoningLevels: () => [...REASONING_LEVELS],
+    },
+    defaultBrain: () => ({
+      provider: providerFamilyForSelection(selection),
+      model: selection.model,
+      reasoningLevel: resolveReasoningLevel(latestSettings),
+    }),
+    // phonePush is built further down; this only runs once alarms fire.
+    push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "personas", line } }) + "\n"),
+  });
+  await personaRuntime.boot().catch(() => []);
+
   const sessions = new SessionManager({
     home: context.home,
     sessionKernel,
+    personas: personaRuntime.sessionHooks(),
     // The garrison's first operator wake producer: a settled turn wakes the
     // background loop within seconds instead of waiting out the heartbeat.
     // Deliberately a closure — the loop is constructed later in this function,
@@ -254,11 +319,21 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     },
     factory: (req) => {
       const workspace = req.workspace ?? context.workspace;
-      const model = req.model ?? selection.model;
+      // A persona thread runs on the persona's own brain (resolved at boot or
+      // creation); everything else keeps the live default selection.
+      const persona = personaRuntime.personaFor(req);
+      const personaBrain = personaRuntime.brainFor(persona);
+      const brain = personaBrain ?? selection;
+      const model = personaBrain ? personaBrain.model : (req.model ?? selection.model);
       planModes.refresh(req.sessionId);
       const sessionTail = promptTailForTenant(req.tenant, promptTail, gitTail);
-      const liveSystemPrompt = () =>
-        promptTailForTenant(req.tenant, composeGarrisonSystemPrompt, composeGuestSystemPrompt)(planModes.stateFor(req.sessionId).permissionMode);
+      // Texting doctrine (phone/Telegram) + the persona's role ride AFTER the
+      // shared prompt, per session — never baked into the common prefix.
+      const buildPrompt = (mode: AresRuntimeState["permissionMode"]) =>
+        promptTailForTenant(req.tenant, composeGarrisonSystemPrompt, composeGuestSystemPrompt)(mode) +
+        personaRuntime.promptLayers(req.sessionId, req.surface, req.personaId);
+      sessionPromptBuilders.set(req.sessionId, buildPrompt);
+      const liveSystemPrompt = () => buildPrompt(planModes.stateFor(req.sessionId).permissionMode);
       const fileReadStamps = new Map<string, FileReadStamp>();
       const requestPermission = req.requestPermission
         ? async (request: Parameters<typeof req.requestPermission>[0]) => {
@@ -276,7 +351,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       );
       const verified = createVerifiedGarrisonCoreSession({
         workspace,
-        provider: selection.provider,
+        provider: brain.provider,
         model,
         systemPrompt: liveSystemPrompt,
         tools,
@@ -287,13 +362,15 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         // dangerous few — money, mail, publish, credentials, wipes — escalate
         // to the owner's phone (and auto-deny if unanswered — the safe miss).
         requestPermission,
-        reasoningLevel: resolveReasoningLevel(settings),
-        maxOutputTokens: chatMaxOutputTokens(selection),
-        contextBudgetTokens: chatContextBudget(selection),
+        reasoningLevel: persona?.reasoningLevel && isReasoningLevel(persona.reasoningLevel)
+          ? persona.reasoningLevel
+          : resolveReasoningLevel(settings),
+        maxOutputTokens: chatMaxOutputTokens(brain),
+        contextBudgetTokens: chatContextBudget(brain),
         fileReadStamps,
         onHistoryTrimmed: (dropped) =>
           invalidateTrimmedReadStamps(fileReadStamps, workspace, dropped),
-        summarizeSpan: makeSpanSummarizer(selection),
+        summarizeSpan: makeSpanSummarizer(brain),
         contextInputs: () => ({
           persona: agent.activePersona() ?? null,
           livingMemoryAndGit: sessionTail,
@@ -305,7 +382,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ? {
               id: req.sessionId,
               workspace,
-              provider: { name: selection.provider.name, model },
+              provider: { name: brain.provider.name, model },
               createdAt: req.createdAt,
               label: req.title,
             }
@@ -320,13 +397,24 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       verifiedSessions.set(req.sessionId, verified);
       return {
         session: verified.session,
-        providerName: selection.provider.name,
+        providerName: brain.provider.name,
         model,
         workspace,
       };
     },
   });
+  personaRuntime.attach(sessions);
   const restored = await sessions.rehydrate();
+
+  // The phone's Today tab: the morning feed (a real turn on its own session),
+  // idea cards (the summarize slot), tracked commitments; plus Imagine's voice.
+  const life = startLifeSurfaces({
+    home: context.home,
+    sessions,
+    selection: () => selection,
+    speech: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "life", line } }) + "\n"),
+  });
 
   const scheduler = new Scheduler({
     hooks: {
@@ -366,10 +454,15 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       // hook existed the gauntlet only ran when someone remembered to.
       gauntlet: async () =>
         (await runScheduledGauntlet({ suite: process.env.ARES_GAUNTLET_SUITE ?? "coding-v3", gate: true, trigger: "garrison", home: context.home })).nightly,
+      // The morning paper: due once a day from ARES_FEED_HOUR (07:00 local).
+      feed: () => life.feed.maybeRunDaily(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
     activeTurns: () => sessions.list().filter((s) => s.busy).length,
+    // The owner's pause holds system jobs; every run lands in the audit trail.
+    isPaused: () => ownerPause.paused,
+    onRun: (hook, result) => void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home),
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
@@ -411,7 +504,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         {
           home: context.home,
           workspace: context.workspace,
-          dispatcher: new QueryEngineDispatcher({
+          // Each unattended step is a stoppable, pausable, audited job.
+          dispatcher: ownerControlledDispatcher(new QueryEngineDispatcher({
             provider: selection.provider,
             model: selection.model,
             workspace: context.workspace,
@@ -422,9 +516,12 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             sessionRegistryHome: context.home,
             requestPermission: async (request) => {
               const gate = gateToolPermission(request, { attended: false });
+              if (gate.kind !== "allow") {
+                void appendAudit({ actor: "operator", action: `permission:${request.toolName}`, params: request.input, result: "denied (unattended)" }, context.home);
+              }
               return gate.kind === "allow" ? "allow_once" : "deny";
             },
-          }),
+          }), (entry) => void appendAudit(entry, context.home)),
         },
         {
           everyMs: operatorTickIntervalMs(),
@@ -458,7 +555,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             return project?.nextActions ?? [];
           },
           // Remote /pause from Telegram (cross-process control flag) parks ticks.
-          paused: () => isOperatorPaused(context.home),
+          paused: async () => ownerPause.paused || (await isOperatorPaused(context.home)),
           emit: (event) => {
             process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n");
             void telegramReporter?.report(event).catch(() => {});
@@ -466,6 +563,41 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           onError: () => {},
         },
       );
+
+  // The owner's control plane: kill switch, pause, jobs, audit — behind the
+  // phone's /gateway routes and Telegram's /stopall /pause /resume /log /jobs.
+  // Telegram alarms come up later with the bridge, hence the late binding.
+  let alarmScheduler: Awaited<ReturnType<typeof startTelegramCheckins>> = null;
+  const controlPlane = new OwnerControlPlane({
+    home: context.home,
+    sessions,
+    scheduler,
+    approvals,
+    alarms: () => alarmScheduler,
+    ...(operatorLoop
+      ? {
+          operator: {
+            get started() {
+              return operatorLoop.started;
+            },
+            everyMs: operatorTickIntervalMs(),
+            stop: () => operatorLoop.stop(),
+            start: () => operatorLoop.start(),
+          },
+        }
+      : {}),
+  });
+  const telegramOwnerControl = {
+    stopAll: () => controlPlane.telegramStopAll(),
+    pause: () => controlPlane.telegramPause(),
+    resume: () => controlPlane.telegramResume(),
+    log: () => controlPlane.telegramLog(),
+    jobs: () => controlPlane.telegramJobs(),
+    cancelJob: async (id: string) => {
+      const result = await controlPlane.cancelJob(id);
+      return `${result.ok ? "⏹" : "✕"} ${id}: ${result.detail}`;
+    },
+  };
 
   const requestedPort = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
   // Filled in below; /health reads them live so a client can see whether the
@@ -486,8 +618,20 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // Recorded-event replay for the /view page and any session.history client:
     // the workspace audit rollout (events.jsonl) is the source.
     history: async (sessionId, opts) => {
-      const rollout = await loadSessionRollout(context.workspace, sessionId);
-      return opts?.limit ? rollout.entries.slice(-opts.limit) : rollout.entries;
+      // The garrison's OWN rollout first. Gateway sessions are recorded to
+      // <home>/garrison/sessions/<id>.jsonl, not the workspace store, so
+      // reading only the workspace answered every request with zero entries —
+      // the phone re-attached to a live conversation and showed an empty
+      // screen, as if leaving the chat had erased it.
+      const own = await loadGarrisonRollout(context.home, sessionId, opts);
+      if (own.length > 0) return own;
+      // A session started in a workspace (TUI, coding) still lives there.
+      try {
+        const rollout = await loadSessionRollout(context.workspace, sessionId);
+        return opts?.limit ? rollout.entries.slice(-opts.limit) : rollout.entries;
+      } catch {
+        return [];
+      }
     },
   });
   const bound = await server.start();
@@ -517,6 +661,39 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   };
   // Remote PC agent server — lets the owner connect to a coworker's PC on the fly
   // via a one-time Telegram link. Best-effort: a bind failure never touches the garrison.
+  // Push to the owner's phone, straight to Apple — set up only when an APNs
+  // key is configured (ARES_APNS_KEY_PATH/KEY_ID/TEAM_ID).
+  const phonePush = new PhonePush(
+    path.join(context.home, "phone-push.json"),
+    apnsFromEnv("com.doingteam.ares"),
+    (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
+  );
+
+  // Connectors the owner can finish on their phone: the provider redirects
+  // back to the tunnel, not to a localhost that only exists on this box.
+  const tunnelOAuth = new TunnelOAuth(
+    () => remoteAgentServer?.linkBaseUrl(),
+    context.home,
+    (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "oauth", line } }) + "\n"),
+  );
+
+  // "Check my email" → a Connect card on the phone. The hub is the broker the
+  // Connect tool hands flows to; its links live on the same public origin.
+  const connectHub = new ConnectHub({
+    publicUrl: () => remoteAgentServer?.linkBaseUrl(),
+    home: context.home,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "connect", line } }) + "\n"),
+  });
+  setConnectBroker(connectHub);
+  // "Watch or take over anytime": every browser the Browser tool opens gets a
+  // /watch/<token> link on the same origin (the browser_live card).
+  const browserWatchHub = new BrowserWatchHub({
+    publicUrl: () => remoteAgentServer?.linkBaseUrl(),
+    home: context.home,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "watch", line } }) + "\n"),
+  });
+  setBrowserWatchHub(browserWatchHub);
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -526,6 +703,76 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         home: context.home,
         controlToken: gatewayToken || undefined,
         ...(door ? { estateDoor: (req, res) => door.handle(req, res) } : {}),
+        // The phone app's way in: wss://<origin>/gateway → this loopback gateway.
+        gatewayUrl: `ws://127.0.0.1:${bound.port}`,
+        // Voice in/out and screenshot bytes for the phone, on the same origin.
+        phoneApi: {
+          transcribe: async (audio, format) =>
+            (await transcribe(audio, "en-US", 20_000, {
+              encoding: format.encoding as "LINEAR16" | "WEBM_OPUS" | "OGG_OPUS" | "FLAC",
+              sampleRateHertz: format.sampleRateHertz,
+            })).text,
+          synthesize: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
+          screenshotRoots: [path.join(context.home, "screenshots"), path.join(os.tmpdir(), "ares-screenshots")],
+          // What Ares MAKES lands in two places: its home (forge/, reports…) and
+          // the workspace it is building in (pages, dashboards). The phone has to
+          // open both, or "show me what you made" 404s on every file it wrote.
+          // Ares builds throwaway pages in the system temp dir — /tmp/dbx-grid/
+          // index.html and friends — and linked them in replies that opened to
+          // "not found", because temp was not a served root. Only the
+          // look-at-able extensions are servable from anywhere, the bearer
+          // token is still required, and symlinks out are refused.
+          artifactRoots: [context.home, context.workspace, os.tmpdir()],
+          oauth: {
+            // The hub's flows first; a state it doesn't own is a legacy
+            // /gateway/connect/start flow.
+            handleCallback: async (req, res, url) =>
+              (await connectHub.handleCallback(req, res, url)) || tunnelOAuth.handleCallback(req, res, url),
+            begin: (provider, scopes) => tunnelOAuth.begin(provider, scopes),
+            callbackUrlForSetup: () => tunnelOAuth.callbackUrlForSetup(),
+          },
+          connect: (req, res, url) => connectHub.handle(req, res, url),
+          life: life.handler,
+          personas: (req, res, url) => personaRuntime.handle(req, res, url),
+          watch: (req, res, url) => browserWatchHub.handle(req, res, url),
+          registerPush: (d) => phonePush.register(d),
+          unregisterPush: (tok) => phonePush.unregister(tok),
+          pushConfigured: () => phonePush.configured,
+          // The phone's settings sheet: which brains exist, how hard they
+          // think, and what they have been given standing permission to do.
+          // The owner could set all three from a terminal and none of them
+          // from the device they actually carry.
+          control: {
+            providers: () => [...TERMINAL_PROVIDERS],
+            models: async (provider) =>
+              (await daemonModelCatalog(provider)).map((row) => ({
+                id: row.id,
+                ...(row.label ? { label: row.label } : {}),
+                ...(row.effortLevels ? { effortLevels: row.effortLevels } : {}),
+              })),
+            effort: () => ({ current: resolveReasoningLevel(latestSettings), levels: [...REASONING_LEVELS] }),
+            setEffort: async (level) => {
+              if (!isReasoningLevel(level)) return;
+              // An explicit choice must outrank ARES_REASONING_LEVEL for the
+              // rest of this process, or the next fresh session snaps back to
+              // the env value and the dial looks broken from the phone.
+              delete process.env.ARES_REASONING_LEVEL;
+              latestSettings = { ...latestSettings, reasoningLevel: level };
+              await updateUiSettings({ reasoningLevel: level });
+              sessions.setReasoningLevel(level);
+              // A persona with its own effort keeps it; the owner-level dial
+              // is the default, not an override of what they chose per agent.
+              for (const p of personaRuntime.store.list()) {
+                if (p.sessionId && p.reasoningLevel && isReasoningLevel(p.reasoningLevel)) {
+                  verifiedSessions.get(p.sessionId)?.session.setReasoningLevel(p.reasoningLevel);
+                }
+              }
+            },
+            permissions: () => commandPermissions.list().map((r) => ({ pattern: r.pattern, effect: r.effect, source: r.source })),
+            revokePermission: (pattern) => commandPermissions.revoke(pattern),
+          },
+          ownerControl: controlPlane,
+        },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
         // link, falls back to LAN (and says so in every link) if it can't
@@ -542,11 +789,25 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     }
   })();
 
+  // Watch for the things worth waking the owner for. Only runs when an APNs
+  // key is configured; otherwise registrations are still accepted so the app
+  // can say "notifications are not set up on this garrison".
+  const phoneNotifier = phonePush.configured && gatewayToken
+    ? new PhoneNotifier({
+        gatewayUrl: `ws://127.0.0.1:${bound.port}`,
+        token: gatewayToken,
+        push: phonePush,
+        log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
+      })
+    : null;
+  phoneNotifier?.start();
+  if (phonePush.configured) process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line: "phone push armed (APNs)" } }) + "\n");
+
   // The bridge comes up now if Telegram is configured, and keeps trying every
   // 30s if it isn't (or if the first attempt failed) — the owner connecting
   // Telegram from the app goes live without a restart.
   const startBridge = () => gatewayToken
-    ? startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl, operatorLoop, remoteAgentServer)
+    ? startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl, operatorLoop, remoteAgentServer, telegramOwnerControl)
     : Promise.resolve(null);
   telegramBridge = await startBridge().catch((err) => {
     process.stderr.write(`garrison: telegram bridge failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -556,7 +817,12 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
 
   // Proactive scheduled check-ins over Telegram — 9am/12pm/3pm by default.
   // Each check-in includes weather for the owner's area when configured.
-  const tgCheckinScheduler = await startTelegramCheckins(context).catch(() => null);
+  // Alarms set from a persona's thread (or carrying a prompt) run back in
+  // that thread and reach the phone as that persona.
+  const tgCheckinScheduler = await startTelegramCheckins(context, {
+    routeAlarm: (alarm, now) => personaRuntime.routeAlarm(alarm, now),
+  }).catch(() => null);
+  alarmScheduler = tgCheckinScheduler;
 
   process.stdout.write(
     notice(
@@ -581,13 +847,18 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       shuttingDown = true;
       process.stdout.write("\ngarrison: standing down…\n");
       uninstallGarrisonCrashHandlers();
+      setAuditSink(null);
       scheduler.stop();
       tgCheckinScheduler?.stop();
       operatorLoop?.stop();
       stopBridgeRetry();
       void telegramBridge?.stop().catch(() => {});
       setTelegramChannel(null);
+      phoneNotifier?.stop();
       void remoteAgentServer?.close().catch(() => {});
+      void connectHub.close().catch(() => {});
+      browserWatchHub.close();
+      setBrowserWatchHub(null);
       setRemoteAgentServer(null);
       void aresNetworkHostStop();
       approvals.dispose();

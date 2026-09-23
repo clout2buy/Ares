@@ -150,7 +150,9 @@ export async function loadAgentSystemContext(opts: {
   await pushBlock(blocks, "identity", paths.identity, 6_000);
   await pushBlock(blocks, "soul", paths.soul, 8_000);
   await pushBlock(blocks, "user", paths.user, 6_000);
-  await pushBlock(blocks, "capabilities", path.join(paths.home, "CAPABILITIES.md"), 8_000);
+  // 12k: field notes (proven recipes) sit at the top and must survive; the
+  // generated inventory below them is what gets cut when the budget runs out.
+  await pushBlock(blocks, "capabilities", path.join(paths.home, "CAPABILITIES.md"), 12_000);
   if (includeMemory) await pushBlock(blocks, "curated memory", paths.memory, 10_000);
   await pushBlock(blocks, "workspace tools", workspaceToolsPath(opts.workspace), 6_000);
   await pushBlock(blocks, "today raw memory", path.join(paths.memoryDir, `${isoDate(opts.today ?? new Date())}.md`), 2_000);

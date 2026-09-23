@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AccessibilityNode, BrowserConnector } from "./types.js";
 import { runChallengeHandoff, type HumanCheckHandler } from "./challenge.js";
+import { savedSessionLoader } from "./savedSessions.js";
 
 export interface PlaywrightOptions {
   headless?: boolean;
@@ -175,6 +176,8 @@ export interface AcquireOptions {
   headless: boolean;
   userDataDir: string;
   viewport: { width: number; height: number };
+  /** Pixel density; a phone viewing the stream wants 2 for readable text. */
+  deviceScaleFactor?: number;
 }
 
 /** Parse "9222,9223" → [9222, 9223]; undefined/empty → undefined. */
@@ -229,6 +232,7 @@ export async function acquireBrowserPage(pw: any, opts: AcquireOptions): Promise
         const context = await pw.chromium.launchPersistentContext(userDataDir, {
           headless: opts.headless,
           viewport: opts.viewport,
+          ...(opts.deviceScaleFactor ? { deviceScaleFactor: opts.deviceScaleFactor } : {}),
           // Real-browser posture so sites (esp. video — YouTube/Netflix) actually
           // work instead of throwing "Something went wrong":
           //  • chromiumSandbox:true   → drops the "--no-sandbox unsupported flag"
@@ -305,6 +309,13 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     viewport: { width: 1280, height: 800 },
   });
   let page = acquired.page;
+  // Sign-ins the owner finished on their phone (Connect → browser) load into
+  // every browser Ares launches itself. Never into an attached real browser —
+  // that one is the owner's own, already signed in as they chose.
+  const loadSavedSessions = acquired.strategy.startsWith("launch:")
+    ? savedSessionLoader(page.context())
+    : async () => 0;
+  await loadSavedSessions().catch(() => 0);
 
   // ── console capture: read errors/logs after an interaction, like a dev tools ──
   const consoleBuffer: Array<{ type: string; text: string; at: string }> = [];
@@ -562,6 +573,7 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       return true;
     },
     async navigate(url) {
+      await loadSavedSessions().catch(() => 0);
       // Bounded waits — a stock 30s default means every miss is a half-minute hang.
       await page.goto(url, { timeout: 15_000, waitUntil: "domcontentloaded" });
       // Visible preview/human handoff must actually surface the controllable
@@ -640,6 +652,35 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     },
     async state() {
       return { url: page.url(), title: await page.title() };
+    },
+    livePage() {
+      return page;
+    },
+    async fillSecret(target, value) {
+      // locator.fill, not typeHuman: one step, no per-character frames of a
+      // secret streamed anywhere, and nothing echoed back.
+      const locator = target.selector ? page.locator(target.selector).first() : page.getByLabel(target.label ?? "").first();
+      if (!(await locator.count().catch(() => 0))) throw new Error(`no field matches ${target.selector ?? `label "${target.label ?? ""}"`}`);
+      await locator.fill(value, { timeout: 8_000 });
+    },
+    async submitForm(selector) {
+      const how = await page
+        .evaluate((sel: string) => {
+          const field = document.querySelector(sel) as HTMLInputElement | null;
+          const form = field?.form;
+          if (form) {
+            if (typeof form.requestSubmit === "function") form.requestSubmit();
+            else form.submit();
+            return true;
+          }
+          const button = document.querySelector('button[type="submit"], input[type="submit"]') as HTMLElement | null;
+          if (!button) return false;
+          button.click();
+          return true;
+        }, selector)
+        .catch(() => false);
+      await page.waitForLoadState?.("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
+      return Boolean(how);
     },
     async close() {
       if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }

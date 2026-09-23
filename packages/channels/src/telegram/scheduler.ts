@@ -34,8 +34,20 @@ export interface Alarm {
   body?: string;
   /** Send to specific chat IDs. Absent = send to all owners. */
   chatIds?: number[];
+  /** A task to run as a turn when the alarm fires (Remind's `prompt`). */
+  prompt?: string;
+  /** The conversation that set the alarm — where a routed run lands. */
+  sessionId?: string;
   /** ISO timestamp when this alarm was created. */
   createdAt: string;
+  /** Who armed it. Absent on alarms written before provenance was kept. */
+  createdBy?: "owner" | "ares";
+  /** A recurring alarm the agent created fires only with the owner's yes to
+   *  its schedule; approved:false is listed but never fires. */
+  approved?: boolean;
+  /** Last time it fired (ISO) and how that went — for the jobs list. */
+  lastRunAt?: string;
+  lastResult?: string;
 }
 
 export interface ScheduleData {
@@ -133,6 +145,17 @@ export interface SchedulerOptions {
   /** Check interval in ms. Default 60_000 (1 minute). */
   tickMs?: number;
   log?: (line: string) => void;
+  /** Owner pause (control plane): while true nothing fires. An alarm whose
+   *  minute passes during the pause fires on resume if still inside its
+   *  2-minute jitter window, otherwise it is skipped for the day. */
+  isPaused?: () => boolean;
+  /**
+   * Route a fired alarm back into the conversation that set it (a persona's
+   * thread, or any alarm carrying a prompt). Resolve true when handled — the
+   * run's reply IS the notification, so no Telegram ping is sent. False (or a
+   * throw) falls back to the ordinary Telegram message.
+   */
+  routeAlarm?: (alarm: Alarm, now: Date) => Promise<boolean>;
 }
 
 export class TelegramScheduler {
@@ -142,6 +165,8 @@ export class TelegramScheduler {
   private readonly now: () => Date;
   private readonly tickMs: number;
   private readonly log: (line: string) => void;
+  private readonly isPaused: () => boolean;
+  private readonly routeAlarm?: (alarm: Alarm, now: Date) => Promise<boolean>;
 
   private schedule: ScheduleData = emptySchedule();
   private timer?: ReturnType<typeof setInterval>;
@@ -156,6 +181,8 @@ export class TelegramScheduler {
     this.now = opts.now ?? (() => new Date());
     this.tickMs = opts.tickMs ?? 60_000;
     this.log = opts.log ?? (() => {});
+    this.isPaused = opts.isPaused ?? (() => false);
+    this.routeAlarm = opts.routeAlarm;
   }
 
   async start(): Promise<void> {
@@ -216,7 +243,9 @@ export class TelegramScheduler {
     this.schedule = await loadSchedule(this.home);
   }
 
-  private tick(): void {
+  /** Exposed for tests and the control plane; the interval calls it. */
+  tick(): void {
+    if (this.isPaused()) return;
     const now = this.now();
     if (now.getDate() !== this.lastDay) {
       this.firedToday.clear();
@@ -228,6 +257,7 @@ export class TelegramScheduler {
 
     for (const alarm of this.schedule.alarms) {
       if (this.firedToday.has(alarm.id)) continue;
+      if (alarm.approved === false) continue;
       // Day filter: if days specified, only fire on those days.
       if (alarm.days?.length && !alarm.days.includes(dow)) continue;
       // Time match: fire in the alarm's minute or up to 2 minutes late (jitter).
@@ -240,23 +270,49 @@ export class TelegramScheduler {
 
   private fireAlarm(alarm: Alarm, now: Date): void {
     const ctx: CheckInContext = { alarm, now };
-    Promise.resolve(this.buildMessage(ctx))
-      .then((text) => {
+    // A one-time alarm authorizes exactly ONE run. It used to be removed only
+    // after a successful send, so a failed send left it armed to fire again
+    // the next day at the same time — a second run nobody approved.
+    if (alarm.once) {
+      const { data } = removeAlarm(this.schedule, alarm.id);
+      this.schedule = data;
+      void saveSchedule(this.home, data).catch(() => {});
+      this.log(`one-shot alarm "${alarm.id}" consumed`);
+    }
+    const routed: Promise<boolean> = this.routeAlarm
+      ? this.routeAlarm(alarm, now).catch((err) => {
+          this.log(`alarm "${alarm.label}" routing failed, falling back to Telegram: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        })
+      : Promise.resolve(false);
+    routed
+      .then(async (handled) => {
+        if (handled) return { sent: 0, routed: true };
+        const text = await this.buildMessage(ctx);
         if (alarm.chatIds?.length) {
-          return this.outbound.sendToChats(alarm.chatIds, text);
+          return { ...(await this.outbound.sendToChats(alarm.chatIds, text)), routed: false };
         }
-        return this.outbound.sendToOwners(text);
+        return { ...(await this.outbound.sendToOwners(text)), routed: false };
       })
       .then((res) => {
-        this.log(`alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
-        if (alarm.once) {
-          const { data } = removeAlarm(this.schedule, alarm.id);
-          this.schedule = data;
-          void saveSchedule(this.home, data).catch(() => {});
-          this.log(`one-shot alarm "${alarm.id}" auto-removed`);
-        }
+        this.log(res.routed ? `alarm "${alarm.label}" ran in session ${alarm.sessionId}` : `alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
+        this.recordRun(alarm, now, res.routed ? `ok: ran in its conversation` : `ok: sent to ${res.sent} chat(s)`);
       })
-      .catch((err) => this.log(`alarm "${alarm.label}" failed: ${err instanceof Error ? err.message : String(err)}`));
+      .catch((err) => {
+        const detail = err instanceof Error ? err.message : String(err);
+        this.log(`alarm "${alarm.label}" failed: ${detail}`);
+        this.recordRun(alarm, now, `error: ${detail.slice(0, 160)}`);
+      });
+  }
+
+  /** Stamp lastRunAt/lastResult on a recurring alarm (one-shots are gone). */
+  private recordRun(alarm: Alarm, now: Date, result: string): void {
+    if (alarm.once) return;
+    const current = this.schedule.alarms.find((a) => a.id === alarm.id);
+    if (!current) return;
+    current.lastRunAt = now.toISOString();
+    current.lastResult = result;
+    void saveSchedule(this.home, this.schedule).catch(() => {});
   }
 }
 

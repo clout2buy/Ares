@@ -9,11 +9,13 @@ import {
   buildTool,
   describeShellActivity,
   destructiveShellDecision,
+  vaultShellDecision,
   irrecoverableShellRefusal,
   resolveWorkspacePath,
   shellInputSchema,
   shellPolicyDecision,
   shellRepositoryInstructionDecision,
+  shellWatchdogFor,
 } from "./_shared.js";
 import { runShell } from "./Bash.js";
 import { powerShellDialect, shellFlavorOf } from "./shellHints.js";
@@ -41,14 +43,18 @@ export const PowerShellTool = buildTool({
     POWERSHELL_TRAPS,
   safety: "workspace-write",
   concurrency: "exclusive",
-  // Self-capping (own per-command timeout + run_in_background) — uncapped here.
+  // Self-capping, with the same engine-side deadline as Bash (shared runShell).
   watchdogTimeoutMs: 0,
+  watchdogFor: shellWatchdogFor,
   inputZod: inputSchema,
   activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   commandFor: (i) => i.command,
   async checkPermissions(i, ctx) {
     const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths);
     if (instructionDecision) return instructionDecision;
+    // The vault guard outranks every stored rule — see vaultShellDecision.
+    const vault = vaultShellDecision(i.command);
+    if (vault) return vault;
     const configured = ctx.commandPermissions?.decide("PowerShell", i.command);
     // An explicit persisted/user grant is authoritative. Without this early
     // return the generic destructive heuristic could silently override an

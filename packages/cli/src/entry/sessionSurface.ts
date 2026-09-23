@@ -16,9 +16,9 @@
 import { openWorkspaceSessionKernel, type JsonValue } from "@ares/core";
 import type { TurnTenant } from "./turnPipeline.js";
 
-export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless";
+export type SessionSurface = "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
 
-const SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless"]);
+const SURFACES: ReadonlySet<string> = new Set(["desktop", "tui", "telegram", "garrison", "headless", "mobile"]);
 
 let processSurface: SessionSurface | undefined;
 

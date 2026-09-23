@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+// The proof gate is off by default (it leaked verification debt across turns).
+// These tests cover the gate-ON contract, so they ask for it explicitly.
+process.env.ARES_CODING_PROOF_GATE = "1";
+
 import {
   createVerifiedGarrisonCoreSession,
   loadCanonicalGarrisonVerificationDebt,

@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stderr } from "node:process";
-import { type PathAccess, type PathGrantScope, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
+import { TOOL_WIDE_GRANT, type PathAccess, type PathGrantScope, type PathPermissionStore, type CommandPermissionStore } from "@ares/tools";
 import type { PermissionPromptDecision, PermissionRule, PermissionRuleEffect } from "@ares/protocol";
 import type { ToolPermissionRequest } from "@ares/core";
 import { permissionPrompt } from "../terminalUi.js";
@@ -111,6 +111,66 @@ export function isDestructiveCommand(command: string): boolean {
 export function hasShellChaining(command: string): boolean {
   return /&&|\|\||[;|\r\n`]|\$\(/.test(command);
 }
+/**
+ * The commands a chained line ACTUALLY runs, or null when we cannot see them
+ * all.
+ *
+ * A prefix grant must never cover a chained command — `Bash(git *)` matching
+ * `git status && rm -rf /` is the whole reason decide() skips prefix rules when
+ * a command is chained. But the consequence was that a chained command could
+ * only ever match a LITERAL rule for its exact text, so Ares — which chains
+ * constantly — re-prompted on every Bash call and "allow always" never
+ * converged on anything. The owner was tapping Allow forever.
+ *
+ * Splitting restores the safety property without the spam: each segment is
+ * judged on its own, so the chain above still stops at `rm -rf /`. Quotes are
+ * respected, so a `;` inside a string is not an operator.
+ *
+ * Returns null when the line contains command substitution (`$(…)` or
+ * backticks), because the command hiding in there is not a segment we can
+ * judge — the caller then falls back to literal-only matching, as before.
+ */
+export function splitChainedCommand(command: string): string[] | null {
+  const segments: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && command[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    // A command we cannot see as a segment: refuse to judge the line at all.
+    if (ch === "`" || (ch === "$" && command[i + 1] === "(")) return null;
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||") {
+      segments.push(current);
+      current = "";
+      i++;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "\n" || ch === "\r") {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (quote) return null; // unbalanced quoting — do not guess
+  segments.push(current);
+  const cleaned = segments.map((s) => s.trim()).filter((s) => s.length > 0);
+  // No "is this segment still chained?" guard here: the walk above already
+  // consumed every operator outside quotes, and a QUOTED `&&` is text — the
+  // blunt check rejected `echo "a && b" && ls`, a line it should split fine.
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 
 // Programs whose first argument IS the real command: the script or package.
 const INTERPRETERS = new Set([
@@ -157,6 +217,13 @@ export function commandPrefixPattern(command: string): string | null {
   return `${kept.join(" ")} *`;
 }
 
+/** What a command rule says about one command. null means "no rule applies". */
+export type CommandVerdict =
+  | { kind: "allow"; reason: string }
+  | { kind: "deny"; reason: string }
+  | { kind: "ask"; prompt: string; suggestion: "allow_once" }
+  | null;
+
 export class AresCommandPermissionStore implements CommandPermissionStore {
   private constructor(
     private readonly rules: PermissionRule[],
@@ -196,12 +263,36 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
    *  next variant of the same command; destructive commands stay literal. */
   async grant(toolName: string, command: string, scope: PathGrantScope): Promise<void> {
     if (scope !== "always") return;
+    // A tool-wide grant (a tool with no command to scope to — ComputerUse,
+    // Browser…) is stored as the bare `Tool(*)`, never run through the command
+    // prefix machinery, which has nothing to generalize from.
+    if (command === TOOL_WIDE_GRANT) return this.store(`${toolName}(${TOOL_WIDE_GRANT})`, false);
     const prefix = commandPrefixPattern(command);
-    const pattern = `${toolName}(${prefix ?? command})`;
+    if (prefix) return this.store(`${toolName}(${prefix})`, true);
+    // A chain has no single prefix to generalize from, so grant the commands
+    // it actually runs. The owner just approved every one of them, and this is
+    // the same generalization an unchained grant already makes — without it,
+    // the literal whole-line rule matches nothing but a byte-identical repeat
+    // and the next chain re-prompts.
+    const segments = hasShellChaining(command) ? splitChainedCommand(command) : null;
+    if (segments && segments.length > 1) {
+      for (const segment of segments) {
+        const segmentPrefix = commandPrefixPattern(segment);
+        // A destructive segment is stored literally, never generalized —
+        // exactly how an unchained destructive grant is handled.
+        await this.store(`${toolName}(${segmentPrefix ?? segment})`, segmentPrefix !== null);
+      }
+      return;
+    }
+    return this.store(`${toolName}(${command})`, false);
+  }
+
+  /** Add one allow rule: live this session, and on disk for the next one. */
+  private async store(pattern: string, isPrefix: boolean): Promise<void> {
     if (this.rules.some((r) => r.pattern === pattern && r.effect === "allow")) return;
     // Effective immediately this session…
     this.rules.push({ pattern, effect: "allow", source: "user-global" });
-    if (prefix) this.prefixPatterns.add(pattern);
+    if (isPrefix) this.prefixPatterns.add(pattern);
     // …and written to the user-global store so the next session won't re-ask.
     let stored: StoredCommandPermissions = { rules: [] };
     try {
@@ -211,7 +302,7 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
     }
     const existing = stored.rules ?? [];
     if (!existing.some((r) => r.pattern === pattern && r.effect === "allow")) {
-      stored.rules = [...existing, { pattern, effect: "allow", ...(prefix ? { prefix: true } : {}) }];
+      stored.rules = [...existing, { pattern, effect: "allow", ...(isPrefix ? { prefix: true } : {}) }];
       await mkdir(path.dirname(this.userGlobalPath), { recursive: true });
       await writeFile(this.userGlobalPath, JSON.stringify(stored, null, 2) + "\n", "utf8");
     }
@@ -223,12 +314,60 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
   }
 
   /**
+   * Undo an always-allow grant: drop it from this session AND from the
+   * user-global store. Without this, one hasty "allow always" at a prompt was
+   * permanent — the only way back was hand-editing command-permissions.json,
+   * which the owner cannot do from a phone. Only user-global rules are
+   * revocable here; a project rule lives in the repo and is the repo's to
+   * change. Returns whether anything was actually removed.
+   */
+  async revoke(pattern: string): Promise<boolean> {
+    const index = this.rules.findIndex((r) => r.pattern === pattern && r.source === "user-global");
+    if (index < 0) return false;
+    this.rules.splice(index, 1);
+    this.prefixPatterns.delete(pattern);
+    let stored: StoredCommandPermissions = { rules: [] };
+    try {
+      stored = JSON.parse(await readFile(this.userGlobalPath, "utf8")) as StoredCommandPermissions;
+    } catch {
+      // Nothing on disk: the live removal above is the whole job.
+      return true;
+    }
+    stored.rules = (stored.rules ?? []).filter((r) => r.pattern !== pattern);
+    await writeFile(this.userGlobalPath, JSON.stringify(stored, null, 2) + "\n", "utf8");
+    return true;
+  }
+
+
+  /**
+   * A chained command no literal rule covers: allow it only if EVERY command
+   * it runs is independently allowed, and deny if any one of them is denied.
+   *
+   * This is what makes "allow always" converge for an agent that chains. The
+   * dangerous case a prefix rule must never cover — `git status && rm -rf /`
+   * riding a `Bash(git *)` grant — still stops here, because the second
+   * segment matches nothing. Returns null (ask) when the line hides a command
+   * we cannot see, or when any segment is unaccounted for.
+   */
+  private decideChained(toolName: string, command: string): CommandVerdict {
+    const segments = splitChainedCommand(command);
+    if (!segments || segments.length < 2) return null;
+    const verdicts = segments.map((segment) => this.decide(toolName, segment));
+    const deniedAt = verdicts.findIndex((v) => v?.kind === "deny");
+    if (deniedAt >= 0) {
+      return { kind: "deny" as const, reason: `${toolName} denied: ${segments[deniedAt]}` };
+    }
+    if (!verdicts.every((v) => v?.kind === "allow")) return null;
+    return { kind: "allow" as const, reason: `every command in the chain is allowed` };
+  }
+
+  /**
    * Precedence: an explicit deny wins over any allow/ask regardless of order —
    * "last matching rule" let a later allow-always grant silently override an
    * owner's deny. Among the rest, the last match still wins (later rules refine
    * earlier ones). Generated prefix rules never match chained commands.
    */
-  decide(toolName: string, command: string) {
+  decide(toolName: string, command: string): CommandVerdict {
     // `Tool(cmd )` lets a `prefix *` rule cover the bare prefix itself.
     const targets = [`${toolName}(${command})`, `${toolName}(${command} )`];
     const chained = hasShellChaining(command);
@@ -237,7 +376,7 @@ export class AresCommandPermissionStore implements CommandPermissionStore {
       const re = wildcardToRegExp(r.pattern);
       return targets.some((t) => re.test(t));
     });
-    if (matches.length === 0) return null;
+    if (matches.length === 0) return chained ? this.decideChained(toolName, command) : null;
     const deny = matches.find((r) => r.effect === "deny");
     if (deny) return { kind: "deny" as const, reason: `${toolName} denied by rule ${deny.pattern}` };
     const rule = matches[matches.length - 1];
@@ -301,6 +440,7 @@ const SENSITIVE_PERMISSION = new RegExp(
 
 function autoPermissionDecision(request: ToolPermissionRequest): PermissionPromptDecision | null {
   const hay = `${request.toolName} ${request.reason}`;
+  if (request.ownerDecision) return null; // a per-call owner decision is never auto-answered
   if (SENSITIVE_PERMISSION.test(hay)) return null; // escalate to the owner
   return "allow_once"; // flow freely
 }

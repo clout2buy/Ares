@@ -38,6 +38,7 @@ import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
 import { currentSubagentDepth } from "./subagentDepth.js";
 import { TurnGuards } from "./turnGuards.js";
 import { modelLikelyHasVision } from "./modelVision.js";
+import { ownerPause } from "./ownerControl.js";
 import {
   estimateTextTokens,
   estimateImageTokens,
@@ -211,6 +212,11 @@ export interface ToolCallContext {
   /** Yield progress events from inside a long-running tool call. */
   emitProgress?(data: unknown): void;
   requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
+  /** Stop this call's watchdog clock while the tool waits on a HUMAN (the
+   *  owner driving the browser after "Take over"), exactly as the permission
+   *  prompt does. Returns the release; releasing re-arms the full deadline.
+   *  The wait itself must stay bounded and honour `signal`. */
+  pauseWatchdog?(): () => void;
   /** Engine-owned read-stamp map. When present, file tools MUST prefer it over
    *  any captured map so each engine (parent / subagent) stays isolated. */
   fileReadStamps?: Map<string, FileReadStampLike>;
@@ -575,6 +581,13 @@ export const CORE_TOOL_NAMES: readonly string[] = [
   // model would think to ToolSearch for — if it can't see this tool it writes
   // an HTML page or recommends AnyDesk.
   "RemotePC",
+  // Core, not deferred: "check my email" / "order me DoorDash" never names a
+  // tool — hidden behind ToolSearch, the model lectured about OAuth apps or
+  // asked for passwords in chat instead of showing a one-tap connect card.
+  "Connect",
+  // Core, not deferred: the doctrine says "call Checkout before any order" —
+  // a model that must ToolSearch for it first will just click Place order.
+  "Checkout",
 ];
 const CORE_TOOL_SET = new Set(CORE_TOOL_NAMES.map((name) => name.toLowerCase()));
 
@@ -4676,6 +4689,26 @@ export class QueryEngine {
     effectEpoch: number,
   ): Promise<ToolExecutionOutcome> {
     const t0 = Date.now();
+    // Owner pause (control plane, ownerControl.ts): freeze at this tool
+    // boundary — before the checkpoint and durable admission, so nothing is
+    // half-started while the owner inspects. Bounded by this tool's own
+    // watchdog budget: a pause that outlasts it fails the call instead of
+    // wedging the turn. An interrupt during the pause terminates it.
+    if (ownerPause.paused) {
+      const budgetMs = watchdogTimeoutMsFor(use.tool.schema, use.input) || UNCAPPED_TOOL_CEILING_MS;
+      const waited = await ownerPause.wait({ signal: this.liveSignal(), timeoutMs: budgetMs });
+      if (waited !== "clear") {
+        const message = waited === "timeout"
+          ? `Tool ${use.name} was not run: paused by owner. Nothing was executed. Do not retry or start other work — end your turn with a one-line status; the owner will resume you.`
+          : `Tool ${use.name} was not run: stopped by owner while paused.`;
+        emit({ type: "tool_error", id: use.id, error: message, durationMs: Date.now() - t0 });
+        return {
+          toolUseId: use.id,
+          finishedAt: Date.now(),
+          result: { type: "tool_result", tool_use_id: use.id, content: message, is_error: true },
+        };
+      }
+    }
     let checkpointId: string | undefined;
     if (shouldCheckpointBeforeTool(use.safety) && this.cfg.beforeToolUseCheckpoint) {
       // Declared single-file target (Edit/Write) → the host can snapshot
@@ -4687,13 +4720,18 @@ export class QueryEngine {
       // EPERM before this guard existed.
       let checkpoint: { checkpointId: string; label?: string } | null = null;
       try {
-        checkpoint = await this.cfg.beforeToolUseCheckpoint({
-          toolUseId: use.id,
-          toolName: use.name,
-          input: use.input,
-          safety: use.safety,
-          targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
-        });
+        // A snapshot that never returns (a wedged git, a poisoned workspace
+        // chain) must degrade exactly like one that fails: the tool still runs.
+        checkpoint = await withCheckpointDeadline(
+          this.cfg.beforeToolUseCheckpoint({
+            toolUseId: use.id,
+            toolName: use.name,
+            input: use.input,
+            safety: use.safety,
+            targetFiles: deps.target && !deps.solo ? [deps.target] : undefined,
+          }),
+          this.liveSignal(),
+        );
       } catch (err) {
         emit({
           type: "system_reminder_injected",
@@ -4796,6 +4834,11 @@ export class QueryEngine {
                     if (wakeSignal.aborted || this.steeringWakeEpoch !== effectEpoch) {
                       return { kind: "steering" as const };
                     }
+                    // A host that refuses by THROWING a PermissionDeniedError
+                    // (the garrison's circuit breaker: "already denied, don't
+                    // re-ask") still owes every surface the closing response,
+                    // or the prompt it just showed stays open forever.
+                    if (isPermissionDeniedError(error)) emit({ type: "permission_response", id, decision: "deny" });
                     throw error;
                   });
                 const outcome = await Promise.race([decision, steering]).finally(() => {
@@ -4821,6 +4864,15 @@ export class QueryEngine {
             }
           : undefined,
         emitProgress: (data) => emit({ type: "tool_progress", id: use.id, data }),
+        pauseWatchdog: () => {
+          watchdog.pause();
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            watchdog.resume();
+          };
+        },
         fileReadStamps: this.cfg.fileReadStamps,
         mutationTransactionId: workspaceMutationTransactionId(this.sessionId, use.id),
         repositoryInstructions: this.cfg.repositoryInstructions,
@@ -4940,7 +4992,7 @@ export class QueryEngine {
       // ctx.signal so the tool's own fetch/child aborts on timeout — turning the
       // 5-minute hang into a fast, correctable is_error the model can adapt to.
       const result = await withWatchdog(
-        watchdogTimeoutMsFor(use.tool.schema),
+        watchdogTimeoutMsFor(use.tool.schema, use.input),
         this.liveSignal(),
         (signal, control) => {
           watchdog = control;
@@ -5271,6 +5323,27 @@ function toolConcurrencyLimit(): number {
   return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_TOOL_CONCURRENCY;
 }
 
+function checkpointTimeoutMs(): number {
+  const raw = Number(process.env.ARES_CHECKPOINT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : 20_000;
+}
+
+/** Bound a pre-tool checkpoint by wall time and by the turn's abort signal. */
+function withCheckpointDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const ms = checkpointTimeoutMs();
+    const timer = setTimeout(() => reject(new Error(`checkpoint timed out after ${Math.round(ms / 1000)}s`)), ms);
+    timer.unref?.();
+    const onAbort = () => reject(new Error("checkpoint abandoned: turn aborted"));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
 /** Error tag for a watchdog-aborted tool — distinct from a user/turn abort. */
 /** Internal control-flow marker: a durable correction woke a permission wait
  * before the owner granted authority, so no primary effect may begin. */
@@ -5291,15 +5364,41 @@ export class ToolWatchdogError extends Error {
 }
 
 /**
- * The watchdog deadline for one tool call. An explicit `watchdogTimeoutMs` on
- * the schema wins (including 0 = uncapped, for self-capping tools like
- * Bash/Task). Otherwise a class default by safety: networked external-state is
- * the tightest (a hung fetch is the classic stall), reads next, and
- * workspace-write/destructive get the most room. ARES_TOOL_WATCHDOG_MS overrides
- * the default globally (0 disables the watchdog everywhere).
+ * The last line against a wedged turn: no tool call may run forever.
+ *
+ * Every freeze this daemon has had was one shape — a tool promise that could
+ * never settle, with nothing above it to give up. withWatchdog already races
+ * every call against a deadline, so a bounded tool CANNOT hang a turn however
+ * broken its internals are. The hole was the opt-out: `watchdogTimeoutMs: 0`
+ * meant "no deadline at all", and it was set on precisely the tools that can
+ * hang — shells, remote exec, sub-agents.
+ *
+ * So 0 no longer means unbounded. It means "no fixed number is right for this
+ * tool", and the tool either derives one from its input (watchdogFor) or falls
+ * to this ceiling. Chosen to sit just under the turn watchdog
+ * (STUCK_TURN_SILENCE_MS, 15 min) so a hung tool surfaces as a correctable
+ * is_error the model can react to, instead of the whole turn being killed.
  */
-function watchdogTimeoutMsFor(schema: ToolSchema): number {
-  if (typeof schema.watchdogTimeoutMs === "number") return Math.max(0, Math.floor(schema.watchdogTimeoutMs));
+const UNCAPPED_TOOL_CEILING_MS = 13 * 60_000;
+
+/**
+ * The watchdog deadline for one tool call. A deadline derived from this call's
+ * input wins (watchdogFor), then an explicit `watchdogTimeoutMs`, then a class
+ * default by safety: networked external-state is the tightest (a hung fetch is
+ * the classic stall), reads next, and workspace-write/destructive get the most
+ * room. ARES_TOOL_WATCHDOG_MS overrides the default globally, and remains the
+ * only way to disable the watchdog (0) — a deliberate debugging escape hatch,
+ * never a per-tool one.
+ */
+function watchdogTimeoutMsFor(schema: ToolSchema, input?: unknown): number {
+  const derived = schema.watchdogFor?.(input);
+  if (typeof derived === "number" && Number.isFinite(derived) && derived > 0) {
+    return Math.floor(derived);
+  }
+  if (typeof schema.watchdogTimeoutMs === "number") {
+    const fixed = Math.max(0, Math.floor(schema.watchdogTimeoutMs));
+    return fixed > 0 ? fixed : UNCAPPED_TOOL_CEILING_MS;
+  }
   const env = Number(process.env.ARES_TOOL_WATCHDOG_MS);
   if (Number.isFinite(env) && env >= 0) return Math.floor(env);
   switch (schema.safety) {
@@ -6290,7 +6389,10 @@ function isPotentialCodeMutationCall(name: string, input: unknown): boolean {
   // Conservative shell mutation cues. The Session checkpoint diff is the final
   // authority and supplies exact files; this early signal merely arms the proof
   // gate before the inner engine tries to finish.
-  return /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|sed\s+-i|git\s+(?:apply|checkout|restore|mv|rm)|npm\s+(?:install|uninstall)|pnpm\s+(?:add|remove|install)|yarn\s+(?:add|remove|install)|cargo\s+(?:add|remove)|apply_patch)\b|(?:>|>>|Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item)/i.test(command);
+  // A redirect only counts when it can land in a file: `2>/dev/null`, `2>&1`,
+  // `>/dev/null` and `&>/dev/null` are stderr/stdout plumbing on nearly every
+  // read-only command and used to arm proof debt on a plain `ls`.
+  return /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|sed\s+-i|git\s+(?:apply|checkout|restore|mv|rm)|npm\s+(?:install|uninstall)|pnpm\s+(?:add|remove|install)|yarn\s+(?:add|remove|install)|cargo\s+(?:add|remove)|apply_patch)\b|(?<![0-9&])>{1,2}(?!\s*(?:\/dev\/null|&[0-9]))|Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item/i.test(command);
 }
 
 /** Consecutive gather-only tool rounds tolerated before the convergence

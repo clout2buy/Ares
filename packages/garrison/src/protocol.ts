@@ -32,6 +32,8 @@ export interface SessionSummary {
   surface?: "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
   /** Who is on the other end; absent means the owner. */
   tenant?: { role: "owner" | "guest"; chatId?: string };
+  /** Set when this is one of the owner's persona threads (absent = default Ares). */
+  personaId?: string;
 }
 
 /** Daemon vitals reported by the `status` frame. */
@@ -57,6 +59,9 @@ export type GatewayClientFrame =
       /** Host + sender stamps (see SessionSummary); unknown values are dropped. */
       surface?: SessionSummary["surface"];
       tenant?: SessionSummary["tenant"];
+      /** Create a thread for one of the owner's personas (it becomes that
+       *  persona's thread and wears its role). Unknown ids are an error. */
+      personaId?: string;
     }
   | { type: "session.attach"; sessionId: string }
   | {

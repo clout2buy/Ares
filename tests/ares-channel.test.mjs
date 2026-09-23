@@ -168,7 +168,7 @@ const fastTimers = {
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
-async function boot(allowedChatIds = [42]) {
+async function boot(allowedChatIds = [42], extra = {}) {
   const gateway = new FakeGateway();
   await gateway.listen();
   const tg = new FakeTelegram();
@@ -178,6 +178,7 @@ async function boot(allowedChatIds = [42]) {
     allowedChatIds,
     timers: fastTimers,
     pollTimeoutS: 1,
+    ...extra,
   });
   bridge.start();
   return { gateway, tg, bridge };
@@ -294,8 +295,10 @@ test("chunkMessage hard-caps pathological outputs with a truncation marker", () 
   for (const chunk of chunks) assert.ok(chunk.length <= 4000);
 });
 
+// The card is opt-in since 2026-09-23 (ARES_TELEGRAM_ACTIVITY=1): by default a
+// turn shows only "typing…" and the reply. When it IS on, it keeps this shape.
 test("tool calls accumulate into one activity card, throttled, collapsing at turn_end", async () => {
-  const ctx = await boot();
+  const ctx = await boot([42], { activityCard: true });
   try {
     ctx.tg.pushMessage(42, "work");
     const send = await waitFor(() => ctx.gateway.framesOf("session.send")[0], "session.send");

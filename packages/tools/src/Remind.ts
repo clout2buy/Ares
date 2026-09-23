@@ -22,6 +22,10 @@ const inputSchema = z
     days: z.array(z.number().int().min(0).max(6)).optional().describe("Which days to fire: 0=Sun, 1=Mon, ..., 6=Sat. Omit for every day."),
     once: z.boolean().optional().describe("If true, fire once then auto-remove — use this for any one-off 'remind me at 5'. Default false (recurring); a recurring alarm is only armed after the owner approves its schedule."),
     body: z.string().optional().describe("Extra text to include in the notification body."),
+    prompt: z.string().max(2_000).optional().describe(
+      "A task to RUN when the alarm fires instead of a static ping (e.g. 'check my bank for new charges since yesterday and tell me about any'). " +
+        "It runs as a turn in THIS conversation, so the result lands in this thread in your voice. Use it for recurring checks a role implies.",
+    ),
     alarm_id: z.string().optional().describe("Alarm ID to remove. Required for 'remove'."),
   })
   .strict();
@@ -50,6 +54,10 @@ export interface SchedulerLike {
     createdBy?: "owner" | "ares";
     /** A recurring alarm the agent made carries the owner's explicit yes. */
     approved?: boolean;
+    /** The conversation that asked for it: a fired alarm with a `prompt`
+     *  (or one from a persona's thread) runs back IN that conversation. */
+    prompt?: string;
+    sessionId?: string;
   }): Promise<{ id: string; label: string; hour: number; minute: number }>;
   removeAlarm(id: string): Promise<{ id: string } | undefined>;
   renderAlarms(): Promise<string>;
@@ -120,6 +128,8 @@ export const RemindTool = buildTool({
       days: i.days,
       once: i.once,
       body: i.body,
+      ...(i.prompt?.trim() ? { prompt: i.prompt.trim() } : {}),
+      ...(ctx?.sessionId ? { sessionId: ctx.sessionId } : {}),
     });
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const time = `${String(alarm.hour).padStart(2, "0")}:${String(alarm.minute).padStart(2, "0")}`;

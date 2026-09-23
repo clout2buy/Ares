@@ -172,7 +172,9 @@ class FakeTg {
   async answerCallbackQuery(id, opts = {}) {
     this.answered.push({ id, text: opts.text });
   }
-  async sendChatAction() {}
+  async sendChatAction(chatId, action) {
+    (this.actions ??= []).push({ chatId, action });
+  }
   /** Everything sent to a chat that isn't the activity card or a prompt. */
   repliesTo(chatId) {
     return this.sent.filter((m) => m.chatId === chatId && !/^[🜂✓⚠🛡🔗]/.test(m.text));
@@ -228,7 +230,7 @@ async function settle(ms = 60) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function boot({ owners = [42], allowed = [42], connectDeps } = {}) {
+async function boot({ owners = [42], allowed = [42], connectDeps, activityCard } = {}) {
   const gateway = new FakeGateway();
   await gateway.listen();
   const tg = new FakeTg();
@@ -243,6 +245,7 @@ async function boot({ owners = [42], allowed = [42], connectDeps } = {}) {
     timers: fastTimers,
     pollTimeoutS: 1,
     connectDeps,
+    ...(activityCard !== undefined ? { activityCard } : {}),
   });
   bridge.start();
   await waitFor(() => gateway.framesOf("hello").length === 1, "hello");
@@ -454,9 +457,49 @@ test("a message typed mid-turn steers the live turn instead of queueing", async 
     assert.equal(steer.sessionId, sid);
     assert.match(steer.text, /not that file/);
 
-    // The card says so, so you know the correction landed.
+    // With the card off (the default) steering is silent: no card, no edit.
+    ctx.gateway.event(sid, { type: "steer_routed", inputId: "i1", disposition: "provider_preempting" });
+    await settle();
+    assert.equal(ctx.tg.edits.find((e) => /^↪ Steering/.test(e.text)), undefined, "no card by default");
+    assert.equal(ctx.tg.sent.length, 0, "nothing on screen but typing…");
+  } finally {
+    await ctx.stop();
+  }
+});
+
+test("with ARES_TELEGRAM_ACTIVITY on, the card says a steer landed", async () => {
+  const ctx = await boot({ activityCard: true });
+  try {
+    const sid = await startTurn(ctx, 42, "refactor the bridge");
+    ctx.gateway.event(sid, { type: "tool_start", id: "t1", name: "Edit", input: {}, activityDescription: "Editing bridge.ts" });
+    ctx.tg.pushMessage(42, "wait — not that file");
+    await waitFor(() => ctx.gateway.framesOf("session.send")[1], "steering send");
     ctx.gateway.event(sid, { type: "steer_routed", inputId: "i1", disposition: "provider_preempting" });
     await waitFor(() => ctx.tg.edits.find((e) => /^↪ Steering/.test(e.text)), "steering shown on the card");
+  } finally {
+    await ctx.stop();
+  }
+});
+
+// ── 7. like a person texting: no tool calls on screen ────────────────────────
+
+test("by default a turn with tool calls shows only typing… and then ONE reply", async () => {
+  const ctx = await boot();
+  try {
+    const sid = await startTurn(ctx);
+    await waitFor(() => (ctx.tg.actions ?? []).some((a) => a.chatId === 42 && a.action === "typing"), "typing…");
+    ctx.gateway.event(sid, { type: "tool_start", id: "t1", name: "Bash", input: {}, activityDescription: "Running tests" });
+    ctx.gateway.event(sid, { type: "tool_end", id: "t1", output: {}, durationMs: 40 });
+    ctx.gateway.event(sid, { type: "tool_start", id: "t2", name: "Edit", input: {}, activityDescription: "Patching bridge" });
+    ctx.gateway.event(sid, { type: "tool_error", id: "t2", error: "EACCES", durationMs: 5 });
+    ctx.gateway.event(sid, { type: "text_delta", text: "Tests pass now." });
+    ctx.gateway.event(sid, { type: "turn_end", status: "ok" });
+    await waitFor(() => ctx.tg.sent.length >= 1, "the reply");
+    await settle();
+    // One notification per turn, and it is the reply — no card, no receipt.
+    assert.equal(ctx.tg.sent.length, 1, JSON.stringify(ctx.tg.sent));
+    assert.match(ctx.tg.sent[0].text, /Tests pass now/);
+    assert.ok(!ctx.tg.sent.concat(ctx.tg.edits).some((m) => /Running tests|Patching bridge|steps ·|🜂 Working/.test(m.text)), "no tool step ever reaches the chat");
   } finally {
     await ctx.stop();
   }

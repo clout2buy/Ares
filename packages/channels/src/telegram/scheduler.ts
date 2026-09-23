@@ -34,6 +34,10 @@ export interface Alarm {
   body?: string;
   /** Send to specific chat IDs. Absent = send to all owners. */
   chatIds?: number[];
+  /** A task to run as a turn when the alarm fires (Remind's `prompt`). */
+  prompt?: string;
+  /** The conversation that set the alarm — where a routed run lands. */
+  sessionId?: string;
   /** ISO timestamp when this alarm was created. */
   createdAt: string;
   /** Who armed it. Absent on alarms written before provenance was kept. */
@@ -145,6 +149,13 @@ export interface SchedulerOptions {
    *  minute passes during the pause fires on resume if still inside its
    *  2-minute jitter window, otherwise it is skipped for the day. */
   isPaused?: () => boolean;
+  /**
+   * Route a fired alarm back into the conversation that set it (a persona's
+   * thread, or any alarm carrying a prompt). Resolve true when handled — the
+   * run's reply IS the notification, so no Telegram ping is sent. False (or a
+   * throw) falls back to the ordinary Telegram message.
+   */
+  routeAlarm?: (alarm: Alarm, now: Date) => Promise<boolean>;
 }
 
 export class TelegramScheduler {
@@ -155,6 +166,7 @@ export class TelegramScheduler {
   private readonly tickMs: number;
   private readonly log: (line: string) => void;
   private readonly isPaused: () => boolean;
+  private readonly routeAlarm?: (alarm: Alarm, now: Date) => Promise<boolean>;
 
   private schedule: ScheduleData = emptySchedule();
   private timer?: ReturnType<typeof setInterval>;
@@ -170,6 +182,7 @@ export class TelegramScheduler {
     this.tickMs = opts.tickMs ?? 60_000;
     this.log = opts.log ?? (() => {});
     this.isPaused = opts.isPaused ?? (() => false);
+    this.routeAlarm = opts.routeAlarm;
   }
 
   async start(): Promise<void> {
@@ -266,16 +279,24 @@ export class TelegramScheduler {
       void saveSchedule(this.home, data).catch(() => {});
       this.log(`one-shot alarm "${alarm.id}" consumed`);
     }
-    Promise.resolve(this.buildMessage(ctx))
-      .then((text) => {
+    const routed: Promise<boolean> = this.routeAlarm
+      ? this.routeAlarm(alarm, now).catch((err) => {
+          this.log(`alarm "${alarm.label}" routing failed, falling back to Telegram: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        })
+      : Promise.resolve(false);
+    routed
+      .then(async (handled) => {
+        if (handled) return { sent: 0, routed: true };
+        const text = await this.buildMessage(ctx);
         if (alarm.chatIds?.length) {
-          return this.outbound.sendToChats(alarm.chatIds, text);
+          return { ...(await this.outbound.sendToChats(alarm.chatIds, text)), routed: false };
         }
-        return this.outbound.sendToOwners(text);
+        return { ...(await this.outbound.sendToOwners(text)), routed: false };
       })
       .then((res) => {
-        this.log(`alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
-        this.recordRun(alarm, now, `ok: sent to ${res.sent} chat(s)`);
+        this.log(res.routed ? `alarm "${alarm.label}" ran in session ${alarm.sessionId}` : `alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
+        this.recordRun(alarm, now, res.routed ? `ok: ran in its conversation` : `ok: sent to ${res.sent} chat(s)`);
       })
       .catch((err) => {
         const detail = err instanceof Error ? err.message : String(err);

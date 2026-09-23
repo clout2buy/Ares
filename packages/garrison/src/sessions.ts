@@ -123,6 +123,9 @@ export interface SessionFactoryRequest {
   initialEventCount?: number;
   title?: string;
   createdAt?: string;
+  /** Set when this session is being created as a persona's thread (the host's
+   *  persona hooks know which persona; the factory adds its prompt layer). */
+  personaId?: string;
 }
 
 interface SessionFactoryMetadata {
@@ -248,6 +251,9 @@ export interface SessionManagerOptions {
    * Best-effort: a throw never blocks the turn.
    */
   beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
+  /** The owner's personal agents (see packages/cli/src/personas.ts). Absent →
+   *  session.create's personaId is ignored and summaries carry none. */
+  personas?: SessionPersonaHooks;
   now?: () => number;
   /** Write every tool outcome and permission decision to the audit trail
    *  (<home>/audit). Default true — this loop is the one place every
@@ -263,6 +269,16 @@ export interface RunningTurn {
   currentTool?: string;
   /** Waiting at the door because the owner paused Ares. */
   waitingForResume?: boolean;
+}
+
+/** How the manager learns about personas without knowing what one is. */
+export interface SessionPersonaHooks {
+  /** The persona's brain hints, or null when no such persona exists. */
+  resolve(personaId: string): { provider?: string; model?: string } | null;
+  /** A new thread was created for this persona — it becomes its thread. */
+  bind(personaId: string, sessionId: string): void;
+  /** Which persona owns this session, if any. */
+  personaOf(sessionId: string): string | undefined;
 }
 
 interface LiveSession {
@@ -341,6 +357,7 @@ export class SessionManager {
   private readonly permissionTimeoutMs: number;
   private readonly onTurnSettled?: (sessionId: string) => void;
   private readonly beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
+  private readonly personas?: SessionPersonaHooks;
   private readonly now: () => number;
   private readonly bootAt: number;
   private lastSend: number | undefined;
@@ -356,16 +373,63 @@ export class SessionManager {
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? 5 * 60_000;
     this.onTurnSettled = opts.onTurnSettled;
     this.beforeSend = opts.beforeSend;
+    this.personas = opts.personas;
     this.now = opts.now ?? Date.now;
     this.bootAt = this.now();
     this.auditEnabled = opts.audit !== false;
   }
 
   create(
-    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant } = {},
+    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant; personaId?: string } = {},
   ): SessionSummary {
-    const session = this.spawn({ id: `sess_${randomUUID()}`, ...opts });
+    const { personaId: askedPersona, ...rest } = opts;
+    // A persona thread: its brain comes from the persona unless the frame
+    // named one; an unknown persona id is an error, never a silent default.
+    const personaId = askedPersona && this.personas ? askedPersona : undefined;
+    const brain = personaId ? this.personas!.resolve(personaId) : undefined;
+    if (personaId && !brain) throw new Error(`unknown persona: ${personaId}`);
+    const session = this.spawn({
+      id: `sess_${randomUUID()}`,
+      ...rest,
+      provider: rest.provider ?? brain?.provider,
+      model: rest.model ?? brain?.model,
+      ...(personaId ? { personaId } : {}),
+    });
+    if (personaId) this.personas!.bind(personaId, session.id);
     return this.summarize(session);
+  }
+
+  /**
+   * Retire a session: interrupt it, drop it from the live table, hide it from
+   * every future rehydration. The rollout stays on disk untouched — archive is
+   * never delete. Returns false for an id that is neither live nor on disk.
+   */
+  async archive(sessionId: string): Promise<boolean> {
+    const session = this.live.get(sessionId);
+    if (session?.busy) {
+      try { this.interrupt(sessionId); } catch { /* already settling */ }
+    }
+    this.live.delete(sessionId);
+    let known = Boolean(session);
+    if (this.sessionKernel) {
+      try {
+        if (this.sessionKernel.getSession(sessionId)) {
+          this.sessionKernel.prepareSessionDeletion(sessionId);
+          known = true;
+        }
+      } catch {
+        // an active lease/job — the JSON marker below still hides it
+      }
+    }
+    if (session) await session.ioChain.catch(() => undefined);
+    const file = metaPath(this.home, sessionId);
+    const meta = await readMetaFile(file);
+    if (meta || known) {
+      await fs.mkdir(sessionsDir(this.home), { recursive: true }).catch(() => undefined);
+      await fs.writeFile(file, JSON.stringify({ ...(meta ?? { id: sessionId }), archived: true }, null, 2) + "\n", "utf8").catch(() => undefined);
+      known = true;
+    }
+    return known;
   }
 
   /** The durable tenant stamp of a live session (owner when never stamped). */
@@ -780,9 +844,11 @@ export class SessionManager {
     titled?: boolean;
     messages?: readonly Message[];
     eventCount?: number;
+    personaId?: string;
   }): LiveSession {
     const controller = new AbortController();
     const made = this.factory({
+      ...(p.personaId ? { personaId: p.personaId } : {}),
       sessionId: p.id,
       provider: p.provider,
       model: p.model,
@@ -884,7 +950,16 @@ export class SessionManager {
       busy: s.busy,
       ...(s.surface ? { surface: s.surface } : {}),
       ...(s.tenant ? { tenant: { ...s.tenant } } : {}),
+      ...(this.personaIdOf(s.id) ? { personaId: this.personaIdOf(s.id) } : {}),
     };
+  }
+
+  private personaIdOf(sessionId: string): string | undefined {
+    try {
+      return this.personas?.personaOf(sessionId);
+    } catch {
+      return undefined;
+    }
   }
 
   private fanOut(session: LiveSession, event: TurnEvent): void {
@@ -1057,6 +1132,8 @@ interface SessionMetaFile {
   createdAt?: string;
   surface?: unknown;
   tenant?: unknown;
+  /** Set by SessionManager.archive — the rollout stays, the session doesn't come back. */
+  archived?: boolean;
 }
 
 /**
@@ -1084,9 +1161,10 @@ export async function rehydrateSessions(
     if (!name.endsWith(".jsonl")) continue;
     const id = name.slice(0, -".jsonl".length);
     if (!id || canonicalIds.has(id)) continue;
+    const meta = await readMetaFile(metaPath(home, id));
+    if (meta?.archived === true) continue;
     const events = (await readRolloutEvents(path.join(dir, name))) ?? [];
     const messages = messagesFromRollout(events);
-    const meta = await readMetaFile(metaPath(home, id));
     const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
     out.push({
       id,
@@ -1119,10 +1197,11 @@ export async function rehydrateSession(
     if (canonical.archived) return null;
     return canonicalRehydratedSession(kernel!, canonical);
   }
+  const meta = await readMetaFile(metaPath(home, sessionId));
+  if (meta?.archived === true) return null;
   const events = await readRolloutEvents(rolloutPath(home, sessionId));
   if (events === null) return null;
   const messages = messagesFromRollout(events);
-  const meta = await readMetaFile(metaPath(home, sessionId));
   const title = healTitle(meta?.title) ?? titleFromMessages(messages) ?? FALLBACK_TITLE;
   return {
     id: sessionId,

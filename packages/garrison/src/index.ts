@@ -40,6 +40,7 @@ export {
   type SessionSubscriber,
   type SessionSendOptions,
   type SessionSendContext,
+  type SessionPersonaHooks,
   type RehydratedSession,
   type RunningTurn,
   type SessionSurface,

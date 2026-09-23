@@ -8,8 +8,11 @@
 //     growing bubble instead of a paragraph (and a buzz) every three seconds.
 //     Only a reply too long to read as bubbles splits — into a preview plus the
 //     full .md as a document.
-//   • Tool calls accumulate on one activity card (activity.ts): every step with
-//     its duration, failures included, collapsing at turn_end into a receipt.
+//   • No tool calls on screen by default (owner, 2026-09-23: "no tool call
+//     showing at all … like a real person"): while a turn works the chat shows
+//     only "typing…", then the reply. ARES_TELEGRAM_ACTIVITY=1 (or the
+//     `activityCard` option) restores the activity card (activity.ts): every
+//     step with its duration, failures included, collapsing into a receipt.
 //   • Permission prompts (prompts.ts) show the actual command/path/URL, collapse
 //     duplicate questions onto one card, go to the owner who is in the
 //     conversation, and close out into a record once answered.
@@ -209,6 +212,15 @@ export interface TelegramBridgeOptions {
   /** Ares home; non-image documents the user sends land in
    *  <home>/telegram/inbox/<chatId>/ so the agent can Read them. Default: tmpdir. */
   home?: string;
+  /** Show the per-turn activity card (tool steps). Default: off unless
+   *  ARES_TELEGRAM_ACTIVITY=1 — the chat reads like a person texting. Permission
+   *  prompts, connect cards, receipts and errors are shown either way. */
+  activityCard?: boolean;
+}
+
+/** The activity card's default: hidden unless ARES_TELEGRAM_ACTIVITY=1. */
+export function telegramActivityCardDefault(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ARES_TELEGRAM_ACTIVITY === "1";
 }
 
 const RECONNECT_MIN_MS = 1_000;
@@ -382,6 +394,8 @@ export class TelegramBridge {
   /** Sessions that already got the "you're on Telegram" preamble. */
   private readonly surfaceIntroSent = new Set<number>();
   private readonly home: string;
+  /** Whether tool steps are shown on a per-turn card (off by default). */
+  private readonly activityCard: boolean;
   /** Chats with one user turn currently in flight through the Garrison.
    *  Value is the epoch-ms of the last event received (or dispatch time if
    *  no events yet).  A turn silent for BRIDGE_TURN_SILENCE_MS is
@@ -470,6 +484,7 @@ export class TelegramBridge {
     this.connectDeps = opts.connectDeps;
     this.remotePcDeps = opts.remotePcDeps;
     this.home = opts.home ?? path.join(os.tmpdir(), "ares-telegram");
+    this.activityCard = opts.activityCard ?? telegramActivityCardDefault();
     if (opts.remotePcDeps) this.subscribeRemotePcEvents(opts.remotePcDeps);
   }
 
@@ -1691,8 +1706,11 @@ export class TelegramBridge {
     }
   }
 
-  /** Re-render the card, throttled. The first render creates the message. */
+  /** Re-render the card, throttled. The first render creates the message.
+   *  With the card off, steps are still tracked (finishStep stays cheap) but
+   *  nothing is ever written to the chat. */
   private touchCard(chatId: number): void {
+    if (!this.activityCard) return;
     const card = this.cards.get(chatId);
     if (!card) return;
     const elapsed = this.now() - card.lastEditAt;
@@ -1739,6 +1757,7 @@ export class TelegramBridge {
     this.cards.delete(chatId);
     if (!card) return;
     if (card.timer !== undefined) this.timers.clearTimeout(card.timer);
+    if (!this.activityCard) return;
     if (card.messageId === undefined && card.steps.length === 0) return;
     const now = this.now();
     for (const step of card.steps) {

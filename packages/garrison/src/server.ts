@@ -329,6 +329,7 @@ export class GarrisonServer {
             workspace: frame.workspace,
             surface: normalizeSessionSurface(frame.surface),
             tenant: normalizeSessionTenant(frame.tenant),
+            ...(typeof frame.personaId === "string" && frame.personaId && frame.personaId !== "ares" ? { personaId: frame.personaId } : {}),
           });
           // The creator is auto-attached: a client that just made a session
           // always wants its events. Explicit session.attach stays for peers.

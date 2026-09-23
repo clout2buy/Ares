@@ -34,6 +34,10 @@ export interface Alarm {
   body?: string;
   /** Send to specific chat IDs. Absent = send to all owners. */
   chatIds?: number[];
+  /** A task to run as a turn when the alarm fires (Remind's `prompt`). */
+  prompt?: string;
+  /** The conversation that set the alarm — where a routed run lands. */
+  sessionId?: string;
   /** ISO timestamp when this alarm was created. */
   createdAt: string;
 }
@@ -133,6 +137,13 @@ export interface SchedulerOptions {
   /** Check interval in ms. Default 60_000 (1 minute). */
   tickMs?: number;
   log?: (line: string) => void;
+  /**
+   * Route a fired alarm back into the conversation that set it (a persona's
+   * thread, or any alarm carrying a prompt). Resolve true when handled — the
+   * run's reply IS the notification, so no Telegram ping is sent. False (or a
+   * throw) falls back to the ordinary Telegram message.
+   */
+  routeAlarm?: (alarm: Alarm, now: Date) => Promise<boolean>;
 }
 
 export class TelegramScheduler {
@@ -142,6 +153,7 @@ export class TelegramScheduler {
   private readonly now: () => Date;
   private readonly tickMs: number;
   private readonly log: (line: string) => void;
+  private readonly routeAlarm?: (alarm: Alarm, now: Date) => Promise<boolean>;
 
   private schedule: ScheduleData = emptySchedule();
   private timer?: ReturnType<typeof setInterval>;
@@ -156,6 +168,7 @@ export class TelegramScheduler {
     this.now = opts.now ?? (() => new Date());
     this.tickMs = opts.tickMs ?? 60_000;
     this.log = opts.log ?? (() => {});
+    this.routeAlarm = opts.routeAlarm;
   }
 
   async start(): Promise<void> {
@@ -240,15 +253,23 @@ export class TelegramScheduler {
 
   private fireAlarm(alarm: Alarm, now: Date): void {
     const ctx: CheckInContext = { alarm, now };
-    Promise.resolve(this.buildMessage(ctx))
-      .then((text) => {
+    const routed: Promise<boolean> = this.routeAlarm
+      ? this.routeAlarm(alarm, now).catch((err) => {
+          this.log(`alarm "${alarm.label}" routing failed, falling back to Telegram: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        })
+      : Promise.resolve(false);
+    routed
+      .then(async (handled) => {
+        if (handled) return { sent: 0, routed: true };
+        const text = await this.buildMessage(ctx);
         if (alarm.chatIds?.length) {
-          return this.outbound.sendToChats(alarm.chatIds, text);
+          return { ...(await this.outbound.sendToChats(alarm.chatIds, text)), routed: false };
         }
-        return this.outbound.sendToOwners(text);
+        return { ...(await this.outbound.sendToOwners(text)), routed: false };
       })
       .then((res) => {
-        this.log(`alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
+        this.log(res.routed ? `alarm "${alarm.label}" ran in session ${alarm.sessionId}` : `alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
         if (alarm.once) {
           const { data } = removeAlarm(this.schedule, alarm.id);
           this.schedule = data;

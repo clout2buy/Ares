@@ -50,6 +50,8 @@ import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 import { startLifeSurfaces } from "./lifeWiring.js";
+import { PersonaRuntime } from "./personaRuntime.js";
+import type { ProviderSelection } from "./providers.js";
 
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
@@ -180,12 +182,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const verifiedSessions = new Map<string, VerifiedGarrisonCoreSession>();
   let composeGarrisonSystemPrompt = (mode: AresRuntimeState["permissionMode"]) =>
     buildSystemPrompt(mode, context);
+  // Each session's full prompt builder (tenant tail + texting/persona layers).
+  // A plan-mode transition re-composes through it, or the swap would silently
+  // drop a guest's isolation and a persona's role mid-conversation.
+  const sessionPromptBuilders = new Map<string, (mode: AresRuntimeState["permissionMode"]) => string>();
   const planModes = new SessionPlanModeRegistry({
     kernel: sessionKernel,
     defaultPermissionMode:
       runtime.permissionMode === "plan" ? "workspace-write" : runtime.permissionMode,
     sessionFor: (sessionId) => verifiedSessions.get(sessionId)?.session,
-    systemPromptFor: (mode) => composeGarrisonSystemPrompt(mode),
+    systemPromptFor: (mode, sessionId) => sessionPromptBuilders.get(sessionId)?.(mode) ?? composeGarrisonSystemPrompt(mode),
   });
   const canonicalVerificationDebt = await loadCanonicalGarrisonVerificationDebt(
     sessionKernel,
@@ -240,9 +246,49 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     (await loadLiveMindContext(context)) +
     (await loadGitContext(context));
 
+  // The owner's personal agents: each has its own thread, brain and role
+  // (personaRuntime.ts). Booted before rehydration so persona threads come
+  // back on their own model with their own layer.
+  const personaRuntime = new PersonaRuntime<ProviderSelection>({
+    home: context.home,
+    resolveBrain: (provider, model) => selectProvider(new Map([["provider", provider], ["model", model]])),
+    live: {
+      setBrain: async (sessionId, brain) => {
+        const verified = verifiedSessions.get(sessionId);
+        if (!verified) return;
+        await verified.session.setProvider(brain.provider, brain.model, {
+          contextBudgetTokens: chatContextBudget(brain),
+          summarizeSpan: makeSpanSummarizer(brain),
+        });
+      },
+      setReasoningLevel: (sessionId, level) => {
+        if (isReasoningLevel(level)) verifiedSessions.get(sessionId)?.session.setReasoningLevel(level);
+      },
+      refreshPrompt: (sessionId) => {
+        const build = sessionPromptBuilders.get(sessionId);
+        if (build) verifiedSessions.get(sessionId)?.session.setSystemPrompt(build(planModes.stateFor(sessionId).permissionMode));
+      },
+    },
+    catalog: {
+      providers: () => [...TERMINAL_PROVIDERS],
+      models: async (provider) => (await daemonModelCatalog(provider)).map((row) => ({ id: row.id })),
+      reasoningLevels: () => [...REASONING_LEVELS],
+    },
+    defaultBrain: () => ({
+      provider: providerFamilyForSelection(selection),
+      model: selection.model,
+      reasoningLevel: resolveReasoningLevel(latestSettings),
+    }),
+    // phonePush is built further down; this only runs once alarms fire.
+    push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "personas", line } }) + "\n"),
+  });
+  await personaRuntime.boot().catch(() => []);
+
   const sessions = new SessionManager({
     home: context.home,
     sessionKernel,
+    personas: personaRuntime.sessionHooks(),
     // The garrison's first operator wake producer: a settled turn wakes the
     // background loop within seconds instead of waiting out the heartbeat.
     // Deliberately a closure — the loop is constructed later in this function,
@@ -265,11 +311,21 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     },
     factory: (req) => {
       const workspace = req.workspace ?? context.workspace;
-      const model = req.model ?? selection.model;
+      // A persona thread runs on the persona's own brain (resolved at boot or
+      // creation); everything else keeps the live default selection.
+      const persona = personaRuntime.personaFor(req);
+      const personaBrain = personaRuntime.brainFor(persona);
+      const brain = personaBrain ?? selection;
+      const model = personaBrain ? personaBrain.model : (req.model ?? selection.model);
       planModes.refresh(req.sessionId);
       const sessionTail = promptTailForTenant(req.tenant, promptTail, gitTail);
-      const liveSystemPrompt = () =>
-        promptTailForTenant(req.tenant, composeGarrisonSystemPrompt, composeGuestSystemPrompt)(planModes.stateFor(req.sessionId).permissionMode);
+      // Texting doctrine (phone/Telegram) + the persona's role ride AFTER the
+      // shared prompt, per session — never baked into the common prefix.
+      const buildPrompt = (mode: AresRuntimeState["permissionMode"]) =>
+        promptTailForTenant(req.tenant, composeGarrisonSystemPrompt, composeGuestSystemPrompt)(mode) +
+        personaRuntime.promptLayers(req.sessionId, req.surface, req.personaId);
+      sessionPromptBuilders.set(req.sessionId, buildPrompt);
+      const liveSystemPrompt = () => buildPrompt(planModes.stateFor(req.sessionId).permissionMode);
       const fileReadStamps = new Map<string, FileReadStamp>();
       const requestPermission = req.requestPermission
         ? async (request: Parameters<typeof req.requestPermission>[0]) => {
@@ -287,7 +343,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       );
       const verified = createVerifiedGarrisonCoreSession({
         workspace,
-        provider: selection.provider,
+        provider: brain.provider,
         model,
         systemPrompt: liveSystemPrompt,
         tools,
@@ -298,13 +354,15 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         // dangerous few — money, mail, publish, credentials, wipes — escalate
         // to the owner's phone (and auto-deny if unanswered — the safe miss).
         requestPermission,
-        reasoningLevel: resolveReasoningLevel(settings),
-        maxOutputTokens: chatMaxOutputTokens(selection),
-        contextBudgetTokens: chatContextBudget(selection),
+        reasoningLevel: persona?.reasoningLevel && isReasoningLevel(persona.reasoningLevel)
+          ? persona.reasoningLevel
+          : resolveReasoningLevel(settings),
+        maxOutputTokens: chatMaxOutputTokens(brain),
+        contextBudgetTokens: chatContextBudget(brain),
         fileReadStamps,
         onHistoryTrimmed: (dropped) =>
           invalidateTrimmedReadStamps(fileReadStamps, workspace, dropped),
-        summarizeSpan: makeSpanSummarizer(selection),
+        summarizeSpan: makeSpanSummarizer(brain),
         contextInputs: () => ({
           persona: agent.activePersona() ?? null,
           livingMemoryAndGit: sessionTail,
@@ -316,7 +374,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ? {
               id: req.sessionId,
               workspace,
-              provider: { name: selection.provider.name, model },
+              provider: { name: brain.provider.name, model },
               createdAt: req.createdAt,
               label: req.title,
             }
@@ -331,12 +389,13 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       verifiedSessions.set(req.sessionId, verified);
       return {
         session: verified.session,
-        providerName: selection.provider.name,
+        providerName: brain.provider.name,
         model,
         workspace,
       };
     },
   });
+  personaRuntime.attach(sessions);
   const restored = await sessions.rehydrate();
 
   // The phone's Today tab: the morning feed (a real turn on its own session),
@@ -624,6 +683,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           },
           connect: (req, res, url) => connectHub.handle(req, res, url),
           life: life.handler,
+          personas: (req, res, url) => personaRuntime.handle(req, res, url),
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
@@ -650,6 +710,13 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
               latestSettings = { ...latestSettings, reasoningLevel: level };
               await updateUiSettings({ reasoningLevel: level });
               sessions.setReasoningLevel(level);
+              // A persona with its own effort keeps it; the owner-level dial
+              // is the default, not an override of what they chose per agent.
+              for (const p of personaRuntime.store.list()) {
+                if (p.sessionId && p.reasoningLevel && isReasoningLevel(p.reasoningLevel)) {
+                  verifiedSessions.get(p.sessionId)?.session.setReasoningLevel(p.reasoningLevel);
+                }
+              }
             },
             permissions: () => commandPermissions.list().map((r) => ({ pattern: r.pattern, effect: r.effect, source: r.source })),
             revokePermission: (pattern) => commandPermissions.revoke(pattern),
@@ -699,7 +766,11 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
 
   // Proactive scheduled check-ins over Telegram — 9am/12pm/3pm by default.
   // Each check-in includes weather for the owner's area when configured.
-  const tgCheckinScheduler = await startTelegramCheckins(context).catch(() => null);
+  // Alarms set from a persona's thread (or carrying a prompt) run back in
+  // that thread and reach the phone as that persona.
+  const tgCheckinScheduler = await startTelegramCheckins(context, {
+    routeAlarm: (alarm, now) => personaRuntime.routeAlarm(alarm, now),
+  }).catch(() => null);
 
   process.stdout.write(
     notice(

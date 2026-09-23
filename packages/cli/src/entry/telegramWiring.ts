@@ -211,7 +211,10 @@ export function keepTelegramBridgeUp(
   return () => { stopped = true; if (timer) clearTimeout(timer); };
 }
 
-export async function startTelegramCheckins(context: CliRuntimeContext): Promise<TelegramScheduler | null> {
+export async function startTelegramCheckins(
+  context: CliRuntimeContext,
+  opts: { routeAlarm?: ConstructorParameters<typeof TelegramScheduler>[0]["routeAlarm"] } = {},
+): Promise<TelegramScheduler | null> {
   if (!(await telegramConfigured().catch(() => false))) return null;
   const cfg = await loadTelegramConfig();
   if (!cfg.botToken) return null;
@@ -239,6 +242,7 @@ export async function startTelegramCheckins(context: CliRuntimeContext): Promise
       return lines.join("\n");
     },
     log: tgLog,
+    ...(opts.routeAlarm ? { routeAlarm: opts.routeAlarm } : {}),
   });
   await tgScheduler.start();
   // Inject into the Remind tool so the agent can add/remove/list alarms at runtime.

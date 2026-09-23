@@ -220,6 +220,9 @@ export interface PhoneApiHooks {
   /** The Today tab's routes (tracking, feed, ideas — see lifeApi.ts). Asked
    *  after the built-in routes, already authenticated; false = not mine. */
   life?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The owner's personal agents (/gateway/personas — phonePersonas.ts).
+   *  Asked right after the bearer check; false = not mine. */
+  personas?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
    *  like /connect/ — the token is the capability for one page. */
   watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1479,6 +1482,9 @@ export class RemoteAgentServer {
     // What the iPhone shares (Health, Contacts, Calendar) — deviceSync.ts.
     if (await handleDeviceApi(req, res, url, { home: this.home })) return;
     const api = this.opts.phoneApi ?? {};
+    if (api.personas && (url.pathname === "/gateway/personas" || url.pathname.startsWith("/gateway/personas/"))) {
+      if (await api.personas(req, res, url)) return;
+    }
 
     try {
       switch (`${req.method} ${url.pathname}`) {

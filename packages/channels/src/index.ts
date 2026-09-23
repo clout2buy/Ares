@@ -24,7 +24,7 @@ export type {
   SendMediaOptions,
 } from "./telegram/api.js";
 
-export { TelegramBridge, chunkMessage, splitPoint, fitMarkdown, toTelegramText, toTelegramHtml, screenshotPathOf } from "./telegram/bridge.js";
+export { TelegramBridge, telegramActivityCardDefault, chunkMessage, splitPoint, fitMarkdown, toTelegramText, toTelegramHtml, screenshotPathOf } from "./telegram/bridge.js";
 export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers, PendingInput } from "./telegram/bridge.js";
 export { detectRemotePcIntent, parseRemotePcCallback, buildLinkMessage, buildPcConnectedMessage, buildPcContextPrefix } from "./telegram/remotePC.js";
 export type { RemotePcBridgeDeps } from "./telegram/remotePC.js";

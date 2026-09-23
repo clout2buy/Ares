@@ -19,6 +19,19 @@ export const GOOGLE_OAUTH: OAuthProviderConfig = {
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/contacts.readonly",
+    // Google Workspace beyond mail + calendar rides the SAME owner-registered
+    // app: one consent covers Drive, Docs, Sheets, Slides, Forms, Tasks and
+    // Contacts. Full `drive` (not drive.file) because "find the budget sheet"
+    // means files Ares did not create; contacts (write) so "save Sam's number"
+    // works, contacts.readonly kept so an older grant still reads.
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/forms.responses.readonly",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
   ],
@@ -108,6 +121,32 @@ export const DROPBOX_OAUTH: OAuthProviderConfig = {
   extraAuthorizeParams: { token_access_type: "offline" },
 };
 
+/**
+ * Microsoft identity platform v2 (Outlook.com, Hotmail, Microsoft 365). Tenant
+ * "common" so one Azure app registration signs in personal AND work/school
+ * accounts. Graph scopes by short name (they default to graph.microsoft.com);
+ * offline_access is what makes Microsoft issue a refresh token at all. The
+ * token endpoint takes the stock client_secret_post form, and `scope` is
+ * optional on both redemption and refresh (the grant's scopes carry over),
+ * so oauth.ts needs no Microsoft special case. Refresh tokens rotate —
+ * parseTokenResponse already keeps whichever one came back last.
+ */
+export const MICROSOFT_OAUTH: OAuthProviderConfig = {
+  provider: "microsoft",
+  authorizeUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+  tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+  scopes: [
+    "offline_access",
+    "User.Read",
+    "Mail.ReadWrite",
+    "Mail.Send",
+    "Calendars.ReadWrite",
+    "Contacts.ReadWrite",
+  ],
+  // An owner with a work and a personal account must be able to pick which.
+  extraAuthorizeParams: { prompt: "select_account" },
+};
+
 /** All known providers, keyed by their stable id. */
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
   google: GOOGLE_OAUTH,
@@ -121,11 +160,12 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
   twitch: TWITCH_OAUTH,
   linkedin: LINKEDIN_OAUTH,
   dropbox: DROPBOX_OAUTH,
+  microsoft: MICROSOFT_OAUTH,
 };
 
 /** Human-readable labels for the connect UI. */
 export const PROVIDER_LABELS: Record<string, string> = {
-  google: "Google (Calendar, Gmail, Contacts)",
+  google: "Google (Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks, Contacts)",
   spotify: "Spotify",
   github: "GitHub",
   reddit: "Reddit",
@@ -136,6 +176,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   twitch: "Twitch",
   linkedin: "LinkedIn",
   dropbox: "Dropbox",
+  microsoft: "Microsoft (Outlook mail, calendar, contacts)",
 };
 
 export function getProviderConfig(provider: string): OAuthProviderConfig | undefined {

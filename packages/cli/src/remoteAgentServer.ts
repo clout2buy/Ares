@@ -40,6 +40,7 @@ import {
 import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
 import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
+import { handleConnectionsApi } from "./phoneConnections.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -1457,6 +1458,8 @@ export class RemoteAgentServer {
     const expected = this.opts.controlToken;
     const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
+    // The Connections screen (list / start / disconnect) — phoneConnections.ts.
+    if (await handleConnectionsApi(req, res, url, { log: (line) => this.log(line) })) return;
     const api = this.opts.phoneApi ?? {};
 
     try {

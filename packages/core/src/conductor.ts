@@ -62,7 +62,7 @@ export const SAFE_RESEARCH_TOOLS = new Set(["WebFetch", "WebSearch", "ImageSearc
  *  have irreversible outward effects (payment / mail / deploy / external account)
  *  or drive the real desktop; an unattended leaf must not reach them. (Recursion
  *  tools are handled separately by FORBIDDEN_CHILD_TOOLS.) */
-export const LEAF_NEVER_TOOLS = new Set(["Stripe", "Email", "Gmail", "GoogleCalendar", "Connect", "Deploy", "ComputerUse"]);
+export const LEAF_NEVER_TOOLS = new Set(["Stripe", "Email", "Gmail", "GoogleCalendar", "Connect", "Deploy", "ComputerUse", "Outlook", "GoogleDrive", "GoogleForms"]);
 
 // ─── Public spec types (what the model authors; the tool layer validates) ──
 

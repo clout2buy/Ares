@@ -21,6 +21,7 @@
 
 import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effects";
 import type { ToolPermissionRequest } from "@ares/core";
+import { connectorCategory } from "./connectorGate.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -139,6 +140,9 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
   if (/\b(credential|secret|api[ _-]?key|password|passphrase|private key|oauth token)\b/.test(hay)) {
     return "credential_or_secret";
   }
+  // Gmail / Google Workspace / Outlook: per-action table in connectorGate.ts.
+  const connector = connectorCategory(request.toolName, actionOf(request));
+  if (connector !== undefined) return connector;
   switch (request.toolName) {
     case "Bash":
     case "PowerShell":

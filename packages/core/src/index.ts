@@ -670,3 +670,12 @@ export {
   type ConnectOutcome,
   type ConnectBroker,
 } from "./connectServices.js";
+export {
+  mintSecretHandle,
+  describeSecretHandle,
+  redeemSecretHandle,
+  revokeSecretHandle,
+  redactSecretValues,
+  handleSite,
+  type SecretHandleScope,
+} from "./secretHandles.js";

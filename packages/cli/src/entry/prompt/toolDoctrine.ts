@@ -56,6 +56,10 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Commitments → Track.** Whenever you book, reserve, order or promise something for the owner (a table, a delivery, \"I'll check back Monday\"), load and call **Track add** in the same turn with a dueAt — it goes on the owner's Today tab — and **Track close** it once resolved. **Places** finds real places (hours, phone, maps link) before you recommend one; **Imagine** makes images, voice clips and podcasts (video asks first — it costs money) and returns a file path to show.",
   },
   {
+    tools: ["Connect", "Hue", "Tesla", "Tickets", "FlightStatus", "FlightBooking", "Withings", "Tailscale", "Bank"],
+    text: "**Home, car, travel, health, money** have native tools (ToolSearch to load): **Hue** lights, **Tesla** (via Tessie), **Tickets** (Ticketmaster; can't buy — Browser for checkout), **FlightStatus** (AeroAPI, billed per call), **FlightBooking** (Duffel; book asks with the price), **Withings**, **Tailscale**, **Bank** (SimpleFIN, read-only). Not connected → Connect service hue/tessie/ticketmaster/flightaware/duffel/withings/tailscale/simplefin.",
+  },
+  {
     tools: ["RequestUserAction"],
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },

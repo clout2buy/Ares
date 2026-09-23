@@ -9,6 +9,7 @@
 // encrypted in the credential vault and handles the rest forever.
 
 import type { OAuthProviderConfig } from "./oauth.js";
+import { WITHINGS_OAUTH } from "./withingsOAuth.js";
 
 export const GOOGLE_OAUTH: OAuthProviderConfig = {
   provider: "google",
@@ -161,6 +162,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
   linkedin: LINKEDIN_OAUTH,
   dropbox: DROPBOX_OAUTH,
   microsoft: MICROSOFT_OAUTH,
+  withings: WITHINGS_OAUTH,
 };
 
 /** Human-readable labels for the connect UI. */
@@ -177,6 +179,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   linkedin: "LinkedIn",
   dropbox: "Dropbox",
   microsoft: "Microsoft (Outlook mail, calendar, contacts)",
+  withings: "Withings (health)",
 };
 
 export function getProviderConfig(provider: string): OAuthProviderConfig | undefined {

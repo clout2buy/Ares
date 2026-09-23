@@ -188,6 +188,14 @@ export { TrackTool, type TrackOutput } from "./Track.js";
 export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
 export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
 export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
+export { HueTool, discoverHueBridges, pairHueBridge, hueCall, hexToXy, hueStateBody, type HueOutput, type HueBridgeRef, type HuePairing } from "./Hue.js";
+export { TeslaTool, TESLA_ASK_ACTIONS, type TeslaOutput } from "./Tesla.js";
+export { TicketsTool, ticketmasterSearchUrl, type TicketsOutput } from "./Tickets.js";
+export { FlightStatusTool, relevantFlight, summarizeFlight, type FlightStatusOutput } from "./FlightStatus.js";
+export { FlightBookingTool, duffelMode, offerRequestBody, summarizeOffer, type FlightBookingOutput } from "./FlightBooking.js";
+export { WithingsTool, decodeMeasureGroups, type WithingsOutput } from "./Withings.js";
+export { TailscaleTool, TAILSCALE_ASK_ACTIONS, type TailscaleOutput } from "./Tailscale.js";
+export { BankTool, claimSimplefinToken, simplefinAccounts, simplefinClaimUrl, type BankOutput } from "./Bank.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,
@@ -229,6 +237,17 @@ import { CONNECTOR_TOOLS } from "./connectorTools.js";
 import { TrackTool } from "./Track.js";
 import { PlacesTool } from "./Places.js";
 import { ImagineTool } from "./Imagine.js";
+import { HueTool } from "./Hue.js";
+import { TeslaTool } from "./Tesla.js";
+import { TicketsTool } from "./Tickets.js";
+import { FlightStatusTool } from "./FlightStatus.js";
+import { FlightBookingTool } from "./FlightBooking.js";
+import { WithingsTool } from "./Withings.js";
+import { TailscaleTool } from "./Tailscale.js";
+import { BankTool } from "./Bank.js";
+
+/** Home, car, travel, health and money connectors (all deferred). */
+export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -267,6 +286,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TrackTool,
       PlacesTool,
       ImagineTool,
+      ...LIFE_TOOLS,
     ] as const
   : [
       ReadTool,
@@ -302,4 +322,5 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TrackTool,
       PlacesTool,
       ImagineTool,
+      ...LIFE_TOOLS,
     ] as const;

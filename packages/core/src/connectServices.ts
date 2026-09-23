@@ -25,6 +25,7 @@ import { OAUTH_PROVIDERS } from "./oauthProviders.js";
 import { loadTokens } from "./oauth.js";
 import { getCredential } from "./credentials.js";
 import { loadRemoteMcpServers } from "./mcpConnect.js";
+import { LIFE_SERVICES } from "./lifeServices.js";
 
 export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
 
@@ -54,6 +55,13 @@ export interface ConnectService {
   appSetup?: { consoleUrl: string; steps: string[] };
   /** api-key: the fields the secure form asks for. */
   fields?: ConnectField[];
+  /** api-key: credentials the hub's verifier stores INSTEAD of the typed
+   *  fields (Hue pairs with zero fields; SimpleFIN trades a one-time token for
+   *  an access URL). What "connected" is checked against. */
+  stores?: string[];
+  /** api-key: what the form tells the owner to do when it isn't just typing a
+   *  key ("Press the button on your Hue bridge, then tap Connect"). */
+  formHint?: string;
   /** browser: where sign-in starts, and the site's registrable domain. */
   loginUrl?: string;
   domain?: string;
@@ -255,6 +263,7 @@ function browserService(site: (typeof BROWSER_SITES)[number]): ConnectService {
 export const CONNECT_SERVICES: ConnectService[] = [
   ...HANDWRITTEN,
   ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
+  ...LIFE_SERVICES,
   ...BROWSER_SITES.map(browserService),
 ];
 
@@ -369,10 +378,11 @@ export async function isServiceConnected(service: ConnectService, home?: string)
       return Boolean(tokens?.accessToken);
     }
     case "api-key": {
-      for (const field of service.fields ?? []) {
-        if (!(await getCredential(field.credential, { home }))) return false;
+      const names = service.stores ?? (service.fields ?? []).map((field) => field.credential);
+      for (const name of names) {
+        if (!(await getCredential(name, { home }))) return false;
       }
-      return true;
+      return names.length > 0;
     }
     case "browser": {
       try {

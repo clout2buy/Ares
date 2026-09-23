@@ -490,6 +490,8 @@ export {
   getProviderConfig,
   listProviders,
 } from "./oauthProviders.js";
+export { WITHINGS_OAUTH, unwrapWithingsToken } from "./withingsOAuth.js";
+export { LIFE_SERVICES } from "./lifeServices.js";
 
 export {
   startOAuthFlow,

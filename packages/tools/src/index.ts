@@ -171,7 +171,17 @@ export { RemotePCTool, setRemoteAgentServer, getRemoteAgentServer, type RemotePC
 export { ConnectTool, CONNECT_WAIT_MS, type ConnectOutput } from "./Connect.js";
 export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
-export { GmailTool, type GmailOutput } from "./Gmail.js";
+export { GmailTool, buildRfc2822, planUnsubscribe, gmailBodyText, findCodeInputProblem, CODE_HANDLE_TTL_MS, type GmailOutput } from "./Gmail.js";
+export * as oneTimeCode from "./oneTimeCode.js";
+export { GoogleDriveTool, driveSearchQuery, driveMultipart, DRIVE_EXPORTS, type GoogleDriveOutput } from "./GoogleDrive.js";
+export { GoogleDocsTool, docText, type GoogleDocsOutput } from "./GoogleDocs.js";
+export { GoogleSheetsTool, type GoogleSheetsOutput } from "./GoogleSheets.js";
+export { GoogleSlidesTool, addSlideRequests, slideTexts, type GoogleSlidesOutput } from "./GoogleSlides.js";
+export { GoogleFormsTool, formQuestion, addQuestionRequests, type GoogleFormsOutput } from "./GoogleForms.js";
+export { GoogleTasksTool, tasksDue, type GoogleTasksOutput } from "./GoogleTasks.js";
+export { GoogleContactsTool, type GoogleContactsOutput } from "./GoogleContacts.js";
+export { OutlookTool, odata, graphTime, eventBody as outlookEventBody, recipients as outlookRecipients, type OutlookOutput } from "./Outlook.js";
+export { CONNECTOR_TOOLS } from "./connectorTools.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
 export {
   makeToolSearchTool,
@@ -210,6 +220,7 @@ import { PhoneTool } from "./Phone.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
+import { CONNECTOR_TOOLS } from "./connectorTools.js";
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -244,6 +255,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...CONNECTOR_TOOLS,
     ] as const
   : [
       ReadTool,
@@ -275,4 +287,5 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...CONNECTOR_TOOLS,
     ] as const;

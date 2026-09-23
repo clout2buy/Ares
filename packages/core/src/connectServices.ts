@@ -66,10 +66,23 @@ const GOOGLE_SETUP = {
   consoleUrl: "https://console.cloud.google.com/apis/credentials",
   steps: [
     "Open console.cloud.google.com and create (or pick) a project.",
-    "APIs & Services → Library: enable the Gmail API, Google Calendar API and People API.",
+    "APIs & Services → Library: enable each of these APIs — Gmail API, Google Calendar API, Google Drive API, Google Docs API, Google Sheets API, Google Slides API, Google Forms API, Google Tasks API and People API (Contacts).",
     "OAuth consent screen: choose External, fill in the app name and your email, add yourself under Test users, then press Publish app (an app left in Testing mode loses access every 7 days).",
     "Credentials → Create credentials → OAuth client ID → Web application. Under Authorized redirect URIs add the redirect URI shown below.",
     "Copy the Client ID and Client secret into the form below.",
+  ],
+};
+
+/** Microsoft identity platform: one Azure app for Outlook.com and work accounts. */
+const MICROSOFT_SETUP = {
+  consoleUrl: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+  steps: [
+    "Open portal.azure.com (sign in with any Microsoft account) → Microsoft Entra ID → App registrations → New registration.",
+    "Name it (e.g. Ares). Supported account types: \"Accounts in any organizational directory and personal Microsoft accounts\".",
+    "Redirect URI: platform \"Web\", and paste the redirect URI shown below. Press Register.",
+    "Copy the Application (client) ID from the Overview page into the form below.",
+    "Certificates & secrets → Client secrets → New client secret. Copy the secret's Value (not its ID) into the form below — it is shown only once.",
+    "API permissions (optional — you'll be asked to consent anyway): Microsoft Graph → Delegated → offline_access, User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Contacts.ReadWrite.",
   ],
 };
 
@@ -95,14 +108,33 @@ const BROWSER_SITES: Array<Omit<ConnectService, "kind" | "howToUse"> & { howToUs
 ];
 
 const HANDWRITTEN: ConnectService[] = [
+  // Outlook BEFORE google: resolveConnectService's substring pass takes the
+  // first hit, and google's "email"/"mail" would swallow "my outlook email".
+  {
+    id: "outlook",
+    label: "Outlook",
+    kind: "oauth-app",
+    oauthProvider: "microsoft",
+    blurb: "Outlook, Hotmail and Microsoft 365: mail, calendar and contacts.",
+    keywords: ["outlook", "hotmail", "outlook.com", "hotmail.com", "live.com", "msn.com", "microsoft", "microsoft mail", "microsoft email", "office 365", "microsoft 365", "o365", "outlook calendar", "outlook email"],
+    howToUse: "Use the Outlook tool: list_messages / search / read_message / send / draft / reply / forward, list_events / create_event, search_contacts.",
+    appSetup: MICROSOFT_SETUP,
+  },
   {
     id: "google",
-    label: "Google (Gmail & Calendar)",
+    label: "Google",
     kind: "oauth-app",
     oauthProvider: "google",
-    blurb: "Read, search and send Gmail; read and edit Google Calendar.",
-    keywords: ["google", "gmail", "email", "e-mail", "inbox", "mail", "calendar", "google calendar", "contacts"],
-    howToUse: "Use the Gmail tool (search / list_messages / read_message / send) and the GoogleCalendar tool.",
+    blurb: "Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks and Contacts.",
+    keywords: [
+      "google", "gmail", "email", "e-mail", "inbox", "mail", "calendar", "google calendar", "contacts", "google contacts",
+      "google drive", "gdrive", "google docs", "google doc", "google sheets", "google sheet", "spreadsheet", "google slides",
+      "slides", "google forms", "google form", "google tasks", "google workspace", "g suite",
+    ],
+    howToUse:
+      "One Google connection covers: Gmail (search / read / send / draft / reply / forward / labels / archive / trash / unsubscribe / find_code), " +
+      "GoogleCalendar, GoogleDrive, GoogleDocs, GoogleSheets, GoogleSlides, GoogleForms, GoogleTasks and GoogleContacts — load them with ToolSearch. " +
+      "If a call fails with a 403 about a disabled API or missing scope, the owner enabled the app before that API was added: connect \"google\" again.",
     appSetup: GOOGLE_SETUP,
   },
   {
@@ -192,7 +224,8 @@ function normalize(text: string): string {
 }
 
 const DOMAIN_OVERRIDES: Record<string, string> = {
-  google: "mail.google.com",
+  google: "google.com",
+  outlook: "outlook.live.com",
   spotify: "spotify.com",
   twilio: "twilio.com",
   "stripe-key": "stripe.com",

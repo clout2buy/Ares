@@ -215,6 +215,9 @@ export interface PhoneApiHooks {
    *  forms, and the live sign-in browser. Unauthenticated — the flow id is
    *  the capability. Returns false for a path it doesn't own. */
   connect?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The Today tab's routes (tracking, feed, ideas — see lifeApi.ts). Asked
+   *  after the built-in routes, already authenticated; false = not mine. */
+  life?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
   unregisterPush?: (token: string) => Promise<void>;
   pushConfigured?: () => boolean;
@@ -276,6 +279,9 @@ const ARTIFACT_TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
+  // What Imagine makes (media/<date>/…): speech, podcasts, video clips.
+  ".mp3": "audio/mpeg",
+  ".mp4": "video/mp4",
 };
 
 /** Places under an artifact root that hold secrets or machinery, never
@@ -1577,6 +1583,7 @@ export class RemoteAgentServer {
           return json(200, { audio: mp3.toString("base64"), contentType: "audio/mpeg" });
         }
         default:
+          if (api.life && (await api.life(req, res, url))) return;
           return json(404, { error: "not found" });
       }
     } catch (err) {

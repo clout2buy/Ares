@@ -173,6 +173,11 @@ export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, type GmailOutput } from "./Gmail.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
+// Life surfaces (the phone's Today tab): commitments, places, media.
+export { TrackTool, type TrackOutput } from "./Track.js";
+export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
+export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
+export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,
@@ -210,6 +215,9 @@ import { PhoneTool } from "./Phone.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
+import { TrackTool } from "./Track.js";
+import { PlacesTool } from "./Places.js";
+import { ImagineTool } from "./Imagine.js";
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -244,6 +252,9 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
     ] as const
   : [
       ReadTool,
@@ -275,4 +286,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
     ] as const;

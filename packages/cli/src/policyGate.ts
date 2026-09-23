@@ -21,6 +21,8 @@
 
 import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effects";
 import { vaultAccessReason, type ToolPermissionRequest } from "@ares/core";
+import { connectorCategory } from "./connectorGate.js";
+import { lifeToolCategory } from "./policyGateLife.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -54,8 +56,8 @@ export function remoteAutonomyDecision(request: ToolPermissionRequest): "allow" 
   // durable plan revision. A remote model can propose it, but only the owner
   // can cross this boundary; never let the autonomy default self-approve it.
   if (request.toolName === "ExitPlanMode") return "ask";
-  // Any owner-only question (a vault read, a recurring schedule) goes to the
-  // owner — autonomy never answers on the owner's behalf.
+  // A per-call owner decision (a checkout total, a vault fill on a named site)
+  // is the owner's by definition — never the autonomy default's.
   if (request.ownerDecision) return "ask";
   const category = classifyToolRequest(request);
   // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
@@ -152,6 +154,9 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
   if (/\b(credential|secret|api[ _-]?key|password|passphrase|private key|oauth token)\b/.test(hay)) {
     return "credential_or_secret";
   }
+  // Gmail / Google Workspace / Outlook: per-action table in connectorGate.ts.
+  const connector = connectorCategory(request.toolName, actionOf(request));
+  if (connector !== undefined) return connector;
   switch (request.toolName) {
     case "Bash":
     case "PowerShell":
@@ -192,7 +197,12 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       return "git_push";
     case "Filesystem":
       return "file_write";
+    // Checkout review: the owner approves the exact total before any order.
+    case "Checkout":
+      return "payment_or_purchase";
     case "Browser":
+      // Filling a vault login or a secret handle into a page touches secrets.
+      if (actionOf(request) === "login" || actionOf(request) === "fill_secret") return "credential_or_secret";
       return /\b(submit|checkout|buy|pay|purchase|order|confirm)\b/.test(hay) ? "browser_submit" : "browser_navigate";
     // Ares's own phone numbers: buying/releasing bills the owner's Twilio
     // account monthly; a text is outbound communication like an email.
@@ -201,14 +211,22 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       if (action === "buy_number" || action === "release_number") return "payment_or_purchase";
       return action === "send_sms" ? "email_send" : null;
     }
+    // A generated video costs dollars on the owner's Gemini bill; images are
+    // cents and run freely. Without this the tool's own "ask" was auto-allowed
+    // on the phone like any unclassified tool.
+    case "Imagine":
+      return actionOf(request) === "video" ? "payment_or_purchase" : null;
     case "McpCallTool":
       return mcpMoneyCategory(mcpToolOf(request));
-    default:
+    default: {
+      const life = lifeToolCategory(request.toolName, actionOf(request));
+      if (life !== undefined) return life;
       // A connected MCP server's tools arrive as mcp_<server>_<tool>. Stripe,
       // PayPal and Square expose real money movers (refunds, charges, invoices,
       // payment links) that were classified null — i.e. auto-allowed on the
       // phone. Anything money-shaped that isn't a read now asks the owner.
       return request.toolName.startsWith("mcp_") ? mcpMoneyCategory(request.toolName) : null;
+    }
   }
 }
 

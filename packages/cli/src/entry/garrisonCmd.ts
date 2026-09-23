@@ -29,6 +29,7 @@ import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
 import { ConnectHub } from "../connectHub.js";
+import { BrowserWatchHub, setBrowserWatchHub } from "../browserWatch.js";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -52,6 +53,7 @@ import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
+import { startLifeSurfaces } from "./lifeWiring.js";
 
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
@@ -345,6 +347,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   const restored = await sessions.rehydrate();
 
+  // The phone's Today tab: the morning feed (a real turn on its own session),
+  // idea cards (the summarize slot), tracked commitments; plus Imagine's voice.
+  const life = startLifeSurfaces({
+    home: context.home,
+    sessions,
+    selection: () => selection,
+    speech: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "life", line } }) + "\n"),
+  });
+
   const scheduler = new Scheduler({
     hooks: {
       heartbeat: async () => {
@@ -383,6 +395,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       // hook existed the gauntlet only ran when someone remembered to.
       gauntlet: async () =>
         (await runScheduledGauntlet({ suite: process.env.ARES_GAUNTLET_SUITE ?? "coding-v3", gate: true, trigger: "garrison", home: context.home })).nightly,
+      // The morning paper: due once a day from ARES_FEED_HOUR (07:00 local).
+      feed: () => life.feed.maybeRunDaily(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
@@ -612,6 +626,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "connect", line } }) + "\n"),
   });
   setConnectBroker(connectHub);
+  // "Watch or take over anytime": every browser the Browser tool opens gets a
+  // /watch/<token> link on the same origin (the browser_live card).
+  const browserWatchHub = new BrowserWatchHub({
+    publicUrl: () => remoteAgentServer?.linkBaseUrl(),
+    home: context.home,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "watch", line } }) + "\n"),
+  });
+  setBrowserWatchHub(browserWatchHub);
 
   remoteAgentServer = await (async () => {
     try {
@@ -651,6 +673,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             callbackUrlForSetup: () => tunnelOAuth.callbackUrlForSetup(),
           },
           connect: (req, res, url) => connectHub.handle(req, res, url),
+          life: life.handler,
+          watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,
@@ -762,6 +786,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       phoneNotifier?.stop();
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});
+      browserWatchHub.close();
+      setBrowserWatchHub(null);
       setRemoteAgentServer(null);
       void aresNetworkHostStop();
       approvals.dispose();

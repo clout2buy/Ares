@@ -5,8 +5,19 @@ import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { stdout } from "node:process";
-import { buildTool } from "@ares/tools";
-import { registerStoppable } from "@ares/core";
+import { approvedCheckout, buildTool, looksLikeOrderSubmission, pageShowsAmount, spendCheckoutApproval, type RichToolContext, type ToolDef } from "@ares/tools";
+import { handleSite, registerStoppable } from "@ares/core";
+import { getBrowserWatchHub, type BrowserWatch } from "../browserWatch.js";
+import {
+  SecretFingerprints,
+  auditFill,
+  describeHandleForApproval,
+  fillSiteOf,
+  performFillSecret,
+  performLogin,
+  redactDeep,
+  savedLoginDomain,
+} from "../browserSecrets.js";
 import { z } from "zod";
 import { loadUiSettings, type UiSettings } from "../uiSettings.js";
 import { TrustGovernor } from "@ares/operator";
@@ -79,7 +90,7 @@ const browserStep = z
 const browserInput = z
   .object({
     action: z
-      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip"])
+      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret"])
       .describe(
         "Browser action. DOM-first web actions: open/tree/fill/click/screenshot/state/close. " +
         "PREVIEW & VERIFY (drives a VISIBLE browser with an animated cursor so the owner watches Ares test the UI): " +
@@ -87,7 +98,9 @@ const browserInput = z
         "'fill_selector' types into a CSS selector; 'console' reads console logs/errors after acting; " +
         "'eval' runs JS in the page to inspect state or call a function. " +
         "Use 'handshake' to attach ONLY to an already-open CDP-enabled Chrome/Edge without launching a replacement. " +
-        "Use 'act' with steps for a complete multi-control job; it executes the sequence and returns one final visual verification instead of burning a model round-trip per click.",
+        "Use 'act' with steps for a complete multi-control job; it executes the sequence and returns one final visual verification instead of burning a model round-trip per click. " +
+        "'login' signs in with the owner's SAVED login for the current https page (username + password from the vault — you never see them; the owner approves each fill). " +
+        "'fill_secret' fills a secret handle (\"sec_…\", e.g. an emailed sign-in code another tool gave you) into one field by selector or label, after the owner approves.",
       ),
     url: z.string().optional().describe("URL for open/preview (e.g. http://localhost:1420)."),
     label: z.string().optional().describe("Accessible label for fill."),
@@ -109,6 +122,11 @@ const browserInput = z
     limit: z.number().int().min(1).max(100).optional().describe("Maximum tree/filmstrip/console entries returned."),
     steps: z.array(browserStep).min(1).max(24).optional().describe("act: ordered DOM-first actions to execute as one transaction, followed by one screenshot and page-state verification."),
     allowRepeat: z.boolean().optional().describe("Permit an intentional repeat of a recently committed click/act. Default false prevents accidental duplicate sends/submits."),
+    domain: z.string().optional().describe("login: the site whose saved login to use (default: the current page's domain)."),
+    username_selector: z.string().optional().describe("login: CSS selector of the username/email field when the default guess misses."),
+    password_selector: z.string().optional().describe("login: CSS selector of the password field (default input[type=password])."),
+    submit: z.boolean().optional().describe("login / fill_secret: submit the form after filling."),
+    handle: z.string().optional().describe("fill_secret: the secret handle (sec_…) to fill. Never a raw value."),
   })
   .strict();
 
@@ -125,10 +143,14 @@ const READ_ONLY_BROWSER_ACTIONS = new Set([
   "filmstrip",
 ]);
 
+type BrowserResult = { output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> };
+
 interface BrowserToolOutput {
   action: string;
   status: string;
   result?: unknown;
+  /** The owner took over this browser and handed it back since Ares last looked. */
+  ownerTookOver?: boolean;
   /** CDP attachment or Ares-owned launch strategy, when Playwright exposes it. */
   browserStrategy?: string;
   /** Loud warning when a rails-gated action did NOT commit (staged/denied). */
@@ -169,6 +191,172 @@ export function makeBrowserTool(
       return true;
     },
   });
+
+  // ── watch / take over, vault fills, checkout guard ──
+  // The owner's live view of THIS browser (null without a garrison origin).
+  let watch: BrowserWatch | null = null;
+  let watchedBrowser: BrowserConnector | null = null;
+  // Progress for the current call, redacted (set per call like frameSink).
+  let progressSink: ((data: Record<string, unknown>) => void) | null = null;
+  // Fingerprints of every secret filled into this browser — never the values.
+  const prints = new SecretFingerprints();
+  // toolUseId → the page a fill was approved for (checkPermissions → call).
+  const approvedFills = new Map<string, { origin: string; domain?: string }>();
+  // Per-call flags (the tool is exclusive, so one call at a time).
+  let callState: { handbackNote?: string; orderSubmission?: boolean; release?: () => void } = {};
+
+  const endWatch = () => {
+    if (!watch) return;
+    const ended = watch;
+    watch = null;
+    watchedBrowser = null;
+    if (ended.ended) return;
+    ended.end();
+    progressSink?.({ kind: "browser_live", sessionId: ended.sessionId, url: ended.url, label: ended.label, state: "ended" });
+  };
+
+  /** Once per browser session: mint the watch link and tell the phone. */
+  const announceWatch = (br: BrowserConnector, i: { url?: string }, ctx: RichToolContext) => {
+    if (watch && watchedBrowser === br && !watch.ended) return;
+    if (watch) endWatch();
+    const hub = getBrowserWatchHub();
+    if (!hub || !br.livePage) return;
+    const label = watchLabel(i.url, br.livePage());
+    const opened = hub.open({ page: () => br.livePage?.(), label, conversationId: ctx.sessionId });
+    if (!opened) return;
+    watch = opened;
+    watchedBrowser = br;
+    callState.release = opened.agentBegin();
+    progressSink?.({ kind: "browser_live", sessionId: opened.sessionId, url: opened.url, label, state: "active" });
+  };
+
+  /**
+   * Single controller: while the owner drives, wait (bounded, abortable, off
+   * the watchdog clock). A handback — waited for now or happened between
+   * calls — always reaches the agent as a re-read notice, and a mutating
+   * action queued behind it is NOT run against a page the agent hasn't seen.
+   */
+  const holdForOwner = async (i: { action: string }, ctx: RichToolContext): Promise<BrowserResult | null> => {
+    const current = watch;
+    if (!current || current.ended) return null;
+    let note: string | undefined;
+    if (current.controller === "owner") {
+      const release = ctx.pauseWatchdog?.();
+      try {
+        const waited = await current.waitForControl({
+          signal: ctx.signal,
+          timeoutMs: takeoverWaitMs(),
+          onWaiting: () => progressSink?.({ kind: "browser_control", sessionId: current.sessionId, controller: "owner", url: current.url }),
+        });
+        if (waited.waited && waited.outcome === "timeout") {
+          return {
+            output: {
+              action: i.action,
+              status: "owner_has_control",
+              note: `ACTION NOT PERFORMED — the owner took over this browser and hasn't handed it back after ${Math.round(takeoverWaitMs() / 60_000)} minutes. Tell them you're waiting for "Hand back to Ares" (or ask what they want); don't work around it.`,
+              filmstripDir: "",
+            },
+            display: "waiting for the owner to hand the browser back",
+          };
+        }
+        if (waited.waited && waited.outcome === "handed_back") note = waited.notice?.note;
+        progressSink?.({ kind: "browser_control", sessionId: current.sessionId, controller: "ares", url: current.url });
+      } finally {
+        release?.();
+      }
+    }
+    note ??= current.takeNotice()?.note;
+    if (note) {
+      const text = `The owner took over and handed back. ${note}`;
+      if (!OBSERVE_ONLY_ACTIONS.has(i.action)) {
+        return {
+          output: { action: i.action, status: "owner_handed_back", ownerTookOver: true, note: `ACTION NOT PERFORMED — ${text}`, filmstripDir: "" },
+          display: "the owner took over and handed back — re-reading first",
+        };
+      }
+      callState.handbackNote = text;
+    }
+    if (!current.ended) callState.release = current.agentBegin();
+    return null;
+  };
+
+  /** A click that places an order needs an approved, unspent Checkout review whose total is still on the page. */
+  const checkoutGuard = async (br: BrowserConnector, i: z.infer<typeof browserInput>, ctx: RichToolContext): Promise<BrowserResult | null> => {
+    const targets =
+      i.action === "click" ? [i.name] :
+      i.action === "click_text" ? [i.query] :
+      i.action === "act" ? (i.steps ?? []).filter((s) => s.action === "click" || s.action === "click_text").map((s) => s.name ?? s.query) :
+      [];
+    const submitting = targets.find((t) => looksLikeOrderSubmission(t));
+    if (!submitting) return null;
+    const refuse = (status: string, note: string): BrowserResult => ({
+      output: { action: i.action, status, note, filmstripDir: "" },
+      display: status === "checkout_review_required" ? "order not placed — needs a Checkout review first" : "order not placed — the total changed",
+    });
+    const approval = approvedCheckout(ctx.sessionId);
+    if (!approval) {
+      return refuse(
+        "checkout_review_required",
+        `ACTION NOT PERFORMED — "${submitting}" would place an order. First call Checkout {action:"review"} with the real cart and the exact total read from this page (merchant, items, fees, tax, tip, total, payment method). Once the owner approves, repeat this click.`,
+      );
+    }
+    if (approval.amount !== null && br.evaluate) {
+      const text = String(await br.evaluate("document.body ? document.body.innerText : ''").catch(() => ""));
+      if (text && !pageShowsAmount(text, approval.amount)) {
+        return refuse(
+          "checkout_total_mismatch",
+          `ACTION NOT PERFORMED — the owner approved ${approval.total} at ${approval.merchant}, but this page no longer shows that total. Read the cart again and call Checkout review with what the page shows now.`,
+        );
+      }
+    }
+    callState.orderSubmission = true;
+    return null;
+  };
+
+  const currentFillSite = async () => {
+    if (!browser) return fillSiteOf("");
+    const state = await browser.state().catch(() => ({ url: "" }));
+    return fillSiteOf(state.url);
+  };
+
+  /** login / fill_secret: fills a secret the model never sees, on the page the owner approved. */
+  const fillFromVault = async (br: BrowserConnector, i: z.infer<typeof browserInput>, ctx: RichToolContext): Promise<BrowserResult> => {
+    const approved = approvedFills.get(ctx.toolUseId ?? "");
+    approvedFills.delete(ctx.toolUseId ?? "");
+    const site = fillSiteOf((await br.state()).url);
+    if ("error" in site) throw new Error(site.error);
+    // The approval named an exact origin. A redirect or a click since then
+    // means the owner approved a different page: fail closed.
+    if (!approved || approved.origin !== site.origin) {
+      throw new Error(`not filled — the page is now ${site.origin}, not the ${approved?.origin ?? "(unapproved)"} the owner approved. Call ${i.action} again on the right page.`);
+    }
+    if (i.action === "login") {
+      const domain = approved.domain ?? (await savedLoginDomain(site.host, { domain: i.domain, home: context.home }));
+      if (!domain) throw new Error(`no saved login for ${site.host} — call Connect with service "login:${handleSite(site.host)}"`);
+      const outcome = await performLogin(br, {
+        domain,
+        home: context.home,
+        ...(i.username_selector ? { usernameSelector: i.username_selector } : {}),
+        ...(i.password_selector ? { passwordSelector: i.password_selector } : {}),
+        submit: i.submit === true,
+        prints,
+      });
+      auditFill({ home: context.home, sessionId: ctx.sessionId, action: "browser.login", target: site.origin, params: { domain, fields: outcome.filled, submit: i.submit === true }, result: `filled ${outcome.filled.join(" + ")}${outcome.submitted ? ", submitted" : ""}` });
+      const state = await br.state().catch(() => ({ url: site.origin }));
+      return {
+        output: { action: i.action, status: "filled", result: { domain, filled: outcome.filled, submitted: outcome.submitted, state }, filmstripDir: "" },
+        display: `filled the saved ${domain} ${outcome.filled.join(" and ")}${outcome.submitted ? " and signed in" : ""}`,
+      };
+    }
+    if (!i.handle) throw new Error("fill_secret needs handle (sec_…)");
+    const outcome = await performFillSecret(br, { handle: i.handle, host: site.host, selector: i.selector, label: i.label, submit: i.submit === true, prints });
+    auditFill({ home: context.home, sessionId: ctx.sessionId, action: "browser.fill_secret", target: site.origin, params: { site: outcome.site, purpose: outcome.purpose, field: i.selector ?? i.label }, result: outcome.submitted ? "filled, submitted" : "filled" });
+    const state = await br.state().catch(() => ({ url: site.origin }));
+    return {
+      output: { action: i.action, status: "filled", result: { site: outcome.site, purpose: outcome.purpose, submitted: outcome.submitted, state }, filmstripDir: "" },
+      display: `filled the ${outcome.purpose} for ${outcome.site}`,
+    };
+  };
 
   const ensureBrowser = async (headless?: boolean, attachOnly = false, cdpUrl?: string): Promise<BrowserConnector> => {
     if (browser?.strategy === "extension:native-messaging" && !extensionBridge?.connected()) {
@@ -234,7 +422,7 @@ export function makeBrowserTool(
     return filmstrip;
   };
 
-  return buildTool({
+  const def: ToolDef<typeof browserInput, BrowserToolOutput> = {
     name: "Browser",
     description:
       "Ares's DOM-first eyes and hands for the web — the ONLY tool for anything inside a web page. It drives CDP/Playwright input without touching the owner's OS mouse. Before opening a duplicate page it reuses a matching attached tab; use tabs/attach when the owner names an already-open tab. For multi-field or multi-click work use one act call with ordered steps, then inspect its final screenshot; do not spend one model call per click. Use APIs/MCP/CLI first when better. ComputerUse is forbidden for browser content. Run headless by default, visible only when the owner asks to watch or an authenticated Ares browser is needed. External websites may block the Forge iframe: the Forge then shows the Playwright screencast, while human sign-in happens in the real visible Ares browser (or an attached signed-in Chrome), never claim an iframe sign-in is available. For visual verification use real screenshots; accessibility text alone cannot verify canvas/WebGL. Self-contained HTML must inline JS/CSS because offline webviews block CDN scripts. NEVER verify time-dependent behaviour (timers, countdowns, intervals, animations, anything \"every N seconds/minutes\") by sleeping and re-checking — real-time waiting cannot prove a minute-scale rule and burns the turn. Instead drive the logic directly with eval: call the page's own update/tick/randomise function N times in a loop and collect the results, or stub the clock (override Date.now/performance.now, or call the interval callback yourself) and assert on the returned values. One eval that exercises 60 ticks proves more than ten screenshots taken a minute apart.",
@@ -242,6 +430,29 @@ export function makeBrowserTool(
     dynamicSafety: (i) => READ_ONLY_BROWSER_ACTIONS.has(i.action) ? "read-only" : "external-state",
     concurrency: "exclusive",
     inputZod: browserInput,
+    // login / fill_secret ask the owner afresh every time, naming the exact
+    // page — even in YOLO, and never answered by an "always" grant.
+    ownerDecisions: true,
+    async checkPermissions(i, ctx) {
+      if (i.action !== "login" && i.action !== "fill_secret") return { kind: "allow" };
+      const site = await currentFillSite();
+      if ("error" in site) return { kind: "deny", reason: site.error };
+      if (i.action === "login") {
+        const domain = await savedLoginDomain(site.host, { domain: i.domain, home: context.home });
+        if (!domain) {
+          const wanted = handleSite(i.domain ?? site.host);
+          return { kind: "deny", reason: `No saved login for ${wanted}. Call Connect {action:"connect", service:"login:${wanted}"} — the owner saves it in a secure form — then call Browser login again. Never ask for the password in chat.` };
+        }
+        approvedFills.set(ctx.toolUseId ?? "", { origin: site.origin, domain });
+        return { kind: "ask", ownerDecision: true, suggestion: "allow_once", prompt: `Fill your saved ${domain} username and password on ${site.where}${i.submit ? " and sign in" : ""}?` };
+      }
+      const info = describeHandleForApproval(i.handle ?? "");
+      if (!info) return { kind: "deny", reason: "That secret handle is unknown or expired — get a fresh one. Never ask for the value in chat." };
+      const bound = site.host === info.site || site.host.endsWith(`.${info.site}`);
+      if (!bound) return { kind: "deny", reason: `That ${info.purpose} is for ${info.site}; this page is ${site.host}. Refusing to fill it here.` };
+      approvedFills.set(ctx.toolUseId ?? "", { origin: site.origin });
+      return { kind: "ask", ownerDecision: true, suggestion: "allow_once", prompt: `Fill your ${info.site} ${info.purpose} on ${site.where}?` };
+    },
     activityDescription: (i) => {
       // Label honestly: opening a local file or driving the in-app page is NOT
       // "Browsing the web" — that wording made users think Ares went to the
@@ -275,6 +486,8 @@ export function makeBrowserTool(
       if (i.action === "eval") return "Testing in the page";
       if (i.action === "state") return "Checking the page state";
       if (i.action === "close") return "Closing the browser";
+      if (i.action === "login") return "Signing in with your saved login";
+      if (i.action === "fill_secret") return "Filling a secret field";
       return embedded ? "Using the in-app browser" : "Browsing the web";
     },
 
@@ -366,6 +579,7 @@ export function makeBrowserTool(
       }
 
       if (i.action === "close") {
+        endWatch();
         if (browser) await browser.close();
         browser = null;
         return {
@@ -381,6 +595,10 @@ export function makeBrowserTool(
       // the connector remains selected for subsequent act/click/fill calls.
       const extensionAttach = extensionBridge?.connected() && ["handshake", "tabs", "attach"].includes(i.action);
       const br = await ensureBrowser(i.action === "preview" ? false : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
+      announceWatch(br, i, ctx);
+      if (i.action === "login" || i.action === "fill_secret") return fillFromVault(br, i, ctx);
+      const orderRefusal = await checkoutGuard(br, i, ctx);
+      if (orderRefusal) return orderRefusal;
 
       if (i.action === "handshake") {
         if (!br.strategy?.startsWith("cdp:") && br.strategy !== "extension:native-messaging") {
@@ -697,8 +915,69 @@ export function makeBrowserTool(
         display: `click ${i.role}:${i.name}: ${result.status}`,
       };
     },
+  };
+
+  const act = def.call;
+  return buildTool({
+    ...def,
+    async call(i, ctx) {
+      callState = {};
+      // Everything page-derived is scanned for filled secrets before it leaves
+      // (frames are pixels of masked fields, and pass through untouched).
+      const redact = (text: string) => prints.redact(text);
+      progressSink = ctx.emitProgress
+        ? (data) => ctx.emitProgress?.(data.kind === "browser_frame" || !prints.size ? data : redactDeep(data, redact))
+        : null;
+      const redactedCtx: RichToolContext = { ...ctx, ...(progressSink ? { emitProgress: (data: unknown) => progressSink?.(data as Record<string, unknown>) } : {}) };
+      try {
+        if (i.engine !== "embedded" && i.action !== "filmstrip") {
+          const held = await holdForOwner(i, redactedCtx);
+          if (held) return prints.size ? redactDeep(held, redact) : held;
+        }
+        const result = await act(i, redactedCtx);
+        if (callState.orderSubmission && result.output.status === "committed") spendCheckoutApproval(ctx.sessionId);
+        if (callState.handbackNote) {
+          result.output = { ...result.output, ownerTookOver: true, note: [callState.handbackNote, result.output.note].filter(Boolean).join(" ") };
+        }
+        if (!prints.size) return result;
+        return { ...result, output: redactDeep(result.output, redact), ...(result.display ? { display: redact(result.display) } : {}) };
+      } catch (err) {
+        if (err instanceof Error && prints.size) err.message = redact(err.message);
+        throw err;
+      } finally {
+        callState.release?.();
+      }
+    },
   });
 }
+
+/** What the watch card calls this browser: the site it's on, else a plain name. */
+function watchLabel(url: string | undefined, page: unknown): string {
+  const hostOf = (value: string | undefined) => {
+    try {
+      const host = value ? new URL(value.includes("://") ? value : `https://${value}`).hostname : "";
+      return host.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  };
+  let current = "";
+  try {
+    current = String((page as { url?: () => string } | undefined)?.url?.() ?? "");
+  } catch {
+    current = "";
+  }
+  return hostOf(url) || (/^https?:/.test(current) ? hostOf(current) : "") || "Ares's browser";
+}
+
+/** How long a Browser action waits for the owner to hand back (ARES_BROWSER_TAKEOVER_WAIT_MS, default 10 min). */
+function takeoverWaitMs(): number {
+  const env = Number(process.env.ARES_BROWSER_TAKEOVER_WAIT_MS);
+  return Number.isFinite(env) && env > 0 ? env : 10 * 60_000;
+}
+
+/** Actions that only look (or, like close, act on no page content) — safe to run right after a handback, carrying the re-read notice. */
+const OBSERVE_ONLY_ACTIONS = new Set(["tabs", "tree", "screenshot", "console", "state", "filmstrip", "close"]);
 
 function isClosedBrowserError(error: unknown): boolean {
   return /target (?:page|context|browser) has been closed|browser has been closed|page has been closed/i.test(

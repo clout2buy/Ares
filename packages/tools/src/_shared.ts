@@ -332,6 +332,9 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
    *  defaults and conductor tool filtering remain conservative. */
   dynamicSafety?: (input: z.infer<I>) => SafetyClass;
   checkPermissions?: (input: z.infer<I>, ctx: RichToolContext) => Promise<PermissionDecision>;
+  /** This tool's checkPermissions can return an `ownerDecision` ask, which
+   *  must replace the generic mode prompt when the permission mode asks too. */
+  ownerDecisions?: boolean;
   call: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolResult<O>>;
   activityDescription: (input: z.infer<I>) => string;
   /** For command tools (Bash/PowerShell): the command string from the input, so
@@ -365,6 +368,13 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     ctx: RichToolContext,
   ): Promise<PermissionDecision> => {
     const base = defaultPermissionDecision(def, ctx, def.dynamicSafety?.(input));
+    if (base.kind === "ask" && def.ownerDecisions && def.checkPermissions) {
+      // The generic "wants to perform an external-state action" prompt must not
+      // stand in for a tool's own OWNER decision (the exact checkout total, the
+      // exact site a password is filled on) — the owner would approve blind.
+      const own = await def.checkPermissions(input, ctx);
+      return own.kind === "ask" && own.ownerDecision ? own : base;
+    }
     if (base.kind !== "allow") return base;
     return def.checkPermissions ? def.checkPermissions(input, ctx) : base;
   };
@@ -605,7 +615,10 @@ export function adaptToolForEngine(
       // very next action (mid-automation, moving their mouse to the dialog and
       // wrecking the run). The grant is honored from the persistent store first,
       // so it also survives a restart.
-      if (decision.kind === "ask" && tool.commandFor === undefined) {
+      // An owner decision is per call by definition: no stored or in-process
+      // "always" answers it (a past checkout approval is not this checkout's).
+      const ownerDecision = decision.kind === "ask" && decision.ownerDecision === true;
+      if (decision.kind === "ask" && tool.commandFor === undefined && !ownerDecision) {
         const stored = rich.commandPermissions?.decide(tool.schema.name, TOOL_WIDE_GRANT);
         if (stored?.kind === "allow" || toolAlwaysGrants.has(tool.schema.name)) {
           decision = { kind: "allow" };
@@ -628,7 +641,7 @@ export function adaptToolForEngine(
             input: parsed,
             reason: decision.prompt,
             suggestion: decision.suggestion,
-            ...(decision.ownerDecision ? { ownerDecision: true } : {}),
+            ...(ownerDecision ? { ownerDecision: true } : {}),
           });
         } catch (error) {
           throw markPreEffectError(error);
@@ -642,10 +655,7 @@ export function adaptToolForEngine(
         // doesn't re-ask. Path tools self-persist inside call() via
         // resolveWorkspacePath; command tools (Bash/PowerShell) route through
         // here. Non-command tools get a process-lifetime tool-name grant.
-        // An owner-only question (a vault read, a recurring schedule) is
-        // answered for THIS call only: "Always" must never become a stored
-        // grant that lets the next one through unasked.
-        if (answer === "allow_always" && !decision.ownerDecision) {
+        if (answer === "allow_always" && !ownerDecision) {
           const command = tool.commandFor?.(parsed);
           // A destructive tool's "always" never outlives the process: the owner
           // approved an irreversible action, not a standing licence for one.

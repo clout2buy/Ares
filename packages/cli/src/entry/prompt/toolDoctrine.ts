@@ -50,6 +50,24 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Missing account → Connect, immediately.** When a request needs a service you can't reach yet — email/Gmail, calendar, Stripe, Supabase, Vercel, GitHub, Notion, a phone number (Twilio), DoorDash/Uber Eats/Instacart/Amazon, or any site behind a login — call **Connect {action:\"connect\", service, reason}** as your FIRST move, before explaining anything. The owner gets a one-tap card on their phone (OAuth sign-in, a secure key form, or a live browser to sign in on); the call waits until they finish and tells you how to use the connection — then finish the original request in the same turn. Never ask for passwords, API keys or codes in chat, never tell the owner to go register an app themselves (the card walks them through it), and never improvise around a missing connection with Bash or scraping. Buying things (a phone number, an order, a checkout) always goes through the owner's approval — show what it costs.",
   },
   {
+    // Keyed on ToolSearch: Track/Places/Imagine are deferred, so the prompt
+    // has to be what makes the model load them at the right moment.
+    tools: ["ToolSearch"],
+    text: "**Commitments → Track.** Whenever you book, reserve, order or promise something for the owner (a table, a delivery, \"I'll check back Monday\"), load and call **Track add** in the same turn with a dueAt — it goes on the owner's Today tab — and **Track close** it once resolved. **Places** finds real places (hours, phone, maps link) before you recommend one; **Imagine** makes images, voice clips and podcasts (video asks first — it costs money) and returns a file path to show.",
+  },
+  {
+    tools: ["Connect", "Hue", "Tesla", "Tickets", "FlightStatus", "FlightBooking", "Withings", "Tailscale", "Bank"],
+    text: "**Home, car, travel, health, money** have native tools (ToolSearch to load): **Hue** lights, **Tesla** (via Tessie), **Tickets** (Ticketmaster; can't buy — Browser for checkout), **FlightStatus** (AeroAPI, billed per call), **FlightBooking** (Duffel; book asks with the price), **Withings**, **Tailscale**, **Bank** (SimpleFIN, read-only). Not connected → Connect service hue/tessie/ticketmaster/flightaware/duffel/withings/tailscale/simplefin.",
+  },
+  {
+    tools: ["Checkout"],
+    text: "**Before placing any order, booking or purchase, call Checkout {action:\"review\"}** with the real cart and the exact total read from the page (merchant, every item, fees, tax, tip, total, payment method as shown, delivery address). The owner approves that receipt; then submit exactly that order, once. Declined → stop. The total changed → review again. The Browser refuses a Place order / Pay click without an approved review.",
+  },
+  {
+    tools: ["Browser"],
+    text: "**Saved logins and secrets are fills, not text.** On a sign-in page call Browser {action:\"login\"} — it fills the owner's saved username and password after they approve; you never see them. Nothing saved → Connect service \"login:<domain>\". A secret handle (sec_…) goes in with Browser fill_secret. Never ask for, type or repeat a password or code. If a Browser result says the owner took over and handed back, re-read the page before doing anything else.",
+  },
+  {
     tools: ["RequestUserAction"],
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },

@@ -377,8 +377,10 @@ export type PermissionDecision =
       kind: "ask";
       prompt: string;
       suggestion?: PermissionPromptSuggestion;
-      /** Only the owner may answer (see ToolPermissionRequest.ownerDecision):
-       *  never auto-approved by bypass/remote-autonomy postures. */
+      /** A fresh, per-call owner decision (a checkout total, a vault fill on a
+       *  named site): it reaches a human even in YOLO/auto modes, a tool-wide
+       *  "always" grant never answers it, and an "always" answer is honoured
+       *  only as "once". See ToolPermissionRequest.ownerDecision. */
       ownerDecision?: boolean;
     }
   | { kind: "deny"; reason: string };

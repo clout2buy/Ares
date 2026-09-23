@@ -653,6 +653,35 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     async state() {
       return { url: page.url(), title: await page.title() };
     },
+    livePage() {
+      return page;
+    },
+    async fillSecret(target, value) {
+      // locator.fill, not typeHuman: one step, no per-character frames of a
+      // secret streamed anywhere, and nothing echoed back.
+      const locator = target.selector ? page.locator(target.selector).first() : page.getByLabel(target.label ?? "").first();
+      if (!(await locator.count().catch(() => 0))) throw new Error(`no field matches ${target.selector ?? `label "${target.label ?? ""}"`}`);
+      await locator.fill(value, { timeout: 8_000 });
+    },
+    async submitForm(selector) {
+      const how = await page
+        .evaluate((sel: string) => {
+          const field = document.querySelector(sel) as HTMLInputElement | null;
+          const form = field?.form;
+          if (form) {
+            if (typeof form.requestSubmit === "function") form.requestSubmit();
+            else form.submit();
+            return true;
+          }
+          const button = document.querySelector('button[type="submit"], input[type="submit"]') as HTMLElement | null;
+          if (!button) return false;
+          button.click();
+          return true;
+        }, selector)
+        .catch(() => false);
+      await page.waitForLoadState?.("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
+      return Boolean(how);
+    },
     async close() {
       if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }
       await acquired.close();

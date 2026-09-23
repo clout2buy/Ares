@@ -25,6 +25,8 @@ import { OAUTH_PROVIDERS } from "./oauthProviders.js";
 import { loadTokens } from "./oauth.js";
 import { getCredential } from "./credentials.js";
 import { loadRemoteMcpServers } from "./mcpConnect.js";
+import { LIFE_SERVICES } from "./lifeServices.js";
+import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
 
 export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
 
@@ -54,6 +56,13 @@ export interface ConnectService {
   appSetup?: { consoleUrl: string; steps: string[] };
   /** api-key: the fields the secure form asks for. */
   fields?: ConnectField[];
+  /** api-key: credentials the hub's verifier stores INSTEAD of the typed
+   *  fields (Hue pairs with zero fields; SimpleFIN trades a one-time token for
+   *  an access URL). What "connected" is checked against. */
+  stores?: string[];
+  /** api-key: what the form tells the owner to do when it isn't just typing a
+   *  key ("Press the button on your Hue bridge, then tap Connect"). */
+  formHint?: string;
   /** browser: where sign-in starts, and the site's registrable domain. */
   loginUrl?: string;
   domain?: string;
@@ -66,10 +75,23 @@ const GOOGLE_SETUP = {
   consoleUrl: "https://console.cloud.google.com/apis/credentials",
   steps: [
     "Open console.cloud.google.com and create (or pick) a project.",
-    "APIs & Services → Library: enable the Gmail API, Google Calendar API and People API.",
+    "APIs & Services → Library: enable each of these APIs — Gmail API, Google Calendar API, Google Drive API, Google Docs API, Google Sheets API, Google Slides API, Google Forms API, Google Tasks API and People API (Contacts).",
     "OAuth consent screen: choose External, fill in the app name and your email, add yourself under Test users, then press Publish app (an app left in Testing mode loses access every 7 days).",
     "Credentials → Create credentials → OAuth client ID → Web application. Under Authorized redirect URIs add the redirect URI shown below.",
     "Copy the Client ID and Client secret into the form below.",
+  ],
+};
+
+/** Microsoft identity platform: one Azure app for Outlook.com and work accounts. */
+const MICROSOFT_SETUP = {
+  consoleUrl: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+  steps: [
+    "Open portal.azure.com (sign in with any Microsoft account) → Microsoft Entra ID → App registrations → New registration.",
+    "Name it (e.g. Ares). Supported account types: \"Accounts in any organizational directory and personal Microsoft accounts\".",
+    "Redirect URI: platform \"Web\", and paste the redirect URI shown below. Press Register.",
+    "Copy the Application (client) ID from the Overview page into the form below.",
+    "Certificates & secrets → Client secrets → New client secret. Copy the secret's Value (not its ID) into the form below — it is shown only once.",
+    "API permissions (optional — you'll be asked to consent anyway): Microsoft Graph → Delegated → offline_access, User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Contacts.ReadWrite.",
   ],
 };
 
@@ -92,17 +114,44 @@ const BROWSER_SITES: Array<Omit<ConnectService, "kind" | "howToUse"> & { howToUs
   { id: "instacart", label: "Instacart", blurb: "Grocery delivery.", keywords: ["instacart", "groceries", "grocery delivery"], loginUrl: "https://www.instacart.com/login", domain: "instacart.com" },
   { id: "amazon", label: "Amazon", blurb: "Shopping and orders.", keywords: ["amazon", "amazon order"], loginUrl: "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0", domain: "amazon.com" },
   { id: "opentable", label: "OpenTable", blurb: "Restaurant reservations.", keywords: ["opentable", "reservation", "book a table"], loginUrl: "https://www.opentable.com/", domain: "opentable.com" },
+  // Meta's APIs won't let a personal agent read DMs or a personal profile
+  // (app review), so these are sign-in-on-the-live-browser services — the
+  // same thing Muse does, minus Meta owning both ends. Sending as the owner
+  // still crosses the browser_submit gate.
+  { id: "instagram", label: "Instagram", blurb: "Your feed, posts, comments and DMs.", keywords: ["instagram", "insta", "ig", "instagram dms", "instagram messages"], loginUrl: "https://www.instagram.com/accounts/login/", domain: "instagram.com" },
+  { id: "facebook", label: "Facebook", blurb: "Your feed, groups, pages and Marketplace.", keywords: ["facebook", "fb", "facebook marketplace", "marketplace"], loginUrl: "https://www.facebook.com/login/", domain: "facebook.com" },
+  { id: "messenger", label: "Messenger", blurb: "Your Messenger conversations.", keywords: ["messenger", "facebook messenger", "fb messages"], loginUrl: "https://www.messenger.com/login/", domain: "messenger.com" },
+  { id: "threads", label: "Threads", blurb: "Your Threads feed, posts and replies.", keywords: ["threads", "threads app"], loginUrl: "https://www.threads.com/login", domain: "threads.com" },
 ];
 
 const HANDWRITTEN: ConnectService[] = [
+  // Outlook BEFORE google: resolveConnectService's substring pass takes the
+  // first hit, and google's "email"/"mail" would swallow "my outlook email".
+  {
+    id: "outlook",
+    label: "Outlook",
+    kind: "oauth-app",
+    oauthProvider: "microsoft",
+    blurb: "Outlook, Hotmail and Microsoft 365: mail, calendar and contacts.",
+    keywords: ["outlook", "hotmail", "outlook.com", "hotmail.com", "live.com", "msn.com", "microsoft", "microsoft mail", "microsoft email", "office 365", "microsoft 365", "o365", "outlook calendar", "outlook email"],
+    howToUse: "Use the Outlook tool: list_messages / search / read_message / send / draft / reply / forward, list_events / create_event, search_contacts.",
+    appSetup: MICROSOFT_SETUP,
+  },
   {
     id: "google",
-    label: "Google (Gmail & Calendar)",
+    label: "Google",
     kind: "oauth-app",
     oauthProvider: "google",
-    blurb: "Read, search and send Gmail; read and edit Google Calendar.",
-    keywords: ["google", "gmail", "email", "e-mail", "inbox", "mail", "calendar", "google calendar", "contacts"],
-    howToUse: "Use the Gmail tool (search / list_messages / read_message / send) and the GoogleCalendar tool.",
+    blurb: "Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks and Contacts.",
+    keywords: [
+      "google", "gmail", "email", "e-mail", "inbox", "mail", "calendar", "google calendar", "contacts", "google contacts",
+      "google drive", "gdrive", "google docs", "google doc", "google sheets", "google sheet", "spreadsheet", "google slides",
+      "slides", "google forms", "google form", "google tasks", "google workspace", "g suite",
+    ],
+    howToUse:
+      "One Google connection covers: Gmail (search / read / send / draft / reply / forward / labels / archive / trash / unsubscribe / find_code), " +
+      "GoogleCalendar, GoogleDrive, GoogleDocs, GoogleSheets, GoogleSlides, GoogleForms, GoogleTasks and GoogleContacts — load them with ToolSearch. " +
+      "If a call fails with a 403 about a disabled API or missing scope, the owner enabled the app before that API was added: connect \"google\" again.",
     appSetup: GOOGLE_SETUP,
   },
   {
@@ -151,6 +200,37 @@ const HANDWRITTEN: ConnectService[] = [
       { credential: "ARES_EMAIL_FROM", label: "From address", placeholder: "Ares <ares@yourdomain.com>", help: "Must be on a domain verified in Resend." },
     ],
   },
+  // Life surfaces: media generation (Imagine) and richer place search (Places).
+  {
+    id: "openai",
+    label: "OpenAI (image generation)",
+    kind: "api-key",
+    blurb: "Generate and edit images with GPT Image.",
+    keywords: ["openai", "openai api key", "gpt image", "gpt-image", "dall-e", "dalle"],
+    keyUrl: "https://platform.openai.com/api-keys",
+    howToUse: "Use the Imagine tool (action image). It saves the picture and returns its path — put the path in your reply.",
+    fields: [{ credential: "OPENAI_API_KEY", label: "API key", placeholder: "sk-…", secret: true, help: "platform.openai.com → API keys. Image generation is billed per image." }],
+  },
+  {
+    id: "gemini",
+    label: "Google Gemini (images & Veo video)",
+    kind: "api-key",
+    blurb: "Generate images and short videos with Gemini and Veo.",
+    keywords: ["gemini", "gemini api key", "google ai studio", "veo", "nano banana", "video generation", "make a video"],
+    keyUrl: "https://aistudio.google.com/apikey",
+    howToUse: "Use the Imagine tool: action image for pictures, action video for Veo clips (the owner approves each video's cost).",
+    fields: [{ credential: "GEMINI_API_KEY", label: "API key", placeholder: "AIza…", secret: true, help: "aistudio.google.com → Get API key. Video (Veo) needs billing enabled on the project." }],
+  },
+  {
+    id: "google-places",
+    label: "Google Places",
+    kind: "api-key",
+    blurb: "Better place search: ratings, hours, phone numbers.",
+    keywords: ["google places", "places api", "google maps api", "google maps key"],
+    keyUrl: "https://console.cloud.google.com/apis/library/places.googleapis.com",
+    howToUse: "The Places tool now searches with Google Places automatically.",
+    fields: [{ credential: "GOOGLE_PLACES_API_KEY", label: "API key", placeholder: "AIza…", secret: true, help: "Google Cloud console: enable \"Places API (New)\", then Credentials → Create credentials → API key." }],
+  },
 ];
 
 function fromCatalog(entry: McpCatalogEntry): ConnectService | null {
@@ -184,6 +264,7 @@ function browserService(site: (typeof BROWSER_SITES)[number]): ConnectService {
 export const CONNECT_SERVICES: ConnectService[] = [
   ...HANDWRITTEN,
   ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
+  ...LIFE_SERVICES,
   ...BROWSER_SITES.map(browserService),
 ];
 
@@ -192,11 +273,15 @@ function normalize(text: string): string {
 }
 
 const DOMAIN_OVERRIDES: Record<string, string> = {
-  google: "mail.google.com",
+  google: "google.com",
+  outlook: "outlook.live.com",
   spotify: "spotify.com",
   twilio: "twilio.com",
   "stripe-key": "stripe.com",
   resend: "resend.com",
+  openai: "openai.com",
+  gemini: "gemini.google.com",
+  "google-places": "maps.google.com",
   github: "github.com",
   "cloudflare-bindings": "cloudflare.com",
   "cloudflare-observability": "cloudflare.com",
@@ -247,6 +332,10 @@ function adHocBrowserService(query: string): ConnectService | null {
  * domain nobody registered becomes a browser sign-in for that site.
  */
 export function resolveConnectService(query: string): ConnectService | null {
+  // "login:<domain>" first: its domain would otherwise keyword-match a
+  // registered browser site ("login:amazon.com" → the Amazon session flow).
+  const loginDomain = siteLoginDomain(query);
+  if (loginDomain) return siteLoginService(loginDomain);
   const q = normalize(query);
   if (!q) return null;
   const byId = CONNECT_SERVICES.find((s) => s.id === q || s.id === q.replace(/ /g, "-"));
@@ -294,10 +383,11 @@ export async function isServiceConnected(service: ConnectService, home?: string)
       return Boolean(tokens?.accessToken);
     }
     case "api-key": {
-      for (const field of service.fields ?? []) {
-        if (!(await getCredential(field.credential, { home }))) return false;
+      const names = service.stores ?? (service.fields ?? []).map((field) => field.credential);
+      for (const name of names) {
+        if (!(await getCredential(name, { home }))) return false;
       }
-      return true;
+      return names.length > 0;
     }
     case "browser": {
       try {

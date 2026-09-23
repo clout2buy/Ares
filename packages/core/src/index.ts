@@ -490,6 +490,8 @@ export {
   getProviderConfig,
   listProviders,
 } from "./oauthProviders.js";
+export { WITHINGS_OAUTH, unwrapWithingsToken } from "./withingsOAuth.js";
+export { LIFE_SERVICES } from "./lifeServices.js";
 
 export {
   startOAuthFlow,
@@ -683,3 +685,4 @@ export { appendAudit, readAudit, redactForAudit, auditDir, type AuditEntry } fro
 export { setAuditSink, recordAudit, auditTargetOf, auditActionOf, ToolAuditTracker, type AuditDraft } from "./auditEvents.js";
 export { ownerPause, registerStoppable, listStoppables, stopAllStoppables, type OwnerPauseWait, type StoppableKind, type StoppableEntry } from "./ownerControl.js";
 export { vaultAccessReason, vaultAccessPrompt } from "./vaultGuard.js";
+export { siteLoginDomain, normalizeLoginDomain, loginCredentialNames, loginDomainCandidates, siteLoginService } from "./siteLogins.js";

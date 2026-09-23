@@ -70,7 +70,8 @@ test("every service carries what its connect kind needs", () => {
     ids.add(s.id);
     assert.ok(s.howToUse, `${s.id} tells the agent nothing after connecting`);
     if (s.kind === "mcp-oauth" || s.kind === "mcp-key") assert.match(s.mcpUrl, /^https:\/\//, s.id);
-    if (s.kind === "mcp-key" || s.kind === "api-key") assert.ok(s.fields?.length, `${s.id} has no form fields`);
+    // A zero-field form is only honest when a verifier makes what gets stored (Hue pairing).
+    if (s.kind === "mcp-key" || s.kind === "api-key") assert.ok(s.fields?.length || (s.stores?.length && s.formHint), `${s.id} has no form fields`);
     if (s.kind === "oauth-app") assert.ok(s.oauthProvider && s.appSetup, s.id);
     if (s.kind === "browser") assert.match(s.loginUrl, /^https:\/\//, s.id);
   }

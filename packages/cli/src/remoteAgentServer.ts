@@ -41,6 +41,8 @@ import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
 import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
 import { handleOwnerControlRoute, type OwnerControlHooks } from "./phoneOwnerControl.js";
+import { handleConnectionsApi } from "./phoneConnections.js";
+import { handleDeviceApi } from "./deviceSync.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -216,6 +218,12 @@ export interface PhoneApiHooks {
    *  forms, and the live sign-in browser. Unauthenticated — the flow id is
    *  the capability. Returns false for a path it doesn't own. */
   connect?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The Today tab's routes (tracking, feed, ideas — see lifeApi.ts). Asked
+   *  after the built-in routes, already authenticated; false = not mine. */
+  life?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
+   *  like /connect/ — the token is the capability for one page. */
+  watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
   unregisterPush?: (token: string) => Promise<void>;
   pushConfigured?: () => boolean;
@@ -280,6 +288,9 @@ const ARTIFACT_TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
+  // What Imagine makes (media/<date>/…): speech, podcasts, video clips.
+  ".mp3": "audio/mpeg",
+  ".mp4": "video/mp4",
 };
 
 /** Places under an artifact root that hold secrets or machinery, never
@@ -1360,6 +1371,12 @@ export class RemoteAgentServer {
       }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
       return;
     }
+    if (url.pathname.startsWith("/watch/") && this.opts.phoneApi?.watch) {
+      void this.opts.phoneApi.watch(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
     if (url.pathname === "/oauth/callback" && this.opts.phoneApi?.oauth) {
       void this.opts.phoneApi.oauth.handleCallback(req, res, url).then((handled) => {
         if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
@@ -1461,6 +1478,10 @@ export class RemoteAgentServer {
     const expected = this.opts.controlToken;
     const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
+    // The Connections screen (list / start / disconnect) — phoneConnections.ts.
+    if (await handleConnectionsApi(req, res, url, { log: (line) => this.log(line) })) return;
+    // What the iPhone shares (Health, Contacts, Calendar) — deviceSync.ts.
+    if (await handleDeviceApi(req, res, url, { home: this.home })) return;
     const api = this.opts.phoneApi ?? {};
 
     try {
@@ -1589,6 +1610,7 @@ export class RemoteAgentServer {
           return json(200, { audio: mp3.toString("base64"), contentType: "audio/mpeg" });
         }
         default:
+          if (api.life && (await api.life(req, res, url))) return;
           return json(404, { error: "not found" });
       }
     } catch (err) {

@@ -2,7 +2,7 @@
 
 import { installGlobalCrashHandlers } from "@ares/core";
 import { readFile } from "node:fs/promises";
-import { getWeatherText, setRemindScheduler, setTelegramChannel } from "@ares/tools";
+import { getWeatherText, setRemindScheduler, setTelegramChannel, TrackingStore } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig, adoptLegacyTelegramConfig } from "../telegramConfig.js";
 import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
@@ -228,6 +228,12 @@ export async function startTelegramCheckins(context: CliRuntimeContext): Promise
       if (ownerLocation) {
         const weather = await getWeatherText(ownerLocation).catch(() => "");
         if (weather) lines.push("", weather);
+      }
+      // Commitments past their due time (Track) ride the check-in so a
+      // promised follow-up reaches the owner even if no turn picked it up.
+      const overdue = await new TrackingStore(context.home).overdue(ctx.now).catch(() => []);
+      if (overdue.length > 0) {
+        lines.push("", "Still open past due:", ...overdue.slice(0, 5).map((i) => `• ${i.title}`));
       }
       lines.push("", "Anything you need? I'm here.");
       return lines.join("\n");

@@ -43,6 +43,7 @@ import {
   type ConnectService,
 } from "@ares/core";
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
+import { LIFE_VERIFIERS } from "./lifeVerifiers.js";
 
 const FLOW_TTL_MS = 15 * 60_000;
 const BROWSER_IDLE_MS = 10 * 60_000;
@@ -609,6 +610,7 @@ function clamp01(value: unknown): number {
 // ─── Key verification ────────────────────────────────────────────────────────
 
 const DEFAULT_VERIFIERS: Record<string, Verify> = {
+  ...LIFE_VERIFIERS,
   async twilio(values, signal) {
     const sid = values.TWILIO_ACCOUNT_SID!;
     const token = values.TWILIO_AUTH_TOKEN!;

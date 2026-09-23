@@ -29,6 +29,10 @@ export interface SchedulerHooks {
   dream?: () => Promise<unknown> | unknown;
   /** Host-injected gauntlet runner (the CLI's runScheduledGauntlet). */
   gauntlet?: () => Promise<GauntletRunSummary> | GauntletRunSummary;
+  /** Daily-job check (the Today feed). Runs every feedCheckEveryMs; the hook
+   *  itself decides whether today's run is due, so a garrison that was down
+   *  at the scheduled hour still delivers when it comes back. */
+  feed?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -71,6 +75,8 @@ export interface SchedulerOptions {
   gauntletCheckEveryMs?: number;
   /** Master switch; default true unless ARES_GAUNTLET_SCHEDULE=0. */
   gauntletEnabled?: boolean;
+  /** How often the feed hook is asked whether it is due; default 5 minutes. */
+  feedCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
@@ -83,6 +89,7 @@ const DEFAULT_HEARTBEAT_MS = 30 * 60_000;
 const DEFAULT_IDLE_MS = 2 * 60 * 60_000;
 const DEFAULT_DREAM_CHECK_MS = 10 * 60_000;
 const DEFAULT_GAUNTLET_CHECK_MS = 10 * 60_000;
+const DEFAULT_FEED_CHECK_MS = 5 * 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -135,7 +142,7 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
 
   constructor(opts: SchedulerOptions) {
@@ -164,6 +171,9 @@ export class Scheduler {
     }
     if (this.opts.hooks.gauntlet && this.gauntletEnabled) {
       this.handles.push(this.setIntervalFn(() => this.gauntletCheck(), this.gauntletCheckEveryMs));
+    }
+    if (this.opts.hooks.feed) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("feed"), this.opts.feedCheckEveryMs ?? DEFAULT_FEED_CHECK_MS));
     }
   }
 
@@ -272,7 +282,7 @@ export class Scheduler {
     }
   }
 
-  private async runHook(name: "heartbeat" | "dream"): Promise<void> {
+  private async runHook(name: "heartbeat" | "dream" | "feed"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
     this.running[name] = true;
     try {

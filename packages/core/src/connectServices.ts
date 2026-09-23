@@ -183,6 +183,37 @@ const HANDWRITTEN: ConnectService[] = [
       { credential: "ARES_EMAIL_FROM", label: "From address", placeholder: "Ares <ares@yourdomain.com>", help: "Must be on a domain verified in Resend." },
     ],
   },
+  // Life surfaces: media generation (Imagine) and richer place search (Places).
+  {
+    id: "openai",
+    label: "OpenAI (image generation)",
+    kind: "api-key",
+    blurb: "Generate and edit images with GPT Image.",
+    keywords: ["openai", "openai api key", "gpt image", "gpt-image", "dall-e", "dalle"],
+    keyUrl: "https://platform.openai.com/api-keys",
+    howToUse: "Use the Imagine tool (action image). It saves the picture and returns its path — put the path in your reply.",
+    fields: [{ credential: "OPENAI_API_KEY", label: "API key", placeholder: "sk-…", secret: true, help: "platform.openai.com → API keys. Image generation is billed per image." }],
+  },
+  {
+    id: "gemini",
+    label: "Google Gemini (images & Veo video)",
+    kind: "api-key",
+    blurb: "Generate images and short videos with Gemini and Veo.",
+    keywords: ["gemini", "gemini api key", "google ai studio", "veo", "nano banana", "video generation", "make a video"],
+    keyUrl: "https://aistudio.google.com/apikey",
+    howToUse: "Use the Imagine tool: action image for pictures, action video for Veo clips (the owner approves each video's cost).",
+    fields: [{ credential: "GEMINI_API_KEY", label: "API key", placeholder: "AIza…", secret: true, help: "aistudio.google.com → Get API key. Video (Veo) needs billing enabled on the project." }],
+  },
+  {
+    id: "google-places",
+    label: "Google Places",
+    kind: "api-key",
+    blurb: "Better place search: ratings, hours, phone numbers.",
+    keywords: ["google places", "places api", "google maps api", "google maps key"],
+    keyUrl: "https://console.cloud.google.com/apis/library/places.googleapis.com",
+    howToUse: "The Places tool now searches with Google Places automatically.",
+    fields: [{ credential: "GOOGLE_PLACES_API_KEY", label: "API key", placeholder: "AIza…", secret: true, help: "Google Cloud console: enable \"Places API (New)\", then Credentials → Create credentials → API key." }],
+  },
 ];
 
 function fromCatalog(entry: McpCatalogEntry): ConnectService | null {
@@ -230,6 +261,9 @@ const DOMAIN_OVERRIDES: Record<string, string> = {
   twilio: "twilio.com",
   "stripe-key": "stripe.com",
   resend: "resend.com",
+  openai: "openai.com",
+  gemini: "gemini.google.com",
+  "google-places": "maps.google.com",
   github: "github.com",
   "cloudflare-bindings": "cloudflare.com",
   "cloudflare-observability": "cloudflare.com",

@@ -183,6 +183,11 @@ export { GoogleContactsTool, type GoogleContactsOutput } from "./GoogleContacts.
 export { OutlookTool, odata, graphTime, eventBody as outlookEventBody, recipients as outlookRecipients, type OutlookOutput } from "./Outlook.js";
 export { CONNECTOR_TOOLS } from "./connectorTools.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
+// Life surfaces (the phone's Today tab): commitments, places, media.
+export { TrackTool, type TrackOutput } from "./Track.js";
+export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
+export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
+export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,
@@ -221,6 +226,9 @@ import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
 import { CONNECTOR_TOOLS } from "./connectorTools.js";
+import { TrackTool } from "./Track.js";
+import { PlacesTool } from "./Places.js";
+import { ImagineTool } from "./Imagine.js";
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -256,6 +264,9 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GmailTool,
       SpotifyTool,
       ...CONNECTOR_TOOLS,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
     ] as const
   : [
       ReadTool,
@@ -288,4 +299,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GmailTool,
       SpotifyTool,
       ...CONNECTOR_TOOLS,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
     ] as const;

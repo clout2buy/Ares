@@ -182,6 +182,11 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       if (action === "buy_number" || action === "release_number") return "payment_or_purchase";
       return action === "send_sms" ? "email_send" : null;
     }
+    // A generated video costs dollars on the owner's Gemini bill; images are
+    // cents and run freely. Without this the tool's own "ask" was auto-allowed
+    // on the phone like any unclassified tool.
+    case "Imagine":
+      return actionOf(request) === "video" ? "payment_or_purchase" : null;
     case "McpCallTool":
       return mcpMoneyCategory(mcpToolOf(request));
     default:

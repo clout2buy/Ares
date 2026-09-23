@@ -48,6 +48,7 @@ import { aresNetworkHostDoor, aresNetworkHostPublicUrl, aresNetworkHostStop, ori
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
+import { startLifeSurfaces } from "./lifeWiring.js";
 
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
@@ -337,6 +338,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   const restored = await sessions.rehydrate();
 
+  // The phone's Today tab: the morning feed (a real turn on its own session),
+  // idea cards (the summarize slot), tracked commitments; plus Imagine's voice.
+  const life = startLifeSurfaces({
+    home: context.home,
+    sessions,
+    selection: () => selection,
+    speech: (text, voice) => synthesize({ text, ...(voice ? { voice } : {}) }),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "life", line } }) + "\n"),
+  });
+
   const scheduler = new Scheduler({
     hooks: {
       heartbeat: async () => {
@@ -375,6 +386,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       // hook existed the gauntlet only ran when someone remembered to.
       gauntlet: async () =>
         (await runScheduledGauntlet({ suite: process.env.ARES_GAUNTLET_SUITE ?? "coding-v3", gate: true, trigger: "garrison", home: context.home })).nightly,
+      // The morning paper: due once a day from ARES_FEED_HOUR (07:00 local).
+      feed: () => life.feed.maybeRunDaily(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
@@ -601,6 +614,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             callbackUrlForSetup: () => tunnelOAuth.callbackUrlForSetup(),
           },
           connect: (req, res, url) => connectHub.handle(req, res, url),
+          life: life.handler,
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,

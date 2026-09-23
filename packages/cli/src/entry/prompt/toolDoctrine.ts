@@ -50,6 +50,12 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Missing account → Connect, immediately.** When a request needs a service you can't reach yet — email/Gmail, calendar, Stripe, Supabase, Vercel, GitHub, Notion, a phone number (Twilio), DoorDash/Uber Eats/Instacart/Amazon, or any site behind a login — call **Connect {action:\"connect\", service, reason}** as your FIRST move, before explaining anything. The owner gets a one-tap card on their phone (OAuth sign-in, a secure key form, or a live browser to sign in on); the call waits until they finish and tells you how to use the connection — then finish the original request in the same turn. Never ask for passwords, API keys or codes in chat, never tell the owner to go register an app themselves (the card walks them through it), and never improvise around a missing connection with Bash or scraping. Buying things (a phone number, an order, a checkout) always goes through the owner's approval — show what it costs.",
   },
   {
+    // Keyed on ToolSearch: Track/Places/Imagine are deferred, so the prompt
+    // has to be what makes the model load them at the right moment.
+    tools: ["ToolSearch"],
+    text: "**Commitments → Track.** Whenever you book, reserve, order or promise something for the owner (a table, a delivery, \"I'll check back Monday\"), load and call **Track add** in the same turn with a dueAt — it goes on the owner's Today tab — and **Track close** it once resolved. **Places** finds real places (hours, phone, maps link) before you recommend one; **Imagine** makes images, voice clips and podcasts (video asks first — it costs money) and returns a file path to show.",
+  },
+  {
     tools: ["RequestUserAction"],
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },

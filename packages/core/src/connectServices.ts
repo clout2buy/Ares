@@ -105,6 +105,14 @@ const BROWSER_SITES: Array<Omit<ConnectService, "kind" | "howToUse"> & { howToUs
   { id: "instacart", label: "Instacart", blurb: "Grocery delivery.", keywords: ["instacart", "groceries", "grocery delivery"], loginUrl: "https://www.instacart.com/login", domain: "instacart.com" },
   { id: "amazon", label: "Amazon", blurb: "Shopping and orders.", keywords: ["amazon", "amazon order"], loginUrl: "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0", domain: "amazon.com" },
   { id: "opentable", label: "OpenTable", blurb: "Restaurant reservations.", keywords: ["opentable", "reservation", "book a table"], loginUrl: "https://www.opentable.com/", domain: "opentable.com" },
+  // Meta's APIs won't let a personal agent read DMs or a personal profile
+  // (app review), so these are sign-in-on-the-live-browser services — the
+  // same thing Muse does, minus Meta owning both ends. Sending as the owner
+  // still crosses the browser_submit gate.
+  { id: "instagram", label: "Instagram", blurb: "Your feed, posts, comments and DMs.", keywords: ["instagram", "insta", "ig", "instagram dms", "instagram messages"], loginUrl: "https://www.instagram.com/accounts/login/", domain: "instagram.com" },
+  { id: "facebook", label: "Facebook", blurb: "Your feed, groups, pages and Marketplace.", keywords: ["facebook", "fb", "facebook marketplace", "marketplace"], loginUrl: "https://www.facebook.com/login/", domain: "facebook.com" },
+  { id: "messenger", label: "Messenger", blurb: "Your Messenger conversations.", keywords: ["messenger", "facebook messenger", "fb messages"], loginUrl: "https://www.messenger.com/login/", domain: "messenger.com" },
+  { id: "threads", label: "Threads", blurb: "Your Threads feed, posts and replies.", keywords: ["threads", "threads app"], loginUrl: "https://www.threads.com/login", domain: "threads.com" },
 ];
 
 const HANDWRITTEN: ConnectService[] = [

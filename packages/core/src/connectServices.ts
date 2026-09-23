@@ -27,6 +27,7 @@ import { getCredential } from "./credentials.js";
 import { loadRemoteMcpServers } from "./mcpConnect.js";
 import { LIFE_SERVICES } from "./lifeServices.js";
 import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
+import { plaidVariantService } from "./plaidService.js";
 
 export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
 
@@ -336,6 +337,9 @@ export function resolveConnectService(query: string): ConnectService | null {
   // registered browser site ("login:amazon.com" → the Amazon session flow).
   const loginDomain = siteLoginDomain(query);
   if (loginDomain) return siteLoginService(loginDomain);
+  // "plaid:add" / "plaid:update:<item_id>": another bank, or a fresh login.
+  const plaidVariant = plaidVariantService(query);
+  if (plaidVariant) return plaidVariant;
   const q = normalize(query);
   if (!q) return null;
   const byId = CONNECT_SERVICES.find((s) => s.id === q || s.id === q.replace(/ /g, "-"));
@@ -383,6 +387,15 @@ export async function isServiceConnected(service: ConnectService, home?: string)
       return Boolean(tokens?.accessToken);
     }
     case "api-key": {
+      // Plaid: connected while at least one bank is linked (a JSON list).
+      if (service.id === "plaid") {
+        try {
+          const items = JSON.parse((await getCredential("PLAID_ITEMS", { home })) ?? "[]") as unknown;
+          return Array.isArray(items) && items.length > 0;
+        } catch {
+          return false;
+        }
+      }
       const names = service.stores ?? (service.fields ?? []).map((field) => field.credential);
       for (const name of names) {
         if (!(await getCredential(name, { home }))) return false;

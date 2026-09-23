@@ -14,6 +14,7 @@
 //              and stores only the resulting Access URL (the token is spent)
 
 import type { ConnectService } from "./connectServices.js";
+import { PLAID_SERVICE } from "./plaidService.js";
 
 export const LIFE_SERVICES: ConnectService[] = [
   {
@@ -103,17 +104,20 @@ export const LIFE_SERVICES: ConnectService[] = [
     fields: [{ credential: "TAILSCALE_API_KEY", label: "API access token", placeholder: "tskey-api-…", secret: true, help: "Admin console → Settings → Keys → Generate access token. It expires after at most 90 days." }],
     howToUse: "Use the Tailscale tool: devices, device (details). authorize, deauthorize, expire and key_expiry change who is on the owner's network and ask first.",
   },
+  // Plaid BEFORE simplefin: "connect my bank" means the one-tap Plaid card;
+  // SimpleFIN stays the alternative for owners who already use it.
+  PLAID_SERVICE,
   {
     id: "simplefin",
     label: "Bank accounts (SimpleFIN)",
     kind: "api-key",
     domain: "simplefin.org",
-    blurb: "Read-only balances and transactions from your banks through SimpleFIN Bridge (a small yearly fee, paid to SimpleFIN). Plaid needs a Plaid developer account; this is the personal route.",
+    blurb: "Read-only balances and transactions from your banks through SimpleFIN Bridge (a small yearly fee, paid to SimpleFIN). The alternative to Plaid for owners who already use SimpleFIN.",
     keywords: ["simplefin", "bank", "bank account", "bank balance", "my balance", "my transactions", "checking account", "savings account", "credit card balance"],
     keyUrl: "https://beta-bridge.simplefin.org/",
     fields: [{ credential: "SIMPLEFIN_SETUP_TOKEN", label: "Setup Token", secret: true, help: "SimpleFIN Bridge → connect your banks → New app connection → copy the Setup Token. It works once; Ares trades it for read-only access." }],
     stores: ["SIMPLEFIN_ACCESS_URL"],
-    howToUse: "Use the Bank tool: accounts (balances) and transactions (recent, per account). Read-only — it cannot move money.",
+    howToUse: "Use the Bank tool: accounts (balances), transactions, spending_summary, recurring (subscriptions/bills) and new_charges. Read-only — it cannot move money.",
   },
   {
     id: "peloton",

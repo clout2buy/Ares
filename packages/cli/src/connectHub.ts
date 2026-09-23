@@ -14,6 +14,9 @@
 //   browser     a live browser streamed to the phone: the owner signs in
 //               themselves (2FA, human checks and all), taps Done, and the
 //               session is saved for Ares's browser to reuse
+//   plaid       (an api-key service, routed specially) a one-time form for the
+//               owner's Plaid keys, then Plaid's own Hosted Link bank picker —
+//               see connectPlaid.ts
 //
 // Unauthenticated on purpose — a phone's Safari is not carrying the gateway
 // token. The flow id (24 random bytes) is the capability, like an OAuth state:
@@ -46,6 +49,7 @@ import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
 import { LIFE_VERIFIERS as LIFE_SURFACE_VERIFIERS } from "./lifeVerifiers.js";
 import { LIFE_VERIFIERS, type VerifyOutcome } from "./connectVerifiersLife.js";
 import { LIVE_INPUT_DOCK, LIVE_VIEW_CSS, applyBrowserInput, captureFrame, type BrowserInput } from "./liveBrowser.js";
+import { PlaidLink, isPlaidService, plaidInstructions, plaidSetupBody, type PlaidFlowState } from "./connectPlaid.js";
 
 const FLOW_TTL_MS = 15 * 60_000;
 const BROWSER_IDLE_MS = 10 * 60_000;
@@ -65,6 +69,8 @@ interface Flow {
   finishOAuth?: (code: string) => Promise<string>;
   browser?: LoginBrowser;
   browserStarting?: Promise<LoginBrowser>;
+  /** Plaid: the Hosted Link session (connectPlaid.ts). */
+  plaid?: PlaidFlowState;
 }
 
 /** A verifier may return `{store}` — the credentials to save INSTEAD of what
@@ -80,6 +86,8 @@ export interface ConnectHubOptions {
   loadPlaywright?: () => Promise<any>;
   /** Test seam: service-specific key verification. */
   verifiers?: Record<string, Verify>;
+  /** Test seam: how often a pending Plaid flow polls /link/token/get. */
+  plaidPollMs?: number;
 }
 
 export class ConnectHub implements ConnectBroker {
@@ -88,10 +96,19 @@ export class ConnectHub implements ConnectBroker {
   private readonly states = new Map<string, string>();
   private readonly log: (line: string) => void;
   private readonly verifiers: Record<string, Verify>;
+  private readonly plaid: PlaidLink;
 
   constructor(private readonly opts: ConnectHubOptions) {
     this.log = opts.log ?? (() => {});
     this.verifiers = { ...DEFAULT_VERIFIERS, ...(opts.verifiers ?? {}) };
+    this.plaid = new PlaidLink({
+      home: opts.home,
+      log: this.log,
+      ...(opts.plaidPollMs !== undefined ? { pollMs: opts.plaidPollMs } : {}),
+      ttlMs: FLOW_TTL_MS,
+      complete: (flow, ok, detail) => this.complete(flow as Flow, ok, detail),
+      flows: () => this.flows.values(),
+    });
   }
 
   private base(): string {
@@ -134,6 +151,8 @@ export class ConnectHub implements ConnectBroker {
       }
     }
     if (service.kind === "oauth-app" && (await this.hasOAuthApp(service))) await this.prepareOAuthApp(flow);
+    // Plaid with keys already set: straight to the bank picker (one tap).
+    if (isPlaidService(service) && (await this.plaid.hasKeys())) await this.plaid.prepare(flow, base);
     this.flows.set(flow.id, flow);
     this.log(`connect: ${service.id} flow started (${service.kind})`);
     return {
@@ -142,7 +161,7 @@ export class ConnectHub implements ConnectBroker {
       label: flow.service.label,
       kind: flow.service.kind,
       url: `${base}/connect/${flow.id}`,
-      instructions: instructionsFor(flow.service, Boolean(flow.authorizeUrl)),
+      instructions: isPlaidService(flow.service) ? plaidInstructions(flow) : instructionsFor(flow.service, Boolean(flow.authorizeUrl)),
     };
   }
 
@@ -280,6 +299,7 @@ export class ConnectHub implements ConnectBroker {
 
   /** Everything under /connect/. False when the path isn't ours. */
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+    if (await this.plaid.handleShared(req, res, url, { page, resultPage })) return true;
     const match = /^\/connect\/([A-Za-z0-9_-]{20,64})(?:\/(frame|input|done|cancel))?\/?$/.exec(url.pathname);
     if (!match) return false;
     this.sweep();
@@ -299,6 +319,7 @@ export class ConnectHub implements ConnectBroker {
         json(res, 200, { ok: true });
         return true;
       }
+      if (isPlaidService(flow.service)) return await this.handlePlaid(req, res, flow);
       switch (flow.service.kind) {
         case "mcp-oauth":
           return this.landOAuth(res, flow);
@@ -324,6 +345,28 @@ export class ConnectHub implements ConnectBroker {
       }
       return true;
     }
+  }
+
+  /** Plaid: the setup form until keys exist, then Plaid's Hosted Link. */
+  private async handlePlaid(req: IncomingMessage, res: ServerResponse, flow: Flow): Promise<boolean> {
+    const base = this.base();
+    if (req.method === "POST" && !flow.plaid) {
+      const outcome = await this.plaid.submitSetup(flow, await readForm(req), base);
+      if ("error" in outcome) page(res, 400, shell("Connect your bank", plaidSetupBody(flow, base, outcome.error)));
+      else {
+        res.writeHead(303, { location: outcome.url, "cache-control": "no-store" });
+        res.end();
+      }
+      return true;
+    }
+    if (flow.plaid) {
+      this.plaid.startPolling(flow);
+      res.writeHead(302, { location: flow.plaid.hostedUrl, "cache-control": "no-store" });
+      res.end();
+      return true;
+    }
+    page(res, 200, shell("Connect your bank", plaidSetupBody(flow, base)));
+    return true;
   }
 
   private landOAuth(res: ServerResponse, flow: Flow): boolean {

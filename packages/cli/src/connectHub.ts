@@ -43,6 +43,7 @@ import {
   type ConnectService,
 } from "@ares/core";
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
+import { LIFE_VERIFIERS, type VerifyOutcome } from "./connectVerifiersLife.js";
 
 const FLOW_TTL_MS = 15 * 60_000;
 const BROWSER_IDLE_MS = 10 * 60_000;
@@ -64,7 +65,9 @@ interface Flow {
   browserStarting?: Promise<LoginBrowser>;
 }
 
-type Verify = (values: Record<string, string>, signal: AbortSignal) => Promise<string | void>;
+/** A verifier may return `{store}` — the credentials to save INSTEAD of what
+ *  was typed (Hue pairing, a claimed SimpleFIN token). */
+type Verify = (values: Record<string, string>, signal: AbortSignal) => Promise<VerifyOutcome>;
 
 export interface ConnectHubOptions {
   /** Public origin the phone reaches, e.g. https://ares.mistiqueai.com */
@@ -380,15 +383,20 @@ export class ConnectHub implements ConnectBroker {
       detail = `${result.toolCount ?? 0} tools available.`;
     } else {
       const verify = this.verifiers[service.id];
+      let toStore = values;
       if (verify) {
         try {
-          detail = (await verify(values, signal)) ?? "";
+          const outcome = await verify(values, signal);
+          if (outcome && typeof outcome === "object") {
+            detail = outcome.detail ?? "";
+            if (outcome.store) toStore = outcome.store;
+          } else detail = outcome ?? "";
         } catch (err) {
           page(res, 400, keyFormPage(flow, `${service.label} rejected that: ${err instanceof Error ? err.message : String(err)}`));
           return true;
         }
       }
-      for (const [name, value] of Object.entries(values)) await setCredential(name, value, { home: this.opts.home });
+      for (const [name, value] of Object.entries(toStore)) await setCredential(name, value, { home: this.opts.home });
     }
     this.complete(flow, true, detail);
     page(res, 200, resultPage(true, `${service.label} connected`, "Saved securely on your Ares. You can go back to the app."));
@@ -632,6 +640,7 @@ const DEFAULT_VERIFIERS: Record<string, Verify> = {
     if (res.status === 401 || res.status === 403) throw new Error("Resend doesn't recognise that key");
     return "";
   },
+  ...LIFE_VERIFIERS,
 };
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -691,6 +700,7 @@ function instructionsFor(service: ConnectService, oauthReady: boolean): string {
       return oauthReady ? `Sign in to ${service.label} and approve Ares.` : `One-time setup: register an app for ${service.label}, then sign in.`;
     case "api-key":
     case "mcp-key":
+      if (service.formHint && !service.fields?.length) return service.formHint;
       return `Enter your ${service.label} key in a secure form. It's stored on your Ares, never in the chat.`;
     case "browser":
       return `Sign in to ${service.label} on a live browser. Tap Done when you're in.`;
@@ -736,10 +746,18 @@ function keyFormPage(flow: Flow, error?: string): string {
         `<label for="${esc(field.credential)}">${esc(field.label)}</label><input id="${esc(field.credential)}" name="${esc(field.credential)}" ${field.secret ? 'type="password"' : 'type="text"'} autocomplete="off" autocapitalize="off" spellcheck="false" ${field.placeholder ? `placeholder="${esc(field.placeholder)}"` : ""} required>${field.help ? `<div class="help">${esc(field.help)}</div>` : ""}`,
     )
     .join("");
+  // A zero-field form (Hue) is a pairing button: the hint is the whole page.
+  const hint = service.formHint ? `<p><b>${esc(service.formHint)}</b></p>` : "";
+  if (!service.fields?.length) {
+    return shell(
+      `Connect ${service.label}`,
+      `<main><div class="mark">🔗</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${hint}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post"><button type="submit">Connect</button></form></main>`,
+    );
+  }
   const where = service.keyUrl ? `<p>Find it at <a href="${esc(service.keyUrl)}" target="_blank" rel="noopener">${esc(service.keyUrl.replace(/^https?:\/\//, ""))}</a>.</p>` : "";
   return shell(
     `Connect ${service.label}`,
-    `<main><div class="mark">🔑</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${where}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post">${fields}<button type="submit">Connect</button></form><p class="help" style="margin-top:1rem">Stored encrypted on your Ares and checked with ${esc(service.label)} before saving. It never appears in the chat.</p></main>`,
+    `<main><div class="mark">🔑</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${hint}${where}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post">${fields}<button type="submit">Connect</button></form><p class="help" style="margin-top:1rem">Stored encrypted on your Ares and checked with ${esc(service.label)} before saving. It never appears in the chat.</p></main>`,
   );
 }
 

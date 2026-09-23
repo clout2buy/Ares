@@ -21,6 +21,7 @@
 
 import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effects";
 import type { ToolPermissionRequest } from "@ares/core";
+import { lifeToolCategory } from "./policyGateLife.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -180,12 +181,15 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
     }
     case "McpCallTool":
       return mcpMoneyCategory(mcpToolOf(request));
-    default:
+    default: {
+      const life = lifeToolCategory(request.toolName, actionOf(request));
+      if (life !== undefined) return life;
       // A connected MCP server's tools arrive as mcp_<server>_<tool>. Stripe,
       // PayPal and Square expose real money movers (refunds, charges, invoices,
       // payment links) that were classified null — i.e. auto-allowed on the
       // phone. Anything money-shaped that isn't a read now asks the owner.
       return request.toolName.startsWith("mcp_") ? mcpMoneyCategory(request.toolName) : null;
+    }
   }
 }
 

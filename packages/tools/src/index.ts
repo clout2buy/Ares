@@ -173,6 +173,14 @@ export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, type GmailOutput } from "./Gmail.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
+export { HueTool, discoverHueBridges, pairHueBridge, hueCall, hexToXy, hueStateBody, type HueOutput, type HueBridgeRef, type HuePairing } from "./Hue.js";
+export { TeslaTool, TESLA_ASK_ACTIONS, type TeslaOutput } from "./Tesla.js";
+export { TicketsTool, ticketmasterSearchUrl, type TicketsOutput } from "./Tickets.js";
+export { FlightStatusTool, relevantFlight, summarizeFlight, type FlightStatusOutput } from "./FlightStatus.js";
+export { FlightBookingTool, duffelMode, offerRequestBody, summarizeOffer, type FlightBookingOutput } from "./FlightBooking.js";
+export { WithingsTool, decodeMeasureGroups, type WithingsOutput } from "./Withings.js";
+export { TailscaleTool, TAILSCALE_ASK_ACTIONS, type TailscaleOutput } from "./Tailscale.js";
+export { BankTool, claimSimplefinToken, simplefinAccounts, simplefinClaimUrl, type BankOutput } from "./Bank.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,
@@ -210,6 +218,17 @@ import { PhoneTool } from "./Phone.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
+import { HueTool } from "./Hue.js";
+import { TeslaTool } from "./Tesla.js";
+import { TicketsTool } from "./Tickets.js";
+import { FlightStatusTool } from "./FlightStatus.js";
+import { FlightBookingTool } from "./FlightBooking.js";
+import { WithingsTool } from "./Withings.js";
+import { TailscaleTool } from "./Tailscale.js";
+import { BankTool } from "./Bank.js";
+
+/** Home, car, travel, health and money connectors (all deferred). */
+export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -244,6 +263,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...LIFE_TOOLS,
     ] as const
   : [
       ReadTool,
@@ -275,4 +295,5 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...LIFE_TOOLS,
     ] as const;

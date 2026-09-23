@@ -57,7 +57,7 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
   },
   {
     tools: ["Connect", "Hue", "Tesla", "Tickets", "FlightStatus", "FlightBooking", "Withings", "Tailscale", "Bank"],
-    text: "**Home, car, travel, health, money** have native tools (ToolSearch to load): **Hue** lights, **Tesla** (via Tessie), **Tickets** (Ticketmaster; can't buy — Browser for checkout), **FlightStatus** (AeroAPI, billed per call), **FlightBooking** (Duffel; book asks with the price), **Withings**, **Tailscale**, **Bank** (SimpleFIN, read-only). Not connected → Connect service hue/tessie/ticketmaster/flightaware/duffel/withings/tailscale/simplefin.",
+    text: "**Home, car, travel, health, money** have native tools (ToolSearch to load): **Hue** lights, **Tesla** (via Tessie), **Tickets** (Ticketmaster; can't buy — Browser for checkout), **FlightStatus** (AeroAPI, billed per call), **FlightBooking** (Duffel; book asks with the price), **Withings**, **Tailscale**, **Bank** (Plaid or SimpleFIN, read-only: balances, spending, subscriptions, new charges; Plaid adds cards/loans and investments). Not connected → Connect service hue/tessie/ticketmaster/flightaware/duffel/withings/tailscale/plaid.",
   },
   {
     tools: ["Checkout"],

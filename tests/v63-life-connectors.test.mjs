@@ -38,6 +38,7 @@ import {
   WithingsTool,
   TailscaleTool,
   BankTool,
+  clearBankCache,
   hexToXy,
   hueStateBody,
   simplefinClaimUrl,
@@ -120,7 +121,8 @@ test("what the owner says resolves to the life connectors", () => {
     "book a flight": ["duffel", "api-key"],
     withings: ["withings", "oauth-app"],
     tailscale: ["tailscale", "api-key"],
-    "bank balance": ["simplefin", "api-key"],
+    "bank balance": ["plaid", "api-key"],
+    simplefin: ["simplefin", "api-key"],
     peloton: ["peloton", "browser"],
     granola: ["granola", "mcp-oauth"],
     printify: ["printify", "mcp-oauth"],
@@ -433,7 +435,7 @@ function simplefinStub(t, { claimStatus = 200 } = {}) {
       return json({
         errlist: [{ code: "con.auth", msg: "Reconnect <b>My Bank</b>" }],
         connections: [{ conn_id: "C1", org_name: "My Bank" }],
-        accounts: [{ id: "A1", name: "Checking", conn_id: "C1", currency: "USD", balance: "1200.50", "available-balance": "1100.50", "balance-date": 1790208000, transactions: [{ id: "t1", posted: 1790100000, amount: "-42.10", description: "Grocer" }] }],
+        accounts: [{ id: "A1", name: "Checking", conn_id: "C1", currency: "USD", balance: "1200.50", "available-balance": "1100.50", "balance-date": 1790208000, transactions: [{ id: "t1", posted: Math.floor(Date.now() / 1000) - 86_400, amount: "-42.10", description: "Grocer" }] }],
       });
     }
     throw new Error(`unexpected ${call.url}`);
@@ -473,20 +475,23 @@ test("SimpleFIN: an already-claimed token warns it may be compromised", async (t
 });
 
 test("Bank reads balances and transactions read-only, sanitizing bank messages", async (t) => {
-  withEnv(t, { SIMPLEFIN_ACCESS_URL: ACCESS });
+  withEnv(t, { SIMPLEFIN_ACCESS_URL: ACCESS, ARES_BANK_CACHE_MS: "0" });
+  clearBankCache();
+  t.after(() => fsp.rm(path.join(process.env.ARES_HOME, "bank"), { recursive: true, force: true }));
   const calls = simplefinStub(t);
   const accounts = await BankTool.call(BankTool.inputZod.parse({ action: "accounts" }), ctx());
   assert.equal(accounts.failure, undefined, accounts.output.message);
-  assert.deepEqual(accounts.output.accounts[0], { id: "A1", name: "Checking", institution: "My Bank", currency: "USD", balance: "1200.50", available: "1100.50", balanceDate: "2026-09-24" });
+  // The normalized record (bankAnalytics.ts), the same shape Plaid produces.
+  assert.deepEqual(accounts.output.accounts[0], { id: "A1", provider: "simplefin", name: "Checking", institution: "My Bank", currency: "USD", balance: 1200.5, available: 1100.5 });
   assert.deepEqual(accounts.output.warnings, ["Reconnect My Bank"], "markup stripped from bank errors");
   const q = new URL(calls[0].url).searchParams;
   assert.equal(q.get("version"), "2");
-  assert.equal(q.get("balances-only"), "1");
+  assert.equal(q.get("pending"), "1", "one request carries balances AND the 90-day window, then is cached");
   assert.ok(!calls[0].url.includes("user9"), "credentials never ride in the URL");
 
-  const tx = await BankTool.call(BankTool.inputZod.parse({ action: "transactions", days: 30 }), ctx());
-  assert.equal(tx.output.transactions[0].amount, "-42.10 USD");
-  assert.equal(new URL(calls[1].url).searchParams.get("pending"), "1");
+  const tx = await BankTool.call(BankTool.inputZod.parse({ action: "transactions", days: 90 }), ctx());
+  assert.equal(tx.output.transactions[0].amount, -42.1);
+  assert.equal(tx.output.transactions[0].accountId, "A1");
   assert.equal(classifyToolRequest({ toolName: "Bank", input: { action: "transactions" }, reason: "" }), null);
 });
 

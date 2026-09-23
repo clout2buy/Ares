@@ -210,6 +210,29 @@ export { FlightBookingTool, duffelMode, offerRequestBody, summarizeOffer, type F
 export { WithingsTool, decodeMeasureGroups, type WithingsOutput } from "./Withings.js";
 export { TailscaleTool, TAILSCALE_ASK_ACTIONS, type TailscaleOutput } from "./Tailscale.js";
 export { BankTool, claimSimplefinToken, simplefinAccounts, simplefinClaimUrl, type BankOutput } from "./Bank.js";
+export { normalizeSimplefinAccount, normalizeSimplefinTransaction } from "./simplefin.js";
+export { merchantKey, deriveCategory, spendingSummary, detectRecurring, newCharges, type NormAccount, type NormTransaction, type RecurringCharge, type SpendingSummary, type ChargesCursor } from "./bankAnalytics.js";
+export { clearBankCache, normalizePlaidAccount, normalizePlaidTransaction, plaidSnapshot, simplefinSnapshot, syncPlaidItem, type BankSnapshot } from "./bankData.js";
+export {
+  PLAID_TRIAL_ITEMS,
+  PlaidError,
+  disconnectPlaid,
+  exchangePlaidPublicTokens,
+  loadPlaidConfig,
+  loadPlaidItems,
+  normalizePlaidEnv,
+  plaidBaseUrl,
+  plaidCall,
+  plaidErrorSentence,
+  plaidItemView,
+  plaidItemsCreated,
+  removePlaidItem,
+  savePlaidItems,
+  type PlaidConfig,
+  type PlaidEnv,
+  type PlaidItem,
+  type PlaidItemView,
+} from "./plaidApi.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,

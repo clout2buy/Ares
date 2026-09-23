@@ -65,7 +65,8 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   { id: "supabase", name: "Supabase", url: "https://mcp.supabase.com/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Databases, auth, storage and edge functions.", keywords: ["supabase"] },
   { id: "prisma", name: "Prisma Postgres", url: "https://mcp.prisma.io/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Manage Prisma Postgres databases.", keywords: ["prisma"] },
   { id: "mongodb", name: "MongoDB Atlas", url: "https://mcp.mongodb.com/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Clusters, collections and queries on Atlas.", keywords: ["mongodb", "mongo", "atlas"] },
-  { id: "plaid", name: "Plaid", url: "https://api.dashboard.plaid.com/mcp/sse", auth: "oauth", transport: "sse", category: "payments", blurb: "Plaid dashboard: items, institutions and usage.", keywords: ["plaid"] },
+  // Not "plaid": that id is the owner's bank connector (plaidService.ts).
+  { id: "plaid-dashboard", name: "Plaid Dashboard", url: "https://api.dashboard.plaid.com/mcp/sse", auth: "oauth", transport: "sse", category: "payments", blurb: "Plaid developer dashboard: items, institutions and usage (for connecting your BANK, use \"plaid\").", keywords: ["plaid dashboard"] },
   // ── projects & tasks ────────────────────────────────────────────────────
   { id: "linear", name: "Linear", url: "https://mcp.linear.app/mcp", auth: "oauth", transport: "http", category: "project", blurb: "Issues, projects, cycles and team workflows.", keywords: ["linear", "linear issue", "ticket"] },
   { id: "atlassian", name: "Atlassian (Jira & Confluence)", url: "https://mcp.atlassian.com/v1/sse", auth: "oauth", transport: "sse", category: "project", blurb: "Jira issues and Confluence pages.", keywords: ["jira", "confluence", "atlassian"] },

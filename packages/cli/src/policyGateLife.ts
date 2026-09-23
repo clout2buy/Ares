@@ -12,6 +12,8 @@
 //   Tailscale authorize/deauthorize/
 //         expire/key_expiry             → credential_or_secret (who may join
 //                                         the owner's private network)
+//   Bank remove_item                    → credential_or_secret (revokes a
+//                                         linked bank)
 // Reads, lights, climate and charging classify as nothing and just run.
 // `undefined` means "not one of these tools" so the caller carries on.
 
@@ -19,7 +21,7 @@ import type { ActionCategory } from "@ares/effects";
 
 const TESLA_ASK = new Set(["unlock", "remote_start", "trunk", "frunk", "honk", "flash"]);
 const TAILSCALE_ASK = new Set(["authorize", "deauthorize", "expire", "key_expiry"]);
-const READ_ONLY = new Set(["Hue", "Tickets", "FlightStatus", "Withings", "Bank"]);
+const READ_ONLY = new Set(["Hue", "Tickets", "FlightStatus", "Withings"]);
 
 export function lifeToolCategory(toolName: string, action: string): ActionCategory | null | undefined {
   switch (toolName) {
@@ -29,6 +31,10 @@ export function lifeToolCategory(toolName: string, action: string): ActionCatego
       return TESLA_ASK.has(action) ? "browser_submit" : null;
     case "Tailscale":
       return TAILSCALE_ASK.has(action) ? "credential_or_secret" : null;
+    case "Bank":
+      // Disconnecting a bank revokes a credential (and, on Plaid's Trial, the
+      // slot is gone for good).
+      return action === "remove_item" ? "credential_or_secret" : null;
     default:
       return READ_ONLY.has(toolName) ? null : undefined;
   }

@@ -42,6 +42,7 @@ import {
   serviceDomain,
   type ConnectService,
 } from "@ares/core";
+import { disconnectPlaid } from "@ares/tools";
 
 export interface PhoneConnection {
   id: string;
@@ -61,6 +62,8 @@ const HANDWRITTEN_CATEGORIES: Record<string, string> = {
   twilio: "comms",
   "stripe-key": "payments",
   resend: "comms",
+  plaid: "money",
+  simplefin: "money",
 };
 
 function categoryOf(service: ConnectService): string | undefined {
@@ -111,6 +114,9 @@ export async function disconnectService(service: ConnectService, home?: string):
       return deleteCredential(`oauth/${cfg.provider}`, { home });
     }
     case "api-key": {
+      // Plaid: revoke and forget every linked bank; the Plaid keys stay, so
+      // reconnecting is one tap (like an oauth-app's registered client).
+      if (service.id === "plaid") return disconnectPlaid({ home });
       let removed = false;
       for (const field of service.fields ?? []) removed = (await deleteCredential(field.credential, { home })) || removed;
       return removed;

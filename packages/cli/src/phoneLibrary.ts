@@ -72,7 +72,8 @@ export async function listArtifacts(opts: LibraryOptions): Promise<ArtifactItem[
     }
     for (const entry of entries) {
       scanned += 1;
-      if (entry.name.startsWith(".") && entry.name !== ".ares") continue;
+      // Dot-dirs are machinery (.ares memory, .git, .claude), never things made for the owner.
+      if (entry.name.startsWith(".")) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (depth > 0 && !SKIP_DIRS.has(entry.name)) await walk(full, depth - 1);

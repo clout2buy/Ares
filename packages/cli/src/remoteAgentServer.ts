@@ -41,6 +41,7 @@ import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
 import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
 import { handleConnectionsApi } from "./phoneConnections.js";
+import { handleDeviceApi } from "./deviceSync.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -1475,6 +1476,8 @@ export class RemoteAgentServer {
     if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
     // The Connections screen (list / start / disconnect) — phoneConnections.ts.
     if (await handleConnectionsApi(req, res, url, { log: (line) => this.log(line) })) return;
+    // What the iPhone shares (Health, Contacts, Calendar) — deviceSync.ts.
+    if (await handleDeviceApi(req, res, url, { home: this.home })) return;
     const api = this.opts.phoneApi ?? {};
 
     try {

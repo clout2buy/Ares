@@ -191,6 +191,35 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim();
 }
 
+const DOMAIN_OVERRIDES: Record<string, string> = {
+  google: "mail.google.com",
+  spotify: "spotify.com",
+  twilio: "twilio.com",
+  "stripe-key": "stripe.com",
+  resend: "resend.com",
+  github: "github.com",
+  "cloudflare-bindings": "cloudflare.com",
+  "cloudflare-observability": "cloudflare.com",
+  atlassian: "atlassian.com",
+  huggingface: "huggingface.co",
+};
+
+/** The site whose icon represents a service (the app renders its favicon as
+ *  the connect card's logo). */
+export function serviceDomain(service: ConnectService): string | undefined {
+  if (DOMAIN_OVERRIDES[service.id]) return DOMAIN_OVERRIDES[service.id];
+  if (service.domain) return service.domain;
+  const url = service.mcpUrl ?? service.keyUrl;
+  if (!url) return undefined;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    const parts = host.split(".");
+    return parts.slice(-2).join(".");
+  } catch {
+    return undefined;
+  }
+}
+
 /** A bare domain or URL the registry doesn't know becomes a browser sign-in. */
 function adHocBrowserService(query: string): ConnectService | null {
   const trimmed = query.trim();

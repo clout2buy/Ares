@@ -658,6 +658,7 @@ export {
   CONNECT_SERVICES,
   resolveConnectService,
   isServiceConnected,
+  serviceDomain,
   browserSessionsDir,
   browserSessionFile,
   setConnectBroker,

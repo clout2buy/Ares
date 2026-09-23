@@ -27,6 +27,7 @@ import {
   resolveConnectService,
   isServiceConnected,
   getConnectBroker,
+  serviceDomain,
 } from "@ares/core";
 import { buildTool, type ToolResult } from "./_shared.js";
 
@@ -231,6 +232,8 @@ async function connectService(
     mode: prompt.kind,
     url: prompt.url,
     instructions: prompt.instructions,
+    blurb: service.blurb,
+    ...(serviceDomain(service) ? { domain: serviceDomain(service) } : {}),
     ...(input.reason ? { reason: input.reason.slice(0, 200) } : {}),
   });
   const outcome = await broker.wait(prompt.flowId, { signal: ctx.signal, timeoutMs: CONNECT_WAIT_MS });

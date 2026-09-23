@@ -169,6 +169,17 @@ export { RemindTool, setRemindScheduler, type RemindOutput, type SchedulerLike }
 export { TelegramTool, setTelegramChannel, getTelegramChannel, resolveTargets as resolveTelegramTargets, type TelegramOutput, type TelegramChannelLike } from "./Telegram.js";
 export { RemotePCTool, setRemoteAgentServer, getRemoteAgentServer, type RemotePCInput, type RemotePCOutput, type RemoteAgentServerLike } from "./RemotePC.js";
 export { ConnectTool, CONNECT_WAIT_MS, type ConnectOutput } from "./Connect.js";
+export {
+  CheckoutTool,
+  recordCheckoutApproval,
+  approvedCheckout,
+  spendCheckoutApproval,
+  parseAmount,
+  pageShowsAmount,
+  looksLikeOrderSubmission,
+  type CheckoutOutput,
+  type ApprovedCheckout,
+} from "./Checkout.js";
 export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, buildRfc2822, planUnsubscribe, gmailBodyText, findCodeInputProblem, CODE_HANDLE_TTL_MS, type GmailOutput } from "./Gmail.js";
@@ -221,6 +232,7 @@ import { RemindTool } from "./Remind.js";
 import { TelegramTool } from "./Telegram.js";
 import { RemotePCTool } from "./RemotePC.js";
 import { ConnectTool } from "./Connect.js";
+import { CheckoutTool } from "./Checkout.js";
 import { PhoneTool } from "./Phone.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
@@ -259,6 +271,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TelegramTool,
       RemotePCTool,
       ConnectTool,
+      CheckoutTool,
       PhoneTool,
       GoogleCalendarTool,
       GmailTool,
@@ -294,6 +307,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TelegramTool,
       RemotePCTool,
       ConnectTool,
+      CheckoutTool,
       PhoneTool,
       GoogleCalendarTool,
       GmailTool,

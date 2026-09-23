@@ -65,4 +65,14 @@ export interface BrowserConnector {
   /** Rebind this connector to an already-open tab. Returns false when no tab
    *  matches, allowing the caller to navigate the Ares-owned page instead. */
   attachToExisting?(query: string): Promise<boolean>;
+  /** The engine page Ares is driving RIGHT NOW (it changes on attach). For
+   *  the owner's live watch/take-over view only — frames and whitelisted
+   *  input for that one page. */
+  livePage?(): unknown;
+  /** Put a secret into a field in one step: no per-character typing, no
+   *  frames emitted, no value in any returned text. Rejects when the field
+   *  isn't there. The caller redacts errors. */
+  fillSecret?(target: { selector?: string; label?: string }, value: string): Promise<void>;
+  /** Submit the form owning `selector` (else click its submit button). */
+  submitForm?(selector: string): Promise<boolean>;
 }

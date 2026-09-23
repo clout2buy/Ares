@@ -56,6 +56,14 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Commitments → Track.** Whenever you book, reserve, order or promise something for the owner (a table, a delivery, \"I'll check back Monday\"), load and call **Track add** in the same turn with a dueAt — it goes on the owner's Today tab — and **Track close** it once resolved. **Places** finds real places (hours, phone, maps link) before you recommend one; **Imagine** makes images, voice clips and podcasts (video asks first — it costs money) and returns a file path to show.",
   },
   {
+    tools: ["Checkout"],
+    text: "**Before placing any order, booking or purchase, call Checkout {action:\"review\"}** with the real cart and the exact total read from the page (merchant, every item, fees, tax, tip, total, payment method as shown, delivery address). The owner approves that receipt; then submit exactly that order, once. Declined → stop. The total changed → review again. The Browser refuses a Place order / Pay click without an approved review.",
+  },
+  {
+    tools: ["Browser"],
+    text: "**Saved logins and secrets are fills, not text.** On a sign-in page call Browser {action:\"login\"} — it fills the owner's saved username and password after they approve; you never see them. Nothing saved → Connect service \"login:<domain>\". A secret handle (sec_…) goes in with Browser fill_secret. Never ask for, type or repeat a password or code. If a Browser result says the owner took over and handed back, re-read the page before doing anything else.",
+  },
+  {
     tools: ["RequestUserAction"],
     text: "**RequestUserAction** is for a wall only a human can clear — a 2FA code, a captcha, a real payment, a login you can't complete. Call it with what you finished, what the owner must do, and how to resume, then STOP and deliver that as your reply. Never guess a code, never loop on the wall, never fail silently.",
   },

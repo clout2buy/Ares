@@ -680,3 +680,4 @@ export {
   type SecretHandleScope,
 } from "./secretHandles.js";
 export { appendAudit, readAudit, redactForAudit, auditDir, type AuditEntry } from "./audit.js";
+export { siteLoginDomain, normalizeLoginDomain, loginCredentialNames, loginDomainCandidates, siteLoginService } from "./siteLogins.js";

@@ -440,6 +440,7 @@ const SENSITIVE_PERMISSION = new RegExp(
 
 function autoPermissionDecision(request: ToolPermissionRequest): PermissionPromptDecision | null {
   const hay = `${request.toolName} ${request.reason}`;
+  if (request.ownerDecision) return null; // a per-call owner decision is never auto-answered
   if (SENSITIVE_PERMISSION.test(hay)) return null; // escalate to the owner
   return "allow_once"; // flow freely
 }

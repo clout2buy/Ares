@@ -211,6 +211,11 @@ export interface ToolCallContext {
   /** Yield progress events from inside a long-running tool call. */
   emitProgress?(data: unknown): void;
   requestPermission?(request: ToolPermissionRequest): Promise<PermissionPromptDecision>;
+  /** Stop this call's watchdog clock while the tool waits on a HUMAN (the
+   *  owner driving the browser after "Take over"), exactly as the permission
+   *  prompt does. Returns the release; releasing re-arms the full deadline.
+   *  The wait itself must stay bounded and honour `signal`. */
+  pauseWatchdog?(): () => void;
   /** Engine-owned read-stamp map. When present, file tools MUST prefer it over
    *  any captured map so each engine (parent / subagent) stays isolated. */
   fileReadStamps?: Map<string, FileReadStampLike>;
@@ -579,6 +584,9 @@ export const CORE_TOOL_NAMES: readonly string[] = [
   // tool — hidden behind ToolSearch, the model lectured about OAuth apps or
   // asked for passwords in chat instead of showing a one-tap connect card.
   "Connect",
+  // Core, not deferred: the doctrine says "call Checkout before any order" —
+  // a model that must ToolSearch for it first will just click Place order.
+  "Checkout",
 ];
 const CORE_TOOL_SET = new Set(CORE_TOOL_NAMES.map((name) => name.toLowerCase()));
 
@@ -4830,6 +4838,15 @@ export class QueryEngine {
             }
           : undefined,
         emitProgress: (data) => emit({ type: "tool_progress", id: use.id, data }),
+        pauseWatchdog: () => {
+          watchdog.pause();
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            watchdog.resume();
+          };
+        },
         fileReadStamps: this.cfg.fileReadStamps,
         mutationTransactionId: workspaceMutationTransactionId(this.sessionId, use.id),
         repositoryInstructions: this.cfg.repositoryInstructions,

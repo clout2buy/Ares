@@ -26,6 +26,7 @@ import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
 import { ConnectHub } from "../connectHub.js";
+import { BrowserWatchHub, setBrowserWatchHub } from "../browserWatch.js";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
@@ -575,6 +576,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "connect", line } }) + "\n"),
   });
   setConnectBroker(connectHub);
+  // "Watch or take over anytime": every browser the Browser tool opens gets a
+  // /watch/<token> link on the same origin (the browser_live card).
+  const browserWatchHub = new BrowserWatchHub({
+    publicUrl: () => remoteAgentServer?.linkBaseUrl(),
+    home: context.home,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "watch", line } }) + "\n"),
+  });
+  setBrowserWatchHub(browserWatchHub);
 
   remoteAgentServer = await (async () => {
     try {
@@ -615,6 +624,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           },
           connect: (req, res, url) => connectHub.handle(req, res, url),
           life: life.handler,
+          watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,
@@ -723,6 +733,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       phoneNotifier?.stop();
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});
+      browserWatchHub.close();
+      setBrowserWatchHub(null);
       setRemoteAgentServer(null);
       void aresNetworkHostStop();
       approvals.dispose();

@@ -44,6 +44,7 @@ import {
 } from "@ares/core";
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
 import { LIFE_VERIFIERS } from "./lifeVerifiers.js";
+import { LIVE_INPUT_DOCK, LIVE_VIEW_CSS, applyBrowserInput, captureFrame, type BrowserInput } from "./liveBrowser.js";
 
 const FLOW_TTL_MS = 15 * 60_000;
 const BROWSER_IDLE_MS = 10 * 60_000;
@@ -452,18 +453,6 @@ export class ConnectHub implements ConnectBroker {
 
 // ─── The login browser ───────────────────────────────────────────────────────
 
-interface BrowserInput {
-  type?: string;
-  x?: number;
-  y?: number;
-  text?: string;
-  key?: string;
-  dy?: number;
-  url?: string;
-}
-
-const ALLOWED_KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Delete", "Space"]);
-
 /** A throwaway browser the owner drives from their phone to sign in. Only its
  *  saved storage state outlives it. */
 class LoginBrowser {
@@ -520,45 +509,12 @@ class LoginBrowser {
 
   frame(): Promise<{ jpeg: Buffer; url: string; title: string }> {
     this.touch();
-    return this.serial(async () => ({
-      jpeg: (await this.page.screenshot({ type: "jpeg", quality: 60, timeout: 10_000 })) as Buffer,
-      url: String(this.page.url()),
-      title: String(await this.page.title().catch(() => "")),
-    }));
+    return this.serial(() => captureFrame(this.page));
   }
 
   input(event: BrowserInput): Promise<void> {
     this.touch();
-    return this.serial(async () => {
-      switch (event.type) {
-        case "tap": {
-          const x = clamp01(event.x) * this.viewport.width;
-          const y = clamp01(event.y) * this.viewport.height;
-          await this.page.mouse.click(x, y);
-          return;
-        }
-        case "type":
-          if (typeof event.text === "string" && event.text.length <= 500) await this.page.keyboard.type(event.text, { delay: 25 });
-          return;
-        case "key":
-          if (event.key && ALLOWED_KEYS.has(event.key)) await this.page.keyboard.press(event.key === "Space" ? " " : event.key);
-          return;
-        case "scroll":
-          await this.page.mouse.wheel(0, Math.max(-2000, Math.min(2000, Number(event.dy) || 0)));
-          return;
-        case "back":
-          await this.page.goBack({ timeout: 15_000 }).catch(() => undefined);
-          return;
-        case "reload":
-          await this.page.reload({ timeout: 20_000 }).catch(() => undefined);
-          return;
-        case "goto": {
-          const target = typeof event.url === "string" ? event.url.trim() : "";
-          if (/^https:\/\//i.test(target)) await this.page.goto(target, { timeout: 30_000, waitUntil: "domcontentloaded" }).catch(() => undefined);
-          return;
-        }
-      }
-    });
+    return this.serial(() => applyBrowserInput(this.page, this.viewport, event));
   }
 
   /** Persist the signed-in session where every Ares browser loads it. */
@@ -600,11 +556,6 @@ function tokenFallback(service: ConnectService, why: string): ConnectService {
     ...(keyUrl ? { keyUrl } : {}),
     fields: [{ credential: `mcp.key.${service.id}`, label: "Access token", secret: true, ...(keyUrl ? { help: `Create one at ${keyUrl}` } : {}) }],
   };
-}
-
-function clamp01(value: unknown): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.5;
 }
 
 // ─── Key verification ────────────────────────────────────────────────────────
@@ -653,7 +604,7 @@ async function readForm(req: IncomingMessage): Promise<Record<string, string>> {
   return Object.fromEntries(new URLSearchParams(await readBody(req)));
 }
 
-async function readJson(req: IncomingMessage): Promise<BrowserInput> {
+export async function readJson(req: IncomingMessage): Promise<BrowserInput> {
   try {
     const parsed = JSON.parse(await readBody(req)) as unknown;
     return parsed && typeof parsed === "object" ? (parsed as BrowserInput) : {};
@@ -669,19 +620,19 @@ const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
 };
 
-function page(res: ServerResponse, status: number, html: string): void {
+export function page(res: ServerResponse, status: number, html: string): void {
   res.writeHead(status, { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS });
   res.end(html);
 }
 
-function json(res: ServerResponse, status: number, body: unknown): void {
+export function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json", ...SECURITY_HEADERS });
   res.end(JSON.stringify(body));
 }
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-function esc(text: string): string {
+export function esc(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
@@ -699,7 +650,7 @@ function instructionsFor(service: ConnectService, oauthReady: boolean): string {
   }
 }
 
-const STYLE = `
+export const STYLE = `
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,system-ui,sans-serif;background:#0b0d10;color:#eceff3;-webkit-font-smoothing:antialiased}
@@ -722,7 +673,7 @@ function shell(title: string, body: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>${body}</body></html>`;
 }
 
-function resultPage(ok: boolean, title: string, detail: string): string {
+export function resultPage(ok: boolean, title: string, detail: string): string {
   return shell(title, `<main style="text-align:center;padding-top:22vh"><div class="mark" style="margin:0 auto .9rem;${ok ? "background:#0f2119;color:#3fd18b" : "background:#2a1215;color:#ff6b75"}">${ok ? "✓" : "✕"}</div><h1>${esc(title)}</h1><p>${esc(detail)}</p></main>`);
 }
 
@@ -741,7 +692,7 @@ function keyFormPage(flow: Flow, error?: string): string {
   const where = service.keyUrl ? `<p>Find it at <a href="${esc(service.keyUrl)}" target="_blank" rel="noopener">${esc(service.keyUrl.replace(/^https?:\/\//, ""))}</a>.</p>` : "";
   return shell(
     `Connect ${service.label}`,
-    `<main><div class="mark">🔑</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${where}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post">${fields}<button type="submit">Connect</button></form><p class="help" style="margin-top:1rem">Stored encrypted on your Ares and checked with ${esc(service.label)} before saving. It never appears in the chat.</p></main>`,
+    `<main><div class="mark">🔑</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${where}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post">${fields}<button type="submit">Connect</button></form><p class="help" style="margin-top:1rem">${service.id.startsWith("login:") ? `Stored encrypted on your Ares. Ares fills it into ${esc(service.domain ?? service.label)} only after you approve each sign-in, and can't see or repeat it.` : `Stored encrypted on your Ares and checked with ${esc(service.label)} before saving. It never appears in the chat.`}</p></main>`,
   );
 }
 
@@ -757,30 +708,12 @@ function appSetupPage(flow: Flow, redirectUri: string, error?: string): string {
 function browserPage(flow: Flow): string {
   const label = esc(flow.service.label);
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="robots" content="noindex"><title>Sign in to ${label}</title><style>${STYLE}
-html,body{height:100%;overflow:hidden}
-.top{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + .5rem) .75rem .5rem;background:#0b0d10ee;display:flex;gap:.5rem;align-items:center;z-index:2;border-bottom:1px solid #1d2229}
-.top .site{flex:1;min-width:0}
-.top .site b{display:block;font-size:.95rem}
-.top .site span{display:block;font-size:.72rem;color:#7d8693;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pill{border:0;border-radius:999px;padding:.55rem .9rem;font-weight:650;font-size:.9rem;margin:0;width:auto}
-.done{background:#3fd18b;color:#04140c}
-.cancel{background:#1b2027;color:#c7cdd6}
-#stage{position:fixed;left:0;right:0;top:3.6rem;bottom:7.6rem;display:flex;align-items:flex-start;justify-content:center;background:#000;touch-action:none}
-#screen{max-width:100%;max-height:100%;display:block;user-select:none;-webkit-user-select:none}
-#spinner{position:absolute;top:40%;color:#7d8693;font-size:.9rem}
-.bottom{position:fixed;left:0;right:0;bottom:0;padding:.5rem .6rem calc(env(safe-area-inset-bottom) + .5rem);background:#0b0d10;border-top:1px solid #1d2229}
-.row{display:flex;gap:.4rem}
-.row input{flex:1;margin:0;padding:.65rem .75rem;font-size:16px}
-.row button{margin:0;width:auto;padding:.6rem .8rem;border-radius:.7rem;font-size:.9rem}
-.keys{margin-top:.45rem}
-.keys button{flex:1;background:#1b2027;color:#dfe4ea;font-weight:600}
-.hint{font-size:.72rem;color:#7d8693;text-align:center;margin:.35rem 0 0}
+${LIVE_VIEW_CSS}
 </style></head><body>
 <div class="top"><div class="site"><b>${label}</b><span id="where">Starting a browser…</span></div><button class="pill cancel" id="cancel">Cancel</button><button class="pill done" id="done">Done</button></div>
 <div id="stage"><img id="screen" alt=""><div id="spinner">Opening ${label}…</div></div>
 <div class="bottom">
-<div class="row"><input id="text" type="text" placeholder="Type here, then Send" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="send">Send</button></div>
-<div class="row keys"><button data-key="Enter">Enter</button><button data-key="Backspace">⌫</button><button data-key="Tab">Tab</button><button data-act="back">Back</button><button data-act="reload">↻</button></div>
+${LIVE_INPUT_DOCK}
 <p class="hint">Tap the page to click, swipe to scroll. Sign in, then tap Done.</p>
 </div>
 <script>

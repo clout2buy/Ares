@@ -55,6 +55,9 @@ export function remoteAutonomyDecision(request: ToolPermissionRequest): "allow" 
   // durable plan revision. A remote model can propose it, but only the owner
   // can cross this boundary; never let the autonomy default self-approve it.
   if (request.toolName === "ExitPlanMode") return "ask";
+  // A per-call owner decision (a checkout total, a vault fill on a named site)
+  // is the owner's by definition — never the autonomy default's.
+  if (request.ownerDecision) return "ask";
   const category = classifyToolRequest(request);
   // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
   if (category === null) return "allow";
@@ -173,7 +176,12 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       return "git_push";
     case "Filesystem":
       return "file_write";
+    // Checkout review: the owner approves the exact total before any order.
+    case "Checkout":
+      return "payment_or_purchase";
     case "Browser":
+      // Filling a vault login or a secret handle into a page touches secrets.
+      if (actionOf(request) === "login" || actionOf(request) === "fill_secret") return "credential_or_secret";
       return /\b(submit|checkout|buy|pay|purchase|order|confirm)\b/.test(hay) ? "browser_submit" : "browser_navigate";
     // Ares's own phone numbers: buying/releasing bills the owner's Twilio
     // account monthly; a text is outbound communication like an email.

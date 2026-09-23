@@ -25,7 +25,7 @@ const NAMES = [
   "CodebaseSearch", "LSP", "Bash", "PowerShell", "BashOutput", "KillShell",
   "TodoWrite", "Task", "TaskOutput", "KillTask", "Conductor", "EnterPlanMode", "UpdatePlanDraft", "ExitPlanMode",
   "WebSearch", "WebFetch", "ImageSearch", "ComputerUse", "Browser", "ToolSearch",
-  "McpListTools", "McpCallTool", "SkillsList", "SkillRead", "Memory", "Connect",
+  "McpListTools", "McpCallTool", "SkillsList", "SkillRead", "Memory", "Connect", "Checkout",
   "RequestUserAction", "Deploy", "Stripe", "Email", "Gmail", "GoogleCalendar",
   "Spotify", "Weather", "Remind", "Mission", "Self", "SkillHub", "Operator", "Capability", "RemotePC",
 ];

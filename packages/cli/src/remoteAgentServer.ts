@@ -21,6 +21,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { createSocket as createUdpSocket } from "node:dgram";
+import os from "node:os";
 import path from "node:path";
 import { aresHome } from "@ares/core";
 import {
@@ -43,6 +44,7 @@ import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
 import { handleOwnerControlRoute, type OwnerControlHooks } from "./phoneOwnerControl.js";
 import { handleConnectionsApi } from "./phoneConnections.js";
 import { handleDeviceApi } from "./deviceSync.js";
+import { handleLibraryApi } from "./phoneLibrary.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -1482,6 +1484,18 @@ export class RemoteAgentServer {
     if (await handleConnectionsApi(req, res, url, { log: (line) => this.log(line) })) return;
     // What the iPhone shares (Health, Contacts, Calendar) — deviceSync.ts.
     if (await handleDeviceApi(req, res, url, { home: this.home })) return;
+    // Goals tab + Artifacts | Media library — phoneLibrary.ts. Lists only
+    // what /gateway/file below will serve (same roots, same refusals).
+    {
+      const fileRoots = [...(this.opts.phoneApi?.screenshotRoots ?? []), ...(this.opts.phoneApi?.artifactRoots ?? [])];
+      const libraryRoots: Array<[string, number]> = [
+        [path.join(this.home, "media"), 3],
+        [path.join(this.home, "forge"), 3],
+        ...(this.opts.phoneApi?.artifactRoots ?? []).filter((r) => r !== this.home && r !== os.tmpdir()).map((r): [string, number] => [r, 2]),
+      ];
+      const servable = (p: string) => Boolean(ARTIFACT_TYPES[path.extname(p).toLowerCase()]) && insideAny(path.resolve(p), fileRoots);
+      if (await handleLibraryApi(req, res, url, { roots: libraryRoots, servable, home: this.home })) return;
+    }
     const api = this.opts.phoneApi ?? {};
 
     try {

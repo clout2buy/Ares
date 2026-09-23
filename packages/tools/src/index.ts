@@ -182,6 +182,7 @@ export {
   type ApprovedCheckout,
 } from "./Checkout.js";
 export { DeviceTool, type DeviceOutput } from "./Device.js";
+export { GoalsTool, GoalsStore, goalsPath, GOAL_CATEGORIES, type LifeGoal, type GoalCategory, type GoalsOutput } from "./Goals.js";
 export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, buildRfc2822, planUnsubscribe, gmailBodyText, findCodeInputProblem, CODE_HANDLE_TTL_MS, type GmailOutput } from "./Gmail.js";
@@ -245,6 +246,7 @@ import { ConnectTool } from "./Connect.js";
 import { CheckoutTool } from "./Checkout.js";
 import { PhoneTool } from "./Phone.js";
 import { DeviceTool } from "./Device.js";
+import { GoalsTool } from "./Goals.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
@@ -296,6 +298,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       CheckoutTool,
       PhoneTool,
       DeviceTool,
+      GoalsTool,
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
@@ -334,6 +337,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       CheckoutTool,
       PhoneTool,
       DeviceTool,
+      GoalsTool,
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,

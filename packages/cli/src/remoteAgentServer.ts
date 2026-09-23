@@ -40,6 +40,7 @@ import {
 import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
 import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
+import { handleOwnerControlRoute, type OwnerControlHooks } from "./phoneOwnerControl.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -240,6 +241,9 @@ export interface PhoneApiHooks {
     /** false when the pattern wasn't found or isn't the owner's to revoke. */
     revokePermission: (pattern: string) => Promise<boolean>;
   };
+  /** The owner's control plane: kill switch, pause, jobs, audit log (see
+   *  phoneOwnerControl.ts for the routes and shapes). */
+  ownerControl?: OwnerControlHooks;
 }
 
 /** One row in the model picker. */
@@ -1460,6 +1464,10 @@ export class RemoteAgentServer {
     const api = this.opts.phoneApi ?? {};
 
     try {
+      if (api.ownerControl) {
+        const reply = await handleOwnerControlRoute(req.method, url, () => readJson(req, 4 * 1024), api.ownerControl);
+        if (reply) return json(reply.status, reply.body);
+      }
       switch (`${req.method} ${url.pathname}`) {
         case "GET /gateway/shot":
         case "GET /gateway/file": {
@@ -1524,9 +1532,13 @@ export class RemoteAgentServer {
           // One cheap round trip for everything the settings sheet opens with.
           // Models are deliberately NOT here: they can cost a provider API
           // call each, and the sheet only needs them once a provider is picked.
-          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          // The kill-switch state rides along: paused/pausedAt/running.
+          const owner = api.ownerControl?.status();
+          if (!api.control) {
+            return owner ? json(200, owner) : json(501, { error: "this machine exposes no model or permission control" });
+          }
           const effort = api.control.effort();
-          return json(200, { providers: api.control.providers(), effort, permissions: api.control.permissions() });
+          return json(200, { providers: api.control.providers(), effort, permissions: api.control.permissions(), ...(owner ?? {}) });
         }
         case "GET /gateway/control/models": {
           if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });

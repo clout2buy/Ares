@@ -19,6 +19,8 @@ import type {
 import type { ToolCallContext, EngineToolEffectPolicy, EngineToolResult } from "@ares/core";
 import {
   renderRepositoryInstructions,
+  vaultAccessPrompt,
+  vaultAccessReason,
   type ResolvedRepositoryInstruction,
 } from "@ares/core";
 
@@ -626,6 +628,7 @@ export function adaptToolForEngine(
             input: parsed,
             reason: decision.prompt,
             suggestion: decision.suggestion,
+            ...(decision.ownerDecision ? { ownerDecision: true } : {}),
           });
         } catch (error) {
           throw markPreEffectError(error);
@@ -639,7 +642,10 @@ export function adaptToolForEngine(
         // doesn't re-ask. Path tools self-persist inside call() via
         // resolveWorkspacePath; command tools (Bash/PowerShell) route through
         // here. Non-command tools get a process-lifetime tool-name grant.
-        if (answer === "allow_always") {
+        // An owner-only question (a vault read, a recurring schedule) is
+        // answered for THIS call only: "Always" must never become a stored
+        // grant that lets the next one through unasked.
+        if (answer === "allow_always" && !decision.ownerDecision) {
           const command = tool.commandFor?.(parsed);
           // A destructive tool's "always" never outlives the process: the owner
           // approved an irreversible action, not a standing licence for one.
@@ -879,6 +885,19 @@ export function destructiveShellDecision(command: string): PermissionDecision | 
     }
   }
   return null;
+}
+
+/**
+ * A shell command that reads Ares's own secret store (credential vault, its
+ * key, OAuth token files, browser sessions, the garrison token) — see
+ * vaultGuard.ts in core. Always an owner-only question, checked BEFORE any
+ * stored "allow" rule: a grant for `cat *` must not become a grant to read
+ * the vault.
+ */
+export function vaultShellDecision(command: string): PermissionDecision | null {
+  const reason = vaultAccessReason(command);
+  if (!reason) return null;
+  return { kind: "ask", prompt: vaultAccessPrompt(reason), suggestion: "deny", ownerDecision: true };
 }
 
 /**

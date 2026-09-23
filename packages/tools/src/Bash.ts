@@ -9,6 +9,7 @@ import {
   buildTool,
   describeShellActivity,
   destructiveShellDecision,
+  vaultShellDecision,
   irrecoverableShellRefusal,
   resolveWorkspacePath,
   shellInputSchema,
@@ -71,6 +72,9 @@ export const BashTool = buildTool({
   async checkPermissions(i, ctx) {
     const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths);
     if (instructionDecision) return instructionDecision;
+    // The vault guard outranks every stored rule — see vaultShellDecision.
+    const vault = vaultShellDecision(i.command);
+    if (vault) return vault;
     const configured = ctx.commandPermissions?.decide("Bash", i.command);
     // A configured/stored deny|ask wins as before.
     if (configured && configured.kind !== "allow") return configured;

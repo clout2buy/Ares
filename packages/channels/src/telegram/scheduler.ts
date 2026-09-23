@@ -36,6 +36,14 @@ export interface Alarm {
   chatIds?: number[];
   /** ISO timestamp when this alarm was created. */
   createdAt: string;
+  /** Who armed it. Absent on alarms written before provenance was kept. */
+  createdBy?: "owner" | "ares";
+  /** A recurring alarm the agent created fires only with the owner's yes to
+   *  its schedule; approved:false is listed but never fires. */
+  approved?: boolean;
+  /** Last time it fired (ISO) and how that went — for the jobs list. */
+  lastRunAt?: string;
+  lastResult?: string;
 }
 
 export interface ScheduleData {
@@ -133,6 +141,10 @@ export interface SchedulerOptions {
   /** Check interval in ms. Default 60_000 (1 minute). */
   tickMs?: number;
   log?: (line: string) => void;
+  /** Owner pause (control plane): while true nothing fires. An alarm whose
+   *  minute passes during the pause fires on resume if still inside its
+   *  2-minute jitter window, otherwise it is skipped for the day. */
+  isPaused?: () => boolean;
 }
 
 export class TelegramScheduler {
@@ -142,6 +154,7 @@ export class TelegramScheduler {
   private readonly now: () => Date;
   private readonly tickMs: number;
   private readonly log: (line: string) => void;
+  private readonly isPaused: () => boolean;
 
   private schedule: ScheduleData = emptySchedule();
   private timer?: ReturnType<typeof setInterval>;
@@ -156,6 +169,7 @@ export class TelegramScheduler {
     this.now = opts.now ?? (() => new Date());
     this.tickMs = opts.tickMs ?? 60_000;
     this.log = opts.log ?? (() => {});
+    this.isPaused = opts.isPaused ?? (() => false);
   }
 
   async start(): Promise<void> {
@@ -216,7 +230,9 @@ export class TelegramScheduler {
     this.schedule = await loadSchedule(this.home);
   }
 
-  private tick(): void {
+  /** Exposed for tests and the control plane; the interval calls it. */
+  tick(): void {
+    if (this.isPaused()) return;
     const now = this.now();
     if (now.getDate() !== this.lastDay) {
       this.firedToday.clear();
@@ -228,6 +244,7 @@ export class TelegramScheduler {
 
     for (const alarm of this.schedule.alarms) {
       if (this.firedToday.has(alarm.id)) continue;
+      if (alarm.approved === false) continue;
       // Day filter: if days specified, only fire on those days.
       if (alarm.days?.length && !alarm.days.includes(dow)) continue;
       // Time match: fire in the alarm's minute or up to 2 minutes late (jitter).
@@ -240,6 +257,15 @@ export class TelegramScheduler {
 
   private fireAlarm(alarm: Alarm, now: Date): void {
     const ctx: CheckInContext = { alarm, now };
+    // A one-time alarm authorizes exactly ONE run. It used to be removed only
+    // after a successful send, so a failed send left it armed to fire again
+    // the next day at the same time — a second run nobody approved.
+    if (alarm.once) {
+      const { data } = removeAlarm(this.schedule, alarm.id);
+      this.schedule = data;
+      void saveSchedule(this.home, data).catch(() => {});
+      this.log(`one-shot alarm "${alarm.id}" consumed`);
+    }
     Promise.resolve(this.buildMessage(ctx))
       .then((text) => {
         if (alarm.chatIds?.length) {
@@ -249,14 +275,23 @@ export class TelegramScheduler {
       })
       .then((res) => {
         this.log(`alarm "${alarm.label}" sent to ${res.sent} chat(s)`);
-        if (alarm.once) {
-          const { data } = removeAlarm(this.schedule, alarm.id);
-          this.schedule = data;
-          void saveSchedule(this.home, data).catch(() => {});
-          this.log(`one-shot alarm "${alarm.id}" auto-removed`);
-        }
+        this.recordRun(alarm, now, `ok: sent to ${res.sent} chat(s)`);
       })
-      .catch((err) => this.log(`alarm "${alarm.label}" failed: ${err instanceof Error ? err.message : String(err)}`));
+      .catch((err) => {
+        const detail = err instanceof Error ? err.message : String(err);
+        this.log(`alarm "${alarm.label}" failed: ${detail}`);
+        this.recordRun(alarm, now, `error: ${detail.slice(0, 160)}`);
+      });
+  }
+
+  /** Stamp lastRunAt/lastResult on a recurring alarm (one-shots are gone). */
+  private recordRun(alarm: Alarm, now: Date, result: string): void {
+    if (alarm.once) return;
+    const current = this.schedule.alarms.find((a) => a.id === alarm.id);
+    if (!current) return;
+    current.lastRunAt = now.toISOString();
+    current.lastResult = result;
+    void saveSchedule(this.home, this.schedule).catch(() => {});
   }
 }
 

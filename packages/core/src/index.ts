@@ -680,3 +680,6 @@ export {
   type SecretHandleScope,
 } from "./secretHandles.js";
 export { appendAudit, readAudit, redactForAudit, auditDir, type AuditEntry } from "./audit.js";
+export { setAuditSink, recordAudit, auditTargetOf, auditActionOf, ToolAuditTracker, type AuditDraft } from "./auditEvents.js";
+export { ownerPause, registerStoppable, listStoppables, stopAllStoppables, type OwnerPauseWait, type StoppableKind, type StoppableEntry } from "./ownerControl.js";
+export { vaultAccessReason, vaultAccessPrompt } from "./vaultGuard.js";

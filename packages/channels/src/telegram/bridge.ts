@@ -41,6 +41,7 @@ import { isVisionImageType, mediaTypeForName, TelegramApiError } from "./api.js"
 import { voiceToText } from "./stt.js";
 import { textToVoice } from "./edgeTts.js";
 import { parseTelegramCommand, handleTelegramCommand, type TelegramCommandDeps } from "./commands.js";
+import { parseOwnerControlCommand, runOwnerControlCommand, type OwnerControlDeps } from "./ownerControl.js";
 import { sendConnectMenu, sendConnectOffer, handleConnectCallback, parseConnectCallback, type ConnectFlowDeps } from "./connect.js";
 import {
   newActivityCard,
@@ -206,6 +207,9 @@ export interface TelegramBridgeOptions {
   /** Remote PC deps. When set, Ares can connect to a coworker's PC on the fly
    *  via a one-time download link sent over Telegram. */
   remotePcDeps?: RemotePcBridgeDeps;
+  /** The garrison's owner control plane (/stopall /pause /resume /log /jobs
+   *  /cancel_job). Owner-only; absent → those commands fall through as before. */
+  ownerControl?: OwnerControlDeps;
   /** Ares home; non-image documents the user sends land in
    *  <home>/telegram/inbox/<chatId>/ so the agent can Read them. Default: tmpdir. */
   home?: string;
@@ -420,6 +424,11 @@ export class TelegramBridge {
   /** tool+input identity → the token already asking it, so a retrying tool
    *  reuses one prompt instead of posting the same question again. */
   private readonly permByKey = new Map<string, string>();
+  /** Actions the owner denied in a session's current turn. The garrison
+   *  refuses repeats without asking; this keeps them from posting a fresh
+   *  card that could only ever say "expired". Cleared at turn_end. */
+  private readonly deniedPermKeys = new Map<string, Set<string>>();
+  private readonly ownerControl?: OwnerControlDeps;
   private permTokenSeq = 0;
   /** chat|provider → when we last offered that connector, for the cooldown. */
   private readonly connectOffers = new Map<string, number>();
@@ -469,6 +478,7 @@ export class TelegramBridge {
     this.commands = opts.commands;
     this.connectDeps = opts.connectDeps;
     this.remotePcDeps = opts.remotePcDeps;
+    this.ownerControl = opts.ownerControl;
     this.home = opts.home ?? path.join(os.tmpdir(), "ares-telegram");
     if (opts.remotePcDeps) this.subscribeRemotePcEvents(opts.remotePcDeps);
   }
@@ -807,6 +817,26 @@ export class TelegramBridge {
       return;
     }
 
+    // The owner's control plane: a signal, not a chat message. Checked before
+    // any other command so /pause means the kill-switch pause for the owner.
+    if (this.ownerControl && this.owners.has(chatId)) {
+      const control = parseOwnerControlCommand(text);
+      if (control) {
+        const deps = this.ownerControl;
+        this.enqueueSend(chatId, async () => {
+          let reply: string;
+          try {
+            reply = await runOwnerControlCommand(deps, control);
+          } catch (err) {
+            this.log(`owner control ${control.kind} failed: ${errText(err)}`);
+            reply = `Couldn't ${control.kind}: ${errText(err)}`;
+          }
+          await this.api.sendMessage(chatId, reply);
+        });
+        return;
+      }
+    }
+
     // /new — drop this chat's session so the next message starts clean. Any
     // allowed chat may reset its OWN thread; it touches nobody else's.
     if (/^\/(new|reset)(?:@\w+)?$/i.test(text.trim())) {
@@ -927,6 +957,10 @@ export class TelegramBridge {
       } catch (err) {
         this.log(`command ${kind} failed: ${errText(err)}`);
         await this.api.sendMessage(chatId, "Command failed.");
+        return;
+      }
+      if (result.control && !this.owners.has(chatId)) {
+        await this.api.sendMessage(chatId, "Only the owner can do that.");
         return;
       }
       if (result.control && this.commands?.control) {
@@ -1424,6 +1458,7 @@ export class TelegramBridge {
         this.offerConnectorFor(chatId, errorEventText(event));
         break;
       case "turn_end": {
+        this.deniedPermKeys.delete(sessionId);
         const text = (this.turnText.get(sessionId) ?? "").trim();
         const err = this.turnError.get(sessionId);
         const shot = this.turnScreenshot.get(sessionId);
@@ -1812,6 +1847,7 @@ export class TelegramBridge {
     // used to post it again every time; now the live prompt absorbs the repeat
     // and one tap answers all of them.
     const key = permissionKey(sessionId, event.toolName, event.input);
+    if (this.deniedPermKeys.get(sessionId)?.has(key)) return;
     const existingToken = this.permByKey.get(key);
     const existing = existingToken ? this.permPrompts.get(existingToken) : undefined;
     if (existing && this.now() - existing.askedAt < PERM_DEDUPE_MS) {
@@ -1941,6 +1977,11 @@ export class TelegramBridge {
     if (!prompt) return false;
     this.permPrompts.delete(token);
     if (this.permByKey.get(prompt.key) === token) this.permByKey.delete(prompt.key);
+    if (decision === "deny") {
+      const denied = this.deniedPermKeys.get(prompt.sessionId) ?? new Set<string>();
+      denied.add(prompt.key);
+      this.deniedPermKeys.set(prompt.sessionId, denied);
+    }
     for (const requestId of prompt.requestIds) {
       this.sendFrame({ type: "permission.respond", sessionId: prompt.sessionId, requestId, decision });
     }

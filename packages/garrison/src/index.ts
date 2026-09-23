@@ -41,6 +41,7 @@ export {
   type SessionSendOptions,
   type SessionSendContext,
   type RehydratedSession,
+  type RunningTurn,
   type SessionSurface,
   type SessionTenant,
   normalizeSessionSurface,
@@ -57,7 +58,10 @@ export {
   type SchedulerHooks,
   type SchedulerHookName,
   type SchedulerEvent,
+  type SchedulerJobStatus,
 } from "./scheduler.js";
+
+export { canonicalActionKey, repeatDenialError } from "./ownerGuards.js";
 
 export {
   recordNightlyGauntlet,

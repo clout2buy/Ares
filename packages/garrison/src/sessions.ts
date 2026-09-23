@@ -43,6 +43,9 @@ import {
 } from "@ares/protocol";
 import {
   FrictionRecorder,
+  ToolAuditTracker,
+  appendAudit,
+  ownerPause,
   projectMessagesFromKernel,
   registerSessionLocation,
   stringifyModelToolOutput,
@@ -55,6 +58,7 @@ import {
 import type { Session as CoreSession } from "@ares/core";
 import type { SessionAttachment, SessionSummary } from "./protocol.js";
 import { garrisonDir } from "./token.js";
+import { canonicalActionKey, repeatDenialError } from "./ownerGuards.js";
 
 // ─── Surface + tenant (who opened the session, and who is talking) ──────
 //
@@ -245,6 +249,20 @@ export interface SessionManagerOptions {
    */
   beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
   now?: () => number;
+  /** Write every tool outcome and permission decision to the audit trail
+   *  (<home>/audit). Default true — this loop is the one place every
+   *  garrison turn passes through. */
+  audit?: boolean;
+}
+
+/** One in-flight turn as the owner's control panel shows it. */
+export interface RunningTurn {
+  sessionId: string;
+  title: string;
+  startedAt: string;
+  currentTool?: string;
+  /** Waiting at the door because the owner paused Ares. */
+  waitingForResume?: boolean;
 }
 
 interface LiveSession {
@@ -274,11 +292,23 @@ interface LiveSession {
   ioChain: Promise<void>;
   /** Original client hints, replayed when the engine is rebuilt after an interrupt. */
   requested: { provider?: string; model?: string; workspace?: string };
+  /** Owner control plane: tool starts awaiting their outcome (audit), the
+   *  tool running now, when the current turn began, the inputs of every
+   *  in-flight send (so stop-all can cancel queued ones too), and the actions
+   *  the owner denied this turn (the circuit breaker). */
+  audit: ToolAuditTracker;
+  currentTool?: string;
+  turnStartedAt?: number;
+  inFlightInputIds: Set<string>;
+  deniedThisTurn: Set<string>;
 }
 
 interface PendingPermission {
   resolve: (decision: PermissionPromptDecision) => void;
   timer: ReturnType<typeof setTimeout>;
+  sessionId: string;
+  /** canonicalActionKey of what was asked — tripped on an owner deny. */
+  action: string;
 }
 
 const FALLBACK_TITLE = "untitled session";
@@ -314,6 +344,10 @@ export class SessionManager {
   private readonly now: () => number;
   private readonly bootAt: number;
   private lastSend: number | undefined;
+  private readonly auditEnabled: boolean;
+  /** Aborted by stopAll() to release sends waiting out an owner pause. */
+  private stopController = new AbortController();
+  private readonly waitingSends = new Map<string, number>();
 
   constructor(opts: SessionManagerOptions) {
     this.home = opts.home;
@@ -324,6 +358,7 @@ export class SessionManager {
     this.beforeSend = opts.beforeSend;
     this.now = opts.now ?? Date.now;
     this.bootAt = this.now();
+    this.auditEnabled = opts.audit !== false;
   }
 
   create(
@@ -389,7 +424,26 @@ export class SessionManager {
     if (!session.coreSession && delivery === "steer") {
       throw new Error("steer delivery requires a canonical Core Session");
     }
+    // Owner pause: a new turn is admitted at the door but does not start
+    // until resume. A stop-all while it waits drops it — nothing was admitted.
+    if (ownerPause.paused) {
+      const stop = this.stopController.signal;
+      this.waitingSends.set(session.id, (this.waitingSends.get(session.id) ?? 0) + 1);
+      try {
+        await ownerPause.wait({ signal: stop });
+      } finally {
+        const left = (this.waitingSends.get(session.id) ?? 1) - 1;
+        if (left > 0) this.waitingSends.set(session.id, left);
+        else this.waitingSends.delete(session.id);
+      }
+      if (stop.aborted) throw new Error("stopped by owner before this turn started");
+      // A legacy engine has no input queue: another send may have won the
+      // race out of the same pause.
+      if (!session.coreSession && session.busy) throw new SessionBusyError(sessionId);
+    }
     session.inFlightSends += 1;
+    session.inFlightInputIds.add(inputId);
+    session.turnStartedAt ??= this.now();
     session.busy = true;
     this.lastSend = this.now();
     if (!session.titled) {
@@ -476,6 +530,7 @@ export class SessionManager {
         }
         this.appendRollout(session, event);
         session.friction?.record(event);
+        this.observeForOwner(session, event);
         // Match Core Session's turn boundary: when a client observes turn_end,
         // the complete rollout and friction envelope are already durable. This
         // closes a real reboot/rehydration race exposed by the front-door test.
@@ -494,6 +549,12 @@ export class SessionManager {
       session.inFlightSends = Math.max(0, session.inFlightSends - 1);
       session.busy = session.inFlightSends > 0;
       session.mirroredAdmissionIds.delete(inputId);
+      session.inFlightInputIds.delete(inputId);
+      if (!session.busy) {
+        session.turnStartedAt = undefined;
+        session.currentTool = undefined;
+        session.deniedThisTurn.clear();
+      }
       if (!session.coreSession && session.controller.signal.aborted) this.rebuildEngine(session);
       // Turn completion is the durability boundary for the shared telemetry
       // plane, matching core Session. Recording stays off the streaming path.
@@ -526,8 +587,82 @@ export class SessionManager {
     if (!pending) return false;
     this.pendingPermissions.delete(key);
     clearTimeout(pending.timer);
+    if (decision === "deny") this.live.get(pending.sessionId)?.deniedThisTurn.add(pending.action);
     pending.resolve(decision);
     return true;
+  }
+
+  // ─── Owner control plane ────────────────────────────────────────────────
+
+  /**
+   * Stop every in-flight turn in every session — the /stop path, for all of
+   * them at once — plus every send still waiting out a pause, and every
+   * queued input a canonical session had admitted behind the active one.
+   * Returns how many turns were live and how many waiting sends were dropped.
+   */
+  interruptAll(): { turns: number; waiting: number } {
+    let turns = 0;
+    for (const session of this.live.values()) {
+      if (!session.busy) continue;
+      turns += 1;
+      try {
+        if (session.coreSession) {
+          for (const inputId of [...session.inFlightInputIds]) {
+            try {
+              session.coreSession.interrupt(inputId);
+            } catch {
+              // already settled or not cancellable — the active interrupt below still lands
+            }
+          }
+          session.coreSession.interrupt();
+        } else {
+          session.controller.abort();
+        }
+      } catch {
+        // one wedged session must not shield the others from the stop
+      }
+    }
+    const waiting = [...this.waitingSends.values()].reduce((sum, n) => sum + n, 0);
+    this.stopController.abort();
+    this.stopController = new AbortController();
+    return { turns, waiting };
+  }
+
+  /** Deny every unanswered permission prompt. Returns how many. */
+  denyAllPendingPermissions(): number {
+    const pending = [...this.pendingPermissions.entries()];
+    for (const [key, entry] of pending) {
+      this.pendingPermissions.delete(key);
+      clearTimeout(entry.timer);
+      entry.resolve("deny");
+    }
+    return pending.length;
+  }
+
+  /** Every turn running (or waiting at the door) right now. */
+  runningTurns(): RunningTurn[] {
+    const out: RunningTurn[] = [];
+    for (const session of this.live.values()) {
+      const waiting = this.waitingSends.has(session.id);
+      if (!session.busy && !waiting) continue;
+      out.push({
+        sessionId: session.id,
+        title: session.title,
+        startedAt: new Date(session.turnStartedAt ?? this.now()).toISOString(),
+        ...(session.currentTool ? { currentTool: session.currentTool } : {}),
+        ...(waiting && !session.busy ? { waitingForResume: true } : {}),
+      });
+    }
+    return out;
+  }
+
+  /** Track the running tool and write the audit line an outcome completes. */
+  private observeForOwner(session: LiveSession, event: TurnEvent): void {
+    if (event.type === "tool_start") session.currentTool = event.name;
+    else if ((event.type === "tool_end" || event.type === "tool_error") && session.currentTool) session.currentTool = undefined;
+    if (!this.auditEnabled) return;
+    const entry = session.audit.observe(event);
+    if (entry) void appendAudit({ ...entry, actor: "ares", sessionId: session.id }, this.home);
   }
 
   /** Epoch ms of the last send anywhere (boot time before the first send). */
@@ -697,6 +832,9 @@ export class SessionManager {
       mirroredAdmissionIds: new Set(),
       controller,
       subscribers: new Set(),
+      audit: new ToolAuditTracker(),
+      inFlightInputIds: new Set(),
+      deniedThisTurn: new Set(),
       ioChain: fs
         .mkdir(sessionsDir(this.home), { recursive: true })
         .then(() => undefined)
@@ -787,8 +925,20 @@ export class SessionManager {
   }
 
   private permissionHandlerFor(sessionId: string) {
-    return (request: ToolPermissionRequest): Promise<PermissionPromptDecision> =>
-      new Promise((resolve) => {
+    return (request: ToolPermissionRequest): Promise<PermissionPromptDecision> => {
+      // Circuit breaker: the owner already said no to this exact action this
+      // turn — refuse without asking again (ownerGuards.ts).
+      const action = canonicalActionKey(request.toolName, request.input);
+      if (this.live.get(sessionId)?.deniedThisTurn.has(action)) {
+        if (this.auditEnabled) {
+          void appendAudit(
+            { actor: "ares", sessionId, action: `permission:${request.toolName}`, params: request.input, result: "denied (repeat of an owner denial)" },
+            this.home,
+          );
+        }
+        return Promise.reject(repeatDenialError(request.toolName));
+      }
+      return new Promise((resolve) => {
         const requestId = request.id ?? `perm_${randomUUID()}`;
         const key = permissionKey(sessionId, requestId);
         const timer = setTimeout(() => {
@@ -796,8 +946,9 @@ export class SessionManager {
           resolve("deny");
         }, this.permissionTimeoutMs);
         timer.unref?.();
-        this.pendingPermissions.set(key, { resolve, timer });
+        this.pendingPermissions.set(key, { resolve, timer, sessionId, action });
       });
+    };
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   buildTool,
   describeShellActivity,
   destructiveShellDecision,
+  vaultShellDecision,
   irrecoverableShellRefusal,
   resolveWorkspacePath,
   shellInputSchema,
@@ -51,6 +52,9 @@ export const PowerShellTool = buildTool({
   async checkPermissions(i, ctx) {
     const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths);
     if (instructionDecision) return instructionDecision;
+    // The vault guard outranks every stored rule — see vaultShellDecision.
+    const vault = vaultShellDecision(i.command);
+    if (vault) return vault;
     const configured = ctx.commandPermissions?.decide("PowerShell", i.command);
     // An explicit persisted/user grant is authoritative. Without this early
     // return the generic destructive heuristic could silently override an

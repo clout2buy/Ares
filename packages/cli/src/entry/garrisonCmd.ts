@@ -1,6 +1,9 @@
 // Extracted from entry.ts — garrisonCmd.
 
 import {
+  appendAudit,
+  ownerPause,
+  setAuditSink,
   composeVerifiedChildSessionSync,
   installGlobalCrashHandlers,
   loadChildVerificationDebt,
@@ -48,6 +51,7 @@ import { aresNetworkHostDoor, aresNetworkHostPublicUrl, aresNetworkHostStop, ori
 import { SessionPlanModeRegistry } from "./sessionPlanModes.js";
 import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
+import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
 
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
@@ -169,6 +173,10 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // The immutable catalog is shared, but mutable shell/todo state is routed by
   // ToolCallContext.sessionId. This keeps gateway sessions and their child
   // Workers from reading, polling, killing, or overwriting each other's state.
+  // The audit trail: subagents and operator workers record through this sink
+  // (the session loop writes its own). Installed only here — a desktop or test
+  // process never writes audit lines into a home that didn't ask for them.
+  setAuditSink((entry) => void appendAudit(entry, context.home));
   const shellRegistry = new ShellRegistry();
   const todoStore = new TodoStore();
   const sessionShellRegistries = new Map<string, ShellRegistry>();
@@ -379,6 +387,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
     activeTurns: () => sessions.list().filter((s) => s.busy).length,
+    // The owner's pause holds system jobs; every run lands in the audit trail.
+    isPaused: () => ownerPause.paused,
+    onRun: (hook, result) => void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home),
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
@@ -420,7 +431,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         {
           home: context.home,
           workspace: context.workspace,
-          dispatcher: new QueryEngineDispatcher({
+          // Each unattended step is a stoppable, pausable, audited job.
+          dispatcher: ownerControlledDispatcher(new QueryEngineDispatcher({
             provider: selection.provider,
             model: selection.model,
             workspace: context.workspace,
@@ -431,9 +443,12 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             sessionRegistryHome: context.home,
             requestPermission: async (request) => {
               const gate = gateToolPermission(request, { attended: false });
+              if (gate.kind !== "allow") {
+                void appendAudit({ actor: "operator", action: `permission:${request.toolName}`, params: request.input, result: "denied (unattended)" }, context.home);
+              }
               return gate.kind === "allow" ? "allow_once" : "deny";
             },
-          }),
+          }), (entry) => void appendAudit(entry, context.home)),
         },
         {
           everyMs: operatorTickIntervalMs(),
@@ -467,7 +482,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             return project?.nextActions ?? [];
           },
           // Remote /pause from Telegram (cross-process control flag) parks ticks.
-          paused: () => isOperatorPaused(context.home),
+          paused: async () => ownerPause.paused || (await isOperatorPaused(context.home)),
           emit: (event) => {
             process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "operator", ...event } }) + "\n");
             void telegramReporter?.report(event).catch(() => {});
@@ -475,6 +490,41 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           onError: () => {},
         },
       );
+
+  // The owner's control plane: kill switch, pause, jobs, audit — behind the
+  // phone's /gateway routes and Telegram's /stopall /pause /resume /log /jobs.
+  // Telegram alarms come up later with the bridge, hence the late binding.
+  let alarmScheduler: Awaited<ReturnType<typeof startTelegramCheckins>> = null;
+  const controlPlane = new OwnerControlPlane({
+    home: context.home,
+    sessions,
+    scheduler,
+    approvals,
+    alarms: () => alarmScheduler,
+    ...(operatorLoop
+      ? {
+          operator: {
+            get started() {
+              return operatorLoop.started;
+            },
+            everyMs: operatorTickIntervalMs(),
+            stop: () => operatorLoop.stop(),
+            start: () => operatorLoop.start(),
+          },
+        }
+      : {}),
+  });
+  const telegramOwnerControl = {
+    stopAll: () => controlPlane.telegramStopAll(),
+    pause: () => controlPlane.telegramPause(),
+    resume: () => controlPlane.telegramResume(),
+    log: () => controlPlane.telegramLog(),
+    jobs: () => controlPlane.telegramJobs(),
+    cancelJob: async (id: string) => {
+      const result = await controlPlane.cancelJob(id);
+      return `${result.ok ? "⏹" : "✕"} ${id}: ${result.detail}`;
+    },
+  };
 
   const requestedPort = Number(args.flags.get("port") ?? process.env.ARES_GARRISON_PORT ?? DEFAULT_GARRISON_PORT);
   // Filled in below; /health reads them live so a client can see whether the
@@ -630,6 +680,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             permissions: () => commandPermissions.list().map((r) => ({ pattern: r.pattern, effect: r.effect, source: r.source })),
             revokePermission: (pattern) => commandPermissions.revoke(pattern),
           },
+          ownerControl: controlPlane,
         },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable
@@ -665,7 +716,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // 30s if it isn't (or if the first attempt failed) — the owner connecting
   // Telegram from the app goes live without a restart.
   const startBridge = () => gatewayToken
-    ? startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl, operatorLoop, remoteAgentServer)
+    ? startTelegramBridge(context, `ws://127.0.0.1:${bound.port}`, gatewayToken, modelControl, operatorLoop, remoteAgentServer, telegramOwnerControl)
     : Promise.resolve(null);
   telegramBridge = await startBridge().catch((err) => {
     process.stderr.write(`garrison: telegram bridge failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -676,6 +727,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // Proactive scheduled check-ins over Telegram — 9am/12pm/3pm by default.
   // Each check-in includes weather for the owner's area when configured.
   const tgCheckinScheduler = await startTelegramCheckins(context).catch(() => null);
+  alarmScheduler = tgCheckinScheduler;
 
   process.stdout.write(
     notice(
@@ -700,6 +752,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       shuttingDown = true;
       process.stdout.write("\ngarrison: standing down…\n");
       uninstallGarrisonCrashHandlers();
+      setAuditSink(null);
       scheduler.stop();
       tgCheckinScheduler?.stop();
       operatorLoop?.stop();

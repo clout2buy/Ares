@@ -59,10 +59,20 @@ export function describePermissionInput(input: unknown): string | undefined {
 /**
  * Identity of a permission question: same session, same tool, same input is the
  * same question, however many times the model asks it. Inputs are serialized
- * with sorted keys so key order can't split one question into two prompts.
+ * with sorted keys so key order can't split one question into two prompts, and
+ * the fields that only explain WHY (a Bash `description`, a `reason`) are left
+ * out — rewording the justification does not make it a new question. Mirrors
+ * the garrison's canonicalActionKey (ownerGuards.ts), which refuses a repeat
+ * of a denied action; the two must agree or a refused repeat posts a card.
  */
+const COSMETIC_INPUT_KEYS = new Set(["description", "reason", "explanation", "justification", "rationale", "why"]);
+
 export function permissionKey(sessionId: string, toolName: string, input: unknown): string {
-  return `${sessionId}|${toolName}|${stableStringify(input).slice(0, 500)}`;
+  const identity =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([key]) => !COSMETIC_INPUT_KEYS.has(key)))
+      : input;
+  return `${sessionId}|${toolName}|${stableStringify(identity).slice(0, 500)}`;
 }
 
 function stableStringify(value: unknown): string {

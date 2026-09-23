@@ -165,7 +165,8 @@ export {
   type PlanModeStateSource,
 } from "./PlanMode.js";
 export { WeatherTool, getWeatherText, type WeatherOutput, type WeatherCondition, type WeatherForecast } from "./Weather.js";
-export { RemindTool, setRemindScheduler, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { RemindTool, setRemindScheduler, describeAlarmSchedule, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { requireScheduleApproval, ScheduleApprovalError } from "./scheduleApproval.js";
 export { TelegramTool, setTelegramChannel, getTelegramChannel, resolveTargets as resolveTelegramTargets, type TelegramOutput, type TelegramChannelLike } from "./Telegram.js";
 export { RemotePCTool, setRemoteAgentServer, getRemoteAgentServer, type RemotePCInput, type RemotePCOutput, type RemoteAgentServerLike } from "./RemotePC.js";
 export { ConnectTool, CONNECT_WAIT_MS, type ConnectOutput } from "./Connect.js";

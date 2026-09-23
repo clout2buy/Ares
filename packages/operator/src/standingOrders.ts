@@ -42,6 +42,12 @@ export interface StandingOrder {
   createdAt: string;
   lastRunAt?: string;
   runCount: number;
+  /** Who created it. Absent on orders written before provenance was kept. */
+  createdBy?: "owner" | "ares";
+  /** Recurring work runs only on an explicit yes that named its cadence. An
+   *  order written with approved:false is never materialized. Absent = legacy
+   *  (predates the rule) and keeps running. */
+  approved?: boolean;
 }
 
 function sanitizeId(id: string): string {
@@ -67,6 +73,8 @@ export function normalizeStandingOrder(input: Partial<StandingOrder> & { stateme
     createdAt: input.createdAt ?? now.toISOString(),
     lastRunAt: input.lastRunAt,
     runCount: input.runCount ?? 0,
+    ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+    ...(typeof input.approved === "boolean" ? { approved: input.approved } : {}),
   };
 }
 
@@ -98,10 +106,13 @@ export async function loadStandingOrders(home?: string): Promise<StandingOrder[]
 
 export async function addStandingOrder(
   home: string | undefined,
-  input: { statement: string; cadenceMs?: number },
+  input: { statement: string; cadenceMs?: number; createdBy?: "owner" | "ares"; approved?: boolean },
   now = new Date(),
 ): Promise<StandingOrder> {
-  const order = normalizeStandingOrder({ statement: input.statement, cadenceMs: input.cadenceMs }, now);
+  const order = normalizeStandingOrder(
+    { statement: input.statement, cadenceMs: input.cadenceMs, createdBy: input.createdBy, approved: input.approved },
+    now,
+  );
   if (!order.statement) throw new Error("a standing order needs a statement");
   await saveStandingOrder(home, order);
   return order;
@@ -129,7 +140,7 @@ export async function setStandingOrderEnabled(home: string | undefined, id: stri
 export function dueStandingOrders(orders: readonly StandingOrder[], now: Date): StandingOrder[] {
   const t = now.getTime();
   return orders.filter((o) => {
-    if (!o.enabled) return false;
+    if (!o.enabled || o.approved === false) return false;
     if (!o.lastRunAt) return true;
     return t - Date.parse(o.lastRunAt) >= o.cadenceMs;
   });

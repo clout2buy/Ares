@@ -6,6 +6,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { stdout } from "node:process";
 import { buildTool } from "@ares/tools";
+import { registerStoppable } from "@ares/core";
 import { z } from "zod";
 import { loadUiSettings, type UiSettings } from "../uiSettings.js";
 import { TrustGovernor } from "@ares/operator";
@@ -150,6 +151,24 @@ export function makeBrowserTool(
   // browser's challenge handler (bound once at creation) reaches THIS turn's
   // approval card instead of only the garrison gateway.
   let promptApprover: RailsContext["requestApproval"] | null = null;
+  // The owner's stop-all closes the browser Ares is driving (ownerControl.ts
+  // in core): a kill switch that leaves a checkout tab mid-click is not one.
+  // Registered for the tool's lifetime; stop() reports false when no browser
+  // is open so the owner's count stays honest. The next Browser call simply
+  // opens a fresh one.
+  registerStoppable({
+    kind: "browser",
+    id: `browser:${context.home}`,
+    label: "Ares browser",
+    persistent: true,
+    stop: async () => {
+      const open = browser;
+      if (!open) return false;
+      browser = null;
+      await open.close().catch(() => undefined);
+      return true;
+    },
+  });
 
   const ensureBrowser = async (headless?: boolean, attachOnly = false, cdpUrl?: string): Promise<BrowserConnector> => {
     if (browser?.strategy === "extension:native-messaging" && !extensionBridge?.connected()) {

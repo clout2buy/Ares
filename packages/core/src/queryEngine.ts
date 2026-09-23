@@ -38,6 +38,7 @@ import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
 import { currentSubagentDepth } from "./subagentDepth.js";
 import { TurnGuards } from "./turnGuards.js";
 import { modelLikelyHasVision } from "./modelVision.js";
+import { ownerPause } from "./ownerControl.js";
 import {
   estimateTextTokens,
   estimateImageTokens,
@@ -4680,6 +4681,26 @@ export class QueryEngine {
     effectEpoch: number,
   ): Promise<ToolExecutionOutcome> {
     const t0 = Date.now();
+    // Owner pause (control plane, ownerControl.ts): freeze at this tool
+    // boundary — before the checkpoint and durable admission, so nothing is
+    // half-started while the owner inspects. Bounded by this tool's own
+    // watchdog budget: a pause that outlasts it fails the call instead of
+    // wedging the turn. An interrupt during the pause terminates it.
+    if (ownerPause.paused) {
+      const budgetMs = watchdogTimeoutMsFor(use.tool.schema, use.input) || UNCAPPED_TOOL_CEILING_MS;
+      const waited = await ownerPause.wait({ signal: this.liveSignal(), timeoutMs: budgetMs });
+      if (waited !== "clear") {
+        const message = waited === "timeout"
+          ? `Tool ${use.name} was not run: paused by owner. Nothing was executed. Do not retry or start other work — end your turn with a one-line status; the owner will resume you.`
+          : `Tool ${use.name} was not run: stopped by owner while paused.`;
+        emit({ type: "tool_error", id: use.id, error: message, durationMs: Date.now() - t0 });
+        return {
+          toolUseId: use.id,
+          finishedAt: Date.now(),
+          result: { type: "tool_result", tool_use_id: use.id, content: message, is_error: true },
+        };
+      }
+    }
     let checkpointId: string | undefined;
     if (shouldCheckpointBeforeTool(use.safety) && this.cfg.beforeToolUseCheckpoint) {
       // Declared single-file target (Edit/Write) → the host can snapshot
@@ -4805,6 +4826,11 @@ export class QueryEngine {
                     if (wakeSignal.aborted || this.steeringWakeEpoch !== effectEpoch) {
                       return { kind: "steering" as const };
                     }
+                    // A host that refuses by THROWING a PermissionDeniedError
+                    // (the garrison's circuit breaker: "already denied, don't
+                    // re-ask") still owes every surface the closing response,
+                    // or the prompt it just showed stays open forever.
+                    if (isPermissionDeniedError(error)) emit({ type: "permission_response", id, decision: "deny" });
                     throw error;
                   });
                 const outcome = await Promise.race([decision, steering]).finally(() => {

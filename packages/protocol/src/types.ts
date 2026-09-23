@@ -373,7 +373,14 @@ export type PermissionPromptSuggestion = PermissionPromptDecision;
 
 export type PermissionDecision =
   | { kind: "allow"; reason?: string }
-  | { kind: "ask"; prompt: string; suggestion?: PermissionPromptSuggestion }
+  | {
+      kind: "ask";
+      prompt: string;
+      suggestion?: PermissionPromptSuggestion;
+      /** Only the owner may answer (see ToolPermissionRequest.ownerDecision):
+       *  never auto-approved by bypass/remote-autonomy postures. */
+      ownerDecision?: boolean;
+    }
   | { kind: "deny"; reason: string };
 
 export type PermissionRuleEffect = "allow" | "ask" | "deny";

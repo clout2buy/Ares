@@ -20,7 +20,7 @@
 // regress the freedom posture the owner chose.
 
 import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effects";
-import type { ToolPermissionRequest } from "@ares/core";
+import { vaultAccessReason, type ToolPermissionRequest } from "@ares/core";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -54,6 +54,9 @@ export function remoteAutonomyDecision(request: ToolPermissionRequest): "allow" 
   // durable plan revision. A remote model can propose it, but only the owner
   // can cross this boundary; never let the autonomy default self-approve it.
   if (request.toolName === "ExitPlanMode") return "ask";
+  // Any owner-only question (a vault read, a recurring schedule) goes to the
+  // owner — autonomy never answers on the owner's behalf.
+  if (request.ownerDecision) return "ask";
   const category = classifyToolRequest(request);
   // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
   if (category === null) return "allow";
@@ -105,6 +108,13 @@ function commandOf(request: ToolPermissionRequest): string {
   return typeof input?.command === "string" ? input.command : "";
 }
 
+/** The path a file tool acts on (file_path or path), if any. */
+function pathOf(request: ToolPermissionRequest): string {
+  const input = request.input as { file_path?: unknown; path?: unknown } | null | undefined;
+  const value = typeof input?.file_path === "string" ? input.file_path : input?.path;
+  return typeof value === "string" ? value : "";
+}
+
 /** The `action` discriminator for action-style tools (Gmail/Calendar/Connect). */
 function actionOf(request: ToolPermissionRequest): string {
   const input = request.input as { action?: unknown } | null | undefined;
@@ -115,6 +125,9 @@ function actionOf(request: ToolPermissionRequest): string {
 export function classifyShell(rawCommand: string): ActionCategory {
   const cmd = rawCommand.replace(/\s+/g, " ").trim();
   if (!cmd) return "shell_mutating";
+  // Reading the credential vault by script is a credential action whatever
+  // the verb — `cat` is read-only to the disk and a leak to the owner.
+  if (vaultAccessReason(cmd)) return "credential_or_secret";
   if (DESTRUCTIVE_SHELL.test(cmd)) return "shell_destructive";
   if (/\bgit\s+push\b/i.test(cmd)) return "git_push";
   if (GIT_READONLY.test(cmd)) return "shell_readonly";
@@ -143,6 +156,16 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
     case "Bash":
     case "PowerShell":
       return classifyShell(commandOf(request));
+    // File tools pointed at the vault are credential reads too (the same
+    // locations the shell guard knows, checked as a path).
+    case "Read":
+    case "Grep":
+    case "Glob":
+    case "Edit":
+    case "Write": {
+      const target = pathOf(request);
+      return target && vaultAccessReason(`cat ${JSON.stringify(target)}`) ? "credential_or_secret" : null;
+    }
     // ComputerUse drives the REAL desktop (mouse/keyboard/screen). No dedicated
     // category — treat as "unknown" so it's conservatively staged, never silent,
     // but never a hard block (the owner legitimately uses it).
@@ -215,6 +238,16 @@ function mcpToolOf(request: ToolPermissionRequest): string | undefined {
  * attended axis. PURE — no I/O.
  */
 export function gateToolPermission(request: ToolPermissionRequest, opts: GateOptions): GateOutcome {
+  // An owner decision is never deferred to a legacy auto-allow: ask when the
+  // owner is there, refuse when nobody is.
+  if (request.ownerDecision) {
+    return {
+      kind: opts.attended ? "ask" : "deny",
+      category: null,
+      hardBlocked: true,
+      reason: opts.attended ? "only the owner can answer this" : "denied: needs the owner's decision and no owner is present (unattended)",
+    };
+  }
   const category = classifyToolRequest(request);
   if (category === null) return { kind: "defer", category: null, hardBlocked: false };
 

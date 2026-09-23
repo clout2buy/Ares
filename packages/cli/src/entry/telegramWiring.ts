@@ -1,6 +1,6 @@
 // Extracted from entry.ts — telegramWiring.
 
-import { installGlobalCrashHandlers } from "@ares/core";
+import { installGlobalCrashHandlers, ownerPause } from "@ares/core";
 import { readFile } from "node:fs/promises";
 import { getWeatherText, setRemindScheduler, setTelegramChannel } from "@ares/tools";
 import { notice } from "../terminalUi.js";
@@ -8,7 +8,7 @@ import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegr
 import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
 import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions } from "@ares/mind";
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
-import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, type RemotePcBridgeDeps } from "@ares/channels";
+import { type OwnerControlDeps, TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, type RemotePcBridgeDeps } from "@ares/channels";
 import type { RemoteAgentServer } from "../remoteAgentServer.js";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getConnectBroker, resolveConnectService, type OAuthTokens } from "@ares/core";
 
@@ -115,7 +115,8 @@ function telegramCommandDeps(context: CliRuntimeContext, modelControl?: Telegram
     standing: {
       list: async () => renderStandingOrders(await loadStandingOrders(context.home).catch(() => [])),
       add: async (statement: string, cadenceMs: number) => {
-        const o = await addStandingOrder(context.home, { statement, cadenceMs });
+        // Typed by the owner with its cadence — that IS the approval.
+        const o = await addStandingOrder(context.home, { statement, cadenceMs, createdBy: "owner", approved: true });
         return o.id;
       },
       cancel: async (id: string) => removeStandingOrder(context.home, id),
@@ -141,7 +142,7 @@ const lifecycleLog = (line: string) => process.stdout.write(JSON.stringify({ typ
 /** Start the Telegram bridge in-process when configured (garrison auto-start) —
  *  no second terminal. Best-effort: a Telegram failure never touches the daemon.
  *  Returns the bridge (to stop on shutdown) or null when not configured. */
-export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null, remoteAgentServer?: RemoteAgentServer | null): Promise<TelegramBridge | null> {
+export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null, remoteAgentServer?: RemoteAgentServer | null, ownerControl?: OwnerControlDeps): Promise<TelegramBridge | null> {
   const adoption = await adoptLegacyTelegramConfig().catch((err) => ({ adopted: false, note: `legacy Telegram adoption failed: ${err instanceof Error ? err.message : String(err)}` }));
   if (adoption.note) lifecycleLog(adoption.note);
   if (!(await telegramConfigured().catch(() => false))) return null;
@@ -168,6 +169,7 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
       home: context.home,
     },
     remotePcDeps: remoteAgentServer ? buildRemotePcDeps(remoteAgentServer) : undefined,
+    ...(ownerControl ? { ownerControl } : {}),
     home: context.home,
   });
   bridge.start();
@@ -233,6 +235,8 @@ export async function startTelegramCheckins(context: CliRuntimeContext): Promise
       return lines.join("\n");
     },
     log: tgLog,
+    // The owner's pause holds alarms too (ownerControl.ts in core).
+    isPaused: () => ownerPause.paused,
   });
   await tgScheduler.start();
   // Inject into the Remind tool so the agent can add/remove/list alarms at runtime.

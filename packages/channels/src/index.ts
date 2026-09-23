@@ -169,3 +169,10 @@ export type {
   WebSocketLike,
   WebSocketCtor,
 } from "./types.js";
+
+export {
+  parseOwnerControlCommand,
+  runOwnerControlCommand,
+  type OwnerControlDeps,
+  type OwnerControlKind,
+} from "./telegram/ownerControl.js";

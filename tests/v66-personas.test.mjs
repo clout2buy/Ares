@@ -280,10 +280,23 @@ test("an alarm set in a persona's thread runs back in that thread and pushes as 
     renderAlarms: async () => "",
   });
   t.after(() => setRemindScheduler(null));
+  const asked = [];
   await RemindTool.call(
     { action: "add", label: "Charges check", hour: 9, minute: 0, prompt: "Check for new card charges since yesterday." },
-    { sessionId: bob.sessionId, workspace: home, signal: new AbortController().signal },
+    // A recurring check is the owner's call (the kill switch's schedule gate):
+    // Bob asks, the owner approves the daily schedule once.
+    {
+      sessionId: bob.sessionId,
+      workspace: home,
+      signal: new AbortController().signal,
+      requestPermission: async (req) => {
+        asked.push(req);
+        return "allow_once";
+      },
+    },
   );
+  assert.equal(asked.length, 1, "the owner was asked to approve the recurring schedule");
+  assert.equal(asked[0].ownerDecision, true);
   assert.equal(added[0].sessionId, bob.sessionId);
   assert.equal(added[0].prompt, "Check for new card charges since yesterday.");
 

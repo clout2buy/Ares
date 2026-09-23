@@ -64,6 +64,15 @@ test("sync → Device tool reads it back with its age; forget removes it", async
   const status = await (await fetch(`${base}/gateway/device`)).json();
   assert.equal(status.kinds.calendar.count, 2);
 
+  // Reminders arrive on their own and must not wipe the events (and back).
+  await post("calendar", { reminders: [{ title: "Call mom", list: "Personal" }] });
+  const stillThere = await DeviceTool.call({ action: "calendar", days: 7, limit: 25 }, { signal });
+  assert.equal(stillThere.output.items[0].title, "Dentist");
+  const rem = await DeviceTool.call({ action: "reminders", days: 7, limit: 25 }, { signal });
+  assert.deepEqual(rem.output.items.map((r) => r.title), ["Call mom"]);
+  await post("reminders/forget", {});
+  assert.equal((await DeviceTool.call({ action: "calendar", days: 7, limit: 25 }, { signal })).output.items.length, 1, "forgetting reminders keeps events");
+
   assert.deepEqual(await post("contacts/forget", {}), { ok: true });
   const gone = await DeviceTool.call({ action: "contacts", query: "sam", days: 7, limit: 25 }, { signal });
   assert.ok(gone.failure);

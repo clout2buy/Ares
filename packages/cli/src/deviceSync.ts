@@ -11,9 +11,13 @@
 //
 //   POST /gateway/device/health    {days:[{date, steps?, restingHr?, avgHr?, sleepMinutes?, activeKcal?, workouts?:[{type,start,minutes?,kcal?}]}]}
 //   POST /gateway/device/contacts  {contacts:[{name, phones?:string[], emails?:string[]}]}
-//   POST /gateway/device/calendar  {events:[{title,start,end?,location?,calendar?}], reminders?:[{title,due?,completed?}]}
+//   POST /gateway/device/calendar  {events?:[{title,start,end?,location?,calendar?,allDay?}], reminders?:[{title,due?,completed?,list?}]}
+//        Calendar and Reminders are separate opt-ins on the phone, so they
+//        arrive as separate posts: each list present in the body replaces
+//        that list; a missing key leaves the other list untouched.
 //        200 {ok:true, stored:<count>}
-//   POST /gateway/device/<kind>/forget   200 {ok:true}
+//   POST /gateway/device/<kind>/forget   200 {ok:true}   (kind: health|contacts|calendar|reminders;
+//        calendar forgets only events, reminders only reminders)
 //   GET  /gateway/device                 200 {kinds:{health?:{syncedAt,count}, contacts?:…, calendar?:…}}
 //
 // Stored at <ARES_HOME>/device/<kind>.json, owner-only file mode. Sizes are
@@ -103,15 +107,20 @@ export function normalizeDevicePayload(kind: DeviceKind, body: Record<string, un
     const row = e as Record<string, unknown>;
     const title = str(row.title);
     const start = str(row.start, 40);
-    return title && start ? [compact({ title, start, end: str(row.end, 40), location: str(row.location), calendar: str(row.calendar, 80) })] : [];
+    return title && start ? [compact({ title, start, end: str(row.end, 40), location: str(row.location), calendar: str(row.calendar, 80), allDay: row.allDay === true ? true : undefined })] : [];
   });
   const reminders = (Array.isArray(body.reminders) ? body.reminders : []).slice(0, cap).flatMap((r) => {
     if (!r || typeof r !== "object") return [];
     const row = r as Record<string, unknown>;
     const title = str(row.title);
-    return title ? [compact({ title, due: str(row.due, 40), completed: row.completed === true ? true : undefined })] : [];
+    return title ? [compact({ title, due: str(row.due, 40), completed: row.completed === true ? true : undefined, list: str(row.list, 80) })] : [];
   });
-  return { data: { events, reminders }, count: events.length + reminders.length };
+  // Only the lists actually sent — the caller merges, so a Reminders-only
+  // sync doesn't wipe the calendar events (and vice versa).
+  return {
+    data: { ...(Array.isArray(body.events) ? { events } : {}), ...(Array.isArray(body.reminders) ? { reminders } : {}) },
+    count: events.length + reminders.length,
+  };
 }
 
 export async function readDeviceSnapshot(kind: DeviceKind, home?: string): Promise<DeviceSnapshot | null> {
@@ -162,17 +171,29 @@ export async function handleDeviceApi(req: IncomingMessage, res: ServerResponse,
       json(200, { kinds });
       return true;
     }
-    const kind = parts[0] as DeviceKind;
+    // "reminders" is its own opt-in on the phone but lives in the calendar snapshot.
+    const asked = parts[0] ?? "";
+    const kind = (asked === "reminders" ? "calendar" : asked) as DeviceKind;
     if (!DEVICE_KINDS.includes(kind) || req.method !== "POST" || parts.length > 2 || (parts.length === 2 && parts[1] !== "forget")) {
       json(404, { error: "unknown device route" });
       return true;
     }
     if (parts[1] === "forget") {
-      await fs.rm(deviceFile(kind, opts.home), { force: true });
+      if (kind === "calendar") {
+        const snap = await readDeviceSnapshot("calendar", opts.home);
+        const keep = { ...(snap?.data ?? {}) };
+        delete keep[asked === "reminders" ? "reminders" : "events"];
+        if (Object.keys(keep).length) await writeSnapshot("calendar", { syncedAt: snap!.syncedAt, data: keep }, opts.home);
+        else await fs.rm(deviceFile("calendar", opts.home), { force: true });
+      } else {
+        await fs.rm(deviceFile(kind, opts.home), { force: true });
+      }
       json(200, { ok: true });
       return true;
     }
-    const { data, count } = normalizeDevicePayload(kind, await readBody(req));
+    const body = await readBody(req);
+    const { data: sent, count } = normalizeDevicePayload(kind, asked === "reminders" && !Array.isArray(body.reminders) ? { reminders: body.items ?? [] } : body);
+    const data = kind === "calendar" ? { ...((await readDeviceSnapshot("calendar", opts.home))?.data ?? {}), ...sent } : sent;
     await writeSnapshot(kind, { syncedAt: new Date().toISOString(), data }, opts.home);
     json(200, { ok: true, stored: count });
     return true;

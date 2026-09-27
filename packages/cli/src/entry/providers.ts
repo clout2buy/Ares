@@ -490,7 +490,7 @@ async function daemonModelCatalogRaw(provider: string): Promise<DaemonModelOptio
     // happily passes through as "a key" and suppresses the env fallback. That
     // alone made discovery return nothing on a machine configured by env.
     const key = settings.deepSeekKey || process.env.DEEPSEEK_API_KEY || process.env.ARES_DEEPSEEK_API_KEY || "";
-    const live = await fetchDeepSeekModels({ apiKey: key }).catch(() => []);
+    const live = await fetchDeepSeekModels({ apiKey: key, baseUrl: process.env.ARES_DEEPSEEK_BASE_URL }).catch(() => []);
     const discovered = live.length > 0;
     const rows = discovered ? live : [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }];
     const labels: Record<string, string> = {
@@ -841,10 +841,11 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
     // budget_tokens. x-api-key skips the OAuth identity branch (no Claude-Code
     // leak). ARES_DEEPSEEK_DIALECT=openai forces the legacy OpenAI-compat path.
     const useOpenAiDialect = process.env.ARES_DEEPSEEK_DIALECT === "openai";
+    const baseUrl = process.env.ARES_DEEPSEEK_BASE_URL;
     const deepSeekKey = settings.deepSeekKey || process.env.DEEPSEEK_API_KEY || "";
     return {
       provider: useOpenAiDialect
-        ? new DeepSeekProvider({ apiKey: deepSeekKey, model })
+        ? new DeepSeekProvider({ apiKey: deepSeekKey, model, baseUrl })
         : new AnthropicProvider({
             apiKey: deepSeekKey || undefined,
             // /anthropic is the base; the Messages API path appends like Anthropic's own.
@@ -857,7 +858,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       preflight: async () => {
         if (!deepSeekKey) return { ok: false, error: "DeepSeek API key is missing. Add it in Settings → API Keys." };
         try {
-          const models = await fetchDeepSeekModels({ apiKey: deepSeekKey });
+          const models = await fetchDeepSeekModels({ apiKey: deepSeekKey, baseUrl });
           if (!models.some((item) => item.id === model)) {
             return { ok: false, error: `DeepSeek model \"${model}\" is not enabled for this API key.` };
           }

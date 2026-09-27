@@ -35,6 +35,7 @@ export interface PersonaView {
   id: string;
   name: string;
   emoji?: string;
+  photo?: string;
   color?: string;
   provider: string;
   model: string;
@@ -74,7 +75,7 @@ export interface PersonasApiDeps {
 
 class BadRequest extends Error {}
 
-async function readBody(req: IncomingMessage, limit = 32 * 1024): Promise<Record<string, unknown>> {
+async function readBody(req: IncomingMessage, limit = 1024 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
@@ -88,7 +89,7 @@ async function readBody(req: IncomingMessage, limit = 32 * 1024): Promise<Record
   return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 }
 
-type Patch = Partial<Pick<Persona, "name" | "emoji" | "color" | "provider" | "model" | "reasoningLevel" | "instructions">>;
+type Patch = Partial<Pick<Persona, "name" | "emoji" | "photo" | "color" | "provider" | "model" | "reasoningLevel" | "instructions">>;
 
 /** Validate the editable fields present in `body`. `required` lists the ones
  *  that must be there (create). Unknown fields are ignored. */
@@ -130,6 +131,11 @@ function parsePatch(body: Record<string, unknown>, required: Array<keyof Patch>,
     if ([...emoji].length > 8) throw new BadRequest("emoji must be a single emoji");
     out.emoji = emoji;
   }
+  const photo = take("photo");
+  if (photo !== undefined) {
+    if (photo && (!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(photo) || photo.length > 900_000)) throw new BadRequest("photo must be a JPEG under 675 KB");
+    out.photo = photo;
+  }
   const color = take("color");
   if (color !== undefined) {
     if (color && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) throw new BadRequest("color must be a #hex colour");
@@ -160,6 +166,7 @@ async function assertBrain(deps: PersonasApiDeps, provider: string, model: strin
 function tidy(p: Persona): Persona {
   const out: Persona = { ...p };
   if (!out.emoji) delete out.emoji;
+  if (!out.photo) delete out.photo;
   if (!out.color) delete out.color;
   if (!out.reasoningLevel) delete out.reasoningLevel;
   return out;
@@ -171,6 +178,7 @@ async function view(deps: PersonasApiDeps, p: Persona): Promise<PersonaView> {
     id: p.id,
     name: p.name,
     ...(p.emoji ? { emoji: p.emoji } : {}),
+    ...(p.photo ? { photo: p.photo } : {}),
     ...(p.color ? { color: p.color } : {}),
     provider: p.provider,
     model: p.model,
@@ -227,6 +235,7 @@ export async function handlePersonasApi(req: IncomingMessage, res: ServerRespons
           id: newPersonaId(),
           name: patch.name!,
           emoji: patch.emoji,
+          photo: patch.photo,
           color: patch.color,
           provider: patch.provider!,
           model: patch.model!,

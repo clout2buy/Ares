@@ -27,6 +27,7 @@ import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
+import { startFamilyReplies } from "./familyWiring.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
 import { ConnectHub } from "../connectHub.js";
 import { BrowserWatchHub, setBrowserWatchHub } from "../browserWatch.js";
@@ -797,11 +798,25 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         gatewayUrl: `ws://127.0.0.1:${bound.port}`,
         token: gatewayToken,
         push: phonePush,
+        agentName: (sessionId) => personaRuntime.store.bySession(sessionId)?.name ?? "Ares",
+        isMobileSession: (sessionId) => sessions.list().some((s) => s.id === sessionId && s.surface === "mobile" && s.tenant?.role !== "guest"),
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
       })
     : null;
   phoneNotifier?.start();
   if (phonePush.configured) process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line: "phone push armed (APNs)" } }) + "\n");
+  if (process.env.ARES_FAMILY_URL && process.env.ARES_FAMILY_TOKEN && (process.env.ARES_FAMILY_SELF === "noah" || process.env.ARES_FAMILY_SELF === "jamara")) {
+    startFamilyReplies({
+      home: context.home,
+      relay: process.env.ARES_FAMILY_URL,
+      token: process.env.ARES_FAMILY_TOKEN,
+      self: process.env.ARES_FAMILY_SELF,
+      store: personaRuntime.store,
+      sessions,
+      push: (message) => phonePush.configured ? phonePush.send(message) : Promise.resolve(),
+      log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "family", line } }) + "\n"),
+    });
+  }
 
   // The bridge comes up now if Telegram is configured, and keeps trying every
   // 30s if it isn't (or if the first attempt failed) — the owner connecting

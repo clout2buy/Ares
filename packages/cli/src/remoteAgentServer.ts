@@ -1500,6 +1500,23 @@ export class RemoteAgentServer {
       if (await handleLibraryApi(req, res, url, { roots: libraryRoots, servable, home: this.home })) return;
     }
     const api = this.opts.phoneApi ?? {};
+    if (url.pathname === "/gateway/family/messages" && (req.method === "GET" || req.method === "POST")) {
+      const relay = process.env.ARES_FAMILY_URL;
+      const token = process.env.ARES_FAMILY_TOKEN;
+      if (!relay || !token) return json(501, { error: "family messaging not configured" });
+      try {
+        const body = req.method === "POST" ? await readJson(req, 16 * 1024) : undefined;
+        const response = await fetch(`${relay}/messages`, {
+          method: req.method,
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+          signal: AbortSignal.timeout(10_000),
+        });
+        return json(response.status, await response.json());
+      } catch (err) {
+        return json(502, { error: err instanceof Error ? err.message : "family relay unavailable" });
+      }
+    }
     if (api.personas && (url.pathname === "/gateway/personas" || url.pathname.startsWith("/gateway/personas/"))) {
       if (await api.personas(req, res, url)) return;
     }

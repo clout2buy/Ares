@@ -182,8 +182,8 @@ export interface SessionSendOptions {
  *  mirror the desktop's contentFromUserInput, so a phone photo can never push
  *  a request past the provider's body cap. */
 export const MAX_ATTACHMENTS_PER_INPUT = 8;
-export const MAX_ATTACHMENT_BASE64_CHARS = 2_000_000;
-export const MAX_TOTAL_ATTACHMENT_BASE64_CHARS = 4_000_000;
+export const MAX_ATTACHMENT_BASE64_CHARS = 24_000_000;
+export const MAX_TOTAL_ATTACHMENT_BASE64_CHARS = 64_000_000;
 const ATTACHMENT_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 /** Validate a client-supplied attachments array. Returns the clean list, or
@@ -202,7 +202,7 @@ export function normalizeSessionAttachments(value: unknown): SessionAttachment[]
       return "session.send attachment mediaType must be image/png, image/jpeg, image/webp, or image/gif";
     }
     if (typeof a.data !== "string" || a.data.length === 0) return "session.send attachment data must be non-empty base64";
-    if (a.data.length > MAX_ATTACHMENT_BASE64_CHARS) return "session.send attachment is too large; each image must be about 1.5 MB or smaller";
+    if (a.data.length > MAX_ATTACHMENT_BASE64_CHARS) return "session.send image exceeds the 18 MB safety limit; choose a smaller file";
     total += a.data.length;
     if (total > MAX_TOTAL_ATTACHMENT_BASE64_CHARS) return "session.send attachments exceed the request budget; send fewer or smaller images";
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(a.data)) return "session.send attachment data is not base64";

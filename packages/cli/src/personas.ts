@@ -22,6 +22,7 @@ export interface Persona {
   id: string;
   name: string;
   emoji?: string;
+  photo?: string;
   color?: string;
   provider: string;
   model: string;
@@ -66,6 +67,7 @@ function normalize(raw: unknown): Persona | null {
     id,
     name,
     ...(str(r.emoji) ? { emoji: str(r.emoji) } : {}),
+    ...(str(r.photo) ? { photo: str(r.photo) } : {}),
     ...(str(r.color) ? { color: str(r.color) } : {}),
     provider,
     model,

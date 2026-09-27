@@ -182,8 +182,14 @@ export class PhonePush {
       req.setTimeout(15_000, () => settle(() => reject(new Error("apns timeout"))));
       req.on("error", (err) => settle(() => reject(err)));
       req.on("end", () => settle(() => resolve(status)));
+      const replyable = ["persona_message", "family_message"].includes(String(message.data?.kind));
       req.end(JSON.stringify({
-        aps: { alert: { title: message.title, body: message.body }, sound: "default" },
+        aps: {
+          alert: { title: message.title, body: message.body },
+          sound: "default",
+          ...(replyable ? { category: "ARES_TEXT_REPLY" } : {}),
+          ...(message.data?.sessionId || message.data?.threadId ? { "thread-id": String(message.data?.sessionId ?? message.data?.threadId) } : {}),
+        },
         ...(message.data ?? {}),
       }));
       req.resume();
@@ -208,6 +214,8 @@ export interface NotifierOptions {
   gatewayUrl: string;
   token: string;
   push: PhonePush;
+  agentName?: (sessionId: string) => string;
+  isMobileSession?: (sessionId: string) => boolean;
   log?: (line: string) => void;
   /** A turn shorter than this finished while they were still looking at it. */
   longTurnMs?: number;
@@ -226,6 +234,7 @@ export class PhoneNotifier {
   private timer?: NodeJS.Timeout;
   private readonly attached = new Set<string>();
   private readonly turnStartedAt = new Map<string, number>();
+  private readonly replyText = new Map<string, string>();
   private readonly log: (line: string) => void;
   private readonly longTurnMs: number;
 
@@ -292,13 +301,19 @@ export class PhoneNotifier {
     const type = String(event.type ?? "");
     if (type === "turn_start") {
       this.turnStartedAt.set(sessionId, Date.now());
+      this.replyText.delete(sessionId);
+      return;
+    }
+    if (type === "text_delta" && this.opts.isMobileSession?.(sessionId)) {
+      this.replyText.set(sessionId, ((this.replyText.get(sessionId) ?? "") + String(event.text ?? "")).slice(-500));
       return;
     }
     if (type === "permission_request") {
+      const agent = this.opts.agentName?.(sessionId) ?? "Ares";
       const tool = String(event.toolName ?? "a tool");
       const detail = describeInput(event.input);
       void this.opts.push.send({
-        title: "Ares needs permission",
+        title: `${agent} needs permission`,
         body: detail ? `${tool} — ${detail}` : tool,
         data: { kind: "permission", sessionId, requestId: String(event.id ?? "") },
         // A newer prompt replaces the older banner instead of stacking.
@@ -309,14 +324,17 @@ export class PhoneNotifier {
     if (type === "turn_end") {
       const startedAt = this.turnStartedAt.get(sessionId);
       this.turnStartedAt.delete(sessionId);
+      const reply = this.replyText.get(sessionId)?.trim();
+      this.replyText.delete(sessionId);
+      if (!this.opts.isMobileSession?.(sessionId)) return;
+      const agent = this.opts.agentName?.(sessionId) ?? "Ares";
       const failed = String(event.status ?? "") === "failed";
       const elapsed = startedAt ? Date.now() - startedAt : 0;
-      // A short turn finished while they were watching it; say nothing.
-      if (!failed && elapsed < this.longTurnMs) return;
+      if (!failed && !reply && elapsed < this.longTurnMs) return;
       void this.opts.push.send({
-        title: failed ? "Ares hit a problem" : "Ares finished",
-        body: failed ? "The turn ended without a reply." : `Done after ${Math.round(elapsed / 1000)}s.`,
-        data: { kind: "turn_end", sessionId },
+        title: failed ? `${agent} hit a problem` : agent,
+        body: failed ? "The turn ended without a reply." : reply ? reply.slice(0, 180) : `Done after ${Math.round(elapsed / 1000)}s.`,
+        data: { kind: !failed && reply ? "persona_message" : "turn_end", sessionId },
         collapseId: `turn-${sessionId}`,
       });
     }

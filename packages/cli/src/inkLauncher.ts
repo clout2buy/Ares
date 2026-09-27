@@ -611,7 +611,7 @@ function providerModelList(provider: ProviderId, settings: UiSettings): string[]
   if (provider === "anthropic") {
     return unique([
       settings.lastAnthropicModel,
-      ...(live ?? ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]),
+      ...(live ?? ["claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]),
     ]);
   }
   if (provider === "deepseek") {

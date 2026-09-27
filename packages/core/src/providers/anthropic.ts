@@ -58,12 +58,12 @@ export function usesAdaptiveThinking(model: string): boolean {
 
 /** Claude families with native adaptive thinking. */
 export function usesNativeAdaptiveThinking(model: string): boolean {
-  return /(?:fable|mythos)-?5|opus-4-[678]|sonnet-(?:4-6|5)/i.test(model);
+  return /(?:fable|mythos)-?5|opus-(?:4-[678]|5(?:-5)?)|sonnet-(?:4-6|5)/i.test(model);
 }
 
 /** Claude families with native output_config.effort support. */
 export function supportsAnthropicEffort(model: string): boolean {
-  return /(?:fable|mythos)-?5|opus-4-[5-8]|sonnet-(?:4-6|5)/i.test(model);
+  return /(?:fable|mythos)-?5|opus-(?:4-[5-8]|5(?:-5)?)|sonnet-(?:4-6|5)/i.test(model);
 }
 
 const ANTHROPIC_VERSION = "2023-06-01";

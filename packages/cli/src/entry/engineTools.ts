@@ -362,7 +362,7 @@ export async function buildEngineTools(
   const sandboxOnly = (await loadUiSettings().catch(() => null))?.computerMode === "sandbox";
   const HOST_ONLY_TOOLS = new Set([
     "Bash", "PowerShell", "BashOutput", "KillShell", "BackgroundTasks",
-    "ComputerUse", "Write", "Edit", "ApplyPatch", "Deploy",
+    "ComputerUse", "Write", "Edit", "ApplyPatch", "Deploy", "Instances",
   ]);
   const admittedToolDefs = sandboxOnly
     ? baseToolDefs.filter((tool) => !HOST_ONLY_TOOLS.has(tool.schema.name))

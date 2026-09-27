@@ -195,6 +195,16 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
     // capability the owner can approve. Treated like git_push (ask), not blocked.
     case "Deploy":
       return "git_push";
+    // Instances deploys separate, always-on copies of Ares on this host. Running
+    // them is ordinary machine work; a pairing link carries a token; purging an
+    // instance deletes another agent's memory and vault.
+    case "Instances": {
+      const action = actionOf(request);
+      if (action === "list" || action === "status" || action === "logs") return null;
+      if (action === "pair_link") return "credential_or_secret";
+      if (action === "remove") return (request.input as { purge?: unknown } | null)?.purge === true ? "shell_destructive" : "shell_mutating";
+      return "shell_mutating";
+    }
     case "Filesystem":
       return "file_write";
     // Checkout review: the owner approves the exact total before any order.

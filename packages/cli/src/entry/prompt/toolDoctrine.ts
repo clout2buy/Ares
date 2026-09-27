@@ -88,6 +88,10 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Deploy / Stripe / Email** are real-world reach: publish a built site and return the live URL, create a payment link, send a report. All three need their key in the environment and ALL confirm with the owner before acting. If a key is missing, name the exact env var rather than pretending you acted.",
   },
   {
+    tools: ["Instances"],
+    text: "**Instances** deploys a separate Ares on this Linux host when the owner asks for another agent, a copy of you, or a dedicated worker: `create` with a name and a purpose, then `pair_link` so the owner adds it on the phone and signs it in to its model. It is a different entity — its own memory, vault and keys; never copy yours into it, and don't talk to the owner as if it were you. `update` rolls freshly built code out to every instance. `remove` keeps its home unless purge (the owner must approve that).",
+  },
+  {
     tools: ["BashOutput", "KillShell", "BackgroundTasks"],
     section: true,
     text: `## Background work — you own every job you start

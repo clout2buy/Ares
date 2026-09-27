@@ -153,6 +153,27 @@ export {
   type ShotMeta,
 } from "./ComputerUse.js";
 export { DeployTool, type DeployOutput } from "./Deploy.js";
+export { InstancesTool, type InstancesOutput } from "./Instances.js";
+export {
+  Instances,
+  instanceConfig,
+  validateInstanceName,
+  pickPorts,
+  parseListeningPorts,
+  renderUnit,
+  renderEnvFile,
+  renderIdentity,
+  renderDockerfile,
+  addIngress,
+  removeIngress,
+  pairLink,
+  domainFromPublicUrl,
+  unitName,
+  type InstanceMeta,
+  type InstanceStatus,
+  type InstanceConfig,
+  type Runner,
+} from "./aresInstances.js";
 export { StripeTool, type StripeOutput } from "./Stripe.js";
 export { EmailTool, type EmailOutput } from "./Email.js";
 export { RequestUserActionTool, type RequestUserActionOutput } from "./RequestUserAction.js";
@@ -285,6 +306,7 @@ import { FlightBookingTool } from "./FlightBooking.js";
 import { WithingsTool } from "./Withings.js";
 import { TailscaleTool } from "./Tailscale.js";
 import { BankTool } from "./Bank.js";
+import { InstancesTool } from "./Instances.js";
 
 /** Home, car, travel, health and money connectors (all deferred). */
 export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
@@ -348,6 +370,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       SkillReadTool,
       MemoryTool,
       DeployTool,
+      InstancesTool,
       StripeTool,
       EmailTool,
       RequestUserActionTool,

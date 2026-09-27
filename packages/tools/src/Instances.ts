@@ -21,7 +21,7 @@ const inputSchema = z
     purpose: z.string().max(600).optional().describe("create: what this instance is for; written into its identity."),
     provider: z.string().optional().describe("create: model provider (default anthropic)."),
     model: z.string().optional().describe("create: model id (default claude-opus-5-5)."),
-    public_url: z.boolean().optional().describe("create: route https://<name>-ares.<domain> through the tunnel (default true when a domain is configured)."),
+    public_url: z.boolean().optional().describe("create: give it the fixed https://<name>-ares.<domain> address on the owner's tunnel (default true when a domain is configured). false: no fixed address; the instance falls back to its own temporary trycloudflare URL, so the phone link changes on restart."),
     guarded: z.boolean().optional().describe("create: keep permission prompts on inside the instance (default false: free mode inside its sandbox)."),
     memory: z.string().optional().describe("create: container memory cap, e.g. 4g."),
     cpus: z.string().optional().describe("create: CPU cap, e.g. 2."),

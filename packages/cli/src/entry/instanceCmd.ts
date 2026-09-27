@@ -3,6 +3,9 @@
 //   ares instance list
 //   ares instance create <name> [--purpose "…"] [--provider p] [--model m]
 //                        [--memory 4g] [--cpus 2] [--no-public] [--guarded] [--env-file path]
+//     --no-public: no fixed <name>-ares.<domain> route; the instance's garrison
+//     falls back to its own temporary trycloudflare URL.
+//     --env-file: KEY=VALUE lines added to the instance's env (e.g. a provider key).
 //   ares instance status|start|stop|restart|logs|pair <name>
 //   ares instance update [<name>]      rebuild the image from this checkout, restart
 //   ares instance image                rebuild the image only

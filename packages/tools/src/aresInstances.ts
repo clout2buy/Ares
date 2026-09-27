@@ -75,12 +75,12 @@ export const defaultRunner: Runner = (cmd, args, opts = {}) =>
   new Promise((resolve, reject) => {
     const program = opts.sudo ? "sudo" : cmd;
     const argv = opts.sudo ? ["-n", cmd, ...args] : args;
-    const child = spawn(program, argv, { stdio: ["pipe", "pipe", "pipe"], signal: opts.signal });
+    const child = spawn(program, argv, { stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], signal: opts.signal });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 120_000);
-    child.stdout.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
-    child.stderr.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
+    child.stdout?.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
+    child.stderr?.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
@@ -89,7 +89,11 @@ export const defaultRunner: Runner = (cmd, args, opts = {}) =>
       clearTimeout(timer);
       resolve({ code, stdout, stderr });
     });
-    child.stdin.end(opts.input ?? "");
+    if (child.stdin) {
+      // A command may exit before reading its input; that is its answer, not a crash.
+      child.stdin.on("error", () => {});
+      child.stdin.end(opts.input);
+    }
   });
 
 /** Host name of the owner's public URL minus its first label: ares.example.com → example.com. */

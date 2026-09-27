@@ -127,7 +127,8 @@ const STATIC_MODEL_CATALOG: Record<"openai" | "anthropic" | "mock", DaemonModelO
   ],
   anthropic: [
     { id: "claude-fable-5", label: "Claude Fable 5", hint: "flagship · adaptive extended thinking", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
-    { id: "claude-opus-5", label: "Claude Opus 5", hint: "newest Opus · deepest reasoning", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", hint: "newest Opus · deepest reasoning", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
+    { id: "claude-opus-5", label: "Claude Opus 5", hint: "prior Opus · deep reasoning", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
     { id: "claude-sonnet-5", label: "Claude Sonnet 5", hint: "frontier Sonnet · coding + agents", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", hint: "deep reasoning workhorse · 1M context", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", hint: "prior Opus · deep reasoning", group: "Anthropic", capabilities: ["tools", "reasoning", "vision"] },

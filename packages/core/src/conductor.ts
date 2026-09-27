@@ -27,6 +27,7 @@ import { extractFirstJson } from "./sideQuery.js";
 import { projectMessagesFromKernel } from "./session.js";
 import type { SessionKernelStore } from "./sessionKernel/index.js";
 import { withComposedVerifiedChildSession } from "./childSessionComposition.js";
+import { registerStoppable } from "./ownerControl.js";
 import type { VerifierOptions } from "./verifier.js";
 import {
   applyWorkspaceMutation,
@@ -62,7 +63,7 @@ export const SAFE_RESEARCH_TOOLS = new Set(["WebFetch", "WebSearch", "ImageSearc
  *  have irreversible outward effects (payment / mail / deploy / external account)
  *  or drive the real desktop; an unattended leaf must not reach them. (Recursion
  *  tools are handled separately by FORBIDDEN_CHILD_TOOLS.) */
-export const LEAF_NEVER_TOOLS = new Set(["Stripe", "Email", "Gmail", "GoogleCalendar", "Connect", "Deploy", "ComputerUse"]);
+export const LEAF_NEVER_TOOLS = new Set(["Stripe", "Email", "Gmail", "GoogleCalendar", "Connect", "Deploy", "ComputerUse", "Outlook", "GoogleDrive", "GoogleForms"]);
 
 // ─── Public spec types (what the model authors; the tool layer validates) ──
 
@@ -2138,6 +2139,19 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
   const onParentAbort = () => controller.abort();
   if (deps.signal.aborted) controller.abort();
   else deps.signal.addEventListener("abort", onParentAbort, { once: true });
+  // The owner's stop-all reaches a fleet directly: every leaf watches this
+  // controller, so one abort cuts the whole fleet without waiting on the
+  // parent turn to notice.
+  const unregisterOwnerStop = registerStoppable({
+    kind: "subagent",
+    id: fleetId,
+    label: `fleet ${fleetId}`,
+    stop: () => {
+      if (controller.signal.aborted) return false;
+      controller.abort();
+      return true;
+    },
+  });
   // Wall-clock backstop: the per-tool watchdog is intentionally OFF for fleets
   // (they legitimately run minutes), so a fork that hangs mid-await would never
   // return usage and never trip the token budget. Cap total wall-time — derived
@@ -2330,6 +2344,7 @@ export async function runFleet(spec: FleetSpec, deps: ConductorDeps): Promise<Fl
     failed = true;
   } finally {
     clearTimeout(wallClockTimer);
+    unregisterOwnerStop();
     deps.signal.removeEventListener("abort", onParentAbort);
   }
 

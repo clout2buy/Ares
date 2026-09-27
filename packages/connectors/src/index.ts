@@ -42,3 +42,4 @@ export {
   type HumanCheckOutcome,
   type HandoffResult,
 } from "./challenge.js";
+export { savedSessionLoader, savedSessionsDir } from "./savedSessions.js";

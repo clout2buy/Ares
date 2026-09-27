@@ -168,7 +168,7 @@ const fastTimers = {
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
-async function boot(allowedChatIds = [42]) {
+async function boot(allowedChatIds = [42], extra = {}) {
   const gateway = new FakeGateway();
   await gateway.listen();
   const tg = new FakeTelegram();
@@ -178,6 +178,7 @@ async function boot(allowedChatIds = [42]) {
     allowedChatIds,
     timers: fastTimers,
     pollTimeoutS: 1,
+    ...extra,
   });
   bridge.start();
   return { gateway, tg, bridge };
@@ -294,22 +295,41 @@ test("chunkMessage hard-caps pathological outputs with a truncation marker", () 
   for (const chunk of chunks) assert.ok(chunk.length <= 4000);
 });
 
-test("tool_start frames render one status message with throttled edits", async () => {
-  const ctx = await boot();
+// The card is opt-in since 2026-09-23 (ARES_TELEGRAM_ACTIVITY=1): by default a
+// turn shows only "typing…" and the reply. When it IS on, it keeps this shape.
+test("tool calls accumulate into one activity card, throttled, collapsing at turn_end", async () => {
+  const ctx = await boot([42], { activityCard: true });
   try {
     ctx.tg.pushMessage(42, "work");
     const send = await waitFor(() => ctx.gateway.framesOf("session.send")[0], "session.send");
     const sid = send.sessionId;
     ctx.gateway.sendEvent(sid, { type: "tool_start", id: "t1", name: "Bash", input: {}, activityDescription: "Running tests" });
-    ctx.gateway.sendEvent(sid, { type: "tool_start", id: "t2", name: "Read", input: {}, activityDescription: "Reading config" });
-    ctx.gateway.sendEvent(sid, { type: "tool_start", id: "t3", name: "Edit", input: {}, activityDescription: "Patching bridge" });
+    await waitFor(() => ctx.tg.sent.length >= 1, "activity card");
+    assert.match(ctx.tg.sent[0].text, /^🜂 Working/, "the card leads with what it's doing");
+    assert.match(ctx.tg.sent[0].text, /⚙ Running tests…/);
 
-    await waitFor(() => ctx.tg.sent.length >= 1, "status message");
-    assert.equal(ctx.tg.sent[0].text, "⚙ Running tests");
-    // Later activities coalesce into throttled edits carrying the latest text.
-    await waitFor(() => ctx.tg.edits.find((e) => e.text === "⚙ Patching bridge"), "final status edit");
-    assert.ok(ctx.tg.edits.length <= 2, "edits are throttled, not one per tool_start");
-    assert.equal(ctx.tg.sent.length, 1, "only one status message is ever created");
+    ctx.gateway.sendEvent(sid, { type: "tool_start", id: "t2", name: "Read", input: {}, activityDescription: "Reading config" });
+    ctx.gateway.sendEvent(sid, { type: "tool_end", id: "t2", output: {}, durationMs: 120 });
+    ctx.gateway.sendEvent(sid, { type: "tool_start", id: "t3", name: "Edit", input: {}, activityDescription: "Patching bridge" });
+    // A failed tool call is VISIBLE — it used to have no renderer at all.
+    ctx.gateway.sendEvent(sid, { type: "tool_error", id: "t3", error: "EACCES: permission denied", durationMs: 8 });
+
+    const card = await waitFor(
+      () => ctx.tg.edits.find((e) => /✗ Patching bridge/.test(e.text)),
+      "card carrying every step",
+    );
+    // Steps accumulate: the earlier ones are still there, not overwritten.
+    assert.match(card.text, /⚙ Running tests…/, "the still-running step");
+    assert.match(card.text, /✓ Reading config · /, "the finished step keeps its duration");
+    assert.match(card.text, /✗ Patching bridge · .* — EACCES: permission denied/);
+    assert.equal(ctx.tg.sent.length, 1, "only one card message is ever created");
+    assert.ok(ctx.tg.edits.length <= 3, "edits are throttled, not one per event");
+
+    // turn_end collapses the card to a receipt instead of abandoning it.
+    ctx.gateway.sendEvent(sid, { type: "turn_end", status: "ok" });
+    const receipt = await waitFor(() => ctx.tg.edits.find((e) => /^[✓⚠] 3 steps/.test(e.text)), "receipt");
+    assert.match(receipt.text, /⚠ 3 steps · .* · 2 failed/, "the open step is counted, not left spinning");
+    assert.equal(ctx.tg.sent.length, 1, "still one message");
   } finally {
     await shutdown(ctx);
   }

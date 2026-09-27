@@ -68,6 +68,33 @@ export async function sendConnectMenu(
   await deps.api.sendMessage(chatId, lines.join("\n"), replyMarkup ? { replyMarkup } : undefined);
 }
 
+/**
+ * The connector card offered at the point of need: a tool just failed because
+ * a service isn't connected, so the sign-in shows up in the thread instead of
+ * the owner being told to go run /connect. Returns false when the provider is
+ * unknown, so the caller can stay quiet rather than offering a dead button.
+ */
+export async function sendConnectOffer(
+  deps: ConnectFlowDeps,
+  chatId: number,
+  providerId: string,
+  opts: { expired?: boolean; note?: string } = {},
+): Promise<boolean> {
+  const cfg = deps.providers[providerId];
+  if (!cfg) return false;
+  const label = deps.providerLabels[providerId] ?? providerId;
+  const short = label.split(" (")[0];
+  const text = opts.note
+    ?? (opts.expired
+      ? `🔗 ${label} needs re-authorizing — its access expired, which is why that just failed.`
+      : `🔗 ${label} isn't connected yet — that's why that just failed.`);
+  const replyMarkup: InlineKeyboardMarkup = {
+    inline_keyboard: [[{ text: `Connect ${short}`, callback_data: `ares:connect:${providerId}` }]],
+  };
+  await deps.api.sendMessage(chatId, text, { replyMarkup });
+  return true;
+}
+
 /** Handle a connect callback from an inline button tap. Starts the OAuth flow
  *  and sends the authorize URL as a clickable link. */
 export async function handleConnectCallback(
@@ -90,15 +117,12 @@ export async function handleConnectCallback(
       provider: cfg,
       home: deps.home,
       onAuthorizeUrl: async (url) => {
+        // A real `url` button: one tap straight to the consent page. This used
+        // to paste the raw URL next to a dead callback_data:"noop" button.
         const replyMarkup: InlineKeyboardMarkup = {
-          inline_keyboard: [[{ text: `Sign in with ${label.split(" (")[0]}`, callback_data: "noop" }]],
+          inline_keyboard: [[{ text: `🔑 Sign in with ${label.split(" (")[0]}`, url }]],
         };
-        // Send the URL as a clickable text message since Telegram inline buttons
-        // can't open arbitrary URLs without url field. Use a plain link instead.
-        await deps.api.sendMessage(
-          chatId,
-          `🔑 Tap the link below to authorize ${label}:\n\n${url}`,
-        );
+        await deps.api.sendMessage(chatId, `Authorize ${label}:`, { replyMarkup });
       },
       onSuccess: async (_tokens) => {
         await deps.api.sendMessage(chatId, `✅ ${label} connected successfully! You can now use it.`);

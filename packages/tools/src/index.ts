@@ -165,13 +165,74 @@ export {
   type PlanModeStateSource,
 } from "./PlanMode.js";
 export { WeatherTool, getWeatherText, type WeatherOutput, type WeatherCondition, type WeatherForecast } from "./Weather.js";
-export { RemindTool, setRemindScheduler, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { RemindTool, setRemindScheduler, describeAlarmSchedule, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { requireScheduleApproval, ScheduleApprovalError } from "./scheduleApproval.js";
 export { TelegramTool, setTelegramChannel, getTelegramChannel, resolveTargets as resolveTelegramTargets, type TelegramOutput, type TelegramChannelLike } from "./Telegram.js";
 export { RemotePCTool, setRemoteAgentServer, getRemoteAgentServer, type RemotePCInput, type RemotePCOutput, type RemoteAgentServerLike } from "./RemotePC.js";
-export { ConnectTool, type ConnectOutput } from "./Connect.js";
+export { ConnectTool, CONNECT_WAIT_MS, type ConnectOutput } from "./Connect.js";
+export {
+  CheckoutTool,
+  recordCheckoutApproval,
+  approvedCheckout,
+  spendCheckoutApproval,
+  parseAmount,
+  pageShowsAmount,
+  looksLikeOrderSubmission,
+  type CheckoutOutput,
+  type ApprovedCheckout,
+} from "./Checkout.js";
+export { DeviceTool, type DeviceOutput } from "./Device.js";
+export { GoalsTool, GoalsStore, goalsPath, GOAL_CATEGORIES, type LifeGoal, type GoalCategory, type GoalsOutput } from "./Goals.js";
+export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
-export { GmailTool, type GmailOutput } from "./Gmail.js";
+export { GmailTool, buildRfc2822, planUnsubscribe, gmailBodyText, findCodeInputProblem, CODE_HANDLE_TTL_MS, type GmailOutput } from "./Gmail.js";
+export * as oneTimeCode from "./oneTimeCode.js";
+export { GoogleDriveTool, driveSearchQuery, driveMultipart, DRIVE_EXPORTS, type GoogleDriveOutput } from "./GoogleDrive.js";
+export { GoogleDocsTool, docText, type GoogleDocsOutput } from "./GoogleDocs.js";
+export { GoogleSheetsTool, type GoogleSheetsOutput } from "./GoogleSheets.js";
+export { GoogleSlidesTool, addSlideRequests, slideTexts, type GoogleSlidesOutput } from "./GoogleSlides.js";
+export { GoogleFormsTool, formQuestion, addQuestionRequests, type GoogleFormsOutput } from "./GoogleForms.js";
+export { GoogleTasksTool, tasksDue, type GoogleTasksOutput } from "./GoogleTasks.js";
+export { GoogleContactsTool, type GoogleContactsOutput } from "./GoogleContacts.js";
+export { OutlookTool, odata, graphTime, eventBody as outlookEventBody, recipients as outlookRecipients, type OutlookOutput } from "./Outlook.js";
+export { CONNECTOR_TOOLS } from "./connectorTools.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
+// Life surfaces (the phone's Today tab): commitments, places, media.
+export { TrackTool, type TrackOutput } from "./Track.js";
+export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
+export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
+export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
+export { HueTool, discoverHueBridges, pairHueBridge, hueCall, hexToXy, hueStateBody, type HueOutput, type HueBridgeRef, type HuePairing } from "./Hue.js";
+export { TeslaTool, TESLA_ASK_ACTIONS, type TeslaOutput } from "./Tesla.js";
+export { TicketsTool, ticketmasterSearchUrl, type TicketsOutput } from "./Tickets.js";
+export { FlightStatusTool, relevantFlight, summarizeFlight, type FlightStatusOutput } from "./FlightStatus.js";
+export { FlightBookingTool, duffelMode, offerRequestBody, summarizeOffer, type FlightBookingOutput } from "./FlightBooking.js";
+export { WithingsTool, decodeMeasureGroups, type WithingsOutput } from "./Withings.js";
+export { TailscaleTool, TAILSCALE_ASK_ACTIONS, type TailscaleOutput } from "./Tailscale.js";
+export { BankTool, claimSimplefinToken, simplefinAccounts, simplefinClaimUrl, type BankOutput } from "./Bank.js";
+export { normalizeSimplefinAccount, normalizeSimplefinTransaction } from "./simplefin.js";
+export { merchantKey, deriveCategory, spendingSummary, detectRecurring, newCharges, type NormAccount, type NormTransaction, type RecurringCharge, type SpendingSummary, type ChargesCursor } from "./bankAnalytics.js";
+export { clearBankCache, normalizePlaidAccount, normalizePlaidTransaction, plaidSnapshot, simplefinSnapshot, syncPlaidItem, type BankSnapshot } from "./bankData.js";
+export {
+  PLAID_TRIAL_ITEMS,
+  PlaidError,
+  disconnectPlaid,
+  exchangePlaidPublicTokens,
+  loadPlaidConfig,
+  loadPlaidItems,
+  normalizePlaidEnv,
+  plaidBaseUrl,
+  plaidCall,
+  plaidErrorSentence,
+  plaidItemView,
+  plaidItemsCreated,
+  removePlaidItem,
+  savePlaidItems,
+  type PlaidConfig,
+  type PlaidEnv,
+  type PlaidItem,
+  type PlaidItemView,
+} from "./plaidApi.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,
@@ -205,9 +266,28 @@ import { RemindTool } from "./Remind.js";
 import { TelegramTool } from "./Telegram.js";
 import { RemotePCTool } from "./RemotePC.js";
 import { ConnectTool } from "./Connect.js";
+import { CheckoutTool } from "./Checkout.js";
+import { PhoneTool } from "./Phone.js";
+import { DeviceTool } from "./Device.js";
+import { GoalsTool } from "./Goals.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
+import { CONNECTOR_TOOLS } from "./connectorTools.js";
+import { TrackTool } from "./Track.js";
+import { PlacesTool } from "./Places.js";
+import { ImagineTool } from "./Imagine.js";
+import { HueTool } from "./Hue.js";
+import { TeslaTool } from "./Tesla.js";
+import { TicketsTool } from "./Tickets.js";
+import { FlightStatusTool } from "./FlightStatus.js";
+import { FlightBookingTool } from "./FlightBooking.js";
+import { WithingsTool } from "./Withings.js";
+import { TailscaleTool } from "./Tailscale.js";
+import { BankTool } from "./Bank.js";
+
+/** Home, car, travel, health and money connectors (all deferred). */
+export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -238,9 +318,18 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TelegramTool,
       RemotePCTool,
       ConnectTool,
+      CheckoutTool,
+      PhoneTool,
+      DeviceTool,
+      GoalsTool,
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...CONNECTOR_TOOLS,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
+      ...LIFE_TOOLS,
     ] as const
   : [
       ReadTool,
@@ -268,7 +357,16 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TelegramTool,
       RemotePCTool,
       ConnectTool,
+      CheckoutTool,
+      PhoneTool,
+      DeviceTool,
+      GoalsTool,
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...CONNECTOR_TOOLS,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
+      ...LIFE_TOOLS,
     ] as const;

@@ -29,6 +29,10 @@ export interface SchedulerHooks {
   dream?: () => Promise<unknown> | unknown;
   /** Host-injected gauntlet runner (the CLI's runScheduledGauntlet). */
   gauntlet?: () => Promise<GauntletRunSummary> | GauntletRunSummary;
+  /** Daily-job check (the Today feed). Runs every feedCheckEveryMs; the hook
+   *  itself decides whether today's run is due, so a garrison that was down
+   *  at the scheduled hour still delivers when it comes back. */
+  feed?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -71,18 +75,40 @@ export interface SchedulerOptions {
   gauntletCheckEveryMs?: number;
   /** Master switch; default true unless ARES_GAUNTLET_SCHEDULE=0. */
   gauntletEnabled?: boolean;
+  /** How often the feed hook is asked whether it is due; default 5 minutes. */
+  feedCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   onError?: (hook: SchedulerHookName, err: unknown) => void;
+  /** Owner pause (control plane): while true no hook STARTS. A running hook
+   *  finishes; the next tick after resume runs normally. */
+  isPaused?: () => boolean;
+  /** Called after every hook run with its outcome — the audit trail's feed. */
+  onRun?: (hook: SchedulerHookName, result: string) => void;
+}
+
+/** One system job as the owner's jobs list shows it. */
+export interface SchedulerJobStatus {
+  name: SchedulerHookName;
+  /** Human cadence: "every 30m", "after 2h idle", "nightly 03:00–06:00". */
+  schedule: string;
+  enabled: boolean;
+  /** Paused by the owner (cancel of a system job pauses it; config re-arms at restart). */
+  paused: boolean;
+  running: boolean;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastResult?: string;
 }
 
 const DEFAULT_HEARTBEAT_MS = 30 * 60_000;
 const DEFAULT_IDLE_MS = 2 * 60 * 60_000;
 const DEFAULT_DREAM_CHECK_MS = 10 * 60_000;
 const DEFAULT_GAUNTLET_CHECK_MS = 10 * 60_000;
+const DEFAULT_FEED_CHECK_MS = 5 * 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -135,8 +161,11 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
+  private readonly lastRuns: Partial<Record<SchedulerHookName, { at: number; result: string }>> = {};
+  private readonly heldHooks = new Set<SchedulerHookName>();
+  private lastHeartbeatAt: number | undefined;
 
   constructor(opts: SchedulerOptions) {
     this.opts = opts;
@@ -164,6 +193,9 @@ export class Scheduler {
     }
     if (this.opts.hooks.gauntlet && this.gauntletEnabled) {
       this.handles.push(this.setIntervalFn(() => this.gauntletCheck(), this.gauntletCheckEveryMs));
+    }
+    if (this.opts.hooks.feed) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("feed"), this.opts.feedCheckEveryMs ?? DEFAULT_FEED_CHECK_MS));
     }
   }
 
@@ -206,6 +238,68 @@ export class Scheduler {
     return this.lastGauntletOutcome;
   }
 
+  /**
+   * Hold (or release) one system job. Heartbeat/dream/gauntlet are armed by
+   * config, not by an approval, so the owner cannot delete them — but every
+   * job must be killable, and for these "kill" means "stop starting it".
+   * In-memory: a restart re-arms from config. Returns false for a hook that
+   * isn't wired.
+   */
+  holdHook(name: SchedulerHookName, held: boolean): boolean {
+    if (!this.opts.hooks[name]) return false;
+    if (held) this.heldHooks.add(name);
+    else this.heldHooks.delete(name);
+    return true;
+  }
+
+  /** Every wired system job with its cadence, next and last run. */
+  jobStatus(): SchedulerJobStatus[] {
+    const iso = (ms: number | undefined) => (ms === undefined ? undefined : new Date(ms).toISOString());
+    const out: SchedulerJobStatus[] = [];
+    const push = (name: SchedulerHookName, schedule: string, enabled: boolean, next: number | undefined) => {
+      const last = this.lastRuns[name];
+      out.push({
+        name,
+        schedule,
+        enabled,
+        paused: this.heldHooks.has(name) || (this.opts.isPaused?.() ?? false),
+        running: this.running[name],
+        ...(enabled && next !== undefined ? { nextRunAt: iso(next) } : {}),
+        ...(last ? { lastRunAt: iso(last.at), lastResult: last.result } : {}),
+      });
+    };
+    if (this.opts.hooks.heartbeat) {
+      const base = this.lastHeartbeatAt ?? this.startedAtMs;
+      push("heartbeat", `every ${formatEvery(this.heartbeatEveryMs)}`, this.started, base === undefined ? undefined : base + this.heartbeatEveryMs);
+    }
+    if (this.opts.hooks.dream) {
+      push("dream", `after ${formatEvery(this.idleMs)} idle`, this.started, this.nextDreamAt());
+    }
+    if (this.opts.hooks.gauntlet) {
+      const end = (this.gauntletHour + this.gauntletWindowHours) % 24;
+      push(
+        "gauntlet",
+        `nightly ${String(this.gauntletHour).padStart(2, "0")}:00–${String(end).padStart(2, "0")}:00`,
+        this.started && this.gauntletEnabled,
+        this.nextGauntletAt(),
+      );
+    }
+    return out;
+  }
+
+  private blocked(name: SchedulerHookName): boolean {
+    return this.heldHooks.has(name) || (this.opts.isPaused?.() ?? false);
+  }
+
+  private noteRun(name: SchedulerHookName, result: string): void {
+    this.lastRuns[name] = { at: this.nowFn(), result };
+    try {
+      this.opts.onRun?.(name, result);
+    } catch {
+      // an observer never breaks the clock
+    }
+  }
+
   private idleBaseline(): number {
     return Math.max(
       this.opts.lastActivityAt?.() ?? 0,
@@ -215,6 +309,7 @@ export class Scheduler {
   }
 
   private dreamCheck(): void {
+    if (this.blocked("dream")) return;
     if (this.nowFn() - this.idleBaseline() < this.idleMs) return;
     this.lastDreamAt = this.nowFn();
     void this.runHook("dream");
@@ -222,6 +317,7 @@ export class Scheduler {
 
   private gauntletCheck(): void {
     if (!this.opts.hooks.gauntlet || !this.gauntletEnabled || this.running.gauntlet) return;
+    if (this.blocked("gauntlet")) return;
     const nowMs = this.nowFn();
     const day = localDayKey(nowMs);
     if (this.lastGauntletDay === day) return;
@@ -237,6 +333,7 @@ export class Scheduler {
     try {
       const summary = await this.opts.hooks.gauntlet!();
       const at = new Date(this.nowFn()).toISOString();
+      this.noteRun("gauntlet", `ok: ${summary.passed}/${summary.total}`);
       if (!this.opts.home) {
         this.emit({ kind: "gauntlet_run", at, summary, regressed: false });
         return;
@@ -256,6 +353,7 @@ export class Scheduler {
         });
       }
     } catch (err) {
+      this.noteRun("gauntlet", `error: ${errorText(err)}`);
       this.opts.onError?.("gauntlet", err);
     } finally {
       this.running.gauntlet = false;
@@ -272,15 +370,29 @@ export class Scheduler {
     }
   }
 
-  private async runHook(name: "heartbeat" | "dream"): Promise<void> {
+  private async runHook(name: "heartbeat" | "dream" | "feed"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
+    if (name === "heartbeat") this.lastHeartbeatAt = this.nowFn();
+    if (this.blocked(name)) return;
     this.running[name] = true;
     try {
       await this.opts.hooks[name]?.();
+      this.noteRun(name, "ok");
     } catch (err) {
+      this.noteRun(name, `error: ${errorText(err)}`);
       this.opts.onError?.(name, err);
     } finally {
       this.running[name] = false;
     }
   }
+}
+
+function errorText(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160);
+}
+
+function formatEvery(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  return `${Math.round(ms / 1000)}s`;
 }

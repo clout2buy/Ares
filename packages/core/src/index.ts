@@ -329,6 +329,7 @@ export {
   disconnectMcpServer,
   setMcpServerEnabled,
   setMcpServerToken,
+  beginMcpConnect,
   probeMcpTools,
   getMcpAccessToken,
   getMcpCallCredentials,
@@ -489,6 +490,9 @@ export {
   getProviderConfig,
   listProviders,
 } from "./oauthProviders.js";
+export { WITHINGS_OAUTH, unwrapWithingsToken } from "./withingsOAuth.js";
+export { LIFE_SERVICES } from "./lifeServices.js";
+export { PLAID_SERVICE, isPlaidService, plaidUpdateItemId, plaidVariantService } from "./plaidService.js";
 
 export {
   startOAuthFlow,
@@ -653,3 +657,33 @@ export { HeapAllocationSampler, heapSamplerEnabled, heapSamplerIntervalBytes, su
 export { fetchAnthropicUsage, fetchKimiUsage, fetchOllamaUsageAsProvider, ollamaUsageAsProvider, type ProviderUsage, type UsageWindow } from "./providers/usage.js";
 export { MCP_CATALOG, MCP_CATEGORIES, catalogById, catalogByUrl, catalogMentions, type McpCatalogEntry, type McpAuthKind, type McpCategory, type McpTransportKind } from "./mcpCatalog.js";
 export { resourceMetadataFromChallenge, revokeMcpToken } from "./mcpOAuth.js";
+export {
+  CONNECT_SERVICES,
+  resolveConnectService,
+  isServiceConnected,
+  serviceDomain,
+  browserSessionsDir,
+  browserSessionFile,
+  setConnectBroker,
+  getConnectBroker,
+  type ConnectKind,
+  type ConnectField,
+  type ConnectService,
+  type ConnectPrompt,
+  type ConnectOutcome,
+  type ConnectBroker,
+} from "./connectServices.js";
+export {
+  mintSecretHandle,
+  describeSecretHandle,
+  redeemSecretHandle,
+  revokeSecretHandle,
+  redactSecretValues,
+  handleSite,
+  type SecretHandleScope,
+} from "./secretHandles.js";
+export { appendAudit, readAudit, redactForAudit, auditDir, type AuditEntry } from "./audit.js";
+export { setAuditSink, recordAudit, auditTargetOf, auditActionOf, ToolAuditTracker, type AuditDraft } from "./auditEvents.js";
+export { ownerPause, registerStoppable, listStoppables, stopAllStoppables, type OwnerPauseWait, type StoppableKind, type StoppableEntry } from "./ownerControl.js";
+export { vaultAccessReason, vaultAccessPrompt } from "./vaultGuard.js";
+export { siteLoginDomain, normalizeLoginDomain, loginCredentialNames, loginDomainCandidates, siteLoginService } from "./siteLogins.js";

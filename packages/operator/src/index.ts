@@ -309,7 +309,7 @@ export {
   type SeedNativeCapabilitiesReport,
 } from "./seed.js";
 
-export { renderCapabilitiesDoc, writeCapabilitiesDoc } from "./ledger.js";
+export { renderCapabilitiesDoc, writeCapabilitiesDoc, extractFieldNotes, FIELD_NOTES_START, FIELD_NOTES_END } from "./ledger.js";
 
 export {
   acquireCapability,

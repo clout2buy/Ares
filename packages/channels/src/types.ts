@@ -18,7 +18,7 @@ export interface GatewaySessionInfo {
 }
 
 /** Which host opened a session — mirrors the garrison's SessionSurface. */
-export type GatewaySurface = "desktop" | "tui" | "telegram" | "garrison" | "headless";
+export type GatewaySurface = "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
 
 /** Who is on the other end of a session or message. The chatId is a string
  *  on the wire so the garrison never has to reason about Telegram's numeric

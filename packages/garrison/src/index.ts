@@ -26,6 +26,9 @@ export {
   SessionManager,
   rehydrateSessions,
   rehydrateSession,
+  loadGarrisonRollout,
+  compactRolloutEvent,
+  ROLLOUT_PROGRESS_TEXT_CAP,
   sessionsDir,
   rolloutPath,
   SessionBusyError,
@@ -37,7 +40,9 @@ export {
   type SessionSubscriber,
   type SessionSendOptions,
   type SessionSendContext,
+  type SessionPersonaHooks,
   type RehydratedSession,
+  type RunningTurn,
   type SessionSurface,
   type SessionTenant,
   normalizeSessionSurface,
@@ -54,7 +59,10 @@ export {
   type SchedulerHooks,
   type SchedulerHookName,
   type SchedulerEvent,
+  type SchedulerJobStatus,
 } from "./scheduler.js";
+
+export { canonicalActionKey, repeatDenialError } from "./ownerGuards.js";
 
 export {
   recordNightlyGauntlet,

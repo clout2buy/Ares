@@ -1,0 +1,451 @@
+// Connectable services — ONE registry behind "Ares, check my email".
+//
+// Before this file there were three disjoint worlds: the OAuth-app providers
+// (Gmail, Spotify … owner-registered apps, oauthProviders.ts), the remote MCP
+// catalog (Stripe, Supabase, Vercel … dynamic registration, mcpCatalog.ts),
+// and nothing at all for API-key services (Twilio) or sites with no API
+// (DoorDash). The agent had no single place to ask "what can I connect, and
+// how?", so it improvised — or told the owner to paste keys into chat.
+//
+// Every service here resolves to one of five connect kinds; the garrison's
+// connect hub turns each into a single link the owner opens on their phone:
+//   mcp-oauth  remote MCP server, OAuth with dynamic client registration
+//   mcp-key    remote MCP server that takes an API key
+//   oauth-app  classic OAuth with an owner-registered app (Google…); the first
+//              connect walks the owner through registering it
+//   api-key    a plain API (Twilio) — a secure form, never the chat
+//   browser    a site with no API (DoorDash) — the owner signs in on a live
+//              browser Ares then drives with the same session
+
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { MCP_CATALOG, type McpCatalogEntry } from "./mcpCatalog.js";
+import { OAUTH_PROVIDERS } from "./oauthProviders.js";
+import { loadTokens } from "./oauth.js";
+import { getCredential } from "./credentials.js";
+import { loadRemoteMcpServers } from "./mcpConnect.js";
+import { LIFE_SERVICES } from "./lifeServices.js";
+import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
+import { plaidVariantService } from "./plaidService.js";
+
+export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
+
+export interface ConnectField {
+  /** Vault credential name the value is stored under. */
+  credential: string;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+  help?: string;
+}
+
+export interface ConnectService {
+  id: string;
+  label: string;
+  kind: ConnectKind;
+  blurb: string;
+  keywords: string[];
+  /** What the agent does once connected — returned verbatim after a connect. */
+  howToUse: string;
+  mcpUrl?: string;
+  keyHeader?: string;
+  keyUrl?: string;
+  /** oauth-app: the provider id in OAUTH_PROVIDERS. */
+  oauthProvider?: string;
+  /** oauth-app: how to register the app, shown on the first connect. */
+  appSetup?: { consoleUrl: string; steps: string[] };
+  /** api-key: the fields the secure form asks for. */
+  fields?: ConnectField[];
+  /** api-key: credentials the hub's verifier stores INSTEAD of the typed
+   *  fields (Hue pairs with zero fields; SimpleFIN trades a one-time token for
+   *  an access URL). What "connected" is checked against. */
+  stores?: string[];
+  /** api-key: what the form tells the owner to do when it isn't just typing a
+   *  key ("Press the button on your Hue bridge, then tap Connect"). */
+  formHint?: string;
+  /** browser: where sign-in starts, and the site's registrable domain. */
+  loginUrl?: string;
+  domain?: string;
+}
+
+const MCP_USE = (id: string) =>
+  `Its tools are live now: call McpListTools with server "${id}" to see them, then McpCallTool (or the mcp_${id}_* tools after a Connectors refresh).`;
+
+const GOOGLE_SETUP = {
+  consoleUrl: "https://console.cloud.google.com/apis/credentials",
+  steps: [
+    "Open console.cloud.google.com and create (or pick) a project.",
+    "APIs & Services → Library: enable each of these APIs — Gmail API, Google Calendar API, Google Drive API, Google Docs API, Google Sheets API, Google Slides API, Google Forms API, Google Tasks API and People API (Contacts).",
+    "OAuth consent screen: choose External, fill in the app name and your email, add yourself under Test users, then press Publish app (an app left in Testing mode loses access every 7 days).",
+    "Credentials → Create credentials → OAuth client ID → Web application. Under Authorized redirect URIs add the redirect URI shown below.",
+    "Copy the Client ID and Client secret into the form below.",
+  ],
+};
+
+/** Microsoft identity platform: one Azure app for Outlook.com and work accounts. */
+const MICROSOFT_SETUP = {
+  consoleUrl: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+  steps: [
+    "Open portal.azure.com (sign in with any Microsoft account) → Microsoft Entra ID → App registrations → New registration.",
+    "Name it (e.g. Ares). Supported account types: \"Accounts in any organizational directory and personal Microsoft accounts\".",
+    "Redirect URI: platform \"Web\", and paste the redirect URI shown below. Press Register.",
+    "Copy the Application (client) ID from the Overview page into the form below.",
+    "Certificates & secrets → Client secrets → New client secret. Copy the secret's Value (not its ID) into the form below — it is shown only once.",
+    "API permissions (optional — you'll be asked to consent anyway): Microsoft Graph → Delegated → offline_access, User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Contacts.ReadWrite.",
+  ],
+};
+
+function genericAppSetup(consoleUrl: string, name: string) {
+  return {
+    consoleUrl,
+    steps: [
+      `Open the ${name} developer console and create an app.`,
+      "Add the redirect URI shown below as an allowed redirect / callback URL.",
+      "Copy the app's Client ID and Client secret into the form below.",
+    ],
+  };
+}
+
+/** Services whose only interface is a website: sign in once, Ares drives it. */
+const BROWSER_SITES: Array<Omit<ConnectService, "kind" | "howToUse"> & { howToUse?: string }> = [
+  { id: "doordash", label: "DoorDash", blurb: "Order food delivery.", keywords: ["doordash", "door dash", "food delivery", "order food", "takeout"], loginUrl: "https://www.doordash.com/consumer/login/", domain: "doordash.com" },
+  { id: "ubereats", label: "Uber Eats", blurb: "Order food delivery.", keywords: ["uber eats", "ubereats"], loginUrl: "https://www.ubereats.com/login-redirect/", domain: "ubereats.com" },
+  { id: "uber", label: "Uber", blurb: "Request rides.", keywords: ["uber ride", "call an uber", "get me an uber"], loginUrl: "https://auth.uber.com/", domain: "uber.com" },
+  { id: "instacart", label: "Instacart", blurb: "Grocery delivery.", keywords: ["instacart", "groceries", "grocery delivery"], loginUrl: "https://www.instacart.com/login", domain: "instacart.com" },
+  { id: "amazon", label: "Amazon", blurb: "Shopping and orders.", keywords: ["amazon", "amazon order"], loginUrl: "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0", domain: "amazon.com" },
+  { id: "opentable", label: "OpenTable", blurb: "Restaurant reservations.", keywords: ["opentable", "reservation", "book a table"], loginUrl: "https://www.opentable.com/", domain: "opentable.com" },
+  // Meta's APIs won't let a personal agent read DMs or a personal profile
+  // (app review), so these are sign-in-on-the-live-browser services — the
+  // same thing Muse does, minus Meta owning both ends. Sending as the owner
+  // still crosses the browser_submit gate.
+  { id: "instagram", label: "Instagram", blurb: "Your feed, posts, comments and DMs.", keywords: ["instagram", "insta", "ig", "instagram dms", "instagram messages"], loginUrl: "https://www.instagram.com/accounts/login/", domain: "instagram.com" },
+  { id: "facebook", label: "Facebook", blurb: "Your feed, groups, pages and Marketplace.", keywords: ["facebook", "fb", "facebook marketplace", "marketplace"], loginUrl: "https://www.facebook.com/login/", domain: "facebook.com" },
+  { id: "messenger", label: "Messenger", blurb: "Your Messenger conversations.", keywords: ["messenger", "facebook messenger", "fb messages"], loginUrl: "https://www.messenger.com/login/", domain: "messenger.com" },
+  { id: "threads", label: "Threads", blurb: "Your Threads feed, posts and replies.", keywords: ["threads", "threads app"], loginUrl: "https://www.threads.com/login", domain: "threads.com" },
+];
+
+const HANDWRITTEN: ConnectService[] = [
+  // Outlook BEFORE google: resolveConnectService's substring pass takes the
+  // first hit, and google's "email"/"mail" would swallow "my outlook email".
+  {
+    id: "outlook",
+    label: "Outlook",
+    kind: "oauth-app",
+    oauthProvider: "microsoft",
+    blurb: "Outlook, Hotmail and Microsoft 365: mail, calendar and contacts.",
+    keywords: ["outlook", "hotmail", "outlook.com", "hotmail.com", "live.com", "msn.com", "microsoft", "microsoft mail", "microsoft email", "office 365", "microsoft 365", "o365", "outlook calendar", "outlook email"],
+    howToUse: "Use the Outlook tool: list_messages / search / read_message / send / draft / reply / forward, list_events / create_event, search_contacts.",
+    appSetup: MICROSOFT_SETUP,
+  },
+  {
+    id: "google",
+    label: "Google",
+    kind: "oauth-app",
+    oauthProvider: "google",
+    blurb: "Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks and Contacts.",
+    keywords: [
+      "google", "gmail", "email", "e-mail", "inbox", "mail", "calendar", "google calendar", "contacts", "google contacts",
+      "google drive", "gdrive", "google docs", "google doc", "google sheets", "google sheet", "spreadsheet", "google slides",
+      "slides", "google forms", "google form", "google tasks", "google workspace", "g suite",
+    ],
+    howToUse:
+      "One Google connection covers: Gmail (search / read / send / draft / reply / forward / labels / archive / trash / unsubscribe / find_code), " +
+      "GoogleCalendar, GoogleDrive, GoogleDocs, GoogleSheets, GoogleSlides, GoogleForms, GoogleTasks and GoogleContacts — load them with ToolSearch. " +
+      "If a call fails with a 403 about a disabled API or missing scope, the owner enabled the app before that API was added: connect \"google\" again.",
+    appSetup: GOOGLE_SETUP,
+  },
+  {
+    id: "spotify",
+    label: "Spotify",
+    kind: "oauth-app",
+    oauthProvider: "spotify",
+    blurb: "Playback, playlists and your library.",
+    keywords: ["spotify", "playlist", "play music on spotify"],
+    howToUse: "Use the Spotify tool.",
+    appSetup: genericAppSetup("https://developer.spotify.com/dashboard", "Spotify"),
+  },
+  {
+    id: "twilio",
+    label: "Twilio (phone numbers & SMS)",
+    kind: "api-key",
+    blurb: "Buy phone numbers, send and read SMS, place calls.",
+    keywords: ["twilio", "phone number", "sms", "text message", "texting number", "buy a number", "get a number"],
+    keyUrl: "https://console.twilio.com/",
+    howToUse: "Use the Phone tool: search_numbers, buy_number (asks the owner first — it costs money), list_numbers, send_sms, messages.",
+    fields: [
+      { credential: "TWILIO_ACCOUNT_SID", label: "Account SID", placeholder: "AC…", help: "Twilio Console → Account Info." },
+      { credential: "TWILIO_AUTH_TOKEN", label: "Auth Token", secret: true, help: "Twilio Console → Account Info (press show)." },
+    ],
+  },
+  {
+    id: "stripe-key",
+    label: "Stripe (secret key)",
+    kind: "api-key",
+    blurb: "Create payment links with the native Stripe tool.",
+    keywords: ["stripe secret key", "stripe key", "payment link"],
+    keyUrl: "https://dashboard.stripe.com/apikeys",
+    howToUse: "Use the Stripe tool to create payment links. For everything else in Stripe, connect service \"stripe\" (OAuth).",
+    fields: [{ credential: "STRIPE_SECRET_KEY", label: "Secret key", placeholder: "sk_live_… or sk_test_…", secret: true, help: "Stripe Dashboard → Developers → API keys. Use a restricted or test key if you prefer." }],
+  },
+  {
+    id: "resend",
+    label: "Resend (send email as Ares)",
+    kind: "api-key",
+    blurb: "Send email from Ares's own address.",
+    keywords: ["resend", "send email from ares"],
+    keyUrl: "https://resend.com/api-keys",
+    howToUse: "Use the Email tool to send.",
+    fields: [
+      { credential: "RESEND_API_KEY", label: "API key", placeholder: "re_…", secret: true },
+      { credential: "ARES_EMAIL_FROM", label: "From address", placeholder: "Ares <ares@yourdomain.com>", help: "Must be on a domain verified in Resend." },
+    ],
+  },
+  // Life surfaces: media generation (Imagine) and richer place search (Places).
+  {
+    id: "openai",
+    label: "OpenAI (image generation)",
+    kind: "api-key",
+    blurb: "Generate and edit images with GPT Image.",
+    keywords: ["openai", "openai api key", "gpt image", "gpt-image", "dall-e", "dalle"],
+    keyUrl: "https://platform.openai.com/api-keys",
+    howToUse: "Use the Imagine tool (action image). It saves the picture and returns its path — put the path in your reply.",
+    fields: [{ credential: "OPENAI_API_KEY", label: "API key", placeholder: "sk-…", secret: true, help: "platform.openai.com → API keys. Image generation is billed per image." }],
+  },
+  {
+    id: "gemini",
+    label: "Google Gemini (images & Veo video)",
+    kind: "api-key",
+    blurb: "Generate images and short videos with Gemini and Veo.",
+    keywords: ["gemini", "gemini api key", "google ai studio", "veo", "nano banana", "video generation", "make a video"],
+    keyUrl: "https://aistudio.google.com/apikey",
+    howToUse: "Use the Imagine tool: action image for pictures, action video for Veo clips (the owner approves each video's cost).",
+    fields: [{ credential: "GEMINI_API_KEY", label: "API key", placeholder: "AIza…", secret: true, help: "aistudio.google.com → Get API key. Video (Veo) needs billing enabled on the project." }],
+  },
+  {
+    id: "google-places",
+    label: "Google Places",
+    kind: "api-key",
+    blurb: "Better place search: ratings, hours, phone numbers.",
+    keywords: ["google places", "places api", "google maps api", "google maps key"],
+    keyUrl: "https://console.cloud.google.com/apis/library/places.googleapis.com",
+    howToUse: "The Places tool now searches with Google Places automatically.",
+    fields: [{ credential: "GOOGLE_PLACES_API_KEY", label: "API key", placeholder: "AIza…", secret: true, help: "Google Cloud console: enable \"Places API (New)\", then Credentials → Create credentials → API key." }],
+  },
+];
+
+function fromCatalog(entry: McpCatalogEntry): ConnectService | null {
+  if (entry.auth === "none") return null;
+  return {
+    id: entry.id,
+    label: entry.name,
+    kind: entry.auth === "oauth" ? "mcp-oauth" : "mcp-key",
+    blurb: entry.blurb,
+    keywords: entry.keywords,
+    howToUse: MCP_USE(entry.id),
+    mcpUrl: entry.url,
+    ...(entry.keyHeader ? { keyHeader: entry.keyHeader } : {}),
+    ...(entry.keyUrl ? { keyUrl: entry.keyUrl } : {}),
+    ...(entry.auth === "key"
+      ? { fields: [{ credential: `mcp.key.${entry.id}`, label: "API key", secret: true, ...(entry.keyUrl ? { help: `Create one at ${entry.keyUrl}` } : {}) }] }
+      : {}),
+  };
+}
+
+function browserService(site: (typeof BROWSER_SITES)[number]): ConnectService {
+  return {
+    ...site,
+    kind: "browser",
+    howToUse:
+      site.howToUse ??
+      `You are signed in to ${site.label} in Ares's browser. Use the Browser tool on ${site.domain}. Anything that spends money (placing an order, checkout) must be confirmed with the owner first — show them the cart and total.`,
+  };
+}
+
+export const CONNECT_SERVICES: ConnectService[] = [
+  ...HANDWRITTEN,
+  ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
+  ...LIFE_SERVICES,
+  ...BROWSER_SITES.map(browserService),
+];
+
+function normalize(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim();
+}
+
+const DOMAIN_OVERRIDES: Record<string, string> = {
+  google: "google.com",
+  outlook: "outlook.live.com",
+  spotify: "spotify.com",
+  twilio: "twilio.com",
+  "stripe-key": "stripe.com",
+  resend: "resend.com",
+  openai: "openai.com",
+  gemini: "gemini.google.com",
+  "google-places": "maps.google.com",
+  github: "github.com",
+  "cloudflare-bindings": "cloudflare.com",
+  "cloudflare-observability": "cloudflare.com",
+  atlassian: "atlassian.com",
+  huggingface: "huggingface.co",
+};
+
+/** The site whose icon represents a service (the app renders its favicon as
+ *  the connect card's logo). */
+export function serviceDomain(service: ConnectService): string | undefined {
+  if (DOMAIN_OVERRIDES[service.id]) return DOMAIN_OVERRIDES[service.id];
+  if (service.domain) return service.domain;
+  const url = service.mcpUrl ?? service.keyUrl;
+  if (!url) return undefined;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    const parts = host.split(".");
+    return parts.slice(-2).join(".");
+  } catch {
+    return undefined;
+  }
+}
+
+/** A bare domain or URL the registry doesn't know becomes a browser sign-in. */
+function adHocBrowserService(query: string): ConnectService | null {
+  const trimmed = query.trim();
+  let host = "";
+  try {
+    host = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) || /\s/.test(trimmed)) return null;
+  const domain = host.replace(/^www\./, "");
+  return browserService({
+    id: `site:${domain}`,
+    label: domain,
+    blurb: `Sign in to ${domain}.`,
+    keywords: [domain],
+    loginUrl: `https://${host}/`,
+    domain,
+  });
+}
+
+/**
+ * Resolve what the agent asked for ("gmail", "Stripe", "doordash.com", "a
+ * phone number") to one service. Exact id, then label, then keyword — and a
+ * domain nobody registered becomes a browser sign-in for that site.
+ */
+export function resolveConnectService(query: string): ConnectService | null {
+  // "login:<domain>" first: its domain would otherwise keyword-match a
+  // registered browser site ("login:amazon.com" → the Amazon session flow).
+  const loginDomain = siteLoginDomain(query);
+  if (loginDomain) return siteLoginService(loginDomain);
+  // "plaid:add" / "plaid:update:<item_id>": another bank, or a fresh login.
+  const plaidVariant = plaidVariantService(query);
+  if (plaidVariant) return plaidVariant;
+  const q = normalize(query);
+  if (!q) return null;
+  const byId = CONNECT_SERVICES.find((s) => s.id === q || s.id === q.replace(/ /g, "-"));
+  if (byId) return byId;
+  const byLabel = CONNECT_SERVICES.find((s) => normalize(s.label) === q);
+  if (byLabel) return byLabel;
+  const byKeyword = CONNECT_SERVICES.find((s) => s.keywords.some((k) => normalize(k) === q));
+  if (byKeyword) return byKeyword;
+  const contains = CONNECT_SERVICES.find((s) => s.keywords.some((k) => k.length >= 4 && q.includes(normalize(k))));
+  if (contains) return contains;
+  if (q.startsWith("site ")) return adHocBrowserService(query.trim().slice(5));
+  return adHocBrowserService(query);
+}
+
+// ─── Browser sign-ins on disk ────────────────────────────────────────────────
+
+function aresHome(home?: string): string {
+  return home ?? process.env.ARES_HOME ?? path.join(os.homedir(), ".ares");
+}
+
+/** Saved Playwright storage state per signed-in site. The Browser tool loads
+ *  these into whatever browser it launches, so one sign-in serves every
+ *  session. They hold live session cookies — never serve this directory. */
+export function browserSessionsDir(home?: string): string {
+  return path.join(aresHome(home), "browser-sessions");
+}
+
+export function browserSessionFile(serviceId: string, home?: string): string {
+  return path.join(browserSessionsDir(home), `${serviceId.replace(/[^a-z0-9._-]+/gi, "_")}.json`);
+}
+
+// ─── Status ──────────────────────────────────────────────────────────────────
+
+export async function isServiceConnected(service: ConnectService, home?: string): Promise<boolean> {
+  switch (service.kind) {
+    case "mcp-oauth":
+    case "mcp-key": {
+      const servers = await loadRemoteMcpServers(home).catch(() => ({} as Record<string, unknown>));
+      return Boolean(servers[service.id]);
+    }
+    case "oauth-app": {
+      const cfg = service.oauthProvider ? OAUTH_PROVIDERS[service.oauthProvider] : undefined;
+      if (!cfg) return false;
+      const tokens = await loadTokens(cfg.provider, { home }).catch(() => undefined);
+      return Boolean(tokens?.accessToken);
+    }
+    case "api-key": {
+      // Plaid: connected while at least one bank is linked (a JSON list).
+      if (service.id === "plaid") {
+        try {
+          const items = JSON.parse((await getCredential("PLAID_ITEMS", { home })) ?? "[]") as unknown;
+          return Array.isArray(items) && items.length > 0;
+        } catch {
+          return false;
+        }
+      }
+      const names = service.stores ?? (service.fields ?? []).map((field) => field.credential);
+      for (const name of names) {
+        if (!(await getCredential(name, { home }))) return false;
+      }
+      return names.length > 0;
+    }
+    case "browser": {
+      try {
+        await fs.access(browserSessionFile(service.id, home));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+}
+
+// ─── The broker the garrison installs ────────────────────────────────────────
+
+export interface ConnectPrompt {
+  flowId: string;
+  service: string;
+  label: string;
+  kind: ConnectKind;
+  /** The one link the owner opens. */
+  url: string;
+  /** One line for the card: what tapping it will do. */
+  instructions: string;
+}
+
+export interface ConnectOutcome {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Implemented by a host with a public address the owner's phone can reach
+ * (the garrison). Absent in a plain CLI, where Connect says so plainly.
+ */
+export interface ConnectBroker {
+  start(service: ConnectService, opts?: { reason?: string }): Promise<ConnectPrompt>;
+  wait(flowId: string, opts: { signal: AbortSignal; timeoutMs: number }): Promise<ConnectOutcome>;
+}
+
+let broker: ConnectBroker | null = null;
+
+export function setConnectBroker(next: ConnectBroker | null): void {
+  broker = next;
+}
+
+export function getConnectBroker(): ConnectBroker | null {
+  return broker;
+}

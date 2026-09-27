@@ -10,6 +10,7 @@ import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
 import { ReflectionScheduler } from "./reflection/scheduler.js";
+import { overdueTrackingBlock } from "@ares/tools";
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +38,11 @@ export async function runHeartbeatTick(opts: {
   }
 
   const findings: string[] = [];
+  // Commitments Ares made (Track) whose due time has passed come FIRST: the
+  // alert text is clipped to ackMaxChars, and a missed follow-up on something
+  // promised to the owner outranks a TODO marker.
+  const overdue = await overdueTrackingBlock(home, now).catch(() => "");
+  if (overdue) findings.push(overdue);
   for (const task of tasks) {
     const finding = await evaluateHeartbeatTask(task, opts.workspace);
     if (finding) findings.push(finding);

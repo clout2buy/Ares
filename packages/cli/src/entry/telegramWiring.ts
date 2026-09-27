@@ -1,16 +1,42 @@
 // Extracted from entry.ts — telegramWiring.
 
-import { installGlobalCrashHandlers } from "@ares/core";
+import { installGlobalCrashHandlers, ownerPause } from "@ares/core";
 import { readFile } from "node:fs/promises";
-import { getWeatherText, setRemindScheduler, setTelegramChannel } from "@ares/tools";
+import { getWeatherText, setRemindScheduler, setTelegramChannel, TrackingStore } from "@ares/tools";
 import { notice } from "../terminalUi.js";
 import { loadTelegramConfig, telegramConfigured, clearTelegramConfig, saveTelegramConfig, adoptLegacyTelegramConfig } from "../telegramConfig.js";
 import { OperatorBackgroundLoop, isOperatorPaused, setOperatorControl, createGoal, listGoals, loadGoal, saveGoal, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, runMeetingNudgeTick, DEFAULT_MEETING_LEAD_MINUTES, type MeetingEvent } from "@ares/operator";
 import { detectWorkspaceProjectId, loadProjectState, loadMissionState, loadRecentAfterActions } from "@ares/mind";
 import { tokenPath, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
-import { TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, type RemotePcBridgeDeps } from "@ares/channels";
+import { type OwnerControlDeps, TelegramApi, TelegramBridge, OperatorTelegramReporter, formatWarMapBriefing, classifyMissionAction, stableHash, loadRoster, saveRoster, seedOwners, TelegramOutbound, TelegramScheduler, type RemotePcBridgeDeps } from "@ares/channels";
 import type { RemoteAgentServer } from "../remoteAgentServer.js";
-import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders } from "@ares/core";
+import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getConnectBroker, resolveConnectService, type OAuthTokens } from "@ares/core";
+
+/**
+ * The Telegram "Connect X" button's flow. core's startOAuthFlow redirects to
+ * localhost:53691 — on the box, not on the phone the owner is holding — so
+ * the button could never finish. With a connect hub installed (the garrison)
+ * the button gets the hub's public link instead, and completes like any other
+ * Connect card. Without one (a desktop run) it keeps the loopback flow.
+ */
+const phoneOAuthFlow: typeof startOAuthFlow = async (opts) => {
+  const broker = getConnectBroker();
+  const service = resolveConnectService(opts.provider.provider);
+  if (!broker || !service) return startOAuthFlow(opts);
+  try {
+    const prompt = await broker.start(service);
+    await opts.onAuthorizeUrl?.(prompt.url);
+    const outcome = await broker.wait(prompt.flowId, { signal: new AbortController().signal, timeoutMs: 10 * 60_000 });
+    if (!outcome.ok) throw new Error(outcome.detail);
+    const tokens: OAuthTokens = { accessToken: "" };
+    await opts.onSuccess?.(tokens);
+    return tokens;
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    await opts.onError?.(error);
+    throw error;
+  }
+};
 import { buildDayBrief, defaultDayBriefSources } from "./introspect.js";
 import { CliRuntimeContext, ParsedArgs, cliRuntimeContext } from "./runtime.js";
 
@@ -89,7 +115,8 @@ function telegramCommandDeps(context: CliRuntimeContext, modelControl?: Telegram
     standing: {
       list: async () => renderStandingOrders(await loadStandingOrders(context.home).catch(() => [])),
       add: async (statement: string, cadenceMs: number) => {
-        const o = await addStandingOrder(context.home, { statement, cadenceMs });
+        // Typed by the owner with its cadence — that IS the approval.
+        const o = await addStandingOrder(context.home, { statement, cadenceMs, createdBy: "owner", approved: true });
         return o.id;
       },
       cancel: async (id: string) => removeStandingOrder(context.home, id),
@@ -115,7 +142,7 @@ const lifecycleLog = (line: string) => process.stdout.write(JSON.stringify({ typ
 /** Start the Telegram bridge in-process when configured (garrison auto-start) —
  *  no second terminal. Best-effort: a Telegram failure never touches the daemon.
  *  Returns the bridge (to stop on shutdown) or null when not configured. */
-export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null, remoteAgentServer?: RemoteAgentServer | null): Promise<TelegramBridge | null> {
+export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl: string, gatewayToken: string, modelControl?: TelegramModelControl, operatorLoop?: OperatorBackgroundLoop | null, remoteAgentServer?: RemoteAgentServer | null, ownerControl?: OwnerControlDeps): Promise<TelegramBridge | null> {
   const adoption = await adoptLegacyTelegramConfig().catch((err) => ({ adopted: false, note: `legacy Telegram adoption failed: ${err instanceof Error ? err.message : String(err)}` }));
   if (adoption.note) lifecycleLog(adoption.note);
   if (!(await telegramConfigured().catch(() => false))) return null;
@@ -135,13 +162,14 @@ export async function startTelegramBridge(context: CliRuntimeContext, gatewayUrl
     log: lifecycleLog,
     commands: telegramCommandDeps(context, modelControl, operatorLoop),
     connectDeps: {
-      startOAuthFlow,
+      startOAuthFlow: phoneOAuthFlow,
       providers: OAUTH_PROVIDERS,
       providerLabels: PROVIDER_LABELS,
       connectedProviders,
       home: context.home,
     },
     remotePcDeps: remoteAgentServer ? buildRemotePcDeps(remoteAgentServer) : undefined,
+    ...(ownerControl ? { ownerControl } : {}),
     home: context.home,
   });
   bridge.start();
@@ -185,7 +213,10 @@ export function keepTelegramBridgeUp(
   return () => { stopped = true; if (timer) clearTimeout(timer); };
 }
 
-export async function startTelegramCheckins(context: CliRuntimeContext): Promise<TelegramScheduler | null> {
+export async function startTelegramCheckins(
+  context: CliRuntimeContext,
+  opts: { routeAlarm?: ConstructorParameters<typeof TelegramScheduler>[0]["routeAlarm"] } = {},
+): Promise<TelegramScheduler | null> {
   if (!(await telegramConfigured().catch(() => false))) return null;
   const cfg = await loadTelegramConfig();
   if (!cfg.botToken) return null;
@@ -203,10 +234,19 @@ export async function startTelegramCheckins(context: CliRuntimeContext): Promise
         const weather = await getWeatherText(ownerLocation).catch(() => "");
         if (weather) lines.push("", weather);
       }
+      // Commitments past their due time (Track) ride the check-in so a
+      // promised follow-up reaches the owner even if no turn picked it up.
+      const overdue = await new TrackingStore(context.home).overdue(ctx.now).catch(() => []);
+      if (overdue.length > 0) {
+        lines.push("", "Still open past due:", ...overdue.slice(0, 5).map((i) => `• ${i.title}`));
+      }
       lines.push("", "Anything you need? I'm here.");
       return lines.join("\n");
     },
     log: tgLog,
+    // The owner's pause holds alarms too (ownerControl.ts in core).
+    isPaused: () => ownerPause.paused,
+    ...(opts.routeAlarm ? { routeAlarm: opts.routeAlarm } : {}),
   });
   await tgScheduler.start();
   // Inject into the Remind tool so the agent can add/remove/list alarms at runtime.

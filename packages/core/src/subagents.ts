@@ -25,6 +25,8 @@ import type { BackgroundJobRecord, JsonValue, SessionKernelStore } from "./sessi
 import { withComposedVerifiedChildSession } from "./childSessionComposition.js";
 import type { VerifierOptions } from "./verifier.js";
 import { SUBAGENT_SPAWNING_TOOLS, currentSubagentDepth, runAtSubagentDepth, subagentMaxDepth } from "./subagentDepth.js";
+import { registerStoppable } from "./ownerControl.js";
+import { ToolAuditTracker, recordAudit } from "./auditEvents.js";
 
 export interface SubagentTypeDef {
   name: string;
@@ -357,6 +359,9 @@ export interface SubagentRunnerOptions {
 export class AresSubagentRunner implements SubagentRunner {
   private readonly backgroundOwnerId = `task-worker-${process.pid}-${randomUUID()}`;
   private readonly backgroundControllers = new Map<string, AbortController>();
+  /** Signals of background workers — their stop is registered by the worker
+   *  (so it settles the durable job as cancelled), not again by run(). */
+  private readonly backgroundSignals = new WeakSet<AbortSignal>();
 
   constructor(private readonly opts: SubagentRunnerOptions) {
     if (opts.sessionKernel) queueMicrotask(() => void this.recoverBackgroundTasks().catch(() => undefined));
@@ -520,7 +525,26 @@ export class AresSubagentRunner implements SubagentRunner {
     const boardRole = req.description || req.subagent_type;
     const emitBoard = (data: Record<string, unknown>) =>
       req.onProgress?.({ kind: "fleet_activity", agentId: id, role: boardRole, phase: "task", ...data });
+    // Owner control plane: a running child is stoppable on its own (a
+    // background child has no parent turn to interrupt), and every action it
+    // takes lands in the audit trail under its own name.
+    const ownerStop = new AbortController();
+    const childSignal = req.signal ? AbortSignal.any([req.signal, ownerStop.signal]) : ownerStop.signal;
+    const unregisterStop = req.signal && this.backgroundSignals.has(req.signal) ? () => {} : registerStoppable({
+      kind: "subagent",
+      id,
+      label: `${req.subagent_type}: ${req.description}`.slice(0, 120),
+      ...(req.parentSessionId ? { sessionId: req.parentSessionId } : {}),
+      stop: (reason) => {
+        if (ownerStop.signal.aborted) return false;
+        ownerStop.abort(new Error(reason));
+        return true;
+      },
+    });
+    const audit = new ToolAuditTracker();
     const onEvent = (ev: import("@ares/protocol").TurnEvent) => {
+      const audited = audit.observe(ev);
+      if (audited) recordAudit({ ...audited, actor: `subagent:${id}`, ...(req.parentSessionId ? { sessionId: req.parentSessionId } : {}) });
       journal.record(ev);
       if (ev.type === "tool_start") {
         req.onProgress?.({
@@ -545,7 +569,7 @@ export class AresSubagentRunner implements SubagentRunner {
           model,
           systemPrompt,
           tools: allowedTools,
-          signal: req.signal,
+          signal: childSignal,
           maxTurns,
           requestPermission: req.requestPermission,
           onEvent,
@@ -562,7 +586,7 @@ export class AresSubagentRunner implements SubagentRunner {
             systemPrompt,
             tools: allowedTools,
             workspace: req.workspace,
-            signal: req.signal,
+            signal: childSignal,
             maxTurns,
             requestPermission: req.requestPermission,
             subagentDepth: childDepth,
@@ -578,6 +602,8 @@ export class AresSubagentRunner implements SubagentRunner {
       // The board never shows a ghost agent: a thrown run settles as failed.
       emitBoard({ event: "done", status: "failed" });
       throw error;
+    } finally {
+      unregisterStop();
     }
 
     const events = result.events;
@@ -719,6 +745,23 @@ export class AresSubagentRunner implements SubagentRunner {
 
     const controller = new AbortController();
     this.backgroundControllers.set(jobId, controller);
+    this.backgroundSignals.add(controller.signal);
+    const unregisterStop = registerStoppable({
+      kind: "subagent",
+      id: jobId,
+      label: `background ${req.subagent_type}: ${req.description}`.slice(0, 120),
+      ...(req.parentSessionId ? { sessionId: req.parentSessionId } : {}),
+      stop: (reason) => {
+        if (controller.signal.aborted) return false;
+        try {
+          kernel.requestBackgroundJobCancellation(jobId);
+        } catch {
+          // the abort below still ends the worker; settlement reads the signal
+        }
+        controller.abort(new Error(reason));
+        return true;
+      },
+    });
     const heartbeat = setInterval(() => {
       const renewed = kernel.renewBackgroundJobLease(jobId, this.backgroundOwnerId, 30_000);
       if (!renewed || renewed.cancelRequested) {
@@ -770,6 +813,7 @@ export class AresSubagentRunner implements SubagentRunner {
       }, this.backgroundOwnerId);
     } finally {
       clearInterval(heartbeat);
+      unregisterStop();
       this.backgroundControllers.delete(jobId);
     }
   }

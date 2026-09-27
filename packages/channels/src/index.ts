@@ -24,7 +24,7 @@ export type {
   SendMediaOptions,
 } from "./telegram/api.js";
 
-export { TelegramBridge, chunkMessage, toTelegramText, toTelegramHtml, screenshotPathOf } from "./telegram/bridge.js";
+export { TelegramBridge, telegramActivityCardDefault, chunkMessage, splitPoint, fitMarkdown, toTelegramText, toTelegramHtml, screenshotPathOf } from "./telegram/bridge.js";
 export type { TelegramBridgeOptions, TelegramApiLike, BridgeTimers, PendingInput } from "./telegram/bridge.js";
 export { detectRemotePcIntent, parseRemotePcCallback, buildLinkMessage, buildPcConnectedMessage, buildPcContextPrefix } from "./telegram/remotePC.js";
 export type { RemotePcBridgeDeps } from "./telegram/remotePC.js";
@@ -125,14 +125,35 @@ export {
   transcribe,
   voiceToText,
   type TranscribeResult,
+  type TranscribeAudio,
 } from "./telegram/stt.js";
 
 export {
   sendConnectMenu,
+  sendConnectOffer,
   handleConnectCallback,
   parseConnectCallback,
 } from "./telegram/connect.js";
 export type { ConnectFlowApi, ConnectFlowDeps } from "./telegram/connect.js";
+
+export {
+  formatDuration,
+  newActivityCard,
+  renderActivityCard,
+  renderActivitySummary,
+  shortFailureDetail,
+  MAX_VISIBLE_STEPS,
+} from "./telegram/activity.js";
+export type { ActivityCardState, ActivityStep, ActivityStepState } from "./telegram/activity.js";
+
+export {
+  describePermissionInput,
+  oauthProviderFromError,
+  permissionKey,
+  renderConnectOffer,
+  renderPermissionOutcome,
+  renderPermissionPrompt,
+} from "./telegram/prompts.js";
 
 export type {
   ClientFrame,
@@ -148,3 +169,10 @@ export type {
   WebSocketLike,
   WebSocketCtor,
 } from "./types.js";
+
+export {
+  parseOwnerControlCommand,
+  runOwnerControlCommand,
+  type OwnerControlDeps,
+  type OwnerControlKind,
+} from "./telegram/ownerControl.js";

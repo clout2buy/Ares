@@ -36,6 +36,11 @@ const SEND_HIGH_WATER_BYTES = 1 << 20; // pause pumping while the socket has ≥
 const DRAIN_RETRY_MS = 25;
 const HELLO_TIMEOUT_MS = 10_000;
 
+/** How often the server pings every authed client. A client that misses one
+ *  cycle (no pong within PING_INTERVAL_MS) is declared dead and terminated.
+ *  This catches half-open TCP connections that the OS would take 2 h to RST. */
+const PING_INTERVAL_MS = 30_000;
+
 // ─── Approval bridge (stub seam — the effects wiring lands in a later phase) ─
 
 export interface ApprovalResponse {
@@ -83,6 +88,7 @@ interface ClientConn {
   drainTimer: ReturnType<typeof setTimeout> | null;
   helloTimer: ReturnType<typeof setTimeout> | null;
   detachBySession: Map<string, () => void>;
+  isAlive: boolean;
 }
 
 export class GarrisonServer {
@@ -98,6 +104,7 @@ export class GarrisonServer {
   private boundPort = 0;
   private unsubscribeApprovals: (() => void) | undefined;
   private unsubscribeScheduler: (() => void) | undefined;
+  private pingTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(opts: GarrisonServerOptions) {
     this.opts = opts;
@@ -140,6 +147,21 @@ export class GarrisonServer {
     const addr = http.address();
     this.boundPort = typeof addr === "object" && addr !== null ? addr.port : port;
     this.boundHost = host;
+
+    this.pingTimer = setInterval(() => {
+      for (const client of this.clients) {
+        if (!client.authed) continue;
+        if (!client.isAlive) {
+          this.dropClient(client, true);
+          this.clients.delete(client);
+          continue;
+        }
+        client.isAlive = false;
+        client.ws.ping();
+      }
+    }, PING_INTERVAL_MS);
+    this.pingTimer.unref?.();
+
     return { host: this.boundHost, port: this.boundPort };
   }
 
@@ -148,6 +170,7 @@ export class GarrisonServer {
   }
 
   async close(): Promise<void> {
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = undefined; }
     this.unsubscribeApprovals?.();
     this.unsubscribeApprovals = undefined;
     this.unsubscribeScheduler?.();
@@ -205,11 +228,13 @@ export class GarrisonServer {
       drainTimer: null,
       helloTimer: null,
       detachBySession: new Map(),
+      isAlive: true,
     };
     this.clients.add(client);
     client.helloTimer = setTimeout(() => this.rejectHandshake(client, "handshake timeout"), HELLO_TIMEOUT_MS);
     client.helloTimer.unref?.();
 
+    ws.on("pong", () => { client.isAlive = true; });
     ws.on("message", (data) => this.onMessage(client, data));
     ws.on("error", () => {
       // Socket errors surface as close; nothing to do here.
@@ -304,6 +329,7 @@ export class GarrisonServer {
             workspace: frame.workspace,
             surface: normalizeSessionSurface(frame.surface),
             tenant: normalizeSessionTenant(frame.tenant),
+            ...(typeof frame.personaId === "string" && frame.personaId && frame.personaId !== "ares" ? { personaId: frame.personaId } : {}),
           });
           // The creator is auto-attached: a client that just made a session
           // always wants its events. Explicit session.attach stays for peers.

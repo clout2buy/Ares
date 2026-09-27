@@ -416,6 +416,32 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
     })().catch(fail);
   });
 
+  return persistMcpConnection({
+    name,
+    url,
+    home,
+    displayName: opts.displayName,
+    authServer,
+    tokens,
+    client: { clientId: ctx!.clientId, ...(ctx!.clientSecret ? { clientSecret: ctx!.clientSecret } : {}) },
+    fetchImpl: opts.fetchImpl,
+  });
+}
+
+/** Store a freshly exchanged token bundle and the connector entry, then prove
+ *  the token against tools/list. Shared by the loopback and public-redirect
+ *  flows so both persist identically. */
+async function persistMcpConnection(input: {
+  name: string;
+  url: string;
+  home?: string;
+  displayName?: string;
+  authServer: Awaited<ReturnType<typeof discoverMcpAuth>>;
+  tokens: Awaited<ReturnType<typeof exchangeMcpCode>>;
+  client: { clientId: string; clientSecret?: string };
+  fetchImpl?: FetchLike;
+}): Promise<ConnectMcpResult> {
+  const { name, url, home, authServer, tokens } = input;
   // Persist: encrypted token bundle in the vault, secret-free entry on disk.
   // A re-auth must not clobber the vaulted custom headers the owner configured.
   const priorHeaders = await vaultedHeaders(name, home);
@@ -424,9 +450,9 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
     refreshToken: tokens.refreshToken,
     expiresAt: tokens.expiresAt,
     tokenEndpoint: authServer.tokenEndpoint,
-          ...(authServer.revocationEndpoint ? { revocationEndpoint: authServer.revocationEndpoint } : {}),
-    clientId: ctx!.clientId,
-    clientSecret: ctx!.clientSecret,
+    ...(authServer.revocationEndpoint ? { revocationEndpoint: authServer.revocationEndpoint } : {}),
+    clientId: input.client.clientId,
+    clientSecret: input.client.clientSecret,
     resource: authServer.resource,
     ...(priorHeaders ? { headers: priorHeaders } : {}),
   };
@@ -441,7 +467,7 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
     oauth: true,
     vault: undefined,
     authToken: undefined,
-    displayName: opts.displayName ?? prev?.displayName ?? name,
+    displayName: input.displayName ?? prev?.displayName ?? name,
     connectedAt: new Date().toISOString(),
   };
   await saveRemoteMcpServers(servers, home);
@@ -450,11 +476,69 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
   // NOT roll back the stored tokens (the server may be briefly unhappy) — it is
   // surfaced so the UI says "connected but unverified" instead of lying.
   try {
-    const probe = await probeMcpTools(url, tokens.accessToken, opts.fetchImpl);
+    const probe = await probeMcpTools(url, tokens.accessToken, input.fetchImpl);
     return { name, url, toolCount: probe.toolCount, verified: true };
   } catch (err) {
     return { name, url, verified: false, verifyError: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * The same OAuth connect, split in two for a caller that owns its own public
+ * redirect (the garrison, reached from a phone — where a loopback callback on
+ * the box is unreachable). `begin` discovers, registers a client for
+ * `redirectUri` (cached per issuer + URI), and returns the URL to open; the
+ * caller routes the provider's redirect back to `finish(code)`.
+ */
+export async function beginMcpConnect(
+  url: string,
+  opts: { redirectUri: string; state: string; name?: string; displayName?: string; home?: string; fetchImpl?: FetchLike },
+): Promise<{ name: string; authorizeUrl: string; finish: (code: string) => Promise<ConnectMcpResult> }> {
+  const name = (opts.name ?? connectorNameFromUrl(url)).trim();
+  const home = opts.home;
+  const authServer = await discoverMcpAuth(url);
+  if (!authServer.registrationEndpoint) {
+    throw new Error(`${name} doesn't support automatic app registration — it needs an API key or a pre-registered client`);
+  }
+  const cacheKey = `${authServer.registrationEndpoint}|${opts.redirectUri}`;
+  const reg = (await cachedClient(home, cacheKey)) ?? (await (async () => {
+    const fresh = await registerMcpClient(authServer.registrationEndpoint!, opts.redirectUri);
+    await rememberClient(home, cacheKey, fresh);
+    return fresh;
+  })());
+  const pkce = generatePkce();
+  const authorizeUrl = buildMcpAuthorizeUrl({
+    authorizationEndpoint: authServer.authorizationEndpoint,
+    clientId: reg.clientId,
+    redirectUri: opts.redirectUri,
+    challenge: pkce.challenge,
+    state: opts.state,
+    scopes: authServer.scopesSupported,
+    resource: authServer.resource,
+  });
+  const finish = async (code: string): Promise<ConnectMcpResult> => {
+    const tokens = await exchangeMcpCode({
+      tokenEndpoint: authServer.tokenEndpoint,
+      ...(authServer.revocationEndpoint ? { revocationEndpoint: authServer.revocationEndpoint } : {}),
+      clientId: reg.clientId,
+      clientSecret: reg.clientSecret,
+      code,
+      verifier: pkce.verifier,
+      redirectUri: opts.redirectUri,
+      resource: authServer.resource,
+    });
+    return persistMcpConnection({
+      name,
+      url,
+      home,
+      displayName: opts.displayName,
+      authServer,
+      tokens,
+      client: { clientId: reg.clientId, ...(reg.clientSecret ? { clientSecret: reg.clientSecret } : {}) },
+      fetchImpl: opts.fetchImpl,
+    });
+  };
+  return { name, authorizeUrl, finish };
 }
 
 export interface SetMcpTokenResult {

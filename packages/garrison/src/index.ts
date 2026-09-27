@@ -48,6 +48,7 @@ export {
   normalizeSessionSurface,
   normalizeSessionTenant,
   normalizeSessionAttachments,
+  MAX_ATTACHMENT_BASE64_CHARS,
   inputContent,
   MAX_ATTACHMENTS_PER_INPUT,
 } from "./sessions.js";

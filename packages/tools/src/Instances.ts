@@ -58,7 +58,7 @@ export const InstancesTool = buildTool<typeof inputSchema, InstancesOutput>({
   safety: "external-state",
   dynamicSafety: (input) => (READ_ACTIONS.has(input.action) ? "read-only" : input.action === "remove" ? "destructive" : "external-state"),
   concurrency: "exclusive",
-  watchdogTimeoutMs: 1_800_000,
+  watchdogTimeoutMs: 12 * 60_000,
   inputZod: inputSchema,
   activityDescription: (input) => (input.action === "list" ? "Listing Ares instances" : `Instance ${input.action.replace("_", " ")} ${input.name ?? ""}`.trim()),
   async checkPermissions(input, ctx) {

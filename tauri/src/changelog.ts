@@ -38,7 +38,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.53.0",
+    version: "0.54.0",
     date: "September 2026",
     title: "One Mind",
     tagline: "Ares now has one memory across every machine, and it can see, show, and act from your phone.",
@@ -49,6 +49,8 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "📷", title: "Send photos on Telegram", blurb: "Ares actually sees the pictures you send it (albums too) and reads the files you drop in the chat.", tag: "New" },
       { icon: "🖼", title: "It shows you", blurb: "Screenshots from the browser or your PC come back as photos, and Ares can send you any image or file on request.", tag: "New" },
       { icon: "✅", title: "One tap, not forty", blurb: "Permission prompts on your phone now have Always, so a long browser task asks once.", tag: "Polished" },
+      { icon: "✨", title: "Opus 5.5 on your subscription", blurb: "Claude Opus 5.5 shows up in the model picker and runs over your Claude sign-in, no API key needed.", tag: "New" },
+      { icon: "🏁", title: "Done means done", blurb: "Ares no longer sends a second agent to re-check its work after every change, so finished tasks finish instead of dragging on.", tag: "Faster" },
       { icon: "💬", title: "Readable replies", blurb: "Bold, code, and links render on Telegram; long answers arrive as a file instead of eight bubbles; /new starts a fresh thread.", tag: "Polished" },
     ],
   },

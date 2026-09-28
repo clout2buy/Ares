@@ -43,10 +43,7 @@ export {
   type ContentBlock,
   isToolUseBlock,
   manualVerificationScoped,
-  buildVerifierSubagentPrompt,
-  parseVerifierVerdict,
   type ProviderToolChoice,
-  type EngineSubagentRunner,
 } from "./queryEngine.js";
 
 export { TurnGuards } from "./turnGuards.js";

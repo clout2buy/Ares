@@ -403,7 +403,6 @@ export async function buildEngineTools(
     },
   };
   const runner = new AresSubagentRunner(runnerOptions);
-  runtime.subagentRunner = runner;
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const taskOutputTool = adaptToolForEngine(makeTaskOutputTool(runner), enrich) as EngineTool;
   const killTaskTool = adaptToolForEngine(makeKillTaskTool(runner), enrich) as EngineTool;
@@ -611,7 +610,6 @@ export async function buildCodingTools(
     },
   };
   const runner = new AresSubagentRunner(runnerOptions);
-  runtime.subagentRunner = runner;
   const taskTool = adaptToolForEngine(makeTaskTool(runner), enrich) as EngineTool;
   const taskOutputTool = adaptToolForEngine(makeTaskOutputTool(runner), enrich) as EngineTool;
   const killTaskTool = adaptToolForEngine(makeKillTaskTool(runner), enrich) as EngineTool;

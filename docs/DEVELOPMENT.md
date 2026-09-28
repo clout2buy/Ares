@@ -137,7 +137,6 @@ variable, documented at its definition site. Quick index (default in parentheses
 | `ARES_EDIT_AUTO_READ=0` | Restore the old "Read before editing" deny; default auto-reads and edits when the match is unique. |
 | `ARES_SHELL_POLICY=allowlist` | Every non-read-only shell command asks; default keeps the destructive-only prompt. |
 | `ARES_STRICT_VERIFY=0` | Legacy `completed` turn status even with unverified changes (default emits `needs_verification`). |
-| `ARES_VERIFY_SUBAGENT=0`, `ARES_VERIFY_SUBAGENT_MIN_FILES` (3) | Adversarial verifier subagent auto-spawn for turns touching N+ files. |
 | `ARES_SUBAGENT_MAX_DEPTH` (1) | Subagent nesting cap; at the cap children lose Task/Conductor/CodingBackend. |
 | `ARES_PLAN_BEFORE_EDIT=0` | Disable forcing TodoWrite as the first call of a substantial coding turn. |
 | `ARES_PINNED_FAILOVER=0`, `ARES_ROUTING_BACKUP` (comma list) | Failover chain for a pinned model (also `routingBackup` in ui.json). |

@@ -1,6 +1,6 @@
 // Extracted from entry.ts — runtime.
 
-import { aresHome, type SubagentRunner } from "@ares/core";
+import { aresHome } from "@ares/core";
 import { TERMINAL_PROVIDERS } from "./providers.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -55,10 +55,6 @@ export interface AresRuntimeState {
    * before agent persona/memory/git context is loaded, so Task and Conductor
    * resolve this at dispatch time instead of capturing a reduced prompt. */
   composeChildSystemPrompt?(): string | Promise<string>;
-  /** The Task tool's subagent runner, published by buildEngineTools so the
-   *  Session can hand it to the engine for the adversarial verifier auto-spawn
-   *  (3+ changed files, see QueryEngineConfig.subagentRunner). */
-  subagentRunner?: SubagentRunner;
   /** Live owner permission posture (master + per-category + fleet inherit).
    *  Mutated by the set_permissions daemon command so toggles apply mid-session. */
   permissions?: PermissionSettings;

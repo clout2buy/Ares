@@ -234,8 +234,6 @@ export interface SessionOptions {
   specDocs?: QueryEngineConfig["specDocs"];
   /** Failure-signature recall — see QueryEngineConfig.recallFailureFix. */
   recallFailureFix?: (input: { tool: string; signature: string; error: string }) => Promise<string | null>;
-  /** Adversarial verifier auto-spawn — see QueryEngineConfig.subagentRunner. */
-  subagentRunner?: QueryEngineConfig["subagentRunner"];
   /** Nesting depth of this session's engine (0 = top-level). */
   subagentDepth?: number;
   /** Structural plan-before-edit — see QueryEngineConfig.planBeforeEdit. */
@@ -495,7 +493,6 @@ export class Session {
         observedMutationAt: opts.observedMutationAt,
         specDocs: opts.specDocs,
         recallFailureFix: opts.recallFailureFix,
-        subagentRunner: opts.subagentRunner,
         subagentDepth: opts.subagentDepth,
         planBeforeEdit: opts.planBeforeEdit,
         hookManager: opts.hookManager,

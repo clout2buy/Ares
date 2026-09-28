@@ -35,7 +35,6 @@ import { promises as fs } from "node:fs";
 import type { HookInvocation, HookManager } from "./hooks.js";
 import { verificationHintFor } from "./verifier.js";
 import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
-import { currentSubagentDepth } from "./subagentDepth.js";
 import { TurnGuards } from "./turnGuards.js";
 import { modelLikelyHasVision } from "./modelVision.js";
 import {
@@ -83,26 +82,6 @@ export interface ProviderToolDescriptor {
   name: string;
   description: string;
   input_schema: object;
-}
-
-/**
- * The slice of a subagent runner the engine needs to auto-spawn the
- * adversarial `verifier` (structurally satisfied by AresSubagentRunner — the
- * host passes the same object the Task tool holds).
- */
-export interface EngineSubagentRunner {
-  has(name: string): boolean;
-  run(req: {
-    subagent_type: string;
-    description: string;
-    prompt: string;
-    parentSessionId?: string;
-    invocationId?: string;
-    workspace: string;
-    signal?: AbortSignal;
-    onProgress?: (data: unknown) => void;
-    requestPermission?: QueryEngineConfig["requestPermission"];
-  }): Promise<{ status: string; workStatus?: WorkStatus; summary: string; id?: string }>;
 }
 
 export interface Provider {
@@ -491,15 +470,6 @@ export interface QueryEngineConfig {
    * event. Kernel-backed Session hosts persist directly from engine.history(),
    * so they disable this to avoid cloning and streaming megabytes of history. */
   includeCompactionProjectionInEvents?: boolean;
-  /**
-   * Host-wired subagent runner (the object the Task tool holds). When present
-   * on a TOP-LEVEL engine, the proof gate runs the adversarial `verifier`
-   * subagent once per turn before accepting "done" over ≥
-   * ARES_VERIFY_SUBAGENT_MIN_FILES (3) changed files without behavioral proof.
-   * A PASS with command evidence counts as proof at the current mutation
-   * generation; a FAIL blocks. ARES_VERIFY_SUBAGENT=0 disables.
-   */
-  subagentRunner?: EngineSubagentRunner;
   /** Nesting depth of this engine (0 = top-level session). Children never
    * auto-spawn verifiers; the runner also guards via AsyncLocalStorage. */
   subagentDepth?: number;
@@ -2619,12 +2589,6 @@ export class QueryEngine {
     // scoping heuristic in scopedManualVerification) — remembered so the
     // disclosure can say WHY it did not count instead of "no proof".
     let unscopedManualVerificationCommand: string | null = null;
-    // Verdict line from the auto-spawned adversarial verifier subagent, and
-    // the freshness of its PASS (evidence tick + host mutation generation).
-    let verifierSubagentVerdict: string | null = null;
-    let verifierSubagentSpawned = false;
-    let verifierSubagentProofTick = 0;
-    let verifierSubagentProofGeneration = -1;
     const changedFiles = new Set<string>();
     // GUI ground truth. Headless/unit green does not prove a window renders:
     // the BeanBrawl failure shipped a grey screen behind "27/27 tests pass".
@@ -2673,17 +2637,6 @@ export class QueryEngine {
     };
     const hasPostMutationProof = (): boolean => {
       const evidence = this.cfg.verificationEvidence?.();
-      // A verifier-subagent PASS with command evidence is behavioral proof for
-      // exactly the mutation state it inspected: any later edit (tick) or host
-      // generation bump invalidates it, as does a manual failure since.
-      if (
-        verifierSubagentProofTick > 0 &&
-        verifierSubagentProofTick >= guards.lastMutationTick &&
-        manualVerificationFailureCommand === null &&
-        (!evidence || evidence.mutationGeneration === verifierSubagentProofGeneration)
-      ) {
-        return true;
-      }
       if (evidence) {
         const currentGenerationPassed =
           evidence.latestRunStatus === "passed" &&
@@ -2771,7 +2724,6 @@ export class QueryEngine {
       if (unscopedManualVerificationCommand && !latestManualVerificationCommand) {
         ran.push(`manual pass NOT counted: \`${unscopedManualVerificationCommand}\` does not reference a changed file, its directory, its package, or a test root — static proof only`);
       }
-      if (verifierSubagentVerdict) ran.push(`verifier subagent: ${verifierSubagentVerdict}`);
       const missing: string[] = [];
       if (ws === "blocked") missing.push("the verifier's red checks were never resolved");
       if (guiNeedsVisualProof()) missing.push("no screenshot of the running app newer than the last change");
@@ -3725,85 +3677,6 @@ export class QueryEngine {
             });
             yield { type: "system_reminder_injected", text, source: "verifier" };
             continue;
-          }
-        }
-        // Adversarial verifier auto-spawn. A turn about to end over ≥N changed
-        // files with no behavioral proof gets ONE independent verifier run
-        // (never per gate iteration, never from inside a subagent) before the
-        // proof gate nags. PASS with command evidence = proof at the current
-        // generation; FAIL blocks; PARTIAL/no-evidence is information only.
-        if (
-          this.cfg.requireVerificationEvidence &&
-          workStatus !== "blocked" &&
-          requiresVerification() &&
-          hasCurrentTurnEngagement() &&
-          !hasPostMutationProof() &&
-          !verifierSubagentSpawned &&
-          !this.liveSignal().aborted
-        ) {
-          const runner = this.cfg.subagentRunner;
-          const realChanged = [...changedFiles].filter((file) => !file.startsWith("<"));
-          if (
-            runner &&
-            process.env.ARES_VERIFY_SUBAGENT !== "0" &&
-            (this.cfg.subagentDepth ?? 0) === 0 &&
-            currentSubagentDepth() === 0 &&
-            realChanged.length >= verifySubagentMinFiles() &&
-            runner.has("verifier")
-          ) {
-            verifierSubagentSpawned = true;
-            const checks = await this.projectChecks();
-            const relFiles = realChanged.map((file) => path.relative(this.cfg.workspace, file) || file);
-            const id = `verify_${cryptoId()}`;
-            yield { type: "subagent_start", id, name: "verifier", description: `Adversarial verification of ${relFiles.length} changed file(s)` };
-            let summary = "";
-            let ran = false;
-            try {
-              const result = await runner.run({
-                subagent_type: "verifier",
-                description: `Verify ${relFiles.length} changed file(s)`,
-                prompt: buildVerifierSubagentPrompt(relFiles, checks),
-                parentSessionId: this.sessionId,
-                invocationId: id,
-                workspace: this.cfg.workspace,
-                signal: this.liveSignal(),
-                requestPermission: this.cfg.requestPermission
-                  ? (request) => this.cfg.requestPermission!(request)
-                  : undefined,
-              });
-              summary = result.summary ?? "";
-              ran = result.status === "completed" || result.status === "needs_verification";
-            } catch (err) {
-              summary = `verifier subagent failed: ${err instanceof Error ? err.message : String(err)}`;
-            }
-            const verdict = parseVerifierVerdict(summary);
-            verifierSubagentVerdict = `${verdict.verdict ?? "NO VERDICT"}${verdict.hasCommandRun ? "" : " (no Command-run evidence)"}`;
-            yield { type: "subagent_end", id, status: ran ? "completed" : "failed", summary: summary.slice(0, 4_000) };
-            const evidenceText = summary.slice(0, 6_000);
-            if (ran && verdict.verdict === "PASS" && verdict.hasCommandRun) {
-              verifierSubagentProofTick = guards.evidenceTick;
-              verifierSubagentProofGeneration = this.cfg.verificationEvidence?.().mutationGeneration ?? -1;
-              manualVerificationFailureCommand = null;
-              yield {
-                type: "system_reminder_injected",
-                text: `Adversarial verifier subagent VERDICT: PASS with command evidence — counted as behavioral proof for the current changes.\n${evidenceText}`,
-                source: "verifier",
-              };
-            } else {
-              const failed = ran && verdict.verdict === "FAIL";
-              if (failed) workStatus = "blocked";
-              const text = failed
-                ? `Adversarial verifier subagent VERDICT: FAIL — the changes are NOT verified. Fix what it found, re-run the checks, then finish.\n${evidenceText}`
-                : `Adversarial verifier subagent returned ${verifierSubagentVerdict} — this does not count as proof. Run the project's checks yourself and show the output.\n${evidenceText}`;
-              this.messages.push({
-                id: cryptoId(),
-                role: "user",
-                content: [{ type: "system_reminder", text }],
-                createdAt: new Date().toISOString(),
-              });
-              yield { type: "system_reminder_injected", text, source: "verifier" };
-              if (failed) continue;
-            }
           }
         }
         // Post-edit proof gate. The verifier's empty reminder queue is NOT a
@@ -6128,38 +6001,6 @@ function manualVerificationCommand(name: string, input: unknown): string | null 
 
 function isManualVerificationCall(name: string, input: unknown): boolean {
   return manualVerificationCommand(name, input) !== null;
-}
-
-/** Changed-file count at which the adversarial verifier auto-spawns. */
-function verifySubagentMinFiles(): number {
-  const raw = Number(process.env.ARES_VERIFY_SUBAGENT_MIN_FILES);
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 3;
-}
-
-/** Prompt for the auto-spawned verifier: the changed files and the project's
- *  own checks, so it runs the real build/tests instead of guessing. */
-export function buildVerifierSubagentPrompt(changedFiles: readonly string[], checks: ProjectChecks | null): string {
-  const files = changedFiles.slice(0, 40).map((file) => `- ${file}`).join("\n");
-  const more = changedFiles.length > 40 ? `\n- … +${changedFiles.length - 40} more` : "";
-  const checkLines = checks
-    ? (["typecheck", "build", "lint", "test"] as const)
-        .map((kind) => (checks[kind] ? `- ${kind}: \`${checks[kind]!.command}\` (from ${checks[kind]!.source})` : ""))
-        .filter(Boolean)
-    : [];
-  const extraTests = checks ? checks.tests.slice(1).map((test) => `- test: \`${test.command}\` (from ${test.source})`) : [];
-  const checksText = [...checkLines, ...extraTests].length
-    ? `Project checks derived from its manifests (run these first, verbatim):\n${[...checkLines, ...extraTests].join("\n")}`
-    : "No project test/build commands could be derived from manifests — find the real ones (README, package manifests, CI config) and run them; if none exist, execute the changed code directly and show its output.";
-  return `The parent agent changed these ${changedFiles.length} file(s) in the workspace and is about to claim the work is done:\n${files}${more}\n\n${checksText}\n\nThen exercise the changed behavior directly (run it / call it / reproduce the requested scenario) with at least one adversarial probe. Every check needs a **Command run:** block with real output. End with exactly one VERDICT: PASS / FAIL / PARTIAL line.`;
-}
-
-/** Parse the verifier contract: the LAST `VERDICT:` line wins; a PASS is only
- *  evidence-backed when at least one Command-run block exists. */
-export function parseVerifierVerdict(text: string): { verdict: "PASS" | "FAIL" | "PARTIAL" | null; hasCommandRun: boolean } {
-  const matches = [...text.matchAll(/^\s*\**\s*VERDICT:\s*\**\s*(PASS|FAIL|PARTIAL)\b/gim)];
-  const last = matches.at(-1)?.[1]?.toUpperCase() as "PASS" | "FAIL" | "PARTIAL" | undefined;
-  const hasCommandRun = /\*\*Command run:\*\*|^\s*Command run:/im.test(text);
-  return { verdict: last ?? null, hasCommandRun };
 }
 
 /** Stems too generic to anchor a command to a changed file by substring. */

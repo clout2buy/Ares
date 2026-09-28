@@ -58,6 +58,13 @@ import { startLifeSurfaces } from "./lifeWiring.js";
 import { PersonaRuntime } from "./personaRuntime.js";
 import type { ProviderSelection } from "./providers.js";
 
+// The owner's standing blanket approval for this box (ARES_TRUST_ALL=1): every
+// class that would otherwise escalate to his phone runs instead, so an agent he
+// texts just works while he's away. Money stays gated (see TRUST_ALL_EXEMPT).
+// Read once at boot — the posture belongs to the process, not to one session,
+// so it covers every agent he has and every one he creates later on this box.
+const OWNER_TRUST_ALL = /^(1|true|yes|on)$/i.test(process.env.ARES_TRUST_ALL?.trim() ?? "");
+
 export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 
 /** Production Garrison composition seam. Remote sessions must get the same
@@ -338,7 +345,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       const fileReadStamps = new Map<string, FileReadStamp>();
       const requestPermission = req.requestPermission
         ? async (request: Parameters<typeof req.requestPermission>[0]) => {
-            const decision = remoteAutonomyDecision(request);
+            const decision = remoteAutonomyDecision(request, { trustAll: OWNER_TRUST_ALL });
             if (decision === "allow") return "allow_once" as const;
             if (decision === "deny") return "deny" as const;
             return req.requestPermission(request);

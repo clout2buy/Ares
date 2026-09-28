@@ -42,28 +42,58 @@ const REMOTE_GATED: ReadonlySet<ActionCategory> = new Set<ActionCategory>([
 ]);
 
 /**
- * Permission posture for REMOTE sessions (Telegram). Autonomy-first: anything
- * that isn't outright dangerous just runs; the dangerous few escalate to the
- * owner's phone (and auto-deny — the safe failure — if unanswered before the
- * tool watchdog fires). PURE — no I/O.
+ * The classes a standing blanket approval still will NOT silence. Money is the
+ * one line the owner's "stop asking me" does not cross: an agent that spends on
+ * its own is a different failure mode from an agent that works without a tap.
+ */
+const TRUST_ALL_EXEMPT: ReadonlySet<ActionCategory> = new Set<ActionCategory>(["payment_or_purchase"]);
+
+/** Owner trust posture for remote sessions. */
+export interface RemoteAutonomyOptions {
+  /**
+   * The owner has handed this box a standing blanket approval (ARES_TRUST_ALL=1
+   * at boot): every class that would otherwise escalate to his phone runs
+   * instead. TRUST_ALL_EXEMPT still asks.
+   */
+  trustAll?: boolean;
+}
+
+/**
+ * Permission posture for REMOTE sessions (phone/Telegram). Autonomy-first:
+ * anything that isn't outright dangerous just runs; the dangerous few escalate
+ * to the owner's phone (and auto-deny — the safe failure — if unanswered before
+ * the tool watchdog fires). With `trustAll` the owner has pre-answered every
+ * escalation on this box, so nothing ever reaches his phone. PURE — no I/O: the
+ * posture is passed in, never read here.
  *
  *   allow → run it now, no prompt
- *   ask   → send Allow/Deny buttons to the owner's Telegram
+ *   ask   → send Allow/Deny buttons to the owner's phone
  *   deny  → refuse outright
  */
-export function remoteAutonomyDecision(request: ToolPermissionRequest): "allow" | "ask" | "deny" {
+export function remoteAutonomyDecision(
+  request: ToolPermissionRequest,
+  opts?: RemoteAutonomyOptions,
+): "allow" | "ask" | "deny" {
   // Exiting plan mode grants workspace-write authority and approves one exact
   // durable plan revision. A remote model can propose it, but only the owner
   // can cross this boundary; never let the autonomy default self-approve it.
   if (request.toolName === "ExitPlanMode") return "ask";
-  // A per-call owner decision (a checkout total, a vault fill on a named site)
-  // is the owner's by definition — never the autonomy default's.
-  if (request.ownerDecision) return "ask";
   const category = classifyToolRequest(request);
+  // A per-call owner decision (a checkout total, a vault fill on a named site)
+  // is the owner's by definition — never the autonomy default's. Under a
+  // standing blanket approval the ones that only ever cost him a tap (filling a
+  // vault login on a named site) go quiet; money still asks.
+  if (request.ownerDecision) {
+    if (!opts?.trustAll) return "ask";
+    return category === "payment_or_purchase" ? "ask" : "allow";
+  }
   // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
   if (category === null) return "allow";
-  // The dangerous few → owner's phone.
-  if (REMOTE_GATED.has(category)) return "ask";
+  // The dangerous few → owner's phone, unless he has trusted this box outright.
+  if (REMOTE_GATED.has(category)) {
+    if (opts?.trustAll && !TRUST_ALL_EXEMPT.has(category)) return "allow";
+    return "ask";
+  }
   // Everything else — navigate, desktop control, file writes, ordinary shell — runs.
   return "allow";
 }

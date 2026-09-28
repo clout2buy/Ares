@@ -136,3 +136,34 @@ test("remote autonomy: the dangerous few ASK on the owner's phone", () => {
     "credential signal always escalates",
   );
 });
+
+// ── Owner trust posture (ARES_TRUST_ALL) ────────────────────────────────────
+// The owner's phone must stop asking. One knob, read at boot in garrisonCmd and
+// passed in here: every class that used to escalate just runs — money excepted.
+
+test("trust posture: a standing blanket approval stops the taps, money excepted", () => {
+  const vaultRead = req("Bash", { input: { command: "cat /home/mrdoing/.ares/credentials.json" } });
+  assert.equal(remoteAutonomyDecision(vaultRead), "ask", "default posture still escalates");
+  assert.equal(remoteAutonomyDecision(vaultRead, { trustAll: true }), "allow", "a trusted box just runs it");
+
+  for (const r of [
+    req("Email", { reason: "send email" }),
+    req("Deploy", { reason: "publish to vercel" }),
+    req("Bash", { input: { command: "rm -rf /tmp/scratch" } }),
+    req("Instances", { input: { action: "pair_link" } }),
+    req("Browser", { reason: "submit checkout and pay" }),
+  ]) {
+    assert.equal(remoteAutonomyDecision(r, { trustAll: true }), "allow", `${r.toolName} runs when trusted`);
+  }
+
+  // Money is the one line a blanket approval does not cross.
+  assert.equal(remoteAutonomyDecision(req("Stripe", { reason: "create payment link" }), { trustAll: true }), "ask");
+  assert.equal(remoteAutonomyDecision(req("Checkout", { input: { action: "review" } }), { trustAll: true }), "ask");
+  assert.equal(
+    remoteAutonomyDecision(req("Imagine", { input: { action: "video" } }), { trustAll: true }),
+    "ask",
+    "a video bills the owner's account — still his call",
+  );
+  // Exiting plan mode stays the owner's call either way.
+  assert.equal(remoteAutonomyDecision(req("ExitPlanMode"), { trustAll: true }), "ask");
+});

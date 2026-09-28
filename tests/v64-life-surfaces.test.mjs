@@ -490,6 +490,62 @@ test("imagine: OpenAI edit sends multipart with the source image", async (t) => 
   assert.equal(form.get("image").type, "image/png");
 });
 
+test("imagine: OpenRouter alone answers, named model, no size on the wire", async (t) => {
+  const home = await withAresHome(t);
+  withEnv(t, {
+    OPENAI_API_KEY: undefined,
+    GEMINI_API_KEY: undefined,
+    GOOGLE_API_KEY: undefined,
+    OPENROUTER_API_KEY: "or-key",
+    ARES_IMAGINE_OPENROUTER_MODEL: undefined,
+  });
+  const png = Buffer.from("89504e470d0a1a0a", "hex");
+  const calls = stubFetch(t, () => jsonRes({ data: [{ b64_json: png.toString("base64"), media_type: "image/png" }] }));
+  // No provider forced: with only OpenRouter keyed, it is the one that answers.
+  const result = await ImagineTool.call({ action: "image", prompt: "a brass diving helmet", size: "1536x1024" }, ctx());
+  assert.ok(!result.failure, result.output.message);
+  assert.equal(calls[0].url, "https://openrouter.ai/api/v1/images");
+  assert.equal(calls[0].init.headers.authorization, "Bearer or-key");
+  // ming-image returns 400 for aspect_ratio, so size must never reach this endpoint.
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    model: "inclusionai/ming-image-0.1-design",
+    prompt: "a brass diving helmet",
+    n: 1,
+  });
+  assert.equal(result.output.provider, "openrouter:inclusionai/ming-image-0.1-design");
+  assert.ok(result.output.path.startsWith(path.join(home, "media")));
+  assert.match(result.output.path, /a-brass-diving-helmet\.png$/);
+  assert.deepEqual(await fsp.readFile(result.output.path), png);
+});
+
+test("imagine: the model the agent names overrides the OpenRouter default", async (t) => {
+  await withAresHome(t);
+  withEnv(t, { OPENAI_API_KEY: undefined, GEMINI_API_KEY: undefined, OPENROUTER_API_KEY: "or-key" });
+  const calls = stubFetch(t, () => jsonRes({ data: [{ b64_json: "iVBORw0K", media_type: "image/png" }] }));
+  const result = await ImagineTool.call(
+    { action: "image", prompt: "flat vector logo", provider: "openrouter", model: "recraft/recraft-v4.1-flash" },
+    ctx(),
+  );
+  assert.ok(!result.failure, result.output.message);
+  assert.equal(JSON.parse(calls[0].init.body).model, "recraft/recraft-v4.1-flash");
+});
+
+test("imagine: OpenRouter names its own key gap and refuses edit_from", async (t) => {
+  const home = await withAresHome(t);
+  withEnv(t, { OPENAI_API_KEY: undefined, GEMINI_API_KEY: undefined, OPENROUTER_API_KEY: undefined });
+  const calls = stubFetch(t, () => jsonRes({ data: [{ b64_json: "iVBORw0K" }] }));
+  const missing = await ImagineTool.call({ action: "image", prompt: "x", provider: "openrouter" }, ctx());
+  assert.match(missing.failure, /OPENROUTER_API_KEY/);
+  assert.equal(calls.length, 0);
+
+  withEnv(t, { OPENROUTER_API_KEY: "or-key" });
+  const src = path.join(home, "in.png");
+  await fsp.writeFile(src, Buffer.from("89504e47", "hex"));
+  const edit = await ImagineTool.call({ action: "image", prompt: "make it night", provider: "openrouter", edit_from: src }, ctx());
+  assert.match(edit.failure, /edit_from/);
+  assert.equal(calls.length, 0);
+});
+
 test("imagine: Gemini image via Interactions, falling back to generateContent", async (t) => {
   await withAresHome(t);
   withEnv(t, { OPENAI_API_KEY: undefined, GEMINI_API_KEY: "g-key", ARES_IMAGINE_GEMINI_IMAGE_MODEL: undefined });

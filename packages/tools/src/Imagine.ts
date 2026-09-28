@@ -31,9 +31,15 @@ import { buildTool, type ToolResult } from "./_shared.js";
 
 const OPENAI_API = "https://api.openai.com/v1";
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
+const OPENROUTER_API = "https://openrouter.ai/api/v1";
 
 function openaiImageModel(): string {
   return process.env.ARES_IMAGINE_OPENAI_MODEL?.trim() || "gpt-image-2";
+}
+/** OpenRouter is a router: the owner names the model per call, so this default is
+ *  only the fallback. ARES_IMAGINE_OPENROUTER_MODEL retargets a whole agent. */
+function openrouterImageModel(): string {
+  return process.env.ARES_IMAGINE_OPENROUTER_MODEL?.trim() || "inclusionai/ming-image-0.1-design";
 }
 function geminiImageModel(): string {
   return process.env.ARES_IMAGINE_GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
@@ -170,6 +176,35 @@ export async function openaiImage(key: string, req: ImageRequest, signal?: Abort
     return Buffer.from(await img.arrayBuffer());
   }
   throw new Error("OpenAI returned no image");
+}
+
+/** OpenRouter's image endpoint answers like OpenAI's ({data[0].b64_json}) but takes
+ *  the model slug per call. Its models each declare their own knobs and it hard-fails
+ *  on anything they don't honour (ming-image 400s on aspect_ratio), so only the model,
+ *  prompt and count go over the wire — no size. */
+export async function openrouterImage(
+  key: string,
+  req: ImageRequest & { model?: string },
+  signal?: AbortSignal,
+): Promise<{ bytes: Buffer; mimeType: string }> {
+  const res = await fetch(`${OPENROUTER_API}/images`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: req.model?.trim() || openrouterImageModel(), prompt: req.prompt, n: 1 }),
+    signal: withDeadline(signal, 180_000),
+  });
+  if (!res.ok) throw new Error(`OpenRouter images ${await readError(res)}`);
+  const json = (await res.json()) as { data?: Array<{ b64_json?: string; media_type?: string; url?: string }> };
+  const first = json.data?.[0];
+  if (first?.b64_json) {
+    return { bytes: Buffer.from(first.b64_json, "base64"), mimeType: first.media_type || "image/png" };
+  }
+  if (first?.url) {
+    const img = await fetch(first.url, { signal: withDeadline(signal, 60_000) });
+    if (!img.ok) throw new Error(`OpenRouter image download HTTP ${img.status}`);
+    return { bytes: Buffer.from(await img.arrayBuffer()), mimeType: first.media_type || "image/png" };
+  }
+  throw new Error("OpenRouter returned no image");
 }
 
 export async function geminiImage(key: string, req: ImageRequest, signal?: AbortSignal): Promise<{ bytes: Buffer; mimeType: string }> {
@@ -315,7 +350,8 @@ const inputSchema = z
     prompt: z.string().optional().describe("image/video: what to make. Be concrete: subject, style, framing, lighting."),
     size: z.enum(["1024x1024", "1536x1024", "1024x1536", "auto"]).optional().describe("image: square, landscape or portrait (default auto)."),
     edit_from: z.string().optional().describe("image: path of an existing png/jpg/webp to edit instead of generating from scratch."),
-    provider: z.enum(["openai", "gemini"]).optional().describe("image: force a provider (default: OpenAI if connected, else Gemini)."),
+    provider: z.enum(["openai", "gemini", "openrouter"]).optional().describe("image: force a provider (default: OpenAI if connected, else Gemini, else OpenRouter)."),
+    model: z.string().optional().describe("image: model id for the OpenRouter provider, e.g. \"inclusionai/ming-image-0.1-design\" — list them at GET /api/v1/images/models (default: ARES_IMAGINE_OPENROUTER_MODEL)."),
     seconds: z.number().int().positive().optional().describe("video: length, 4/6/8 (default 8)."),
     aspect: z.enum(["16:9", "9:16"]).optional().describe("video: landscape (default) or vertical."),
     text: z.string().optional().describe("speech: the text to read."),
@@ -335,7 +371,7 @@ export interface ImagineOutput {
 }
 
 const NO_IMAGE_KEY =
-  "No image provider is connected. Call Connect with service \"openai\" (an OpenAI API key) or \"gemini\" (a Google AI Studio key) — the owner pastes it in a secure form on their phone — then retry.";
+  "No image provider is connected. Call Connect with service \"openai\" (an OpenAI API key) or \"gemini\" (a Google AI Studio key), or set OPENROUTER_API_KEY (OpenRouter — generates on the owner's credits, model named per call) — the owner pastes it in a secure form on their phone — then retry.";
 const NO_VIDEO_KEY =
   "Video needs Google Veo: call Connect with service \"gemini\" (a Google AI Studio API key), then retry. (OpenAI's Sora video API is shut down.)";
 const MAX_SPEECH_CHARS = 20_000;
@@ -344,9 +380,9 @@ const MAX_PODCAST_SEGMENTS = 120;
 export const ImagineTool = buildTool<typeof inputSchema, ImagineOutput>({
   name: "Imagine",
   description:
-    "Create media and save it as a file the owner sees on their phone: image (generate or edit_from an existing image — OpenAI gpt-image or Gemini), " +
+    "Create media and save it as a file the owner sees on their phone: image (generate or edit_from an existing image — OpenAI gpt-image, Gemini, or OpenRouter with a model you name), " +
     "video (a 4–8s clip with Google Veo; costs real money, the owner approves), speech (text → mp3 in Ares's voice), podcast (a two-voice mp3 from 'A:'/'B:' lines). " +
-    "Returns the file path — put it in your reply. If a provider isn't connected, call Connect service \"openai\" or \"gemini\".",
+    "Returns the file path — put it in your reply. If a provider isn't connected, call Connect service \"openai\" or \"gemini\", or set OPENROUTER_API_KEY.",
   // Images/speech only write a file under the Ares home; a video spends real
   // money, so only it is external-state (and asks).
   safety: "workspace-write",
@@ -383,10 +419,17 @@ export const ImagineTool = buildTool<typeof inputSchema, ImagineOutput>({
           if (!input.prompt?.trim()) return fail("image needs a prompt.");
           const openaiKey = await getCredential("OPENAI_API_KEY").catch(() => undefined);
           const geminiKey = await getCredential("GEMINI_API_KEY", { envFallback: ["GOOGLE_API_KEY"] }).catch(() => undefined);
-          const provider = input.provider ?? (openaiKey ? "openai" : geminiKey ? "gemini" : undefined);
+          const openrouterKey = await getCredential("OPENROUTER_API_KEY").catch(() => undefined);
+          const provider =
+            input.provider ?? (openaiKey ? "openai" : geminiKey ? "gemini" : openrouterKey ? "openrouter" : undefined);
           if (!provider) return fail(NO_IMAGE_KEY);
-          const key = provider === "openai" ? openaiKey : geminiKey;
-          if (!key) return fail(`${provider === "openai" ? "OpenAI" : "Gemini"} isn't connected. Call Connect with service "${provider}", then retry.`);
+          const key = provider === "openai" ? openaiKey : provider === "gemini" ? geminiKey : openrouterKey;
+          if (!key)
+            return fail(
+              provider === "openrouter"
+                ? "OpenRouter isn't connected. Set OPENROUTER_API_KEY in this agent's environment, then retry."
+                : `${provider === "openai" ? "OpenAI" : "Gemini"} isn't connected. Call Connect with service "${provider}", then retry.`,
+            );
           let source: ImageRequest["source"];
           if (input.edit_from) {
             const file = path.resolve(input.edit_from);
@@ -404,6 +447,16 @@ export const ImagineTool = buildTool<typeof inputSchema, ImagineOutput>({
             const file = await mediaPath(input.prompt, "png");
             await fs.writeFile(file, bytes);
             return done(file, `openai:${openaiImageModel()}`, "Image");
+          }
+          if (provider === "openrouter") {
+            // edit_from is not wired to OpenRouter's input_references yet — fail
+            // loudly rather than hand back a fresh image that looks like the edit.
+            if (source) return fail('The OpenRouter provider generates from scratch — use provider "openai" or "gemini" for edit_from.');
+            const model = input.model?.trim() || openrouterImageModel();
+            const image = await openrouterImage(key, { ...req, model }, ctx.signal);
+            const file = await mediaPath(input.prompt, image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/webp" ? "webp" : "png");
+            await fs.writeFile(file, image.bytes);
+            return done(file, `openrouter:${model}`, "Image");
           }
           const image = await geminiImage(key, req, ctx.signal);
           const file = await mediaPath(input.prompt, image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/webp" ? "webp" : "png");

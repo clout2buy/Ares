@@ -265,9 +265,7 @@ class StdioMcpClient {
     // reason, instead of letting every request wait out its timeout.
     child.on("close", (code, signal) => {
       if (this.pending.size === 0) return;
-      const why = this.stderrTail.trim().split(/
-?
-/).filter(Boolean).pop();
+      const why = this.stderrTail.trim().split(/\r?\n/).filter(Boolean).pop();
       const err = new Error(`MCP server exited (${signal ?? `code ${code}`})${why ? `: ${why.slice(0, 300)}` : ""}`);
       for (const p of this.pending.values()) p.reject(err);
       this.pending.clear();
@@ -319,15 +317,10 @@ class StdioMcpClient {
     const text = JSON.stringify(msg);
     if (this.framing === "content-length") {
       const body = Buffer.from(text, "utf8");
-      this.child.stdin.write(`Content-Length: ${body.length}
-
-
-
-`);
+      this.child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
       this.child.stdin.write(body);
     } else {
-      this.child.stdin.write(`${text}
-`);
+      this.child.stdin.write(`${text}\n`);
     }
   }
 
@@ -336,11 +329,7 @@ class StdioMcpClient {
     while (this.buffer.length > 0) {
       const head = this.buffer.subarray(0, Math.min(this.buffer.length, 16)).toString("latin1");
       if (/^content-length:/i.test(head)) {
-        const headerEnd = this.buffer.indexOf("
-
-
-
-");
+        const headerEnd = this.buffer.indexOf("\r\n\r\n");
         if (headerEnd === -1) return;
         const lenMatch = this.buffer.subarray(0, headerEnd).toString("utf8").match(/Content-Length:\s*(\d+)/i);
         if (!lenMatch) {

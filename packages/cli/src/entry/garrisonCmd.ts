@@ -631,8 +631,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           collapseId: "device-wake",
         })).sent > 0,
     },
-    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "
-"),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n"),
   });
   setDeviceBridge(deviceBridge);
   const server = new GarrisonServer({
@@ -770,8 +769,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
-          device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "
-")),
+          device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,

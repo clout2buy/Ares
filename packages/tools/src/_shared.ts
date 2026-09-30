@@ -336,7 +336,7 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
    *  must replace the generic mode prompt when the permission mode asks too. */
   ownerDecisions?: boolean;
   /** The tool's own `ask` prompts (not just owner decisions) name the exact
-   *  action and replace the generic "wants to perform a � action" prompt. */
+   *  action and replace the generic "wants to perform a … action" prompt. */
   ownPrompts?: boolean;
   call: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolResult<O>>;
   activityDescription: (input: z.infer<I>) => string;
@@ -376,6 +376,7 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
       // stand in for a tool's own OWNER decision (the exact checkout total, the
       // exact site a password is filled on) — the owner would approve blind.
       const own = await def.checkPermissions(input, ctx);
+      if (own.kind === "deny" && def.ownPrompts) return own;
       return own.kind === "ask" && (own.ownerDecision || def.ownPrompts) ? own : base;
     }
     if (base.kind !== "allow") return base;

@@ -492,7 +492,7 @@ export class GarrisonServer {
     }
   }
 
-  /** Phone Hands frames. Only the owner's control-token socket may speak them —
+  /** Phone Hands frames. Only the owner's control-token socket may speak them â€”
    *  a read-scope viewer can neither register a phone nor answer for one. */
   private routeDevice(client: ClientConn, frame: Extract<GatewayClientFrame, { type: `device.${string}` }>): void {
     const bridge = this.opts.devices;

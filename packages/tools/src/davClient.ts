@@ -96,8 +96,16 @@ function ctxFor(service: ErrorContext["service"], account: DavAccount): ErrorCon
   return { service, ...(host ? { host } : {}), provider: account.id, secrets: accountSecrets(account) };
 }
 
+type Tsdav = typeof import("tsdav");
+
+/** tsdav ships ESM and CJS; under Node the import may arrive namespaced under `default`. */
+async function loadTsdav(): Promise<Tsdav> {
+  const mod = (await import("tsdav")) as unknown as Tsdav & { default?: Tsdav };
+  return (typeof mod.createAccount === "function" ? mod : (mod.default as Tsdav));
+}
+
 interface Session {
-  tsdav: typeof import("tsdav");
+  tsdav: Tsdav;
   dav: DAVAccount;
   headers: Record<string, string>;
   fetchImpl: typeof fetch;
@@ -108,7 +116,7 @@ async function session(type: "caldav" | "carddav", account: DavAccount): Promise
   const ctx = ctxFor(type === "caldav" ? "CalDAV" : "CardDAV", account);
   try {
     const base = assertSafeDavUrl(account.serverUrl);
-    const tsdav = await import("tsdav");
+    const tsdav = await loadTsdav();
     const credentials = { username: account.username, password: account.password };
     const headers = tsdav.getBasicAuthHeaders(credentials) as Record<string, string>;
     const fetchImpl = boundedFetch({ base, secrets: ctx.secrets });

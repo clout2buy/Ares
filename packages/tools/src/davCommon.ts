@@ -335,7 +335,7 @@ export function boundedFetch(opts: BoundedFetchOptions): typeof fetch {
       }
       buffer = Buffer.concat(chunks);
     }
-    const out = new Response(bodyless ? null : buffer, { status: res.status, statusText: res.statusText, headers: res.headers });
+    const out = new Response(bodyless || !buffer ? null : new Uint8Array(buffer), { status: res.status, statusText: res.statusText, headers: res.headers });
     Object.defineProperty(out, "url", { value: res.url || target.href });
     return out;
   }) as typeof fetch;

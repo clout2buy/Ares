@@ -549,8 +549,9 @@ test("tool: status / shortcuts / invoke output shapes", async () => {
 test("tool: registered by default and kept out of leaf sub-agents", async () => {
   const { DEFAULT_TOOLS } = await import("../packages/tools/dist/index.js");
   assert.ok(DEFAULT_TOOLS.some((t) => t.schema.name === "iPhone"));
-  const { LEAF_NEVER_TOOLS } = await import("../packages/core/dist/index.js");
-  assert.ok(LEAF_NEVER_TOOLS.has("iPhone"));
+  // LEAF_NEVER_TOOLS is module-private to conductor; read the source of truth.
+  const conductor = await fs.readFile(new URL("../packages/core/src/conductor.ts", import.meta.url), "utf8");
+  assert.match(conductor, /LEAF_NEVER_TOOLS = new Set\(\[[^\]]*"iPhone"/);
   const tool = DEFAULT_TOOLS.find((t) => t.schema.name === "iPhone");
   assert.match(tool.schema.description, /reason/);
   assert.match(tool.schema.description, /audited/);

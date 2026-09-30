@@ -282,7 +282,7 @@ async function httpProbe(
         redirect: opts.redirect ?? "follow",
         signal: AbortSignal.timeout(opts.timeoutMs),
       });
-      const text = (await res.text().catch(() => "")).slice(0, 6000);
+      const text = (await res.text().catch(() => "")).slice(0, 4_000_000);
       return { status: res.status, ms: Date.now() - t0, text, contentType: res.headers.get("content-type") ?? "" };
     } catch (err) {
       const e = err as { name?: string; cause?: { code?: string; message?: string }; message?: string };
@@ -447,10 +447,13 @@ function upstreamSpecs(): UpstreamSpec[] {
       headers: { "user-agent": "Ares/1.0 (doingbox)" },
       validate: (p) => (Array.isArray(asJson(p.text)) && (asJson(p.text) as unknown[]).length > 0 ? null : "empty or non-JSON result"),
     }),
-    liveness("upstream:overpass", "Overpass API (Places tool)", `https://overpass-api.de/api/interpreter?data=${encodeURIComponent("[out:json][timeout:10];node(1);out;")}`, {
+    liveness("upstream:overpass", "Overpass API (Places tool)", "https://overpass-api.de/api/interpreter", {
       free: "free",
       auth: "none",
-      headers: { "user-agent": "Ares/1.0 (doingbox)" },
+      // POST, exactly as Places.ts calls it (GET is rate-limited harder).
+      method: "POST",
+      headers: { "user-agent": "Ares/1.0 (doingbox)", "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ data: "[out:json][timeout:10];node(1);out;" }).toString(),
       validate: (p) => ((asJson(p.text) as { elements?: unknown } | undefined)?.elements !== undefined ? null : "no elements[] in the JSON"),
     }),
     liveness("upstream:ddg-html", "DuckDuckGo HTML search (WebSearch fallback)", "https://html.duckduckgo.com/html/?q=ares+agent", {
@@ -562,6 +565,50 @@ const TOOLS: ToolSpec[] = [
   { name: "ImageSearch", file: "ImageSearch.ts", dependsOn: ["upstream:ddg-images", "upstream:brave"], mode: "any", free: "free", auth: "none" },
   { name: "WebSearch", file: "WebSearch.ts", dependsOn: ["upstream:ddg-html", "upstream:brave", "upstream:tavily"], mode: "any", free: "free", auth: "none" },
 ];
+
+
+// ─── Catalog lint (pure) ─────────────────────────────────────────────────────
+
+/** Static sanity checks over the catalogs. Returns human-readable problems. */
+export function lintCatalogs(c: { remote: McpCatalogEntry[]; stdio: McpStdioEntry[]; services: ConnectService[] } = { remote: MCP_CATALOG, stdio: MCP_STDIO_CATALOG, services: CONNECT_SERVICES }): string[] {
+  const problems: string[] = [];
+  const seen = new Map<string, string>();
+  for (const s of c.services) {
+    if (seen.has(s.id)) problems.push(`duplicate connect-service id "${s.id}" (${seen.get(s.id)} and ${s.kind})`);
+    seen.set(s.id, s.kind);
+    if (!s.label || !s.blurb || !s.howToUse) problems.push(`service "${s.id}" is missing label/blurb/howToUse`);
+    if (!s.keywords.length && s.kind !== "browser") problems.push(`service "${s.id}" has no keywords (the agent cannot resolve it)`);
+  }
+  for (const e of c.remote) {
+    try {
+      const u = new URL(e.url);
+      if (u.protocol !== "https:") problems.push(`remote "${e.id}" is not https`);
+    } catch {
+      problems.push(`remote "${e.id}" has an invalid url`);
+    }
+    if (e.auth === "key" && !e.keyUrl) problems.push(`remote "${e.id}" needs a key but has no keyUrl`);
+    if (!e.keywords.length) problems.push(`remote "${e.id}" has no keywords`);
+  }
+  for (const e of c.stdio) {
+    const names = new Set<string>();
+    for (const f of e.fields ?? []) {
+      if (names.has(f.name)) problems.push(`stdio "${e.id}" repeats field "${f.name}"`);
+      names.add(f.name);
+      if ("env" in f.target && !/^[A-Z][A-Z0-9_]*$/.test(f.target.env)) problems.push(`stdio "${e.id}" env name "${f.target.env}" is not UPPER_SNAKE`);
+      if (!f.probe) problems.push(`stdio "${e.id}" field "${f.name}" has no probe value for the doctor`);
+    }
+    for (const a of e.args) {
+      const m = /^\{([a-z0-9-]+)\}$/i.exec(a);
+      if (m && m[1] !== "scratch" && !(e.fields ?? []).some((f) => "arg" in f.target && f.target.arg === m[1])) problems.push(`stdio "${e.id}" arg {${m[1]}} has no matching field`);
+    }
+    for (const f of e.fields ?? []) {
+      if ("arg" in f.target && !e.args.includes(`{${f.target.arg}}`)) problems.push(`stdio "${e.id}" field "${f.name}" targets arg {${f.target.arg}} that the args never use`);
+    }
+    if (e.cost !== "free" && !e.docs && !e.keyUrl) problems.push(`stdio "${e.id}" is not free but names no docs/keyUrl`);
+    if (e.runtime !== "docker" && e.runtime !== e.command && !(e.runtime === "npx" && e.command === "npx")) problems.push(`stdio "${e.id}" runtime ${e.runtime} does not match command ${e.command}`);
+  }
+  return problems;
+}
 
 // ─── Planning ────────────────────────────────────────────────────────────────
 
@@ -809,6 +856,15 @@ function planUpstream(u: UpstreamSpec): Planned {
 
 function planLocal(): Planned[] {
   const out: Planned[] = [];
+  out.push({
+    entry: { id: "catalog:lint", name: "Catalog consistency (ids, urls, field wiring)", kind: "runtime", source: "core catalogs", launch: { transport: "local" }, auth: "none", needsCredentials: false, free: "n/a" },
+    lane: "local",
+    network: false,
+    async run() {
+      const problems = lintCatalogs();
+      return problems.length ? { verdict: "broken", reason: `${problems.length} catalog problem(s): ${problems.slice(0, 3).join("; ")}`, evidence: { problems: problems.slice(0, 40) } } : { verdict: "working", reason: "all catalog entries are well-formed", evidence: {} };
+    },
+  });
   out.push({
     entry: { id: "runtime:node-npx", name: "Node + npx (stdio servers, Deploy tool)", kind: "runtime", source: "host", launch: { transport: "local" }, auth: "none", needsCredentials: false, free: "n/a" },
     lane: "local",

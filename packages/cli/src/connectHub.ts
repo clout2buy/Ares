@@ -634,7 +634,14 @@ export const DEFAULT_VERIFIERS: Record<string, Verify> = {
   },
   async resend(values, signal) {
     const res = await fetch("https://api.resend.com/domains", { headers: { authorization: `Bearer ${values.RESEND_API_KEY}` }, signal });
-    if (res.status === 401 || res.status === 403) throw new Error("Resend doesn't recognise that key");
+    const body = (await res.json().catch(() => ({}))) as { name?: string };
+    // A send-only ("sending access") key can't list domains: Resend answers 401
+    // restricted_api_key — a REAL key, exactly what Ares needs to send.
+    if (body.name === "restricted_api_key") return "Send-only key — that's all sending email needs.";
+    // An unknown key is HTTP 400 "API key is invalid" (found by the connector
+    // doctor: only 401/403 were treated as rejection, so a typo was accepted).
+    if (res.status === 400 || res.status === 401 || res.status === 403) throw new Error("Resend doesn't recognise that key");
+    if (!res.ok) throw new Error(`Resend answered HTTP ${res.status}`);
     return "";
   },
   ...LIFE_VERIFIERS,

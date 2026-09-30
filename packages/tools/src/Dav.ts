@@ -179,7 +179,7 @@ const calendarSchema = z.object({
   title: z.string().optional().describe("Event or reminder title."),
   start: z.string().optional().describe("Event start: YYYY-MM-DD for all-day, or YYYY-MM-DDTHH:MM[:SS] (wall clock in `timezone`), optionally with Z or an offset."),
   end: z.string().optional().describe("Event end (default start + 1 hour). For all-day events this is the LAST day, inclusive."),
-  timezone: z.string().optional().describe("IANA zone for the times, e.g. America/New_York (default: the owner's zone). Recurring events keep their wall-clock time across daylight saving."),
+  timezone: z.string().optional().describe("IANA zone for the times, e.g. America/New_York (default: ARES_OWNER_TIMEZONE, else this machine's zone; pass the owner's zone from your context when it differs). Recurring events keep their wall-clock time across daylight saving."),
   location: z.string().optional().describe("Event location."),
   description: z.string().optional().describe("Event description or reminder notes."),
   recurrence: z.string().optional().describe('Repeat rule (RRULE body), e.g. "FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10" or "FREQ=MONTHLY;BYMONTHDAY=1". On update, "none" removes the repeat.'),

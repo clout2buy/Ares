@@ -48,6 +48,7 @@ import {
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
 import { LIFE_VERIFIERS as LIFE_SURFACE_VERIFIERS } from "./lifeVerifiers.js";
 import { LIFE_VERIFIERS, type VerifyOutcome } from "./connectVerifiersLife.js";
+import { DAV_VERIFIERS } from "./connectDav.js";
 import { LIVE_INPUT_DOCK, LIVE_VIEW_CSS, applyBrowserInput, captureFrame, type BrowserInput } from "./liveBrowser.js";
 import { PlaidLink, isPlaidService, plaidInstructions, plaidSetupBody, type PlaidFlowState } from "./connectPlaid.js";
 
@@ -405,6 +406,7 @@ export class ConnectHub implements ConnectBroker {
     const values: Record<string, string> = {};
     for (const field of fields) {
       const value = (form[field.credential] ?? "").trim();
+      if (!value && field.optional) continue;
       if (!value) {
         page(res, 400, keyFormPage(flow, `${field.label} is required.`));
         return true;
@@ -637,6 +639,7 @@ const DEFAULT_VERIFIERS: Record<string, Verify> = {
     return "";
   },
   ...LIFE_VERIFIERS,
+  ...DAV_VERIFIERS,
 };
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -739,7 +742,7 @@ function keyFormPage(flow: Flow, error?: string): string {
   const fields = (service.fields ?? [])
     .map(
       (field) =>
-        `<label for="${esc(field.credential)}">${esc(field.label)}</label><input id="${esc(field.credential)}" name="${esc(field.credential)}" ${field.secret ? 'type="password"' : 'type="text"'} autocomplete="off" autocapitalize="off" spellcheck="false" ${field.placeholder ? `placeholder="${esc(field.placeholder)}"` : ""} required>${field.help ? `<div class="help">${esc(field.help)}</div>` : ""}`,
+        `<label for="${esc(field.credential)}">${esc(field.label)}</label><input id="${esc(field.credential)}" name="${esc(field.credential)}" ${field.secret ? 'type="password"' : 'type="text"'} autocomplete="off" autocapitalize="off" spellcheck="false" ${field.placeholder ? `placeholder="${esc(field.placeholder)}"` : ""} ${field.optional ? "" : "required"}>${field.help ? `<div class="help">${esc(field.help)}</div>` : ""}`,
     )
     .join("");
   // A zero-field form (Hue) is a pairing button: the hint is the whole page.

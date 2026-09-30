@@ -493,6 +493,7 @@ export {
 } from "./oauthProviders.js";
 export { WITHINGS_OAUTH, unwrapWithingsToken } from "./withingsOAuth.js";
 export { LIFE_SERVICES } from "./lifeServices.js";
+export { DAV_SERVICES, DAV_CREDENTIALS } from "./davServices.js";
 export { PLAID_SERVICE, isPlaidService, plaidUpdateItemId, plaidVariantService } from "./plaidService.js";
 
 export {

@@ -87,6 +87,20 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Wait until the stream has been quiet for a moment (retained messages arrive at once, then stop) or the cap. */
+function settle(capMs: number, lastAt: () => number, signal?: AbortSignal): Promise<void> {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const tick = setInterval(() => {
+      const now = Date.now();
+      if (signal?.aborted || now - started >= capMs || now - lastAt() >= 700) {
+        clearInterval(tick);
+        resolve();
+      }
+    }, 50);
+  });
+}
+
 const MAX_COLLECTED_BYTES = 1024 * 1024;
 
 export const MqttTool = buildTool<typeof inputSchema, MqttOutput>({
@@ -153,7 +167,9 @@ export const MqttTool = buildTool<typeof inputSchema, MqttOutput>({
           let dropped = 0;
           let finished!: () => void;
           const done = new Promise<void>((r) => (finished = r));
+          let lastAt = Date.now();
           client.onMessage((m) => {
+            lastAt = Date.now();
             if (!includeSys && m.topic.startsWith("$SYS")) return;
             if (input.action === "retained" && !m.retain) return;
             bytes += m.payload.length;
@@ -179,7 +195,7 @@ export const MqttTool = buildTool<typeof inputSchema, MqttOutput>({
           });
           const granted = await client.subscribe([filter], input.qos ?? 0);
           if (granted[0] === 0x80) return failResult<MqttOutput>(`The broker refused the subscription to ${filter} (not permitted for this user).`);
-          await Promise.race([sleep(cappedMs, ctx.signal), done]);
+          await Promise.race([input.action === "retained" ? settle(cappedMs, () => lastAt, ctx.signal) : sleep(cappedMs, ctx.signal), done, client.broken]);
           if (input.action === "tree") {
             const rows = [...topics.entries()]
               .sort(([a], [b]) => a.localeCompare(b))

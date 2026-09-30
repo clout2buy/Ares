@@ -114,6 +114,7 @@ export function createHooksApi(opts: HooksApiOptions): HooksApi {
     if (!url.pathname.startsWith("/gateway/hooks/") || !rest || rest.includes("/") || rest === "recent") return false;
     const id = rest;
     const src = sourceOf(req);
+    const sock = req.socket;
 
     // 1. Who may even be heard: per-source and global limits, before any work.
     const wait = sourceLimiter.hit(src, PER_SOURCE_PER_MIN) || globalLimiter.hit("*", GLOBAL_PER_MIN);
@@ -121,7 +122,7 @@ export function createHooksApi(opts: HooksApiOptions): HooksApi {
       stats.refused++;
       send(res, 429, { error: "too many requests" }, { "retry-after": String(wait), connection: "close" });
       void audit({ result: "source_limited", src });
-      req.destroy();
+      res.once("finish", () => sock.destroy()); // after the answer is flushed, not before
       return true;
     }
 
@@ -133,7 +134,7 @@ export function createHooksApi(opts: HooksApiOptions): HooksApi {
       stats.refused++;
       send(res, 413, { error: "payload too large" }, { connection: "close" });
       void audit({ hook: known?.name, result: "oversize", src });
-      req.destroy();
+      res.once("finish", () => sock.destroy()); // after the answer is flushed, not before
       return true;
     }
     const body = read.body;

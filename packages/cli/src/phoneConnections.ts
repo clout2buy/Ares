@@ -42,7 +42,7 @@ import {
   serviceDomain,
   type ConnectService,
 } from "@ares/core";
-import { disconnectPlaid } from "@ares/tools";
+import { disconnectPlaid, syncApiConnectServices } from "@ares/tools";
 
 export interface PhoneConnection {
   id: string;
@@ -74,6 +74,8 @@ function categoryOf(service: ConnectService): string | undefined {
 }
 
 export async function listPhoneConnections(home?: string): Promise<PhoneConnection[]> {
+  // Services the owner added to the universal Api tool (possibly from another process) join the list.
+  syncApiConnectServices(home);
   return Promise.all(
     CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:")).map(async (service) => {
       const domain = serviceDomain(service);

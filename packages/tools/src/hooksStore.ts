@@ -275,10 +275,12 @@ export function verifyHookAuth(
         if (!m) return { ok: false, reason: "bad_signature" };
         const expected = createHmac("sha256", secret).update(rawBody).digest();
         if (!timingSafeEqual(Buffer.from(m[1]!, "hex"), expected)) return { ok: false, reason: "bad_signature" };
-        // GitHub signs the body only (no timestamp); its per-delivery id is the nonce.
-        const delivery = header(headers, "x-github-delivery");
-        if (!delivery) return { ok: false, reason: "missing_credentials" };
-        if (replay.check(`g:${delivery}:${m[1]!.toLowerCase()}`, 24 * 3600 * 1000)) return { ok: false, reason: "replayed" };
+        // GitHub signs the body only (no timestamp) and the delivery id is an unsigned header,
+        // so an attacker replaying a captured request could change it. The SIGNATURE is the
+        // nonce: the same signed body is accepted once per window. (The delivery header is
+        // still required — it marks a real GitHub-shaped sender.)
+        if (!header(headers, "x-github-delivery")) return { ok: false, reason: "missing_credentials" };
+        if (replay.check(`g:${m[1]!.toLowerCase()}`, 6 * 3600 * 1000)) return { ok: false, reason: "replayed" };
         return { ok: true };
       }
       createHmac("sha256", secret).update(rawBody).digest();
@@ -476,7 +478,7 @@ export function setupRecipe(h: HookDef, base: string | undefined, secret?: strin
       "",
       "Sign the raw body with HMAC-SHA256 and send it as a header:",
       `  X-Ares-Signature: t=<unix seconds>,v1=<hex HMAC_SHA256(secret, "<t>." + body)>   (valid for 5 minutes, single use)`,
-      "GitHub: Settings → Webhooks → Payload URL above, Content type application/json, Secret below — GitHub's X-Hub-Signature-256 is accepted (its X-GitHub-Delivery id prevents replays).",
+      "GitHub: Settings → Webhooks → Payload URL above, Content type application/json, Secret below — GitHub's X-Hub-Signature-256 is accepted (a signed body is accepted once per 6 hours, so a captured request cannot be replayed).",
       `  Secret: ${secret ?? "<secret shown when the hook was created>"}`,
       "An iPhone Shortcut cannot compute an HMAC; use a bearer hook for Shortcuts.",
     );

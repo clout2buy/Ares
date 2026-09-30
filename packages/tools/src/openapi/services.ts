@@ -268,6 +268,11 @@ export async function addService(input: AddServiceInput, env: ServiceEnv = {}): 
   }
   if (input.verifyOperationId && !handle.has(input.verifyOperationId)) throw new ApiInputError(`verify_operation "${input.verifyOperationId}" is not an operation of this spec`);
   for (const id of input.readOperationIds ?? []) if (!handle.has(id)) throw new ApiInputError(`read_operation "${id}" is not an operation of this spec`);
+  for (const name of Object.keys(input.headers ?? {})) {
+    if (/^(authorization|proxy-authorization|cookie|set-cookie)$/i.test(name) || /key|token|secret|auth|passw/i.test(name)) {
+      throw new ApiInputError(`\`headers\` are stored in plain text and may not carry credentials ("${name}"). Use \`auth\` for the credential recipe; the owner enters the secret in the secure form (Connect service "api-${input.id}").`);
+    }
+  }
   if (input.insecureTls && !input.allowLan) throw new ApiInputError("insecure_tls is only allowed together with allow_lan");
 
   const def: ApiServiceDef = {

@@ -124,8 +124,14 @@ export class MqttClient {
   private pingTimer?: NodeJS.Timeout;
   private connack?: { resolve: () => void; reject: (e: Error) => void };
   private error?: Error;
+  private breakNow!: (e: Error) => void;
+  /** Rejects if the connection fails or the broker hangs up while we are listening (never after our own close()). */
+  readonly broken: Promise<never>;
 
-  private constructor(private readonly socket: net.Socket) {}
+  private constructor(private readonly socket: net.Socket) {
+    this.broken = new Promise<never>((_, reject) => (this.breakNow = reject));
+    this.broken.catch(() => {}); // observed only by those who race it
+  }
 
   static async connect(opts: MqttConnectOptions): Promise<MqttClient> {
     // The literal-address and name checks; DNS answers are classified in `lookup`.
@@ -208,6 +214,7 @@ export class MqttClient {
 
   private fail(err: Error): void {
     if (!this.error) this.error = err;
+    if (!this.closed) this.breakNow(err);
     this.connack?.reject(err);
     this.connack = undefined;
     for (const p of this.pendingAck.values()) {

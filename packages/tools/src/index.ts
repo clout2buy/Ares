@@ -259,6 +259,7 @@ export {
   appendHookAudit,
   recentHookAudit,
   setHooksBaseUrlProvider,
+  forgetHookSecret,
   getHooksBaseUrl,
   safeEqual,
   ReplayCache,

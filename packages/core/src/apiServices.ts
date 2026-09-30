@@ -218,7 +218,7 @@ export const API_PRESET_DEFS: ApiServiceDef[] = [
   {
     id: "nasa-apod",
     label: "NASA APOD",
-    blurb: "NASA's Astronomy Picture of the Day. Works on NASA's shared DEMO_KEY; a free key from api.nasa.gov lifts the limit.",
+    blurb: "NASA's Astronomy Picture of the Day. Works on NASA's shared DEMO_KEY (their servers are sometimes slow or answer 500 once; a free key from api.nasa.gov lifts the limit).",
     specSource: { kind: "preset" },
     baseUrl: "https://api.nasa.gov",
     auth: { type: "apiKey", in: "query", name: "api_key", optional: true, defaultValue: "DEMO_KEY", label: "NASA API key (optional)" },

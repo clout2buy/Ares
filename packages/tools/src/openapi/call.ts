@@ -595,6 +595,8 @@ export interface ExecuteOptions {
   maxBytes?: number;
   now?: () => number;
   home?: string;
+  /** Pause before the one retry of a read that got a 5xx (default 700 ms). */
+  retryDelayMs?: number;
 }
 
 export interface ApiCallResult {
@@ -674,22 +676,32 @@ export async function executeCall(def: ApiServiceDef, op: ResolvedOperation, bui
   }
   const audit: AuditEntry = { ts: new Date(started).toISOString(), service: def.id, operation: op.id, method: built.method, host, ...(op.method !== "GET" && op.method !== "HEAD" ? { write: true } : {}) };
   try {
-    const res = await safeFetch(built.url, {
-      method: built.method,
-      headers: built.headers,
-      ...(built.body !== undefined ? { body: built.body } : {}),
-      allowLan: def.allowLan === true,
-      timeoutMs: opts.timeoutMs ?? 20_000,
-      maxBytes: opts.maxBytes ?? 2 * 1024 * 1024,
-      credentialHeaders: auth.headerNames,
-      credentialQuery: auth.queryNames,
-      insecureTls: def.insecureTls === true,
-      ...(env.resolver ? { resolver: env.resolver } : {}),
-      ...(env.signal ? { signal: env.signal } : {}),
-    });
+    const send = () =>
+      safeFetch(built.url, {
+        method: built.method,
+        headers: built.headers,
+        ...(built.body !== undefined ? { body: built.body } : {}),
+        allowLan: def.allowLan === true,
+        timeoutMs: opts.timeoutMs ?? 20_000,
+        maxBytes: opts.maxBytes ?? 2 * 1024 * 1024,
+        credentialHeaders: auth.headerNames,
+        credentialQuery: auth.queryNames,
+        insecureTls: def.insecureTls === true,
+        ...(env.resolver ? { resolver: env.resolver } : {}),
+        ...(env.signal ? { signal: env.signal } : {}),
+      });
+    let res = await send();
+    const notes = [...built.notes];
+    // A read that hit a server hiccup is safe to repeat once (never a write: it might have happened).
+    if ((built.method === "GET" || built.method === "HEAD") && [500, 502, 503, 504].includes(res.status) && !env.signal?.aborted) {
+      const first = res.status;
+      await new Promise((r) => setTimeout(r, opts.retryDelayMs ?? 700));
+      await takeRateSlot(def, now);
+      res = await send();
+      notes.push(`retried once after HTTP ${first}`);
+    }
     const ms = now() - started;
     const contentType = res.headers["content-type"] ?? "";
-    const notes = [...built.notes];
     if (res.redirects.length) notes.push(`followed ${res.redirects.length} redirect(s)`);
     const parsed = parseBody(contentType, res.body, def, notes);
     let body = parsed.body;

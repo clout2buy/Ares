@@ -315,7 +315,7 @@ const usgs = spec("USGS Earthquakes", "https://earthquake.usgs.gov", "USGS earth
     get: op("countEarthquakes", "How many events match the filters", [p("format", "query", str("Output", { enum: ["geojson"], default: "geojson" }), true), ...quakeFilters()], { tags: ["catalogue"] }),
   },
   "/earthquakes/feed/v1.0/summary/{feed}.geojson": {
-    get: op("summaryFeed", "A real-time summary feed, updated every minute", [
+    get: op("summaryFeed", "Recent earthquakes: a real-time summary feed (past hour/day/week/month), updated every minute", [
       p("feed", "path", str("Feed name: <min magnitude>_<window>", { enum: FEEDS })),
     ], { tags: ["feeds"] }),
   },

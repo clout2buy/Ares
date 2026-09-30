@@ -523,8 +523,8 @@ export function searchOperations(ops: OpIndexEntry[], query: string, opts: Searc
     }
     if (matched === 0 && score < 10) continue;
     if (unique.length > 1) score *= 0.5 + 0.5 * (matched / unique.length);
-    if (unique.length > 1 && op.summary.toLowerCase().includes(lowerQuery)) score += 8;
-    if (op.deprecated) score *= 0.7;
+    if (unique.length > 1 && op.summary.toLowerCase().includes(lowerQuery)) score += 3;
+    if (op.deprecated) score *= 0.5;
     scored.push({ ...op, score: Math.round(score * 100) / 100 });
   }
   scored.sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.id.localeCompare(b.id));

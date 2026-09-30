@@ -54,7 +54,7 @@ export const DAV_SERVICES: ConnectService[] = [
     label: "CalDAV (any calendar server)",
     kind: "api-key",
     blurb: "Calendar and reminders from any CalDAV server: Fastmail, Nextcloud, Google, Radicale, Baikal, Synology and more.",
-    keywords: ["caldav", "cal dav", "nextcloud calendar", "fastmail calendar", "radicale", "baikal", "synology calendar"],
+    keywords: ["caldav", "cal dav", "nextcloud", "nextcloud calendar", "fastmail calendar", "radicale", "baikal", "synology calendar"],
     keyUrl: "https://en.wikipedia.org/wiki/CalDAV",
     formHint: "Use an app password if the provider offers them. The server address can be just the site (https://dav.example.com); Ares finds the calendars itself.",
     fields: [

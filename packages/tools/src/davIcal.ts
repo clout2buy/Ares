@@ -549,6 +549,18 @@ export function patchEventIcs(ics: string, patch: EventPatch, ownerTz: string): 
       end = shiftWhen(start, durationMs > 0 ? durationMs : start.allDay ? 86_400_000 : 3_600_000);
     }
     if (end.ms < start.ms) throw new Error("The end is before the start.");
+    // Moving the series moves the slots its exceptions and exclusions point at:
+    // shift detached overrides (RECURRENCE-ID, start, end) and EXDATE/RDATE by the
+    // same wall-clock delta, as calendar apps do, so they stay attached.
+    if (patch.start !== undefined && !curStart.isDate === !start.allDay) {
+      const oldWall = Date.UTC(curStart.year, curStart.month - 1, curStart.day, curStart.isDate ? 0 : curStart.hour, curStart.isDate ? 0 : curStart.minute, curStart.isDate ? 0 : curStart.second);
+      const newWall = Date.UTC(start.y, start.mo - 1, start.d, start.h, start.mi, start.s);
+      const delta = newWall - oldWall;
+      if (delta !== 0) {
+        shiftTimes(master, ["exdate", "rdate"], delta);
+        for (const other of root.getAllSubcomponents("vevent")) if (other !== master) shiftTimes(other, ["recurrence-id", "dtstart", "dtend"], delta);
+      }
+    }
     master.removeProperty("dtstart");
     master.removeProperty("dtend");
     master.removeProperty("duration");
@@ -560,6 +572,30 @@ export function patchEventIcs(ics: string, patch: EventPatch, ownerTz: string): 
   master.updatePropertyWithValue("sequence", (Number.isFinite(seq) ? seq : 0) + 1);
   master.updatePropertyWithValue("dtstamp", ICAL.Time.fromJSDate(new Date(), true));
   return root.toString();
+}
+
+/** Move every time value of the named properties by a wall-clock delta. */
+function shiftTimes(comp: ICAL.Component, names: string[], deltaMs: number): void {
+  const totalSeconds = Math.round(deltaMs / 1000);
+  const days = Math.trunc(totalSeconds / 86_400);
+  let rest = totalSeconds - days * 86_400;
+  const hours = Math.trunc(rest / 3_600);
+  rest -= hours * 3_600;
+  const minutes = Math.trunc(rest / 60);
+  const seconds = rest - minutes * 60;
+  for (const name of names) {
+    for (const prop of comp.getAllProperties(name)) {
+      const values = prop.getValues();
+      if (!values.length || !values.every((v) => v instanceof ICAL.Time)) continue;
+      prop.setValues(
+        (values as ICAL.Time[]).map((v) => {
+          const moved = v.clone();
+          moved.adjust(days, v.isDate ? 0 : hours, v.isDate ? 0 : minutes, v.isDate ? 0 : seconds);
+          return moved;
+        }),
+      );
+    }
+  }
 }
 
 export function eventUidOf(ics: string): string {

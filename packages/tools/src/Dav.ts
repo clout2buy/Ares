@@ -24,6 +24,7 @@ import {
   DavError,
   NOT_CONNECTED,
   accountSecrets,
+  classifyError,
   clip,
   loadDavAccount,
   oneLine,
@@ -78,10 +79,15 @@ function ok<O extends { message: string }>(output: O, display?: string): ToolRes
 
 /** Anything thrown becomes a safe sentence: DavErrors already are; the rest
  *  are scrubbed of secrets and clipped. */
-function safeMessage(err: unknown, account?: DavAccount): string {
+function safeMessage(err: unknown, account?: DavAccount, service: "CalDAV" | "CardDAV" = "CalDAV"): string {
   if (err instanceof DavError) return err.message;
+  const secrets = account ? accountSecrets(account) : [];
+  // Network-shaped failures get the precise sentence; a validation message the
+  // model should read verbatim (bad date, bad rule) stays as written.
+  const c = classifyError(err, { service, provider: account?.id, secrets });
+  if (c.kind !== "unknown") return c.message;
   const text = err instanceof Error ? err.message : String(err);
-  return redact(clip(text.replace(/\s+/g, " "), 300), account ? accountSecrets(account) : []);
+  return redact(clip(text.replace(/\s+/g, " "), 300), secrets);
 }
 
 function slug(): string {
@@ -592,7 +598,7 @@ export const ContactsTool = buildTool<typeof contactsSchema, ContactsOutput>({
     try {
       return await runContacts(input, setup.backend);
     } catch (err) {
-      return fail<ContactsOutput>(safeMessage(err, setup.account));
+      return fail<ContactsOutput>(safeMessage(err, setup.account, "CardDAV"));
     }
   },
 });

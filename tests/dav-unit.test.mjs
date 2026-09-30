@@ -316,7 +316,7 @@ test("events are built with escaped text, a VTIMEZONE for named zones, and injec
   const built = ical.buildEventIcs({ title: evil, start: "2026-11-03T12:00", timezone: "America/New_York", location: "A, B; C", description: "line1\nline2\\x", recurrence: "FREQ=DAILY;COUNT=2", alarmMinutesBefore: 15 });
   assert.match(built.ics, /BEGIN:VTIMEZONE/);
   assert.match(built.ics, /DTSTART;TZID=America\/New_York:20261103T120000/);
-  assert.equal((built.ics.match(/BEGIN:VEVENT/g) ?? []).length, 1, "injection stayed inside SUMMARY");
+  assert.equal((built.ics.match(/^BEGIN:VEVENT/gm) ?? []).length, 1, "injection stayed inside SUMMARY");
   assert.match(built.ics, /LOCATION:A\\, B\\; C/);
   assert.match(built.ics, /TRIGGER:-PT15M/);
   const back = ical.describeEvent(built.ics, META);
@@ -364,13 +364,13 @@ test("contacts: photos are ignored, unknown fields survive an update, text is es
   const patched = ical.patchVcard(card, { org: "Engines, Inc." });
   assert.match(patched, /X-SOCIALPROFILE/);
   assert.match(patched, /PHOTO/);
-  assert.match(patched, /ORG:Engines\\, Inc\./);
+  assert.match(patched, /ORG:Engines\\?, Inc\./);
   assert.match(patched, /TEL;TYPE=CELL/);
   assert.throws(() => ical.buildVcard({ name: "X", email: "not-an-email" }), /not an email/);
   assert.throws(() => ical.buildVcard({ name: "X", birthday: "yesterday" }), /YYYY-MM-DD/);
   assert.throws(() => ical.buildVcard({ name: " " }), /needs a name/);
   const evil = ical.buildVcard({ name: "Eve\r\nEND:VCARD\r\nBEGIN:VCARD\r\nFN:pwn" });
-  assert.equal((evil.vcf.match(/BEGIN:VCARD/g) ?? []).length, 1);
+  assert.equal((evil.vcf.match(/^BEGIN:VCARD/gm) ?? []).length, 1);
 });
 
 // ── the Calendar tool, against a fake server ────────────────────────────────

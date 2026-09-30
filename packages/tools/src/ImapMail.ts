@@ -19,7 +19,7 @@
 import { z } from "zod";
 import { buildTool, type ToolResult } from "./_shared.js";
 import { previewForApproval } from "./googleApi.js";
-import { DAV_LIMITS, DavError, NOT_CONNECTED, clip, loadMailAccount, oneLine, redact, type AccountId, type MailAccount } from "./davCommon.js";
+import { DAV_LIMITS, DavError, NOT_CONNECTED, classifyError, clip, loadMailAccount, oneLine, redact, type AccountId, type MailAccount } from "./davCommon.js";
 import { mailBackendFor, type FolderInfo, type MailBackend, type MessageBody, type MessageSummary, type ReplyContext } from "./imapClient.js";
 
 const ACTIONS = [
@@ -122,8 +122,11 @@ async function setup(input: { account?: AccountId }): Promise<{ account: MailAcc
 
 function safeMessage(err: unknown, account?: MailAccount): string {
   if (err instanceof DavError) return err.message;
+  const secrets = account ? [account.password] : [];
+  const c = classifyError(err, { service: "IMAP", host: account?.imap.host, provider: account?.id, secrets });
+  if (c.kind !== "unknown") return c.message;
   const text = err instanceof Error ? err.message : String(err);
-  return redact(clip(text.replace(/\s+/g, " "), 300), account ? [account.password] : []);
+  return redact(clip(text.replace(/\s+/g, " "), 300), secrets);
 }
 
 /** Recipients of a reply, never including the owner's own addresses. */

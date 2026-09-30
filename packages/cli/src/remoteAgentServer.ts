@@ -1560,6 +1560,7 @@ export class RemoteAgentServer {
 
     if (api.device && (url.pathname === "/gateway/device" || url.pathname.startsWith("/gateway/device/"))) {
       if (await api.device(req, res, url)) return;
+    }
     if (api.hooks && (url.pathname === "/gateway/hooks" || url.pathname.startsWith("/gateway/hooks/"))) {
       if (await api.hooks.manage(req, res, url)) return;
     }

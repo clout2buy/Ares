@@ -347,7 +347,8 @@ test("a patch changes only what it names: overrides, attendees and unknown prope
   assert.equal(events[0].title, "Sync v2");
   assert.equal(events[0].start, "2026-03-17T10:00:00+01:00");
   assert.equal(events[0].end, "2026-03-17T11:30:00+01:00", "the 90-minute duration is kept");
-  assert.equal(events.find((e) => e.title === "Override")?.start, "2026-03-24T16:00:00+01:00");
+  // Moving the series 4 hours earlier moves its exception with it (the override was 2 h after the slot): it stays attached.
+  assert.equal(events.find((e) => e.title === "Override")?.start, "2026-03-24T12:00:00+01:00");
   assert.match(ical.patchEventIcs(data, { recurrence: "none" }, "UTC"), /^(?![\s\S]*RRULE)/);
   assert.throws(() => ical.patchEventIcs(data, { title: " " }, "UTC"), /can't be empty/);
 });

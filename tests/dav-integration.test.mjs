@@ -305,6 +305,42 @@ describe("DAV + IMAP/SMTP against real servers", { skip }, () => {
     assert.ok(gone.failure && /no longer exists|not belong|No item/i.test(gone.failure));
   });
 
+  test("Calendar: an event written by ANOTHER client (EXDATE, detached override, TZID without VTIMEZONE) expands correctly from a real server, and moving the series keeps the override attached", async () => {
+    const foreign = [
+      "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Other Client//EN",
+      "BEGIN:VEVENT", "UID:foreign-1", "DTSTAMP:20260101T000000Z",
+      "DTSTART;TZID=Europe/Berlin:20260317T140000", "DTEND;TZID=Europe/Berlin:20260317T150000",
+      "RRULE:FREQ=WEEKLY;COUNT=5", "EXDATE;TZID=Europe/Berlin:20260324T140000", "SUMMARY:Team sync", "X-APPLE-STRUCTURED-LOCATION:keep", "END:VEVENT",
+      "BEGIN:VEVENT", "UID:foreign-1", "DTSTAMP:20260101T000000Z", "RECURRENCE-ID;TZID=Europe/Berlin:20260407T140000",
+      "DTSTART;TZID=Europe/Berlin:20260407T160000", "DTEND;TZID=Europe/Berlin:20260407T170000", "SUMMARY:Team sync (moved)", "END:VEVENT",
+      "END:VCALENDAR", "",
+    ].join("\r\n");
+    const put = await fetch(`${radicale}${USER}/work/foreign.ics`, { method: "PUT", headers: { authorization: basic, "content-type": "text/calendar" }, body: foreign });
+    assert.equal(put.status, 201);
+    const listed = record(await CalendarTool.call({ action: "list_events", from: "2026-03-01", to: "2026-05-01", timezone: "Europe/Berlin" }, ctx()));
+    assert.ok(!listed.failure, listed.failure);
+    assert.deepEqual(listed.output.events.map((e) => [e.start, e.title]), [
+      ["2026-03-17T14:00:00+01:00", "Team sync"],
+      ["2026-03-31T14:00:00+02:00", "Team sync"],
+      ["2026-04-07T16:00:00+02:00", "Team sync (moved)"],
+      ["2026-04-14T14:00:00+02:00", "Team sync"],
+    ]);
+    const id = listed.output.events[0].id;
+    const upd = record(await CalendarTool.call({ action: "update_event", event_id: id, start: "2026-03-17T10:00", timezone: "Europe/Berlin" }, ctx()));
+    assert.ok(!upd.failure, upd.failure);
+    const moved = record(await CalendarTool.call({ action: "list_events", from: "2026-03-01", to: "2026-05-01", timezone: "Europe/Berlin" }, ctx()));
+    assert.deepEqual(moved.output.events.map((e) => [e.start.slice(0, 16), e.title]), [
+      ["2026-03-17T10:00", "Team sync"],
+      ["2026-03-31T10:00", "Team sync"],
+      ["2026-04-07T12:00", "Team sync (moved)"],
+      ["2026-04-14T10:00", "Team sync"],
+    ]);
+    const raw = await (await fetch(`${radicale}${USER}/work/foreign.ics`, { headers: { authorization: basic } })).text();
+    assert.match(raw, /X-APPLE-STRUCTURED-LOCATION:keep/, "properties this tool does not know survive a write");
+    assert.match(raw, /EXDATE[^\r\n]*20260324T100000/, "the exclusion moved with the series");
+    await CalendarTool.call({ action: "delete_event", event_id: id }, ctx());
+  });
+
   test("Calendar: all-day and UTC events, and an id from another server is refused without a request", async () => {
     const trip = record(await CalendarTool.call({ action: "create_event", title: "Trip", start: "2026-11-03", end: "2026-11-05", calendar: "Work" }, ctx()));
     assert.ok(!trip.failure, trip.failure);

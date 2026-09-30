@@ -49,6 +49,7 @@ import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
 import { LIFE_VERIFIERS as LIFE_SURFACE_VERIFIERS } from "./lifeVerifiers.js";
 import { LIFE_VERIFIERS, type VerifyOutcome } from "./connectVerifiersLife.js";
 import { DAV_VERIFIERS } from "./connectDav.js";
+import { stdioVerifiers } from "./connectVerifiersStdio.js";
 import { LIVE_INPUT_DOCK, LIVE_VIEW_CSS, applyBrowserInput, captureFrame, type BrowserInput } from "./liveBrowser.js";
 import { PlaidLink, isPlaidService, plaidInstructions, plaidSetupBody, type PlaidFlowState } from "./connectPlaid.js";
 
@@ -101,7 +102,7 @@ export class ConnectHub implements ConnectBroker {
 
   constructor(private readonly opts: ConnectHubOptions) {
     this.log = opts.log ?? (() => {});
-    this.verifiers = { ...DEFAULT_VERIFIERS, ...(opts.verifiers ?? {}) };
+    this.verifiers = { ...DEFAULT_VERIFIERS, ...stdioVerifiers(opts.home), ...(opts.verifiers ?? {}) };
     this.plaid = new PlaidLink({
       home: opts.home,
       log: this.log,
@@ -613,7 +614,7 @@ function tokenFallback(service: ConnectService, why: string): ConnectService {
 
 // ─── Key verification ────────────────────────────────────────────────────────
 
-const DEFAULT_VERIFIERS: Record<string, Verify> = {
+export const DEFAULT_VERIFIERS: Record<string, Verify> = {
   ...LIFE_SURFACE_VERIFIERS,
   async twilio(values, signal) {
     const sid = values.TWILIO_ACCOUNT_SID!;
@@ -635,7 +636,14 @@ const DEFAULT_VERIFIERS: Record<string, Verify> = {
   },
   async resend(values, signal) {
     const res = await fetch("https://api.resend.com/domains", { headers: { authorization: `Bearer ${values.RESEND_API_KEY}` }, signal });
-    if (res.status === 401 || res.status === 403) throw new Error("Resend doesn't recognise that key");
+    const body = (await res.json().catch(() => ({}))) as { name?: string };
+    // A send-only ("sending access") key can't list domains: Resend answers 401
+    // restricted_api_key — a REAL key, exactly what Ares needs to send.
+    if (body.name === "restricted_api_key") return "Send-only key — that's all sending email needs.";
+    // An unknown key is HTTP 400 "API key is invalid" (found by the connector
+    // doctor: only 401/403 were treated as rejection, so a typo was accepted).
+    if (res.status === 400 || res.status === 401 || res.status === 403) throw new Error("Resend doesn't recognise that key");
+    if (!res.ok) throw new Error(`Resend answered HTTP ${res.status}`);
     return "";
   },
   ...LIFE_VERIFIERS,

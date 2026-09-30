@@ -14,7 +14,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildTool, toolError } from "./_shared.js";
-import { getMcpCallCredentials } from "@ares/core";
+import { getCredential, getMcpCallCredentials } from "@ares/core";
 
 const listInputSchema = z
   .object({
@@ -36,6 +36,12 @@ interface StdioServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** env var name -> vault credential name. Secrets for catalog-installed
+   *  servers live in the encrypted vault, never in mcp.json. */
+  envVault?: Record<string, string>;
+  /** Set when the entry was installed from the stdio catalog: the child then
+   *  gets a minimal environment, not the garrison's (provider keys et al). */
+  stdioCatalog?: string;
   cwd?: string;
 }
 
@@ -248,11 +254,21 @@ class StdioMcpClient {
   // fire before any request is enqueued, so we stash it and let initialize()/
   // request() reject with it immediately instead of stalling until the timeout.
   spawnError: Error | null = null;
+  private stderrTail = "";
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.on("data", (chunk: Buffer) => this.onData(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
-      void chunk;
+      this.stderrTail = (this.stderrTail + chunk.toString("utf8")).slice(-1500);
+    });
+    // The server died mid-conversation: fail what is in flight now, with the
+    // reason, instead of letting every request wait out its timeout.
+    child.on("close", (code, signal) => {
+      if (this.pending.size === 0) return;
+      const why = this.stderrTail.trim().split(/\r?\n/).filter(Boolean).pop();
+      const err = new Error(`MCP server exited (${signal ?? `code ${code}`})${why ? `: ${why.slice(0, 300)}` : ""}`);
+      for (const p of this.pending.values()) p.reject(err);
+      this.pending.clear();
     });
     // A bad/missing server command emits an async 'error' (ENOENT is common on a
     // first run). Unhandled, that becomes an uncaught exception that can crash the
@@ -269,7 +285,7 @@ class StdioMcpClient {
 
   async initialize(): Promise<void> {
     await this.request("initialize", {
-      protocolVersion: "2024-11-05",
+      protocolVersion: "2025-06-18",
       capabilities: {},
       clientInfo: { name: "ares", version: "0.11.2" },
     });
@@ -290,36 +306,70 @@ class StdioMcpClient {
     this.writeMessage({ jsonrpc: "2.0", method, params });
   }
 
+  // Real MCP stdio servers speak newline-delimited JSON (one message per line,
+  // spec 2025-06-18). This client used to write ONLY LSP-style Content-Length
+  // frames, which no mainstream server reads: every stdio connector hung until
+  // its timeout. Write NDJSON by default; if a server answers with
+  // Content-Length frames, mirror that so legacy servers keep working.
+  private framing: "ndjson" | "content-length" = "ndjson";
+
   private writeMessage(msg: unknown): void {
-    const body = Buffer.from(JSON.stringify(msg), "utf8");
-    this.child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-    this.child.stdin.write(body);
+    const text = JSON.stringify(msg);
+    if (this.framing === "content-length") {
+      const body = Buffer.from(text, "utf8");
+      this.child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
+      this.child.stdin.write(body);
+    } else {
+      this.child.stdin.write(`${text}\n`);
+    }
   }
 
   private onData(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) return;
-      const header = this.buffer.slice(0, headerEnd).toString("utf8");
-      const lenMatch = header.match(/Content-Length:\s*(\d+)/i);
-      if (!lenMatch) {
-        this.buffer = this.buffer.slice(headerEnd + 4);
+    while (this.buffer.length > 0) {
+      const head = this.buffer.subarray(0, Math.min(this.buffer.length, 16)).toString("latin1");
+      if (/^content-length:/i.test(head)) {
+        const headerEnd = this.buffer.indexOf("\r\n\r\n");
+        if (headerEnd === -1) return;
+        const lenMatch = this.buffer.subarray(0, headerEnd).toString("utf8").match(/Content-Length:\s*(\d+)/i);
+        if (!lenMatch) {
+          this.buffer = this.buffer.subarray(headerEnd + 4);
+          continue;
+        }
+        const bodyStart = headerEnd + 4;
+        const bodyEnd = bodyStart + Number(lenMatch[1]);
+        if (this.buffer.length < bodyEnd) return;
+        const body = this.buffer.subarray(bodyStart, bodyEnd).toString("utf8");
+        this.buffer = this.buffer.subarray(bodyEnd);
+        this.framing = "content-length";
+        this.dispatchFrame(body);
         continue;
       }
-      const length = Number(lenMatch[1]);
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + length;
-      if (this.buffer.length < bodyEnd) return;
-      const body = this.buffer.slice(bodyStart, bodyEnd).toString("utf8");
-      this.buffer = this.buffer.slice(bodyEnd);
-      // A malformed frame must not kill the client and orphan in-flight requests;
-      // drop the bad frame and keep draining so well-formed frames still resolve.
-      try {
-        this.handleMessage(JSON.parse(body) as { id?: number; result?: unknown; error?: { message?: string } });
-      } catch {
-        // unparseable JSON-RPC frame; skip it
+      const nl = this.buffer.indexOf(0x0a);
+      if (nl === -1) return;
+      const line = this.buffer.subarray(0, nl).toString("utf8").trim();
+      this.buffer = this.buffer.subarray(nl + 1);
+      // Servers print banners and logs on stdout; only JSON objects are frames.
+      if (line.startsWith("{")) this.dispatchFrame(line);
+    }
+  }
+
+  // A malformed frame must not kill the client and orphan in-flight requests;
+  // drop the bad frame and keep draining so well-formed frames still resolve.
+  private dispatchFrame(body: string): void {
+    try {
+      const msg = JSON.parse(body) as { id?: number | string; method?: string; result?: unknown; error?: { message?: string } };
+      // Server-initiated requests (ping, roots/list, sampling) must be answered
+      // or some servers block waiting on us.
+      if (msg.method && msg.id !== undefined) {
+        if (msg.method === "ping") this.writeMessage({ jsonrpc: "2.0", id: msg.id, result: {} });
+        else if (msg.method === "roots/list") this.writeMessage({ jsonrpc: "2.0", id: msg.id, result: { roots: [] } });
+        else this.writeMessage({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not supported by this client" } });
+        return;
       }
+      this.handleMessage(msg as { id?: number; result?: unknown; error?: { message?: string } });
+    } catch {
+      // unparseable JSON-RPC frame; skip it
     }
   }
 
@@ -719,10 +769,26 @@ async function withMcpClient<T>(
   fn: (client: McpClient) => Promise<T>,
 ): Promise<T> {
   if (isRemote(cfg)) return await withRemoteClient(cfg, timeoutMs, fn);
-  const child = spawn(cfg.command, cfg.args ?? [], {
+  const vaultEnv: Record<string, string> = {};
+  for (const [envName, credName] of Object.entries(cfg.envVault ?? {})) {
+    const value = await getCredential(credName).catch(() => undefined);
+    if (value) vaultEnv[envName] = value;
+  }
+  const args: string[] = [];
+  for (const a of cfg.args ?? []) {
+    const m = /^\$\{VAULT:([^}]+)\}$/.exec(a);
+    if (!m) { args.push(a); continue; }
+    const value = await getCredential(m[1]!).catch(() => undefined);
+    if (!value) throw new Error(`a credential this MCP server needs is missing from the vault (${m[1]}) — connect it again`);
+    args.push(value);
+  }
+  const child = spawn(cfg.command, args, {
     cwd: cfg.cwd,
-    env: { ...process.env, ...(cfg.env ?? {}) },
+    env: { ...(cfg.stdioCatalog ? minimalChildEnv() : process.env), ...(cfg.env ?? {}), ...vaultEnv },
     windowsHide: true,
+    // Own process group on POSIX so the kill below also reaps what npx/uvx
+    // launched, not just the wrapper.
+    detached: process.platform !== "win32",
   });
   const client = new StdioMcpClient(child);
   // Capture the handle so we can clear it after the race settles; an un-cleared
@@ -751,6 +817,23 @@ async function withMcpClient<T>(
     ]);
   } finally {
     clearTimeout(timer);
-    child.kill();
+    killChildTree(child);
+  }
+}
+
+/** The environment a third-party (catalog) server is allowed to see. */
+function minimalChildEnv(): NodeJS.ProcessEnv {
+  const keep = ["PATH", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SystemRoot", "SYSTEMROOT", "ComSpec", "APPDATA", "LOCALAPPDATA", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "npm_config_cache", "KUBECONFIG", "DOCKER_HOST"];
+  const out: NodeJS.ProcessEnv = { CI: "1", npm_config_update_notifier: "false", npm_config_fund: "false", npm_config_audit: "false" };
+  for (const k of keep) if (process.env[k] !== undefined) out[k] = process.env[k];
+  return out;
+}
+
+function killChildTree(child: ChildProcessWithoutNullStreams): void {
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGTERM");
+    else child.kill();
+  } catch {
+    try { child.kill(); } catch { /* already gone */ }
   }
 }

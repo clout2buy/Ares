@@ -657,6 +657,7 @@ export * from "./sessionKernel/index.js";
 // Allocation attribution for heap-pressure artifacts (see heapSampler.ts header).
 export { HeapAllocationSampler, heapSamplerEnabled, heapSamplerIntervalBytes, summarizeSamplingProfile, type HeapAllocationSite } from "./heapSampler.js";
 export { fetchAnthropicUsage, fetchKimiUsage, fetchOllamaUsageAsProvider, ollamaUsageAsProvider, type ProviderUsage, type UsageWindow } from "./providers/usage.js";
+export * from "./mcpStdioCatalog.js";
 export { MCP_CATALOG, MCP_CATEGORIES, catalogById, catalogByUrl, catalogMentions, type McpCatalogEntry, type McpAuthKind, type McpCategory, type McpTransportKind } from "./mcpCatalog.js";
 export { resourceMetadataFromChallenge, revokeMcpToken } from "./mcpOAuth.js";
 export {

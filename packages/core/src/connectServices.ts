@@ -21,6 +21,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MCP_CATALOG, type McpCatalogEntry } from "./mcpCatalog.js";
+import { stdioConnectServices } from "./mcpStdioCatalog.js";
 import { OAUTH_PROVIDERS } from "./oauthProviders.js";
 import { loadTokens } from "./oauth.js";
 import { getCredential } from "./credentials.js";
@@ -273,6 +274,9 @@ export const CONNECT_SERVICES: ConnectService[] = [
   ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
   ...LIFE_SERVICES,
   ...BROWSER_SITES.map(browserService),
+  // Local stdio MCP servers (npx/uvx) — last, so no keyword here can shadow an
+  // older service. Only those whose runtime is installed on this machine.
+  ...stdioConnectServices(),
 ];
 
 function normalize(text: string): string {

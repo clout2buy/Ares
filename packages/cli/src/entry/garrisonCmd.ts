@@ -58,6 +58,7 @@ import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
 import { startLifeSurfaces } from "./lifeWiring.js";
+import { startConnectorHealthMonitor } from "../connectorHealth.js";
 import { PersonaRuntime } from "./personaRuntime.js";
 import type { ProviderSelection } from "./providers.js";
 
@@ -668,6 +669,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   const bound = await server.start();
   scheduler.start();
+  // Daily, jittered launch+handshake of the MCP servers the owner connected
+  // (only those). Results: <home>/telemetry/connectors-health.json, read by
+  // connectorHealth(id). Kill switch: ARES_CONNECTOR_HEALTH=0.
+  const connectorHealth = startConnectorHealthMonitor({
+    home: context.aresHome,
+    skipWhen: () => ownerPause.paused || sessions.list().some((s) => s.busy),
+    log: (line) => process.stdout.write(`garrison: ${line}` + String.fromCharCode(10)),
+  });
   operatorLoop?.start();
   if (telegramReporter) void sendWarMapBriefing(telegramReporter, context).catch(() => {});
   // Auto-start the Telegram bridge in-process when configured — no second
@@ -903,6 +912,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       uninstallGarrisonCrashHandlers();
       setAuditSink(null);
       scheduler.stop();
+      connectorHealth.stop();
       tgCheckinScheduler?.stop();
       operatorLoop?.stop();
       stopBridgeRetry();

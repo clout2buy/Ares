@@ -232,6 +232,9 @@ export interface PhoneApiHooks {
   /** Phone Hands over HTTP (/gateway/device — phoneDevice.ts): the device
    *  list, a health check, and the pending/respond fallback. false = not mine. */
   device?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Synchronous "ask Ares" for Siri/Shortcuts (/gateway/ask, /gateway/ask/last —
+   *  phoneAsk.ts). Asked after the owner bearer check; false = not mine. */
+  ask?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
    *  like /connect/ — the token is the capability for one page. */
   watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1532,6 +1535,9 @@ export class RemoteAgentServer {
     }
     if (api.instances && (url.pathname === "/gateway/instances" || url.pathname.startsWith("/gateway/instances/"))) {
       if (await api.instances(req, res, url)) return;
+    }
+    if (api.ask && (url.pathname === "/gateway/ask" || url.pathname === "/gateway/ask/" || url.pathname === "/gateway/ask/last")) {
+      if (await api.ask(req, res, url)) return;
     }
 
     if (api.device && (url.pathname === "/gateway/device" || url.pathname.startsWith("/gateway/device/"))) {

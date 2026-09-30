@@ -30,7 +30,8 @@ export const DAV_SERVICES: ConnectService[] = [
     domain: "icloud.com",
     blurb:
       "Your iPhone-synced iCloud Calendar, Reminders, Contacts and Mail, reached over Apple's open CalDAV/CardDAV/IMAP servers. " +
-      "It works even while your phone is off. It needs an APP-SPECIFIC password, never your Apple ID password.",
+      "It works even while your phone is off. It needs an APP-SPECIFIC password, never your Apple ID password. " +
+      "Apple limits this route: Reminders and Notes you upgraded to the newer iCloud format are not exposed to third-party apps.",
     keywords: [
       "icloud", "i cloud", "apple id", "apple calendar", "apple contacts", "apple reminders", "apple mail", "apple notes",
       "iphone calendar", "iphone reminders", "iphone contacts", "icloud calendar", "icloud mail", "icloud contacts", "icloud reminders", "icloud notes",

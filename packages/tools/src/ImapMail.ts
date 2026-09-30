@@ -265,7 +265,20 @@ export async function runMail(input: Input, account: MailAccount, backend: MailB
     }
 
     case "list_notes": {
-      const { total, messages } = await backend.listMessages("Notes", { limit });
+      let listed: { total: number; messages: MessageSummary[] };
+      try {
+        listed = await backend.listMessages("Notes", { limit });
+      } catch (err) {
+        if (err instanceof DavError && err.kind === "not-found") {
+          return fail(
+            account.id === "icloud"
+              ? "This iCloud mailbox has no Notes folder. Apple only exposes Notes over IMAP for notes that were NOT upgraded to the newer iCloud format; upgraded notes can't be read this way."
+              : "This mailbox has no Notes folder.",
+          );
+        }
+        throw err;
+      }
+      const { total, messages } = listed;
       return ok({ messages, total, note: "Notes are read-only here.", message: `${UNTRUSTED}\n${messages.length} of ${total} note(s):\n${messages.map(summaryLine).join("\n") || "(none)"}` });
     }
 

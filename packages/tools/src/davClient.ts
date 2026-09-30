@@ -13,6 +13,7 @@
 // the owner's server, so `inside()` refuses any id that is not under one of
 // the account's own collections before a single request is made.
 
+import { createHash } from "node:crypto";
 import type { DAVAccount } from "tsdav";
 import {
   DAV_LIMITS,
@@ -79,7 +80,10 @@ const DISCOVERY_TTL_MS = 10 * 60_000;
 const discovered = new Map<string, { at: number; account: DAVAccount }>();
 
 function cacheKey(type: string, account: DavAccount): string {
-  return `${type}|${account.serverUrl}|${account.username}|${account.password.length}|${account.password.slice(0, 2)}${account.password.slice(-2)}`;
+  // A hash, not the password: a changed password must miss the cache, and no
+  // fragment of the secret is kept as a map key.
+  const digest = createHash("sha256").update(`${account.username}\0${account.password}`).digest("hex").slice(0, 16);
+  return `${type}|${account.serverUrl}|${digest}`;
 }
 
 export function clearDavDiscoveryCache(): void {
@@ -267,6 +271,8 @@ export function realCalendarBackend(account: DavAccount): CalendarBackend {
 // ─── CardDAV backend ─────────────────────────────────────────────────────────
 
 /** Properties worth asking for: everything except PHOTO and other blobs. */
+/** Most cards examined per search when the server cannot filter for us. */
+const MAX_CARDS_SCANNED = 400;
 const CARD_PROPS = ["VERSION", "UID", "FN", "N", "EMAIL", "TEL", "ORG", "TITLE", "ADR", "BDAY", "URL", "NOTE", "NICKNAME"];
 
 export function realContactsBackend(account: DavAccount): ContactsBackend {
@@ -294,17 +300,30 @@ export function realContactsBackend(account: DavAccount): ContactsBackend {
           const text = (name: string) => ({ _attributes: { name }, "text-match": { _attributes: { collation: "i;unicode-casemap", "match-type": "contains" }, _text: q.query } });
           filters = { _attributes: { test: "anyof" }, "prop-filter": ["FN", "EMAIL", "TEL", "ORG", "NICKNAME"].map(text) };
         }
-        const res = await s.tsdav.addressBookQuery({ url: book.url, props: props as never, ...(filters ? { filters: filters as never } : {}), depth: "1", headers: s.headers, fetch: s.fetchImpl });
-        const failed = res.find((r) => !r.ok && r.status >= 400 && !r.props);
-        if (failed && res.length === 1) {
-          // A server that rejects the filter: retry unfiltered with a bounded read.
-          if (filters && failed.status !== 401 && failed.status !== 403) {
-            const again = await s.tsdav.addressBookQuery({ url: book.url, props: props as never, depth: "1", headers: s.headers, fetch: s.fetchImpl });
-            return cardsFrom(again, book.url);
-          }
-          throw classifyHttpStatus(failed.status, s.ctx);
+        // Step 1: WHICH cards match: hrefs only, cheap even for a huge book.
+        const base = { url: book.url, depth: "1" as const, headers: s.headers, fetch: s.fetchImpl };
+        let listed = await s.tsdav.addressBookQuery({ ...base, props: { "d:getetag": {} } as never, ...(filters ? { filters: filters as never } : {}) });
+        const failed = listed.length === 1 ? listed.find((r) => !r.ok && r.status >= 400 && !r.props) : undefined;
+        if (failed) {
+          // A server that rejects the filter: list unfiltered instead.
+          if (filters && failed.status !== 401 && failed.status !== 403) listed = await s.tsdav.addressBookQuery({ ...base, props: { "d:getetag": {} } as never });
+          else throw classifyHttpStatus(failed.status, s.ctx);
         }
-        return cardsFrom(res, book.url);
+        const bookBase = book.url.endsWith("/") ? book.url : `${book.url}/`;
+        const hrefs = listed
+          .filter((r) => r.ok !== false && typeof r.href === "string" && r.href)
+          .map((r) => new URL(String(r.href), bookBase))
+          .filter((u) => u.href !== bookBase && !u.pathname.endsWith("/"))
+          .slice(0, MAX_CARDS_SCANNED)
+          .map((u) => `${u.pathname}${u.search}`);
+        // Step 2: fetch those cards in small batches (photo-free properties), so
+        // one response never carries a whole address book of embedded photos.
+        const out: DavObject[] = [];
+        for (let i = 0; i < hrefs.length; i += 25) {
+          const res = await s.tsdav.addressBookMultiGet({ ...base, props: props as never, objectUrls: hrefs.slice(i, i + 25) });
+          out.push(...cardsFrom(res as RawResponse[], book.url));
+        }
+        return out;
       });
     },
     async getObject(url) {

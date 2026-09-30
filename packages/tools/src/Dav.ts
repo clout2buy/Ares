@@ -94,9 +94,17 @@ function slug(): string {
   return crypto.randomUUID();
 }
 
-function pickCalendar(cals: CalendarInfo[], ref: string | undefined, kind: "VEVENT" | "VTODO", prefer: RegExp): CalendarInfo {
+/** What an empty reminder list set means. On iCloud it usually means the owner
+ *  upgraded Reminders to the iOS 13+ format, which Apple does not serve over CalDAV. */
+export function noReminderListsMessage(provider?: string): string {
+  return provider === "icloud"
+    ? "This iCloud account exposes no reminder lists over CalDAV. Apple only serves Reminders that were NOT upgraded to the iOS 13+ format; upgraded lists (the usual case) can't be read or written by any third-party app. Ares can't reach them this way."
+    : "This account has no reminder lists (calendars that hold reminders).";
+}
+
+function pickCalendar(cals: CalendarInfo[], ref: string | undefined, kind: "VEVENT" | "VTODO", prefer: RegExp, provider?: string): CalendarInfo {
   const usable = cals.filter((c) => c.components.length === 0 || c.components.includes(kind));
-  if (!usable.length) throw new DavError("not-found", kind === "VTODO" ? "This account has no reminder lists (calendars that hold reminders)." : "This account has no event calendars.");
+  if (!usable.length) throw new DavError("not-found", kind === "VTODO" ? noReminderListsMessage(provider) : "This account has no event calendars.");
   if (ref) {
     const want = ref.trim().toLowerCase();
     const exact = usable.filter((c) => c.url === ref.trim() || c.name.toLowerCase() === want);
@@ -286,14 +294,14 @@ export const CalendarTool = buildTool<typeof calendarSchema, CalendarOutput>({
     if ("error" in setup) return fail<CalendarOutput>(setup.error);
     const { account, backend } = setup;
     try {
-      return await runCalendar(input, backend);
+      return await runCalendar(input, backend, account.id);
     } catch (err) {
       return fail<CalendarOutput>(safeMessage(err, account));
     }
   },
 });
 
-export async function runCalendar(input: CalendarInput, backend: CalendarBackend): Promise<ToolResult<CalendarOutput>> {
+export async function runCalendar(input: CalendarInput, backend: CalendarBackend, provider?: string): Promise<ToolResult<CalendarOutput>> {
   const tz = input.timezone !== undefined ? (isValidTimeZone(input.timezone) ? input.timezone : undefined) : systemTimeZone();
   if (!tz) return fail<CalendarOutput>(`"${clip(input.timezone, 40)}" is not a known IANA time zone (for example America/New_York).`);
   const limit = Math.min(input.max_results ?? 50, DAV_LIMITS.maxEvents);
@@ -398,7 +406,7 @@ export async function runCalendar(input: CalendarInput, backend: CalendarBackend
 
     case "list_reminders": {
       const cals = selectCalendars(await backend.listCalendars(), input.calendar, "VTODO");
-      if (!cals.length) return ok({ reminders: [], message: "This account has no reminder lists." });
+      if (!cals.length) return ok({ reminders: [], message: noReminderListsMessage(provider) });
       const all: ReminderView[] = [];
       for (const cal of cals) {
         const objects = await backend.fetchObjects(cal, { kind: "VTODO", pendingOnly: !input.include_completed });
@@ -418,7 +426,7 @@ export async function runCalendar(input: CalendarInput, backend: CalendarBackend
     case "create_reminder": {
       if (!input.title?.trim()) return fail<CalendarOutput>("create_reminder needs a title.");
       const cals = await backend.listCalendars();
-      const list = pickCalendar(cals, input.calendar, "VTODO", /^(reminders?|tasks?|to ?dos?)/i);
+      const list = pickCalendar(cals, input.calendar, "VTODO", /^(reminders?|tasks?|to ?dos?)/i, provider);
       const built = buildTodoIcs({
         title: input.title,
         ...(input.due ? { due: input.due } : {}),

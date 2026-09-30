@@ -46,7 +46,7 @@
  *       machine is offline, so a laptop reconnects within a second of its
  *       WiFi associating rather than serving out a blind 60s timer.
  */
-export const DEVICE_CONNECTOR_VERSION = 4;
+export const DEVICE_CONNECTOR_VERSION = 5;
 
 /** Ops v2 understands. Sent at attach so the server never has to guess. */
 export const DEVICE_CONNECTOR_CAPS = [
@@ -221,6 +221,109 @@ function Test-ProofEqual([string]$A, [string]$B) {
   return ($diff -eq 0)
 }
 
+# ─── authenticated channel (v5) ────────────────────────────────────────────
+# Proof-of-possession authenticates the handshake; these MACs authenticate
+# every frame after it. No encryption: an on-path observer can still read the
+# traffic, but cannot inject, alter, replay, or reorder commands.
+$script:ChannelActive = $false
+$script:ChannelS2DKey = $null
+$script:ChannelD2SKey = $null
+$script:ChannelS2DSeq = [UInt64]0
+$script:ChannelD2SSeq = [UInt64]0
+$script:ChannelLabel = 'ares-remote-channel/1'
+
+function Join-Bytes([byte[]]$A, [byte[]]$B) {
+  $out = New-Object byte[] ($A.Length + $B.Length)
+  [Array]::Copy($A, 0, $out, 0, $A.Length)
+  [Array]::Copy($B, 0, $out, $A.Length, $B.Length)
+  return $out
+}
+
+function Get-HmacBytes([byte[]]$Key, [byte[]]$Data) {
+  $h = New-Object Security.Cryptography.HMACSHA256
+  try { $h.Key = $Key; return $h.ComputeHash($Data) } finally { $h.Dispose() }
+}
+
+function ConvertFrom-Base64UrlExact([string]$Text, [int]$Length) {
+  if (-not $Text -or $Text -notmatch '^[A-Za-z0-9_-]+$') { return $null }
+  $b64 = $Text.Replace('-', '+').Replace('_', '/')
+  while (($b64.Length % 4) -ne 0) { $b64 += '=' }
+  try { $bytes = [Convert]::FromBase64String($b64) } catch { return $null }
+  if ($bytes.Length -ne $Length) { return $null }
+  return $bytes
+}
+
+# RFC 5869 extract + one-block expand. PowerShell 5.1 has no built-in HKDF.
+function Get-ChannelKeys($Cred, [string]$DeviceNonce, [string]$ServerNonce) {
+  $ds = ConvertFrom-Base64UrlExact ([string]$Cred.deviceSecret) 32
+  $sk = ConvertFrom-Base64UrlExact ([string]$Cred.serverKey) 32
+  $dn = ConvertFrom-Base64UrlExact $DeviceNonce 32
+  $sn = ConvertFrom-Base64UrlExact $ServerNonce 32
+  if ($null -eq $ds -or $null -eq $sk -or $null -eq $dn -or $null -eq $sn) { return $null }
+  $ikm = Join-Bytes $ds $sk
+  $salt = Join-Bytes $dn $sn
+  $prk = Get-HmacBytes $salt $ikm
+  $s2dInfo = Join-Bytes ([Text.Encoding]::UTF8.GetBytes($script:ChannelLabel + ' s2d')) ([byte[]]@(1))
+  $d2sInfo = Join-Bytes ([Text.Encoding]::UTF8.GetBytes($script:ChannelLabel + ' d2s')) ([byte[]]@(1))
+  return @{ s2d = (Get-HmacBytes $prk $s2dInfo); d2s = (Get-HmacBytes $prk $d2sInfo) }
+}
+
+function ConvertTo-U64BE([UInt64]$Value) {
+  $bytes = [BitConverter]::GetBytes($Value)
+  if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($bytes) }
+  return $bytes
+}
+
+function Get-ChannelMac([byte[]]$Key, [byte]$Direction, [UInt64]$Seq, [string]$Payload) {
+  $payloadBytes = [Text.Encoding]::UTF8.GetBytes($Payload)
+  $prefix = [Text.Encoding]::UTF8.GetBytes($script:ChannelLabel + ' mac/1')
+  $head = Join-Bytes ([byte[]]@(1, $Direction)) (Join-Bytes (ConvertTo-U64BE $Seq) (ConvertTo-U64BE ([UInt64]$payloadBytes.Length)))
+  $mac = Get-HmacBytes $Key (Join-Bytes $prefix (Join-Bytes $head $payloadBytes))
+  return (($mac | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Protect-ChannelText([string]$Json) {
+  if (-not $script:ChannelActive -or -not $Json.EndsWith('}')) { return $null }
+  $seqText = [string]$script:ChannelD2SSeq
+  $covered = $Json.Substring(0, $Json.Length - 1) + ',"seq":"' + $seqText + '"}'
+  $mac = Get-ChannelMac $script:ChannelD2SKey 2 $script:ChannelD2SSeq $covered
+  $script:ChannelD2SSeq++
+  return $covered.Substring(0, $covered.Length - 1) + ',"mac":"' + $mac + '"}'
+}
+
+function Unprotect-ChannelText([string]$Text) {
+  if (-not $script:ChannelActive) { return $Text }
+  $m = [regex]::Match($Text, '^(.*),"seq":"([0-9]{1,15})","mac":"([0-9a-f]{64})"}$')
+  if (-not $m.Success) { return $null }
+  [UInt64]$seq = 0
+  if (-not [UInt64]::TryParse($m.Groups[2].Value, [ref]$seq)) { return $null }
+  if ($seq -ne $script:ChannelS2DSeq) { return $null }
+  $covered = $m.Groups[1].Value + ',"seq":"' + $m.Groups[2].Value + '"}'
+  $want = Get-ChannelMac $script:ChannelS2DKey 1 $seq $covered
+  if (-not (Test-ProofEqual $want $m.Groups[3].Value)) { return $null }
+  $script:ChannelS2DSeq++
+  return $covered
+}
+
+function Start-AuthenticatedChannel($Cred, [string]$DeviceNonce, [string]$ServerNonce) {
+  $keys = Get-ChannelKeys $Cred $DeviceNonce $ServerNonce
+  if ($null -eq $keys) { return $false }
+  $script:ChannelS2DKey = $keys.s2d
+  $script:ChannelD2SKey = $keys.d2s
+  $script:ChannelS2DSeq = [UInt64]0
+  $script:ChannelD2SSeq = [UInt64]0
+  $script:ChannelActive = $true
+  return $true
+}
+
+function Stop-AuthenticatedChannel {
+  $script:ChannelActive = $false
+  $script:ChannelS2DKey = $null
+  $script:ChannelD2SKey = $null
+  $script:ChannelS2DSeq = [UInt64]0
+  $script:ChannelD2SSeq = [UInt64]0
+}
+
 # ─── credential storage ────────────────────────────────────────────────────
 function Get-Credential-Stored {
   if (-not (Test-Path $CredFile)) { return $null }
@@ -301,9 +404,22 @@ function Find-Home($Cred) {
 
 # ─── websocket helpers ─────────────────────────────────────────────────────
 function Send-Json($Ws, $Obj) {
-  $bytes = [Text.Encoding]::UTF8.GetBytes(($Obj | ConvertTo-Json -Compress -Depth 10))
+  $text = $Obj | ConvertTo-Json -Compress -Depth 10
+  if ($script:ChannelActive) {
+    $text = Protect-ChannelText $text
+    if (-not $text) { throw 'could not seal authenticated channel frame' }
+  }
+  $bytes = [Text.Encoding]::UTF8.GetBytes($text)
   $seg = [ArraySegment[byte]]::new($bytes)
   $Ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+}
+
+function ConvertFrom-WireText([string]$Text) {
+  if ($script:ChannelActive) {
+    $Text = Unprotect-ChannelText $Text
+    if ($null -eq $Text) { throw 'channel frame failed authentication or sequence' }
+  }
+  return ($Text | ConvertFrom-Json)
 }
 
 # BLOCKING receive. A hard-won correction: the first cut cancelled ReceiveAsync
@@ -330,7 +446,13 @@ function Receive-Json($Ws) {
     return 'CLOSED'
   }
   if ($ms.Length -eq 0) { return $null }
-  try { return ([Text.Encoding]::UTF8.GetString($ms.ToArray()) | ConvertFrom-Json) } catch { return $null }
+  try { return (ConvertFrom-WireText ([Text.Encoding]::UTF8.GetString($ms.ToArray()))) }
+  catch {
+    # Once channel auth is active, malformed / unMACed / replayed data is not a
+    # recoverable JSON error. Propagate so Connect-Once tears down the socket.
+    if ($script:ChannelActive) { throw }
+    return $null
+  }
 }
 
 # Timed receive for the HANDSHAKE only. Here aborting the socket on timeout is
@@ -352,7 +474,11 @@ function Receive-JsonTimeout($Ws, [int]$TimeoutMs) {
     return 'CLOSED'
   } finally { $cts.Dispose() }
   if ($ms.Length -eq 0) { return $null }
-  try { return ([Text.Encoding]::UTF8.GetString($ms.ToArray()) | ConvertFrom-Json) } catch { return $null }
+  try { return (ConvertFrom-WireText ([Text.Encoding]::UTF8.GetString($ms.ToArray()))) }
+  catch {
+    if ($script:ChannelActive) { throw }
+    return $null
+  }
 }
 
 # ─── concurrent command execution ──────────────────────────────────────────
@@ -706,6 +832,9 @@ try {
 
 # ─── the connection ────────────────────────────────────────────────────────
 function Connect-Once($Cred, [string]$WsUrl) {
+  # Channel state belongs to exactly one WebSocket + handshake transcript.
+  # Never carry keys or sequence numbers across a reconnect.
+  Stop-AuthenticatedChannel
   $ws = New-Object Net.WebSockets.ClientWebSocket
   $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(20)
   try {
@@ -737,7 +866,12 @@ function Connect-Once($Cred, [string]$WsUrl) {
         serverKey = $reply.serverKey; name = $reply.name; lastWsUrl = $WsUrl
       }
       Save-Credential $Cred
-      Write-Log "paired as '$($reply.name)'"
+      Write-Log "paired as '$($reply.name)' — reconnecting on authenticated channel"
+      # The enrollment socket carried the permanent secrets, so it cannot be
+      # retroactively MACed. Do not accept even one elevated command on it:
+      # reconnect immediately and complete the v5 transcript first.
+      try { $ws.Dispose() } catch { }
+      return @{ ok = $true; retry = $true }
     } else {
       # Every later run: mutual proof. We verify the SERVER before obeying it.
       $myNonce = New-Nonce
@@ -758,9 +892,19 @@ function Connect-Once($Cred, [string]$WsUrl) {
         try { $ws.Dispose() } catch { }
         return @{ ok = $false; retry = $true }
       }
-      Send-Json $ws @{ type = 'device_auth'; proof = (Get-Proof $Cred.deviceSecret $sp.nonce 'device'); connectorVersion = $ConnectorVersion; username = $env:USERNAME }
+      # The proof FORM is the v5 capability bit. A relay cannot strip it or
+      # replace it with the legacy proof without knowing deviceSecret.
+      Send-Json $ws @{ type = 'device_auth'; proof = (Get-Proof $Cred.deviceSecret $sp.nonce ('device:mac1:' + [string]$ConnectorVersion)); connectorVersion = $ConnectorVersion; username = $env:USERNAME }
+      # device_ready is the FIRST protected s2d frame. Arm the channel before
+      # reading it; an unMACed ready (including one stripped by a relay) fails
+      # closed and tears down this socket.
+      if (-not (Start-AuthenticatedChannel $Cred $myNonce ([string]$sp.nonce))) {
+        Write-Log 'could not derive authenticated channel keys — re-pair this device'
+        try { $ws.Dispose() } catch { }
+        return @{ ok = $false; retry = $false }
+      }
       $ready = Receive-JsonTimeout $ws 30000
-      if ($null -eq $ready -or $ready -eq 'CLOSED' -or $ready.type -ne 'device_ready') {
+      if ($null -eq $ready -or $ready -eq 'CLOSED' -or $ready.type -ne 'device_ready' -or $ready.channel -ne 'mac1') {
         $why = if ($ready -and $ready.message) { $ready.message } else { 'no response' }
         Write-Log "attach refused: $why"
         try { $ws.Dispose() } catch { }

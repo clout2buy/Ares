@@ -32,6 +32,7 @@ import {
   DEVICE_CONNECTOR_VERSION,
 } from "../packages/cli/dist/remoteDeviceConnector.js";
 import { proofFor, mintNonce, _resetDeviceKeyCache } from "../packages/cli/dist/remoteDeviceCrypto.js";
+import { channelAuthProof, channelKeys, openFrame } from "../packages/cli/dist/remoteChannelCrypto.js";
 
 const run = promisify(execFile);
 
@@ -51,28 +52,48 @@ async function withServer(fn) {
   }
 }
 
-/** A fake connector that enrols, then answers whatever `ops` says. */
+/** A fake legacy connector that enrols, reconnects, then answers `ops`. */
 async function attachDevice(server, base, { connectorVersion, ops = {} } = {}) {
   const { token } = await server.generatePairingLink("test laptop");
-  const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
-  const seen = [];
-  let cred = null;
-  await new Promise((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
-  });
-  ws.on("message", (raw) => {
+  const enrollWs = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+  await new Promise((resolve, reject) => { enrollWs.once("open", resolve); enrollWs.once("error", reject); });
+  const credPromise = new Promise((resolve) => enrollWs.on("message", (raw) => {
     const msg = JSON.parse(String(raw));
-    if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
-    if (msg.type === "enrolled") { cred = msg; return; }
-    seen.push(msg);
-    const handler = ops[msg.type];
-    if (handler) ws.send(JSON.stringify({ ...handler(msg), reqId: msg.reqId }));
-  });
-  ws.send(JSON.stringify({
+    if (msg.type === "enrolled") resolve(msg);
+  }));
+  enrollWs.send(JSON.stringify({
     type: "enroll", token, hostname: "TRICKFOOL", os: "Windows", username: "Clout",
     elevated: true, ...(connectorVersion ? { connectorVersion } : {}),
   }));
+  const cred = await credPromise;
+  enrollWs.close();
+
+  const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
+  await new Promise((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
+  const inbox = [];
+  const waiters = [];
+  const seen = [];
+  ws.on("message", (raw) => {
+    const msg = JSON.parse(String(raw));
+    const waiter = waiters.shift();
+    if (waiter) { waiter(msg); return; }
+    if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
+    seen.push(msg);
+    const handler = ops[msg.type];
+    if (handler) ws.send(JSON.stringify({ ...handler(msg), reqId: msg.reqId }));
+    else inbox.push(msg);
+  });
+  const next = () => (inbox.length ? Promise.resolve(inbox.shift()) : new Promise((r) => waiters.push(r)));
+  const myNonce = mintNonce();
+  ws.send(JSON.stringify({ type: "device_hello", deviceId: cred.deviceId, nonce: myNonce }));
+  const sp = await next();
+  assert.equal(sp.type, "server_proof");
+  assert.equal(sp.proof, proofFor(cred.serverKey, myNonce, "server"));
+  ws.send(JSON.stringify({
+    type: "device_auth", proof: proofFor(cred.deviceSecret, sp.nonce, "device"), connectorVersion,
+  }));
+  const ready = await next();
+  assert.equal(ready.type, "device_ready", `attach refused: ${ready.message ?? ""}`);
   for (let i = 0; i < 200 && server.listPcs().length === 0; i++) await new Promise((r) => setTimeout(r, 20));
   const pc = server.listPcs()[0];
   assert.ok(pc, "device never attached");
@@ -86,24 +107,33 @@ async function reattach(server, base, cred, connectorVersion) {
   const inbox = [];
   const waiters = [];
   ws.on("message", (raw) => {
-    const msg = JSON.parse(String(raw));
-    if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
+    const text = String(raw);
     const w = waiters.shift();
-    if (w) w(msg); else inbox.push(msg);
+    if (w) w(text); else inbox.push(text);
   });
   const next = () => (inbox.length ? Promise.resolve(inbox.shift()) : new Promise((r) => waiters.push(r)));
   const myNonce = mintNonce();
   ws.send(JSON.stringify({ type: "device_hello", deviceId: cred.deviceId, nonce: myNonce }));
-  const sp = await next();
+  const sp = JSON.parse(await next());
   assert.equal(sp.type, "server_proof");
   assert.equal(sp.proof, proofFor(cred.serverKey, myNonce, "server"));
-  ws.send(JSON.stringify({
-    type: "device_auth",
-    proof: proofFor(cred.deviceSecret, sp.nonce, "device"),
-    connectorVersion,
-  }));
-  const ready = await next();
-  assert.equal(ready.type, "device_ready", `reattach refused: ${ready.message ?? ""}`);
+  if (connectorVersion >= 5) {
+    const keys = channelKeys(cred.deviceSecret, cred.serverKey, myNonce, sp.nonce);
+    assert.ok(keys);
+    ws.send(JSON.stringify({
+      type: "device_auth", proof: channelAuthProof(cred.deviceSecret, sp.nonce), connectorVersion,
+    }));
+    const opened = openFrame(keys.s2d, 0x01, 0, await next());
+    assert.ok(opened, "v5 device_ready was not channel-authenticated");
+    const ready = JSON.parse(opened.payload);
+    assert.equal(ready.type, "device_ready", `reattach refused: ${ready.message ?? ""}`);
+  } else {
+    ws.send(JSON.stringify({
+      type: "device_auth", proof: proofFor(cred.deviceSecret, sp.nonce, "device"), connectorVersion,
+    }));
+    const ready = JSON.parse(await next());
+    assert.equal(ready.type, "device_ready", `reattach refused: ${ready.message ?? ""}`);
+  }
   return { ws };
 }
 

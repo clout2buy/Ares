@@ -15,7 +15,10 @@
 //           that run elevated and discovery is an unauthenticated UDP reply —
 //           whoever answers a probe first would otherwise own the machine.
 
+import { createHmac } from "node:crypto";
+
 import {
+  type DeviceAuth,
   type DeviceRegistryFile,
   type PairedDevice,
   authenticateDevice,
@@ -24,13 +27,14 @@ import {
   serverProofFor,
   uniqueDeviceName,
 } from "./remoteDevices.js";
-import { mintNonce } from "./remoteDeviceCrypto.js";
+import { mintNonce, openDeviceKey, proofMatches } from "./remoteDeviceCrypto.js";
+import { type ChannelKeys, CHANNEL_MODE, channelKeys } from "./remoteChannelCrypto.js";
 
 /** Messages a device may send. Anything else is ignored, not answered. */
 export type DeviceInbound =
   | { type: "enroll"; token: string; hostname: string; os: string; username: string; elevated?: boolean }
   | { type: "device_hello"; deviceId: string; nonce: string }
-  | { type: "device_auth"; proof: string };
+  | { type: "device_auth"; proof: string; connectorVersion?: number };
 
 export interface EnrollContext {
   /** Validate the one-time pairing token; returns the owner's chosen name. */
@@ -110,6 +114,11 @@ export interface AttachState {
   serverNonce: string;
   deviceId: string;
   device: PairedDevice;
+  /**
+   * The device's hello nonce, kept so the channel keys can bind the full
+   * handshake transcript at auth time (channel MACs derive from BOTH nonces).
+   */
+  deviceNonce: string;
 }
 
 export type HelloResult =
@@ -150,21 +159,78 @@ export async function handleDeviceHello(
   const serverNonce = mintNonce();
   return {
     ok: true,
-    state: { serverNonce, deviceId: device.id, device },
+    state: { serverNonce, deviceId: device.id, device, deviceNonce: msg.nonce },
     reply: { type: "server_proof", proof, nonce: serverNonce },
   };
 }
 
 export type AttachResult =
-  | { ok: true; device: PairedDevice; reply: Record<string, unknown> }
+  | { ok: true; device: PairedDevice; reply: Record<string, unknown>; channel: null | ChannelKeys; connectorVersion?: number }
   | { ok: false; reply: Record<string, unknown> };
 
-/** Phase 2b. The device answers our challenge; now it may run commands. */
+/**
+ * Phase 2b. The device answers our challenge; now it may run commands.
+ *
+ * The proof FORM is the capability bit (see remoteChannelCrypto.ts): a v5
+ * connector answers with HMAC(deviceSecret, "device:mac1:<version>:<nonce>"); a v4
+ * connector with the legacy "device:<nonce>". We try the mac1 form first and
+ * only fall back to legacy for genuine v4 connectors — the form that matched
+ * decides whether the session gets channel MACs, never any unauthenticated
+ * field a relay could strip or forge. A relay cannot downgrade a v5 device:
+ * it cannot produce the legacy proof without the secret, and it cannot stop
+ * a v5 device from requiring a valid MAC on device_ready.
+ */
 export async function handleDeviceAuth(
   ctx: Pick<EnrollContext, "registry" | "save">,
   state: AttachState,
   msg: Extract<DeviceInbound, { type: "device_auth" }>,
 ): Promise<AttachResult> {
+  // Try the v5 (mac1) proof form first. authenticateDeviceReason distinguishes
+  // "bad proof" from "unknown device" without enabling anything.
+  const claimedVersion = msg.connectorVersion;
+  const v5Version = typeof claimedVersion === "number" && Number.isSafeInteger(claimedVersion) && claimedVersion >= 5
+    ? claimedVersion
+    : null;
+  const v5Auth = v5Version === null
+    ? null
+    : await authenticateDeviceMode(ctx.registry, state.deviceId, state.serverNonce, msg.proof ?? "", "mac1", v5Version);
+  if (v5Auth?.ok && v5Version !== null) {
+    const keys = await channelKeysFor(v5Auth.device, state.deviceNonce, state.serverNonce);
+    if (!keys) {
+      // Credential of an unexpected shape: fail the attach rather than open
+      // an unauthenticated elevated channel. Re-pairing fixes it.
+      return { ok: false, reply: { type: "error", message: "this device's credential cannot key a protected channel — re-pair it", fatal: true } };
+    }
+    // Pin the highest successfully used mode BEFORE accepting the session. A
+    // crash after device_ready must not forget the floor and admit a legacy
+    // proof on the next connection.
+    v5Auth.device.channelAuth = CHANNEL_MODE;
+    v5Auth.device.lastSeenAt = Date.now();
+    try {
+      await ctx.save(ctx.registry);
+    } catch {
+      return { ok: false, reply: { type: "error", message: "could not persist protected-channel state — refusing attach", fatal: true } };
+    }
+    return {
+      ok: true,
+      device: v5Auth.device,
+      channel: keys,
+      connectorVersion: v5Version,
+      reply: {
+        type: "device_ready",
+        deviceId: v5Auth.device.id,
+        name: v5Auth.device.name,
+        elevated: v5Auth.device.allowElevated === true,
+        channel: CHANNEL_MODE,
+      },
+    };
+  }
+  // Once mac1 has ever completed, legacy authentication is a downgrade. The
+  // connector can only get here by running old code or by having its v5 proof
+  // replaced; neither is safe enough for an elevated command channel.
+  if (state.device.channelAuth === CHANNEL_MODE) {
+    return { ok: false, reply: { type: "error", message: "protected device refused a legacy channel — update or re-pair it", reason: "downgrade", fatal: true } };
+  }
   const auth = await authenticateDevice(ctx.registry, state.deviceId, state.serverNonce, msg.proof ?? "");
   if (!auth.ok) {
     // The reason is deliberately surfaced: a device retrying forever with no
@@ -178,14 +244,11 @@ export async function handleDeviceAuth(
     return { ok: false, reply: { type: "error", message, reason: auth.reason, fatal: true } };
   }
 
-  auth.device.lastSeenAt = Date.now();
-  // Best-effort: losing a lastSeen timestamp must never fail an otherwise good
-  // attach, and this fires on every reconnect.
-  await ctx.save(ctx.registry).catch(() => {});
-
+  authDeviceTouch(ctx, auth.device);
   return {
     ok: true,
     device: auth.device,
+    channel: null,
     reply: {
       type: "device_ready",
       deviceId: auth.device.id,
@@ -224,4 +287,50 @@ export async function renameDevice(
   device.name = uniqueDeviceName(others, wanted);
   await ctx.save(ctx.registry);
   return device;
+}
+
+// ─── channel-MAC support (v5) ──────────────────────────────────────────────
+
+/**
+ * Authenticate a device against the v5 ("mac1") proof MODE.
+ * Same shape as authenticateDevice(), but the proof label embeds the mode, so
+ * matching the mac1 form is proof the connector understands channel MACs —
+ * an unauthenticated version field never decides channel protection.
+ */
+export async function authenticateDeviceMode(
+  registry: DeviceRegistryFile,
+  deviceId: string,
+  serverNonce: string,
+  presentedProof: string,
+  mode: "mac1",
+  connectorVersion: number,
+): Promise<DeviceAuth> {
+  const device = registry.devices.find((d) => d.id === deviceId);
+  if (!device) return { ok: false, reason: "unknown" };
+  const secret = await openDeviceKey(device.secretEnc);
+  if (!secret) return { ok: false, reason: "unreadable" };
+  const expect = createHmac("sha256", secret)
+    .update(`device:${mode}:${connectorVersion}:${serverNonce}`, "utf8")
+    .digest("hex");
+  if (!proofMatches(expect, presentedProof)) return { ok: false, reason: "bad-proof" };
+  if (device.revokedAt) return { ok: false, reason: "revoked" };
+  return { ok: true, device };
+}
+
+/** Derive the session channel keys from a device's stored secrets. */
+export async function channelKeysFor(
+  device: PairedDevice,
+  deviceNonce: string,
+  serverNonce: string,
+): Promise<ChannelKeys | null> {
+  const secret = await openDeviceKey(device.secretEnc);
+  const serverKey = await openDeviceKey(device.serverKeyEnc);
+  if (!secret || !serverKey) return null;
+  return channelKeys(secret, serverKey, deviceNonce, serverNonce);
+}
+
+/** Update lastSeen + persist, best-effort — shared by both attach paths. */
+function authDeviceTouch(ctx: Pick<EnrollContext, "registry" | "save">, device: PairedDevice): void {
+  device.lastSeenAt = Date.now();
+  void ctx.save(ctx.registry).catch(() => {});
 }

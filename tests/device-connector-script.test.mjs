@@ -15,6 +15,7 @@ import { createHmac } from "node:crypto";
 
 import { buildDeviceConnectorPs1 } from "../packages/cli/dist/remoteDeviceConnector.js";
 import { proofFor } from "../packages/cli/dist/remoteDeviceCrypto.js";
+import { channelKeys, sealFrame } from "../packages/cli/dist/remoteChannelCrypto.js";
 
 const SCRIPT = buildDeviceConnectorPs1({
   token: "tok-abc123",
@@ -104,6 +105,38 @@ test("it verifies the SERVER before obeying anything", () => {
   const idx = SCRIPT.indexOf("SERVER PROOF FAILED");
   const authIdx = SCRIPT.indexOf("device_auth");
   assert.ok(idx < authIdx, "the server is checked BEFORE we authenticate to it");
+});
+
+test("v5 proves channel capability in the auth proof and requires a MACed ready", () => {
+  assert.match(SCRIPT, /device:mac1/);
+  assert.match(SCRIPT, /Start-AuthenticatedChannel/);
+  assert.match(SCRIPT, /ready\.channel -ne 'mac1'/);
+  const auth = SCRIPT.indexOf("type = 'device_auth'");
+  const arm = SCRIPT.indexOf("Start-AuthenticatedChannel", auth);
+  const ready = SCRIPT.indexOf("Receive-JsonTimeout", arm);
+  assert.ok(auth < arm && arm < ready, "auth is plain, then keys arm BEFORE device_ready is read");
+});
+
+test("every steady-state frame uses the authenticated send/receive wrappers", () => {
+  assert.match(SCRIPT, /Protect-ChannelText/);
+  assert.match(SCRIPT, /Unprotect-ChannelText/);
+  assert.match(SCRIPT, /channel frame failed authentication or sequence/);
+  assert.match(SCRIPT, /\$script:ChannelD2SSeq\+\+/);
+  assert.match(SCRIPT, /\$script:ChannelS2DSeq\+\+/);
+  // PowerShell does not use backslash escaping inside single-quoted strings.
+  // A literal backslash here changes both JSON and MAC-covered bytes.
+  assert.ok(!SCRIPT.includes('\\"seq'), "channel framing must not emit backslash-quoted JSON");
+  assert.ok(!SCRIPT.includes('\\"mac'), "channel framing must not emit backslash-quoted JSON");
+  assert.match(SCRIPT, /',"seq":"'/);
+  assert.match(SCRIPT, /',"mac":"'/);
+});
+
+test("a fresh enrolment reconnects before accepting commands", () => {
+  const saved = SCRIPT.indexOf("Save-Credential $Cred");
+  const reconnect = SCRIPT.indexOf("reconnecting on authenticated channel", saved);
+  const eventLoop = SCRIPT.indexOf("# ── event loop", reconnect);
+  assert.ok(saved < reconnect && reconnect < eventLoop);
+  assert.match(SCRIPT.slice(reconnect, eventLoop), /return @\{ ok = \$true; retry = \$true \}/);
 });
 
 test("proof comparison is not short-circuiting", () => {
@@ -252,6 +285,60 @@ function findPowershell() {
 }
 
 const PS_EXE = findPowershell();
+
+test(
+  "PowerShell and Node derive identical channel keys and frame MACs",
+  { skip: PS_EXE ? false : "no PowerShell on this host" },
+  () => {
+    const deviceSecret = Buffer.from(Array.from({ length: 32 }, (_, i) => i)).toString("base64url");
+    const serverKey = Buffer.from(Array.from({ length: 32 }, (_, i) => 255 - i)).toString("base64url");
+    const deviceNonce = Buffer.from(Array.from({ length: 32 }, (_, i) => i * 3)).toString("base64url");
+    const serverNonce = Buffer.from(Array.from({ length: 32 }, (_, i) => i * 7)).toString("base64url");
+    const keys = channelKeys(deviceSecret, serverKey, deviceNonce, serverNonce);
+    assert.ok(keys);
+    const expectedWire = sealFrame(keys.d2s, 0x02, 0, '{"type":"pong"}');
+    const inboundWire = sealFrame(keys.s2d, 0x01, 0, '{"type":"ping"}');
+    assert.ok(inboundWire);
+    const tamperedWire = inboundWire.replace('"ping"', '"pong"');
+
+    const start = SCRIPT.indexOf("function Get-Proof");
+    const end = SCRIPT.indexOf("# ─── credential storage", start);
+    assert.ok(start >= 0 && end > start, "crypto block exists in generated connector");
+    const cryptoBlock = SCRIPT.slice(start, end);
+    const probe = [
+      cryptoBlock,
+      `$c = [pscustomobject]@{ deviceSecret = '${deviceSecret}'; serverKey = '${serverKey}' }`,
+      `$k = Get-ChannelKeys $c '${deviceNonce}' '${serverNonce}'`,
+      "(($k.s2d | ForEach-Object { $_.ToString('x2') }) -join '')",
+      "(($k.d2s | ForEach-Object { $_.ToString('x2') }) -join '')",
+      `[void](Start-AuthenticatedChannel $c '${deviceNonce}' '${serverNonce}')`,
+      "Protect-ChannelText '{\"type\":\"pong\"}'",
+      `if ((Unprotect-ChannelText '${inboundWire}') -eq '{"type":"ping","seq":"0"}') { 'GOOD_ACCEPT' } else { 'GOOD_FAIL' }`,
+      "Stop-AuthenticatedChannel",
+      `[void](Start-AuthenticatedChannel $c '${deviceNonce}' '${serverNonce}')`,
+      `if ($null -eq (Unprotect-ChannelText '${tamperedWire}')) { 'TAMPER_REJECT' } else { 'TAMPER_ACCEPT' }`,
+      "Stop-AuthenticatedChannel",
+      `[void](Start-AuthenticatedChannel $c '${deviceNonce}' '${serverNonce}')`,
+      `if ($null -eq (Unprotect-ChannelText '{"type":"ping"}')) { 'PLAIN_REJECT' } else { 'PLAIN_ACCEPT' }`,
+    ].join("\n");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ares-macinterop-"));
+    const target = path.join(dir, "interop.ps1");
+    writeFileSync(target, probe, "utf8");
+    const out = execFileSync(
+      PS_EXE,
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", target],
+      { encoding: "utf8", timeout: 60_000 },
+    ).trim().split(/\r?\n/);
+    assert.deepEqual(out, [
+      keys.s2d.toString("hex"),
+      keys.d2s.toString("hex"),
+      expectedWire,
+      "GOOD_ACCEPT",
+      "TAMPER_REJECT",
+      "PLAIN_REJECT",
+    ]);
+  },
+);
 
 const CHECKER = [
   "param([string]$Target)",

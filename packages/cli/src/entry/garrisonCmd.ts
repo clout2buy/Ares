@@ -22,8 +22,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, Instances, type FileReadStamp } from "@ares/tools";
+import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
+import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -703,6 +704,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   setBrowserWatchHub(browserWatchHub);
 
+  // Universal connectors: the owner's Api services join the Connections list, and
+  // an inbound webhook (POST /gateway/hooks/<id>) starts a turn in an agent's thread.
+  syncApiConnectServices();
+  setHooksBaseUrlProvider(() => remoteAgentServer?.linkBaseUrl());
+  const hooksApi = createHooksApi({
+    baseUrl: () => remoteAgentServer?.linkBaseUrl(),
+    fire: makeHookFirer({ sessions, personas: personaRuntime }),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "hooks", line } }) + "\n"),
+  });
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -746,6 +757,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ...(process.platform === "linux"
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),
+          hooks: hooksApi,
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),

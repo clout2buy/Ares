@@ -48,6 +48,7 @@ import {
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
 import { LIFE_VERIFIERS as LIFE_SURFACE_VERIFIERS } from "./lifeVerifiers.js";
 import { LIFE_VERIFIERS, type VerifyOutcome } from "./connectVerifiersLife.js";
+import { UNIVERSAL_VERIFIERS, apiVerifierFor } from "./connectVerifiersApi.js";
 import { LIVE_INPUT_DOCK, LIVE_VIEW_CSS, applyBrowserInput, captureFrame, type BrowserInput } from "./liveBrowser.js";
 import { PlaidLink, isPlaidService, plaidInstructions, plaidSetupBody, type PlaidFlowState } from "./connectPlaid.js";
 
@@ -427,7 +428,7 @@ export class ConnectHub implements ConnectBroker {
       }
       detail = `${result.toolCount ?? 0} tools available.`;
     } else {
-      const verify = this.verifiers[service.id];
+      const verify = this.verifiers[service.id] ?? apiVerifierFor(service.id, this.opts.home);
       let toStore = values;
       if (verify) {
         try {
@@ -637,6 +638,7 @@ const DEFAULT_VERIFIERS: Record<string, Verify> = {
     return "";
   },
   ...LIFE_VERIFIERS,
+  ...UNIVERSAL_VERIFIERS,
 };
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────

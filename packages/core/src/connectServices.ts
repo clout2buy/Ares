@@ -28,6 +28,7 @@ import { loadRemoteMcpServers } from "./mcpConnect.js";
 import { LIFE_SERVICES } from "./lifeServices.js";
 import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
 import { plaidVariantService } from "./plaidService.js";
+import { API_CONNECT_SERVICES, apiConnectServiceFromDisk, isApiConnectId } from "./apiServices.js";
 
 export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
 
@@ -267,6 +268,9 @@ export const CONNECT_SERVICES: ConnectService[] = [
   ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
   ...LIFE_SERVICES,
   ...BROWSER_SITES.map(browserService),
+  // Universal API connector presets (Home Assistant, CoinGecko, NASA): appended
+  // LAST so they never shadow what resolved before. apiServices.ts.
+  ...API_CONNECT_SERVICES,
 ];
 
 function normalize(text: string): string {
@@ -337,6 +341,12 @@ export function resolveConnectService(query: string): ConnectService | null {
   // registered browser site ("login:amazon.com" → the Amazon session flow).
   const loginDomain = siteLoginDomain(query);
   if (loginDomain) return siteLoginService(loginDomain);
+  // "api-<id>": a service the owner added to the universal Api tool.
+  if (isApiConnectId(query.trim().toLowerCase())) {
+    const wanted = query.trim().toLowerCase();
+    const api = CONNECT_SERVICES.find((s) => s.id === wanted) ?? apiConnectServiceFromDisk(wanted);
+    if (api) return api;
+  }
   // "plaid:add" / "plaid:update:<item_id>": another bank, or a fresh login.
   const plaidVariant = plaidVariantService(query);
   if (plaidVariant) return plaidVariant;
@@ -448,4 +458,17 @@ export function setConnectBroker(next: ConnectBroker | null): void {
 
 export function getConnectBroker(): ConnectBroker | null {
   return broker;
+}
+
+/** Add (or replace) a registry entry at runtime — the Api tool's own services. */
+export function registerConnectService(service: ConnectService): void {
+  const at = CONNECT_SERVICES.findIndex((s) => s.id === service.id);
+  if (at >= 0) CONNECT_SERVICES[at] = service;
+  else CONNECT_SERVICES.push(service);
+}
+
+/** Drop a runtime-registered entry (a removed Api service). */
+export function unregisterConnectService(id: string): void {
+  const at = CONNECT_SERVICES.findIndex((s) => s.id === id);
+  if (at >= 0) CONNECT_SERVICES.splice(at, 1);
 }

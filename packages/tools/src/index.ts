@@ -223,6 +223,54 @@ export { TrackTool, type TrackOutput } from "./Track.js";
 export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
 export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
 export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
+// Universal connectors: any OpenAPI service, MQTT, inbound webhooks.
+export { ApiTool, type ApiOutput } from "./OpenApi.js";
+export { MqttTool, previewPayload, publishNeedsOwnerDecision, type MqttOutput } from "./Mqtt.js";
+export { HooksTool, type HooksOutput } from "./Hooks.js";
+export {
+  addService as addApiService,
+  apiCall,
+  classifyApiCall,
+  listServices as listApiServices,
+  removeService as removeApiService,
+  specHandleFor,
+  syncApiConnectServices,
+  verifyApiService,
+  type CallClass,
+} from "./openapi/services.js";
+export { SpecHandle, parseSpecText, searchOperations, suggestAuth, simplifySchema, tokenize, type ResolvedOperation, type OpIndexEntry } from "./openapi/spec.js";
+export { buildRequest, executeCall, resolveAuth, redactText, redactTokens, visibleHeaders, resetRateLimits, clearOAuthCache, ApiInputError, vaultCredentials, type CredentialSource } from "./openapi/call.js";
+export { classifyAddress, assertUrlAllowed, safeFetch, guardedLookup, NetBlockedError, type AddressClass, type Resolver } from "./openapi/netGuard.js";
+export { MqttClient, parseMqttUrl, validateTopicName, validateTopicFilter } from "./openapi/mqttClient.js";
+export { atomToJson } from "./openapi/atom.js";
+export { PRESET_SPECS } from "./openapi/presets.js";
+export {
+  createHook,
+  deleteHook,
+  listHooks,
+  findHook,
+  loadHookSecret,
+  verifyHookAuth,
+  signHook,
+  renderHookTurn,
+  setupRecipe,
+  publicHook,
+  hookUrl,
+  appendHookAudit,
+  recentHookAudit,
+  setHooksBaseUrlProvider,
+  getHooksBaseUrl,
+  safeEqual,
+  ReplayCache,
+  WindowLimiter,
+  HOOK_ID_RE,
+  DEFAULT_MAX_BYTES,
+  HARD_MAX_BYTES,
+  type HookDef,
+  type HookAuth,
+  type HookEvent,
+  type HookAuditEntry,
+} from "./hooksStore.js";
 export { HueTool, discoverHueBridges, pairHueBridge, hueCall, hexToXy, hueStateBody, type HueOutput, type HueBridgeRef, type HuePairing } from "./Hue.js";
 export { TeslaTool, TESLA_ASK_ACTIONS, type TeslaOutput } from "./Tesla.js";
 export { TicketsTool, ticketmasterSearchUrl, type TicketsOutput } from "./Tickets.js";
@@ -307,9 +355,15 @@ import { WithingsTool } from "./Withings.js";
 import { TailscaleTool } from "./Tailscale.js";
 import { BankTool } from "./Bank.js";
 import { InstancesTool } from "./Instances.js";
+import { ApiTool } from "./OpenApi.js";
+import { MqttTool } from "./Mqtt.js";
+import { HooksTool } from "./Hooks.js";
 
 /** Home, car, travel, health and money connectors (all deferred). */
 export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
+
+/** Universal connectors (all deferred): any OpenAPI service, MQTT, inbound webhooks. */
+export const UNIVERSAL_TOOLS = [ApiTool, MqttTool, HooksTool] as const;
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -352,6 +406,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       PlacesTool,
       ImagineTool,
       ...LIFE_TOOLS,
+      ...UNIVERSAL_TOOLS,
     ] as const
   : [
       ReadTool,
@@ -392,4 +447,5 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       PlacesTool,
       ImagineTool,
       ...LIFE_TOOLS,
+      ...UNIVERSAL_TOOLS,
     ] as const;

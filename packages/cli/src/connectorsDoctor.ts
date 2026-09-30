@@ -611,6 +611,128 @@ export function lintCatalogs(c: { remote: McpCatalogEntry[]; stdio: McpStdioEntr
   return problems;
 }
 
+
+// ─── Tool gates: call each credentialed tool with NO credentials ─────────────
+//
+// Runs in a CHILD process with a minimal environment and an empty Ares home,
+// so a doctor run on a machine that does have keys can never spend or read
+// them. A healthy credentialed tool answers "connect it first" with a typed
+// error; a keyless one (Weather, Places) just works.
+
+interface GateSpec {
+  input: Record<string, unknown>;
+  /** Needs no credential at all: a successful return is a pass. */
+  keyless?: boolean;
+}
+
+const TOOL_GATES: Record<string, GateSpec> = {
+  Gmail: { input: { action: "list_messages" } },
+  GoogleCalendar: { input: { action: "list_calendars" } },
+  GoogleDrive: { input: { action: "list" } },
+  GoogleContacts: { input: { action: "list" } },
+  Outlook: { input: { action: "list_messages" } },
+  Spotify: { input: { action: "now_playing" } },
+  Tesla: { input: { action: "vehicles" } },
+  Tickets: { input: { action: "search", keyword: "doctor" } },
+  FlightStatus: { input: { action: "arrivals", airport: "KSFO" } },
+  Withings: { input: { action: "measurements" } },
+  Tailscale: { input: { action: "devices" } },
+  Bank: { input: { action: "accounts" } },
+  Stripe: { input: { name: "doctor", amount: 100 } },
+  Email: { input: { to: "doctor@example.invalid", subject: "doctor", body: "doctor" } },
+  Phone: { input: { action: "list_numbers" } },
+  Imagine: { input: { action: "image", prompt: "doctor" } },
+  Weather: { input: { location: "London" }, keyless: true },
+  Places: { input: { action: "geocode", query: "London" }, keyless: true },
+};
+
+export interface GateOutcome {
+  result: "returned" | "threw";
+  display?: string;
+  error?: string;
+  errorType?: string;
+  ms: number;
+}
+
+const GATE_RE = /connect|credential|not (?:connected|configured|set up|linked)|no .{0,30}(?:key|token|account)|api key|sign in|sign-in|unauthori[sz]ed|authenticat|needs? (?:a |an |your )|missing|set up|vault|link/i;
+
+export function classifyGate(name: string, spec: GateSpec, o: GateOutcome): { verdict: Verdict; reason: string } {
+  void name;
+  const text = `${o.error ?? ""} ${o.display ?? ""}`;
+  if (o.result === "returned") {
+    if (spec.keyless) return { verdict: "working", reason: `the tool's own code path answered with no credentials (${o.ms}ms)` };
+    return GATE_RE.test(text) ? { verdict: "works-needs-credentials", reason: `answers "${text.trim().slice(0, 100)}" with no credentials` } : { verdict: "degraded", reason: `returned normally with no credentials configured: ${text.trim().slice(0, 100)}` };
+  }
+  const err = o.error ?? "";
+  if (/Invalid input|Expected .* received|Required|invalid_type|ZodError/i.test(err)) return { verdict: "unverifiable", reason: `the doctor's minimal input was rejected by the tool schema: ${err.slice(0, 100)}` };
+  if (/TypeError|ReferenceError|Cannot read prop|is not a function|undefined/.test(`${o.errorType} ${err}`) && !GATE_RE.test(err)) return { verdict: "broken", reason: `untyped crash instead of a clear error: ${o.errorType}: ${err.slice(0, 120)}` };
+  if (spec.keyless) {
+    if (/fetch failed|ENOTFOUND|ECONN|timed out|returned 5\d\d|answered HTTP 5\d\d/i.test(err)) return { verdict: "degraded", reason: `upstream unreachable through the tool: ${err.slice(0, 120)}` };
+    return { verdict: "broken", reason: `keyless tool failed: ${err.slice(0, 140)}` };
+  }
+  if (GATE_RE.test(err)) return { verdict: "works-needs-credentials", reason: `clear credential gate: "${err.slice(0, 120)}"` };
+  return { verdict: "degraded", reason: `errors without a clear "connect it" message: ${err.slice(0, 140)}` };
+}
+
+const GATE_SCRIPT = `
+const tools = await import(process.env.ARES_DOCTOR_TOOLS_URL);
+const inputs = JSON.parse(process.env.ARES_DOCTOR_TOOL_INPUTS);
+for (const [name, input] of Object.entries(inputs)) {
+  const t0 = Date.now();
+  let out;
+  try {
+    const tool = tools[name + "Tool"];
+    if (!tool) throw Object.assign(new Error("tool not exported"), { name: "MissingTool" });
+    const parsed = tool.inputZod.parse(input);
+    const res = await tool.call(parsed, { workspace: process.cwd(), signal: AbortSignal.timeout(25000), sessionId: "doctor" });
+    out = { name, result: "returned", display: String(res && res.display || "").slice(0, 200), ms: Date.now() - t0 };
+  } catch (e) {
+    out = { name, result: "threw", error: String(e && e.message || e).slice(0, 300), errorType: String(e && e.name || typeof e), ms: Date.now() - t0 };
+  }
+  console.log("DOCTORJSON " + JSON.stringify(out));
+}
+process.exit(0);
+`;
+
+async function runToolGates(scratchRoot: string, timeoutMs: number): Promise<Record<string, GateOutcome>> {
+  const toolsUrl = new URL("../../tools/dist/index.js", import.meta.url).href;
+  const home = path.join(scratchRoot, "gate-home");
+  await fs.mkdir(home, { recursive: true });
+  const inputs = Object.fromEntries(Object.entries(TOOL_GATES).map(([k, v]) => [k, v.input]));
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    USERPROFILE: home,
+    ARES_HOME: home,
+    XDG_CONFIG_HOME: home,
+    ARES_DOCTOR_TOOLS_URL: toolsUrl,
+    ARES_DOCTOR_TOOL_INPUTS: JSON.stringify(inputs),
+  };
+  const out: Record<string, GateOutcome> = {};
+  await new Promise<void>((resolve) => {
+    const c = spawn(process.execPath, ["--input-type=module", "-e", GATE_SCRIPT], { env, cwd: home, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    let buf = "";
+    const timer = setTimeout(() => c.kill("SIGKILL"), timeoutMs);
+    timer.unref?.();
+    c.stdout?.on("data", (d: Buffer) => {
+      buf += d.toString();
+      let nl: number;
+      while ((nl = buf.indexOf(String.fromCharCode(10))) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("DOCTORJSON ")) continue;
+        try {
+          const o = JSON.parse(line.slice(11)) as GateOutcome & { name: string };
+          out[o.name] = o;
+        } catch { /* skip */ }
+      }
+    });
+    c.on("error", () => { clearTimeout(timer); resolve(); });
+    c.on("close", () => { clearTimeout(timer); resolve(); });
+  });
+  return out;
+}
+
 // ─── Planning ────────────────────────────────────────────────────────────────
 
 type Lane = "net" | "stdio" | "local";
@@ -889,8 +1011,22 @@ function planLocal(): Planned[] {
     lane: "local",
     network: false,
     async run() {
-      const found = await Promise.resolve(findInstalledChromium()).catch(() => undefined);
-      return found ? { verdict: "working", reason: "a Chromium is installed for browser sign-in flows", evidence: { note: String(found).slice(0, 120) } } : { verdict: "degraded", reason: "no Chromium installed: browser sign-in connectors (DoorDash, Instagram…) cannot start a live session here", evidence: {} };
+      // A system Chromium/Chrome/Edge, else Playwright's bundled browser (which
+      // is what Ares falls through to when findInstalledChromium finds nothing).
+      const system = findInstalledChromium();
+      if (system) return { verdict: "working", reason: "a system Chromium-family browser is installed for sign-in flows", evidence: { note: String(system).slice(0, 120) } };
+      const roots = [
+        process.env.PLAYWRIGHT_BROWSERS_PATH,
+        path.join(os.homedir(), ".cache", "ms-playwright"),
+        path.join(os.homedir(), "Library", "Caches", "ms-playwright"),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "ms-playwright") : undefined,
+      ].filter((r): r is string => Boolean(r));
+      for (const r of roots) {
+        const entries = await fs.readdir(r).catch(() => [] as string[]);
+        const hit = entries.find((e) => /^chromium(?:_headless_shell)?-\d+/.test(e));
+        if (hit) return { verdict: "working", reason: `Playwright's bundled ${hit} is installed`, evidence: { note: r } };
+      }
+      return { verdict: "degraded", reason: "no Chromium found (system or Playwright-bundled): browser sign-in connectors (DoorDash, Instagram...) cannot start a live session on this host", evidence: {} };
     },
   });
   out.push({
@@ -1136,10 +1272,20 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport 
     // Tools: derived verdicts (only when not filtered away).
     const byId = new Map(results.map((r) => [r.id, r]));
     if (!only && !kinds) {
+      const gates = opts.offline ? {} : await runToolGates(scratchRoot, 150_000).catch(() => ({} as Record<string, GateOutcome>));
       for (const t of TOOLS) {
         const deps = t.dependsOn.map((d) => byId.get(d)).filter((x): x is CheckResult => Boolean(x));
-        const verdict = combineVerdicts(deps.map((d) => d.verdict), t.mode ?? "all");
+        let verdict = combineVerdicts(deps.map((d) => d.verdict), t.mode ?? "all");
         const worst = deps.find((d) => d.verdict === verdict) ?? deps[0];
+        let gateNote: { verdict: Verdict; reason: string; outcome: GateOutcome } | undefined;
+        const spec = TOOL_GATES[t.name];
+        const gateOut = gates[t.name];
+        if (spec && gateOut) {
+          const g = classifyGate(t.name, spec, gateOut);
+          gateNote = { ...g, outcome: gateOut };
+          // the tool is only as healthy as the worse of its upstreams and its own gate
+          verdict = combineVerdicts([verdict, g.verdict === "unverifiable" ? verdict : g.verdict], "all");
+        }
         results.push({
           id: `tool:${t.name}`,
           name: t.name,
@@ -1152,8 +1298,14 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport 
           dependsOn: t.dependsOn,
           dependsMode: t.mode ?? "all",
           verdict,
-          reason: worst ? `stands on ${worst.id}: ${worst.reason}` : "no upstream check ran",
-          evidence: { dependsOn: t.dependsOn, upstream: deps.map((d) => ({ id: d.id, verdict: d.verdict })) },
+          reason: gateNote && gateNote.verdict !== "unverifiable" && (!worst || VERDICT_RANK[gateNote.verdict] > VERDICT_RANK[worst.verdict])
+            ? `own call with no credentials: ${gateNote.reason}`
+            : worst ? `stands on ${worst.id}: ${worst.reason}` : "no upstream check ran",
+          evidence: {
+            dependsOn: t.dependsOn,
+            upstream: deps.map((d) => ({ id: d.id, verdict: d.verdict })),
+            ...(gateNote ? { gate: { verdict: gateNote.verdict, reason: gateNote.reason, result: gateNote.outcome.result, ms: gateNote.outcome.ms, ...(gateNote.outcome.error ? { firstError: gateNote.outcome.error.slice(0, 200) } : {}) } } : {}),
+          },
           durationMs: 0,
         });
       }

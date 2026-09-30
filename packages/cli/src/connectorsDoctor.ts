@@ -665,7 +665,7 @@ export function classifyGate(name: string, spec: GateSpec, o: GateOutcome): { ve
   }
   const err = o.error ?? "";
   if (/Invalid input|Expected .* received|Required|invalid_type|ZodError/i.test(err)) return { verdict: "unverifiable", reason: `the doctor's minimal input was rejected by the tool schema: ${err.slice(0, 100)}` };
-  if (/TypeError|ReferenceError|Cannot read prop|is not a function|undefined/.test(`${o.errorType} ${err}`) && !GATE_RE.test(err)) return { verdict: "broken", reason: `untyped crash instead of a clear error: ${o.errorType}: ${err.slice(0, 120)}` };
+  if (/TypeError|ReferenceError|Cannot read prop|is not a function|is undefined/.test(`${o.errorType ?? ""} ${err}`) && !GATE_RE.test(err)) return { verdict: "broken", reason: `untyped crash instead of a clear error: ${o.errorType}: ${err.slice(0, 120)}` };
   if (spec.keyless) {
     if (/fetch failed|ENOTFOUND|ECONN|timed out|returned 5\d\d|answered HTTP 5\d\d/i.test(err)) return { verdict: "degraded", reason: `upstream unreachable through the tool: ${err.slice(0, 120)}` };
     return { verdict: "broken", reason: `keyless tool failed: ${err.slice(0, 140)}` };

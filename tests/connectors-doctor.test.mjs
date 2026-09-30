@@ -31,6 +31,7 @@ import {
   classifyStdioProbe,
   classifyRemoteProbe,
   classifyVerifierError,
+  classifyGate,
   combineVerdicts,
   lintCatalogs,
   runDoctor,
@@ -332,6 +333,21 @@ test("classifyVerifierError: alive+gate vs dead vs flaky", () => {
   assert.equal(classifyVerifierError("Duffel answered HTTP 503").verdict, "degraded");
   assert.equal(classifyVerifierError("Foo answered HTTP 418").verdict, "works-needs-credentials");
   assert.equal(classifyVerifierError("kaboom").verdict, "degraded");
+});
+
+test("classifyGate: typed gates pass, untyped crashes and silent successes do not", () => {
+  const keyed = { input: {} };
+  const keyless = { input: {}, keyless: true };
+  const g = (spec, o) => classifyGate("T", spec, { ms: 5, ...o }).verdict;
+  assert.equal(g(keyed, { result: "threw", error: "OAUTH_NOT_AUTHORIZED: google is not connected. Call Connect" }), "works-needs-credentials");
+  assert.equal(g(keyed, { result: "returned", display: "Tessie isn't connected, so Ares can't reach the car." }), "works-needs-credentials");
+  assert.equal(g(keyed, { result: "returned", display: "3 vehicles: ..." }), "degraded", "a credentialed tool answering with data and no credentials is suspicious");
+  assert.equal(g(keyed, { result: "threw", errorType: "TypeError", error: "Cannot read properties of undefined (reading 'token')" }), "broken");
+  assert.equal(g(keyed, { result: "threw", error: "Invalid input: expected string, received number" }), "unverifiable");
+  assert.equal(g(keyed, { result: "threw", error: "kaboom" }), "degraded");
+  assert.equal(g(keyless, { result: "returned", display: "London: 19C" }), "working");
+  assert.equal(g(keyless, { result: "threw", error: "wttr.in returned 503" }), "degraded");
+  assert.equal(g(keyless, { result: "threw", error: "no results" }), "broken");
 });
 
 test("combineVerdicts: all = worst, any = best", () => {

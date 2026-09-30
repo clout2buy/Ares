@@ -198,6 +198,8 @@ export interface TelegramBridgeOptions {
   /** hello.client identifier. Default "telegram". */
   clientName?: string;
   log?: (line: string) => void;
+  /** Jitter source for poll-failure backoff, in [0,1). Default Math.random. */
+  random?: () => number;
   /**
    * Remote-command deps (state/control/dry-run). When set, recognized slash /
    * one-word commands are handled locally; everything else still routes to a
@@ -370,6 +372,7 @@ export class TelegramBridge {
   private readonly pollTimeoutS: number;
   private readonly clientName: string;
   private readonly log: (line: string) => void;
+  private readonly random: () => number;
   private readonly commands?: TelegramCommandDeps;
   private readonly connectDeps?: Omit<ConnectFlowDeps, "api" | "log">;
 
@@ -489,6 +492,7 @@ export class TelegramBridge {
     this.pollTimeoutS = opts.pollTimeoutS ?? 25;
     this.clientName = opts.clientName ?? "telegram";
     this.log = opts.log ?? (() => undefined);
+    this.random = opts.random ?? Math.random;
     this.commands = opts.commands;
     this.connectDeps = opts.connectDeps;
     this.remotePcDeps = opts.remotePcDeps;
@@ -644,11 +648,16 @@ export class TelegramBridge {
   private async pollLoop(): Promise<void> {
     let offset = 0;
     let conflictBackoff = 0;
+    let failures = 0;
     while (this.running) {
       let updates: TgUpdate[];
       try {
         updates = await this.api.getUpdates(offset, this.pollTimeoutS, this.abort.signal);
         conflictBackoff = 0;
+        if (failures > 0) {
+          this.log(`getUpdates recovered after ${failures} failures`);
+          failures = 0;
+        }
       } catch (err) {
         if (!this.running) return;
         if (err instanceof TelegramApiError && err.code === 409) {
@@ -660,8 +669,13 @@ export class TelegramBridge {
           await this.sleepMs(conflictBackoff);
           continue;
         }
-        this.log(`getUpdates failed: ${errText(err)}`);
-        await this.sleepMs(1_000);
+        failures += 1;
+        const capped = pollBackoffBase(failures) >= POLL_BACKOFF_MAX_MS;
+        const escalated = pollBackoffBase(failures) !== pollBackoffBase(failures - 1);
+        if (failures === 1 || escalated || (capped && failures % POLL_LOG_EVERY === 0)) {
+          this.log(`getUpdates failed (x${failures}): ${errText(err)}`);
+        }
+        await this.sleepMs(nextBackoffMs(failures, this.random));
         continue;
       }
       // Pick up any out-of-band roster change (the agent authorized someone via
@@ -2074,6 +2088,22 @@ export class TelegramBridge {
       handle = this.timers.setTimeout(finish, ms);
     });
   }
+}
+
+const POLL_BACKOFF_MIN_MS = 1_000;
+const POLL_BACKOFF_MAX_MS = 60_000;
+const POLL_LOG_EVERY = 20;
+
+function pollBackoffBase(failures: number): number {
+  if (failures < 1) return 0;
+  return Math.min(POLL_BACKOFF_MAX_MS, POLL_BACKOFF_MIN_MS * 2 ** Math.min(failures - 1, 16));
+}
+
+/** Delay before retrying getUpdates after `failures` consecutive failures: 1s, 2s, 4s… capped at 60s, jittered down to 50-100%. */
+export function nextBackoffMs(failures: number, rng: () => number = Math.random): number {
+  const base = pollBackoffBase(failures);
+  // Jitter only shaves time off so the 60s cap is a hard ceiling.
+  return Math.round(base * (0.5 + 0.5 * rng()));
 }
 
 function errText(err: unknown): string {

@@ -119,7 +119,7 @@ async function session(type: "caldav" | "carddav", account: DavAccount): Promise
     const tsdav = await loadTsdav();
     const credentials = { username: account.username, password: account.password };
     const headers = tsdav.getBasicAuthHeaders(credentials) as Record<string, string>;
-    const fetchImpl = boundedFetch({ base, secrets: ctx.secrets });
+    const fetchImpl = boundedFetch({ base, secrets: ctx.secrets, ctx });
     const key = cacheKey(type, account);
     const hit = discovered.get(key);
     if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return { tsdav, dav: hit.account, headers, fetchImpl, ctx };
@@ -284,9 +284,13 @@ export function realContactsBackend(account: DavAccount): ContactsBackend {
           "card:address-data": { "card:prop": CARD_PROPS.map((name) => ({ _attributes: { name } })) },
         };
         let filters: Record<string, unknown> | undefined;
+        // Phone numbers are stored formatted ("+1 (555) 010-0199"): a server-side
+        // substring match on the digits would miss them, so a phone-like query
+        // fetches the (photo-free, bounded) book and the tool matches on digits.
+        const phoneLike = q.query !== undefined && /^[\d+()\-.\s]{3,}$/.test(q.query) && q.query.replace(/\D/g, "").length >= 3;
         if (q.uid) {
           filters = { _attributes: { test: "anyof" }, "prop-filter": [{ _attributes: { name: "UID" }, "text-match": { _attributes: { "match-type": "equals" }, _text: q.uid } }] };
-        } else if (q.query) {
+        } else if (q.query && !phoneLike) {
           const text = (name: string) => ({ _attributes: { name }, "text-match": { _attributes: { collation: "i;unicode-casemap", "match-type": "contains" }, _text: q.query } });
           filters = { _attributes: { test: "anyof" }, "prop-filter": ["FN", "EMAIL", "TEL", "ORG", "NICKNAME"].map(text) };
         }

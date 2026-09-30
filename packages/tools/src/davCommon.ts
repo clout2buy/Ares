@@ -112,10 +112,19 @@ const APP_PASSWORD_HINT =
 const ICLOUD_APP_PASSWORD_HELP =
   "iCloud only accepts an app-specific password here, never your Apple ID password: sign in at account.apple.com, open Sign-In and Security, choose App-Specific Passwords, create one named Ares, and paste the xxxx-xxxx-xxxx-xxxx value. Two-factor authentication must be on.";
 
-function errorCode(err: unknown): string {
-  const any = err as { code?: unknown; cause?: { code?: unknown } } | null;
-  const code = any?.code ?? any?.cause?.code;
-  return typeof code === "string" ? code : "";
+/** The most specific error code in an error and its causes (fetch wraps the
+ *  socket error: TypeError("fetch failed") with cause.code or an AggregateError). */
+function errorCode(err: unknown, depth = 0): string {
+  if (!err || typeof err !== "object" || depth > 4) return "";
+  const any = err as { code?: unknown; cause?: unknown; errors?: unknown[] };
+  if (typeof any.code === "string" && any.code) return any.code;
+  const nested = errorCode(any.cause, depth + 1);
+  if (nested) return nested;
+  for (const inner of Array.isArray(any.errors) ? any.errors : []) {
+    const c = errorCode(inner, depth + 1);
+    if (c) return c;
+  }
+  return "";
 }
 
 function errorText(err: unknown): string {
@@ -289,6 +298,8 @@ export interface BoundedFetchOptions {
   /** Underlying fetch (tests). */
   fetchImpl?: typeof fetch;
   secrets?: ReadonlyArray<string | undefined | null>;
+  /** How to word a network failure (which protocol, which provider). */
+  ctx?: ErrorContext;
 }
 
 /**
@@ -311,7 +322,14 @@ export function boundedFetch(opts: BoundedFetchOptions): typeof fetch {
     if (!mayForwardAuth(opts.base, target)) headers.delete("authorization");
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-    const res = await real(target.href, { ...init, headers, signal });
+    let res: Response;
+    try {
+      res = await real(target.href, { ...init, headers, signal });
+    } catch (err) {
+      // Classify here, where the socket error and its cause are still attached.
+      if (err instanceof DavError) throw err;
+      throw classifyError(err, { ...(opts.ctx ?? { service: "CalDAV" as const }), host: target.hostname, secrets: opts.secrets ?? opts.ctx?.secrets });
+    }
     const bodyless = res.status === 101 || res.status === 204 || res.status === 205 || res.status === 304 || (res.status >= 300 && res.status < 400);
     let buffer: Buffer | null = null;
     if (!bodyless && res.body) {

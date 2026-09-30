@@ -238,7 +238,13 @@ test("boundedFetch: refuses cleartext to public hosts, strips Authorization off-
   await f("https://elsewhere.example.org/b", { headers: { authorization: "Basic Zm9vOmJhcg==" } });
   assert.equal(seen[1].headers.get("authorization"), null, "Authorization never leaves the domain");
   await assert.rejects(() => f("https://dav.example.com/big", {}), (e) => e.kind === "too-large");
-  await assert.rejects(() => f("https://dav.example.com/hang", {}), (e) => e.kind === "timeout" && /did not answer in time/.test(e.message));
+  // AbortSignal.timeout timers are unref'd (a real socket keeps the loop alive); hold it open here.
+  const keepAlive = setInterval(() => {}, 20);
+  try {
+    await assert.rejects(() => f("https://dav.example.com/hang", {}), (e) => e.kind === "timeout" && /did not answer in time/.test(e.message));
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test("object ids must live inside the account's own collections", () => {

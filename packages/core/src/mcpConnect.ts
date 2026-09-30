@@ -595,6 +595,28 @@ export async function setMcpServerToken(
   }
 }
 
+/**
+ * Register a remote MCP server that needs NO credential (it answered an
+ * unauthenticated initialize + tools/list). Stores only the secret-free entry;
+ * there is no vault bundle. Refuses to overwrite an existing entry — the
+ * caller decides names, and a custom connector must never clobber a real one.
+ */
+export async function addOpenMcpServer(
+  name: string,
+  url: string,
+  opts: { displayName?: string; home?: string } = {},
+): Promise<boolean> {
+  const servers = await loadRemoteMcpServers(opts.home);
+  if (servers[name]) return false;
+  servers[name] = {
+    url,
+    displayName: opts.displayName ?? name,
+    connectedAt: new Date().toISOString(),
+  };
+  await saveRemoteMcpServers(servers, opts.home);
+  return true;
+}
+
 /** Remove a connector: delete its on-disk entry and its vault token. */
 export async function disconnectMcpServer(name: string, home?: string): Promise<boolean> {
   const servers = await loadRemoteMcpServers(home);

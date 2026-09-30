@@ -330,6 +330,7 @@ export {
   setMcpServerEnabled,
   setMcpServerToken,
   beginMcpConnect,
+  addOpenMcpServer,
   probeMcpTools,
   getMcpAccessToken,
   getMcpCallCredentials,

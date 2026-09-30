@@ -585,15 +585,15 @@ function shiftTimes(comp: ICAL.Component, names: string[], deltaMs: number): voi
   const seconds = rest - minutes * 60;
   for (const name of names) {
     for (const prop of comp.getAllProperties(name)) {
-      const values = prop.getValues();
+      const values = prop.isMultiValue ? prop.getValues() : [prop.getFirstValue()];
       if (!values.length || !values.every((v) => v instanceof ICAL.Time)) continue;
-      prop.setValues(
-        (values as ICAL.Time[]).map((v) => {
-          const moved = v.clone();
-          moved.adjust(days, v.isDate ? 0 : hours, v.isDate ? 0 : minutes, v.isDate ? 0 : seconds);
-          return moved;
-        }),
-      );
+      const moved = (values as ICAL.Time[]).map((v) => {
+        const t = v.clone();
+        t.adjust(days, v.isDate ? 0 : hours, v.isDate ? 0 : minutes, v.isDate ? 0 : seconds);
+        return t;
+      });
+      if (prop.isMultiValue) prop.setValues(moved);
+      else prop.setValue(moved[0]!);
     }
   }
 }
@@ -815,7 +815,7 @@ export function buildVcard(input: ContactInput, uid: string = newUid()): { uid: 
   if (input.birthday?.trim()) lines.push(`BDAY:${input.birthday.trim()}`);
   if (input.url?.trim()) lines.push(`URL:${escText(oneLine(input.url, 300))}`);
   if (input.note?.trim()) lines.push(`NOTE:${escText(clip(input.note.trim(), 8000))}`);
-  lines.push(`REV:${dtstampNow()}`, "END:VCARD");
+  lines.push("END:VCARD");
   const card = new ICAL.Component(ICAL.parse(crlf(lines)));
   return { uid, vcf: card.toString() + "\r\n" };
 }
@@ -826,10 +826,17 @@ export function patchVcard(vcf: string, patch: ContactInput): string {
   checkContact(patch);
   const parsed = ICAL.parse(vcf);
   const card = new ICAL.Component(Array.isArray(parsed) && typeof parsed[0] === "string" ? (parsed as never) : ((parsed as unknown[])[0] as never));
+  // Properties are built by parsing them under the card's OWN design set (vCard
+  // 3 or 4), so typed values and escaping round-trip exactly as for a fresh card.
+  const version = String(card.getFirstPropertyValue("version") ?? "3.0");
+  const adopt = (text: string): void => {
+    const frag = new ICAL.Component(ICAL.parse(["BEGIN:VCARD", `VERSION:${version}`, text, "END:VCARD"].join("\r\n")));
+    for (const p of frag.getAllProperties()) if (p.name !== "version") card.addProperty(new ICAL.Property(p.toJSON(), card));
+  };
   const setText = (prop: string, value: string | undefined): void => {
     if (value === undefined) return;
     card.removeAllProperties(prop);
-    if (value.trim()) card.addProperty(ICAL.Property.fromString(`${prop.toUpperCase()}:${escText(clip(oneLine(value, 8000), 8000))}`));
+    if (value.trim()) adopt(`${prop.toUpperCase()}:${escText(clip(oneLine(value, 8000), 8000))}`);
   };
   if (patch.name !== undefined) {
     const name = oneLine(patch.name, 200);
@@ -837,34 +844,33 @@ export function patchVcard(vcf: string, patch: ContactInput): string {
     const { family, given } = splitName(name);
     card.removeAllProperties("fn");
     card.removeAllProperties("n");
-    card.addProperty(ICAL.Property.fromString(`FN:${escText(name)}`));
-    card.addProperty(ICAL.Property.fromString(`N:${escText(family)};${escText(given)};;;`));
+    adopt(`FN:${escText(name)}`);
+    adopt(`N:${escText(family)};${escText(given)};;;`);
   }
   if (patch.email !== undefined) {
     card.removeAllProperties("email");
-    if (patch.email.trim()) card.addProperty(ICAL.Property.fromString(`EMAIL;TYPE=INTERNET:${escText(patch.email.trim())}`));
+    if (patch.email.trim()) adopt(`EMAIL;TYPE=INTERNET:${escText(patch.email.trim())}`);
   }
   if (patch.phone !== undefined) {
     card.removeAllProperties("tel");
-    if (patch.phone.trim()) card.addProperty(ICAL.Property.fromString(`TEL;TYPE=VOICE:${escText(oneLine(patch.phone, 40))}`));
+    if (patch.phone.trim()) adopt(`TEL;TYPE=VOICE:${escText(oneLine(patch.phone, 40))}`);
   }
   setText("org", patch.org?.replace(/;/g, ","));
   setText("title", patch.title);
   setText("url", patch.url);
   if (patch.note !== undefined) {
     card.removeAllProperties("note");
-    if (patch.note.trim()) card.addProperty(ICAL.Property.fromString(`NOTE:${escText(clip(patch.note.trim(), 8000))}`));
+    if (patch.note.trim()) adopt(`NOTE:${escText(clip(patch.note.trim(), 8000))}`);
   }
   if (patch.address !== undefined) {
     card.removeAllProperties("adr");
-    if (patch.address.trim()) card.addProperty(ICAL.Property.fromString(`ADR;TYPE=HOME:;;${escText(oneLine(patch.address, 300))};;;;`));
+    if (patch.address.trim()) adopt(`ADR;TYPE=HOME:;;${escText(oneLine(patch.address, 300))};;;;`);
   }
   if (patch.birthday !== undefined) {
     card.removeAllProperties("bday");
-    if (patch.birthday.trim()) card.addProperty(ICAL.Property.fromString(`BDAY:${patch.birthday.trim()}`));
+    if (patch.birthday.trim()) adopt(`BDAY:${patch.birthday.trim()}`);
   }
   card.removeAllProperties("rev");
-  card.addProperty(ICAL.Property.fromString(`REV:${dtstampNow()}`));
   return card.toString() + "\r\n";
 }
 

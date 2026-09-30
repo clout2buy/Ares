@@ -1525,6 +1525,7 @@ export class Session {
   private async drainStartupOrphans(orphanInputIds: readonly string[]): Promise<void> {
     if (!this.kernel) return;
     await this.ensureSessionDir();
+    let firstError: unknown;
     for (const inputId of orphanInputIds) {
       const beforeLease = this.kernel.getInput(inputId);
       if (
@@ -1600,13 +1601,29 @@ export class Session {
             inputId,
             error: kernelError,
           }));
+          // A replay that failed is terminal for this input. Left claimed, the
+          // lease release would requeue it as the queue head again: every later
+          // message then waits behind a row nobody runs, and every restart
+          // replays the same poison input. The ledger keeps its messages, so a
+          // fresh message can still continue the work.
+          if (ownsActiveInput && this.kernel.getInput(inputId)?.state === "claimed") {
+            this.kernel.cancelInput(inputId, {
+              sessionId: this.meta.id,
+              fence,
+              reason: {
+                code: "DETACHED_RECOVERY_FAILED",
+                message: "Startup recovery replayed this input and it did not complete",
+              },
+            });
+          }
         }
-        throw error;
+        firstError ??= error;
       } finally {
         if (ownsActiveInput && this.activeInputId === inputId) this.activeInputId = null;
         this.finishKernelRun(executionState, workOutcome, kernelError);
       }
     }
+    if (firstError !== undefined) throw firstError;
   }
 
   private async beginKernelRun(): Promise<RunFence> {

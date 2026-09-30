@@ -592,6 +592,7 @@ export class SessionManager {
         if (event.type === "input_admitted" && session.mirroredAdmissionIds.delete(event.inputId)) {
           continue;
         }
+        if (event.type === "turn_end" && event.status === "failed") this.retireFailedInput(session, inputId);
         this.appendRollout(session, event);
         session.friction?.record(event);
         this.observeForOwner(session, event);
@@ -623,6 +624,35 @@ export class SessionManager {
       // Turn completion is the durability boundary for the shared telemetry
       // plane, matching core Session. Recording stays off the streaming path.
       await session.friction?.settle();
+    }
+  }
+
+  /**
+   * Core requeues a failed turn's input so a host can resumeTurn() it. The
+   * garrison never does: left admitted, that row becomes the queue head with
+   * no runner, and every later message waits behind it and then settles
+   * without running. The failure is already on screen; the ledger keeps the
+   * transcript, so the next message continues from it. Same rule as the
+   * desktop daemon's DAEMON_TURN_FAILED settlement.
+   */
+  private retireFailedInput(session: LiveSession, inputId: string): void {
+    const kernel = this.sessionKernel;
+    if (!kernel || !session.coreSession) return;
+    try {
+      const owner = kernel.getInput(inputId);
+      if (owner?.state !== "admitted" && owner?.state !== "claimed") return;
+      kernel.cancelInput(inputId, {
+        sessionId: session.id,
+        ...(owner.state === "claimed" && owner.claimedGeneration !== null
+          ? { expectedGeneration: owner.claimedGeneration }
+          : {}),
+        reason: {
+          code: "GARRISON_TURN_FAILED",
+          message: "The hosted turn reached an explicit failed boundary",
+        },
+      });
+    } catch (error) {
+      console.error(`garrison: could not retire failed input ${inputId} in ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

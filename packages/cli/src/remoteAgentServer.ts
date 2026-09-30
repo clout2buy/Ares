@@ -2158,11 +2158,11 @@ function buildWindowsCmd(base: string, token: string): string {
   ].join("\r\n");
 }
 
-function buildPowerShellAgent(token: string, wsUrl: string): string {
+export function buildPowerShellAgent(token: string, wsUrl: string): string {
   return AGENT_PS1.replace(/__ARES_TOKEN__/g, token).replace(/__ARES_WS_URL__/g, wsUrl);
 }
 
-function buildPythonAgent(token: string, wsUrl: string): string {
+export function buildPythonAgent(token: string, wsUrl: string): string {
   return AGENT_PY.replace(/__ARES_TOKEN__/g, token).replace(/__ARES_WS_URL__/g, wsUrl);
 }
 

@@ -235,6 +235,14 @@ export interface PhoneApiHooks {
   /** Synchronous "ask Ares" for Siri/Shortcuts (/gateway/ask, /gateway/ask/last —
    *  phoneAsk.ts). Asked after the owner bearer check; false = not mine. */
   ask?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Inbound webhooks (/gateway/hooks — phoneHooks.ts). `inbound` answers the
+   *  unauthenticated `POST /gateway/hooks/<id>` door BEFORE the bearer check (the
+   *  hook's own secret is its auth); `manage` is the owner's list/create/delete,
+   *  asked after it. false = not mine. */
+  hooks?: {
+    inbound: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+    manage: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  };
   /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
    *  like /connect/ — the token is the capability for one page. */
   watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1489,6 +1497,16 @@ export class RemoteAgentServer {
       res.end(JSON.stringify(body));
     };
     if (url.pathname === "/gateway/health") return json(200, { ok: true, gateway: !!this.opts.gatewayUrl });
+    // Inbound webhooks: the one place the OUTSIDE world may POST without the owner's bearer.
+    if (this.opts.phoneApi?.hooks && req.method === "POST" && url.pathname.startsWith("/gateway/hooks/")) {
+      try {
+        if (await this.opts.phoneApi.hooks.inbound(req, res, url)) return;
+      } catch (err) {
+        this.log(`hooks inbound error: ${err instanceof Error ? err.message : String(err)}`);
+        if (!res.headersSent) return json(500, { error: "internal error" });
+        return;
+      }
+    }
     const expected = this.opts.controlToken;
     const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
@@ -1542,6 +1560,8 @@ export class RemoteAgentServer {
 
     if (api.device && (url.pathname === "/gateway/device" || url.pathname.startsWith("/gateway/device/"))) {
       if (await api.device(req, res, url)) return;
+    if (api.hooks && (url.pathname === "/gateway/hooks" || url.pathname.startsWith("/gateway/hooks/"))) {
+      if (await api.hooks.manage(req, res, url)) return;
     }
 
     try {

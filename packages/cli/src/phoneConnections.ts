@@ -57,9 +57,10 @@ import {
   isServiceConnected,
   resolveConnectService,
   serviceDomain,
+  uninstallStdioConnector,
   type ConnectService,
 } from "@ares/core";
-import { disconnectPlaid } from "@ares/tools";
+import { disconnectPlaid, syncApiConnectServices } from "@ares/tools";
 import { extrasFor, loadEnrichContext, type ConnectionExtras } from "./connectionsEnrich.js";
 import { forgetTest, safeText } from "./connectionsSafe.js";
 import { testConnection, type FetchLike } from "./connectionsTest.js";
@@ -95,6 +96,8 @@ function categoryOf(service: ConnectService): string | undefined {
 }
 
 export async function listPhoneConnections(home?: string, opts: { now?: () => number } = {}): Promise<PhoneConnection[]> {
+  // Services the owner added to the universal Api tool (possibly from another process) join the list.
+  syncApiConnectServices(home);
   const remote = await loadRemoteMcpServers(home).catch(() => ({} as Record<string, RemoteMcpEntry>));
   const ctx = await loadEnrichContext({ ...(home ? { home } : {}), ...(opts.now ? { now: opts.now } : {}), remote });
   const registry = CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:"));
@@ -147,7 +150,7 @@ export async function disconnectService(service: ConnectService, home?: string):
   switch (service.kind) {
     case "mcp-oauth":
     case "mcp-key": {
-      const removed = await disconnectMcpServer(service.id, home);
+      const removed = (await disconnectMcpServer(service.id, home)) || (await uninstallStdioConnector(service.id, home).catch(() => false));
       const key = await deleteCredential(`mcp.key.${service.id}`, { home }).catch(() => false);
       return removed || key;
     }
@@ -160,7 +163,7 @@ export async function disconnectService(service: ConnectService, home?: string):
       // Plaid: revoke and forget every linked bank; the Plaid keys stay, so
       // reconnecting is one tap (like an oauth-app's registered client).
       if (service.id === "plaid") return disconnectPlaid({ home });
-      let removed = false;
+      let removed = await uninstallStdioConnector(service.id, home).catch(() => false);
       for (const field of service.fields ?? []) removed = (await deleteCredential(field.credential, { home })) || removed;
       return removed;
     }

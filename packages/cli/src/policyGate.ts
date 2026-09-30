@@ -25,6 +25,7 @@ import { connectorCategory } from "./connectorGate.js";
 import { lifeToolCategory } from "./policyGateLife.js";
 import { deviceCapabilityFloor } from "@ares/tools";
 import { davToolCategory } from "./policyGateDav.js";
+import { universalToolCategory } from "./policyGateUniversal.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -274,6 +275,8 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
     default: {
       const life = lifeToolCategory(request.toolName, actionOf(request));
       if (life !== undefined) return life;
+      const universal = universalToolCategory(request.toolName, request.input);
+      if (universal !== undefined) return universal;
       // A connected MCP server's tools arrive as mcp_<server>_<tool>. Stripe,
       // PayPal and Square expose real money movers (refunds, charges, invoices,
       // payment links) that were classified null — i.e. auto-allowed on the

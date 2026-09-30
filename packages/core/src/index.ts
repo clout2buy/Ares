@@ -494,6 +494,31 @@ export {
 export { WITHINGS_OAUTH, unwrapWithingsToken } from "./withingsOAuth.js";
 export { LIFE_SERVICES } from "./lifeServices.js";
 export { DAV_SERVICES, DAV_CREDENTIALS } from "./davServices.js";
+export {
+  API_PRESET_DEFS,
+  API_CONNECT_SERVICES,
+  MQTT_CONNECT_SERVICE,
+  API_ID_RE,
+  apiPresetDef,
+  apiCred,
+  apiConnectId,
+  isApiConnectId,
+  validateApiId,
+  apiServicesDir,
+  apiServiceDir,
+  saveApiServiceDef,
+  saveApiServiceSpec,
+  readApiServiceSpecText,
+  loadApiServiceDef,
+  listApiServiceDefs,
+  removeApiServiceFiles,
+  resolveApiServiceDef,
+  apiConnectFields,
+  apiConnectService,
+  apiConnectServiceFromDisk,
+  type ApiAuth,
+  type ApiServiceDef,
+} from "./apiServices.js";
 export { PLAID_SERVICE, isPlaidService, plaidUpdateItemId, plaidVariantService } from "./plaidService.js";
 
 export {
@@ -669,6 +694,8 @@ export {
   browserSessionFile,
   setConnectBroker,
   getConnectBroker,
+  registerConnectService,
+  unregisterConnectService,
   type ConnectKind,
   type ConnectField,
   type ConnectService,

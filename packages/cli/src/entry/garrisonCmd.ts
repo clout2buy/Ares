@@ -26,6 +26,9 @@ import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, set
 import { createInstancesApi } from "../phoneInstances.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
+import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
+import { createInstancesApi } from "../phoneInstances.js";
+import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -735,6 +738,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   setBrowserWatchHub(browserWatchHub);
 
+  // Universal connectors: the owner's Api services join the Connections list, and
+  // an inbound webhook (POST /gateway/hooks/<id>) starts a turn in an agent's thread.
+  syncApiConnectServices();
+  setHooksBaseUrlProvider(() => remoteAgentServer?.linkBaseUrl());
+  const hooksApi = createHooksApi({
+    baseUrl: () => remoteAgentServer?.linkBaseUrl(),
+    fire: makeHookFirer({ sessions, personas: personaRuntime }),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "hooks", line } }) + "\n"),
+  });
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -782,6 +795,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             home: context.home,
             log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),
           }),
+          hooks: hooksApi,
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
           registerPush: (d) => phonePush.register(d),

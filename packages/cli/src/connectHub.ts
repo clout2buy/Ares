@@ -50,6 +50,7 @@ import { LIFE_VERIFIERS as LIFE_SURFACE_VERIFIERS } from "./lifeVerifiers.js";
 import { LIFE_VERIFIERS, type VerifyOutcome } from "./connectVerifiersLife.js";
 import { DAV_VERIFIERS } from "./connectDav.js";
 import { stdioVerifiers } from "./connectVerifiersStdio.js";
+import { UNIVERSAL_VERIFIERS, apiVerifierFor } from "./connectVerifiersApi.js";
 import { LIVE_INPUT_DOCK, LIVE_VIEW_CSS, applyBrowserInput, captureFrame, type BrowserInput } from "./liveBrowser.js";
 import { PlaidLink, isPlaidService, plaidInstructions, plaidSetupBody, type PlaidFlowState } from "./connectPlaid.js";
 
@@ -430,7 +431,7 @@ export class ConnectHub implements ConnectBroker {
       }
       detail = `${result.toolCount ?? 0} tools available.`;
     } else {
-      const verify = this.verifiers[service.id];
+      const verify = this.verifiers[service.id] ?? apiVerifierFor(service.id, this.opts.home);
       let toStore = values;
       if (verify) {
         try {
@@ -648,6 +649,7 @@ export const DEFAULT_VERIFIERS: Record<string, Verify> = {
   },
   ...LIFE_VERIFIERS,
   ...DAV_VERIFIERS,
+  ...UNIVERSAL_VERIFIERS,
 };
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────

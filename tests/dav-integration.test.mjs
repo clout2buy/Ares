@@ -73,6 +73,15 @@ async function waitFor(label, probe, ms = 90_000) {
   throw new Error(`${label} did not become ready: ${last?.message ?? "timeout"}`);
 }
 
+/** A port nothing listens on (bind, read, release). */
+async function deadPort() {
+  const srv = http.createServer();
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const { port } = srv.address();
+  await new Promise((r) => srv.close(r));
+  return port;
+}
+
 const ctx = () => ({ signal: new AbortController().signal, permissionMode: "bypass" });
 const basic = `Basic ${Buffer.from(`${USER}:${PASSWORD}`).toString("base64")}`;
 
@@ -184,7 +193,7 @@ describe("DAV + IMAP/SMTP against real servers", { skip }, () => {
     );
     // A port nothing listens on: unreachable, not "wrong password".
     await assert.rejects(
-      () => verifyCalDav({ [DAV_CREDENTIALS.caldav.url]: "http://127.0.0.1:9/", [DAV_CREDENTIALS.caldav.user]: USER, [DAV_CREDENTIALS.caldav.password]: PASSWORD }),
+      () => verifyCalDav({ [DAV_CREDENTIALS.caldav.url]: `http://127.0.0.1:${await deadPort()}/`, [DAV_CREDENTIALS.caldav.user]: USER, [DAV_CREDENTIALS.caldav.password]: PASSWORD }),
       (err) => err.kind === "unreachable" && /refused the connection/.test(err.message),
     );
     // A web server that is not CalDAV.
@@ -224,7 +233,7 @@ describe("DAV + IMAP/SMTP against real servers", { skip }, () => {
       (err) => (err.kind === "auth" || err.kind === "app-password") && !err.message.includes(bad),
     );
     await assert.rejects(
-      () => verifyImap({ [DAV_CREDENTIALS.imap.host]: "127.0.0.1:9", [DAV_CREDENTIALS.imap.user]: USER, [DAV_CREDENTIALS.imap.password]: PASSWORD }),
+      () => verifyImap({ [DAV_CREDENTIALS.imap.host]: `127.0.0.1:${await deadPort()}`, [DAV_CREDENTIALS.imap.user]: USER, [DAV_CREDENTIALS.imap.password]: PASSWORD }),
       (err) => err.kind === "unreachable",
     );
   });

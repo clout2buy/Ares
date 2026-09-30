@@ -190,6 +190,9 @@ export function classifyError(err: unknown, ctx: ErrorContext): DavError {
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "EAI_NODATA" || /ENOTFOUND|getaddrinfo/i.test(text)) {
     return new DavError("unreachable", `Could not find ${ctx.host ? `a server named ${ctx.host}` : "that server"}. Check the spelling of the address and that this machine has internet.`);
   }
+  if (/bad port/i.test(text)) {
+    return new DavError("unreachable", `${where(ctx)} uses a port that is blocked for web requests. Use the provider's standard port.`);
+  }
   if (code === "ECONNREFUSED" || /ECONNREFUSED/i.test(text)) {
     return new DavError("unreachable", `${where(ctx)} refused the connection. The address or port is wrong, or the service is not running.`);
   }

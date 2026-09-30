@@ -203,10 +203,20 @@ export function createAskApi(host: AskSessionHost, opts: AskApiOptions) {
       }
     } catch { /* first use */ }
   };
-  const save = () =>
-    fs.mkdir(opts.home, { recursive: true })
-      .then(() => fs.writeFile(stateFile, JSON.stringify({ sessionId, last }) + "\n", "utf8"))
+  // Saves are serialized and atomic (temp + rename): the session id and the
+  // last answer are written from two places and read back after a restart.
+  let saving: Promise<void> = Promise.resolve();
+  const save = () => {
+    saving = saving
+      .then(async () => {
+        await fs.mkdir(opts.home, { recursive: true });
+        const tmp = `${stateFile}.${process.pid}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify({ sessionId, last }) + "\n", "utf8");
+        await fs.rename(tmp, stateFile);
+      })
       .catch(() => undefined);
+    return saving;
+  };
 
   const send = (res: ServerResponse, status: number, body: unknown) => {
     const text = JSON.stringify(body);

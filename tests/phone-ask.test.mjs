@@ -188,10 +188,17 @@ test("one dedicated session: created once, titled Voice, mobile surface, reused;
   assert.equal(summary.surface, "mobile");
   assert.equal(summary.tenant?.role ?? "owner", "owner");
   // A fresh handler on the same home (daemon restart) finds the same session.
-  const again = createAskApi(s.sessions, { home, budgetMs: 400 });
-  assert.equal(typeof again, "function");
+  await waitFor(async () => {
+    try { return JSON.parse(await fsp.readFile(path.join(home, "voice-ask.json"), "utf8")).last?.reply === "ok"; } catch { return false; }
+  }, "state persisted");
   const saved = JSON.parse(await fsp.readFile(path.join(home, "voice-ask.json"), "utf8"));
   assert.equal(saved.sessionId, a.body.sessionId);
+  const second = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "tok", phoneApi: { ask: createAskApi(s.sessions, { home, budgetMs: 400 }) } });
+  await second.start();
+  t.after(() => second.close());
+  const res = await fetch(`http://127.0.0.1:${second.port}/gateway/ask`, { method: "POST", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: JSON.stringify({ text: "third" }) });
+  assert.equal((await res.json()).sessionId, a.body.sessionId, "a fresh handler on the same home reuses the session");
+  assert.equal(s.holder.created, 1);
 });
 
 test("every ask carries the hidden voice steering note, and it strips cleanly", async (t) => {

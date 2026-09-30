@@ -23,6 +23,7 @@ import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effe
 import { vaultAccessReason, type ToolPermissionRequest } from "@ares/core";
 import { connectorCategory } from "./connectorGate.js";
 import { lifeToolCategory } from "./policyGateLife.js";
+import { davToolCategory } from "./policyGateDav.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -187,6 +188,9 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
   // Gmail / Google Workspace / Outlook: per-action table in connectorGate.ts.
   const connector = connectorCategory(request.toolName, actionOf(request));
   if (connector !== undefined) return connector;
+  // Calendar / Contacts / Mail over CalDAV, CardDAV, IMAP/SMTP: policyGateDav.ts.
+  const dav = davToolCategory(request.toolName, actionOf(request));
+  if (dav !== undefined) return dav;
   switch (request.toolName) {
     case "Bash":
     case "PowerShell":

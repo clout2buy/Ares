@@ -217,6 +217,13 @@ export { GoogleTasksTool, tasksDue, type GoogleTasksOutput } from "./GoogleTasks
 export { GoogleContactsTool, type GoogleContactsOutput } from "./GoogleContacts.js";
 export { OutlookTool, odata, graphTime, eventBody as outlookEventBody, recipients as outlookRecipients, type OutlookOutput } from "./Outlook.js";
 export { CONNECTOR_TOOLS } from "./connectorTools.js";
+export { DAV_TOOLS } from "./davTools.js";
+export { CalendarTool, ContactsTool, type CalendarOutput, type ContactsOutput } from "./Dav.js";
+export { MailTool, type MailOutput } from "./ImapMail.js";
+export { verifyIcloud, verifyCalDav, verifyCardDav, verifyImap, type DavVerifyOutcome } from "./davVerify.js";
+export * as davCommon from "./davCommon.js";
+export { davSeams, clearDavDiscoveryCache } from "./davClient.js";
+export { mailSeams } from "./imapClient.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
 // Life surfaces (the phone's Today tab): commitments, places, media.
 export { TrackTool, type TrackOutput } from "./Track.js";
@@ -295,6 +302,7 @@ import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
 import { CONNECTOR_TOOLS } from "./connectorTools.js";
+import { DAV_TOOLS } from "./davTools.js";
 import { TrackTool } from "./Track.js";
 import { PlacesTool } from "./Places.js";
 import { ImagineTool } from "./Imagine.js";
@@ -348,6 +356,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GmailTool,
       SpotifyTool,
       ...CONNECTOR_TOOLS,
+      ...DAV_TOOLS,
       TrackTool,
       PlacesTool,
       ImagineTool,
@@ -388,6 +397,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       GmailTool,
       SpotifyTool,
       ...CONNECTOR_TOOLS,
+      ...DAV_TOOLS,
       TrackTool,
       PlacesTool,
       ImagineTool,

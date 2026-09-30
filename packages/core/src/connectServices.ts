@@ -26,6 +26,7 @@ import { loadTokens } from "./oauth.js";
 import { getCredential } from "./credentials.js";
 import { loadRemoteMcpServers } from "./mcpConnect.js";
 import { LIFE_SERVICES } from "./lifeServices.js";
+import { DAV_SERVICES } from "./davServices.js";
 import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
 import { plaidVariantService } from "./plaidService.js";
 
@@ -38,6 +39,8 @@ export interface ConnectField {
   placeholder?: string;
   secret?: boolean;
   help?: string;
+  /** The secure form may leave it blank; it is not stored and "connected" does not need it. */
+  optional?: boolean;
 }
 
 export interface ConnectService {
@@ -263,6 +266,9 @@ function browserService(site: (typeof BROWSER_SITES)[number]): ConnectService {
 }
 
 export const CONNECT_SERVICES: ConnectService[] = [
+  // DAV first: its keywords are specific (icloud, caldav, imap) and must win the
+  // substring pass over google's generic "calendar"/"email".
+  ...DAV_SERVICES,
   ...HANDWRITTEN,
   ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
   ...LIFE_SERVICES,
@@ -396,7 +402,7 @@ export async function isServiceConnected(service: ConnectService, home?: string)
           return false;
         }
       }
-      const names = service.stores ?? (service.fields ?? []).map((field) => field.credential);
+      const names = service.stores ?? (service.fields ?? []).filter((field) => !field.optional).map((field) => field.credential);
       for (const name of names) {
         if (!(await getCredential(name, { home }))) return false;
       }

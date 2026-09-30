@@ -410,6 +410,15 @@ export function guessSmtpHost(imapHost: string): string {
   return /^imap[.-]/i.test(imapHost) ? imapHost.replace(/^imap/i, "smtp") : imapHost;
 }
 
+/** "host", "host:port", "imaps://host:port" (implicit TLS on any port). Port
+ *  993 (IMAP) and 465 (SMTP) are implicit TLS; every other port is STARTTLS. */
+export function parseMailEndpoint(raw: string, defaultPort: number, implicitTlsPort: number): { host: string; port: number; secure: boolean } {
+  const scheme = /^([a-z]+):\/\//i.exec(raw.trim())?.[1]?.toLowerCase();
+  const { host, port } = parseHostPort(raw, defaultPort);
+  const explicitTls = scheme === "imaps" || scheme === "smtps" || scheme === "ssl" || scheme === "tls";
+  return { host, port, secure: explicitTls || port === implicitTlsPort };
+}
+
 export function mailAccountFromValues(values: {
   host: string;
   user: string;
@@ -417,15 +426,14 @@ export function mailAccountFromValues(values: {
   smtpHost?: string;
   from?: string;
 }): MailAccount {
-  const imap = parseHostPort(values.host, 993);
-  const smtpDefault = guessSmtpHost(imap.host);
+  const imap = parseMailEndpoint(values.host, 993, 993);
   const smtpRaw = values.smtpHost?.trim();
-  const smtp = smtpRaw ? parseHostPort(smtpRaw, 587) : { host: smtpDefault, port: 587 };
+  const smtp = smtpRaw ? parseMailEndpoint(smtpRaw, 587, 465) : { host: guessSmtpHost(imap.host), port: 587, secure: false };
   const from = values.from?.trim() || (values.user.includes("@") ? values.user : "");
   return {
     id: "imap",
-    imap: { host: imap.host, port: imap.port, secure: imap.port === 993 },
-    smtp: { host: smtp.host, port: smtp.port, secure: smtp.port === 465 },
+    imap,
+    smtp,
     users: [values.user],
     smtpUser: values.user,
     password: values.password,

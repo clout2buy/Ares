@@ -21,6 +21,7 @@ import {
   deviceCapabilityFloor,
 } from "../packages/tools/dist/index.js";
 import { createDeviceApi } from "../packages/cli/dist/phoneDevice.js";
+import { RemoteAgentServer } from "../packages/cli/dist/remoteAgentServer.js";
 import { PhonePush } from "../packages/cli/dist/phonePush.js";
 import { classifyToolRequest, remoteAutonomyDecision, gateToolPermission } from "../packages/cli/dist/policyGate.js";
 
@@ -624,7 +625,7 @@ test("REST: device list, health check round trip, pending/respond fallback", asy
   const { server, call } = await serveApi(bridge);
   t.after(() => server.close());
 
-  const list = await call("GET", "/gateway/device");
+  const list = await call("GET", "/gateway/device/list");
   assert.equal(list.status, 200);
   assert.equal(list.body.devices[0].id, "ph1");
   assert.equal(list.body.devices[0].connected, true);
@@ -654,7 +655,7 @@ test("REST: device list, health check round trip, pending/respond fallback", asy
   assert.deepEqual((await call("GET", "/gateway/device/pending?device=ph1")).body, { requests: [] });
   assert.equal((await call("POST", "/gateway/device/respond", { id: "x" })).status, 400);
   assert.deepEqual((await call("POST", "/gateway/device/respond", { id: "dq_none", ok: true })).body, { accepted: false });
-  assert.equal((await call("DELETE", "/gateway/device")).status, 405);
+  assert.equal((await call("DELETE", "/gateway/device/list")).status, 405);
   assert.equal((await call("GET", "/gateway/device/nothing")).status, 404);
 });
 
@@ -779,4 +780,27 @@ test("garrison integration: device frames route to the bridge; read tokens and g
   c.send({ type: "device.hello", device: { id: "x", name: "x" }, capabilities: [] });
   await until(() => c.find("error"));
   assert.match(c.find("error").message, /not wired/);
+});
+
+test("real RemoteAgentServer: bridge routes beat the synced-data handler, kinds route intact, auth enforced", async (t) => {
+  const { bridge } = makeBridge();
+  phone(bridge, {});
+  const srv = new RemoteAgentServer({
+    port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "tok",
+    phoneApi: { device: createDeviceApi(bridge, () => {}) },
+  });
+  await srv.start();
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const get = (p, token = "tok") => fetch(base + p, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  assert.equal((await get("/gateway/device/pending?device=probe", null)).status, 401);
+  const pending = await get("/gateway/device/pending?device=probe");
+  assert.equal(pending.status, 200);
+  assert.deepEqual((await pending.json()).requests, []);
+  const list = await get("/gateway/device/list");
+  assert.equal(list.status, 200);
+  assert.equal((await list.json()).devices[0].id, "ph1");
+  const kinds = await get("/gateway/device");
+  assert.equal(kinds.status, 200);
+  assert.ok((await kinds.json()).kinds);
 });

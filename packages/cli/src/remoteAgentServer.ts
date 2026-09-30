@@ -1491,6 +1491,10 @@ export class RemoteAgentServer {
     if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
     // The Connections screen (list / start / disconnect) — phoneConnections.ts.
     if (await handleConnectionsApi(req, res, url, { log: (line) => this.log(line) })) return;
+    // The phone bridge routes must win over deviceSync.ts, which 404s unknown subroutes.
+    if (this.opts.phoneApi?.device && /^/gateway/device/(pending|respond|test|list)/?$/.test(url.pathname)) {
+      if (await this.opts.phoneApi.device(req, res, url)) return;
+    }
     // What the iPhone shares (Health, Contacts, Calendar) — deviceSync.ts.
     if (await handleDeviceApi(req, res, url, { home: this.home })) return;
     // Goals tab + Artifacts | Media library — phoneLibrary.ts. Lists only

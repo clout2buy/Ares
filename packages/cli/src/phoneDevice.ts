@@ -47,7 +47,8 @@ export function createDeviceApi(bridge: DeviceBridge, log: (line: string) => voi
     if (url.pathname !== "/gateway/device" && !url.pathname.startsWith("/gateway/device/")) return false;
     const sub = url.pathname.slice("/gateway/device".length).replace(/^\/|\/$/g, "");
     try {
-      if (sub === "" && req.method === "GET") {
+      if (sub === "") return false; // the synced-data kinds route (deviceSync.ts) owns the bare path
+      if (sub === "list" && req.method === "GET") {
         return send(res, 200, { devices: bridge.list() }), true;
       }
       if (sub === "test" && req.method === "POST") {
@@ -70,7 +71,7 @@ export function createDeviceApi(bridge: DeviceBridge, log: (line: string) => voi
         if (typeof body.id !== "string" || !body.id || typeof body.ok !== "boolean") return send(res, 400, { error: "id and ok are required" }), true;
         return send(res, 200, bridge.httpRespond(body)), true;
       }
-      const known = ["test", "pending", "respond", ""];
+      const known = ["test", "pending", "respond", "list"];
       return send(res, known.includes(sub) ? 405 : 404, { error: known.includes(sub) ? "method not allowed" : "not found" }), true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -226,6 +226,9 @@ export interface PhoneApiHooks {
   /** The owner's personal agents (/gateway/personas — phonePersonas.ts).
    *  Asked right after the bearer check; false = not mine. */
   personas?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The separate Ares instances deployed on this host (/gateway/instances —
+   *  phoneInstances.ts). Absent off Linux; false = not mine. */
+  instances?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
    *  like /connect/ — the token is the capability for one page. */
   watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1519,6 +1522,9 @@ export class RemoteAgentServer {
     }
     if (api.personas && (url.pathname === "/gateway/personas" || url.pathname.startsWith("/gateway/personas/"))) {
       if (await api.personas(req, res, url)) return;
+    }
+    if (api.instances && (url.pathname === "/gateway/instances" || url.pathname.startsWith("/gateway/instances/"))) {
+      if (await api.instances(req, res, url)) return;
     }
 
     try {

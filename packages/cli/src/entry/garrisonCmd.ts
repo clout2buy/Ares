@@ -22,7 +22,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, type FileReadStamp } from "@ares/tools";
+import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, Instances, type FileReadStamp } from "@ares/tools";
+import { createInstancesApi } from "../phoneInstances.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -735,6 +736,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           connect: (req, res, url) => connectHub.handle(req, res, url),
           life: life.handler,
           personas: (req, res, url) => personaRuntime.handle(req, res, url),
+          ...(process.platform === "linux"
+            ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
+            : {}),
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),

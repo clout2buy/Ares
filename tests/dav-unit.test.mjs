@@ -466,6 +466,26 @@ test("Calendar: create, get, update and delete round-trip through the backend; i
   }
 });
 
+test("Apple's upgraded Reminders and Notes are explained honestly, not reported as an empty account", async (t) => {
+  withEnv(t, ICLOUD_ENV);
+  const backend = fakeCalendar();
+  backend.calendars = backend.calendars.filter((c) => c.name !== "Reminders");
+  useCalendar(t, backend);
+  const listed = await CalendarTool.call({ action: "list_reminders" }, ctx());
+  assert.ok(!listed.failure);
+  assert.match(listed.output.message, /iOS 13\+ format/);
+  const created = await CalendarTool.call({ action: "create_reminder", title: "x" }, ctx());
+  assert.match(created.failure, /upgraded to the iOS 13\+ format/);
+  const mailBackend = fakeMail({
+    async listMessages() {
+      throw new davCommon.DavError("not-found", 'There is no mail folder called "Notes".');
+    },
+  });
+  useMail(t, mailBackend);
+  const notes = await MailTool.call({ action: "list_notes" }, ctx());
+  assert.match(notes.failure, /no Notes folder.*NOT upgraded/s);
+});
+
 test("Calendar: reminders create in the reminder list, list open ones, and complete", async (t) => {
   withEnv(t, ICLOUD_ENV);
   const backend = fakeCalendar();

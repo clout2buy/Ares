@@ -686,6 +686,16 @@ test("installStdioConnector writes no secret to mcp.json; uninstall removes only
   });
 });
 
+test("memory server gets a stable data path under the Ares home (not the npx cache)", async () => {
+  await withHome(async (home) => {
+    await installStdioConnector(stdioEntryById("memory"), {}, home);
+    const doc = JSON.parse(readFileSync(path.join(home, "mcp.json"), "utf8"));
+    assert.equal(path.normalize(doc.servers.memory.env.MEMORY_FILE_PATH), path.join(home, "mcp-data", "memory.json"));
+    assert.ok(existsSync(path.join(home, "mcp-data")), "data dir created");
+    assert.equal(doc.servers.memory.envVault, undefined);
+  });
+});
+
 test("stdioConnectService: one secure form (or one tap), marker credential, honest cost", () => {
   const s = stdioConnectService(stdioEntryById("slack-bot"));
   assert.equal(s.kind, "api-key");

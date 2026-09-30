@@ -12,6 +12,7 @@ import path from "node:path";
 import {
   MCP_STDIO_CATALOG,
   installStdioConnector,
+  renderStaticEnv,
   renderStdioArgs,
   resolveStdioValues,
   stdioFieldCredential,
@@ -47,7 +48,9 @@ export function stdioVerifier(entry: McpStdioEntry, home?: string): Verify {
 
     // Probe with the REAL values (secrets included) so a bad token that the
     // server validates at startup is caught now; evidence is scrubbed.
-    const secretEnv: Record<string, string> = { ...env };
+    const scratchHome = home ?? process.env.ARES_HOME ?? path.join(os.homedir(), ".ares");
+    const secretEnv: Record<string, string> = { ...renderStaticEnv(entry, { aresHome: scratchHome }), ...env };
+    if (entry.staticEnv) await fs.mkdir(path.join(scratchHome, "mcp-data"), { recursive: true });
     for (const f of entry.fields ?? []) {
       if ("env" in f.target && f.secret && byName[f.name]) secretEnv[f.target.env] = byName[f.name]!;
     }

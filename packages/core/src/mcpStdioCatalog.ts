@@ -49,6 +49,8 @@ export interface McpStdioEntry {
   /** Static args; `{arg-name}` tokens are replaced by the matching `arg` field. */
   args: string[];
   fields?: StdioField[];
+  /** Fixed, non-secret env. `{ares-home}` -> the Ares home, `{scratch}` -> the doctor's scratch dir. */
+  staticEnv?: Record<string, string>;
   cost: StdioCost;
   /** Where the owner gets the key / account when `cost` is not "free". */
   keyUrl?: string;
@@ -82,6 +84,8 @@ export const MCP_STDIO_CATALOG: McpStdioEntry[] = [
     runtime: "npx",
     command: NPX,
     args: ["-y", "@modelcontextprotocol/server-memory"],
+    // Without this the graph lives inside the npx cache and vanishes when it is pruned.
+    staticEnv: { MEMORY_FILE_PATH: "{ares-home}/mcp-data/memory.json" },
     cost: "free",
     docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
   },
@@ -419,6 +423,15 @@ export const MCP_STDIO_CATALOG: McpStdioEntry[] = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Render an entry's fixed env for a given Ares home / scratch dir. */
+export function renderStaticEnv(entry: McpStdioEntry, vars: { aresHome?: string; scratch?: string }): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(entry.staticEnv ?? {})) {
+    out[k] = v.replace(/\{ares-home\}/g, vars.aresHome ?? "").replace(/\{scratch\}/g, vars.scratch ?? "");
+  }
+  return out;
+}
+
 export function stdioEntryById(id: string): McpStdioEntry | undefined {
   return MCP_STDIO_CATALOG.find((e) => e.id === id);
 }
@@ -515,6 +528,8 @@ export async function installStdioConnector(entry: McpStdioEntry, values: Record
   const key: "servers" | "mcpServers" = doc.mcpServers && !doc.servers ? "mcpServers" : "servers";
   const servers = (doc[key] ??= {}) as Record<string, unknown>;
   const resolved = resolveStdioValues(entry, values);
+  const staticEnv = renderStaticEnv(entry, { aresHome: homeDir(home) });
+  if (Object.keys(staticEnv).length) await fs.mkdir(path.join(homeDir(home), "mcp-data"), { recursive: true });
   // Secret ARG values (connection strings) never sit in mcp.json: the arg
   // carries a `${VAULT:NAME}` marker the MCP client expands at spawn.
   const args = entry.args.map((a) =>
@@ -527,7 +542,7 @@ export async function installStdioConnector(entry: McpStdioEntry, values: Record
   servers[entry.id] = {
     command: entry.command,
     args,
-    ...(Object.keys(resolved.env).length ? { env: resolved.env } : {}),
+    ...(Object.keys({ ...staticEnv, ...resolved.env }).length ? { env: { ...staticEnv, ...resolved.env } } : {}),
     ...(Object.keys(resolved.envVault).length ? { envVault: resolved.envVault } : {}),
     stdioCatalog: entry.id,
     connectedAt: new Date().toISOString(),

@@ -37,6 +37,7 @@ import {
   getMcpCallCredentials,
   getCredential,
   renderStdioArgs,
+  renderStaticEnv,
   type ConnectService,
   type McpCatalogEntry,
   type McpStdioEntry,
@@ -663,7 +664,8 @@ async function planStdioCatalog(e: McpStdioEntry): Promise<Planned> {
       try {
         // Materialise probe values: dirs/files the server insists on.
         const argValues: Record<string, string> = {};
-        const env: Record<string, string> = {};
+        const env: Record<string, string> = renderStaticEnv(e, { aresHome: scratch, scratch });
+        if (Object.keys(env).length) await fs.mkdir(path.join(scratch, "mcp-data"), { recursive: true });
         const injected: string[] = [];
         for (const f of e.fields ?? []) {
           const v = renderProbeValue(f.probe, scratch);

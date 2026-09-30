@@ -24,6 +24,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, Instances, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
+import { createAskApi } from "../phoneAsk.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -746,6 +747,10 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ...(process.platform === "linux"
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),
+          ask: createAskApi(sessions, {
+            home: context.home,
+            log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),
+          }),
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),

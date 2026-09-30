@@ -380,9 +380,9 @@ export class SessionManager {
   }
 
   create(
-    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant; personaId?: string } = {},
+    opts: { provider?: string; model?: string; workspace?: string; surface?: SessionSurface; tenant?: SessionTenant; personaId?: string; title?: string } = {},
   ): SessionSummary {
-    const { personaId: askedPersona, ...rest } = opts;
+    const { personaId: askedPersona, title: fixedTitle, ...rest } = opts;
     // A persona thread: its brain comes from the persona unless the frame
     // named one; an unknown persona id is an error, never a silent default.
     const personaId = askedPersona && this.personas ? askedPersona : undefined;
@@ -394,6 +394,9 @@ export class SessionManager {
       provider: rest.provider ?? brain?.provider,
       model: rest.model ?? brain?.model,
       ...(personaId ? { personaId } : {}),
+      // A host-named thread (the voice session) keeps its name instead of
+      // being titled by its first message.
+      ...(fixedTitle ? { title: fixedTitle, titled: true } : {}),
     });
     if (personaId) this.personas!.bind(personaId, session.id);
     return this.summarize(session);

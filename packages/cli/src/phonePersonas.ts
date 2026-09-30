@@ -5,16 +5,23 @@
 // is built against these — do not change them):
 //
 //   GET  /gateway/personas
-//        200 {personas:[{id,name,emoji?,color?,provider,model,reasoningLevel?,
+//        200 {personas:[{id,name,emoji?,color?,avatar?,provider,model,reasoningLevel?,
 //                        instructions,sessionId,lastMessage?,lastAt?,busy}]}
 //        The implicit default "ares" persona is always first (sessionId is its
 //        current default thread, "" when none exists yet).
+//        `avatar` is the VERSION of the agent's picture in the avatar store
+//        (phoneAvatars.ts) when one exists, the default "ares" included; the
+//        bytes are GET /gateway/avatar/<id>. The legacy in-persona `photo`
+//        data URI is still returned as before.
 //   POST /gateway/personas            {name,provider,model,instructions,emoji?,color?,reasoningLevel?}
 //        200 {persona} · 400 invalid field / unknown provider or model
 //   POST /gateway/personas/<id>       {name?,emoji?,color?,provider?,model?,reasoningLevel?,instructions?}
-//        200 {persona} · 400 invalid · 404 unknown persona (and "ares", which is not editable here)
+//        200 {persona} · 400 invalid · 404 unknown persona
+//        "ares" is not editable here: 400 pointing at PUT /gateway/avatar/ares,
+//        the one thing about the default agent the phone may change.
 //   POST /gateway/personas/<id>/delete
-//        200 {ok:true} · 404 unknown persona — archives the thread, keeps its rollout
+//        200 {ok:true} · 404 unknown persona — archives the thread, keeps its rollout,
+//        and drops the agent's avatar (deps.onRemoved; a failure there never fails the delete)
 //
 // All the garrison coupling (sessions, the model catalog, the live runtime)
 // arrives as hooks so this module is testable with fakes.
@@ -37,6 +44,8 @@ export interface PersonaView {
   emoji?: string;
   photo?: string;
   color?: string;
+  /** Version of the agent's stored avatar, when it has one. */
+  avatar?: string;
   provider: string;
   model: string;
   reasoningLevel?: string;
@@ -69,6 +78,11 @@ export interface PersonasApiDeps {
   apply: (persona: Persona, changed: { brain: boolean; layer: boolean; effort: boolean }) => Promise<void>;
   /** Start a turn in a thread without waiting for it. */
   kickoff: (sessionId: string, text: string) => void;
+  /** The current avatar version for an agent id, "ares" included (stamped on
+   *  every PersonaView). Absent = this box keeps no avatars. */
+  avatarVersion?: (id: string) => string | undefined;
+  /** A persona was deleted: drop what hangs off its id (its avatar). */
+  onRemoved?: (id: string) => Promise<void> | void;
   log?: (line: string) => void;
   now?: () => Date;
 }
@@ -174,12 +188,14 @@ function tidy(p: Persona): Persona {
 
 async function view(deps: PersonasApiDeps, p: Persona): Promise<PersonaView> {
   const last = p.sessionId ? await deps.lastMessage(p.sessionId).catch(() => undefined) : undefined;
+  const avatar = deps.avatarVersion?.(p.id);
   return {
     id: p.id,
     name: p.name,
     ...(p.emoji ? { emoji: p.emoji } : {}),
     ...(p.photo ? { photo: p.photo } : {}),
     ...(p.color ? { color: p.color } : {}),
+    ...(avatar ? { avatar } : {}),
     provider: p.provider,
     model: p.model,
     ...(p.reasoningLevel ? { reasoningLevel: p.reasoningLevel } : {}),
@@ -270,6 +286,12 @@ export async function handlePersonasApi(req: IncomingMessage, res: ServerRespons
       return true;
     }
     const id = decodeURIComponent(m[1]!);
+    // The default agent's name, brain and instructions live on the box. Say so
+    // (an old app shows this text) and point at the one thing the phone can set.
+    if (id === DEFAULT_PERSONA_ID && !m[2]) {
+      json(400, { error: "Ares's own name, brain and instructions are set on the box. Its picture is PUT /gateway/avatar/ares." });
+      return true;
+    }
     const existing = deps.store.get(id);
     if (!existing) {
       json(404, { error: `unknown persona: ${id.slice(0, 40)}` });
@@ -278,6 +300,8 @@ export async function handlePersonasApi(req: IncomingMessage, res: ServerRespons
     if (m[2]) {
       await deps.store.remove(id);
       if (existing.sessionId) await deps.archiveSession(existing.sessionId).catch((err) => deps.log?.(`personas: archive ${existing.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`));
+      // The persona is gone either way; a leftover picture is only clutter.
+      try { await deps.onRemoved?.(id); } catch (err) { deps.log?.(`personas: cleanup for ${id} failed: ${err instanceof Error ? err.message : String(err)}`); }
       deps.log?.(`personas: deleted ${id} "${existing.name}"`);
       json(200, { ok: true });
       return true;

@@ -26,6 +26,8 @@ import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, set
 import { createInstancesApi } from "../phoneInstances.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
+import { AvatarStore, createAvatarsApi } from "../phoneAvatars.js";
+import { DEFAULT_PERSONA_ID } from "../personas.js";
 import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
@@ -267,11 +269,17 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     (await loadLiveMindContext(context)) +
     (await loadGitContext(context));
 
+  // Agents' pictures (<home>/phone/avatars): the persona list stamps each
+  // agent with its picture's version, and deleting a persona drops its picture.
+  const avatarStore = new AvatarStore(context.home);
+  await avatarStore.load().catch((err) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "avatars", line: `load failed: ${err instanceof Error ? err.message : String(err)}` } }) + "\n"));
+
   // The owner's personal agents: each has its own thread, brain and role
   // (personaRuntime.ts). Booted before rehydration so persona threads come
   // back on their own model with their own layer.
   const personaRuntime = new PersonaRuntime<ProviderSelection>({
     home: context.home,
+    avatars: { version: (id) => avatarStore.version(id), remove: (id) => avatarStore.remove(id) },
     resolveBrain: (provider, model) => selectProvider(new Map([["provider", provider], ["model", model]])),
     live: {
       setBrain: async (sessionId, brain) => {
@@ -786,6 +794,12 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           connect: (req, res, url) => connectHub.handle(req, res, url),
           life: life.handler,
           personas: (req, res, url) => personaRuntime.handle(req, res, url),
+          avatars: createAvatarsApi({
+            store: avatarStore,
+            // Only "ares" and a saved persona can hold a picture.
+            known: (id) => id === DEFAULT_PERSONA_ID || personaRuntime.store.get(id) !== undefined,
+            log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "avatars", line } }) + "\n"),
+          }),
           ...(process.platform === "linux"
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),

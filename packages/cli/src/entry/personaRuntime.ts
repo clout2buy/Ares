@@ -59,6 +59,12 @@ export interface PersonaRuntimeOptions<Brain> {
   };
   /** The default assistant's brain as the cockpit shows it. */
   defaultBrain: () => { provider: string; model: string; reasoningLevel?: string };
+  /** The avatar store (phoneAvatars.ts), seen only as far as personas need it:
+   *  the version stamped on each agent, and cleanup when one is deleted. */
+  avatars?: {
+    version: (id: string) => string | undefined;
+    remove: (id: string) => Promise<unknown> | unknown;
+  };
   /** Phone push (PhonePush.send); absent when APNs is not configured. */
   push?: (message: { title: string; body: string; data?: Record<string, unknown>; collapseId?: string }) => Promise<unknown>;
   log?: (line: string) => void;
@@ -197,6 +203,12 @@ export class PersonaRuntime<Brain = unknown> {
           .send(sessionId, text)
           .catch((err) => this.log(`persona kickoff in ${sessionId} failed: ${errText(err)}`));
       },
+      ...(this.opts.avatars
+        ? {
+            avatarVersion: (id: string) => this.opts.avatars!.version(id),
+            onRemoved: async (id: string) => { await this.opts.avatars!.remove(id); },
+          }
+        : {}),
       log: this.opts.log,
     });
   }

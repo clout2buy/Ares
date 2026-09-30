@@ -157,7 +157,10 @@ test("personas: create, list, edit and delete over /gateway/personas", async (t)
   const after = await call("GET", "/gateway/personas");
   assert.deepEqual(after.body.personas.map((p) => p.name), ["Ares", "Chef"]);
   assert.equal((await call("POST", `/gateway/personas/${bob.id}`, { name: "Rob" })).status, 404);
-  assert.equal((await call("POST", "/gateway/personas/ares", { name: "Zeus" })).status, 404, "the default is not editable here");
+  // The default is not editable here: a 400 that says where its picture goes (was a bare 404).
+  const aresEdit = await call("POST", "/gateway/personas/ares", { name: "Zeus" });
+  assert.equal(aresEdit.status, 400);
+  assert.match(aresEdit.body.error, /PUT \/gateway\/avatar\/ares/);
 });
 
 test("personas: validation answers 400 and creates nothing", async (t) => {

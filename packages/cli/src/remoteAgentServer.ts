@@ -226,6 +226,10 @@ export interface PhoneApiHooks {
   /** The owner's personal agents (/gateway/personas — phonePersonas.ts).
    *  Asked right after the bearer check; false = not mine. */
   personas?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Agent pictures (/gateway/avatars, /gateway/avatar/<id> — phoneAvatars.ts).
+   *  GET/PUT/DELETE all arrive here: /gateway/* is not method-gated. Asked
+   *  right after the bearer check; false = not mine. */
+  avatars?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** The separate Ares instances deployed on this host (/gateway/instances —
    *  phoneInstances.ts). Absent off Linux; false = not mine. */
   instances?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1550,6 +1554,9 @@ export class RemoteAgentServer {
     }
     if (api.personas && (url.pathname === "/gateway/personas" || url.pathname.startsWith("/gateway/personas/"))) {
       if (await api.personas(req, res, url)) return;
+    }
+    if (api.avatars && (url.pathname === "/gateway/avatars" || url.pathname.startsWith("/gateway/avatar/"))) {
+      if (await api.avatars(req, res, url)) return;
     }
     if (api.instances && (url.pathname === "/gateway/instances" || url.pathname.startsWith("/gateway/instances/"))) {
       if (await api.instances(req, res, url)) return;

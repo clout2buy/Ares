@@ -108,7 +108,10 @@ export function toSpeakable(input: string, cap: number = ASK_REPLY_CAP): string 
   // Images and links: keep the words, drop the address.
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_m, alt: string) => alt);
   text = text.replace(/\[([^\]]+)\]\(([^)\s]*)[^)]*\)/g, (_m, label: string) => label);
-  text = text.replace(/\bhttps?:\/\/[^\s)>\]]+/gi, (u) => domainOf(u.replace(/[.,;:!?]+$/, "")));
+  text = text.replace(/\bhttps?:\/\/[^\s)>\]]+/gi, (u) => {
+    const tail = /[.,;:!?]+$/.exec(u)?.[0] ?? "";
+    return domainOf(tail ? u.slice(0, -tail.length) : u) + tail;
+  });
   text = text.replace(/\bwww\.[^\s)>\]]+/gi, (u) => u.replace(/^www\./i, "").split(/[/?#]/)[0] ?? u);
   text = text.replace(/`([^`\n]*)`/g, "$1");
 

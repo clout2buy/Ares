@@ -244,7 +244,6 @@ test("budget expiry returns working without aborting; /ask/last shows the eventu
 
 test("budget: ARES_ASK_BUDGET_MS is honoured and clamped to 28s", async (t) => {
   const home = await tempHome(t);
-  const { sessions } = scripted(home, answer("x"));
   const prior = process.env.ARES_ASK_BUDGET_MS;
   t.after(() => { if (prior === undefined) delete process.env.ARES_ASK_BUDGET_MS; else process.env.ARES_ASK_BUDGET_MS = prior; });
   process.env.ARES_ASK_BUDGET_MS = "50";
@@ -260,7 +259,7 @@ test("budget: ARES_ASK_BUDGET_MS is honoured and clamped to 28s", async (t) => {
   assert.equal((await res.json()).status, "working");
   assert.ok(Date.now() - started < 2000, "env budget of 50ms applied, not the 22s default");
   release();
-  void sessions;
+  await waitFor(async () => (await (await fetch(`http://127.0.0.1:${server.port}/gateway/ask/last`, { headers: { authorization: "Bearer tok" } })).json()).reply === "late", "turn settles before cleanup");
 });
 
 test("concurrent ask: a different question while one runs is 429 with working info; the same question joins the running turn", async (t) => {

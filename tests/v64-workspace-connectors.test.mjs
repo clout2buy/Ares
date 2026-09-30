@@ -510,7 +510,10 @@ test("GET /gateway/connections lists every registered service with its state", a
   assert.equal(res.status, 200);
   const { services } = await res.json();
   const google = services.find((s) => s.id === "google");
-  assert.deepEqual(Object.keys(google).sort(), ["blurb", "category", "connected", "domain", "id", "kind", "label"]);
+  // The original shape is intact; everything else is an OPTIONAL enrichment (phone-connections.test.mjs).
+  const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom"];
+  for (const key of ["blurb", "category", "connected", "domain", "id", "kind", "label"]) assert.ok(key in google, key);
+  for (const key of Object.keys(google)) assert.ok(["blurb", "category", "connected", "domain", "id", "kind", "label", ...OPTIONAL].includes(key), `unexpected key ${key}`);
   assert.equal(google.connected, true, "the google token stored above");
   assert.equal(google.label, "Google");
   assert.equal(services.find((s) => s.id === "outlook").connected, true);

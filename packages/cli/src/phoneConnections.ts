@@ -10,11 +10,25 @@
 // every route here is owner-only. Shapes (the app is built against these):
 //
 //   GET  /gateway/connections
-//        200 {services:[{id,label,kind,domain?,blurb,connected,category?}]}
+//        200 {services:[{id,label,kind,domain?,blurb,connected,category?,
+//            account?,connectedAt?,lastUsedAt?,health?,healthDetail?,scopes?,
+//            capabilities?,usedBy?,custom?}]} — the extras are optional and
+//            only present when knowable (connectionsEnrich.ts says how each is
+//            derived); no secret ever appears in any field
 //   POST /gateway/connections/start       {service}
 //        200 {url, flowId, kind, service, label, instructions}
 //        400 no service · 404 unknown service · 503 no connect broker
 //        502 the broker refused (no public address, registration failed…)
+//   POST /gateway/connections/test        {service}
+//        200 {ok, detail?, checkedAt} — a bounded (<=10s), side-effect-free
+//            liveness check (connectionsTest.ts) · 400 no service · 404 unknown
+//   GET  /gateway/connections/custom
+//        200 {supported, servers:[{id,name,url,status,toolCount?,detail?}]}
+//   POST /gateway/connections/custom      {name, url}
+//        200 {id, status:"connected"|"needs_auth", authUrl?} · 400 invalid
+//            input · 409 name taken / limit · 502 unreachable · 503 no hub
+//   POST /gateway/connections/custom/remove {id}
+//        200 {ok} · 400 · 404 (customConnectors.ts has the safety rules)
 //   POST /gateway/connections/disconnect  {service}
 //        200 {ok, service, connected, removed} — ok is false only when the
 //            service still reads as connected (an env-provided key)
@@ -31,6 +45,9 @@ import { promises as fs } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   CONNECT_SERVICES,
+  loadRemoteMcpServers,
+  type ConnectBroker,
+  type RemoteMcpEntry,
   OAUTH_PROVIDERS,
   browserSessionFile,
   catalogById,
@@ -43,8 +60,12 @@ import {
   type ConnectService,
 } from "@ares/core";
 import { disconnectPlaid } from "@ares/tools";
+import { extrasFor, loadEnrichContext, type ConnectionExtras } from "./connectionsEnrich.js";
+import { forgetTest, safeText } from "./connectionsSafe.js";
+import { testConnection, type FetchLike } from "./connectionsTest.js";
+import { HttpError, addCustom, customService, isCustomId, listCustom, removeCustom, type ResolveHost } from "./customConnectors.js";
 
-export interface PhoneConnection {
+export interface PhoneConnection extends ConnectionExtras {
   id: string;
   label: string;
   kind: ConnectService["kind"];
@@ -73,30 +94,52 @@ function categoryOf(service: ConnectService): string | undefined {
   return service.kind === "browser" ? "commerce" : undefined;
 }
 
-export async function listPhoneConnections(home?: string): Promise<PhoneConnection[]> {
-  return Promise.all(
-    CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:")).map(async (service) => {
+export async function listPhoneConnections(home?: string, opts: { now?: () => number } = {}): Promise<PhoneConnection[]> {
+  const remote = await loadRemoteMcpServers(home).catch(() => ({} as Record<string, RemoteMcpEntry>));
+  const ctx = await loadEnrichContext({ ...(home ? { home } : {}), ...(opts.now ? { now: opts.now } : {}), remote });
+  const registry = CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:"));
+  const listed = await Promise.all(
+    registry.map(async (service): Promise<PhoneConnection> => {
       const domain = serviceDomain(service);
       const category = categoryOf(service);
+      const connected = await isServiceConnected(service, home).catch(() => false);
+      const extras = await extrasFor(service, connected, ctx).catch((): ConnectionExtras => ({}));
       return {
         id: service.id,
         label: service.label,
         kind: service.kind,
         ...(domain ? { domain } : {}),
         blurb: service.blurb,
-        connected: await isServiceConnected(service, home).catch(() => false),
+        connected,
         ...(category ? { category } : {}),
+        ...extras,
       };
     }),
   );
+  // Connectors the owner added by URL: real servers no registry row owns.
+  const custom = await Promise.all(
+    Object.entries(remote)
+      .filter(([id]) => isCustomId(id, remote))
+      .map(async ([id, entry]): Promise<PhoneConnection> => {
+        const service = customService(id, entry);
+        const extras = await extrasFor(service, true, ctx, { custom: true }).catch((): ConnectionExtras => ({ custom: true }));
+        return { id, label: service.label, kind: service.kind, blurb: service.blurb, connected: true, category: "custom", ...extras };
+      }),
+  );
+  return [...listed, ...custom];
 }
 
 /** Exact registry id first (the app sends ids it listed); then the same
- *  plain-language / domain resolution the Connect tool uses. */
-function findService(query: string): ConnectService | null {
+ *  plain-language / domain resolution the Connect tool uses; then a custom
+ *  connector the owner added by URL. */
+async function findService(query: string, home?: string): Promise<ConnectService | null> {
   const q = query.trim();
   if (!q) return null;
-  return CONNECT_SERVICES.find((s) => s.id === q) ?? resolveConnectService(q);
+  const known = CONNECT_SERVICES.find((s) => s.id === q);
+  if (known) return known;
+  const remote = await loadRemoteMcpServers(home).catch(() => ({} as Record<string, RemoteMcpEntry>));
+  if (isCustomId(q, remote)) return customService(q, remote[q]!);
+  return resolveConnectService(q);
 }
 
 /** Remove whatever connects `service`. True when something was removed. */
@@ -149,6 +192,33 @@ export interface ConnectionsApiOptions {
   /** Vault/state home override (tests). */
   home?: string;
   log?: (line: string) => void;
+  /** Test seams: outbound HTTP, clock, DNS, the connect hub, the test budget. */
+  fetchImpl?: FetchLike;
+  now?: () => number;
+  resolveHost?: ResolveHost;
+  allowPrivate?: boolean;
+  broker?: ConnectBroker | null;
+  testTimeoutMs?: number;
+}
+
+/** Strict body reader for the routes that take input from the phone. */
+async function readStrictBody(req: IncomingMessage, limit = 4 * 1024): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += (chunk as Buffer).byteLength;
+    if (total > limit) throw new HttpError(413, "body too large");
+    chunks.push(chunk as Buffer);
+  }
+  if (!chunks.length) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new HttpError(400, "body must be JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "body must be a JSON object");
+  return parsed as Record<string, unknown>;
 }
 
 /**
@@ -164,16 +234,16 @@ export async function handleConnectionsApi(req: IncomingMessage, res: ServerResp
   try {
     switch (`${req.method} ${url.pathname.replace(/\/+$/, "")}`) {
       case "GET /gateway/connections":
-        json(200, { services: await listPhoneConnections(opts.home) });
+        json(200, { services: await listPhoneConnections(opts.home, opts.now ? { now: opts.now } : {}) });
         return true;
 
       case "POST /gateway/connections/start": {
         const body = await readJsonBody(req);
         const asked = typeof body.service === "string" ? body.service : "";
         if (!asked.trim()) { json(400, { error: "service required" }); return true; }
-        const service = findService(asked);
+        const service = await findService(asked, opts.home);
         if (!service) { json(404, { error: `unknown service: ${asked.slice(0, 80)}` }); return true; }
-        const broker = getConnectBroker();
+        const broker = opts.broker === undefined ? getConnectBroker() : opts.broker;
         if (!broker) { json(503, { error: "this machine has no connect hub (it needs a public address)" }); return true; }
         try {
           const prompt = await broker.start(service, { reason: "from the Connections screen" });
@@ -189,12 +259,58 @@ export async function handleConnectionsApi(req: IncomingMessage, res: ServerResp
         const body = await readJsonBody(req);
         const asked = typeof body.service === "string" ? body.service : "";
         if (!asked.trim()) { json(400, { error: "service required" }); return true; }
-        const service = findService(asked);
+        const service = await findService(asked, opts.home);
         if (!service) { json(404, { error: `unknown service: ${asked.slice(0, 80)}` }); return true; }
         const removed = await disconnectService(service, opts.home);
+        forgetTest(opts.home, service.id);
         const connected = await isServiceConnected(service, opts.home).catch(() => false);
         opts.log?.(`connections: ${service.id} disconnected from the phone (${removed ? "removed" : "nothing stored"})`);
         json(200, { ok: !connected, service: service.id, connected, removed });
+        return true;
+      }
+
+      case "POST /gateway/connections/test": {
+        const body = await readStrictBody(req);
+        const asked = typeof body.service === "string" ? body.service : "";
+        if (!asked.trim()) { json(400, { error: "service required" }); return true; }
+        const service = await findService(asked, opts.home);
+        if (!service) { json(404, { error: `unknown service: ${safeText(asked, [], 80)}` }); return true; }
+        const result = await testConnection(service, {
+          ...(opts.home ? { home: opts.home } : {}),
+          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+          ...(opts.now ? { now: opts.now } : {}),
+          ...(opts.testTimeoutMs ? { timeoutMs: opts.testTimeoutMs } : {}),
+        });
+        opts.log?.(`connections: ${service.id} tested from the phone (${result.ok ? "ok" : "failed"})`);
+        json(200, { ok: result.ok, detail: result.detail, checkedAt: result.checkedAt });
+        return true;
+      }
+
+      case "GET /gateway/connections/custom": {
+        const ctx = await loadEnrichContext({ ...(opts.home ? { home: opts.home } : {}), ...(opts.now ? { now: opts.now } : {}), remote: {} });
+        json(200, { supported: true, servers: await listCustom(opts.home, ctx.mcpCache) });
+        return true;
+      }
+
+      case "POST /gateway/connections/custom": {
+        const body = await readStrictBody(req);
+        const added = await addCustom(body, {
+          ...(opts.home ? { home: opts.home } : {}),
+          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+          ...(opts.resolveHost ? { resolveHost: opts.resolveHost } : {}),
+          ...(opts.allowPrivate !== undefined ? { allowPrivate: opts.allowPrivate } : {}),
+          ...(opts.broker !== undefined ? { broker: opts.broker } : {}),
+          ...(opts.log ? { log: opts.log } : {}),
+        });
+        json(200, added);
+        return true;
+      }
+
+      case "POST /gateway/connections/custom/remove": {
+        const body = await readStrictBody(req);
+        const removed = await removeCustom(body.id, { ...(opts.home ? { home: opts.home } : {}), ...(opts.log ? { log: opts.log } : {}) });
+        forgetTest(opts.home, String(body.id));
+        json(200, { ok: removed });
         return true;
       }
 
@@ -203,6 +319,10 @@ export async function handleConnectionsApi(req: IncomingMessage, res: ServerResp
         return true;
     }
   } catch (err) {
+    if (err instanceof HttpError) {
+      if (!res.headersSent) json(err.status, { error: err.message });
+      return true;
+    }
     opts.log?.(`connections ${url.pathname} failed: ${err instanceof Error ? err.message : String(err)}`);
     if (!res.headersSent) json(500, { error: err instanceof Error ? err.message : String(err) });
     return true;

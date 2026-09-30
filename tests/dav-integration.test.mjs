@@ -192,8 +192,9 @@ describe("DAV + IMAP/SMTP against real servers", { skip }, () => {
       },
     );
     // A port nothing listens on: unreachable, not "wrong password".
+    const dead = await deadPort();
     await assert.rejects(
-      () => verifyCalDav({ [DAV_CREDENTIALS.caldav.url]: `http://127.0.0.1:${await deadPort()}/`, [DAV_CREDENTIALS.caldav.user]: USER, [DAV_CREDENTIALS.caldav.password]: PASSWORD }),
+      () => verifyCalDav({ [DAV_CREDENTIALS.caldav.url]: `http://127.0.0.1:${dead}/`, [DAV_CREDENTIALS.caldav.user]: USER, [DAV_CREDENTIALS.caldav.password]: PASSWORD }),
       (err) => err.kind === "unreachable" && /refused the connection/.test(err.message),
     );
     // A web server that is not CalDAV.
@@ -232,8 +233,9 @@ describe("DAV + IMAP/SMTP against real servers", { skip }, () => {
       () => verifyImap({ [DAV_CREDENTIALS.imap.host]: `127.0.0.1:${mail.imap}`, [DAV_CREDENTIALS.imap.user]: USER, [DAV_CREDENTIALS.imap.password]: bad }),
       (err) => (err.kind === "auth" || err.kind === "app-password") && !err.message.includes(bad),
     );
+    const deadImap = await deadPort();
     await assert.rejects(
-      () => verifyImap({ [DAV_CREDENTIALS.imap.host]: `127.0.0.1:${await deadPort()}`, [DAV_CREDENTIALS.imap.user]: USER, [DAV_CREDENTIALS.imap.password]: PASSWORD }),
+      () => verifyImap({ [DAV_CREDENTIALS.imap.host]: `127.0.0.1:${deadImap}`, [DAV_CREDENTIALS.imap.user]: USER, [DAV_CREDENTIALS.imap.password]: PASSWORD }),
       (err) => err.kind === "unreachable",
     );
   });

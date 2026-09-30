@@ -21,6 +21,7 @@ import type { TurnEvent } from "@ares/protocol";
 import { constantTimeEqual, ensureToken, ensureReadToken } from "./token.js";
 import { normalizeSessionAttachments, normalizeSessionSurface, normalizeSessionTenant, type SessionManager } from "./sessions.js";
 import type { Scheduler } from "./scheduler.js";
+import type { DeviceBridge } from "./deviceBridge.js";
 import { viewerHtml } from "./viewer.js";
 import {
   DEFAULT_GARRISON_PORT,
@@ -75,6 +76,8 @@ export interface GarrisonServerOptions {
   history?: (sessionId: string, opts?: { limit?: number }) => Promise<Array<{ ts?: string; event: TurnEvent }>>;
   /** Extra live fields merged into GET /health (telegram bridge state, remote PCs). */
   status?: () => Record<string, unknown>;
+  /** Phone Hands: where device.* frames go. Absent = the frames are refused. */
+  devices?: DeviceBridge;
 }
 
 interface ClientConn {
@@ -89,6 +92,8 @@ interface ClientConn {
   helloTimer: ReturnType<typeof setTimeout> | null;
   detachBySession: Map<string, () => void>;
   isAlive: boolean;
+  /** Identity of this socket in the DeviceBridge's correlation table. */
+  devKey: string;
 }
 
 export class GarrisonServer {
@@ -105,6 +110,7 @@ export class GarrisonServer {
   private unsubscribeApprovals: (() => void) | undefined;
   private unsubscribeScheduler: (() => void) | undefined;
   private pingTimer: ReturnType<typeof setInterval> | undefined;
+  private connSeq = 0;
 
   constructor(opts: GarrisonServerOptions) {
     this.opts = opts;
@@ -229,6 +235,7 @@ export class GarrisonServer {
       helloTimer: null,
       detachBySession: new Map(),
       isAlive: true,
+      devKey: `c${++this.connSeq}`,
     };
     this.clients.add(client);
     client.helloTimer = setTimeout(() => this.rejectHandshake(client, "handshake timeout"), HELLO_TIMEOUT_MS);
@@ -472,10 +479,47 @@ export class GarrisonServer {
         }
         return;
       }
+      case "device.hello":
+      case "device.capabilities":
+      case "device.response":
+      case "device.event": {
+        this.routeDevice(client, frame);
+        return;
+      }
       default: {
         this.enqueueError(client, `unknown frame type: ${(frame as { type: string }).type}`);
       }
     }
+  }
+
+  /** Phone Hands frames. Only the owner's control-token socket may speak them —
+   *  a read-scope viewer can neither register a phone nor answer for one. */
+  private routeDevice(client: ClientConn, frame: Extract<GatewayClientFrame, { type: `device.${string}` }>): void {
+    const bridge = this.opts.devices;
+    if (!bridge) {
+      this.enqueueError(client, "device bridge not wired");
+      return;
+    }
+    if (client.scope !== "control") {
+      this.enqueueError(client, `read-only client: ${frame.type} is not permitted`);
+      return;
+    }
+    let problem: string | null = null;
+    switch (frame.type) {
+      case "device.hello":
+        problem = bridge.hello(client.devKey, (f) => this.enqueueFrame(client, f), frame);
+        break;
+      case "device.capabilities":
+        problem = bridge.capabilities(client.devKey, frame);
+        break;
+      case "device.response":
+        bridge.response(client.devKey, frame);
+        break;
+      case "device.event":
+        problem = bridge.event(client.devKey, frame);
+        break;
+    }
+    if (problem) this.enqueueError(client, problem);
   }
 
   private garrisonStatus(): GarrisonStatus {
@@ -569,6 +613,7 @@ export class GarrisonServer {
       }
     }
     client.detachBySession.clear();
+    this.opts.devices?.closed(client.devKey);
     client.queue.length = 0;
     if (terminate) client.ws.terminate();
   }

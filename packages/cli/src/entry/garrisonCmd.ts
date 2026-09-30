@@ -22,8 +22,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, Instances, type FileReadStamp } from "@ares/tools";
+import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, setDeviceBridge, Instances, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
+import { createDeviceApi } from "../phoneDevice.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -37,7 +38,7 @@ import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
 import { MemoryStore, detectWorkspaceProjectId, loadProjectState, withConsolidationLock } from "@ares/mind";
-import { SessionManager, GarrisonServer, Scheduler, ApprovalQueue, tokenPath, loadGarrisonRollout, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
+import { SessionManager, GarrisonServer, DeviceBridge, Scheduler, ApprovalQueue, tokenPath, loadGarrisonRollout, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "../holotable.js";
 import { runEffect } from "@ares/effects";
 import { gateToolPermission, remoteAutonomyDecision } from "../policyGate.js";
@@ -613,7 +614,28 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // Telegram bridge is actually up instead of inferring it from saved chat ids.
   let telegramBridge: TelegramBridge | null = null;
   let remoteAgentServer: RemoteAgentServer | null = null;
+  // Phone Hands: the owner's phone as a set of capabilities Ares can call.
+  // Guests never reach it; a sleeping phone is woken by a silent push, then a
+  // visible one (phonePush is built below — only called once a request needs it).
+  const deviceBridge = new DeviceBridge({
+    statePath: path.join(context.home, "device", "bridge.json"),
+    isOwnerSession: (sessionId) => sessions.list().some((s) => s.id === sessionId && s.tenant?.role !== "guest"),
+    wake: {
+      available: async () => phonePush.configured && (await phonePush.list()).length > 0,
+      silent: async () => (await phonePush.sendBackground()).sent > 0,
+      visible: async (info) =>
+        (await phonePush.send({
+          title: "Ares needs your phone",
+          body: info.reason,
+          data: { kind: "device_wake", ...(info.deviceId ? { deviceId: info.deviceId } : {}) },
+          collapseId: "device-wake",
+        })).sent > 0,
+    },
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n"),
+  });
+  setDeviceBridge(deviceBridge);
   const server = new GarrisonServer({
+    devices: deviceBridge,
     home: context.home,
     sessions,
     scheduler,
@@ -747,6 +769,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
+          device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,
@@ -880,6 +903,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       stopBridgeRetry();
       void telegramBridge?.stop().catch(() => {});
       setTelegramChannel(null);
+      setDeviceBridge(null);
+      deviceBridge.shutdown();
       phoneNotifier?.stop();
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});

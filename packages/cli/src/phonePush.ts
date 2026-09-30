@@ -60,6 +60,15 @@ export interface PushMessage {
   collapseId?: string;
 }
 
+/** One APNs request, as handed to the transport (and to tests). */
+export interface ApnsRequest {
+  deviceToken: string;
+  headers: Record<string, string>;
+  body: string;
+}
+/** Sends one APNs request and resolves with Apple's HTTP status. */
+export type ApnsTransport = (cfg: ApnsConfig, request: ApnsRequest) => Promise<number>;
+
 export class PhonePush {
   private devices = new Map<string, PhonePushDevice>();
   private keyPem?: string;
@@ -70,6 +79,8 @@ export class PhonePush {
     private readonly storePath: string,
     private readonly cfg: ApnsConfig | null,
     private readonly log: (line: string) => void = () => {},
+    /** Test seam: replaces the HTTP/2 call to Apple. */
+    private readonly transport?: ApnsTransport,
   ) {}
 
   get configured(): boolean {
@@ -125,6 +136,20 @@ export class PhonePush {
   /** Send to every registered device. Apple's "this token is dead" answers
    *  prune the device rather than being retried forever. */
   async send(message: PushMessage): Promise<{ sent: number; failed: number }> {
+    return this.fanout(message, "alert");
+  }
+
+  /**
+   * A silent wake-up: apns-push-type background, priority 5, content-available
+   * and no alert. It lets the app run briefly (and pull a pending Phone Hands
+   * request over HTTP) without showing the owner anything. Apple may throttle
+   * or drop these; callers follow up with a visible alert when it matters.
+   */
+  async sendBackground(data: Record<string, unknown> = {}): Promise<{ sent: number; failed: number }> {
+    return this.fanout({ title: "", body: "", data }, "background");
+  }
+
+  private async fanout(message: PushMessage, mode: "alert" | "background"): Promise<{ sent: number; failed: number }> {
     await this.load();
     if (!this.cfg || this.devices.size === 0) return { sent: 0, failed: 0 };
     const jwt = await this.token();
@@ -132,7 +157,7 @@ export class PhonePush {
     let failed = 0;
     for (const device of [...this.devices.values()]) {
       try {
-        const status = await this.sendOne(device.token, jwt, message);
+        const status = await this.sendOne(device.token, jwt, message, mode);
         if (status === 200) {
           sent++;
           if (device.lastError) {
@@ -158,8 +183,44 @@ export class PhonePush {
     return { sent, failed };
   }
 
-  private sendOne(deviceToken: string, jwt: string, message: PushMessage): Promise<number> {
+  /** The exact APNs headers + body for one message. Pure; exported via the class for tests. */
+  static buildRequest(cfg: ApnsConfig, deviceToken: string, jwt: string, message: PushMessage, mode: "alert" | "background"): ApnsRequest {
+    const headers: Record<string, string> = {
+      ":method": "POST",
+      ":path": `/3/device/${deviceToken}`,
+      authorization: `bearer ${jwt}`,
+      "apns-topic": cfg.bundleId,
+      "apns-push-type": mode,
+      "apns-priority": mode === "background" ? "5" : "10",
+    };
+    if (mode === "background") {
+      // Apple requires a background push to carry content-available and no alert.
+      headers["apns-expiration"] = String(Math.floor(Date.now() / 1000) + 60);
+      return { deviceToken, headers, body: JSON.stringify({ aps: { "content-available": 1 }, deviceWake: true, ...(message.data ?? {}) }) };
+    }
+    if (message.collapseId) headers["apns-collapse-id"] = message.collapseId.slice(0, 64);
+    const replyable = ["persona_message", "family_message"].includes(String(message.data?.kind));
+    const wake = message.data?.kind === "device_wake";
+    return {
+      deviceToken,
+      headers,
+      body: JSON.stringify({
+        aps: {
+          alert: { title: message.title, body: message.body },
+          sound: "default",
+          ...(replyable ? { category: "ARES_TEXT_REPLY" } : wake ? { category: "ARES_DEVICE_WAKE" } : {}),
+          ...(wake ? { "interruption-level": "time-sensitive" } : {}),
+          ...(message.data?.sessionId || message.data?.threadId ? { "thread-id": String(message.data?.sessionId ?? message.data?.threadId) } : {}),
+        },
+        ...(message.data ?? {}),
+      }),
+    };
+  }
+
+  private sendOne(deviceToken: string, jwt: string, message: PushMessage, mode: "alert" | "background" = "alert"): Promise<number> {
     const cfg = this.cfg!;
+    const prepared = PhonePush.buildRequest(cfg, deviceToken, jwt, message, mode);
+    if (this.transport) return this.transport(cfg, prepared);
     return new Promise<number>((resolve, reject) => {
       const client = http2Connect(APNS_HOST(cfg.production !== false));
       const settle = (fn: () => void) => {
@@ -167,31 +228,13 @@ export class PhonePush {
         fn();
       };
       client.on("error", (err) => settle(() => reject(err)));
-      const headers: Record<string, string> = {
-        ":method": "POST",
-        ":path": `/3/device/${deviceToken}`,
-        authorization: `bearer ${jwt}`,
-        "apns-topic": cfg.bundleId,
-        "apns-push-type": "alert",
-        "apns-priority": "10",
-      };
-      if (message.collapseId) headers["apns-collapse-id"] = message.collapseId.slice(0, 64);
-      const req = client.request(headers);
+      const req = client.request(prepared.headers);
       let status = 0;
       req.on("response", (h) => { status = Number(h[":status"] ?? 0); });
       req.setTimeout(15_000, () => settle(() => reject(new Error("apns timeout"))));
       req.on("error", (err) => settle(() => reject(err)));
       req.on("end", () => settle(() => resolve(status)));
-      const replyable = ["persona_message", "family_message"].includes(String(message.data?.kind));
-      req.end(JSON.stringify({
-        aps: {
-          alert: { title: message.title, body: message.body },
-          sound: "default",
-          ...(replyable ? { category: "ARES_TEXT_REPLY" } : {}),
-          ...(message.data?.sessionId || message.data?.threadId ? { "thread-id": String(message.data?.sessionId ?? message.data?.threadId) } : {}),
-        },
-        ...(message.data ?? {}),
-      }));
+      req.end(prepared.body);
       req.resume();
     });
   }

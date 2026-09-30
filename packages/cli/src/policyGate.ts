@@ -23,6 +23,7 @@ import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effe
 import { vaultAccessReason, type ToolPermissionRequest } from "@ares/core";
 import { connectorCategory } from "./connectorGate.js";
 import { lifeToolCategory } from "./policyGateLife.js";
+import { deviceCapabilityFloor } from "@ares/tools";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -234,6 +235,14 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
       if (action === "pair_link") return "credential_or_secret";
       if (action === "remove") return (request.input as { purge?: unknown } | null)?.purge === true ? "shell_destructive" : "shell_mutating";
       return "shell_mutating";
+    }
+    // iPhone (Phone Hands): reading the phone's calendar/battery runs; anything
+    // that changes or exposes the phone asks like a calendar create does. The
+    // tool itself makes sensitive capabilities a per-call owner decision.
+    case "iPhone": {
+      if (actionOf(request) !== "invoke") return null;
+      const capability = String((request.input as { capability?: unknown } | null)?.capability ?? "");
+      return deviceCapabilityFloor(capability) === "read" ? null : "browser_submit";
     }
     case "Filesystem":
       return "file_write";

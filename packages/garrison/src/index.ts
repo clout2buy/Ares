@@ -23,6 +23,18 @@ export { ensureToken, ensureReadToken, constantTimeEqual, garrisonDir, tokenPath
 export { viewerHtml } from "./viewer.js";
 
 export {
+  DeviceBridge,
+  DEVICE_DEFAULT_TIMEOUT_MS,
+  DEVICE_MAX_TIMEOUT_MS,
+  DEVICE_MAX_RESULT_BYTES,
+  summarizeDeviceArgs,
+  type DeviceBridgeOptions,
+  type DeviceWake,
+  type DeviceWakeInfo,
+  type DevicePendingRequest,
+} from "./deviceBridge.js";
+
+export {
   SessionManager,
   rehydrateSessions,
   rehydrateSession,

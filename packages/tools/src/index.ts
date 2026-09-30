@@ -154,6 +154,8 @@ export {
 } from "./ComputerUse.js";
 export { DeployTool, type DeployOutput } from "./Deploy.js";
 export { InstancesTool, type InstancesOutput } from "./Instances.js";
+export { IPhoneTool, type IPhoneOutput } from "./IPhone.js";
+export * from "./deviceTypes.js";
 export {
   Instances,
   instanceConfig,
@@ -307,6 +309,7 @@ import { WithingsTool } from "./Withings.js";
 import { TailscaleTool } from "./Tailscale.js";
 import { BankTool } from "./Bank.js";
 import { InstancesTool } from "./Instances.js";
+import { IPhoneTool } from "./IPhone.js";
 
 /** Home, car, travel, health and money connectors (all deferred). */
 export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
@@ -338,6 +341,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       WeatherTool,
       RemindTool,
       TelegramTool,
+      IPhoneTool,
       RemotePCTool,
       ConnectTool,
       CheckoutTool,
@@ -371,6 +375,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       MemoryTool,
       DeployTool,
       InstancesTool,
+      IPhoneTool,
       StripeTool,
       EmailTool,
       RequestUserActionTool,

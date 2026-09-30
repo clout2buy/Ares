@@ -10,6 +10,7 @@
 import type { PermissionPromptDecision, TurnEvent } from "@ares/protocol";
 import type { ApprovalVerb, StagedApproval } from "@ares/effects";
 import type { SchedulerEvent } from "./scheduler.js";
+import type { DeviceCapability, DeviceIdentity, DeviceShortcut } from "@ares/tools";
 
 export const PROTO_VERSION = 1 as const;
 export const DEFAULT_GARRISON_PORT = 7421;
@@ -98,7 +99,13 @@ export type GatewayClientFrame =
       requestId: string;
       decision: PermissionPromptDecision;
     }
-  | { type: "approval.respond"; approvalId: string; verb: ApprovalVerb; note?: string };
+  | { type: "approval.respond"; approvalId: string; verb: ApprovalVerb; note?: string }
+  // Phone Hands (DeviceBridge): the owner's app registers what it can do and
+  // answers requests. Control-token clients only.
+  | { type: "device.hello"; device: DeviceIdentity; capabilities: DeviceCapability[]; shortcuts?: DeviceShortcut[] }
+  | { type: "device.capabilities"; capabilities: DeviceCapability[]; shortcuts?: DeviceShortcut[] }
+  | { type: "device.response"; id: string; ok: boolean; result?: unknown; error?: { code: string; message: string } }
+  | { type: "device.event"; kind: string; data?: unknown };
 
 // ─── Server → client ────────────────────────────────────────────────────
 
@@ -119,4 +126,7 @@ export type GatewayServerFrame =
   /** Daemon-level happenings with no session (nightly gauntlet outcome…),
    *  broadcast to every authed client so the UI/Telegram can surface them. */
   | { type: "garrison.event"; event: SchedulerEvent }
+  /** Phone Hands: run one capability on the phone and answer with device.response. */
+  | { type: "device.request"; id: string; capability: string; args: Record<string, unknown>; deadlineMs: number; reason?: string }
+  | { type: "device.ack"; id: string }
   | { type: "error"; message: string };

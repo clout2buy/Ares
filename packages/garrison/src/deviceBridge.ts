@@ -505,7 +505,7 @@ export class DeviceBridge implements DeviceBridgeLike {
       () => this.finish(p, { ok: false, device: p.deviceId, error: { code: "timeout", message: `The phone did not answer within ${Math.round(p.timeoutMs / 1000)}s.` }, durationMs: this.now() - p.startedAt }),
       p.timeoutMs,
     );
-    p.timer.unref?.();
+    // Not unref'd: an awaited phone call is live work the process must outlast.
     for (const wake of p.dispatchWaiters.splice(0)) wake();
   }
 

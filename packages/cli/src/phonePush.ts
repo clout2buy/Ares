@@ -11,6 +11,13 @@ import { connect as http2Connect } from "node:http2";
 import { createPrivateKey, sign as cryptoSign } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { StagedApproval } from "@ares/effects";
+import { approvalLine, approvalSummary, classifyApproval, classifyStaged, permissionApprovalId, stagedApprovalId, redactSecrets } from "./phoneApprovals.js";
+
+/** Banner actions: Allow once / Deny / Open. */
+export const APPROVAL_CATEGORY = "ARES_APPROVAL";
+/** Banner actions for a decision that must be made in the app: Deny / Open. */
+export const APPROVAL_STRICT_CATEGORY = "ARES_APPROVAL_STRICT";
 
 export interface PhonePushDevice {
   /** Hex APNs device token. */
@@ -58,6 +65,27 @@ export interface PushMessage {
   data?: Record<string, unknown>;
   /** Collapse key: a newer prompt replaces an older one rather than stacking. */
   collapseId?: string;
+}
+
+/** The ActivityKit attributes type the app's widget extension declares. */
+export const LIVE_ACTIVITY_ATTRIBUTES_TYPE = "AresActivityAttributes";
+
+export interface LiveActivityPush {
+  event: "start" | "update" | "end";
+  /** Must decode as AresActivityAttributes.ContentState on the phone. */
+  contentState: Record<string, unknown>;
+  /** start only. */
+  attributesType?: string;
+  attributes?: Record<string, unknown>;
+  /** start requires one; update/end may carry one (it wakes the screen). */
+  alert?: { title: string; body: string };
+  /** Epoch seconds. */
+  staleDate?: number;
+  /** end only, epoch seconds; omitted = the system default (about four hours). */
+  dismissalDate?: number;
+  /** 10 immediate (counts against the budget), 5 may be delayed. Default 10. */
+  priority?: 5 | 10;
+  timestamp?: number;
 }
 
 /** One APNs request, as handed to the transport (and to tests). */
@@ -201,6 +229,11 @@ export class PhonePush {
     if (message.collapseId) headers["apns-collapse-id"] = message.collapseId.slice(0, 64);
     const replyable = ["persona_message", "family_message"].includes(String(message.data?.kind));
     const wake = message.data?.kind === "device_wake";
+    // An approval gets Allow/Deny/Open only when the server classified it quick;
+    // anything else (strict, or a payload that predates the classifier) gets the
+    // category that cannot approve from the banner.
+    const approval = message.data?.kind === "permission" || message.data?.kind === "approval";
+    const category = replyable ? "ARES_TEXT_REPLY" : wake ? "ARES_DEVICE_WAKE" : approval ? (message.data?.gate === "quick" ? APPROVAL_CATEGORY : APPROVAL_STRICT_CATEGORY) : undefined;
     return {
       deviceToken,
       headers,
@@ -208,7 +241,7 @@ export class PhonePush {
         aps: {
           alert: { title: message.title, body: message.body },
           sound: "default",
-          ...(replyable ? { category: "ARES_TEXT_REPLY" } : wake ? { category: "ARES_DEVICE_WAKE" } : {}),
+          ...(category ? { category } : {}),
           ...(wake ? { "interruption-level": "time-sensitive" } : {}),
           ...(message.data?.sessionId || message.data?.threadId ? { "thread-id": String(message.data?.sessionId ?? message.data?.threadId) } : {}),
         },
@@ -217,9 +250,52 @@ export class PhonePush {
     };
   }
 
+  /**
+   * One Live Activity push (start / update / end) to a specific activity or
+   * push-to-start token. Resolves with Apple's HTTP status; 0 when push is not
+   * configured. Pruning dead tokens is the caller's job: only it knows which
+   * registry the token came from.
+   */
+  async sendLiveActivity(deviceToken: string, push: LiveActivityPush): Promise<number> {
+    if (!this.cfg) return 0;
+    const jwt = await this.token();
+    return this.deliver(PhonePush.buildLiveActivityRequest(this.cfg, deviceToken, jwt, push));
+  }
+
+  /** The exact APNs headers + body for a Live Activity push. Pure. */
+  static buildLiveActivityRequest(cfg: ApnsConfig, deviceToken: string, jwt: string, push: LiveActivityPush, nowMs = Date.now()): ApnsRequest {
+    const nowSec = Math.floor(nowMs / 1000);
+    const headers: Record<string, string> = {
+      ":method": "POST",
+      ":path": `/3/device/${deviceToken}`,
+      authorization: `bearer ${jwt}`,
+      "apns-topic": `${cfg.bundleId}.push-type.liveactivity`,
+      "apns-push-type": "liveactivity",
+      "apns-priority": String(push.priority ?? 10),
+      // A progress update is worthless a couple of minutes late; the end is not.
+      "apns-expiration": String(nowSec + (push.event === "end" ? 3600 : push.event === "start" ? 120 : 180)),
+    };
+    const aps: Record<string, unknown> = {
+      timestamp: push.timestamp ?? nowSec,
+      event: push.event,
+      "content-state": push.contentState,
+    };
+    if (push.staleDate !== undefined) aps["stale-date"] = push.staleDate;
+    if (push.event === "end" && push.dismissalDate !== undefined) aps["dismissal-date"] = push.dismissalDate;
+    if (push.event === "start") {
+      aps["attributes-type"] = push.attributesType ?? LIVE_ACTIVITY_ATTRIBUTES_TYPE;
+      aps.attributes = push.attributes ?? {};
+    }
+    if (push.alert) aps.alert = push.alert;
+    return { deviceToken, headers, body: JSON.stringify({ aps }) };
+  }
+
   private sendOne(deviceToken: string, jwt: string, message: PushMessage, mode: "alert" | "background" = "alert"): Promise<number> {
+    return this.deliver(PhonePush.buildRequest(this.cfg!, deviceToken, jwt, message, mode));
+  }
+
+  private deliver(prepared: ApnsRequest): Promise<number> {
     const cfg = this.cfg!;
-    const prepared = PhonePush.buildRequest(cfg, deviceToken, jwt, message, mode);
     if (this.transport) return this.transport(cfg, prepared);
     return new Promise<number>((resolve, reject) => {
       const client = http2Connect(APNS_HOST(cfg.production !== false));
@@ -253,15 +329,24 @@ export function apnsFromEnv(bundleId: string): ApnsConfig | null {
 
 import WebSocket from "ws";
 
+/** Anything that wants to follow the same stream the notifier reads (the Live Activity, the widgets). */
+export interface NotifierObserver {
+  onSessionEvent?(sessionId: string, event: Record<string, unknown>): void;
+  onStagedApproval?(staged: StagedApproval): void;
+}
+
 export interface NotifierOptions {
   gatewayUrl: string;
   token: string;
-  push: PhonePush;
+  push: Pick<PhonePush, "send">;
   agentName?: (sessionId: string) => string;
   isMobileSession?: (sessionId: string) => boolean;
   log?: (line: string) => void;
   /** A turn shorter than this finished while they were still looking at it. */
   longTurnMs?: number;
+  observers?: NotifierObserver[];
+  /** This garrison's public origin, so a phone paired to several can tell whose approval a banner is. */
+  originOf?: () => string | undefined;
 }
 
 /**
@@ -278,6 +363,7 @@ export class PhoneNotifier {
   private readonly attached = new Set<string>();
   private readonly turnStartedAt = new Map<string, number>();
   private readonly replyText = new Map<string, string>();
+  private readonly notifiedStaged = new Set<string>();
   private readonly log: (line: string) => void;
   private readonly longTurnMs: number;
 
@@ -309,7 +395,7 @@ export class PhoneNotifier {
     this.ws = ws;
     ws.on("open", () => ws.send(JSON.stringify({ type: "hello", token: this.opts.token, client: "phone-push", proto: 1 })));
     ws.on("message", (raw) => {
-      let frame: { type?: string; sessions?: Array<{ id: string }>; session?: { id: string }; sessionId?: string; event?: Record<string, unknown> };
+      let frame: { type?: string; sessions?: Array<{ id: string }>; session?: { id: string }; sessionId?: string; event?: Record<string, unknown>; staged?: StagedApproval };
       try { frame = JSON.parse(String(raw)); } catch { return; }
       if (frame.type === "welcome") {
         this.backoff = 1_000;
@@ -317,7 +403,8 @@ export class PhoneNotifier {
         return;
       }
       if (frame.type === "session.created" && frame.session) return this.attach(frame.session.id);
-      if (frame.type === "event" && frame.sessionId && frame.event) this.onEvent(frame.sessionId, frame.event);
+      if (frame.type === "event" && frame.sessionId && frame.event) this.handleEvent(frame.sessionId, frame.event);
+      if (frame.type === "approval.pending" && frame.staged) this.handleStaged(frame.staged);
     });
     ws.on("close", () => { if (this.ws === ws) this.retry("closed"); });
     ws.on("error", () => { /* close follows */ });
@@ -340,7 +427,44 @@ export class PhoneNotifier {
     this.timer.unref?.();
   }
 
-  private onEvent(sessionId: string, event: Record<string, unknown>): void {
+  /** A staged effect (browser submit, connector effect) waiting on the owner. The
+   *  gateway replays outstanding ones on every reconnect, so each id pushes once. */
+  handleStaged(staged: StagedApproval): void {
+    for (const o of this.opts.observers ?? []) {
+      try { o.onStagedApproval?.(staged); } catch { /* an observer must never break the push */ }
+    }
+    if (!staged || typeof staged.id !== "string" || this.notifiedStaged.has(staged.id)) return;
+    this.notifiedStaged.add(staged.id);
+    while (this.notifiedStaged.size > 200) {
+      const oldest = this.notifiedStaged.values().next().value;
+      if (oldest === undefined) break;
+      this.notifiedStaged.delete(oldest);
+    }
+    const cls = classifyStaged(staged);
+    const tool = String(staged.kind || "action").slice(0, 40);
+    const target = redactSecrets(String(staged.reason ?? "")).replace(/\s+/g, " ").trim().slice(0, 80);
+    void this.opts.push.send({
+      title: "Ares needs approval",
+      body: target ? `${tool} — ${target}` : tool,
+      data: { kind: "approval", approvalId: stagedApprovalId(staged.id), gate: cls.gate, tool, target, ...this.originField() },
+      collapseId: `approval-${staged.id}`.slice(0, 64),
+    });
+  }
+
+  private originField(): { origin?: string } {
+    try {
+      const origin = this.opts.originOf?.();
+      return origin ? { origin } : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** One event off the gateway stream. Public so tests can drive it without a socket. */
+  handleEvent(sessionId: string, event: Record<string, unknown>): void {
+    for (const o of this.opts.observers ?? []) {
+      try { o.onSessionEvent?.(sessionId, event); } catch { /* an observer must never break the push */ }
+    }
     const type = String(event.type ?? "");
     if (type === "turn_start") {
       this.turnStartedAt.set(sessionId, Date.now());
@@ -353,12 +477,15 @@ export class PhoneNotifier {
     }
     if (type === "permission_request") {
       const agent = this.opts.agentName?.(sessionId) ?? "Ares";
-      const tool = String(event.toolName ?? "a tool");
-      const detail = describeInput(event.input);
+      const cls = classifyApproval({ toolName: String(event.toolName ?? ""), input: event.input, reason: String(event.reason ?? ""), ownerDecision: event.ownerDecision === true });
+      const sum = approvalSummary(String(event.toolName ?? "a tool"), event.input, cls);
+      const requestId = String(event.id ?? "");
       void this.opts.push.send({
         title: `${agent} needs permission`,
-        body: detail ? `${tool} — ${detail}` : tool,
-        data: { kind: "permission", sessionId, requestId: String(event.id ?? "") },
+        body: approvalLine(sum),
+        // gate decides which actions the banner carries (see APPROVAL_CATEGORY);
+        // tool/target are the same redacted line the banner shows, for the app.
+        data: { kind: "permission", sessionId, requestId, approvalId: permissionApprovalId(sessionId, requestId), gate: cls.gate, tool: sum.tool, target: sum.target, ...this.originField() },
         // A newer prompt replaces the older banner instead of stacking.
         collapseId: `perm-${sessionId}`,
       });
@@ -382,18 +509,4 @@ export class PhoneNotifier {
       });
     }
   }
-}
-
-/** One short line of what a tool is about to do, for the banner. */
-function describeInput(input: unknown): string {
-  if (!input || typeof input !== "object") return "";
-  const r = input as Record<string, unknown>;
-  for (const key of ["command", "url", "file_path", "path", "to", "query"]) {
-    const v = r[key];
-    if (typeof v === "string" && v.trim()) {
-      const flat = v.replace(/\s+/g, " ").trim();
-      return flat.length > 90 ? `${flat.slice(0, 89)}…` : flat;
-    }
-  }
-  return "";
 }

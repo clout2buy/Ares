@@ -56,6 +56,8 @@ export {
   type SessionPersonaHooks,
   type RehydratedSession,
   type RunningTurn,
+  type PendingPermissionInfo,
+  type PermissionOutcome,
   type SessionSurface,
   type SessionTenant,
   normalizeSessionSurface,
@@ -93,4 +95,4 @@ export {
   type ApprovalResponse,
 } from "./server.js";
 
-export { ApprovalQueue, type ApprovalQueueOptions } from "./approvals.js";
+export { ApprovalQueue, type ApprovalQueueOptions, type ApprovalOutcome } from "./approvals.js";

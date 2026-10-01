@@ -247,6 +247,10 @@ export interface PhoneApiHooks {
   /** Synchronous "ask Ares" for Siri/Shortcuts (/gateway/ask, /gateway/ask/last —
    *  phoneAsk.ts). Asked after the owner bearer check; false = not mine. */
   ask?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Approve-from-the-notification and Live Activity tokens (/gateway/approvals,
+   *  /gateway/liveactivity — phoneApprovals.ts, phoneLiveActivity.ts). Asked after
+   *  the owner bearer check; false = not mine. */
+  notify?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Inbound webhooks (/gateway/hooks — phoneHooks.ts). `inbound` answers the
    *  unauthenticated `POST /gateway/hooks/<id>` door BEFORE the bearer check (the
    *  hook's own secret is its auth); `manage` is the owner's list/create/delete,
@@ -1581,6 +1585,10 @@ export class RemoteAgentServer {
     }
     if (api.ask && (url.pathname === "/gateway/ask" || url.pathname === "/gateway/ask/" || url.pathname === "/gateway/ask/last")) {
       if (await api.ask(req, res, url)) return;
+    }
+
+    if (api.notify && /^\/gateway\/(approvals|liveactivity)(\/|$)/.test(url.pathname)) {
+      if (await api.notify(req, res, url)) return;
     }
 
     if (api.device && (url.pathname === "/gateway/device" || url.pathname.startsWith("/gateway/device/"))) {

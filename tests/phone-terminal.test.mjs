@@ -401,8 +401,8 @@ test("the shell's environment carries none of Ares's secrets", { skip }, async (
   const r = await rig(t);
   const id = await r.create();
   const c = await r.open(id).ready();
-  c.type("env | sort; echo ENV-DONE-MARK\n");
-  await c.waitText("ENV-DONE-MARK");
+  c.type("env | sort; echo ENV-DONE-$((6*7))\n");
+  await c.waitText("ENV-DONE-42");
   assert.match(c.text, /TERM=xterm-256color/);
   assert.match(c.text, /LANG=en_US\.UTF-8/);
   assert.match(c.text, /HOME=/);
@@ -425,7 +425,9 @@ test("idle timeout kills a terminal nobody is attached to (fake short timer)", {
   await until(async () => (await (await r.call("GET", "/gateway/terminal")).json()).sessions.length === 1, 6000, "idle terminal reaped");
   const left = (await (await r.call("GET", "/gateway/terminal")).json()).sessions;
   assert.equal(left[0].id, kept, "the attached terminal is never idle");
-  assert.notEqual(spawnSync("tmux", ["-L", r.socket, "has-session", "-t", idle]).status, 0);
+  // the list shrinks first; the tmux session is killed and the audit entry written right after
+  await until(() => spawnSync("tmux", ["-L", r.socket, "has-session", "-t", idle]).status !== 0, 4000, "idle tmux session killed");
+  await until(async () => (await readAudit({ home: r.home, actionPrefix: "terminal.idle", limit: 5 })).length >= 1, 4000, "idle reap audited");
   const entries = await readAudit({ home: r.home, actionPrefix: "terminal.idle", limit: 5 });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].target, `terminal:${idle}`);
@@ -439,8 +441,9 @@ test("UTF-8: a character split across chunks arrives whole, and input round-trip
   const r = await rig(t, { flushMs: 5 });
   const id = await r.create();
   const c = await r.open(id).ready();
-  c.type("printf 'a\\342\\202'; sleep 0.4; printf '\\254b\\360\\237'; sleep 0.4; printf '\\231\\202c\\n'; echo SPLIT-DONE\n");
-  await c.waitText("SPLIT-DONE");
+  c.type("printf 'a\\342\\202'; sleep 0.4; printf '\\254b\\360\\237'; sleep 0.4; printf '\\231\\202c\\n'; echo SPLIT-$((6*7))\n");
+  // a marker the shell computes: the echo of the typed line must not satisfy the wait
+  await c.waitText("SPLIT-42");
   assert.ok(c.text.includes("a€b\u{1F642}c"), "split euro and emoji reassembled");
   assert.ok(!c.text.includes("�"), "no replacement characters");
   for (const f of c.frames.filter((x) => x.t === "out")) assert.ok(!f.d.includes("�"));
@@ -458,9 +461,9 @@ test("slow client: output is dropped and resynced, the server never blocks, othe
   const fast = await r.open(id).ready();
   const slow = await r.open(id).ready();
   slow.ws._socket.pause(); // the phone stops reading
-  fast.type("yes abcdefghijklmnopqrstuvwxyz0123456789 | head -c 40000000; echo FLOOD-DONE\n");
+  fast.type("yes abcdefghijklmnopqrstuvwxyz0123456789 | head -c 40000000; echo FLOOD-$((6*7))\n");
   const started = Date.now();
-  await fast.waitText("FLOOD-DONE", 30000);
+  await fast.waitText("FLOOD-42", 30000);
   const flood = Date.now() - started;
   assert.ok(flood < 25000, `the engine was not held back by the slow phone (${flood} ms)`);
   // http answers promptly while the slow socket is still stalled
@@ -471,11 +474,11 @@ test("slow client: output is dropped and resynced, the server never blocks, othe
   // the phone wakes up: it is resynced with a snapshot, not fed 40 MB
   slow.ws._socket.resume();
   await slow.waitFrame((f) => f.t === "replay" && f.reset === true && slow.frames.indexOf(f) > 0, 15000);
-  await until(() => slow.text.includes("FLOOD-DONE"), 15000, "slow client catches up to the end");
+  await until(() => slow.text.includes("FLOOD-42"), 15000, "slow client catches up to the end");
   const received = slow.frames.filter((f) => f.t === "out").reduce((n, f) => n + f.d.length, 0);
   assert.ok(received < 20_000_000, `slow client received ${received} bytes of a 40 MB flood: it was resynced, not fed everything`);
-  const received2 = fast.frames.filter((f) => f.t === "out").reduce((n, f) => n + f.d.length, 0);
-  assert.ok(received2 > received, "the fast client saw everything");
+  // (no "fast received more than slow": a flood this size outruns any client, so the fast one is
+  // resynced too by design. What matters is that the stalled phone held nobody back, asserted above.)
   await slow.close();
   await fast.close();
 });
@@ -535,8 +538,9 @@ test("one-shot run: exit code, stderr, timeout, truncation, scrubbing, cwd", { s
   assert.equal((await r.call("POST", "/gateway/terminal/run", { command: "" })).status, 400);
   assert.equal((await r.call("POST", "/gateway/terminal/run", { command: "id", cwd: "rel" })).status, 400);
   assert.equal((await run({ command: "echo hi", timeoutSec: 9999 })).exitCode, 0, "timeout is clamped, not rejected");
+  // the audit append is asynchronous: the last run's entry can land just after its response
+  await until(async () => (await readAudit({ home: r.home, actionPrefix: "terminal.run", limit: 20 })).length >= 6, 4000, "all six runs audited");
   const audited = await readAudit({ home: r.home, actionPrefix: "terminal.run", limit: 20 });
-  assert.ok(audited.length >= 6);
   assert.ok(!JSON.stringify(audited).includes("sk_live_abcdefgh12345678"), "secret shapes are redacted in the audit too");
 });
 

@@ -21,6 +21,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -253,7 +254,7 @@ interface Sess {
   pid: number;
   ring: OutputRing;
   fifo: string;
-  reader: fs.ReadStream | undefined;
+  reader: net.Socket | undefined;
   clients: Set<Client>;
   bytesIn: number;
   bytesOut: number;
@@ -450,9 +451,15 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
       await fs.promises.mkdir(dirs.logs, { recursive: true, mode: 0o700 });
       s.logFd = fs.openSync(path.join(dirs.logs, `${s.id}.log`), "a", 0o600);
     }
-    // r+ on a FIFO opens it read-write: it never blocks waiting for a writer
-    // and never sees EOF when the pane's `cat` is replaced.
-    const reader = fs.createReadStream(s.fifo, { flags: "r+", highWaterMark: 64 * 1024 });
+    // O_RDWR on a FIFO never blocks waiting for a writer and never sees EOF when
+    // the pane's `cat` is replaced. It is read through libuv's event loop
+    // (net.Socket on the fd), NOT fs.createReadStream: that issues a blocking
+    // read() on a threadpool thread which, with our own write end open, never
+    // returns and cannot be cancelled. Each live terminal would pin one of the
+    // pool's 4 threads for good (max terminals is 6), starving every other fs,
+    // dns and crypto call in the garrison, and the process could not even exit.
+    const fd = fs.openSync(s.fifo, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+    const reader = new net.Socket({ fd, readable: true, writable: false });
     s.reader = reader;
     reader.on("data", (chunk) => {
       const b = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
@@ -465,7 +472,13 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     reader.on("error", () => { /* torn down with the session */ });
     const quoted = `'${s.fifo.replace(/'/g, `'\\''`)}'`;
     const r = await tmux(["pipe-pane", "-O", "-t", `${s.id}:`, `cat >> ${quoted}`]);
-    if (r.code !== 0) throw new Error(`pipe-pane failed: ${r.err.trim().slice(0, 200)}`);
+    if (r.code !== 0) {
+      // A command-mode pane can finish before pipe-pane lands. Its output is still served
+      // by the capture-pane snapshot and poll() reports the exit, so a dead pane is not an error.
+      const dead = await tmux(["display-message", "-p", "-t", `${s.id}:`, "#{pane_dead}"]);
+      if (dead.code === 0 && dead.out.trim() === "1") return;
+      throw new Error(`pipe-pane failed: ${r.err.trim().slice(0, 200)}`);
+    }
   }
 
   async function adopt(): Promise<void> {
@@ -600,12 +613,35 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     }).catch(() => {});
   }
 
+  /**
+   * tmux applies a resize to the pane's pty a moment AFTER resize-window
+   * returns (measured: a keystroke 6 ms later still ran `stty size` against the
+   * old geometry). Wait for the kernel's view to match so input queued behind a
+   * resize really sees it. Best-effort and bounded: a host without GNU stty, or
+   * a pane that died, just proceeds.
+   */
+  async function ptySizeApplied(s: Sess, cols: number, rows: number): Promise<void> {
+    const tty = (await tmux(["display-message", "-p", "-t", `${s.id}:`, "#{pane_tty}"])).out.trim();
+    if (!tty.startsWith("/dev/")) return;
+    for (let i = 0; i < 40; i++) {
+      const size = await new Promise<string>((resolve) => {
+        execFile("stty", ["-F", tty, "size"], { timeout: 1_000, encoding: "utf8" }, (error, stdout) => resolve(error ? "" : stdout.trim()));
+      });
+      if (size === "") return;
+      if (size === `${rows} ${cols}`) return;
+      await sleep(10);
+    }
+  }
+
   async function resizeSess(s: Sess, cols: number, rows: number): Promise<void> {
     if (s.cols === cols && s.rows === rows) return;
     s.cols = cols;
     s.rows = rows;
     // Same queue as input: a keystroke typed after a resize must see the new size.
-    const done = s.inputChain.then(async () => { await tmux(["resize-window", "-t", `${s.id}:`, "-x", String(cols), "-y", String(rows)]); }).catch(() => {});
+    const done = s.inputChain.then(async () => {
+      await tmux(["resize-window", "-t", `${s.id}:`, "-x", String(cols), "-y", String(rows)]);
+      await ptySizeApplied(s, cols, rows);
+    }).catch(() => {});
     s.inputChain = done;
     await done;
   }

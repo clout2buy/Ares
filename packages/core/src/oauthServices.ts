@@ -61,7 +61,7 @@ export const OAUTH_APP_SERVICES: ConnectService[] = [
     domain: "discord.com",
     blurb: "Your Discord identity and servers. Reading messages needs a bot, which Discord only offers as a token.",
     keywords: ["discord", "discord server", "discord servers"],
-    howToUse: "Discord OAuth identifies the owner and lists their servers. " + API_USE("Discord", "discord") + " Reading or sending messages needs a bot token (Connect service discord-bot): the Api tool then sends bot operations as "Bot <token>".",
+    howToUse: "Discord OAuth identifies the owner and lists their servers. " + API_USE("Discord", "discord") + " Reading or sending messages needs a bot token (Connect service discord-bot): the Api tool then sends bot operations as Bot <token>.",
   },
   {
     id: "zoom",

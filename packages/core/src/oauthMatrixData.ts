@@ -5721,6 +5721,27 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "No official public API or OAuth. Community clients use the unofficial api.onepeloton.com username/password login -- not OAuth, may break, ToS risk. Keep browser session."
   },
   {
+    "id": "facebook-marketplace",
+    "label": "Facebook Marketplace (experimental)",
+    "class": "f",
+    "flow": "browser",
+    "registry": "existing",
+    "endpoints": {},
+    "pkce": false,
+    "clientAuth": "none",
+    "scopes": [],
+    "refreshTokens": false,
+    "ownerSetup": "none",
+    "unsupportedReason": "Facebook has no Marketplace or personal Messenger API, so Ares can only use your logged-in browser session (experimental; Facebook does not allow automation and may restrict the account).",
+    "evidence": [
+      "Meta's Graph API exposes no Marketplace search or personal Messenger endpoints; Pages Messenger covers Pages only (see the facebook row)",
+      "logged-out Chromium probe of /marketplace/<city>/search rendered the public page (docs/MARKETPLACE.md)"
+    ],
+    "verification": "UNVERIFIED",
+    "fixtures": [],
+    "notes": "Browser session only, labelled experimental. Drives the owner's own signed-in session with slow pacing, per-hour caps and owner approval of every message; stops at any login wall, checkpoint, block or captcha. See docs/MARKETPLACE.md."
+  },
+  {
     "id": "arxiv",
     "label": "arXiv",
     "class": "n",

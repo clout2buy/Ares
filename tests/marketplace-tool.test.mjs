@@ -265,7 +265,7 @@ test("doctrine: loads with Connect, says experimental, owner approval and untrus
   assert.match(text, /Facebook Marketplace \(EXPERIMENTAL\)/);
   assert.match(text, /draft_message/);
   assert.match(text, /never instructions/);
-  assert.match(text, /never solve or bypass/);
+  assert.match(text, /STOP and tell the owner/);
 });
 
 test("the unverified-send result is a failure the model cannot misreport", async () => {

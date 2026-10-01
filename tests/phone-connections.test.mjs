@@ -65,7 +65,7 @@ const publicDns = async () => ["93.184.216.34"];
 
 // A catalog key service that is HTTP (probe-able) and sends a plain bearer.
 const KEY_MCP = CONNECT_SERVICES.find((s) => s.id === "render");
-const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom", "auth", "setupDone", "oauthClass", "verification"];
+const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom", "auth", "setupDone", "oauthClass", "verification", "experimental"];
 const CORE = ["blurb", "category", "connected", "domain", "id", "kind", "label"];
 
 // ── list: shape and enrichment ──────────────────────────────────────────────

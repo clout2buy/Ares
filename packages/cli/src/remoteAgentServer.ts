@@ -257,6 +257,10 @@ export interface PhoneApiHooks {
    *  /gateway/liveactivity — phoneApprovals.ts, phoneLiveActivity.ts). Asked after
    *  the owner bearer check; false = not mine. */
   notify?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The agent handoff timeline (/gateway/timeline — phoneTimeline.ts): who
+   *  handed what to whom, with a revision cursor and an optional long poll.
+   *  Asked after the owner bearer check; false = not mine. */
+  timeline?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Inbound webhooks (/gateway/hooks — phoneHooks.ts). `inbound` answers the
    *  unauthenticated `POST /gateway/hooks/<id>` door BEFORE the bearer check (the
    *  hook's own secret is its auth); `manage` is the owner's list/create/delete,
@@ -1591,6 +1595,9 @@ export class RemoteAgentServer {
     }
     if (api.ask && (url.pathname === "/gateway/ask" || url.pathname === "/gateway/ask/" || url.pathname === "/gateway/ask/last")) {
       if (await api.ask(req, res, url)) return;
+    }
+    if (api.timeline && (url.pathname === "/gateway/timeline" || url.pathname === "/gateway/timeline/")) {
+      if (await api.timeline(req, res, url)) return;
     }
 
     if (api.notify && /^\/gateway\/(approvals|liveactivity)(\/|$)/.test(url.pathname)) {

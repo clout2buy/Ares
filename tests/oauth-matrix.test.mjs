@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MCP_CATALOG, CONNECT_SERVICES, OAUTH_MATRIX, discoveryFactsFrom, matrixFor, planConnect, summarizeMatrix, parseAuthServerMetadata } from "../packages/core/dist/index.js";
+import { MCP_STDIO_CATALOG, MCP_CATALOG, CONNECT_SERVICES, OAUTH_MATRIX, discoveryFactsFrom, matrixFor, planConnect, summarizeMatrix, parseAuthServerMetadata } from "../packages/core/dist/index.js";
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "oauth");
 const readFix = (rel) => JSON.parse(readFileSync(path.join(FIX, rel), "utf8"));
@@ -24,7 +24,7 @@ test("every registry service has a class and a path", () => {
     if (e.registry === "excluded") assert.ok(e.excludedReason, `${e.id} excluded without a reason`);
   }
   // rows that claim to be registry services exist there, and vice versa for added ones
-  for (const e of OAUTH_MATRIX.filter((x) => x.registry === "existing" || x.registry === "added")) assert.ok(CONNECT_SERVICES.some((s) => s.id === e.id) || MCP_CATALOG.some((c) => c.id === e.id && c.auth === "none"), `${e.id} is in the matrix but not the registry`);
+  for (const e of OAUTH_MATRIX.filter((x) => x.registry === "existing" || x.registry === "added")) assert.ok(CONNECT_SERVICES.some((s) => s.id === e.id) || MCP_STDIO_CATALOG.some((c) => c.id === e.id) || MCP_CATALOG.some((c) => c.id === e.id && c.auth === "none"), `${e.id} is in the matrix but not the registry`);
   assert.ok(new Set(OAUTH_MATRIX.map((e) => e.id)).size === OAUTH_MATRIX.length, "duplicate matrix ids");
 });
 

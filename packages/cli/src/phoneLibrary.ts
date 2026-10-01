@@ -7,6 +7,9 @@
 //   GET  /gateway/goals          200 {goals:[{id,title,category,status,progress?,target?,plan?,note?,nextCheckIn?,createdAt,updatedAt}]}
 //   POST /gateway/goals/close    {id, status:"done"|"dropped"} → 200 {ok:true} · 404 unknown
 //   GET  /gateway/artifacts      200 {items:[{path,name,kind,size,modifiedAt}]} newest first
+//                                kind: page | document | image | video | audio | code | data | model | archive
+//                                size is bytes; modifiedAt is the file's mtime (ISO-8601). A client must
+//                                treat a kind it does not know as a generic file: kinds are only ever added.
 //
 // Artifacts are the things Ares MADE — pages, documents, images, audio,
 // video — found under its media and forge dirs and the workspace it builds
@@ -20,8 +23,10 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { GoalsStore } from "@ares/tools";
 
-export type ArtifactKind = "page" | "document" | "image" | "video" | "audio";
+export type ArtifactKind = "page" | "document" | "image" | "video" | "audio" | "code" | "data" | "model" | "archive";
 
+/** Every extension /gateway/file will serve (ARTIFACT_TYPES) has a kind here, or
+ *  it would be servable but never listed — a test pins the two tables together. */
 const KIND_BY_EXT: Record<string, ArtifactKind> = {
   ".html": "page",
   ".htm": "page",
@@ -29,15 +34,86 @@ const KIND_BY_EXT: Record<string, ArtifactKind> = {
   ".md": "document",
   ".txt": "document",
   ".csv": "document",
+  ".tsv": "document",
+  ".docx": "document",
+  ".xlsx": "document",
+  ".pptx": "document",
   ".png": "image",
   ".jpg": "image",
   ".jpeg": "image",
   ".webp": "image",
   ".gif": "image",
   ".svg": "image",
+  ".heic": "image",
+  ".heif": "image",
+  ".avif": "image",
+  ".bmp": "image",
+  ".tif": "image",
+  ".tiff": "image",
   ".mp4": "video",
+  ".mov": "video",
+  ".m4v": "video",
+  ".webm": "video",
+  ".3gp": "video",
   ".mp3": "audio",
+  ".m4a": "audio",
+  ".aac": "audio",
+  ".wav": "audio",
+  ".aif": "audio",
+  ".aiff": "audio",
+  ".caf": "audio",
+  ".flac": "audio",
+  ".ogg": "audio",
+  ".opus": "audio",
+  ".glb": "model",
+  ".gltf": "model",
+  ".usdz": "model",
+  ".zip": "archive",
+  ".json": "data",
+  ".jsonl": "data",
+  ".ndjson": "data",
+  ".log": "data",
+  ".xml": "data",
+  ".yaml": "data",
+  ".yml": "data",
+  ".toml": "data",
+  ".js": "code",
+  ".mjs": "code",
+  ".cjs": "code",
+  ".jsx": "code",
+  ".ts": "code",
+  ".tsx": "code",
+  ".py": "code",
+  ".rb": "code",
+  ".go": "code",
+  ".rs": "code",
+  ".java": "code",
+  ".kt": "code",
+  ".swift": "code",
+  ".c": "code",
+  ".h": "code",
+  ".cc": "code",
+  ".cpp": "code",
+  ".hpp": "code",
+  ".cs": "code",
+  ".php": "code",
+  ".lua": "code",
+  ".sql": "code",
+  ".sh": "code",
+  ".bash": "code",
+  ".zsh": "code",
+  ".ps1": "code",
+  ".css": "code",
+  ".scss": "code",
 };
+
+/** Source and data files are what a PROJECT is made of, not what Ares made for
+ *  the owner: in a project tree (the workspace) they are served but not listed. */
+const PROJECT_QUIET_KINDS = new Set<ArtifactKind>(["code", "data"]);
+
+export function kindOfExtension(ext: string): ArtifactKind | undefined {
+  return KIND_BY_EXT[ext.toLowerCase()];
+}
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".claude", "dist", ".next", "build", ".cache", "coverage", ".turbo", "screenshots", "browser-profile", "browser-sessions", "garrison", "sessions", "tool-results", "checkpoints"]);
 const MAX_ITEMS = 300;
@@ -57,12 +133,15 @@ export interface LibraryOptions {
   /** The file server's own rule — only list what it will serve. */
   servable: (absPath: string) => boolean;
   home?: string;
+  /** Roots that are a working tree rather than a place Ares puts what it makes
+   *  (the workspace): `code` and `data` files under these are not listed. */
+  projectRoots?: string[];
 }
 
 export async function listArtifacts(opts: LibraryOptions): Promise<ArtifactItem[]> {
   const found = new Map<string, ArtifactItem>();
   let scanned = 0;
-  const walk = async (dir: string, depth: number): Promise<void> => {
+  const walk = async (dir: string, depth: number, project: boolean): Promise<void> => {
     if (scanned > MAX_FILES_SCANNED) return;
     let entries: import("node:fs").Dirent[];
     try {
@@ -76,12 +155,12 @@ export async function listArtifacts(opts: LibraryOptions): Promise<ArtifactItem[
       if (entry.name.startsWith(".")) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (depth > 0 && !SKIP_DIRS.has(entry.name)) await walk(full, depth - 1);
+        if (depth > 0 && !SKIP_DIRS.has(entry.name)) await walk(full, depth - 1, project);
         continue;
       }
       if (!entry.isFile()) continue;
       const kind = KIND_BY_EXT[path.extname(entry.name).toLowerCase()];
-      if (!kind || found.has(full) || !opts.servable(full)) continue;
+      if (!kind || found.has(full) || (project && PROJECT_QUIET_KINDS.has(kind)) || !opts.servable(full)) continue;
       // Docs the repo ships (README, CHANGELOG, AGENTS…) aren't things Ares made.
       if (kind === "document" && /^(readme|changelog|license|agents|claude|ares|contributing|security)\b/i.test(entry.name)) continue;
       try {
@@ -93,7 +172,8 @@ export async function listArtifacts(opts: LibraryOptions): Promise<ArtifactItem[
       }
     }
   };
-  for (const [root, depth] of opts.roots) await walk(root, depth);
+  const projects = new Set((opts.projectRoots ?? []).map((r) => path.resolve(r)));
+  for (const [root, depth] of opts.roots) await walk(root, depth, projects.has(path.resolve(root)));
   return [...found.values()].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, MAX_ITEMS);
 }
 

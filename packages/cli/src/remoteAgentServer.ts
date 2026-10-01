@@ -24,6 +24,7 @@ import { createSocket as createUdpSocket } from "node:dgram";
 import os from "node:os";
 import path from "node:path";
 import { aresHome } from "@ares/core";
+import { ARTIFACT_TYPES, mayServe, realPathOk, serveFile } from "./phoneFile.js";
 import {
   type DeviceRegistryFile,
   type PairedDevice,
@@ -295,40 +296,6 @@ export interface PermissionEntry {
   effect: string;
   /** user-global rules are revocable from the phone; project rules are not. */
   source: string;
-}
-
-/** What /gateway/file will hand a phone, by extension: things you LOOK at.
- *  Anything else is 404 — the owner's token is not a licence to read
- *  arbitrary files. JSON is deliberately absent: nothing Ares makes for the
- *  owner to see is JSON, and credentials.json / ui.json are. */
-const ARTIFACT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".htm": "text/html; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-  ".pdf": "application/pdf",
-  ".txt": "text/plain; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  // What Imagine makes (media/<date>/…): speech, podcasts, video clips.
-  ".mp3": "audio/mpeg",
-  ".mp4": "video/mp4",
-};
-
-/** Places under an artifact root that hold secrets or machinery, never
- *  artifacts — refused whatever the extension. The workspace is a root now
- *  (Ares builds pages there), and the workspace holds the signing key dir,
- *  a .git, and node_modules. */
-// browser-sessions holds live sign-in cookies (Connect → browser); never serve it.
-const NEVER_SERVE = /(^|[\\/])(\.git|node_modules|asc|\.ssh|\.gnupg|garrison|browser-sessions|browser-profile)([\\/]|$)|(^|[\\/])[^\\/]*\.(env|pem|p8|p12|key|mobileprovision)$|credentials\.json$|ui\.json$/i;
-
-function insideAny(wanted: string, roots: string[]): boolean {
-  if (NEVER_SERVE.test(wanted)) return false;
-  return roots.map((r) => path.resolve(r)).some((root) => wanted === root || wanted.startsWith(root + path.sep));
 }
 
 /** The privacy policy for the AgentAres companion app, served publicly so the
@@ -1480,6 +1447,33 @@ export class RemoteAgentServer {
     res.end(body);
   }
 
+  /**
+   * /gateway/file and /gateway/shot: hand the phone one thing Ares made.
+   * Only a file under a root Ares itself writes to, only a type we'd show: the
+   * token is the owner's, but a path parameter is still a path parameter.
+   * /shot is the image-only alias the app used first. The bytes are streamed
+   * with Range/HEAD support by phoneFile.ts — never buffered.
+   */
+  private async serveArtifact(req: IncomingMessage, res: ServerResponse, rawPath: string, imageOnly: boolean): Promise<void> {
+    const api = this.opts.phoneApi ?? {};
+    const notFound = () => {
+      res.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(req.method === "HEAD" ? undefined : JSON.stringify({ error: "not found" }));
+    };
+    const wanted = path.resolve(rawPath);
+    const roots = [...(api.screenshotRoots ?? []), ...(api.artifactRoots ?? [])];
+    const type = ARTIFACT_TYPES[path.extname(wanted).toLowerCase()];
+    if (!type || (imageOnly && !type.startsWith("image/")) || !mayServe(wanted, roots, this.home)) return notFound();
+    // …and again after following symlinks. The extension check reads the
+    // PATH, so `served-root/report.html` symlinked at an ssh key would
+    // otherwise pass every gate above and be handed straight out. Matters
+    // most for the temp root, which is world-writable.
+    let real: string;
+    try { real = await realpath(wanted); } catch { return notFound(); }
+    if (real !== wanted && !realPathOk(real, roots, this.home)) return notFound();
+    if ((await serveFile(req, res, real, type)) === "missing") return notFound();
+  }
+
   private wsUrl(): string {
     return this.linkBaseUrl().replace(/^http/, "ws") + "/ws";
   }
@@ -1526,13 +1520,18 @@ export class RemoteAgentServer {
     // what /gateway/file below will serve (same roots, same refusals).
     {
       const fileRoots = [...(this.opts.phoneApi?.screenshotRoots ?? []), ...(this.opts.phoneApi?.artifactRoots ?? [])];
+      // A workspace is somebody's project tree: its pages, pictures and media are
+      // things Ares made, but its source and data files are the project, and
+      // listing every .ts/.json at depth 2 would bury the library. (They still
+      // open by path; this only decides what the LIST shows.)
+      const projectRoots = (this.opts.phoneApi?.artifactRoots ?? []).filter((r) => r !== this.home && r !== os.tmpdir());
       const libraryRoots: Array<[string, number]> = [
         [path.join(this.home, "media"), 3],
         [path.join(this.home, "forge"), 3],
-        ...(this.opts.phoneApi?.artifactRoots ?? []).filter((r) => r !== this.home && r !== os.tmpdir()).map((r): [string, number] => [r, 2]),
+        ...projectRoots.map((r): [string, number] => [r, 2]),
       ];
-      const servable = (p: string) => Boolean(ARTIFACT_TYPES[path.extname(p).toLowerCase()]) && insideAny(path.resolve(p), fileRoots);
-      if (await handleLibraryApi(req, res, url, { roots: libraryRoots, servable, home: this.home })) return;
+      const servable = (p: string) => mayServe(path.resolve(p), fileRoots, this.home);
+      if (await handleLibraryApi(req, res, url, { roots: libraryRoots, servable, home: this.home, projectRoots })) return;
     }
     const api = this.opts.phoneApi ?? {};
     if (url.pathname === "/gateway/family/messages" && (req.method === "GET" || req.method === "POST")) {
@@ -1573,38 +1572,26 @@ export class RemoteAgentServer {
     }
 
     try {
+      // The same door with the path IN the URL — /gateway/file/<absolute path> —
+      // so a page opened there resolves its relative references (<img src="cat.png">,
+      // <video src="clip.mp4">) to siblings under the same directory, which a
+      // ?path= query cannot do. Identical rules: it only re-spells the path.
+      if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/gateway/file/")) {
+        let spelled: string;
+        try { spelled = decodeURIComponent(url.pathname.slice("/gateway/file".length)); } catch { return json(404, { error: "not found" }); }
+        if (process.platform === "win32" && /^\/[A-Za-z]:\//.test(spelled)) spelled = spelled.slice(1);
+        return await this.serveArtifact(req, res, spelled, false);
+      }
       if (api.ownerControl) {
         const reply = await handleOwnerControlRoute(req.method, url, () => readJson(req, 4 * 1024), api.ownerControl);
         if (reply) return json(reply.status, reply.body);
       }
       switch (`${req.method} ${url.pathname}`) {
         case "GET /gateway/shot":
-        case "GET /gateway/file": {
-          // Only a file under a root Ares itself writes to, only a type we'd
-          // show: the token is the owner's, but a path parameter is still a
-          // path parameter. /shot is the image-only alias the app used first.
-          const wanted = path.resolve(url.searchParams.get("path") ?? "");
-          const roots = [...(api.screenshotRoots ?? []), ...(api.artifactRoots ?? [])];
-          const ext = path.extname(wanted).toLowerCase();
-          const type = ARTIFACT_TYPES[ext];
-          const imageOnly = url.pathname === "/gateway/shot";
-          if (!insideAny(wanted, roots) || !type || (imageOnly && !type.startsWith("image/"))) return json(404, { error: "not found" });
-          // …and again after following symlinks. The extension check reads the
-          // PATH, so `served-root/report.html` symlinked at an ssh key would
-          // otherwise pass every gate above and be handed straight out. Matters
-          // most for the temp root, which is world-writable.
-          let real: string;
-          try { real = await realpath(wanted); } catch { return json(404, { error: "not found" }); }
-          if (real !== wanted && !insideAny(real, roots)) return json(404, { error: "not found" });
-          let bytes: Buffer;
-          try { bytes = await readFile(real); } catch { return json(404, { error: "not found" }); }
-          const headers: Record<string, string | number> = { "content-type": type, "content-length": bytes.byteLength, "cache-control": "private, max-age=60" };
-          // A page Ares wrote runs in the phone's viewer with no network: it
-          // may draw (WebGL, canvas, inline scripts) but never phone home.
-          if (type.startsWith("text/html")) headers["content-security-policy"] = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'";
-          res.writeHead(200, headers);
-          res.end(bytes);
-          return;
+        case "HEAD /gateway/shot":
+        case "GET /gateway/file":
+        case "HEAD /gateway/file": {
+          return await this.serveArtifact(req, res, url.searchParams.get("path") ?? "", url.pathname === "/gateway/shot");
         }
         case "POST /gateway/connect/start": {
           if (!api.oauth) return json(501, { error: "connectors are not set up on this machine" });

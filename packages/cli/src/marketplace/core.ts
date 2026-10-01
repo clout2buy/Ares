@@ -253,6 +253,16 @@ export function parseListing(raw: RawListing, wantedId?: string): ListingDetail 
       break;
     }
   }
+  if (!location) {
+    // "Listed 3 days ago in Austin, TX"
+    for (const line of lines) {
+      const m = /\bin\s+([A-Z][A-Za-z.'’ -]{1,40},\s?[A-Z]{2})\b/.exec(line);
+      if (m && POSTED_RE.test(line)) {
+        location = m[1]!;
+        break;
+      }
+    }
+  }
   const posted = lines.map((l) => POSTED_RE.exec(l)?.[0]).find(Boolean) ?? "";
   const links = raw.sellerLinks ?? [];
   const sellerLink = links.find((l) => /\/marketplace\/profile\/(\d+)/.test(l.href) || /profile\.php\?id=\d+/.test(l.href)) ?? links[0];
@@ -375,8 +385,8 @@ export function detectWall(s: Surface): Wall | null {
     path = s.url.toLowerCase();
   }
   if (BLOCKED.test(hay)) return { kind: "blocked", reason: "Facebook says this account is temporarily blocked or restricted from Marketplace" };
-  if (/\/checkpoint\b/.test(path) || CHECKPOINT.test(hay)) return { kind: "checkpoint", reason: "Facebook is asking for an identity or security check" };
   if (s.hasCaptcha || CAPTCHA.test(`${hay}\n${s.frames ?? ""}`)) return { kind: "captcha", reason: "Facebook is showing a captcha or human check" };
+  if (/\/checkpoint\b/.test(path) || CHECKPOINT.test(hay)) return { kind: "checkpoint", reason: "Facebook is asking for an identity or security check" };
   if (/^\/(?:login|recover|reg)\b/.test(path) || /login\.php/.test(path) || s.hasPassword || LOGIN_TEXT.test(hay)) {
     return { kind: "login", reason: "The saved Facebook sign-in is missing or expired (login page)" };
   }

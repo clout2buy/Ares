@@ -266,6 +266,7 @@ interface Sess {
   closing: boolean;
   /** false while the tmux session is still being created (the poll must not judge it yet). */
   ready: boolean;
+  deadPolls?: number;
 }
 
 export interface TerminalApi {
@@ -572,6 +573,10 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
           s.cols = Number(f[6]) || s.cols;
           s.rows = Number(f[7]) || s.rows;
           if (f[1] === "1" && s.alive) {
+            // tmux flags the pane dead a moment before it has reaped the child and recorded
+            // the status; reading it in that window would report a failed command as exit 0.
+            const statusKnown = f[2] !== "" || Number(f[3]) > 0;
+            if (!statusKnown && (s.deadPolls = (s.deadPolls ?? 0) + 1) < 8) continue;
             s.alive = false;
             const status = Number(f[2]);
             const signal = Number(f[3]);

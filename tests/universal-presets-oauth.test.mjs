@@ -98,6 +98,7 @@ test("schema: every preset is complete and well-formed", async (t) => {
     assert.match(b.source.docsUrl, /^https:\/\//);
     assert.ok(["vendor-openapi", "discovery", "graphql-schema", "docs"].includes(b.source.kind));
     if (b.source.kind !== "docs") assert.match(b.source.specUrl ?? "", /^https:\/\//, "a spec-derived preset names its spec URL");
+    for (const u of b.source.specUrls ?? []) assert.match(u, /^https:\/\//);
     assert.ok(b.notes.rateLimits.length > 15 && b.notes.auth.length > 15, "rate-limit and auth notes");
 
     // the spec

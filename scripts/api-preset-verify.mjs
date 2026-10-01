@@ -71,18 +71,24 @@ async function checkSpec(bundle) {
     out.note = "no machine-readable spec; operations curated from the documentation";
     return out;
   }
-  let fetched;
-  try {
-    fetched = await fetchText(bundle.source.specUrl);
-  } catch (err) {
-    out.note = `fetch failed: ${err.message}`;
+  const urls = [bundle.source.specUrl, ...(bundle.source.specUrls ?? [])];
+  const fetchedAll = [];
+  for (const url of urls) {
+    try {
+      const f = await fetchText(url);
+      fetchedAll.push({ url, ...f });
+    } catch (err) {
+      out.note = `fetch failed for ${url}: ${err.message}`;
+      return out;
+    }
+  }
+  const bad = fetchedAll.find((f) => f.status !== 200);
+  out.status = bad ? bad.status : 200;
+  if (bad) {
+    out.note = `spec URL ${bad.url} answered HTTP ${bad.status}`;
     return out;
   }
-  out.status = fetched.status;
-  if (fetched.status !== 200) {
-    out.note = `spec URL answered HTTP ${fetched.status}`;
-    return out;
-  }
+  const fetched = fetchedAll[0];
   if (bundle.source.kind === "graphql-schema") {
     const schema = fetched.text;
     const rootFields = (type) => {
@@ -106,21 +112,13 @@ async function checkSpec(bundle) {
     out.note = `GraphQL schema (${(schema.length / 1024).toFixed(0)} KB); ${q.size} query and ${mu.size} mutation root fields`;
     return out;
   }
-  let vendor;
+  const vendors = [];
   try {
-    vendor = new SpecHandle(parseSpecText(fetched.text));
+    for (const f of fetchedAll) vendors.push(new SpecHandle(parseSpecText(f.text)));
   } catch (err) {
-    out.note = `the vendor spec did not parse: ${err.message}`;
+    out.note = `a vendor spec did not parse: ${err.message}`;
     return out;
   }
-  const vendorServerPath = (() => {
-    try {
-      const s = vendor.meta.servers[0];
-      return s ? new URL(s).pathname.replace(/\/$/, "") : "";
-    } catch {
-      return "";
-    }
-  })();
   const ourBasePath = (() => {
     try {
       return new URL(bundle.def.baseUrl ?? "https://x.invalid").pathname.replace(/\/$/, "");
@@ -129,21 +127,31 @@ async function checkSpec(bundle) {
     }
   })();
   const index = new Map();
-  for (const v of vendor.ops) index.set(`${v.method} ${norm(vendorServerPath + v.path)}`, v);
-  for (const v of vendor.ops) if (!index.has(`${v.method} ${norm(v.path)}`)) index.set(`${v.method} ${norm(v.path)}`, v);
+  for (const vendor of vendors) {
+    const serverPath = (() => {
+      try {
+        const sv = vendor.meta.servers[0];
+        return sv ? new URL(sv).pathname.replace(/\/$/, "") : "";
+      } catch {
+        return "";
+      }
+    })();
+    for (const v of vendor.ops) index.set(`${v.method} ${norm(serverPath + v.path)}`, { v, vendor });
+    for (const v of vendor.ops) if (!index.has(`${v.method} ${norm(v.path)}`)) index.set(`${v.method} ${norm(v.path)}`, { v, vendor });
+  }
   for (const op of handle.ops) {
     const resolved = handle.operation(op.id);
     const declared = bundle.spec.paths[op.path]?.[op.method.toLowerCase()];
     const vendorKey = typeof declared?.["x-ares-vendor"] === "string" ? declared["x-ares-vendor"] : `${op.method} ${op.path}`;
     const [vm, ...vp] = vendorKey.split(" ");
     const candidates = [`${vm} ${norm(ourBasePath + vp.join(" "))}`, `${vm} ${norm(vp.join(" "))}`];
-    const hit = candidates.map((k) => index.get(k)).find(Boolean);
-    if (!hit) {
+    const entry = candidates.map((k) => index.get(k)).find(Boolean);
+    if (!entry) {
       out.missing.push(`${op.method} ${op.path} (${op.id})`);
       continue;
     }
     out.found++;
-    const vOp = vendor.operation(hit.id);
+    const vOp = entry.vendor.operation(entry.v.id);
     const vNames = new Set(vOp.parameters.map((p) => p.name.toLowerCase()));
     for (const p of resolved.parameters) {
       if (vNames.has(p.name.toLowerCase())) continue;
@@ -155,7 +163,7 @@ async function checkSpec(bundle) {
     }
   }
   out.level = out.missing.length === 0 ? "SPEC-FETCHED" : "UNVERIFIED";
-  out.note = `${vendor.meta.title} ${vendor.meta.apiVersion}, ${vendor.ops.length} operations in the vendor spec`;
+  out.note = vendors.map((v) => `${v.meta.title} ${v.meta.apiVersion} (${v.ops.length} operations)`).join("; ");
   return out;
 }
 

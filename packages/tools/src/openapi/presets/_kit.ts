@@ -169,6 +169,8 @@ export interface PresetSource {
   kind: "vendor-openapi" | "discovery" | "graphql-schema" | "docs";
   /** The machine-readable spec this was curated from (vendor-openapi / discovery / graphql-schema). */
   specUrl?: string;
+  /** More specs of the same service (Google has one discovery document per API; Atlassian one per product). */
+  specUrls?: string[];
   /** The human documentation for the operations (always). */
   docsUrl: string;
   /** The day the spec or docs were fetched and the operations checked against them (YYYY-MM-DD). */

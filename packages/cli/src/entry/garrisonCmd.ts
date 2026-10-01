@@ -29,6 +29,7 @@ import { createAskApi } from "../phoneAsk.js";
 import { AvatarStore, createAvatarsApi } from "../phoneAvatars.js";
 import { DEFAULT_PERSONA_ID } from "../personas.js";
 import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
+import { createInboxApi, makeInboxRunner } from "../phoneInbox.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -754,6 +755,18 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "hooks", line } }) + "\n"),
   });
 
+  // Share -> Ares: what the owner shares from any iOS app becomes one turn on the
+  // chosen agent's thread (phoneInbox.ts); the reply is pushed when it lands.
+  const inboxApi = createInboxApi({
+    home: context.home,
+    knownAgent: (id) => id === DEFAULT_PERSONA_ID || personaRuntime.store.get(id) !== undefined,
+    agentName: (id) => (id === DEFAULT_PERSONA_ID ? undefined : personaRuntime.store.get(id)?.name),
+    runner: makeInboxRunner({ sessions, personas: personaRuntime }),
+    notify: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "inbox", line } }) + "\n"),
+  });
+  void inboxApi.start().catch((err: unknown) => process.stderr.write(`garrison: inbox failed to start: ${err instanceof Error ? err.message : String(err)}\n`));
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -808,6 +821,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),
           }),
           hooks: hooksApi,
+          inbox: inboxApi.handle,
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
           registerPush: (d) => phonePush.register(d),

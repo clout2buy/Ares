@@ -21,7 +21,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { browserSessionFile } from "@ares/core";
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
-import type { RawCard, type RawListing, type RawThread, type Surface } from "./core.js";
+import type { RawCard, RawListing, RawThread, Surface } from "./core.js";
 
 export type ComposeResult =
   | { ok: true }

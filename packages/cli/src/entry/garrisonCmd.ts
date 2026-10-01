@@ -28,7 +28,7 @@ import { createInstancesApi } from "../phoneInstances.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
 import { createTimelineApi } from "../phoneTimeline.js";
-import { AvatarStore, createAvatarsApi } from "../phoneAvatars.js";
+import { AVATAR_MAX_BYTES, AvatarStore, createAvatarsApi, detectImage } from "../phoneAvatars.js";
 import { DEFAULT_PERSONA_ID } from "../personas.js";
 import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
 import { createInboxApi, makeInboxRunner } from "../phoneInbox.js";

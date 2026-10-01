@@ -512,6 +512,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
   async function destroy(s: Sess, reason: string, kind: "kill" | "idle" | "gone" | "reap"): Promise<void> {
     if (s.closing) return;
     s.closing = true;
+    log(`terminal: ended ${s.id} (${kind}: ${reason})`);
     sessions.delete(s.id);
     s.unregister?.();
     for (const c of [...s.clients]) {

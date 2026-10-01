@@ -80,7 +80,7 @@ test("Microsoft is a classic oauth-app provider on the v2 common endpoint", asyn
   for (const s of ["offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "Contacts.ReadWrite"]) assert.ok(ms.scopes.includes(s), s);
   const url = new URL(buildAuthorizeUrl(ms, { clientId: "app-id", redirectUri: "https://ares.test/oauth/callback", state: "st" }));
   assert.equal(url.searchParams.get("response_type"), "code");
-  assert.equal(url.searchParams.get("scope"), "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite");
+  assert.equal(url.searchParams.get("scope"), "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite Files.ReadWrite");
   assert.equal(url.searchParams.get("prompt"), "select_account");
 
   // Token redemption + refresh: form-encoded, client_secret in the body
@@ -511,7 +511,7 @@ test("GET /gateway/connections lists every registered service with its state", a
   const { services } = await res.json();
   const google = services.find((s) => s.id === "google");
   // The original shape is intact; everything else is an OPTIONAL enrichment (phone-connections.test.mjs).
-  const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom"];
+  const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom", "auth", "setupDone", "oauthClass", "verification"];
   for (const key of ["blurb", "category", "connected", "domain", "id", "kind", "label"]) assert.ok(key in google, key);
   for (const key of Object.keys(google)) assert.ok(["blurb", "category", "connected", "domain", "id", "kind", "label", ...OPTIONAL].includes(key), `unexpected key ${key}`);
   assert.equal(google.connected, true, "the google token stored above");
@@ -520,7 +520,7 @@ test("GET /gateway/connections lists every registered service with its state", a
   assert.equal(services.find((s) => s.id === "doordash").connected, false);
   assert.equal(services.find((s) => s.id === "stripe").category, "payments");
   assert.ok(!services.some((s) => s.id.startsWith("site:")));
-  assert.equal(services.length, CONNECT_SERVICES.length);
+  assert.equal(services.length, CONNECT_SERVICES.filter((s) => !s.advanced).length);
 });
 
 test("POST /gateway/connections/start hands the broker's link back; 404 / 503 otherwise", async (t) => {

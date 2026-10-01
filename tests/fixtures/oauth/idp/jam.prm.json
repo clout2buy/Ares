@@ -1,0 +1,1 @@
+{"resource":"https://mcp.jam.dev/mcp","resource_server":"https://mcp.jam.dev/","authorization_servers":["https://api.jam.dev"],"scopes_supported":["mcp:read","mcp:write"],"introspection_endpoint":"https://api.jam.dev/oauth/introspect"}

@@ -1,0 +1,1 @@
+{"resource":"https://mcp.dropbox.com/mcp","authorization_servers":["https://www.dropbox.com"],"scopes_supported":["account_info.read","file_requests.read","file_requests.write","files.content.read","files.content.write","files.metadata.read","files.metadata.write","sharing.read","sharing.write"]}

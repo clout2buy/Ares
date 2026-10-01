@@ -12,6 +12,7 @@
 // tested without a live server. Token storage/refresh reuses oauth.ts.
 
 import { createHash, randomBytes } from "node:crypto";
+import { parseAuthServerMetadata } from "./oauthEngine.js";
 
 export interface McpAuthServer {
   /** RFC 8414 authorization_endpoint. */
@@ -25,6 +26,18 @@ export interface McpAuthServer {
   /** The protected resource identifier to bind tokens to (RFC 8707). */
   resource: string;
   revocationEndpoint?: string;
+  /** The issuer identifier (RFC 8414), for the RFC 9207 `iss` check. */
+  issuer?: string;
+  /** RFC 8628 device authorization endpoint, when the server has one. */
+  deviceAuthorizationEndpoint?: string;
+  grantTypesSupported?: string[];
+  tokenEndpointAuthMethodsSupported?: string[];
+  codeChallengeMethodsSupported?: string[];
+  userinfoEndpoint?: string;
+  /** The issuer fetches an https client_id as a metadata document (no registration needed). */
+  clientIdMetadataDocumentSupported?: boolean;
+  /** Scopes the PROTECTED RESOURCE advertises (RFC 9728), preferred over the issuer's. */
+  resourceScopes?: string[];
 }
 
 export interface McpOAuthDeps {
@@ -129,6 +142,8 @@ export async function discoverMcpAuth(mcpUrl: string, deps: McpOAuthDeps = {}): 
     const authorizationEndpoint = typeof meta?.authorization_endpoint === "string" ? meta.authorization_endpoint : "";
     const tokenEndpoint = typeof meta?.token_endpoint === "string" ? meta.token_endpoint : "";
     if (authorizationEndpoint && tokenEndpoint) {
+      const parsed = parseAuthServerMetadata(meta);
+      const resourceScopes = Array.isArray(prm?.scopes_supported) ? (prm!.scopes_supported as unknown[]).filter((x): x is string => typeof x === "string") : undefined;
       return {
         authorizationEndpoint,
         tokenEndpoint,
@@ -136,6 +151,14 @@ export async function discoverMcpAuth(mcpUrl: string, deps: McpOAuthDeps = {}): 
         scopesSupported: Array.isArray(meta?.scopes_supported) ? (meta!.scopes_supported as string[]) : undefined,
         resource,
         ...(typeof meta?.revocation_endpoint === "string" ? { revocationEndpoint: meta.revocation_endpoint as string } : {}),
+        ...(parsed?.issuer ? { issuer: parsed.issuer } : {}),
+        ...(parsed?.deviceAuthorizationEndpoint ? { deviceAuthorizationEndpoint: parsed.deviceAuthorizationEndpoint } : {}),
+        ...(parsed?.grantTypesSupported ? { grantTypesSupported: parsed.grantTypesSupported } : {}),
+        ...(parsed?.tokenEndpointAuthMethodsSupported ? { tokenEndpointAuthMethodsSupported: parsed.tokenEndpointAuthMethodsSupported } : {}),
+        ...(parsed?.codeChallengeMethodsSupported ? { codeChallengeMethodsSupported: parsed.codeChallengeMethodsSupported } : {}),
+        ...(parsed?.userinfoEndpoint ? { userinfoEndpoint: parsed.userinfoEndpoint } : {}),
+        ...(parsed?.clientIdMetadataDocumentSupported ? { clientIdMetadataDocumentSupported: true } : {}),
+        ...(resourceScopes?.length ? { resourceScopes } : {}),
       };
     }
   }
@@ -318,13 +341,20 @@ export async function exchangeMcpCode(
 }
 
 /** RFC 7009 — tell the issuer to forget a token. Best effort; never throws. */
-export async function revokeMcpToken(revocationEndpoint: string, token: string, clientId: string, deps: McpOAuthDeps = {}): Promise<boolean> {
+export async function revokeMcpToken(
+  revocationEndpoint: string,
+  token: string,
+  clientId: string,
+  deps: McpOAuthDeps & { clientSecret?: string; hint?: "access_token" | "refresh_token" } = {},
+): Promise<boolean> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   try {
+    const form = new URLSearchParams({ token, client_id: clientId, ...(deps.hint ? { token_type_hint: deps.hint } : {}) });
+    if (deps.clientSecret) form.set("client_secret", deps.clientSecret);
     const res = await fetchImpl(revocationEndpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token, client_id: clientId }).toString(),
+      body: form.toString(),
       signal: AbortSignal.timeout(8_000),
     });
     return res.ok;

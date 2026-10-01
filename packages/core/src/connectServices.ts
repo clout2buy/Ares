@@ -31,6 +31,8 @@ import { DAV_SERVICES } from "./davServices.js";
 import { siteLoginDomain, siteLoginService } from "./siteLogins.js";
 import { plaidVariantService } from "./plaidService.js";
 import { API_CONNECT_SERVICES, apiConnectServiceFromDisk, isApiConnectId } from "./apiServices.js";
+import { OAUTH_APP_SERVICES } from "./oauthServices.js";
+import { matrixFor } from "./oauthMatrix.js";
 
 export type ConnectKind = "mcp-oauth" | "mcp-key" | "oauth-app" | "api-key" | "browser";
 
@@ -72,6 +74,12 @@ export interface ConnectService {
   /** browser: where sign-in starts, and the site's registrable domain. */
   loginUrl?: string;
   domain?: string;
+  /** An OAuth service that also has an EXPERIMENTAL live-browser session for what
+   *  its official API cannot reach (Meta's personal feeds). Started only on request. */
+  browserFallback?: { loginUrl: string; domain: string; label: string };
+  /** A pasted-token sibling of an OAuth service (stdio MCP with a token). Kept for
+   *  owners already connected through it; hidden from the phone list otherwise. */
+  advanced?: boolean;
 }
 
 const MCP_USE = (id: string) =>
@@ -81,8 +89,8 @@ const GOOGLE_SETUP = {
   consoleUrl: "https://console.cloud.google.com/apis/credentials",
   steps: [
     "Open console.cloud.google.com and create (or pick) a project.",
-    "APIs & Services → Library: enable each of these APIs — Gmail API, Google Calendar API, Google Drive API, Google Docs API, Google Sheets API, Google Slides API, Google Forms API, Google Tasks API and People API (Contacts).",
-    "OAuth consent screen: choose External, fill in the app name and your email, add yourself under Test users, then press Publish app (an app left in Testing mode loses access every 7 days).",
+    "APIs & Services → Library: enable each of these APIs — Gmail API, Google Calendar API, Google Drive API, Google Docs API, Google Sheets API, Google Slides API, Google Forms API, Google Tasks API, People API (Contacts), YouTube Data API v3 and Google Photos Picker API.",
+    "OAuth consent screen: choose External, fill in the app name and your email, add yourself under Test users, then press Publish app to move it to In production. Verification is NOT needed for one owner (you only see an unverified-app warning once). An app left in Testing mode loses access every 7 days: that is why a Google connection that worked on Monday asks you to sign in again next week.",
     "Credentials → Create credentials → OAuth client ID → Web application. Under Authorized redirect URIs add the redirect URI shown below.",
     "Copy the Client ID and Client secret into the form below.",
   ],
@@ -120,14 +128,6 @@ const BROWSER_SITES: Array<Omit<ConnectService, "kind" | "howToUse"> & { howToUs
   { id: "instacart", label: "Instacart", blurb: "Grocery delivery.", keywords: ["instacart", "groceries", "grocery delivery"], loginUrl: "https://www.instacart.com/login", domain: "instacart.com" },
   { id: "amazon", label: "Amazon", blurb: "Shopping and orders.", keywords: ["amazon", "amazon order"], loginUrl: "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0", domain: "amazon.com" },
   { id: "opentable", label: "OpenTable", blurb: "Restaurant reservations.", keywords: ["opentable", "reservation", "book a table"], loginUrl: "https://www.opentable.com/", domain: "opentable.com" },
-  // Meta's APIs won't let a personal agent read DMs or a personal profile
-  // (app review), so these are sign-in-on-the-live-browser services — the
-  // same thing Muse does, minus Meta owning both ends. Sending as the owner
-  // still crosses the browser_submit gate.
-  { id: "instagram", label: "Instagram", blurb: "Your feed, posts, comments and DMs.", keywords: ["instagram", "insta", "ig", "instagram dms", "instagram messages"], loginUrl: "https://www.instagram.com/accounts/login/", domain: "instagram.com" },
-  { id: "facebook", label: "Facebook", blurb: "Your feed, groups, pages and Marketplace.", keywords: ["facebook", "fb", "facebook marketplace", "marketplace"], loginUrl: "https://www.facebook.com/login/", domain: "facebook.com" },
-  { id: "messenger", label: "Messenger", blurb: "Your Messenger conversations.", keywords: ["messenger", "facebook messenger", "fb messages"], loginUrl: "https://www.messenger.com/login/", domain: "messenger.com" },
-  { id: "threads", label: "Threads", blurb: "Your Threads feed, posts and replies.", keywords: ["threads", "threads app"], loginUrl: "https://www.threads.com/login", domain: "threads.com" },
 ];
 
 const HANDWRITTEN: ConnectService[] = [
@@ -138,9 +138,9 @@ const HANDWRITTEN: ConnectService[] = [
     label: "Outlook",
     kind: "oauth-app",
     oauthProvider: "microsoft",
-    blurb: "Outlook, Hotmail and Microsoft 365: mail, calendar and contacts.",
-    keywords: ["outlook", "hotmail", "outlook.com", "hotmail.com", "live.com", "msn.com", "microsoft", "microsoft mail", "microsoft email", "office 365", "microsoft 365", "o365", "outlook calendar", "outlook email"],
-    howToUse: "Use the Outlook tool: list_messages / search / read_message / send / draft / reply / forward, list_events / create_event, search_contacts.",
+    blurb: "Outlook, Hotmail and Microsoft 365: mail, calendar, contacts and OneDrive files. Signs in with a code on your phone.",
+    keywords: ["outlook", "hotmail", "outlook.com", "hotmail.com", "live.com", "msn.com", "microsoft", "microsoft mail", "microsoft email", "office 365", "microsoft 365", "o365", "outlook calendar", "outlook email", "onedrive", "one drive"],
+    howToUse: "Use the Outlook tool: list_messages / search / read_message / send / draft / reply / forward, list_events / create_event, search_contacts. OneDrive files ride the same sign-in (Files.ReadWrite): call the Microsoft Graph /me/drive API with the Api tool.",
     appSetup: MICROSOFT_SETUP,
   },
   {
@@ -148,15 +148,15 @@ const HANDWRITTEN: ConnectService[] = [
     label: "Google",
     kind: "oauth-app",
     oauthProvider: "google",
-    blurb: "Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks and Contacts.",
+    blurb: "Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks, Contacts, YouTube and the Photos picker.",
     keywords: [
       "google", "gmail", "email", "e-mail", "inbox", "mail", "calendar", "google calendar", "contacts", "google contacts",
       "google drive", "gdrive", "google docs", "google doc", "google sheets", "google sheet", "spreadsheet", "google slides",
-      "slides", "google forms", "google form", "google tasks", "google workspace", "g suite",
+      "slides", "google forms", "google form", "google tasks", "google workspace", "g suite", "youtube", "google photos", "photos",
     ],
     howToUse:
       "One Google connection covers: Gmail (search / read / send / draft / reply / forward / labels / archive / trash / unsubscribe / find_code), " +
-      "GoogleCalendar, GoogleDrive, GoogleDocs, GoogleSheets, GoogleSlides, GoogleForms, GoogleTasks and GoogleContacts — load them with ToolSearch. " +
+      "GoogleCalendar, GoogleDrive, GoogleDocs, GoogleSheets, GoogleSlides, GoogleForms, GoogleTasks and GoogleContacts — load them with ToolSearch. YouTube (Data API v3) and the Photos Picker API ride the same sign-in: call them with the Api tool. " +
       "If a call fails with a 403 about a disabled API or missing scope, the owner enabled the app before that API was added: connect \"google\" again.",
     appSetup: GOOGLE_SETUP,
   },
@@ -168,7 +168,14 @@ const HANDWRITTEN: ConnectService[] = [
     blurb: "Playback, playlists and your library.",
     keywords: ["spotify", "playlist", "play music on spotify"],
     howToUse: "Use the Spotify tool.",
-    appSetup: genericAppSetup("https://developer.spotify.com/dashboard", "Spotify"),
+    appSetup: {
+      consoleUrl: "https://developer.spotify.com/dashboard",
+      steps: [
+        "Open the Spotify Developer Dashboard, sign in and press Create app.",
+        "Redirect URI: paste the redirect URI shown below (https is allowed). Under APIs used, tick Web API.",
+        "Settings: copy the Client ID into the form below. No secret is needed: Ares signs in with PKCE.",
+      ],
+    },
   },
   {
     id: "twilio",
@@ -249,6 +256,8 @@ function fromCatalog(entry: McpCatalogEntry): ConnectService | null {
     keywords: entry.keywords,
     howToUse: MCP_USE(entry.id),
     mcpUrl: entry.url,
+    // A client-registry key for the MCP servers that need a registered client (GitHub, Slack ...).
+    ...(matrixFor(entry.id)?.provider && matrixFor(entry.id)!.class !== "a" ? { oauthProvider: matrixFor(entry.id)!.provider } : {}),
     ...(entry.keyHeader ? { keyHeader: entry.keyHeader } : {}),
     ...(entry.keyUrl ? { keyUrl: entry.keyUrl } : {}),
     ...(entry.auth === "key"
@@ -267,21 +276,35 @@ function browserService(site: (typeof BROWSER_SITES)[number]): ConnectService {
   };
 }
 
+/** Pasted-token stdio connectors whose OAuth sibling now exists (oauthMatrix.supersededBy). */
+const LEGACY_TOKEN_SIBLINGS = new Set(["gitlab-token", "sentry-token", "supabase-token", "mongodb-uri", "notion-token", "slack-bot", "discord-bot"]);
+
 export const CONNECT_SERVICES: ConnectService[] = [
   // DAV first: its keywords are specific (icloud, caldav, imap) and must win the
   // substring pass over google's generic "calendar"/"email".
   ...DAV_SERVICES,
   ...HANDWRITTEN,
+  // OAuth-only services (Meta's official APIs, Strava, X ...): oauthServices.ts.
+  ...OAUTH_APP_SERVICES,
   ...MCP_CATALOG.map(fromCatalog).filter((s): s is ConnectService => s !== null),
   ...LIFE_SERVICES,
   ...BROWSER_SITES.map(browserService),
   // Local stdio MCP servers (npx/uvx) — last, so no keyword here can shadow an
   // older service. Only those whose runtime is installed on this machine.
-  ...stdioConnectServices(),
+  ...stdioConnectServices().map((s) => (LEGACY_TOKEN_SIBLINGS.has(s.id) ? { ...s, advanced: true } : s)),
   // Universal API connector presets (Home Assistant, CoinGecko, NASA): appended
   // LAST so they never shadow what resolved before. apiServices.ts.
   ...API_CONNECT_SERVICES,
 ];
+
+// OAuth apps carry their one-time registration copy from the audit (oauthMatrix.setup) unless hand-written above.
+for (let i = 0; i < CONNECT_SERVICES.length; i += 1) {
+  const svc = CONNECT_SERVICES[i]!;
+  if (svc.kind !== "oauth-app" || svc.appSetup) continue;
+  const m = matrixFor(svc.id)?.setup;
+  CONNECT_SERVICES[i] = { ...svc, appSetup: m?.consoleUrl ? { consoleUrl: m.consoleUrl, steps: m.steps } : genericAppSetup(`https://${svc.domain ?? svc.id + ".com"}/`, svc.label) };
+}
+
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim();
@@ -404,7 +427,17 @@ export async function isServiceConnected(service: ConnectService, home?: string)
       const cfg = service.oauthProvider ? OAUTH_PROVIDERS[service.oauthProvider] : undefined;
       if (!cfg) return false;
       const tokens = await loadTokens(cfg.provider, { home }).catch(() => undefined);
-      return Boolean(tokens?.accessToken);
+      if (tokens?.accessToken) return true;
+      // The experimental browser session (Meta) still counts for owners who signed in that way.
+      if (service.browserFallback) {
+        try {
+          await fs.access(browserSessionFile(service.id, home));
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return false;
     }
     case "api-key": {
       // Plaid: connected while at least one bank is linked (a JSON list).

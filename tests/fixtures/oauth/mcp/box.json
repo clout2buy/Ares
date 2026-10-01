@@ -1,0 +1,59 @@
+{
+  "id": "box",
+  "mcpUrl": "https://mcp.box.com",
+  "probedAt": "2026-10-01T00:29:12.048Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer realm=\"Service\", error=\"invalid_request\", error_description=\"The access token was not found.\", resource_metadata=\"https://mcp.box.com/.well-known/oauth-protected-resource\"",
+    "contentType": null
+  },
+  "prm": {
+    "url": "https://mcp.box.com/.well-known/oauth-protected-resource",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.box.com/",
+      "resource_name": "Box Model Context Protocol Server",
+      "authorization_servers": [
+        "https://api.box.com/"
+      ],
+      "bearer_methods_supported": [
+        "header"
+      ],
+      "resource_documentation": "https://developer.box.com/guides/box-mcp/remote/",
+      "resource_policy_uri": "https://www.box.com/legal/termsofservice",
+      "resource_tos_uri": "https://www.box.com/legal/termsofservice"
+    }
+  },
+  "as": {
+    "url": "https://api.box.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://api.box.com",
+      "authorization_endpoint": "https://account.box.com/api/oauth2/authorize",
+      "token_endpoint": "https://api.box.com/oauth2/token",
+      "response_types_supported": [
+        "code"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post"
+      ],
+      "revocation_endpoint": "https://api.box.com/oauth2/revoke",
+      "revocation_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "service_documentation": "https://developer.box.com/guides/authentication/",
+      "op_policy_uri": "https://www.box.com/legal/termsofservice",
+      "op_tos_uri": "https://www.box.com/legal/termsofservice"
+    },
+    "issuerQueried": "https://api.box.com/"
+  }
+}

@@ -54,7 +54,14 @@ import {
   deleteCredential,
   disconnectMcpServer,
   getConnectBroker,
+  isBrokerV2,
   isServiceConnected,
+  matrixFor,
+  planConnect,
+  resolveOAuthClient,
+  clientRequiresSecret,
+  revokeAndForgetTokens,
+  callbackParamsFromUrl,
   resolveConnectService,
   serviceDomain,
   uninstallStdioConnector,
@@ -67,6 +74,11 @@ import { testConnection, type FetchLike } from "./connectionsTest.js";
 import { HttpError, addCustom, customService, isCustomId, listCustom, removeCustom, type ResolveHost } from "./customConnectors.js";
 
 export interface PhoneConnection extends ConnectionExtras {
+  /** how it connects: oauth | oauth-setup | device | key | browser | unsupported */
+  auth?: string;
+  setupDone?: boolean;
+  oauthClass?: string;
+  verification?: string;
   id: string;
   label: string;
   kind: ConnectService["kind"];
@@ -101,13 +113,31 @@ export async function listPhoneConnections(home?: string, opts: { now?: () => nu
   const remote = await loadRemoteMcpServers(home).catch(() => ({} as Record<string, RemoteMcpEntry>));
   const ctx = await loadEnrichContext({ ...(home ? { home } : {}), ...(opts.now ? { now: opts.now } : {}), remote });
   const registry = CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:"));
+  const clientCache = new Map<string, { hasSecret: boolean } | undefined>();
   const listed = await Promise.all(
     registry.map(async (service): Promise<PhoneConnection> => {
       const domain = serviceDomain(service);
       const category = categoryOf(service);
       const connected = await isServiceConnected(service, home).catch(() => false);
       const extras = await extrasFor(service, connected, ctx).catch((): ConnectionExtras => ({}));
+      const entry = matrixFor(service.id);
+      const provider = entry?.provider ?? service.oauthProvider ?? (service.kind === "oauth-app" ? service.id : undefined);
+      let client: { hasSecret: boolean } | undefined;
+      if (provider && (service.kind === "oauth-app" || (service.kind === "mcp-oauth" && entry && entry.class !== "a"))) {
+        if (!clientCache.has(provider)) {
+          const r = await resolveOAuthClient(provider, { ...(home ? { home } : {}), requireSecret: clientRequiresSecret(provider, entry) }).catch(() => undefined);
+          clientCache.set(provider, r ? { hasSecret: Boolean(r.clientSecret) } : undefined);
+        }
+        client = clientCache.get(provider);
+      }
+      const plan = planConnect(service, { client });
+      const wanted = !connected && !extras.scopes && entry?.scopes?.length ? { scopes: entry.scopes.slice(0, 40) } : {};
       return {
+        auth: plan.auth,
+        setupDone: plan.setupDone,
+        ...(plan.oauthClass ? { oauthClass: plan.oauthClass } : {}),
+        ...(entry ? { verification: entry.verification } : {}),
+        ...wanted,
         id: service.id,
         label: service.label,
         kind: service.kind,
@@ -129,7 +159,9 @@ export async function listPhoneConnections(home?: string, opts: { now?: () => nu
         return { id, label: service.label, kind: service.kind, blurb: service.blurb, connected: true, category: "custom", ...extras };
       }),
   );
-  return [...listed, ...custom];
+  // Pasted-token siblings of an OAuth service stay listed only for owners already connected through them.
+  const visible = listed.filter((c) => !(CONNECT_SERVICES.find((s) => s.id === c.id)?.advanced && !c.connected));
+  return [...visible, ...custom];
 }
 
 /** Exact registry id first (the app sends ids it listed); then the same
@@ -157,7 +189,8 @@ export async function disconnectService(service: ConnectService, home?: string):
     case "oauth-app": {
       const cfg = service.oauthProvider ? OAUTH_PROVIDERS[service.oauthProvider] : undefined;
       if (!cfg) return false;
-      return deleteCredential(`oauth/${cfg.provider}`, { home });
+      // RFC 7009 where the vendor offers it, then forget (the registered client stays).
+      return revokeAndForgetTokens(cfg, cfg.provider, home ? { home } : {});
     }
     case "api-key": {
       // Plaid: revoke and forget every linked bank; the Plaid keys stay, so
@@ -178,7 +211,7 @@ export async function disconnectService(service: ConnectService, home?: string):
   }
 }
 
-async function readJsonBody(req: IncomingMessage, limit = 4 * 1024): Promise<Record<string, unknown>> {
+async function readJsonBody(req: IncomingMessage, limit = 8 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
@@ -248,6 +281,21 @@ export async function handleConnectionsApi(req: IncomingMessage, res: ServerResp
         if (!service) { json(404, { error: `unknown service: ${asked.slice(0, 80)}` }); return true; }
         const broker = opts.broker === undefined ? getConnectBroker() : opts.broker;
         if (!broker) { json(503, { error: "this machine has no connect hub (it needs a public address)" }); return true; }
+        if (body.v === 2 && isBrokerV2(broker)) {
+          try {
+            const result = await broker.startV2(service, {
+              reason: "from the Connections screen",
+              ...(body.returnTo === "ares://oauth" ? { returnTo: "ares://oauth" } : {}),
+              ...(body.mode === "browser" ? { mode: "browser" as const } : {}),
+              ...(body.reconnect === true ? { reconnect: true } : {}),
+            });
+            opts.log?.(`connections: ${service.id} v2 start -> ${result.state}`);
+            json(200, result);
+          } catch (err) {
+            json(502, { error: safeText(err instanceof Error ? err.message : String(err), [], 240) });
+          }
+          return true;
+        }
         try {
           const prompt = await broker.start(service, { reason: "from the Connections screen" });
           opts.log?.(`connections: ${service.id} flow started from the phone`);
@@ -255,6 +303,43 @@ export async function handleConnectionsApi(req: IncomingMessage, res: ServerResp
         } catch (err) {
           json(502, { error: err instanceof Error ? err.message : String(err) });
         }
+        return true;
+      }
+
+      case "GET /gateway/connections/poll": {
+        const broker = opts.broker === undefined ? getConnectBroker() : opts.broker;
+        const id = url.searchParams.get("id") ?? "";
+        if (!id) { json(400, { error: "id required" }); return true; }
+        const r = isBrokerV2(broker) ? broker.pollFlow(id) : null;
+        if (!r) { json(404, { error: "unknown or expired flow", state: "expired" }); return true; }
+        json(200, r);
+        return true;
+      }
+
+      case "POST /gateway/connections/complete": {
+        const broker = opts.broker === undefined ? getConnectBroker() : opts.broker;
+        const body = await readStrictBody(req, 8 * 1024);
+        const pollId = typeof body.pollId === "string" ? body.pollId : "";
+        const redirect = typeof body.url === "string" ? body.url : "";
+        if (!pollId || !redirect) { json(400, { error: "pollId and url required" }); return true; }
+        const r = isBrokerV2(broker) ? await broker.completeFlow(pollId, redirect) : null;
+        if (!r) { json(404, { error: "unknown or expired flow", state: "expired" }); return true; }
+        json(200, r);
+        return true;
+      }
+
+      case "POST /gateway/connections/setup": {
+        const broker = opts.broker === undefined ? getConnectBroker() : opts.broker;
+        const body = await readStrictBody(req, 8 * 1024);
+        const asked = typeof body.service === "string" ? body.service : "";
+        if (!asked.trim()) { json(400, { error: "service required" }); return true; }
+        const service = await findService(asked, opts.home);
+        if (!service) { json(404, { error: `unknown service: ${safeText(asked, [], 80)}` }); return true; }
+        if (!isBrokerV2(broker)) { json(503, { error: "this machine has no connect hub" }); return true; }
+        const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? (body.values as Record<string, unknown>) : {};
+        const r = await broker.setupService(service, values, { clear: body.clear === true });
+        opts.log?.(`connections: ${service.id} setup ${r.ok ? "ok" : "refused"}`);
+        json(r.ok ? 200 : 400, r);
         return true;
       }
 

@@ -1,0 +1,1 @@
+{"resource":"https://huggingface.co/mcp","authorization_servers":["https://huggingface.co"],"bearer_methods_supported":["header"],"scopes_supported":["openid","profile","read-mcp","read-repos","jobs","contribute-repos","inference-api"]}

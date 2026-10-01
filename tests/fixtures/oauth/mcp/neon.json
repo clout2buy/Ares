@@ -1,0 +1,82 @@
+{
+  "id": "neon",
+  "mcpUrl": "https://mcp.neon.tech/mcp",
+  "probedAt": "2026-10-01T00:29:08.889Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"No authorization provided\", resource_metadata=\"https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp\"",
+    "contentType": "application/json"
+  },
+  "prm": {
+    "url": "https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.neon.tech/mcp",
+      "authorization_servers": [
+        "https://mcp.neon.tech"
+      ],
+      "bearer_methods_supported": [
+        "header"
+      ],
+      "resource_documentation": "https://neon.com/docs/ai/neon-mcp-server"
+    }
+  },
+  "as": {
+    "url": "https://mcp.neon.tech/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://mcp.neon.tech",
+      "authorization_endpoint": "https://mcp.neon.tech/api/authorize",
+      "token_endpoint": "https://mcp.neon.tech/api/token",
+      "registration_endpoint": "https://mcp.neon.tech/api/register",
+      "revocation_endpoint": "https://mcp.neon.tech/api/revoke",
+      "response_types_supported": [
+        "code"
+      ],
+      "response_modes_supported": [
+        "query"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_post",
+        "client_secret_basic",
+        "none"
+      ],
+      "registration_endpoint_auth_methods_supported": [
+        "client_secret_post",
+        "client_secret_basic",
+        "none"
+      ],
+      "revocation_endpoint_auth_methods_supported": [
+        "client_secret_post",
+        "client_secret_basic",
+        "none"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "scopes_supported": [
+        "read",
+        "write"
+      ],
+      "x-neon-scope-categories": [
+        "projects",
+        "branches",
+        "endpoints",
+        "snapshots",
+        "schema",
+        "querying",
+        "neon_auth",
+        "data_api",
+        "observability",
+        "docs",
+        "functions",
+        "storage"
+      ]
+    },
+    "issuerQueried": "https://mcp.neon.tech"
+  }
+}

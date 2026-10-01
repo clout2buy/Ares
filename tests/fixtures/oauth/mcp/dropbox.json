@@ -1,0 +1,102 @@
+{
+  "id": "dropbox",
+  "mcpUrl": "https://mcp.dropbox.com/mcp",
+  "probedAt": "2026-10-01T00:29:12.080Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.dropbox.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"missing bearer token\"",
+    "contentType": "text/plain; charset=utf-8"
+  },
+  "prm": {
+    "url": "https://mcp.dropbox.com/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.dropbox.com/mcp",
+      "authorization_servers": [
+        "https://www.dropbox.com"
+      ],
+      "scopes_supported": [
+        "account_info.read",
+        "file_requests.read",
+        "file_requests.write",
+        "files.content.read",
+        "files.content.write",
+        "files.metadata.read",
+        "files.metadata.write",
+        "sharing.read",
+        "sharing.write"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://www.dropbox.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://www.dropbox.com",
+      "authorization_endpoint": "https://www.dropbox.com/oauth2/authorize",
+      "token_endpoint": "https://api.dropboxapi.com/oauth2/token",
+      "revocation_endpoint": "https://api.dropboxapi.com/2/auth/token/revoke",
+      "scopes_supported": [
+        "account_info.read",
+        "contacts.read",
+        "contacts.write",
+        "files.metadata.read",
+        "files.content.read",
+        "files.content.write",
+        "files.permanent_delete",
+        "files.metadata.write",
+        "sharing.read",
+        "sharing.write",
+        "file_requests.read",
+        "file_requests.write",
+        "openid",
+        "profile",
+        "email",
+        "account_info.write",
+        "backup.read",
+        "backup.write",
+        "dash/content.read",
+        "dash/content.write",
+        "team_info.read",
+        "team_info.write",
+        "sessions.list",
+        "sessions.modify",
+        "members.read",
+        "members.write",
+        "members.delete",
+        "groups.read",
+        "groups.write",
+        "events.read",
+        "team_data.governance.read",
+        "team_data.governance.write",
+        "team_data.member",
+        "team_data.content.read",
+        "team_data.content.write",
+        "team_data.team_space",
+        "files.team_metadata.write",
+        "events.write",
+        "files.team_metadata.read"
+      ],
+      "response_types_supported": [
+        "code"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "client_credentials",
+        "refresh_token",
+        "device_code"
+      ],
+      "code_challenge_methods_supported": [
+        "plain",
+        "S256"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_post",
+        "client_secret_basic",
+        "none"
+      ],
+      "registration_endpoint": "https://www.dropbox.com/oauth2/register"
+    },
+    "issuerQueried": "https://www.dropbox.com"
+  }
+}

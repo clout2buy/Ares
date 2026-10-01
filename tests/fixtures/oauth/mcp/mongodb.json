@@ -1,0 +1,81 @@
+{
+  "id": "mongodb",
+  "mcpUrl": "https://mcp.mongodb.com/mcp",
+  "probedAt": "2026-10-01T00:29:09.224Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer realm=\"mcp\", resource_metadata=\"https://mcp.mongodb.com/.well-known/oauth-protected-resource\"",
+    "contentType": "application/json"
+  },
+  "prm": {
+    "url": "https://mcp.mongodb.com/.well-known/oauth-protected-resource",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.mongodb.com",
+      "authorization_servers": [
+        "https://authorize.mongodb.com"
+      ],
+      "scopes_supported": []
+    }
+  },
+  "as": {
+    "url": "https://authorize.mongodb.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://authorize.mongodb.com",
+      "authorization_endpoint": "https://cloud.mongodb.com/oauth/authorize",
+      "token_endpoint": "https://authorize.mongodb.com/tokens",
+      "jwks_uri": "https://authorize.mongodb.com/jwks",
+      "response_types_supported": [
+        "code"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "client_credentials",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:token-exchange"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "none",
+        "client_secret_basic",
+        "client_secret_post",
+        "private_key_jwt"
+      ],
+      "token_endpoint_auth_signing_alg_values_supported": [
+        "RS256",
+        "ES256",
+        "ES512"
+      ],
+      "revocation_endpoint": "https://authorize.mongodb.com/tokens/revoke",
+      "revocation_endpoint_auth_methods_supported": [
+        "none",
+        "client_secret_basic",
+        "client_secret_post",
+        "private_key_jwt"
+      ],
+      "revocation_endpoint_auth_signing_alg_values_supported": [
+        "RS256",
+        "ES256",
+        "ES512"
+      ],
+      "introspection_endpoint": "https://authorize.mongodb.com/tokens/introspect",
+      "introspection_endpoint_auth_methods_supported": [
+        "none",
+        "client_secret_basic",
+        "client_secret_post",
+        "private_key_jwt"
+      ],
+      "introspection_endpoint_auth_signing_alg_values_supported": [
+        "RS256",
+        "ES256",
+        "ES512"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "authorization_response_iss_parameter_supported": true,
+      "client_id_metadata_document_supported": true
+    },
+    "issuerQueried": "https://authorize.mongodb.com"
+  }
+}

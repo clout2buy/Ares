@@ -32,7 +32,22 @@ import {
   exchangeMcpCode,
   refreshMcpToken,
   revokeMcpToken,
+  type McpAuthServer,
 } from "./mcpOAuth.js";
+import {
+  OAuthError,
+  beginAuthorization,
+  completeAuthorization,
+  pollDeviceAuthorization,
+  refreshOAuthToken,
+  registerOAuthClient,
+  requestDeviceAuthorization,
+  singleFlight,
+  type CallbackParams,
+  type ClientAuthMethod,
+  type DeviceAuthorization,
+  type PendingAuthorization,
+} from "./oauthEngine.js";
 
 const DEFAULT_PORT = 53682; // distinct from the provider-OAuth loopback (53691)
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -78,7 +93,13 @@ interface McpTokenBundle {
   revocationEndpoint?: string;
   clientId: string;
   clientSecret?: string;
+  /** How the client authenticates at the token endpoint (default: secret in the form, or none). */
+  clientAuth?: ClientAuthMethod;
   resource: string;
+  /** Scope string the issuer granted, for display. */
+  scope?: string;
+  /** The refresh token was rejected (invalid_grant): the owner must sign in again. */
+  needsReauth?: boolean;
   /** Custom request headers swept out of the on-disk entry — headers routinely
    *  carry API keys (x-api-key et al.) and must live encrypted like tokens. */
   headers?: Record<string, string>;
@@ -438,7 +459,7 @@ async function persistMcpConnection(input: {
   displayName?: string;
   authServer: Awaited<ReturnType<typeof discoverMcpAuth>>;
   tokens: Awaited<ReturnType<typeof exchangeMcpCode>>;
-  client: { clientId: string; clientSecret?: string };
+  client: { clientId: string; clientSecret?: string; authMethod?: ClientAuthMethod };
   fetchImpl?: FetchLike;
 }): Promise<ConnectMcpResult> {
   const { name, url, home, authServer, tokens } = input;
@@ -453,6 +474,8 @@ async function persistMcpConnection(input: {
     ...(authServer.revocationEndpoint ? { revocationEndpoint: authServer.revocationEndpoint } : {}),
     clientId: input.client.clientId,
     clientSecret: input.client.clientSecret,
+    ...(input.client.authMethod ? { clientAuth: input.client.authMethod } : {}),
+    ...(tokens.scope ? { scope: tokens.scope } : {}),
     resource: authServer.resource,
     ...(priorHeaders ? { headers: priorHeaders } : {}),
   };
@@ -541,6 +564,174 @@ export async function beginMcpConnect(
   return { name, authorizeUrl, finish };
 }
 
+// ─── The engine-driven connect (what the garrison's hub calls) ───────────────
+
+export interface McpAuthPlanOptions {
+  name?: string;
+  displayName?: string;
+  home?: string;
+  /** Where the issuer sends the browser back: the garrison's /oauth/callback. */
+  redirectUri: string;
+  /** https://<origin>/oauth/client.json: lets servers that support Client ID
+   *  Metadata Documents (and refuse DCR for our redirect) accept Ares. */
+  clientMetadataUrl?: string;
+  /** A client from the registry (owner-registered or Ares's official one). */
+  client?: { clientId: string; clientSecret?: string; authMethod?: ClientAuthMethod };
+  /** Scopes Ares needs (the matrix); default: what the resource/issuer advertises. */
+  scopes?: string[];
+  /** Use the device flow when a client is given and the issuer offers one. */
+  preferDevice?: boolean;
+  /** When DCR refuses the redirect (allowlists), retry with this loopback
+   *  redirect: the phone app intercepts it (POST /gateway/connections/complete). */
+  loopbackRedirectUri?: string;
+  /** Test seam for the post-connect tools/list probe. */
+  fetchImpl?: FetchLike;
+  /** Test seam for discovery / registration / token HTTP. */
+  engineFetch?: typeof fetch;
+  /** Test seam: the wait between device polls. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export type McpAuthPrepared =
+  | {
+      mode: "code";
+      name: string;
+      authorizeUrl: string;
+      redirectUri: string;
+      /** How the client id was obtained: dcr | cimd | client (registry). */
+      registration: "dcr" | "cimd" | "client";
+      /** True when the loopback redirect was used (the app must intercept it). */
+      viaLoopback: boolean;
+      issuer?: string;
+      pending: PendingAuthorization;
+      finish: (params: CallbackParams) => Promise<ConnectMcpResult>;
+    }
+  | {
+      mode: "device";
+      name: string;
+      device: DeviceAuthorization;
+      /** Polls the issuer until the owner approves; resolves once connected. */
+      poll: (signal?: AbortSignal) => Promise<ConnectMcpResult>;
+    }
+  | {
+      /** No client could be had automatically: the owner registers one once. */
+      mode: "setup";
+      name: string;
+      reason: string;
+      authServer: McpAuthServer;
+    };
+
+function looksLikeRedirectRefusal(err: unknown): boolean {
+  return err instanceof OAuthError && (err.code === "invalid_redirect_uri" || /redirect/i.test(err.message));
+}
+
+const REFUSED = "this server only accepts clients it has approved, and it refused Ares's redirect";
+
+/**
+ * Discover, obtain a client, and prepare either an authorization-code URL or a
+ * device code for a remote MCP server. The client comes from, in order: the
+ * registry (a given client), dynamic registration (RFC 7591), a Client ID
+ * Metadata Document, a loopback-redirect registration (allowlisting issuers),
+ * and otherwise `setup` - never a pasted token. Tokens persist only in the
+ * encrypted vault, exactly like every other connect path.
+ */
+export async function prepareMcpAuthorization(url: string, opts: McpAuthPlanOptions): Promise<McpAuthPrepared> {
+  const name = (opts.name ?? connectorNameFromUrl(url)).trim();
+  const home = opts.home;
+  const deps = opts.engineFetch ? { fetchImpl: opts.engineFetch } : {};
+  const authServer = await discoverMcpAuth(url, deps);
+
+  let client = opts.client;
+  let registration: "dcr" | "cimd" | "client" = "client";
+  let redirectUri = opts.redirectUri;
+  let viaLoopback = false;
+
+  /** Register (or reuse the cached registration) for one redirect URI. */
+  const register = async (uri: string) => {
+    const cacheKey = `${authServer.registrationEndpoint}|${uri}`;
+    const cached = await cachedClient(home, cacheKey);
+    if (cached) return cached;
+    const fresh = await registerOAuthClient(authServer.registrationEndpoint!, { redirectUris: [uri], clientName: "Ares" }, deps);
+    await rememberClient(home, cacheKey, fresh);
+    return fresh;
+  };
+  const useCimd = (): boolean => {
+    if (!authServer.clientIdMetadataDocumentSupported || !opts.clientMetadataUrl) return false;
+    client = { clientId: opts.clientMetadataUrl, authMethod: "none" };
+    registration = "cimd";
+    return true;
+  };
+
+  if (!client) {
+    if (authServer.registrationEndpoint) {
+      try {
+        const reg = await register(redirectUri);
+        client = { clientId: reg.clientId, ...(reg.clientSecret ? { clientSecret: reg.clientSecret } : {}) };
+        registration = "dcr";
+      } catch (err) {
+        if (!looksLikeRedirectRefusal(err)) throw err;
+        if (!useCimd()) {
+          if (!opts.loopbackRedirectUri) return { mode: "setup", name, authServer, reason: REFUSED };
+          try {
+            const reg = await register(opts.loopbackRedirectUri);
+            client = { clientId: reg.clientId, ...(reg.clientSecret ? { clientSecret: reg.clientSecret } : {}) };
+            registration = "dcr";
+            redirectUri = opts.loopbackRedirectUri;
+            viaLoopback = true;
+          } catch (loopErr) {
+            if (!looksLikeRedirectRefusal(loopErr)) throw loopErr;
+            return { mode: "setup", name, authServer, reason: REFUSED };
+          }
+        }
+      }
+    } else if (!useCimd()) {
+      return { mode: "setup", name, authServer, reason: "this server has no automatic client registration" };
+    }
+  }
+
+  const useClient = client!;
+  // A registry client with a secret authenticates the way the issuer says it accepts.
+  if (useClient.clientSecret && !useClient.authMethod) {
+    const methods = authServer.tokenEndpointAuthMethodsSupported;
+    if (methods?.length && !methods.includes("client_secret_post") && methods.includes("client_secret_basic")) useClient.authMethod = "client_secret_basic";
+  }
+  const scopes = opts.scopes?.length ? opts.scopes : authServer.resourceScopes?.length ? authServer.resourceScopes : authServer.scopesSupported;
+  const persist = (tokens: Awaited<ReturnType<typeof exchangeMcpCode>>) =>
+    persistMcpConnection({ name, url, home, displayName: opts.displayName, authServer, tokens, client: useClient, fetchImpl: opts.fetchImpl });
+
+  if (opts.preferDevice && opts.client && authServer.deviceAuthorizationEndpoint) {
+    const device = await requestDeviceAuthorization({ endpoint: authServer.deviceAuthorizationEndpoint, client: useClient, ...(scopes?.length ? { scopes } : {}) }, deps);
+    return {
+      mode: "device",
+      name,
+      device,
+      poll: async (signal) =>
+        persist(await pollDeviceAuthorization({ tokenEndpoint: authServer.tokenEndpoint, client: useClient, device, ...(signal ? { signal } : {}), ...(opts.sleep ? { sleep: opts.sleep } : {}) }, deps)),
+    };
+  }
+
+  const { authorizeUrl, pending } = beginAuthorization({
+    authorizationEndpoint: authServer.authorizationEndpoint,
+    tokenEndpoint: authServer.tokenEndpoint,
+    client: useClient,
+    redirectUri,
+    ...(scopes?.length ? { scopes } : {}),
+    resource: authServer.resource,
+    ...(authServer.issuer ? { issuer: authServer.issuer } : {}),
+  });
+  return {
+    mode: "code",
+    name,
+    authorizeUrl,
+    redirectUri,
+    registration,
+    viaLoopback,
+    ...(authServer.issuer ? { issuer: authServer.issuer } : {}),
+    pending,
+    finish: async (params) => persist(await completeAuthorization(pending, params, deps)),
+  };
+}
+
 export interface SetMcpTokenResult {
   name: string;
   url: string;
@@ -627,7 +818,11 @@ export async function disconnectMcpServer(name: string, home?: string): Promise<
     if (raw) {
       const bundle = JSON.parse(raw) as McpTokenBundle;
       if (bundle.revocationEndpoint && bundle.accessToken && bundle.clientId) {
-        await revokeMcpToken(bundle.revocationEndpoint, bundle.refreshToken ?? bundle.accessToken, bundle.clientId);
+        // The refresh token is the long-lived one; revoking it kills the grant.
+        await revokeMcpToken(bundle.revocationEndpoint, bundle.refreshToken ?? bundle.accessToken, bundle.clientId, {
+          ...(bundle.clientSecret ? { clientSecret: bundle.clientSecret } : {}),
+          hint: bundle.refreshToken ? "refresh_token" : "access_token",
+        });
       }
     }
   } catch {
@@ -652,20 +847,35 @@ export async function getMcpAccessToken(name: string, home?: string, now: () => 
   const fresh = bundle.expiresAt == null || bundle.expiresAt - now() > skewMs;
   if (fresh) return bundle.accessToken;
   if (!bundle.refreshToken) return bundle.accessToken; // can't refresh; try it anyway
-  try {
-    const next = await refreshMcpToken({
-      tokenEndpoint: bundle.tokenEndpoint,
-      clientId: bundle.clientId,
-      clientSecret: bundle.clientSecret,
-      refreshToken: bundle.refreshToken,
-      resource: bundle.resource,
-    }, { now });
-    const updated: McpTokenBundle = { ...bundle, accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
-    await setCredential(tokenKey(name), JSON.stringify(updated), { home });
-    return next.accessToken;
-  } catch {
-    return bundle.accessToken; // refresh failed; hand back the stale token so the call can surface a clean 401
-  }
+  // Single-flight: a rotating refresh token is burnt by its first use, so two
+  // tool calls racing past expiry must share ONE refresh request.
+  return singleFlight(`mcp|${home ?? ""}|${name}`, async () => {
+    const latestRaw = await getCredential(tokenKey(name), { home });
+    let current = bundle;
+    if (latestRaw) { try { current = JSON.parse(latestRaw) as McpTokenBundle; } catch { current = bundle; } }
+    if (current.expiresAt == null || current.expiresAt - now() > skewMs) return current.accessToken; // someone else refreshed
+    if (!current.refreshToken) return current.accessToken;
+    try {
+      const next = await refreshOAuthToken({
+        tokenEndpoint: current.tokenEndpoint,
+        client: { clientId: current.clientId, ...(current.clientSecret ? { clientSecret: current.clientSecret } : {}), ...(current.clientAuth ? { authMethod: current.clientAuth } : {}) },
+        refreshToken: current.refreshToken,
+        resource: current.resource,
+        prev: { refreshToken: current.refreshToken, ...(current.scope ? { scope: current.scope } : {}) },
+      }, { now });
+      const updated: McpTokenBundle = { ...current, accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt, ...(next.scope ? { scope: next.scope } : {}) };
+      delete updated.needsReauth;
+      await setCredential(tokenKey(name), JSON.stringify(updated), { home });
+      return next.accessToken;
+    } catch (err) {
+      // The vendor says the grant is dead: remember it so the list reads "expired"
+      // (and the owner is asked to sign in again) instead of retrying forever.
+      if (err instanceof OAuthError && (err.code === "invalid_grant" || err.code === "invalid_client")) {
+        await setCredential(tokenKey(name), JSON.stringify({ ...current, needsReauth: true }), { home }).catch(() => undefined);
+      }
+      return current.accessToken; // refresh failed; hand back the stale token so the call can surface a clean 401
+    }
+  });
 }
 
 /** The vault bundle's custom headers for a connector, if any. */

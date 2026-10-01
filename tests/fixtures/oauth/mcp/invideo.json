@@ -1,0 +1,16 @@
+{
+  "id": "invideo",
+  "mcpUrl": "https://mcp.invideo.io/sse",
+  "probedAt": "2026-10-01T00:29:10.492Z",
+  "initialize": {
+    "status": 404,
+    "wwwAuthenticate": null,
+    "contentType": "text/plain;charset=UTF-8"
+  },
+  "prm": null,
+  "as": null,
+  "initializeGet": {
+    "status": 200,
+    "wwwAuthenticate": null
+  }
+}

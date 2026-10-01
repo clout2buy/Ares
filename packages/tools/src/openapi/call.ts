@@ -806,7 +806,8 @@ export function parseLinkNext(link: string | undefined): string | undefined {
   if (!link) return undefined;
   for (const part of link.split(/,\s*(?=<)/)) {
     const m = /<([^>]+)>\s*;(.*)/.exec(part);
-    if (m && /rel\s*=\s*"?([^";]*\s)?next(\s[^";]*)?"?/i.test(m[2]!)) return m[1];
+    // Sentry marks the last page: rel="next"; results="false" means there is nothing after it.
+    if (m && /rel\s*=\s*"?([^";]*\s)?next(\s[^";]*)?"?/i.test(m[2]!) && !/results\s*=\s*"?false"?/i.test(m[2]!)) return m[1];
   }
   return undefined;
 }

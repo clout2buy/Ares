@@ -280,6 +280,8 @@ test("Link headers: rel=next is found among several", () => {
   assert.equal(parseLinkNext('<https://a/x?page=1>; rel="prev", <https://a/x?page=3>; rel="next"'), "https://a/x?page=3");
   assert.equal(parseLinkNext('<https://a/x?page=1>; rel="prev"'), undefined);
   assert.equal(parseLinkNext(undefined), undefined);
+  assert.equal(parseLinkNext('<https://s/x?cursor=a>; rel="next"; results="false"; cursor="a"'), undefined, "Sentry's last page says results=false");
+  assert.equal(parseLinkNext('<https://s/x?cursor=b>; rel="next"; results="true"; cursor="b"'), "https://s/x?cursor=b");
 });
 
 // ─── shaping ─────────────────────────────────────────────────────────────────

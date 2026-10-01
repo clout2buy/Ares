@@ -758,6 +758,14 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // without APNs; the pushes only go out when it is configured.
   const pushLog = (line: string) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n");
   const agentNameOf = (sessionId: string) => personaRuntime.store.bySession(sessionId)?.name ?? "Ares";
+  // Who a banner is from: the picture/name the phone's Notification Service Extension draws.
+  const pushAgentById = (id: string) => {
+    const p = personaRuntime.store.get(id);
+    if (!p && id !== DEFAULT_PERSONA_ID) return undefined;
+    const avatarVersion = avatarStore.version(id);
+    return { id, name: p?.name ?? "Ares", ...(p?.color ? { accent: p.color } : {}), ...(avatarVersion ? { avatarVersion } : {}) };
+  };
+  phonePush.setAgentDirectory(pushAgentById);
   const nudgeWidgets = createWidgetNudger((data) => (phonePush.configured ? phonePush.sendBackground(data) : Promise.resolve()), { log: pushLog });
   const liveActivityRegistry = new LiveActivityRegistry(path.join(context.home, "phone-liveactivity.json"));
   const liveActivity = new LiveActivityDriver({
@@ -973,6 +981,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         token: gatewayToken,
         push: phonePush,
         agentName: (sessionId) => personaRuntime.store.bySession(sessionId)?.name ?? "Ares",
+        agentOf: (sessionId) => pushAgentById(personaRuntime.store.bySession(sessionId)?.id ?? DEFAULT_PERSONA_ID),
+        stagedAgent: () => pushAgentById(DEFAULT_PERSONA_ID),
         isMobileSession: (sessionId) => sessions.list().some((s) => s.id === sessionId && s.surface === "mobile" && s.tenant?.role !== "guest"),
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
         observers: [liveActivity, { onStagedApproval: () => nudgeWidgets() }],

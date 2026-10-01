@@ -58,6 +58,30 @@ export function apnsJwt(cfg: ApnsConfig, keyPem: string, now = Date.now()): stri
   return `${input}.${b64url(signature)}`;
 }
 
+/** Who a push is from. Lets the phone's Notification Service Extension draw the
+ *  agent's picture and name (a communication notification) instead of the app icon. */
+export interface PushAgent {
+  id: string;
+  name: string;
+  /** #hex persona colour: the fallback disc when the agent has no picture. */
+  accent?: string;
+  /** The picture's version (its ETag), the phone's cache key. Absent = no picture. */
+  avatarVersion?: string;
+}
+/** Resolves an agent id to what a push needs to attribute it (sync; the store is in memory). */
+export type PushAgentDirectory = (agentId: string) => PushAgent | undefined;
+
+const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/** The small, secret-free fields the extension reads, plus the per-agent thread id. */
+export function agentPayload(agent: PushAgent): Record<string, string> {
+  const out: Record<string, string> = { agentId: agent.id, agentName: agent.name.replace(/\s+/g, " ").trim().slice(0, 60) || "Ares" };
+  if (agent.avatarVersion && /^[A-Za-z0-9._-]{1,64}$/.test(agent.avatarVersion)) out.avatarVersion = agent.avatarVersion;
+  if (agent.accent && HEX_RE.test(agent.accent)) out.accent = agent.accent;
+  return out;
+}
+
 export interface PushMessage {
   title: string;
   body: string;
@@ -65,6 +89,9 @@ export interface PushMessage {
   data?: Record<string, unknown>;
   /** Collapse key: a newer prompt replaces an older one rather than stacking. */
   collapseId?: string;
+  /** Attribute the banner to an agent (picture + name on the phone). Resolved
+   *  from data.agentId when a directory is set and this is absent. */
+  agent?: PushAgent;
 }
 
 /** The ActivityKit attributes type the app's widget extension declares. */
@@ -102,6 +129,7 @@ export class PhonePush {
   private keyPem?: string;
   private jwt?: { token: string; mintedAt: number };
   private loaded = false;
+  private agents?: PushAgentDirectory;
 
   constructor(
     private readonly storePath: string,
@@ -110,6 +138,23 @@ export class PhonePush {
     /** Test seam: replaces the HTTP/2 call to Apple. */
     private readonly transport?: ApnsTransport,
   ) {}
+
+  /** Lets pushes that only carry data.agentId (goals, briefings, inbox) pick up the agent's picture. */
+  setAgentDirectory(directory: PushAgentDirectory | undefined): void {
+    this.agents = directory;
+  }
+
+  private attribute(message: PushMessage): PushMessage {
+    if (message.agent) return message;
+    const id = message.data?.agentId;
+    if (typeof id !== "string" || !AGENT_ID_RE.test(id)) return message;
+    try {
+      const agent = this.agents?.(id);
+      return agent ? { ...message, agent } : message;
+    } catch {
+      return message;
+    }
+  }
 
   get configured(): boolean {
     return this.cfg !== null;
@@ -185,7 +230,7 @@ export class PhonePush {
     let failed = 0;
     for (const device of [...this.devices.values()]) {
       try {
-        const status = await this.sendOne(device.token, jwt, message, mode);
+        const status = await this.sendOne(device.token, jwt, mode === "alert" ? this.attribute(message) : message, mode);
         if (status === 200) {
           sent++;
           if (device.lastError) {
@@ -234,6 +279,12 @@ export class PhonePush {
     // category that cannot approve from the banner.
     const approval = message.data?.kind === "permission" || message.data?.kind === "approval";
     const category = replyable ? "ARES_TEXT_REPLY" : wake ? "ARES_DEVICE_WAKE" : approval ? (message.data?.gate === "quick" ? APPROVAL_CATEGORY : APPROVAL_STRICT_CATEGORY) : undefined;
+    // Agent-attributed: mutable-content wakes the app's Notification Service
+    // Extension, which draws the agent's picture and name. Payload stays tiny
+    // and secret-free (ids, a name, a version, a colour); the extension fetches
+    // the picture itself with the owner token it already holds.
+    const agentFields = message.agent ? agentPayload(message.agent) : undefined;
+    const thread = agentFields ? `agent-${agentFields.agentId}` : message.data?.sessionId || message.data?.threadId ? String(message.data?.sessionId ?? message.data?.threadId) : undefined;
     return {
       deviceToken,
       headers,
@@ -243,9 +294,11 @@ export class PhonePush {
           sound: "default",
           ...(category ? { category } : {}),
           ...(wake ? { "interruption-level": "time-sensitive" } : {}),
-          ...(message.data?.sessionId || message.data?.threadId ? { "thread-id": String(message.data?.sessionId ?? message.data?.threadId) } : {}),
+          ...(agentFields ? { "mutable-content": 1 } : {}),
+          ...(thread ? { "thread-id": thread } : {}),
         },
         ...(message.data ?? {}),
+        ...(agentFields ?? {}),
       }),
     };
   }
@@ -340,6 +393,10 @@ export interface NotifierOptions {
   token: string;
   push: Pick<PhonePush, "send">;
   agentName?: (sessionId: string) => string;
+  /** The agent behind a session, for the picture/name on the banner. Falls back to agentName. */
+  agentOf?: (sessionId: string) => PushAgent | undefined;
+  /** Who a staged (session-less) approval belongs to; default is the default persona. */
+  stagedAgent?: (staged: StagedApproval) => PushAgent | undefined;
   isMobileSession?: (sessionId: string) => boolean;
   log?: (line: string) => void;
   /** A turn shorter than this finished while they were still looking at it. */
@@ -443,12 +500,24 @@ export class PhoneNotifier {
     const cls = classifyStaged(staged);
     const tool = String(staged.kind || "action").slice(0, 40);
     const target = redactSecrets(String(staged.reason ?? "")).replace(/\s+/g, " ").trim().slice(0, 80);
+    let stagedAgent: PushAgent | undefined;
+    try { stagedAgent = this.opts.stagedAgent?.(staged); } catch { /* the banner still goes out */ }
     void this.opts.push.send({
-      title: "Ares needs approval",
+      title: `${stagedAgent?.name ?? "Ares"} needs approval`,
+      ...(stagedAgent ? { agent: stagedAgent } : {}),
       body: target ? `${tool} — ${target}` : tool,
       data: { kind: "approval", approvalId: stagedApprovalId(staged.id), gate: cls.gate, tool, target, ...this.originField() },
       collapseId: `approval-${staged.id}`.slice(0, 64),
     });
+  }
+
+  private agentFor(sessionId: string): { agent?: PushAgent } {
+    try {
+      const agent = this.opts.agentOf?.(sessionId);
+      return agent ? { agent } : {};
+    } catch {
+      return {};
+    }
   }
 
   private originField(): { origin?: string } {
@@ -476,7 +545,7 @@ export class PhoneNotifier {
       return;
     }
     if (type === "permission_request") {
-      const agent = this.opts.agentName?.(sessionId) ?? "Ares";
+      const agent = this.opts.agentOf?.(sessionId)?.name ?? this.opts.agentName?.(sessionId) ?? "Ares";
       const cls = classifyApproval({ toolName: String(event.toolName ?? ""), input: event.input, reason: String(event.reason ?? ""), ownerDecision: event.ownerDecision === true });
       const sum = approvalSummary(String(event.toolName ?? "a tool"), event.input, cls);
       const requestId = String(event.id ?? "");
@@ -488,6 +557,7 @@ export class PhoneNotifier {
         data: { kind: "permission", sessionId, requestId, approvalId: permissionApprovalId(sessionId, requestId), gate: cls.gate, tool: sum.tool, target: sum.target, ...this.originField() },
         // A newer prompt replaces the older banner instead of stacking.
         collapseId: `perm-${sessionId}`,
+        ...this.agentFor(sessionId),
       });
       return;
     }
@@ -497,7 +567,7 @@ export class PhoneNotifier {
       const reply = this.replyText.get(sessionId)?.trim();
       this.replyText.delete(sessionId);
       if (!this.opts.isMobileSession?.(sessionId)) return;
-      const agent = this.opts.agentName?.(sessionId) ?? "Ares";
+      const agent = this.opts.agentOf?.(sessionId)?.name ?? this.opts.agentName?.(sessionId) ?? "Ares";
       const failed = String(event.status ?? "") === "failed";
       const elapsed = startedAt ? Date.now() - startedAt : 0;
       if (!failed && !reply && elapsed < this.longTurnMs) return;
@@ -506,6 +576,7 @@ export class PhoneNotifier {
         body: failed ? "The turn ended without a reply." : reply ? reply.slice(0, 180) : `Done after ${Math.round(elapsed / 1000)}s.`,
         data: { kind: !failed && reply ? "persona_message" : "turn_end", sessionId },
         collapseId: `turn-${sessionId}`,
+        ...this.agentFor(sessionId),
       });
     }
   }

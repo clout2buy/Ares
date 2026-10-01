@@ -9,7 +9,9 @@
 //   GET  /gateway/jobs                      → {jobs:[OwnerJobView…]}
 //   POST /gateway/jobs/cancel     {id}      → {ok, id, detail}
 //   POST /gateway/jobs/resume     {id}      → {ok, id}    (held system jobs)
-//   GET  /gateway/audit?limit=&sessionId=   → {entries:[AuditEntry…]} newest first
+//   GET  /gateway/audit?limit=&sessionId=&before=&action=&target=&days=
+//                                           → {entries:[AuditEntry…], nextBefore?} newest first;
+//                                             pass nextBefore back as `before` to page into history
 //
 // GET /gateway/control (the settings cockpit) is NOT here: it already exists
 // and gains {paused, pausedAt?, running} from status() in place.
@@ -25,7 +27,7 @@ export interface OwnerControlHooks {
   listJobs(): Promise<{ jobs: OwnerJobView[] }>;
   cancelJob(id: string): Promise<{ ok: boolean; id: string; detail: string }>;
   resumeJob(id: string): { ok: boolean; id: string };
-  readAudit(opts: { limit?: number; sessionId?: string }): Promise<AuditEntry[]>;
+  readAudit(opts: { limit?: number; sessionId?: string; before?: string; actionPrefix?: string; target?: string; days?: number }): Promise<AuditEntry[]>;
 }
 
 export interface RouteReply {
@@ -65,8 +67,22 @@ export async function handleOwnerControlRoute(
       const rawLimit = Number(url.searchParams.get("limit") ?? 100);
       const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 1_000) : 100;
       const sessionId = (url.searchParams.get("sessionId") ?? "").trim();
-      const entries = await hooks.readAudit({ limit, ...(sessionId ? { sessionId } : {}) });
-      return { status: 200, body: { entries } };
+      const before = (url.searchParams.get("before") ?? "").trim();
+      if (before && !Number.isFinite(Date.parse(before))) return { status: 400, body: { error: "before must be an ISO timestamp" } };
+      const actionPrefix = (url.searchParams.get("action") ?? "").trim().slice(0, 64);
+      const target = (url.searchParams.get("target") ?? "").trim().slice(0, 200);
+      const rawDays = Number(url.searchParams.get("days") ?? NaN);
+      const entries = await hooks.readAudit({
+        limit,
+        ...(sessionId ? { sessionId } : {}),
+        ...(before ? { before } : {}),
+        ...(actionPrefix ? { actionPrefix } : {}),
+        ...(target ? { target } : {}),
+        ...(Number.isFinite(rawDays) ? { days: Math.min(Math.max(Math.floor(rawDays), 1), 30) } : {}),
+      });
+      // A full page may have more behind it: hand back the cursor.
+      const last = entries[entries.length - 1];
+      return { status: 200, body: { entries, ...(entries.length >= limit && last ? { nextBefore: last.ts } : {}) } };
     }
     default:
       return null;

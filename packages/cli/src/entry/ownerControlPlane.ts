@@ -329,8 +329,8 @@ export class OwnerControlPlane {
 
   // ─── audit ──────────────────────────────────────────────────────────────
 
-  readAudit(opts: { limit?: number; sessionId?: string } = {}): Promise<AuditEntry[]> {
-    return readAudit({ home: this.deps.home, limit: opts.limit ?? 100, ...(opts.sessionId ? { sessionId: opts.sessionId } : {}) });
+  readAudit(opts: { limit?: number; sessionId?: string; before?: string; actionPrefix?: string; target?: string; days?: number } = {}): Promise<AuditEntry[]> {
+    return readAudit({ home: this.deps.home, ...opts, limit: opts.limit ?? 100 });
   }
 
   // ─── Telegram (one message each) ────────────────────────────────────────
@@ -430,10 +430,11 @@ const SYSTEM_TITLES: Record<string, string> = {
   heartbeat: "Heartbeat + reliability triage",
   dream: "Dreaming (crucible + memory consolidation)",
   gauntlet: "Nightly coding gauntlet",
+  goals: "Goal check-ins (agents working your goals)",
 };
 
 function isHookName(name: string | undefined): name is SchedulerHookName {
-  return name === "heartbeat" || name === "dream" || name === "gauntlet";
+  return name === "heartbeat" || name === "dream" || name === "gauntlet" || name === "goals";
 }
 
 function pad(n: number): string {

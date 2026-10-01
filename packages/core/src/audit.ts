@@ -81,13 +81,30 @@ export function appendAudit(entry: Omit<AuditEntry, "ts"> & { ts?: string }, hom
   return next.catch(() => undefined);
 }
 
-/** Newest-first entries from the last `days` files, capped at `limit`. */
-export async function readAudit(opts: { home?: string; days?: number; limit?: number; sessionId?: string } = {}): Promise<AuditEntry[]> {
+export interface ReadAuditOptions {
+  home?: string;
+  days?: number;
+  limit?: number;
+  sessionId?: string;
+  /** Only entries strictly older than this ISO timestamp: the cursor a client
+   *  passes back (the `ts` of the last entry it has) to page into history. */
+  before?: string;
+  /** Only actions starting with this prefix, e.g. "goal.". */
+  actionPrefix?: string;
+  /** Only entries about this target (exact). */
+  target?: string;
+}
+
+/** Newest-first entries from the last `days` files (counted back from `before`
+ *  when paging), capped at `limit`. */
+export async function readAudit(opts: ReadAuditOptions = {}): Promise<AuditEntry[]> {
   const days = Math.min(Math.max(opts.days ?? 2, 1), 30);
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 2000);
+  const beforeMs = opts.before ? Date.parse(opts.before) : NaN;
+  const startMs = Number.isFinite(beforeMs) ? beforeMs : Date.now();
   const out: AuditEntry[] = [];
   for (let i = 0; i < days && out.length < limit; i++) {
-    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    const day = new Date(startMs - i * 86_400_000).toISOString().slice(0, 10);
     let text = "";
     try {
       text = await fs.readFile(path.join(auditDir(opts.home), `${day}.jsonl`), "utf8");
@@ -99,6 +116,9 @@ export async function readAudit(opts: { home?: string; days?: number; limit?: nu
       try {
         const entry = JSON.parse(line) as AuditEntry;
         if (opts.sessionId && entry.sessionId !== opts.sessionId) continue;
+        if (Number.isFinite(beforeMs) && !(entry.ts < new Date(beforeMs).toISOString())) continue;
+        if (opts.actionPrefix && !entry.action.startsWith(opts.actionPrefix)) continue;
+        if (opts.target && entry.target !== opts.target) continue;
         out.push(entry);
         if (out.length >= limit) break;
       } catch {

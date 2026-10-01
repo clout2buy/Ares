@@ -325,7 +325,40 @@ interface PendingPermission {
   sessionId: string;
   /** canonicalActionKey of what was asked — tripped on an owner deny. */
   action: string;
+  /** What the prompt is about, so a surface that cannot hold a socket open (a
+   *  lock-screen action, a widget) can list and answer it over HTTP. */
+  requestId: string;
+  toolName: string;
+  input: unknown;
+  reason: string;
+  ownerDecision: boolean;
+  createdAt: number;
+  expiresAt: number;
 }
+
+/** A tool permission prompt still waiting for the owner. */
+export interface PendingPermissionInfo {
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  input: unknown;
+  reason: string;
+  /** A per-call owner decision (checkout total, plan crossing): never answered from a lock screen. */
+  ownerDecision: boolean;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/** How a permission prompt that is no longer pending ended. */
+export interface PermissionOutcome {
+  decision: PermissionPromptDecision;
+  /** "owner" answered it; "timeout" and "sweep" are the safe-deny paths. */
+  by: "owner" | "timeout" | "sweep";
+  at: number;
+}
+
+/** Resolved prompts remembered so a late tap on an old notification gets a clear answer. */
+const RESOLVED_PERMISSIONS_KEPT = 200;
 
 const FALLBACK_TITLE = "untitled session";
 const TITLE_MAX_CHARS = 64;
@@ -351,6 +384,7 @@ export class SessionManager {
    *  same just-restored session don't spawn it twice. */
   private readonly rehydrating = new Map<string, Promise<LiveSession | null>>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
+  private readonly resolvedPermissions = new Map<string, PermissionOutcome>();
   private readonly home: string;
   private readonly factory: SessionFactory;
   private readonly sessionKernel?: SessionKernelStore;
@@ -684,9 +718,32 @@ export class SessionManager {
     if (!pending) return false;
     this.pendingPermissions.delete(key);
     clearTimeout(pending.timer);
+    this.rememberPermission(key, { decision, by: "owner", at: this.now() });
     if (decision === "deny") this.live.get(pending.sessionId)?.deniedThisTurn.add(pending.action);
     pending.resolve(decision);
     return true;
+  }
+
+  /** Tool permission prompts waiting on the owner right now, oldest first. */
+  pendingPermissionList(): PendingPermissionInfo[] {
+    return [...this.pendingPermissions.values()]
+      .map(({ sessionId, requestId, toolName, input, reason, ownerDecision, createdAt, expiresAt }) => ({ sessionId, requestId, toolName, input, reason, ownerDecision, createdAt, expiresAt }))
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** How a prompt that is no longer pending ended, or undefined if it was never seen (or long forgotten). */
+  permissionOutcome(sessionId: string, requestId: string): PermissionOutcome | undefined {
+    return this.resolvedPermissions.get(permissionKey(sessionId, requestId));
+  }
+
+  private rememberPermission(key: string, outcome: PermissionOutcome): void {
+    this.resolvedPermissions.delete(key);
+    this.resolvedPermissions.set(key, outcome);
+    while (this.resolvedPermissions.size > RESOLVED_PERMISSIONS_KEPT) {
+      const oldest = this.resolvedPermissions.keys().next().value;
+      if (oldest === undefined) break;
+      this.resolvedPermissions.delete(oldest);
+    }
   }
 
   // ─── Owner control plane ────────────────────────────────────────────────
@@ -731,6 +788,7 @@ export class SessionManager {
     for (const [key, entry] of pending) {
       this.pendingPermissions.delete(key);
       clearTimeout(entry.timer);
+      this.rememberPermission(key, { decision: "deny", by: "sweep", at: this.now() });
       entry.resolve("deny");
     }
     return pending.length;
@@ -1051,10 +1109,28 @@ export class SessionManager {
         const key = permissionKey(sessionId, requestId);
         const timer = setTimeout(() => {
           this.pendingPermissions.delete(key);
+          this.rememberPermission(key, { decision: "deny", by: "timeout", at: this.now() });
           resolve("deny");
         }, this.permissionTimeoutMs);
         timer.unref?.();
-        this.pendingPermissions.set(key, { resolve, timer, sessionId, action });
+        const createdAt = this.now();
+        this.pendingPermissions.set(key, {
+          resolve, timer, sessionId, action, requestId,
+          toolName: request.toolName, input: request.input, reason: request.reason,
+          ownerDecision: request.ownerDecision === true,
+          createdAt, expiresAt: createdAt + this.permissionTimeoutMs,
+        });
+        // A prompt whose turn was interrupted or steered away no longer has any
+        // authority: drop it now so a lock-screen list never offers a phantom.
+        const abandon = () => {
+          if (this.pendingPermissions.get(key)?.timer !== timer) return;
+          this.pendingPermissions.delete(key);
+          clearTimeout(timer);
+          this.rememberPermission(key, { decision: "deny", by: "sweep", at: this.now() });
+          resolve("deny");
+        };
+        if (request.signal?.aborted) abandon();
+        else request.signal?.addEventListener("abort", abandon, { once: true });
       });
     };
   }

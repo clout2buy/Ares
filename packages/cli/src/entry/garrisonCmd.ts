@@ -33,6 +33,8 @@ import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
+import { createApprovalsApi } from "../phoneApprovals.js";
+import { LiveActivityDriver, LiveActivityRegistry, createLiveActivityApi, createWidgetNudger } from "../phoneLiveActivity.js";
 import { startFamilyReplies } from "./familyWiring.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
 import { ConnectHub } from "../connectHub.js";
@@ -719,6 +721,28 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
   );
 
+  // Approve from the notification, Live Activity / Dynamic Island, widget refresh
+  // (phoneApprovals.ts, phoneLiveActivity.ts). The approvals routes work with or
+  // without APNs; the pushes only go out when it is configured.
+  const pushLog = (line: string) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n");
+  const agentNameOf = (sessionId: string) => personaRuntime.store.bySession(sessionId)?.name ?? "Ares";
+  const nudgeWidgets = createWidgetNudger((data) => (phonePush.configured ? phonePush.sendBackground(data) : Promise.resolve()), { log: pushLog });
+  const liveActivityRegistry = new LiveActivityRegistry(path.join(context.home, "phone-liveactivity.json"));
+  const liveActivity = new LiveActivityDriver({
+    registry: liveActivityRegistry,
+    sender: phonePush,
+    agentName: agentNameOf,
+    taskLabel: (sessionId) => {
+      const title = sessions.list().find((s) => s.id === sessionId)?.title;
+      return title && title !== agentNameOf(sessionId) ? title : undefined;
+    },
+    isMobileSession: (sessionId) => sessions.list().some((s) => s.id === sessionId && s.surface === "mobile" && s.tenant?.role !== "guest"),
+    onApprovalsChanged: nudgeWidgets,
+    log: pushLog,
+  });
+  const approvalsApi = createApprovalsApi({ sessions, staged: approvals, agentName: agentNameOf, onResolved: nudgeWidgets, log: pushLog });
+  const liveActivityApi = createLiveActivityApi({ registry: liveActivityRegistry, driver: liveActivity, configured: () => phonePush.configured, log: pushLog });
+
   // Connectors the owner can finish on their phone: the provider redirects
   // back to the tunnel, not to a localhost that only exists on this box.
   const tunnelOAuth = new TunnelOAuth(
@@ -810,6 +834,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           hooks: hooksApi,
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
+          notify: async (req, res, url) => (await approvalsApi(req, res, url)) || (await liveActivityApi(req, res, url)),
           registerPush: (d) => phonePush.register(d),
           unregisterPush: (tok) => phonePush.unregister(tok),
           pushConfigured: () => phonePush.configured,
@@ -875,6 +900,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         agentName: (sessionId) => personaRuntime.store.bySession(sessionId)?.name ?? "Ares",
         isMobileSession: (sessionId) => sessions.list().some((s) => s.id === sessionId && s.surface === "mobile" && s.tenant?.role !== "guest"),
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
+        observers: [liveActivity, { onStagedApproval: () => nudgeWidgets() }],
       })
     : null;
   phoneNotifier?.start();
@@ -947,6 +973,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       setDeviceBridge(null);
       deviceBridge.shutdown();
       phoneNotifier?.stop();
+      liveActivity.dispose();
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});
       browserWatchHub.close();

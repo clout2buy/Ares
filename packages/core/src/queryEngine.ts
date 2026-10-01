@@ -4791,6 +4791,7 @@ export class QueryEngine {
                 input: request.input,
                 reason: request.reason,
                 suggestion: request.suggestion,
+                ...(request.ownerDecision ? { ownerDecision: true } : {}),
               });
               // The human approval wait must NOT count against the tool watchdog
               // — the tool hasn't run yet, it's only waiting for a click. Pause

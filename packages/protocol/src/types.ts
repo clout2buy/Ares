@@ -203,7 +203,18 @@ export type TurnEvent =
       /** See tool_end.images — declared failures can still carry screenshots. */
       images?: { blocks: number; approxBytes: number };
     }
-  | { type: "permission_request"; id: string; toolName: string; input: unknown; reason: string; suggestion?: PermissionPromptSuggestion }
+  | {
+      type: "permission_request";
+      id: string;
+      toolName: string;
+      input: unknown;
+      reason: string;
+      suggestion?: PermissionPromptSuggestion;
+      /** Present (true) only for a per-call owner decision (a checkout total, a
+       *  plan crossing). Surfaces that can answer from a lock screen use it to
+       *  insist on opening the app. See ToolPermissionRequest.ownerDecision. */
+      ownerDecision?: boolean;
+    }
   | { type: "permission_response"; id: string; decision: PermissionPromptDecision }
   | { type: "verify_scheduled"; files: string[] }
   | { type: "verify_finished"; ok: boolean; output: string; durationMs: number }

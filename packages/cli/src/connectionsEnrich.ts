@@ -83,7 +83,7 @@ const STATIC_CAPABILITIES: Record<string, string[]> = {
 };
 
 export interface McpToolsCache {
-  [server: string]: { tools?: Array<{ name?: string; description?: string }>; error?: string; at?: number } | undefined;
+  [server: string]: { tools?: Array<{ name?: string; description?: string }>; error?: string; errorAt?: number; at?: number } | undefined;
 }
 
 export interface EnrichContext {
@@ -301,7 +301,14 @@ export async function extrasFor(
   if (test) {
     const account = cleanAccount(test.account);
     if (account) out.account = account;
-    if (!health || health === "ok") {
+    // The latest liveness test is the freshest evidence there is: a success newer
+    // than any recorded failure beats a stale cached tool-list error and a
+    // stale expiry guess (the Fix button never clears otherwise).
+    const errorAt = ctx.mcpCache[service.id]?.errorAt ?? 0;
+    if (test.ok && ctx.now() - test.checkedAt < TEST_FRESH_MS && test.checkedAt >= errorAt) {
+      health = "ok";
+      detail = undefined;
+    } else if (!health || health === "ok") {
       if (ctx.now() - test.checkedAt < TEST_FRESH_MS) {
         if (test.ok) health = "ok";
         else {
@@ -320,4 +327,23 @@ export async function extrasFor(
 /** Catalog-known custom-ness: a server in mcp-remote.json no registry row owns. */
 export function isCustomEntry(id: string, knownIds: Set<string>): boolean {
   return !knownIds.has(id) && !catalogById(id);
+}
+
+/**
+ * Drop the cached tool-list failure for one connector (mcp-tools-cache.json).
+ * A successful connect or liveness test calls this so the next list read has no
+ * stale "rejected the connection (HTTP 401)" to turn into `expired`. Tools in the
+ * cache are kept. Never throws.
+ */
+export async function clearMcpCacheError(id: string, home?: string): Promise<void> {
+  const file = path.join(aresHome(home), "mcp-tools-cache.json");
+  try {
+    const cache = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, { error?: string; errorAt?: number }>;
+    const entry = cache[id];
+    if (!entry || (entry.error === undefined && entry.errorAt === undefined)) return;
+    delete entry.error;
+    delete entry.errorAt;
+    await fs.writeFile(file, JSON.stringify(cache, null, 2) + "
+", "utf8");
+  } catch { /* no cache yet */ }
 }

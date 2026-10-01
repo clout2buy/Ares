@@ -283,11 +283,19 @@ export async function handleConnectionsApi(req: IncomingMessage, res: ServerResp
         if (!broker) { json(503, { error: "this machine has no connect hub (it needs a public address)" }); return true; }
         if (body.v === 2 && isBrokerV2(broker)) {
           try {
+            // The Fix button on an expired card calls start again: a stored but dead
+            // credential must start a fresh flow, never answer "connected".
+            let reconnect = body.reconnect === true;
+            if (!reconnect && (await isServiceConnected(service, opts.home).catch(() => false))) {
+              const ctx = await loadEnrichContext({ ...(opts.home ? { home: opts.home } : {}), ...(opts.now ? { now: opts.now } : {}), remote: await loadRemoteMcpServers(opts.home).catch(() => ({})) });
+              const extras = await extrasFor(service, true, ctx).catch((): ConnectionExtras => ({}));
+              if (extras.health === "expired" || extras.health === "error") reconnect = true;
+            }
             const result = await broker.startV2(service, {
               reason: "from the Connections screen",
               ...(body.returnTo === "ares://oauth" ? { returnTo: "ares://oauth" } : {}),
               ...(body.mode === "browser" ? { mode: "browser" as const } : {}),
-              ...(body.reconnect === true ? { reconnect: true } : {}),
+              ...(reconnect ? { reconnect: true } : {}),
             });
             opts.log?.(`connections: ${service.id} v2 start -> ${result.state}`);
             json(200, result);

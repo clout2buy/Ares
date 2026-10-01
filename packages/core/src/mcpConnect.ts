@@ -23,6 +23,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { catalogById } from "./mcpCatalog.js";
 import { getCredential, setCredential, deleteCredential } from "./credentials.js";
 import {
   discoverMcpAuth,
@@ -111,6 +112,7 @@ export async function loadRemoteMcpServers(home?: string): Promise<Record<string
     const parsed = JSON.parse(raw) as { servers?: Record<string, RemoteMcpEntry> };
     const servers = parsed.servers ?? {};
     await sweepPlaintextSecrets(servers, home);
+    await migrateRetiredSseUrls(servers, home);
     return servers;
   } catch {
     return {};
@@ -151,6 +153,27 @@ async function sweepPlaintextSecrets(servers: Record<string, RemoteMcpEntry>, ho
     }
   }
   if (dirty) await saveRemoteMcpServers(servers, home);
+}
+
+/**
+ * A connector stored against a legacy /sse URL that the catalog has since moved
+ * to streamable HTTP (Cloudflare retired its HTTP+SSE endpoints: the old URL
+ * answers 410 to an SSE client) is rewritten to the catalog URL. Same host only,
+ * so a custom server of the same name is never redirected elsewhere.
+ */
+async function migrateRetiredSseUrls(servers: Record<string, RemoteMcpEntry>, home?: string): Promise<void> {
+  let dirty = false;
+  for (const [name, entry] of Object.entries(servers)) {
+    const cat = catalogById(name);
+    if (!cat || cat.transport === "sse" || cat.url === entry.url) continue;
+    try {
+      const have = new URL(entry.url);
+      if (!/\/sse\/?$/i.test(have.pathname) || have.host.toLowerCase() !== new URL(cat.url).host.toLowerCase()) continue;
+      entry.url = cat.url;
+      dirty = true;
+    } catch { /* unparsable url: leave it */ }
+  }
+  if (dirty) await saveRemoteMcpServers(servers, home).catch(() => undefined);
 }
 
 async function saveRemoteMcpServers(servers: Record<string, RemoteMcpEntry>, home?: string): Promise<void> {

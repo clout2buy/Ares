@@ -60,6 +60,8 @@ import {
   type StartOptions,
   type StartResult,
 } from "@ares/core";
+import { rememberTest } from "./connectionsSafe.js";
+import { clearMcpCacheError } from "./connectionsEnrich.js";
 import { DEFAULT_LOOPBACK_REDIRECT, OAuthDriver, type Prepared } from "./connectOAuth.js";
 import { acquireBrowserPage, findInstalledChromium } from "@ares/connectors";
 import { LIFE_VERIFIERS as LIFE_SURFACE_VERIFIERS } from "./lifeVerifiers.js";
@@ -336,6 +338,13 @@ export class ConnectHub implements ConnectBrokerV2 {
     if (flow.status !== "pending") return;
     flow.status = ok ? "ok" : "failed";
     flow.detail = detail;
+    if (ok) {
+      // A successful connect is the newest evidence: overwrite the stored health
+      // with green now, and drop the stale cached tool-list failure (the
+      // "rejected the connection (HTTP 401)" latch) so it cannot come back.
+      rememberTest(this.opts.home, flow.service.id, { ok: true, detail: "connected", checkedAt: Date.now() });
+      void clearMcpCacheError(flow.service.id, this.opts.home);
+    }
     // No token, code or URL ever reaches a log line: the service id and the verdict only.
     this.log(`connect: ${flow.service.id} ${ok ? "connected" : `failed: ${scrubOAuthText(detail, 120)}`}`);
     flow.device?.abort.abort();

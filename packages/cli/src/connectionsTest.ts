@@ -31,6 +31,7 @@ import {
   probeMcpTools,
   type ConnectService,
 } from "@ares/core";
+import { clearMcpCacheError } from "./connectionsEnrich.js";
 import { cleanAccount, rememberTest, safeText, type TestRecord } from "./connectionsSafe.js";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -228,5 +229,6 @@ export async function testConnection(service: ConnectService, o: TestOptions = {
     ...(outcome.account ? { account: outcome.account } : {}),
   };
   rememberTest(o.home, service.id, record);
+  if (record.ok) await clearMcpCacheError(service.id, o.home);
   return record;
 }

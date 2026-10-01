@@ -205,7 +205,33 @@ export {
   type ApprovedCheckout,
 } from "./Checkout.js";
 export { DeviceTool, type DeviceOutput } from "./Device.js";
-export { GoalsTool, GoalsStore, goalsPath, GOAL_CATEGORIES, type LifeGoal, type GoalCategory, type GoalsOutput } from "./Goals.js";
+export {
+  GoalsTool,
+  GoalsStore,
+  goalsPath,
+  GOAL_CATEGORIES,
+  GOAL_STATUSES,
+  GOAL_CADENCES,
+  CADENCE_MS,
+  STATUS_INPUTS,
+  GoalInputError,
+  parseGoalFields,
+  parseNoteText,
+  appendGoalNote,
+  goalSummary,
+  goalNotesPage,
+  isOpenGoal,
+  type LifeGoal,
+  type LifeGoalStatus,
+  type GoalCategory,
+  type GoalCadence,
+  type GoalNote,
+  type GoalNoteBy,
+  type GoalFields,
+  type GoalStatusInput,
+  type GoalSummary,
+  type GoalsOutput,
+} from "./Goals.js";
 export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
 export { GmailTool, buildRfc2822, planUnsubscribe, gmailBodyText, findCodeInputProblem, CODE_HANDLE_TTL_MS, type GmailOutput } from "./Gmail.js";

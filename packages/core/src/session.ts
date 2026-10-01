@@ -830,6 +830,15 @@ export class Session {
     }
   }
 
+  /** Has this session's kernel already admitted an input with this id? A
+   *  retried send (same inputId after a dropped connection) is a replay, not a
+   *  new request. False on a legacy session with no durable kernel. */
+  hasAdmittedInput(inputId: string): boolean {
+    if (!this.kernel) return false;
+    const known = this.kernel.getInput(inputId);
+    return known !== null && known.sessionId === this.meta.id;
+  }
+
   /** Append a user message and stream the turn. Events persist to rollout. */
   async *send(text: string): AsyncGenerator<TurnEvent> {
     yield* this.sendContent([{ type: "text", text }]);
@@ -877,6 +886,8 @@ export class Session {
       let userMessage: Message;
       let admittedInput: AdmittedInputRecord | null = null;
       let restoreExistingInput = false;
+      // True when this send re-presented an input the kernel already holds.
+      let replayedAdmission = false;
       if (admission.recoverExistingInput && !this.kernel) {
         throw new Error("recoverExistingInput requires a durable session kernel");
       }
@@ -906,6 +917,7 @@ export class Session {
             : { content }),
         });
         admittedInput = result.record;
+        replayedAdmission = !result.inserted && !admission.recoverExistingInput;
         if (admission.recoverExistingInput && result.inserted) {
           throw new Error(`startup recovery input ${inputKey} did not already exist`);
         }
@@ -930,6 +942,7 @@ export class Session {
         sessionId: this.meta.id,
         delivery,
         userMessage,
+        ...(replayedAdmission ? { replay: true as const } : {}),
       };
       // Admission is the write-ahead boundary. If this cannot become durable,
       // the provider must not start and tools must not gain side effects.

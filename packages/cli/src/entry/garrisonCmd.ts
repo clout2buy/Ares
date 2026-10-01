@@ -61,6 +61,7 @@ import { promptTailForTenant } from "./sessionSurface.js";
 import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
 import { startLifeSurfaces } from "./lifeWiring.js";
+import { startGoalSurfaces } from "./goalsMemoryWiring.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
 import { PersonaRuntime } from "./personaRuntime.js";
 import type { ProviderSelection } from "./providers.js";
@@ -437,6 +438,17 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "life", line } }) + "\n"),
   });
 
+  // The phone's Goals (agents working them on a schedule) and Memory surfaces.
+  // phonePush is built further down; the closure only runs once a check-in lands.
+  const goalSurfaces = startGoalSurfaces({
+    context,
+    sessions,
+    personas: personaRuntime,
+    push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()),
+    isPaused: () => ownerPause.paused,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "goals", line } }) + "\n"),
+  });
+
   const scheduler = new Scheduler({
     hooks: {
       heartbeat: async () => {
@@ -477,13 +489,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         (await runScheduledGauntlet({ suite: process.env.ARES_GAUNTLET_SUITE ?? "coding-v3", gate: true, trigger: "garrison", home: context.home })).nightly,
       // The morning paper: due once a day from ARES_FEED_HOUR (07:00 local).
       feed: () => life.feed.maybeRunDaily(),
+      // Goal check-ins: wakes the agent on each goal that is due, in its own thread.
+      goals: () => goalSurfaces.tick(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
     activeTurns: () => sessions.list().filter((s) => s.busy).length,
     // The owner's pause holds system jobs; every run lands in the audit trail.
     isPaused: () => ownerPause.paused,
-    onRun: (hook, result) => void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home),
+    // An idle goals tick (every five minutes) is not an action worth a line.
+    onRun: (hook, result) => { if (hook === "goals" && result === "idle") return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
@@ -794,6 +809,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           connect: (req, res, url) => connectHub.handle(req, res, url),
           life: life.handler,
           personas: (req, res, url) => personaRuntime.handle(req, res, url),
+          goals: goalSurfaces.goalsApi,
+          memory: goalSurfaces.memoryApi,
           avatars: createAvatarsApi({
             store: avatarStore,
             // Only "ares" and a saved persona can hold a picture.

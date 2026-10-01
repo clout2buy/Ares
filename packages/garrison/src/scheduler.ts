@@ -33,6 +33,9 @@ export interface SchedulerHooks {
    *  itself decides whether today's run is due, so a garrison that was down
    *  at the scheduled hour still delivers when it comes back. */
   feed?: () => Promise<unknown> | unknown;
+  /** Goal check-ins (the phone's Goals tab): runs every goalsCheckEveryMs and
+   *  itself decides which goals' agents are due. */
+  goals?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -77,6 +80,8 @@ export interface SchedulerOptions {
   gauntletEnabled?: boolean;
   /** How often the feed hook is asked whether it is due; default 5 minutes. */
   feedCheckEveryMs?: number;
+  /** How often the goals hook looks for due check-ins; default 5 minutes. */
+  goalsCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
@@ -109,6 +114,7 @@ const DEFAULT_IDLE_MS = 2 * 60 * 60_000;
 const DEFAULT_DREAM_CHECK_MS = 10 * 60_000;
 const DEFAULT_GAUNTLET_CHECK_MS = 10 * 60_000;
 const DEFAULT_FEED_CHECK_MS = 5 * 60_000;
+const DEFAULT_GOALS_CHECK_MS = 5 * 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -161,7 +167,7 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, goals: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
   private readonly lastRuns: Partial<Record<SchedulerHookName, { at: number; result: string }>> = {};
   private readonly heldHooks = new Set<SchedulerHookName>();
@@ -196,6 +202,9 @@ export class Scheduler {
     }
     if (this.opts.hooks.feed) {
       this.handles.push(this.setIntervalFn(() => void this.runHook("feed"), this.opts.feedCheckEveryMs ?? DEFAULT_FEED_CHECK_MS));
+    }
+    if (this.opts.hooks.goals) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("goals"), this.goalsCheckEveryMs()));
     }
   }
 
@@ -274,6 +283,10 @@ export class Scheduler {
     }
     if (this.opts.hooks.dream) {
       push("dream", `after ${formatEvery(this.idleMs)} idle`, this.started, this.nextDreamAt());
+    }
+    if (this.opts.hooks.goals) {
+      const last = this.lastRuns.goals?.at ?? this.startedAtMs;
+      push("goals", `every ${formatEvery(this.goalsCheckEveryMs())}`, this.started, last === undefined ? undefined : last + this.goalsCheckEveryMs());
     }
     if (this.opts.hooks.gauntlet) {
       const end = (this.gauntletHour + this.gauntletWindowHours) % 24;
@@ -370,14 +383,20 @@ export class Scheduler {
     }
   }
 
-  private async runHook(name: "heartbeat" | "dream" | "feed"): Promise<void> {
+  private goalsCheckEveryMs(): number {
+    return this.opts.goalsCheckEveryMs ?? DEFAULT_GOALS_CHECK_MS;
+  }
+
+  private async runHook(name: "heartbeat" | "dream" | "feed" | "goals"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
     if (name === "heartbeat") this.lastHeartbeatAt = this.nowFn();
     if (this.blocked(name)) return;
     this.running[name] = true;
     try {
-      await this.opts.hooks[name]?.();
-      this.noteRun(name, "ok");
+      const out = await this.opts.hooks[name]?.();
+      // The goals hook reports what it did ("idle", "ran 1 check-in") so the
+      // jobs list is honest and an idle tick can stay out of the audit trail.
+      this.noteRun(name, name === "goals" && typeof out === "string" ? out : "ok");
     } catch (err) {
       this.noteRun(name, `error: ${errorText(err)}`);
       this.opts.onError?.(name, err);

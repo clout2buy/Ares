@@ -66,5 +66,6 @@ export {
   type MnemosyneServerFrame,
 } from "./protocol.js";
 
+export { selectMemories, MEMORY_PAGE_DEFAULT, MEMORY_PAGE_MAX, type MemoryQuery, type MemoryPage } from "./memoryView.js";
 export { MnemosyneServer, renderBindingBlock, type MnemosyneServerOptions } from "./server.js";
 export { MnemosyneClient, type MnemosyneClientOptions } from "./client.js";

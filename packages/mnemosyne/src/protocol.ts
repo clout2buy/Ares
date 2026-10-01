@@ -9,6 +9,7 @@
 // Correlation: any client frame may carry `req`; the reply echoes it as `re`.
 
 import type { MemoryKind, MemoryNode, RecallResult } from "@ares/mind";
+import type { MemoryPage } from "./memoryView.js";
 import type { Binding, BindingClass, BindingSource } from "./bindings.js";
 import type { CompiledGuard, GuardVerdict } from "./guards.js";
 import type { AttestOutcome, ComplianceReport } from "./attest.js";
@@ -20,6 +21,13 @@ export type MnemosyneClientFrame =
   | { type: "hello"; token: string; client: string; proto: number; req?: string }
   | { type: "remember"; kind: MemoryKind; content: string; tags?: string[]; source?: string; scope?: string; req?: string }
   | { type: "recall"; cue: string; limit?: number; scope?: string; reinforce?: boolean; req?: string }
+  // The owner's view of memory (the phone's Memory screen). list is read-only
+  // (never reinforces); edit and forget are owner corrections, applied to the
+  // SAME in-memory store the recalls write through, so a correction cannot be
+  // undone by the next recall's persist.
+  | { type: "memory.list"; scope?: string; kinds?: MemoryKind[]; query?: string; limit?: number; offset?: number; req?: string }
+  | { type: "memory.edit"; id: string; content: string; req?: string }
+  | { type: "memory.forget"; id: string; req?: string }
   | { type: "bindings.list"; req?: string }
   | { type: "bindings.add"; class: BindingClass; text: string; source?: BindingSource; req?: string }
   | { type: "bindings.retire"; id: string; req?: string }
@@ -35,6 +43,8 @@ export type MnemosyneServerFrame =
   | { type: "error"; message: string; re?: string }
   | { type: "remembered"; node: MemoryNode; re?: string }
   | { type: "recalled"; items: RecallResult[]; re?: string }
+  | { type: "memory.page"; page: MemoryPage; re?: string }
+  | { type: "memory.edited"; before: MemoryNode; after: MemoryNode; re?: string }
   | { type: "bindings"; list: Binding[]; re?: string }
   | { type: "binding.added"; binding: Binding; re?: string }
   | {

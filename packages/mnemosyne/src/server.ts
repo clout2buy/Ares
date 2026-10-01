@@ -15,6 +15,7 @@ import path from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { MemoryStore } from "@ares/mind";
 import { mnemosynePaths } from "./paths.js";
+import { selectMemories } from "./memoryView.js";
 import { ensureToken, constantTimeEqual } from "./token.js";
 import {
   addBinding,
@@ -197,6 +198,20 @@ export class MnemosyneServer {
         this.send(socket, { type: "recalled", items, re: frame.req });
         return;
       }
+      case "memory.list": {
+        this.send(socket, { type: "memory.page", page: selectMemories(store.all(), { scope: frame.scope, kinds: frame.kinds, query: frame.query, limit: frame.limit, offset: frame.offset }), re: frame.req });
+        return;
+      }
+      case "memory.edit": {
+        const edited = typeof frame.id === "string" && typeof frame.content === "string" ? await store.edit(frame.id, frame.content) : undefined;
+        this.send(socket, edited ? { type: "memory.edited", before: edited.before, after: edited.after, re: frame.req } : { type: "error", message: `no memory ${String(frame.id).slice(0, 80)}`, re: frame.req });
+        return;
+      }
+      case "memory.forget": {
+        const forgotten = typeof frame.id === "string" ? await store.forget(frame.id) : false;
+        this.send(socket, forgotten ? { type: "ok", re: frame.req } : { type: "error", message: `no memory ${String(frame.id).slice(0, 80)}`, re: frame.req });
+        return;
+      }
       case "bindings.list": {
         this.send(socket, { type: "bindings", list: await loadBindings(this.opts.home), re: frame.req });
         return;
@@ -242,7 +257,7 @@ export class MnemosyneServer {
       }
       default: {
         const exhaustive: never = frame;
-        this.send(socket, { type: "error", message: `unknown frame ${JSON.stringify(exhaustive).slice(0, 80)}` });
+        this.send(socket, { type: "error", message: `unknown frame ${JSON.stringify(exhaustive).slice(0, 80)}`, re: (exhaustive as { req?: string }).req });
       }
     }
   }

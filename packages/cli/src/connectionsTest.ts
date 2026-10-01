@@ -19,6 +19,7 @@
 
 import { promises as fs } from "node:fs";
 import {
+  accountFromJson,
   OAUTH_PROVIDERS,
   browserSessionFile,
   catalogByUrl,
@@ -106,10 +107,11 @@ async function checkOAuthApp(service: ConnectService, o: TestOptions, guarded: F
     return { ok: false, detail: "the access token expired and the refresh was rejected; reconnect" };
   }
   secrets.push(token);
-  const info = USERINFO[cfg.provider];
+  const generic = cfg.userinfoUrl ? { url: cfg.userinfoUrl, account: (j: Record<string, unknown>) => accountFromJson(j) } : undefined;
+  const info = USERINFO[cfg.provider] ?? generic;
   if (!info) return { ok: true, detail: "token present and unexpired (this provider has no account lookup)" };
   try {
-    const res = await guarded(info.url, { headers: { authorization: `Bearer ${token}`, accept: "application/json", ...(info.headers ?? {}) } });
+    const res = await guarded(info.url, { headers: { authorization: `Bearer ${token}`, accept: "application/json", ...((info as { headers?: Record<string, string> }).headers ?? {}) } });
     const verdict = httpVerdict(res.status, service.label);
     if (verdict) return verdict;
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;

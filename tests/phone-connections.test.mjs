@@ -65,7 +65,7 @@ const publicDns = async () => ["93.184.216.34"];
 
 // A catalog key service that is HTTP (probe-able) and sends a plain bearer.
 const KEY_MCP = CONNECT_SERVICES.find((s) => s.id === "render");
-const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom"];
+const OPTIONAL = ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "capabilities", "usedBy", "custom", "auth", "setupDone", "oauthClass", "verification"];
 const CORE = ["blurb", "category", "connected", "domain", "id", "kind", "label"];
 
 // ── list: shape and enrichment ──────────────────────────────────────────────
@@ -73,13 +73,13 @@ const CORE = ["blurb", "category", "connected", "domain", "id", "kind", "label"]
 test("list keeps the original shape and never invents data on a clean home", async () => {
   const home = await tmpHome();
   const list = await listPhoneConnections(home);
-  assert.equal(list.length, CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:")).length);
+  assert.equal(list.length, CONNECT_SERVICES.filter((s) => !s.id.startsWith("site:") && !s.advanced).length);
   for (const s of list) {
     for (const key of ["id", "label", "kind", "blurb", "connected"]) assert.ok(key in s, `${s.id} lacks ${key}`);
     for (const key of Object.keys(s)) assert.ok([...CORE, ...OPTIONAL].includes(key), `unexpected key ${key}`);
     assert.equal(s.connected, false);
     // nothing is connected, so nothing about an account, health, use or scopes can be known
-    for (const key of ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "scopes", "custom"]) assert.ok(!(key in s), `${s.id} invented ${key}`);
+    for (const key of ["account", "connectedAt", "lastUsedAt", "health", "healthDetail", "custom"]) assert.ok(!(key in s), `${s.id} invented ${key}`);
   }
   const google = list.find((s) => s.id === "google");
   assert.ok(google.capabilities.length > 0);

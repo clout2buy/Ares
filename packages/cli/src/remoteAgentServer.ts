@@ -1370,7 +1370,7 @@ export class RemoteAgentServer {
       }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
       return;
     }
-    if (url.pathname === "/oauth/callback" && this.opts.phoneApi?.oauth) {
+    if ((url.pathname === "/oauth/callback" || url.pathname === "/oauth/client.json") && this.opts.phoneApi?.oauth) {
       void this.opts.phoneApi.oauth.handleCallback(req, res, url).then((handled) => {
         if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
       }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });

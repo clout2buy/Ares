@@ -191,7 +191,8 @@ async function mcpTokenShape(id: string, home?: string): Promise<TokenShape | nu
   try {
     const raw = await getCredential(`mcp.token.${id}`, { home });
     if (!raw) return null;
-    const bundle = JSON.parse(raw) as { expiresAt?: unknown; refreshToken?: unknown };
+    const bundle = JSON.parse(raw) as { expiresAt?: unknown; refreshToken?: unknown; needsReauth?: unknown };
+    if (bundle.needsReauth === true) return { expiresAt: 1, hasRefresh: false };
     return {
       ...(typeof bundle.expiresAt === "number" ? { expiresAt: bundle.expiresAt } : {}),
       hasRefresh: typeof bundle.refreshToken === "string" && bundle.refreshToken.length > 0,
@@ -274,7 +275,9 @@ export async function extrasFor(
       if (tokens) {
         const scopes = scopesOf(tokens.scope);
         if (scopes) out.scopes = scopes;
-        if (tokens.expiresAt !== undefined && tokens.expiresAt <= ctx.now() && !tokens.refreshToken) {
+        if (tokens.meta?.account) out.account = tokens.meta.account;
+        if (tokens.meta?.connectedAt) out.connectedAt = tokens.meta.connectedAt;
+        if (tokens.needsReauth || (tokens.expiresAt !== undefined && tokens.expiresAt <= ctx.now() && !tokens.refreshToken && !cfg?.customRefresh)) {
           health = "expired";
           detail = "the access token expired; reconnect to sign in again";
         } else {

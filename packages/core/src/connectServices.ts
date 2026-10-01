@@ -297,6 +297,15 @@ export const CONNECT_SERVICES: ConnectService[] = [
   ...API_CONNECT_SERVICES,
 ];
 
+// OAuth apps carry their one-time registration copy from the audit (oauthMatrix.setup) unless hand-written above.
+for (let i = 0; i < CONNECT_SERVICES.length; i += 1) {
+  const svc = CONNECT_SERVICES[i]!;
+  if (svc.kind !== "oauth-app" || svc.appSetup) continue;
+  const m = matrixFor(svc.id)?.setup;
+  CONNECT_SERVICES[i] = { ...svc, appSetup: m?.consoleUrl ? { consoleUrl: m.consoleUrl, steps: m.steps } : genericAppSetup(`https://${svc.domain ?? svc.id + ".com"}/`, svc.label) };
+}
+
+
 function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim();
 }

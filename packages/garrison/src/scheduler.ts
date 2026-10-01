@@ -421,9 +421,10 @@ export class Scheduler {
     this.running[name] = true;
     try {
       const out = await this.opts.hooks[name]?.();
-      // The goals hook reports what it did ("idle", "ran 1 check-in") so the
-      // jobs list is honest and an idle tick can stay out of the audit trail.
-      this.noteRun(name, (name === "goals" || name === "marketplace") && typeof out === "string" ? out : "ok");
+      // Every hook records its OWN result. Masking the payload behind the
+      // literal "ok" hid a heartbeat alert every 30 minutes for weeks: the audit
+      // read "ok" 378 times in a row and could not have read anything else.
+      this.noteRun(name, describeHookResult(out));
     } catch (err) {
       this.noteRun(name, `error: ${errorText(err)}`);
       this.opts.onError?.(name, err);
@@ -435,6 +436,23 @@ export class Scheduler {
 
 function errorText(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160);
+}
+
+/** A hook's own words, or "ok" when it genuinely has none. Anything richer than
+ *  a string (the heartbeat's HeartbeatResult, a dream summary) reduces to its
+ *  status plus the first line of its text, so the audit keeps one honest line
+ *  per run and cannot claim health a hook never reported. */
+function describeHookResult(out: unknown): string {
+  if (typeof out === "string") return out.trim() || "ok";
+  if (out && typeof out === "object") {
+    const { status, text } = out as { status?: unknown; text?: unknown };
+    if (typeof status === "string" && status) {
+      const first = typeof text === "string" ? (text.split("\n")[0] ?? "").trim() : "";
+      const quiet = status === "ok" || status === "skipped";
+      return quiet || !first ? status : `${status}: ${first.slice(0, 120)}`;
+    }
+  }
+  return "ok";
 }
 
 function formatEvery(ms: number): string {

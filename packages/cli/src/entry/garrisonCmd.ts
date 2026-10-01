@@ -72,6 +72,7 @@ import { startGoalSurfaces } from "./goalsMemoryWiring.js";
 import { startBriefingsAndLocation, type PhoneBriefingsAndLocation } from "./briefingWiring.js";
 import { configureSharedMarketplace } from "../marketplace/tool.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
+import { deliverHeartbeatAlerts } from "../heartbeatAlerts.js";
 import { PersonaRuntime } from "./personaRuntime.js";
 import type { ProviderSelection } from "./providers.js";
 
@@ -492,6 +493,37 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           triage,
         ]);
         if (heartbeat.status === "rejected") throw heartbeat.reason;
+        // The alert is the whole point of the heartbeat, so it must not die in a
+        // return value. Fire-and-forget: the turn can take minutes and must not
+        // hold the scheduler's clock. Budget and de-duplication live in
+        // heartbeatAlerts.ts; personaRuntime pushes whatever I reply in-thread.
+        void deliverHeartbeatAlerts({
+          home: context.home,
+          findings: heartbeat.value.findings,
+          sink: {
+            startTurn: async (text) => {
+              const sessionId = await personaRuntime.defaultThread();
+              if (!sessionId) return false;
+              return personaRuntime.routeAlarm(
+                { id: "heartbeat", label: "Heartbeat", body: text, prompt: text, sessionId },
+                new Date(),
+              );
+            },
+            push: async (text) => {
+              if (phonePush.configured) await phonePush.send({ title: "Rook", body: text });
+            },
+            log: (line) => {
+              process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "heartbeat-alert", line } }) + "\n");
+            },
+          },
+        }).catch((error: unknown) => {
+          process.stdout.write(
+            JSON.stringify({
+              type: "lifecycle",
+              event: { kind: "heartbeat-alert-error", message: error instanceof Error ? error.message : String(error) },
+            }) + "\n",
+          );
+        });
         return heartbeat.value;
       },
       // Dreams become the trial: every dream tick runs the Crucible first,

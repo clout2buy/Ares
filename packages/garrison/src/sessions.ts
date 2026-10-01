@@ -1514,10 +1514,38 @@ export async function loadGarrisonRollout(
   const limit = opts?.limit && opts.limit > 0 ? opts.limit : Infinity;
   const entries: Array<{ ts?: string; event: TurnEvent }> = [];
   const found = await forEachRolloutEntry(rolloutPath(home, sessionId), (entry) => {
+    if (mergeStreamDelta(entries[entries.length - 1], entry)) return;
     entries.push(entry);
     if (entries.length > limit) entries.shift();
   });
   return found ? entries : [];
+}
+
+/**
+ * A reply is persisted as hundreds of tiny deltas, so "the newest 300 events"
+ * was often just the tail of one assistant message with no user turn in it: the
+ * phone drew a fragment, or nothing, and the thread looked wiped. Folding
+ * consecutive deltas of one stream into a single event leaves the transcript
+ * identical (clients append them) while a limit now counts real structure.
+ */
+function mergeStreamDelta(prev: { ts?: string; event: TurnEvent } | undefined, next: { ts?: string; event: TurnEvent }): boolean {
+  if (!prev) return false;
+  const a = prev.event;
+  const b = next.event;
+  if (a.type === "text_delta" && b.type === "text_delta") {
+    prev.event = { ...a, text: a.text + b.text };
+    return true;
+  }
+  if (a.type === "thinking_delta" && b.type === "thinking_delta") {
+    const signature = b.signature ?? a.signature;
+    prev.event = { ...a, text: a.text + b.text, ...(signature !== undefined ? { signature } : {}) };
+    return true;
+  }
+  if (a.type === "tool_use_input_delta" && b.type === "tool_use_input_delta" && a.id === b.id) {
+    prev.event = { ...a, deltaJson: a.deltaJson + b.deltaJson };
+    return true;
+  }
+  return false;
 }
 
 /**

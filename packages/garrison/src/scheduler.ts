@@ -33,6 +33,10 @@ export interface SchedulerHooks {
    *  itself decides whether today's run is due, so a garrison that was down
    *  at the scheduled hour still delivers when it comes back. */
   feed?: () => Promise<unknown> | unknown;
+  /** The phone's morning/evening briefings. Runs every briefingCheckEveryMs; the
+   *  hook decides whether one is due (in the owner's zone), so a late garrison
+   *  still delivers inside its catch-up window. */
+  briefing?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -77,6 +81,8 @@ export interface SchedulerOptions {
   gauntletEnabled?: boolean;
   /** How often the feed hook is asked whether it is due; default 5 minutes. */
   feedCheckEveryMs?: number;
+  /** How often the briefing hook is asked whether one is due; default 1 minute. */
+  briefingCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
@@ -109,6 +115,7 @@ const DEFAULT_IDLE_MS = 2 * 60 * 60_000;
 const DEFAULT_DREAM_CHECK_MS = 10 * 60_000;
 const DEFAULT_GAUNTLET_CHECK_MS = 10 * 60_000;
 const DEFAULT_FEED_CHECK_MS = 5 * 60_000;
+const DEFAULT_BRIEFING_CHECK_MS = 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -161,7 +168,7 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, briefing: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
   private readonly lastRuns: Partial<Record<SchedulerHookName, { at: number; result: string }>> = {};
   private readonly heldHooks = new Set<SchedulerHookName>();
@@ -196,6 +203,9 @@ export class Scheduler {
     }
     if (this.opts.hooks.feed) {
       this.handles.push(this.setIntervalFn(() => void this.runHook("feed"), this.opts.feedCheckEveryMs ?? DEFAULT_FEED_CHECK_MS));
+    }
+    if (this.opts.hooks.briefing) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("briefing"), this.opts.briefingCheckEveryMs ?? DEFAULT_BRIEFING_CHECK_MS));
     }
   }
 
@@ -284,6 +294,9 @@ export class Scheduler {
         this.nextGauntletAt(),
       );
     }
+    if (this.opts.hooks.briefing) {
+      push("briefing", "morning and evening briefings", this.started, undefined);
+    }
     return out;
   }
 
@@ -370,7 +383,7 @@ export class Scheduler {
     }
   }
 
-  private async runHook(name: "heartbeat" | "dream" | "feed"): Promise<void> {
+  private async runHook(name: "heartbeat" | "dream" | "feed" | "briefing"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
     if (name === "heartbeat") this.lastHeartbeatAt = this.nowFn();
     if (this.blocked(name)) return;

@@ -430,10 +430,11 @@ const SYSTEM_TITLES: Record<string, string> = {
   heartbeat: "Heartbeat + reliability triage",
   dream: "Dreaming (crucible + memory consolidation)",
   gauntlet: "Nightly coding gauntlet",
+  briefing: "Morning and evening briefings",
 };
 
 function isHookName(name: string | undefined): name is SchedulerHookName {
-  return name === "heartbeat" || name === "dream" || name === "gauntlet";
+  return name === "heartbeat" || name === "dream" || name === "gauntlet" || name === "briefing";
 }
 
 function pad(n: number): string {

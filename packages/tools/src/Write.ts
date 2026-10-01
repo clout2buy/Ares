@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { gateEdit } from "./syntaxGate.js";
 import {
   type PostMutationFeedback,
   WorkspaceMutationError,
@@ -143,6 +144,11 @@ export const WriteTool = buildTool({
       });
     }
 
+    // Pre-write syntax gate (see syntaxGate.ts): refuse a full-file rewrite that
+    // turns a parsing file into a non-parsing one; a NEW file only warns.
+    const gate = await gateEdit(filePath, existed ? current : null, i.content, ctx.workspace);
+    if (gate.block) throw toolError(gate.message ?? "Syntax check failed after this write.");
+
     let backupPath: string | undefined;
     let feedback: PostMutationFeedback | undefined;
     const mutationWorkspace = await mutationWorkspaceForPaths(ctx.workspace, [filePath]);
@@ -187,7 +193,7 @@ export const WriteTool = buildTool({
         ...(preview !== undefined ? { previousContentPreview: preview } : {}),
       },
       touchedFiles: [filePath],
-      display: appendMutationFeedback(`${existed ? `Updated ${filePath}` : `Created ${filePath}`}${autoReadNote}`, feedback),
+      display: appendMutationFeedback(`${existed ? `Updated ${filePath}` : `Created ${filePath}`}${autoReadNote}${gate.message ? `\n${gate.message}` : ""}`, feedback),
     };
   },
 });

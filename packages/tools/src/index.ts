@@ -9,6 +9,11 @@ export { EditTool, nearMissHint, looksLineNumberPrefixed, weakestLayer, type Edi
 export { ApplyPatchTool, type ApplyPatchOutput } from "./ApplyPatch.js";
 export { safeOverwrite, assessShrink, type SafeOverwriteOptions, type SafeOverwriteResult, type ShrinkVerdict } from "./safeWrite.js";
 export { GlobTool } from "./Glob.js";
+export { DiffTool, type DiffOutput } from "./Diff.js";
+export { BisectTool, type BisectOutput } from "./Bisect.js";
+export { summarizeTestOutput, looksLikeTestCommand, testSummaryMinChars, type TestSummary } from "./testSummary.js";
+export { checkSyntax, gateEdit, syntaxGateMode, isSyntaxCheckable, type SyntaxVerdict, type GateResult } from "./syntaxGate.js";
+export { runGit, snapshotRepo, changedSince, parseNumstat, type GitResult, type RepoSnapshot } from "./gitUtil.js";
 export { GrepTool, regexInputProblem } from "./Grep.js";
 export { BashTool, runShell, type BashOutput } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
@@ -259,7 +264,7 @@ export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
 export { TrackTool, type TrackOutput } from "./Track.js";
 export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
 export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
-export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
+export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, normalizeImageProvider, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
 // Universal connectors: any OpenAPI service, MQTT, inbound webhooks.
 export { ApiTool, type ApiOutput } from "./OpenApi.js";
 export { MqttTool, previewPayload, publishNeedsOwnerDecision, type MqttOutput } from "./Mqtt.js";

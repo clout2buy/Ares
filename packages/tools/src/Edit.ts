@@ -29,6 +29,7 @@ import {
   WorkspaceMutationService,
   workspaceContentHash,
 } from "@ares/core";
+import { gateEdit } from "./syntaxGate.js";
 import {
   autoReadForMutation,
   buildTool,
@@ -175,6 +176,10 @@ export interface EditOutput {
   /** True when Edit read the file itself because it had not been Read this
    *  session (see ARES_EDIT_AUTO_READ). */
   autoRead?: boolean;
+  /** The stamp was stale but the edit still resolved against the current bytes. */
+  staleRetried?: boolean;
+  /** Set when ARES_EDIT_SYNTAX_GATE=warn (or a new file) wrote syntactically broken code. */
+  syntaxWarning?: string;
   /** cat -n style excerpt of each edited region WITH a few lines of surrounding
    *  context, so the model can verify the change landed without a follow-up Read
    *  (which would only re-read the file it just wrote). */
@@ -280,20 +285,21 @@ export const EditTool = buildTool({
     // Staleness check (C2): the content hash is exact and immune to mtime
     // granularity races. Fall back to mtime only for stamps written before the
     // hash existed (resumed sessions / older rollouts).
+    //
+    // A stale stamp used to be a hard stop ("Re-Read and retry"), costing a
+    // round trip even when the edit's old_string still matches the CURRENT
+    // bytes uniquely. Now the edit is attempted against the bytes on disk (the
+    // re-read already happened - `content` is fresh); if it resolves, it lands
+    // with a note, and only a miss surfaces the stale error. ARES_EDIT_STALE_RETRY=0
+    // restores the hard stop.
+    let staleError: string | undefined;
     if (stamp.hash !== undefined) {
-      if (contentHash(content) !== stamp.hash) {
-        throw toolError(
-          `${filePath} was modified on disk since the last Read. Re-Read and retry.`,
-        );
-      }
+      if (contentHash(content) !== stamp.hash) staleError = `${filePath} was modified on disk since the last Read. Re-Read and retry.`;
     } else {
       const stat = await fs.stat(filePath);
-      if (stat.mtimeMs > stamp.mtimeMs + 5) {
-        throw toolError(
-          `${filePath} was modified on disk since the last Read. Re-Read and retry.`,
-        );
-      }
+      if (stat.mtimeMs > stamp.mtimeMs + 5) staleError = `${filePath} was modified on disk since the last Read. Re-Read and retry.`;
     }
+    if (staleError && (process.env.ARES_EDIT_STALE_RETRY ?? "").trim() === "0") throw toolError(staleError);
     // Atomic batch: apply every hunk in order to an in-memory working copy.
     // Only write once ALL hunks resolve — if any fails the file is untouched, so
     // a multi-site edit can never half-apply (the classic "edit 2's text is gone
@@ -306,6 +312,9 @@ export const EditTool = buildTool({
       const h = hunks[idx];
       const result = replaceResilient(working, h.old_string, h.new_string, h.replace_all);
       if (!result.ok) {
+        // Stale read AND the text no longer resolves: the stale error is the
+        // actionable one (the file really did change under the model).
+        if (staleError) throw toolError(staleError);
         const where = hunks.length > 1 ? ` (edit ${idx + 1} of ${hunks.length})` : "";
         const batchNote =
           (hunks.length > 1 ? " No edits were applied — the batch is all-or-nothing." : "") +
@@ -339,6 +348,11 @@ export const EditTool = buildTool({
       totalReplacements += result.replacements;
       matchedBys.add(result.matchedBy);
     }
+
+    // Pre-write syntax gate: an edit that turns a parsing file into a
+    // non-parsing one is refused BEFORE the bytes land (nothing to roll back).
+    const gate = await gateEdit(filePath, content, working, ctx.workspace);
+    if (gate.block) throw toolError(gate.message ?? "Syntax check failed after this edit.");
 
     let feedback: PostMutationFeedback | undefined;
     const mutationWorkspace = await mutationWorkspaceForPaths(ctx.workspace, [filePath]);
@@ -383,7 +397,10 @@ export const EditTool = buildTool({
     const matchedBy = layers.join(",");
     const note = matchedBy === "exact" ? "" : ` [matched via ${matchedBy}]`;
     const across = hunks.length > 1 ? ` across ${hunks.length} edits` : "";
-    const autoReadNote = autoRead ? `\n(auto-read ${filePath} before editing)` : "";
+    const autoReadNote =
+      (autoRead ? `\n(auto-read ${filePath} before editing)` : "") +
+      (staleError ? `\n(${filePath} had changed on disk since your last Read; the edit was applied to the current bytes - Re-Read before further edits)` : "") +
+      (gate.message ? `\n${gate.message}` : "");
     // Return the edited region(s) with surrounding context so the model can
     // verify the change from the tool result alone (like Claude Code's Edit),
     // instead of issuing a follow-up Read that would only re-read what it wrote.
@@ -396,6 +413,8 @@ export const EditTool = buildTool({
         layers,
         matchedBy,
         ...(autoRead ? { autoRead: true } : {}),
+        ...(staleError ? { staleRetried: true } : {}),
+        ...(gate.message ? { syntaxWarning: gate.message } : {}),
         diff,
         feedback,
       },

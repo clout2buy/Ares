@@ -13,11 +13,14 @@ import {
   irrecoverableShellRefusal,
   resolveWorkspacePath,
   shellInputSchema,
+  isReadOnlyShellCommand,
+  shellInstructionsAfterRun,
   shellPolicyDecision,
   shellRepositoryInstructionDecision,
   shellWatchdogFor,
 } from "./_shared.js";
 import { classifyShellFailure, shellFlavorOf, type ShellFlavor } from "./shellHints.js";
+import { looksLikeTestCommand, summarizeTestOutput, testSummaryMinChars } from "./testSummary.js";
 
 const MAX_OUTPUT_CHARS = 30_000;
 // After the shell process exits, how long its stdio pipes may stay open
@@ -43,6 +46,10 @@ export interface BashOutput {
   /** One-line actionable diagnosis from classifyShellFailure when the run
    *  failed and a known signature appeared in the output tail. */
   hint?: string;
+  /** Present when a large test/build log was collapsed into stdout (see testSummary.ts). */
+  testSummary?: { framework: string; passed?: number; failed?: number; skipped?: number; total?: number; originalLines: number };
+  /** Repository rules newly applicable to this (read-only) command's cwd. */
+  repositoryInstructions?: string;
 }
 
 export interface BashBackgroundOutput {
@@ -70,7 +77,7 @@ export const BashTool = buildTool({
   activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   commandFor: (i) => i.command,
   async checkPermissions(i, ctx) {
-    const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths);
+    const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths, i.command);
     if (instructionDecision) return instructionDecision;
     // The vault guard outranks every stored rule — see vaultShellDecision.
     const vault = vaultShellDecision(i.command);
@@ -134,6 +141,11 @@ export const BashTool = buildTool({
       ctx.emitProgress?.({ kind: "shell_output", stream, text });
     }, capturePath);
     const output: BashOutput | BashBackgroundOutput = result;
+    await collapseTestOutput(result, i.command, capturePath);
+    if (isReadOnlyShellCommand(i.command)) {
+      const rules = await shellInstructionsAfterRun(ctx, i.command, i.cwd, i.target_paths);
+      if (rules) result.repositoryInstructions = rules;
+    }
     const hintLine = result.hint ? `\nhint: ${result.hint}` : "";
     const failure = result.timedOut
       ? `Bash timed out after ${i.timeout}ms${hintLine}`
@@ -151,6 +163,36 @@ export const BashTool = buildTool({
     };
   },
 });
+
+/** Replace a huge test/build log with its digest, keeping the full text in a file. */
+async function collapseTestOutput(result: BashOutput, command: string, capturePath: string): Promise<void> {
+  if (!looksLikeTestCommand(command)) return;
+  const combined = `${result.stdout}${result.stdout && result.stderr ? "\n" : ""}${result.stderr}`;
+  if (combined.length < testSummaryMinChars()) return;
+  let fullPath = result.fullOutputPath;
+  if (!fullPath) {
+    // Not truncated, so runShell removed its spool; keep the full text for Read.
+    try {
+      await fs.writeFile(capturePath, combined, "utf8");
+      fullPath = capturePath;
+    } catch {
+      fullPath = undefined;
+    }
+  }
+  const summary = summarizeTestOutput(combined, fullPath ? { fullOutputPath: fullPath } : {});
+  result.stdout = summary.text;
+  result.stderr = "";
+  result.truncated = true;
+  if (fullPath) result.fullOutputPath = fullPath;
+  result.testSummary = {
+    framework: summary.framework,
+    passed: summary.passed,
+    failed: summary.failed,
+    skipped: summary.skipped,
+    total: summary.total,
+    originalLines: summary.originalLines,
+  };
+}
 
 export async function runShell(
   program: string,

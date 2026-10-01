@@ -215,7 +215,23 @@ export async function shellRepositoryInstructionDecision(
   ctx: RichToolContext,
   cwdInput: string | undefined,
   targetInputs: readonly string[] = [],
+  command?: string,
 ): Promise<PermissionDecision | null> {
+  // A provably read-only command cannot violate a rule it has not read yet, so
+  // blocking it only burns a round trip (field: 68 of 186 Rook sessions had
+  // their FIRST command - `date`, `hostname`, `ls` - rejected). Let it run; the
+  // rules ride on its result instead (see shellInstructionsAfterRun).
+  if (command !== undefined && isReadOnlyShellCommand(command)) return null;
+  const targets = await shellInstructionTargets(ctx, cwdInput, targetInputs);
+  const instructions = await mutationInstructionBlock(ctx, targets);
+  return instructions ? { kind: "deny", reason: instructions } : null;
+}
+
+async function shellInstructionTargets(
+  ctx: RichToolContext,
+  cwdInput: string | undefined,
+  targetInputs: readonly string[],
+): Promise<string[]> {
   const cwd = await resolveWorkspacePath(ctx, cwdInput, "cwd", "execute");
   const targets = [cwd];
   for (const [index, target] of targetInputs.entries()) {
@@ -226,8 +242,37 @@ export async function shellRepositoryInstructionDecision(
     const candidate = path.isAbsolute(target) ? target : path.resolve(cwd, target);
     targets.push(await resolveWorkspacePath(ctx, candidate, `target_paths[${index}]`, "all"));
   }
-  const instructions = await mutationInstructionBlock(ctx, targets);
-  return instructions ? { kind: "deny", reason: instructions } : null;
+  return targets;
+}
+
+/** Claim + render the rules a read-only shell command skipped in
+ * checkPermissions. Returns "" when nothing new applies. Never throws. */
+export async function shellInstructionsAfterRun(
+  ctx: RichToolContext,
+  command: string,
+  cwdInput: string | undefined,
+  targetInputs: readonly string[] = [],
+): Promise<string> {
+  if (!isReadOnlyShellCommand(command)) return "";
+  try {
+    const targets = await shellInstructionTargets(ctx, cwdInput, targetInputs);
+    return renderRepositoryInstructions(await repositoryInstructionsForTargets(ctx, targets));
+  } catch {
+    return "";
+  }
+}
+
+/** Rules newly applicable to the paths a read-only tool (Grep/Glob) just
+ * searched, rendered for the result so the later first Edit already passes. */
+export async function repositoryInstructionsText(
+  ctx: RichToolContext,
+  targets: readonly string[],
+): Promise<string> {
+  try {
+    return renderRepositoryInstructions(await repositoryInstructionsForTargets(ctx, targets));
+  } catch {
+    return "";
+  }
 }
 
 export function appendRepositoryInstructions(

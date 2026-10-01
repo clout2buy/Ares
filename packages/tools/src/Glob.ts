@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { buildTool, resolveWorkspacePath } from "./_shared.js";
+import { buildTool, repositoryInstructionsText, resolveWorkspacePath } from "./_shared.js";
 
 const inputSchema = z
   .object({
@@ -20,6 +20,22 @@ export interface GlobOutput {
   pattern: string;
   matches: Array<{ path: string; mtimeMs: number; size: number }>;
   truncated: boolean;
+  /** The walk hit its wall-clock or visit cap; the list is partial. */
+  capped?: boolean;
+  /** Repository rules newly applicable to the searched root. */
+  repositoryInstructions?: string;
+}
+
+/** Wall-clock cap for one walk (ARES_GLOB_TIMEOUT_MS, default 15s). */
+function globTimeoutMs(): number {
+  const n = Number(process.env.ARES_GLOB_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 200 ? n : 15_000;
+}
+/** Directory entries visited before giving up (a node_modules-sized tree under an odd name). */
+const MAX_VISITED_ENTRIES = 300_000;
+
+interface WalkState {
+  capped: boolean;
 }
 
 export const GlobTool = buildTool({
@@ -55,7 +71,9 @@ export const GlobTool = buildTool({
 
   async call(i, ctx): Promise<{ output: GlobOutput; display: string }> {
     const root = await resolveWorkspacePath(ctx, i.cwd, "cwd", "read");
-    const matches = await glob(root, i.pattern, i.max_results + 1);
+    const walkState: WalkState = { capped: false };
+    const matches = await glob(root, i.pattern, i.max_results + 1, walkState);
+    const rules = await repositoryInstructionsText(ctx, [root]);
     const stats = await Promise.all(
       matches.slice(0, i.max_results).map(async (rel) => {
         const abs = path.resolve(root, rel);
@@ -73,7 +91,9 @@ export const GlobTool = buildTool({
       output: {
         pattern: i.pattern,
         matches: valid,
-        truncated: matches.length > i.max_results,
+        truncated: matches.length > i.max_results || walkState.capped,
+        ...(walkState.capped ? { capped: true } : {}),
+        ...(rules ? { repositoryInstructions: rules } : {}),
       },
       display: `${valid.length} file${valid.length === 1 ? "" : "s"} matched ${i.pattern}`,
     };
@@ -82,9 +102,11 @@ export const GlobTool = buildTool({
 
 // Minimal recursive glob implementation. Supports **, *, ?, character classes.
 // Production version (M3) will use a real glob library + .gitignore.
-async function glob(root: string, pattern: string, limit: number): Promise<string[]> {
+async function glob(root: string, pattern: string, limit: number, state: WalkState = { capped: false }): Promise<string[]> {
   const regex = globToRegExp(pattern);
   const out: string[] = [];
+  const deadline = Date.now() + globTimeoutMs();
+  let visited = 0;
   // Walk dot-dirs (e.g. .github/workflows) but skip heavy/state ones, matching
   // the ripgrep --hidden behavior so Glob and Grep agree on visibility.
   const ignoreDirs = new Set([
@@ -113,7 +135,11 @@ async function glob(root: string, pattern: string, limit: number): Promise<strin
       return;
     }
     for (const entry of entries) {
-      if (out.length >= limit) return;
+      if (out.length >= limit || state.capped) return;
+      if (++visited > MAX_VISITED_ENTRIES || ((visited & 255) === 0 && Date.now() > deadline)) {
+        state.capped = true;
+        return;
+      }
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       const childAbs = path.join(dir, entry.name);
       if (entry.isDirectory()) {

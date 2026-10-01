@@ -393,7 +393,7 @@ test("both shell adapters share one contract and load cwd rules before process e
         repositoryInstructions: resolver,
       };
       const input = {
-        command: "node --version",
+        command: "node ./build.js",
         description: "Inspect Node version",
         timeout: 120_000,
         cwd: workspace,
@@ -456,7 +456,7 @@ test("shell rules follow approved external cwd and resolve relative targets from
         ...(pathPermissions ? { pathPermissions } : {}),
       };
       const input = {
-        command: "node --version",
+        command: "node ./build.js",
         description: "Inspect external Node version",
         timeout: 120_000,
         cwd: external,

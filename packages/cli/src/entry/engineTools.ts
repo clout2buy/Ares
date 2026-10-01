@@ -2,7 +2,7 @@
 
 import { AresSubagentRunner, SubagentRegistry, isCoreToolName, loadInstructionReminders, openWorkspaceSessionKernel, type EngineTool, type SubagentTypeDef, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { getRemoteAgentServer, setRemoteAgentServer, DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, requireScheduleApproval, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { getRemoteAgentServer, setRemoteAgentServer, DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, DiffTool, BisectTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, requireScheduleApproval, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
 import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
@@ -580,6 +580,9 @@ export async function buildCodingTools(
     GrepTool,
     CodebaseSearchTool,
     LspTool,
+    // Deferred tier (not in CORE_TOOL_NAMES): found through ToolSearch, zero prompt cost.
+    DiffTool,
+    ...(options.shell === false ? [] : [BisectTool]),
     ...(options.shell === false ? [] : process.platform === "win32" ? [PowerShellTool, BashTool] : [BashTool, PowerShellTool]),
     makeTodoWriteTool(todoStore),
     ...(options.shell === false

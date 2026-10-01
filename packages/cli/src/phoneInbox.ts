@@ -527,6 +527,8 @@ export interface InboxRecord {
 
 export interface InboxView {
   id: string;
+  /** The phone's own id for this upload, so it can tell the box has it. */
+  clientId?: string;
   status: InboxStatus;
   createdAt: string;
   updatedAt: string;
@@ -545,6 +547,7 @@ export interface InboxView {
 export function viewOf(rec: InboxRecord, agentName?: string): InboxView {
   return {
     id: rec.id,
+    ...(rec.clientId ? { clientId: rec.clientId } : {}),
     status: rec.status,
     createdAt: new Date(rec.createdAt).toISOString(),
     updatedAt: new Date(rec.updatedAt).toISOString(),

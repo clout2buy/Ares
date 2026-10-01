@@ -439,6 +439,7 @@ test("clientId makes an upload idempotent: the same share twice is one record", 
   const a = await send();
   const b = await send();
   assert.equal(a.status, 201);
+  assert.equal(a.json.item.clientId, "idem-0001-abcdef");
   assert.equal(b.status, 200);
   assert.equal(b.json.duplicate, true);
   assert.equal(b.json.item.id, a.json.item.id);

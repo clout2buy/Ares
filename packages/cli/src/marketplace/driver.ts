@@ -92,6 +92,7 @@ const LISTING_JS = `(() => {
     if (!/^https?:/.test(s)) continue;
     if ((i.naturalWidth || i.width || 0) < 80) continue;
     if (/emoji|static\\.xx|rsrc\\.php|profile/i.test(s)) continue;
+    if (i.closest('a[href*="/marketplace/item/"]')) continue; // other listings thumbnails (Todays picks)
     imgs.add(s.split('?')[0]);
   }
   const links = Array.from(document.querySelectorAll('a[href*="/marketplace/profile/"], a[href*="profile.php?id="]'))

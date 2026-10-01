@@ -118,6 +118,9 @@ const PRICE_ANY = /(?:^|\s)(free|(?:[$£€]|usd|cad|eur|gbp)\s?[\d,]+(?:\.\d{1,
 const POSTED_RE = /\b(?:listed\s+)?(?:(?:a|an|\d+)\s+(?:minute|min|hour|hr|day|week|month)s?\s+ago|just\s+now|yesterday|today)\b/i;
 const LOCATION_RE = /^[A-Z][A-Za-z.'’ -]{1,40},\s?[A-Z]{2}\b/;
 
+const ARIA_CARD_RE = /^(.+),\s*((?:free|[$£€]\s?[\d,]+(?:\.\d{1,2})?))\s*,\s*(.+?),\s*listing\s+\d+\s*$/i;
+const BADGE_RE = /^(?:just listed|new|price drop|sponsored|pending|in stock|shipping available|free shipping|only \d+ left|boosted)$/i;
+
 /** "$1,200" gives 1200, "Free" gives 0, otherwise null. */
 export function priceNumber(price: string): number | null {
   if (/^free$/i.test(price.trim())) return 0;
@@ -143,7 +146,19 @@ export function parseCard(card: RawCard): Listing | null {
   let location = "";
   let postedAgo = "";
   const rest: string[] = [];
-  for (const line of lines) {
+  // Seen on the live (logged-out) site: aria-label="Seachange Bike, $100, Austin, TX, listing 1623309472877577".
+  // It is the most reliable source, so it wins over the visible lines, which carry badges like "Just listed".
+  const ariaMatch = ARIA_CARD_RE.exec((card.aria ?? "").trim());
+  if (ariaMatch) {
+    price = ariaMatch[2]!.trim();
+    location = ariaMatch[3]!.trim();
+    rest.push(ariaMatch[1]!.trim());
+  }
+  for (const line of ariaMatch ? [] : lines) {
+    if (BADGE_RE.test(line)) {
+      if (!postedAgo && /just listed/i.test(line)) postedAgo = "Just listed";
+      continue;
+    }
     if (!price && PRICE_RE.test(line)) {
       price = line.match(PRICE_RE)![0].trim();
       const tail = line.slice(price.length).trim();
@@ -165,6 +180,7 @@ export function parseCard(card: RawCard): Listing | null {
     const any = PRICE_ANY.exec(card.aria ?? "") ?? PRICE_ANY.exec(card.alt ?? "");
     if (any) price = any[1]!;
   }
+  if (ariaMatch && lines.some((l) => /^just listed$/i.test(l))) postedAgo = "Just listed";
   let title = rest[0] ?? "";
   if (!title && card.aria) title = card.aria.replace(PRICE_ANY, "").replace(/\s+/g, " ").trim();
   if (!title && card.alt) title = card.alt.replace(PRICE_ANY, "").replace(/\s+/g, " ").trim();
@@ -245,11 +261,24 @@ export function parseListing(raw: RawListing, wantedId?: string): ListingDetail 
     if (any) price = any[1]!;
   }
   const condition = clean(afterHeading(lines, /^condition$/i, 2).split("\n")[0] ?? "", 60);
-  const description = afterHeading(lines, /^(?:seller'?s? description|description)$/i, 30);
+  let description = afterHeading(lines, /^(?:seller'?s? description|description)$/i, 30);
+  if (!description) {
+    // Seen on the live site: "Details / Condition / Used - like new / <description> / City, ST · Location is approximate".
+    const c = lines.findIndex((l) => /^condition$/i.test(l));
+    if (c >= 0) {
+      const out: string[] = [];
+      for (const line of lines.slice(c + 2, c + 40)) {
+        if (/location is approximate|^seller information|^related searches|^today.s picks|^message$|^see more$/i.test(line)) break;
+        out.push(line);
+      }
+      description = out.join("
+");
+    }
+  }
   let location = "";
   for (const line of lines) {
     if (LOCATION_RE.test(line) && line.length <= 60) {
-      location = line;
+      location = line.split(/\s+·\s+/)[0]!;
       break;
     }
   }

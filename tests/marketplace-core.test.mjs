@@ -168,3 +168,47 @@ test("normalizeMessage and priceNumber", () => {
   assert.equal(priceNumber("Free"), 0);
   assert.equal(priceNumber("call me"), null);
 });
+
+// Shapes observed on the live site while LOGGED OUT (no sign-in was used): the card carries an
+// aria-label "Title, $price, City, ST, listing <id>" and a "Just listed" badge line before the price.
+test("live card shape: aria-label wins, badge lines are not titles", () => {
+  const l = parseCard({
+    id: "1623309472877577",
+    href: "https://www.facebook.com/marketplace/item/1623309472877577/?ref=search&referral_code=null",
+    text: "Just listed\n$100\nSeachange Bike\nAustin, TX",
+    alt: "Seachange Bike in Austin, TX",
+    aria: "Seachange Bike, $100, Austin, TX, listing 1623309472877577",
+    img: "https://scontent.fosu2-2.fna.fbcdn.net/v/t39.84726-6/8279908_n.jpg",
+  });
+  assert.equal(l.title, "Seachange Bike");
+  assert.equal(l.price, "$100");
+  assert.equal(l.location, "Austin, TX");
+  assert.equal(l.postedAgo, "Just listed");
+  // Without the aria-label the visible lines still give the right answer.
+  const t = parseCard({ href: "/marketplace/item/1115669014230984/", text: "Just listed\n$80\nTrek 820\nAustin, TX" });
+  assert.equal(t.title, "Trek 820");
+  assert.equal(t.price, "$80");
+  // A comma in the title does not confuse the aria parse.
+  const c = parseCard({ href: "/marketplace/item/1115669014231111/", text: "", aria: "Bike, red, 26 inch, $25, Buda, TX, listing 1115669014231111" });
+  assert.equal(c.title, "Bike, red, 26 inch");
+  assert.equal(c.price, "$25");
+  assert.equal(c.location, "Buda, TX");
+});
+
+test("live listing shape (logged out): location without the approximate suffix, condition, description fallback", () => {
+  const text = [
+    "Seachange Bike", "$100", "Hobbies", "Listed 12 hours ago in Austin, TX", "Message", "Save", "Share", "Details", "Condition", "Used - like new",
+    "Austin, TX · Location is approximate", "Related searches", "bike or bicycle", "Message", "Today's picks",
+  ].join("\n");
+  const d = parseListing({ url: "https://www.facebook.com/marketplace/item/1623309472877577/", h1: "Seachange Bike", text, sellerLinks: [], imageCount: 5 });
+  assert.equal(d.title, "Seachange Bike");
+  assert.equal(d.price, "$100");
+  assert.equal(d.location, "Austin, TX");
+  assert.equal(d.condition, "Used - like new");
+  assert.equal(d.postedAgo, "Listed 12 hours ago");
+  assert.equal(d.description, "");
+  assert.equal(d.sellerName, undefined);
+  // When the seller's own text sits between the condition and the location line, it is the description.
+  const withDesc = parseListing({ url: "https://www.facebook.com/marketplace/item/1623309472877577/", h1: "Bike", text: text.replace("Used - like new\n", "Used - like new\nGreat bike, new tires.\nPickup near the lake.\n") });
+  assert.equal(withDesc.description, "Great bike, new tires.\nPickup near the lake.");
+});

@@ -22,6 +22,12 @@ export interface DeviceShortcut {
   name: string;
   description?: string;
   acceptsInput?: boolean;
+  /** What the owner calls it out loud (see deviceShortcuts.ts). */
+  alias?: string;
+  /** One line: when to reach for it. */
+  whenToUse?: string;
+  /** false = the owner marked it routine; anything else is sensitive. */
+  sensitive?: boolean;
 }
 
 export interface DeviceIdentity {

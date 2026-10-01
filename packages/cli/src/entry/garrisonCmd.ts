@@ -4,6 +4,7 @@ import {
   appendAudit,
   ownerPause,
   setAuditSink,
+  recordAudit,
   composeVerifiedChildSessionSync,
   installGlobalCrashHandlers,
   loadChildVerificationDebt,
@@ -22,7 +23,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, setDeviceBridge, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
+import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, setDeviceBridge, setShortcutDirectory, ShortcutDirectory, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
@@ -30,6 +31,7 @@ import { AvatarStore, createAvatarsApi } from "../phoneAvatars.js";
 import { DEFAULT_PERSONA_ID } from "../personas.js";
 import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
 import { createInboxApi, makeInboxRunner } from "../phoneInbox.js";
+import { createShortcutsApi } from "../phoneShortcuts.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
 import { RemoteAgentServer } from "../remoteAgentServer.js";
 import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
@@ -646,6 +648,13 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n"),
   });
   setDeviceBridge(deviceBridge);
+  // The owner's Shortcut aliases (synced from the phone) and Ares's proposals: the iPhone tool resolves "run my bedtime routine" against this.
+  const shortcutDirectory = new ShortcutDirectory(path.join(context.home, "device", "shortcuts.json"), {
+    audit: (entry) => recordAudit(entry),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "shortcuts", line } }) + "\n"),
+  });
+  await shortcutDirectory.load();
+  setShortcutDirectory(shortcutDirectory);
   const server = new GarrisonServer({
     devices: deviceBridge,
     home: context.home,
@@ -822,6 +831,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           }),
           hooks: hooksApi,
           inbox: inboxApi.handle,
+          shortcuts: createShortcutsApi({ directory: shortcutDirectory }),
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
           registerPush: (d) => phonePush.register(d),

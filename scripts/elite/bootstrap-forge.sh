@@ -154,8 +154,8 @@ cmd_status() {
   say "forge: $FORGE"
   [ -d "$BARE" ] || { say "  not set up (run: $0 init)"; return 0; }
   say "  remote: $(git -C "$BARE" remote get-url rook 2>/dev/null | sed -E 's#//[^/@]*@#//#')"
-  if git -C "$BARE" config --get core.sshCommand >/dev/null 2>&1; then say "  credentials: deploy key"; \
-  elif git -C "$BARE" config --get credential.https://github.com.helper >/dev/null 2>&1; then say "  credentials: vault helper"; \
+  if git -C "$BARE" config --local --get core.sshCommand >/dev/null 2>&1; then say "  credentials: deploy key"; \
+  elif git -C "$BARE" config --local --get credential.https://github.com.helper >/dev/null 2>&1; then say "  credentials: vault helper"; \
   else say "  credentials: none"; fi
   say "  live commit: $(git -C "$BARE" rev-parse --short refs/live/head 2>/dev/null || echo unknown)"
   say "  rook branches: $(git -C "$BARE" for-each-ref --format=x refs/remotes/rook | wc -l | tr -d ' ')"

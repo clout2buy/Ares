@@ -79,7 +79,7 @@ test("bootstrap: a URL with credentials is refused, and a deploy key is recorded
   void r;
 
   const key = path.join(f.root, "deploy_key");
-  writeFileSync(key, "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n");
+  writeFileSync(key, "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n"); // ares-secret-scan: ignore (a fake key to prove it is never printed)
   const ok = sh(f, ["--offline", "init"], { ARES_FORGE_SSH_KEY: fwd(key) });
   assert.equal(ok.code, 0, ok.err);
   assert.ok(!(ok.out + ok.err).includes("SECRETKEYMATERIAL"), "key contents never printed");

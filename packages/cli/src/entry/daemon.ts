@@ -3315,7 +3315,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         continue;
       }
       if (command.type === "kimi_login_start") {
-        // Kimi subscription sign-in (RFC 8628 device flow) against auth.kimi.com,
+        // Kimi subscription sign-in (RFC 8628 device flow) against auth.kimi.ai,
         // owned by Ares itself. The verification URL goes to the UI card so the
         // owner can approve in a browser; tokens land in ~/.ares/kimi-auth.json.
         const sid = command.sessionId;

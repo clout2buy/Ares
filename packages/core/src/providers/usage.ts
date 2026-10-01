@@ -97,12 +97,12 @@ export async function fetchOllamaUsageAsProvider(apiKey: string): Promise<Provid
 
 interface KimiWindow { window?: { duration?: number; timeUnit?: string }; detail?: { limit?: string | number; used?: string | number; remaining?: string | number; resetTime?: string } }
 
-/** https://api.kimi.com/coding/v1/usages — the Kimi Code subscription's
+/** https://api.kimi.ai/coding/v1/usages — the Kimi Code subscription's
  *  rolling windows (a 5-hour window under `limits`, the longer cycle under
  *  `usage`), membership level, and the booster wallet. */
 export async function fetchKimiUsage(accessToken: string, opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}): Promise<ProviderUsage> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const res = await fetchImpl("https://api.kimi.com/coding/v1/usages", {
+  const res = await fetchImpl("https://api.kimi.ai/coding/v1/usages", {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
     signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
   });

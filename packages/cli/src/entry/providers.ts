@@ -885,7 +885,7 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       provider: new OpenRouterProvider({
         apiKey: kimiCredential,
         model,
-        baseUrl: "https://api.kimi.com/coding/v1",
+        baseUrl: staticKimiKey ? "https://api.kimi.com/coding/v1" : "https://api.kimi.ai/coding/v1",
         providerName: "kimi",
         // Subscription tokens expire in hours while a session's provider
         // instance lives for days: re-resolve per request (refresh-on-read

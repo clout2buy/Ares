@@ -116,6 +116,7 @@ export {
   kimiLogout,
   fetchKimiModels,
   KIMI_CODING_BASE_URL,
+  KIMI_OAUTH_CODING_BASE_URL,
   type KimiModel,
   type KimiTokens,
   type KimiAuthStatus,

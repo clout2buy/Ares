@@ -16,6 +16,8 @@ import { withMissionRunRecorded } from "./missionLiveness.js";
 import { QueryEngineDispatcher, acquireCapability, createGoal, listGoals, listAcquisitions, listCapabilities, markAcquisitionAcquired, newGoalId, novelDeltaCurve, reliabilityOf, runGoalToCompletion, saveGoal, setAcquisitionStatus, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, addWatcher, loadWatchers, removeWatcher, renderWatchers, type StandingOrder, type Goal, type AcquisitionKind, type VerificationSpec } from "@ares/operator";
 import { MemoryRouter, MemoryStore, withConsolidationLock } from "@ares/mind";
 import { makeBrowserTool } from "./browserBridge.js";
+import { makeMarketplaceTool } from "../marketplace/tool.js";
+import { marketplaceEnabled } from "../marketplace/service.js";
 import { ProviderSelection, fastModelFor } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, compactLine } from "./runtime.js";
 import { buildChildSystemPrompt } from "./prompt/child.js";
@@ -496,7 +498,9 @@ export async function buildEngineTools(
     enrich,
   ) as EngineTool;
   const connectorsTool = adaptToolForEngine(makeConnectorsTool(() => context.workspace), enrich) as EngineTool;
-  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  // Experimental Facebook Marketplace (deferred, loaded with ToolSearch). ARES_MARKETPLACE=0 keeps it out of the catalog entirely.
+  const marketplaceTools = marketplaceEnabled() ? [adaptToolForEngine(makeMarketplaceTool(), enrich) as EngineTool] : [];
+  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool, ...marketplaceTools];
   // Connected MCP servers' tools ride in this same array, refilled in place
   // whenever a connector changes — the engine reads the array every turn.
   liveMcpTools.attach(all);

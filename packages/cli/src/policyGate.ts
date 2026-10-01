@@ -26,6 +26,7 @@ import { lifeToolCategory } from "./policyGateLife.js";
 import { deviceCapabilityFloor, isRoutineShortcutCall } from "@ares/tools";
 import { davToolCategory } from "./policyGateDav.js";
 import { universalToolCategory } from "./policyGateUniversal.js";
+import { MARKETPLACE_TOOL, marketplaceToolCategory } from "./policyGateMarketplace.js";
 
 /**
  * The categories that ALWAYS need the owner's explicit yes — even when Ares is
@@ -88,7 +89,8 @@ export function remoteAutonomyDecision(
   // vault login on a named site) go quiet; money still asks.
   if (request.ownerDecision) {
     if (!opts?.trustAll) return "ask";
-    return category === "payment_or_purchase" ? "ask" : "allow";
+    // A message to a stranger in the owner's name (Marketplace) is never pre-answered by a blanket approval.
+    return category === "payment_or_purchase" || request.toolName === MARKETPLACE_TOOL ? "ask" : "allow";
   }
   // Benign / unclassified tools (Read, WebFetch, WebSearch, Weather, …) → run.
   if (category === null) return "allow";
@@ -193,6 +195,8 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
   // Calendar / Contacts / Mail over CalDAV, CardDAV, IMAP/SMTP: policyGateDav.ts.
   const dav = davToolCategory(request.toolName, actionOf(request));
   if (dav !== undefined) return dav;
+  const marketplace = marketplaceToolCategory(request.toolName, actionOf(request));
+  if (marketplace !== undefined) return marketplace;
   switch (request.toolName) {
     case "Bash":
     case "PowerShell":

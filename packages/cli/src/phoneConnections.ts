@@ -76,6 +76,8 @@ import { HttpError, addCustom, customService, isCustomId, listCustom, removeCust
 export interface PhoneConnection extends ConnectionExtras {
   /** how it connects: oauth | oauth-setup | device | key | browser | unsupported */
   auth?: string;
+  /** Unofficial and against the site's rules: the phone shows an EXPERIMENTAL tag. */
+  experimental?: boolean;
   setupDone?: boolean;
   oauthClass?: string;
   verification?: string;
@@ -142,6 +144,7 @@ export async function listPhoneConnections(home?: string, opts: { now?: () => nu
         label: service.label,
         kind: service.kind,
         ...(domain ? { domain } : {}),
+        ...(service.experimental ? { experimental: true } : {}),
         blurb: service.blurb,
         connected,
         ...(category ? { category } : {}),

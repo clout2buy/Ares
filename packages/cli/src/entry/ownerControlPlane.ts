@@ -435,7 +435,7 @@ const SYSTEM_TITLES: Record<string, string> = {
 };
 
 function isHookName(name: string | undefined): name is SchedulerHookName {
-  return name === "heartbeat" || name === "dream" || name === "gauntlet" || name === "goals" || name === "briefing";
+  return name === "heartbeat" || name === "dream" || name === "gauntlet" || name === "goals" || name === "briefing" || name === "marketplace";
 }
 
 function pad(n: number): string {

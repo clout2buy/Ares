@@ -70,6 +70,7 @@ import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlan
 import { startLifeSurfaces } from "./lifeWiring.js";
 import { startGoalSurfaces } from "./goalsMemoryWiring.js";
 import { startBriefingsAndLocation, type PhoneBriefingsAndLocation } from "./briefingWiring.js";
+import { configureSharedMarketplace } from "../marketplace/tool.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
 import { PersonaRuntime } from "./personaRuntime.js";
 import type { ProviderSelection } from "./providers.js";
@@ -472,6 +473,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // approval queue and phone push exist; the scheduler's hook only asks it.
   let phoneBriefing: PhoneBriefingsAndLocation | undefined;
 
+  // Experimental Facebook Marketplace: watch results go to the phone (phonePush is built below; the closure runs later).
+  const marketplace = configureSharedMarketplace({ push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()) });
   const scheduler = new Scheduler({
     hooks: {
       heartbeat: async () => {
@@ -516,6 +519,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       goals: () => goalSurfaces.tick(),
       // The phone's briefings: due at the owner's chosen times, in their zone.
       briefing: () => phoneBriefing?.briefings.tick(),
+      // Marketplace watches: at most one due watch per tick; honours ARES_MARKETPLACE=0, the owner's pause and walls.
+      marketplace: () => marketplace.tick(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
@@ -523,7 +528,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // The owner's pause holds system jobs; every run lands in the audit trail.
     isPaused: () => ownerPause.paused,
     // An idle goals tick (every five minutes) is not an action worth a line.
-    onRun: (hook, result) => { if (hook === "goals" && result === "idle") return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
+    onRun: (hook, result) => { if ((hook === "goals" || hook === "marketplace") && result.startsWith("idle")) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");

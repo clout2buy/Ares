@@ -6,6 +6,7 @@ import {
   setAuditSink,
   recordAudit,
   composeVerifiedChildSessionSync,
+  gcWorkspaceCheckpoints,
   installGlobalCrashHandlers,
   loadChildVerificationDebt,
   loadSessionRollout,
@@ -25,6 +26,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, setDeviceBridge, setShortcutDirectory, ShortcutDirectory, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
+import { connectorsSource, createSystemSignals, instancesSource, startSystemSurfaces } from "../systemWiring.js";
 import { createProvidersApi } from "../phoneProviders.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
@@ -336,9 +338,12 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     } catch { /* a bad legacy photo just stays where it was */ }
   }
 
+  // System health signals (recent errors, provider breakers, event-loop lag), fed from every session's event stream.
+  const systemSignals = createSystemSignals();
   const sessions = new SessionManager({
     home: context.home,
     sessionKernel,
+    onEvent: systemSignals.onEvent,
     personas: personaRuntime.sessionHooks(),
     // The garrison's first operator wake producer: a settled turn wakes the
     // background loop within seconds instead of waiting out the heartbeat.
@@ -521,6 +526,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       briefing: () => phoneBriefing?.briefings.tick(),
       // Marketplace watches: at most one due watch per tick; honours ARES_MARKETPLACE=0, the owner's pause and walls.
       marketplace: () => marketplace.tick(),
+      // Box upkeep + the nightly encrypted backup (systemWiring.ts); ARES_HOUSEKEEPING=0 turns it off.
+      housekeeping: () => systemSurfaces.tick(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
@@ -528,7 +535,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // The owner's pause holds system jobs; every run lands in the audit trail.
     isPaused: () => ownerPause.paused,
     // An idle goals tick (every five minutes) is not an action worth a line.
-    onRun: (hook, result) => { if ((hook === "goals" || hook === "marketplace") && result.startsWith("idle")) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
+    onRun: (hook, result) => { if ((hook === "goals" || hook === "marketplace" || hook === "housekeeping") && result.startsWith("idle")) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
@@ -730,6 +737,26 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   const bound = await server.start();
   scheduler.start();
+  // The phone's System screen: health snapshot, housekeeping, alerts, backups (phoneSystem.ts / systemWiring.ts).
+  const instancesBox = process.platform === "linux" ? new Instances() : undefined;
+  const systemSurfaces = startSystemSurfaces({
+    home: context.home,
+    workspace: context.workspace,
+    signals: systemSignals,
+    sessions,
+    scheduler: () => scheduler,
+    approvalsPending: () => approvals.pending().length,
+    push: () => phonePush,
+    tunnel: () => remoteAgentServer,
+    connectors: connectorsSource(context.aresHome),
+    ...(instancesBox ? { instances: instancesSource(instancesBox) } : {}),
+    gcCheckpoints: gcWorkspaceCheckpoints,
+    kernel: sessionKernel,
+    activeTurns: () => sessions.list().filter((s) => s.busy).length,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "system", line } }) + "
+"),
+  });
+  systemSurfaces.start();
   // Daily, jittered launch+handshake of the MCP servers the owner connected
   // (only those). Results: <home>/telemetry/connectors-health.json, read by
   // connectorHealth(id). Kill switch: ARES_CONNECTOR_HEALTH=0.
@@ -912,6 +939,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           personas: (req, res, url) => personaRuntime.handle(req, res, url),
           goals: goalSurfaces.goalsApi,
           memory: goalSurfaces.memoryApi,
+          system: systemSurfaces.api,
           avatars: createAvatarsApi({
             store: avatarStore,
             // Only "ares" and a saved persona can hold a picture.
@@ -1072,6 +1100,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       uninstallGarrisonCrashHandlers();
       setAuditSink(null);
       scheduler.stop();
+      systemSurfaces.stop();
       connectorHealth.stop();
       tgCheckinScheduler?.stop();
       operatorLoop?.stop();

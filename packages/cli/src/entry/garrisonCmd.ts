@@ -918,8 +918,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             : {}),
           providers: createProvidersApi({
             home: context.home,
-            log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "providers", line } }) + "
-"),
+            log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "providers", line } }) + "\n"),
           }),
           ask: createAskApi(sessions, {
             home: context.home,

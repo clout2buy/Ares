@@ -172,7 +172,7 @@ interface Flow {
   done: Promise<void>;
   finish: (status: FlowStatus, error?: string) => void;
   timer?: NodeJS.Timeout;
-  cancel: () => void;
+  cancel: () => void | Promise<void>;
   /** paste: write the code into the CLI. */
   sendCode?: (code: string) => boolean;
   secrets: string[];
@@ -567,7 +567,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
       flow.callbackPath = lb.path;
       flow.cancel = () => {
         // Closing the listener: a provider-error callback makes the flow finish and close its server.
-        void replay(lb.port, `${lb.path}?error=cancelled`).then(() => flow.finish("failed", "cancelled"));
+        return replay(lb.port, `${lb.path}?error=cancelled`).then(() => flow.finish("failed", "cancelled"));
       };
       return { state: "open", id, url: winner, pollId: flow.pollId, intercept: { redirectPrefix: `http://localhost:${lb.port}${lb.path}` } };
     }
@@ -704,7 +704,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
           const body = await readBody(req);
           const flow = typeof body.pollId === "string" ? flows.get(body.pollId) : undefined;
           if (!flow) { send(res, 404, { error: "unknown or expired sign-in", state: "expired" }); return true; }
-          if (flow.status === "pending") flow.cancel();
+          if (flow.status === "pending") await flow.cancel();
           audit("providers.cancel", flow.provider, {}, "ok");
           send(res, 200, { ok: true, ...pollOf(flow) });
           return true;
@@ -715,7 +715,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
           if (!knownId(body.id)) throw new HttpFail(404, "unknown provider");
           const id = body.id;
           const running = active.get(id);
-          if (running) running.cancel();
+          if (running) await running.cancel();
           if ((CLI_IDS as string[]).includes(id)) {
             const spec = CLI_SPECS[id as CliId];
             const bin = await findBin(spec);
@@ -748,7 +748,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
 
   /** Stop every pending login (garrison shutdown). */
   function close(): void {
-    for (const flow of [...active.values()]) { try { flow.cancel(); } catch { /* gone */ } }
+    for (const flow of [...active.values()]) { try { void flow.cancel(); } catch { /* gone */ } }
   }
 
   return Object.assign(handle, { close });

@@ -13,7 +13,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { parseArgs } from "./lib/common.mjs";
+import { expandHome, parseArgs } from "./lib/common.mjs";
 import { deployChange, EXIT } from "./lib/deploy.mjs";
 
 process.on("SIGHUP", () => {}); // a closed terminal must not abandon a half-finished deploy
@@ -30,15 +30,15 @@ const num = (v, d) => (v === undefined ? d : Number.isFinite(Number(v)) ? Number
 const out = await deployChange({
   sha: a.sha,
   branch: a.branch,
-  live: a.live ?? process.env.ARES_LIVE_DIR ?? path.join(os.homedir(), "Ares"),
-  home: a.home,
-  fetchFrom: a["fetch-from"],
+  live: expandHome(a.live ?? process.env.ARES_LIVE_DIR ?? path.join(os.homedir(), "Ares")),
+  home: expandHome(a.home),
+  fetchFrom: expandHome(a["fetch-from"]),
   service: a.service,
   baseUrl: a["base-url"],
   dryRun: a["dry-run"] === true,
   yes: a.yes === true,
   ackHighRisk: a["ack-high-risk"] === true,
-  receiptFile: a["approval-receipt"],
+  receiptFile: expandHome(a["approval-receipt"]),
   drainMin: num(a.drain, 0),
   smokeAsk: a["smoke-ask"] ?? process.env.ARES_DEPLOY_SMOKE_ASK,
   readyTimeoutMs: num(a["ready-timeout"], 120) * 1000,

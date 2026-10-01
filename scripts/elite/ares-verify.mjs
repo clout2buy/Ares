@@ -8,7 +8,7 @@
 // Exit: 0 green, 1 red (details in the result), 2 usage/setup error.
 // The signing key is created on first use (0600) or comes from ARES_VERIFY_KEY. See docs/ELITE-SELFIMPROVE.md.
 
-import { parseArgs } from "./lib/common.mjs";
+import { expandHome, parseArgs } from "./lib/common.mjs";
 import { verifyChange } from "./lib/verify.mjs";
 
 let args;
@@ -24,9 +24,9 @@ try {
     sha: args.sha,
     branch: args.branch,
     base: args.base,
-    repo: args.repo,
-    liveDir: args["live-dir"],
-    home: args.home,
+    repo: expandHome(args.repo),
+    liveDir: expandHome(args["live-dir"]),
+    home: expandHome(args.home),
     keep: args.keep === true,
     log: args.json ? () => {} : (l) => console.error(`ares-verify: ${l}`),
     commands: Object.fromEntries(["install", "build", "lint", "test"].filter((k) => args[`${k}-cmd`]).map((k) => [k, args[`${k}-cmd`]])),

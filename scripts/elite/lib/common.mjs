@@ -205,6 +205,8 @@ export function branchApproved(branch, patterns) {
 
 // ---------------------------------------------------------------- misc
 
+/** `~/x` -> absolute; leaves everything else alone (a quoted ~ never reaches the shell's expansion). */
+export const expandHome = (p) => (typeof p === "string" && (p === "~" || p.startsWith("~/")) ? path.join(os.homedir(), p.slice(1)) : p);
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const nowIso = () => new Date().toISOString();
 export const shortSha = (sha) => String(sha ?? "").slice(0, 8);

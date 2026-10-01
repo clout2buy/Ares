@@ -5,13 +5,13 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import {
-  API_PRESET_DEFS,
   apiConnectId,
   apiConnectService,
   apiCred,
   apiPresetDef,
   apiServiceDir,
   getCredential,
+  listApiPresetDefs,
   listApiServiceDefs,
   readApiServiceSpecText,
   registerConnectService,
@@ -32,7 +32,9 @@ import {
   searchOperations,
   suggestAuth,
   tokenize,
+  type AresPaginate,
   type AuthSuggestion,
+  type OpExt,
   type ResolvedOperation,
 } from "./spec.js";
 import { PRESET_SPECS } from "./presets.js";
@@ -40,12 +42,19 @@ import {
   ApiInputError,
   buildRequest,
   executeCall,
+  fetchPage,
+  graphqlTextIsReadOnly,
+  renderResult,
   resolveAuth,
   vaultCredentials,
   type ApiCallResult,
   type CredentialSource,
   type ExecuteOptions,
+  type PageResult,
+  type PagingInfo,
 } from "./call.js";
+import { getPath } from "./shape.js";
+import { hasConnectedToken } from "./connectedToken.js";
 
 export interface ServiceEnv {
   home?: string;
@@ -113,6 +122,7 @@ export interface ServiceSummary {
 
 async function accessOf(def: ApiServiceDef, home?: string): Promise<ServiceSummary["access"]> {
   const get = (name: string) => getCredential(name, home ? { home } : {});
+  if (def.oauth) return (await hasConnectedToken(def, { creds: vaultCredentials(home), ...(home ? { home } : {}) })) ? "connected" : "not-connected";
   const needsBase = Boolean(def.baseUrlField);
   if (needsBase && !(await get(apiCred(def.id, "BASEURL")))) return "not-connected";
   switch (def.auth.type) {
@@ -132,7 +142,7 @@ async function accessOf(def: ApiServiceDef, home?: string): Promise<ServiceSumma
 }
 
 export async function listServices(home?: string): Promise<ServiceSummary[]> {
-  const defs = [...API_PRESET_DEFS, ...listApiServiceDefs(home)];
+  const defs = [...listApiPresetDefs(), ...listApiServiceDefs(home)];
   const out: ServiceSummary[] = [];
   for (const def of defs) {
     let operations = 0;
@@ -150,7 +160,7 @@ export async function listServices(home?: string): Promise<ServiceSummary[]> {
       operations,
       access,
       ...(def.allowLan ? { lan: true } : {}),
-      ...(access === "not-connected" || access === "optional-key" ? { connect: `Connect service "${apiConnectId(def.id)}"` } : {}),
+      ...(access === "not-connected" || access === "optional-key" ? { connect: `Connect service "${def.oauth ? def.oauth.connect : apiConnectId(def.id)}"` } : {}),
     });
   }
   return out;
@@ -338,6 +348,10 @@ export interface CallClass {
   path?: string;
   destructive: boolean;
   financial: boolean;
+  /** Puts words in front of other people (a message, a post, a comment): the owner sees the exact text. */
+  message?: boolean;
+  /** Where the recipient and the words are, in the call input (from the operation's x-ares-message). */
+  messagePaths?: { to?: string[]; text?: string[] };
   reason?: string;
 }
 
@@ -353,7 +367,16 @@ function serviceCallWords(params: Record<string, unknown> | undefined): string[]
   return words;
 }
 
-export function classifyApiCall(serviceId: string, operationId: string, params?: Record<string, unknown>, home?: string): CallClass {
+/**
+ * Read or write, and how serious. The HTTP method decides first (GET/HEAD/OPTIONS
+ * read; everything else writes; DELETE is always destructive). A curated preset
+ * refines that per operation with x-ares-risk: it can mark a POST that only
+ * reads as `read`, and it can mark a write as `message` / `destructive` /
+ * `financial` — or as a plain `write`, which skips the word heuristics (a
+ * reviewed "subscription" in a notification setting is not a payment). Without
+ * a declaration (a user-added spec) the word heuristics decide.
+ */
+export function classifyApiCall(serviceId: string, operationId: string, params?: Record<string, unknown>, home?: string, body?: unknown): CallClass {
   let def: ApiServiceDef | null;
   try {
     def = resolveApiServiceDef(serviceId, home);
@@ -361,31 +384,53 @@ export function classifyApiCall(serviceId: string, operationId: string, params?:
     def = null;
   }
   if (!def) return { kind: "unknown", destructive: false, financial: false };
-  let op: ResolvedOperation | null = null;
+  let op: { method: string; path: string; id: string; ext?: OpExt } | null = null;
   try {
     const handle = specHandleFor(def, home);
     const entry = handle.ops.find((o) => o.id === operationId);
-    if (entry) op = { method: entry.method, path: entry.path, id: entry.id } as ResolvedOperation;
+    if (entry) op = { method: entry.method, path: entry.path, id: entry.id, ...(entry.ext ? { ext: entry.ext } : {}) };
   } catch {
     return { kind: "unknown", destructive: false, financial: false };
   }
   if (!op) return { kind: "unknown", destructive: false, financial: false };
   const method = op.method.toUpperCase();
-  if (method === "GET" || method === "HEAD" || method === "OPTIONS" || def.readOperationIds?.includes(op.id)) {
-    return { kind: "read", method, path: op.path, destructive: false, financial: false };
+  const risk = op.ext?.risk;
+  const display = op.path.replace(/#.*$/, "");
+  // Free-form GraphQL: a plain query reads; anything else (or no query to inspect) is a write.
+  if (op.ext?.graphql?.raw) {
+    const query = body && typeof body === "object" ? (body as Record<string, unknown>).query : undefined;
+    if (typeof query === "string" && graphqlTextIsReadOnly(query)) return { kind: "read", method, path: display, destructive: false, financial: false };
+    return { kind: "write", method, path: display, destructive: false, financial: false, reason: "free-form GraphQL that is not a plain query" };
   }
-  const words = [...tokenize(`${op.id} ${op.path.replace(/\{[^}]*\}/g, " ")}`), ...serviceCallWords(params)].map(stem);
+  const readByMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
+  const declaredRead = method !== "DELETE" && (def.readOperationIds?.includes(op.id) || risk === "read");
+  if ((readByMethod && (!risk || risk === "read")) || declaredRead) {
+    return { kind: "read", method, path: display, destructive: false, financial: false };
+  }
+  const explicit = risk !== undefined && risk !== "read";
+  const words = explicit ? [] : [...tokenize(`${op.id} ${op.path.replace(/\{[^}]*\}/g, " ")}`), ...serviceCallWords(params)].map(stem);
   const destructiveHit = words.find((w) => DESTRUCTIVE_WORDS.has(w));
   const financialHit = words.find((w) => FINANCIAL_WORDS.has(w));
-  const destructive = method === "DELETE" || destructiveHit !== undefined;
-  const financial = financialHit !== undefined;
+  const destructive = method === "DELETE" || risk === "destructive" || destructiveHit !== undefined;
+  const financial = risk === "financial" || financialHit !== undefined;
+  const message = risk === "message";
+  const reason = financial
+    ? `looks financial (${risk === "financial" ? "declared" : `"${financialHit}"`})`
+    : destructive
+      ? method === "DELETE"
+        ? "a DELETE"
+        : `looks destructive (${risk === "destructive" ? "declared" : `"${destructiveHit}"`})`
+      : message
+        ? "sends words to other people"
+        : undefined;
   return {
     kind: "write",
     method,
-    path: op.path,
+    path: display,
     destructive,
     financial,
-    ...(financial ? { reason: `looks financial ("${financialHit}")` } : destructive ? { reason: method === "DELETE" ? "a DELETE" : `looks destructive ("${destructiveHit}")` } : {}),
+    ...(message ? { message: true, ...(op.ext?.message ? { messagePaths: op.ext.message } : {}) } : {}),
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -416,6 +461,82 @@ export interface ApiCallInput {
   params?: Record<string, unknown>;
   body?: unknown;
   contentType?: string;
+  /** How many pages to follow for a list operation that pages (default 1, at most 10). */
+  pages?: number;
+  /** Stop collecting once this many items are in hand (default 500). */
+  maxItems?: number;
+}
+
+const MAX_PAGES = 10;
+const DEFAULT_MAX_ITEMS = 500;
+
+function allowedOrigins(def: ApiServiceDef, baseUrl: string): Set<string> {
+  const out = new Set<string>();
+  for (const u of [baseUrl, ...(def.extraOrigins ?? [])]) {
+    try {
+      out.add(new URL(u).origin);
+    } catch {
+      // ignore a malformed entry
+    }
+  }
+  return out;
+}
+
+interface NextStep {
+  params?: Record<string, unknown>;
+  body?: unknown;
+  url?: string;
+  param?: string;
+  value?: string | number;
+}
+
+/** What to ask for next, or null when the list is done. */
+function nextStep(pag: AresPaginate, page: PageResult, items: unknown[], params: Record<string, unknown>, body: unknown): NextStep | null {
+  const cursorTarget = (value: string | number): NextStep => {
+    const param = pag.param ?? "";
+    if (pag.body) {
+      const base = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+      return { body: { ...base, [param]: value }, param, value };
+    }
+    return { params: { ...params, [param]: value }, param, value };
+  };
+  const moreFlag = pag.more !== undefined ? getPath(page.body, pag.more) : undefined;
+  switch (pag.style) {
+    case "token": {
+      const cursor = pag.next !== undefined ? getPath(page.body, pag.next) : undefined;
+      if (cursor === undefined || cursor === null || cursor === "" || cursor === false) return null;
+      if (pag.more !== undefined && moreFlag !== true) return null;
+      if (typeof cursor !== "string" && typeof cursor !== "number") return null;
+      return cursorTarget(cursor);
+    }
+    case "next-url": {
+      const url = pag.next !== undefined ? getPath(page.body, pag.next) : undefined;
+      return typeof url === "string" && url ? { url } : null;
+    }
+    case "link":
+      return page.linkNext ? { url: page.linkNext } : null;
+    case "page": {
+      if (!items.length || !pag.param) return null;
+      const limit = pag.limitParam ? Number(params[pag.limitParam]) : NaN;
+      if (Number.isFinite(limit) && limit > 0 && items.length < limit) return null;
+      const current = Number(params[pag.param] ?? 1);
+      return cursorTarget((Number.isFinite(current) ? current : 1) + 1);
+    }
+    case "offset": {
+      if (!items.length || !pag.param) return null;
+      const limit = pag.limitParam ? Number(params[pag.limitParam]) : NaN;
+      if (Number.isFinite(limit) && limit > 0 && items.length < limit) return null;
+      const current = Number(params[pag.param] ?? 0);
+      return cursorTarget((Number.isFinite(current) ? current : 0) + items.length);
+    }
+    case "last-id": {
+      if (pag.more !== undefined && moreFlag !== true) return null;
+      const last = items[items.length - 1];
+      const id = last && typeof last === "object" ? (last as Record<string, unknown>)[pag.idField ?? "id"] : undefined;
+      if (typeof id !== "string" && typeof id !== "number") return null;
+      return cursorTarget(id);
+    }
+  }
 }
 
 export async function apiCall(input: ApiCallInput, env: ServiceEnv = {}, opts: ExecuteOptions = {}): Promise<ApiCallResult & { operation: ResolvedOperation }> {
@@ -425,16 +546,121 @@ export async function apiCall(input: ApiCallInput, env: ServiceEnv = {}, opts: E
   const op = handle.operation(input.operationId);
   if (!op) throw new ApiInputError(unknownOperationMessage(def, handle, input.operationId));
   const creds = env.creds ?? vaultCredentials(env.home);
-  const callEnv = { creds, ...(env.resolver ? { resolver: env.resolver } : {}), ...(env.signal ? { signal: env.signal } : {}) };
+  const callEnv = { creds, ...(env.home ? { home: env.home } : {}), ...(env.resolver ? { resolver: env.resolver } : {}), ...(env.signal ? { signal: env.signal } : {}) };
   const baseUrl = await resolveBaseUrl(def, handle, creds);
   const auth = await resolveAuth(def, callEnv);
-  const built = buildRequest({ def, op, baseUrl, params: input.params ?? {}, body: input.body, contentType: input.contentType, auth });
-  const result = await executeCall(def, op, built, auth, callEnv, { home: env.home, ...opts });
+  const execOpts: ExecuteOptions = { home: env.home, ...opts };
+  const pag = op.ext?.paginate;
+  const wanted = Math.min(Math.max(Math.floor(input.pages ?? 1), 1), MAX_PAGES);
+  let params: Record<string, unknown> = { ...(input.params ?? {}) };
+  let body = input.body;
+
+  // A list that pages, asked for more than one page: follow it, merge the items.
+  if (pag && wanted > 1 && pag.items !== undefined) {
+    // Ask for the biggest page the service allows unless the caller chose a size.
+    if (pag.limitParam && params[pag.limitParam] === undefined) {
+      const declared = op.parameters.find((p) => p.name === pag.limitParam);
+      const max = declared && typeof declared.schema.maximum === "number" ? declared.schema.maximum : undefined;
+      if (max !== undefined) params = { ...params, [pag.limitParam]: Math.min(max, 100) };
+    }
+    const maxItems = Math.min(Math.max(Math.floor(input.maxItems ?? DEFAULT_MAX_ITEMS), 1), 5000);
+    const origins = allowedOrigins(def, baseUrl);
+    const pages: PageResult[] = [];
+    const collected: unknown[] = [];
+    const notes: string[] = [];
+    let built = buildRequest({ def, op, baseUrl, params, body, contentType: input.contentType, auth });
+    const firstBuilt = built;
+    let stoppedBy: PagingInfo["stoppedBy"] = "end";
+    let next: NextStep | null = null;
+    let totalMs = 0;
+    let totalBytes = 0;
+    for (let i = 0; i < wanted; i++) {
+      let page: PageResult;
+      try {
+        page = await fetchPage(def, op, built, auth, callEnv, execOpts);
+      } catch (err) {
+        if (i === 0) throw err;
+        notes.push(`stopped after ${i} page${i === 1 ? "" : "s"}: ${err instanceof Error ? err.message : String(err)}`);
+        stoppedBy = "error";
+        break;
+      }
+      pages.push(page);
+      totalMs += page.ms;
+      totalBytes += page.bytes;
+      if (page.status < 200 || page.status >= 300 || page.softError) {
+        stoppedBy = "error";
+        break;
+      }
+      const items = getPath(page.body, pag.items);
+      if (!Array.isArray(items)) {
+        notes.push(`page ${i + 1} had no list at "${pag.items || "(root)"}"; stopped`);
+        stoppedBy = "error";
+        break;
+      }
+      collected.push(...items);
+      next = nextStep(pag, page, items, params, body);
+      if (collected.length >= maxItems) {
+        collected.length = maxItems;
+        stoppedBy = next ? "items" : "end";
+        break;
+      }
+      if (!next) {
+        stoppedBy = "end";
+        break;
+      }
+      if (i === wanted - 1) {
+        stoppedBy = "pages";
+        break;
+      }
+      if (next.url) {
+        let target: URL;
+        try {
+          target = new URL(next.url, built.url);
+        } catch {
+          notes.push("the next-page link was not a valid URL; stopped");
+          stoppedBy = "error";
+          break;
+        }
+        if (!origins.has(target.origin)) {
+          notes.push(`the next page is on another host (${target.host}); not followed`);
+          stoppedBy = "error";
+          next = null;
+          break;
+        }
+        built = { ...built, url: target.href, displayUrl: target.href };
+      } else {
+        params = next.params ?? params;
+        body = next.body !== undefined ? next.body : body;
+        built = buildRequest({ def, op, baseUrl, params, body, contentType: input.contentType, auth });
+      }
+    }
+    let last = pages[pages.length - 1]!;
+    const failed = (pg: PageResult) => pg.status < 200 || pg.status >= 300 || Boolean(pg.softError);
+    if (failed(last) && pages.length > 1) {
+      // A later page failed: hand back what was collected, and say so.
+      notes.push(`page ${pages.length} failed (HTTP ${last.status}${last.softError ? `: ${last.softError}` : ""}); returning the ${collected.length} items collected before it`);
+      last = pages[pages.length - 2]!;
+    }
+    const useCollected = collected.length > 0 && !failed(last);
+    const paging: PagingInfo = {
+      pages: pages.length,
+      items: collected.length,
+      more: next !== null && (stoppedBy === "pages" || stoppedBy === "items"),
+      ...(next && next.param && next.value !== undefined && (stoppedBy === "pages" || stoppedBy === "items") ? { next: { param: next.param, value: next.value } } : {}),
+      stoppedBy,
+    };
+    notes.unshift(`followed ${pages.length} page${pages.length === 1 ? "" : "s"}, ${collected.length} item${collected.length === 1 ? "" : "s"}${paging.more ? "; more remain (pass the cursor in `params` to continue)" : ""}`);
+    const result = renderResult(def, op, firstBuilt, auth, last, useCollected ? collected : last.body, [...pages.flatMap((p) => p.notes).filter((n, i, all) => all.indexOf(n) === i), ...notes], execOpts, { bytes: totalBytes, ms: totalMs, paging });
+    return { ...result, operation: op };
+  }
+
+  const built = buildRequest({ def, op, baseUrl, params, body, contentType: input.contentType, auth });
+  const result = await executeCall(def, op, built, auth, callEnv, execOpts);
   return { ...result, operation: op };
 }
 
 export function unknownServiceMessage(id: string, home?: string): string {
-  const all = [...API_PRESET_DEFS, ...listApiServiceDefs(home)].map((d) => d.id);
+  const all = [...listApiPresetDefs(), ...listApiServiceDefs(home)].map((d) => d.id);
   const near = all.find((s) => s.includes(id.toLowerCase()) || id.toLowerCase().includes(s));
   return `no service "${id}". Known services: ${all.join(", ")}.${near ? ` Did you mean "${near}"?` : ""} Add your own with Api add.`;
 }
@@ -444,6 +670,44 @@ export function unknownOperationMessage(def: ApiServiceDef, handle: SpecHandle, 
   return `${def.id} has no operation "${opId}".${hits.length ? ` Closest: ${hits.map((h) => h.id).join(", ")}.` : ""} Use Api search to find the operationId.`;
 }
 
+
+// ─── Search across services ──────────────────────────────────────────────────
+
+export interface CrossHit {
+  service: string;
+  label: string;
+  operationId: string;
+  method: string;
+  path: string;
+  summary: string;
+  score: number;
+  access: ServiceSummary["access"];
+}
+
+/** Rank operations of every service at once (presets and the owner's own): "my unread mail" finds the Gmail call. */
+export async function searchAllServices(query: string, opts: { limit?: number; method?: string; connectedFirst?: boolean } = {}, home?: string): Promise<{ hits: CrossHit[]; total: number }> {
+  const limit = Math.min(Math.max(opts.limit ?? 15, 1), 50);
+  const defs = [...listApiPresetDefs(), ...listApiServiceDefs(home)];
+  const all: CrossHit[] = [];
+  for (const def of defs) {
+    let handle: SpecHandle;
+    try {
+      handle = specHandleFor(def, home);
+    } catch {
+      continue;
+    }
+    const { hits } = searchOperations(handle.ops, query, { limit: 8, method: opts.method });
+    if (!hits.length) continue;
+    const access = await accessOf(def, home);
+    for (const h of hits) {
+      all.push({ service: def.id, label: def.label, operationId: h.id, method: h.method, path: h.path.replace(/#.*$/, ""), summary: h.summary, score: h.score, access });
+    }
+  }
+  // A service the owner has connected outranks one they have not, when the match is otherwise close.
+  const weight = (h: CrossHit) => h.score * (opts.connectedFirst !== false && (h.access === "connected" || h.access === "no-key" || h.access === "optional-key") ? 1.15 : 1);
+  all.sort((a, b) => weight(b) - weight(a) || a.service.localeCompare(b.service) || a.operationId.localeCompare(b.operationId));
+  return { hits: all.slice(0, limit), total: all.length };
+}
 
 // ─── The connect form's live check ───────────────────────────────────────────
 

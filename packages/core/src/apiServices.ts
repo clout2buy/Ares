@@ -23,9 +23,37 @@ import type { ConnectField, ConnectService } from "./connectServices.js";
 export type ApiAuth =
   | { type: "none" }
   | { type: "apiKey"; in: "header" | "query" | "cookie"; name: string; optional?: boolean; defaultValue?: string; label?: string }
-  | { type: "bearer"; header?: string; scheme?: string; optional?: boolean; label?: string }
+  | {
+      type: "bearer";
+      header?: string;
+      /** The word before the token (default "Bearer"; "" sends the bare token, as Shopify wants). */
+      scheme?: string;
+      /** The whole header value, with {token} and {CLIENT_ID} placeholders (Trello: OAuth oauth_consumer_key="{CLIENT_ID}", oauth_token="{token}"). Wins over scheme. */
+      template?: string;
+      optional?: boolean;
+      label?: string;
+    }
   | { type: "basic" }
   | { type: "oauth2cc"; tokenUrl: string; scope?: string };
+
+/**
+ * Where a preset's bearer token comes from when the service is connected with
+ * OAuth (or a key) through the Connect registry instead of a form of its own.
+ * Resolved at call time by tools/openapi/connectedToken.ts: the explicit
+ * API_<ID>_KEY credential first, then the connected account.
+ */
+export interface ApiOAuthSource {
+  /** The registry id the owner connects: Connect service "<connect>" (vercel, github, google, outlook ...). */
+  connect: string;
+  /** The OAuth-app provider id in OAUTH_PROVIDERS when it differs from `connect` (outlook -> microsoft). */
+  provider?: string;
+  /** The remote-MCP server whose OAuth token the vendor's REST API also accepts. Only set where that is documented. */
+  mcp?: string;
+  /** Vault credential names that may hold a usable token or key (STRIPE_SECRET_KEY, mcp.key.github). */
+  credentials?: string[];
+  /** The scopes this service's operations need (named in a 403 hint). */
+  scopes?: string[];
+}
 
 export interface ApiServiceDef {
   /** 2-40 chars: lowercase letters, digits, dashes. */
@@ -40,6 +68,10 @@ export interface ApiServiceDef {
   /** Other origins an operation's own `servers` entry may name. Nothing else is ever called. */
   extraOrigins?: string[];
   auth: ApiAuth;
+  /** The bearer comes from a connected account (registry OAuth / key) instead of an `api-<id>` form. */
+  oauth?: ApiOAuthSource;
+  /** Extra credential-bearing request headers; values may contain {CLIENT_ID} (Twitch Client-Id) and are scrubbed like the token. */
+  authHeaders?: Record<string, string>;
   /** The owner allows this service on a private/LAN address over plain http. */
   allowLan?: boolean;
   /** Accept a self-signed TLS certificate (a LAN service over https). Only with allowLan. */
@@ -56,6 +88,8 @@ export interface ApiServiceDef {
   readOperationIds?: string[];
   /** A response shim for formats that are not JSON. */
   transform?: "atom";
+  /** The service answers HTTP 200 with {"ok": false, "error": "..."} when it refuses (Slack): which body fields say so. */
+  errorEnvelope?: { okPath: string; errorPath: string };
   keywords?: string[];
   domain?: string;
   howToUse?: string;
@@ -245,8 +279,24 @@ export const API_PRESET_DEFS: ApiServiceDef[] = [
   },
 ];
 
+/** Presets registered by @ares/tools (the connected-account services). Kept apart
+ *  from API_PRESET_DEFS so that list — the keyless and form-connected presets — is stable. */
+const REGISTERED_PRESETS = new Map<string, ApiServiceDef>();
+
+export function registerApiPresets(defs: ApiServiceDef[]): void {
+  for (const def of defs) {
+    if (API_PRESET_DEFS.some((d) => d.id === def.id)) continue;
+    REGISTERED_PRESETS.set(def.id, def);
+  }
+}
+
+/** Every preset: the built-in list plus the registered connected-account ones. */
+export function listApiPresetDefs(): ApiServiceDef[] {
+  return [...API_PRESET_DEFS, ...REGISTERED_PRESETS.values()];
+}
+
 export function apiPresetDef(id: string): ApiServiceDef | undefined {
-  return API_PRESET_DEFS.find((d) => d.id === id);
+  return API_PRESET_DEFS.find((d) => d.id === id) ?? REGISTERED_PRESETS.get(id);
 }
 
 // ─── Disk store (user-added services) ────────────────────────────────────────
@@ -330,6 +380,7 @@ export function apiConnectFields(def: ApiServiceDef): ConnectField[] {
     });
   }
   const auth = def.auth;
+  if (def.oauth) return fields; // the connected account supplies the token: no form
   switch (auth.type) {
     case "apiKey":
     case "bearer":

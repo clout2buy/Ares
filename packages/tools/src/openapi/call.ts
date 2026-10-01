@@ -8,17 +8,15 @@
 
 import { appendFile, mkdir, stat, rename } from "node:fs/promises";
 import path from "node:path";
-import { getCredential, apiCred, apiServicesDir, type ApiServiceDef } from "@ares/core";
+import { getCredential, apiCred, apiServicesDir, clientIdName, getProviderConfig, type ApiServiceDef } from "@ares/core";
 import { safeFetch, NetBlockedError, type Resolver } from "./netGuard.js";
 import type { JsonObject, ResolvedOperation, ResolvedParam } from "./spec.js";
 import { atomToJson } from "./atom.js";
+import { ApiInputError, type CredentialSource } from "./errors.js";
+import { projectFields, selectPath, shrinkJson } from "./shape.js";
+import { notConnectedMessage, resolveConnectedToken } from "./connectedToken.js";
 
-/** A problem with how the model called: the message says how to fix it. */
-export class ApiInputError extends Error {}
-
-export interface CredentialSource {
-  get(name: string): Promise<string | undefined>;
-}
+export { ApiInputError, type CredentialSource } from "./errors.js";
 
 export function vaultCredentials(home?: string): CredentialSource {
   return { get: (name) => getCredential(name, home ? { home } : {}) };
@@ -134,9 +132,12 @@ export interface CallEnv {
   resolver?: Resolver;
   signal?: AbortSignal;
   now?: () => number;
+  /** The Ares home the vault lives in (a connected account's OAuth grant is read from it). */
+  home?: string;
 }
 
 function notConnected(def: ApiServiceDef, what: string): ApiInputError {
+  if (def.oauth) return new ApiInputError(notConnectedMessage(def));
   return new ApiInputError(
     `${def.label} has no ${what} stored. Connect it first: call Connect with service "api-${def.id}" (the owner enters it in a secure form on their phone — never in chat). ` +
       `Headless fallback: set the environment variable ${apiCred(def.id, "KEY")}.`,
@@ -180,14 +181,28 @@ async function fetchOAuthToken(def: ApiServiceDef, env: CallEnv, baseAllowLan: b
   return json.access_token;
 }
 
-export async function resolveAuth(def: ApiServiceDef, env: CallEnv): Promise<AuthMaterial> {
+/** The OAuth app's public client id (Twitch Client-Id, Trello's key): the service's own, else the connected provider's. */
+async function clientIdFor(def: ApiServiceDef, env: CallEnv): Promise<string | undefined> {
+  const own = await env.creds.get(apiCred(def.id, "CLIENT_ID"));
+  if (own) return own;
+  const cfg = getProviderConfig((def.oauth?.provider ?? def.oauth?.connect ?? "").toLowerCase());
+  return cfg ? env.creds.get(clientIdName(cfg)) : undefined;
+}
+
+/** The credential the service's apiKey/bearer recipe uses: the connected account's, or the explicit one. */
+async function storedToken(def: ApiServiceDef, env: CallEnv): Promise<string | undefined> {
+  if (def.oauth) return (await resolveConnectedToken(def, { creds: env.creds, ...(env.home ? { home: env.home } : {}), ...(env.now ? { now: env.now } : {}) }))?.token;
+  return env.creds.get(apiCred(def.id, "KEY"));
+}
+
+async function resolveAuthMain(def: ApiServiceDef, env: CallEnv): Promise<AuthMaterial> {
   const out: AuthMaterial = { headers: {}, query: [], cookies: [], secrets: [], headerNames: [], queryNames: [] };
   const auth = def.auth;
   switch (auth.type) {
     case "none":
       return out;
     case "apiKey": {
-      const stored = await env.creds.get(apiCred(def.id, "KEY"));
+      const stored = await storedToken(def, env);
       const value = stored ?? auth.defaultValue;
       if (!value) {
         if (auth.optional) return out;
@@ -208,14 +223,20 @@ export async function resolveAuth(def: ApiServiceDef, env: CallEnv): Promise<Aut
       return out;
     }
     case "bearer": {
-      const token = await env.creds.get(apiCred(def.id, "KEY"));
+      const token = await storedToken(def, env);
       if (!token) {
         if (auth.optional) return out;
         throw notConnected(def, "access token");
       }
       out.secrets.push(token);
       const header = (auth.header ?? "authorization").toLowerCase();
-      out.headers[header] = `${auth.scheme ?? "Bearer"} ${token}`.trim();
+      if (auth.template) {
+        const clientId = auth.template.includes("{CLIENT_ID}") ? await clientIdFor(def, env) : undefined;
+        if (auth.template.includes("{CLIENT_ID}") && !clientId) throw new ApiInputError(`${def.label} needs the app's client id (${apiCred(def.id, "CLIENT_ID")}) as well as the token - reconnect it${def.oauth ? ` (Connect service "${def.oauth.connect}")` : ""}.`);
+        out.headers[header] = auth.template.split("{token}").join(token).split("{CLIENT_ID}").join(clientId ?? "");
+      } else {
+        out.headers[header] = `${auth.scheme ?? "Bearer"} ${token}`.trim();
+      }
       out.headerNames.push(header);
       return out;
     }
@@ -236,6 +257,22 @@ export async function resolveAuth(def: ApiServiceDef, env: CallEnv): Promise<Aut
       return out;
     }
   }
+}
+
+export async function resolveAuth(def: ApiServiceDef, env: CallEnv): Promise<AuthMaterial> {
+  const out = await resolveAuthMain(def, env);
+  // Extra credential-bearing headers (Twitch wants Client-Id beside the token).
+  for (const [name, template] of Object.entries(def.authHeaders ?? {})) {
+    let value = template;
+    if (template.includes("{CLIENT_ID}")) {
+      const clientId = await clientIdFor(def, env);
+      if (!clientId) throw new ApiInputError(`${def.label} needs the app's client id (${apiCred(def.id, "CLIENT_ID")}) - reconnect it${def.oauth ? ` (Connect service "${def.oauth.connect}")` : ""}.`);
+      value = template.split("{CLIENT_ID}").join(clientId);
+    }
+    out.headers[name.toLowerCase()] = value;
+    out.headerNames.push(name.toLowerCase());
+  }
+  return out;
 }
 
 // ─── Request building ────────────────────────────────────────────────────────
@@ -351,7 +388,10 @@ export function buildRequest(input: BuildInput): BuiltRequest {
   }
 
   // ── path ──
-  let pathText = op.path;
+  // Curated GraphQL operations share one endpoint; their path carries a "#name" so each is its own operation.
+  let pathText = op.path.replace(/#.*$/, "");
+  const graphql = op.ext?.graphql && !op.ext.graphql.raw ? op.ext.graphql : undefined;
+  const variables: Record<string, unknown> = {};
   const queryPairs: Array<[string, string]> = [];
   const headers: Record<string, string> = {};
   const cookies: Array<[string, string]> = [];
@@ -359,11 +399,16 @@ export function buildRequest(input: BuildInput): BuiltRequest {
     const key = `${p.in}:${p.name}`;
     if (!supplied.has(key)) continue;
     const value = supplied.get(key);
+    if (graphql) {
+      variables[p.name] = typedVariable(p, value);
+      continue;
+    }
     const ser = serializeParam(p, value);
     if (p.in === "path") {
       const flat = ser.kind === "single" ? ser.values : ser.pairs.map(([, v]) => v);
-      for (const v of flat) if (v === "." || v === "..") throw new ApiInputError(`path parameter "${p.name}" may not be "." or ".."`);
-      const joined = ser.kind === "single" ? ser.values.map(encodeURIComponent).join(",") : flat.map(encodeURIComponent).join(",");
+      for (const v of flat) for (const part of p.reserved ? v.split("/") : [v]) if (part === "." || part === "..") throw new ApiInputError(`path parameter "${p.name}" may not be "." or ".."`);
+      const enc = p.reserved ? (v: string) => v.split("/").map(encodeURIComponent).join("/") : encodeURIComponent;
+      const joined = ser.kind === "single" ? ser.values.map(enc).join(",") : flat.map(enc).join(",");
       pathText = pathText.split(`{${p.name}}`).join(joined);
     } else if (p.in === "query") {
       if (ser.kind === "pairs") queryPairs.push(...ser.pairs);
@@ -382,7 +427,11 @@ export function buildRequest(input: BuildInput): BuiltRequest {
   // ── body ──
   let bodyOut: string | Buffer | undefined;
   let contentType: string | undefined;
-  if (input.body !== undefined && input.body !== null && input.body !== "") {
+  if (graphql) {
+    if (input.body !== undefined && input.body !== null && input.body !== "") throw new ApiInputError(`${op.id} is a fixed GraphQL operation: pass its variables in \`params\`, not a body.`);
+    bodyOut = JSON.stringify({ query: graphql.query, variables });
+    contentType = "application/json";
+  } else if (input.body !== undefined && input.body !== null && input.body !== "") {
     if (op.method === "GET" || op.method === "HEAD") throw new ApiInputError(`${op.id} is a ${op.method}; it does not take a body. Use \`params\`.`);
     if (!op.body) notes.push("this operation declares no request body in the spec; sent anyway");
     contentType = input.contentType ?? op.body?.contentType ?? "application/json";
@@ -400,6 +449,7 @@ export function buildRequest(input: BuildInput): BuiltRequest {
         }
       }
       checkRequiredProps(op, payload);
+      if (op.ext?.graphql?.raw) assertReadOnlyGraphql(payload);
       bodyOut = JSON.stringify(payload);
     } else if (mime === "application/x-www-form-urlencoded") {
       if (typeof payload === "string") bodyOut = payload;
@@ -451,6 +501,56 @@ export function buildRequest(input: BuildInput): BuiltRequest {
   };
   if (!finalHeaders["user-agent"]) finalHeaders["user-agent"] = "AresAgent/1.0 (personal assistant)";
   return { method: op.method, url, displayUrl, headers: finalHeaders, ...(bodyOut !== undefined ? { body: bodyOut } : {}), notes };
+}
+
+/** A GraphQL variable keeps its JSON type: numbers stay numbers, booleans booleans, lists lists. */
+function typedVariable(p: ResolvedParam, value: unknown): unknown {
+  const schema = p.schema;
+  const type = typeof schema.type === "string" ? schema.type.split("|")[0] : undefined;
+  if (type === "object") {
+    let obj = value;
+    if (typeof obj === "string") {
+      try {
+        obj = JSON.parse(obj);
+      } catch {
+        throw new ApiInputError(`parameter "${p.name}" must be an object`);
+      }
+    }
+    if (obj === null || typeof obj !== "object" || Array.isArray(obj)) throw new ApiInputError(`parameter "${p.name}" must be an object`);
+    const required: string[] = Array.isArray(schema.required) ? schema.required : [];
+    const missing = required.filter((k) => (obj as Record<string, unknown>)[k] === undefined);
+    if (missing.length) throw new ApiInputError(`parameter "${p.name}" is missing required ${missing.length === 1 ? "field" : "fields"}: ${missing.join(", ")}`);
+    return obj;
+  }
+  if (type === "array") {
+    const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(",").map((s) => s.trim()).filter(Boolean) : [value];
+    const itemSchema: JsonObject = schema.items && typeof schema.items === "object" ? schema.items : {};
+    return list.map((item) => typedScalar(p, item, itemSchema));
+  }
+  return typedScalar(p, value, schema);
+}
+
+function typedScalar(p: ResolvedParam, value: unknown, schema: JsonObject): unknown {
+  const type = typeof schema.type === "string" ? schema.type.split("|")[0] : undefined;
+  const text = coerceScalar(p, value, schema); // validates type, range and enum
+  if (type === "integer" || type === "number") return Number(text);
+  if (type === "boolean") return text === "true";
+  return text;
+}
+
+/** Free-form GraphQL here may only read: no mutation or subscription operation. */
+export function graphqlTextIsReadOnly(query: string): boolean {
+  const stripped = query
+    .replace(/"""[\s\S]*?"""/g, '""')
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/#[^\n]*/g, " ");
+  return !/(^|[}\s;])(mutation|subscription)\b/i.test(stripped);
+}
+
+function assertReadOnlyGraphql(payload: unknown): void {
+  const query = payload && typeof payload === "object" ? (payload as Record<string, unknown>).query : undefined;
+  if (typeof query !== "string" || !query.trim()) throw new ApiInputError('`body` needs {"query": "...", "variables": {...}}');
+  if (!graphqlTextIsReadOnly(query)) throw new ApiInputError("free-form GraphQL here is read-only: a mutation or subscription is refused. Use the named mutation operations (search for them), which ask the owner first.");
 }
 
 function isAuthManagedName(op: ResolvedOperation, key: string, def: ApiServiceDef): boolean {
@@ -591,12 +691,30 @@ export async function appendAudit(entry: AuditEntry, home?: string): Promise<voi
 export interface ExecuteOptions {
   maxChars?: number;
   select?: string;
+  /** Keep only these dotted fields of each item ("id", "name", "owner.login"). */
+  fields?: string[];
   timeoutMs?: number;
   maxBytes?: number;
   now?: () => number;
   home?: string;
   /** Pause before the one retry of a read that got a 5xx (default 700 ms). */
   retryDelayMs?: number;
+  /** Longest Retry-After honoured after a 429 (default 15 s); a longer one is reported, not waited out. */
+  maxRetryWaitMs?: number;
+  /** Retries after a 429 (default 2). */
+  maxRetries429?: number;
+  /** Sleep, injectable so tests do not wait. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface PagingInfo {
+  pages: number;
+  items: number;
+  /** The service has more beyond what was fetched. */
+  more: boolean;
+  /** Pass this in `params` to continue where this call stopped. */
+  next?: { param: string; value: string | number };
+  stoppedBy: "end" | "pages" | "items" | "error";
 }
 
 export interface ApiCallResult {
@@ -608,34 +726,13 @@ export interface ApiCallResult {
   headers: Record<string, string>;
   /** The body as shown to the model: compact JSON (possibly narrowed by `select`) or text. */
   text: string;
-  /** The parsed body when it is JSON and was not cut — use this instead of `text`. */
+  /** The parsed body when it is JSON (shrunk to fit when it was too big) — use this instead of `text`. */
   data?: unknown;
   truncated: boolean;
   bytes: number;
   ms: number;
   notes: string[];
-}
-
-function selectPath(value: unknown, pathText: string): unknown {
-  let current: unknown = value;
-  const segments = pathText.split(/[.\[\]]+/).filter(Boolean);
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]!;
-    const slice = /^(-?\d*):(-?\d*)$/.exec(seg);
-    if (slice) {
-      if (!Array.isArray(current)) return undefined;
-      current = current.slice(slice[1] ? Number(slice[1]) : 0, slice[2] ? Number(slice[2]) : undefined);
-      continue;
-    }
-    if (seg === "*") {
-      if (!Array.isArray(current)) return undefined;
-      const rest = segments.slice(i + 1).join(".");
-      return current.map((item) => (rest ? selectPath(item, rest) : item));
-    }
-    if (current === null || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[seg];
-  }
-  return current;
+  paging?: PagingInfo;
 }
 
 function parseBody(contentType: string, buf: Buffer, def: ApiServiceDef, notes: string[]): { body: unknown; text: string } {
@@ -664,8 +761,71 @@ function parseBody(contentType: string, buf: Buffer, def: ApiServiceDef, notes: 
   return { body: undefined, text };
 }
 
-export async function executeCall(def: ApiServiceDef, op: ResolvedOperation, built: BuiltRequest, auth: AuthMaterial, env: CallEnv, opts: ExecuteOptions = {}): Promise<ApiCallResult> {
+/** One fetched page, before it is shaped for the model. Its headers are the raw ones: never shown as is. */
+export interface PageResult {
+  status: number;
+  contentType: string;
+  headers: Record<string, string>;
+  body: unknown;
+  text: string;
+  wireTruncated: boolean;
+  bytes: number;
+  ms: number;
+  notes: string[];
+  /** HTTP 200 whose body says it failed (Slack {ok:false}, GraphQL errors with no data). */
+  softError?: string;
+  /** The Link header's rel="next" URL. */
+  linkNext?: string;
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function isRateLimited(res: { status: number; headers: Record<string, string> }): boolean {
+  if (res.status === 429) return true;
+  // GitHub's primary/secondary limits answer 403 with the budget spent.
+  return res.status === 403 && res.headers["x-ratelimit-remaining"] === "0" && Boolean(res.headers["retry-after"] ?? res.headers["x-ratelimit-reset"]);
+}
+
+/** How long the service asks to wait, in ms (Retry-After seconds or date; x-ratelimit-reset epoch or delta). */
+export function retryAfterMs(headers: Record<string, string>, nowMs: number): number | undefined {
+  const ra = headers["retry-after"];
+  if (ra) {
+    if (/^\d+(\.\d+)?$/.test(ra.trim())) return Math.ceil(Number(ra) * 1000);
+    const date = Date.parse(ra);
+    if (!Number.isNaN(date)) return Math.max(0, date - nowMs);
+  }
+  const reset = headers["x-ratelimit-reset"] ?? headers["ratelimit-reset"] ?? headers["x-rate-limit-reset"];
+  if (reset && /^\d+$/.test(reset.trim())) {
+    const n = Number(reset);
+    return n > 1e9 ? Math.max(0, n * 1000 - nowMs) : n * 1000;
+  }
+  return undefined;
+}
+
+export function parseLinkNext(link: string | undefined): string | undefined {
+  if (!link) return undefined;
+  for (const part of link.split(/,\s*(?=<)/)) {
+    const m = /<([^>]+)>\s*;(.*)/.exec(part);
+    if (m && /rel\s*=\s*"?([^";]*\s)?next(\s[^";]*)?"?/i.test(m[2]!)) return m[1];
+  }
+  return undefined;
+}
+
+function firstGraphqlError(body: unknown): string | undefined {
+  const errors = (body as { errors?: unknown })?.errors;
+  if (!Array.isArray(errors) || !errors.length) return undefined;
+  const first = errors[0] as { message?: unknown };
+  return typeof first?.message === "string" ? first.message.slice(0, 300) : "GraphQL error";
+}
+
+/**
+ * One guarded request, end to end: rate slot, the call, a patient retry on 429
+ * (any method — a 429 was not processed), one retry of a read after a 5xx, the
+ * audit line. Returns the page before any shaping.
+ */
+export async function fetchPage(def: ApiServiceDef, op: ResolvedOperation, built: BuiltRequest, auth: AuthMaterial, env: CallEnv, opts: ExecuteOptions = {}): Promise<PageResult> {
   const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? defaultSleep;
   await takeRateSlot(def, now);
   const started = now();
   let host = "";
@@ -692,10 +852,31 @@ export async function executeCall(def: ApiServiceDef, op: ResolvedOperation, bui
       });
     let res = await send();
     const notes = [...built.notes];
+    // Rate limited: wait what the service asks (bounded) and try again.
+    const maxRetries = opts.maxRetries429 ?? 2;
+    const maxWait = opts.maxRetryWaitMs ?? 15_000;
+    let retries = 0;
+    while (isRateLimited(res) && !env.signal?.aborted) {
+      const asked = retryAfterMs(res.headers, now());
+      const wait = Math.max(asked ?? 1000 * 2 ** retries, 250);
+      if (retries >= maxRetries) {
+        notes.push(`still rate limited (HTTP ${res.status}) after ${retries} retr${retries === 1 ? "y" : "ies"}${asked !== undefined ? `; the service asks for ${Math.ceil(asked / 1000)}s` : ""} - slow down and try again later`);
+        break;
+      }
+      if (wait > maxWait) {
+        notes.push(`rate limited (HTTP ${res.status}): the service asks for ${Math.ceil(wait / 1000)}s, longer than the ${Math.round(maxWait / 1000)}s this call will wait - try again after that`);
+        break;
+      }
+      await sleep(wait);
+      await takeRateSlot(def, now);
+      res = await send();
+      retries++;
+      notes.push(`waited ${Math.max(1, Math.round(wait / 1000))}s (Retry-After) and retried after HTTP 429`);
+    }
     // A read that hit a server hiccup is safe to repeat once (never a write: it might have happened).
     if ((built.method === "GET" || built.method === "HEAD") && [500, 502, 503, 504].includes(res.status) && !env.signal?.aborted) {
       const first = res.status;
-      await new Promise((r) => setTimeout(r, opts.retryDelayMs ?? 700));
+      await sleep(opts.retryDelayMs ?? 700);
       await takeRateSlot(def, now);
       res = await send();
       notes.push(`retried once after HTTP ${first}`);
@@ -704,51 +885,39 @@ export async function executeCall(def: ApiServiceDef, op: ResolvedOperation, bui
     const contentType = res.headers["content-type"] ?? "";
     if (res.redirects.length) notes.push(`followed ${res.redirects.length} redirect(s)`);
     const parsed = parseBody(contentType, res.body, def, notes);
-    let body = parsed.body;
-    let text = parsed.text;
-    if (opts.select && body !== undefined) {
-      const picked = selectPath(body, opts.select);
-      if (picked === undefined) notes.push(`select "${opts.select}" matched nothing; showing the whole response`);
-      else {
-        body = picked;
-        text = typeof picked === "string" ? picked : JSON.stringify(picked);
+    let softError: string | undefined;
+    if (parsed.body !== undefined && typeof parsed.body === "object" && parsed.body !== null) {
+      const envelope = def.errorEnvelope;
+      if (envelope && (parsed.body as Record<string, unknown>)[envelope.okPath] === false) {
+        const detail = (parsed.body as Record<string, unknown>)[envelope.errorPath];
+        softError = `${def.label} refused it: ${typeof detail === "string" ? detail : "ok was false"}`;
       }
-    }
-    let shown = body !== undefined && typeof body !== "string" ? JSON.stringify(body) : text;
-    shown = redactText(shown, auth.secrets);
-    const maxChars = Math.min(Math.max(opts.maxChars ?? 12_000, 500), 60_000);
-    let truncated = res.truncated;
-    if (shown.length > maxChars) {
-      shown = `${shown.slice(0, maxChars)}…`;
-      truncated = true;
-      notes.push(`output cut to ${maxChars} characters — narrow the request (limit/fields) or pass \`select\` (a dotted path such as "results.0.name" or "items.*.id")`);
-    }
-    if (res.truncated) notes.push(`the response exceeded ${Math.round((opts.maxBytes ?? 2 * 1024 * 1024) / 1024)} KB and was cut`);
-    let data: unknown;
-    if (!truncated && body !== undefined && typeof body === "object" && body !== null) {
-      try {
-        data = JSON.parse(shown);
-      } catch {
-        data = undefined;
+      if (op.ext?.graphql || /graphql/i.test(op.path)) {
+        const message = firstGraphqlError(parsed.body);
+        if (message) {
+          const hasData = (parsed.body as { data?: unknown }).data !== null && (parsed.body as { data?: unknown }).data !== undefined;
+          if (hasData) notes.push(`GraphQL returned an error alongside data: ${message}`);
+          else softError = `GraphQL error: ${message}`;
+        }
       }
     }
     audit.status = res.status;
     audit.ms = ms;
     audit.bytes = res.body.length;
     await appendAudit(audit, opts.home);
+    const linkNext = parseLinkNext(res.headers.link);
     return {
-      ok: res.status >= 200 && res.status < 300,
       status: res.status,
-      method: built.method,
-      url: built.displayUrl,
       contentType,
-      headers: visibleHeaders(res.headers, auth.secrets),
-      text: shown,
-      ...(data !== undefined ? { data } : {}),
-      truncated,
+      headers: res.headers,
+      body: parsed.body,
+      text: parsed.text,
+      wireTruncated: res.truncated,
       bytes: res.body.length,
       ms,
       notes,
+      ...(softError ? { softError } : {}),
+      ...(linkNext ? { linkNext } : {}),
     };
   } catch (err) {
     audit.error = redactText(err instanceof Error ? err.message : String(err), auth.secrets).slice(0, 200);
@@ -757,4 +926,101 @@ export async function executeCall(def: ApiServiceDef, op: ResolvedOperation, bui
     if (err instanceof NetBlockedError) throw new ApiInputError(`blocked by the network guard: ${err.message}`);
     throw err;
   }
+}
+
+/**
+ * Shape the page(s) for the model: select a part, keep chosen fields, redact,
+ * and when it is still too big shrink it structurally (never mid-value).
+ * `body` is the parsed body (for several pages: the merged items).
+ */
+export function renderResult(
+  def: ApiServiceDef,
+  op: ResolvedOperation,
+  built: BuiltRequest,
+  auth: AuthMaterial,
+  last: PageResult,
+  body: unknown,
+  notesIn: string[],
+  opts: ExecuteOptions,
+  extra: { bytes?: number; ms?: number; paging?: PagingInfo } = {},
+): ApiCallResult {
+  void def;
+  const notes = [...notesIn];
+  let value = body;
+  let text = last.text;
+  if (opts.select && value !== undefined) {
+    const picked = selectPath(value, opts.select);
+    if (picked === undefined) notes.push(`select "${opts.select}" matched nothing; showing the whole response`);
+    else {
+      value = picked;
+      text = typeof picked === "string" ? picked : JSON.stringify(picked);
+    }
+  }
+  if (opts.fields?.length && value !== undefined && value !== null && typeof value === "object") {
+    value = projectFields(value, opts.fields, opts.select ? undefined : op.ext?.paginate?.items);
+    text = JSON.stringify(value);
+  }
+  const maxChars = Math.min(Math.max(opts.maxChars ?? 12_000, 500), 60_000);
+  let truncated = last.wireTruncated;
+  let shown: string;
+  let data: unknown;
+  const cutNote = (detail: string) =>
+    `output cut to ${maxChars} characters${detail} — narrow the request (limit/fields) or pass \`select\` (a dotted path such as "results.0.name" or "items.*.id"; "items.20:40" slices)`;
+  if (value !== undefined && value !== null && typeof value === "object") {
+    let json = JSON.stringify(value);
+    let shrunk: unknown = value;
+    if (json.length > maxChars) {
+      const s = shrinkJson(value, maxChars);
+      shrunk = s.value;
+      json = JSON.stringify(s.value);
+      truncated = true;
+      notes.push(cutNote(s.cuts.length ? ` (${s.cuts.join("; ")})` : ""));
+      if (json.length > maxChars) {
+        json = `${json.slice(0, maxChars)}…`;
+        shrunk = undefined;
+      }
+    }
+    shown = redactText(json, auth.secrets);
+    if (shrunk !== undefined) {
+      if (shown === json) data = shrunk;
+      else {
+        try {
+          data = JSON.parse(shown);
+        } catch {
+          data = undefined;
+        }
+      }
+    }
+  } else {
+    const plain = value !== undefined && typeof value !== "string" ? JSON.stringify(value) : typeof value === "string" ? value : text;
+    shown = redactText(plain, auth.secrets);
+    if (shown.length > maxChars) {
+      shown = `${shown.slice(0, maxChars)}…`;
+      truncated = true;
+      notes.push(cutNote(""));
+    }
+  }
+  if (last.wireTruncated) notes.push(`the response exceeded ${Math.round((opts.maxBytes ?? 2 * 1024 * 1024) / 1024)} KB and was cut`);
+  const ok = last.status >= 200 && last.status < 300 && !last.softError;
+  if (last.softError) notes.push(last.softError);
+  return {
+    ok,
+    status: last.status,
+    method: built.method,
+    url: built.displayUrl,
+    contentType: last.contentType,
+    headers: visibleHeaders(last.headers, auth.secrets),
+    text: shown,
+    ...(data !== undefined ? { data } : {}),
+    truncated,
+    bytes: extra.bytes ?? last.bytes,
+    ms: extra.ms ?? last.ms,
+    notes,
+    ...(extra.paging ? { paging: extra.paging } : {}),
+  };
+}
+
+export async function executeCall(def: ApiServiceDef, op: ResolvedOperation, built: BuiltRequest, auth: AuthMaterial, env: CallEnv, opts: ExecuteOptions = {}): Promise<ApiCallResult> {
+  const page = await fetchPage(def, op, built, auth, env, opts);
+  return renderResult(def, op, built, auth, page, page.body, page.notes, opts);
 }

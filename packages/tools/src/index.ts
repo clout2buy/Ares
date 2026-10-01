@@ -268,6 +268,7 @@ export {
   addService as addApiService,
   apiCall,
   classifyApiCall,
+  resolveBaseUrl,
   listServices as listApiServices,
   removeService as removeApiService,
   specHandleFor,
@@ -280,7 +281,7 @@ export {
 export { SpecHandle, parseSpecText, searchOperations, suggestAuth, simplifySchema, tokenize, type ResolvedOperation, type OpIndexEntry } from "./openapi/spec.js";
 export { buildRequest, executeCall, fetchPage, renderResult, resolveAuth, redactText, redactTokens, visibleHeaders, resetRateLimits, clearOAuthCache, retryAfterMs, parseLinkNext, graphqlTextIsReadOnly, ApiInputError, vaultCredentials, type CredentialSource, type PagingInfo } from "./openapi/call.js";
 export { shrinkJson, projectFields, selectPath, getPath } from "./openapi/shape.js";
-export { setConnectedTokenProvider, resolveConnectedToken, hasConnectedToken, notConnectedMessage, type ConnectedToken, type ConnectedTokenProvider } from "./openapi/connectedToken.js";
+export { setConnectedTokenProvider, resolveConnectedToken, hasConnectedToken, connectedBaseUrl, oauthProviderId, notConnectedMessage, type ConnectedToken, type ConnectedTokenProvider } from "./openapi/connectedToken.js";
 export { PRESET_BUNDLES, PRESET_ROSTER, presetBundle } from "./openapi/presets/index.js";
 export type { PresetBundle, Recipe, RecipeStep, PresetSource, PresetNotes } from "./openapi/presets/_kit.js";
 export { classifyAddress, assertUrlAllowed, safeFetch, guardedLookup, NetBlockedError, type AddressClass, type Resolver } from "./openapi/netGuard.js";

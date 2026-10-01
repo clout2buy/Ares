@@ -49,7 +49,7 @@ export default definePreset({
   id: "meta-graph",
   label: "Facebook & Instagram",
   blurb: "Your Facebook Pages and Instagram account: posts, comments, insights, the inbox and publishing. Reads run freely; posting, replying, commenting and messaging ask first with the exact text.",
-  connect: "instagram",
+  connect: "facebook",
   oauth: {
     scopes: [
       "pages_show_list, pages_read_engagement (Pages and their posts)",

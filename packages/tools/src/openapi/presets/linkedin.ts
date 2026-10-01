@@ -28,7 +28,7 @@ export default definePreset({
   id: "linkedin",
   label: "LinkedIn",
   blurb: "Your LinkedIn profile, posts and comments, and the Company Pages you administer. Reads run freely; publishing a post or comment asks first, with the exact text.",
-  connect: "api-linkedin",
+  connect: "linkedin",
   oauth: { provider: "linkedin", scopes: ["openid", "profile", "email", "w_member_social (post and comment as the member)", "r_member_social (read the member's posts: restricted, approved apps only)", "r_organization_social + w_organization_social (Company Page posts, page admins)"] },
   baseUrl: "https://api.linkedin.com",
   headers: { "linkedin-version": "202609", "x-restli-protocol-version": "2.0.0" },

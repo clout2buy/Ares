@@ -38,7 +38,6 @@ export default definePreset({
   blurb: "Your Airtable bases: browse tables and fields, search and filter records, read a record, and add or update records. Reads run freely; creating, updating and commenting ask.",
   connect: "airtable",
   oauth: {
-    provider: "airtable",
     scopes: ["schema.bases:read", "data.records:read", "data.records:write", "data.recordComments:read", "data.recordComments:write", "user.email:read (optional, for whoami's email)"],
   },
   baseUrl: "https://api.airtable.com",

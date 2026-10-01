@@ -30,7 +30,6 @@ import supabase from "./supabase.js";
 import sentry from "./sentry.js";
 import pagerduty from "./pagerduty.js";
 import strava from "./strava.js";
-import fitbit from "./fitbit.js";
 import zoom from "./zoom.js";
 import reddit from "./reddit.js";
 import twitch from "./twitch.js";
@@ -42,14 +41,14 @@ import mailchimp from "./mailchimp.js";
 import discord from "./discord.js";
 import linkedin from "./linkedin.js";
 import typeform from "./typeform.js";
-import x from "./x.js";
+import xTwitter from "./x-twitter.js";
 import xero from "./xero.js";
 import salesforce from "./salesforce.js";
 
 /** Every service the roster names, in the order `services` lists them. */
-export const PRESET_ROSTER: string[] = ["vercel", "github", "google", "microsoft-graph", "slack", "notion", "linear", "atlassian", "spotify", "dropbox", "figma", "asana", "todoist", "trello", "stripe", "shopify", "cloudflare", "supabase", "sentry", "pagerduty", "strava", "fitbit", "zoom", "reddit", "twitch", "meta-graph", "airtable", "hubspot", "calendly", "mailchimp", "discord", "linkedin", "typeform", "x", "xero", "salesforce"];
+export const PRESET_ROSTER: string[] = ["vercel", "github", "google", "microsoft-graph", "slack", "notion", "linear", "atlassian", "spotify", "dropbox", "figma", "asana", "todoist", "trello", "stripe", "shopify", "cloudflare", "supabase", "sentry", "pagerduty", "strava", "zoom", "reddit", "twitch", "meta-graph", "airtable", "hubspot", "calendly", "mailchimp", "discord", "linkedin", "typeform", "x-twitter", "xero", "salesforce"];
 
-const AUTHORED: Array<PresetBundle | null> = [vercel, github, google, microsoftGraph, slack, notion, linear, atlassian, spotify, dropbox, figma, asana, todoist, trello, stripe, shopify, cloudflare, supabase, sentry, pagerduty, strava, fitbit, zoom, reddit, twitch, metaGraph, airtable, hubspot, calendly, mailchimp, discord, linkedin, typeform, x, xero, salesforce];
+const AUTHORED: Array<PresetBundle | null> = [vercel, github, google, microsoftGraph, slack, notion, linear, atlassian, spotify, dropbox, figma, asana, todoist, trello, stripe, shopify, cloudflare, supabase, sentry, pagerduty, strava, zoom, reddit, twitch, metaGraph, airtable, hubspot, calendly, mailchimp, discord, linkedin, typeform, xTwitter, xero, salesforce];
 
 export const PRESET_BUNDLES: PresetBundle[] = AUTHORED.filter((b): b is PresetBundle => b !== null);
 

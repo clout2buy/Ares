@@ -51,6 +51,19 @@ export interface ApiOAuthSource {
   mcp?: string;
   /** Vault credential names that may hold a usable token or key (STRIPE_SECRET_KEY, mcp.key.github). */
   credentials?: string[];
+  /**
+   * Operations carrying one of these tags authenticate with a DIFFERENT credential and
+   * scheme than the connected account: Discord's bot operations send `Authorization: Bot
+   * <token>` with the token the discord-bot connector stored. Nothing stored under any of
+   * the names = the operation falls back to the connected account's token.
+   */
+  opCredentials?: Array<{ tag: string; credentials: string[]; scheme: string }>;
+  /**
+   * The vendor names the API host in the token response (Salesforce's instance_url): the
+   * connected account's stored token field of this name is the base URL, so no address form
+   * is asked. An explicitly stored API_<ID>_BASEURL still wins.
+   */
+  baseUrlFromToken?: string;
   /** The scopes this service's operations need (named in a 403 hint). */
   scopes?: string[];
 }
@@ -371,7 +384,7 @@ export function resolveApiServiceDef(id: string, home?: string): ApiServiceDef |
 /** The fields the secure phone form asks for, derived from the auth recipe. */
 export function apiConnectFields(def: ApiServiceDef): ConnectField[] {
   const fields: ConnectField[] = [];
-  if (def.baseUrlField) {
+  if (def.baseUrlField && !def.oauth?.baseUrlFromToken) {
     fields.push({
       credential: apiCred(def.id, "BASEURL"),
       label: def.baseUrlField.label,
@@ -381,6 +394,8 @@ export function apiConnectFields(def: ApiServiceDef): ConnectField[] {
   }
   const auth = def.auth;
   if (def.oauth) return fields; // the connected account supplies the token: no form
+  // Trello-style recipes carry the app's public key beside the token: ask for it on the same form.
+  if (auth.type === "bearer" && auth.template?.includes("{CLIENT_ID}")) fields.push({ credential: apiCred(def.id, "CLIENT_ID"), label: "API key (the app's public key)" });
   switch (auth.type) {
     case "apiKey":
     case "bearer":

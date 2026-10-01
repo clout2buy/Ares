@@ -22,7 +22,7 @@ export default definePreset({
   id: "zoom",
   label: "Zoom",
   blurb: "Your Zoom meetings: what is coming up, past meetings and who attended, cloud recordings, AI summaries and the join invitation. Reads run freely; scheduling, changing or deleting a meeting asks.",
-  connect: "api-zoom",
+  connect: "zoom",
   oauth: { provider: "zoom", scopes: ["meeting:read:list_meetings", "meeting:read:meeting", "meeting:read:list_upcoming_meetings", "meeting:read:participant (past meetings)", "cloud_recording:read:list_user_recordings", "meeting:read:list_summaries", "user:read:user", "meeting:write:meeting (only to create, edit, end or delete)"] },
   baseUrl: "https://api.zoom.us/v2",
   verifyOperationId: "getMe",

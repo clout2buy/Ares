@@ -41,7 +41,7 @@ export default definePreset({
   label: "Linear",
   blurb: "Your Linear issues, projects, cycles and teams: what is assigned to you, what is blocked, what shipped. Reads run freely; creating or editing issues and commenting ask.",
   connect: "linear",
-  oauth: { provider: "linear", scopes: ["read", "write (issues:create and comments:create for the write operations)"] },
+  oauth: { scopes: ["read", "write (issues:create and comments:create for the write operations)"] },
   baseUrl: "https://api.linear.app",
   verifyOperationId: "getViewer",
   ratePerMin: 60,

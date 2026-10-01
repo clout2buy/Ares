@@ -21,7 +21,7 @@ export default definePreset({
   id: "typeform",
   label: "Typeform",
   blurb: "Your Typeform forms and workspaces, and the responses people submitted to them. Read-only: nothing here changes a form or deletes an answer.",
-  connect: "api-typeform",
+  connect: "typeform",
   oauth: { provider: "typeform", scopes: ["accounts:read", "forms:read", "responses:read", "workspaces:read", "webhooks:read (listWebhooks)"] },
   baseUrl: "https://api.typeform.com",
   verifyOperationId: "getMe",

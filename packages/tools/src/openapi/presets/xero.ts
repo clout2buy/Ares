@@ -29,7 +29,7 @@ export default definePreset({
   id: "xero",
   label: "Xero",
   blurb: "Your Xero books, read-only: invoices and bills, contacts, chart of accounts, bank transactions, payments and reports like profit and loss and aged receivables. Nothing can be created, paid or changed.",
-  connect: "api-xero",
+  connect: "xero",
   oauth: {
     provider: "xero",
     scopes: ["accounting.transactions.read", "accounting.contacts.read", "accounting.settings.read", "accounting.reports.read", "offline_access", "openid"],

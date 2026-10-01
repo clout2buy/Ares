@@ -29,12 +29,13 @@ export default definePreset({
   id: "cloudflare",
   label: "Cloudflare",
   blurb: "Your Cloudflare zones, DNS records, Workers, Pages deployments and storage inventory. Reads run freely; DNS edits, cache purges and setting changes ask.",
-  connect: "cloudflare",
-  oauth: {
-    provider: "cloudflare",
-    scopes: ["Zone: Read", "DNS: Edit", "Cache Purge", "Workers Scripts: Read", "Cloudflare Pages: Edit", "Account Settings: Read"],
-  },
+  // The Connect registry has no Cloudflare REST sign-in (only the Workers bindings and observability MCP servers),
+  // so the owner pastes a scoped API token (Zone: Read, DNS: Edit, Cache Purge, Workers Scripts: Read, Pages: Edit,
+  // Account Settings: Read) into the standard secure form.
+  connect: "api-cloudflare",
+  form: true,
   baseUrl: "https://api.cloudflare.com/client/v4",
+  auth: { type: "bearer", label: "Cloudflare API token (scoped: Zone Read, DNS Edit, Cache Purge, Workers Read, Pages Edit)" },
   verifyOperationId: "verifyToken",
   ratePerMin: 60,
   keywords: ["cloudflare", "dns", "zone", "domain", "worker", "pages", "cache", "cdn"],
@@ -56,7 +57,6 @@ export default definePreset({
       "createDnsRecord/updateDnsRecord: proxied true routes traffic through Cloudflare (orange cloud); ttl 1 means automatic. A wrong record can take a site offline: the owner approves each one.",
       "invalidateCachedContent with purge_everything empties the zone's entire cache and can spike the origin; prefer files, tags, hosts or prefixes.",
       "Worker secrets, script source, API tokens and R2 object bodies are deliberately not exposed.",
-      "The OAuth provider id `cloudflare` and registry entry are being added by the OAuth engineer; until then connect with an API token.",
     ],
   },
   ops: [

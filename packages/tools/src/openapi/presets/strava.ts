@@ -19,7 +19,7 @@ export default definePreset({
   id: "strava",
   label: "Strava",
   blurb: "Your Strava runs, rides and workouts: recent activities, splits, laps, heart-rate zones, lifetime totals, clubs and gear. Reads run freely; editing or adding an activity asks.",
-  connect: "api-strava",
+  connect: "strava",
   oauth: { provider: "strava", scopes: ["read", "activity:read_all", "profile:read_all", "activity:write (only to edit or add activities)"] },
   baseUrl: "https://www.strava.com/api/v3",
   verifyOperationId: "getLoggedInAthlete",

@@ -54,7 +54,7 @@ import {
   type PagingInfo,
 } from "./call.js";
 import { getPath } from "./shape.js";
-import { hasConnectedToken } from "./connectedToken.js";
+import { connectedBaseUrl, hasConnectedToken } from "./connectedToken.js";
 
 export interface ServiceEnv {
   home?: string;
@@ -444,9 +444,25 @@ export function normalizeBaseUrl(raw: string, def: ApiServiceDef, handle: SpecHa
   return text;
 }
 
-export async function resolveBaseUrl(def: ApiServiceDef, handle: SpecHandle, creds: CredentialSource): Promise<string> {
+/** A vendor-named host (Salesforce's instance_url) is only trusted on the vendor's own domains. */
+const VENDOR_HOST = /^(?:[a-z0-9-]+\.)+(?:salesforce\.com|force\.com|salesforce-setup\.com|salesforce\.mil|cloudforce\.com)$/i;
+
+export async function resolveBaseUrl(def: ApiServiceDef, handle: SpecHandle, creds: CredentialSource, home?: string): Promise<string> {
   if (def.baseUrl) return def.baseUrl.replace(/\/+$/, "");
-  const stored = await creds.get(apiCred(def.id, "BASEURL"));
+  let stored = await creds.get(apiCred(def.id, "BASEURL"));
+  if (!stored && def.oauth?.baseUrlFromToken) {
+    const named = await connectedBaseUrl(def, home ? { home } : {});
+    if (named) {
+      let host = "";
+      try {
+        const u = new URL(named);
+        if (u.protocol === "https:" && !u.username && !u.password) host = u.hostname;
+      } catch {
+        // not a URL
+      }
+      if (VENDOR_HOST.test(host)) stored = `https://${host}`;
+    }
+  }
   if (!stored) {
     throw new ApiInputError(
       `${def.label} has no address stored. Connect it first: call Connect with service "${apiConnectId(def.id)}" (the owner types the address into a secure form on their phone).`,
@@ -547,8 +563,8 @@ export async function apiCall(input: ApiCallInput, env: ServiceEnv = {}, opts: E
   if (!op) throw new ApiInputError(unknownOperationMessage(def, handle, input.operationId));
   const creds = env.creds ?? vaultCredentials(env.home);
   const callEnv = { creds, ...(env.home ? { home: env.home } : {}), ...(env.resolver ? { resolver: env.resolver } : {}), ...(env.signal ? { signal: env.signal } : {}) };
-  const baseUrl = await resolveBaseUrl(def, handle, creds);
-  const auth = await resolveAuth(def, callEnv);
+  const baseUrl = await resolveBaseUrl(def, handle, creds, env.home);
+  const auth = await resolveAuth(def, { ...callEnv, opTags: op.tags });
   const execOpts: ExecuteOptions = { home: env.home, ...opts };
   const pag = op.ext?.paginate;
   const wanted = Math.min(Math.max(Math.floor(input.pages ?? 1), 1), MAX_PAGES);

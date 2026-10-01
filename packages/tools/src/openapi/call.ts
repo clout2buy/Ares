@@ -134,6 +134,8 @@ export interface CallEnv {
   now?: () => number;
   /** The Ares home the vault lives in (a connected account's OAuth grant is read from it). */
   home?: string;
+  /** Tags of the operation about to be called (a preset may authenticate some operations differently). */
+  opTags?: string[];
 }
 
 function notConnected(def: ApiServiceDef, what: string): ApiInputError {
@@ -190,9 +192,13 @@ async function clientIdFor(def: ApiServiceDef, env: CallEnv): Promise<string | u
 }
 
 /** The credential the service's apiKey/bearer recipe uses: the connected account's, or the explicit one. */
-async function storedToken(def: ApiServiceDef, env: CallEnv): Promise<string | undefined> {
-  if (def.oauth) return (await resolveConnectedToken(def, { creds: env.creds, ...(env.home ? { home: env.home } : {}), ...(env.now ? { now: env.now } : {}) }))?.token;
-  return env.creds.get(apiCred(def.id, "KEY"));
+async function storedToken(def: ApiServiceDef, env: CallEnv): Promise<{ token: string; scheme?: string } | undefined> {
+  if (def.oauth) {
+    const got = await resolveConnectedToken(def, { creds: env.creds, ...(env.home ? { home: env.home } : {}), ...(env.now ? { now: env.now } : {}), ...(env.opTags ? { opTags: env.opTags } : {}) });
+    return got ? { token: got.token, ...(got.scheme ? { scheme: got.scheme } : {}) } : undefined;
+  }
+  const key = await env.creds.get(apiCred(def.id, "KEY"));
+  return key ? { token: key } : undefined;
 }
 
 async function resolveAuthMain(def: ApiServiceDef, env: CallEnv): Promise<AuthMaterial> {
@@ -202,7 +208,7 @@ async function resolveAuthMain(def: ApiServiceDef, env: CallEnv): Promise<AuthMa
     case "none":
       return out;
     case "apiKey": {
-      const stored = await storedToken(def, env);
+      const stored = (await storedToken(def, env))?.token;
       const value = stored ?? auth.defaultValue;
       if (!value) {
         if (auth.optional) return out;
@@ -223,7 +229,8 @@ async function resolveAuthMain(def: ApiServiceDef, env: CallEnv): Promise<AuthMa
       return out;
     }
     case "bearer": {
-      const token = await storedToken(def, env);
+      const found = await storedToken(def, env);
+      const token = found?.token;
       if (!token) {
         if (auth.optional) return out;
         throw notConnected(def, "access token");
@@ -235,7 +242,7 @@ async function resolveAuthMain(def: ApiServiceDef, env: CallEnv): Promise<AuthMa
         if (auth.template.includes("{CLIENT_ID}") && !clientId) throw new ApiInputError(`${def.label} needs the app's client id (${apiCred(def.id, "CLIENT_ID")}) as well as the token - reconnect it${def.oauth ? ` (Connect service "${def.oauth.connect}")` : ""}.`);
         out.headers[header] = auth.template.split("{token}").join(token).split("{CLIENT_ID}").join(clientId ?? "");
       } else {
-        out.headers[header] = `${auth.scheme ?? "Bearer"} ${token}`.trim();
+        out.headers[header] = `${found.scheme ?? auth.scheme ?? "Bearer"} ${token}`.trim();
       }
       out.headerNames.push(header);
       return out;

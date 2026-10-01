@@ -26,8 +26,14 @@ export default definePreset({
   id: "discord",
   label: "Discord",
   blurb: "Your Discord account and servers; with a bot token also a server's channels, members and messages. Reads run freely; sending or deleting a message asks first.",
-  connect: "api-discord",
-  oauth: { provider: "discord", scopes: ["identify", "guilds", "guilds.members.read", "connections (listMyConnections)"] },
+  connect: "discord",
+  oauth: {
+    provider: "discord",
+    // Operations tagged "bot" send "Authorization: Bot <token>" with the bot token the discord-bot connector stored
+    // (Connect service "discord-bot"); DISCORD_BOT_TOKEN is the headless alternative. Without one they fall back to the user token.
+    opCredentials: [{ tag: "bot", credentials: ["mcp.stdio.discord-bot.token", "DISCORD_BOT_TOKEN"], scheme: "Bot" }],
+    scopes: ["identify", "guilds", "guilds.members.read", "connections (listMyConnections)"],
+  },
   baseUrl: "https://discord.com/api/v10",
   verifyOperationId: "getMe",
   ratePerMin: 60,
@@ -42,7 +48,7 @@ export default definePreset({
   notes: {
     rateLimits: "Per-route buckets plus a global limit per bot or user; both are reported in X-RateLimit-Limit / -Remaining / -Reset-After / -Bucket headers and, over the limit, HTTP 429 with {retry_after}. Discord says not to hard-code the numbers. Source: https://discord.com/developers/docs/topics/rate-limits",
     pagination: "Cursor style by snowflake id: listMessages uses before / after / around with limit (max 100) - pass the last message id as before; listMyGuilds uses before / after / limit (max 200). Lists answer bare JSON arrays.",
-    auth: "Authorization: Bearer <OAuth2 user access token> for the user operations. The bot operations need Authorization: Bot <bot token> instead, which the Bearer-only connection cannot send: they work only if the stored token is accepted as such (UNVERIFIED), else expect 401.",
+    auth: "Authorization: Bearer <OAuth2 user access token> for the user operations. The bot operations (tagged bot) send Authorization: Bot <bot token> instead, using the token stored by Connect service discord-bot (or DISCORD_BOT_TOKEN); with no bot token stored they fall back to the user token and Discord answers 401.",
     scopes: "identify (getMe without email), guilds (listMyGuilds), guilds.members.read (getMyGuildMember), connections (listMyConnections). The messages.read scope is for the local RPC server only and does NOT let the REST API read channels.",
     gotchas: [
       "User OAuth2 tokens cannot read or send channel messages over REST; the bot-tagged operations need a bot token in the server with the View Channel / Read Message History / Send Messages permissions and, to read message text, the Message Content privileged intent.",

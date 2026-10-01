@@ -21,7 +21,7 @@ export default definePreset({
   id: "twitch",
   label: "Twitch",
   blurb: "Who is live on Twitch, the streams you follow, channels, games, videos and clips. Reads run freely; creating a clip, or sending a chat message or announcement, asks first.",
-  connect: "api-twitch",
+  connect: "twitch",
   oauth: { provider: "twitch", scopes: ["user:read:follows", "clips:edit (createClip)", "user:write:chat (sendChatMessage)", "moderator:manage:announcements (sendChatAnnouncement)"] },
   baseUrl: "https://api.twitch.tv/helix",
   authHeaders: { "Client-Id": "{CLIENT_ID}" },

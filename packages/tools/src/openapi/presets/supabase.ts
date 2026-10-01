@@ -23,7 +23,7 @@ export default definePreset({
   label: "Supabase",
   blurb: "Your Supabase projects: database queries, migrations, edge functions, branches, logs, advisors and health. Reads run freely; anything that can change data asks.",
   connect: "supabase",
-  oauth: { provider: "supabase", scopes: ["a Supabase personal access token or OAuth token with access to the organization and projects"] },
+  oauth: { scopes: ["a Supabase personal access token or OAuth token with access to the organization and projects"] },
   baseUrl: "https://api.supabase.com",
   verifyOperationId: "listOrganizations",
   ratePerMin: 60,

@@ -17,7 +17,7 @@
 // UNVERIFIED (not in that guide): getUserInfo, the OpenID Connect userinfo endpoint
 // (/services/oauth2/userinfo), documented in Salesforce's OAuth guide, which was not fetched.
 //
-// The host is per org: the owner types the My Domain address once when connecting
+// The host is per org: it is the instance_url Salesforce returns with the OAuth token
 // (https://yourcompany.my.salesforce.com); every path here starts with /services/data/v67.0.
 //
 // Deliberately left out: composite and batch resources, Bulk API, SOAP, Apex REST, blob
@@ -41,10 +41,12 @@ export default definePreset({
   id: "salesforce",
   label: "Salesforce",
   blurb: "Your Salesforce org: SOQL queries and search over accounts, contacts, leads, opportunities and cases, record details and metadata. Reads run freely; creating or editing a record asks, deleting is your decision.",
-  connect: "api-salesforce",
-  oauth: { provider: "salesforce", scopes: ["api (access and manage your data)", "refresh_token, offline_access (stay connected)"] },
+  connect: "salesforce",
+  oauth: { provider: "salesforce", baseUrlFromToken: "instance_url", scopes: ["api (access and manage your data)", "refresh_token, offline_access (stay connected)"] },
   baseUrl: "https://example.my.salesforce.com",
-  baseUrlField: { label: "Salesforce My Domain address", placeholder: "https://yourcompany.my.salesforce.com", help: "The address you open Salesforce at (your My Domain), e.g. https://acme.my.salesforce.com. Not login.salesforce.com." },
+  // The org host is the instance_url Salesforce returns with the token (kept in the vault by the OAuth engine), so no
+  // address form is asked. API_SALESFORCE_BASEURL (the My Domain address) overrides it, for a headless setup.
+  baseUrlField: { label: "Salesforce My Domain address", placeholder: "https://yourcompany.my.salesforce.com", help: "The address you open Salesforce at (your My Domain). Normally read from the sign-in; only needed headless." },
   ratePerMin: 120,
   verifyOperationId: "getApiResources",
   keywords: ["salesforce", "crm", "sfdc", "opportunity", "lead", "account", "contact", "case", "pipeline", "soql", "deals"],
@@ -58,7 +60,7 @@ export default definePreset({
   notes: {
     rateLimits: "Org-wide, not per app: a rolling 24-hour allowance of API requests (for example 100,000 plus 1,000 per user license on Enterprise Edition) and a concurrent limit on long-running requests (25). Exceeding it answers HTTP 403 with REQUEST_LIMIT_EXCEEDED. Every response carries Sforce-Limit-Info: api-usage=used/total; getLimits (View Setup permission) shows DailyApiRequests remaining.",
     pagination: "A query returns up to 2,000 records at a time with totalSize, done and nextRecordsUrl (a path); pass pages and the tool follows nextRecordsUrl until done. A search (SOSL) returns at most 2,000 rows in one answer and does not page.",
-    auth: "Authorization: Bearer <OAuth access token> against the org's own My Domain host (the owner types it when connecting). The token's user decides what is visible: field-level security, sharing rules and object permissions all apply.",
+    auth: "Authorization: Bearer <OAuth access token> against the org's own host (the instance_url Salesforce returned with the token). The token's user decides what is visible: field-level security, sharing rules and object permissions all apply.",
     scopes: "OAuth scope `api` (plus refresh_token for staying connected). getLimits needs the View Setup and Configuration permission; reading deleted records needs access to them; a missing object or field permission answers INSUFFICIENT_ACCESS or INVALID_FIELD naming it.",
     gotchas: [
       "SOQL, not SQL: SELECT Id, Name FROM Account WHERE Industry = 'Retail' ORDER BY CreatedDate DESC LIMIT 20. Dates are literals (2026-09-01 or 2026-09-01T00:00:00Z, THIS_WEEK, LAST_N_DAYS:30), strings use single quotes, relationships use dots (Account.Name, Owner.Name) and child queries use (SELECT ... FROM Contacts). There is no SELECT * : name the fields (describeObject lists them). Aggregates (COUNT(), SUM(Amount) with GROUP BY) work.",

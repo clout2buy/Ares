@@ -27,7 +27,7 @@ export default definePreset({
   id: "reddit",
   label: "Reddit",
   blurb: "Browse Reddit: subreddits, hot and new posts, comment threads, search, a user's posts, and your inbox. Reads run freely; posting, commenting, messaging, voting and saving ask first.",
-  connect: "api-reddit",
+  connect: "reddit",
   oauth: { provider: "reddit", scopes: ["identity", "read", "history", "mysubreddits", "privatemessages (inbox, compose)", "submit (post, comment)", "edit", "vote", "save"] },
   baseUrl: "https://oauth.reddit.com",
   verifyOperationId: "getMe",

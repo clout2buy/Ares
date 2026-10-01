@@ -28,10 +28,10 @@ const PAGED = { style: "token", param: "pagination_token", next: "meta.next_toke
 const USER_ID = () => p("id", "path", str("The user's numeric id; for the owner use getMe.data.id"));
 
 export default definePreset({
-  id: "x",
+  id: "x-twitter",
   label: "X (Twitter)",
   blurb: "Your X timeline, mentions, posts, search and bookmarks. Reads run freely (X bills reads per post on pay-per-use); posting, liking, reposting and following ask first, with the exact text.",
-  connect: "api-x",
+  connect: "x",
   oauth: { provider: "x", scopes: ["tweet.read", "users.read", "offline.access", "tweet.write (post, delete)", "like.write", "follow.write", "bookmark.read", "bookmark.write"] },
   baseUrl: "https://api.x.com",
   verifyOperationId: "getMe",

@@ -12,8 +12,8 @@
 
 import type { ConnectService } from "./connectServices.js";
 
-const API_USE = (label: string, id: string) =>
-  `Connected through OAuth: the ${label} token is refreshed automatically and held in the vault. Call ${label}'s REST API with the Api tool (service "api-${id}") ` +
+const API_USE = (label: string, id: string, apiId: string = id) =>
+  `Connected through OAuth: the ${label} token is refreshed automatically and held in the vault. Call ${label}'s REST API with the Api tool (service "${apiId}") ` +
   `once its preset is installed; if there is no preset yet, say the connection is ready and ask the owner to add the ${label} API to the Api tool. Never ask for the token.`;
 
 export const OAUTH_APP_SERVICES: ConnectService[] = [
@@ -39,7 +39,7 @@ export const OAUTH_APP_SERVICES: ConnectService[] = [
     domain: "facebook.com",
     blurb: "Your Facebook Pages: posts, comments and the Page inbox (Messenger) through Meta's official API. A personal profile, feed, groups and chats have no API.",
     keywords: ["facebook", "fb", "facebook page", "facebook pages", "messenger", "facebook messenger", "fb messages", "page inbox"],
-    howToUse: "Facebook is connected through Facebook Login for the Pages the owner administers. " + API_USE("Facebook", "facebook") + " A personal profile, feed, Marketplace and chats have no API (experimental browser session only).",
+    howToUse: "Facebook is connected through Facebook Login for the Pages the owner administers. " + API_USE("Facebook", "facebook", "meta-graph") + " A personal profile, feed, Marketplace and chats have no API (experimental browser session only).",
     browserFallback: { loginUrl: "https://www.facebook.com/login/", domain: "facebook.com", label: "Experimental: sign in to Facebook on a live browser" },
   },
   {
@@ -61,7 +61,7 @@ export const OAUTH_APP_SERVICES: ConnectService[] = [
     domain: "discord.com",
     blurb: "Your Discord identity and servers. Reading messages needs a bot, which Discord only offers as a token.",
     keywords: ["discord", "discord server", "discord servers"],
-    howToUse: "Discord OAuth identifies the owner and lists their servers. " + API_USE("Discord", "discord") + " Reading or sending messages needs a bot token, which is token-only (class e).",
+    howToUse: "Discord OAuth identifies the owner and lists their servers. " + API_USE("Discord", "discord") + " Reading or sending messages needs a bot token (Connect service discord-bot): the Api tool then sends bot operations as "Bot <token>".",
   },
   {
     id: "zoom",
@@ -101,7 +101,7 @@ export const OAUTH_APP_SERVICES: ConnectService[] = [
     domain: "x.com",
     blurb: "Read and post on X as you. The X API is pay-per-use.",
     keywords: ["twitter", "x.com", "tweet", "x post", "my tweets", "tweet something"],
-    howToUse: API_USE("X", "x"),
+    howToUse: API_USE("X", "x", "x-twitter"),
   },
   {
     id: "linkedin",

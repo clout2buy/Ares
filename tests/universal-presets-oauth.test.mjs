@@ -8,9 +8,6 @@
 // Offline and deterministic. Whether the operations match the vendor's real spec
 // is checked separately, from a machine with internet: scripts/api-preset-verify.mjs
 // (results in docs/API-PRESETS.md).
-//
-// While presets are being added in parallel, ARES_PRESETS_PARTIAL=1 skips the
-// "the whole roster is authored" check.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -35,7 +32,6 @@ import {
 } from "../packages/tools/dist/index.js";
 import { listApiPresetDefs, resolveApiServiceDef, validateApiId, apiCred, apiPresetDef, API_PRESET_DEFS, resolveConnectService } from "../packages/core/dist/index.js";
 
-const PARTIAL = process.env.ARES_PRESETS_PARTIAL === "1";
 const TOKEN = "tok_live_abcdefghijklmnop123456";
 const CLIENT_ID = "client-id-0123456789";
 const ctx = (permissionMode = "workspace-write") => ({ signal: new AbortController().signal, permissionMode });
@@ -53,7 +49,7 @@ const requiredParams = (op) => Object.fromEntries(op.parameters.filter((p) => p.
 test("roster: every authored preset is a rostered id, and the whole roster is authored", () => {
   assert.equal(new Set(PRESET_ROSTER).size, PRESET_ROSTER.length, "no id twice");
   for (const b of PRESET_BUNDLES) assert.ok(PRESET_ROSTER.includes(b.id), `${b.id} is not on the roster in presets/index.ts`);
-  if (!PARTIAL) assert.deepEqual(PRESET_BUNDLES.map((b) => b.id).sort(), [...PRESET_ROSTER].sort(), "a roster id exports null: that service is not authored yet");
+  assert.deepEqual(PRESET_BUNDLES.map((b) => b.id).sort(), [...PRESET_ROSTER].sort(), "a roster id exports null: that service is not authored yet");
   assert.ok(PRESET_BUNDLES.length >= 1);
 });
 
@@ -333,8 +329,14 @@ test("auth: each preset's recipe puts the connected token in exactly the header 
     for (const name of Object.keys(expected)) assert.ok(auth.headerNames.includes(name), `${name} is treated as a credential header (stripped on a cross-origin redirect)`);
     // unconnected: one sentence that says how to fix it
     await assert.rejects(() => resolveAuth(def, { creds: fakeCreds({}) }), (err) => {
-      assert.match(err.message, /not connected - Connect service "/, `${b.id}: ${err.message}`);
-      assert.match(err.message, new RegExp(`Connect service "${(def.oauth?.connect ?? `api-${def.id}`).replace(/[-]/g, "\\-")}"`));
+      if (def.oauth) {
+        assert.match(err.message, /not connected - Connect service "/, `${b.id}: ${err.message}`);
+        assert.match(err.message, new RegExp(`Connect service "${def.oauth.connect.replace(/[-]/g, "\\-")}"`));
+      } else {
+        // a form-connected preset (shopify, mailchimp, trello, cloudflare): its own secure form is the way in
+        assert.match(err.message, /has no access token stored\. Connect it first: call Connect with service "/, `${b.id}: ${err.message}`);
+        assert.ok(err.message.includes(`"api-${def.id}"`), `${b.id}: names its api-${def.id} form`);
+      }
       assert.ok(!err.message.includes(TOKEN));
       return true;
     });

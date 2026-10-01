@@ -30,7 +30,6 @@ export default definePreset({
   blurb: "Your Calendly meetings and scheduling: upcoming and past events, who is invited, your event types and open slots, busy times and meeting recaps. Reads run freely; making links and cancelling ask.",
   connect: "calendly",
   oauth: {
-    provider: "calendly",
     scopes: ["users:read", "event_types:read", "scheduled_events:read", "availability:read", "organizations:read", "contacts:read", "meeting_recaps:read", "scheduling_links:write (single-use links)", "scheduled_events:write (cancel)"],
   },
   baseUrl: "https://api.calendly.com",

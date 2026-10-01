@@ -7,27 +7,34 @@
 //   2. the vault credentials the registry stores a key under (def.oauth.credentials:
 //      STRIPE_SECRET_KEY, mcp.key.github ...)
 //   3. the owner's OAuth-app grant for the provider (Google, Spotify, GitHub, Slack ...),
-//      refreshed transparently by getValidAccessToken
-//   4. the remote-MCP OAuth bundle (def.oauth.mcp), only where a preset says the
-//      vendor's MCP token is also a REST token
+//      refreshed transparently by oauth-core's getValidAccessToken. The provider id is
+//      the preset's own, else the one the Connect registry / OAuth matrix names for
+//      `oauth.connect`, so the preset follows the registry.
+//   4. the remote-MCP OAuth bundle the hub stored under the connect id (Linear, Figma,
+//      Sentry, Vercel ... are connected through their MCP server's sign-in; the same
+//      vendor-issued token is sent to that vendor's own REST host and nowhere else)
 //
-// The OAuth engine is being rebuilt elsewhere; whatever it ends up exposing plugs
-// in through setConnectedTokenProvider, which is asked FIRST. Nothing in here
+// A host that wants to take over token supply entirely plugs in through
+// setConnectedTokenProvider, which is asked FIRST. Nothing in here
 // ever returns a token to the model: the Api tool puts it in a header and scrubs
 // it from everything shown.
 
-import { apiCred, getMcpAccessToken, getProviderConfig, getValidAccessToken, loadTokens, type ApiServiceDef } from "@ares/core";
+import { apiCred, getMcpAccessToken, getProviderConfig, getValidAccessToken, loadTokens, matrixFor, resolveConnectService, type ApiServiceDef } from "@ares/core";
 import { ApiInputError, type CredentialSource } from "./errors.js";
 
 export interface ConnectedTokenEnv {
   creds: CredentialSource;
   home?: string;
   now?: () => number;
+  /** Tags of the operation being called (a preset's opCredentials may pick another credential for them). */
+  opTags?: string[];
 }
 
 export interface ConnectedToken {
   token: string;
   source: "key" | "credential" | "oauth" | "mcp" | "provider";
+  /** Set when an operation-specific credential supplied the token (Discord's "Bot"): the word before it. */
+  scheme?: string;
 }
 
 export type ConnectedTokenProvider = (def: ApiServiceDef, env: ConnectedTokenEnv) => Promise<string | undefined>;
@@ -50,6 +57,16 @@ export function notConnectedMessage(def: ApiServiceDef): string {
 
 export async function resolveConnectedToken(def: ApiServiceDef, env: ConnectedTokenEnv): Promise<ConnectedToken | undefined> {
   const src = def.oauth;
+  // An operation that authenticates differently (Discord's bot operations) wins when its credential is stored.
+  if (src?.opCredentials && env.opTags?.length) {
+    for (const rule of src.opCredentials) {
+      if (!env.opTags.some((tag) => tag.toLowerCase() === rule.tag.toLowerCase())) continue;
+      for (const name of rule.credentials) {
+        const value = await env.creds.get(name);
+        if (value) return { token: value, source: "credential", scheme: rule.scheme };
+      }
+    }
+  }
   if (provider) {
     const injected = await provider(def, env);
     if (injected) return { token: injected, source: "provider" };
@@ -61,7 +78,7 @@ export async function resolveConnectedToken(def: ApiServiceDef, env: ConnectedTo
     const value = await env.creds.get(name);
     if (value) return { token: value, source: "credential" };
   }
-  const providerId = (src.provider ?? src.connect).toLowerCase();
+  const providerId = oauthProviderId(def);
   const cfg = getProviderConfig(providerId);
   if (cfg) {
     const deps = env.home ? { home: env.home } : {};
@@ -79,11 +96,45 @@ export async function resolveConnectedToken(def: ApiServiceDef, env: ConnectedTo
       }
     }
   }
-  if (src.mcp) {
-    const token = await getMcpAccessToken(src.mcp, env.home).catch(() => null);
+  const mcpName = mcpBundleName(def);
+  if (mcpName) {
+    const token = await getMcpAccessToken(mcpName, env.home).catch(() => null);
     if (token) return { token, source: "mcp" };
   }
   return undefined;
+}
+
+/** The engine provider id (vault slot oauth/<provider>) for a connected-account preset: its own, else the registry's. */
+export function oauthProviderId(def: ApiServiceDef): string {
+  const src = def.oauth;
+  if (!src) return def.id;
+  if (src.provider) return src.provider.toLowerCase();
+  const service = resolveConnectService(src.connect);
+  return (service?.oauthProvider ?? matrixFor(src.connect)?.provider ?? src.connect).toLowerCase();
+}
+
+/** The MCP bundle name the hub stored the owner's sign-in under: the preset's own claim, else the registry's remote-MCP connect id. */
+function mcpBundleName(def: ApiServiceDef): string | undefined {
+  const src = def.oauth;
+  if (!src) return undefined;
+  if (src.mcp) return src.mcp;
+  const service = resolveConnectService(src.connect);
+  return service?.kind === "mcp-oauth" ? service.id : undefined;
+}
+
+/**
+ * The API host the vendor named in the token response (Salesforce instance_url), for a preset whose
+ * `oauth.baseUrlFromToken` says so. Never throws; undefined when the account is not connected or the
+ * field is absent.
+ */
+export async function connectedBaseUrl(def: ApiServiceDef, env: { home?: string }): Promise<string | undefined> {
+  const field = def.oauth?.baseUrlFromToken;
+  if (!field) return undefined;
+  const cfg = getProviderConfig(oauthProviderId(def));
+  if (!cfg) return undefined;
+  const tokens = await loadTokens(cfg.provider, env.home ? { home: env.home } : {}).catch(() => undefined);
+  const value = tokens?.meta?.extra?.[field];
+  return typeof value === "string" && value ? value : undefined;
 }
 
 /** Does the service have a usable token right now? Never throws. */

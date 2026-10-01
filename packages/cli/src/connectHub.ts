@@ -26,6 +26,8 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   OAUTH_PROVIDERS,
@@ -129,6 +131,22 @@ export interface ConnectHubOptions {
   engineNow?: () => number;
   /** The loopback redirect the phone app intercepts (default http://localhost:53682/oauth/callback). */
   loopbackRedirect?: string;
+}
+
+/** playwright is a dependency of @ares/connectors, not of this package: resolve it from there so pnpm's strict node_modules still finds it. */
+async function importPlaywright(): Promise<any> {
+  const moduleName = "playwright";
+  try {
+    return await import(moduleName);
+  } catch (first) {
+    try {
+      const here = createRequire(import.meta.url);
+      const viaConnectors = createRequire(here.resolve("@ares/connectors")).resolve(moduleName);
+      return await import(pathToFileURL(viaConnectors).href);
+    } catch {
+      throw first;
+    }
+  }
 }
 
 export class ConnectHub implements ConnectBrokerV2 {
@@ -761,10 +779,17 @@ export class ConnectHub implements ConnectBrokerV2 {
 
   private async ensureBrowser(flow: Flow): Promise<LoginBrowser> {
     if (flow.browser) return flow.browser;
-    flow.browserStarting ??= LoginBrowser.open(flow.service, this.opts.home, this.opts.loadPlaywright).then((browser) => {
-      flow.browser = browser;
-      return browser;
-    });
+    flow.browserStarting ??= LoginBrowser.open(flow.service, this.opts.home, this.opts.loadPlaywright).then(
+      (browser) => {
+        flow.browser = browser;
+        return browser;
+      },
+      (err) => {
+        // A failed start must not be cached: the next frame poll (or a fix on the box) can try again.
+        flow.browserStarting = undefined;
+        throw err;
+      },
+    );
     return flow.browserStarting;
   }
 
@@ -832,8 +857,7 @@ class LoginBrowser {
   }
 
   static async open(service: ConnectService, home: string | undefined, loadPlaywright?: () => Promise<any>): Promise<LoginBrowser> {
-    const moduleName = "playwright";
-    const pw = loadPlaywright ? await loadPlaywright() : await import(moduleName);
+    const pw = loadPlaywright ? await loadPlaywright() : await importPlaywright();
     const profileDir = await fs.mkdtemp(path.join(os.tmpdir(), "ares-login-"));
     const viewport = { width: 412, height: 860 };
     const acquired = await acquireBrowserPage(pw, {

@@ -50,7 +50,7 @@ async function crashIssues(home: string, sinceMs: number): Promise<Issue[]> {
       let rec: { at?: string; kind?: string; process?: string; message?: string; stack?: string };
       try { rec = JSON.parse(line); } catch { continue; }
       const top = clean((rec.stack ?? "").split("\n").find((l) => /\bat\b/.test(l)) ?? "", 160);
-      const fp = fingerprintOf("crash", rec.process ?? "", rec.kind ?? "", normalize(String(rec.message ?? "")), normalize(top));
+      const fp = fingerprintOf("crash", rec.process ?? "", rec.kind ?? "", normalize(clean(rec.message, 400)), normalize(top));
       const cur = groups.get(fp);
       const at = rec.at ?? new Date(st.mtimeMs).toISOString();
       if (cur) { cur.occurrences++; if (at > cur.lastSeenAt) cur.lastSeenAt = at; continue; }

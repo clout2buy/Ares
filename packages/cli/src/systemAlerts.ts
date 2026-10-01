@@ -165,6 +165,14 @@ export function candidatesFrom(snapshot: SystemSnapshot, signals: Signals = {}, 
       body: signals.deployRolledBack.reason ? scrubErrorText(signals.deployRolledBack.reason, 140) : "The last deploy failed its checks and was reverted.",
     });
   }
+  // The self-improvement deploy script already pushes its own "Deploy rolled back"; here it only reaches the feed.
+  const deploys = (snapshot.maintainer as { deploys?: Array<{ status?: string; id?: string; finishedAt?: string; at?: string }> } | undefined)?.deploys;
+  for (const d of Array.isArray(deploys) ? deploys.slice(0, 5) : []) {
+    const at = Date.parse(d.finishedAt ?? d.at ?? "");
+    if (d.status === "rolled-back" && Number.isFinite(at) && Date.now() - at <= 24 * 3_600_000) {
+      out.push({ key: `deploy:${d.id ?? at}`, kind: "deploy_rolled_back", title: "A deploy was rolled back", body: "The maintainer's last deploy failed its checks and was reverted.", feedOnly: true });
+    }
+  }
   const hk = snapshot.housekeeping as { lastError?: string } | undefined;
   if (hk?.lastError) {
     out.push({ key: "housekeeping", kind: "housekeeping_failed", title: "Housekeeping hit an error", body: scrubErrorText(hk.lastError, 140), feedOnly: true });

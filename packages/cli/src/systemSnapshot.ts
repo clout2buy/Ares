@@ -470,10 +470,11 @@ export function createSystemService(deps: SystemDeps): SystemService {
       errors: errors ?? [],
       ...(housekeeping !== undefined ? { housekeeping } : {}),
       ...(backup !== undefined ? { backup } : {}),
-      ...(maintainer !== undefined ? { maintainer } : {}),
-      ...(deep !== undefined ? { deep } : {}),
+      ...(maintainer !== undefined ? { maintainer: boundedMaintainer(maintainer) } : {}),
+      ...(deep !== undefined ? { deep: boundedDeep(deep) } : {}),
       sources,
     };
+    adoptDeep(base, deep);
     const problems = deriveProblems(base);
     const status = worstLevel(problems);
     const value: SystemSnapshot = { ...base, status, headline: headlineFor(status, base.garrison.uptimeSec, usedPct, problems), problems };
@@ -499,6 +500,71 @@ export function createSystemService(deps: SystemDeps): SystemService {
       return inflight;
     },
   };
+}
+
+/**
+ * Fold the antihang slice's /gateway/health/deep payload into what this snapshot
+ * measured itself, so the two never disagree on the phone: breaker rows this
+ * snapshot's own tracker has not seen, the larger orphan/zombie count, and the
+ * deep error ring when ours is empty. Read defensively: any field may be absent.
+ */
+export function adoptDeep(base: Omit<SystemSnapshot, "status" | "headline" | "problems">, deep: unknown): void {
+  if (!deep || typeof deep !== "object") return;
+  const d = deep as Record<string, unknown>;
+  const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  const rows = Array.isArray(rec(d.providers).breakers) ? (rec(d.providers).breakers as unknown[]) : [];
+  for (const raw of rows) {
+    const r = rec(raw);
+    const key = typeof r.key === "string" ? r.key : "";
+    if (!key) continue;
+    const state = r.state === "open" ? "open" : r.state === "half-open" ? "degraded" : "closed";
+    const existing = base.providers.find((p) => p.provider === key);
+    const failures = typeof r.consecutiveFailures === "number" ? r.consecutiveFailures : 0;
+    const failingForMs = typeof r.openForMs === "number" ? r.openForMs : 0;
+    const lastError = typeof r.lastError === "string" ? scrub(r.lastError) : undefined;
+    if (!existing) base.providers.push({ provider: key, state, consecutiveFailures: failures, failingForMs, ...(lastError ? { lastError } : {}) });
+    else if (state === "open" && existing.state !== "open") Object.assign(existing, { state, consecutiveFailures: Math.max(existing.consecutiveFailures, failures), failingForMs: Math.max(existing.failingForMs, failingForMs), ...(lastError ? { lastError } : {}) });
+  }
+  const proc = rec(d.processes);
+  if (typeof proc.orphans === "number") base.processes.orphans = Math.max(base.processes.orphans, proc.orphans);
+  if (typeof proc.zombies === "number") base.processes.zombies = Math.max(base.processes.zombies, proc.zombies);
+  if (base.errors.length === 0 && Array.isArray(d.errors)) {
+    base.errors = (d.errors as unknown[]).slice(0, 10).flatMap((e) => {
+      const r = rec(e);
+      return typeof r.message === "string" ? [{ at: typeof r.at === "string" ? r.at : new Date().toISOString(), source: typeof r.kind === "string" ? r.kind : "ares", message: scrub(r.message) }] : [];
+    });
+  }
+}
+
+/** A maintainer status can carry whole proposals; the System screen needs their count and state, not their diffs. */
+export function boundedMaintainer(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (Array.isArray(v)) {
+      out[k] = v.slice(0, 5).map((item) => {
+        if (!item || typeof item !== "object") return item;
+        const r = item as Record<string, unknown>;
+        const keep: Record<string, unknown> = {};
+        for (const f of ["id", "status", "at", "finishedAt", "title"]) if (typeof r[f] === "string") keep[f] = scrub(r[f] as string);
+        return keep;
+      });
+    } else if (v === null || typeof v !== "object") {
+      out[k] = typeof v === "string" ? scrub(v) : v;
+    }
+  }
+  return out;
+}
+
+/** The deep health payload passes through, unless it grew past what a phone poll should carry. */
+export function boundedDeep(value: unknown): unknown {
+  try {
+    if (JSON.stringify(value).length <= 32_768) return value;
+  } catch {
+    // not serialisable
+  }
+  const d = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return { truncated: true, ...(typeof d.status === "string" ? { status: d.status } : {}), ...(typeof d.ok === "boolean" ? { ok: d.ok } : {}) };
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;

@@ -367,3 +367,15 @@ test("a second run while one is in flight is refused, not stacked", async (t) =>
   release();
   await first;
 });
+
+test("ARES_HOUSEKEEPING_PROCESSES=0 turns the process reaper off alone", async (t) => {
+  const f = await fixture(t);
+  await put(path.join(f.ws, ".ares", "wire-log", "ancient.jsonl"), 1000, 90);
+  const killed = [];
+  const table = [{ pid: 200, ppid: 1, state: "S", comm: "chrome", cmd: `chrome --user-data-dir=${f.home}/browser-profile`, uid: 1000, ageSec: 3600 }];
+  process.env.ARES_HOUSEKEEPING_PROCESSES = "0";
+  t.after(() => { delete process.env.ARES_HOUSEKEEPING_PROCESSES; });
+  await make(f, { processes: async () => table, ownPid: 100, uid: 1000, kill: (p) => killed.push(p), isAlive: () => false, sleep: async () => {} }).run();
+  assert.deepEqual(killed, []);
+  assert.equal(await exists(path.join(f.ws, ".ares", "wire-log", "ancient.jsonl")), false, "everything else still ran");
+});

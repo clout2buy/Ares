@@ -290,3 +290,53 @@ test("recent errors are scrubbed, shortened, deduplicated and bounded", () => {
   assert.equal(ring.recent(10).length, 3, "bounded by capacity");
   assert.equal(scrubErrorText("x".repeat(1000)).length <= 240, true);
 });
+
+test("the antihang deep health is folded in: its breakers, orphans and errors appear, nothing is lost", async (t) => {
+  const home = await tmpHome(t);
+  const deep = {
+    ok: false,
+    status: "degraded",
+    providers: { open: 1, breakers: [
+      { key: "anthropic", state: "open", consecutiveFailures: 4, openForMs: 400_000, lastError: "529 overloaded" },
+      { key: "deepseek", state: "half-open", consecutiveFailures: 1, openForMs: 0 },
+      { key: "ollama", state: "closed", consecutiveFailures: 0, openForMs: 0 },
+    ] },
+    processes: { orphans: 2, zombies: 1 },
+    errors: [{ at: new Date().toISOString(), kind: "watchdog:nudge", message: "session s1 silent for 90s Authorization: Bearer abcdefghijklmnop1234" }],
+  };
+  const service = createSystemService(baseDeps(home, { providers: () => [], errors: () => [], deep: async () => deep }));
+  const snap = await service.snapshot();
+  assert.deepEqual(snap.providers.map((p) => [p.provider, p.state]), [["anthropic", "open"], ["deepseek", "degraded"], ["ollama", "closed"]]);
+  assert.equal(snap.providers[0].failingForMs, 400_000);
+  assert.equal(snap.processes.orphans, 2);
+  assert.equal(snap.processes.zombies, 1);
+  assert.equal(snap.errors.length, 1);
+  assert.doesNotMatch(snap.errors[0].message, /abcdefghijklmnop1234/);
+  assert.equal(snap.deep.status, "degraded", "and the deep payload itself is passed through");
+  assert.ok(snap.problems.some((p) => p.id === "provider:anthropic"));
+  // Our own tracker wins where both know the provider and ours says open.
+  const mine = createSystemService(baseDeps(home, { providers: () => [{ provider: "anthropic", state: "closed", consecutiveFailures: 0, failingForMs: 0 }], deep: async () => deep }));
+  assert.equal((await mine.snapshot()).providers.find((p) => p.provider === "anthropic").state, "open", "the worse of the two is reported");
+});
+
+test("a deep payload that is not an object, or is half-formed, changes nothing", async (t) => {
+  const home = await tmpHome(t);
+  for (const deep of [null, "nope", 42, [], { providers: "x", processes: null, errors: 3 }]) {
+    const snap = await createSystemService(baseDeps(home, { deep: async () => deep })).snapshot();
+    assert.equal(snap.providers.length, 1);
+    assert.equal(snap.status, "ok");
+  }
+});
+
+test("a maintainer status with whole proposals is trimmed to what the screen needs, and a huge deep payload is cut", async (t) => {
+  const home = await tmpHome(t);
+  const big = "x".repeat(5000);
+  const maintainer = { enabled: true, proposals: Array.from({ length: 20 }, (_, i) => ({ id: `p${i}`, status: "pending", title: "t", diff: big })), deploys: [{ id: "d1", status: "deployed", finishedAt: "2026-10-01T00:00:00Z", log: big }] };
+  const snap = await createSystemService(baseDeps(home, { maintainer: async () => maintainer, deep: async () => ({ ok: false, status: "degraded", junk: big.repeat(10) }) })).snapshot();
+  assert.equal(snap.maintainer.proposals.length, 5);
+  assert.equal(snap.maintainer.proposals[0].diff, undefined);
+  assert.equal(snap.maintainer.deploys[0].log, undefined);
+  assert.equal(snap.maintainer.enabled, true);
+  assert.deepEqual(snap.deep, { truncated: true, status: "degraded", ok: false });
+  assert.ok(JSON.stringify(snap).length < 40_000, "the poll stays small");
+});

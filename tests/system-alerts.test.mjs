@@ -215,3 +215,14 @@ test("external signals: boot ledger counts starts, crash files count, the rollba
   await fsp.writeFile(path.join(dir, "system", "signals", "deploy-rolled-back.json"), JSON.stringify({ at: new Date(now - 3 * 86_400_000).toISOString() }));
   assert.equal((await readSignals(dir, now)).deployRolledBack, undefined, "an old rollback is history, not an alert");
 });
+
+test("a rollback the maintainer reports reaches the feed but does not push twice (the deploy script already pushed)", async (t) => {
+  const r = rig(t);
+  const { engine: e } = await engine(t, r);
+  const withRollback = snap({ maintainer: { deploys: [{ id: "d1", status: "rolled-back", finishedAt: new Date(r.now - 3600_000).toISOString() }] } });
+  const events = await e.evaluate(withRollback);
+  assert.ok(events.some((x) => x.alert === "deploy_rolled_back"), "it is in the feed");
+  assert.equal(r.sent.length, 0, "no second banner");
+  const old = snap({ maintainer: { deploys: [{ id: "d0", status: "rolled-back", finishedAt: new Date(r.now - 3 * 86_400_000).toISOString() }] } });
+  assert.deepEqual(candidatesFrom(old).map((c) => c.kind), []);
+});

@@ -891,6 +891,8 @@ export class Housekeeping {
   }
 
   private async jobProcesses(c: { dryRun: boolean; counters: JobCounters }): Promise<void> {
+    // The anti-hang slice runs its own orphan reaper; either one can be turned off without the other.
+    if (process.env.ARES_HOUSEKEEPING_PROCESSES === "0") return;
     const table = await (this.d.processes ?? readProcTable)();
     if (table.length === 0) return;
     const own = this.d.ownPid ?? process.pid;

@@ -326,7 +326,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   for (const p of personaRuntime.store.list()) {
     try {
       if (!p.photo || avatarStore.meta(p.id)) continue;
-      const m = /^data:image/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(p.photo);
+      const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(p.photo);
       if (!m?.[1]) continue;
       const bytes = Buffer.from(m[1], "base64");
       if (bytes.length > AVATAR_MAX_BYTES || !detectImage(bytes)) continue;

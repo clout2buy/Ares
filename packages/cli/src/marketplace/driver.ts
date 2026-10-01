@@ -89,7 +89,7 @@ const LISTING_JS = `(() => {
   const imgs = new Set();
   for (const i of main.querySelectorAll('img')) {
     const s = i.currentSrc || i.src || '';
-    if (!/^https:/.test(s)) continue;
+    if (!/^https?:/.test(s)) continue;
     if ((i.naturalWidth || i.width || 0) < 80) continue;
     if (/emoji|static\\.xx|rsrc\\.php|profile/i.test(s)) continue;
     imgs.add(s.split('?')[0]);

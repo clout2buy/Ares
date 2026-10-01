@@ -28,12 +28,12 @@ function neutralize(text: string): string {
 /** A short single-line field (title, price, location, seller name). Capped, never fenced. */
 export function clean(text: unknown, max = 160): string {
   if (typeof text !== "string") return "";
-  return neutralize(text).replace(/\s+/g, " ").trim().slice(0, max);
+  return scrubSecrets(neutralize(text).replace(/\s+/g, " ").trim().slice(0, max));
 }
 
 /** Free text (a description, a seller's message): fenced so it cannot read as an instruction. */
 export function fence(text: unknown, max = 2000): string {
-  const body = typeof text === "string" ? neutralize(text).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, max) : "";
+  const body = typeof text === "string" ? scrubSecrets(neutralize(text).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, max)) : "";
   return `<${FENCE}>\n${body}\n</${FENCE}>`;
 }
 

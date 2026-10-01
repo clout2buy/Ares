@@ -321,6 +321,18 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "personas", line } }) + "\n"),
   });
   await personaRuntime.boot().catch(() => []);
+  // Pictures set by older app builds live inside the persona record as a data URI. The notification
+  // extension (and every newer client) reads the avatar store, so copy each one across once.
+  for (const p of personaRuntime.store.list()) {
+    try {
+      if (!p.photo || avatarStore.meta(p.id)) continue;
+      const m = /^data:image/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(p.photo);
+      if (!m?.[1]) continue;
+      const bytes = Buffer.from(m[1], "base64");
+      if (bytes.length > AVATAR_MAX_BYTES || !detectImage(bytes)) continue;
+      await avatarStore.put(p.id, bytes);
+    } catch { /* a bad legacy photo just stays where it was */ }
+  }
 
   const sessions = new SessionManager({
     home: context.home,

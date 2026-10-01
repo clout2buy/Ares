@@ -901,6 +901,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         isMobileSession: (sessionId) => sessions.list().some((s) => s.id === sessionId && s.surface === "mobile" && s.tenant?.role !== "guest"),
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "push", line } }) + "\n"),
         observers: [liveActivity, { onStagedApproval: () => nudgeWidgets() }],
+        originOf: () => remoteAgentServer?.linkBaseUrl(),
       })
     : null;
   phoneNotifier?.start();

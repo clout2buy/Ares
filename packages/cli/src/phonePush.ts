@@ -345,6 +345,8 @@ export interface NotifierOptions {
   /** A turn shorter than this finished while they were still looking at it. */
   longTurnMs?: number;
   observers?: NotifierObserver[];
+  /** This garrison's public origin, so a phone paired to several can tell whose approval a banner is. */
+  originOf?: () => string | undefined;
 }
 
 /**
@@ -444,9 +446,18 @@ export class PhoneNotifier {
     void this.opts.push.send({
       title: "Ares needs approval",
       body: target ? `${tool} — ${target}` : tool,
-      data: { kind: "approval", approvalId: stagedApprovalId(staged.id), gate: cls.gate, tool, target },
+      data: { kind: "approval", approvalId: stagedApprovalId(staged.id), gate: cls.gate, tool, target, ...this.originField() },
       collapseId: `approval-${staged.id}`.slice(0, 64),
     });
+  }
+
+  private originField(): { origin?: string } {
+    try {
+      const origin = this.opts.originOf?.();
+      return origin ? { origin } : {};
+    } catch {
+      return {};
+    }
   }
 
   /** One event off the gateway stream. Public so tests can drive it without a socket. */
@@ -474,7 +485,7 @@ export class PhoneNotifier {
         body: approvalLine(sum),
         // gate decides which actions the banner carries (see APPROVAL_CATEGORY);
         // tool/target are the same redacted line the banner shows, for the app.
-        data: { kind: "permission", sessionId, requestId, approvalId: permissionApprovalId(sessionId, requestId), gate: cls.gate, tool: sum.tool, target: sum.target },
+        data: { kind: "permission", sessionId, requestId, approvalId: permissionApprovalId(sessionId, requestId), gate: cls.gate, tool: sum.tool, target: sum.target, ...this.originField() },
         // A newer prompt replaces the older banner instead of stacking.
         collapseId: `perm-${sessionId}`,
       });

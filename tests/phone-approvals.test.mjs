@@ -517,6 +517,22 @@ test("banner: a strict prompt gets the Deny/Open category and hides what it must
   assert.equal(buildAps(sent[1]).aps.category, APPROVAL_STRICT_CATEGORY);
 });
 
+test("banner: the garrison's origin rides along so a phone paired to several knows whose approval it is", () => {
+  const sent = [];
+  const notifier = new PhoneNotifier({
+    gatewayUrl: "ws://127.0.0.1:1", token: "t",
+    push: { send: async (m) => { sent.push(m); return { sent: 1, failed: 0 }; } },
+    originOf: () => "https://ares.example.com",
+  });
+  notifier.handleEvent("s", { type: "permission_request", id: "p1", toolName: "Read", input: {}, reason: "" });
+  notifier.handleStaged({ id: "x", kind: "k", domain: "d", irreversibility: "recoverable", reason: "r" });
+  assert.equal(sent[0].data.origin, "https://ares.example.com");
+  assert.equal(sent[1].data.origin, "https://ares.example.com");
+  const bare = new PhoneNotifier({ gatewayUrl: "ws://127.0.0.1:1", token: "t", push: { send: async (m) => { sent.push(m); return { sent: 1, failed: 0 }; } }, originOf: () => { throw new Error("tunnel down"); } });
+  bare.handleEvent("s", { type: "permission_request", id: "p2", toolName: "Read", input: {}, reason: "" });
+  assert.equal(sent[2].data.origin, undefined, "a throwing origin never stops the banner");
+});
+
 test("banner: a payload without a gate (an older server, a hand-built push) cannot offer Allow", () => {
   const body = buildAps({ title: "t", body: "b", data: { kind: "permission", sessionId: "s", requestId: "r" } });
   assert.equal(body.aps.category, APPROVAL_STRICT_CATEGORY);

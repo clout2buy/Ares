@@ -26,6 +26,7 @@ import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, set
 import { createInstancesApi } from "../phoneInstances.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
+import { createTimelineApi } from "../phoneTimeline.js";
 import { AvatarStore, createAvatarsApi } from "../phoneAvatars.js";
 import { DEFAULT_PERSONA_ID } from "../personas.js";
 import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
@@ -753,6 +754,18 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     fire: makeHookFirer({ sessions, personas: personaRuntime }),
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "hooks", line } }) + "\n"),
   });
+  // Who handed what to whom (/gateway/timeline): folds every owner session's
+  // Task / fleet / coding-backend / family handoffs into one stream.
+  const timelineApi = createTimelineApi(sessions, {
+    home: context.home,
+    agentOf: (sessionId) => {
+      const p = personaRuntime.store.bySession(sessionId);
+      return p
+        ? { id: p.id, name: p.name, kind: "agent", ...(p.color ? { color: p.color } : {}), ...(p.emoji ? { emoji: p.emoji } : {}) }
+        : { id: DEFAULT_PERSONA_ID, name: "Ares", kind: "agent" };
+    },
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "timeline", line } }) + "\n"),
+  });
 
   remoteAgentServer = await (async () => {
     try {
@@ -808,6 +821,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),
           }),
           hooks: hooksApi,
+          timeline: timelineApi.handle,
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),
           registerPush: (d) => phonePush.register(d),
@@ -947,6 +961,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       setDeviceBridge(null);
       deviceBridge.shutdown();
       phoneNotifier?.stop();
+      timelineApi.stop();
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});
       browserWatchHub.close();

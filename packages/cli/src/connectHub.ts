@@ -1073,7 +1073,7 @@ function keyFormPage(flow: Flow, error?: string): string {
   const where = service.keyUrl ? `<p>Find it at <a href="${esc(service.keyUrl)}" target="_blank" rel="noopener">${esc(service.keyUrl.replace(/^https?:\/\//, ""))}</a>.</p>` : "";
   return shell(
     `Connect ${service.label}`,
-    `<main><div class="mark">🔑</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${notOAuth}${hint}${where}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post">${fields}<button type="submit">Connect</button></form><p class="help" style="margin-top:1rem">${service.id.startsWith("login:") ? `Stored encrypted on your Ares. Ares fills it into ${esc(service.domain ?? service.label)} only after you approve each sign-in, and can't see or repeat the values.` : `Stored encrypted on your Ares and checked with ${esc(service.label)} before saving. It never appears in the chat.`}</p></main>`,
+    `<main><div class="mark">🔑</div><h1>Connect ${esc(service.label)}</h1>${reasonLine(flow)}<p>${esc(service.blurb)}</p>${notOAuth}${hint}${where}${error ? `<div class="err">${esc(error)}</div>` : ""}<form method="post">${fields}<button type="submit">Connect</button></form><p class="help" style="margin-top:1rem">${service.id.startsWith("login:") ? `Stored encrypted on your Ares. Ares fills it into ${esc(service.domain ?? service.label)} only after you approve each sign-in, and can't see or repeat it.` : `Stored encrypted on your Ares and checked with ${esc(service.label)} before saving. It never appears in the chat.`}</p></main>`,
   );
 }
 

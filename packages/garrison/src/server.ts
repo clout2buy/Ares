@@ -205,6 +205,10 @@ export class GarrisonServer {
           ok: true,
           version: this.opts.version ?? GARRISON_VERSION,
           sessions: this.opts.sessions.list().length,
+          // A deploy must not restart the daemon under a live turn (that is
+          // how an agent strands its own conversation); ares-safe-restart
+          // polls this until it reads 0.
+          runningTurns: this.opts.sessions.runningTurns().length,
           ...(this.opts.status?.() ?? {}),
         }),
       );

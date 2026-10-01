@@ -320,6 +320,10 @@ interface LiveSession {
   /** Admissions mirrored through observeEvents; suppress if the runtime also
    * yields the same event on its public stream. Cleared at each turn boundary. */
   mirroredAdmissionIds: Set<string>;
+  /** A crash-recovery replay is running with no sender attached (see
+   * CoreSession.observeDetachedTurns). Counts as busy so Stop and the
+   * running-turns view see it. */
+  detachedTurnOpen?: boolean;
   controller: AbortController;
   subscribers: Set<SessionSubscriber>;
   /** Serializes rollout/meta writes so JSONL lines land in event order. */
@@ -727,7 +731,7 @@ export class SessionManager {
       }
       if (stuckTimer) clearInterval(stuckTimer);
       session.inFlightSends = Math.max(0, session.inFlightSends - 1);
-      session.busy = session.inFlightSends > 0;
+      session.busy = session.inFlightSends > 0 || session.detachedTurnOpen === true;
       session.mirroredAdmissionIds.delete(inputId);
       session.inFlightInputIds.delete(inputId);
       if (!session.busy) {
@@ -1100,6 +1104,33 @@ export class SessionManager {
             waiter({ inputId: event.inputId, duplicate: event.replay === true });
           } catch {
             // a client callback never breaks the stream
+          }
+        }
+      });
+      // A turn a crash/restart left mid-flight is replayed by Core Session at
+      // construction with no sender stream. Without this mirror the replay
+      // never reaches the rollout or any phone: the owner sees the agent go
+      // silent for the whole replay and treats it as bricked.
+      coreSession.observeDetachedTurns?.((event) => {
+        if (event.type === "turn_start") {
+          session.detachedTurnOpen = true;
+          session.busy = true;
+          session.turnStartedAt = this.now();
+        }
+        this.appendRollout(session, event);
+        this.observeForOwner(session, event);
+        this.fanOut(session, event);
+        if (event.type === "turn_end") {
+          session.detachedTurnOpen = false;
+          session.busy = session.inFlightSends > 0;
+          if (!session.busy) {
+            session.turnStartedAt = undefined;
+            session.currentTool = undefined;
+          }
+          try {
+            this.onTurnSettled?.(session.id);
+          } catch {
+            // a wake producer must never break the event stream
           }
         }
       });

@@ -767,6 +767,8 @@ export function describeShellActivity(rawCommand: string, background: boolean): 
  * Returns a refusal message, or null when the command is fine.
  */
 export function irrecoverableShellRefusal(command: string): string | null {
+  const selfKill = selfHostKillRefusal(command);
+  if (selfKill) return selfKill;
   const normalized = command.replace(/\s+/g, " ").trim();
   // every `git clean` invocation in the line, including chained ones
   // Pre-subcommand git options may take a VALUE (`git -C <path> clean …`,
@@ -793,6 +795,42 @@ export function irrecoverableShellRefusal(command: string): string | null {
     );
   }
   return null;
+}
+
+/**
+ * Refuse a command that stops or restarts the daemon this agent is running
+ * inside. The tool call never returns: the turn it belongs to dies with the
+ * process, the conversation is left mid-turn, and the owner sees the agent go
+ * dark. Incident 2026-10-01: an agent on doingbox ran
+ * `sudo systemctl restart ares-garrison` to pick up a new drop-in and went
+ * silent for 13 minutes on the owner's phone. Every other Ares agent on the
+ * box (they all live in that one process) was cut off with it.
+ *
+ * `ares-safe-restart` is the sanctioned path: it is detached from the caller,
+ * waits for no turn to be running, and verifies health afterwards. Read-only
+ * systemctl verbs (status, show, is-active, cat) are untouched.
+ */
+export function selfHostKillRefusal(command: string): string | null {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  if (/\bares-safe-restart\b/.test(normalized)) return null;
+  const hostUnits = String.raw`(?:ares-garrison|ares-partner|ares-instance-[\w-]+)(?:\.service)?`;
+  const lifecycle = String.raw`(?:restart|stop|kill|try-restart|reload-or-restart|try-reload-or-restart|condrestart|force-reload|disable\s+--now|mask\s+--now)`;
+  const patterns = [
+    new RegExp(String.raw`\bsystemctl\b(?:\s+--?[\w=-]+)*\s+${lifecycle}\b[^;&|]*\b${hostUnits}\b`, "i"),
+    new RegExp(String.raw`\bservice\s+${hostUnits}\s+(?:restart|stop|force-reload)\b`, "i"),
+    new RegExp(String.raw`\bpkill\b[^;&|]*\b(?:entry\.js|garrison)\b`, "i"),
+    new RegExp(String.raw`\bkillall\b[^;&|]*\bnode\b`, "i"),
+  ];
+  if (!patterns.some((p) => p.test(normalized))) return null;
+  return (
+    "Refused: this stops or restarts the Ares daemon you are running inside. The tool call would never " +
+    "return: your turn dies mid-flight, your conversation goes dark on the owner's phone, and every other " +
+    "agent in the same process is cut off too. This holds even in bypass/YOLO mode.\n\n" +
+    "Use the safe path instead: `ares-safe-restart <unit> \"<reason>\"` (for example " +
+    "`ares-safe-restart ares-garrison \"pick up DISPLAY drop-in\"`). It is detached from you, waits until " +
+    "no turn is running (including yours, so finish your reply first), restarts, health-checks, and logs " +
+    "to ~/.ares/safe-restart.log. Tell the owner it is queued; you will be back after it lands."
+  );
 }
 
 /**

@@ -331,6 +331,8 @@ export class Session {
   private lastCheckpointId: string | undefined;
   private ioError: Error | null = null;
   private readonly eventObservers = new Set<(event: TurnEvent) => void>();
+  private readonly detachedObservers = new Set<(event: TurnEvent) => void>();
+  private readonly detachedBacklog: TurnEvent[] = [];
   /**
    * The Session, not a UI flag, owns execution. Every send/resume acquires this
    * FIFO lease before touching QueryEngine state. This remains held until the
@@ -620,6 +622,26 @@ export class Session {
   observeEvents(observer: (event: TurnEvent) => void): () => void {
     this.eventObservers.add(observer);
     return () => this.eventObservers.delete(observer);
+  }
+
+  /** Events of turns that run with NO sender stream attached — today, the
+   * detached startup recovery that replays an input a crash/restart left
+   * mid-turn. observeEvents sees them too, but cannot tell them apart from a
+   * caller-driven turn; a host that only renders what sendContent yields
+   * would otherwise show the owner total silence for the whole replay. */
+  observeDetachedTurns(observer: (event: TurnEvent) => void): () => void {
+    this.detachedObservers.add(observer);
+    // The replay starts in the constructor; a host can only subscribe after it
+    // gets the instance back (often across an await). Hand over what it missed.
+    const missed = this.detachedBacklog.splice(0);
+    for (const event of missed) {
+      try {
+        observer(event);
+      } catch {
+        // A rendering surface cannot break the durable replay.
+      }
+    }
+    return () => this.detachedObservers.delete(observer);
   }
 
   /** Swap provider/model in place and persist the new session metadata. */
@@ -1584,6 +1606,7 @@ export class Session {
         let terminal: Extract<TurnEvent, { type: "turn_end" }> | null = null;
         let outputMessageId: string | null = null;
         for await (const event of this.streamAndPersist()) {
+          this.notifyDetached(event);
           if (event.type === "message_done") {
             outputMessageId = kernelStoredMessageId(this.meta.id, event.message.id);
           }
@@ -1631,6 +1654,16 @@ export class Session {
           }
         }
         firstError ??= error;
+        // Close the turn on every surface even when the replay died before its
+        // own turn_start: the crashed generation's turn is still open on the
+        // owner's screen, and nothing else will ever end it.
+        this.notifyDetached({
+          type: "turn_end",
+          status: "failed",
+          workStatus: "unverified",
+          usage: { inputTokens: 0, outputTokens: 0 },
+          durationMs: 0,
+        });
       } finally {
         if (ownsActiveInput && this.activeInputId === inputId) this.activeInputId = null;
         this.finishKernelRun(executionState, workOutcome, kernelError);
@@ -2634,6 +2667,21 @@ export class Session {
       // conservatively over-red, never falsely green.
       if (event.status === "completed" && outcome === "verified") {
         this.kernel.resolveSessionMutations(fence);
+      }
+    }
+  }
+
+  private notifyDetached(event: TurnEvent): void {
+    if (this.detachedObservers.size === 0) {
+      // Bounded: a host that never subscribes must not leak a whole replay.
+      if (this.detachedBacklog.length < 2_000) this.detachedBacklog.push(event);
+      return;
+    }
+    for (const observer of this.detachedObservers) {
+      try {
+        observer(event);
+      } catch {
+        // A rendering surface cannot break the durable replay.
       }
     }
   }

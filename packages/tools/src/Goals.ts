@@ -44,6 +44,8 @@ export interface GoalNote {
   agentId?: string;
   /** 0..1 at the time of the note, when it moved. */
   progress?: number;
+  /** The app's idempotency token: a retried note carrying the same one is the same note. */
+  clientId?: string;
 }
 
 export interface LifeGoal {
@@ -190,7 +192,7 @@ function newNoteId(): string {
 }
 
 /** Append to the timeline (capped, oldest dropped) and keep `note` current. */
-export function appendGoalNote(goal: LifeGoal, input: { text: string; by: GoalNoteBy; agentId?: string; progress?: number }, now: Date): GoalNote {
+export function appendGoalNote(goal: LifeGoal, input: { text: string; by: GoalNoteBy; agentId?: string; progress?: number; clientId?: string }, now: Date): GoalNote {
   const note: GoalNote = {
     id: newNoteId(),
     at: now.toISOString(),
@@ -198,6 +200,7 @@ export function appendGoalNote(goal: LifeGoal, input: { text: string; by: GoalNo
     by: input.by,
     ...(input.agentId ? { agentId: input.agentId } : {}),
     ...(input.progress !== undefined ? { progress: input.progress } : {}),
+    ...(input.clientId ? { clientId: input.clientId } : {}),
   };
   const notes = [...(goal.notes ?? []), note];
   goal.notes = notes.length > MAX_GOAL_NOTES ? notes.slice(notes.length - MAX_GOAL_NOTES) : notes;
@@ -425,13 +428,16 @@ export class GoalsStore {
     });
   }
 
-  addNote(id: string, input: { text: string; by: GoalNoteBy; agentId?: string; progress?: number }, now = new Date()): Promise<{ goal: LifeGoal; note: GoalNote } | null> {
+  /** A retried note carrying the same clientId returns the one already written (`created: false`). */
+  addNote(id: string, input: { text: string; by: GoalNoteBy; agentId?: string; progress?: number; clientId?: string }, now = new Date()): Promise<{ goal: LifeGoal; note: GoalNote; created: boolean } | null> {
     return this.mutate((goals) => {
       const goal = goals.find((g) => g.id === id);
       if (!goal) return null;
+      const same = input.clientId ? (goal.notes ?? []).find((n) => n.clientId === input.clientId) : undefined;
+      if (same) return { goal: { ...goal }, note: same, created: false };
       if (input.progress !== undefined) goal.progress = input.progress;
       const note = appendGoalNote(goal, input, now);
-      return { goal: { ...goal }, note };
+      return { goal: { ...goal }, note, created: true };
     });
   }
 

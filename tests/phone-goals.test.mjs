@@ -207,6 +207,22 @@ test("a retried create with the same clientId returns the first goal, not a seco
   assert.equal((await s.call("GET", "/gateway/goals")).body.goals[0].clientId, undefined, "the idempotency token is not part of the view");
 });
 
+test("a retried note with the same clientId is the same note, not a second", async (t) => {
+  const home = await tempHome(t);
+  const s = await serve(t, home);
+  const g = (await s.call("POST", "/gateway/goals", { title: "Journal" })).body.goal;
+  const first = await s.call("POST", "/gateway/goals/note", { id: g.id, text: "Ran 3 km", progress: 0.3, clientId: "n_abc" });
+  const retry = await s.call("POST", "/gateway/goals/note", { id: g.id, text: "Ran 3 km", progress: 0.3, clientId: "n_abc" });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.duplicate, undefined);
+  assert.equal(retry.body.duplicate, true);
+  assert.equal(retry.body.note.id, first.body.note.id);
+  const notes = (await s.call("GET", `/gateway/goals/notes?id=${g.id}`)).body.notes;
+  assert.equal(notes.filter((n) => n.text === "Ran 3 km").length, 1);
+  assert.equal(s.audits.filter((a) => a.action === "goal.note").length, 1);
+  assert.equal((await s.call("POST", "/gateway/goals/note", { id: g.id, text: "x", clientId: "no spaces allowed" })).status, 400);
+});
+
 test("assigning an agent schedules a check-in; unassigning clears it", async (t) => {
   const home = await tempHome(t);
   const s = await serve(t, home);

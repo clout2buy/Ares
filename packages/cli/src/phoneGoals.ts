@@ -23,8 +23,8 @@
 //        200 {goal} · 400 · 404
 //   POST /gateway/goals/close         {id, status?:"done"|"dropped"}   (the original route)
 //        200 {ok:true,goal} · 404
-//   POST /gateway/goals/note          {id, text, progress?}
-//        200 {goal,note} · 400 · 404
+//   POST /gateway/goals/note          {id, text, progress?, clientId?}
+//        200 {goal,note} · 200 {goal,note,duplicate:true} for a clientId already noted · 400 · 404
 //   POST /gateway/goals/delete        {id}
 //        200 {ok:true} · 404
 //   GET  /gateway/goals/notes?id=&limit=&before=
@@ -204,10 +204,15 @@ export function createGoalsApi(deps: GoalsApiDeps): (req: IncomingMessage, res: 
           if (typeof body.progress !== "number" || !Number.isFinite(body.progress) || body.progress < 0 || body.progress > 1) throw new BadRequest("progress must be a number from 0 to 1");
           progress = body.progress;
         }
-        const result = await store.addNote(id, { text, by: "owner", ...(progress !== undefined ? { progress } : {}) }, now());
+        let clientId: string | undefined;
+        if (body.clientId !== undefined) {
+          if (typeof body.clientId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(body.clientId)) throw new BadRequest("clientId must be 1-64 letters, digits, - or _");
+          clientId = body.clientId;
+        }
+        const result = await store.addNote(id, { text, by: "owner", ...(progress !== undefined ? { progress } : {}), ...(clientId ? { clientId } : {}) }, now());
         if (!result) { json(404, { error: "unknown goal" }); return true; }
-        audit("goal.note", id, { chars: text.length, ...(progress !== undefined ? { progress } : {}) });
-        json(200, { goal: view(result.goal), note: result.note });
+        if (result.created) audit("goal.note", id, { chars: text.length, ...(progress !== undefined ? { progress } : {}) });
+        json(200, { goal: view(result.goal), note: result.note, ...(result.created ? {} : { duplicate: true }) });
         return true;
       }
 

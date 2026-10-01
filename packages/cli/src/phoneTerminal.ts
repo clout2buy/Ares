@@ -77,7 +77,6 @@ const TMUX_CONF = [
   "set -g escape-time 0",
   "set -g mouse off",
   "set -g set-titles off",
-  "set -g window-size manual",
   "set -g destroy-unattached off",
   "unbind-key -a",
   "",

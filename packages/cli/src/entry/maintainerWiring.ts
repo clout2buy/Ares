@@ -53,11 +53,14 @@ export function gitWorktrees(opts: { forgeRepo: string; workRoot: string; liveDi
       const head = await git(liveDir, ["rev-parse", "HEAD"]);
       if (head.code !== 0) return null;
       const sha = head.stdout.trim();
-      // Make sure the forge knows the live commit (read-only fetch from the live tree), and see what rook has.
-      await git(forgeRepo, ["fetch", "-q", "--no-tags", liveDir, "+HEAD:refs/live/head"], 120_000);
-      await git(forgeRepo, ["fetch", "-q", "--prune", "rook"], 120_000).catch(() => undefined);
       const have = await git(forgeRepo, ["cat-file", "-e", `${sha}^{commit}`]);
       return have.code === 0 ? sha : null;
+    },
+    async sync() {
+      if (!(await exists(forgeRepo))) return;
+      // Make sure the forge knows the live commit (read-only fetch from the live tree), and see what rook has.
+      await git(forgeRepo, ["fetch", "-q", "--no-tags", liveDir, "+HEAD:refs/live/head"], 120_000);
+      await git(forgeRepo, ["fetch", "-q", "--prune", "rook"], 120_000);
     },
     async create(slug, day) {
       const base = (await git(liveDir, ["rev-parse", "HEAD"])).stdout.trim();
@@ -203,7 +206,8 @@ export function startMaintainer(opts: MaintainerWiringOptions): MaintainerWiring
         args: ["--sha", sha, "--approval-receipt", receiptFile, "--drain", String(drainMin), "--live", liveDir, "--fetch-from", forgeRepo, "--proposal", proposalId, "--title", title.slice(0, 100), "--requested-by", "maintainer", "--home", home, "--json"],
         env: {
           HOME: os.homedir(), PATH: env.PATH ?? "", ARES_HOME: home, ARES_LIVE_DIR: liveDir, ARES_FORGE_DIR: forge,
-          ...(env.ARES_REMOTE_AGENT_PORT ? { ARES_REMOTE_AGENT_PORT: env.ARES_REMOTE_AGENT_PORT } : {}),
+          // the deploy's own knobs and the gateway port ride along; nothing else from this process's environment does
+          ...Object.fromEntries(Object.entries(env).filter(([k, v]) => v !== undefined && /^(ARES_REMOTE_AGENT_PORT|ARES_DEPLOY_(SMOKE_ASK|APPROVED_BRANCHES|SUDO))$/.test(k)) as Array<[string, string]>),
         },
         ...(typeof process.getuid === "function" ? { uid: process.getuid(), gid: process.getgid?.() } : {}),
       });

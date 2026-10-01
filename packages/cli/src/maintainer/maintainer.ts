@@ -63,8 +63,10 @@ export interface CodingRunner {
 }
 
 export interface WorktreeOps {
-  /** The commit the box is running (the base every change is measured against). */
+  /** The commit the box is running (the base every change is measured against). Cheap: no network. */
   liveSha(): Promise<string | null>;
+  /** Refresh the forge from the remote and the live commit (network; called once at the start of a run). */
+  sync?(): Promise<void>;
   create(slug: string, day: string): Promise<{ dir: string; branch: string; baseSha: string }>;
   /** Commit everything in `dir`; `changed:false` when the tree is clean. */
   commit(dir: string, message: string): Promise<{ changed: boolean; sha: string }>;
@@ -494,6 +496,7 @@ export class Maintainer {
     try {
       this.audit("maintainer.run.start", runId, { trigger }, "started");
       if (budget.calls >= cfg.budgetCalls || budget.tokens >= cfg.budgetTokens) return await finish("skipped", "today's model budget is used up");
+      await this.deps.worktrees.sync?.().catch(() => undefined);
       const live = await this.deps.worktrees.liveSha();
       if (!live) { this.forgeReady = false; return await finish("skipped", "the forge is not set up (scripts/elite/bootstrap-forge.sh init)"); }
       this.forgeReady = true;

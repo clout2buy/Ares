@@ -215,6 +215,8 @@ while the owner has not paused Ares and no session is mid-turn (an unavailable n
 | `ARES_MAINTAINER_BUGREPORT_DIRS` | - | extra bug-report dirs (path-delimiter separated) |
 | `ARES_FORGE_DIR`, `ARES_LIVE_DIR`, `ARES_ELITE_DIR` | `~/forge`, `~/Ares`, repo `scripts/elite` | locations |
 | `ARES_DEPLOY_LAUNCHER` | auto | `system` / `user` / `none` |
+| `ARES_DEPLOY_SMOKE_ASK` | `on` | `on` / `warn` / `off`: whether the scripted `/gateway/ask` smoke check (one model call, run before and after) can fail a deploy |
+| `ARES_DEPLOY_APPROVED_BRANCHES` | `main,release/*,auto/*,feat*/*` | branch patterns a deployable commit must be on |
 
 **Each night**: (1) collect - crash artifacts (`~/.ares/crashes`), audit-log errors (grouped, 2+ occurrences,
 denials and its own entries ignored), the reliability triage findings (failed turns/subagents, engine and

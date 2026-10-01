@@ -40,7 +40,7 @@ const out = await deployChange({
   ackHighRisk: a["ack-high-risk"] === true,
   receiptFile: a["approval-receipt"],
   drainMin: num(a.drain, 0),
-  smokeAsk: a["smoke-ask"],
+  smokeAsk: a["smoke-ask"] ?? process.env.ARES_DEPLOY_SMOKE_ASK,
   readyTimeoutMs: num(a["ready-timeout"], 120) * 1000,
   requestedBy: a["requested-by"] ?? "cli",
   proposalId: a.proposal,

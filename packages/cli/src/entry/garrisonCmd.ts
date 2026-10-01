@@ -25,6 +25,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, setDeviceBridge, setShortcutDirectory, ShortcutDirectory, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
+import { createProvidersApi } from "../phoneProviders.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
 import { createTimelineApi } from "../phoneTimeline.js";
@@ -915,6 +916,11 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ...(process.platform === "linux"
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),
+          providers: createProvidersApi({
+            home: context.home,
+            log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "providers", line } }) + "
+"),
+          }),
           ask: createAskApi(sessions, {
             home: context.home,
             log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),

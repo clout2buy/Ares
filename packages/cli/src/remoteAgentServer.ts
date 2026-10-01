@@ -241,6 +241,9 @@ export interface PhoneApiHooks {
   /** The separate Ares instances deployed on this host (/gateway/instances —
    *  phoneInstances.ts). Absent off Linux; false = not mine. */
   instances?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Provider / coding-agent logins from the phone (/gateway/providers —
+   *  phoneProviders.ts, docs/PROVIDER-LOGIN.md). False = not mine. */
+  providers?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** The Share-sheet inbox (/gateway/inbox — phoneInbox.ts): Share -> Ares from any
    *  iOS app, worked on in the background. Asked after the bearer check; false = not mine. */
   inbox?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1592,6 +1595,9 @@ export class RemoteAgentServer {
     }
     if (api.instances && (url.pathname === "/gateway/instances" || url.pathname.startsWith("/gateway/instances/"))) {
       if (await api.instances(req, res, url)) return;
+    }
+    if (api.providers && (url.pathname === "/gateway/providers" || url.pathname.startsWith("/gateway/providers/"))) {
+      if (await api.providers(req, res, url)) return;
     }
     if (api.ask && (url.pathname === "/gateway/ask" || url.pathname === "/gateway/ask/" || url.pathname === "/gateway/ask/last")) {
       if (await api.ask(req, res, url)) return;

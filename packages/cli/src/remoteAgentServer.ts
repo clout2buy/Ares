@@ -46,6 +46,7 @@ import { handleOwnerControlRoute, type OwnerControlHooks } from "./phoneOwnerCon
 import { handleConnectionsApi } from "./phoneConnections.js";
 import { handleDeviceApi } from "./deviceSync.js";
 import { handleLibraryApi } from "./phoneLibrary.js";
+import type { TerminalApi } from "./phoneTerminal.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -309,6 +310,10 @@ export interface PhoneApiHooks {
   /** The owner's control plane: kill switch, pause, jobs, audit log (see
    *  phoneOwnerControl.ts for the routes and shapes). */
   ownerControl?: OwnerControlHooks;
+  /** The Terminal tab (/gateway/terminal — phoneTerminal.ts, docs/TERMINAL.md): an
+   *  owner-only PTY shell. It authenticates itself (owner bearer; any other token is
+   *  403) so it is asked BEFORE the generic bearer check. */
+  terminal?: TerminalApi;
 }
 
 /** One row in the model picker. */
@@ -501,6 +506,10 @@ export class RemoteAgentServer {
     wss.on("connection", (ws, req) => {
       const pathname = (req.url ?? "/").split("?")[0];
       if (pathname === "/gateway") this.proxyGateway(ws, req);
+      else if (pathname.startsWith("/gateway/terminal/")) {
+        const terminal = this.opts.phoneApi?.terminal;
+        if (terminal) terminal.ws(ws, req); else ws.close(1008, "no terminal on this machine");
+      }
       else this.handleConnection(ws);
     });
     // `ws` forwards the HTTP server's errors onto the WebSocketServer, and an
@@ -1534,6 +1543,9 @@ export class RemoteAgentServer {
         if (!res.headersSent) return json(500, { error: "internal error" });
         return;
       }
+    }
+    if (this.opts.phoneApi?.terminal && (url.pathname === "/gateway/terminal" || url.pathname.startsWith("/gateway/terminal/"))) {
+      if (await this.opts.phoneApi.terminal.http(req, res, url)) return;
     }
     const expected = this.opts.controlToken;
     const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");

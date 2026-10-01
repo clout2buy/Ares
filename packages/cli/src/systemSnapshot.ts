@@ -12,7 +12,7 @@ import { promises as fs, statfsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import v8 from "node:v8";
-import type { ErrorEntry, LoopLag, ProviderBreaker } from "./systemSignals.js";
+import { scrubErrorText, type ErrorEntry, type LoopLag, type ProviderBreaker } from "./systemSignals.js";
 
 export const CACHE_MS = 5_000;
 export const DISK_SCAN_MS = 10 * 60_000;
@@ -521,7 +521,7 @@ export function adoptDeep(base: Omit<SystemSnapshot, "status" | "headline" | "pr
     const existing = base.providers.find((p) => p.provider === key);
     const failures = typeof r.consecutiveFailures === "number" ? r.consecutiveFailures : 0;
     const failingForMs = typeof r.openForMs === "number" ? r.openForMs : 0;
-    const lastError = typeof r.lastError === "string" ? scrub(r.lastError) : undefined;
+    const lastError = typeof r.lastError === "string" ? scrubErrorText(r.lastError, 160) : undefined;
     if (!existing) base.providers.push({ provider: key, state, consecutiveFailures: failures, failingForMs, ...(lastError ? { lastError } : {}) });
     else if (state === "open" && existing.state !== "open") Object.assign(existing, { state, consecutiveFailures: Math.max(existing.consecutiveFailures, failures), failingForMs: Math.max(existing.failingForMs, failingForMs), ...(lastError ? { lastError } : {}) });
   }
@@ -531,7 +531,7 @@ export function adoptDeep(base: Omit<SystemSnapshot, "status" | "headline" | "pr
   if (base.errors.length === 0 && Array.isArray(d.errors)) {
     base.errors = (d.errors as unknown[]).slice(0, 10).flatMap((e) => {
       const r = rec(e);
-      return typeof r.message === "string" ? [{ at: typeof r.at === "string" ? r.at : new Date().toISOString(), source: typeof r.kind === "string" ? r.kind : "ares", message: scrub(r.message) }] : [];
+      return typeof r.message === "string" ? [{ at: typeof r.at === "string" ? r.at : new Date().toISOString(), source: typeof r.kind === "string" ? scrubErrorText(r.kind, 40) : "ares", message: scrubErrorText(r.message) }] : [];
     });
   }
 }
@@ -546,11 +546,11 @@ export function boundedMaintainer(value: unknown): unknown {
         if (!item || typeof item !== "object") return item;
         const r = item as Record<string, unknown>;
         const keep: Record<string, unknown> = {};
-        for (const f of ["id", "status", "at", "finishedAt", "title"]) if (typeof r[f] === "string") keep[f] = scrub(r[f] as string);
+        for (const f of ["id", "status", "at", "finishedAt", "title"]) if (typeof r[f] === "string") keep[f] = scrubErrorText(r[f], 80);
         return keep;
       });
     } else if (v === null || typeof v !== "object") {
-      out[k] = typeof v === "string" ? scrub(v) : v;
+      out[k] = typeof v === "string" ? scrubErrorText(v, 120) : v;
     }
   }
   return out;

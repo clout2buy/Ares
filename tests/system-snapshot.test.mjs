@@ -322,7 +322,7 @@ test("the antihang deep health is folded in: its breakers, orphans and errors ap
 test("a deep payload that is not an object, or is half-formed, changes nothing", async (t) => {
   const home = await tmpHome(t);
   for (const deep of [null, "nope", 42, [], { providers: "x", processes: null, errors: 3 }]) {
-    const snap = await createSystemService(baseDeps(home, { deep: async () => deep })).snapshot();
+    const snap = await createSystemService(baseDeps(home, { connectors: async () => ({}), deep: async () => deep })).snapshot();
     assert.equal(snap.providers.length, 1);
     assert.equal(snap.status, "ok");
   }
@@ -339,4 +339,16 @@ test("a maintainer status with whole proposals is trimmed to what the screen nee
   assert.equal(snap.maintainer.enabled, true);
   assert.deepEqual(snap.deep, { truncated: true, status: "degraded", ok: false });
   assert.ok(JSON.stringify(snap).length < 40_000, "the poll stays small");
+});
+
+test("a provider that failed and then saw no traffic is not an outage forever", () => {
+  let now = 0;
+  const h = new ProviderHealth(() => now);
+  for (let i = 0; i < 4; i++) { now += 1000; h.fail("anthropic", "529"); }
+  now += 10 * 60_000;
+  assert.equal(h.states()[0].state, "open", "10 minutes on, still failing as far as anyone knows");
+  now += 6 * 60_000;
+  assert.equal(h.states()[0].state, "closed", "after 15 quiet minutes it is shown closed");
+  h.fail("anthropic", "529");
+  assert.equal(h.states()[0].consecutiveFailures, 1, "a new failure starts a fresh run, it does not resurrect the old one");
 });

@@ -79,6 +79,8 @@ interface ProviderRecord {
 /** An outage is declared after this many failures in a row with no success between. */
 export const BREAKER_OPEN_AFTER = 3;
 export const BREAKER_DEGRADED_AFTER = 2;
+/** With no new failure for this long the provider is shown closed again: no traffic is not an outage. */
+export const BREAKER_FORGET_MS = 15 * 60_000;
 
 export class ProviderHealth {
   private readonly records = new Map<string, ProviderRecord>();
@@ -96,6 +98,7 @@ export class ProviderHealth {
   fail(provider: string, error?: unknown): void {
     if (!provider) return;
     const r = this.records.get(provider) ?? { consecutiveFailures: 0 };
+    if (r.lastFailureAt !== undefined && this.now() - r.lastFailureAt > BREAKER_FORGET_MS) r.consecutiveFailures = 0;
     if (r.consecutiveFailures === 0) r.firstFailureAt = this.now();
     r.consecutiveFailures += 1;
     r.lastFailureAt = this.now();
@@ -107,15 +110,19 @@ export class ProviderHealth {
     const now = this.now();
     const iso = (ms: number | undefined) => (ms === undefined ? undefined : new Date(ms).toISOString());
     return [...this.records.entries()]
-      .map(([provider, r]): ProviderBreaker => ({
+      .map(([provider, r]): ProviderBreaker => {
+        const forgotten = r.lastFailureAt !== undefined && now - r.lastFailureAt > BREAKER_FORGET_MS;
+        const failures = forgotten ? 0 : r.consecutiveFailures;
+        return {
         provider,
-        state: r.consecutiveFailures >= BREAKER_OPEN_AFTER ? "open" : r.consecutiveFailures >= BREAKER_DEGRADED_AFTER ? "degraded" : "closed",
-        consecutiveFailures: r.consecutiveFailures,
+        state: failures >= BREAKER_OPEN_AFTER ? "open" : failures >= BREAKER_DEGRADED_AFTER ? "degraded" : "closed",
+        consecutiveFailures: failures,
         ...(r.lastOkAt !== undefined ? { lastOkAt: iso(r.lastOkAt) } : {}),
         ...(r.lastFailureAt !== undefined ? { lastFailureAt: iso(r.lastFailureAt) } : {}),
-        ...(r.lastError && r.consecutiveFailures > 0 ? { lastError: r.lastError } : {}),
-        failingForMs: r.consecutiveFailures > 0 && r.firstFailureAt !== undefined ? Math.max(0, now - r.firstFailureAt) : 0,
-      }))
+        ...(r.lastError && failures > 0 ? { lastError: r.lastError } : {}),
+        failingForMs: failures > 0 && r.firstFailureAt !== undefined ? Math.max(0, now - r.firstFailureAt) : 0,
+        };
+      })
       .sort((a, b) => a.provider.localeCompare(b.provider));
   }
 }

@@ -25,6 +25,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { TodoStore, ShellRegistry, setRemoteAgentServer, setTelegramChannel, setDeviceBridge, setShortcutDirectory, ShortcutDirectory, Instances, setHooksBaseUrlProvider, syncApiConnectServices, type FileReadStamp } from "@ares/tools";
 import { createInstancesApi } from "../phoneInstances.js";
+import { createTerminalApi } from "../phoneTerminal.js";
 import { createProvidersApi } from "../phoneProviders.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
@@ -977,6 +978,10 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             revokePermission: (pattern) => commandPermissions.revoke(pattern),
           },
           ownerControl: controlPlane,
+          // The Terminal tab: an owner-only PTY shell (docs/TERMINAL.md). Off Windows only.
+          ...(process.platform !== "win32"
+            ? { terminal: createTerminalApi({ home: context.home, ownerToken: () => gatewayToken || undefined, log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "terminal", line } }) + "\n") }) }
+            : {}),
         },
         log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "remote-agent", line } }) + "\n"),
         // "auto" by default: finds or fetches cloudflared for an internet-reachable

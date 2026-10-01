@@ -255,6 +255,12 @@ export interface PhoneApiHooks {
     inbound: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
     manage: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   };
+  /** Morning/evening briefings (/gateway/briefings — phoneBriefings.ts). Asked
+   *  right after the bearer check; false = not mine. */
+  briefings?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Location triggers: places, rules and the phone's enter/exit events
+   *  (/gateway/location — phoneLocation.ts). false = not mine. */
+  location?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
    *  like /connect/ — the token is the capability for one page. */
   watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1582,6 +1588,12 @@ export class RemoteAgentServer {
     }
     if (api.hooks && (url.pathname === "/gateway/hooks" || url.pathname.startsWith("/gateway/hooks/"))) {
       if (await api.hooks.manage(req, res, url)) return;
+    }
+    if (api.briefings && (url.pathname === "/gateway/briefings" || url.pathname.startsWith("/gateway/briefings/"))) {
+      if (await api.briefings(req, res, url)) return;
+    }
+    if (api.location && (url.pathname === "/gateway/location" || url.pathname.startsWith("/gateway/location/"))) {
+      if (await api.location(req, res, url)) return;
     }
 
     try {

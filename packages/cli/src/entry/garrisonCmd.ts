@@ -62,6 +62,7 @@ import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
 import { startLifeSurfaces } from "./lifeWiring.js";
 import { startGoalSurfaces } from "./goalsMemoryWiring.js";
+import { startBriefingsAndLocation, type PhoneBriefingsAndLocation } from "./briefingWiring.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
 import { PersonaRuntime } from "./personaRuntime.js";
 import type { ProviderSelection } from "./providers.js";
@@ -448,6 +449,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     isPaused: () => ownerPause.paused,
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "goals", line } }) + "\n"),
   });
+  // Morning/evening briefings and location rules (briefingWiring.ts). Built once the
+  // approval queue and phone push exist; the scheduler's hook only asks it.
+  let phoneBriefing: PhoneBriefingsAndLocation | undefined;
 
   const scheduler = new Scheduler({
     hooks: {
@@ -491,6 +495,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       feed: () => life.feed.maybeRunDaily(),
       // Goal check-ins: wakes the agent on each goal that is due, in its own thread.
       goals: () => goalSurfaces.tick(),
+      // The phone's briefings: due at the owner's chosen times, in their zone.
+      briefing: () => phoneBriefing?.briefings.tick(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
@@ -769,6 +775,17 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "hooks", line } }) + "\n"),
   });
 
+  const briefingWiring = startBriefingsAndLocation({
+    home: context.home,
+    sessions,
+    personas: personaRuntime,
+    approvals: { pending: () => approvals.pending().map((a) => ({ id: a.id, reason: a.reason, kind: a.kind })) },
+    push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()),
+    isPaused: () => ownerPause.paused,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "briefings", line } }) + "\n"),
+  });
+  phoneBriefing = briefingWiring;
+
   remoteAgentServer = await (async () => {
     try {
       // The Ares network door rides this same origin under /oricle when the
@@ -823,7 +840,11 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ask: createAskApi(sessions, {
             home: context.home,
             log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),
+            // "What's my briefing" is answered from the card already written today, with no model call.
+            briefing: briefingWiring.askBriefing,
           }),
+          briefings: briefingWiring.briefingsApi,
+          location: briefingWiring.locationApi,
           hooks: hooksApi,
           watch: (req, res, url) => browserWatchHub.handle(req, res, url),
           device: createDeviceApi(deviceBridge, (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "device", line } }) + "\n")),

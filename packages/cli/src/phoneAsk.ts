@@ -16,6 +16,11 @@
 // sentences. Every consumer that shows a transcript already strips a leading
 // "(System: …)" preamble (personas.stripPreamble, the garrison's title healer).
 //
+// One exception to "every ask is a turn": "what's my briefing" (and its close
+// spellings, see matchBriefingRequest) is answered from the briefing the garrison
+// already wrote today (phoneBriefings.ts), with no model call and no session.
+// When there is no briefing for today it falls through to an ordinary turn.
+//
 // Nothing is weakened: permission prompts, the remote-autonomy gate, the owner
 // pause and the kill switch all sit below SessionManager.send and still apply.
 // A turn that outlives the budget (a slow tool, a pause, an approval nobody
@@ -31,6 +36,8 @@ export const ASK_DEFAULT_BUDGET_MS = 22_000;
 export const ASK_MAX_BUDGET_MS = 28_000;
 export const ASK_MAX_TEXT = 2_000;
 export const ASK_REPLY_CAP = 600;
+/** A stored briefing is read out whole, so it gets a longer cap than a model reply. */
+export const BRIEFING_REPLY_CAP = 900;
 export const VOICE_SESSION_TITLE = "Voice";
 export const WORKING_REPLY = "Still working on it. I'll keep going, check the app for the result.";
 export const FAILED_REPLY = "Sorry, I couldn't get an answer just now. Check the app.";
@@ -53,6 +60,10 @@ export interface AskApiOptions {
   now?: () => number;
   /** Overrides ARES_ASK_BUDGET_MS (still clamped to the hard max). */
   budgetMs?: number;
+  /** Today's stored briefing, so a request for it needs no model call. Absent → asked like anything else. */
+  briefing?: {
+    today(kind?: "morning" | "evening"): Promise<{ id: string; spokenText: string } | undefined>;
+  };
 }
 
 export type AskStatus = "done" | "working";
@@ -75,6 +86,35 @@ export function voiceSteeringNote(surface: string = "siri"): string {
 
 export function withVoiceSteering(text: string, surface?: string): string {
   return `${voiceSteeringNote(surface)}\n\n${text}`;
+}
+
+// ─── "what's my briefing" ─────────────────────────────────────────────────
+
+const BRIEFING_LEAD = "(?:(?:hey |ok |okay )?ares[, ]+)?(?:please |can you |could you |would you |will you |go ahead and )*";
+const BRIEFING_ASK = "(?:what is |what are |whats |what were |tell me |give me |give me a |read me |read out |read |play |show me |get me |i want |i need |let me hear |lets hear |start )?";
+const BRIEFING_DET = "(?:my |the |todays |today )?";
+const BRIEFING_KIND = "(?:(morning|evening|daily|todays) )?";
+const BRIEFING_TAIL = "(?: for today| today| please| now| again)*";
+const BRIEFING_RE = new RegExp(`^${BRIEFING_LEAD}${BRIEFING_ASK}${BRIEFING_DET}${BRIEFING_KIND}briefing${BRIEFING_TAIL}$`);
+const BRIEF_ME_RE = /^(?:please )?brief me(?: please| now)?$/;
+
+/** Is this utterance JUST a request for the owner's briefing? Strict on purpose:
+ *  anything with an extra clause ("…and email it to Bob", "…on AI news") is a
+ *  normal question and goes to the model. `kind` is set when they named one. */
+export function matchBriefingRequest(text: string): { kind?: "morning" | "evening" } | null {
+  if (typeof text !== "string" || text.length > 80) return null;
+  const t = text
+    .toLowerCase()
+    .replace(/[‘’']/g, "")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return null;
+  if (BRIEF_ME_RE.test(t)) return {};
+  const m = BRIEFING_RE.exec(t);
+  if (!m) return null;
+  const kind = m[1];
+  return kind === "morning" || kind === "evening" ? { kind } : {};
 }
 
 // ─── plain speakable text ─────────────────────────────────────────────────
@@ -320,6 +360,18 @@ export function createAskApi(host: AskSessionHost, opts: AskApiOptions) {
       throw err;
     }
     await load();
+    // A stored briefing answers "what's my briefing" with no model call and no
+    // session. Anything it cannot answer (none today, lookup failed) is asked normally.
+    const wanted = opts.briefing ? matchBriefingRequest(body.text) : null;
+    if (wanted && opts.briefing) {
+      const card = await opts.briefing.today(wanted.kind).catch(() => undefined);
+      const reply = card?.spokenText ? toSpeakable(card.spokenText, BRIEFING_REPLY_CAP) : "";
+      if (card && reply) {
+        last = { reply, status: "done", at: now() };
+        void save();
+        return send(res, 200, { reply, status: "done", sessionId: sessionId ?? "", source: "briefing", briefingId: card.id });
+      }
+    }
     const budget = budgetFor(opts);
     if (run && !run.settled) {
       const id = sessionId ?? "";

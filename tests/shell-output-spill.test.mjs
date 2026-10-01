@@ -66,3 +66,21 @@ test("runShell preserves UTF-8 code points split across process chunks", async (
   assert.equal(result.stdout, "€\n");
   assert.doesNotMatch(progress.join(""), /�/);
 });
+
+test("runShell settles after abort even when the process tree ignores the kill", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ares-shell-abort-"));
+  const controller = new AbortController();
+  const started = Date.now();
+  // A child that exits only after 60s; abort fires at 200ms. taskkill/kill
+  // normally ends it, and the force-settle grace must bound the wait either way.
+  const pending = runShell(
+    process.execPath,
+    ["-e", "setTimeout(() => {}, 60000)"],
+    dir,
+    120_000,
+    controller.signal,
+  );
+  setTimeout(() => controller.abort(), 200);
+  await pending;
+  assert.ok(Date.now() - started < 15_000, "abort settles the tool promptly");
+});

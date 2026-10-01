@@ -145,6 +145,8 @@ export const BashTool = buildTool({
   },
 });
 
+const KILL_SETTLE_GRACE_MS = 5_000;
+
 export async function runShell(
   program: string,
   args: string[],
@@ -216,12 +218,30 @@ export async function runShell(
         }
       }
     };
-    const onAbort = () => killTree();
+    // taskkill can miss a detached grandchild, or the child can sit in an
+    // uninterruptible wait; `close` then never fires and the tool (and with it
+    // the whole turn, its queue slot and every later message) hangs forever.
+    // After a kill, give the tree a grace period and then settle regardless.
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    const armForceSettle = () => {
+      if (forceTimer) return;
+      forceTimer = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.emit("close", null);
+      }, KILL_SETTLE_GRACE_MS);
+      forceTimer.unref?.();
+    };
+    const onAbort = () => {
+      killTree();
+      armForceSettle();
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) queueMicrotask(onAbort);
 
     const timer = setTimeout(() => {
       timedOut = true;
+      armForceSettle();
       // On win32 kill the whole tree — child.kill() leaves grandchildren (dev
       // servers, watchers) alive holding ports. taskkill /T /F reaps them.
       if (process.platform === "win32" && child.pid) {
@@ -297,7 +317,11 @@ export async function runShell(
       grace.unref();
       child.once("close", () => clearTimeout(grace));
     });
+    let closed = false;
     child.on("close", (code) => {
+      if (closed) return;
+      closed = true;
+      if (forceTimer) clearTimeout(forceTimer);
       void (async () => {
         clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);

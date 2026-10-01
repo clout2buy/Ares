@@ -38,6 +38,16 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.54.1",
+    date: "October 2026",
+    title: "Unstuck",
+    tagline: "A frozen command can no longer lock up a whole conversation.",
+    highlights: [
+      { icon: "🛑", title: "Stop really stops", blurb: "If a command hangs, Stop now ends it within seconds instead of leaving the chat stuck forever.", tag: "Fixed" },
+      { icon: "💬", title: "No more silent messages", blurb: "If an earlier turn is still stuck, Ares now tells you your message is queued instead of ignoring it.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.54.0",
     date: "September 2026",
     title: "One Mind",

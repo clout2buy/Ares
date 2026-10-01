@@ -1006,6 +1006,19 @@ export class Session {
           await this.persistImmediateTurnEnd(terminal);
           yield terminal;
         } else {
+          if (settled?.state === "admitted") {
+            // Timed out behind another input that is still held (typically a
+            // hung tool from an interrupted turn). Say so instead of letting the
+            // message vanish; it stays queued and runs when the head clears.
+            yield {
+              type: "error",
+              error: {
+                code: "session_busy",
+                message: "The previous turn is still stuck, so this message is queued behind it. Stop the stuck turn or start a new session.",
+                retriable: true,
+              },
+            };
+          }
           executionState = "completed";
           workOutcome = this.kernel.getSession(this.meta.id)?.workOutcome ?? "not_applicable";
         }

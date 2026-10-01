@@ -29,6 +29,7 @@ import {
 } from "../phoneBriefings.js";
 import { LocationService, createLocationApi, makeLocationFirer, type LocationSessionHost } from "../phoneLocation.js";
 import { localDayKey, resolveTimeZone, zonedParts } from "../phoneCommon.js";
+import type { MaintenanceFacts } from "../maintainer/maintainer.js";
 
 /** The tools read only `input`; the rich context is for permissions and streams a briefing never needs. */
 const TOOL_CONTEXT = {} as unknown as RichToolContext;
@@ -90,6 +91,8 @@ export interface BriefingSourceDeps {
   sessions: { list(): Array<{ id: string; busy: boolean }> };
   seams?: BriefingToolSeams;
   now?: () => number;
+  /** The nightly Maintainer's facts for the "Ares maintenance" section (absent: no such section). */
+  maintenance?: (sinceMs: number) => Promise<MaintenanceFacts>;
 }
 
 const inWindow = (startIso: string, window: CalendarWindow): boolean => {
@@ -104,6 +107,7 @@ export function buildBriefingSources(deps: BriefingSourceDeps): BriefingSources 
   const location = () => process.env.ARES_OWNER_LOCATION?.trim();
 
   return {
+    ...(deps.maintenance ? { maintenance: deps.maintenance } : {}),
     weather: async () => {
       const where = location();
       if (!where) throw new SourceNotConnected("no home location is set (ARES_OWNER_LOCATION)");

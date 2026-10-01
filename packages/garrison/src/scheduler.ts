@@ -43,6 +43,9 @@ export interface SchedulerHooks {
   /** Facebook Marketplace watches (experimental). Runs every marketplaceCheckEveryMs; the hook
    *  itself picks at most ONE due watch per tick, so searches stay slow and never burst. */
   marketplace?: () => Promise<unknown> | unknown;
+  /** The nightly Maintainer (self-improvement proposals). Runs every maintainerCheckEveryMs; the
+   *  hook decides whether tonight's run is due, and starts long work in the background. */
+  maintainer?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -93,6 +96,8 @@ export interface SchedulerOptions {
   briefingCheckEveryMs?: number;
   /** How often the marketplace hook looks for a due watch; default 5 minutes. */
   marketplaceCheckEveryMs?: number;
+  /** How often the maintainer hook is asked whether tonight's run is due; default 5 minutes. */
+  maintainerCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
@@ -128,6 +133,7 @@ const DEFAULT_FEED_CHECK_MS = 5 * 60_000;
 const DEFAULT_GOALS_CHECK_MS = 5 * 60_000;
 const DEFAULT_BRIEFING_CHECK_MS = 60_000;
 const DEFAULT_MARKETPLACE_CHECK_MS = 5 * 60_000;
+const DEFAULT_MAINTAINER_CHECK_MS = 5 * 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -180,7 +186,7 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, goals: false, briefing: false, marketplace: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, goals: false, briefing: false, marketplace: false, maintainer: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
   private readonly lastRuns: Partial<Record<SchedulerHookName, { at: number; result: string }>> = {};
   private readonly heldHooks = new Set<SchedulerHookName>();
@@ -224,6 +230,9 @@ export class Scheduler {
     }
     if (this.opts.hooks.marketplace) {
       this.handles.push(this.setIntervalFn(() => void this.runHook("marketplace"), this.opts.marketplaceCheckEveryMs ?? DEFAULT_MARKETPLACE_CHECK_MS));
+    }
+    if (this.opts.hooks.maintainer) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("maintainer"), this.opts.maintainerCheckEveryMs ?? DEFAULT_MAINTAINER_CHECK_MS));
     }
   }
 
@@ -324,6 +333,11 @@ export class Scheduler {
       const last = this.lastRuns.marketplace?.at ?? this.startedAtMs;
       push("marketplace", `Marketplace watches, checked every ${formatEvery(every)}`, this.started, last === undefined ? undefined : last + every);
     }
+    if (this.opts.hooks.maintainer) {
+      const every = this.opts.maintainerCheckEveryMs ?? DEFAULT_MAINTAINER_CHECK_MS;
+      const last = this.lastRuns.maintainer?.at ?? this.startedAtMs;
+      push("maintainer", `nightly self-improvement proposals, checked every ${formatEvery(every)}`, this.started, last === undefined ? undefined : last + every);
+    }
     return out;
   }
 
@@ -414,7 +428,7 @@ export class Scheduler {
     return this.opts.goalsCheckEveryMs ?? DEFAULT_GOALS_CHECK_MS;
   }
 
-  private async runHook(name: "heartbeat" | "dream" | "feed" | "goals" | "briefing" | "marketplace"): Promise<void> {
+  private async runHook(name: "heartbeat" | "dream" | "feed" | "goals" | "briefing" | "marketplace" | "maintainer"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
     if (name === "heartbeat") this.lastHeartbeatAt = this.nowFn();
     if (this.blocked(name)) return;
@@ -423,7 +437,7 @@ export class Scheduler {
       const out = await this.opts.hooks[name]?.();
       // The goals hook reports what it did ("idle", "ran 1 check-in") so the
       // jobs list is honest and an idle tick can stay out of the audit trail.
-      this.noteRun(name, (name === "goals" || name === "marketplace") && typeof out === "string" ? out : "ok");
+      this.noteRun(name, (name === "goals" || name === "marketplace" || name === "maintainer") && typeof out === "string" ? out : "ok");
     } catch (err) {
       this.noteRun(name, `error: ${errorText(err)}`);
       this.opts.onError?.(name, err);

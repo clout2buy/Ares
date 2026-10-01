@@ -473,7 +473,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
       if (await tmuxAvailable()) return;
       if (!(await serverUp())) return;
       await fs.promises.mkdir(dirs.run, { recursive: true, mode: 0o700 });
-      const sep = "\u001f";
+      const sep = "~|~"; // printable: tmux rewrites control characters in format output
       const r = await tmux(["list-panes", "-a", "-F", ["#{session_name}", "#{pane_pid}", "#{window_width}", "#{window_height}", "#{pane_current_path}", "#{pane_dead}", "#{pane_dead_status}", "#{@ares_created}", "#{@ares_title}"].join(sep)]);
       if (r.code !== 0) return;
       for (const line of r.out.split("\n")) {
@@ -545,7 +545,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     ticking = true;
     try {
       if (ownerPause.paused) api.detachAll(4423, "paused by owner");
-      const sep = "\u001f";
+      const sep = "~|~"; // printable: tmux rewrites control characters in format output
       const r = await tmux(["list-panes", "-a", "-F", ["#{session_name}", "#{pane_dead}", "#{pane_dead_status}", "#{pane_dead_signal}", "#{pane_pid}", "#{pane_current_path}", "#{window_width}", "#{window_height}"].join(sep)]);
       const seen = new Set<string>();
       if (r.code === 0) {
@@ -609,7 +609,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
 
   /** Scrollback + visible screen + cursor, as bytes an emulator can replay. Bounded. */
   async function snapshot(s: Sess): Promise<string> {
-    const sep = "\u001f";
+    const sep = "~|~"; // printable: tmux rewrites control characters in format output
     const info = await tmux(["display-message", "-p", "-t", `${s.id}:`, ["#{alternate_on}", "#{cursor_x}", "#{cursor_y}", "#{history_size}", "#{window_height}"].join(sep)]);
     const f = info.out.trim().split(sep);
     const alt = f[0] === "1";

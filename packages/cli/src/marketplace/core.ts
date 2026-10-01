@@ -271,8 +271,7 @@ export function parseListing(raw: RawListing, wantedId?: string): ListingDetail 
         if (/location is approximate|^seller information|^related searches|^today.s picks|^message$|^see more$/i.test(line)) break;
         out.push(line);
       }
-      description = out.join("
-");
+      description = out.join("\n");
     }
   }
   let location = "";

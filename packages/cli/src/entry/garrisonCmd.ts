@@ -753,8 +753,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     gcCheckpoints: gcWorkspaceCheckpoints,
     kernel: sessionKernel,
     activeTurns: () => sessions.list().filter((s) => s.busy).length,
-    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "system", line } }) + "
-"),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "system", line } }) + "\n"),
   });
   systemSurfaces.start();
   // Daily, jittered launch+handshake of the MCP servers the owner connected

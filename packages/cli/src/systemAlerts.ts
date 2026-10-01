@@ -57,6 +57,8 @@ interface ActiveAlert {
   lastAttemptAt?: number;
   sends: number;
   held?: boolean;
+  /** The last evaluation only wanted this in the feed (an escalation to a push resets `sends`). */
+  feedOnly?: boolean;
   /** Consecutive evaluations where the condition was false. */
   misses: number;
 }
@@ -274,6 +276,13 @@ export class AlertEngine {
         state.active[cand.key] = a;
       }
       a.misses = 0;
+      if (a.feedOnly && !cand.feedOnly) {
+        // The 80% heads-up became the 85% alert: that is a first push, not a repeat.
+        a.sends = 0;
+        a.lastSentAt = undefined;
+        a.lastAttemptAt = undefined;
+      }
+      a.feedOnly = cand.feedOnly === true;
       const wantPush = !cand.feedOnly && this.o.push !== undefined && (this.o.pushReady?.() ?? true);
       const blockedByQuiet = quiet && !cand.critical;
       let due = false;

@@ -215,6 +215,8 @@ export interface HousekeepingDeps {
   docker?: (args: string[]) => Promise<GitResult | null>;
   ownPid?: number;
   uid?: number;
+  /** false = never write the report or ledger (read-only measurement against a live home). Default true. */
+  persist?: boolean;
   log?: (line: string) => void;
 }
 
@@ -434,6 +436,7 @@ export class Housekeeping {
   }
 
   private async writeReport(report: HousekeepingReport, dryRun: boolean): Promise<void> {
+    if (this.d.persist === false) return;
     try {
       await fs.mkdir(path.dirname(this.reportFile), { recursive: true });
       // A dry run is a question, not a result: it must not replace the last real report.
@@ -445,6 +448,7 @@ export class Housekeeping {
   }
 
   private async ledger(entry: Omit<LedgerEntry, "at">): Promise<void> {
+    if (this.d.persist === false) return;
     try {
       await fs.mkdir(path.dirname(this.ledgerFile), { recursive: true });
       const st = await fs.stat(this.ledgerFile).catch(() => null);
@@ -579,7 +583,7 @@ export class Housekeeping {
     const seen = new Set<string>();
     for (const dir of dirs) {
       for (const e of await listDir(dir)) {
-        if (!e.isFile() || !/\.log(\.\d+)?(\.gz)?$/.test(e.name)) continue;
+        if (!e.isFile() || !/\.log(\.[A-Za-z0-9-]+)*$/.test(e.name)) continue;
         const file = path.join(dir, e.name);
         if (seen.has(file)) continue;
         seen.add(file);
@@ -678,33 +682,31 @@ export class Housekeeping {
     for (const ws of spaces) {
       const blobs = path.join(ws, ".ares", "checkpoints", "blobs");
       if (!(await exists(blobs))) continue;
-      const before = await dirSize(blobs);
-      c.counters.found += before.files;
       const orphans = await this.orphanBlobs(ws);
       if (orphans === null) {
         c.counters.notes.push(`${path.basename(ws)}: unreadable checkpoint metas, sweep skipped`);
         continue;
       }
+      c.counters.found += orphans.total;
+      if (orphans.count === 0) continue;
       if (c.dryRun) {
         c.counters.acted += orphans.count;
         c.counters.bytes += orphans.bytes;
         continue;
       }
-      if ((this.d.activeTurns?.() ?? 0) > 0 && orphans.count > 0 && ws === (this.d.workspaces ?? [])[0]) {
-        // GC is safe against a live turn (it serialises and spares fresh blobs), so this is only a courtesy note.
-        c.counters.notes.push("ran with a turn active; blobs younger than a minute were spared");
-      }
+      // Core's GC is safe against a live turn (it serialises per workspace and spares blobs younger than a minute).
       await this.d.gcCheckpoints(ws);
-      const after = await dirSize(blobs);
-      const freed = Math.max(0, before.bytes - after.bytes);
-      c.counters.acted += Math.max(0, before.files - after.files);
+      const after = (await this.orphanBlobs(ws)) ?? orphans;
+      const freedBlobs = Math.max(0, orphans.count - after.count);
+      const freed = Math.max(0, orphans.bytes - after.bytes);
+      c.counters.acted += freedBlobs;
       c.counters.bytes += freed;
-      if (freed > 0) await this.ledger({ job: "checkpoints", action: "gc", target: blobs, bytes: freed, detail: `${before.files - after.files} blobs` });
+      if (freedBlobs > 0) await this.ledger({ job: "checkpoints", action: "gc", target: blobs, bytes: freed, detail: `${freedBlobs} orphaned blobs` });
     }
   }
 
   /** Blobs that no surviving checkpoint meta references and that are older than a minute. null = cannot tell. */
-  private async orphanBlobs(workspace: string): Promise<{ count: number; bytes: number } | null> {
+  private async orphanBlobs(workspace: string): Promise<{ count: number; bytes: number; total: number } | null> {
     const metaDir = path.join(workspace, ".ares", "checkpoints", "meta");
     const live = new Set<string>();
     for (const e of await listDir(metaDir)) {
@@ -718,10 +720,12 @@ export class Housekeeping {
     }
     let count = 0;
     let bytes = 0;
+    let total = 0;
     const root = path.join(workspace, ".ares", "checkpoints", "blobs");
     for (const shard of await listDir(root)) {
       if (!shard.isDirectory()) continue;
       for (const b of await listDir(path.join(root, shard.name))) {
+        total += 1;
         if (live.has(b.name)) continue;
         const st = await fs.lstat(path.join(root, shard.name, b.name)).catch(() => null);
         if (!st || this.now() - st.mtimeMs < 60_000) continue;
@@ -729,7 +733,7 @@ export class Housekeeping {
         bytes += st.size;
       }
     }
-    return { count, bytes };
+    return { count, bytes, total };
   }
 
   private async jobWal(c: { dryRun: boolean; counters: JobCounters }): Promise<void> {

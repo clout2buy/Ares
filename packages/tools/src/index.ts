@@ -273,10 +273,16 @@ export {
   specHandleFor,
   syncApiConnectServices,
   verifyApiService,
+  searchAllServices,
   type CallClass,
+  type CrossHit,
 } from "./openapi/services.js";
 export { SpecHandle, parseSpecText, searchOperations, suggestAuth, simplifySchema, tokenize, type ResolvedOperation, type OpIndexEntry } from "./openapi/spec.js";
-export { buildRequest, executeCall, resolveAuth, redactText, redactTokens, visibleHeaders, resetRateLimits, clearOAuthCache, ApiInputError, vaultCredentials, type CredentialSource } from "./openapi/call.js";
+export { buildRequest, executeCall, fetchPage, renderResult, resolveAuth, redactText, redactTokens, visibleHeaders, resetRateLimits, clearOAuthCache, retryAfterMs, parseLinkNext, graphqlTextIsReadOnly, ApiInputError, vaultCredentials, type CredentialSource, type PagingInfo } from "./openapi/call.js";
+export { shrinkJson, projectFields, selectPath, getPath } from "./openapi/shape.js";
+export { setConnectedTokenProvider, resolveConnectedToken, hasConnectedToken, notConnectedMessage, type ConnectedToken, type ConnectedTokenProvider } from "./openapi/connectedToken.js";
+export { PRESET_BUNDLES, PRESET_ROSTER, presetBundle } from "./openapi/presets/index.js";
+export type { PresetBundle, Recipe, RecipeStep, PresetSource, PresetNotes } from "./openapi/presets/_kit.js";
 export { classifyAddress, assertUrlAllowed, safeFetch, guardedLookup, NetBlockedError, type AddressClass, type Resolver } from "./openapi/netGuard.js";
 export { MqttClient, parseMqttUrl, validateTopicName, validateTopicFilter } from "./openapi/mqttClient.js";
 export { atomToJson } from "./openapi/atom.js";

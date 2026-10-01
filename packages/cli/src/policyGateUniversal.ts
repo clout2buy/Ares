@@ -7,6 +7,7 @@
 //         any other method                               → browser_submit
 //         financial-looking operation or service call    → payment_or_purchase
 //         DELETE / destructive-looking operation         → shell_destructive
+//         a message / post / comment (preset risk)       → email_send (words in front of others)
 //         add / remove / refresh a service               → credential_or_secret
 //                                                          (it changes what Ares may reach)
 //   Mqtt  publish                                        → browser_submit
@@ -26,10 +27,11 @@ export function universalToolCategory(toolName: string, input: unknown): ActionC
       if (action !== "call") return null;
       const opId = String(rec.operationId ?? rec.operation_id ?? "");
       const params = rec.params && typeof rec.params === "object" ? (rec.params as Record<string, unknown>) : undefined;
-      const cls = classifyApiCall(String(rec.service ?? "").toLowerCase(), opId, params);
+      const cls = classifyApiCall(String(rec.service ?? "").toLowerCase(), opId, params, undefined, rec.body);
       if (cls.kind !== "write") return null;
       if (cls.financial) return "payment_or_purchase";
       if (cls.destructive) return "shell_destructive";
+      if (cls.message) return "email_send";
       return "browser_submit";
     }
     case "Mqtt":

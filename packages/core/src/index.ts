@@ -519,6 +519,8 @@ export {
   MQTT_CONNECT_SERVICE,
   API_ID_RE,
   apiPresetDef,
+  registerApiPresets,
+  listApiPresetDefs,
   apiCred,
   apiConnectId,
   isApiConnectId,
@@ -536,6 +538,7 @@ export {
   apiConnectService,
   apiConnectServiceFromDisk,
   type ApiAuth,
+  type ApiOAuthSource,
   type ApiServiceDef,
 } from "./apiServices.js";
 export { PLAID_SERVICE, isPlaidService, plaidUpdateItemId, plaidVariantService } from "./plaidService.js";

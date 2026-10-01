@@ -6,6 +6,7 @@
 // ARES_UNIVERSAL_INTEGRATION=1); the ones that did not answer were dropped.
 
 import type { JsonObject } from "./spec.js";
+import { PRESET_BUNDLES } from "./presets/index.js";
 
 type Loc = "path" | "query" | "header";
 
@@ -494,4 +495,6 @@ export const PRESET_SPECS: Record<string, JsonObject> = {
   coingecko,
   "nasa-apod": nasaApod,
   "home-assistant": homeAssistant,
+  // The connected-account services (Vercel, GitHub, Google ...): one curated file each in ./presets/.
+  ...Object.fromEntries(PRESET_BUNDLES.map((b) => [b.id, b.spec])),
 };

@@ -8,11 +8,60 @@
 // spec must never make Ares fetch another URL.
 
 import YAML from "yaml";
+import { discoveryToOpenApi, isDiscoveryDocument } from "./discovery.js";
 
 export type JsonObject = Record<string, any>;
 
 export const HTTP_METHODS = ["get", "put", "post", "delete", "patch", "head", "options", "trace"] as const;
 const PATH_ITEM_KEYS = new Set(["parameters", "servers", "summary", "description", "$ref"]);
+
+/** How an operation is treated by the safety model, beyond its HTTP method. Curated presets only. */
+export type AresRisk = "read" | "write" | "destructive" | "financial" | "message";
+
+/** How a list operation pages. The Api tool follows it when asked for more than one page. */
+export interface AresPaginate {
+  /** token: next cursor value in the response goes into `param`. next-url: the response holds the full next URL.
+   *  link: the Link header's rel="next". page: `param` is a page number. offset: `param` is an item offset.
+   *  last-id: `param` is the id of the last item (Stripe starting_after), continue while `more` is true. */
+  style: "token" | "next-url" | "link" | "page" | "offset" | "last-id";
+  /** The request parameter that carries the cursor / page / offset / last id. */
+  param?: string;
+  /** The request parameter that sets the page size. */
+  limitParam?: string;
+  /** Response path (dotted) of the next cursor or next URL. */
+  next?: string;
+  /** Response path of the array of items to merge; "" or "." means the response itself is the array. */
+  items?: string;
+  /** Response path of a boolean that says there is more (GraphQL pageInfo.hasNextPage, Stripe has_more). */
+  more?: string;
+  /** The cursor is sent in the JSON body, not the query (Notion search, Slack-style POST reads). */
+  body?: boolean;
+  /** Item field that holds the id, for last-id (default "id"). */
+  idField?: string;
+}
+
+/** A curated GraphQL operation: the query text is fixed, `params` become its variables. */
+export interface AresGraphql {
+  query: string;
+  kind: "query" | "mutation";
+  /** The free-form query operation: the caller writes the query; mutations and subscriptions are refused. */
+  raw?: boolean;
+}
+
+/** Where to read the recipient and the exact words of a message-sending operation, for the owner's prompt. */
+export interface AresMessage {
+  /** Dotted paths into the call input: "body.channel", "params.chat_id". */
+  to?: string[];
+  text?: string[];
+}
+
+export interface OpExt {
+  risk?: AresRisk;
+  keywords?: string[];
+  paginate?: AresPaginate;
+  graphql?: AresGraphql;
+  message?: AresMessage;
+}
 
 export interface OpIndexEntry {
   id: string;
@@ -21,6 +70,18 @@ export interface OpIndexEntry {
   summary: string;
   tags: string[];
   deprecated?: boolean;
+  ext?: OpExt;
+}
+
+function extOf(op: JsonObject): OpExt | undefined {
+  const out: OpExt = {};
+  const risk = op["x-ares-risk"];
+  if (risk === "read" || risk === "write" || risk === "destructive" || risk === "financial" || risk === "message") out.risk = risk;
+  if (Array.isArray(op["x-ares-keywords"])) out.keywords = op["x-ares-keywords"].map(String).slice(0, 24);
+  if (op["x-ares-paginate"] && typeof op["x-ares-paginate"] === "object") out.paginate = op["x-ares-paginate"] as AresPaginate;
+  if (op["x-ares-graphql"] && typeof op["x-ares-graphql"] === "object") out.graphql = op["x-ares-graphql"] as AresGraphql;
+  if (op["x-ares-message"] && typeof op["x-ares-message"] === "object") out.message = op["x-ares-message"] as AresMessage;
+  return Object.keys(out).length ? out : undefined;
 }
 
 export interface SpecMeta {
@@ -43,6 +104,8 @@ export interface ResolvedParam {
   explode?: boolean;
   /** Swagger 2 collectionFormat, normalised to an OAS3 style/explode pair by the builder. */
   collectionFormat?: string;
+  /** A path variable that may contain slashes (Google's {+name}: people/me): slashes are kept, not encoded. */
+  reserved?: boolean;
 }
 
 export interface ResolvedBody {
@@ -65,6 +128,8 @@ export interface ResolvedOperation {
   responses: Array<{ status: string; description: string }>;
   /** Absolute server URLs this operation names itself (else the spec's). */
   servers: string[];
+  /** Curated-preset extensions (x-ares-*). */
+  ext?: OpExt;
 }
 
 export class SpecError extends Error {}
@@ -90,6 +155,8 @@ export function parseSpecText(text: string): JsonObject {
     }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SpecError("the spec must be an object");
+  // A Google API discovery document is not OpenAPI, but every Google API publishes one: convert it.
+  if (isDiscoveryDocument(parsed)) return discoveryToOpenApi(parsed);
   return parsed as JsonObject;
 }
 
@@ -278,6 +345,7 @@ export class SpecHandle {
           summary: clip(op.summary) ?? clip(op.description, 120) ?? "",
           tags: Array.isArray(op.tags) ? op.tags.map(String).slice(0, 6) : [],
           ...(op.deprecated === true ? { deprecated: true } : {}),
+          ...(extOf(op) ? { ext: extOf(op)! } : {}),
         });
       }
     }
@@ -345,6 +413,7 @@ export class SpecHandle {
         ...(typeof p.style === "string" ? { style: p.style } : {}),
         ...(typeof p.explode === "boolean" ? { explode: p.explode } : {}),
         ...(typeof p.collectionFormat === "string" ? { collectionFormat: p.collectionFormat } : {}),
+        ...(p["x-reserved"] === true ? { reserved: true } : {}),
       });
     }
 
@@ -396,6 +465,7 @@ export class SpecHandle {
       ...(body ? { body } : {}),
       responses,
       servers: ownServers,
+      ...(entry.ext ? { ext: entry.ext } : {}),
     };
     this.resolved.set(id, resolved);
     return resolved;
@@ -449,7 +519,12 @@ export function suggestAuth(raw: JsonObject): AuthSuggestion[] {
 
 // ─── Search ──────────────────────────────────────────────────────────────────
 
-const STOPWORDS = new Set(["a", "an", "the", "of", "for", "to", "in", "on", "by", "and", "or", "all", "me", "my", "with", "from", "is", "it", "that", "this", "as", "at", "be"]);
+const STOPWORDS = new Set([
+  "a", "an", "the", "of", "for", "to", "in", "on", "by", "and", "or", "all", "me", "my", "with", "from", "is", "it", "that", "this", "as", "at", "be",
+  // conversational filler: "what did I deploy today" should rank on deploy, not on did/what
+  "what", "which", "who", "when", "where", "why", "how", "did", "do", "does", "done", "have", "has", "had", "was", "were", "are", "been", "i", "you", "please", "show", "tell", "give", "any", "there", "can", "could", "would", "should", "will", "may", "might", "must", "some",
+  "they", "them", "their", "it", "its", "up", "right", "now", "just", "also", "if", "so", "then", "than", "want", "need", "like", "into", "out", "about", "today", "yesterday", "tonight", "again",
+]);
 
 /** Split identifiers and prose into lowercase words (camelCase, snake, kebab, path segments). */
 export function tokenize(text: string): string[] {
@@ -467,6 +542,67 @@ function stem(word: string): string {
   return word;
 }
 
+/** What a person says, mapped to what an API calls it (stemmed on both sides). Kept small and generic;
+ *  service-specific phrasing belongs in an operation's own x-ares-keywords. */
+const SYNONYMS: Record<string, string[]> = {
+  mail: ["message", "email", "inbox"],
+  email: ["mail", "message", "inbox"],
+  inbox: ["message", "mail"],
+  unread: ["inbox", "message"],
+  deploy: ["deployment"],
+  deployed: ["deployment"],
+  release: ["deployment", "tag"],
+  playing: ["playback", "player", "current"],
+  song: ["track"],
+  music: ["track", "playback"],
+  meeting: ["event", "calendar"],
+  appointment: ["event", "calendar"],
+  schedule: ["event", "calendar"],
+  task: ["todo", "issue"],
+  todo: ["task"],
+  ticket: ["issue"],
+  bug: ["issue"],
+  pr: ["pull"],
+  file: ["document", "drive"],
+  doc: ["document"],
+  folder: ["directory"],
+  photo: ["media", "image"],
+  picture: ["media", "image"],
+  post: ["media", "create"],
+  customer: ["contact", "client"],
+  client: ["customer", "contact"],
+  member: ["user"],
+  whoami: ["user", "profile", "account"],
+  me: ["user", "profile"],
+  profile: ["user", "account"],
+  channel: ["conversation"],
+  dm: ["conversation", "message"],
+  remove: ["delete"],
+  delete: ["remove", "trash"],
+  trash: ["delete"],
+  send: ["create", "post", "write"],
+  write: ["create"],
+  reply: ["comment", "message"],
+  comment: ["reply"],
+  stat: ["insight", "metric", "analytics"],
+  metric: ["insight", "analytics"],
+  analytics: ["insight", "metric"],
+  money: ["balance", "payment"],
+  revenue: ["balance", "payment", "charge"],
+  domain: ["dns"],
+  website: ["site", "project"],
+  site: ["website", "project"],
+  log: ["event", "output"],
+  error: ["issue", "exception"],
+  alert: ["incident"],
+  oncall: ["schedule", "incident"],
+  run: ["workflow", "action"],
+  build: ["deployment", "workflow", "run"],
+  commit: ["change"],
+  repo: ["repository"],
+  workout: ["activity", "exercise"],
+};
+
 export interface SearchOptions {
   limit?: number;
   method?: string;
@@ -475,6 +611,20 @@ export interface SearchOptions {
 
 export interface SearchHit extends OpIndexEntry {
   score: number;
+}
+
+/** How rare a token is within the searched operations: 0.75 (in everything) .. 1.25 (in one). */
+function idfWeights(docs: string[][], tokens: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const n = Math.max(docs.length, 1);
+  const max = Math.log(1 + n);
+  for (const t of tokens) {
+    let df = 0;
+    for (const d of docs) if (d.includes(t)) df++;
+    const idf = Math.log(1 + (n - df + 0.5) / (df + 0.5));
+    out.set(t, 0.75 + 0.5 * Math.min(1, idf / max));
+  }
+  return out;
 }
 
 export function searchOperations(ops: OpIndexEntry[], query: string, opts: SearchOptions = {}): { hits: SearchHit[]; total: number } {
@@ -494,36 +644,65 @@ export function searchOperations(ops: OpIndexEntry[], query: string, opts: Searc
   const meaningful = qTokens.filter((t) => !STOPWORDS.has(t));
   if (meaningful.length) qTokens = meaningful;
   const unique = [...new Set(qTokens)];
+  const wantsWrite = /\b(create|add|send|post|make|update|edit|change|delete|remove|schedule|book|reply|write|compose|upload|move|rename|cancel|publish|invite|share|assign|mark|approve|merge|redeploy|rollback|roll back|promote|trigger|dispatch|forward|draft|archive|trash|pause|resume)\b/i.test(trimmed);
+
+  // Per-operation token bags (computed once; the index is small).
+  const bags = pool.map((op) => ({
+    op,
+    id: tokenize(op.id).map(stem),
+    path: tokenize(op.path.replace(/\{[^}]*\}/g, " ")).map(stem),
+    summary: tokenize(op.summary).map(stem),
+    tags: op.tags.flatMap((t) => tokenize(t)).map(stem),
+    keywords: (op.ext?.keywords ?? []).flatMap((k) => tokenize(k)).map(stem),
+  }));
+  const weights = idfWeights(
+    bags.map((b) => [...b.id, ...b.path, ...b.summary, ...b.tags, ...b.keywords]),
+    [...new Set(unique.flatMap((q) => [q, ...(SYNONYMS[q] ?? []).map(stem)]))],
+  );
+
   const scored: SearchHit[] = [];
-  for (const op of pool) {
+  for (const b of bags) {
+    const op = b.op;
     const idLower = op.id.toLowerCase();
     let score = 0;
     if (idLower === lowerQuery) score += 100;
     else if (lowerQuery.length >= 3 && !/\s/.test(lowerQuery) && idLower.includes(lowerQuery)) score += 10;
-    const idTokens = tokenize(op.id).map(stem);
-    const pathTokens = tokenize(op.path.replace(/\{[^}]*\}/g, " ")).map(stem);
-    const sumTokens = tokenize(op.summary).map(stem);
-    const tagTokens = op.tags.flatMap((t) => tokenize(t)).map(stem);
     let matched = 0;
     for (const q of unique) {
       let best = 0;
-      const hit = (tokens: string[], exact: number, prefix: number, sub: number) => {
-        for (const t of tokens) {
-          if (t === q) best = Math.max(best, exact);
-          else if (q.length >= 3 && t.startsWith(q)) best = Math.max(best, prefix);
-          else if (q.length >= 4 && t.includes(q)) best = Math.max(best, sub);
-        }
-      };
-      hit(idTokens, 6, 3, 1.5);
-      hit(pathTokens, 5, 2.5, 1);
-      hit(sumTokens, 4, 2, 1);
-      hit(tagTokens, 3, 1.5, 0.5);
+      const variants: Array<[string, number]> = [[q, 1], ...(SYNONYMS[q] ?? []).map((s): [string, number] => [stem(s), 0.7])];
+      for (const [v, scale] of variants) {
+        const hit = (tokens: string[], exact: number, prefix: number, sub: number) => {
+          for (const t of tokens) {
+            if (t === v) best = Math.max(best, exact * scale);
+            else if (v.length >= 3 && t.startsWith(v)) best = Math.max(best, prefix * scale);
+            else if (v.length >= 4 && t.includes(v)) best = Math.max(best, sub * scale);
+          }
+        };
+        hit(b.id, 6, 3, 1.5);
+        hit(b.path, 5, 2.5, 1);
+        hit(b.summary, 4, 2, 1);
+        hit(b.keywords, 5, 2.5, 1);
+        hit(b.tags, 3, 1.5, 0.5);
+      }
       if (best > 0) matched++;
-      score += best;
+      score += best * (weights.get(q) ?? 1);
     }
     if (matched === 0 && score < 10) continue;
     if (unique.length > 1) score *= 0.5 + 0.5 * (matched / unique.length);
     if (unique.length > 1 && op.summary.toLowerCase().includes(lowerQuery)) score += 3;
+    // A curated phrase ("unread mail", "what is playing") that the query contains is the strongest signal there is.
+    for (const k of op.ext?.keywords ?? []) {
+      const phrase = k.toLowerCase().trim();
+      if (phrase.length >= 4 && lowerQuery.includes(phrase)) {
+        score += 8;
+        break;
+      }
+    }
+    // "what meetings do I have" wants the list, "schedule a meeting" wants the create: break ties by intent.
+    const isRead = op.method === "GET" || op.method === "HEAD" || op.ext?.risk === "read";
+    if (!wantsWrite && !isRead) score *= 0.85;
+    else if (wantsWrite && op.method === "GET") score *= 0.9;
     if (op.deprecated) score *= 0.5;
     scored.push({ ...op, score: Math.round(score * 100) / 100 });
   }

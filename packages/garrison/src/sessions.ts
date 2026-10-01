@@ -176,7 +176,25 @@ export interface SessionSendOptions {
   tenant?: SessionTenant;
   /** Inline images for this input (already validated by the gateway). */
   attachments?: SessionAttachment[];
+  /**
+   * Called once the input is durably admitted (or recognised as one that
+   * already was). `duplicate` is true for a retried send reusing its inputId:
+   * nothing is executed again. This is how a client that lost its connection
+   * mid-send learns, on its new one, that the message arrived.
+   */
+  onAdmitted?: (info: { inputId: string; duplicate: boolean }) => void;
 }
+
+/** A retried send reused an inputId for a DIFFERENT message. */
+export class InputConflictError extends Error {
+  constructor(readonly inputId: string) {
+    super(`session.send inputId ${JSON.stringify(inputId.slice(0, 80))} was already used for a different message`);
+    this.name = "InputConflictError";
+  }
+}
+
+/** How many recent inputIds a legacy (no durable kernel) session remembers. */
+const SEEN_INPUTS_MAX = 256;
 
 /** Bounds for inline attachments: per-image and per-input base64 budgets that
  *  mirror the desktop's contentFromUserInput, so a phone photo can never push
@@ -317,6 +335,12 @@ interface LiveSession {
   turnStartedAt?: number;
   inFlightInputIds: Set<string>;
   deniedThisTurn: Set<string>;
+  /** Sends waiting to hear their admission (Core Session reports admission to
+   *  observers, not on the turn stream): inputId -> its onAdmitted. */
+  admissionWaiters: Map<string, Array<(info: { inputId: string; duplicate: boolean }) => void>>;
+  /** Legacy engines have no durable input queue, so idempotency is remembered
+   *  here: inputId -> a fingerprint of what was sent. Bounded, in memory. */
+  seenInputs: Map<string, string>;
 }
 
 interface PendingPermission {
@@ -325,6 +349,12 @@ interface PendingPermission {
   sessionId: string;
   /** canonicalActionKey of what was asked — tripped on an owner deny. */
   action: string;
+}
+
+/** What identifies "the same message" for a retried send: its text and its images. */
+function inputFingerprint(text: string, attachments: SessionAttachment[] | undefined): string {
+  const images = (attachments ?? []).map((a) => `${a.mediaType}:${a.data.length}:${a.data.slice(0, 32)}:${a.data.slice(-32)}`).join("|");
+  return `${text.length}:${text}\u0000${images}`;
 }
 
 const FALLBACK_TITLE = "untitled session";
@@ -487,6 +517,25 @@ export class SessionManager {
     // after boot, failed boot rehydration, or a client references it across a
     // restart) is lazily rebuilt from its rollout rather than rejected.
     const session = (await this.ensureLiveSession(sessionId)) ?? this.get(sessionId);
+    // Idempotency: a send that reuses an inputId it has already had admitted
+    // (the client retried after a dropped connection) is acknowledged, never
+    // executed twice. Only a CLIENT-supplied id is a retry key.
+    let replay = false;
+    let legacyPrint: string | undefined;
+    if (options.inputId !== undefined) {
+      if (session.coreSession) {
+        replay = session.coreSession.hasAdmittedInput?.(inputId) === true;
+      } else {
+        const seen = session.seenInputs.get(inputId);
+        const print = inputFingerprint(text, options.attachments);
+        if (seen !== undefined) {
+          if (seen !== print) throw new InputConflictError(inputId);
+          options.onAdmitted?.({ inputId, duplicate: true });
+          return;
+        }
+        legacyPrint = print;
+      }
+    }
     if (!session.coreSession && session.busy) throw new SessionBusyError(sessionId);
     if (!session.coreSession && delivery === "steer") {
       throw new Error("steer delivery requires a canonical Core Session");
@@ -508,6 +557,12 @@ export class SessionManager {
       // race out of the same pause.
       if (!session.coreSession && session.busy) throw new SessionBusyError(sessionId);
     }
+    if (legacyPrint !== undefined) {
+      // Remembered once the turn is really under way (not for a send refused
+      // above as busy or stopped, which the client rightly retries).
+      session.seenInputs.set(inputId, legacyPrint);
+      if (session.seenInputs.size > SEEN_INPUTS_MAX) session.seenInputs.delete(session.seenInputs.keys().next().value as string);
+    }
     session.inFlightSends += 1;
     session.inFlightInputIds.add(inputId);
     session.turnStartedAt ??= this.now();
@@ -525,15 +580,24 @@ export class SessionManager {
       this.queueMetaWrite(session);
       this.stampKernelIdentity(session);
     }
+    // A replay is not a new request: memory capture already ran for it.
     try {
-      await this.beforeSend?.({
-        sessionId: session.id,
-        text,
-        surface: session.surface,
-        tenant: options.tenant ?? session.tenant ?? { role: "owner" },
-      });
+      if (!replay) {
+        await this.beforeSend?.({
+          sessionId: session.id,
+          text,
+          surface: session.surface,
+          tenant: options.tenant ?? session.tenant ?? { role: "owner" },
+        });
+      }
     } catch {
       // a host hook must never block the turn
+    }
+    // Core Session reports admission to its observers; wait there for it.
+    // A legacy engine has no admission step: it is admitted as it is handed over.
+    if (options.onAdmitted) {
+      if (session.coreSession) session.admissionWaiters.set(inputId, [...(session.admissionWaiters.get(inputId) ?? []), options.onAdmitted]);
+      else options.onAdmitted({ inputId, duplicate: false });
     }
     // ── stuck-turn watchdog ──────────────────────────────────────────────
     let lastEventAt = Date.now();
@@ -595,7 +659,10 @@ export class SessionManager {
         if (event.type === "input_admitted" && session.mirroredAdmissionIds.delete(event.inputId)) {
           continue;
         }
-        if (event.type === "turn_end" && event.status === "failed") this.retireFailedInput(session, inputId);
+        if (event.type === "turn_end" && event.status === "failed") {
+          this.retireFailedInput(session, inputId);
+          if (legacyPrint !== undefined) session.seenInputs.delete(inputId);
+        }
         this.appendRollout(session, event);
         session.friction?.record(event);
         this.observeForOwner(session, event);
@@ -612,7 +679,18 @@ export class SessionManager {
         }
         this.fanOut(session, event);
       }
+    } catch (error) {
+      // A turn that threw did not happen: its retry must run, not be swallowed.
+      if (legacyPrint !== undefined) session.seenInputs.delete(inputId);
+      if ((error as { code?: unknown } | null)?.code === "IDEMPOTENCY_CONFLICT") throw new InputConflictError(inputId);
+      throw error;
     } finally {
+      if (options.onAdmitted) {
+        // Drop our own unfulfilled waiter, never a concurrent retry's.
+        const left = (session.admissionWaiters.get(inputId) ?? []).filter((w) => w !== options.onAdmitted);
+        if (left.length > 0) session.admissionWaiters.set(inputId, left);
+        else session.admissionWaiters.delete(inputId);
+      }
       if (stuckTimer) clearInterval(stuckTimer);
       session.inFlightSends = Math.max(0, session.inFlightSends - 1);
       session.busy = session.inFlightSends > 0;
@@ -934,6 +1012,8 @@ export class SessionManager {
       audit: new ToolAuditTracker(),
       inFlightInputIds: new Set(),
       deniedThisTurn: new Set(),
+      admissionWaiters: new Map(),
+      seenInputs: new Map(),
       ioChain: fs
         .mkdir(sessionsDir(this.home), { recursive: true })
         .then(() => undefined)
@@ -949,8 +1029,21 @@ export class SessionManager {
       coreSession.observeEvents((event) => {
         if (event.type !== "input_admitted") return;
         session.mirroredAdmissionIds.add(event.inputId);
-        this.appendRollout(session, event);
+        // A replay (a retried send reusing its inputId) is acknowledged to
+        // subscribers but NOT written again: the history already holds it,
+        // and a reconnecting phone must not replay the same message twice.
+        if (event.replay !== true) this.appendRollout(session, event);
         this.fanOut(session, event);
+        const waiting = session.admissionWaiters.get(event.inputId);
+        const waiter = waiting?.shift();
+        if (waiting && waiting.length === 0) session.admissionWaiters.delete(event.inputId);
+        if (waiter) {
+          try {
+            waiter({ inputId: event.inputId, duplicate: event.replay === true });
+          } catch {
+            // a client callback never breaks the stream
+          }
+        }
       });
     }
     this.live.set(p.id, session);

@@ -382,13 +382,17 @@ export class GarrisonServer {
           this.enqueueError(client, "session.send requires sessionId and text");
           return;
         }
-        if (
-          frame.inputId !== undefined &&
-          (typeof frame.inputId !== "string" || !frame.inputId.trim() || frame.inputId.length > 1_024)
-        ) {
-          this.enqueueError(client, "session.send inputId must be a non-empty string of at most 1024 characters");
+        for (const [name, value] of [["inputId", frame.inputId], ["clientMsgId", frame.clientMsgId]] as const) {
+          if (value !== undefined && (typeof value !== "string" || !value.trim() || value.length > 1_024)) {
+            this.enqueueError(client, `session.send ${name} must be a non-empty string of at most 1024 characters`);
+            return;
+          }
+        }
+        if (frame.inputId !== undefined && frame.clientMsgId !== undefined && frame.inputId !== frame.clientMsgId) {
+          this.enqueueError(client, "session.send inputId and clientMsgId must match when both are sent");
           return;
         }
+        const inputId = frame.inputId ?? frame.clientMsgId;
         if (frame.delivery !== undefined && frame.delivery !== "queue" && frame.delivery !== "steer") {
           this.enqueueError(client, "session.send delivery must be queue or steer");
           return;
@@ -400,11 +404,17 @@ export class GarrisonServer {
         }
         // Fire-and-forget: the turn streams to subscribers; failures (busy,
         // unknown session, engine throw) come back as one error frame.
+        const sentTo = frame.sessionId;
         sessions.send(frame.sessionId, frame.text, {
-          inputId: frame.inputId,
+          inputId,
           delivery: frame.delivery,
           tenant: normalizeSessionTenant(frame.tenant),
           ...(attachments.length > 0 ? { attachments } : {}),
+          // A client that named its message gets told the garrison has it, on
+          // the connection it sent it from (which may not be attached yet).
+          ...(inputId !== undefined
+            ? { onAdmitted: (info: { inputId: string; duplicate: boolean }) => this.enqueueFrame(client, { type: "send.ack", sessionId: sentTo, inputId: info.inputId, duplicate: info.duplicate }) }
+            : {}),
         }).catch((err) => this.enqueueError(client, errorMessage(err)));
         return;
       }

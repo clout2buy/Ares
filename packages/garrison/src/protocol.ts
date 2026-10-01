@@ -70,8 +70,15 @@ export type GatewayClientFrame =
       sessionId: string;
       text: string;
       /** Stable owner-generated identity. Reusing it retries one logical input
-       * instead of creating a second coding turn after an ambiguous disconnect. */
+       * instead of creating a second coding turn after an ambiguous disconnect.
+       * A client that queues messages while offline sends each with its own id
+       * and may re-send it as often as it likes: the garrison executes it once,
+       * answers every attempt with `send.ack`, and refuses the same id carrying
+       * a different message. */
       inputId?: string;
+      /** Alias of `inputId` (the name a client-side outbox gives it). When both
+       * are present they must be equal. */
+      clientMsgId?: string;
       /** queue starts a later turn; steer injects the correction at the next
        * safe boundary of the active canonical turn. Defaults to queue. */
       delivery?: "queue" | "steer";
@@ -129,4 +136,8 @@ export type GatewayServerFrame =
   /** Phone Hands: run one capability on the phone and answer with device.response. */
   | { type: "device.request"; id: string; capability: string; args: Record<string, unknown>; deadlineMs: number; reason?: string }
   | { type: "device.ack"; id: string }
+  /** The garrison has this input: admitted just now, or already (a retry).
+   *  Sent only to the connection that sent it, and only when the send carried
+   *  an inputId / clientMsgId. `duplicate` true means nothing ran again. */
+  | { type: "send.ack"; sessionId: string; inputId: string; duplicate: boolean }
   | { type: "error"; message: string };

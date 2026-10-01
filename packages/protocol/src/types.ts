@@ -139,6 +139,11 @@ export type TurnEvent =
       sessionId: string;
       delivery: "queue" | "steer";
       userMessage: Message;
+      /** True when this is the acknowledgement of an input that was ALREADY
+       * admitted: a retried send reusing its inputId after a dropped
+       * connection. Nothing new happened; a surface that already shows the
+       * message must not show it again. */
+      replay?: true;
     }
   | { type: "turn_start"; turnId: string; sessionId: string; userMessage: Message }
   | {

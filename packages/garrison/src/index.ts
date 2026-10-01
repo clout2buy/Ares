@@ -44,6 +44,7 @@ export {
   sessionsDir,
   rolloutPath,
   SessionBusyError,
+  InputConflictError,
   UnknownSessionError,
   type SessionManagerOptions,
   type SessionFactory,

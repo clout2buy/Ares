@@ -70,4 +70,45 @@ scrubbed environment (HOME, PATH, LANG, USER, TERM only) and `BROWSER` / `xdg-op
 records the authorize URL instead of opening anything. Every login, completion and logout is audited
 (`providers.login`, `providers.complete`, `providers.logout`).
 
-(Per-provider support and the real-CLI findings are appended below.)
+
+`POST /complete` waits up to 20 s for the CLI to finish before answering, so the usual answer is already
+`signed_in`; `pending` means keep polling. A finished flow answers its verdict again and is never replayed.
+`login` on a provider that is already `signed_in` answers `signed_in` unless the body has `force: true`.
+
+## What each provider supports
+
+| id | kind | A loopback | B device | C paste | verified how |
+|---|---|---|---|---|---|
+| `claude-code` | coding-agent | yes (default) | no | yes (`method:"paste"`, also the automatic fallback) | REAL `claude` 2.1.280 on Rook, run to the URL under a throwaway HOME, through the broker; completion proven with a mock only |
+| `codex` | coding-agent | yes (default) | yes (`method:"device"` runs `codex login --device-auth`) | no | NOT installed on Rook: mock only; behaviour is from the CLI's documented flow |
+| `kimi-cli` | coding-agent | no | yes (parse a `XXXX-XXXX` code + URL from the output) | no | NOT installed on Rook: generic parser, unverified; reported `unknown` while the binary is absent |
+| `ares-anthropic` | model | yes: `runAnthropicLoginFlow`, listener `127.0.0.1:53692/callback` | no | no | in-process; token exchange mocked; file `~/.ares/anthropic-oauth.json` read back by `loadAnthropicTokens` / `resolveAnthropicAccessToken` |
+| `ares-openai` | model | yes: `runOpenAILoginFlow`, listener `127.0.0.1:1455/auth/callback` | no (the issuer's device endpoint sits behind a bot challenge, see openaiAuth.ts) | no | in-process; exchange mocked; file `~/.ares/auth.json` |
+| `ares-kimi` | model | no | yes: `runKimiLoginFlow` device flow | no | in-process; endpoints mocked; file `~/.ares/kimi-auth.json` |
+
+Not covered: GitHub Copilot (Ares has no Copilot login) and `gh` (its login prompts interactively before it prints a code).
+Ares's two loopback listeners (53692 Anthropic, 1455 OpenAI/Codex) are fixed ports: the CLI `codex login` also uses 1455, so
+`codex` and `ares-openai` cannot be signed in at the same moment (the second fails honestly with "port in use").
+
+## Real CLI findings (Rook, 2026-10-01)
+
+`claude auth login` (Claude Code 2.1.280, native binary, `~/.local/bin/claude`), run with `HOME=<throwaway>`, `BROWSER`
+and `xdg-open` on PATH pointing at the recording shim, stdin/stdout on a pty (`script -qefc`), no terminal:
+
+* It "opens the browser" by executing `$BROWSER <url>` (also `xdg-open`). The shim received
+  `https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-...&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A<PORT>%2Fcallback&scope=...&code_challenge=...&code_challenge_method=S256&state=...`
+  and `ss -ltnp` showed `claude` listening on `127.0.0.1:<PORT>` (a RANDOM port per run, e.g. 40799), path `/callback`. This is mechanism A.
+* On stdout it prints `Opening browser to sign in...`, `If the browser didn't open, visit: <URL>` (an OSC-8 hyperlink, so
+  the escapes must be stripped) where THAT URL carries `redirect_uri=https://platform.claude.com/oauth/code/callback`
+  (the manual flow), then the prompt `Paste code here if prompted > `. This is mechanism C, available simultaneously.
+* `claude auth status --json` answers `{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty",...}` in a clean HOME;
+  that is what the listing uses. The credential is `~/.claude/.credentials.json`. `claude auth logout` signs out.
+* Headless Linux does NOT stop it from using loopback: no DISPLAY is needed because the browser is the phone.
+* Killing the pty child frees the port (verified); no process is left behind after a cancel.
+
+`gh auth login --web` was probed too and is NOT wired: it asks interactive questions (git protocol) before printing its one-time code.
+
+`codex` and `kimi` are not installed on Rook, so their output is unverified. Codex's documented login prints a loopback
+URL (`http://localhost:1455/auth/callback` redirect) and, with `--device-auth`, a URL plus code; the broker handles both
+generically (URL from the shim or stdout, code matched by `[A-Z0-9]{3,5}-[A-Z0-9]{3,5}`). If the real output differs the flow
+fails with a scrubbed message after 20 s rather than hanging.

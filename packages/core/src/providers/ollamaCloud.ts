@@ -33,6 +33,7 @@ import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent } from "./stallGuard.js";
 import { parseRetryAfterMs } from "./retryAfter.js";
 import { sanitizeToolPairs, coerceToolArgs, TOOL_ARGS_ERROR_KEY } from "./_toolPairs.js";
+import { imageMediaTypeFor } from "./imageMediaType.js";
 
 export type SlotName = "reasoner" | "apply" | "summarize";
 
@@ -1011,7 +1012,8 @@ function toAnthropicContentBlock(block: ContentBlock): Record<string, unknown> {
       type: "image",
       source: {
         type: "base64",
-        media_type: block.source.mediaType,
+        // Same reason as anthropic.ts: the bytes outrank the sender's claim.
+        media_type: imageMediaTypeFor(block.source.mediaType, block.source.data),
         data: block.source.data,
       },
     };

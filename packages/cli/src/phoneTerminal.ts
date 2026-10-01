@@ -474,7 +474,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
       if (!(await serverUp())) return;
       await fs.promises.mkdir(dirs.run, { recursive: true, mode: 0o700 });
       const sep = "\u001f";
-      const r = await tmux(["list-panes", "-a", "-F", ["#{session_name}", "#{pane_pid}", "#{window_width}", "#{window_height}", "#{pane_current_path}", "#{pane_dead}", "#{pane_dead_status}", "#{@ares_title}", "#{@ares_created}"].join(sep)]);
+      const r = await tmux(["list-panes", "-a", "-F", ["#{session_name}", "#{pane_pid}", "#{window_width}", "#{window_height}", "#{pane_current_path}", "#{pane_dead}", "#{pane_dead_status}", "#{@ares_created}", "#{@ares_title}"].join(sep)]);
       if (r.code !== 0) return;
       for (const line of r.out.split("\n")) {
         const f = line.split(sep);
@@ -482,7 +482,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
         if (!SID.test(id) || sessions.has(id)) continue;
         const s = newSess({
           id, pid: Number(f[1]) || 0, cols: Number(f[2]) || 80, rows: Number(f[3]) || 24, cwd: f[4] || "",
-          title: f[7] || `Terminal ${++titleCounter}`, createdAt: f[8] || new Date(now()).toISOString(),
+          title: f.slice(8).join(sep) || `Terminal ${++titleCounter}`, createdAt: f[7] || new Date(now()).toISOString(),
         });
         s.ready = true;
         if (f[5] === "1") { s.alive = false; s.exitCode = Number(f[6]) || 0; s.deadAtMs = now(); }

@@ -604,7 +604,10 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     if (s.cols === cols && s.rows === rows) return;
     s.cols = cols;
     s.rows = rows;
-    await tmux(["resize-window", "-t", `${s.id}:`, "-x", String(cols), "-y", String(rows)]);
+    // Same queue as input: a keystroke typed after a resize must see the new size.
+    const done = s.inputChain.then(async () => { await tmux(["resize-window", "-t", `${s.id}:`, "-x", String(cols), "-y", String(rows)]); }).catch(() => {});
+    s.inputChain = done;
+    await done;
   }
 
   /** Scrollback + visible screen + cursor, as bytes an emulator can replay. Bounded. */

@@ -1,0 +1,1 @@
+{"resource":"https://fig-mcp.instacart.com","authorization_servers":["https://fig-mcp.instacart.com"],"jwks_uri":"https://jwk.instacart.com/.well-known/jwks.json","scopes_supported":["connect:fig_mcp"]}

@@ -1,0 +1,16 @@
+{
+  "id": "intuit-mcp",
+  "mcpUrl": "https://mcp.intuit.com/mcp",
+  "probedAt": "2026-10-01T00:29:13.843Z",
+  "initialize": {
+    "status": 403,
+    "wwwAuthenticate": null,
+    "contentType": "text/html"
+  },
+  "prm": null,
+  "as": null,
+  "initializeGet": {
+    "status": 403,
+    "wwwAuthenticate": null
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "id": "figma",
+  "mcpUrl": "https://mcp.figma.com/mcp",
+  "probedAt": "2026-10-01T00:29:10.213Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"",
+    "contentType": "text/plain; charset=utf-8"
+  },
+  "prm": {
+    "url": "https://mcp.figma.com/.well-known/oauth-protected-resource",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.figma.com/mcp",
+      "authorization_servers": [
+        "https://api.figma.com"
+      ],
+      "bearer_methods_supported": [
+        "header"
+      ],
+      "scopes_supported": [
+        "mcp:connect"
+      ],
+      "resource_name": "Figma MCP",
+      "resource_documentation": "https://developers.figma.com/docs/figma-mcp-server/"
+    }
+  },
+  "as": {
+    "url": "https://api.figma.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://api.figma.com",
+      "authorization_endpoint": "https://www.figma.com/oauth/mcp",
+      "token_endpoint": "https://api.figma.com/v1/oauth/token",
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer"
+      ],
+      "authorization_grant_profiles_supported": [
+        "urn:ietf:params:oauth:grant-profile:id-jag"
+      ],
+      "response_types_supported": [
+        "code"
+      ],
+      "registration_endpoint": "https://api.figma.com/v1/oauth/mcp/register",
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post"
+      ],
+      "scopes_supported": [
+        "mcp:connect"
+      ],
+      "require_state_parameter": true,
+      "authorization_response_iss_parameter_supported": true
+    },
+    "issuerQueried": "https://api.figma.com"
+  }
+}

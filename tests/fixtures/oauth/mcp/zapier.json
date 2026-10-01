@@ -1,0 +1,59 @@
+{
+  "id": "zapier",
+  "mcpUrl": "https://mcp.zapier.com/api/mcp/mcp",
+  "probedAt": "2026-10-01T00:29:11.562Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer realm=\"Zapier MCP\", error=\"invalid_token\"",
+    "contentType": "application/json; charset=utf-8"
+  },
+  "prm": {
+    "url": "https://mcp.zapier.com/.well-known/oauth-protected-resource/api/mcp/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.zapier.com/api/mcp/mcp",
+      "authorization_servers": [
+        "https://mcp.zapier.com"
+      ],
+      "scopes_supported": [
+        "openid",
+        "profile",
+        "email"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://mcp.zapier.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://mcp.zapier.com",
+      "authorization_endpoint": "https://mcp.zapier.com/oauth/authorize",
+      "token_endpoint": "https://mcp.zapier.com/api/v1/oauth/token",
+      "registration_endpoint": "https://mcp.zapier.com/api/v1/oauth/register",
+      "revocation_endpoint": "https://mcp.zapier.com/api/v1/oauth/revoke",
+      "userinfo_endpoint": "https://mcp.zapier.com/api/v1/oauth/userinfo",
+      "scopes_supported": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "response_types_supported": [
+        "code"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "none",
+        "client_secret_post",
+        "client_secret_basic"
+      ],
+      "code_challenge_methods_supported": [
+        "plain",
+        "S256"
+      ]
+    },
+    "issuerQueried": "https://mcp.zapier.com"
+  }
+}

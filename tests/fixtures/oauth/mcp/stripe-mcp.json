@@ -1,0 +1,51 @@
+{
+  "id": "stripe-mcp",
+  "mcpUrl": "https://mcp.stripe.com",
+  "probedAt": "2026-10-01T00:29:13.401Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.stripe.com/.well-known/oauth-protected-resource\"",
+    "contentType": "application/json"
+  },
+  "prm": {
+    "url": "https://mcp.stripe.com/.well-known/oauth-protected-resource",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.stripe.com",
+      "authorization_servers": [
+        "https://access.stripe.com/mcp"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://access.stripe.com/.well-known/oauth-authorization-server/mcp",
+    "status": 200,
+    "body": {
+      "issuer": "https://access.stripe.com/mcp",
+      "authorization_endpoint": "https://access.stripe.com/mcp/oauth2/authorize",
+      "token_endpoint": "https://access.stripe.com/mcp/oauth2/token",
+      "registration_endpoint": "https://access.stripe.com/mcp/oauth2/register",
+      "revocation_endpoint": "https://access.stripe.com/mcp/oauth2/revoke",
+      "response_types_supported": [
+        "code"
+      ],
+      "scopes_supported": [
+        "mcp"
+      ],
+      "response_modes_supported": [
+        "query"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "none"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ]
+    },
+    "issuerQueried": "https://access.stripe.com/mcp"
+  }
+}

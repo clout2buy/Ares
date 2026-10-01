@@ -1,0 +1,1 @@
+{"resource":"https://mcp.sentry.dev/mcp","authorization_servers":["https://mcp.sentry.dev"],"scopes_supported":["org:read","project:write","team:write","event:write","alerts:write"],"bearer_methods_supported":["header"]}

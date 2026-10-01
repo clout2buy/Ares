@@ -80,7 +80,7 @@ test("Microsoft is a classic oauth-app provider on the v2 common endpoint", asyn
   for (const s of ["offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "Contacts.ReadWrite"]) assert.ok(ms.scopes.includes(s), s);
   const url = new URL(buildAuthorizeUrl(ms, { clientId: "app-id", redirectUri: "https://ares.test/oauth/callback", state: "st" }));
   assert.equal(url.searchParams.get("response_type"), "code");
-  assert.equal(url.searchParams.get("scope"), "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite");
+  assert.equal(url.searchParams.get("scope"), "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite Files.ReadWrite");
   assert.equal(url.searchParams.get("prompt"), "select_account");
 
   // Token redemption + refresh: form-encoded, client_secret in the body

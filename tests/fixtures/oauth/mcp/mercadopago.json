@@ -1,0 +1,55 @@
+{
+  "id": "mercadopago",
+  "mcpUrl": "https://mcp.mercadopago.com/mcp",
+  "probedAt": "2026-10-01T00:29:11.550Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": null,
+    "contentType": "application/json; charset=utf-8"
+  },
+  "prm": {
+    "url": "https://mcp.mercadopago.com/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.mercadopago.com/mcp",
+      "authorization_servers": [
+        "https://mcp.mercadopago.com/mcp"
+      ],
+      "scopes_supported": [
+        "offline_access",
+        "write",
+        "read"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://mcp.mercadopago.com/.well-known/oauth-authorization-server/mcp",
+    "status": 200,
+    "body": {
+      "issuer": "https://mcp.mercadopago.com/mcp",
+      "authorization_endpoint": "https://auth.mercadopago.com/mcp/authorization",
+      "token_endpoint": "https://mcp.mercadopago.com/oauth/token",
+      "device_authorization_endpoint": "https://mcp.mercadopago.com/oauth/device_authorization",
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "response_types_supported": [
+        "code"
+      ],
+      "scopes_supported": [
+        "offline_access",
+        "write",
+        "read"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "none"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "registration_endpoint": "https://mcp.mercadopago.com/oauth/register/mcp"
+    },
+    "issuerQueried": "https://mcp.mercadopago.com/mcp"
+  }
+}

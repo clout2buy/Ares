@@ -1,0 +1,88 @@
+{
+  "id": "supabase",
+  "mcpUrl": "https://mcp.supabase.com/mcp",
+  "probedAt": "2026-10-01T00:29:08.913Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer error=\"invalid_request\", error_description=\"No access token was provided in this request\", resource_metadata=\"https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp\"",
+    "contentType": "application/json; charset=utf-8"
+  },
+  "prm": {
+    "url": "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.supabase.com/mcp",
+      "bearer_methods_supported": [
+        "header"
+      ],
+      "authorization_servers": [
+        "https://api.supabase.com"
+      ],
+      "resource_documentation": "https://mcp.supabase.com/api/mcp",
+      "resource_name": "Supabase MCP (Beta)",
+      "scopes_supported": [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:write",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+        "storage:read",
+        "storage:write"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://api.supabase.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://api.supabase.com",
+      "authorization_endpoint": "https://api.supabase.com/v1/oauth/authorize",
+      "token_endpoint": "https://api.supabase.com/v1/oauth/token",
+      "registration_endpoint": "https://api.supabase.com/platform/oauth/apps/register",
+      "response_types_supported": [
+        "code"
+      ],
+      "response_modes_supported": [
+        "query"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post"
+      ],
+      "code_challenge_methods_supported": [
+        "S256",
+        "plain"
+      ],
+      "scopes_supported": [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:write",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+        "storage:read",
+        "storage:write"
+      ],
+      "authorization_grant_profiles_supported": [
+        "urn:ietf:params:oauth:grant-profile:id-jag"
+      ]
+    },
+    "issuerQueried": "https://api.supabase.com"
+  }
+}

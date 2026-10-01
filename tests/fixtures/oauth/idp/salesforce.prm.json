@@ -1,0 +1,9 @@
+{
+  "resource": "https://api.salesforce.com/platform/mcp/v1/platform/sobject-all",
+  "authorization_servers": [
+    "https://login.salesforce.com"
+  ],
+  "scopes_supported": [
+    "mcp_api", "refresh_token"
+  ]
+}

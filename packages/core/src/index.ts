@@ -336,6 +336,9 @@ export {
   getMcpCallCredentials,
   loadRemoteMcpServers,
   connectorNameFromUrl,
+  prepareMcpAuthorization,
+  type McpAuthPlanOptions,
+  type McpAuthPrepared,
   type RemoteMcpEntry,
   type ConnectMcpOptions,
   type ConnectMcpResult,
@@ -480,10 +483,26 @@ export {
   isExpired,
   clientIdName,
   clientSecretName,
+  quirksOf,
+  clientCredsFor,
+  beginProviderAuthorization,
+  startProviderDevice,
+  pollProviderDevice,
+  finalizeProviderTokens,
+  revokeAndForgetTokens,
   type OAuthProviderConfig,
   type OAuthTokens,
+  type OAuthTokenMeta,
   type OAuthDeps,
 } from "./oauth.js";
+export * from "./oauthEngine.js";
+export * from "./oauthClients.js";
+export * from "./oauthMatrix.js";
+export * from "./oauthPlan.js";
+export * from "./connectV2.js";
+export * from "./oauthAccount.js";
+export * from "./oauthServices.js";
+export * from "./oauthVendorQuirks.js";
 
 export {
   OAUTH_PROVIDERS,

@@ -1,0 +1,12 @@
+{
+  "id": "firecrawl",
+  "mcpUrl": "https://mcp.firecrawl.dev/mcp",
+  "probedAt": "2026-10-01T00:29:11.576Z",
+  "initialize": {
+    "status": 200,
+    "wwwAuthenticate": null,
+    "contentType": "text/event-stream"
+  },
+  "prm": null,
+  "as": null
+}

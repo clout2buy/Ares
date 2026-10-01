@@ -241,6 +241,12 @@ export interface PhoneApiHooks {
   /** The separate Ares instances deployed on this host (/gateway/instances —
    *  phoneInstances.ts). Absent off Linux; false = not mine. */
   instances?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The Share-sheet inbox (/gateway/inbox — phoneInbox.ts): Share -> Ares from any
+   *  iOS app, worked on in the background. Asked after the bearer check; false = not mine. */
+  inbox?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Shortcut aliases and Ares's proposed Shortcuts (/gateway/shortcuts —
+   *  phoneShortcuts.ts). Asked after the bearer check; false = not mine. */
+  shortcuts?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Phone Hands over HTTP (/gateway/device — phoneDevice.ts): the device
    *  list, a health check, and the pending/respond fallback. false = not mine. */
   device?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1591,6 +1597,12 @@ export class RemoteAgentServer {
       if (await api.notify(req, res, url)) return;
     }
 
+    if (api.inbox && (url.pathname === "/gateway/inbox" || url.pathname.startsWith("/gateway/inbox/"))) {
+      if (await api.inbox(req, res, url)) return;
+    }
+    if (api.shortcuts && (url.pathname === "/gateway/shortcuts" || url.pathname.startsWith("/gateway/shortcuts/"))) {
+      if (await api.shortcuts(req, res, url)) return;
+    }
     if (api.device && (url.pathname === "/gateway/device" || url.pathname.startsWith("/gateway/device/"))) {
       if (await api.device(req, res, url)) return;
     }

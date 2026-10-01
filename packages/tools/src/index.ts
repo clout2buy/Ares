@@ -154,8 +154,10 @@ export {
 } from "./ComputerUse.js";
 export { DeployTool, type DeployOutput } from "./Deploy.js";
 export { InstancesTool, type InstancesOutput } from "./Instances.js";
-export { IPhoneTool, type IPhoneOutput } from "./IPhone.js";
+export { IPhoneTool, isRoutineShortcutCall, type IPhoneOutput } from "./IPhone.js";
 export * from "./deviceTypes.js";
+export * from "./deviceShortcuts.js";
+export * from "./shortcutBuilder.js";
 export {
   Instances,
   instanceConfig,

@@ -23,7 +23,7 @@ import { evaluateAction, type ActionCategory, type ActionMode } from "@ares/effe
 import { vaultAccessReason, type ToolPermissionRequest } from "@ares/core";
 import { connectorCategory } from "./connectorGate.js";
 import { lifeToolCategory } from "./policyGateLife.js";
-import { deviceCapabilityFloor } from "@ares/tools";
+import { deviceCapabilityFloor, isRoutineShortcutCall } from "@ares/tools";
 import { davToolCategory } from "./policyGateDav.js";
 import { universalToolCategory } from "./policyGateUniversal.js";
 
@@ -245,8 +245,12 @@ export function classifyToolRequest(request: ToolPermissionRequest): ActionCateg
     // that changes or exposes the phone asks like a calendar create does. The
     // tool itself makes sensitive capabilities a per-call owner decision.
     case "iPhone": {
-      if (actionOf(request) !== "invoke") return null;
-      const capability = String((request.input as { capability?: unknown } | null)?.capability ?? "");
+      if (actionOf(request) !== "invoke") return null; // status, shortcuts and propose_shortcut change nothing on the phone
+      const input = request.input as { capability?: unknown; device?: unknown; args?: unknown } | null;
+      const capability = String(input?.capability ?? "");
+      // A Shortcut the owner marked routine may run without the box asking (the phone still applies its own gate);
+      // an unmarked, unknown or sensitive one is a per-call owner decision.
+      if (capability === "shortcut.run" && isRoutineShortcutCall({ ...(typeof input?.device === "string" ? { device: input.device } : {}), ...(input?.args && typeof input.args === "object" ? { args: input.args as Record<string, unknown> } : {}) })) return null;
       return deviceCapabilityFloor(capability) === "read" ? null : "browser_submit";
     }
     case "Filesystem":

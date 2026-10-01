@@ -206,6 +206,9 @@ function sanitizeShortcuts(raw: unknown): DeviceShortcut[] {
       name: s.name,
       ...(typeof s.description === "string" ? { description: clip(s.description, 300) } : {}),
       ...(typeof s.acceptsInput === "boolean" ? { acceptsInput: s.acceptsInput } : {}),
+      ...(typeof s.alias === "string" && s.alias.trim() ? { alias: clip(s.alias.trim(), 60) } : {}),
+      ...(typeof s.whenToUse === "string" && s.whenToUse.trim() ? { whenToUse: clip(s.whenToUse.trim(), 200) } : {}),
+      ...(typeof s.sensitive === "boolean" ? { sensitive: s.sensitive } : {}),
     });
   }
   return out;

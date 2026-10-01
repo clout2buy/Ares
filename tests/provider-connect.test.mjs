@@ -165,6 +165,6 @@ test("Ares's own logins are cards too (ares-anthropic is loopback, ares-kimi is 
 });
 
 test("the tool description tells the agent this is THE way to ask, and never to print links", () => {
-  assert.match(ConnectTool.description, /provider:<id>/);
-  assert.match(ConnectTool.description, /never print OAuth links/i);
+  assert.match(ConnectTool.schema.description, /provider:<id>/);
+  assert.match(ConnectTool.schema.description, /never print OAuth links/i);
 });

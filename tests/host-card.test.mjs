@@ -21,7 +21,7 @@ const nets = (ip) => () => ({
   "br-abc": [{ address: "172.18.0.1", family: "IPv4", internal: false }],
   eth0: [{ address: ip, family: "IPv4", internal: false }, { address: "fe80::1", family: "IPv6", internal: false }],
 });
-const base = { hostname: "doingbox", networkInterfaces: nets("192.168.1.41"), uptime: () => 90_000, version: () => "0.54.0", phoneUrl: () => "https://ares.example.com" };
+const base = { hostname: () => "doingbox", networkInterfaces: nets("192.168.1.41"), uptime: () => 90_000, version: () => "0.54.0", phoneUrl: () => "https://ares.example.com" };
 
 test("lanAddresses keeps the LAN address and drops loopback, docker bridges and IPv6", () => {
   assert.deepEqual(lanAddresses(nets("192.168.1.41")()), ["192.168.1.41"]);

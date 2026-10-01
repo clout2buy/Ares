@@ -1051,6 +1051,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       phoneNotifier?.stop();
       liveActivity.dispose();
       timelineApi.stop();
+      inboxApi.stop();
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});
       browserWatchHub.close();

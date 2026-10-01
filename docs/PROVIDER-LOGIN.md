@@ -112,3 +112,19 @@ and `xdg-open` on PATH pointing at the recording shim, stdin/stdout on a pty (`s
 URL (`http://localhost:1455/auth/callback` redirect) and, with `--device-auth`, a URL plus code; the broker handles both
 generically (URL from the shim or stdout, code matched by `[A-Z0-9]{3,5}-[A-Z0-9]{3,5}`). If the real output differs the flow
 fails with a scrubbed message after 20 s rather than hanging.
+
+## Agents asking for a provider sign-in (`Connect {service: "provider:<id>"}`)
+
+An agent never prints an OAuth link or asks for a code. `Connect` with `service: "provider:claude-code"` (also `codex`,
+`kimi-cli`, `ares-anthropic`, `ares-openai`, `ares-kimi`) reads the provider's state from this broker first:
+
+* `signed_in`: answers at once with the account, no card.
+* `unknown` (CLI not installed): a plain failure the agent relays; no card.
+* otherwise: emits ONE `tool_progress` card `{ kind: "connect_request", flowId, service: "provider:<id>", label, mode: "provider",
+  providerId, method, reason?, expired?, instructions }` (no `url`) and returns AT ONCE. The app answers the card with its own
+  Providers flow for that id (`useProviderLogin`: auth session / device code / paste only when `method` says so).
+* The garrison watches the provider (the broker's sign-in event plus a 5 s state poll, 10 minute cap) and, when it reads
+  `signed_in`, wakes the asking session once with a short note (`sessions.send`, queued) and emits `connect_result`.
+
+Code: `packages/core/src/providerSignIn.ts` (host interface), `packages/tools/src/connectProvider.ts`,
+`packages/cli/src/providerSignInHost.ts`, wiring in `garrisonCmd.ts`.

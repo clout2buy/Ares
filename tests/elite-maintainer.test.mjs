@@ -687,7 +687,7 @@ test("end to end: scripted coding in a real worktree -> real ares-verify -> prop
   assert.equal(f.restarts(), 0);
 
   approvals.respond({ approvalId: `maintainer:${p.id}`, verb: "allow_once" });
-  for (let i = 0; i < 200 && (await m.getProposal(p.id)).status === "deploying"; i++) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 300 && ["pending", "deploying"].includes((await m.getProposal(p.id)).status); i++) await new Promise((r) => setTimeout(r, 50));
   const done = await m.getProposal(p.id);
   assert.equal(done.status, "deployed", JSON.stringify(done));
   assert.equal(f.head(), p.sha, "the live tree moved to the verified commit");

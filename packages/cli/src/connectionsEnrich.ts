@@ -343,7 +343,6 @@ export async function clearMcpCacheError(id: string, home?: string): Promise<voi
     if (!entry || (entry.error === undefined && entry.errorAt === undefined)) return;
     delete entry.error;
     delete entry.errorAt;
-    await fs.writeFile(file, JSON.stringify(cache, null, 2) + "
-", "utf8");
+    await fs.writeFile(file, JSON.stringify(cache, null, 2) + "\n", "utf8");
   } catch { /* no cache yet */ }
 }

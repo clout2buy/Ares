@@ -86,7 +86,7 @@ test("the card rides the per-session layer for a persona thread and is absent wh
 
 test("a real persona session and a guest session, composed the way the garrison factory does", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "ares-hostcard-"));
-  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const runtime = new PersonaRuntime({
     home,
     resolveBrain: async (provider, model) => ({ provider, model }),
@@ -121,4 +121,5 @@ test("a real persona session and a guest session, composed the way the garrison 
   net = "192.168.1.77"; clock += 61_000;
   const p2 = sessions.create({ surface: "mobile", tenant: { role: "owner" }, personaId: persona.id });
   assert.match(seen.get(p2.id), /192\.168\.1\.77/, "a later session sees the new address");
+  await sessions.flush();
 });

@@ -305,7 +305,7 @@ export const FACEBOOK_OAUTH: OAuthProviderConfig = {
   userinfoUrl: "https://graph.facebook.com/v23.0/me?fields=id,name",
   pkce: false,
   scopeSeparator: ",",
-  scopes: ["public_profile", "pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement", "pages_read_user_content", "pages_messaging"],
+  scopes: ["public_profile", "pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement", "pages_read_user_content"],
   afterExchange: facebookExchange,
   // No refresh grant: swapping the long-lived token again renews it.
   customRefresh: facebookExchange,

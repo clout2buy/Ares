@@ -2899,8 +2899,7 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
       "pages_read_engagement",
       "pages_manage_posts",
       "pages_manage_engagement",
-      "pages_read_user_content",
-      "pages_messaging"
+      "pages_read_user_content"
     ],
     "scopeSeparator": ",",
     "refreshTokens": false,

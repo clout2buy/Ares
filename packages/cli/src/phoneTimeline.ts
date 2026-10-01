@@ -47,6 +47,8 @@ export const BRIEF_CAP = 480;
 export const EXCERPT_CAP = 700;
 /** A background job with no result this long after it began is flagged `stale`. */
 export const STALE_AFTER_MS = 6 * 60 * 60_000;
+/** Detached Task jobs remembered so a later TaskOutput can settle them. */
+export const JOBS_CAP = 500;
 
 export type HandoffStatus = "running" | "done" | "failed" | "cancelled";
 export type HandoffVia = "task" | "fleet" | "coding" | "family" | "subagent";
@@ -402,9 +404,11 @@ export class TimelineStore {
     });
   }
 
-  /** Fold one session event. `agent` is who this session belongs to. Cheap for
-   *  the events that matter nothing to a handoff (every streamed token). */
-  observe(sessionId: string, agent: Party, ts: number, event: TurnEvent): void {
+  /** Fold one session event. `who` is who this session belongs to (a function,
+   *  so it is only asked for when a handoff is actually recorded). Cheap for the
+   *  events that matter nothing to a handoff (every streamed token). */
+  observe(sessionId: string, who: Party | (() => Party), ts: number, event: TurnEvent): void {
+    const agent = (): Party => (typeof who === "function" ? who() : who);
     switch (event.type) {
       case "tool_start": {
         const name = String(event.name ?? "");
@@ -415,7 +419,7 @@ export class TimelineStore {
           const prev = this.records.get(id);
           if (prev) return; // a replay of a call already folded
           this.commit({
-            id, rev: 0, via: hit.via, from: agent, to: hit.to, task: hit.task,
+            id, rev: 0, via: hit.via, from: agent(), to: hit.to, task: hit.task,
             ...(hit.brief ? { brief: hit.brief } : {}),
             status: "running", at: ts, sessionId,
             ...(hit.background ? { background: true } : {}),
@@ -440,6 +444,7 @@ export class TimelineStore {
         const detached = rec.via === "task" && typeof out?.jobId === "string" && out.status !== undefined && rec.background === true;
         if (detached) {
           this.jobs.set(String(out!.jobId), link.id);
+          if (this.jobs.size > JOBS_CAP) this.jobs.delete(this.jobs.keys().next().value as string);
           const status = String(out!.status);
           if (status === "completed" || status === "failed" || status === "cancelled" || status === "orphaned") this.jobResult(String(out!.jobId), event.output, ts);
           return;
@@ -472,7 +477,7 @@ export class TimelineStore {
         const id = `${sessionId}:sub:${event.id}`;
         if (this.records.has(id)) return;
         this.commit({
-          id, rev: 0, via: "subagent", from: agent,
+          id, rev: 0, via: "subagent", from: agent(),
           to: { id: `sub:${String(event.name).toLowerCase().slice(0, 60)}`, name: prettyType(String(event.name).slice(0, 60)), kind: "subagent" },
           task: scrub(event.description, TASK_CAP) || "A check",
           status: "running", at: ts, sessionId,
@@ -491,7 +496,7 @@ export class TimelineStore {
         const id = `${sessionId}:in:${String(event.inputId ?? ts)}`;
         if (this.records.has(id)) return;
         this.commit({
-          id, rev: 0, via: "family", from: personParty(family.from), to: agent,
+          id, rev: 0, via: "family", from: personParty(family.from), to: agent(),
           task: scrub(family.text, TASK_CAP) || "A message",
           ...(family.text.length > TASK_CAP ? { brief: scrub(family.text, BRIEF_CAP) } : {}),
           status: "running", at: ts, sessionId,
@@ -502,7 +507,8 @@ export class TimelineStore {
         return;
       }
       case "message_done": {
-        if (event.message?.role !== "assistant") return;
+        // Only a thread with a family message waiting on its answer needs to remember what was said.
+        if (!this.inbound.has(sessionId) || event.message?.role !== "assistant") return;
         const t = textOf(event.message);
         if (t.trim()) this.lastSaid.set(sessionId, t);
         return;
@@ -691,7 +697,7 @@ export function createTimelineApi(host: TimelineSessionHost, opts: TimelineApiOp
 
   const replay = async (sessionId: string): Promise<void> => {
     if (!sessionId || path.basename(sessionId) !== sessionId) return;
-    const agent = opts.agentOf(sessionId);
+    const agent = () => opts.agentOf(sessionId);
     const entries = await readRolloutTail(path.join(sessionsDirOf(opts.home), `${sessionId}.jsonl`), tailBytes);
     for (const { ts, event } of entries) {
       const at = ts ? Date.parse(ts) : NaN;
@@ -704,7 +710,7 @@ export function createTimelineApi(host: TimelineSessionHost, opts: TimelineApiOp
     let off: () => void;
     try {
       off = host.attach(s.id, (event) => {
-        try { store.observe(s.id, opts.agentOf(s.id), now(), event); } catch { /* never break a turn */ }
+        try { store.observe(s.id, () => opts.agentOf(s.id), now(), event); } catch { /* never break a turn */ }
       });
     } catch {
       return; // not live (yet)

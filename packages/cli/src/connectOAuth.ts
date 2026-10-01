@@ -115,7 +115,7 @@ export class OAuthDriver {
       ...(entry && entry.class !== "a" && entry.scopes.length ? { scopes: entry.scopes } : {}),
       preferDevice: plan.device,
       // Only the v2 phone app can intercept a loopback redirect.
-      ...(o.v2 && (entry?.loopback || entry?.allowlist || entry?.class === "a") ? { loopbackRedirectUri: this.opts.loopbackRedirect ?? DEFAULT_LOOPBACK_REDIRECT } : {}),
+      ...(o.v2 && (!entry || entry.loopback || entry.allowlist || entry.class === "a") ? { loopbackRedirectUri: this.opts.loopbackRedirect ?? DEFAULT_LOOPBACK_REDIRECT } : {}),
       ...(this.opts.engineFetch ? { engineFetch: this.opts.engineFetch, fetchImpl: this.opts.engineFetch } : {}),
       ...(this.opts.sleep ? { sleep: this.opts.sleep } : {}),
     });

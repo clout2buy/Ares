@@ -89,6 +89,8 @@ export interface OAuthMatrixEntry {
   };
   /** false = OAuth exists but only for approved partners: no self-serve registration. */
   selfServe?: boolean;
+  /** One honest sentence for the owner when the service cannot connect (class f / partner-only). */
+  unsupportedReason?: string;
   /** Dynamic registration exists but allowlists redirect URIs (Vercel). */
   allowlist?: boolean;
   /** The server only accepts a loopback redirect: the phone app intercepts it. */
@@ -112,7 +114,7 @@ export const OAUTH_MATRIX: readonly OAuthMatrixEntry[] = OAUTH_MATRIX_DATA;
 const BY_ID = new Map(OAUTH_MATRIX.map((e) => [e.id, e]));
 
 export function matrixFor(id: string): OAuthMatrixEntry | undefined {
-  return BY_ID.get(id);
+  return BY_ID.get(id) ?? OAUTH_MATRIX.find((e) => e.id === id);
 }
 
 /** The rows that ride one engine provider (client registry key / vault slot). */

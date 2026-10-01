@@ -1,7 +1,7 @@
 {
   "id": "zapier",
   "mcpUrl": "https://mcp.zapier.com/api/mcp/mcp",
-  "probedAt": "2026-10-01T00:29:11.562Z",
+  "probedAt": "2026-10-01T01:31:04.017Z",
   "initialize": {
     "status": 401,
     "wwwAuthenticate": "Bearer realm=\"Zapier MCP\", error=\"invalid_token\"",

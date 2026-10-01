@@ -1,17 +1,17 @@
 {
   "id": "webflow",
-  "mcpUrl": "https://mcp.webflow.com/sse",
-  "probedAt": "2026-10-01T00:29:12.415Z",
+  "mcpUrl": "https://mcp.webflow.com/mcp",
+  "probedAt": "2026-10-01T01:31:04.743Z",
   "initialize": {
     "status": 401,
-    "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.webflow.com/.well-known/oauth-protected-resource/sse\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"",
+    "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.webflow.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"",
     "contentType": "application/json"
   },
   "prm": {
-    "url": "https://mcp.webflow.com/.well-known/oauth-protected-resource/sse",
+    "url": "https://mcp.webflow.com/.well-known/oauth-protected-resource/mcp",
     "status": 200,
     "body": {
-      "resource": "https://mcp.webflow.com/sse",
+      "resource": "https://mcp.webflow.com/mcp",
       "authorization_servers": [
         "https://mcp.webflow.com"
       ],

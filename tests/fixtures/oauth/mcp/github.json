@@ -1,7 +1,7 @@
 {
   "id": "github",
   "mcpUrl": "https://api.githubcopilot.com/mcp/",
-  "probedAt": "2026-10-01T00:29:08.078Z",
+  "probedAt": "2026-10-01T01:31:04.006Z",
   "initialize": {
     "status": 401,
     "wwwAuthenticate": "Bearer error=\"invalid_request\", error_description=\"No access token was provided in this request\", resource_metadata=\"https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/\"",

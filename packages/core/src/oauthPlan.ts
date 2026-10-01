@@ -77,7 +77,7 @@ export function planConnect(service: ConnectService, ctx: PlanContext = {}): Con
     return { ...base, start: "fields", auth: "key", needsClient: false, setupDone: true, setupFields: [], device: false, reason: entry?.class === "n" ? "a local connector with nothing to sign in to" : "this service has no OAuth for personal use: it only issues API keys" };
   }
   if (service.kind === "browser" || cls === "f") {
-    const reason = cls === "f" || !entry ? (entry?.notes ? firstSentence(entry.notes) : `${service.label} has no public API, so Ares can only use your logged-in browser session`) : REASON_PARTNER;
+    const reason = entry?.unsupportedReason ?? (cls === "f" || !entry ? (entry?.notes ? firstSentence(entry.notes) : `${service.label} has no public API, so Ares can only use your logged-in browser session`) : REASON_PARTNER);
     return { ...base, start: "unsupported", auth: browserAlternative ? "browser" : "unsupported", needsClient: false, setupDone: true, setupFields: [], device: false, reason, ...alt };
   }
 

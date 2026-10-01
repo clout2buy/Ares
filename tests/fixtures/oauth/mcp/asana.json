@@ -1,19 +1,19 @@
 {
   "id": "asana",
-  "mcpUrl": "https://mcp.asana.com/sse",
-  "probedAt": "2026-10-01T00:29:09.682Z",
+  "mcpUrl": "https://mcp.asana.com/v2/mcp",
+  "probedAt": "2026-10-01T01:31:04.016Z",
   "initialize": {
     "status": 401,
-    "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.asana.com/.well-known/oauth-protected-resource\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"",
+    "wwwAuthenticate": "Bearer realm=\"Asana MCP\", resource_metadata=\"https://mcp.asana.com/.well-known/oauth-protected-resource/v2\", error=\"invalid_request\", error_description=\"Authorization header is required for MCP V2 access\"",
     "contentType": "application/json"
   },
   "prm": {
-    "url": "https://mcp.asana.com/.well-known/oauth-protected-resource",
+    "url": "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
     "status": 200,
     "body": {
-      "resource": "https://mcp.asana.com",
+      "resource": "https://mcp.asana.com/v2/mcp",
       "authorization_servers": [
-        "https://mcp.asana.com"
+        "https://app.asana.com"
       ],
       "scopes_supported": [
         "default"
@@ -26,34 +26,32 @@
     }
   },
   "as": {
-    "url": "https://mcp.asana.com/.well-known/oauth-authorization-server",
+    "url": "https://app.asana.com/.well-known/oauth-authorization-server",
     "status": 200,
     "body": {
-      "issuer": "https://mcp.asana.com",
-      "authorization_endpoint": "https://mcp.asana.com/authorize",
-      "token_endpoint": "https://mcp.asana.com/token",
-      "registration_endpoint": "https://mcp.asana.com/register",
+      "issuer": "https://app.asana.com",
+      "authorization_endpoint": "https://app.asana.com/-/oauth_authorize",
+      "token_endpoint": "https://app.asana.com/-/oauth_token",
+      "revocation_endpoint": "https://app.asana.com/-/oauth_revoke",
       "response_types_supported": [
         "code"
       ],
-      "response_modes_supported": [
-        "query"
-      ],
       "grant_types_supported": [
         "authorization_code",
-        "refresh_token"
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer"
+      ],
+      "authorization_grant_profiles_supported": [
+        "urn:ietf:params:oauth:grant-profile:id-jag"
       ],
       "token_endpoint_auth_methods_supported": [
-        "client_secret_basic",
         "client_secret_post",
-        "none"
+        "client_secret_basic"
       ],
-      "revocation_endpoint": "https://mcp.asana.com/token",
       "code_challenge_methods_supported": [
-        "plain",
         "S256"
       ]
     },
-    "issuerQueried": "https://mcp.asana.com"
+    "issuerQueried": "https://app.asana.com"
   }
 }

@@ -1,7 +1,7 @@
 {
   "id": "tavily",
   "mcpUrl": "https://mcp.tavily.com/mcp/",
-  "probedAt": "2026-10-01T00:29:11.934Z",
+  "probedAt": "2026-10-01T01:31:04.591Z",
   "initialize": {
     "status": 401,
     "wwwAuthenticate": "Bearer scope=\"openid offline_access\", resource_metadata=\"https://mcp.tavily.com/.well-known/oauth-protected-resource/mcp\"",

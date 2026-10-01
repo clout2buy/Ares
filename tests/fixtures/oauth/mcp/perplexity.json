@@ -1,7 +1,7 @@
 {
   "id": "perplexity",
   "mcpUrl": "https://api.perplexity.ai/mcp",
-  "probedAt": "2026-10-01T00:29:12.028Z",
+  "probedAt": "2026-10-01T01:31:04.710Z",
   "initialize": {
     "status": 401,
     "wwwAuthenticate": "Bearer resource_metadata=\"https://api.perplexity.ai/.well-known/oauth-protected-resource\"",

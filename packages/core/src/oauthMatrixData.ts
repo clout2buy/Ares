@@ -2092,18 +2092,16 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "verification": "LIVE-VERIFIED",
     "fixtures": [
       "mcp/asana.json",
-      "idp/asana.as.json",
       "idp/asana.as2.json",
-      "idp/asana.prm.json",
       "idp/asana.prm2.json"
     ],
     "facts": {
-      "dcr": true,
+      "dcr": false,
       "device": false,
       "cimd": false,
       "pkceS256": true,
       "revocation": true,
-      "publicClient": true
+      "publicClient": false
     },
     "healthCheck": {
       "method": "GET",
@@ -2273,6 +2271,7 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "refreshTokens": true,
     "ownerSetup": "Request an Instacart Connect OAuth client (redirect https://ares.mistiqueai.com/oauth/callback), or take a Developer Platform API key for list-page creation only.",
     "selfServe": false,
+    "unsupportedReason": "Instacart OAuth needs a client from its Connect partner program, and its free API only builds shareable lists.",
     "evidence": [
       "https://fig-mcp.instacart.com/.well-known/oauth-authorization-server (LIVE)",
       "https://fig-mcp.instacart.com/.well-known/oauth-protected-resource (LIVE)",
@@ -2531,6 +2530,8 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "refreshTokens": true,
     "ownerSetup": "Unknown / likely not self-serve; stay on browser for bookings.",
     "selfServe": false,
+    "unsupportedReason": "Uber gates its Riders API and MCP behind partner approval, so rides need the browser for now.",
+    "allowlist": true,
     "evidence": [
       "https://auth.uber.com/.well-known/openid-configuration (LIVE)",
       "https://developer.uber.com/docs/riders/introduction (\"Access to this API endpoint requires approval from Uber\"; program changing for third-party apps)",
@@ -2576,6 +2577,8 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "refreshTokens": true,
     "ownerSetup": "Unknown: probably needs Uber to allowlist the Ares client; otherwise browser session.",
     "selfServe": false,
+    "unsupportedReason": "Uber Eats ordering via MCP needs an Uber-approved client; until then Ares uses the browser.",
+    "allowlist": true,
     "evidence": [
       "https://auth.uber.com/.well-known/openid-configuration (LIVE: grants authorization_code, refresh_token, client_credentials; scopes include eats.3p.mcp, eats.customer_ordering, oauth.dcr; registration_endpoint field = developer dashboard, not RFC7591)",
       "MCP URL from search listings only (mcpservers.org 403 to fetcher)"
@@ -2675,33 +2678,6 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
       "url": "https://api.vercel.com/v2/user"
     },
     "notes": "AS metadata (live): DCR at /login/oauth/register, device_code + client_credentials + refresh grants, S256 only. Bogus device POST -> 400 invalid_client 'App not found' (alive). Sign in with Vercel (this AS) gives identity only; REST permissions beta. Vercel Connect (docs/connect, GA, per-token-request billing) is for apps DEPLOYED on Vercel obtaining third-party tokens; it is NOT a way for Ares to obtain a Vercel REST token - irrelevant. Integration tokens see only what the installer granted (all or selected projects) and scopes configured; integration is disabled (403 integration_configuration_disabled) if its owner leaves the team. Best REST path today = Integration OAuth (class c, code-secret, secret held server-side, https callback OK). Pasted access token remains the fallback. mcp.vercel.com accepts only reviewed clients: dynamic registration works for loopback redirects (http://localhost:<port>) and a few named clients, and refuses the garrison's https redirect. Ares registers with a loopback redirect and the phone app intercepts it."
-  },
-  {
-    "id": "api-home-assistant",
-    "label": "Home Assistant (REST)",
-    "class": "c",
-    "alsoClass": [
-      "e"
-    ],
-    "flow": "code-pkce",
-    "registry": "existing",
-    "endpoints": {
-      "docs": "https://developers.home-assistant.io/docs/auth_api"
-    },
-    "pkce": false,
-    "clientAuth": "none",
-    "scopes": [],
-    "refreshTokens": true,
-    "tokenLifetime": "1800s access / refresh token; long-lived access tokens valid 10 years",
-    "redirectRules": "IndieAuth: client_id = your app website URL; redirect_uri must be same host+port as client_id (or listed via link tags in the first 10kB of the client_id page). Ares: client_id https://ares.mistiqueai.com/ + redirect https://ares.mistiqueai.com/oauth/callback share a host, so NO registration needed.",
-    "ownerSetup": "None beyond giving Ares the HA base URL and logging in to HA in the phone browser.",
-    "apiAfterConnect": "rest/ws:<HA base>/api (or mcp:<HA base>/api/mcp)",
-    "evidence": [
-      "https://developers.home-assistant.io/docs/auth_api"
-    ],
-    "verification": "FLOW-VERIFIED-AGAINST-MOCK",
-    "fixtures": [],
-    "notes": "Same flow as home-assistant (IndieAuth code flow at <HA base>/auth/authorize + /auth/token). UNVERIFIED (docs only, instance-local)."
   },
   {
     "id": "discord",
@@ -3099,49 +3075,6 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "Today is 2026-09-30 = the legacy support end date; 30 days left. Existing Fitbit tokens do not transfer; every user must re-consent via Google OAuth (search-reported). RECOMMENDATION: do not add id 'fitbit'. If wanted, add id 'google-health' as scopes of the google provider (Google Health API, REST under /health/reference/rest; scope names/restricted status/device-flow eligibility NOT found in fetched docs -> UNVERIFIED; Google's device-flow allowed list (fetched) does not contain any health scope, so it needs the Web client + code flow)."
   },
   {
-    "id": "gemini",
-    "label": "Gemini API",
-    "class": "c",
-    "alsoClass": [
-      "e"
-    ],
-    "flow": "code-pkce",
-    "registry": "existing",
-    "endpoints": {
-      "issuer": "https://accounts.google.com",
-      "authorize": "https://accounts.google.com/o/oauth2/v2/auth",
-      "token": "https://oauth2.googleapis.com/token",
-      "docs": "https://ai.google.dev/gemini-api/docs/oauth"
-    },
-    "pkce": true,
-    "clientAuth": "client_secret_post",
-    "scopes": [
-      "https://www.googleapis.com/auth/generative-language.retriever",
-      "https://www.googleapis.com/auth/cloud-platform"
-    ],
-    "refreshTokens": true,
-    "tokenLifetime": "1h access; refresh until revoked (7 days if consent screen is External + Testing)",
-    "ownerSetup": "Reuse the Google OAuth client (Cloud Console) and add the scope; owner must be a test user on the consent screen.",
-    "apiAfterConnect": "rest:https://generativelanguage.googleapis.com/v1beta (Bearer)",
-    "evidence": [
-      "https://ai.google.dev/gemini-api/docs/oauth",
-      "https://accounts.google.com/.well-known/openid-configuration (LIVE, shared fixture google.oidc.json)"
-    ],
-    "verification": "LIVE-VERIFIED",
-    "fixtures": [
-      "idp/google.oidc.json"
-    ],
-    "facts": {
-      "dcr": false,
-      "device": true,
-      "cimd": false,
-      "pkceS256": true,
-      "revocation": true,
-      "publicClient": false
-    },
-    "notes": "Docs confirm OAuth is supported but call it \"appropriate for a testing environment\"; scopes are generative-language.retriever or cloud-platform (sensitive/restricted -> unverified-app warning, fine for owner-as-test-user). Device flow (oauth2.googleapis.com/device/code alive: bogus probe -> invalid_client) likely does NOT permit these scopes (UNVERIFIED). Simplest: keep the API key; OAuth only pays off if Ares already holds a Google OAuth client."
-  },
-  {
     "id": "google",
     "label": "Google (Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Tasks, Contacts)",
     "class": "c",
@@ -3283,33 +3216,6 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
       "url": "https://photospicker.googleapis.com/v1/sessions"
     },
     "notes": "Since 2025-03-31 the scopes photoslibrary.readonly, photoslibrary.sharing and photoslibrary were removed (403). Remaining: photoslibrary.appendonly, photoslibrary.readonly.appcreateddata, photoslibrary.edit.appcreateddata -> Library API can only list/search/get media items and albums CREATED BY THE APP; shared-album operations are gone. To read the user's existing library the only route is the Picker API: create session -> user opens pickerUri in the Google Photos app/browser and chooses items -> app polls session (mediaItemsSet) -> lists/downloads only those items. So Ares can: upload photos, read what it uploaded, and ask the owner to pick photos (needs a human tap each time; cannot browse or search the library autonomously). RECOMMEND: scope-of/opt-in addition to google (same client) but NOT in the default consent, because it needs two extra APIs and is rarely needed; expose as its own registry id only for the picker handshake UX."
-  },
-  {
-    "id": "home-assistant",
-    "label": "Home Assistant (MCP)",
-    "class": "c",
-    "alsoClass": [
-      "e"
-    ],
-    "flow": "code-pkce",
-    "registry": "existing",
-    "endpoints": {
-      "docs": "https://developers.home-assistant.io/docs/auth_api"
-    },
-    "pkce": false,
-    "clientAuth": "none",
-    "scopes": [],
-    "refreshTokens": true,
-    "tokenLifetime": "1800s access / refresh token; long-lived access tokens valid 10 years",
-    "redirectRules": "IndieAuth: client_id = your app website URL; redirect_uri must be same host+port as client_id (or listed via link tags in the first 10kB of the client_id page). Ares: client_id https://ares.mistiqueai.com/ + redirect https://ares.mistiqueai.com/oauth/callback share a host, so NO registration needed.",
-    "ownerSetup": "None beyond giving Ares the HA base URL and logging in to HA in the phone browser.",
-    "apiAfterConnect": "rest/ws:<HA base>/api (or mcp:<HA base>/api/mcp)",
-    "evidence": [
-      "https://developers.home-assistant.io/docs/auth_api"
-    ],
-    "verification": "FLOW-VERIFIED-AGAINST-MOCK",
-    "fixtures": [],
-    "notes": "Real IndieAuth code flow with zero app registration. Docs mention no PKCE and no device flow (pkce:false is \"not documented\"). No public HA instance to probe, so UNVERIFIED. Rook must reach the HA token endpoint (LAN or Nabu Casa URL). Long-lived token (profile page) is the fallback (class e). Same for api-home-assistant."
   },
   {
     "id": "instagram",
@@ -3454,8 +3360,9 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
       "f"
     ],
     "flow": "code-secret",
-    "registry": "existing",
+    "registry": "scope",
     "provider": "facebook",
+    "parent": "facebook",
     "endpoints": {
       "issuer": "https://www.facebook.com",
       "authorize": "https://www.facebook.com/v23.0/dialog/oauth",
@@ -3630,6 +3537,79 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "OAuth technically exists and standard (code flow, permanent refresh), but app creation is gated by approval since Nov 2025, so for a brand-new owner the practical class is f (browser) until/unless approval arrives. Classification evidence for the gate is third-party reporting; the owner should try the 'create app' button at reddit.com/prefs/apps first -- if it still works, class c is immediately usable."
   },
   {
+    "id": "salesforce",
+    "label": "Salesforce",
+    "class": "c",
+    "alsoClass": [
+      "d"
+    ],
+    "flow": "code-pkce",
+    "registry": "added",
+    "provider": "salesforce",
+    "endpoints": {
+      "issuer": "https://login.salesforce.com",
+      "authorize": "https://login.salesforce.com/services/oauth2/authorize",
+      "token": "https://login.salesforce.com/services/oauth2/token",
+      "revoke": "https://login.salesforce.com/services/oauth2/revoke",
+      "userinfo": "https://login.salesforce.com/services/oauth2/userinfo",
+      "resource": "https://api.salesforce.com/platform/mcp/v1/platform/sobject-all",
+      "docs": "https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/postman.html"
+    },
+    "pkce": true,
+    "clientAuth": "none",
+    "scopes": [
+      "api",
+      "refresh_token",
+      "mcp_api"
+    ],
+    "refreshTokens": true,
+    "tokenLifetime": "per org session settings; refresh_token scope gives long-lived refresh token",
+    "redirectRules": "ECA callback URL list is exact-match; docs example uses https://claude.ai/api/mcp/auth_callback. Device flow needs no redirect. My-domain / instance URL differs per org (login.salesforce.com for prod/dev edition, test.salesforce.com sandbox).",
+    "ownerSetup": "In their Salesforce org, create one External Client App (OAuth scopes api/refresh_token/mcp_api, PKCE on, device flow enabled), paste consumer key; activate the hosted MCP servers in Setup > API Catalog > MCP Servers.",
+    "setup": {
+      "appType": "External Client App (Connected Apps are being deprecated for new creation)",
+      "steps": [
+        "Enable OAuth settings; callback URL https://ares.mistiqueai.com/oauth/callback (required field even for device flow)",
+        "Scopes: Manage user data via APIs (api), Perform requests at any time (refresh_token), Access MCP servers (mcp_api)",
+        "Enable 'Require PKCE'; enable 'Issue JWT-based access tokens for named users' (required for MCP per setup guides); turn on device flow ('Enable Device Flow')",
+        "Setup > API Catalog > MCP Servers: activate the hosted servers needed",
+        "Copy Consumer Key (client_id); public client needs no secret for device flow"
+      ],
+      "fields": [
+        "client_id"
+      ],
+      "deviceFlowCheckbox": "Enable Device Flow (in ECA OAuth flow enablement; label recalled from docs, not verified)",
+      "reviewRequired": "Needs a Salesforce org (free Developer Edition works for the REST API; hosted MCP availability by edition not verified). No app review for own-org use."
+    },
+    "apiAfterConnect": "rest:https://<instance_url>/services/data/v62.0 (instance_url returned by token) or mcp:https://api.salesforce.com/platform/mcp/v1/<server>",
+    "evidence": [
+      "https://login.salesforce.com/.well-known/openid-configuration (fetched: auth-code + refresh only, S256 only, registration_endpoint listed, NO device grant advertised)",
+      "https://api.salesforce.com/.well-known/oauth-protected-resource/platform/mcp/v1/platform/sobject-all (fetched: scopes mcp_api, refresh_token)",
+      "https://api.salesforce.com/.well-known/oauth-authorization-server (fetched: client_secret_post only, no registration_endpoint)",
+      "live: POST /services/oauth2/token response_type=device_code client_id=bogus -> {\"error\":\"invalid_client_id\"} (endpoint answers device requests)",
+      "https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/postman.html (via search; page 403 to fetch)"
+    ],
+    "verification": "LIVE-VERIFIED",
+    "fixtures": [
+      "idp/salesforce.as.json",
+      "idp/salesforce.oidc.json",
+      "idp/salesforce.prm.json"
+    ],
+    "facts": {
+      "dcr": true,
+      "device": false,
+      "cimd": false,
+      "pkceS256": true,
+      "revocation": true,
+      "publicClient": false
+    },
+    "healthCheck": {
+      "method": "GET",
+      "url": "https://login.salesforce.com/services/oauth2/userinfo"
+    },
+    "notes": "Device flow existence: documented by Salesforce, but discovery metadata does not advertise it and I could not complete a real device request (no client). Treat as unverified; auth-code+PKCE is the verified path. Hosted MCP AS metadata says client_secret_post only, so an MCP-token via device flow may need the secret - unverified. Registry id is NEW. Salesforce hosts a login redirect for each org (my domain); prod/dev edition login.salesforce.com, sandboxes test.salesforce.com."
+  },
+  {
     "id": "shopify-store",
     "label": "Shopify store (Admin API)",
     "class": "c",
@@ -3680,79 +3660,6 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "verification": "FLOW-VERIFIED-AGAINST-MOCK",
     "fixtures": [],
     "notes": "No global discovery: OAuth is per-store, per-app, never class a. Storefront MCP https://{shop}.myshopify.com/api/mcp is unauthenticated (public catalog/cart). Customer Accounts MCP uses code+PKCE for shoppers, not the merchant. API version string is a guess; use the current stable one."
-  },
-  {
-    "id": "slack-bot",
-    "label": "Slack bot (xoxb)",
-    "class": "c",
-    "alsoClass": [
-      "e"
-    ],
-    "flow": "code-secret",
-    "registry": "existing",
-    "supersededBy": "slack",
-    "endpoints": {
-      "issuer": "https://slack.com",
-      "authorize": "https://slack.com/oauth/v2/authorize",
-      "token": "https://slack.com/api/oauth.v2.access",
-      "revoke": "https://slack.com/api/auth.revoke",
-      "userinfo": "https://slack.com/api/auth.test",
-      "docs": "https://docs.slack.dev/authentication/installing-with-oauth/"
-    },
-    "pkce": false,
-    "clientAuth": "client_secret_post",
-    "scopes": [
-      "channels:read",
-      "channels:history",
-      "groups:history",
-      "im:history",
-      "chat:write",
-      "users:read",
-      "reactions:write",
-      "files:read"
-    ],
-    "scopeSeparator": ",",
-    "refreshTokens": false,
-    "tokenLifetime": "xoxb bot token does not expire unless token rotation is enabled (then 12h + single-use refresh)",
-    "redirectRules": "https required, exact-match against the app's Redirect URLs list. Ares https tunnel callback works.",
-    "ownerSetup": "Same Slack app as 'slack' (or a second one): add bot scopes + redirect URL, then Ares runs the install flow and stores the xoxb token instead of the owner pasting it.",
-    "setup": {
-      "consoleUrl": "https://api.slack.com/apps",
-      "appType": "Create New App > From scratch",
-      "steps": [
-        "Add redirect URL https://ares.mistiqueai.com/oauth/callback",
-        "Add Bot Token Scopes",
-        "Copy client id + secret into Ares; Ares sends owner to oauth/v2/authorize?scope=<bot scopes>, exchanges code at oauth.v2.access, stores authed bot access_token"
-      ],
-      "fields": [
-        "client_id",
-        "client_secret"
-      ],
-      "deviceFlowCheckbox": "none",
-      "reviewRequired": "None for a workspace-installed (non-distributed) app."
-    },
-    "apiAfterConnect": "stdio MCP (Slack bot server) with SLACK_BOT_TOKEN env = token Ares obtained via oauth.v2.access; or rest:https://slack.com/api",
-    "evidence": [
-      "https://docs.slack.dev/authentication/installing-with-oauth/ (fetched: https redirect required, scope= for bot, user_scope= for user, tokens do not expire)",
-      "live probe: POST https://slack.com/api/oauth.v2.access with bogus client -> {\"ok\":false,\"error\":\"invalid_code\"} (endpoint alive)"
-    ],
-    "verification": "LIVE-VERIFIED",
-    "fixtures": [
-      "idp/slack.oidc.json"
-    ],
-    "facts": {
-      "dcr": false,
-      "device": false,
-      "cimd": false,
-      "pkceS256": false,
-      "revocation": false,
-      "publicClient": false
-    },
-    "healthCheck": {
-      "method": "POST",
-      "url": "https://slack.com/api/auth.test"
-    },
-    "notes": "The pasted xoxb token path is what exists today; the OAuth install flow produces the identical token, so the owner never copies it. Single app can hold both bot and user scopes (one authorize call with scope= and user_scope=). Bot reads only channels it has been invited to."
   },
   {
     "id": "spotify",
@@ -3992,35 +3899,6 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
       "url": "https://api.trello.com/1/members/me"
     },
     "notes": "No Trello MCP server found. Trello's legacy API key + 1/authorize?response_type=token flow (class e/browser consent) is documented as to-be-deprecated. Docs say OAuth2 is for user-facing apps, not bots. trello.com/.well-known returns HTML (none)."
-  },
-  {
-    "id": "twilio",
-    "label": "Twilio",
-    "class": "c",
-    "alsoClass": [
-      "e"
-    ],
-    "flow": "code-secret",
-    "registry": "existing",
-    "endpoints": {
-      "token": "https://oauth.twilio.com/v2/token",
-      "docs": "https://www.twilio.com/docs/iam/oauth-apps/overview"
-    },
-    "pkce": false,
-    "clientAuth": "client_secret_post",
-    "scopes": [],
-    "refreshTokens": true,
-    "tokenLifetime": "3600s access (doc example); refresh token for auth-code grant",
-    "ownerSetup": "Create an OAuth app in the Twilio Console (client id/secret) -- or just keep Account SID + Auth Token/API key.",
-    "apiAfterConnect": "rest:https://api.twilio.com (Bearer)",
-    "evidence": [
-      "https://www.twilio.com/docs/iam/oauth-apps/overview",
-      "https://www.twilio.com/docs/iam/oauth-apps/oauth-access-token",
-      "LIVE: bogus POST to https://oauth.twilio.com/v2/token -> 401 code 321401 \"Invalid credentials\""
-    ],
-    "verification": "FLOW-VERIFIED-AGAINST-MOCK",
-    "fixtures": [],
-    "notes": "CORRECTION to the brief: Twilio now has first-party OAuth Apps (client_credentials AND authorization_code + refresh; token endpoint alive as probed). Authorize URL / PKCE / scopes not found in the docs fetched. Legacy Twilio Connect is not OAuth. For an owner using their OWN account, client_credentials adds nothing over an API key; auth-code only matters for multi-user apps. Hosted MCP mcp.twilio.com/docs is docs-only, no auth. Treat as e in practice."
   },
   {
     "id": "typeform",
@@ -4561,80 +4439,6 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "Discovery JSON lists device_authorization_endpoint (checked) but does not advertise code_challenge_methods_supported (PKCE is supported by the platform for code flow; not seen in the metadata). Doc: device flow accepts tenant common/consumers/organizations/GUID; personal accounts using common/consumers are asked to sign in again on the verification page; verification_uri_complete is NOT supported (user must type the code). Doc: refresh token issued only if offline_access in scope. Whether a bogus device request against common behaves the same for a REAL public client was not tested (no client). A personal-only Entra tenant is needed to register: sign in to Azure with the personal MSA (free). Tasks (To Do) with Tasks.ReadWrite works for personal accounts (training knowledge, unverified here). Old 'Outlook.com REST' endpoints are gone; use Graph. Best path for Rook: device flow, since no redirect/secret and works headless; code flow is the alt."
   },
   {
-    "id": "salesforce",
-    "label": "Salesforce",
-    "class": "d",
-    "alsoClass": [
-      "c",
-      "b"
-    ],
-    "flow": "device",
-    "registry": "added",
-    "provider": "salesforce",
-    "endpoints": {
-      "issuer": "https://login.salesforce.com",
-      "authorize": "https://login.salesforce.com/services/oauth2/authorize",
-      "token": "https://login.salesforce.com/services/oauth2/token",
-      "revoke": "https://login.salesforce.com/services/oauth2/revoke",
-      "userinfo": "https://login.salesforce.com/services/oauth2/userinfo",
-      "resource": "https://api.salesforce.com/platform/mcp/v1/platform/sobject-all",
-      "docs": "https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/postman.html"
-    },
-    "pkce": true,
-    "clientAuth": "none",
-    "scopes": [
-      "api",
-      "refresh_token",
-      "mcp_api"
-    ],
-    "refreshTokens": true,
-    "tokenLifetime": "per org session settings; refresh_token scope gives long-lived refresh token",
-    "redirectRules": "ECA callback URL list is exact-match; docs example uses https://claude.ai/api/mcp/auth_callback. Device flow needs no redirect. My-domain / instance URL differs per org (login.salesforce.com for prod/dev edition, test.salesforce.com sandbox).",
-    "ownerSetup": "In their Salesforce org, create one External Client App (OAuth scopes api/refresh_token/mcp_api, PKCE on, device flow enabled), paste consumer key; activate the hosted MCP servers in Setup > API Catalog > MCP Servers.",
-    "setup": {
-      "appType": "External Client App (Connected Apps are being deprecated for new creation)",
-      "steps": [
-        "Enable OAuth settings; callback URL https://ares.mistiqueai.com/oauth/callback (required field even for device flow)",
-        "Scopes: Manage user data via APIs (api), Perform requests at any time (refresh_token), Access MCP servers (mcp_api)",
-        "Enable 'Require PKCE'; enable 'Issue JWT-based access tokens for named users' (required for MCP per setup guides); turn on device flow ('Enable Device Flow')",
-        "Setup > API Catalog > MCP Servers: activate the hosted servers needed",
-        "Copy Consumer Key (client_id); public client needs no secret for device flow"
-      ],
-      "fields": [
-        "client_id"
-      ],
-      "deviceFlowCheckbox": "Enable Device Flow (in ECA OAuth flow enablement; label recalled from docs, not verified)",
-      "reviewRequired": "Needs a Salesforce org (free Developer Edition works for the REST API; hosted MCP availability by edition not verified). No app review for own-org use."
-    },
-    "apiAfterConnect": "rest:https://<instance_url>/services/data/v62.0 (instance_url returned by token) or mcp:https://api.salesforce.com/platform/mcp/v1/<server>",
-    "evidence": [
-      "https://login.salesforce.com/.well-known/openid-configuration (fetched: auth-code + refresh only, S256 only, registration_endpoint listed, NO device grant advertised)",
-      "https://api.salesforce.com/.well-known/oauth-protected-resource/platform/mcp/v1/platform/sobject-all (fetched: scopes mcp_api, refresh_token)",
-      "https://api.salesforce.com/.well-known/oauth-authorization-server (fetched: client_secret_post only, no registration_endpoint)",
-      "live: POST /services/oauth2/token response_type=device_code client_id=bogus -> {\"error\":\"invalid_client_id\"} (endpoint answers device requests)",
-      "https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/postman.html (via search; page 403 to fetch)"
-    ],
-    "verification": "LIVE-VERIFIED",
-    "fixtures": [
-      "idp/salesforce.as.json",
-      "idp/salesforce.oidc.json",
-      "idp/salesforce.prm.json"
-    ],
-    "facts": {
-      "dcr": true,
-      "device": false,
-      "cimd": false,
-      "pkceS256": true,
-      "revocation": true,
-      "publicClient": false
-    },
-    "healthCheck": {
-      "method": "GET",
-      "url": "https://login.salesforce.com/services/oauth2/userinfo"
-    },
-    "notes": "Device flow existence: documented by Salesforce, but discovery metadata does not advertise it and I could not complete a real device request (no client). Treat as unverified; auth-code+PKCE is the verified path. Hosted MCP AS metadata says client_secret_post only, so an MCP-token via device flow may need the secret - unverified. Registry id is NEW. Salesforce hosts a login redirect for each org (my domain); prod/dev edition login.salesforce.com, sandboxes test.salesforce.com."
-  },
-  {
     "id": "twitch",
     "label": "Twitch",
     "class": "d",
@@ -4784,6 +4588,33 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "verification": "UNVERIFIED",
     "fixtures": [],
     "notes": "Key optional; no OAuth."
+  },
+  {
+    "id": "api-home-assistant",
+    "label": "Home Assistant (REST)",
+    "class": "e",
+    "alsoClass": [
+      "c"
+    ],
+    "flow": "api-key",
+    "registry": "existing",
+    "endpoints": {
+      "docs": "https://developers.home-assistant.io/docs/auth_api"
+    },
+    "pkce": false,
+    "clientAuth": "none",
+    "scopes": [],
+    "refreshTokens": true,
+    "tokenLifetime": "1800s access / refresh token; long-lived access tokens valid 10 years",
+    "redirectRules": "IndieAuth: client_id = your app website URL; redirect_uri must be same host+port as client_id (or listed via link tags in the first 10kB of the client_id page). Ares: client_id https://ares.mistiqueai.com/ + redirect https://ares.mistiqueai.com/oauth/callback share a host, so NO registration needed.",
+    "ownerSetup": "None beyond giving Ares the HA base URL and logging in to HA in the phone browser.",
+    "apiAfterConnect": "rest/ws:<HA base>/api (or mcp:<HA base>/api/mcp)",
+    "evidence": [
+      "https://developers.home-assistant.io/docs/auth_api"
+    ],
+    "verification": "UNVERIFIED",
+    "fixtures": [],
+    "notes": "Same flow as home-assistant (IndieAuth code flow at <HA base>/auth/authorize + /auth/token). UNVERIFIED (docs only, instance-local)."
   },
   {
     "id": "api-nasa-apod",
@@ -4978,6 +4809,49 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "x-apikey header only; no OAuth. Not fetched (knowledge)."
   },
   {
+    "id": "gemini",
+    "label": "Gemini API",
+    "class": "e",
+    "alsoClass": [
+      "c"
+    ],
+    "flow": "api-key",
+    "registry": "existing",
+    "endpoints": {
+      "issuer": "https://accounts.google.com",
+      "authorize": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token": "https://oauth2.googleapis.com/token",
+      "docs": "https://ai.google.dev/gemini-api/docs/oauth"
+    },
+    "pkce": true,
+    "clientAuth": "client_secret_post",
+    "scopes": [
+      "https://www.googleapis.com/auth/generative-language.retriever",
+      "https://www.googleapis.com/auth/cloud-platform"
+    ],
+    "refreshTokens": true,
+    "tokenLifetime": "1h access; refresh until revoked (7 days if consent screen is External + Testing)",
+    "ownerSetup": "Reuse the Google OAuth client (Cloud Console) and add the scope; owner must be a test user on the consent screen.",
+    "apiAfterConnect": "rest:https://generativelanguage.googleapis.com/v1beta (Bearer)",
+    "evidence": [
+      "https://ai.google.dev/gemini-api/docs/oauth",
+      "https://accounts.google.com/.well-known/openid-configuration (LIVE, shared fixture google.oidc.json)"
+    ],
+    "verification": "LIVE-VERIFIED",
+    "fixtures": [
+      "idp/google.oidc.json"
+    ],
+    "facts": {
+      "dcr": false,
+      "device": true,
+      "cimd": false,
+      "pkceS256": true,
+      "revocation": true,
+      "publicClient": false
+    },
+    "notes": "Docs confirm OAuth is supported but call it \"appropriate for a testing environment\"; scopes are generative-language.retriever or cloud-platform (sensitive/restricted -> unverified-app warning, fine for owner-as-test-user). Device flow (oauth2.googleapis.com/device/code alive: bogus probe -> invalid_client) likely does NOT permit these scopes (UNVERIFIED). Simplest: keep the API key; OAuth only pays off if Ares already holds a Google OAuth client."
+  },
+  {
     "id": "gitlab-token",
     "label": "GitLab (PAT, stdio)",
     "class": "e",
@@ -5034,6 +4908,33 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "verification": "UNVERIFIED",
     "fixtures": [],
     "notes": "API key is the supported path; Places API (New) also accepts OAuth with the cloud-platform scope (UNVERIFIED) but needs a billed GCP project regardless."
+  },
+  {
+    "id": "home-assistant",
+    "label": "Home Assistant (MCP)",
+    "class": "e",
+    "alsoClass": [
+      "c"
+    ],
+    "flow": "api-key",
+    "registry": "existing",
+    "endpoints": {
+      "docs": "https://developers.home-assistant.io/docs/auth_api"
+    },
+    "pkce": false,
+    "clientAuth": "none",
+    "scopes": [],
+    "refreshTokens": true,
+    "tokenLifetime": "1800s access / refresh token; long-lived access tokens valid 10 years",
+    "redirectRules": "IndieAuth: client_id = your app website URL; redirect_uri must be same host+port as client_id (or listed via link tags in the first 10kB of the client_id page). Ares: client_id https://ares.mistiqueai.com/ + redirect https://ares.mistiqueai.com/oauth/callback share a host, so NO registration needed.",
+    "ownerSetup": "None beyond giving Ares the HA base URL and logging in to HA in the phone browser.",
+    "apiAfterConnect": "rest/ws:<HA base>/api (or mcp:<HA base>/api/mcp)",
+    "evidence": [
+      "https://developers.home-assistant.io/docs/auth_api"
+    ],
+    "verification": "UNVERIFIED",
+    "fixtures": [],
+    "notes": "Real IndieAuth code flow with zero app registration. Docs mention no PKCE and no device flow (pkce:false is \"not documented\"). No public HA instance to probe, so UNVERIFIED. Rook must reach the HA token endpoint (LAN or Nabu Casa URL). Long-lived token (profile page) is the fallback (class e). Same for api-home-assistant."
   },
   {
     "id": "hue",
@@ -5454,6 +5355,79 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "No OAuth by design; the setup token is single-use and exchanged for the long-lived access URL. Daily request cap (about 24/day, docs)."
   },
   {
+    "id": "slack-bot",
+    "label": "Slack bot (xoxb)",
+    "class": "e",
+    "alsoClass": [
+      "c"
+    ],
+    "flow": "api-key",
+    "registry": "existing",
+    "supersededBy": "slack",
+    "endpoints": {
+      "issuer": "https://slack.com",
+      "authorize": "https://slack.com/oauth/v2/authorize",
+      "token": "https://slack.com/api/oauth.v2.access",
+      "revoke": "https://slack.com/api/auth.revoke",
+      "userinfo": "https://slack.com/api/auth.test",
+      "docs": "https://docs.slack.dev/authentication/installing-with-oauth/"
+    },
+    "pkce": false,
+    "clientAuth": "client_secret_post",
+    "scopes": [
+      "channels:read",
+      "channels:history",
+      "groups:history",
+      "im:history",
+      "chat:write",
+      "users:read",
+      "reactions:write",
+      "files:read"
+    ],
+    "scopeSeparator": ",",
+    "refreshTokens": false,
+    "tokenLifetime": "xoxb bot token does not expire unless token rotation is enabled (then 12h + single-use refresh)",
+    "redirectRules": "https required, exact-match against the app's Redirect URLs list. Ares https tunnel callback works.",
+    "ownerSetup": "Same Slack app as 'slack' (or a second one): add bot scopes + redirect URL, then Ares runs the install flow and stores the xoxb token instead of the owner pasting it.",
+    "setup": {
+      "consoleUrl": "https://api.slack.com/apps",
+      "appType": "Create New App > From scratch",
+      "steps": [
+        "Add redirect URL https://ares.mistiqueai.com/oauth/callback",
+        "Add Bot Token Scopes",
+        "Copy client id + secret into Ares; Ares sends owner to oauth/v2/authorize?scope=<bot scopes>, exchanges code at oauth.v2.access, stores authed bot access_token"
+      ],
+      "fields": [
+        "client_id",
+        "client_secret"
+      ],
+      "deviceFlowCheckbox": "none",
+      "reviewRequired": "None for a workspace-installed (non-distributed) app."
+    },
+    "apiAfterConnect": "stdio MCP (Slack bot server) with SLACK_BOT_TOKEN env = token Ares obtained via oauth.v2.access; or rest:https://slack.com/api",
+    "evidence": [
+      "https://docs.slack.dev/authentication/installing-with-oauth/ (fetched: https redirect required, scope= for bot, user_scope= for user, tokens do not expire)",
+      "live probe: POST https://slack.com/api/oauth.v2.access with bogus client -> {\"ok\":false,\"error\":\"invalid_code\"} (endpoint alive)"
+    ],
+    "verification": "LIVE-VERIFIED",
+    "fixtures": [
+      "idp/slack.oidc.json"
+    ],
+    "facts": {
+      "dcr": false,
+      "device": false,
+      "cimd": false,
+      "pkceS256": false,
+      "revocation": false,
+      "publicClient": false
+    },
+    "healthCheck": {
+      "method": "POST",
+      "url": "https://slack.com/api/auth.test"
+    },
+    "notes": "The pasted xoxb token path is what exists today; the OAuth install flow produces the identical token, so the owner never copies it. Single app can hold both bot and user scopes (one authorize call with scope= and user_scope=). Bot reads only channels it has been invited to."
+  },
+  {
     "id": "stripe-key",
     "label": "Stripe (restricted/secret key)",
     "class": "e",
@@ -5621,6 +5595,35 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "notes": "Discovery API is public-data search with an apikey query param; no OAuth. Purchasing is not exposed by any public API. Not fetched (knowledge)."
   },
   {
+    "id": "twilio",
+    "label": "Twilio",
+    "class": "e",
+    "alsoClass": [
+      "c"
+    ],
+    "flow": "api-key",
+    "registry": "existing",
+    "endpoints": {
+      "token": "https://oauth.twilio.com/v2/token",
+      "docs": "https://www.twilio.com/docs/iam/oauth-apps/overview"
+    },
+    "pkce": false,
+    "clientAuth": "client_secret_post",
+    "scopes": [],
+    "refreshTokens": true,
+    "tokenLifetime": "3600s access (doc example); refresh token for auth-code grant",
+    "ownerSetup": "Create an OAuth app in the Twilio Console (client id/secret) -- or just keep Account SID + Auth Token/API key.",
+    "apiAfterConnect": "rest:https://api.twilio.com (Bearer)",
+    "evidence": [
+      "https://www.twilio.com/docs/iam/oauth-apps/overview",
+      "https://www.twilio.com/docs/iam/oauth-apps/oauth-access-token",
+      "LIVE: bogus POST to https://oauth.twilio.com/v2/token -> 401 code 321401 \"Invalid credentials\""
+    ],
+    "verification": "UNVERIFIED",
+    "fixtures": [],
+    "notes": "CORRECTION to the brief: Twilio now has first-party OAuth Apps (client_credentials AND authorization_code + refresh; token endpoint alive as probed). Authorize URL / PKCE / scopes not found in the docs fetched. Legacy Twilio Connect is not OAuth. For an owner using their OWN account, client_credentials adds nothing over an API key; auth-code only matters for multi-user apps. Hosted MCP mcp.twilio.com/docs is docs-only, no auth. Treat as e in practice."
+  },
+  {
     "id": "amazon",
     "label": "Amazon (shopping)",
     "class": "f",
@@ -5642,6 +5645,7 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     ],
     "refreshTokens": false,
     "ownerSetup": "none",
+    "unsupportedReason": "Amazon only provides identity sign-in, not order or cart access, and its seller APIs are for sellers only.",
     "evidence": [
       "https://developer.amazon.com/docs/login-with-amazon/documentation-overview.html (not fetched; from knowledge)",
       "api.amazon.com/.well-known/openid-configuration -> HTTP 403 to curl"
@@ -5668,6 +5672,7 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "refreshTokens": false,
     "ownerSetup": "Join the DoorDash MCP waitlist and request an OAuth client with redirect https://ares.mistiqueai.com/oauth/callback; else stay on browser.",
     "selfServe": false,
+    "unsupportedReason": "DoorDash MCP is a private corporate beta; until DoorDash approves an OAuth client for you, Ares uses the browser.",
     "evidence": [
       "https://developer.doordash.com/en-US/docs/mcp/overview/about_mcp/",
       "https://developer.doordash.com/en-US/docs/mcp/tutorials/get_started/"
@@ -5688,6 +5693,7 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "scopes": [],
     "refreshTokens": false,
     "ownerSetup": "none",
+    "unsupportedReason": "OpenTable only offers its booking API to approved restaurant and affiliate partners, not individuals.",
     "evidence": [
       "partner/affiliate program only (UNVERIFIED, no doc fetched)"
     ],
@@ -5707,6 +5713,7 @@ export const OAUTH_MATRIX_DATA: OAuthMatrixEntry[] = [
     "scopes": [],
     "refreshTokens": false,
     "ownerSetup": "none",
+    "unsupportedReason": "Peloton has no public API, so Ares can only use your logged-in browser session.",
     "evidence": [
       "no public developer program found (UNVERIFIED: absence of evidence)"
     ],

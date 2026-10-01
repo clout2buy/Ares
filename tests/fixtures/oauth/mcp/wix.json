@@ -1,17 +1,17 @@
 {
   "id": "wix",
-  "mcpUrl": "https://mcp.wix.com/sse",
-  "probedAt": "2026-10-01T00:29:11.131Z",
+  "mcpUrl": "https://mcp.wix.com/mcp",
+  "probedAt": "2026-10-01T01:31:04.017Z",
   "initialize": {
     "status": 401,
-    "wwwAuthenticate": "Bearer realm=\"OAuth\", error=\"invalid_token\", error_description=\"Missing or invalid access token\", resource_metadata=\"https://mcp.wix.com/.well-known/oauth-protected-resource\"",
+    "wwwAuthenticate": "Bearer realm=\"OAuth\", error=\"invalid_token\", error_description=\"Missing or invalid access token\", resource_metadata=\"https://mcp.wix.com/.well-known/oauth-protected-resource/mcp\"",
     "contentType": "application/json"
   },
   "prm": {
-    "url": "https://mcp.wix.com/.well-known/oauth-protected-resource",
+    "url": "https://mcp.wix.com/.well-known/oauth-protected-resource/mcp",
     "status": 200,
     "body": {
-      "resource": "https://mcp.wix.com",
+      "resource": "https://mcp.wix.com/mcp",
       "authorization_servers": [
         "https://mcp.wix.com"
       ],

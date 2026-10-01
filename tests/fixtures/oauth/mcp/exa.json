@@ -1,7 +1,7 @@
 {
   "id": "exa",
   "mcpUrl": "https://mcp.exa.ai/mcp",
-  "probedAt": "2026-10-01T00:29:11.720Z",
+  "probedAt": "2026-10-01T01:31:04.018Z",
   "initialize": {
     "status": 200,
     "wwwAuthenticate": null,

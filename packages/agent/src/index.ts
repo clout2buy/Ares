@@ -91,7 +91,7 @@ export {
   type CapabilityToolOptions,
   type CapabilityToolOutput,
 } from "./tools/Capability.js";
-export { runSkill, type RunSkillOptions, type SkillRunResult } from "./skills/runtime.js";
+export { runSkill, PROGRESS_MARKER, type RunSkillOptions, type SkillRunResult } from "./skills/runtime.js";
 export {
   CAPABILITY_CONTRACT_VERSION,
   CAPABILITY_MANIFEST_FILE,

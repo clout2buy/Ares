@@ -66,6 +66,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 		"ping":
 			return _ok({
 				"side": "editor",
+				"pid": OS.get_process_id(),
+				"window_title": DisplayServer.window_get_title() if DisplayServer.has_method("window_get_title") else "",
 				"godot": Engine.get_version_info().get("string", ""),
 				"project": ProjectSettings.get_setting("application/config/name", ""),
 				"scene": _scene_path(),
@@ -120,6 +122,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _signal_list(params)
 		"editor.screenshot":
 			return _editor_screenshot(params)
+		"editor.frame":
+			return _editor_frame(params)
 		"editor.play":
 			return _editor_play(params)
 		"editor.stop":
@@ -576,6 +580,22 @@ func _editor_screenshot(params: Dictionary) -> Dictionary:
 	if err != OK:
 		return _err("save_png failed: " + error_string(err))
 	return _ok({"file": file, "width": img.get_width(), "height": img.get_height(), "view": view})
+
+
+## A JPEG frame of the editor viewport for the live feed — same source as
+## editor.screenshot, but streamed as base64 instead of written to disk.
+func _editor_frame(params: Dictionary) -> Dictionary:
+	var view := str(params.get("view", "3d"))
+	var vp: Viewport = EditorInterface.get_editor_viewport_2d() if view == "2d" else EditorInterface.get_editor_viewport_3d(int(params.get("index", 0)))
+	if vp == null or vp.get_texture() == null:
+		return _err("viewport unavailable: " + view)
+	var img := vp.get_texture().get_image()
+	var out: Dictionary = Rpc.frame_base64(img, int(params.get("max_width", 960)), float(params.get("quality", 0.6)))
+	if out.is_empty():
+		return _err("viewport image is empty")
+	out["view"] = view
+	out["scene"] = _scene_path()
+	return _ok(out)
 
 
 func _editor_play(params: Dictionary) -> Dictionary:

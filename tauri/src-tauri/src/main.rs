@@ -686,6 +686,240 @@ fn ares_open_path(path: String) -> Result<(), String> {
     { host_command("xdg-open").arg(&target).spawn().map_err(|e| format!("failed to launch artifact: {e}"))?; Ok(()) }
 }
 
+/// Native window embedding (Windows). The Forge can show the REAL engine —
+/// a Godot game or the whole editor — by re-parenting its top-level window
+/// into the Ares window as a child placed over the live stage. Input then goes
+/// straight to the engine (it is its own HWND with focus), nothing is encoded,
+/// and nothing is lost when the owner wants it back: release restores the
+/// original style/parent/rect. Every embedded window is released on exit so
+/// closing Ares never destroys someone's running game.
+#[cfg(windows)]
+mod embed {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER,
+        HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOW,
+        WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+        WS_VISIBLE,
+    };
+
+    struct Saved {
+        style: isize,
+        ex_style: isize,
+        rect: RECT,
+    }
+
+    static EMBEDDED: Mutex<Option<HashMap<isize, Saved>>> = Mutex::new(None);
+
+    struct Finder {
+        pid: u32,
+        title: Vec<u16>,
+        exclude: isize,
+        found: isize,
+        found_title: String,
+    }
+
+    fn window_title(hwnd: HWND) -> String {
+        let mut buf = [0u16; 512];
+        let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> i32 {
+        let finder = &mut *(lparam as *mut Finder);
+        if hwnd as isize == finder.exclude || IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        if !GetWindow(hwnd, GW_OWNER).is_null() {
+            return 1; // owned popups (tooltips, dialogs) are not the engine window
+        }
+        let title = window_title(hwnd);
+        if title.is_empty() {
+            return 1;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        let pid_match = finder.pid != 0 && pid == finder.pid;
+        let title_match = !finder.title.is_empty() && {
+            let want = String::from_utf16_lossy(&finder.title).to_lowercase();
+            title.to_lowercase().contains(&want)
+        };
+        if pid_match || (finder.pid == 0 && title_match) {
+            finder.found = hwnd as isize;
+            finder.found_title = title;
+            return 0;
+        }
+        1
+    }
+
+    /// Find a visible top-level window by process id, falling back to a
+    /// case-insensitive title substring (a launcher's pid differs from the
+    /// window's; the project name does not).
+    pub fn find_window(pid: Option<u32>, title: Option<&str>, exclude: isize) -> Option<(isize, String)> {
+        let title_w: Vec<u16> = title.unwrap_or("").encode_utf16().collect();
+        let mut finder = Finder { pid: pid.unwrap_or(0), title: title_w.clone(), exclude, found: 0, found_title: String::new() };
+        unsafe { EnumWindows(Some(enum_cb), &mut finder as *mut Finder as LPARAM) };
+        if finder.found == 0 && finder.pid != 0 && !title_w.is_empty() {
+            finder = Finder { pid: 0, title: title_w, exclude, found: 0, found_title: String::new() };
+            unsafe { EnumWindows(Some(enum_cb), &mut finder as *mut Finder as LPARAM) };
+        }
+        (finder.found != 0).then(|| (finder.found, finder.found_title))
+    }
+
+    pub fn embed(parent: isize, hwnd: isize, x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
+        let h_wnd = hwnd as HWND;
+        let mut guard = EMBEDDED.lock().map_err(|_| "embed registry poisoned".to_string())?;
+        let map = guard.get_or_insert_with(HashMap::new);
+        if !map.contains_key(&hwnd) {
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            unsafe { GetWindowRect(h_wnd, &mut rect) };
+            let style = unsafe { GetWindowLongPtrW(h_wnd, GWL_STYLE) };
+            let ex_style = unsafe { GetWindowLongPtrW(h_wnd, GWL_EXSTYLE) };
+            map.insert(hwnd, Saved { style, ex_style, rect });
+            let child_style = ((style as u32) & !(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)) | WS_CHILD | WS_VISIBLE;
+            let child_ex = (ex_style as u32) & !WS_EX_APPWINDOW;
+            unsafe {
+                ShowWindow(h_wnd, SW_RESTORE);
+                SetWindowLongPtrW(h_wnd, GWL_STYLE, child_style as isize);
+                SetWindowLongPtrW(h_wnd, GWL_EXSTYLE, child_ex as isize);
+                if SetParent(h_wnd, parent as HWND).is_null() {
+                    // undo the style change before reporting
+                    SetWindowLongPtrW(h_wnd, GWL_STYLE, style);
+                    SetWindowLongPtrW(h_wnd, GWL_EXSTYLE, ex_style);
+                    map.remove(&hwnd);
+                    return Err("SetParent failed (is the window from an elevated process?)".to_string());
+                }
+            }
+        }
+        unsafe {
+            SetWindowPos(h_wnd, HWND_TOP, x, y, w.max(1), h.max(1), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            SetFocus(h_wnd);
+        }
+        Ok(())
+    }
+
+    pub fn place(hwnd: isize, x: i32, y: i32, w: i32, h: i32, visible: bool) -> bool {
+        let guard = match EMBEDDED.lock() { Ok(g) => g, Err(_) => return false };
+        if !guard.as_ref().map(|m| m.contains_key(&hwnd)).unwrap_or(false) {
+            return false;
+        }
+        let h_wnd = hwnd as HWND;
+        unsafe {
+            if visible {
+                SetWindowPos(h_wnd, HWND_TOP, x, y, w.max(1), h.max(1), SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            } else {
+                ShowWindow(h_wnd, SW_HIDE);
+            }
+        }
+        true
+    }
+
+    pub fn focus(hwnd: isize) {
+        unsafe { SetFocus(hwnd as HWND) };
+    }
+
+    fn restore(hwnd: isize, saved: &Saved) {
+        let h_wnd = hwnd as HWND;
+        unsafe {
+            SetParent(h_wnd, std::ptr::null_mut());
+            SetWindowLongPtrW(h_wnd, GWL_STYLE, saved.style);
+            SetWindowLongPtrW(h_wnd, GWL_EXSTYLE, saved.ex_style);
+            let r = &saved.rect;
+            SetWindowPos(h_wnd, std::ptr::null_mut(), r.left, r.top, (r.right - r.left).max(200), (r.bottom - r.top).max(120), SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER);
+            ShowWindow(h_wnd, SW_SHOW);
+        }
+    }
+
+    pub fn release(hwnd: isize) -> bool {
+        let mut guard = match EMBEDDED.lock() { Ok(g) => g, Err(_) => return false };
+        let Some(map) = guard.as_mut() else { return false };
+        match map.remove(&hwnd) {
+            Some(saved) => {
+                restore(hwnd, &saved);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn release_all() {
+        let mut guard = match EMBEDDED.lock() { Ok(g) => g, Err(_) => return };
+        if let Some(map) = guard.take() {
+            for (hwnd, saved) in map {
+                restore(hwnd, &saved);
+            }
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct EmbedInfo {
+    hwnd: isize,
+    title: String,
+}
+
+/// Re-parent an engine window (by pid, else by title substring) into the Ares
+/// window at the given client-area rectangle (physical pixels).
+#[tauri::command]
+fn ares_embed_window(window: tauri::WebviewWindow, pid: Option<u32>, title: Option<String>, x: i32, y: i32, w: i32, h: i32) -> Result<EmbedInfo, String> {
+    #[cfg(windows)]
+    {
+        let parent = window.hwnd().map_err(|e| format!("no native window: {e}"))?.0 as isize;
+        let (hwnd, found_title) = embed::find_window(pid, title.as_deref(), parent)
+            .ok_or_else(|| format!("no visible window for pid {:?} / title {:?}", pid, title))?;
+        embed::embed(parent, hwnd, x, y, w, h)?;
+        Ok(EmbedInfo { hwnd, title: found_title })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, pid, title, x, y, w, h);
+        Err("native window embedding is Windows-only; the Forge shows the streamed frames instead".to_string())
+    }
+}
+
+#[tauri::command]
+fn ares_embed_place(hwnd: isize, x: i32, y: i32, w: i32, h: i32, visible: bool) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        Ok(embed::place(hwnd, x, y, w, h, visible))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, x, y, w, h, visible);
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+fn ares_embed_focus(hwnd: isize) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        embed::focus(hwnd);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn ares_embed_release(hwnd: isize) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        Ok(embed::release(hwnd))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        Ok(false)
+    }
+}
+
 /// Every command `type` the daemon's loop actually handles. The webview can
 /// only ask for one of these — an unknown/forged type is rejected here instead
 /// of being piped into daemon stdin verbatim (defense in depth: the webview is
@@ -733,6 +967,9 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "mcp_catalog", "mcp_probe", "mcp_refresh_tools",
     // Agent visibility: HELM's fleet history + durable background subagents.
     "fleets_list", "subagents_list",
+    // The Forge live feed: watch an engine Ares drives (a Godot game/editor)
+    // between turns and send the owner's keys/mouse into the running game.
+    "live_watch", "live_unwatch", "live_input", "live_status",
     // The owner's memory surface: read what Ares believes, correct or delete
     // a memory in place. Owner-surface commands — never expose guest scopes.
     "mind_overview", "mind_edit", "mind_forget",
@@ -2090,6 +2327,8 @@ fn main() {
                         hide_windows_accent_border(&chrome_window);
                     }
                     if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                        #[cfg(windows)]
+                        embed::release_all();
                         if let Some(state) = close_handle.try_state::<DaemonState>() {
                             let _ = stop_existing_daemon(state.inner());
                         }
@@ -2124,6 +2363,10 @@ fn main() {
             ares_daemon_command,
             ares_open_url,
             ares_open_path,
+            ares_embed_window,
+            ares_embed_place,
+            ares_embed_focus,
+            ares_embed_release,
             ares_permission_response,
             ares_forge_write,
             ares_export_log,
@@ -2154,6 +2397,10 @@ fn main() {
             // cleanup orphaned the daemon (and its Telegram bridge), which kept
             // answering after the app "exited". ExitRequested fires on ALL of them.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Give any embedded engine window back to the desktop before
+                // our window goes away with its children.
+                #[cfg(windows)]
+                embed::release_all();
                 if let Some(state) = app_handle.try_state::<DaemonState>() {
                     let _ = stop_existing_daemon(state.inner());
                 }

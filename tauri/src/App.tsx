@@ -475,6 +475,78 @@ const TRANSCRIPT_WINDOW = 150;
  *  fresh decode + cached bitmap the renderer had to GC, the CPU/memory churn
  *  behind the WebView2 leak during browser-driving runs. The canvas backing
  *  store is allocated once and repainted in place. */
+interface LiveFeedState {
+  source: string;
+  side: string;
+  label: string;
+  at: number;
+  interactive: boolean;
+  watching: boolean;
+  offered: boolean;
+  width?: number;
+  height?: number;
+  step?: string;
+  note?: string;
+  /** Native window hints from the provider, for embedding the real window. */
+  pid?: number | null;
+  windowTitle?: string;
+}
+
+const IS_WINDOWS_HOST = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
+/** Physical-pixel rectangle of an element inside the window's client area. */
+function physicalRect(el: HTMLElement): { x: number; y: number; w: number; h: number } {
+  const r = el.getBoundingClientRect();
+  const s = window.devicePixelRatio || 1;
+  return { x: Math.round(r.left * s), y: Math.round(r.top * s), w: Math.max(1, Math.round(r.width * s)), h: Math.max(1, Math.round(r.height * s)) };
+}
+
+interface LiveInputEvent {
+  kind: "key" | "mouse" | "wheel";
+  key?: string;
+  pressed?: boolean;
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  x?: number;
+  y?: number;
+  button?: number;
+  relative?: boolean;
+  move?: boolean;
+  mask?: number;
+  delta?: number;
+}
+
+/** Browser KeyboardEvent.code → the key name Godot's OS.find_keycode_from_string accepts. */
+function godotKeyName(code: string, key: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (/^Numpad[0-9]$/.test(code)) return `KP ${code.slice(6)}`;
+  if (/^F([1-9]|1[0-2])$/.test(code)) return code;
+  const named: Record<string, string> = {
+    Space: "Space", Escape: "Escape", Enter: "Enter", NumpadEnter: "Kp Enter", Tab: "Tab", Backspace: "Backspace",
+    ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+    ShiftLeft: "Shift", ShiftRight: "Shift", ControlLeft: "Ctrl", ControlRight: "Ctrl", AltLeft: "Alt", AltRight: "Alt",
+    Delete: "Delete", Insert: "Insert", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", CapsLock: "CapsLock",
+    Minus: "Minus", Equal: "Equal", BracketLeft: "BracketLeft", BracketRight: "BracketRight", Semicolon: "Semicolon", Quote: "Apostrophe",
+    Comma: "Comma", Period: "Period", Slash: "Slash", Backslash: "Backslash", Backquote: "QuoteLeft",
+  };
+  if (named[code]) return named[code];
+  return key.length === 1 ? key.toUpperCase() : null;
+}
+
+/** Map a pointer position on an object-fit:contain canvas to frame pixels. */
+function frameCoords(el: HTMLElement, clientX: number, clientY: number, fw: number, fh: number): { x: number; y: number } {
+  const rect = el.getBoundingClientRect();
+  const ar = fw / Math.max(1, fh);
+  let dw = rect.width, dh = rect.width / ar;
+  if (dh > rect.height) { dh = rect.height; dw = rect.height * ar; }
+  const ox = (rect.width - dw) / 2, oy = (rect.height - dh) / 2;
+  const x = Math.max(0, Math.min(fw, ((clientX - rect.left - ox) / Math.max(1, dw)) * fw));
+  const y = Math.max(0, Math.min(fh, ((clientY - rect.top - oy) / Math.max(1, dh)) * fh));
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
 function LiveFrameCanvas({ frame, className, title }: { frame: string; className?: string; title?: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
@@ -635,6 +707,22 @@ function App() {
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
   const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
   const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number } | null>(null);
+  // A non-browser live source (a Godot game/editor Ares is driving). Frames
+  // land in liveBrowser like the screencast; this carries what it is, whether
+  // the daemon is still polling it between turns, and whether it takes input.
+  const [liveFeed, setLiveFeed] = useState<LiveFeedState | null>(null);
+  const [liveInteract, setLiveInteract] = useState(false);
+  const [liveMouseLook, setLiveMouseLook] = useState(false);
+  // The REAL engine window re-parented into the Ares window over the live
+  // stage (Windows). While embedded, frames are not painted — the owner sees
+  // and uses the engine itself; the stage element only reserves the space.
+  const [liveEmbed, setLiveEmbed] = useState<{ hwnd: number; title: string; side: string } | null>(null);
+  const [liveEmbedError, setLiveEmbedError] = useState<string | null>(null);
+  const liveStageRef = useRef<HTMLDivElement | null>(null);
+  const liveEmbedRef = useRef<{ hwnd: number } | null>(null);
+  const liveInputQueue = useRef<LiveInputEvent[]>([]);
+  const liveInputTimer = useRef<number | null>(null);
+  const liveHeldKeys = useRef<Set<string>>(new Set());
   const [liveUrl, setLiveUrl] = useState("http://127.0.0.1:3000");
   const [liveRevision, setLiveRevision] = useState(0);
   // The INTERACTIVE embedded browser — Ares drives its own self-contained HTML
@@ -873,6 +961,79 @@ function App() {
     },
     [native],
   );
+
+  // Owner input into the live game: batched per animation frame so a mouse
+  // drag does not become a hundred daemon commands.
+  const sendLiveInput = useCallback((events: LiveInputEvent[]) => {
+    liveInputQueue.current.push(...events);
+    if (liveInputTimer.current !== null) return;
+    liveInputTimer.current = window.setTimeout(() => {
+      liveInputTimer.current = null;
+      const batch = liveInputQueue.current.splice(0, 64);
+      if (batch.length) daemonCmd({ type: "live_input", events: batch });
+    }, 16);
+  }, [daemonCmd]);
+
+  const releaseLiveKeys = useCallback(() => {
+    const held = [...liveHeldKeys.current];
+    liveHeldKeys.current.clear();
+    if (held.length) sendLiveInput(held.map((key) => ({ kind: "key" as const, key, pressed: false })));
+  }, [sendLiveInput]);
+
+  // Embed the real engine window over the live stage (Windows). The provider
+  // told us the pid / window title; the shell re-parents that HWND into ours.
+  const embedLiveWindow = useCallback(async () => {
+    const el = liveStageRef.current;
+    if (!native || !el || !liveFeed) return;
+    setLiveEmbedError(null);
+    const rect = physicalRect(el);
+    try {
+      const info = await invoke<{ hwnd: number; title: string }>("ares_embed_window", { pid: liveFeed.pid ?? null, title: liveFeed.windowTitle ?? null, ...rect });
+      liveEmbedRef.current = { hwnd: info.hwnd };
+      setLiveEmbed({ hwnd: info.hwnd, title: info.title, side: liveFeed.side });
+      setLiveInteract(false);
+      releaseLiveKeys();
+      // The engine is on screen for real now; stop pulling frames for it.
+      if (liveFeed.watching) daemonCmd({ type: "live_unwatch" });
+    } catch (err) {
+      setLiveEmbedError(err instanceof Error ? err.message : String(err));
+    }
+  }, [native, liveFeed, daemonCmd, releaseLiveKeys]);
+
+  const releaseLiveWindow = useCallback(() => {
+    const current = liveEmbedRef.current;
+    liveEmbedRef.current = null;
+    setLiveEmbed(null);
+    if (native && current) void invoke("ares_embed_release", { hwnd: current.hwnd }).catch(() => null);
+  }, [native]);
+
+  // Keep the embedded window glued to the stage: follow layout changes, hide
+  // it when the Forge/live tab is not showing, and release it on unmount.
+  useEffect(() => {
+    if (!native || !liveEmbed) return;
+    const visible = forge.open && forge.tab === "live";
+    const place = () => {
+      const el = liveStageRef.current;
+      const current = liveEmbedRef.current;
+      if (!current) return;
+      if (!visible || !el) { void invoke("ares_embed_place", { hwnd: current.hwnd, x: 0, y: 0, w: 1, h: 1, visible: false }).catch(() => null); return; }
+      const rect = physicalRect(el);
+      void invoke<boolean>("ares_embed_place", { hwnd: current.hwnd, ...rect, visible: true }).then((still) => { if (still === false) { liveEmbedRef.current = null; setLiveEmbed(null); } }).catch(() => null);
+    };
+    place();
+    const el = liveStageRef.current;
+    const ro = el ? new ResizeObserver(() => place()) : null;
+    if (el && ro) ro.observe(el);
+    window.addEventListener("resize", place);
+    const poll = window.setInterval(place, 1000); // sidebar/rail animations move the stage without resizing the window
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", place);
+      window.clearInterval(poll);
+    };
+  }, [native, liveEmbed, forge.open, forge.tab, forgeWidth]);
+
+  useEffect(() => () => { const current = liveEmbedRef.current; if (native && current) void invoke("ares_embed_release", { hwnd: current.hwnd }).catch(() => null); }, [native]);
 
   // Slash-command palette for the composer: typing "/" surfaces these, Enter
   // runs them. The composer stays dumb — it just renders and fires `run`.
@@ -2291,6 +2452,63 @@ function App() {
         setLiveBrowser({ frame: ev.data.image, at: Date.now() });
         setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
         return;
+      }
+      // Live engine frames — a provider (the Godot game/editor) streaming while
+      // its operation runs, or the daemon's live-feed hub polling it between
+      // turns. Same canvas as the browser screencast; carries its own label.
+      {
+        const raw = ev as unknown as { type?: string; data?: Record<string, unknown>; image?: string; source?: string; side?: string; label?: string; width?: number; height?: number; interactive?: boolean; state?: string; error?: string; project?: string };
+        const frameData = raw.type === "tool_progress" && raw.data?.kind === "live_frame" ? raw.data : raw.type === "live_frame" ? raw : null;
+        if (frameData && typeof frameData.image === "string") {
+          const d = frameData as { image: string; source?: string; side?: string; label?: string; width?: number; height?: number };
+          const now = Date.now();
+          setLiveBrowser({ frame: d.image, at: now });
+          setLiveFeed((f) => ({
+            source: d.source ?? f?.source ?? "engine",
+            side: d.side ?? f?.side ?? "game",
+            label: d.label ?? f?.label ?? "Live",
+            at: now,
+            interactive: (d.side ?? f?.side) === "game",
+            watching: raw.type === "live_frame" ? true : f?.watching ?? false,
+            offered: f?.offered ?? false,
+            width: d.width ?? f?.width,
+            height: d.height ?? f?.height,
+            step: f?.step,
+          }));
+          setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
+          return;
+        }
+        if (raw.type === "tool_progress" && raw.data?.kind === "live_step") {
+          const label = typeof raw.data.label === "string" ? raw.data.label : "";
+          setLiveFeed((f) => (f ? { ...f, step: label } : f));
+          return;
+        }
+        if (raw.type === "tool_progress" && raw.data?.kind === "live_control") {
+          // Native-window hints (pid/title) so the owner can embed the real engine.
+          const d = raw.data as { side?: string; source?: string; label?: string; pid?: number | null; windowTitle?: string; state?: string };
+          setLiveFeed((f) => {
+            const base: LiveFeedState = f ?? { source: d.source ?? "engine", side: d.side ?? "game", label: d.label ?? "Live", at: 0, interactive: d.side === "game", watching: false, offered: false };
+            if (d.state === "ended") return { ...base, pid: null, offered: false, watching: false, note: "run finished" };
+            return { ...base, side: d.side ?? base.side, label: d.label ?? base.label, pid: d.pid ?? base.pid, windowTitle: d.windowTitle ?? base.windowTitle, offered: true, interactive: (d.side ?? base.side) === "game" };
+          });
+          // do not return: the Capability tool's activity stream also shows it
+        }
+        if (raw.type === "live_feed" && typeof raw.state === "string") {
+          const state = raw.state;
+          const hints = raw as { pid?: number | null; windowTitle?: string };
+          setLiveFeed((f) => {
+            const base: LiveFeedState = f ?? { source: raw.source ?? "engine", side: raw.side ?? "game", label: raw.label ?? "Live", at: 0, interactive: raw.side === "game", watching: false, offered: false };
+            if (state === "watching") return { ...base, label: raw.label ?? base.label, side: raw.side ?? base.side, interactive: !!raw.interactive, watching: true, offered: true, note: undefined, pid: hints.pid ?? base.pid, windowTitle: hints.windowTitle ?? base.windowTitle };
+            if (state === "offered" || state === "streaming") return { ...base, label: raw.label ?? base.label, side: raw.side ?? base.side, interactive: !!raw.interactive, offered: true, note: undefined };
+            if (state === "stopped" || state === "lost" || state === "ended" || state === "offer_gone") {
+              return { ...base, watching: false, offered: state === "stopped", note: state === "lost" ? "the game closed" : state === "ended" ? "run finished" : undefined };
+            }
+            if (state === "unavailable" || state === "input_failed") return { ...base, note: raw.error ?? state };
+            return base;
+          });
+          if (state === "lost" || state === "ended") { setLiveInteract(false); setLiveMouseLook(false); }
+          return;
+        }
       }
       if (ev.type === "tool_progress" && ev.data?.kind === "browser_target" && typeof ev.data.url === "string") {
         const target = { url: ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
@@ -4402,7 +4620,11 @@ function App() {
                 {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })}>Open separate copy ↗</button> : null}
               </form>
               <div className="forgeMeta">
-                {embeddedActive ? embeddedActivity || "Interactive app controlled by Ares" : liveTarget?.title || liveTarget?.url || "Launch a local app or let Ares open one"}
+                {embeddedActive
+                  ? embeddedActivity || "Interactive app controlled by Ares"
+                  : liveFeed && (!liveTarget || liveFeed.at >= liveTarget.at)
+                    ? `${liveFeed.label}${liveFeed.step ? ` · ${liveFeed.step}` : ""}${liveFeed.note ? ` · ${liveFeed.note}` : liveFeed.watching ? " · watching" : ""}`
+                    : liveTarget?.title || liveTarget?.url || "Launch a local app or let Ares open one"}
               </div>
               {/* interactive embedded browser (Ares's own HTML apps/games) */}
               <div className="liveStage embed" data-on={embeddedActive ? "1" : "0"}>
@@ -4411,7 +4633,104 @@ function App() {
               {/* Local apps are safely embeddable. External sites frequently
                   refuse frames; show the actual Playwright screencast instead
                   of a blocked iframe that falsely appears interactive. */}
-              {!embeddedActive && liveTarget ? (
+              {/* Engine feed (Godot game/editor): the latest frame, plus the
+                  owner's keyboard and mouse forwarded into the running game. */}
+              {!embeddedActive && liveFeed && (liveBrowser || liveEmbed) && (!liveTarget || liveFeed.at >= liveTarget.at) ? (
+                <div
+                  ref={liveStageRef}
+                  className={`liveStage interactive engineFeed ${liveInteract ? "capturing" : ""} ${liveEmbed ? "embedded" : ""}`}
+                  data-live={liveEmbed || Date.now() - liveFeed.at < 4000 ? "1" : "0"}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (!liveInteract) return;
+                    if (e.code === "Escape" && e.shiftKey) { setLiveInteract(false); releaseLiveKeys(); if (document.pointerLockElement) document.exitPointerLock(); return; }
+                    e.preventDefault();
+                    if (e.repeat) return;
+                    const key = godotKeyName(e.code, e.key);
+                    if (!key) return;
+                    liveHeldKeys.current.add(key);
+                    sendLiveInput([{ kind: "key", key, pressed: true, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey }]);
+                  }}
+                  onKeyUp={(e) => {
+                    if (!liveInteract) return;
+                    e.preventDefault();
+                    const key = godotKeyName(e.code, e.key);
+                    if (!key) return;
+                    liveHeldKeys.current.delete(key);
+                    sendLiveInput([{ kind: "key", key, pressed: false }]);
+                  }}
+                  onBlur={() => releaseLiveKeys()}
+                  onPointerDown={(e) => {
+                    const el = e.currentTarget;
+                    el.focus();
+                    if (!liveInteract) { setLiveInteract(true); return; }
+                    if (liveMouseLook && document.pointerLockElement !== el) { void el.requestPointerLock(); }
+                    const { x, y } = frameCoords(el, e.clientX, e.clientY, liveFeed.width ?? el.clientWidth, liveFeed.height ?? el.clientHeight);
+                    sendLiveInput([{ kind: "mouse", x, y, button: e.button === 2 ? 2 : e.button === 1 ? 3 : 1, pressed: true, move: !liveMouseLook }]);
+                  }}
+                  onPointerUp={(e) => {
+                    if (!liveInteract) return;
+                    const el = e.currentTarget;
+                    const { x, y } = frameCoords(el, e.clientX, e.clientY, liveFeed.width ?? el.clientWidth, liveFeed.height ?? el.clientHeight);
+                    sendLiveInput([{ kind: "mouse", x, y, button: e.button === 2 ? 2 : e.button === 1 ? 3 : 1, pressed: false, move: !liveMouseLook }]);
+                  }}
+                  onPointerMove={(e) => {
+                    if (!liveInteract) return;
+                    const el = e.currentTarget;
+                    if (liveMouseLook) {
+                      if (e.movementX || e.movementY) sendLiveInput([{ kind: "mouse", x: e.movementX, y: e.movementY, relative: true, mask: e.buttons }]);
+                      return;
+                    }
+                    if (e.buttons === 0 && (e.timeStamp % 3) > 1) return; // thin hover traffic
+                    const { x, y } = frameCoords(el, e.clientX, e.clientY, liveFeed.width ?? el.clientWidth, liveFeed.height ?? el.clientHeight);
+                    sendLiveInput([{ kind: "mouse", x, y, mask: e.buttons }]);
+                  }}
+                  onWheel={(e) => {
+                    if (!liveInteract) return;
+                    e.preventDefault();
+                    const el = e.currentTarget;
+                    const { x, y } = frameCoords(el, e.clientX, e.clientY, liveFeed.width ?? el.clientWidth, liveFeed.height ?? el.clientHeight);
+                    sendLiveInput([{ kind: "wheel", x, y, delta: e.deltaY }]);
+                  }}
+                  onContextMenu={(e) => { if (liveInteract) e.preventDefault(); }}
+                >
+                  {liveEmbed ? (
+                    <div className="engineEmbedSlot" aria-label={`${liveEmbed.title} (embedded)`}>
+                      <span>{liveEmbed.title}</span>
+                    </div>
+                  ) : liveBrowser ? (
+                    <LiveFrameCanvas className="liveTelemetryMain" frame={liveBrowser.frame} title={liveFeed.label} />
+                  ) : null}
+                  <div className="engineFeedBar">
+                    <span className={liveEmbed || Date.now() - liveFeed.at < 4000 ? "liveDot" : "idleDot"} />
+                    <span className="engineFeedLabel">{liveFeed.side === "editor" ? "Godot editor" : "Godot game"}{liveEmbed ? " · native" : liveFeed.width ? ` · ${liveFeed.width}×${liveFeed.height}` : ""}</span>
+                    {native && IS_WINDOWS_HOST ? (
+                      liveEmbed ? (
+                        <button type="button" data-on="1" onClick={() => releaseLiveWindow()} title="Give the window back to the desktop">⧉ Detach window</button>
+                      ) : (liveFeed.pid || liveFeed.windowTitle) ? (
+                        <button type="button" onClick={() => void embedLiveWindow()} title="Pull the real Godot window into this pane — native speed, direct input">⧉ Embed window</button>
+                      ) : null
+                    ) : null}
+                    {liveEmbedError ? <span className="engineFeedHint" title={liveEmbedError}>couldn't embed — {liveEmbedError.slice(0, 60)}</span> : null}
+                    {liveFeed.interactive && !liveEmbed ? (
+                      <>
+                        <button type="button" data-on={liveInteract ? "1" : "0"} onClick={() => { const next = !liveInteract; setLiveInteract(next); if (!next) { releaseLiveKeys(); if (document.pointerLockElement) document.exitPointerLock(); } }} title="Send your keyboard and mouse to the game (Shift+Esc releases)">
+                          {liveInteract ? "⌨ Playing — Shift+Esc to release" : "🎮 Play"}
+                        </button>
+                        <button type="button" data-on={liveMouseLook ? "1" : "0"} onClick={() => setLiveMouseLook((v) => !v)} title="Relative mouse motion for first/third-person cameras (click the frame to capture the cursor)">
+                          Mouse look
+                        </button>
+                      </>
+                    ) : liveEmbed ? <span className="engineFeedHint">click inside to play — it is the real window</span> : <span className="engineFeedHint">view only</span>}
+                    {liveEmbed ? null : liveFeed.watching ? (
+                      <button type="button" onClick={() => { daemonCmd({ type: "live_unwatch" }); setLiveInteract(false); }}>Stop watching</button>
+                    ) : liveFeed.offered ? (
+                      <button type="button" onClick={() => daemonCmd({ type: "live_watch", source: liveFeed.source, side: liveFeed.side })}>Watch live</button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {!embeddedActive && liveTarget && !(liveFeed && liveBrowser && liveFeed.at >= liveTarget.at) ? (
                 <div className={`liveStage interactive ${forgeCanEmbed(liveTarget.url) ? "localTarget" : "externalTarget"}`}>
                   {forgeCanEmbed(liveTarget.url) ? (
                     <>
@@ -4428,10 +4747,10 @@ function App() {
                   )}
                 </div>
               ) : null}
-              {!embeddedActive && !liveTarget ? (
+              {!embeddedActive && !liveTarget && !(liveFeed && liveBrowser) ? (
                 <div className="forgeEmpty">
                   <div className="emptyEmblem" aria-hidden="true" />
-                  <p>When Ares tests a page, app, or game it built, you'll watch it here — cursor moving, clicking, navigating at human speed. Just like it has its own browser.</p>
+                  <p>When Ares tests a page, app, or game it built, you'll watch it here — cursor moving, clicking, navigating at human speed. A Godot game Ares runs shows up here too, and you can grab the controls.</p>
                 </div>
               ) : null}
             </div>

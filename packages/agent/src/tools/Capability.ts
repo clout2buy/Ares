@@ -357,6 +357,10 @@ export function makeCapabilityTool(options: CapabilityToolOptions) {
         timeoutMs,
         signal: ctx.signal,
         sessionId: ctx.sessionId,
+        // Streamed provider progress (live frames, phases) rides the turn's
+        // progress channel so the owner watches the editor/game in the Forge
+        // while the operation runs — the same path the browser screencast uses.
+        onProgress: (event) => ctx.emitProgress?.({ ...event, providerId: provider.manifest.id, operation }),
       });
       await recordProviderOutcome(home, provider, run);
       ctx.emitProgress?.({

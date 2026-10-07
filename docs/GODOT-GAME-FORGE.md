@@ -48,6 +48,36 @@ Newline-delimited JSON over 127.0.0.1: `{"id","method","params"}` →
 (auto-`load`ed when the target property is an Object), `{"$res": path}` and
 `{"$var": literal}`. Node paths are relative to the edited scene root.
 
+## Live feed and native embedding
+
+Three layers, all engine-agnostic above the provider:
+
+1. **Provider progress stream** — a handler writes `##ares-progress## {json}`
+   lines to stdout; `runSkill` (`packages/agent/src/skills/runtime.ts`,
+   `PROGRESS_MARKER`) parses them as they stream and keeps them out of the
+   logs; the `Capability` tool forwards each as a `tool_progress` event. The
+   Godot provider streams `live_frame` (JPEG, base64, ≤960 px, from the
+   bridge's `editor.frame` / the runtime's `frame`), `live_step`, and
+   `live_control` (`{host, port, method, side, state, pid, windowTitle}`).
+2. **Daemon live-feed hub** (`packages/cli/src/entry/daemon/liveFeed.ts`) —
+   on `live_control state:"detached"` (a game left running with `keepAlive`)
+   it keeps polling frames between turns and emits `live_frame` / `live_feed`
+   events to the UI; `live_input` forwards the owner's keys/mouse to the
+   runtime's `input.key` / `input.mouse` (explicit press/release edges,
+   relative mouse-look); `live_watch` / `live_unwatch` / `live_status` are the
+   UI commands (allow-listed in `tauri/src-tauri/src/main.rs`). Editor feeds
+   are view-only. A feed is declared lost after 8 failed polls.
+3. **Forge "Live" pane** (`tauri/src/App.tsx`) — paints frames on the same
+   canvas as the browser screencast, with Play (keyboard/mouse capture,
+   Shift+Esc releases), Mouse look (pointer lock → relative motion), Watch /
+   Stop watching. On Windows, **Embed window** asks the shell
+   (`ares_embed_window`, `ares_embed_place`, `ares_embed_release` in
+   `main.rs`) to re-parent the real Godot window (found by pid, else title)
+   into the Ares window over the stage: native rendering, direct input, kept
+   in place on resize, released on Detach, tab switch hides it, and every
+   embedded window is released before the app exits so closing Ares never
+   destroys a running game.
+
 ## Engine provisioning
 
 `install` (and `ares godot install`, or `ares godot init` when nothing is

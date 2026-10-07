@@ -48,7 +48,16 @@ export interface RunSkillOptions {
   sessionId?: string;
   /** Explicit provider operation. Falls back to input.op for capability skills. */
   operation?: string;
+  /** Live progress from the handler while it runs. A handler writes a line
+   * `##ares-progress## {json}` to stdout (see PROGRESS_MARKER); each parsed
+   * object is delivered here as it streams — frames, phases, step results —
+   * so a long provider operation can be watched, not just awaited. Marker
+   * lines never reach the retained logs. */
+  onProgress?: (event: Record<string, unknown>) => void;
 }
+
+/** Prefix a handler writes before a one-line JSON object to stream progress. */
+export const PROGRESS_MARKER = "##ares-progress##";
 
 export interface SkillRunResult {
   name: string;
@@ -272,7 +281,23 @@ export async function runSkill(opts: RunSkillOptions): Promise<SkillRunResult> {
       if (opts.signal?.aborted) onAbort();
 
       const collect = (chunk: Buffer) => chunks.push(chunk);
-      child.stdout.on("data", collect);
+      // stdout may carry progress marker lines; split them out as they stream
+      // (frames can be ~100 KB, so a line may span many chunks).
+      let pending = "";
+      const collectStdout = (chunk: Buffer) => {
+        if (!opts.onProgress) {
+          collect(chunk);
+          return;
+        }
+        pending += chunk.toString("utf8");
+        let nl: number;
+        while ((nl = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0, nl);
+          pending = pending.slice(nl + 1);
+          if (!deliverProgress(line, opts.onProgress)) chunks.push(Buffer.from(line + "\n", "utf8"));
+        }
+      };
+      child.stdout.on("data", collectStdout);
       child.stderr.on("data", collect);
 
       const finish = (exitCode: number | null, spawnError?: Error) => {
@@ -280,6 +305,10 @@ export async function runSkill(opts: RunSkillOptions): Promise<SkillRunResult> {
         settled = true;
         clearTimeout(timer);
         opts.signal?.removeEventListener("abort", onAbort);
+        if (pending) {
+          if (!opts.onProgress || !deliverProgress(pending, opts.onProgress)) chunks.push(Buffer.from(pending, "utf8"));
+          pending = "";
+        }
         resolve({
           logs: clampLog(Buffer.concat(chunks).toString("utf8")),
           timedOut,
@@ -369,6 +398,20 @@ export async function runSkill(opts: RunSkillOptions): Promise<SkillRunResult> {
     timedOut: false,
     aborted: false,
   };
+}
+
+/** True when `line` was a progress marker (and was delivered). */
+function deliverProgress(line: string, onProgress: (event: Record<string, unknown>) => void): boolean {
+  const trimmed = line.replace(/\r$/, "");
+  if (!trimmed.startsWith(PROGRESS_MARKER)) return false;
+  try {
+    const value = JSON.parse(trimmed.slice(PROGRESS_MARKER.length).trim()) as unknown;
+    if (value && typeof value === "object" && !Array.isArray(value)) onProgress(value as Record<string, unknown>);
+  } catch {
+    // a malformed marker line is dropped, never surfaced as a log line that
+    // could be mistaken for handler output
+  }
+  return true;
 }
 
 function providerOperation(

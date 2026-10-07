@@ -77,6 +77,19 @@ Scene node paths are relative to the scene root (`"."` is the root,
 Godot literals in strings: `"Vector3(0, 1, 0)"`, `"Color(1, 0.5, 0, 1)"`.
 Resources are `"res://..."` strings (auto-loaded) or `{"$res": "res://..."}`.
 
+## The owner watches — and plays
+
+Every live-editor `mutate`, every `screenshot`, and every `run` streams
+frames into the Forge "Live" pane of the desktop app while it executes, so
+the owner sees the editor change and the game being driven in real time.
+Leave a game running for them with `run {keepAlive: true}`: the pane keeps
+streaming after your turn ends, the owner can press **Play** to send their
+keyboard/mouse into it, and on Windows **Embed window** pulls the real
+engine window into the pane (native, zero latency). When you hand a game
+over this way, say so in one line ("left it running — hit Play or Embed in
+the Live pane"). A later `run` attaches to that same game; a `run` without
+`keepAlive` stops it when done.
+
 ## Modes
 
 - **live-editor** — the project is open in Godot with the Ares bridge addon

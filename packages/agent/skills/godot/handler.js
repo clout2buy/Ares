@@ -11,6 +11,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import * as tscn from "./lib/tscn.js";
 import * as mesh from "./lib/mesh.js";
 import * as net from "./lib/net.js";
@@ -53,6 +54,58 @@ export default async function handler(input, ctx) {
 }
 
 // ---- shared ---------------------------------------------------------------
+
+/** Stream a progress event to the Ares runtime (see PROGRESS_MARKER in
+ * packages/agent/src/skills/runtime.ts). Frames reach the Forge "Live" pane. */
+function progress(event) {
+  try {
+    process.stdout.write(`##ares-progress## ${JSON.stringify(event)}\n`);
+  } catch {
+    // never let telemetry break an operation
+  }
+}
+
+/** Poll a viewport at ~fps and stream JPEG frames while an operation runs.
+ * Returns a stop() that resolves once the last in-flight call settles. */
+function startFeed(call, { side, label, method = "frame", view = "3d", fps = 3, maxWidth = 960, quality = 0.6 }) {
+  let busy = false;
+  let stopped = false;
+  let misses = 0;
+  const tick = async () => {
+    if (busy || stopped) return;
+    busy = true;
+    try {
+      const r = await call(method, { view, max_width: maxWidth, quality }, 2500);
+      misses = 0;
+      if (r?.image) progress({ kind: "live_frame", source: "godot", side, label, image: r.image, width: r.width, height: r.height, view: r.view });
+    } catch {
+      misses += 1;
+    } finally {
+      busy = false;
+    }
+  };
+  const timer = setInterval(tick, Math.max(120, Math.round(1000 / fps)));
+  void tick();
+  return {
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      while (busy) await net.sleep(50);
+    },
+    get misses() {
+      return misses;
+    },
+  };
+}
+
+async function addonVersionOf(pluginCfg) {
+  try {
+    const text = await fs.readFile(pluginCfg, "utf8");
+    return text.match(/^version="([^"]+)"/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function sha256File(file) {
   return createHash("sha256").update(await fs.readFile(file)).digest("hex");
@@ -120,12 +173,15 @@ const OPS = {
     }
     const found = await godot.locateGodot({ root: ctx.root, home: ctx.home, dotnet: project.dotnet, verify: input?.verify !== false });
     const addonInstalled = await godot.exists(path.join(ctx.root, "addons", "ares_bridge", "plugin.gd"));
+    const addonVersion = await addonVersionOf(path.join(ctx.root, "addons", "ares_bridge", "plugin.cfg"));
+    const bundledAddonVersion = await addonVersionOf(path.join(ctx.skillDir ?? path.dirname(fileURLToPath(import.meta.url)), "addon", "ares_bridge", "plugin.cfg"));
     const editor = await net.rpcPing(cfg.bridgePort, 600);
     const game = await net.rpcPing(cfg.runtimePort, 400);
     if (!found.found) diagnostics.push(`Godot executable not found. ${found.hint}`);
     else if (found.version) await godot.rememberGodot(ctx.home, found.path, found.version).catch(() => {});
     if (!addonInstalled) diagnostics.push("Ares bridge addon not installed in this project — run `ares godot init <project>` for live editor control (offline .tscn editing and headless checks still work).");
     else if (!project.aresBridgeEnabled) diagnostics.push("Ares bridge addon present but not enabled in project.godot [editor_plugins]; `ares godot init` enables it.");
+    else if (addonVersion && bundledAddonVersion && addonVersion !== bundledAddonVersion) diagnostics.push(`Ares bridge addon in this project is v${addonVersion} but Ares ships v${bundledAddonVersion} — run \`ares godot init <project>\` to update it (then reopen the editor / restart the game).`);
     if (addonInstalled && project.aresBridgeEnabled && !editor) diagnostics.push(`Editor bridge not reachable on 127.0.0.1:${cfg.bridgePort} — open the project in the Godot editor to enable live mode.`);
     if (project.dotnet) diagnostics.push("C# project: `check` runs `dotnet build`; a mono/.NET Godot build is preferred.");
     return {
@@ -133,7 +189,7 @@ const OPS = {
       result: {
         project: { name: project.name, mainScene: project.mainScene, engineVersion: project.engineVersion, dotnet: project.dotnet, renderer: project.renderer },
         godot: found.found ? { path: found.path, version: found.version, from: found.from, mono: found.mono } : null,
-        bridge: { addonInstalled, enabled: project.aresBridgeEnabled, port: cfg.bridgePort, editorLive: !!editor, editorScene: editor?.scene ?? null, runtimeLive: !!game },
+        bridge: { addonInstalled, addonVersion, bundledAddonVersion, enabled: project.aresBridgeEnabled, port: cfg.bridgePort, editorLive: !!editor, editorScene: editor?.scene ?? null, runtimeLive: !!game },
         mode: editor ? "live-editor" : game ? "live-game" : "offline",
       },
       diagnostics,
@@ -325,8 +381,13 @@ const OPS = {
         await live.call("scene.open", { path: sceneRes });
       }
       const current = async () => (await live.call("ping", {})).scene;
+      // The owner watches the editor change op by op in the Forge; the feed
+      // keeps streaming a little past the save so the final state is seen.
+      const feed = startFeed(live.call, { side: "editor", label: `editing ${sceneRes ?? live.pong.scene ?? "scene"}`, method: "editor.frame", view: input.view ?? "3d", fps: 2 });
+      progress({ kind: "live_control", source: "godot", side: "editor", host: "127.0.0.1", port: cfg.bridgePort, method: "editor.frame", label: `Godot editor — ${project?.name ?? "project"}`, state: "available", project: ctx.root, pid: live.pong.pid ?? null, windowTitle: live.pong.window_title || "Godot Engine" });
       for (const op of ops) {
         const { op: name, ...params } = op;
+        progress({ kind: "live_step", source: "godot", side: "editor", op: name, label: `${name} ${params.name ?? params.path ?? params.action ?? ""}`.trim() });
         try {
           if (name === "scene.new") {
             const file = godot.resToAbs(ctx.root, params.path);
@@ -369,6 +430,8 @@ const OPS = {
           results.push({ op: "scene.save", ok: false, error: String(error.message ?? error) });
         }
       }
+      await net.sleep(400);
+      await feed.stop();
       const mutations = [];
       for (const [file, before] of touched) {
         const m = await mutationFor(file, before);
@@ -601,6 +664,12 @@ const OPS = {
 
     const deadline = Date.now() + (input.timeoutMs ?? 90_000);
     const settle = input.settleMs ?? 600;
+    const feedLabel = `${project.name} — ${input.scene ?? project.mainScene ?? "game"}`;
+    // pid + window title let the desktop shell embed the REAL game window
+    // (Win32 reparenting) instead of only painting frames.
+    const gamePid = session?.pid ?? existing?.pong?.pid ?? null;
+    progress({ kind: "live_control", source: "godot", side: "game", host: "127.0.0.1", port: cfg.runtimePort, method: "frame", label: feedLabel, state: "running", project: ctx.root, pid: gamePid, windowTitle: project.name });
+    const feed = input.feed === false ? null : startFeed(call, { side: "game", label: feedLabel, method: "frame", fps: input.fps ?? 4 });
     if (!attached && settle > 0) await net.sleep(settle);
     try {
       for (const step of steps) {
@@ -612,6 +681,7 @@ const OPS = {
           stepResults.push({ step, ok: false, error: `game exited (code ${session.exitCode}) before this step` });
           break;
         }
+        progress({ kind: "live_step", source: "godot", side: "game", label: typeof step === "string" ? step : Object.keys(step).map((k) => `${k} ${typeof step[k] === "object" ? JSON.stringify(step[k]) : step[k]}`).join(" ").slice(0, 120) });
         try {
           stepResults.push({ step, ok: true, result: await runStep(step, call, takeShot, asserts) });
         } catch (error) {
@@ -634,10 +704,17 @@ const OPS = {
         }
       }
     } finally {
-      if (session && !input.keepAlive) await session.stop();
-      else if (session) {
+      if (feed) await feed.stop();
+      if (session && !input.keepAlive) {
+        await session.stop();
+        progress({ kind: "live_control", source: "godot", side: "game", port: cfg.runtimePort, state: "ended", label: feedLabel });
+      } else if (session) {
         session.detach();
-        diagnostics.push(`game left running (pid ${session.pid}) on runtime port ${cfg.runtimePort}; later run calls attach to it`);
+        diagnostics.push(`game left running (pid ${session.pid}) on runtime port ${cfg.runtimePort}; the owner can keep watching and playing it in the Forge; later run calls attach to it`);
+        progress({ kind: "live_control", source: "godot", side: "game", host: "127.0.0.1", port: cfg.runtimePort, method: "frame", state: "detached", label: feedLabel, project: ctx.root, pid: session.pid, windowTitle: project.name });
+      } else {
+        // attached to a game someone else left running — leave it, keep the feed offered
+        progress({ kind: "live_control", source: "godot", side: "game", host: "127.0.0.1", port: cfg.runtimePort, method: "frame", state: "detached", label: feedLabel, project: ctx.root, pid: gamePid, windowTitle: project.name });
       }
     }
     const diag = session ? godot.classifyOutput(session.output) : { errors: [], warnings: [], info: [] };
@@ -683,6 +760,9 @@ const OPS = {
     if (!editor) return { ok: false, error: `neither the running game (port ${cfg.runtimePort}) nor the editor bridge (port ${cfg.bridgePort}) is reachable. Open the project in Godot, or use run with a screenshot step.` };
     if (input.focus) await editor.call("editor.focus", { path: input.focus }).catch(() => {});
     const r = await editor.call("editor.screenshot", { file, view: input.view ?? "3d", index: input.index ?? 0 }, 15_000);
+    const frame = await editor.call("editor.frame", { view: input.view ?? "3d", index: input.index ?? 0, max_width: 960 }, 5000).catch(() => null);
+    if (frame?.image) progress({ kind: "live_frame", source: "godot", side: "editor", label: `Godot editor — ${r.view}`, image: frame.image, width: frame.width, height: frame.height, view: r.view });
+    progress({ kind: "live_control", source: "godot", side: "editor", host: "127.0.0.1", port: cfg.bridgePort, method: "editor.frame", label: `Godot editor — ${(await godot.readProject(ctx.root))?.name ?? "project"}`, state: "available", project: ctx.root, pid: editor.pong.pid ?? null, windowTitle: editor.pong.window_title || "Godot Engine" });
     return { ok: true, result: { source: "editor", file, width: r.width, height: r.height, view: r.view, next: "Read the PNG to look at it" }, evidence: [await screenshotEvidence(file)] };
   },
 

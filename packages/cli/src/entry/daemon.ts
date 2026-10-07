@@ -79,6 +79,7 @@ import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
+import { LiveFeedHub, type LiveControl, type LiveInputEvent } from "./daemon/liveFeed.js";
 
 const providerUsageCache = new Map<string, { at: number; usage: ProviderUsage | undefined; error: string | undefined }>();
 let ollamaUsageCache: { at: number; usage: OllamaUsage | undefined; error: string | undefined } | undefined;
@@ -386,9 +387,15 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
 
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
-    eventRing.record({ at: Date.now(), ...payload });
+    // Frames are ~100 KB of base64 each at several per second; the crash
+    // ring only needs to know one arrived, not keep the pixels.
+    eventRing.record({ at: Date.now(), ...(typeof payload.image === "string" ? { ...payload, image: `<${payload.image.length} chars>` } : payload) });
     process.stdout.write(JSON.stringify(payload) + "\n");
   };
+
+  // The Forge's live window onto an engine Ares drives (a Godot game left
+  // running, an open editor) between turns — plus the owner's input into it.
+  const liveFeed = new LiveFeedHub({ emit: (obj, sessionId) => tagEmit(sessionId, obj) });
 
   // ─── Resident-session ceiling ────────────────────────────────────────────
   //
@@ -3527,6 +3534,40 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         process.stdout.write(JSON.stringify({ type: "operator_control_set", action, engaged: await killSwitch.engaged() }) + "\n");
         continue;
       }
+      if (command.type === "live_watch") {
+        // Watch an engine the provider offered (or an explicit loopback endpoint).
+        const c = command as unknown as Record<string, unknown>;
+        liveFeed.startWatching(
+          {
+            source: typeof c.source === "string" ? c.source : undefined,
+            side: typeof c.side === "string" ? c.side : undefined,
+            host: typeof c.host === "string" ? c.host : undefined,
+            port: typeof c.port === "number" ? c.port : undefined,
+            method: typeof c.method === "string" ? c.method : undefined,
+            label: typeof c.label === "string" ? c.label : undefined,
+            pid: typeof c.pid === "number" ? c.pid : undefined,
+            windowTitle: typeof c.windowTitle === "string" ? c.windowTitle : undefined,
+          },
+          typeof c.sessionId === "string" ? c.sessionId : undefined,
+        );
+        continue;
+      }
+      if (command.type === "live_unwatch") {
+        liveFeed.stopWatching();
+        continue;
+      }
+      if (command.type === "live_status") {
+        process.stdout.write(JSON.stringify({ type: "live_status", ...liveFeed.status() }) + "\n");
+        continue;
+      }
+      if (command.type === "live_input") {
+        // The owner's keys/mouse from the Forge into the running game. Never
+        // reaches the OS — it is parsed by the game's own input pipeline.
+        const c = command as unknown as Record<string, unknown>;
+        const events = Array.isArray(c.events) ? (c.events as LiveInputEvent[]) : [];
+        if (events.length) void liveFeed.input(events, typeof c.sessionId === "string" ? c.sessionId : undefined);
+        continue;
+      }
       if (command.type === "pointmaps_list" || command.type === "pointmap_delete") {
         const current = (await loadUiSettings().catch(() => null))?.pointMaps ?? [];
         let maps = Array.isArray(current) ? current : [];
@@ -4122,6 +4163,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 tagEmit(sid, { type: "steer_applied", inputId, status: "claimed" });
               }
               if (ev.type === "tool_start" && ev.id && ev.name) toolNamesById.set(ev.id, ev.name);
+              // A provider announcing a live target (game left running, editor
+              // open): the hub keeps the Forge feed alive after the tool ends.
+              if (ev.type === "tool_progress") {
+                const data = (event as { data?: { kind?: string } }).data;
+                if (data?.kind === "live_control") liveFeed.onControl(data as unknown as LiveControl, sid);
+              }
               // Persona adopt/release: the tool itself only validates and echoes
               // (it has no session handle), so the daemon is what actually swaps
               // the prompt layer. Doing it here — rather than inside the tool —

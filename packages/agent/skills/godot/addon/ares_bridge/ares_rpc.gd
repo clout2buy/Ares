@@ -88,6 +88,23 @@ func _handle_line(peer: StreamPeerTCP, line: String) -> void:
 	peer.put_data(text.to_utf8_buffer())
 
 
+# ---- frames ----------------------------------------------------------------
+
+## Downscale + JPEG-encode an image for streaming (no disk round trip).
+static func frame_base64(img: Image, max_width: int = 960, quality: float = 0.6) -> Dictionary:
+	if img == null or img.is_empty():
+		return {}
+	var w := img.get_width()
+	var h := img.get_height()
+	if max_width > 0 and w > max_width:
+		var nh := int(round(float(h) * float(max_width) / float(w)))
+		img.resize(max_width, max(1, nh), Image.INTERPOLATE_BILINEAR)
+	if img.get_format() != Image.FORMAT_RGB8:
+		img.convert(Image.FORMAT_RGB8)
+	var bytes := img.save_jpg_to_buffer(clampf(quality, 0.1, 1.0))
+	return {"image": Marshalls.raw_to_base64(bytes), "width": img.get_width(), "height": img.get_height(), "bytes": bytes.size()}
+
+
 # ---- value conversion shared by both sides -------------------------------
 
 static func to_json(v) -> Variant:

@@ -6,6 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 import { rpcCall, rpcPing, waitForPort, sleep } from "./net.js";
 
 const IS_WIN = process.platform === "win32";
@@ -590,8 +593,11 @@ export async function dotnetBuild(root, { timeoutMs = 240_000 } = {}) {
 
 // ---- play session -----------------------------------------------------------
 
-/** Launch the game with the Ares runtime enabled and hand back a controller. */
-export async function launchGame(godot, root, { scene, runtimePort, width, height, headless = false, extraArgs = [], onLine, startupTimeoutMs = 45_000 } = {}) {
+/** Launch the game with the Ares runtime enabled and hand back a controller.
+ * Engine output goes to a log FILE, not pipes: a game left running
+ * (keepAlive) must not keep the provider process alive through inherited
+ * pipe handles, and the log then outlives the operation that started it. */
+export async function launchGame(godot, root, { scene, runtimePort, width, height, headless = false, extraArgs = [], startupTimeoutMs = 45_000, logFile } = {}) {
   const args = ["--path", root];
   if (headless) args.push("--headless");
   if (width && height) args.push("--resolution", `${width}x${height}`);
@@ -599,25 +605,42 @@ export async function launchGame(godot, root, { scene, runtimePort, width, heigh
   args.push(...extraArgs);
   if (scene) args.push(scene);
   const env = { ARES_GODOT_RUNTIME: "1", ARES_GODOT_RUNTIME_PORT: String(runtimePort) };
-  const child = spawn(godot, args, { cwd: root, env: { ...process.env, ...env }, windowsHide: false, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "";
-  const collect = (d) => {
-    const s = d.toString("utf8");
-    output = output.length > 600_000 ? output.slice(-600_000) + s : output + s;
-    onLine?.(s);
-  };
-  child.stdout.on("data", collect);
-  child.stderr.on("data", collect);
+  const log = logFile ?? path.join(root, ".ares", "godot", "runs", `${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.log`);
+  await fs.mkdir(path.dirname(log), { recursive: true });
+  const { openSync, closeSync } = await import("node:fs");
+  const fd = openSync(log, "a");
+  let child;
+  try {
+    // detached on every platform: a game left running (keepAlive) must outlive
+    // the provider process, and on Windows a non-detached child dies with a
+    // parent that sits in a kill-on-close job object.
+    child = spawn(godot, args, { cwd: root, env: { ...process.env, ...env }, windowsHide: false, detached: true, stdio: ["ignore", fd, fd] });
+  } finally {
+    closeSync(fd); // the child holds its own handle
+  }
   let exited = false;
   let exitCode = null;
-  child.once("close", (code) => {
+  child.once("exit", (code) => {
     exited = true;
     exitCode = code;
   });
+  child.once("error", () => {
+    exited = true;
+    exitCode = -1;
+  });
+  const readLog = () => {
+    try {
+      const text = require("node:fs").readFileSync(log, "utf8");
+      return text.length > 600_000 ? text.slice(-600_000) : text;
+    } catch {
+      return "";
+    }
+  };
   const pong = await waitForPort(runtimePort, { timeoutMs: startupTimeoutMs, isAlive: () => !exited });
   return {
     pid: child.pid,
     args,
+    logFile: log,
     ready: !!pong,
     pong,
     get exited() {
@@ -627,7 +650,7 @@ export async function launchGame(godot, root, { scene, runtimePort, width, heigh
       return exitCode;
     },
     get output() {
-      return output;
+      return readLog();
     },
     call: (method, params, timeoutMs) => rpcCall(runtimePort, method, params, timeoutMs),
     async stop(graceMs = 2500) {
@@ -639,8 +662,7 @@ export async function launchGame(godot, root, { scene, runtimePort, width, heigh
       return exitCode;
     },
     detach() {
-      child.stdout.removeAllListeners("data");
-      child.stderr.removeAllListeners("data");
+      child.removeAllListeners();
       child.unref();
     },
   };

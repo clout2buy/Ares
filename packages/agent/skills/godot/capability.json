@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ares/godot",
   "kind": "environment-provider",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "scope": "user",
   "description": "Godot 4 game-development provider: live editor bridge (scene tree, nodes, scripts, signals, input map), headless script/boot checks, instrumented play sessions with screenshots and input scripting, procedural 3D asset generation (OBJ), Godot class-reference lookup, YouTube transcript watching, and asset-library discovery.",
   "compatibility": {

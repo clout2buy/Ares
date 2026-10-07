@@ -56,6 +56,7 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			var cs := get_tree().current_scene
 			return _ok({
 				"side": "runtime",
+				"pid": OS.get_process_id(),
 				"scene": cs.scene_file_path if cs else "",
 				"fps": Engine.get_frames_per_second(),
 				"frame": Engine.get_process_frames(),
@@ -65,6 +66,13 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			})
 		"screenshot":
 			return _screenshot(params)
+		"frame":
+			var img := get_viewport().get_texture().get_image()
+			var out: Dictionary = Rpc.frame_base64(img, int(params.get("max_width", 960)), float(params.get("quality", 0.6)))
+			if out.is_empty():
+				return _err("viewport image empty")
+			out["frame"] = Engine.get_process_frames()
+			return _ok(out)
 		"input.press":
 			return _press(params)
 		"input.release":
@@ -190,6 +198,8 @@ func _press(params: Dictionary) -> Dictionary:
 	return _ok({"pressed": actions, "ms": ms})
 
 
+## Key input. `pressed` given explicitly → that edge only (a human holding a
+## key from the Forge); omitted → a tap released after `ms`.
 func _key(params: Dictionary) -> Dictionary:
 	var key := str(params.get("key", ""))
 	var code := OS.find_keycode_from_string(key)
@@ -198,6 +208,13 @@ func _key(params: Dictionary) -> Dictionary:
 	var ev := InputEventKey.new()
 	ev.keycode = code
 	ev.physical_keycode = code
+	ev.shift_pressed = bool(params.get("shift", false))
+	ev.ctrl_pressed = bool(params.get("ctrl", false))
+	ev.alt_pressed = bool(params.get("alt", false))
+	if params.has("pressed"):
+		ev.pressed = bool(params["pressed"])
+		Input.parse_input_event(ev)
+		return _ok({"key": key, "pressed": ev.pressed})
 	ev.pressed = true
 	Input.parse_input_event(ev)
 	var ms := int(params.get("ms", 100))
@@ -208,26 +225,40 @@ func _key(params: Dictionary) -> Dictionary:
 	return _ok({"key": key, "ms": ms})
 
 
+## Mouse input. Coordinates are viewport pixels (the frame's own size).
+## button + pressed:true/false → that edge only; button without pressed → a
+## click released after `ms`; relative → motion delta (mouse-look).
 func _mouse(params: Dictionary) -> Dictionary:
 	var pos := Vector2(float(params.get("x", 0)), float(params.get("y", 0)))
 	if params.get("relative", false):
 		var mm := InputEventMouseMotion.new()
 		mm.relative = pos
 		mm.position = get_viewport().get_mouse_position() + pos
+		mm.button_mask = int(params.get("mask", 0))
 		Input.parse_input_event(mm)
 		return _ok({"moved": Rpc.to_json(pos)})
-	get_viewport().warp_mouse(pos)
-	var motion := InputEventMouseMotion.new()
-	motion.position = pos
-	Input.parse_input_event(motion)
+	if params.get("move", true) or not params.has("button"):
+		get_viewport().warp_mouse(pos)
+		var motion := InputEventMouseMotion.new()
+		motion.position = pos
+		motion.global_position = pos
+		motion.button_mask = int(params.get("mask", 0))
+		Input.parse_input_event(motion)
 	if params.has("button"):
 		var btn := InputEventMouseButton.new()
 		btn.position = pos
+		btn.global_position = pos
 		btn.button_index = int(params.get("button", 1))
+		btn.double_click = bool(params.get("double", false))
+		if params.has("pressed"):
+			btn.pressed = bool(params["pressed"])
+			Input.parse_input_event(btn)
+			return _ok({"position": Rpc.to_json(pos), "button": btn.button_index, "pressed": btn.pressed})
 		btn.pressed = true
 		Input.parse_input_event(btn)
 		var rel := InputEventMouseButton.new()
 		rel.position = pos
+		rel.global_position = pos
 		rel.button_index = btn.button_index
 		_releases.append({"at": Time.get_ticks_msec() + int(params.get("ms", 80)), "event": rel})
 	return _ok({"position": Rpc.to_json(pos)})

@@ -4,6 +4,7 @@
 //   ares godot doctor [project]                              provider healthcheck (godot exe, bridge, runtime)
 //   ares godot check [project]                               headless parse + boot check
 //   ares godot shot [project] [--view 3d|2d]                 screenshot the editor viewport (editor must be open)
+//   ares godot install [--version 4.3] [--mono] [--dir D]    provision the official engine (SHA-512 verified) into ~/.ares/godot/engine
 //   ares godot skill                                         (re)install the bundled provider into ~/.ares/skills
 //
 // Everything runs through the same capability provider the agent uses
@@ -29,12 +30,24 @@ export async function godotCommand(parsed: ParsedArgs): Promise<number> {
   const project = path.resolve(parsed.positionals[1] ?? parsed.flags.get("project") ?? process.cwd());
   const projectFile = path.join(project, "project.godot");
   const hasProject = await fs.stat(projectFile).then((s) => s.isFile(), () => false);
+  const invoke = async (operation: string, input: Record<string, unknown>, timeoutMs = 120_000) =>
+    runSkill({ home, name: "godot", operation, input, targetRoot: hasProject ? project : home, workspace: hasProject ? project : home, timeoutMs });
+
+  if (action === "install") {
+    // Ares carries its own engine: official release, SHA-512 verified, into ~/.ares/godot/engine.
+    const run = await invoke("install", {
+      version: parsed.flags.get("version"),
+      mono: parsed.flags.has("mono") ? true : undefined,
+      dir: parsed.flags.get("dir"),
+      force: parsed.flags.has("force"),
+    }, 1_200_000);
+    printRun(run);
+    return run.ok ? 0 : 1;
+  }
   if (!hasProject) {
-    console.error(`no project.godot in ${project}\nusage: ares godot <init|doctor|check|shot> [project-dir]`);
+    console.error(`no project.godot in ${project}\nusage: ares godot <init|doctor|check|shot|run|install|skill> [project-dir]`);
     return 2;
   }
-  const invoke = async (operation: string, input: Record<string, unknown>, timeoutMs = 120_000) =>
-    runSkill({ home, name: "godot", operation, input, targetRoot: project, workspace: project, timeoutMs });
 
   if (action === "init") {
     const addonSource = path.join(skillDir, "addon", "ares_bridge");
@@ -100,8 +113,15 @@ export async function godotCommand(parsed: ParsedArgs): Promise<number> {
       await fs.writeFile(gi, `${ignore.replace(/\s*$/, "")}\n# Ares run artifacts (screenshots, caches)\n.ares/godot/\n`.replace(/^\n/, ""), "utf8");
       console.log("git    → .ares/godot/ ignored");
     }
+    let run = await invoke("health", { verify: true }, 40_000);
+    const health = run.result as { godot?: unknown } | undefined;
+    if (run.ok && !health?.godot && !parsed.flags.has("no-install")) {
+      console.log("\nno Godot executable found — provisioning the official release into the Ares home (pass --no-install to skip)…");
+      const installed = await invoke("install", { mono: parsed.flags.has("mono") ? true : undefined }, 1_200_000);
+      printRun(installed);
+      if (installed.ok) run = await invoke("health", { verify: true }, 40_000);
+    }
     console.log("\nOpen the project in Godot (the editor prints `Ares bridge listening on 127.0.0.1:<port>`), then:\n  ares godot doctor " + JSON.stringify(project));
-    const run = await invoke("health", { verify: true }, 40_000);
     printRun(run);
     return 0;
   }
@@ -129,7 +149,7 @@ export async function godotCommand(parsed: ParsedArgs): Promise<number> {
     printRun(run);
     return run.ok ? 0 : 1;
   }
-  console.error(`unknown godot subcommand: ${action}\nusage: ares godot <init|doctor|check|shot|run|skill> [project-dir] [--godot <exe>] [--port N]`);
+  console.error(`unknown godot subcommand: ${action}\nusage: ares godot <init|doctor|check|shot|run|install|skill> [project-dir] [--godot <exe>] [--port N] [--version 4.3] [--mono]`);
   return 2;
 }
 

@@ -151,6 +151,28 @@ const OPS = {
     };
   },
 
+  async install(input, ctx) {
+    const { project } = await context(ctx);
+    const version = String(input.version ?? project?.engineVersion ?? "4.3");
+    const mono = input.mono ?? !!project?.dotnet;
+    const progress = [];
+    if (!input.force) {
+      const found = await godot.locateGodot({ root: ctx.root, home: ctx.home, dotnet: mono, verify: true });
+      const wantMajorMinor = version.split(".").slice(0, 2).join(".");
+      if (found.found && (!input.version || String(found.version ?? "").startsWith(wantMajorMinor)) && (!mono || found.mono)) {
+        return { ok: true, result: { installed: false, already: true, path: found.path, version: found.version, from: found.from, note: "an engine is already available; pass force:true or version to fetch another" } };
+      }
+    }
+    try {
+      const r = await godot.installGodot({ home: ctx.home, version, mono, dir: input.dir, force: !!input.force, onProgress: (m) => progress.push(m) });
+      const check = await godot.exec(r.path, ["--version"], { timeoutMs: 15_000 }).catch((e) => ({ stdout: "", stderr: String(e) }));
+      const reported = (check.stdout + check.stderr).trim().split(/\r?\n/).find((l) => /^\d+\.\d+/.test(l)) ?? null;
+      return { ok: true, result: { ...r, reportedVersion: reported, mono, license: "MIT (Godot Engine contributors); notice written beside the executable", progress: progress.slice(-3) }, diagnostics: reported ? [] : ["the executable did not report a version — it may be the wrong platform build"] };
+    } catch (error) {
+      return { ok: false, error: `install failed: ${String(error.message ?? error)}`, result: { version, mono, progress: progress.slice(-5) } };
+    }
+  },
+
   async inspect(input, ctx) {
     const what = String(input.what ?? "project");
     const { project, cfg } = await context(ctx);

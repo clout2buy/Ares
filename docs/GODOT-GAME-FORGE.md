@@ -48,12 +48,34 @@ Newline-delimited JSON over 127.0.0.1: `{"id","method","params"}` →
 (auto-`load`ed when the target property is an Object), `{"$res": path}` and
 `{"$var": literal}`. Node paths are relative to the edited scene root.
 
+## Engine provisioning
+
+`install` (and `ares godot install`, or `ares godot init` when nothing is
+found) downloads the official release for the platform from the godotengine
+GitHub releases, verifies the archive against the published `SHA512-SUMS.txt`,
+extracts it under `~/.ares/godot/engine/<tag>/`, writes an MIT notice beside
+the executable and remembers the path in `~/.ares/godot.json`. Ares-installed
+engines rank above anything found on the machine; an explicitly configured
+path still wins. The engine is not bundled into the installer on purpose:
+130 MB per platform build, and projects pin different versions.
+
 ## Verified
 
 `tests/godot-provider.test.mjs` covers the manifest, bundled install/refresh
 policy, tscn round-trip and edits, mesh generators, net helpers, output
-classification, the full offline path through the contract runtime
-(health/inspect/mutate/asset, failure receipts), and `ares godot init`.
-Live research ops were exercised against the real services. The GDScript
-addon is validated against a real editor by `ares godot init <project>` +
-`ares godot doctor` (needs a Godot 4 executable).
+classification, release-asset naming, the full offline path through the
+contract runtime (health/inspect/mutate/asset, failure receipts), and
+`ares godot init`. Research ops were exercised against the real services.
+
+Validated live on 2026-10-07 with Godot 4.3.stable (Windows, gl_compatibility):
+`ares godot init` installed and enabled the addon; the editor printed
+`Ares bridge listening`; `health` reported `live-editor`; `inspect tree` came
+from the editor; a `mutate` batch added a CSGBox3D + OmniLight3D through the
+bridge with Vector3/Color/bool coercion, set a script export, focused the
+node and saved (receipt carried the scene's post-save hash); `screenshot
+source:editor` captured the 3D viewport; `check` parsed all scripts including
+the addon's and booted the main scene headless; `run` launched the game with
+the runtime, drove `jump`/`move_right`, read `physics.state`, passed three
+asserts (rising 5.53 m/s, landed, stopped against the obstacle with
+`is_on_wall`), captured three screenshots and reported 146 fps with zero
+engine errors.

@@ -183,13 +183,19 @@ function candidateDirs() {
 
 const EXE_RE = IS_WIN ? /^godot.*\.exe$/i : /^godot/i;
 
+/** Executables under `dir`. Recurses into godot-named subdirs (and, when
+ * `depth` starts at 1, into any subdir one level down — Ares's own engine
+ * dirs are named by version tag). macOS app bundles count as executables. */
 async function listExecutables(dir, depth = 0) {
   const out = [];
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const e of entries) {
     const full = path.join(dir, e.name);
-    if (e.isFile() && EXE_RE.test(e.name) && !/\.(zip|txt|sha256|pck|json)$/i.test(e.name)) out.push(full);
-    else if (e.isDirectory() && depth < 2 && /godot/i.test(e.name)) out.push(...(await listExecutables(full, depth + 1)));
+    if (e.isFile() && EXE_RE.test(e.name) && !/\.(zip|txt|sha256|pck|json|sha512)$/i.test(e.name)) out.push(full);
+    else if (e.isDirectory() && process.platform === "darwin" && /^Godot(_mono)?\.app$/.test(e.name)) {
+      const bin = path.join(full, "Contents", "MacOS", "Godot");
+      if (await exists(bin)) out.push(bin);
+    } else if (e.isDirectory() && depth < 3 && (/godot/i.test(e.name) || depth >= 1)) out.push(...(await listExecutables(full, depth + 1)));
   }
   return out;
 }
@@ -215,11 +221,21 @@ function scoreCandidate(p, { dotnet }) {
   return score;
 }
 
+/** Where Ares keeps engines it provisioned itself: <home>/godot/engine/<tag>/. */
+export function engineDir(home, tag) {
+  const base = path.join(home || path.join(os.homedir(), ".ares"), "godot", "engine");
+  return tag ? path.join(base, tag) : base;
+}
+
 export async function locateGodot({ root, home, dotnet = false, verify = true } = {}) {
   const cfg = await readAresConfig(root ?? process.cwd(), home);
   const explicit = [process.env.ARES_GODOT, process.env.GODOT, process.env.GODOT4_BIN, cfg.godotPath].filter(Boolean);
   const candidates = [];
   for (const p of explicit) if (await exists(p)) candidates.push({ path: p, from: "configured" });
+  // Engines Ares installed itself come before anything found on the machine.
+  for (const tag of await fs.readdir(engineDir(home)).catch(() => [])) {
+    for (const p of await listExecutables(engineDir(home, tag), 1)) if (!candidates.some((c) => c.path === p)) candidates.push({ path: p, from: "ares-installed" });
+  }
   for (const p of await whichAll(IS_WIN ? ["godot", "godot4", "godot-mono", "Godot"] : ["godot", "godot4", "godot-mono", "godot4-mono", "org.godotengine.Godot"])) {
     if (!candidates.some((c) => c.path === p)) candidates.push({ path: p, from: "PATH" });
   }
@@ -227,9 +243,9 @@ export async function locateGodot({ root, home, dotnet = false, verify = true } 
     for (const p of await listExecutables(dir)) if (!candidates.some((c) => c.path === p)) candidates.push({ path: p, from: dir });
   }
   const sorted = candidates
-    .map((c) => ({ ...c, score: (c.from === "configured" ? 10_000 : 0) + scoreCandidate(c.path, { dotnet }) }))
+    .map((c) => ({ ...c, score: (c.from === "configured" ? 10_000 : c.from === "ares-installed" ? 5_000 : 0) + scoreCandidate(c.path, { dotnet }) }))
     .sort((a, b) => b.score - a.score);
-  if (sorted.length === 0) return { found: false, candidates: [], hint: "Install Godot 4 (godotengine.org/download) and set ARES_GODOT=<path to exe>, or run `ares godot init --godot <path>`." };
+  if (sorted.length === 0) return { found: false, candidates: [], hint: "No Godot 4 executable found. Let Ares provision one: invoke the `install` operation (or `ares godot install`), which downloads the official release into the Ares home and verifies its SHA-512. Or set ARES_GODOT=<path to exe> / `ares godot init --godot <path>`." };
   const pick = sorted[0];
   let version = null;
   if (verify) {
@@ -253,6 +269,121 @@ export async function rememberGodot(home, godotPath, version) {
   cfg.checkedAt = new Date().toISOString();
   await fs.mkdir(home, { recursive: true });
   await fs.writeFile(file, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+}
+
+// ---- self-provisioning ----------------------------------------------------------
+
+/** Official release asset for this platform. Godot is MIT-licensed; Ares
+ * fetches it from the godotengine GitHub releases and verifies SHA-512. */
+export function releaseAsset(version, { mono = false, platform = process.platform, arch = process.arch } = {}) {
+  const clean = String(version).replace(/^v/, "").replace(/-stable$/, "");
+  const tag = `${clean}-stable`;
+  const stem = `Godot_v${tag}${mono ? "_mono" : ""}`;
+  let asset, exeHint;
+  if (platform === "win32") {
+    asset = mono ? `${stem}_win64.zip` : `${stem}_win64.exe.zip`;
+    exeHint = /win64(_console)?\.exe$/i;
+  } else if (platform === "darwin") {
+    asset = `${stem}_macos.universal.zip`;
+    exeHint = /Godot(_mono)?\.app\/Contents\/MacOS\/Godot$/;
+  } else {
+    const a = arch === "arm64" ? "arm64" : "x86_64";
+    asset = `${stem}_linux.${a}.zip`;
+    exeHint = new RegExp(`linux\\.${a}$`);
+  }
+  return { tag, version: clean, asset, exeHint, url: `https://github.com/godotengine/godot/releases/download/${tag}/${asset}`, sumsUrl: `https://github.com/godotengine/godot/releases/download/${tag}/SHA512-SUMS.txt` };
+}
+
+async function sha512OfFile(file) {
+  const { createHash } = await import("node:crypto");
+  const { createReadStream } = await import("node:fs");
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha512");
+    createReadStream(file).on("data", (d) => hash.update(d)).on("error", reject).on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function downloadToFile(url, file, { timeoutMs = 900_000, onProgress } = {}) {
+  const { createWriteStream } = await import("node:fs");
+  const { pipeline } = await import("node:stream/promises");
+  const { Readable } = await import("node:stream");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers: { "user-agent": "AresGodotProvider/1.0" }, redirect: "follow", signal: controller.signal });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} for ${url}`);
+    const total = Number(res.headers.get("content-length") ?? 0);
+    let done = 0;
+    const counter = new (await import("node:stream")).Transform({
+      transform(chunk, _enc, cb) {
+        done += chunk.length;
+        onProgress?.(done, total);
+        cb(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body), counter, createWriteStream(file));
+    return { bytes: done, total };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function extractZip(zip, dest) {
+  await fs.mkdir(dest, { recursive: true });
+  if (IS_WIN) {
+    const run = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `Expand-Archive -LiteralPath ${psQuote(zip)} -DestinationPath ${psQuote(dest)} -Force`], { timeoutMs: 600_000 });
+    if (run.code !== 0) throw new Error(`Expand-Archive failed: ${run.stderr.trim() || run.stdout.trim()}`);
+    return;
+  }
+  const tool = process.platform === "darwin" ? ["ditto", ["-x", "-k", zip, dest]] : ["unzip", ["-o", "-q", zip, "-d", dest]];
+  const run = await exec(tool[0], tool[1], { timeoutMs: 600_000 });
+  if (run.code !== 0) throw new Error(`${tool[0]} failed: ${run.stderr.trim() || run.stdout.trim()}`);
+}
+
+function psQuote(s) {
+  return `'${String(s).replace(/'/g, "''")}'`;
+}
+
+/** Download + verify + extract an official Godot release into the Ares home
+ * (or `dir`), remember it, and return the executable path. */
+export async function installGodot({ home, version = "4.3", mono = false, dir, force = false, onProgress } = {}) {
+  const release = releaseAsset(version, { mono });
+  const target = dir ? path.resolve(dir) : engineDir(home, release.tag + (mono ? "-mono" : ""));
+  if (!force) {
+    const existing = await listExecutables(target, 1);
+    const exe = pickExecutable(existing, release.exeHint, mono);
+    if (exe) return { installed: false, already: true, path: exe, dir: target, version: release.version, tag: release.tag };
+  }
+  await fs.mkdir(target, { recursive: true });
+  const zip = path.join(target, release.asset);
+  onProgress?.(`downloading ${release.asset}`);
+  const { bytes } = await downloadToFile(release.url, zip, { onProgress: (done, total) => onProgress?.(`downloading ${release.asset}: ${(done / 1048576).toFixed(0)}/${total ? (total / 1048576).toFixed(0) : "?"} MB`) });
+  onProgress?.("verifying SHA-512");
+  const sumsText = await (await fetch(release.sumsUrl, { headers: { "user-agent": "AresGodotProvider/1.0" } })).text();
+  const expected = sumsText.split(/\r?\n/).find((l) => l.endsWith(release.asset) || l.endsWith(`*${release.asset}`))?.trim().split(/\s+/)[0]?.toLowerCase();
+  if (!expected) throw new Error(`SHA512-SUMS.txt has no entry for ${release.asset}`);
+  const actual = await sha512OfFile(zip);
+  if (actual !== expected) {
+    await fs.rm(zip, { force: true });
+    throw new Error(`SHA-512 mismatch for ${release.asset}: expected ${expected.slice(0, 16)}…, got ${actual.slice(0, 16)}…`);
+  }
+  onProgress?.("extracting");
+  await extractZip(zip, target);
+  await fs.rm(zip, { force: true });
+  const files = await listExecutables(target, 1);
+  const exe = pickExecutable(files, release.exeHint, mono);
+  if (!exe) throw new Error(`extracted ${release.asset} but found no executable under ${target}`);
+  if (!IS_WIN) await fs.chmod(exe, 0o755).catch(() => {});
+  await fs.writeFile(path.join(target, "LICENSE-NOTICE.txt"), `Godot Engine ${release.version} — MIT License, Copyright (c) 2014-present Godot Engine contributors, Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur. Downloaded by Ares from ${release.url} and verified against ${release.sumsUrl}.\n`, "utf8").catch(() => {});
+  await rememberGodot(home, exe, release.version).catch(() => {});
+  return { installed: true, already: false, path: exe, dir: target, version: release.version, tag: release.tag, bytes, sha512: actual };
+}
+
+function pickExecutable(files, hint, mono) {
+  const matching = files.filter((f) => hint.test(f.replace(/\\/g, "/")));
+  const pool = matching.length ? matching : files;
+  if (pool.length === 0) return null;
+  return pool.sort((a, b) => scoreCandidate(b, { dotnet: mono }) - scoreCandidate(a, { dotnet: mono }))[0];
 }
 
 // ---- processes ------------------------------------------------------------
@@ -440,7 +571,13 @@ export async function bootCheck(godot, root, { scene, frames = 3, timeoutMs = 60
     run = await exec(godot, ["--headless", "--path", root, "--quit", ...(scene ? [scene] : [])], { cwd: root, timeoutMs });
   }
   const diag = classifyOutput(run.stdout + "\n" + run.stderr);
-  return { code: run.code, timedOut: run.timedOut, ...diag, tail: (run.stdout + run.stderr).split(/\r?\n/).filter(Boolean).slice(-40) };
+  // --headless swaps in the dummy renderer, which logs null-mesh/texture
+  // complaints for perfectly valid scenes (CSG, MeshInstance). Those are not
+  // project errors; keep them visible under `ignored` without failing the check.
+  const benign = (e) => /rendering\/dummy|dummy\/storage|Parameter "m" is null|Parameter "t" is null|texture_2d_get/i.test(`${e.message} ${e.at ?? ""}`);
+  const ignored = diag.errors.filter(benign);
+  const errors = diag.errors.filter((e) => !benign(e));
+  return { code: run.code, timedOut: run.timedOut, errors, ignored, warnings: diag.warnings, info: diag.info, tail: (run.stdout + run.stderr).split(/\r?\n/).filter(Boolean).slice(-40) };
 }
 
 export async function dotnetBuild(root, { timeoutMs = 240_000 } = {}) {

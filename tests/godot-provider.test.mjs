@@ -171,6 +171,18 @@ test("net helpers: html→text, timed text, youtube ids, doc sections", () => {
   assert.match(section, /^bool move_and_slide\(\)/);
 });
 
+test("engine self-provisioning resolves official release assets per platform", () => {
+  const win = godot.releaseAsset("4.3", { platform: "win32" });
+  assert.equal(win.asset, "Godot_v4.3-stable_win64.exe.zip");
+  assert.equal(win.url, "https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_win64.exe.zip");
+  assert.ok(win.exeHint.test("Godot_v4.3-stable_win64.exe"));
+  assert.equal(godot.releaseAsset("v4.7.1-stable", { platform: "win32", mono: true }).asset, "Godot_v4.7.1-stable_mono_win64.zip");
+  assert.equal(godot.releaseAsset("4.3", { platform: "darwin" }).asset, "Godot_v4.3-stable_macos.universal.zip");
+  assert.equal(godot.releaseAsset("4.3", { platform: "linux", arch: "arm64" }).asset, "Godot_v4.3-stable_linux.arm64.zip");
+  assert.equal(godot.releaseAsset("4.3", { platform: "linux", arch: "x64" }).asset, "Godot_v4.3-stable_linux.x86_64.zip");
+  assert.match(godot.engineDir("C:\\home", "4.3-stable").replace(/\\/g, "/"), /C:\/home\/godot\/engine\/4\.3-stable$/);
+});
+
 test("project.godot parsing and output classification", () => {
   const project = godot.parseGodotIni(PROJECT);
   assert.equal(project.application["config/name"], '"Fixture"');

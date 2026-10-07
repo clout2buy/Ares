@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ares/godot",
   "kind": "environment-provider",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "scope": "user",
   "description": "Godot 4 game-development provider: live editor bridge (scene tree, nodes, scripts, signals, input map), headless script/boot checks, instrumented play sessions with screenshots and input scripting, procedural 3D asset generation (OBJ), Godot class-reference lookup, YouTube transcript watching, and asset-library discovery.",
   "compatibility": {
@@ -22,6 +22,12 @@
     "locate": {
       "description": "Find the Godot executable (env ARES_GODOT, ~/.ares/godot.json, project .ares/godot.json, PATH, common install dirs) and report versions, bridge/runtime port status, and project facts.",
       "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "install": {
+      "description": "Provision the engine: download the official Godot 4 release for this platform (optionally the .NET build), verify its SHA-512 against the published sums, extract it into the Ares home, and remember it. No-op when a matching engine already exists.",
+      "effect": "workspace-write",
       "evidence": [],
       "requiresFreshObservationAfter": false
     },
@@ -83,6 +89,8 @@
   "provides": {
     "godot/health": "health",
     "godot/locate": "locate",
+    "godot/install": "install",
+    "engine/install": "install",
     "scene/inspect": "inspect",
     "scene/observe": "inspect",
     "scene/mutate": "mutate",

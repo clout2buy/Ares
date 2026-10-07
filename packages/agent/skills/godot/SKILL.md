@@ -39,7 +39,8 @@ just drive the engine.
 
 ```
 health                       {}                                   → mode: live-editor | live-game | offline, godot path, bridge status
-locate                       {}                                   → where the Godot exe is; set ARES_GODOT if missing
+locate                       {}                                   → where the Godot exe is
+install                      {version?: "4.3", mono?: bool, dir?, force?}   → download + verify + extract the official engine when none is found
 inspect                      {what: project|tree|node|inputmap|scripts|assets|signals|find|class|selection|scene-file,
                               scene?: "res://...", path?: "Player/Camera3D", props?: [...], pattern?, type?, class?}
 mutate                       {scene?: "res://...", save?: true, ops: [
@@ -115,10 +116,13 @@ Resources are `"res://..."` strings (auto-loaded) or `{"$res": "res://..."}`.
 
 ## When the engine is missing
 
-`health` reports `godot: null`. Say so, give the download link
-(https://godotengine.org/download), and continue with offline edits +
-`inspect`; do not claim verification. If the owner points at an exe, remember
-it with `ares godot init --godot <path>` (writes `~/.ares/godot.json`).
+`health` reports `godot: null`. **Provision it yourself**: `install {}`
+downloads the official release matching the project (`version` and `mono`
+default from `project.godot`; pass `mono:true` for C# projects), verifies
+the SHA-512 against the published sums, extracts it under `~/.ares/godot/engine/`
+and remembers it — Godot is MIT-licensed, so this is Ares carrying its own
+engine. Tell the owner it happened (size ≈ 55–105 MB). If the owner prefers a
+specific exe, `ares godot init --godot <path>` remembers that instead.
 
 ## Scope guard
 

@@ -183,6 +183,42 @@ test("engine self-provisioning resolves official release assets per platform", (
   assert.match(godot.engineDir("C:\\home", "4.3-stable").replace(/\\/g, "/"), /C:\/home\/godot\/engine\/4\.3-stable$/);
 });
 
+test("ComfyUI UI-format workflows convert to API prompts with links, widgets, seeds and overrides", async () => {
+  const comfy = await import(pathToFileURL(path.join(skillSrc, "lib", "comfy.js")).href);
+  const objectInfo = {
+    LoadImage: { input: { required: { image: [["a.png"], { image_upload: true }], upload: [["image"]] } } },
+    KSampler: { input: { required: { model: ["MODEL"], seed: ["INT", { default: 0, control_after_generate: true }], steps: ["INT", {}], sampler_name: [["euler", "heun"]], image: ["IMAGE"], newer_flag: ["BOOLEAN", { default: true }] }, optional: { denoise: ["FLOAT", {}] } } },
+    PrimitiveString: { input: { required: { value: ["STRING", {}] } } },
+    Export: { input: { required: { mesh: ["MESH"], filename: ["STRING", {}] } } },
+    Simplify: { input: { required: { mesh: ["MESH"], target: ["INT", {}], method: [["Cumesh", "Meshlib"]] } } },
+  };
+  const ui = {
+    nodes: [
+      { id: 1, type: "LoadImage", widgets_values: ["old.png", "image"], inputs: [] },
+      { id: 2, type: "KSampler", widgets_values: [12345, "fixed", 12, "heun", true, 0.5], inputs: [{ name: "model", link: null }, { name: "image", link: 7 }] },
+      { id: 3, type: "PrimitiveString", widgets_values: ["Pistol"], inputs: [] },
+      { id: 4, type: "Export", widgets_values: ["Pistol"], inputs: [{ name: "mesh", link: 9 }], mode: 4 },
+      // `target` was converted to a linked input but its slot (500000) is still stored
+      { id: 5, type: "Simplify", widgets_values: [500000, "Meshlib"], inputs: [{ name: "mesh", link: 9 }, { name: "target", link: 11, widget: { name: "target" } }] },
+    ],
+    links: [[7, 1, 0, 2, 1, "IMAGE"], [9, 2, 0, 4, 0, "MESH"], [11, 3, 0, 5, 1, "INT"]],
+  };
+  const prompt = comfy.uiToApiPrompt(ui, objectInfo, { imageName: "uploaded.png", baseName: "Sword", sets: { "KSampler.steps": 20, "1.upload": "image" } });
+  assert.deepEqual(prompt["1"], { class_type: "LoadImage", inputs: { image: "uploaded.png", upload: "image" } });
+  assert.deepEqual(prompt["2"].inputs, { image: ["1", 0], seed: 12345, steps: 20, sampler_name: "heun", newer_flag: true, denoise: 0.5 }, "seed's control value is skipped; linked sockets keep [node, slot]");
+  // Saved before `newer_flag` existed: the missing slot takes the declared default.
+  const older = comfy.uiToApiPrompt({ nodes: [{ id: 2, type: "KSampler", widgets_values: [1, "fixed", 12, "heun"], inputs: [] }], links: [] }, objectInfo);
+  assert.equal(older["2"].inputs.newer_flag, true);
+  assert.equal("denoise" in older["2"].inputs, false, "an optional input with no slot and no default stays unset");
+  assert.deepEqual(prompt["5"].inputs, { mesh: ["2", 0], target: ["3", 0], method: "Meshlib" }, "a linked widget consumes its stored slot so later widgets stay aligned");
+  assert.equal(prompt["3"].inputs.value, "Sword", "PrimitiveString base names are overridden");
+  assert.equal(prompt["4"], undefined, "bypassed nodes are dropped");
+  assert.throws(() => comfy.uiToApiPrompt(ui, objectInfo, { sets: { "Nope.x": 1 } }), /no node matches/);
+  assert.throws(() => comfy.uiToApiPrompt({ nodes: [{ id: 9, type: "Missing" }] }, objectInfo), /unknown node class/);
+  const cfg = await comfy.comfyConfig(path.join(os.tmpdir(), "no-such-ares-home"));
+  assert.equal(cfg.url, "http://127.0.0.1:8188");
+});
+
 test("project.godot parsing and output classification", () => {
   const project = godot.parseGodotIni(PROJECT);
   assert.equal(project.application["config/name"], '"Fixture"');

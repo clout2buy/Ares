@@ -63,6 +63,9 @@ run                          {scene?: "res://...", steps:[ "wait 500", {press:"j
                                 {mouse:{x:400,y:300,button:1}}, {key:"ESCAPE"}, {timeScale:0.25}, {stats:true} ],
                               timeoutMs?: 90000, keepAlive?: false, headless?: false, attach?: true}
 screenshot                   {source: "editor"|"game"|"auto", view: "3d"|"2d", label?, focus?: "Player"}
+asset                        {kind: "ai", image: "res://concept/sword.png", name: "sword", textured?: true, quality?: fast|balanced|high,
+                              model?: "microsoft/TRELLIS.2-4B"|"visualbruno/TRELLIS.2-4B-FP8"|"TencentARC/Pixal3D", sets?: {"Node.input": value}}
+                                → AI image→3D (TRELLIS.2 through the owner's local ComfyUI; starts it if needed) → GLB in res://assets/generated
 asset                        {kind: box|plane|cylinder|cone|sphere|capsule|torus|terrain|lathe|extrude|stairs|ramp|wedge|arch|pipe|download|terrain-script,
                               name, params:{...}, dir?: "res://assets/generated", collision?: trimesh|convex|only|rigid,
                               material?: {color:[r,g,b], roughness, metallic}, transform?: {scale, translate, rotateY},

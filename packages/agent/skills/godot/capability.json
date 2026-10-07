@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ares/godot",
   "kind": "environment-provider",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "scope": "user",
   "description": "Godot 4 game-development provider: live editor bridge (scene tree, nodes, scripts, signals, input map), headless script/boot checks, instrumented play sessions with screenshots and input scripting, procedural 3D asset generation (OBJ), Godot class-reference lookup, YouTube transcript watching, and asset-library discovery.",
   "compatibility": {
@@ -62,7 +62,7 @@
       "requiresFreshObservationAfter": true
     },
     "asset": {
-      "description": "Generate 3D geometry procedurally (box, cylinder, cone, sphere, capsule, plane, terrain, lathe, extrude, stairs, ramp, arch) as Wavefront OBJ files Godot imports natively, or emit a @tool GDScript SurfaceTool generator.",
+      "description": "Generate 3D assets: AI image→3D (kind 'ai': TRELLIS.2 through the owner's local ComfyUI, textured GLB), procedural geometry (box, cylinder, cone, sphere, capsule, plane, terrain, lathe, extrude, stairs, ramp, arch) as Wavefront OBJ, a @tool GDScript terrain generator, or download a URL into res://.",
       "effect": "workspace-write",
       "evidence": [],
       "requiresFreshObservationAfter": false

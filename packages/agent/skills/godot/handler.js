@@ -16,6 +16,7 @@ import * as tscn from "./lib/tscn.js";
 import * as mesh from "./lib/mesh.js";
 import * as net from "./lib/net.js";
 import * as godot from "./lib/godot.js";
+import * as comfy from "./lib/comfy.js";
 
 const PROVIDER_ID = "ares/godot";
 
@@ -790,6 +791,107 @@ const OPS = {
       await fs.writeFile(file, buffer);
       mutations.push(await mutationFor(file, before));
       return { ok: true, result: { file, res: godot.absToRes(ctx.root, file), bytes: buffer.length, contentType, note: "Godot imports glb/gltf/obj/png on the next editor scan (or run `check` to trigger a headless import)." }, mutations };
+    }
+
+    if (kind === "concept" || kind === "text-to-image") {
+      // Text → concept image (FLUX.2 Klein 4B through the owner's ComfyUI). The
+      // image is what image→3D consumes, so prompts should describe ONE object,
+      // centered, on a plain background, in the style the game needs.
+      if (!input.prompt) return { ok: false, error: "asset kind 'concept' needs prompt" };
+      const cfg = await comfy.comfyConfig(ctx.home);
+      let server;
+      try {
+        server = await comfy.ensureComfy(cfg, { startupTimeoutMs: input.startupTimeoutMs ?? 240_000 });
+      } catch (error) {
+        return { ok: false, error: String(error.message ?? error) };
+      }
+      const conceptDir = godot.resToAbs(ctx.root, String(input.dir ?? "res://concept"));
+      await fs.mkdir(conceptDir, { recursive: true });
+      const fullPrompt = input.raw ? String(input.prompt) : `${input.prompt}. Single object centered, full view, plain solid light gray background, soft even studio lighting, no text, no watermark, game asset concept art, highly detailed`;
+      progress({ kind: "live_step", source: "comfy", side: "asset", label: `FLUX.2 Klein: ${String(input.prompt).slice(0, 80)}` });
+      let run;
+      try {
+        run = await comfy.runPrompt({ url: cfg.url, prompt: comfy.fluxKleinPrompt({ prompt: fullPrompt, width: input.width ?? 1024, height: input.height ?? 1024, seed: input.seed, steps: input.steps ?? 4, model: cfg.models.flux, clip: cfg.models.fluxClip, vae: cfg.models.fluxVae, filenamePrefix: `ares_concept_${name}` }), waitMs: input.timeoutMs ?? 600_000, onStatus: (status, secs) => progress({ kind: "live_step", source: "comfy", side: "asset", label: `ComfyUI ${status} (${secs}s)` }) });
+      } catch (error) {
+        return { ok: false, error: String(error.message ?? error), result: { server } };
+      }
+      const images = run.files.filter((f) => /\.(png|jpg|webp)$/i.test(f.file));
+      if (!images.length) return { ok: false, error: `ComfyUI finished in ${run.seconds}s but produced no image` };
+      const src = comfy.outputPath(cfg.dir, images[0]);
+      const dest = path.join(conceptDir, `${name}.png`);
+      const before = await hashIfExists(dest);
+      await fs.copyFile(src, dest);
+      mutations.push(await mutationFor(dest, before));
+      const res = godot.absToRes(ctx.root, dest);
+      progress({ kind: "live_frame", source: "comfy", side: "asset", label: `concept ${name}`, image: (await fs.readFile(dest)).toString("base64"), mime: "image/png" });
+      return { ok: true, result: { kind: "concept", generator: "FLUX.2 Klein 4B via ComfyUI", seconds: run.seconds, file: res, prompt: fullPrompt, next: `Read ${res} to judge it; then asset {kind:"ai", image:"${res}", name:"${name}"} for the 3D model.` }, mutations };
+    }
+
+    if (kind === "ai" || kind === "generate3d" || kind === "image-to-3d") {
+      // Image → textured GLB through the owner's local ComfyUI + TRELLIS.2.
+      // With prompt and no image, make the concept image first (text → 3D).
+      if (!input.image && input.prompt) {
+        const concept = await OPS.asset({ ...input, kind: "concept", name: `${name}_concept` }, ctx);
+        if (!concept.ok) return concept;
+        for (const m of concept.mutations ?? []) mutations.push(m);
+        input = { ...input, image: concept.result.file, conceptResult: concept.result };
+      }
+      if (!input.image) return { ok: false, error: "asset kind 'ai' needs image (a PNG/JPG/WebP of ONE object; background is removed automatically) or prompt (text → concept image → 3D)." };
+      const cfg = await comfy.comfyConfig(ctx.home);
+      const imageFile = godot.resToAbs(ctx.root, String(input.image));
+      if (!(await godot.exists(imageFile))) return { ok: false, error: `image not found: ${imageFile}` };
+      let server;
+      try {
+        server = await comfy.ensureComfy(cfg, { startupTimeoutMs: input.startupTimeoutMs ?? 240_000 });
+      } catch (error) {
+        return { ok: false, error: String(error.message ?? error) };
+      }
+      progress({ kind: "live_step", source: "comfy", side: "asset", label: `TRELLIS.2 ${input.textured === false ? "mesh" : "mesh + texture"} from ${path.basename(imageFile)}` });
+      const workflowsDir = path.join(cfg.dir, "custom_nodes", "ComfyUI-Trellis2", "example_workflows");
+      const workflowFile = input.workflow ? godot.resToAbs(ctx.root, String(input.workflow)) : path.join(workflowsDir, input.textured === false ? "MeshOnly.json" : "MeshWithTexturing.json");
+      const quality = String(input.quality ?? "balanced");
+      const sets = {
+        // flash-attn is installed in the ComfyUI venv (cu130/torch 2.10 wheel); pass attention:"sdpa" to go without it.
+        "Trellis2LoadModel.backend": input.attention ?? "flash_attn",
+        "Trellis2LoadModel.low_vram": input.lowVram ?? true,
+        "Trellis2LoadModel.modelname": input.model ?? "microsoft/TRELLIS.2-4B",
+        ...(input.sets ?? {}),
+      };
+      if (quality === "fast") Object.assign(sets, { "Trellis2ShapeCascadeGenerator.resolution": 512 });
+      if (quality === "high") Object.assign(sets, { "Trellis2ShapeCascadeGenerator.resolution": 1024 });
+      let run;
+      try {
+        run = await comfy.runWorkflow({ url: cfg.url, workflowFile, image: imageFile, baseName: name, sets, waitMs: input.timeoutMs ?? 1_200_000, onStatus: (status, secs) => progress({ kind: "live_step", source: "comfy", side: "asset", label: `ComfyUI ${status} (${secs}s)` }) });
+      } catch (error) {
+        return { ok: false, error: String(error.message ?? error), result: { workflow: workflowFile, server } };
+      }
+      // Copy the produced meshes into the project.
+      const outputs = run.files.filter((f) => /\.(glb|gltf|obj)$/i.test(f.file));
+      const copied = [];
+      for (const f of outputs) {
+        const src = comfy.outputPath(cfg.dir, f);
+        if (!(await godot.exists(src))) continue;
+        const dest = path.join(dir, path.basename(src));
+        const before = await hashIfExists(dest);
+        await fs.copyFile(src, dest);
+        mutations.push(await mutationFor(dest, before));
+        copied.push(godot.absToRes(ctx.root, dest));
+      }
+      if (copied.length === 0) return { ok: false, error: `ComfyUI finished in ${run.seconds}s but produced no mesh files (outputs: ${JSON.stringify(run.files).slice(0, 500)})`, result: { workflow: workflowFile } };
+      return {
+        ok: true,
+        result: {
+          kind: "ai",
+          generator: "TRELLIS.2 via ComfyUI",
+          seconds: run.seconds,
+          files: copied,
+          source: godot.absToRes(ctx.root, imageFile),
+          concept: input.conceptResult ?? undefined,
+          how: `Instance it: scene.instance {scene: "${copied.find((c) => /\.glb$/i.test(c)) ?? copied[0]}"} (glTF imports as a scene with PBR materials) — then check scale (metres), add collision (create_trimesh_collision or a convex shape), and run + screenshot to look at it.`,
+          server,
+        },
+        mutations,
+      };
     }
 
     if (kind === "terrain-script" || (kind === "terrain" && input.format === "gdscript")) {

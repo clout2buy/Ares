@@ -78,6 +78,38 @@ Three layers, all engine-agnostic above the provider:
    embedded window is released before the app exits so closing Ares never
    destroys a running game.
 
+## AI asset generation (image → 3D)
+
+`asset {kind:"ai", image, name}` turns a concept image into a textured GLB
+through the owner's local **ComfyUI + TRELLIS.2** (Microsoft, MIT, 4B params,
+PBR materials) and copies it into `res://assets/generated/`. The provider's
+`lib/comfy.js` starts ComfyUI from its venv when it is not listening, converts
+the node pack's UI-format example workflows to API prompts via `/object_info`
+(so `MeshWithTexturing.json` / `MeshOnly.json` run unchanged), uploads the
+image, overrides what matters (`Trellis2LoadModel.backend`, `low_vram`,
+`modelname`, cascade resolution for `quality: fast|balanced|high`, plus any
+`sets`), waits, and reports the produced files with hashes. Install lives
+outside the repo (`D:/ComfyUI`, `~/.ares/godot.json` → `comfyDir`/`comfyUrl`):
+ComfyUI + `visualbruno/ComfyUI-Trellis2` with its Windows wheels for
+Python 3.13 / Torch 2.10 / CUDA 13.1 (cumesh, nvdiffrast, nvdiffrec_render,
+flex_gemm, o_voxel, natten), flash-attn 2.8.3 (cu130/torch 2.10 community
+wheel), triton-windows, and the checkpoints `microsoft/TRELLIS.2-4B`
+(16.2 GB; `visualbruno/TRELLIS.2-4B-FP8` and `TencentARC/Pixal3D` are
+selectable). Text → 3D: `asset {kind:"concept", prompt}` makes the image with
+FLUX.2 Klein 4B (`lib/comfy.js` `fluxKleinPrompt`, flat API prompt — the
+ComfyUI template is a subgraph the API cannot run), then `kind:"ai"` with
+`prompt` chains both.
+
+**Blackwell (RTX 50, sm_120) trap:** the node pack's `cumesh` / `o_voxel`
+wheels carry only `sm_86` code; JIT-translated on sm_120 the narrow-band
+remesh silently produces ~90 % degenerate faces and tens of thousands of
+fragments. Rebuild both natively (`D:/ComfyUI/ares/build-sm120.cmd`: vcvars64
+`-vcvars_ver=14.44`, CUDA 13.0, `GPU_ARCHS=sm_89;sm_120`,
+`uv pip install --no-build-isolation` of `JeffreyXiang/CuMesh` and
+`TRELLIS.2/o-voxel`); verify with `cuobjdump --list-elf` and a trimesh
+component count (≤ 5 is healthy). Plan B is the pack's `Trellis2VoxelToMesh`
+(CPU marching cubes).
+
 ## Engine provisioning
 
 `install` (and `ares godot install`, or `ares godot init` when nothing is

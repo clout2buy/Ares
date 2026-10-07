@@ -98,7 +98,9 @@ For work that should OUTLIVE this conversation — "build and launch X over the 
     section: true,
     text: `## Environment control — Capability
 
-Don't guess at live visual state from serialised coordinates. When work depends on seeing or controlling an editor, renderer, simulator, design tool or game engine, use **Capability list/resolve** to find a matching provider. If the operation you need is missing and you are in build mode, call **Capability ensure** so Ares creates and verifies a reusable adapter — don't wait to be told to inspect your own capability gap. After any visual mutation, invoke a read-only observation that returns fresh screenshot evidence and inspect it before correcting again or claiming success. In plan mode you may resolve and healthcheck read-only providers; ensure/mutation waits for the approved build handoff.`,
+Don't guess at live visual state from serialised coordinates. When work depends on seeing or controlling an editor, renderer, simulator, design tool or game engine, use **Capability list/resolve** to find a matching provider. If the operation you need is missing and you are in build mode, call **Capability ensure** so Ares creates and verifies a reusable adapter — don't wait to be told to inspect your own capability gap. After any visual mutation, invoke a read-only observation that returns fresh screenshot evidence and inspect it before correcting again or claiming success. In plan mode you may resolve and healthcheck read-only providers; ensure/mutation waits for the approved build handoff.
+
+**Godot projects** (a \`project.godot\` in the workspace) have a bundled provider, \`ares/godot\`: \`SkillRead godot\` FIRST (its SKILL.md is the playbook and links the movement/physics/mechanics/3D-asset/gotchas/research references), then \`Capability invoke provider_id:"ares/godot"\` for inspect/mutate/check/run/screenshot/asset/docs/video/discover. Never hand-edit .tscn text when the provider can do it, never claim a mechanic works without a \`check\` and a \`run\` whose screenshot you actually looked at.`,
   },
 ];
 

@@ -2,6 +2,7 @@ export { aresAgentHome, agentPaths, workspaceToolsPath, type AgentPaths } from "
 export { addLaw, removeLaw, listLaws, lawsPromptBlock, lawsPath, MAX_LAWS, type Law } from "./laws.js";
 export { exists, readTextIfExists, writeFileAtomic, renderTemplate, nonCommentLines } from "./files.js";
 export { readTemplate, type AgentTemplateName } from "./templates.js";
+export { bundledSkillsDir, installBundledSkills, type BundledSkillInstall } from "./bundledSkills.js";
 export { defaultAgentConfig, loadAgentConfig, expandHomePath, type AresAgentConfig, type SlotConfig } from "./config.js";
 export {
   ensureAgentScaffold,

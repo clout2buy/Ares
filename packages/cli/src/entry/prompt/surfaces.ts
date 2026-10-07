@@ -7,9 +7,26 @@
 // relative position, so the long cacheable prefix is byte-identical across
 // turns for a given catalog.
 
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { PermissionMode } from "@ares/protocol";
 import { machineCardPromptBlock } from "@ares/tools";
 import { cachedUiSettings } from "../../uiSettings.js";
+
+/** Workspace facts worth one line: an engine project at cwd changes which
+ *  bundled provider/playbook the model should reach for first. Synchronous
+ *  and cheap (one stat), so it stays inside the environment block. */
+function workspaceHints(cwd: string): string {
+  const hints: string[] = [];
+  try {
+    if (cwd && existsSync(path.join(cwd, "project.godot"))) {
+      hints.push("- Godot 4 project at the working directory: `SkillRead godot` before touching scenes/scripts, then the `ares/godot` provider via Capability (inspect → mutate → check → run+screenshot).");
+    }
+  } catch {
+    // a hint is never worth a failed compose
+  }
+  return hints.length ? `\n${hints.join("\n")}` : "";
+}
 
 /** Workflow surfaces: the app loop, the plan/build boundary, and hooks. The
  *  Operator, deep-research and Capability workflows are tool-keyed doctrine
@@ -68,7 +85,7 @@ export function environmentBlock(permissionMode: PermissionMode, cwd: string, pl
 - Working directory: ${cwd}
 - Platform: ${platform}
 - Today's date: ${today}
-- Permission mode: ${permissionMode}`;
+- Permission mode: ${permissionMode}${workspaceHints(cwd)}`;
 }
 
 /** Response shape, reach, hard rules, and the live environment block. */

@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "id": "ares/godot",
+  "kind": "environment-provider",
+  "version": "1.0.0",
+  "scope": "user",
+  "description": "Godot 4 game-development provider: live editor bridge (scene tree, nodes, scripts, signals, input map), headless script/boot checks, instrumented play sessions with screenshots and input scripting, procedural 3D asset generation (OBJ), Godot class-reference lookup, YouTube transcript watching, and asset-library discovery.",
+  "compatibility": {
+    "platforms": ["win32", "darwin", "linux"]
+  },
+  "match": {
+    "files": ["project.godot", "*.tscn", "*.gd", "*.tres", "*.gdshader", "*.godot"],
+    "commands": ["godot", "Godot_v4", "godot4"]
+  },
+  "operations": {
+    "health": {
+      "description": "Read-only provider healthcheck: locates the Godot binary, confirms project.godot at targetRoot, and reports whether the editor bridge and runtime are reachable.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "locate": {
+      "description": "Find the Godot executable (env ARES_GODOT, ~/.ares/godot.json, project .ares/godot.json, PATH, common install dirs) and report versions, bridge/runtime port status, and project facts.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "inspect": {
+      "description": "Observe project state without changing it: live scene tree via the editor bridge (or offline .tscn parse), node properties, project settings, input map, scripts, assets, signals.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "mutate": {
+      "description": "Apply a batch of editor operations (scene new/open/save, node add/remove/set/reparent, script create/attach, signal connect, input-map actions, project settings). Uses the live editor bridge when available, otherwise edits .tscn/.gd/project.godot on disk.",
+      "effect": "workspace-write",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "check": {
+      "description": "Headless verification: parse-check every GDScript, boot the main scene for one frame under --headless, and collect SCRIPT ERROR / parse / missing-resource diagnostics.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "run": {
+      "description": "Launch the game (or a specific scene) with the Ares runtime attached, execute an input/observation script (press actions, wait, query node state, screenshot), capture stdout/stderr errors, and save viewport screenshots as fresh visual evidence.",
+      "effect": "workspace-write",
+      "evidence": ["screenshot"],
+      "requiresFreshObservationAfter": true
+    },
+    "screenshot": {
+      "description": "Capture the editor's 3D or 2D viewport (via the bridge) or the running game's viewport (via the runtime) to a PNG and return it as fresh screenshot evidence.",
+      "effect": "read-only",
+      "evidence": ["screenshot"],
+      "requiresFreshObservationAfter": true
+    },
+    "asset": {
+      "description": "Generate 3D geometry procedurally (box, cylinder, cone, sphere, capsule, plane, terrain, lathe, extrude, stairs, ramp, arch) as Wavefront OBJ files Godot imports natively, or emit a @tool GDScript SurfaceTool generator.",
+      "effect": "workspace-write",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "docs": {
+      "description": "Fetch and cache Godot 4 class reference pages (docs.godotengine.org) as plain text, or search the cached corpus; also resolves tutorial pages by slug.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "video": {
+      "description": "Watch a YouTube video by pulling its transcript (timestamped), or search YouTube for tutorials/reference footage; results are cached under the Ares home.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    },
+    "discover": {
+      "description": "Search reference and asset sources: Godot Asset Library API, Poly Haven models/textures/HDRIs, and a curated list of Godot learning sources.",
+      "effect": "read-only",
+      "evidence": [],
+      "requiresFreshObservationAfter": false
+    }
+  },
+  "provides": {
+    "godot/health": "health",
+    "godot/locate": "locate",
+    "scene/inspect": "inspect",
+    "scene/observe": "inspect",
+    "scene/mutate": "mutate",
+    "editor/mutate": "mutate",
+    "godot/check": "check",
+    "game/run": "run",
+    "game/play": "run",
+    "scene/render": "screenshot",
+    "scene/screenshot": "screenshot",
+    "asset/generate": "asset",
+    "mesh/generate": "asset",
+    "reference/docs": "docs",
+    "reference/video": "video",
+    "reference/discover": "discover"
+  },
+  "healthcheck": {
+    "operation": "health",
+    "timeoutMs": 20000
+  }
+}

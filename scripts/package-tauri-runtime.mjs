@@ -78,6 +78,11 @@ await build({
 await cp(path.join(root, "packages", "agent", "templates"), templatesOut, {
   recursive: true,
 });
+// Bundled capability providers (e.g. the Godot provider) resolve as
+// `<cli dir>/../skills` from the bundle, exactly like templates.
+await cp(path.join(root, "packages", "agent", "skills"), path.join(runtime, "skills"), {
+  recursive: true,
+});
 await cp(path.join(root, "voice_service"), voiceServiceOut, {
   recursive: true,
 });
@@ -130,6 +135,7 @@ const outputs = [
   path.join(runtime, "cli", "ShellSupervisor.js"),
   path.join(binOut, nodeName),
   path.join(voiceServiceOut, "server.py"),
+  path.join(runtime, "skills", "godot", "handler.js"),
   path.join(modulesOut, "playwright", "package.json"),
   path.join(modulesOut, "playwright-core", "package.json"),
   path.join(modulesOut, "pdfjs-dist", "LICENSE"),

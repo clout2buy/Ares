@@ -4,6 +4,7 @@ import path from "node:path";
 import { agentPaths, aresAgentHome, workspaceToolsPath } from "../paths.js";
 import { exists, readTextIfExists, renderTemplate, writeFileAtomic } from "../files.js";
 import { readTemplate } from "../templates.js";
+import { installBundledSkills } from "../bundledSkills.js";
 import { loadAgentConfig } from "../config.js";
 import { vibeRulesMarkdown } from "./vibeRules.js";
 
@@ -37,6 +38,7 @@ export async function ensureAgentScaffold(opts: { home?: string; workspace?: str
   await mkdir(paths.transcriptsDir, { recursive: true });
   await mkdir(paths.skillsDir, { recursive: true });
   await ensureBuiltInBrowserSkills(paths.skillsDir);
+  await installBundledSkills(paths.skillsDir).catch(() => []);
   await mkdir(paths.dreamsDir, { recursive: true });
   await loadAgentConfig(home);
 
@@ -66,6 +68,7 @@ export async function completeBootstrap(profile: BootstrapProfile, opts: { home?
   await mkdir(paths.home, { recursive: true });
   await mkdir(paths.skillsDir, { recursive: true });
   await ensureBuiltInBrowserSkills(paths.skillsDir);
+  await installBundledSkills(paths.skillsDir).catch(() => []);
   const born = (profile.bornAt ?? new Date()).toISOString();
   const vibe = profile.vibe.trim() || "direct";
   const values = {

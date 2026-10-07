@@ -25,6 +25,7 @@ import { daemonCommand } from "./entry/daemon.js";
 import { attachCommand, garrisonCommand } from "./entry/garrisonCmd.js";
 import { mnemosyneCommand } from "./entry/mnemosyneCmd.js";
 import { computerCommand } from "./entry/computerCmd.js";
+import { godotCommand } from "./entry/godotCmd.js";
 import { holoCommand } from "./entry/holoCmd.js";
 import { briefCommand, checkpointsCommand, doctorCommand, frictionCommand, loginCommand, recapCommand, resumeCommand, sessionsCommand, themesCommand, todayCommand, worldCommand } from "./entry/introspect.js";
 import { mindCommand } from "./entry/mindCmd.js";
@@ -103,6 +104,10 @@ async function main(): Promise<void> {
     }
     case "computer": {
       process.exit(await computerCommand(args));
+      return;
+    }
+    case "godot": {
+      process.exit(await godotCommand(args));
       return;
     }
     case "attach": {

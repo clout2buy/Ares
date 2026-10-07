@@ -477,11 +477,13 @@ async function normalizeHandlerOutcome(input: {
   } else if (input.manifest.operations[expectedOperation].effect === "read-only" && normalizedMutations.length > 0) {
     contractError = `read-only provider operation '${expectedOperation}' reported mutations`;
   } else {
-    contractError = validateEvidence(
-      input.manifest.operations[expectedOperation],
-      receipt,
-      input.startedAt,
-    ) ?? await validateMutationHashes(normalizedMutations);
+    // A receipt that already reports ok:false carries the provider's own
+    // reason; demanding fresh evidence from a failed run would only replace
+    // "Godot not found" with "missing screenshot". Mutations are still
+    // hash-checked because a failed run may have partially written files.
+    contractError = (receipt.ok
+      ? validateEvidence(input.manifest.operations[expectedOperation], receipt, input.startedAt)
+      : undefined) ?? await validateMutationHashes(normalizedMutations);
   }
 
   const normalizedReceipt: CapabilityReceipt = {

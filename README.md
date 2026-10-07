@@ -172,6 +172,23 @@ automation practice site, run `ARES_LIVE_BROWSER_HARNESS=1 pnpm test` (PowerShel
 > `--user-data-dir` for anything sensitive, and remember the debugging port is
 > unauthenticated to anything that can reach `127.0.0.1`.
 
+## Godot game forge
+
+Ares ships a Godot 4 capability provider (`ares/godot`): a live editor bridge
+addon, offline `.tscn`/`.gd`/`project.godot` editing, headless parse + boot
+checks, instrumented play sessions (scripted input, physics-state asserts,
+screenshots as evidence), procedural 3D assets, and research operations
+(class reference, YouTube transcripts, Asset Library, Poly Haven). Wire a
+project up once:
+
+```bash
+ares godot init path/to/project --godot "C:\Godot\Godot_v4.3-stable_win64.exe"
+```
+
+Then open the project in the editor (it prints `Ares bridge listening`) and
+ask Ares for the game you want. `ares godot doctor|check|shot|run` expose the
+same operations from the terminal. Design notes: `docs/GODOT-GAME-FORGE.md`.
+
 ## Packages
 
 - `@ares/protocol` — shared event, provider, reasoning, and tool-call shapes.

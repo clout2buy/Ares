@@ -73,6 +73,7 @@ import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlan
 import { startLifeSurfaces } from "./lifeWiring.js";
 import { startGoalSurfaces } from "./goalsMemoryWiring.js";
 import { startBriefingsAndLocation, type PhoneBriefingsAndLocation } from "./briefingWiring.js";
+import { startMaintainer, type MaintainerWiring } from "./maintainerWiring.js";
 import { configureSharedMarketplace } from "../marketplace/tool.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
 import { deliverHeartbeatAlerts } from "../heartbeatAlerts.js";
@@ -479,6 +480,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   // Morning/evening briefings and location rules (briefingWiring.ts). Built once the
   // approval queue and phone push exist; the scheduler's hook only asks it.
   let phoneBriefing: PhoneBriefingsAndLocation | undefined;
+  // The nightly Maintainer (maintainerWiring.ts): built once approvals and push exist; the scheduler's hook only asks it.
+  let maintainerWiring: MaintainerWiring | undefined;
 
   // Experimental Facebook Marketplace: watch results go to the phone (phonePush is built below; the closure runs later).
   const marketplace = configureSharedMarketplace({ push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()) });
@@ -557,6 +560,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       goals: () => goalSurfaces.tick(),
       // The phone's briefings: due at the owner's chosen times, in their zone.
       briefing: () => phoneBriefing?.briefings.tick(),
+      // Nightly self-improvement proposals (never deploys by itself; ARES_MAINTAINER=0 disables).
+      maintainer: () => maintainerWiring?.tick() ?? "idle",
       // Marketplace watches: at most one due watch per tick; honours ARES_MARKETPLACE=0, the owner's pause and walls.
       marketplace: () => marketplace.tick(),
       // Box upkeep + the nightly encrypted backup (systemWiring.ts); ARES_HOUSEKEEPING=0 turns it off.
@@ -568,7 +573,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     // The owner's pause holds system jobs; every run lands in the audit trail.
     isPaused: () => ownerPause.paused,
     // An idle goals tick (every five minutes) is not an action worth a line.
-    onRun: (hook, result) => { if ((hook === "goals" || hook === "marketplace" || hook === "housekeeping") && result.startsWith("idle")) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
+    onRun: (hook, result) => { if ((hook === "goals" || hook === "marketplace" || hook === "housekeeping") && result.startsWith("idle")) return; if (hook === "maintainer" && !/^(started|error|not started)/.test(result)) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
@@ -907,7 +912,16 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "timeline", line } }) + "\n"),
   });
 
+  maintainerWiring = startMaintainer({
+    context,
+    sessions,
+    approvals,
+    push: (message) => (phonePush.configured ? phonePush.send(message) : Promise.resolve()),
+    isPaused: () => ownerPause.paused,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "maintainer", line } }) + "\n"),
+  });
   const briefingWiring = startBriefingsAndLocation({
+    maintenance: (since) => maintainerWiring!.maintainer.briefingFacts(since),
     home: context.home,
     sessions,
     personas: personaRuntime,
@@ -970,6 +984,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           life: life.handler,
           personas: (req, res, url) => personaRuntime.handle(req, res, url),
           goals: goalSurfaces.goalsApi,
+          maintainer: maintainerWiring?.api,
           memory: goalSurfaces.memoryApi,
           system: systemSurfaces.api,
           avatars: createAvatarsApi({

@@ -45,6 +45,9 @@ export interface SchedulerHooks {
   marketplace?: () => Promise<unknown> | unknown;
   /** Box upkeep (log rotation, orphan blobs, temp dirs, nightly backup). Runs every housekeepingCheckEveryMs (hourly); the host's hook decides what is due. */
   housekeeping?: () => Promise<unknown> | unknown;
+  /** The nightly Maintainer (self-improvement proposals). Runs every maintainerCheckEveryMs; the
+   *  hook decides whether tonight's run is due, and starts long work in the background. */
+  maintainer?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -97,6 +100,8 @@ export interface SchedulerOptions {
   marketplaceCheckEveryMs?: number;
   /** How often the housekeeping hook runs; default 1 hour. */
   housekeepingCheckEveryMs?: number;
+  /** How often the maintainer hook is asked whether tonight's run is due; default 5 minutes. */
+  maintainerCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
@@ -133,6 +138,7 @@ const DEFAULT_GOALS_CHECK_MS = 5 * 60_000;
 const DEFAULT_BRIEFING_CHECK_MS = 60_000;
 const DEFAULT_MARKETPLACE_CHECK_MS = 5 * 60_000;
 const DEFAULT_HOUSEKEEPING_CHECK_MS = 60 * 60_000;
+const DEFAULT_MAINTAINER_CHECK_MS = 5 * 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -185,7 +191,7 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, goals: false, briefing: false, marketplace: false, housekeeping: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, goals: false, briefing: false, marketplace: false, housekeeping: false, maintainer: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
   private readonly lastRuns: Partial<Record<SchedulerHookName, { at: number; result: string }>> = {};
   private readonly heldHooks = new Set<SchedulerHookName>();
@@ -232,6 +238,9 @@ export class Scheduler {
     }
     if (this.opts.hooks.housekeeping) {
       this.handles.push(this.setIntervalFn(() => void this.runHook("housekeeping"), this.opts.housekeepingCheckEveryMs ?? DEFAULT_HOUSEKEEPING_CHECK_MS));
+    }
+    if (this.opts.hooks.maintainer) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("maintainer"), this.opts.maintainerCheckEveryMs ?? DEFAULT_MAINTAINER_CHECK_MS));
     }
   }
 
@@ -337,6 +346,11 @@ export class Scheduler {
       const last = this.lastRuns.housekeeping?.at ?? this.startedAtMs;
       push("housekeeping", `box upkeep and nightly backup, every ${formatEvery(every)}`, this.started, last === undefined ? undefined : last + every);
     }
+    if (this.opts.hooks.maintainer) {
+      const every = this.opts.maintainerCheckEveryMs ?? DEFAULT_MAINTAINER_CHECK_MS;
+      const last = this.lastRuns.maintainer?.at ?? this.startedAtMs;
+      push("maintainer", `nightly self-improvement proposals, checked every ${formatEvery(every)}`, this.started, last === undefined ? undefined : last + every);
+    }
     return out;
   }
 
@@ -427,7 +441,7 @@ export class Scheduler {
     return this.opts.goalsCheckEveryMs ?? DEFAULT_GOALS_CHECK_MS;
   }
 
-  private async runHook(name: "heartbeat" | "dream" | "feed" | "goals" | "briefing" | "marketplace" | "housekeeping"): Promise<void> {
+  private async runHook(name: "heartbeat" | "dream" | "feed" | "goals" | "briefing" | "marketplace" | "housekeeping" | "maintainer"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
     if (name === "heartbeat") this.lastHeartbeatAt = this.nowFn();
     if (this.blocked(name)) return;

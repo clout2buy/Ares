@@ -432,10 +432,11 @@ const SYSTEM_TITLES: Record<string, string> = {
   gauntlet: "Nightly coding gauntlet",
   goals: "Goal check-ins (agents working your goals)",
   briefing: "Morning and evening briefings",
+  maintainer: "Nightly Maintainer (self-improvement proposals)",
 };
 
 function isHookName(name: string | undefined): name is SchedulerHookName {
-  return name === "heartbeat" || name === "dream" || name === "gauntlet" || name === "goals" || name === "briefing" || name === "marketplace";
+  return name === "heartbeat" || name === "dream" || name === "gauntlet" || name === "goals" || name === "briefing" || name === "marketplace" || name === "maintainer";
 }
 
 function pad(n: number): string {

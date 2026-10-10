@@ -50,6 +50,7 @@ import {
   zonedTimeToMs,
 } from "./phoneCommon.js";
 import { toSpeakable } from "./phoneAsk.js";
+import type { MaintenanceFacts } from "./maintainer/maintainer.js";
 
 // ─── Contract ─────────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ export const BRIEFING_KINDS = ["morning", "evening"] as const;
 export type BriefingKind = (typeof BRIEFING_KINDS)[number];
 
 /** Canonical display order: what needs the owner first, then the day, then the rest. */
-export const BRIEFING_SECTION_IDS = ["approvals", "calendar", "weather", "reminders", "mail", "goals", "agents"] as const;
+export const BRIEFING_SECTION_IDS = ["approvals", "calendar", "weather", "reminders", "mail", "goals", "agents", "maintenance"] as const;
 export type BriefingSectionId = (typeof BRIEFING_SECTION_IDS)[number];
 
 export interface BriefingSettings {
@@ -79,7 +80,7 @@ export const DEFAULT_BRIEFING_SETTINGS: BriefingSettings = {
   morning: { enabled: true, time: "07:30" },
   evening: { enabled: true, time: "18:30" },
   agentId: "ares",
-  sections: { approvals: true, calendar: true, weather: true, reminders: true, mail: true, goals: true, agents: true },
+  sections: { approvals: true, calendar: true, weather: true, reminders: true, mail: true, goals: true, agents: true, maintenance: true },
   push: true,
 };
 
@@ -196,6 +197,8 @@ export interface BriefingSources {
   goals?: () => Promise<FactGoal[]>;
   agents?: (sinceMs: number) => Promise<FactAgents>;
   approvals?: () => Promise<FactApproval[]>;
+  /** What the nightly Maintainer did (maintainer/maintainer.ts). Absent = the section is skipped, not "missing". */
+  maintenance?: (sinceMs: number) => Promise<MaintenanceFacts>;
 }
 
 export type SourceStatus = "ok" | MissingReason;
@@ -231,6 +234,7 @@ const SECTION_TITLES: Record<BriefingSectionId, (k: BriefingKind, window?: strin
   mail: () => "Mail",
   goals: () => "Goals",
   agents: (k) => (k === "morning" ? "While you were away" : "What your agents did"),
+  maintenance: () => "Ares maintenance",
 };
 
 // ─── Settings ─────────────────────────────────────────────────────────────
@@ -445,7 +449,7 @@ export async function gatherFacts(input: {
   const packets: BriefingPacketMap = {};
   const on = (id: BriefingSectionId) => settings.sections[id];
 
-  const [weather, calendar, mail, reminders, goals, agents, approvals] = await Promise.all([
+  const [weather, calendar, mail, reminders, goals, agents, approvals, maintenance] = await Promise.all([
     on("weather") ? fetchSource(sources.weather, timeoutMs) : undefined,
     on("calendar") ? fetchSource(sources.calendar && (() => sources.calendar!(window)), timeoutMs) : undefined,
     on("mail") ? fetchSource(sources.mail, timeoutMs) : undefined,
@@ -453,6 +457,7 @@ export async function gatherFacts(input: {
     on("goals") ? fetchSource(sources.goals, timeoutMs) : undefined,
     on("agents") ? fetchSource(sources.agents && (() => sources.agents!(sinceMs)), timeoutMs) : undefined,
     on("approvals") ? fetchSource(sources.approvals, timeoutMs) : undefined,
+    on("maintenance") && sources.maintenance ? fetchSource(() => sources.maintenance!(sinceMs), timeoutMs) : undefined,
   ]);
 
   if (weather) {
@@ -586,6 +591,28 @@ export async function gatherFacts(input: {
                 refs.set(ref, { kind: "approvals", id: a.id });
                 return { ref, summary: flat(a.summary, CAPS.textChars), ...(a.kind ? { kind: flat(a.kind, 40) } : {}) };
               }),
+            },
+          }
+        : {}),
+    };
+  }
+
+  if (maintenance) {
+    const m = maintenance.value;
+    if (maintenance.status === "ok" && m) for (const w of m.proposalsWaiting) refs.set(`proposal:${w.id}`, { kind: "approvals", id: `maintainer:${w.id}` });
+    packets.maintenance = {
+      id: "maintenance",
+      status: maintenance.status,
+      ...(maintenance.status === "ok" && m
+        ? {
+            data: {
+              ranLast24h: m.ranLast24h,
+              issuesFound: m.issuesFound,
+              attempts: m.attempts,
+              proposalsWaiting: m.proposalsWaiting.slice(0, 5).map((w) => ({ ref: `proposal:${w.id}`, title: flat(w.title, 100), risk: w.risk })),
+              deployed: m.deployed.slice(0, 5).map((d) => ({ title: flat(d.title, 100), sha: d.sha })),
+              rollbacks: m.rollbacks.slice(0, 5).map((r) => ({ title: flat(r.title, 100), reason: flat(r.reason, 120) })),
+              budget: m.budget,
             },
           }
         : {}),
@@ -764,6 +791,19 @@ export function factsCard(facts: BriefingFacts): Parsed {
         acts && acts.total ? `${plural(acts.total, "action")} since the last briefing${acts.failed ? `, ${acts.failed} failed` : ""}.` : "Your agents have been active.",
         active.slice(0, 5).map((x) => ({ text: x.name, ...(x.lastMessage ? { detail: x.lastMessage } : x.working ? { detail: "Working now" } : {}), ...(facts.refs.get(x.ref) ? { link: facts.refs.get(x.ref) } : {}) })),
       );
+    }
+  }
+  if (ok("maintenance")) {
+    const m = data<{ ranLast24h: boolean; issuesFound: number; attempts: number; proposalsWaiting: Array<{ ref: string; title: string; risk: string }>; deployed: Array<{ title: string }>; rollbacks: Array<{ title: string; reason: string }>; budget: { callsUsed: number; callsLimit: number } }>("maintenance");
+    const items: BriefingItem[] = [
+      ...m.proposalsWaiting.map((w) => ({ text: `Proposal: ${w.title}`, detail: `${w.risk} risk, waiting for your approval`, ...(facts.refs.get(w.ref) ? { link: facts.refs.get(w.ref) } : {}) })),
+      ...m.deployed.map((d) => ({ text: `Deployed: ${d.title}` })),
+      ...m.rollbacks.map((r) => ({ text: `Rolled back: ${r.title}`, detail: r.reason })),
+    ];
+    if (m.ranLast24h || items.length) {
+      const ran = m.ranLast24h ? `Ran overnight: ${plural(m.issuesFound, "issue")} found, ${plural(m.attempts, "fix")} attempted (${m.budget.callsUsed}/${m.budget.callsLimit} model calls).` : "No maintenance run overnight.";
+      add("maintenance", `${ran}${m.proposalsWaiting.length ? ` ${plural(m.proposalsWaiting.length, "proposal")} waiting for you.` : ""}`, items.slice(0, 5));
+      if (m.proposalsWaiting.length) bits.push(`${plural(m.proposalsWaiting.length, "maintenance proposal")}`);
     }
   }
   const greet = facts.kind === "morning" ? "Good morning" : "Good evening";

@@ -232,6 +232,9 @@ export interface PhoneApiHooks {
    *  Asked right after the bearer check, before the built-in list/close in
    *  phoneLibrary.ts (which stays as the fallback); false = not mine. */
   goals?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The nightly Maintainer: status, run now, approve/reject proposals (/gateway/maintainer…
+   *  — maintainer/maintainerApi.ts, docs/ELITE-SELFIMPROVE.md). Owner-only; false = not mine. */
+  maintainer?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** What Ares remembers about the owner (/gateway/memory… — phoneMemory.ts):
    *  list, search, correct, forget. Owner-only; false = not mine. */
   memory?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1563,6 +1566,9 @@ export class RemoteAgentServer {
     if (await handleDeviceApi(req, res, url, { home: this.home })) return;
     if (this.opts.phoneApi?.goals && (url.pathname === "/gateway/goals" || url.pathname.startsWith("/gateway/goals/"))) {
       if (await this.opts.phoneApi.goals(req, res, url)) return;
+    }
+    if (this.opts.phoneApi?.maintainer && (url.pathname === "/gateway/maintainer" || url.pathname.startsWith("/gateway/maintainer/"))) {
+      if (await this.opts.phoneApi.maintainer(req, res, url)) return;
     }
     if (this.opts.phoneApi?.memory && (url.pathname === "/gateway/memory" || url.pathname.startsWith("/gateway/memory/"))) {
       if (await this.opts.phoneApi.memory(req, res, url)) return;

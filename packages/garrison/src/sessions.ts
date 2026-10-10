@@ -262,6 +262,8 @@ export interface SessionManagerOptions {
    * Best-effort: a throw never breaks the event stream.
    */
   onTurnSettled?: (sessionId: string) => void;
+  /** Read-only tap on every turn event with the session's provider, for host health signals (errors, provider breakers). Best-effort: a throw is swallowed. */
+  onEvent?: (info: { sessionId: string; provider: string; event: TurnEvent }) => void;
   /**
    * Runs after admission bookkeeping and BEFORE the runtime sees the text.
    * Garrison sessions never pass through the CLI's prepareUserTurn, so this is
@@ -424,6 +426,7 @@ export class SessionManager {
   private readonly sessionKernel?: SessionKernelStore;
   private readonly permissionTimeoutMs: number;
   private readonly onTurnSettled?: (sessionId: string) => void;
+  private readonly onEventTap?: SessionManagerOptions["onEvent"];
   private readonly beforeSend?: (ctx: SessionSendContext) => Promise<void> | void;
   private readonly personas?: SessionPersonaHooks;
   private readonly now: () => number;
@@ -440,6 +443,7 @@ export class SessionManager {
     this.sessionKernel = opts.sessionKernel;
     this.permissionTimeoutMs = opts.permissionTimeoutMs ?? 5 * 60_000;
     this.onTurnSettled = opts.onTurnSettled;
+    this.onEventTap = opts.onEvent;
     this.beforeSend = opts.beforeSend;
     this.personas = opts.personas;
     this.now = opts.now ?? Date.now;
@@ -895,6 +899,11 @@ export class SessionManager {
 
   /** Track the running tool and write the audit line an outcome completes. */
   private observeForOwner(session: LiveSession, event: TurnEvent): void {
+    try {
+      this.onEventTap?.({ sessionId: session.id, provider: session.provider, event });
+    } catch {
+      // a health tap never breaks the event stream
+    }
     if (event.type === "tool_start") session.currentTool = event.name;
     else if ((event.type === "tool_end" || event.type === "tool_error") && session.currentTool) session.currentTool = undefined;
     if (!this.auditEnabled) return;

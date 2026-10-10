@@ -385,6 +385,16 @@ export class SessionKernelStore {
     }
   }
 
+  /**
+   * A consistent point-in-time copy of the whole database to `dest` (which must
+   * not exist), taken through SQLite itself (VACUUM INTO) so a WAL being written
+   * by another connection never yields a torn file. For backups.
+   */
+  backupTo(dest: string): void {
+    this.assertOpen();
+    this.db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+  }
+
   get journalMode(): string {
     this.assertOpen();
     return String(this.db.pragma("journal_mode", { simple: true }) ?? "");

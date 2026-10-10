@@ -242,6 +242,9 @@ export interface PhoneApiHooks {
   /** The separate Ares instances deployed on this host (/gateway/instances —
    *  phoneInstances.ts). Absent off Linux; false = not mine. */
   instances?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The box's health at a glance (/gateway/system[/events|/housekeeping|/backup|/turns/stop] —
+   *  phoneSystem.ts). Asked after the owner bearer check; false = not mine. */
+  system?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Provider / coding-agent logins from the phone (/gateway/providers —
    *  phoneProviders.ts, docs/PROVIDER-LOGIN.md). False = not mine. */
   providers?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1607,6 +1610,9 @@ export class RemoteAgentServer {
     }
     if (api.instances && (url.pathname === "/gateway/instances" || url.pathname.startsWith("/gateway/instances/"))) {
       if (await api.instances(req, res, url)) return;
+    }
+    if (api.system && (url.pathname === "/gateway/system" || url.pathname.startsWith("/gateway/system/"))) {
+      if (await api.system(req, res, url)) return;
     }
     if (api.providers && (url.pathname === "/gateway/providers" || url.pathname.startsWith("/gateway/providers/"))) {
       if (await api.providers(req, res, url)) return;

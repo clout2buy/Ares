@@ -143,7 +143,8 @@ export const BisectTool = buildTool({
       if (start.code !== 0) throw toolError(`Bisect: git bisect start failed: ${start.stderr.trim().slice(0, 300)}`);
       const budgetMs = (needed + 1) * i.step_timeout_s * 1000;
       const run = await runBisect(wt, i.command, bash, i.step_timeout_s * 1000, budgetMs, ctx.signal);
-      const found = /([0-9a-f]{40}) is the first bad commit/.exec(run.out);
+      // Newer git quotes the term ("is the first 'bad' commit"); older git does not.
+      const found = /([0-9a-f]{40}) is the first '?bad'? commit/.exec(run.out);
       const steps = (run.out.match(/running\s/g) ?? []).length;
       const tail = run.out.split(/\r?\n/).slice(-40).join("\n");
       if (!found) {

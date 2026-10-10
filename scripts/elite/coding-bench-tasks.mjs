@@ -533,7 +533,7 @@ export const TASKS = [
         // What a model without the tool does: drive git bisect by hand.
         yield { name: "Bash", input: { command: "git bisect start HEAD v1", description: "start bisect", timeout: 30000 } };
         const r = yield { name: "Bash", input: { command: "git bisect run node --test", description: "bisect run", timeout: 120000 } };
-        culprit = (r.text.match(/([0-9a-f]{40}) is the first bad commit/) ?? [])[1] ?? "";
+        culprit = (r.text.match(/([0-9a-f]{40}) is the first '?bad'? commit/) ?? [])[1] ?? "";
         yield { name: "Bash", input: { command: "git bisect reset", description: "restore HEAD", timeout: 30000 } };
       }
       yield { name: "Read", input: { file_path: "src/calc.mjs" } };

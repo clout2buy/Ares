@@ -139,19 +139,41 @@ async function main(): Promise<void> {
     await persist();
   };
 
+  // Signal the child's whole PROCESS GROUP, not just the shell. A `bash -c`
+  // running a pipeline (`docker exec … | tail`) does not forward signals to its
+  // children with job control off, so killing only the shell orphans the
+  // grandchildren — and if one holds the stdout pipe open, the child's `close`
+  // event never fires and this supervisor wedges forever (the freeze a hung
+  // `docker exec … | tail` caused: the exec orphaned to PID 1, tail kept the
+  // pipe, no terminal event, the turn hung). The child leads its own group
+  // (spawned detached), so negate the pid to reach the group; fall back to the
+  // bare child if that send fails (already gone, or Windows).
+  const signalTree = (sig: NodeJS.Signals) => {
+    if (!child?.pid) return;
+    try {
+      if (process.platform !== "win32") process.kill(-child.pid, sig);
+      else child.kill(sig);
+    } catch {
+      try { child.kill(sig); } catch { /* already gone */ }
+    }
+  };
+
   const terminate = () => {
     if (terminal || cancelling) return;
     cancelling = true;
     if (child?.pid) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // The close event or liveness reconciliation will decide terminal truth.
-      }
-      const force = setTimeout(() => {
-        try { child?.kill("SIGKILL"); } catch { /* best effort */ }
-      }, 2_000);
+      signalTree("SIGTERM");
+      const force = setTimeout(() => signalTree("SIGKILL"), 2_000);
       force.unref();
+      // Belt-and-suspenders: if a survivor in another PID namespace (a
+      // container process reached via `docker exec`) keeps the output pipe
+      // open, `close` still never comes. Settle as cancelled once SIGKILL has
+      // had time to land, so a wedged pipe can never hang the turn again.
+      const giveUp = setTimeout(() => {
+        void settle("cancelled", null, "SIGKILL", "terminated; a surviving child held the output pipe open")
+          .finally(() => process.exit(0));
+      }, 5_000);
+      giveUp.unref();
     } else {
       void settle("cancelled", null, "SIGTERM", null).finally(() => process.exit(0));
     }
@@ -163,7 +185,10 @@ async function main(): Promise<void> {
     cwd: manifest.cwd,
     windowsHide: true,
     shell: false,
-    detached: false,
+    // Lead a new process group (POSIX) so terminate() can signal the whole
+    // pipeline — shell AND its docker-exec/tail grandchildren — at once. Stdio
+    // stays piped; the child is never unref'd, so supervision is unchanged.
+    detached: process.platform !== "win32",
   });
   child.stdout?.on("data", (chunk: Buffer) => append("stdout", stdoutDecoder.write(chunk), child?.stdout ?? undefined));
   child.stderr?.on("data", (chunk: Buffer) => append("stderr", stderrDecoder.write(chunk), child?.stderr ?? undefined));

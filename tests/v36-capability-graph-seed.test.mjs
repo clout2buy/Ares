@@ -25,6 +25,9 @@ import {
   saveCapability,
   recordOutcome,
   renderCapabilitiesDoc,
+  extractFieldNotes,
+  FIELD_NOTES_START,
+  FIELD_NOTES_END,
   writeCapabilitiesDoc,
   TOOL_CAPABILITY_SEEDS,
   TOOL_CAPABILITY_MAP,
@@ -165,4 +168,34 @@ test("ledger: renderCapabilitiesDoc is a pure projection (empty graph → empty 
   const doc = renderCapabilitiesDoc([]);
   assert.match(doc, /empty graph/);
   assert.ok(!doc.includes(".crix"));
+});
+
+// ── 9. regeneration keeps the field notes (2026-09-22: it deleted them) ──────
+
+test("ledger: proven recipes survive regeneration and move above the generated lists", async () => {
+  const home = await freshHome();
+  await seedAllCapabilities(home);
+  const caps = await listCapabilities(home);
+  const file = await writeCapabilitiesDoc(home, caps);
+  // SelfEvolve appends to the end of the file, after the generated footer.
+  await fs.appendFile(file, "\n## doingbot admin API\n- read a channel: GET /api/targets/{id}/messages\n");
+
+  await writeCapabilitiesDoc(home, caps);
+  let doc = await fs.readFile(file, "utf8");
+  assert.ok(doc.includes("GET /api/targets/{id}/messages"), "the recipe was wiped by regeneration");
+  assert.ok(doc.indexOf("doingbot admin API") < doc.indexOf("## Mastered"), "notes sit above the inventory");
+  assert.ok(doc.includes(FIELD_NOTES_START) && doc.includes(FIELD_NOTES_END));
+
+  // Stable: rewriting again neither duplicates nor drops anything.
+  await writeCapabilitiesDoc(home, caps);
+  const again = await fs.readFile(file, "utf8");
+  assert.equal(again, doc);
+
+  // A second appended note joins the first.
+  await fs.appendFile(file, "\n## music\n- queue a song: POST /api/music\n");
+  await writeCapabilitiesDoc(home, caps);
+  doc = await fs.readFile(file, "utf8");
+  assert.equal(doc.split("GET /api/targets/{id}/messages").length, 2, "no duplication");
+  assert.ok(doc.includes("POST /api/music"));
+  assert.equal(extractFieldNotes(doc).split("## ").length, 3);
 });

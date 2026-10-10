@@ -47,29 +47,37 @@ export const MCP_CATEGORIES: Array<{ id: McpCategory; label: string }> = [
 
 export const MCP_CATALOG: McpCatalogEntry[] = [
   // ── code & repos ─────────────────────────────────────────────────────────
-  { id: "github", name: "GitHub", url: "https://api.githubcopilot.com/mcp/", auth: "oauth", transport: "http", category: "dev", blurb: "Repos, issues, pull requests, code search and Actions.", keywords: ["github", "repo", "repository", "pull request", "pr", "issue", "gh"], docs: "https://github.com/github/github-mcp-server" },
+  // Probed 2026-09-30: GitHub's MCP authorization server (https://github.com/login/oauth) has NO dynamic client registration but DOES advertise the device
+  // authorization grant (RFC 8628): sign in with a code, no redirect and no secret. It needs one registered client id (an OAuth App with "Enable Device Flow"),
+  // which Ares ships (oauthClients.ts) or the owner registers once. No pasted token.
+  { id: "github", name: "GitHub", url: "https://api.githubcopilot.com/mcp/", auth: "oauth", transport: "http", category: "dev", blurb: "Repos, issues, pull requests, code search and Actions (signs in with a device code).", keywords: ["github", "repo", "repository", "pull request", "pr", "issue", "gh"], docs: "https://github.com/github/github-mcp-server" },
   { id: "gitlab", name: "GitLab", url: "https://gitlab.com/api/v4/mcp", auth: "oauth", transport: "http", category: "dev", blurb: "Projects, merge requests, pipelines and issues on GitLab.com.", keywords: ["gitlab", "merge request", "mr"] },
   { id: "sentry", name: "Sentry", url: "https://mcp.sentry.dev/mcp", auth: "oauth", transport: "http", category: "monitoring", blurb: "Search, query and debug errors and performance issues.", keywords: ["sentry", "error tracking", "crash", "exception"] },
-  { id: "semgrep", name: "Semgrep", url: "https://mcp.semgrep.ai/mcp", auth: "none", transport: "http", category: "security", blurb: "Static analysis and security scanning of code.", keywords: ["semgrep", "sast", "security scan", "vulnerability"] },
+  { id: "semgrep", name: "Semgrep", url: "https://mcp.semgrep.ai/mcp", auth: "oauth", transport: "http", category: "security", blurb: "Static analysis and security scanning of code.", keywords: ["semgrep", "sast", "security scan", "vulnerability"] },
   { id: "context7", name: "Context7", url: "https://mcp.context7.com/mcp", auth: "none", transport: "http", category: "docs", blurb: "Up-to-date library and framework documentation for code.", keywords: ["context7", "library docs", "api docs", "documentation"] },
   { id: "deepwiki", name: "DeepWiki", url: "https://mcp.deepwiki.com/mcp", auth: "none", transport: "http", category: "docs", blurb: "Ask questions about any public GitHub repository.", keywords: ["deepwiki", "repo docs", "explain repo"] },
   { id: "jam", name: "Jam", url: "https://mcp.jam.dev/mcp", auth: "oauth", transport: "http", category: "dev", blurb: "Bug reports with console logs, network and repro steps.", keywords: ["jam", "bug report", "repro"] },
   // ── deploy & infra ──────────────────────────────────────────────────────
+  // Vercel's DCR (https://api.vercel.com/login/oauth/register) is an ALLOWLIST: it accepts loopback redirects (http://localhost:<port>) and a few named clients and
+  // answers invalid_redirect_uri for the garrison's https callback (probed 2026-09-30; docs: "only supports AI clients that have been reviewed and approved").
+  // Ares registers with a loopback redirect and the phone app intercepts it (oauthMatrix: vercel.loopback).
   { id: "vercel", name: "Vercel", url: "https://mcp.vercel.com", auth: "oauth", transport: "http", category: "deploy", blurb: "Projects, deployments, logs and domains.", keywords: ["vercel", "deploy", "deployment", "next.js hosting"] },
   { id: "netlify", name: "Netlify", url: "https://netlify-mcp.netlify.app/mcp", auth: "oauth", transport: "http", category: "deploy", blurb: "Sites, deploys, forms and environment variables.", keywords: ["netlify"] },
-  { id: "cloudflare-docs", name: "Cloudflare Docs", url: "https://docs.mcp.cloudflare.com/sse", auth: "none", transport: "sse", category: "docs", blurb: "Search Cloudflare's documentation.", keywords: ["cloudflare docs"] },
-  { id: "cloudflare-bindings", name: "Cloudflare Workers", url: "https://bindings.mcp.cloudflare.com/sse", auth: "oauth", transport: "sse", category: "deploy", blurb: "Workers, KV, R2, D1 and bindings on your account.", keywords: ["cloudflare", "workers", "kv", "r2", "d1"] },
-  { id: "cloudflare-observability", name: "Cloudflare Observability", url: "https://observability.mcp.cloudflare.com/sse", auth: "oauth", transport: "sse", category: "monitoring", blurb: "Logs and analytics for your Workers.", keywords: ["cloudflare logs", "workers logs"] },
+  { id: "cloudflare-docs", name: "Cloudflare Docs", url: "https://docs.mcp.cloudflare.com/mcp", auth: "none", transport: "http", category: "docs", blurb: "Search Cloudflare's documentation.", keywords: ["cloudflare docs"] },
+  { id: "cloudflare-bindings", name: "Cloudflare Workers", url: "https://bindings.mcp.cloudflare.com/mcp", auth: "oauth", transport: "http", category: "deploy", blurb: "Workers, KV, R2, D1 and bindings on your account.", keywords: ["cloudflare", "workers", "kv", "r2", "d1"] },
+  { id: "cloudflare-observability", name: "Cloudflare Observability", url: "https://observability.mcp.cloudflare.com/mcp", auth: "oauth", transport: "http", category: "monitoring", blurb: "Logs and analytics for your Workers.", keywords: ["cloudflare logs", "workers logs"] },
   { id: "render", name: "Render", url: "https://mcp.render.com/mcp", auth: "key", transport: "http", category: "deploy", blurb: "Services, deploys, logs and databases on Render.", keywords: ["render.com", "render"], keyUrl: "https://dashboard.render.com/settings#api-keys" },
   { id: "neon", name: "Neon", url: "https://mcp.neon.tech/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Serverless Postgres: projects, branches, SQL.", keywords: ["neon", "postgres", "neon db"] },
   { id: "supabase", name: "Supabase", url: "https://mcp.supabase.com/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Databases, auth, storage and edge functions.", keywords: ["supabase"] },
   { id: "prisma", name: "Prisma Postgres", url: "https://mcp.prisma.io/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Manage Prisma Postgres databases.", keywords: ["prisma"] },
-  { id: "mongodb", name: "MongoDB Atlas", url: "https://mcp.mongodb.com/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Clusters, collections and queries on Atlas.", keywords: ["mongodb", "mongo", "atlas"] },
-  { id: "plaid", name: "Plaid", url: "https://api.dashboard.plaid.com/mcp/sse", auth: "oauth", transport: "sse", category: "payments", blurb: "Plaid dashboard: items, institutions and usage.", keywords: ["plaid"] },
+  { id: "mongodb", name: "MongoDB Atlas", url: "https://mcp.mongodb.com/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Clusters, collections and queries on Atlas (no dynamic registration: connects with an access token).", keywords: ["mongodb", "mongo", "atlas"] },
+  // Not "plaid": that id is the owner's bank connector (plaidService.ts).
+  { id: "plaid-dashboard", name: "Plaid Dashboard", url: "https://api.dashboard.plaid.com/mcp/sse", auth: "oauth", transport: "sse", category: "payments", blurb: "Plaid developer dashboard: items, institutions and usage (for connecting your BANK, use \"plaid\").", keywords: ["plaid dashboard"] },
   // ── projects & tasks ────────────────────────────────────────────────────
   { id: "linear", name: "Linear", url: "https://mcp.linear.app/mcp", auth: "oauth", transport: "http", category: "project", blurb: "Issues, projects, cycles and team workflows.", keywords: ["linear", "linear issue", "ticket"] },
-  { id: "atlassian", name: "Atlassian (Jira & Confluence)", url: "https://mcp.atlassian.com/v1/sse", auth: "oauth", transport: "sse", category: "project", blurb: "Jira issues and Confluence pages.", keywords: ["jira", "confluence", "atlassian"] },
-  { id: "asana", name: "Asana", url: "https://mcp.asana.com/sse", auth: "oauth", transport: "sse", category: "project", blurb: "Tasks, projects and goals.", keywords: ["asana"] },
+  { id: "atlassian", name: "Atlassian (Jira & Confluence)", url: "https://mcp.atlassian.com/v2/mcp", auth: "oauth", transport: "http", category: "project", blurb: "Jira issues and Confluence pages.", keywords: ["jira", "confluence", "atlassian"] },
+  // The /sse server shut down 2026-08-05; the v2 server has no dynamic registration (probed 2026-09-30): an Asana MCP app registered once.
+  { id: "asana", name: "Asana", url: "https://mcp.asana.com/v2/mcp", auth: "oauth", transport: "http", category: "project", blurb: "Tasks, projects and goals.", keywords: ["asana"] },
   { id: "monday", name: "monday.com", url: "https://mcp.monday.com/mcp", auth: "oauth", transport: "http", category: "project", blurb: "Boards, items and workflows.", keywords: ["monday", "monday.com"] },
   { id: "notion", name: "Notion", url: "https://mcp.notion.com/mcp", auth: "oauth", transport: "http", category: "docs", blurb: "Search, read and update your Notion workspace.", keywords: ["notion", "notion page", "notion database"] },
   { id: "clickup", name: "ClickUp", url: "https://mcp.clickup.com/mcp", auth: "oauth", transport: "http", category: "project", blurb: "Tasks, docs and spaces.", keywords: ["clickup"] },
@@ -77,33 +85,42 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   // ── design ──────────────────────────────────────────────────────────────
   { id: "figma", name: "Figma", url: "https://mcp.figma.com/mcp", auth: "oauth", transport: "http", category: "design", blurb: "Read designs, components and variables from Figma files.", keywords: ["figma", "design file", "mockup"] },
   { id: "canva", name: "Canva", url: "https://mcp.canva.com/mcp", auth: "oauth", transport: "http", category: "design", blurb: "Create and edit Canva designs.", keywords: ["canva"] },
-  { id: "invideo", name: "invideo", url: "https://mcp.invideo.io/sse", auth: "oauth", transport: "sse", category: "design", blurb: "Generate videos from prompts.", keywords: ["invideo", "video generation"] },
+  { id: "invideo", name: "invideo", url: "https://mcp.invideo.io/mcp", auth: "none", transport: "http", category: "design", blurb: "Generate videos from prompts.", keywords: ["invideo", "video generation"] },
   // ── messaging & comms ───────────────────────────────────────────────────
   { id: "intercom", name: "Intercom", url: "https://mcp.intercom.com/mcp", auth: "oauth", transport: "http", category: "comms", blurb: "Conversations, contacts and help center.", keywords: ["intercom", "support inbox"] },
-  { id: "hubspot", name: "HubSpot", url: "https://mcp.hubspot.com/anthropic", auth: "oauth", transport: "http", category: "comms", blurb: "CRM contacts, companies, deals and tickets.", keywords: ["hubspot", "crm"] },
+  { id: "hubspot", name: "HubSpot", url: "https://mcp.hubspot.com/anthropic", auth: "oauth", transport: "http", category: "comms", blurb: "CRM contacts, companies, deals and tickets (no dynamic registration: connects with an access token).", keywords: ["hubspot", "crm"] },
   { id: "close", name: "Close CRM", url: "https://mcp.close.com/mcp", auth: "oauth", transport: "http", category: "comms", blurb: "Leads, opportunities and activity in Close.", keywords: ["close crm", "close.com"] },
   // ── payments & commerce ─────────────────────────────────────────────────
   { id: "stripe", name: "Stripe", url: "https://mcp.stripe.com", auth: "oauth", transport: "http", category: "payments", blurb: "Customers, payments, subscriptions and docs.", keywords: ["stripe", "payment", "subscription", "invoice"] },
   { id: "paypal", name: "PayPal", url: "https://mcp.paypal.com/mcp", auth: "oauth", transport: "http", category: "payments", blurb: "Invoices, orders, subscriptions and disputes.", keywords: ["paypal"] },
   { id: "square", name: "Square", url: "https://mcp.squareup.com/sse", auth: "oauth", transport: "sse", category: "commerce", blurb: "Payments, orders, catalog and customers.", keywords: ["square", "squareup"] },
-  { id: "shopify", name: "Shopify Dev", url: "https://shopify.dev/mcp", auth: "none", transport: "http", category: "commerce", blurb: "Shopify APIs, docs and schema search.", keywords: ["shopify", "shopify dev"] },
-  { id: "wix", name: "Wix", url: "https://mcp.wix.com/sse", auth: "oauth", transport: "sse", category: "commerce", blurb: "Sites, stores and bookings on Wix.", keywords: ["wix"] },
+  // shopify.dev/mcp answered HTTP 404 on 2026-09-30 (the Shopify Dev MCP is now a local npx server: see mcpStdioCatalog "shopify-dev").
+  { id: "wix", name: "Wix", url: "https://mcp.wix.com/mcp", auth: "oauth", transport: "http", category: "commerce", blurb: "Sites, stores and bookings on Wix.", keywords: ["wix"] },
   { id: "dodo", name: "Dodo Payments", url: "https://mcp.dodopayments.com/sse", auth: "oauth", transport: "sse", category: "payments", blurb: "Products, payments and subscriptions.", keywords: ["dodo payments"] },
   { id: "mercadopago", name: "Mercado Pago", url: "https://mcp.mercadopago.com/mcp", auth: "oauth", transport: "http", category: "payments", blurb: "Mercado Pago integration docs and tools.", keywords: ["mercado pago", "mercadopago"] },
+  // Slack's hosted MCP needs a Slack app the owner registers once (no dynamic registration: probed 2026-09-30).
+  { id: "slack", name: "Slack", url: "https://mcp.slack.com/mcp", auth: "oauth", transport: "http", category: "comms", blurb: "Search, read and post in your Slack workspace.", keywords: ["slack", "slack message", "slack channel", "dm on slack"], docs: "https://docs.slack.dev/ai/mcp-server" },
+  // PagerDuty's MCP has no dynamic registration; a Scoped OAuth app registered once.
+  { id: "pagerduty", name: "PagerDuty", url: "https://mcp.pagerduty.com/mcp", auth: "oauth", transport: "http", category: "monitoring", blurb: "Incidents, services, on-call schedules and escalation policies.", keywords: ["pagerduty", "on-call", "incident", "oncall"] },
   // ── ai & search ─────────────────────────────────────────────────────────
   { id: "huggingface", name: "Hugging Face", url: "https://huggingface.co/mcp", auth: "oauth", transport: "http", category: "ai", blurb: "Models, datasets, papers and Spaces.", keywords: ["hugging face", "huggingface", "hf", "model hub"] },
-  { id: "zapier", name: "Zapier", url: "https://mcp.zapier.com/api/mcp/mcp", auth: "key", transport: "http", category: "productivity", blurb: "8,000+ apps through your Zapier actions.", keywords: ["zapier", "zap", "automation"], keyUrl: "https://mcp.zapier.com" },
+  { id: "zapier", name: "Zapier", url: "https://mcp.zapier.com/api/mcp/mcp", auth: "oauth", transport: "http", category: "productivity", blurb: "8,000+ apps through your Zapier actions.", keywords: ["zapier", "zap", "automation"] },
   { id: "firecrawl", name: "Firecrawl", url: "https://mcp.firecrawl.dev/mcp", auth: "key", transport: "http", category: "search", blurb: "Scrape, crawl and extract from any site.", keywords: ["firecrawl", "scrape", "crawl"], keyUrl: "https://firecrawl.dev/app/api-keys", keyHeader: "Authorization" },
-  { id: "exa", name: "Exa", url: "https://mcp.exa.ai/mcp", auth: "key", transport: "http", category: "search", blurb: "Neural web search and page contents.", keywords: ["exa", "web search"], keyUrl: "https://dashboard.exa.ai/api-keys" },
-  { id: "tavily", name: "Tavily", url: "https://mcp.tavily.com/mcp/", auth: "key", transport: "http", category: "search", blurb: "Search and extract for agents.", keywords: ["tavily"], keyUrl: "https://app.tavily.com/home" },
-  { id: "perplexity", name: "Perplexity", url: "https://mcp.perplexity.ai/mcp", auth: "key", transport: "http", category: "search", blurb: "Answers with citations from Perplexity.", keywords: ["perplexity"], keyUrl: "https://www.perplexity.ai/settings/api" },
+  { id: "exa", name: "Exa", url: "https://mcp.exa.ai/mcp", auth: "oauth", transport: "http", category: "search", blurb: "Neural web search and page contents.", keywords: ["exa", "web search"] },
+  { id: "tavily", name: "Tavily", url: "https://mcp.tavily.com/mcp/", auth: "oauth", transport: "http", category: "search", blurb: "Search and extract for agents.", keywords: ["tavily"] },
+  { id: "perplexity", name: "Perplexity", url: "https://api.perplexity.ai/mcp", auth: "oauth", transport: "http", category: "search", blurb: "Answers with citations from Perplexity.", keywords: ["perplexity"] },
   // ── productivity & docs ─────────────────────────────────────────────────
-  { id: "box", name: "Box", url: "https://mcp.box.com", auth: "oauth", transport: "http", category: "docs", blurb: "Files, folders and content in Box.", keywords: ["box", "box.com"] },
+  { id: "box", name: "Box", url: "https://mcp.box.com", auth: "oauth", transport: "http", category: "docs", blurb: "Files, folders and content in Box (no dynamic registration: connects with an access token).", keywords: ["box", "box.com"] },
   { id: "dropbox", name: "Dropbox", url: "https://mcp.dropbox.com/mcp", auth: "oauth", transport: "http", category: "docs", blurb: "Files and folders in Dropbox.", keywords: ["dropbox"] },
   { id: "airtable", name: "Airtable", url: "https://mcp.airtable.com/mcp", auth: "oauth", transport: "http", category: "data", blurb: "Bases, tables and records.", keywords: ["airtable"] },
-  { id: "webflow", name: "Webflow", url: "https://mcp.webflow.com/sse", auth: "oauth", transport: "sse", category: "design", blurb: "Sites, CMS collections and pages.", keywords: ["webflow"] },
+  { id: "webflow", name: "Webflow", url: "https://mcp.webflow.com/mcp", auth: "oauth", transport: "http", category: "design", blurb: "Sites, CMS collections and pages.", keywords: ["webflow"] },
   { id: "fireflies", name: "Fireflies", url: "https://api.fireflies.ai/mcp", auth: "oauth", transport: "http", category: "productivity", blurb: "Meeting transcripts and summaries.", keywords: ["fireflies", "meeting notes", "transcript"] },
-  { id: "calendly", name: "Calendly", url: "https://mcp.calendly.com/mcp", auth: "oauth", transport: "http", category: "productivity", blurb: "Event types, scheduled events and availability.", keywords: ["calendly", "scheduling"] },
+  // Probed 2026-09-23: /mcp answers 404; the server root answers 401 with
+  // resource metadata and calendly.com/oauth/register does dynamic registration.
+  { id: "calendly", name: "Calendly", url: "https://mcp.calendly.com", auth: "oauth", transport: "http", category: "productivity", blurb: "Event types, scheduled events and availability.", keywords: ["calendly", "scheduling"] },
+  // Both probed 2026-09-23: 401 + RFC 9728 metadata + a registration_endpoint.
+  { id: "granola", name: "Granola", url: "https://mcp.granola.ai/mcp", auth: "oauth", transport: "http", category: "productivity", blurb: "Your meeting notes and transcripts from Granola.", keywords: ["granola", "granola notes", "my meeting notes"] },
+  { id: "printify", name: "Printify", url: "https://mcp.printify.com/mcp", auth: "oauth", transport: "http", category: "commerce", blurb: "Print-on-demand products, shops and orders.", keywords: ["printify", "print on demand", "merch store"] },
 ];
 
 export function catalogById(id: string): McpCatalogEntry | undefined {

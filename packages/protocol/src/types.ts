@@ -139,6 +139,11 @@ export type TurnEvent =
       sessionId: string;
       delivery: "queue" | "steer";
       userMessage: Message;
+      /** True when this is the acknowledgement of an input that was ALREADY
+       * admitted: a retried send reusing its inputId after a dropped
+       * connection. Nothing new happened; a surface that already shows the
+       * message must not show it again. */
+      replay?: true;
     }
   | { type: "turn_start"; turnId: string; sessionId: string; userMessage: Message }
   | {
@@ -203,7 +208,18 @@ export type TurnEvent =
       /** See tool_end.images — declared failures can still carry screenshots. */
       images?: { blocks: number; approxBytes: number };
     }
-  | { type: "permission_request"; id: string; toolName: string; input: unknown; reason: string; suggestion?: PermissionPromptSuggestion }
+  | {
+      type: "permission_request";
+      id: string;
+      toolName: string;
+      input: unknown;
+      reason: string;
+      suggestion?: PermissionPromptSuggestion;
+      /** Present (true) only for a per-call owner decision (a checkout total, a
+       *  plan crossing). Surfaces that can answer from a lock screen use it to
+       *  insist on opening the app. See ToolPermissionRequest.ownerDecision. */
+      ownerDecision?: boolean;
+    }
   | { type: "permission_response"; id: string; decision: PermissionPromptDecision }
   | { type: "verify_scheduled"; files: string[] }
   | { type: "verify_finished"; ok: boolean; output: string; durationMs: number }
@@ -344,6 +360,12 @@ export interface ToolSchema {
    *  `safety`. Bounds a single tool call so a hung network fetch can't stall the
    *  whole turn for minutes. */
   watchdogTimeoutMs?: number;
+  /** A deadline derived from THIS call's input, for tools whose honest budget
+   *  depends on their arguments (a shell command's own `timeout`, a remote
+   *  transfer's size). Wins over watchdogTimeoutMs. Returning 0/undefined falls
+   *  back to the static value — but never to "unbounded": see
+   *  UNCAPPED_TOOL_CEILING_MS. */
+  watchdogFor?: (input: unknown) => number | undefined;
   /** Max characters of this tool's result kept inline in the model's context.
    *  When the result exceeds it, the engine spills the full output to disk and
    *  hands the model a preview + a path it can re-Read — so a giant file read or
@@ -367,7 +389,16 @@ export type PermissionPromptSuggestion = PermissionPromptDecision;
 
 export type PermissionDecision =
   | { kind: "allow"; reason?: string }
-  | { kind: "ask"; prompt: string; suggestion?: PermissionPromptSuggestion }
+  | {
+      kind: "ask";
+      prompt: string;
+      suggestion?: PermissionPromptSuggestion;
+      /** A fresh, per-call owner decision (a checkout total, a vault fill on a
+       *  named site): it reaches a human even in YOLO/auto modes, a tool-wide
+       *  "always" grant never answers it, and an "always" answer is honoured
+       *  only as "once". See ToolPermissionRequest.ownerDecision. */
+      ownerDecision?: boolean;
+    }
   | { kind: "deny"; reason: string };
 
 export type PermissionRuleEffect = "allow" | "ask" | "deny";

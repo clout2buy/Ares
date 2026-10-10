@@ -153,6 +153,31 @@ export {
   type ShotMeta,
 } from "./ComputerUse.js";
 export { DeployTool, type DeployOutput } from "./Deploy.js";
+export { InstancesTool, type InstancesOutput } from "./Instances.js";
+export { IPhoneTool, isRoutineShortcutCall, type IPhoneOutput } from "./IPhone.js";
+export * from "./deviceTypes.js";
+export * from "./deviceShortcuts.js";
+export * from "./shortcutBuilder.js";
+export {
+  Instances,
+  instanceConfig,
+  validateInstanceName,
+  pickPorts,
+  parseListeningPorts,
+  renderUnit,
+  renderEnvFile,
+  renderIdentity,
+  renderDockerfile,
+  addIngress,
+  removeIngress,
+  pairLink,
+  domainFromPublicUrl,
+  unitName,
+  type InstanceMeta,
+  type InstanceStatus,
+  type InstanceConfig,
+  type Runner,
+} from "./aresInstances.js";
 export { StripeTool, type StripeOutput } from "./Stripe.js";
 export { EmailTool, type EmailOutput } from "./Email.js";
 export { RequestUserActionTool, type RequestUserActionOutput } from "./RequestUserAction.js";
@@ -165,13 +190,163 @@ export {
   type PlanModeStateSource,
 } from "./PlanMode.js";
 export { WeatherTool, getWeatherText, type WeatherOutput, type WeatherCondition, type WeatherForecast } from "./Weather.js";
-export { RemindTool, setRemindScheduler, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { RemindTool, setRemindScheduler, describeAlarmSchedule, type RemindOutput, type SchedulerLike } from "./Remind.js";
+export { requireScheduleApproval, ScheduleApprovalError } from "./scheduleApproval.js";
 export { TelegramTool, setTelegramChannel, getTelegramChannel, resolveTargets as resolveTelegramTargets, type TelegramOutput, type TelegramChannelLike } from "./Telegram.js";
 export { RemotePCTool, setRemoteAgentServer, getRemoteAgentServer, type RemotePCInput, type RemotePCOutput, type RemoteAgentServerLike } from "./RemotePC.js";
-export { ConnectTool, type ConnectOutput } from "./Connect.js";
+export { ConnectTool, CONNECT_WAIT_MS, type ConnectOutput } from "./Connect.js";
+export {
+  CheckoutTool,
+  recordCheckoutApproval,
+  approvedCheckout,
+  spendCheckoutApproval,
+  parseAmount,
+  pageShowsAmount,
+  looksLikeOrderSubmission,
+  type CheckoutOutput,
+  type ApprovedCheckout,
+} from "./Checkout.js";
+export { DeviceTool, type DeviceOutput } from "./Device.js";
+export {
+  GoalsTool,
+  GoalsStore,
+  goalsPath,
+  GOAL_CATEGORIES,
+  GOAL_STATUSES,
+  GOAL_CADENCES,
+  CADENCE_MS,
+  STATUS_INPUTS,
+  GoalInputError,
+  parseGoalFields,
+  parseNoteText,
+  appendGoalNote,
+  goalSummary,
+  goalNotesPage,
+  isOpenGoal,
+  type LifeGoal,
+  type LifeGoalStatus,
+  type GoalCategory,
+  type GoalCadence,
+  type GoalNote,
+  type GoalNoteBy,
+  type GoalFields,
+  type GoalStatusInput,
+  type GoalSummary,
+  type GoalsOutput,
+} from "./Goals.js";
+export { PhoneTool, twilioMonthlyPrice, type PhoneOutput } from "./Phone.js";
 export { GoogleCalendarTool, type GoogleCalendarOutput } from "./GoogleCalendar.js";
-export { GmailTool, type GmailOutput } from "./Gmail.js";
+export { GmailTool, buildRfc2822, planUnsubscribe, gmailBodyText, findCodeInputProblem, CODE_HANDLE_TTL_MS, type GmailOutput } from "./Gmail.js";
+export * as oneTimeCode from "./oneTimeCode.js";
+export { GoogleDriveTool, driveSearchQuery, driveMultipart, DRIVE_EXPORTS, type GoogleDriveOutput } from "./GoogleDrive.js";
+export { GoogleDocsTool, docText, type GoogleDocsOutput } from "./GoogleDocs.js";
+export { GoogleSheetsTool, type GoogleSheetsOutput } from "./GoogleSheets.js";
+export { GoogleSlidesTool, addSlideRequests, slideTexts, type GoogleSlidesOutput } from "./GoogleSlides.js";
+export { GoogleFormsTool, formQuestion, addQuestionRequests, type GoogleFormsOutput } from "./GoogleForms.js";
+export { GoogleTasksTool, tasksDue, type GoogleTasksOutput } from "./GoogleTasks.js";
+export { GoogleContactsTool, type GoogleContactsOutput } from "./GoogleContacts.js";
+export { OutlookTool, odata, graphTime, eventBody as outlookEventBody, recipients as outlookRecipients, type OutlookOutput } from "./Outlook.js";
+export { CONNECTOR_TOOLS } from "./connectorTools.js";
+export { DAV_TOOLS } from "./davTools.js";
+export { CalendarTool, ContactsTool, type CalendarOutput, type ContactsOutput } from "./Dav.js";
+export { MailTool, type MailOutput } from "./ImapMail.js";
+export { verifyIcloud, verifyCalDav, verifyCardDav, verifyImap, type DavVerifyOutcome } from "./davVerify.js";
+export * as davCommon from "./davCommon.js";
+export { davSeams, clearDavDiscoveryCache } from "./davClient.js";
+export { mailSeams } from "./imapClient.js";
 export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
+// Life surfaces (the phone's Today tab): commitments, places, media.
+export { TrackTool, type TrackOutput } from "./Track.js";
+export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
+export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
+export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
+// Universal connectors: any OpenAPI service, MQTT, inbound webhooks.
+export { ApiTool, type ApiOutput } from "./OpenApi.js";
+export { MqttTool, previewPayload, publishNeedsOwnerDecision, type MqttOutput } from "./Mqtt.js";
+export { HooksTool, type HooksOutput } from "./Hooks.js";
+export {
+  addService as addApiService,
+  apiCall,
+  classifyApiCall,
+  resolveBaseUrl,
+  listServices as listApiServices,
+  removeService as removeApiService,
+  specHandleFor,
+  syncApiConnectServices,
+  verifyApiService,
+  searchAllServices,
+  type CallClass,
+  type CrossHit,
+} from "./openapi/services.js";
+export { SpecHandle, parseSpecText, searchOperations, suggestAuth, simplifySchema, tokenize, type ResolvedOperation, type OpIndexEntry } from "./openapi/spec.js";
+export { buildRequest, executeCall, fetchPage, renderResult, resolveAuth, redactText, redactTokens, visibleHeaders, resetRateLimits, clearOAuthCache, retryAfterMs, parseLinkNext, graphqlTextIsReadOnly, ApiInputError, vaultCredentials, type CredentialSource, type PagingInfo } from "./openapi/call.js";
+export { shrinkJson, projectFields, selectPath, getPath } from "./openapi/shape.js";
+export { setConnectedTokenProvider, resolveConnectedToken, hasConnectedToken, connectedBaseUrl, oauthProviderId, notConnectedMessage, type ConnectedToken, type ConnectedTokenProvider } from "./openapi/connectedToken.js";
+export { PRESET_BUNDLES, PRESET_ROSTER, presetBundle } from "./openapi/presets/index.js";
+export type { PresetBundle, Recipe, RecipeStep, PresetSource, PresetNotes } from "./openapi/presets/_kit.js";
+export { classifyAddress, assertUrlAllowed, safeFetch, guardedLookup, NetBlockedError, type AddressClass, type Resolver } from "./openapi/netGuard.js";
+export { MqttClient, parseMqttUrl, validateTopicName, validateTopicFilter } from "./openapi/mqttClient.js";
+export { atomToJson } from "./openapi/atom.js";
+export { PRESET_SPECS } from "./openapi/presets.js";
+export {
+  createHook,
+  deleteHook,
+  listHooks,
+  findHook,
+  loadHookSecret,
+  verifyHookAuth,
+  signHook,
+  renderHookTurn,
+  setupRecipe,
+  publicHook,
+  hookUrl,
+  appendHookAudit,
+  recentHookAudit,
+  setHooksBaseUrlProvider,
+  forgetHookSecret,
+  getHooksBaseUrl,
+  safeEqual,
+  ReplayCache,
+  WindowLimiter,
+  HOOK_ID_RE,
+  DEFAULT_MAX_BYTES,
+  HARD_MAX_BYTES,
+  type HookDef,
+  type HookAuth,
+  type HookEvent,
+  type HookAuditEntry,
+} from "./hooksStore.js";
+export { HueTool, discoverHueBridges, pairHueBridge, hueCall, hexToXy, hueStateBody, type HueOutput, type HueBridgeRef, type HuePairing } from "./Hue.js";
+export { TeslaTool, TESLA_ASK_ACTIONS, type TeslaOutput } from "./Tesla.js";
+export { TicketsTool, ticketmasterSearchUrl, type TicketsOutput } from "./Tickets.js";
+export { FlightStatusTool, relevantFlight, summarizeFlight, type FlightStatusOutput } from "./FlightStatus.js";
+export { FlightBookingTool, duffelMode, offerRequestBody, summarizeOffer, type FlightBookingOutput } from "./FlightBooking.js";
+export { WithingsTool, decodeMeasureGroups, type WithingsOutput } from "./Withings.js";
+export { TailscaleTool, TAILSCALE_ASK_ACTIONS, type TailscaleOutput } from "./Tailscale.js";
+export { BankTool, claimSimplefinToken, simplefinAccounts, simplefinClaimUrl, type BankOutput } from "./Bank.js";
+export { normalizeSimplefinAccount, normalizeSimplefinTransaction } from "./simplefin.js";
+export { merchantKey, deriveCategory, spendingSummary, detectRecurring, newCharges, type NormAccount, type NormTransaction, type RecurringCharge, type SpendingSummary, type ChargesCursor } from "./bankAnalytics.js";
+export { clearBankCache, normalizePlaidAccount, normalizePlaidTransaction, plaidSnapshot, simplefinSnapshot, syncPlaidItem, type BankSnapshot } from "./bankData.js";
+export {
+  PLAID_TRIAL_ITEMS,
+  PlaidError,
+  disconnectPlaid,
+  exchangePlaidPublicTokens,
+  loadPlaidConfig,
+  loadPlaidItems,
+  normalizePlaidEnv,
+  plaidBaseUrl,
+  plaidCall,
+  plaidErrorSentence,
+  plaidItemView,
+  plaidItemsCreated,
+  removePlaidItem,
+  savePlaidItems,
+  type PlaidConfig,
+  type PlaidEnv,
+  type PlaidItem,
+  type PlaidItemView,
+} from "./plaidApi.js";
 export {
   makeToolSearchTool,
   DeferredToolRegistry,
@@ -205,9 +380,37 @@ import { RemindTool } from "./Remind.js";
 import { TelegramTool } from "./Telegram.js";
 import { RemotePCTool } from "./RemotePC.js";
 import { ConnectTool } from "./Connect.js";
+import { CheckoutTool } from "./Checkout.js";
+import { PhoneTool } from "./Phone.js";
+import { DeviceTool } from "./Device.js";
+import { GoalsTool } from "./Goals.js";
 import { GoogleCalendarTool } from "./GoogleCalendar.js";
 import { GmailTool } from "./Gmail.js";
 import { SpotifyTool } from "./Spotify.js";
+import { CONNECTOR_TOOLS } from "./connectorTools.js";
+import { DAV_TOOLS } from "./davTools.js";
+import { TrackTool } from "./Track.js";
+import { PlacesTool } from "./Places.js";
+import { ImagineTool } from "./Imagine.js";
+import { HueTool } from "./Hue.js";
+import { TeslaTool } from "./Tesla.js";
+import { TicketsTool } from "./Tickets.js";
+import { FlightStatusTool } from "./FlightStatus.js";
+import { FlightBookingTool } from "./FlightBooking.js";
+import { WithingsTool } from "./Withings.js";
+import { TailscaleTool } from "./Tailscale.js";
+import { BankTool } from "./Bank.js";
+import { InstancesTool } from "./Instances.js";
+import { IPhoneTool } from "./IPhone.js";
+import { ApiTool } from "./OpenApi.js";
+import { MqttTool } from "./Mqtt.js";
+import { HooksTool } from "./Hooks.js";
+
+/** Home, car, travel, health and money connectors (all deferred). */
+export const LIFE_TOOLS = [HueTool, TeslaTool, TicketsTool, FlightStatusTool, FlightBookingTool, WithingsTool, TailscaleTool, BankTool] as const;
+
+/** Universal connectors (all deferred): any OpenAPI service, MQTT, inbound webhooks. */
+export const UNIVERSAL_TOOLS = [ApiTool, MqttTool, HooksTool] as const;
 
 /** The default tool set wired into a fresh Session. */
 export const DEFAULT_TOOLS = process.platform === "win32"
@@ -236,11 +439,23 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       WeatherTool,
       RemindTool,
       TelegramTool,
+      IPhoneTool,
       RemotePCTool,
       ConnectTool,
+      CheckoutTool,
+      PhoneTool,
+      DeviceTool,
+      GoalsTool,
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...CONNECTOR_TOOLS,
+      ...DAV_TOOLS,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
+      ...LIFE_TOOLS,
+      ...UNIVERSAL_TOOLS,
     ] as const
   : [
       ReadTool,
@@ -259,6 +474,8 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       SkillReadTool,
       MemoryTool,
       DeployTool,
+      InstancesTool,
+      IPhoneTool,
       StripeTool,
       EmailTool,
       RequestUserActionTool,
@@ -268,7 +485,18 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       TelegramTool,
       RemotePCTool,
       ConnectTool,
+      CheckoutTool,
+      PhoneTool,
+      DeviceTool,
+      GoalsTool,
       GoogleCalendarTool,
       GmailTool,
       SpotifyTool,
+      ...CONNECTOR_TOOLS,
+      ...DAV_TOOLS,
+      TrackTool,
+      PlacesTool,
+      ImagineTool,
+      ...LIFE_TOOLS,
+      ...UNIVERSAL_TOOLS,
     ] as const;

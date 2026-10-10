@@ -173,7 +173,11 @@ async function createCheckpointUnserialized(opts: CreateCheckpointOptions): Prom
   // seconds so the first Edit of a session does not pay for it.
   if (++checkpointsSinceGc >= GC_EVERY) {
     checkpointsSinceGc = 0;
-    if (startupGcScheduled.has(opts.workspace)) await gcUnserialized(opts.workspace).catch(() => {});
+    // Never sweep inline. This slot just queued its own ref anchor BEHIND
+    // itself, and gc waits for pending anchors — awaiting gc here deadlocked
+    // the whole workspace chain: every later pre-tool checkpoint hung until
+    // the process restarted. Take a fresh slot after the anchor instead.
+    if (startupGcScheduled.has(opts.workspace)) gcWorkspaceCheckpoints(opts.workspace).catch(() => {});
     else scheduleStartupGc(opts.workspace);
   }
   return meta;
@@ -208,16 +212,18 @@ const anchorPending = new Map<string, Promise<void>>();
  *  the pre-tool hot path. Fills `gitCommit` into the meta once done. */
 function scheduleGitAnchor(workspace: string, meta: CheckpointMeta): void {
   const job = serializedForWorkspace(workspace, async () => {
+    // GC may have evicted the meta while this job waited its turn; anchoring
+    // it anyway would leak a ref no sweep can attribute. Read the on-disk copy
+    // first and merge into that rather than rewriting our in-memory one.
+    const current = await loadWorkspaceCheckpoint(workspace, meta.id).catch(() => null);
+    if (!current) return;
     let parent = lastAnchoredCommit.get(meta.sessionId);
     if (!parent && meta.parentCheckpointId) {
       parent = (await loadWorkspaceCheckpoint(workspace, meta.parentCheckpointId).catch(() => null))?.gitCommit;
     }
     const commit = await gitAnchorTree(workspace, meta.sessionId, meta.id, meta.gitTree!, parent);
     lastAnchoredCommit.set(meta.sessionId, commit);
-    // Merge into the on-disk meta rather than rewrite our in-memory copy: GC
-    // may have evicted it meanwhile (resurrecting it would leak its ref).
-    const current = await loadWorkspaceCheckpoint(workspace, meta.id).catch(() => null);
-    if (current) await writeMeta(workspace, { ...current, gitCommit: commit });
+    await writeMeta(workspace, { ...current, gitCommit: commit });
   }).catch(() => {}); // an unanchored tree survives gc's two-week prune window anyway
   const key = path.resolve(workspace);
   const previous = anchorPending.get(key) ?? Promise.resolve();
@@ -325,10 +331,14 @@ async function hashFileCached(workspace: string, full: string, mtimeMs: number, 
  *     accumulated 1.2GB of permanently unreferenced blobs exactly this way.
  *     The sweep now always runs. */
 export function gcWorkspaceCheckpoints(workspace: string): Promise<void> {
-  return serializedForWorkspace(workspace, () => gcUnserialized(workspace));
+  // Snapshot the anchors queued so far BEFORE taking a chain slot: every one
+  // of them sits ahead of this sweep in the chain, so waiting on them inside
+  // the slot cannot deadlock. Anchors queued later are the next sweep's job.
+  const anchorsAhead = anchorPending.get(path.resolve(workspace)) ?? Promise.resolve();
+  return serializedForWorkspace(workspace, () => gcUnserialized(workspace, anchorsAhead));
 }
 
-async function gcUnserialized(workspace: string): Promise<void> {
+async function gcUnserialized(workspace: string, anchorsAhead: Promise<void> = Promise.resolve()): Promise<void> {
   const gcStartedAt = Date.now();
   const retention = checkpointRetention();
   const maxAge = checkpointMaxAgeMs();
@@ -373,7 +383,7 @@ async function gcUnserialized(workspace: string): Promise<void> {
   // now OR vanished out-of-band) so the next `git gc` can reclaim the objects.
   // Knob-independent: refs written while the layer was on still need cleaning.
   if (!unreadableMetas && (await gitCheckpointRoot(workspace, { ignoreKnob: true }))) {
-    await settleGitCheckpointAnchors(workspace);
+    await anchorsAhead;
     const refs = await gitListCheckpointRefs(workspace).catch(() => [] as string[]);
     await gitDeleteRefs(workspace, refs.filter((ref) => !survivingRefs.has(ref))).catch(() => {});
   }

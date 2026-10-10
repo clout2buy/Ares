@@ -1,0 +1,1 @@
+{"resource":"https://mcp.tavily.com/mcp","authorization_servers":["https://mcp.tavily.com/"],"scopes_supported":["openid","offline_access"],"bearer_methods_supported":["header"]}

@@ -136,6 +136,19 @@ export const MAX_SESSION_LEASE_TTL_MS = 5 * 60_000;
 export const MIN_SESSION_LEASE_HEARTBEAT_MS = 50;
 export const MAX_SESSION_LEASE_HEARTBEAT_MS = 60_000;
 
+/** A checkpoint diff rides the per-workspace git chain; bound it so a wedged
+ *  chain degrades to the existing "scope unknown" fallbacks instead of hanging
+ *  tool settlement. */
+const CHECKPOINT_DIFF_TIMEOUT_MS = 20_000;
+
+function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms);
+    timer.unref?.();
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
 export interface SessionLeaseTiming {
   leaseTtlMs: number;
   heartbeatIntervalMs: number;
@@ -316,6 +329,8 @@ export class Session {
   private lastCheckpointId: string | undefined;
   private ioError: Error | null = null;
   private readonly eventObservers = new Set<(event: TurnEvent) => void>();
+  private readonly detachedObservers = new Set<(event: TurnEvent) => void>();
+  private readonly detachedBacklog: TurnEvent[] = [];
   /**
    * The Session, not a UI flag, owns execution. Every send/resume acquires this
    * FIFO lease before touching QueryEngine state. This remains held until the
@@ -606,6 +621,26 @@ export class Session {
     return () => this.eventObservers.delete(observer);
   }
 
+  /** Events of turns that run with NO sender stream attached — today, the
+   * detached startup recovery that replays an input a crash/restart left
+   * mid-turn. observeEvents sees them too, but cannot tell them apart from a
+   * caller-driven turn; a host that only renders what sendContent yields
+   * would otherwise show the owner total silence for the whole replay. */
+  observeDetachedTurns(observer: (event: TurnEvent) => void): () => void {
+    this.detachedObservers.add(observer);
+    // The replay starts in the constructor; a host can only subscribe after it
+    // gets the instance back (often across an await). Hand over what it missed.
+    const missed = this.detachedBacklog.splice(0);
+    for (const event of missed) {
+      try {
+        observer(event);
+      } catch {
+        // A rendering surface cannot break the durable replay.
+      }
+    }
+    return () => this.detachedObservers.delete(observer);
+  }
+
   /** Swap provider/model in place and persist the new session metadata. */
   async setProvider(
     provider: Provider,
@@ -644,6 +679,27 @@ export class Session {
   /** Stop exactly one in-flight/admitted request. Returns true only when a live
    * or not-yet-admitted input accepted cancellation. Idle and duplicate Stop
    * calls are no-ops and can never poison the next turn. */
+  /** Last-resort teardown for a turn the host has given up on (a stuck-turn
+   *  watchdog whose interrupt and abort were never observed). Revokes provider
+   *  and tool authority and relinquishes the durable run lease so a fresh host
+   *  can rehydrate this session and reconcile — the same state a process crash
+   *  leaves behind, minus the restart. */
+  abandon(reason: string): void {
+    try {
+      this.engine.interrupt();
+    } catch {
+      // already terminal
+    }
+    if (this.kernelFence && this.kernelLease) {
+      try {
+        this.finishKernelRun("interrupted", "unverified", errorToKernelJson(new Error(reason)));
+      } catch {
+        // release() tears the heartbeat down before it rethrows; the lease
+        // is no longer renewed either way.
+      }
+    }
+  }
+
   interrupt(inputId?: string): boolean {
     const targetInputId = inputId || this.activeInputId;
     if (!targetInputId) return false;
@@ -793,6 +849,15 @@ export class Session {
     }
   }
 
+  /** Has this session's kernel already admitted an input with this id? A
+   *  retried send (same inputId after a dropped connection) is a replay, not a
+   *  new request. False on a legacy session with no durable kernel. */
+  hasAdmittedInput(inputId: string): boolean {
+    if (!this.kernel) return false;
+    const known = this.kernel.getInput(inputId);
+    return known !== null && known.sessionId === this.meta.id;
+  }
+
   /** Append a user message and stream the turn. Events persist to rollout. */
   async *send(text: string): AsyncGenerator<TurnEvent> {
     yield* this.sendContent([{ type: "text", text }]);
@@ -840,6 +905,8 @@ export class Session {
       let userMessage: Message;
       let admittedInput: AdmittedInputRecord | null = null;
       let restoreExistingInput = false;
+      // True when this send re-presented an input the kernel already holds.
+      let replayedAdmission = false;
       if (admission.recoverExistingInput && !this.kernel) {
         throw new Error("recoverExistingInput requires a durable session kernel");
       }
@@ -869,6 +936,7 @@ export class Session {
             : { content }),
         });
         admittedInput = result.record;
+        replayedAdmission = !result.inserted && !admission.recoverExistingInput;
         if (admission.recoverExistingInput && result.inserted) {
           throw new Error(`startup recovery input ${inputKey} did not already exist`);
         }
@@ -893,6 +961,7 @@ export class Session {
         sessionId: this.meta.id,
         delivery,
         userMessage,
+        ...(replayedAdmission ? { replay: true as const } : {}),
       };
       // Admission is the write-ahead boundary. If this cannot become durable,
       // the provider must not start and tools must not gain side effects.
@@ -1501,6 +1570,7 @@ export class Session {
   private async drainStartupOrphans(orphanInputIds: readonly string[]): Promise<void> {
     if (!this.kernel) return;
     await this.ensureSessionDir();
+    let firstError: unknown;
     for (const inputId of orphanInputIds) {
       const beforeLease = this.kernel.getInput(inputId);
       if (
@@ -1546,6 +1616,7 @@ export class Session {
         let terminal: Extract<TurnEvent, { type: "turn_end" }> | null = null;
         let outputMessageId: string | null = null;
         for await (const event of this.streamAndPersist()) {
+          this.notifyDetached(event);
           if (event.type === "message_done") {
             outputMessageId = kernelStoredMessageId(this.meta.id, event.message.id);
           }
@@ -1576,13 +1647,39 @@ export class Session {
             inputId,
             error: kernelError,
           }));
+          // A replay that failed is terminal for this input. Left claimed, the
+          // lease release would requeue it as the queue head again: every later
+          // message then waits behind a row nobody runs, and every restart
+          // replays the same poison input. The ledger keeps its messages, so a
+          // fresh message can still continue the work.
+          if (ownsActiveInput && this.kernel.getInput(inputId)?.state === "claimed") {
+            this.kernel.cancelInput(inputId, {
+              sessionId: this.meta.id,
+              fence,
+              reason: {
+                code: "DETACHED_RECOVERY_FAILED",
+                message: "Startup recovery replayed this input and it did not complete",
+              },
+            });
+          }
         }
-        throw error;
+        firstError ??= error;
+        // Close the turn on every surface even when the replay died before its
+        // own turn_start: the crashed generation's turn is still open on the
+        // owner's screen, and nothing else will ever end it.
+        this.notifyDetached({
+          type: "turn_end",
+          status: "failed",
+          workStatus: "unverified",
+          usage: { inputTokens: 0, outputTokens: 0 },
+          durationMs: 0,
+        });
       } finally {
         if (ownsActiveInput && this.activeInputId === inputId) this.activeInputId = null;
         this.finishKernelRun(executionState, workOutcome, kernelError);
       }
     }
+    if (firstError !== undefined) throw firstError;
   }
 
   private async beginKernelRun(): Promise<RunFence> {
@@ -1988,7 +2085,11 @@ export class Session {
     let diffUnavailable: string | null = null;
     if (settled.checkpointId) {
       try {
-        const diff = await diffWorkspaceCheckpointUnified(this.opts.workspace, settled.checkpointId);
+        const diff = await withDeadline(
+          diffWorkspaceCheckpointUnified(this.opts.workspace, settled.checkpointId),
+          CHECKPOINT_DIFF_TIMEOUT_MS,
+          "hook checkpoint diff",
+        );
         touchedFiles = diff.files.map((file) => path.resolve(this.opts.workspace, file));
         if (diff.diff || touchedFiles.length > 0) {
           this.kernel.appendEvent(this.kernelFence, "hook.workspace_observed", toKernelJson({
@@ -2040,7 +2141,11 @@ export class Session {
 
     if (affectedPaths.length === 0 && checkpointId) {
       try {
-        const diff = await diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId);
+        const diff = await withDeadline(
+          diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId),
+          CHECKPOINT_DIFF_TIMEOUT_MS,
+          "mutation scope diff",
+        );
         affectedPaths = diff.files.map((file) => path.resolve(this.opts.workspace, file));
         scopeComplete = !diff.truncated;
       } catch {
@@ -2109,7 +2214,11 @@ export class Session {
           const checkpointId = preToolCheckpoints.get(event.id);
           if (checkpointId) {
             try {
-              preparedDiff = await diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId);
+              preparedDiff = await withDeadline(
+                diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId),
+                CHECKPOINT_DIFF_TIMEOUT_MS,
+                "tool checkpoint diff",
+              );
             } catch (error) {
               // Opaque execution tools can mutate through arbitrary programs
               // (`node generator.mjs`, build scripts, formatters). If their
@@ -2194,7 +2303,11 @@ export class Session {
           toolNames.delete(event.id);
           const checkpointId = preToolCheckpoints.get(event.id);
           if (!checkpointId) continue;
-          const diff = preparedDiff ?? await diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId, event.touchedFiles).catch(() => null);
+          const diff = preparedDiff ?? await withDeadline(
+            diffWorkspaceCheckpointUnified(this.opts.workspace, checkpointId, event.touchedFiles),
+            CHECKPOINT_DIFF_TIMEOUT_MS,
+            "tool checkpoint diff",
+          ).catch(() => null);
           if (!diff || !diff.diff) continue;
           const diffEvent: TurnEvent = {
             type: "workspace_diff",
@@ -2564,6 +2677,21 @@ export class Session {
       // conservatively over-red, never falsely green.
       if (event.status === "completed" && outcome === "verified") {
         this.kernel.resolveSessionMutations(fence);
+      }
+    }
+  }
+
+  private notifyDetached(event: TurnEvent): void {
+    if (this.detachedObservers.size === 0) {
+      // Bounded: a host that never subscribes must not leak a whole replay.
+      if (this.detachedBacklog.length < 2_000) this.detachedBacklog.push(event);
+      return;
+    }
+    for (const observer of this.detachedObservers) {
+      try {
+        observer(event);
+      } catch {
+        // A rendering surface cannot break the durable replay.
       }
     }
   }

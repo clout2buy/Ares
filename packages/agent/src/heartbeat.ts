@@ -3,13 +3,14 @@ import { promisify } from "node:util";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { agentPaths, aresAgentHome } from "./paths.js";
-import { nonCommentLines, readTextIfExists, writeFileAtomic } from "./files.js";
+import { readTextIfExists, writeFileAtomic } from "./files.js";
 import type { AresAgentConfig } from "./config.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
 import { ReflectionScheduler } from "./reflection/scheduler.js";
+import { overdueTrackingBlock } from "@ares/tools";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,6 +18,9 @@ export interface HeartbeatResult {
   status: "ok" | "skipped" | "alert" | "error";
   text: string;
   tasks: string[];
+  /** Individual findings. `text` is these joined and clipped for one-line
+   *  consumers; callers that deliver or de-dupe need them one at a time. */
+  findings: string[];
 }
 
 export async function runHeartbeatTick(opts: {
@@ -30,13 +34,18 @@ export async function runHeartbeatTick(opts: {
   const paths = agentPaths(home);
   emitLifecycle({ type: "heartbeat_tick", reason: opts.reason ?? "interval" });
   const text = await readTextIfExists(paths.heartbeat);
-  const tasks = text ? nonCommentLines(text) : [];
+  const tasks = text ? heartbeatChecks(text) : [];
   const now = opts.now ?? new Date();
   if (!withinActiveHours(now, opts.config.heartbeat.activeHours)) {
-    return { status: "skipped", text: "HEARTBEAT_OK outside active hours", tasks };
+    return { status: "skipped", text: "HEARTBEAT_OK outside active hours", tasks, findings: [] };
   }
 
   const findings: string[] = [];
+  // Commitments Ares made (Track) whose due time has passed come FIRST: the
+  // alert text is clipped to ackMaxChars, and a missed follow-up on something
+  // promised to the owner outranks a TODO marker.
+  const overdue = await overdueTrackingBlock(home, now).catch(() => "");
+  if (overdue) findings.push(overdue);
   for (const task of tasks) {
     const finding = await evaluateHeartbeatTask(task, opts.workspace);
     if (finding) findings.push(finding);
@@ -45,9 +54,9 @@ export async function runHeartbeatTick(opts: {
   // finds a broken or failing capability surfaces it as an alert.
   findings.push(...(await reflectHeartbeat(home)));
 
-  if (tasks.length > 0) await writeHeartbeatState(paths.heartbeatState, now, tasks);
-  if (findings.length === 0) return { status: tasks.length > 0 ? "ok" : "skipped", text: "HEARTBEAT_OK", tasks };
-  return { status: "alert", text: findings.join("\n").slice(0, opts.config.heartbeat.ackMaxChars), tasks };
+  if (tasks.length > 0) await writeHeartbeatState(paths.heartbeatState, now, tasks, findings);
+  if (findings.length === 0) return { status: tasks.length > 0 ? "ok" : "skipped", text: "HEARTBEAT_OK", tasks, findings: [] };
+  return { status: "alert", text: findings.join("\n").slice(0, opts.config.heartbeat.ackMaxChars), tasks, findings };
 }
 
 /** The heartbeat tick as a scheduler pass: run it, surface alerts/errors through
@@ -108,6 +117,19 @@ async function reflectHeartbeat(home: string): Promise<string[]> {
   }
 }
 
+/** A check is a top-level bullet; headings, prose and blockquotes are
+ *  documentation. Every non-`#` line used to be parsed as a check, which turned
+ *  HEARTBEAT.md's own preamble and its "how i respond" policy into permanent
+ *  alarms the engine could never clear. */
+export function heartbeatChecks(text: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of text.split(/\r?\n/)) {
+    const match = raw.trim().match(/^[-*]\s+(\S.*)$/);
+    if (match) seen.add(match[1].trim());
+  }
+  return [...seen];
+}
+
 async function evaluateHeartbeatTask(task: string, workspace: string): Promise<string | null> {
   const lower = task.toLowerCase();
   if (lower.includes("git status")) {
@@ -119,10 +141,28 @@ async function evaluateHeartbeatTask(task: string, workspace: string): Promise<s
       return null;
     }
   }
+  if (lower.includes("ahead of origin") || lower.includes("unpushed")) {
+    try {
+      const { stdout } = await execFileAsync("git", ["rev-list", "--count", "@{u}..HEAD"], {
+        cwd: workspace,
+        windowsHide: true,
+        timeout: 5_000,
+      });
+      const ahead = Number.parseInt(stdout.trim(), 10);
+      return Number.isFinite(ahead) && ahead > 0 ? `unpushed work: ${ahead} commit(s) not on the remote` : null;
+    } catch {
+      // No upstream configured (or not a repo) is not a finding.
+      return null;
+    }
+  }
   if (lower.includes("todo")) {
     return await scanTodos(workspace);
   }
-  return `Heartbeat task needs attention: ${task}`;
+  // A check the engine cannot evaluate is a defect in the CHECKLIST, not in the
+  // world. Reporting it as "needs attention" made every unrecognised line a
+  // permanent alarm; naming it unimplemented is true and actionable (write the
+  // check), and callers that deliver alerts de-dupe it.
+  return `Check not implemented yet: ${task}`;
 }
 
 async function scanTodos(workspace: string): Promise<string | null> {
@@ -147,11 +187,16 @@ async function scanTodos(workspace: string): Promise<string | null> {
   return found.length > 0 ? `TODO markers found: ${found.join(", ")}` : null;
 }
 
-async function writeHeartbeatState(file: string, now: Date, tasks: readonly string[]): Promise<void> {
-  await writeFileAtomic(file, JSON.stringify({ lastRunAt: now.toISOString(), tasks }, null, 2) + "\n")
-    .catch(async () => {
-      await writeFile(file, JSON.stringify({ lastRunAt: now.toISOString(), tasks }, null, 2) + "\n", "utf8");
-    });
+async function writeHeartbeatState(
+  file: string,
+  now: Date,
+  tasks: readonly string[],
+  findings: readonly string[],
+): Promise<void> {
+  const payload = JSON.stringify({ lastRunAt: now.toISOString(), tasks, findings }, null, 2) + "\n";
+  await writeFileAtomic(file, payload).catch(async () => {
+    await writeFile(file, payload, "utf8");
+  });
 }
 
 function parseDurationMs(value: string, fallback: number): number {

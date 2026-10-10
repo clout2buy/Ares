@@ -1,4 +1,4 @@
-// Kimi OAuth — RFC 8628 device-code flow against auth.kimi.com.
+// Kimi OAuth — RFC 8628 device-code flow against auth.kimi.ai.
 //
 // Kimi's coding endpoint (api.kimi.com/coding/v1) accepts either a plain API key
 // or a subscription access token minted by this flow. Credential precedence is
@@ -17,7 +17,9 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const OAUTH_HOST = "https://auth.kimi.com";
+// auth.kimi.ai is the international host (verification at www.kimi.ai); auth.kimi.com issues
+// links on the mainland-routed site, where an international account cannot approve the code.
+const OAUTH_HOST = "https://auth.kimi.ai";
 const OAUTH_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const DEVICE_AUTHORIZATION_PATH = "/api/oauth/device_authorization";
 const TOKEN_PATH = "/api/oauth/token";
@@ -172,7 +174,7 @@ export async function requestKimiDeviceAuthorization(
   return {
     deviceCode: body.device_code,
     userCode: body.user_code,
-    verificationUri: typeof body.verification_uri === "string" ? body.verification_uri : `${OAUTH_HOST}/device`,
+    verificationUri: typeof body.verification_uri === "string" ? body.verification_uri : `https://www.kimi.ai/code/authorize_device`,
     verificationUriComplete: typeof body.verification_uri_complete === "string" ? body.verification_uri_complete : undefined,
     intervalSeconds: Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_POLL_INTERVAL_SECONDS,
     expiresInSeconds: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 900,
@@ -311,6 +313,8 @@ export async function resolveKimiAccessToken(fetchImpl: typeof fetch = fetch): P
 }
 
 export const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1";
+/** Where a subscription token minted by the auth.kimi.ai flow is spent. */
+export const KIMI_OAUTH_CODING_BASE_URL = "https://api.kimi.ai/coding/v1";
 
 export interface KimiModel {
   id: string;
@@ -336,10 +340,11 @@ export async function fetchKimiModels(
   credential?: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<readonly KimiModel[] | null> {
-  const token = credential !== undefined && credential !== "" ? credential : await resolveKimiAccessToken(fetchImpl);
+  const isKey = credential !== undefined && credential !== "";
+  const token = isKey ? credential : await resolveKimiAccessToken(fetchImpl);
   if (token === null || token === "") return null;
   try {
-    const response = await fetchImpl(`${KIMI_CODING_BASE_URL}/models`, {
+    const response = await fetchImpl(`${isKey ? KIMI_CODING_BASE_URL : KIMI_OAUTH_CODING_BASE_URL}/models`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
     });
     if (!response.ok) return null;

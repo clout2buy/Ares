@@ -18,18 +18,26 @@ export interface TranscribeResult {
   confidence: number;
 }
 
+/** How the bytes are encoded. Telegram voice notes are Opus; the phone app
+ *  records 16 kHz mono LINEAR16 WAV, which the API takes as-is. */
+export interface TranscribeAudio {
+  encoding?: "WEBM_OPUS" | "OGG_OPUS" | "LINEAR16" | "FLAC";
+  sampleRateHertz?: number;
+}
+
 export async function transcribe(
   audio: Buffer,
   language = "en-US",
   timeoutMs = 15_000,
+  format: TranscribeAudio = {},
 ): Promise<TranscribeResult> {
   const res = await fetch(STT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       config: {
-        encoding: "WEBM_OPUS",
-        sampleRateHertz: 24000,
+        encoding: format.encoding ?? "WEBM_OPUS",
+        sampleRateHertz: format.sampleRateHertz ?? 24000,
         languageCode: language,
         model: "default",
       },

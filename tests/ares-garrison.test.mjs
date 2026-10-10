@@ -752,6 +752,61 @@ test("sessions: canonical runtime admits a concurrent queued input instead of re
   }
 });
 
+test("sessions: a failed turn releases its input so the next message runs instead of waiting behind it", async () => {
+  // Reproduces the live wedge on doingbox (sess_094eb26b): a turn ended
+  // failed, core requeued its input as the admitted queue head, and every
+  // later phone message sat behind a row no runner owned, then settled after
+  // 60s without ever running.
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "ares-garrison-failed-release-"));
+  const kernel = await openWorkspaceSessionKernel(home);
+  let providerCalls = 0;
+  const provider = {
+    name: "fail-once",
+    async *stream() {
+      providerCalls += 1;
+      if (providerCalls === 1) throw new Error("simulated network hiccup mid-WebFetch");
+      yield {
+        type: "message_done",
+        message: {
+          id: `after-failure-${providerCalls}`,
+          role: "assistant",
+          content: [{ type: "text", text: "back" }],
+          createdAt: new Date().toISOString(),
+        },
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: "end_turn",
+      };
+    },
+  };
+  // Wired like garrisonCmd: the manager holds the same kernel its sessions use.
+  const sessions = new SessionManager({ home, sessionKernel: kernel, factory: makeCoreSessionFactory(home, kernel, provider) });
+  const { id } = sessions.create();
+  const ends = [];
+  sessions.attach(id, (event) => {
+    if (event.type === "turn_end") ends.push(event.status);
+  });
+  try {
+    await sessions.send(id, "go all out", { inputId: "doomed", delivery: "steer" });
+    assert.equal(ends.at(-1), "failed");
+    assert.equal(kernel.getInput("doomed")?.state, "cancelled", "a failed turn must not stay the queue head");
+
+    const started = Date.now();
+    await sessions.send(id, "you there?", { inputId: "next", delivery: "steer" });
+    assert.ok(Date.now() - started < 10_000, "the next message must not wait out the 60s head timeout");
+    assert.equal(providerCalls, 2, "the next message actually reached the model");
+    assert.equal(ends.at(-1), "completed");
+    assert.equal(kernel.getInput("next")?.state, "consumed");
+    assert.deepEqual(
+      kernel.listInputs(id).filter((input) => input.state === "admitted" || input.state === "claimed"),
+      [],
+      "nothing is left stranded in the queue",
+    );
+  } finally {
+    await sessions.flush();
+    kernel.close();
+  }
+});
+
 test("gateway: steer delivery and stable identity reach the canonical input ledger", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "ares-garrison-steer-"));
   const kernel = await openWorkspaceSessionKernel(home);

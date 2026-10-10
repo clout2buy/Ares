@@ -23,12 +23,28 @@ export { ensureToken, ensureReadToken, constantTimeEqual, garrisonDir, tokenPath
 export { viewerHtml } from "./viewer.js";
 
 export {
+  DeviceBridge,
+  DEVICE_DEFAULT_TIMEOUT_MS,
+  DEVICE_MAX_TIMEOUT_MS,
+  DEVICE_MAX_RESULT_BYTES,
+  summarizeDeviceArgs,
+  type DeviceBridgeOptions,
+  type DeviceWake,
+  type DeviceWakeInfo,
+  type DevicePendingRequest,
+} from "./deviceBridge.js";
+
+export {
   SessionManager,
   rehydrateSessions,
   rehydrateSession,
+  loadGarrisonRollout,
+  compactRolloutEvent,
+  ROLLOUT_PROGRESS_TEXT_CAP,
   sessionsDir,
   rolloutPath,
   SessionBusyError,
+  InputConflictError,
   UnknownSessionError,
   type SessionManagerOptions,
   type SessionFactory,
@@ -37,12 +53,17 @@ export {
   type SessionSubscriber,
   type SessionSendOptions,
   type SessionSendContext,
+  type SessionPersonaHooks,
   type RehydratedSession,
+  type RunningTurn,
+  type PendingPermissionInfo,
+  type PermissionOutcome,
   type SessionSurface,
   type SessionTenant,
   normalizeSessionSurface,
   normalizeSessionTenant,
   normalizeSessionAttachments,
+  MAX_ATTACHMENT_BASE64_CHARS,
   inputContent,
   MAX_ATTACHMENTS_PER_INPUT,
 } from "./sessions.js";
@@ -54,7 +75,10 @@ export {
   type SchedulerHooks,
   type SchedulerHookName,
   type SchedulerEvent,
+  type SchedulerJobStatus,
 } from "./scheduler.js";
+
+export { canonicalActionKey, repeatDenialError } from "./ownerGuards.js";
 
 export {
   recordNightlyGauntlet,
@@ -71,4 +95,4 @@ export {
   type ApprovalResponse,
 } from "./server.js";
 
-export { ApprovalQueue, type ApprovalQueueOptions } from "./approvals.js";
+export { ApprovalQueue, type ApprovalQueueOptions, type ApprovalOutcome } from "./approvals.js";

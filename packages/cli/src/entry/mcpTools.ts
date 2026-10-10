@@ -24,6 +24,7 @@ interface CachedServer {
   at: number;
   tools: McpToolDescriptor[];
   error?: string;
+  errorAt?: number;
 }
 
 function cachePath(): string {
@@ -138,12 +139,12 @@ class LiveMcpTools {
       if (!tools && !opts.cacheOnly) {
         try {
           tools = await listMcpServerToolsFull(workspace, name, 20_000);
-          cache[name] = { url, at: now, tools };
+          cache[name] = { url, at: now, tools }; // a clean listing also drops any earlier error
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
           tools = cached?.tools ?? [];
           fromCache = Boolean(cached);
-          cache[name] = { ...(cached ?? { at: 0, tools: [] }), url, error };
+          cache[name] = { ...(cached ?? { at: 0, tools: [] }), url, error, errorAt: now };
         }
       } else if (!tools) {
         tools = cached?.tools ?? [];

@@ -1,0 +1,12 @@
+{
+  "resource": "https://mcp.exa.ai/mcp",
+  "authorization_servers": [
+    "https://auth.exa.ai"
+  ],
+  "scopes_supported": [
+    "mcp:tools"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ]
+}

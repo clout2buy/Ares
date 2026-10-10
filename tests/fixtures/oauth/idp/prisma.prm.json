@@ -1,0 +1,1 @@
+{"resource":"https://mcp.prisma.io/mcp","authorization_servers":["https://auth.prisma.io"],"scopes_supported":["workspace:admin","offline_access"],"resource_name":"Prisma"}

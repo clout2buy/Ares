@@ -29,6 +29,20 @@ export interface SchedulerHooks {
   dream?: () => Promise<unknown> | unknown;
   /** Host-injected gauntlet runner (the CLI's runScheduledGauntlet). */
   gauntlet?: () => Promise<GauntletRunSummary> | GauntletRunSummary;
+  /** Daily-job check (the Today feed). Runs every feedCheckEveryMs; the hook
+   *  itself decides whether today's run is due, so a garrison that was down
+   *  at the scheduled hour still delivers when it comes back. */
+  feed?: () => Promise<unknown> | unknown;
+  /** Goal check-ins (the phone's Goals tab): runs every goalsCheckEveryMs and
+   *  itself decides which goals' agents are due. */
+  goals?: () => Promise<unknown> | unknown;
+  /** The phone's morning/evening briefings. Runs every briefingCheckEveryMs; the
+   *  hook decides whether one is due (in the owner's zone), so a late garrison
+   *  still delivers inside its catch-up window. */
+  briefing?: () => Promise<unknown> | unknown;
+  /** Facebook Marketplace watches (experimental). Runs every marketplaceCheckEveryMs; the hook
+   *  itself picks at most ONE due watch per tick, so searches stay slow and never burst. */
+  marketplace?: () => Promise<unknown> | unknown;
 }
 
 export type SchedulerHookName = keyof SchedulerHooks;
@@ -71,18 +85,49 @@ export interface SchedulerOptions {
   gauntletCheckEveryMs?: number;
   /** Master switch; default true unless ARES_GAUNTLET_SCHEDULE=0. */
   gauntletEnabled?: boolean;
+  /** How often the feed hook is asked whether it is due; default 5 minutes. */
+  feedCheckEveryMs?: number;
+  /** How often the goals hook looks for due check-ins; default 5 minutes. */
+  goalsCheckEveryMs?: number;
+  /** How often the briefing hook is asked whether one is due; default 1 minute. */
+  briefingCheckEveryMs?: number;
+  /** How often the marketplace hook looks for a due watch; default 5 minutes. */
+  marketplaceCheckEveryMs?: number;
   /** Ares home for the nightly ledger + triage finding. Absent = record nothing. */
   home?: string;
   now?: () => number;
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   onError?: (hook: SchedulerHookName, err: unknown) => void;
+  /** Owner pause (control plane): while true no hook STARTS. A running hook
+   *  finishes; the next tick after resume runs normally. */
+  isPaused?: () => boolean;
+  /** Called after every hook run with its outcome — the audit trail's feed. */
+  onRun?: (hook: SchedulerHookName, result: string) => void;
+}
+
+/** One system job as the owner's jobs list shows it. */
+export interface SchedulerJobStatus {
+  name: SchedulerHookName;
+  /** Human cadence: "every 30m", "after 2h idle", "nightly 03:00–06:00". */
+  schedule: string;
+  enabled: boolean;
+  /** Paused by the owner (cancel of a system job pauses it; config re-arms at restart). */
+  paused: boolean;
+  running: boolean;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastResult?: string;
 }
 
 const DEFAULT_HEARTBEAT_MS = 30 * 60_000;
 const DEFAULT_IDLE_MS = 2 * 60 * 60_000;
 const DEFAULT_DREAM_CHECK_MS = 10 * 60_000;
 const DEFAULT_GAUNTLET_CHECK_MS = 10 * 60_000;
+const DEFAULT_FEED_CHECK_MS = 5 * 60_000;
+const DEFAULT_GOALS_CHECK_MS = 5 * 60_000;
+const DEFAULT_BRIEFING_CHECK_MS = 60_000;
+const DEFAULT_MARKETPLACE_CHECK_MS = 5 * 60_000;
 const DEFAULT_GAUNTLET_HOUR = 3;
 const DEFAULT_GAUNTLET_WINDOW_HOURS = 3;
 
@@ -135,8 +180,11 @@ export class Scheduler {
   private lastDreamAt: number | undefined;
   private lastGauntletDay: string | undefined;
   private lastGauntletOutcome: NightlyGauntletOutcome | undefined;
-  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false };
+  private readonly running: Record<SchedulerHookName, boolean> = { heartbeat: false, dream: false, gauntlet: false, feed: false, goals: false, briefing: false, marketplace: false };
   private readonly listeners = new Set<(event: SchedulerEvent) => void>();
+  private readonly lastRuns: Partial<Record<SchedulerHookName, { at: number; result: string }>> = {};
+  private readonly heldHooks = new Set<SchedulerHookName>();
+  private lastHeartbeatAt: number | undefined;
 
   constructor(opts: SchedulerOptions) {
     this.opts = opts;
@@ -164,6 +212,18 @@ export class Scheduler {
     }
     if (this.opts.hooks.gauntlet && this.gauntletEnabled) {
       this.handles.push(this.setIntervalFn(() => this.gauntletCheck(), this.gauntletCheckEveryMs));
+    }
+    if (this.opts.hooks.feed) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("feed"), this.opts.feedCheckEveryMs ?? DEFAULT_FEED_CHECK_MS));
+    }
+    if (this.opts.hooks.goals) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("goals"), this.goalsCheckEveryMs()));
+    }
+    if (this.opts.hooks.briefing) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("briefing"), this.opts.briefingCheckEveryMs ?? DEFAULT_BRIEFING_CHECK_MS));
+    }
+    if (this.opts.hooks.marketplace) {
+      this.handles.push(this.setIntervalFn(() => void this.runHook("marketplace"), this.opts.marketplaceCheckEveryMs ?? DEFAULT_MARKETPLACE_CHECK_MS));
     }
   }
 
@@ -206,6 +266,80 @@ export class Scheduler {
     return this.lastGauntletOutcome;
   }
 
+  /**
+   * Hold (or release) one system job. Heartbeat/dream/gauntlet are armed by
+   * config, not by an approval, so the owner cannot delete them — but every
+   * job must be killable, and for these "kill" means "stop starting it".
+   * In-memory: a restart re-arms from config. Returns false for a hook that
+   * isn't wired.
+   */
+  holdHook(name: SchedulerHookName, held: boolean): boolean {
+    if (!this.opts.hooks[name]) return false;
+    if (held) this.heldHooks.add(name);
+    else this.heldHooks.delete(name);
+    return true;
+  }
+
+  /** Every wired system job with its cadence, next and last run. */
+  jobStatus(): SchedulerJobStatus[] {
+    const iso = (ms: number | undefined) => (ms === undefined ? undefined : new Date(ms).toISOString());
+    const out: SchedulerJobStatus[] = [];
+    const push = (name: SchedulerHookName, schedule: string, enabled: boolean, next: number | undefined) => {
+      const last = this.lastRuns[name];
+      out.push({
+        name,
+        schedule,
+        enabled,
+        paused: this.heldHooks.has(name) || (this.opts.isPaused?.() ?? false),
+        running: this.running[name],
+        ...(enabled && next !== undefined ? { nextRunAt: iso(next) } : {}),
+        ...(last ? { lastRunAt: iso(last.at), lastResult: last.result } : {}),
+      });
+    };
+    if (this.opts.hooks.heartbeat) {
+      const base = this.lastHeartbeatAt ?? this.startedAtMs;
+      push("heartbeat", `every ${formatEvery(this.heartbeatEveryMs)}`, this.started, base === undefined ? undefined : base + this.heartbeatEveryMs);
+    }
+    if (this.opts.hooks.dream) {
+      push("dream", `after ${formatEvery(this.idleMs)} idle`, this.started, this.nextDreamAt());
+    }
+    if (this.opts.hooks.goals) {
+      const last = this.lastRuns.goals?.at ?? this.startedAtMs;
+      push("goals", `every ${formatEvery(this.goalsCheckEveryMs())}`, this.started, last === undefined ? undefined : last + this.goalsCheckEveryMs());
+    }
+    if (this.opts.hooks.gauntlet) {
+      const end = (this.gauntletHour + this.gauntletWindowHours) % 24;
+      push(
+        "gauntlet",
+        `nightly ${String(this.gauntletHour).padStart(2, "0")}:00–${String(end).padStart(2, "0")}:00`,
+        this.started && this.gauntletEnabled,
+        this.nextGauntletAt(),
+      );
+    }
+    if (this.opts.hooks.briefing) {
+      push("briefing", "morning and evening briefings", this.started, undefined);
+    }
+    if (this.opts.hooks.marketplace) {
+      const every = this.opts.marketplaceCheckEveryMs ?? DEFAULT_MARKETPLACE_CHECK_MS;
+      const last = this.lastRuns.marketplace?.at ?? this.startedAtMs;
+      push("marketplace", `Marketplace watches, checked every ${formatEvery(every)}`, this.started, last === undefined ? undefined : last + every);
+    }
+    return out;
+  }
+
+  private blocked(name: SchedulerHookName): boolean {
+    return this.heldHooks.has(name) || (this.opts.isPaused?.() ?? false);
+  }
+
+  private noteRun(name: SchedulerHookName, result: string): void {
+    this.lastRuns[name] = { at: this.nowFn(), result };
+    try {
+      this.opts.onRun?.(name, result);
+    } catch {
+      // an observer never breaks the clock
+    }
+  }
+
   private idleBaseline(): number {
     return Math.max(
       this.opts.lastActivityAt?.() ?? 0,
@@ -215,6 +349,7 @@ export class Scheduler {
   }
 
   private dreamCheck(): void {
+    if (this.blocked("dream")) return;
     if (this.nowFn() - this.idleBaseline() < this.idleMs) return;
     this.lastDreamAt = this.nowFn();
     void this.runHook("dream");
@@ -222,6 +357,7 @@ export class Scheduler {
 
   private gauntletCheck(): void {
     if (!this.opts.hooks.gauntlet || !this.gauntletEnabled || this.running.gauntlet) return;
+    if (this.blocked("gauntlet")) return;
     const nowMs = this.nowFn();
     const day = localDayKey(nowMs);
     if (this.lastGauntletDay === day) return;
@@ -237,6 +373,7 @@ export class Scheduler {
     try {
       const summary = await this.opts.hooks.gauntlet!();
       const at = new Date(this.nowFn()).toISOString();
+      this.noteRun("gauntlet", `ok: ${summary.passed}/${summary.total}`);
       if (!this.opts.home) {
         this.emit({ kind: "gauntlet_run", at, summary, regressed: false });
         return;
@@ -256,6 +393,7 @@ export class Scheduler {
         });
       }
     } catch (err) {
+      this.noteRun("gauntlet", `error: ${errorText(err)}`);
       this.opts.onError?.("gauntlet", err);
     } finally {
       this.running.gauntlet = false;
@@ -272,15 +410,53 @@ export class Scheduler {
     }
   }
 
-  private async runHook(name: "heartbeat" | "dream"): Promise<void> {
+  private goalsCheckEveryMs(): number {
+    return this.opts.goalsCheckEveryMs ?? DEFAULT_GOALS_CHECK_MS;
+  }
+
+  private async runHook(name: "heartbeat" | "dream" | "feed" | "goals" | "briefing" | "marketplace"): Promise<void> {
     if (this.running[name]) return; // never overlap a slow hook with itself
+    if (name === "heartbeat") this.lastHeartbeatAt = this.nowFn();
+    if (this.blocked(name)) return;
     this.running[name] = true;
     try {
-      await this.opts.hooks[name]?.();
+      const out = await this.opts.hooks[name]?.();
+      // Every hook records its OWN result. Masking the payload behind the
+      // literal "ok" hid a heartbeat alert every 30 minutes for weeks: the audit
+      // read "ok" 378 times in a row and could not have read anything else.
+      this.noteRun(name, describeHookResult(out));
     } catch (err) {
+      this.noteRun(name, `error: ${errorText(err)}`);
       this.opts.onError?.(name, err);
     } finally {
       this.running[name] = false;
     }
   }
+}
+
+function errorText(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160);
+}
+
+/** A hook's own words, or "ok" when it genuinely has none. Anything richer than
+ *  a string (the heartbeat's HeartbeatResult, a dream summary) reduces to its
+ *  status plus the first line of its text, so the audit keeps one honest line
+ *  per run and cannot claim health a hook never reported. */
+function describeHookResult(out: unknown): string {
+  if (typeof out === "string") return out.trim() || "ok";
+  if (out && typeof out === "object") {
+    const { status, text } = out as { status?: unknown; text?: unknown };
+    if (typeof status === "string" && status) {
+      const first = typeof text === "string" ? (text.split("\n")[0] ?? "").trim() : "";
+      const quiet = status === "ok" || status === "skipped";
+      return quiet || !first ? status : `${status}: ${first.slice(0, 120)}`;
+    }
+  }
+  return "ok";
+}
+
+function formatEvery(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  return `${Math.round(ms / 1000)}s`;
 }

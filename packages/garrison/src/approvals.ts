@@ -35,8 +35,20 @@ export interface ApprovalQueueOptions {
   now?: () => Date;
 }
 
+/** How a staged approval that is no longer pending ended. */
+export interface ApprovalOutcome {
+  verb: ApprovalDecision["verb"];
+  at: number;
+  /** "owner" decided; "timeout" and "shutdown" are the safe-deny paths. */
+  by: "owner" | "timeout" | "shutdown";
+}
+
+/** Settled approvals remembered so a late tap gets a clear "already handled". */
+const OUTCOMES_KEPT = 200;
+
 export class ApprovalQueue implements ApprovalBridge {
   private readonly entries = new Map<string, PendingEntry>();
+  private readonly outcomes = new Map<string, ApprovalOutcome>();
   private readonly subscribers = new Set<(staged: StagedApproval) => void>();
   private readonly opts: ApprovalQueueOptions;
 
@@ -63,6 +75,7 @@ export class ApprovalQueue implements ApprovalBridge {
         // provider retry backoff). respond()/dispose() clear it.
         entry.timer = setTimeout(() => {
           this.entries.delete(staged.id);
+          this.remember(staged.id, "deny", "timeout");
           this.settle(entry, { id: staged.id, verb: "deny", at: this.nowIso(), note: "auto-denied: approval timed out" });
         }, this.opts.timeoutMs);
       }
@@ -92,6 +105,7 @@ export class ApprovalQueue implements ApprovalBridge {
     if (!entry) throw new Error(`no pending approval: ${decision.approvalId}`);
     this.entries.delete(decision.approvalId);
     if (entry.timer) clearTimeout(entry.timer);
+    this.remember(decision.approvalId, decision.verb, "owner");
     this.settle(entry, {
       id: decision.approvalId,
       verb: decision.verb,
@@ -106,11 +120,17 @@ export class ApprovalQueue implements ApprovalBridge {
     return [...this.entries.values()].map((e) => e.staged);
   }
 
+  /** How an approval that is no longer pending ended; undefined if never seen or long forgotten. */
+  outcome(id: string): ApprovalOutcome | undefined {
+    return this.outcomes.get(id);
+  }
+
   /** Shutdown: clear timers and deny everything still outstanding so no awaiter
    *  hangs and no timer blocks process exit. */
   dispose(): void {
     for (const [id, entry] of this.entries) {
       if (entry.timer) clearTimeout(entry.timer);
+      this.remember(id, "deny", "shutdown");
       this.settle(entry, { id, verb: "deny", at: this.nowIso(), note: "denied: garrison shutting down" });
     }
     this.entries.clear();
@@ -118,6 +138,16 @@ export class ApprovalQueue implements ApprovalBridge {
   }
 
   // ─── internals ─────────────────────────────────────────────────────────────
+
+  private remember(id: string, verb: ApprovalOutcome["verb"], by: ApprovalOutcome["by"]): void {
+    this.outcomes.delete(id);
+    this.outcomes.set(id, { verb, by, at: (this.opts.now ?? (() => new Date()))().getTime() });
+    while (this.outcomes.size > OUTCOMES_KEPT) {
+      const oldest = this.outcomes.keys().next().value;
+      if (oldest === undefined) break;
+      this.outcomes.delete(oldest);
+    }
+  }
 
   private settle(entry: PendingEntry, decision: ApprovalDecision): void {
     for (const resolve of entry.resolvers) {

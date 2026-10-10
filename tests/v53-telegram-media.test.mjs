@@ -26,7 +26,7 @@ import { WebSocketServer } from "ws";
 
 import { TelegramBridge, toTelegramHtml, screenshotPathOf, seedOwners, emptyRoster } from "../packages/channels/dist/index.js";
 import { TelegramTool, setTelegramChannel, resolveTelegramTargets } from "../packages/tools/dist/index.js";
-import { normalizeSessionAttachments, inputContent } from "../packages/garrison/dist/index.js";
+import { normalizeSessionAttachments, inputContent, MAX_ATTACHMENT_BASE64_CHARS } from "../packages/garrison/dist/index.js";
 
 // ── 1. HTML rendering ────────────────────────────────────────────────────────
 
@@ -450,7 +450,7 @@ test("garrison: normalizeSessionAttachments enforces shape and budget; inputCont
   assert.equal(typeof normalizeSessionAttachments([{ kind: "video", mediaType: "image/png", data: "AAAA" }]), "string");
   assert.equal(typeof normalizeSessionAttachments([{ kind: "image", mediaType: "image/bmp", data: "AAAA" }]), "string");
   assert.equal(typeof normalizeSessionAttachments([{ kind: "image", mediaType: "image/png", data: "not base64!" }]), "string");
-  assert.equal(typeof normalizeSessionAttachments([{ kind: "image", mediaType: "image/png", data: "A".repeat(2_000_001) }]), "string");
+  assert.equal(typeof normalizeSessionAttachments([{ kind: "image", mediaType: "image/png", data: "A".repeat(MAX_ATTACHMENT_BASE64_CHARS + 1) }]), "string");
   assert.equal(typeof normalizeSessionAttachments(Array.from({ length: 9 }, () => ({ kind: "image", mediaType: "image/png", data: "AAAA" }))), "string");
   const ok = normalizeSessionAttachments([{ kind: "image", mediaType: "image/jpeg", data: "AAAA", extra: 1 }]);
   assert.deepEqual(ok, [{ kind: "image", mediaType: "image/jpeg", data: "AAAA" }]);

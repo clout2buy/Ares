@@ -1,0 +1,55 @@
+{
+  "id": "cloudflare-bindings",
+  "mcpUrl": "https://bindings.mcp.cloudflare.com/mcp",
+  "probedAt": "2026-10-01T00:29:08.678Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://bindings.mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\"",
+    "contentType": null
+  },
+  "prm": {
+    "url": "https://bindings.mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://bindings.mcp.cloudflare.com/mcp",
+      "authorization_servers": [
+        "https://bindings.mcp.cloudflare.com"
+      ],
+      "bearer_methods_supported": [
+        "header"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://bindings.mcp.cloudflare.com/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://bindings.mcp.cloudflare.com",
+      "authorization_endpoint": "https://bindings.mcp.cloudflare.com/oauth/authorize",
+      "token_endpoint": "https://bindings.mcp.cloudflare.com/token",
+      "registration_endpoint": "https://bindings.mcp.cloudflare.com/register",
+      "response_types_supported": [
+        "code"
+      ],
+      "response_modes_supported": [
+        "query"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post",
+        "none"
+      ],
+      "revocation_endpoint": "https://bindings.mcp.cloudflare.com/token",
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "authorization_response_iss_parameter_supported": true,
+      "client_id_metadata_document_supported": false
+    },
+    "issuerQueried": "https://bindings.mcp.cloudflare.com"
+  }
+}

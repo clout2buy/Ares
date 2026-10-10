@@ -113,6 +113,7 @@ export {
   kimiLogout,
   fetchKimiModels,
   KIMI_CODING_BASE_URL,
+  KIMI_OAUTH_CODING_BASE_URL,
   type KimiModel,
   type KimiTokens,
   type KimiAuthStatus,
@@ -326,11 +327,16 @@ export {
   disconnectMcpServer,
   setMcpServerEnabled,
   setMcpServerToken,
+  beginMcpConnect,
+  addOpenMcpServer,
   probeMcpTools,
   getMcpAccessToken,
   getMcpCallCredentials,
   loadRemoteMcpServers,
   connectorNameFromUrl,
+  prepareMcpAuthorization,
+  type McpAuthPlanOptions,
+  type McpAuthPrepared,
   type RemoteMcpEntry,
   type ConnectMcpOptions,
   type ConnectMcpResult,
@@ -475,10 +481,26 @@ export {
   isExpired,
   clientIdName,
   clientSecretName,
+  quirksOf,
+  clientCredsFor,
+  beginProviderAuthorization,
+  startProviderDevice,
+  pollProviderDevice,
+  finalizeProviderTokens,
+  revokeAndForgetTokens,
   type OAuthProviderConfig,
   type OAuthTokens,
+  type OAuthTokenMeta,
   type OAuthDeps,
 } from "./oauth.js";
+export * from "./oauthEngine.js";
+export * from "./oauthClients.js";
+export * from "./oauthMatrix.js";
+export * from "./oauthPlan.js";
+export * from "./connectV2.js";
+export * from "./oauthAccount.js";
+export * from "./oauthServices.js";
+export * from "./oauthVendorQuirks.js";
 
 export {
   OAUTH_PROVIDERS,
@@ -486,6 +508,38 @@ export {
   getProviderConfig,
   listProviders,
 } from "./oauthProviders.js";
+export { WITHINGS_OAUTH, unwrapWithingsToken } from "./withingsOAuth.js";
+export { LIFE_SERVICES } from "./lifeServices.js";
+export { DAV_SERVICES, DAV_CREDENTIALS } from "./davServices.js";
+export {
+  API_PRESET_DEFS,
+  API_CONNECT_SERVICES,
+  MQTT_CONNECT_SERVICE,
+  API_ID_RE,
+  apiPresetDef,
+  registerApiPresets,
+  listApiPresetDefs,
+  apiCred,
+  apiConnectId,
+  isApiConnectId,
+  validateApiId,
+  apiServicesDir,
+  apiServiceDir,
+  saveApiServiceDef,
+  saveApiServiceSpec,
+  readApiServiceSpecText,
+  loadApiServiceDef,
+  listApiServiceDefs,
+  removeApiServiceFiles,
+  resolveApiServiceDef,
+  apiConnectFields,
+  apiConnectService,
+  apiConnectServiceFromDisk,
+  type ApiAuth,
+  type ApiOAuthSource,
+  type ApiServiceDef,
+} from "./apiServices.js";
+export { PLAID_SERVICE, isPlaidService, plaidUpdateItemId, plaidVariantService } from "./plaidService.js";
 
 export {
   startOAuthFlow,
@@ -648,5 +702,38 @@ export * from "./sessionKernel/index.js";
 // Allocation attribution for heap-pressure artifacts (see heapSampler.ts header).
 export { HeapAllocationSampler, heapSamplerEnabled, heapSamplerIntervalBytes, summarizeSamplingProfile, type HeapAllocationSite } from "./heapSampler.js";
 export { fetchAnthropicUsage, fetchKimiUsage, fetchOllamaUsageAsProvider, ollamaUsageAsProvider, type ProviderUsage, type UsageWindow } from "./providers/usage.js";
+export * from "./mcpStdioCatalog.js";
 export { MCP_CATALOG, MCP_CATEGORIES, catalogById, catalogByUrl, catalogMentions, type McpCatalogEntry, type McpAuthKind, type McpCategory, type McpTransportKind } from "./mcpCatalog.js";
 export { resourceMetadataFromChallenge, revokeMcpToken } from "./mcpOAuth.js";
+export {
+  CONNECT_SERVICES,
+  resolveConnectService,
+  isServiceConnected,
+  serviceDomain,
+  browserSessionsDir,
+  browserSessionFile,
+  setConnectBroker,
+  getConnectBroker,
+  registerConnectService,
+  unregisterConnectService,
+  type ConnectKind,
+  type ConnectField,
+  type ConnectService,
+  type ConnectPrompt,
+  type ConnectOutcome,
+  type ConnectBroker,
+} from "./connectServices.js";
+export {
+  mintSecretHandle,
+  describeSecretHandle,
+  redeemSecretHandle,
+  revokeSecretHandle,
+  redactSecretValues,
+  handleSite,
+  type SecretHandleScope,
+} from "./secretHandles.js";
+export { appendAudit, readAudit, redactForAudit, auditDir, type AuditEntry } from "./audit.js";
+export { setAuditSink, recordAudit, auditTargetOf, auditActionOf, ToolAuditTracker, type AuditDraft } from "./auditEvents.js";
+export { ownerPause, registerStoppable, listStoppables, stopAllStoppables, type OwnerPauseWait, type StoppableKind, type StoppableEntry } from "./ownerControl.js";
+export { vaultAccessReason, vaultAccessPrompt } from "./vaultGuard.js";
+export { siteLoginDomain, normalizeLoginDomain, loginCredentialNames, loginDomainCandidates, siteLoginService } from "./siteLogins.js";

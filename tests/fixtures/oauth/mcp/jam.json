@@ -1,0 +1,59 @@
+{
+  "id": "jam",
+  "mcpUrl": "https://mcp.jam.dev/mcp",
+  "probedAt": "2026-10-01T00:29:08.093Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.jam.dev/.well-known/oauth-protected-resource\", scope=\"mcp:read mcp:write\"",
+    "contentType": "application/json; charset=utf-8"
+  },
+  "prm": {
+    "url": "https://mcp.jam.dev/.well-known/oauth-protected-resource",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.jam.dev/mcp",
+      "resource_server": "https://mcp.jam.dev/",
+      "authorization_servers": [
+        "https://api.jam.dev"
+      ],
+      "scopes_supported": [
+        "mcp:read",
+        "mcp:write"
+      ],
+      "introspection_endpoint": "https://api.jam.dev/oauth/introspect"
+    }
+  },
+  "as": {
+    "url": "https://api.jam.dev/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://api.jam.dev",
+      "authorization_endpoint": "https://api.jam.dev/oauth/authorize",
+      "token_endpoint": "https://api.jam.dev/oauth/token",
+      "registration_endpoint": "https://api.jam.dev/oauth/register",
+      "introspection_endpoint": "https://api.jam.dev/oauth/introspect",
+      "revocation_endpoint": "https://api.jam.dev/oauth/revoke",
+      "scopes_supported": [
+        "mcp:read",
+        "mcp:write",
+        "cli:read",
+        "cli:write"
+      ],
+      "response_types_supported": [
+        "code"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "none",
+        "client_secret_post"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ]
+    },
+    "issuerQueried": "https://api.jam.dev"
+  }
+}

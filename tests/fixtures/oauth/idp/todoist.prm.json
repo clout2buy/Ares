@@ -1,0 +1,1 @@
+{"resource":"https://ai.todoist.net/mcp","authorization_servers":["https://todoist.com"],"bearer_methods_supported":["header"],"scopes_supported":["data:read_write"]}

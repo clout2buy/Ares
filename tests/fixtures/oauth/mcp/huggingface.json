@@ -1,0 +1,72 @@
+{
+  "id": "huggingface",
+  "mcpUrl": "https://huggingface.co/mcp",
+  "probedAt": "2026-10-01T00:29:11.557Z",
+  "initialize": {
+    "status": 200,
+    "wwwAuthenticate": null,
+    "contentType": "application/json"
+  },
+  "prm": {
+    "url": "https://huggingface.co/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://huggingface.co/mcp",
+      "authorization_servers": [
+        "https://huggingface.co"
+      ],
+      "bearer_methods_supported": [
+        "header"
+      ],
+      "scopes_supported": [
+        "openid",
+        "profile",
+        "read-mcp",
+        "read-repos",
+        "jobs",
+        "contribute-repos",
+        "inference-api"
+      ]
+    }
+  },
+  "as": {
+    "url": "https://huggingface.co/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://huggingface.co",
+      "registration_endpoint": "https://huggingface.co/oauth/register",
+      "token_endpoint": "https://huggingface.co/oauth/token",
+      "authorization_endpoint": "https://huggingface.co/oauth/authorize",
+      "userinfo_endpoint": "https://huggingface.co/oauth/userinfo",
+      "device_authorization_endpoint": "https://huggingface.co/oauth/device",
+      "jwks_uri": "https://huggingface.co/oauth/jwks",
+      "response_types_supported": [
+        "code"
+      ],
+      "response_modes_supported": [
+        "query"
+      ],
+      "id_token_signing_alg_values_supported": [
+        "RS256"
+      ],
+      "subject_types_supported": [
+        "public"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post"
+      ],
+      "client_id_metadata_document_supported": true,
+      "grant_types_supported": [
+        "urn:ietf:params:oauth:grant-type:token-exchange",
+        "urn:ietf:params:oauth:grant-type:device_code",
+        "authorization_code",
+        "refresh_token"
+      ]
+    },
+    "issuerQueried": "https://huggingface.co"
+  }
+}

@@ -2,7 +2,7 @@
 
 import { AresSubagentRunner, SubagentRegistry, isCoreToolName, loadInstructionReminders, openWorkspaceSessionKernel, type EngineTool, type SubagentTypeDef, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
-import { getRemoteAgentServer, setRemoteAgentServer, DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
+import { getRemoteAgentServer, setRemoteAgentServer, DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, requireScheduleApproval, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
 import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { z } from "zod";
 import { decidePermission } from "../permissionPolicy.js";
@@ -16,6 +16,8 @@ import { withMissionRunRecorded } from "./missionLiveness.js";
 import { QueryEngineDispatcher, acquireCapability, createGoal, listGoals, listAcquisitions, listCapabilities, markAcquisitionAcquired, newGoalId, novelDeltaCurve, reliabilityOf, runGoalToCompletion, saveGoal, setAcquisitionStatus, loadStandingOrders, addStandingOrder, removeStandingOrder, renderStandingOrders, addWatcher, loadWatchers, removeWatcher, renderWatchers, type StandingOrder, type Goal, type AcquisitionKind, type VerificationSpec } from "@ares/operator";
 import { MemoryRouter, MemoryStore, withConsolidationLock } from "@ares/mind";
 import { makeBrowserTool } from "./browserBridge.js";
+import { makeMarketplaceTool } from "../marketplace/tool.js";
+import { marketplaceEnabled } from "../marketplace/service.js";
 import { ProviderSelection, fastModelFor } from "./providers.js";
 import { AresRuntimeState, CliRuntimeContext, compactLine } from "./runtime.js";
 import { buildChildSystemPrompt } from "./prompt/child.js";
@@ -362,7 +364,7 @@ export async function buildEngineTools(
   const sandboxOnly = (await loadUiSettings().catch(() => null))?.computerMode === "sandbox";
   const HOST_ONLY_TOOLS = new Set([
     "Bash", "PowerShell", "BashOutput", "KillShell", "BackgroundTasks",
-    "ComputerUse", "Write", "Edit", "ApplyPatch", "Deploy",
+    "ComputerUse", "Write", "Edit", "ApplyPatch", "Deploy", "Instances",
   ]);
   const admittedToolDefs = sandboxOnly
     ? baseToolDefs.filter((tool) => !HOST_ONLY_TOOLS.has(tool.schema.name))
@@ -495,7 +497,9 @@ export async function buildEngineTools(
     enrich,
   ) as EngineTool;
   const connectorsTool = adaptToolForEngine(makeConnectorsTool(() => context.workspace), enrich) as EngineTool;
-  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool];
+  // Experimental Facebook Marketplace (deferred, loaded with ToolSearch). ARES_MARKETPLACE=0 keeps it out of the catalog entirely.
+  const marketplaceTools = marketplaceEnabled() ? [adaptToolForEngine(makeMarketplaceTool(), enrich) as EngineTool] : [];
+  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool, ...marketplaceTools];
   // Connected MCP servers' tools ride in this same array, refilled in place
   // whenever a connector changes — the engine reads the array every turn.
   liveMcpTools.attach(all);
@@ -752,13 +756,22 @@ function makeStandingOrderTool(context: CliRuntimeContext) {
     concurrency: "exclusive",
     inputZod: standingOrderInput,
     activityDescription: (i) => (i.action === "add" ? "Queuing a standing order" : i.action === "cancel" ? "Cancelling a standing order" : "Listing standing orders"),
-    async call(i): Promise<{ output: StandingOrderToolOutput; display: string }> {
+    async call(i, ctx): Promise<{ output: StandingOrderToolOutput; display: string }> {
       if (i.action === "add") {
         const statement = i.statement?.trim();
         if (!statement) throw new Error("StandingOrder add requires a statement");
         const minutes = i.every_minutes ?? 60;
-        const order = await addStandingOrder(context.home, { statement, cadenceMs: minutes * 60_000 });
         const cadence = minutes >= 60 ? `${(minutes / 60).toFixed(minutes % 60 ? 1 : 0)}h` : `${minutes}m`;
+        // Recurring unattended work is armed only on the owner's yes to THIS
+        // cadence (scheduleApproval.ts) — asking for the mission is not asking
+        // for it to run every two hours forever.
+        await requireScheduleApproval(ctx, {
+          toolName: "StandingOrder",
+          input: i,
+          what: `standing order "${compactLine(statement, 80)}"`,
+          schedule: `every ${cadence}, unattended`,
+        });
+        const order = await addStandingOrder(context.home, { statement, cadenceMs: minutes * 60_000, createdBy: "ares", approved: true });
         return {
           output: { action: i.action, id: order.id, result: `Standing order queued (${order.id}): "${statement}" every ${cadence}. It will run unattended and report back.` },
           display: `Standing order: ${compactLine(statement, 80)} every ${cadence}`,
@@ -832,11 +845,19 @@ function makeWatcherTool(context: CliRuntimeContext) {
     concurrency: "exclusive",
     inputZod: watcherInput,
     activityDescription: (i) => (i.action === "add" ? "Adding a watcher" : i.action === "remove" ? "Removing a watcher" : "Listing watchers"),
-    async call(i): Promise<{ output: WatcherToolOutput; display: string }> {
+    async call(i, ctx): Promise<{ output: WatcherToolOutput; display: string }> {
       if (i.action === "add") {
         const label = i.label?.trim();
         const proposal = i.proposal?.trim();
         if (!label || !proposal || !i.condition) throw new Error("Watcher add requires label, condition, and proposal");
+        // A watcher is a recurring probe (a command probe runs a process every
+        // cadence, unattended) — same rule as any recurring job.
+        await requireScheduleApproval(ctx, {
+          toolName: "Watcher",
+          input: i,
+          what: `watcher "${compactLine(label, 60)}" (${i.condition.kind} probe, ${i.mode ?? "plan"} mode)`,
+          schedule: `every ${i.every_minutes ?? 15}m`,
+        });
         const watcher = await addWatcher(context.home, {
           label,
           condition: i.condition as VerificationSpec,

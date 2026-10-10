@@ -1,0 +1,1 @@
+{"resource":"https://netlify-mcp.netlify.app/mcp","authorization_servers":["https://netlify-mcp.netlify.app/"],"scopes_supported":["offline_access","read","write","claudeai"],"bearer_methods_supported":["header"]}

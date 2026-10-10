@@ -73,7 +73,15 @@ export function createVerifiedChildSession(
   persistedDebt: ChildVerificationDebt = NO_CHILD_DEBT,
 ): VerifiedChildSession {
   const requiresProof = options.tools.some((tool) => tool.schema.safety !== "read-only");
-  const restoredDebt = requiresProof && persistedDebt.required;
+  // The proof gate is OFF by default. It modelled "this workspace owes
+  // evidence" as SESSION state, so debt from one coding turn leaked into every
+  // later turn — a plain question would be told it had unproven code changes
+  // and go run the test suite to discharge a debt it never created. That run
+  // emitted no events for minutes, tripped the turn watchdogs, got interrupted,
+  // and left the debt unpaid for the next turn to inherit. ARES_CODING_PROOF_GATE=1
+  // restores the whole mechanism, debt restore included.
+  const gateOn = process.env.ARES_CODING_PROOF_GATE === "1";
+  const restoredDebt = gateOn && requiresProof && persistedDebt.required;
   const verifier = new ContinuousVerifier({
     ...verifierOptions,
     workspace: options.workspace,
@@ -91,30 +99,33 @@ export function createVerifiedChildSession(
   }
 
   try {
-    const session = new Session({
-      ...options,
-      drainSystemReminders: () => [
-        ...(upstreamReminders?.() ?? []),
-        ...verifier.drainReminders(),
-      ],
-      confirmTurnEnd: () => confirmChildTurnEnd(verifier),
-      requireVerificationEvidence: requiresProof,
-      verificationEvidence: () => verifier.evidenceSnapshot(),
-      outstandingVerificationRequired: () => requiresProof && (restoredDebt || currentTurnMutation),
-      persistedVerificationDebt: () => restoredDebt,
-      persistedVerificationScopeComplete: () => !restoredDebt || persistedDebt.scopeComplete,
-      // Persisted debt is deliberately not a current-turn mutation timestamp.
-      // The generation-aware persisted-debt branch accepts only the new run we
-      // scheduled above; current child edits use this timestamp as usual.
-      observedMutationAt: () => observedMutationAt,
-    });
-    unsubscribe = session.observeEvents((event) => {
-      if ((event.type === "tool_end" || event.type === "tool_error") && event.touchedFiles?.length) {
-        currentTurnMutation = true;
-        observedMutationAt = Date.now();
-        verifier.scheduleFor(event.touchedFiles);
-      }
-    });
+    const session = new Session(
+      gateOn
+        ? {
+            ...options,
+            drainSystemReminders: () => [
+              ...(upstreamReminders?.() ?? []),
+              ...verifier.drainReminders(),
+            ],
+            confirmTurnEnd: () => confirmChildTurnEnd(verifier),
+            requireVerificationEvidence: requiresProof,
+            verificationEvidence: () => verifier.evidenceSnapshot(),
+            outstandingVerificationRequired: () => requiresProof && (restoredDebt || currentTurnMutation),
+            persistedVerificationDebt: () => restoredDebt,
+            persistedVerificationScopeComplete: () => !restoredDebt || persistedDebt.scopeComplete,
+            observedMutationAt: () => observedMutationAt,
+          }
+        : { ...options },
+    );
+    if (gateOn) {
+      unsubscribe = session.observeEvents((event) => {
+        if ((event.type === "tool_end" || event.type === "tool_error") && event.touchedFiles?.length) {
+          currentTurnMutation = true;
+          observedMutationAt = Date.now();
+          verifier.scheduleFor(event.touchedFiles);
+        }
+      });
+    }
 
     let disposed = false;
     return {

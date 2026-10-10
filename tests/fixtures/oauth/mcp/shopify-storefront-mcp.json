@@ -1,0 +1,16 @@
+{
+  "id": "shopify-storefront-mcp",
+  "mcpUrl": "https://shopify.dev/mcp",
+  "probedAt": "2026-10-01T00:29:13.436Z",
+  "initialize": {
+    "status": 404,
+    "wwwAuthenticate": null,
+    "contentType": "text/html; charset=utf-8"
+  },
+  "prm": null,
+  "as": null,
+  "initializeGet": {
+    "status": 404,
+    "wwwAuthenticate": null
+  }
+}

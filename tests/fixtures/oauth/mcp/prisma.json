@@ -1,0 +1,48 @@
+{
+  "id": "prisma",
+  "mcpUrl": "https://mcp.prisma.io/mcp",
+  "probedAt": "2026-10-01T00:29:08.963Z",
+  "initialize": {
+    "status": 401,
+    "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"Missing Authorization header\", resource_metadata=\"https://mcp.prisma.io/.well-known/oauth-protected-resource/mcp\"",
+    "contentType": "application/json"
+  },
+  "prm": {
+    "url": "https://mcp.prisma.io/.well-known/oauth-protected-resource/mcp",
+    "status": 200,
+    "body": {
+      "resource": "https://mcp.prisma.io/mcp",
+      "authorization_servers": [
+        "https://auth.prisma.io"
+      ],
+      "scopes_supported": [
+        "workspace:admin",
+        "offline_access"
+      ],
+      "resource_name": "Prisma"
+    }
+  },
+  "as": {
+    "url": "https://auth.prisma.io/.well-known/oauth-authorization-server",
+    "status": 200,
+    "body": {
+      "issuer": "https://auth.prisma.io",
+      "authorization_endpoint": "https://auth.prisma.io/authorize",
+      "token_endpoint": "https://auth.prisma.io/token",
+      "jwks_uri": "https://auth.prisma.io/.well-known/jwks.json",
+      "registration_endpoint": "https://auth.prisma.io/register",
+      "response_types_supported": [
+        "code"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post",
+        "none"
+      ]
+    },
+    "issuerQueried": "https://auth.prisma.io"
+  }
+}

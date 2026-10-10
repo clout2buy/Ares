@@ -36,6 +36,7 @@ import type { Provider, ProviderRequest } from "../queryEngine.js";
 import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard.js";
 import { parseRetryAfterMs } from "./retryAfter.js";
 import { coerceToolArgs, sanitizeToolPairs, toolResultsFirst, TOOL_ARGS_ERROR_KEY } from "./_toolPairs.js";
+import { imageMediaTypeFor } from "./imageMediaType.js";
 import {
   resolveAnthropicAccessToken,
   ANTHROPIC_OAUTH_BETA,
@@ -754,7 +755,14 @@ function toAnthropicImage(block: Extract<ContentBlock, { type: "image" }>): Reco
   }
   return {
     type: "image",
-    source: { type: "base64", media_type: block.source.mediaType, data: block.source.data },
+    // media_type is the one field a sender gets wrong often enough to be worth
+    // re-deriving from the bytes: Anthropic 400s the whole request on a
+    // mismatch, and one stored block then bricks the thread forever.
+    source: {
+      type: "base64",
+      media_type: imageMediaTypeFor(block.source.mediaType, block.source.data),
+      data: block.source.data,
+    },
   };
 }
 

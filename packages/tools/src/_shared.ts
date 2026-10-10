@@ -19,6 +19,8 @@ import type {
 import type { ToolCallContext, EngineToolEffectPolicy, EngineToolResult } from "@ares/core";
 import {
   renderRepositoryInstructions,
+  vaultAccessPrompt,
+  vaultAccessReason,
   type ResolvedRepositoryInstruction,
 } from "@ares/core";
 
@@ -114,6 +116,28 @@ export interface RichToolContext extends ToolCallContext {
 
 export const SHELL_DEFAULT_TIMEOUT_MS = 120_000;
 export const SHELL_MAX_TIMEOUT_MS = 600_000;
+
+/** How much longer than its own declared timeout a foreground shell may take
+ *  before the ENGINE gives up on it. Covers the kill escalation (2s) and the
+ *  force-settle backstop (5s) with room to spare, so this deadline only ever
+ *  fires when runShell's own settlement machinery has itself failed — which is
+ *  exactly the case that wedged three production turns. */
+export const SHELL_WATCHDOG_GRACE_MS = 20_000;
+/** A backgrounded command returns a shell_id immediately; if THAT takes half a
+ *  minute, something is wrong with the supervisor, not with the command. */
+export const SHELL_BACKGROUND_WATCHDOG_MS = 30_000;
+
+/** The engine-level deadline for one shell call, derived from what the call
+ *  itself asked for. A shell is "self-capping", but 2026-09-22 proved a
+ *  self-cap can fire and still never settle — so the engine keeps its own. */
+export function shellWatchdogFor(input: { timeout?: number; run_in_background?: boolean }): number {
+  if (input.run_in_background === true) return SHELL_BACKGROUND_WATCHDOG_MS;
+  const declared = typeof input.timeout === "number" && input.timeout > 0
+    ? Math.min(input.timeout, SHELL_MAX_TIMEOUT_MS)
+    : SHELL_DEFAULT_TIMEOUT_MS;
+  return declared + SHELL_WATCHDOG_GRACE_MS;
+}
+
 
 /** One model-facing command contract for every platform shell. Bash and
  * PowerShell differ only in interpreter selection; cwd, timeout, detached-job
@@ -284,9 +308,16 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
   concurrency: Concurrency;
   providerHint?: ProviderHint;
   deferLoading?: boolean;
-  /** Per-tool execution watchdog (ms). 0 = uncapped (self-capping tools);
+  /** Per-tool execution watchdog (ms). 0 = no STATIC cap (the engine then
+   *  applies UNCAPPED_TOOL_CEILING_MS — nothing is ever unbounded);
    *  omitted = engine picks a class default from `safety`. */
   watchdogTimeoutMs?: number;
+  /** A deadline derived from this call's input, for tools whose honest budget
+   *  depends on their arguments. Wins over watchdogTimeoutMs. This is how a
+   *  "self-capping" tool stays bounded by the ENGINE rather than by trusting
+   *  its own internals — a shell whose kill fails to settle is exactly how
+   *  three production turns wedged. */
+  watchdogFor?: (input: z.infer<I>) => number | undefined;
   /** Max chars of result kept inline before the engine spills to disk (Phase 4). */
   maxResultSizeChars?: number;
   inputZod: I;
@@ -301,6 +332,12 @@ export interface ToolDef<I extends z.ZodTypeAny, O> {
    *  defaults and conductor tool filtering remain conservative. */
   dynamicSafety?: (input: z.infer<I>) => SafetyClass;
   checkPermissions?: (input: z.infer<I>, ctx: RichToolContext) => Promise<PermissionDecision>;
+  /** This tool's checkPermissions can return an `ownerDecision` ask, which
+   *  must replace the generic mode prompt when the permission mode asks too. */
+  ownerDecisions?: boolean;
+  /** The tool's own `ask` prompts (not just owner decisions) name the exact
+   *  action and replace the generic "wants to perform a … action" prompt. */
+  ownPrompts?: boolean;
   call: (input: z.infer<I>, ctx: RichToolContext) => Promise<ToolResult<O>>;
   activityDescription: (input: z.infer<I>) => string;
   /** For command tools (Bash/PowerShell): the command string from the input, so
@@ -325,6 +362,7 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     providerHint: def.providerHint,
     deferLoading: def.deferLoading,
     watchdogTimeoutMs: def.watchdogTimeoutMs,
+    ...(def.watchdogFor ? { watchdogFor: (input: unknown) => def.watchdogFor!(input as z.infer<I>) } : {}),
     maxResultSizeChars: def.maxResultSizeChars,
   };
 
@@ -333,6 +371,14 @@ export function buildTool<I extends z.ZodTypeAny, O>(def: ToolDef<I, O>): Tool<I
     ctx: RichToolContext,
   ): Promise<PermissionDecision> => {
     const base = defaultPermissionDecision(def, ctx, def.dynamicSafety?.(input));
+    if (base.kind === "ask" && (def.ownerDecisions || def.ownPrompts) && def.checkPermissions) {
+      // The generic "wants to perform an external-state action" prompt must not
+      // stand in for a tool's own OWNER decision (the exact checkout total, the
+      // exact site a password is filled on) — the owner would approve blind.
+      const own = await def.checkPermissions(input, ctx);
+      if (own.kind === "deny" && def.ownPrompts) return own;
+      return own.kind === "ask" && (own.ownerDecision || def.ownPrompts) ? own : base;
+    }
     if (base.kind !== "allow") return base;
     return def.checkPermissions ? def.checkPermissions(input, ctx) : base;
   };
@@ -484,9 +530,31 @@ function markPreEffectError(error: unknown): Error {
 }
 
 /** Tool names the user clicked "Allow always" on this process run. Backs the
- *  non-command allow_always path in adaptToolForEngine — session-scoped on
- *  purpose (a fresh daemon starts guarded again). */
+ *  non-command allow_always path in adaptToolForEngine for the cases that are
+ *  deliberately NOT persisted (see TOOL_WIDE_GRANT). */
 const toolAlwaysGrants = new Set<string>();
+
+/**
+ * The command a tool-wide "Allow always" is stored under, for tools that have
+ * no command to scope the grant to (ComputerUse, Browser, RemotePC…).
+ *
+ * Without this, "Always" on such a tool lived in a process-local Set: every
+ * garrison restart re-asked everything the owner had already permanently
+ * allowed, which is most of what makes the prompts feel like spam. Destructive
+ * tools are excluded on purpose — "always" on an irreversible action stays
+ * scoped to the run it was granted in.
+ */
+export const TOOL_WIDE_GRANT = "*";
+
+/** A tool's safety for this specific input, falling back to its declared class
+ *  when the dynamic classifier throws on an edge-case input. */
+function safetyOf(tool: Tool<z.ZodTypeAny, unknown>, input: unknown): SafetyClass {
+  try {
+    return tool.effectiveSafety(input as never);
+  } catch {
+    return tool.schema.safety;
+  }
+}
 
 export function adaptToolForEngine(
   tool: Tool<z.ZodTypeAny, unknown>,
@@ -546,12 +614,19 @@ export function adaptToolForEngine(
         throw markPreEffectError(error);
       }
       // "Allow always" for non-command tools (ComputerUse, Browser, …) grants
-      // the TOOL for the rest of the process. Before this, allow_always was a
-      // silent no-op for any tool without commandFor — the user clicked Always
-      // and got re-prompted on the very next action (mid-automation, moving
-      // their mouse to the dialog and wrecking the run).
-      if (decision.kind === "ask" && toolAlwaysGrants.has(tool.schema.name)) {
-        decision = { kind: "allow" };
+      // the TOOL. Before this, allow_always was a silent no-op for any tool
+      // without commandFor — the user clicked Always and got re-prompted on the
+      // very next action (mid-automation, moving their mouse to the dialog and
+      // wrecking the run). The grant is honored from the persistent store first,
+      // so it also survives a restart.
+      // An owner decision is per call by definition: no stored or in-process
+      // "always" answers it (a past checkout approval is not this checkout's).
+      const ownerDecision = decision.kind === "ask" && decision.ownerDecision === true;
+      if (decision.kind === "ask" && tool.commandFor === undefined && !ownerDecision) {
+        const stored = rich.commandPermissions?.decide(tool.schema.name, TOOL_WIDE_GRANT);
+        if (stored?.kind === "allow" || toolAlwaysGrants.has(tool.schema.name)) {
+          decision = { kind: "allow" };
+        }
       }
       if (decision.kind === "deny") {
         // A policy deny ("Read the file first", "disabled in plan mode") is a
@@ -570,6 +645,7 @@ export function adaptToolForEngine(
             input: parsed,
             reason: decision.prompt,
             suggestion: decision.suggestion,
+            ...(ownerDecision ? { ownerDecision: true } : {}),
           });
         } catch (error) {
           throw markPreEffectError(error);
@@ -583,17 +659,21 @@ export function adaptToolForEngine(
         // doesn't re-ask. Path tools self-persist inside call() via
         // resolveWorkspacePath; command tools (Bash/PowerShell) route through
         // here. Non-command tools get a process-lifetime tool-name grant.
-        if (answer === "allow_always") {
+        if (answer === "allow_always" && !ownerDecision) {
           const command = tool.commandFor?.(parsed);
-          if (command !== undefined) {
+          // A destructive tool's "always" never outlives the process: the owner
+          // approved an irreversible action, not a standing licence for one.
+          const persistable = command !== undefined || safetyOf(tool, parsed) !== "destructive";
+          if (persistable) {
             try {
-              await rich.commandPermissions?.grant?.(tool.schema.name, command, "always");
+              await rich.commandPermissions?.grant?.(tool.schema.name, command ?? TOOL_WIDE_GRANT, "always");
             } catch (error) {
               throw markPreEffectError(error);
             }
-          } else {
-            toolAlwaysGrants.add(tool.schema.name);
           }
+          // Also hold it in-process: the host may have no writable store, and
+          // the grant must take effect for THIS run either way.
+          if (command === undefined) toolAlwaysGrants.add(tool.schema.name);
         }
       }
       const result = await tool.call(parsed, rich);
@@ -687,6 +767,8 @@ export function describeShellActivity(rawCommand: string, background: boolean): 
  * Returns a refusal message, or null when the command is fine.
  */
 export function irrecoverableShellRefusal(command: string): string | null {
+  const selfKill = selfHostKillRefusal(command);
+  if (selfKill) return selfKill;
   const normalized = command.replace(/\s+/g, " ").trim();
   // every `git clean` invocation in the line, including chained ones
   // Pre-subcommand git options may take a VALUE (`git -C <path> clean …`,
@@ -713,6 +795,42 @@ export function irrecoverableShellRefusal(command: string): string | null {
     );
   }
   return null;
+}
+
+/**
+ * Refuse a command that stops or restarts the daemon this agent is running
+ * inside. The tool call never returns: the turn it belongs to dies with the
+ * process, the conversation is left mid-turn, and the owner sees the agent go
+ * dark. Incident 2026-10-01: an agent on doingbox ran
+ * `sudo systemctl restart ares-garrison` to pick up a new drop-in and went
+ * silent for 13 minutes on the owner's phone. Every other Ares agent on the
+ * box (they all live in that one process) was cut off with it.
+ *
+ * `ares-safe-restart` is the sanctioned path: it is detached from the caller,
+ * waits for no turn to be running, and verifies health afterwards. Read-only
+ * systemctl verbs (status, show, is-active, cat) are untouched.
+ */
+export function selfHostKillRefusal(command: string): string | null {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  if (/\bares-safe-restart\b/.test(normalized)) return null;
+  const hostUnits = String.raw`(?:ares-garrison|ares-partner|ares-instance-[\w-]+)(?:\.service)?`;
+  const lifecycle = String.raw`(?:restart|stop|kill|try-restart|reload-or-restart|try-reload-or-restart|condrestart|force-reload|disable\s+--now|mask\s+--now)`;
+  const patterns = [
+    new RegExp(String.raw`\bsystemctl\b(?:\s+--?[\w=-]+)*\s+${lifecycle}\b[^;&|]*\b${hostUnits}\b`, "i"),
+    new RegExp(String.raw`\bservice\s+${hostUnits}\s+(?:restart|stop|force-reload)\b`, "i"),
+    new RegExp(String.raw`\bpkill\b[^;&|]*\b(?:entry\.js|garrison)\b`, "i"),
+    new RegExp(String.raw`\bkillall\b[^;&|]*\bnode\b`, "i"),
+  ];
+  if (!patterns.some((p) => p.test(normalized))) return null;
+  return (
+    "Refused: this stops or restarts the Ares daemon you are running inside. The tool call would never " +
+    "return: your turn dies mid-flight, your conversation goes dark on the owner's phone, and every other " +
+    "agent in the same process is cut off too. This holds even in bypass/YOLO mode.\n\n" +
+    "Use the safe path instead: `ares-safe-restart <unit> \"<reason>\"` (for example " +
+    "`ares-safe-restart ares-garrison \"pick up DISPLAY drop-in\"`). It is detached from you, waits until " +
+    "no turn is running (including yours, so finish your reply first), restarts, health-checks, and logs " +
+    "to ~/.ares/safe-restart.log. Tell the owner it is queued; you will be back after it lands."
+  );
 }
 
 /**
@@ -819,6 +937,19 @@ export function destructiveShellDecision(command: string): PermissionDecision | 
     }
   }
   return null;
+}
+
+/**
+ * A shell command that reads Ares's own secret store (credential vault, its
+ * key, OAuth token files, browser sessions, the garrison token) — see
+ * vaultGuard.ts in core. Always an owner-only question, checked BEFORE any
+ * stored "allow" rule: a grant for `cat *` must not become a grant to read
+ * the vault.
+ */
+export function vaultShellDecision(command: string): PermissionDecision | null {
+  const reason = vaultAccessReason(command);
+  if (!reason) return null;
+  return { kind: "ask", prompt: vaultAccessPrompt(reason), suggestion: "deny", ownerDecision: true };
 }
 
 /**

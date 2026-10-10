@@ -1,0 +1,1 @@
+{"resource":"https://mcp.granola.ai/mcp","authorization_servers":["https://mcp-auth.granola.ai"],"bearer_methods_supported":["header"],"scopes_supported":["mcp"]}

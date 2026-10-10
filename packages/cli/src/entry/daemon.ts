@@ -13,6 +13,20 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
 
+/** Daemon-side turn watchdog — a LONG backstop (15 min), the sibling of the
+ *  garrison one. It resets on every event (tool_progress included), so a
+ *  streaming long build/test never trips it; foreground shells are already
+ *  bounded by their own ≤10-min tool timeout. It only catches a turn wedged
+ *  past that — the class that froze a Telegram turn on 2026-09-21 when a hung
+ *  `docker exec … | tail` orphaned a grandchild that held the output pipe.
+ *  That orphan-pipe bug is fixed at the source now (ShellSupervisor group-kill);
+ *  this stands behind it. 0 disables; ARES_TURN_SILENCE_MS overrides. */
+const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 900_000);
+
+/** How often the stuck-turn watchdog samples. 30 s keeps overhead trivial
+ *  while adding at most 30 s of latency on top of STUCK_TURN_SILENCE_MS. */
+const STUCK_TURN_CHECK_MS = 30_000;
+
 import { liveMcpTools } from "./mcpTools.js";
 import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken, MCP_CATALOG, MCP_CATEGORIES, discoverMcpAuth } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -3308,7 +3322,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         continue;
       }
       if (command.type === "kimi_login_start") {
-        // Kimi subscription sign-in (RFC 8628 device flow) against auth.kimi.com,
+        // Kimi subscription sign-in (RFC 8628 device flow) against auth.kimi.ai,
         // owned by Ares itself. The verification URL goes to the UI card so the
         // owner can approve in a browser; tokens land in ~/.ares/kimi-auth.json.
         const sid = command.sessionId;
@@ -3949,6 +3963,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // know whether a lane tag is honest — a lane is a ROUTER decision and
         // manual mode ran no router.
         let turnRoutingMode: "auto" | "manual" = "manual";
+        let stuckTurnTimer: ReturnType<typeof setInterval> | null = null;
         try {
           if (ownerCancellationPending()) throw new Error("owner cancelled before optional routing");
           const settings = await loadUiSettings();
@@ -4148,10 +4163,27 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // interrupt between the two halves of one tool call.
           const toolNamesById = new Map<string, string>();
           let promotedSteerApplied = false;
+          // ── stuck-turn watchdog ──────────────────────────────────────────
+          // Resets on every streamed event. When silence exceeds the
+          // threshold, injects synthetic interrupts that walk the existing
+          // Stop → force-Stop → zombie-release escalation ladder.
+          let lastTurnEventAt = Date.now();
+          stuckTurnTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
+            if (!entry.turnActive || entry.activeInputId !== inputId) return;
+            const silent = Date.now() - lastTurnEventAt;
+            if (silent < STUCK_TURN_SILENCE_MS) return;
+            console.error(
+              `stuck-turn watchdog: turn ${inputId} silent for ${Math.round(silent / 1000)}s — ` +
+              (entry.cancelRequested ? "escalating" : "auto-cancelling"),
+            );
+            commands.onInterrupt?.({ type: "interrupt", sessionId: command.sessionId } as DaemonInputCommand);
+          }, STUCK_TURN_CHECK_MS) : null;
+          stuckTurnTimer?.unref?.();
           const streamOnce = async (gen: AsyncGenerator<unknown>) => {
             let eventCount = 0;
             for await (const event of gen) {
               eventCount++;
+              lastTurnEventAt = Date.now();
               const ev = event as { type: string; status?: "completed" | "interrupted" | "failed"; error?: { code?: string; message?: string }; touchedFiles?: string[]; text?: string; id?: string; name?: string; output?: unknown };
               trackSteeringBoundary(entry, ev);
               // Oricle: every N tool completions and every compaction re-stamp
@@ -4450,6 +4482,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             tagEmit(command.sessionId, { type: "turn_end", status: "failed", usage: {}, durationMs: 0 });
           }
         } finally {
+          if (stuckTurnTimer) clearInterval(stuckTurnTimer);
           // Zombie unwind after a force-release: the daemon has already settled
           // this turn and released (possibly evicted/rehydrated) the entry — a
           // successor may own it now. Touching entry state or emitting

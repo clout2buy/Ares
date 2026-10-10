@@ -5,7 +5,8 @@
 // the server without touching recall logic.
 
 import WebSocket from "ws";
-import type { MemoryKind, MemoryNode, RecallResult } from "@ares/mind";
+import type { MemoryEditResult, MemoryKind, MemoryNode, RecallResult } from "@ares/mind";
+import type { MemoryPage, MemoryQuery } from "./memoryView.js";
 import type { Binding, BindingClass, BindingSource } from "./bindings.js";
 import type { AttestOutcome, ComplianceReport } from "./attest.js";
 import type { GuardVerdict } from "./guards.js";
@@ -129,6 +130,23 @@ export class MnemosyneClient {
 
   async recall(cue: string, opts: { limit?: number; scope?: string; reinforce?: boolean } = {}): Promise<RecallResult[]> {
     return (await this.expect({ type: "recall", cue, ...opts }, "recalled")).items;
+  }
+
+  /** The owner's view of memory: one page, read-only (nothing is reinforced). */
+  async listMemories(query: MemoryQuery = {}): Promise<MemoryPage> {
+    const { scope, kinds, query: text, limit, offset } = query;
+    return (await this.expect({ type: "memory.list", ...(scope ? { scope } : {}), ...(kinds ? { kinds: [...kinds] } : {}), ...(text ? { query: text } : {}), ...(limit !== undefined ? { limit } : {}), ...(offset !== undefined ? { offset } : {}) }, "memory.page")).page;
+  }
+
+  /** An owner's correction, verbatim. Rejects when no node has that id. */
+  async editMemory(id: string, content: string): Promise<MemoryEditResult> {
+    const reply = await this.expect({ type: "memory.edit", id, content }, "memory.edited");
+    return { before: reply.before, after: reply.after };
+  }
+
+  /** Forget one node. Rejects when no node has that id. */
+  async forgetMemory(id: string): Promise<void> {
+    await this.expect({ type: "memory.forget", id }, "ok");
   }
 
   async listBindings(): Promise<Binding[]> {

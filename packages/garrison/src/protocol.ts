@@ -10,6 +10,7 @@
 import type { PermissionPromptDecision, TurnEvent } from "@ares/protocol";
 import type { ApprovalVerb, StagedApproval } from "@ares/effects";
 import type { SchedulerEvent } from "./scheduler.js";
+import type { DeviceCapability, DeviceIdentity, DeviceShortcut } from "@ares/tools";
 
 export const PROTO_VERSION = 1 as const;
 export const DEFAULT_GARRISON_PORT = 7421;
@@ -29,9 +30,11 @@ export interface SessionSummary {
   provider: string;
   busy: boolean;
   /** Which host opened it (absent on sessions created before surfaces existed). */
-  surface?: "desktop" | "tui" | "telegram" | "garrison" | "headless";
+  surface?: "desktop" | "tui" | "telegram" | "garrison" | "headless" | "mobile";
   /** Who is on the other end; absent means the owner. */
   tenant?: { role: "owner" | "guest"; chatId?: string };
+  /** Set when this is one of the owner's persona threads (absent = default Ares). */
+  personaId?: string;
 }
 
 /** Daemon vitals reported by the `status` frame. */
@@ -57,6 +60,9 @@ export type GatewayClientFrame =
       /** Host + sender stamps (see SessionSummary); unknown values are dropped. */
       surface?: SessionSummary["surface"];
       tenant?: SessionSummary["tenant"];
+      /** Create a thread for one of the owner's personas (it becomes that
+       *  persona's thread and wears its role). Unknown ids are an error. */
+      personaId?: string;
     }
   | { type: "session.attach"; sessionId: string }
   | {
@@ -64,8 +70,15 @@ export type GatewayClientFrame =
       sessionId: string;
       text: string;
       /** Stable owner-generated identity. Reusing it retries one logical input
-       * instead of creating a second coding turn after an ambiguous disconnect. */
+       * instead of creating a second coding turn after an ambiguous disconnect.
+       * A client that queues messages while offline sends each with its own id
+       * and may re-send it as often as it likes: the garrison executes it once,
+       * answers every attempt with `send.ack`, and refuses the same id carrying
+       * a different message. */
       inputId?: string;
+      /** Alias of `inputId` (the name a client-side outbox gives it). When both
+       * are present they must be equal. */
+      clientMsgId?: string;
       /** queue starts a later turn; steer injects the correction at the next
        * safe boundary of the active canonical turn. Defaults to queue. */
       delivery?: "queue" | "steer";
@@ -93,7 +106,13 @@ export type GatewayClientFrame =
       requestId: string;
       decision: PermissionPromptDecision;
     }
-  | { type: "approval.respond"; approvalId: string; verb: ApprovalVerb; note?: string };
+  | { type: "approval.respond"; approvalId: string; verb: ApprovalVerb; note?: string }
+  // Phone Hands (DeviceBridge): the owner's app registers what it can do and
+  // answers requests. Control-token clients only.
+  | { type: "device.hello"; device: DeviceIdentity; capabilities: DeviceCapability[]; shortcuts?: DeviceShortcut[] }
+  | { type: "device.capabilities"; capabilities: DeviceCapability[]; shortcuts?: DeviceShortcut[] }
+  | { type: "device.response"; id: string; ok: boolean; result?: unknown; error?: { code: string; message: string } }
+  | { type: "device.event"; kind: string; data?: unknown };
 
 // ─── Server → client ────────────────────────────────────────────────────
 
@@ -114,4 +133,11 @@ export type GatewayServerFrame =
   /** Daemon-level happenings with no session (nightly gauntlet outcome…),
    *  broadcast to every authed client so the UI/Telegram can surface them. */
   | { type: "garrison.event"; event: SchedulerEvent }
+  /** Phone Hands: run one capability on the phone and answer with device.response. */
+  | { type: "device.request"; id: string; capability: string; args: Record<string, unknown>; deadlineMs: number; reason?: string }
+  | { type: "device.ack"; id: string }
+  /** The garrison has this input: admitted just now, or already (a retry).
+   *  Sent only to the connection that sent it, and only when the send carried
+   *  an inputId / clientMsgId. `duplicate` true means nothing ran again. */
+  | { type: "send.ack"; sessionId: string; inputId: string; duplicate: boolean }
   | { type: "error"; message: string };

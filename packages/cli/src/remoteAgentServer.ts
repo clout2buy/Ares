@@ -15,14 +15,16 @@
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { createSocket as createUdpSocket } from "node:dgram";
+import os from "node:os";
 import path from "node:path";
 import { aresHome } from "@ares/core";
+import { ARTIFACT_TYPES, mayServe, realPathOk, serveFile } from "./phoneFile.js";
 import {
   type DeviceRegistryFile,
   type PairedDevice,
@@ -40,6 +42,11 @@ import {
 import { DiscoveryResponder, DISCOVERY_PORT } from "./remoteRendezvous.js";
 import { buildDeviceConnectorPs1, buildV1UpdateScript, DEVICE_CONNECTOR_VERSION } from "./remoteDeviceConnector.js";
 import { checkFirewall, firewallAdvice } from "./remoteFirewall.js";
+import { handleOwnerControlRoute, type OwnerControlHooks } from "./phoneOwnerControl.js";
+import { handleConnectionsApi } from "./phoneConnections.js";
+import { handleDeviceApi } from "./deviceSync.js";
+import { handleLibraryApi } from "./phoneLibrary.js";
+import type { TerminalApi } from "./phoneTerminal.js";
 
 export const DEFAULT_REMOTE_AGENT_PORT = 7422;
 /** How long an unused link stays valid. */
@@ -178,7 +185,214 @@ export interface RemoteAgentServerOptions {
    * (its own token) and returns false for paths that are not its own.
    */
   estateDoor?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+  /**
+   * The garrison's loopback WebSocket gateway (ws://127.0.0.1:7421). When set,
+   * a companion client — the phone app — reaches it as wss://<origin>/gateway
+   * on this same tunneled origin, so one tunnel fronts remote PCs, the Ares
+   * network AND the owner's own chat. The proxy is deliberately dumb: bytes
+   * both ways, and the garrison's own hello handshake (control or read token)
+   * is the only authentication — exactly what a client on the LAN gets.
+   */
+  gatewayUrl?: string;
+  /**
+   * The phone's HTTP side-channel, on the same origin as /gateway and
+   * guarded by the same token (Bearer). Hooks rather than imports so this
+   * server stays free of the channels package and tests can stub them.
+   *  - transcribe: voice in (the app records 16 kHz mono LINEAR16 WAV)
+   *  - synthesize: voice out (mp3)
+   *  - screenshotRoots: the only directories /gateway/shot may serve from
+   */
+  phoneApi?: PhoneApiHooks;
 }
+
+export interface PhoneApiHooks {
+  transcribe?: (audio: Buffer, format: { encoding: string; sampleRateHertz: number }) => Promise<string>;
+  synthesize?: (text: string, voice?: string) => Promise<Buffer>;
+  screenshotRoots?: string[];
+  /** Register/forget a phone for push notifications. Absent → the endpoint
+   *  reports that push is not set up on this machine. */
+  /** Connector OAuth that finishes on the phone: the provider redirects to
+   *  this origin instead of localhost. */
+  oauth?: {
+    handleCallback: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+    begin: (providerId: string, scopes?: string[]) => Promise<{ authorizeUrl: string; state: string }>;
+    callbackUrlForSetup: () => string | null;
+  };
+  /** The connect hub's pages (/connect/<flow>…): OAuth landings, secure key
+   *  forms, and the live sign-in browser. Unauthenticated — the flow id is
+   *  the capability. Returns false for a path it doesn't own. */
+  connect?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The Today tab's routes (tracking, feed, ideas — see lifeApi.ts). Asked
+   *  after the built-in routes, already authenticated; false = not mine. */
+  life?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The owner's personal agents (/gateway/personas — phonePersonas.ts).
+   *  Asked right after the bearer check; false = not mine. */
+  personas?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The Goals tab's writes and check-ins (/gateway/goals… — phoneGoals.ts).
+   *  Asked right after the bearer check, before the built-in list/close in
+   *  phoneLibrary.ts (which stays as the fallback); false = not mine. */
+  goals?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** What Ares remembers about the owner (/gateway/memory… — phoneMemory.ts):
+   *  list, search, correct, forget. Owner-only; false = not mine. */
+  memory?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Agent pictures (/gateway/avatars, /gateway/avatar/<id> — phoneAvatars.ts).
+   *  GET/PUT/DELETE all arrive here: /gateway/* is not method-gated. Asked
+   *  right after the bearer check; false = not mine. */
+  avatars?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The separate Ares instances deployed on this host (/gateway/instances —
+   *  phoneInstances.ts). Absent off Linux; false = not mine. */
+  instances?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Provider / coding-agent logins from the phone (/gateway/providers —
+   *  phoneProviders.ts, docs/PROVIDER-LOGIN.md). False = not mine. */
+  providers?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The Share-sheet inbox (/gateway/inbox — phoneInbox.ts): Share -> Ares from any
+   *  iOS app, worked on in the background. Asked after the bearer check; false = not mine. */
+  inbox?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Shortcut aliases and Ares's proposed Shortcuts (/gateway/shortcuts —
+   *  phoneShortcuts.ts). Asked after the bearer check; false = not mine. */
+  shortcuts?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Phone Hands over HTTP (/gateway/device — phoneDevice.ts): the device
+   *  list, a health check, and the pending/respond fallback. false = not mine. */
+  device?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Synchronous "ask Ares" for Siri/Shortcuts (/gateway/ask, /gateway/ask/last —
+   *  phoneAsk.ts). Asked after the owner bearer check; false = not mine. */
+  ask?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Approve-from-the-notification and Live Activity tokens (/gateway/approvals,
+   *  /gateway/liveactivity — phoneApprovals.ts, phoneLiveActivity.ts). Asked after
+   *  the owner bearer check; false = not mine. */
+  notify?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The agent handoff timeline (/gateway/timeline — phoneTimeline.ts): who
+   *  handed what to whom, with a revision cursor and an optional long poll.
+   *  Asked after the owner bearer check; false = not mine. */
+  timeline?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Inbound webhooks (/gateway/hooks — phoneHooks.ts). `inbound` answers the
+   *  unauthenticated `POST /gateway/hooks/<id>` door BEFORE the bearer check (the
+   *  hook's own secret is its auth); `manage` is the owner's list/create/delete,
+   *  asked after it. false = not mine. */
+  hooks?: {
+    inbound: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+    manage: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  };
+  /** Morning/evening briefings (/gateway/briefings — phoneBriefings.ts). Asked
+   *  right after the bearer check; false = not mine. */
+  briefings?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Location triggers: places, rules and the phone's enter/exit events
+   *  (/gateway/location — phoneLocation.ts). false = not mine. */
+  location?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Watch / take over Ares's live browser (/watch/<token>…). Unauthenticated
+   *  like /connect/ — the token is the capability for one page. */
+  watch?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  registerPush?: (device: { token: string; platform: string; label?: string }) => Promise<void>;
+  unregisterPush?: (token: string) => Promise<void>;
+  pushConfigured?: () => boolean;
+  /** Where Ares writes the things it MAKES (renders, pages, reports) — its
+   *  home. /gateway/file serves these so the phone can see, not just read
+   *  about, what it built. Same containment rule as screenshots. */
+  artifactRoots?: string[];
+  /**
+   * The cockpit the app renders: which providers and models exist, what
+   * reasoning effort each one honours, and which standing permission grants
+   * are in force. Hooks rather than imports so this server keeps knowing
+   * nothing about the provider registry or the permission store, and tests
+   * can stub the lot.
+   */
+  control?: {
+    providers: () => string[];
+    /** Models for one provider. May hit that provider's API, so it is a
+     *  separate call from the cheap overview. */
+    models: (provider: string) => Promise<ModelOption[]>;
+    effort: () => { current: string; levels: string[] };
+    setEffort: (level: string) => Promise<void>;
+    permissions: () => PermissionEntry[];
+    /** false when the pattern wasn't found or isn't the owner's to revoke. */
+    revokePermission: (pattern: string) => Promise<boolean>;
+  };
+  /** The owner's control plane: kill switch, pause, jobs, audit log (see
+   *  phoneOwnerControl.ts for the routes and shapes). */
+  ownerControl?: OwnerControlHooks;
+  /** The Terminal tab (/gateway/terminal — phoneTerminal.ts, docs/TERMINAL.md): an
+   *  owner-only PTY shell. It authenticates itself (owner bearer; any other token is
+   *  403) so it is asked BEFORE the generic bearer check. */
+  terminal?: TerminalApi;
+}
+
+/** One row in the model picker. */
+export interface ModelOption {
+  id: string;
+  label?: string;
+  /** The effort rungs this model actually honours; absent means it has no dial. */
+  effortLevels?: string[];
+  contextWindow?: number;
+}
+
+/** One standing permission grant, as the app lists it. */
+export interface PermissionEntry {
+  pattern: string;
+  effect: string;
+  /** user-global rules are revocable from the phone; project rules are not. */
+  source: string;
+}
+
+/** The privacy policy for the AgentAres companion app, served publicly so the
+ *  URL given to App Store Connect resolves. Kept inline rather than read from
+ *  disk: a review fetch must never depend on a file being present. */
+const PRIVACY_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentAres — Privacy</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:40px 22px 72px; background:#07090c; color:#e8ebf0;
+         font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  main { max-width:660px; margin:0 auto; }
+  h1 { font-size:27px; margin:0 0 6px; }
+  h2 { font-size:17px; margin:34px 0 8px; color:#ff7a1a; }
+  p, li { color:#c3c9d4; }
+  .sub { color:#5c6472; font-size:14px; margin:0 0 8px; }
+  code { background:#181d25; padding:1px 6px; border-radius:5px; font-size:14px; }
+</style></head>
+<body><main>
+<h1>AgentAres — Privacy</h1>
+<p class="sub">Last updated 22 September 2026</p>
+
+<p>AgentAres is a companion app for an Ares assistant that <strong>you</strong> run on
+<strong>your own</strong> computer. It is not a service. There is no account, no sign-up,
+and no backend operated by us.</p>
+
+<h2>What we collect</h2>
+<p>Nothing. We operate no servers that this app talks to, so there is nothing for us
+to collect, store, sell, or hand to anyone.</p>
+
+<h2>Where your data goes</h2>
+<p>The app connects only to the address you pair it with — your own machine. Your
+messages, the assistant&#39;s replies, any photos you attach, and any voice recording
+travel between your phone and that machine and nowhere else. Pairing details are kept
+on your device.</p>
+
+<h2>Permissions the app asks for</h2>
+<ul>
+<li><strong>Camera</strong> — to scan the pairing QR code, and to take a photo you
+choose to send. Images go only to your own machine.</li>
+<li><strong>Photo library</strong> — only for photos you pick to send.</li>
+<li><strong>Microphone</strong> — only while you hold the record button. Audio is sent
+to your machine to be transcribed there.</li>
+<li><strong>Notifications</strong> — so your machine can tell you a task finished or
+needs your approval, delivered through Apple Push Notification service.</li>
+</ul>
+
+<h2>Third parties</h2>
+<p>Apple delivers push notifications and distributes the app. Whatever your own
+assistant is configured to use on your machine — a model provider, a connector you
+authorized — is governed by that provider&#39;s policy and your configuration, not by
+this app.</p>
+
+<h2>Deleting your data</h2>
+<p>Delete the app to remove pairing details from your phone. Everything else lives on
+your machine and is yours to delete there.</p>
+
+<h2>Contact</h2>
+<p><code>clout2buy@gmail.com</code></p>
+</main></body></html>`;
 
 // ─── Internal state ────────────────────────────────────────────────────────
 
@@ -289,7 +503,15 @@ export class RemoteAgentServer {
     const host = this.opts.host ?? "0.0.0.0";
     const http = createServer((req, res) => this.handleHttp(req, res));
     const wss = new WebSocketServer({ server: http, maxPayload: 64 * 1024 * 1024 });
-    wss.on("connection", (ws) => this.handleConnection(ws));
+    wss.on("connection", (ws, req) => {
+      const pathname = (req.url ?? "/").split("?")[0];
+      if (pathname === "/gateway") this.proxyGateway(ws, req);
+      else if (pathname.startsWith("/gateway/terminal/")) {
+        const terminal = this.opts.phoneApi?.terminal;
+        if (terminal) terminal.ws(ws, req); else ws.close(1008, "no terminal on this machine");
+      }
+      else this.handleConnection(ws);
+    });
     // `ws` forwards the HTTP server's errors onto the WebSocketServer, and an
     // "error" event with no listener THROWS. That made the listen guard below
     // a lie: the promise rejected and the caller caught it, but the re-emit
@@ -1175,6 +1397,35 @@ export class RemoteAgentServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) { void this.handleControlApi(req, res, url); return; }
+    if (url.pathname.startsWith("/connect/") && this.opts.phoneApi?.connect) {
+      void this.opts.phoneApi.connect(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
+    if (url.pathname.startsWith("/watch/") && this.opts.phoneApi?.watch) {
+      void this.opts.phoneApi.watch(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
+    if ((url.pathname === "/oauth/callback" || url.pathname === "/oauth/client.json") && this.opts.phoneApi?.oauth) {
+      void this.opts.phoneApi.oauth.handleCallback(req, res, url).then((handled) => {
+        if (!handled && !res.headersSent) { res.writeHead(404); res.end(); }
+      }).catch(() => { if (!res.headersSent) { res.writeHead(500); res.end(); } });
+      return;
+    }
+    // Public, unauthenticated, and deliberately so: Apple fetches this during
+    // TestFlight/App Store review, and it is the page a tester follows from the
+    // listing. It states what is true of this app — the only server it talks to
+    // is the one the owner runs.
+    if (url.pathname === "/privacy") {
+      const page = PRIVACY_PAGE;
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(page), "cache-control": "public, max-age=3600" });
+      res.end(page);
+      return;
+    }
+    if (url.pathname.startsWith("/gateway/")) { void this.handlePhoneApi(req, res, url); return; }
     // The Ares network: the estate door lives on this origin under /oricle.
     if (url.pathname.startsWith("/oricle/")) {
       const door = this.opts.estateDoor;
@@ -1235,6 +1486,33 @@ export class RemoteAgentServer {
     res.end(body);
   }
 
+  /**
+   * /gateway/file and /gateway/shot: hand the phone one thing Ares made.
+   * Only a file under a root Ares itself writes to, only a type we'd show: the
+   * token is the owner's, but a path parameter is still a path parameter.
+   * /shot is the image-only alias the app used first. The bytes are streamed
+   * with Range/HEAD support by phoneFile.ts — never buffered.
+   */
+  private async serveArtifact(req: IncomingMessage, res: ServerResponse, rawPath: string, imageOnly: boolean): Promise<void> {
+    const api = this.opts.phoneApi ?? {};
+    const notFound = () => {
+      res.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(req.method === "HEAD" ? undefined : JSON.stringify({ error: "not found" }));
+    };
+    const wanted = path.resolve(rawPath);
+    const roots = [...(api.screenshotRoots ?? []), ...(api.artifactRoots ?? [])];
+    const type = ARTIFACT_TYPES[path.extname(wanted).toLowerCase()];
+    if (!type || (imageOnly && !type.startsWith("image/")) || !mayServe(wanted, roots, this.home)) return notFound();
+    // …and again after following symlinks. The extension check reads the
+    // PATH, so `served-root/report.html` symlinked at an ssh key would
+    // otherwise pass every gate above and be handed straight out. Matters
+    // most for the temp root, which is world-writable.
+    let real: string;
+    try { real = await realpath(wanted); } catch { return notFound(); }
+    if (real !== wanted && !realPathOk(real, roots, this.home)) return notFound();
+    if ((await serveFile(req, res, real, type)) === "missing") return notFound();
+  }
+
   private wsUrl(): string {
     return this.linkBaseUrl().replace(/^http/, "ws") + "/ws";
   }
@@ -1243,6 +1521,248 @@ export class RemoteAgentServer {
   //
   // The chat surfaces run in the daemon process; this server runs in the
   // garrison. The RemotePC tool there talks to us through these routes.
+
+  // ─── Phone API (same origin as /gateway, Bearer = the gateway token) ────
+  //
+  // Unlike the control API this is MEANT to arrive through the tunnel: it is
+  // the companion app's side-channel for the things a WebSocket frame is the
+  // wrong shape for — a screenshot's bytes, a voice note in, spoken audio out.
+
+  private async handlePhoneApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(body));
+    };
+    if (url.pathname === "/gateway/health") return json(200, { ok: true, gateway: !!this.opts.gatewayUrl });
+    // Inbound webhooks: the one place the OUTSIDE world may POST without the owner's bearer.
+    if (this.opts.phoneApi?.hooks && req.method === "POST" && url.pathname.startsWith("/gateway/hooks/")) {
+      try {
+        if (await this.opts.phoneApi.hooks.inbound(req, res, url)) return;
+      } catch (err) {
+        this.log(`hooks inbound error: ${err instanceof Error ? err.message : String(err)}`);
+        if (!res.headersSent) return json(500, { error: "internal error" });
+        return;
+      }
+    }
+    if (this.opts.phoneApi?.terminal && (url.pathname === "/gateway/terminal" || url.pathname.startsWith("/gateway/terminal/"))) {
+      if (await this.opts.phoneApi.terminal.http(req, res, url)) return;
+    }
+    const expected = this.opts.controlToken;
+    const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (!expected || !tokensMatch(presented, expected)) return json(401, { error: "unauthorized" });
+    // The Connections screen (list / start / disconnect) — phoneConnections.ts.
+    if (await handleConnectionsApi(req, res, url, { log: (line) => this.log(line) })) return;
+    // The phone bridge routes must win over deviceSync.ts, which 404s unknown subroutes.
+    if (this.opts.phoneApi?.device && /^\/gateway\/device\/(pending|respond|test|list)\/?$/.test(url.pathname)) {
+      if (await this.opts.phoneApi.device(req, res, url)) return;
+    }
+    // What the iPhone shares (Health, Contacts, Calendar) — deviceSync.ts.
+    if (await handleDeviceApi(req, res, url, { home: this.home })) return;
+    if (this.opts.phoneApi?.goals && (url.pathname === "/gateway/goals" || url.pathname.startsWith("/gateway/goals/"))) {
+      if (await this.opts.phoneApi.goals(req, res, url)) return;
+    }
+    if (this.opts.phoneApi?.memory && (url.pathname === "/gateway/memory" || url.pathname.startsWith("/gateway/memory/"))) {
+      if (await this.opts.phoneApi.memory(req, res, url)) return;
+    }
+    // Goals tab + Artifacts | Media library — phoneLibrary.ts. Lists only
+    // what /gateway/file below will serve (same roots, same refusals).
+    {
+      const fileRoots = [...(this.opts.phoneApi?.screenshotRoots ?? []), ...(this.opts.phoneApi?.artifactRoots ?? [])];
+      // A workspace is somebody's project tree: its pages, pictures and media are
+      // things Ares made, but its source and data files are the project, and
+      // listing every .ts/.json at depth 2 would bury the library. (They still
+      // open by path; this only decides what the LIST shows.)
+      const projectRoots = (this.opts.phoneApi?.artifactRoots ?? []).filter((r) => r !== this.home && r !== os.tmpdir());
+      const libraryRoots: Array<[string, number]> = [
+        [path.join(this.home, "media"), 3],
+        [path.join(this.home, "forge"), 3],
+        ...projectRoots.map((r): [string, number] => [r, 2]),
+      ];
+      const servable = (p: string) => mayServe(path.resolve(p), fileRoots, this.home);
+      if (await handleLibraryApi(req, res, url, { roots: libraryRoots, servable, home: this.home, projectRoots })) return;
+    }
+    const api = this.opts.phoneApi ?? {};
+    if (url.pathname === "/gateway/family/messages" && (req.method === "GET" || req.method === "POST")) {
+      const relay = process.env.ARES_FAMILY_URL;
+      const token = process.env.ARES_FAMILY_TOKEN;
+      if (!relay || !token) return json(501, { error: "family messaging not configured" });
+      try {
+        const body = req.method === "POST" ? await readJson(req, 16 * 1024) : undefined;
+        const response = await fetch(`${relay}/messages`, {
+          method: req.method,
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+          signal: AbortSignal.timeout(10_000),
+        });
+        return json(response.status, await response.json());
+      } catch (err) {
+        return json(502, { error: err instanceof Error ? err.message : "family relay unavailable" });
+      }
+    }
+    if (api.personas && (url.pathname === "/gateway/personas" || url.pathname.startsWith("/gateway/personas/"))) {
+      if (await api.personas(req, res, url)) return;
+    }
+    if (api.avatars && (url.pathname === "/gateway/avatars" || url.pathname.startsWith("/gateway/avatar/"))) {
+      if (await api.avatars(req, res, url)) return;
+    }
+    if (api.instances && (url.pathname === "/gateway/instances" || url.pathname.startsWith("/gateway/instances/"))) {
+      if (await api.instances(req, res, url)) return;
+    }
+    if (api.providers && (url.pathname === "/gateway/providers" || url.pathname.startsWith("/gateway/providers/"))) {
+      if (await api.providers(req, res, url)) return;
+    }
+    if (api.ask && (url.pathname === "/gateway/ask" || url.pathname === "/gateway/ask/" || url.pathname === "/gateway/ask/last")) {
+      if (await api.ask(req, res, url)) return;
+    }
+    if (api.timeline && (url.pathname === "/gateway/timeline" || url.pathname === "/gateway/timeline/")) {
+      if (await api.timeline(req, res, url)) return;
+    }
+
+    if (api.notify && /^\/gateway\/(approvals|liveactivity)(\/|$)/.test(url.pathname)) {
+      if (await api.notify(req, res, url)) return;
+    }
+
+    if (api.inbox && (url.pathname === "/gateway/inbox" || url.pathname.startsWith("/gateway/inbox/"))) {
+      if (await api.inbox(req, res, url)) return;
+    }
+    if (api.shortcuts && (url.pathname === "/gateway/shortcuts" || url.pathname.startsWith("/gateway/shortcuts/"))) {
+      if (await api.shortcuts(req, res, url)) return;
+    }
+    if (api.device && (url.pathname === "/gateway/device" || url.pathname.startsWith("/gateway/device/"))) {
+      if (await api.device(req, res, url)) return;
+    }
+    if (api.hooks && (url.pathname === "/gateway/hooks" || url.pathname.startsWith("/gateway/hooks/"))) {
+      if (await api.hooks.manage(req, res, url)) return;
+    }
+    if (api.briefings && (url.pathname === "/gateway/briefings" || url.pathname.startsWith("/gateway/briefings/"))) {
+      if (await api.briefings(req, res, url)) return;
+    }
+    if (api.location && (url.pathname === "/gateway/location" || url.pathname.startsWith("/gateway/location/"))) {
+      if (await api.location(req, res, url)) return;
+    }
+
+    try {
+      // The same door with the path IN the URL — /gateway/file/<absolute path> —
+      // so a page opened there resolves its relative references (<img src="cat.png">,
+      // <video src="clip.mp4">) to siblings under the same directory, which a
+      // ?path= query cannot do. Identical rules: it only re-spells the path.
+      if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/gateway/file/")) {
+        let spelled: string;
+        try { spelled = decodeURIComponent(url.pathname.slice("/gateway/file".length)); } catch { return json(404, { error: "not found" }); }
+        if (process.platform === "win32" && /^\/[A-Za-z]:\//.test(spelled)) spelled = spelled.slice(1);
+        return await this.serveArtifact(req, res, spelled, false);
+      }
+      if (api.ownerControl) {
+        const reply = await handleOwnerControlRoute(req.method, url, () => readJson(req, 4 * 1024), api.ownerControl);
+        if (reply) return json(reply.status, reply.body);
+      }
+      switch (`${req.method} ${url.pathname}`) {
+        case "GET /gateway/shot":
+        case "HEAD /gateway/shot":
+        case "GET /gateway/file":
+        case "HEAD /gateway/file": {
+          return await this.serveArtifact(req, res, url.searchParams.get("path") ?? "", url.pathname === "/gateway/shot");
+        }
+        case "POST /gateway/connect/start": {
+          if (!api.oauth) return json(501, { error: "connectors are not set up on this machine" });
+          const body = await readJson(req, 4 * 1024);
+          const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+          if (!provider) return json(400, { error: "provider required" });
+          try {
+            const { authorizeUrl } = await api.oauth.begin(provider, Array.isArray(body.scopes) ? (body.scopes as string[]) : undefined);
+            return json(200, { authorizeUrl });
+          } catch (err) {
+            return json(400, { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        case "GET /gateway/connect/callback-url": {
+          return json(200, { callbackUrl: api.oauth?.callbackUrlForSetup() ?? null });
+        }
+        case "POST /gateway/push/register": {
+          const body = await readJson(req, 16 * 1024);
+          const token = typeof body.token === "string" ? body.token.trim() : "";
+          if (!token) return json(400, { error: "token required" });
+          if (body.remove === true) {
+            if (api.unregisterPush) await api.unregisterPush(token);
+            return json(200, { ok: true, removed: true });
+          }
+          if (!api.registerPush) return json(501, { error: "push is not set up on this machine", configured: false });
+          await api.registerPush({
+            token,
+            platform: typeof body.platform === "string" ? body.platform : "ios",
+            ...(typeof body.label === "string" ? { label: body.label } : {}),
+          });
+          return json(200, { ok: true, configured: api.pushConfigured ? api.pushConfigured() : true });
+        }
+        case "GET /gateway/control": {
+          // One cheap round trip for everything the settings sheet opens with.
+          // Models are deliberately NOT here: they can cost a provider API
+          // call each, and the sheet only needs them once a provider is picked.
+          // The kill-switch state rides along: paused/pausedAt/running.
+          const owner = api.ownerControl?.status();
+          if (!api.control) {
+            return owner ? json(200, owner) : json(501, { error: "this machine exposes no model or permission control" });
+          }
+          const effort = api.control.effort();
+          return json(200, { providers: api.control.providers(), effort, permissions: api.control.permissions(), ...(owner ?? {}) });
+        }
+        case "GET /gateway/control/models": {
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const provider = (url.searchParams.get("provider") ?? "").trim();
+          if (!provider) return json(400, { error: "provider required" });
+          try {
+            return json(200, { provider, models: await api.control.models(provider) });
+          } catch (err) {
+            // A provider that is unreachable or unauthed is a normal state to
+            // render ("no models — check the key"), not a 500 for the app.
+            return json(200, { provider, models: [], error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        case "POST /gateway/control/effort": {
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const body = await readJson(req, 4 * 1024);
+          const level = typeof body.level === "string" ? body.level.trim().toLowerCase() : "";
+          const { levels } = api.control.effort();
+          if (!levels.includes(level)) return json(400, { error: `level must be one of: ${levels.join(", ")}` });
+          await api.control.setEffort(level);
+          return json(200, { ok: true, effort: api.control.effort() });
+        }
+        case "POST /gateway/control/permissions/revoke": {
+          if (!api.control) return json(501, { error: "this machine exposes no model or permission control" });
+          const body = await readJson(req, 4 * 1024);
+          const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
+          if (!pattern) return json(400, { error: "pattern required" });
+          const removed = await api.control.revokePermission(pattern);
+          return json(removed ? 200 : 404, { ok: removed, permissions: api.control.permissions() });
+        }
+        case "POST /gateway/stt": {
+          if (!api.transcribe) return json(501, { error: "no transcriber on this machine" });
+          const body = await readJson(req, 12 * 1024 * 1024);
+          const audio = typeof body.audio === "string" ? Buffer.from(body.audio, "base64") : Buffer.alloc(0);
+          if (audio.byteLength === 0) return json(400, { error: "audio (base64) required" });
+          const encoding = typeof body.encoding === "string" ? body.encoding : "LINEAR16";
+          const sampleRateHertz = typeof body.sampleRateHertz === "number" ? body.sampleRateHertz : 16_000;
+          const text = await api.transcribe(audio, { encoding, sampleRateHertz });
+          return json(200, { text });
+        }
+        case "POST /gateway/tts": {
+          if (!api.synthesize) return json(501, { error: "no voice on this machine" });
+          const body = await readJson(req, 64 * 1024);
+          const text = typeof body.text === "string" ? body.text.trim() : "";
+          if (!text) return json(400, { error: "text required" });
+          const voice = typeof body.voice === "string" ? body.voice : undefined;
+          const mp3 = await api.synthesize(text.slice(0, 4_000), voice);
+          return json(200, { audio: mp3.toString("base64"), contentType: "audio/mpeg" });
+        }
+        default:
+          if (api.life && (await api.life(req, res, url))) return;
+          return json(404, { error: "not found" });
+      }
+    } catch (err) {
+      this.log(`phone api ${url.pathname} failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (!res.headersSent) json(500, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   private async handleControlApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const json = (status: number, body: unknown) => {
@@ -1341,6 +1861,63 @@ export class RemoteAgentServer {
   }
 
   // ─── WebSocket ─────────────────────────────────────────────────────────
+
+  /**
+   * Pipe one companion socket to the garrison gateway. Cloudflare closes a
+   * WebSocket idle for 100s, and the garrison's own 30s ping only reaches the
+   * upstream leg (`ws` answers it here), so this leg gets its own ping.
+   */
+  private proxyGateway(client: WebSocket, req: IncomingMessage): void {
+    const target = this.opts.gatewayUrl;
+    if (!target) {
+      client.close(1011, "no gateway on this machine");
+      return;
+    }
+    const peer = req.headers["cf-connecting-ip"] ?? req.socket.remoteAddress ?? "?";
+    const upstream = new WebSocket(target);
+    // Frames the client sends before the upstream leg is open are held, not
+    // dropped: the very first one is the hello, and losing it means the
+    // garrison's handshake timer closes a connection that looked healthy.
+    const backlog: Array<{ data: WebSocket.RawData; isBinary: boolean }> = [];
+    let open = false;
+    // A close code read off one leg is not always legal to SEND on the other:
+    // 1005/1006 (no status / abnormal) are receive-only, and `ws` throws on
+    // them — inside a catch, which left the far side open forever. Forward
+    // only codes a peer may send; everything else becomes a plain 1000.
+    const sendable = (code: number): number =>
+      (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999) ? code : 1000;
+    const closeBoth = (code: number, reason: string) => {
+      const safeCode = sendable(code);
+      const safeReason = reason.slice(0, 120);
+      try { if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) client.close(safeCode, safeReason); } catch { /* already gone */ }
+      try { if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close(safeCode, safeReason); } catch { /* already gone */ }
+    };
+    upstream.on("open", () => {
+      open = true;
+      for (const { data, isBinary } of backlog.splice(0)) upstream.send(data, { binary: isBinary });
+      this.log(`gateway proxy: companion connected from ${peer}`);
+    });
+    upstream.on("message", (data, isBinary) => {
+      if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+    });
+    client.on("message", (data, isBinary) => {
+      if (open && upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+      else backlog.push({ data, isBinary });
+    });
+    upstream.on("close", (code, reason) => closeBoth(code, reason.toString()));
+    client.on("close", () => closeBoth(1000, "companion left"));
+    upstream.on("error", (err) => {
+      this.log(`gateway proxy: upstream error (${err.message})`);
+      closeBoth(1011, "gateway unavailable");
+    });
+    client.on("error", () => closeBoth(1011, "companion error"));
+    const ping = setInterval(() => {
+      if (client.readyState === WebSocket.OPEN) client.ping();
+      else clearInterval(ping);
+    }, 30_000);
+    ping.unref?.();
+    client.once("close", () => clearInterval(ping));
+  }
 
   private handleConnection(ws: WebSocket): void {
     let pc: RemotePcConn | undefined;
@@ -1548,6 +2125,20 @@ export class RemoteAgentServer {
   }
 }
 
+/** Body as JSON, bounded — a phone upload is a few hundred KB, never more. */
+async function readJson(req: IncomingMessage, limit: number): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).byteLength;
+    if (total > limit) throw new Error("body too large");
+    chunks.push(c as Buffer);
+  }
+  if (chunks.length === 0) return {};
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+}
+
 function tokensMatch(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf8");
   const bb = Buffer.from(b, "utf8");
@@ -1669,11 +2260,11 @@ function buildWindowsCmd(base: string, token: string): string {
   ].join("\r\n");
 }
 
-function buildPowerShellAgent(token: string, wsUrl: string): string {
+export function buildPowerShellAgent(token: string, wsUrl: string): string {
   return AGENT_PS1.replace(/__ARES_TOKEN__/g, token).replace(/__ARES_WS_URL__/g, wsUrl);
 }
 
-function buildPythonAgent(token: string, wsUrl: string): string {
+export function buildPythonAgent(token: string, wsUrl: string): string {
   return AGENT_PY.replace(/__ARES_TOKEN__/g, token).replace(/__ARES_WS_URL__/g, wsUrl);
 }
 

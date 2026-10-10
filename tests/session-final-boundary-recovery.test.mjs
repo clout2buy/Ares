@@ -246,3 +246,62 @@ test("final-boundary recovery projects a settled tool result without rerunning i
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("a startup replay that fails retires its input instead of wedging every later message", async () => {
+  // Reproduces the live poison on doingbox (sess_08d961dd): an orphaned input
+  // was replayed at boot, the replay failed, lease release requeued it as the
+  // admitted queue head, and every later send waited 60s behind it and then
+  // settled without running. Every restart replayed the same failure.
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "ares-poison-orphan-"));
+  const store = new SessionKernelStore(new BetterSqlite3(":memory:"));
+  try {
+    let calls = 0;
+    const provider = {
+      name: "fail-twice",
+      async *stream() {
+        calls += 1;
+        if (calls <= 2) throw new Error(`simulated provider failure ${calls}`);
+        yield {
+          type: "message_done",
+          message: {
+            id: `recovered_${calls}`,
+            role: "assistant",
+            content: [{ type: "text", text: "running again" }],
+            createdAt: new Date().toISOString(),
+          },
+          usage: { inputTokens: 1, outputTokens: 1 },
+          stopReason: "end_turn",
+        };
+      },
+    };
+    const options = { workspace, provider, model: "mock", systemPrompt: "test", tools: [], sessionKernel: store, contextBudgetTokens: 0 };
+    const first = new Session({ ...options, sessionId: "poison" });
+    for await (const _ of first.sendContent([{ type: "text", text: "doomed" }], { inputId: "poison-input" })) { /* drain */ }
+    assert.equal(store.getInput("poison-input")?.state, "admitted", "core requeues a failed input for resume");
+
+    const snapshot = await loadSessionSnapshot(workspace, "poison", { maxMessages: 10_000 });
+    const restarted = new Session({
+      ...options,
+      sessionMeta: snapshot.meta,
+      initialMessages: snapshot.messages,
+      initialTodos: snapshot.todos,
+      initialSeq: snapshot.nextSeq,
+    });
+    await assert.rejects(restarted.waitForStartupRecovery(), /ended failed/);
+    assert.equal(calls, 2, "startup replayed the orphan once");
+    assert.equal(store.getInput("poison-input")?.state, "cancelled", "a failed replay is terminal, not requeued");
+
+    const started = Date.now();
+    const events = [];
+    for await (const event of restarted.sendContent([{ type: "text", text: "you there?" }], { inputId: "next-input" })) {
+      events.push(event);
+    }
+    assert.ok(Date.now() - started < 10_000, "the next message must not wait out the 60s head timeout");
+    assert.equal(calls, 3, "the next message reached the model");
+    assert.equal(events.findLast((event) => event.type === "turn_end")?.status, "completed");
+    assert.equal(store.getInput("next-input")?.state, "consumed");
+  } finally {
+    store.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

@@ -20,7 +20,7 @@ function workspaceHints(cwd: string): string {
   const hints: string[] = [];
   try {
     if (cwd && existsSync(path.join(cwd, "project.godot"))) {
-      hints.push("- Godot 4 project at the working directory: `SkillRead godot` before touching scenes/scripts, then the `ares/godot` provider via Capability (inspect → mutate → check → run+screenshot).");
+      hints.push("- Godot 4 project at the working directory: `SkillRead godot` FIRST, then `Capability invoke provider_id:\"ares/godot\"` (inspect → mutate → check → run+screenshot). Never hand-edit .tscn text the provider can change; never claim a mechanic works without a check and a run whose screenshot you looked at.");
     }
   } catch {
     // a hint is never worth a failed compose

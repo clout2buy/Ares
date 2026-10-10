@@ -38,6 +38,15 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.55.1",
+    date: "October 2026",
+    title: "GitHub, connected",
+    tagline: "Connecting GitHub's tools no longer stops at an error.",
+    highlights: [
+      { icon: "🐙", title: "GitHub connects", blurb: "Connect GitHub from the connector list: Ares shows a short code, you approve it on GitHub, and its tools are ready.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.55.0",
     date: "October 2026",
     title: "One Ares",

@@ -24,6 +24,7 @@ import os from "node:os";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { catalogById } from "./mcpCatalog.js";
+import { resolveOAuthClient } from "./oauthClients.js";
 import { getCredential, setCredential, deleteCredential } from "./credentials.js";
 import {
   discoverMcpAuth,
@@ -353,6 +354,72 @@ function clientCachePath(home: string | undefined): string {
   return path.join(home ?? process.env.ARES_HOME ?? path.join(os.homedir(), ".ares"), "mcp-clients.json");
 }
 
+/** The registry provider id for a connector name ("github", "github-mcp" -> "github"). */
+function registryProviderFor(name: string): string {
+  return name.toLowerCase().replace(/[-_ ]?mcp$/, "").replace(/[^a-z0-9]+/g, "-");
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** The local page that shows the device code: the browser opens it, the owner
+ *  copies the code and clicks through to the issuer's verification page. */
+function deviceCodePage(name: string, userCode: string, verificationUri: string): string {
+  const code = escapeHtml(userCode);
+  const link = escapeHtml(verificationUri);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect ${escapeHtml(name)}</title>
+<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}
+main{text-align:center;padding:24px;max-width:420px}code{display:block;font-size:2.4rem;letter-spacing:.15em;margin:18px 0;padding:12px;background:#222;border-radius:10px}
+a,button{display:inline-block;margin:6px;padding:10px 18px;border-radius:8px;border:0;background:#2f81f7;color:#fff;font-size:1rem;text-decoration:none;cursor:pointer}
+p{color:#aaa}</style></head><body><main><h2>Connect ${escapeHtml(name)} to Ares</h2><p>Enter this code on the next page:</p><code>${code}</code>
+<button onclick="navigator.clipboard.writeText('${code}').then(()=>this.textContent='Copied')">Copy code</button>
+<a href="${link}" target="_blank" rel="noopener">Open ${escapeHtml(new URL(verificationUri).host)}</a>
+<p>Ares finishes on its own once you approve. You can close this tab afterwards.</p></main></body></html>`;
+}
+
+/**
+ * Sign in to a server without dynamic registration through the device flow,
+ * using a registry client (vault or official). Returns null when no client is
+ * registered for this provider or the issuer has no device flow, so the caller
+ * keeps its normal "needs a pre-registered client" message.
+ */
+async function connectWithRegistryDevice(url: string, name: string, opts: ConnectMcpOptions): Promise<ConnectMcpResult | null> {
+  const client = await resolveOAuthClient(registryProviderFor(name), opts.home ? { home: opts.home } : {}).catch(() => undefined);
+  if (!client) return null;
+  const prepared = await prepareMcpAuthorization(url, {
+    name,
+    ...(opts.displayName ? { displayName: opts.displayName } : {}),
+    ...(opts.home ? { home: opts.home } : {}),
+    redirectUri: "http://127.0.0.1/oauth/callback",
+    client: { clientId: client.clientId, ...(client.clientSecret ? { clientSecret: client.clientSecret } : {}), authMethod: client.clientSecret ? "client_secret_post" : "none" },
+    preferDevice: true,
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  });
+  if (prepared.mode !== "device") return null;
+  const page = deviceCodePage(opts.displayName ?? name, prepared.device.userCode, prepared.device.verificationUri);
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(page);
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve(typeof addr === "object" && addr ? addr.port : 0);
+    });
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(60_000, Math.min(opts.timeoutMs ?? 15 * 60_000, prepared.device.expiresAt - Date.now())));
+  try {
+    opts.onAuthorizeUrl(`http://127.0.0.1:${port}/`);
+    return await prepared.poll(controller.signal);
+  } finally {
+    clearTimeout(timer);
+    server.close();
+  }
+}
+
 export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Promise<ConnectMcpResult> {
   const name = (opts.name ?? connectorNameFromUrl(url)).trim();
   const home = opts.home;
@@ -360,8 +427,11 @@ export async function connectMcpServer(url: string, opts: ConnectMcpOptions): Pr
   // Discovery needs no port — do it before binding so a dead server fails fast.
   const authServer = await discoverMcpAuth(url);
   if (!authServer.registrationEndpoint) {
-    // Some servers require a pre-registered client. Surface a clear next step
-    // instead of failing deep in the flow.
+    // No dynamic registration (GitHub is the big one). A pre-registered client
+    // from the registry - the owner's vault or Ares's official one - can still
+    // sign in through the device flow, which needs no secret and no redirect.
+    const viaDevice = await connectWithRegistryDevice(url, name, opts);
+    if (viaDevice) return viaDevice;
     throw new Error(
       `${name} doesn't support automatic app registration. It may need a token you paste directly (use the token field), or a pre-registered client.`,
     );

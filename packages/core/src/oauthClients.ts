@@ -32,7 +32,8 @@ export interface OfficialClient {
  * the setup step is shown instead.
  */
 export const OFFICIAL_OAUTH_CLIENTS: Record<string, OfficialClient> = {
-  github: { clientId: "" },
+  // The "Ares" OAuth App (device flow enabled). A public client id carries no secret.
+  github: { clientId: "Ov23li6UvYcUBCIhABNw" },
   google: { clientId: "" },
   slack: { clientId: "" },
   notion: { clientId: "" },

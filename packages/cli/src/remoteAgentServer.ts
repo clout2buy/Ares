@@ -669,6 +669,34 @@ export class RemoteAgentServer {
     };
   }
 
+  /**
+   * Everything the iPhone app needs to pair with THIS Ares: the gateway
+   * address, the owner token that opens it, and the ares://pair link its QR
+   * scanner reads. Each Ares hosts its own gateway, so nobody's phone ever
+   * depends on someone else's server. `permanence` says whether the address
+   * survives a restart: a pinned origin does, a quick tunnel does not (new
+   * random hostname each boot), and a LAN address only works at home.
+   */
+  async phonePairing(): Promise<{ url: string; token: string; name: string; link: string; permanence: "stable" | "tunnel" | "lan"; advice?: string }> {
+    if (!this.publicBaseUrl && (this.opts.tunnelMode ?? "auto") !== "none") {
+      await Promise.race([this.tunnelReady, new Promise<void>((r) => setTimeout(r, TUNNEL_WAIT_MS).unref?.())]);
+    }
+    const token = this.opts.controlToken ?? "";
+    if (!token) throw new Error("the gateway has no owner token yet; restart Ares so the garrison can create one");
+    const base = this.linkBaseUrl().replace(/\/+$/, "");
+    const url = `${base.replace(/^http/, "ws")}/gateway`;
+    const name = (process.env["ARES_HOST_NICKNAME"] ?? "").trim() || hostname();
+    const permanence = this.stableBaseUrl ? "stable" : this.publicBaseUrl ? "tunnel" : "lan";
+    const advice =
+      permanence === "tunnel"
+        ? "This is a temporary address: it changes every time Ares restarts, and the phone will need to pair again. Pin your own address (Settings, or ARES_REMOTE_PUBLIC_URL with a Cloudflare named tunnel) to make it permanent."
+        : permanence === "lan"
+          ? "This address only works on your home network. Pin a public address (ARES_REMOTE_PUBLIC_URL) to reach Ares from anywhere."
+          : undefined;
+    const link = `ares://pair?${new URLSearchParams({ url, token, name }).toString()}`;
+    return { url, token, name, link, permanence, ...(advice ? { advice } : {}) };
+  }
+
   /** Every paired device, with whether it is connected right now. */
   listDevices(): Array<{
     id: string; name: string; hostname: string; os: string;
@@ -1820,6 +1848,8 @@ export class RemoteAgentServer {
         // Permanent pairing — a DIFFERENT link kind from the one-time help
         // link above, so the UI can offer the two as distinct buttons.
         case "POST /api/pair-link": return json(200, await this.generatePairingLink(str("label") || "my device"));
+        // The iPhone app pairing payload (address + owner token + ares://pair link).
+        case "GET /api/phone-pair": return json(200, await this.phonePairing());
         case "GET /api/devices": return json(200, { devices: this.listDevices() });
         case "POST /api/unpair": {
           const device = await this.unpairDevice(str("deviceId"));

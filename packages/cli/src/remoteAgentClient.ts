@@ -113,6 +113,38 @@ export class RemoteAgentClient implements RemoteAgentServerLike {
     return this.call("POST", "/api/link", { label });
   }
 
+  /**
+   * Relay one request to this machine's own phone gateway (/gateway/...) with
+   * the owner token, so the desktop can use every feature the iPhone app has
+   * without the token ever reaching the web view. Returns the status instead
+   * of throwing on 4xx/5xx so the UI can show the gateway's own error.
+   */
+  async gatewayFetch(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", route: string, body?: unknown, timeoutMs = 45_000): Promise<{ status: number; data: unknown }> {
+    if (!/^\/gateway(\/|$|\?)/.test(route) || route.includes("..")) throw new Error(`not a gateway route: ${route}`);
+    const token = await readFile(tokenPath(this.home), "utf8").then((t) => t.trim()).catch(() => "");
+    if (!token) throw new Error(`Ares Garrison is not running (no gateway token at ${tokenPath(this.home)}).`);
+    let res: Response;
+    try {
+      res = await fetch(`${this.base}${route}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      throw new Error(describeCallFailure(err, this.base, route, timeoutMs));
+    }
+    const text = await res.text().catch(() => "");
+    let data: unknown = text;
+    try { data = text ? JSON.parse(text) : null; } catch { /* plain text body */ }
+    return { status: res.status, data };
+  }
+
+  /** What the iPhone app needs to pair with this Ares (see RemoteAgentServer.phonePairing). */
+  phonePairing(): Promise<{ url: string; token: string; name: string; link: string; permanence: "stable" | "tunnel" | "lan"; advice?: string }> {
+    return this.call("GET", "/api/phone-pair");
+  }
+
   /** Permanent pairing link — distinct from the one-time help link. */
   generatePairingLink(label: string): Promise<{ token: string; url: string; scope: LinkScope; warning?: string }> {
     return this.call("POST", "/api/pair-link", { label });

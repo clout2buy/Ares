@@ -978,6 +978,7 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "remote_pcs", "remote_pc_link", "remote_pc_disconnect", "remote_pc_screenshot",
     // Permanent pairing: mint a pairing link, list paired devices, unpair one.
     "remote_pc_pair", "remote_devices", "remote_device_unpair",
+    "phone_pair", "gateway_request",
 ];
 
 #[tauri::command]

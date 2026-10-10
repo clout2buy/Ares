@@ -2432,6 +2432,29 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         continue;
       }
+      if (command.type === "phone_pair") {
+        // Pair the iPhone app with THIS Ares's own gateway (no shared server).
+        try {
+          const pairing = await new RemoteAgentClient(live.context.home).phonePairing();
+          process.stdout.write(JSON.stringify({ type: "phone_pair", ...pairing }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "phone_pair", error: err instanceof Error ? err.message : String(err) }) + "\n");
+        }
+        continue;
+      }
+      if (command.type === "gateway_request") {
+        // The desktop's door to the phone API: same routes, same owner token, one relay.
+        const c = command as { requestId?: unknown; method?: unknown; path?: unknown; body?: unknown };
+        const requestId = typeof c.requestId === "string" ? c.requestId : "";
+        const method = typeof c.method === "string" && /^(GET|POST|PUT|PATCH|DELETE)$/.test(c.method) ? (c.method as "GET") : "GET";
+        try {
+          const out = await new RemoteAgentClient(live.context.home).gatewayFetch(method, typeof c.path === "string" ? c.path : "", c.body);
+          process.stdout.write(JSON.stringify({ type: "gateway_response", requestId, status: out.status, data: out.data }) + "\n");
+        } catch (err) {
+          process.stdout.write(JSON.stringify({ type: "gateway_response", requestId, status: 0, error: err instanceof Error ? err.message : String(err) }) + "\n");
+        }
+        continue;
+      }
       if (command.type === "remote_pcs" || command.type === "remote_pc_link" || command.type === "remote_pc_pair" || command.type === "remote_devices" || command.type === "remote_device_unpair" || command.type === "remote_pc_disconnect" || command.type === "remote_pc_screenshot") {
         const client = new RemoteAgentClient(live.context.home);
         try {

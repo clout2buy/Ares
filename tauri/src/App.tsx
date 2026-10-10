@@ -34,6 +34,7 @@ import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packa
 import { redactSecrets } from "../../packages/protocol/src/secretRedact";
 import { daemonExitMessage } from "../../packages/protocol/src/daemonExit";
 import { UpdateBanner } from "./UpdateBanner";
+import { PhonePairCard, type PhonePairState } from "./PhonePair";
 import { WhatsNew } from "./WhatsNew";
 import { LivingSurface } from "./LivingSurface";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle, useUiStyle } from "./newStyle";
@@ -763,6 +764,7 @@ function App() {
   // its own link (with a permanence warning) and the list of devices already
   // paired to this machine.
   const [remotePairLink, setRemotePairLink] = useState<{ url: string; scope: string; label: string; warning: string } | null>(null);
+  const [phonePair, setPhonePair] = useState<PhonePairState>({ status: "idle" });
   const [remoteDevices, setRemoteDevices] = useState<PairedDeviceRow[]>([]);
   const [remoteScope, setRemoteScope] = useState<"public" | "lan" | "unknown">("unknown");
   // pcId → live screen preview state (image data URL, error, or loading).
@@ -1980,6 +1982,16 @@ function App() {
         case "remote_devices":
           if (Array.isArray(e.devices)) setRemoteDevices(e.devices as PairedDeviceRow[]);
           return true;
+        case "phone_pair": {
+          const p = e as { url?: unknown; token?: unknown; name?: unknown; link?: unknown; permanence?: unknown; advice?: unknown; error?: unknown };
+          if (typeof p.url === "string" && typeof p.token === "string" && typeof p.link === "string") {
+            const permanence = p.permanence === "stable" || p.permanence === "tunnel" ? p.permanence : "lan";
+            setPhonePair({ status: "ready", pairing: { url: p.url, token: p.token, name: String(p.name ?? ""), link: p.link, permanence, ...(typeof p.advice === "string" ? { advice: p.advice } : {}) } });
+          } else {
+            setPhonePair({ status: "error", error: typeof p.error === "string" ? p.error : "Ares couldn't produce a pairing code." });
+          }
+          return true;
+        }
         case "remote_pc_screenshot": {
           const pcId = String(e.pcId ?? "");
           if (!pcId) return true;
@@ -4161,6 +4173,17 @@ function App() {
             onConnect={(label) => { setRemoteLink(null); daemonCmd({ type: "remote_pc_link", label }); }}
             onPair={(label) => { setRemotePairLink(null); daemonCmd({ type: "remote_pc_pair", label }); }}
             onClearPairLink={() => setRemotePairLink(null)}
+            phonePair={phonePair}
+            onPhonePair={() => {
+              if (!native) {
+                // Browser DEMO mode has no garrison: show a clearly fake sample so the flow is visible.
+                setPhonePair({ status: "ready", pairing: { url: "wss://ares.example.org/gateway", token: "demo-token-not-real", name: "demo", link: "ares://pair?url=wss%3A%2F%2Fares.example.org%2Fgateway&token=demo-token-not-real&name=demo", permanence: "tunnel", advice: "Demo mode: this is a sample code. In the desktop app it points at your own computer." } });
+                return;
+              }
+              setPhonePair({ status: "loading" });
+              daemonCmd({ type: "phone_pair" });
+            }}
+            onPhonePairClose={() => setPhonePair({ status: "idle" })}
             onUnpair={(deviceId) => daemonCmd({ type: "remote_device_unpair", deviceId })}
             onClearLink={() => setRemoteLink(null)}
             onDisconnect={(pcId) => { daemonCmd({ type: "remote_pc_disconnect", pcId }); setRemoteShots((p) => { const n = { ...p }; delete n[pcId]; return n; }); }}
@@ -5765,6 +5788,9 @@ function AresOsView({
   onConnect,
   onPair,
   onClearPairLink,
+  phonePair,
+  onPhonePair,
+  onPhonePairClose,
   onUnpair,
   onClearLink,
   onDisconnect,
@@ -5781,6 +5807,9 @@ function AresOsView({
   onConnect: (label: string) => void;
   onPair: (label: string) => void;
   onClearPairLink: () => void;
+  phonePair: PhonePairState;
+  onPhonePair: () => void;
+  onPhonePairClose: () => void;
   onUnpair: (deviceId: string) => void;
   onClearLink: () => void;
   onDisconnect: (pcId: string) => void;
@@ -5872,6 +5901,8 @@ function AresOsView({
           ) : null}
         </div>
       ) : null}
+
+      <PhonePairCard state={phonePair} onPair={onPhonePair} onClose={onPhonePairClose} />
 
       {devices.length > 0 ? (
         <section className="aresosDevices">

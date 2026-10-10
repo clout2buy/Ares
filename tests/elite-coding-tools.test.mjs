@@ -413,7 +413,9 @@ test("Bisect: finds the first bad commit in a throwaway worktree and leaves the 
   await commit("c5", "BAD\n// c5\n");
   const headBefore = git(dir, "rev-parse", "HEAD").trim();
   const r = await BisectTool.call({ good: "v1", bad: "HEAD", command: "grep -q good v.txt", step_timeout_s: 30, max_steps: 10 }, ctx(dir));
-  assert.equal(r.output.status, "found", r.output.note ?? r.output.log);
+  assert.equal(r.output.status, "found", `${r.output.note ?? ""}
+--- bisect log ---
+${r.output.log ?? ""}`);
   assert.equal(r.output.culprit.subject, "c3 breaks it");
   assert.deepEqual(r.output.culprit.files, ["v.txt"]);
   assert.equal(git(dir, "rev-parse", "HEAD").trim(), headBefore, "checkout HEAD untouched");

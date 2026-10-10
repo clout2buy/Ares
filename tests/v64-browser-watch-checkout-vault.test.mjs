@@ -197,7 +197,7 @@ test("a watch link streams one page; the owner can only drive it after Take over
   for (let i = 0; i < 150; i++) {
     const audit = await readAudit({ home: HOME, limit: 2000 });
     windows = audit.filter((e) => e.params?.browserSession === watch.sessionId);
-    if (windows.some((e) => e.action === "browser.control.end")) break;
+    if (windows.some((e) => e.action === "browser.control.end" && e.result === "handed back to Ares")) break;
     await sleep(20);
   }
   assert.ok(windows.some((e) => e.actor === "owner" && e.action === "browser.control.start" && e.target === "https://www.doordash.com/cart"));

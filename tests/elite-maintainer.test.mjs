@@ -53,7 +53,7 @@ async function rig(t, o = {}) {
   const maintainer = new Maintainer({
     home,
     now: () => ck.t,
-    env: { ARES_MAINTAINER_TIME: "03:30", ...(o.env ?? {}) },
+    env: { ARES_MAINTAINER: "1", ARES_MAINTAINER_TIME: "03:30", ...(o.env ?? {}) },
     collect: o.collect ?? (async () => o.issues ?? [issue()]),
     coding: o.coding ?? {
       async run(task) {
@@ -86,8 +86,9 @@ const settle = async (m) => { await m.whenIdle(); await new Promise((r) => setTi
 
 // ---------------------------------------------------------------- config + ranking
 
-test("config: on by default at 03:30; ARES_MAINTAINER=0 disables; bad values fall back", () => {
-  const d = maintainerConfig({});
+test("config: off unless ARES_MAINTAINER=1, 03:30 by default; bad values fall back", () => {
+  assert.equal(maintainerConfig({}).enabled, false, "a desktop install never self-edits unless asked");
+  const d = maintainerConfig({ ARES_MAINTAINER: "1" });
   assert.equal(d.enabled, true);
   assert.equal(d.time, "03:30");
   assert.equal(d.maxIssues, 2);
@@ -654,7 +655,7 @@ test("end to end: scripted coding in a real worktree -> real ares-verify -> prop
   const edits = { VERSION: "v2 fixed\n", "app.js": "export const x = 2;\n" };
   const m = new Maintainer({
     home: f.home,
-    env: { ARES_MAINTAINER_TIME: "03:30" },
+    env: { ARES_MAINTAINER: "1", ARES_MAINTAINER_TIME: "03:30" },
     collect: async () => [issue()],
     coding: { run: async (task) => { for (const [n, c] of Object.entries(edits)) await fsp.writeFile(path.join(task.dir, n), c); task.meter.calls = 4; return { ok: true, summary: "Fixed it." }; } },
     worktrees,
@@ -703,7 +704,7 @@ test("end to end: a worktree that fails verification never becomes a proposal an
   const approvals = new ApprovalQueue({ approver: "owner" });
   t.after(() => approvals.dispose());
   const m = new Maintainer({
-    home: f.home, env: {},
+    home: f.home, env: { ARES_MAINTAINER: "1" },
     collect: async () => [issue()],
     coding: { run: async (task) => { await fsp.writeFile(path.join(task.dir, "VERSION"), "v2 FAILTEST\n"); return { ok: true, summary: "Broke it." }; } },
     worktrees: gitWorktrees({ forgeRepo: f.author, workRoot: f.work, liveDir: f.live }),

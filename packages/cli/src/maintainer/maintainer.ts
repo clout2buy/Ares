@@ -1,6 +1,6 @@
 // The Maintainer: Ares improving itself, safely, without anyone at the keyboard.
 //
-// Every night (default 03:30 local, ARES_MAINTAINER=0 turns it off) inside a hard daily budget it
+// Every night when enabled (ARES_MAINTAINER=1; default 03:30 local) inside a hard daily budget it
 //   1. collects what went wrong (crashes, audit errors, failed turns, bug reports, red verifies),
 //   2. ranks the issues and takes at most N,
 //   3. for each: a throwaway worktree on auto/<date>-<slug>, a CODING task there, ares-verify,
@@ -144,7 +144,9 @@ export function maintainerConfig(env: Record<string, string | undefined> = proce
   };
   const time = /^([01]?\d|2[0-3]):([0-5]\d)$/.test((env.ARES_MAINTAINER_TIME ?? "").trim()) ? env.ARES_MAINTAINER_TIME!.trim().padStart(5, "0") : "03:30";
   return {
-    enabled: env.ARES_MAINTAINER !== "0",
+    // Opt-in (ARES_MAINTAINER=1): it spends the host's own model budget editing Ares's source, which
+    // only makes sense on a box set up to self-improve (doingbox), never on every desktop install.
+    enabled: env.ARES_MAINTAINER === "1",
     time,
     windowHours: num(env.ARES_MAINTAINER_WINDOW_HOURS, 5, 1, 23),
     budgetCalls: Math.floor(num(env.ARES_MAINTAINER_BUDGET, 40, 0, 10_000)),
@@ -447,7 +449,7 @@ export class Maintainer {
 
   /** Run now (the phone's "run now"). Returns immediately; the run continues in the background. */
   runNow(): { started: true; runId: string } | { started: false; reason: string } {
-    if (!this.config.enabled) return { started: false, reason: "the Maintainer is disabled (ARES_MAINTAINER=0)" };
+    if (!this.config.enabled) return { started: false, reason: "the Maintainer is off (set ARES_MAINTAINER=1 to enable it)" };
     if (this.deps.isPaused?.()) return { started: false, reason: "Ares is paused" };
     return this.start("manual");
   }

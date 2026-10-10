@@ -568,11 +568,11 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       goals: () => goalSurfaces.tick(),
       // The phone's briefings: due at the owner's chosen times, in their zone.
       briefing: () => phoneBriefing?.briefings.tick(),
-      // Nightly self-improvement proposals (never deploys by itself; ARES_MAINTAINER=0 disables).
+      // Nightly self-improvement proposals (never deploys by itself; opt-in with ARES_MAINTAINER=1).
       maintainer: () => maintainerWiring?.tick() ?? "idle",
       // Marketplace watches: at most one due watch per tick; honours ARES_MARKETPLACE=0, the owner's pause and walls.
       marketplace: () => marketplace.tick(),
-      // Box upkeep + the nightly encrypted backup (systemWiring.ts); ARES_HOUSEKEEPING=0 turns it off.
+      // Box upkeep (ARES_HOUSEKEEPING=0 turns it off) + the nightly encrypted backup, opt-in with ARES_BACKUP=1.
       housekeeping: () => systemSurfaces.tick(),
     },
     lastActivityAt: () => sessions.lastActivityAt(),

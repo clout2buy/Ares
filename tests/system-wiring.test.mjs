@@ -89,8 +89,20 @@ test("the session event tap feeds the error ring and the provider breakers", asy
   assert.equal((await get(r, "/gateway/system?fresh=1")).providers.find((p) => p.provider === "anthropic").state, "closed", "one good turn closes it");
 });
 
+test("backups are opt-in: without ARES_BACKUP=1 the tick cleans but never backs up", async (t) => {
+  const r = await rig(t);
+  const before = process.env.ARES_BACKUP;
+  delete process.env.ARES_BACKUP;
+  t.after(() => { if (before !== undefined) process.env.ARES_BACKUP = before; });
+  const line = await r.surfaces.tick();
+  assert.doesNotMatch(line, /backup/);
+});
+
 test("the hourly tick cleans, backs up tonight's state, and the snapshot shows both", async (t) => {
   const r = await rig(t);
+  const before = process.env.ARES_BACKUP;
+  process.env.ARES_BACKUP = "1";
+  t.after(() => { if (before === undefined) delete process.env.ARES_BACKUP; else process.env.ARES_BACKUP = before; });
   const line = await r.surfaces.tick();
   assert.match(line, /backup ok/);
   assert.equal(await fsp.stat(path.join(r.home, "housekeeping", "last-report.json")).then(() => true, () => false), true);
@@ -115,6 +127,9 @@ test("the hourly tick cleans, backs up tonight's state, and the snapshot shows b
 });
 
 test("a failed backup reaches the phone and the snapshot calls it critical", async (t) => {
+  const backupBefore = process.env.ARES_BACKUP;
+  process.env.ARES_BACKUP = "1";
+  t.after(() => { if (backupBefore === undefined) delete process.env.ARES_BACKUP; else process.env.ARES_BACKUP = backupBefore; });
   const r = await rig(t);
   process.env.ARES_BACKUP_MAX_MB = "0.0001";
   const line = await r.surfaces.tick();

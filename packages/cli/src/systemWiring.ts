@@ -287,7 +287,9 @@ export function startSystemSurfaces(o: SystemSurfacesOptions): SystemSurfaces {
       parts.push(`housekeeping skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
     try {
-      if (await backupDue(root, Date.now(), Number(process.env.ARES_BACKUP_HOUR ?? 3))) {
+      // Opt-in (ARES_BACKUP=1): up to 1 GB a night, 11 kept, in the user's home - right for an
+      // always-on box, a surprise on a desktop install.
+      if (process.env.ARES_BACKUP === "1" && (await backupDue(root, Date.now(), Number(process.env.ARES_BACKUP_HOUR ?? 3)))) {
         const r = await doBackup();
         parts.push(r.ok ? "backup ok" : `backup FAILED: ${r.error}`);
       }

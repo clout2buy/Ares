@@ -38,6 +38,22 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.55.0",
+    date: "October 2026",
+    title: "One Ares",
+    tagline: "The always-on server edition and the desktop are one Ares again, and it builds games now.",
+    highlights: [
+      { icon: "🎮", title: "Build Godot games", blurb: "Ares installs Godot, edits scenes, runs your game, checks it with screenshots, and can embed the live game right in the Forge pane.", tag: "New" },
+      { icon: "📱", title: "Pair your iPhone", blurb: "AresOS shows a QR code: scan it in the Ares app and your phone talks straight to your own computer, no outside server.", tag: "New" },
+      { icon: "🧠", title: "Server brain, merged", blurb: "Goals, briefings, inbox, approvals, timeline and memory from the always-on edition now run in every desktop Ares, ready for the iPhone app.", tag: "New" },
+      { icon: "🔌", title: "Connect almost anything", blurb: "Home Assistant, webhooks and any web API with a spec connect from one form, and the model never sees the keys.", tag: "New" },
+      { icon: "✍️", title: "Edits that don't break", blurb: "Ares refuses an edit that would leave a file unparseable, and huge test logs arrive as a short summary.", tag: "Safer" },
+      { icon: "⏱️", title: "Nothing hangs forever", blurb: "Every tool now has a deadline, and a stuck shell can no longer freeze a conversation.", tag: "Fixed" },
+      { icon: "🛑", title: "A real kill switch", blurb: "Stop preempts whatever is running, and every action Ares takes lands in an audit trail.", tag: "Safer" },
+      { icon: "🪶", title: "Leaner prompt", blurb: "Specialist instructions only load when they apply, so every turn starts lighter.", tag: "Faster" },
+    ],
+  },
+  {
     version: "0.54.1",
     date: "October 2026",
     title: "Unstuck",

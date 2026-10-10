@@ -1543,7 +1543,15 @@ export class RemoteAgentServer {
     // most for the temp root, which is world-writable.
     let real: string;
     try { real = await realpath(wanted); } catch { return notFound(); }
-    if (real !== wanted && !realPathOk(real, roots, this.home)) return notFound();
+    if (real !== wanted) {
+      // realpath also expands Windows 8.3 short names (C:\Users\RUNNER~1 → runneradmin), so the
+      // roots and home are compared in the same canonical spelling, or every file under a
+      // short-named temp root reads as "outside" and 404s.
+      const canon = (p: string) => realpath(p).catch(() => p);
+      const realRoots = [...roots, ...(await Promise.all(roots.map(canon)))];
+      const realHome = this.home ? await canon(this.home) : this.home;
+      if (!realPathOk(real, realRoots, realHome)) return notFound();
+    }
     if ((await serveFile(req, res, real, type)) === "missing") return notFound();
   }
 

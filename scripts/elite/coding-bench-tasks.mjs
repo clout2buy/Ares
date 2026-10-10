@@ -215,12 +215,14 @@ export const TASKS = [
     async *script() {
       yield { name: "Bash", input: { command: "git status --short", description: "see the merge state", timeout: 30000 } };
       yield { name: "Read", input: { file_path: "src/greet.mjs" } };
+      // Write the resolution whole: git versions lay the conflict hunk out differently (a newer
+      // git on the release runner kept the shared lines outside the markers), so an exact
+      // old_string over the markers only matched one git.
       yield {
-        name: "Edit",
+        name: "Write",
         input: {
           file_path: "src/greet.mjs",
-          old_string: "<<<<<<< HEAD\nexport function shout(name) {\n  return `${name.toUpperCase()}!`;\n}\n\nexport function greet(name) {\n  return `Hello there, ${name}`;\n=======\nexport function greet(name) {\n  return `Welcome, ${name}!`;\n>>>>>>> feature\n",
-          new_string: "export function shout(name) {\n  return `${name.toUpperCase()}!`;\n}\n\nexport function greet(name) {\n  return `Welcome, ${name}!`;\n",
+          content: "export function shout(name) {\n  return `${name.toUpperCase()}!`;\n}\n\nexport function greet(name) {\n  return `Welcome, ${name}!`;\n}\n",
         },
       };
       yield { name: "Bash", input: { command: "git add src/greet.mjs && node --test", description: "stage and test", timeout: 60000 } };

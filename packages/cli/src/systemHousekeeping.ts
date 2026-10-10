@@ -18,7 +18,7 @@
 //     (and `git worktree remove` itself would refuse: belt and braces).
 
 import { execFile } from "node:child_process";
-import { createReadStream, createWriteStream, promises as fs, statfsSync } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs, realpathSync, statfsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -111,7 +111,15 @@ export interface FenceRoot {
 export class Fence {
   private readonly roots: FenceRoot[];
   constructor(roots: FenceRoot[]) {
-    this.roots = roots.map((r) => ({ ...r, dir: path.resolve(r.dir) }));
+    // Each root in its given AND canonical spelling: git and realpath report long names, while
+    // os.tmpdir() can be an 8.3 short name (C:\Users\RUNNER~1), and the same folder must not
+    // read as "outside" just because it was spelled the other way.
+    this.roots = roots.flatMap((r) => {
+      const given = path.resolve(r.dir);
+      let canonical = given;
+      try { canonical = realpathSync.native(given); } catch { /* not there yet */ }
+      return canonical === given ? [{ ...r, dir: given }] : [{ ...r, dir: given }, { ...r, dir: canonical }];
+    });
   }
 
   /** Throws unless `target` may be deleted. Returns the resolved path. */

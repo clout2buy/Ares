@@ -191,9 +191,15 @@ test("a watch link streams one page; the owner can only drive it after Take over
   assert.match(await (await fetch(base + at)).text(), /Browser closed/);
   assert.equal((await fetch(`${base}/watch/${"x".repeat(32)}`)).status, 404);
 
-  await sleep(30); // audit appends are fire-and-forget
-  const audit = await readAudit({ home: HOME, limit: 2000 });
-  const windows = audit.filter((e) => e.params?.browserSession === watch.sessionId);
+  // Audit appends are fire-and-forget: poll for the hand-back row instead of betting on 30ms
+  // (a loaded release runner lost that bet).
+  let windows = [];
+  for (let i = 0; i < 150; i++) {
+    const audit = await readAudit({ home: HOME, limit: 2000 });
+    windows = audit.filter((e) => e.params?.browserSession === watch.sessionId);
+    if (windows.some((e) => e.action === "browser.control.end")) break;
+    await sleep(20);
+  }
   assert.ok(windows.some((e) => e.actor === "owner" && e.action === "browser.control.start" && e.target === "https://www.doordash.com/cart"));
   const ended = windows.find((e) => e.actor === "owner" && e.action === "browser.control.end" && e.result === "handed back to Ares");
   assert.equal(ended.params.urlAtStart, "https://www.doordash.com/cart");

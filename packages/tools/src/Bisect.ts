@@ -52,7 +52,9 @@ function runBisect(cwd: string, command: string, bash: string, perStepMs: number
     // when present) so one hung command cannot eat the whole budget. The user's
     // command rides in an env var - never interpolated into shell text.
     const wrapper =
-      'if command -v timeout >/dev/null 2>&1; then timeout -k 5 "$ARES_BISECT_T" "$ARES_BISECT_BASH" -lc "$ARES_BISECT_CMD"; rc=$?; [ "$rc" -eq 124 ] && exit 1; exit "$rc"; ' +
+      // `timeout --version` (not `command -v timeout`): on Windows, System32\timeout.exe is a
+      // "wait N seconds" command that rejects these arguments and failed every step.
+      'if timeout --version 2>/dev/null | grep -q coreutils; then timeout -k 5 "$ARES_BISECT_T" "$ARES_BISECT_BASH" -lc "$ARES_BISECT_CMD"; rc=$?; [ "$rc" -eq 124 ] && exit 1; exit "$rc"; ' +
       'else "$ARES_BISECT_BASH" -lc "$ARES_BISECT_CMD"; fi';
     const child = spawn("git", ["bisect", "run", "sh", "-c", wrapper], {
       cwd,

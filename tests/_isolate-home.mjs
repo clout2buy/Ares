@@ -75,3 +75,12 @@ if (!process.env.ARES_DEVICES_HOME) {
 if (!process.env.ARES_MNEMOSYNE_PORT) {
   process.env.ARES_MNEMOSYNE_PORT = String(20_000 + (process.pid % 20_000));
 }
+
+// The owner's machines pin their own public address and tunnel in the user
+// environment (ARES_REMOTE_PUBLIC_URL=https://remote.<their domain>). Inherited,
+// it turned every LAN-only server under test into a "permanent public address"
+// one and failed the link, presence and pairing suites on that machine only.
+// A test that wants an address passes it as an option or sets it itself.
+if (process.env.ARES_TEST_KEEP_REMOTE_ENV !== "1") {
+  for (const key of ["ARES_REMOTE_PUBLIC_URL", "ARES_REMOTE_TUNNEL_NAME", "ARES_INSTANCE_DOMAIN", "ARES_HOST_NICKNAME"]) delete process.env[key];
+}

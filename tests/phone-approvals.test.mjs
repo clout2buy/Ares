@@ -319,7 +319,7 @@ test("list: rows carry no secrets and a gate the app can read", () => {
 
 async function tempHome(t) {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-approvals-"));
-  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  t.after(() => fsp.rm(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }));
   return home;
 }
 
@@ -423,7 +423,9 @@ test("through the real server: a timed-out prompt reads as already_resolved with
   const { sessions } = scriptedSessions(home, ({ requestPermission }) => {
     n += 1;
     return requestPermission({ id: `perm_t${n}`, toolName: "Write", input: { file_path: "/w/a.ts" }, reason: "", ...(n === 2 ? { signal: controller.signal } : {}) });
-  }, 120);
+    // Long enough that a loaded machine's first poll still sees the prompt (120ms flaked
+    // under the full suite on Windows), short enough to time out inside waitFor's 3s.
+  }, 1000);
   const call = await serve(t, sessions);
 
   const a = sessions.create({ surface: "mobile" });

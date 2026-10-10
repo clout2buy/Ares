@@ -14,7 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { runForkedTurn, type ToolPermissionRequest } from "@ares/core";
+import { closeWorkspaceSessionKernel, runForkedTurn, type ToolPermissionRequest } from "@ares/core";
 import { ShellRegistry, TodoStore } from "@ares/tools";
 import type { CodingResult, CodingRunner, CodingTask } from "../maintainer/maintainer.js";
 import { gateToolPermission } from "../policyGate.js";
@@ -110,6 +110,7 @@ export function createMaintainerCodingRunner(opts: CodingRunnerOptions): CodingR
         clearTimeout(timer);
         task.signal.removeEventListener("abort", onOuterAbort);
         await shellRegistry.killAll().catch(() => 0);
+        await closeWorkspaceSessionKernel(task.dir).catch(() => undefined);
         await rm(isolatedHome, { recursive: true, force: true }).catch(() => undefined);
       }
     },

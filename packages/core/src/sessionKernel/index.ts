@@ -48,4 +48,4 @@ export {
 
 export type * from "./types.js";
 
-export { openWorkspaceSessionKernel, workspaceSessionKernelPath } from "./workspace.js";
+export { closeWorkspaceSessionKernel, openWorkspaceSessionKernel, workspaceSessionKernelPath } from "./workspace.js";

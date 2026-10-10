@@ -168,7 +168,7 @@ cmd_new_worktree() {
   slug="$(printf '%s' "$slug" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-32 | sed -E 's/-+$//')"
   [ -n "$slug" ] || die "slug has no usable characters"
   local day branch dir base n=1
-  day="$(date +%Y-%m-%d)"
+  day="$(date -u +%Y-%m-%d)"
   branch="auto/$day-$slug"
   while git -C "$BARE" show-ref --verify --quiet "refs/heads/$branch"; do n=$((n+1)); branch="auto/$day-$slug-$n"; done
   dir="$WORK/${branch//\//-}"

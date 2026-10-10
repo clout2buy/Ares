@@ -23,3 +23,18 @@ export function openWorkspaceSessionKernel(workspace: string): Promise<SessionKe
   return pending;
 }
 
+
+/** Close and forget a workspace's connection. For throwaway workspaces (the
+ * Maintainer's worktrees): on Windows an open SQLite handle locks the -shm/-wal
+ * files, so the worktree could never be deleted while this process lives. */
+export async function closeWorkspaceSessionKernel(workspace: string): Promise<void> {
+  const filename = workspaceSessionKernelPath(workspace);
+  const pending = workspaceStores.get(filename);
+  if (!pending) return;
+  workspaceStores.delete(filename);
+  try {
+    (await pending).close();
+  } catch {
+    /* a failed open has nothing to close */
+  }
+}

@@ -14,6 +14,7 @@ import {
   resolveWorkspacePath,
   shellInputSchema,
   shellPolicyDecision,
+  shellInstructionsAfterRun,
   shellRepositoryInstructionDecision,
   shellWatchdogFor,
 } from "./_shared.js";
@@ -50,7 +51,7 @@ export const PowerShellTool = buildTool({
   activityDescription: (i) => describeShellActivity(i.command, i.run_in_background === true),
   commandFor: (i) => i.command,
   async checkPermissions(i, ctx) {
-    const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths);
+    const instructionDecision = await shellRepositoryInstructionDecision(ctx, i.cwd, i.target_paths, i.command);
     if (instructionDecision) return instructionDecision;
     // The vault guard outranks every stored rule — see vaultShellDecision.
     const vault = vaultShellDecision(i.command);
@@ -113,7 +114,8 @@ export const PowerShellTool = buildTool({
     // and `??`; powershell.exe 5.1 rejects all of them. Without this the model
     // has to guess the dialect from an error it may not recognise.
     const dialect = powerShellDialect(shellFlavorOf(pwsh)) ?? "PowerShell (unknown version)";
-    const output: unknown = { ...result, dialect };
+    const rules = await shellInstructionsAfterRun(ctx, i.command, i.cwd, i.target_paths);
+    const output: unknown = { ...result, dialect, ...(rules ? { repositoryInstructions: rules } : {}) };
     // A non-zero exit with NOTHING on either stream leaves the model blind —
     // the forensics pass found 25 of 57 failing shell calls in the owner's
     // sessions were exactly this (verify.ps1, `… | Select-Object -Last N`,

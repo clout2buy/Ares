@@ -7,7 +7,7 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { buildTool, resolveWorkspacePath, toolError, type RichToolContext } from "./_shared.js";
+import { buildTool, repositoryInstructionsText, resolveWorkspacePath, toolError, type RichToolContext } from "./_shared.js";
 
 const DEFAULT_IGNORE_GLOBS = [
   "**/.git/**",
@@ -72,6 +72,52 @@ export interface GrepOutput {
   totalMatches: number;
   truncated: boolean;
   engine: "ripgrep" | "native";
+  /** The search hit its wall-clock cap; results are partial. */
+  timedOut?: boolean;
+  /** Repository rules newly applicable to the searched paths. */
+  repositoryInstructions?: string;
+}
+
+/** Wall-clock cap for one search (ARES_GREP_TIMEOUT_MS, default 30s). */
+export function grepTimeoutMs(): number {
+  const n = Number(process.env.ARES_GREP_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 500 ? n : 30_000;
+}
+/** Files larger than this are skipped (ripgrep --max-filesize, native stat). */
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
+/** Stop collecting once this many matches were seen; the count is then a floor. */
+const MATCH_CAP = 20_000;
+
+/**
+ * Split ripgrep/PCRE-style inline flag groups off the front of a pattern:
+ * `(?i)foo`, `(?is)foo`, `(?i)(?m)foo`. Models write these constantly and the
+ * JS engine rejects them ("Invalid group"). ripgrep understands them natively,
+ * so the ORIGINAL pattern still goes to rg; this gives the JS validator and the
+ * native fallback the stripped pattern plus equivalent RegExp flags.
+ */
+export function splitInlineFlags(pattern: string): { pattern: string; flags: string; changed: boolean } {
+  let rest = pattern;
+  let flags = "";
+  let extended = false;
+  for (;;) {
+    const m = /^\(\?([a-zA-Z-]+)\)/.exec(rest);
+    if (!m || !/^[imsxuU-]+$/.test(m[1])) break;
+    let on = true;
+    for (const c of m[1]) {
+      if (c === "-") on = false;
+      else if (on && (c === "i" || c === "s" || c === "m") && !flags.includes(c)) flags += c;
+      else if (on && c === "x") extended = true;
+    }
+    rest = rest.slice(m[0].length);
+  }
+  if (extended) rest = rest.replace(/\\.|\s+|#[^\n]*/g, (t) => (t.startsWith("\\") ? t : ""));
+  // Scoped groups `(?i:...)` are not in older V8; degrade them to plain groups
+  // (and fold the flag in globally) so the pattern still validates/searches.
+  rest = rest.replace(/\(\?([imsx]+):/g, (_all, f: string) => {
+    for (const c of f) if ((c === "i" || c === "s" || c === "m") && !flags.includes(c)) flags += c;
+    return "(?:";
+  });
+  return { pattern: rest, flags, changed: rest !== pattern || flags !== "" };
 }
 
 /**
@@ -80,12 +126,15 @@ export interface GrepOutput {
  * stderr (or worse, silently return 0 matches on a construct its engine lacks).
  * Returns null when the pattern is fine.
  */
-export function regexInputProblem(pattern: string): string | null {
+export function regexInputProblem(rawPattern: string): string | null {
+  const split = splitInlineFlags(rawPattern);
+  const pattern = split.pattern;
   try {
-    new RegExp(pattern);
+    new RegExp(pattern, split.flags);
   } catch (err) {
     const msg = err instanceof Error ? err.message.replace(/^Invalid regular expression:\s*/i, "") : String(err);
-    return `invalid regular expression — ${msg}. Escape literal metacharacters with a backslash (e.g. \\( \\[ \\.) or fix the construct.`;
+    const corrected = split.changed ? ` (inline flags were handled; the remaining pattern /${pattern}/ is what failed)` : "";
+    return `invalid regular expression — ${msg}${corrected}. Escape literal metacharacters with a backslash (e.g. \\( \\[ \\.) or fix the construct.`;
   }
   // Constructs JS accepts but ripgrep's default engine rejects or misparses.
   let inClass = false;
@@ -145,13 +194,15 @@ export const GrepTool = buildTool({
     const roots = await resolveSearchPaths(ctx, i.path);
     const ripgrep = await tryRipgrep(i, roots, ctx.signal, (data) => ctx.emitProgress?.(data));
     const output: GrepOutput = ripgrep ?? (await nativeGrep(i, roots, (data) => ctx.emitProgress?.(data)));
+    const rules = await repositoryInstructionsText(ctx, roots);
+    if (rules) output.repositoryInstructions = rules;
     const summary =
       output.mode === "files_with_matches"
         ? `${output.files?.length ?? 0} file(s) matched /${i.pattern}/`
         : output.mode === "count"
         ? `${output.totalMatches} match(es) for /${i.pattern}/`
         : `${output.totalMatches} line(s) matched /${i.pattern}/`;
-    return { output, display: summary };
+    return { output, display: output.timedOut ? `${summary} (search timed out - partial results)` : summary };
   },
 });
 
@@ -166,7 +217,7 @@ async function tryRipgrep(
   const rgPath = await which("rg");
   if (!rgPath) return null;
 
-  const args: string[] = ["--no-config", "--json", "--hidden"];
+  const args: string[] = ["--no-config", "--json", "--hidden", "--max-filesize", String(MAX_FILE_BYTES), "--max-columns", "2000", "--max-columns-preview"];
   for (const ignore of DEFAULT_IGNORE_GLOBS) {
     args.push("--glob", `!${ignore}`);
   }
@@ -183,6 +234,14 @@ async function tryRipgrep(
 
   return new Promise((resolve) => {
     const child = spawn(rgPath, args, { signal });
+    let timedOut = false;
+    let capped = false;
+    // A search must never wedge a turn: on a pathological tree rg is killed at
+    // the wall-clock cap and the partial results are returned, flagged.
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+    }, grepTimeoutMs());
     let buf = "";
     const matches: GrepMatch[] = [];
     const files = new Set<string>();
@@ -213,6 +272,10 @@ async function tryRipgrep(
           if (total === 1 || total % 25 === 0) {
             emitProgress?.({ kind: "grep_match", file: p, line: lineNum, total });
           }
+          if (total >= MATCH_CAP && i.output_mode !== "count" && !capped) {
+            capped = true;
+            try { child.kill("SIGKILL"); } catch { /* ignore */ }
+          }
           if (i.output_mode === "content" && matches.length < i.max_results) {
             matches.push({ path: p, line: lineNum, text: text.replace(/\n$/, "") });
           }
@@ -233,9 +296,16 @@ async function tryRipgrep(
       }
     });
 
-    child.on("error", () => resolve(null));
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
     child.on("close", () => {
-      resolve(buildOutput(i, matches, files, counts, total, "ripgrep"));
+      clearTimeout(timer);
+      const out = buildOutput(i, matches, files, counts, total, "ripgrep");
+      if (timedOut) out.timedOut = true;
+      if (timedOut || capped) out.truncated = true;
+      resolve(out);
     });
   });
 }
@@ -264,14 +334,18 @@ async function nativeGrep(
   roots: string[],
   emitProgress?: (data: unknown) => void,
 ): Promise<GrepOutput> {
-  const flags = (i.case_insensitive ? "i" : "") + (i.multiline === true ? "gs" : "");
+  const inline = splitInlineFlags(i.pattern);
+  const flagSet = new Set<string>([...(i.case_insensitive ? ["i"] : []), ...(i.multiline === true ? ["g", "s"] : []), ...inline.flags]);
+  const flags = [...flagSet].join("");
+  const deadline = Date.now() + grepTimeoutMs();
+  let nativeTimedOut = false;
   // An invalid model-supplied pattern throws a raw JS SyntaxError here, which
   // surfaces as an opaque crash rather than something the model can correct.
   // Re-throw as a recognizable tool error (ripgrep already returns its own
   // error text; keep the native fallback consistent).
   let regex: RegExp;
   try {
-    regex = new RegExp(i.pattern, flags);
+    regex = new RegExp(inline.pattern, flags);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw toolError(
@@ -328,6 +402,7 @@ async function nativeGrep(
       for (let k = 0; k < lines.length; k++) if (regex.test(lines[k])) hits.push({ line: k, endLine: k });
     }
     const emitted = new Set<number>();
+    if (hits.length > 0 && total >= MATCH_CAP) return;
     for (const hit of hits) {
       files.add(abs);
       counts[abs] = (counts[abs] ?? 0) + 1;
@@ -359,18 +434,19 @@ async function nativeGrep(
       return;
     }
     for (const e of entries) {
+      if (Date.now() > deadline) {
+        nativeTimedOut = true;
+        return;
+      }
+      if (total >= MATCH_CAP) return;
       const abs = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (ignoreDirs.has(e.name)) continue;
         await walk(abs);
       } else if (e.isFile()) {
         if (!matchesAnyGlob(abs, roots, i.glob)) continue;
-        let text: string;
-        try {
-          text = await fs.readFile(abs, "utf8");
-        } catch {
-          continue;
-        }
+        const text = await readSearchable(abs);
+        if (text === null) continue;
         scanText(abs, text);
       }
     }
@@ -380,13 +456,34 @@ async function nativeGrep(
     const stat = await fs.stat(root).catch(() => null);
     if (stat?.isFile()) {
       if (!matchesAnyGlob(root, roots, i.glob)) continue;
-      scanText(root, await fs.readFile(root, "utf8"));
+      const text = await readSearchable(root);
+      if (text !== null) scanText(root, text);
     } else {
       await walk(root);
     }
   }
 
-  return buildOutput(i, matches, files, counts, total, "native");
+  const out = buildOutput(i, matches, files, counts, total, "native");
+  if (nativeTimedOut) {
+    out.timedOut = true;
+    out.truncated = true;
+  }
+  if (total >= MATCH_CAP) out.truncated = true;
+  return out;
+}
+
+/** Read a file for the native scan, or null when it is too big or binary. A
+ *  multi-GB log or a NUL-bearing blob used to be slurped whole into memory. */
+async function readSearchable(abs: string): Promise<string | null> {
+  try {
+    const stat = await fs.stat(abs);
+    if (stat.size > MAX_FILE_BYTES) return null;
+    const buf = await fs.readFile(abs);
+    if (buf.subarray(0, 8192).includes(0)) return null;
+    return buf.toString("utf8");
+  } catch {
+    return null;
+  }
 }
 
 async function resolveSearchPaths(

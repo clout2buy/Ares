@@ -21,8 +21,36 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
 import { buildTool, toolError, type RichToolContext } from "./_shared.js";
+import { promises as fsp } from "node:fs";
+import { resolveProjectChecks } from "@ares/core";
+import { resolveBashProgram, runShell } from "./Bash.js";
+import { changedSince, runGit, snapshotRepo } from "./gitUtil.js";
+import { summarizeTestOutput } from "./testSummary.js";
+import {
+  claimWorkspace,
+  classifyPriorRun,
+  extractSessionId,
+  readRunRecord,
+  releaseWorkspace,
+  renderCard,
+  runKeyFor,
+  summarizeBackendLine,
+  thinkingBudgetFor,
+  writeRunRecord,
+  type BackendResultCard,
+  type BackendRunRecord,
+} from "./codingBackendRun.js";
 
 export type BackendName = "claude" | "codex";
+
+/** Optional per-run knobs; every field is absent for a default run. */
+export interface BackendRunOptions {
+  /** An explicit model for the CLI (Claude: --model). Absent = the gateway sentinel from env. */
+  model?: string;
+  effort?: "low" | "medium" | "high";
+  /** Continue a previous CLI session (Claude: --resume <id>). */
+  resumeSessionId?: string;
+}
 
 export interface BackendSpec {
   name: BackendName;
@@ -42,7 +70,7 @@ export interface BackendSpec {
   rejectProbeReason?: string;
   /** Headless run args. The PROMPT is fed via stdin (never argv) so it can
    *  carry quotes/newlines/code with zero escaping risk on any platform. */
-  runArgs(base: string, model: string): string[];
+  runArgs(base: string, model: string, opts?: BackendRunOptions): string[];
   /** Whether this backend has a verified Ares-owned auth binding today. Running
    *  an unbound CLI would fall back to the user's own CLI OAuth, which is
    *  forbidden by this tool's contract. */
@@ -75,7 +103,16 @@ export const BACKENDS: Record<BackendName, BackendSpec> = {
     probeArgs: ["--help"],
     rejectProbePattern: /\bUsage:\s*bun\b|Bun is a fast JavaScript runtime/i,
     rejectProbeReason: "the claude command on PATH is Bun, not Claude Code",
-    runArgs: () => ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"],
+    runArgs: (_base, _model, opts) => [
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "acceptEdits",
+      ...(opts?.resumeSessionId && /^[A-Za-z0-9_-]{6,80}$/.test(opts.resumeSessionId) ? ["--resume", opts.resumeSessionId] : []),
+      ...(opts?.model && /^[\w./:@-]{1,80}$/.test(opts.model) ? ["--model", opts.model] : []),
+    ],
     gatewayReady: true,
     gatewayEnv: (base, token, model) => ({
       ANTHROPIC_BASE_URL: `${base}/api/gateway`,
@@ -95,7 +132,7 @@ export const BACKENDS: Record<BackendName, BackendSpec> = {
     installPkg: "@openai/codex",
     versionArgs: ["--version"],
     // codex exec = non-interactive automation mode; prompt via stdin.
-    runArgs: (base, model) => [
+    runArgs: (base, model, opts) => [
       "exec",
       "--ignore-user-config",
       "--ignore-rules",
@@ -117,6 +154,7 @@ export const BACKENDS: Record<BackendName, BackendSpec> = {
       'model_providers.ares_gateway.wire_api="responses"',
       "-c",
       "model_providers.ares_gateway.requires_openai_auth=false",
+      ...(opts?.effort ? ["-c", `model_reasoning_effort=${tomlString(opts.effort)}`] : []),
       "-",
     ],
     gatewayReady: true,
@@ -148,10 +186,16 @@ interface ProcResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  aborted?: boolean;
   spawnError?: Error;
 }
 
 const MAX_CAPTURE = 200_000;
+/** SIGTERM -> this long to wind down (flush a commit, write a file) -> SIGKILL. */
+const stopGraceMs = (): number => {
+  const n = Number(process.env.ARES_BACKEND_STOP_GRACE_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 5_000;
+};
 
 /** Spawn a child with injected env, feed `input` on stdin, stream lines out. */
 function runProc(
@@ -165,18 +209,26 @@ function runProc(
     timeoutMs: number;
     signal: AbortSignal;
     onLine?: (stream: "stdout" | "stderr", line: string) => void;
+    /** Called once with the child pid right after spawn (for the run record). */
+    onSpawn?: (pid: number) => void;
+    /** Grace between the polite stop and the kill. */
+    graceMs?: number;
   },
 ): Promise<ProcResult> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
+    // Own process group on POSIX so a stop reaches the CLI's children too:
+    // with shell:true the child is `sh`, and killing only sh orphaned the real
+    // CLI (still editing the tree after Ares reported a timeout).
+    const detach = process.platform !== "win32" && spawnImpl === spawn;
     try {
       child = spawnImpl(cmd, args, {
         cwd: opts.cwd,
         // Merge over the real environment so PATH/HOME survive; our keys win.
         env: { ...process.env, ...opts.env },
-        signal: opts.signal,
         windowsHide: true,
-        // Global npm bins are .cmd shims on Windows — shell:true lets the OS
+        detached: detach,
+        // Global npm bins are .cmd shims on Windows - shell:true lets the OS
         // resolve them. Only fixed, space-free flags reach argv; the prompt
         // rides stdin, so there is no injection surface here.
         shell: true,
@@ -185,40 +237,82 @@ function runProc(
       resolve({ code: null, stdout: "", stderr: "", timedOut: false, spawnError: err as Error });
       return;
     }
+    if (child.pid) opts.onSpawn?.(child.pid);
 
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
+    let stopping = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const signalTree = (sig: "SIGTERM" | "SIGKILL"): void => {
+      if (!child.pid) {
+        try { child.kill(sig); } catch { /* ignore */ }
+        return;
+      }
+      if (process.platform === "win32" && spawnImpl === spawn) {
+        spawn("taskkill", ["/PID", String(child.pid), "/T", ...(sig === "SIGKILL" ? ["/F"] : [])], { stdio: "ignore", windowsHide: true }).on("error", () => {
+          try { child.kill(sig); } catch { /* ignore */ }
+        });
+        return;
+      }
+      if (detach) {
+        try {
+          process.kill(-child.pid, sig);
+          return;
+        } catch { /* group already gone - fall through */ }
+      }
+      try { child.kill(sig); } catch { /* ignore */ }
+    };
+    const stop = (): void => {
+      if (stopping) return;
+      stopping = true;
+      signalTree("SIGTERM");
+      graceTimer = setTimeout(() => signalTree("SIGKILL"), opts.graceMs ?? stopGraceMs());
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      if (process.platform === "win32" && child.pid) {
-        spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => {
-          try { child.kill(); } catch { /* ignore */ }
-        });
-      } else {
-        child.kill();
-      }
+      stop();
     }, opts.timeoutMs);
+    const onAbort = (): void => {
+      aborted = true;
+      stop();
+    };
+    if (opts.signal.aborted) onAbort();
+    else opts.signal.addEventListener("abort", onAbort, { once: true });
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
+      opts.signal.removeEventListener("abort", onAbort);
+    };
 
+    let carry: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" };
     const pump = (stream: "stdout" | "stderr", chunk: Buffer): void => {
       const text = chunk.toString("utf8");
       if (stream === "stdout") stdout = (stdout + text).slice(-MAX_CAPTURE);
       else stderr = (stderr + text).slice(-MAX_CAPTURE);
-      if (opts.onLine) for (const line of text.split(/\r?\n/)) if (line.trim()) opts.onLine(stream, line);
+      if (!opts.onLine) return;
+      // Re-assemble lines across chunk boundaries: a JSON event split in two
+      // chunks used to be emitted as two broken fragments.
+      const parts = (carry[stream] + text).split(/\r?\n/);
+      carry[stream] = parts.pop() ?? "";
+      for (const line of parts) if (line.trim()) opts.onLine(stream, line);
     };
     child.stdout?.on("data", (c: Buffer) => pump("stdout", c));
     child.stderr?.on("data", (c: Buffer) => pump("stderr", c));
 
     child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ code: null, stdout, stderr, timedOut, spawnError: err });
+      cleanup();
+      resolve({ code: null, stdout, stderr, timedOut, aborted, spawnError: err });
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      cleanup();
+      if (opts.onLine) for (const stream of ["stdout", "stderr"] as const) if (carry[stream].trim()) opts.onLine(stream, carry[stream]);
+      resolve({ code, stdout, stderr, timedOut, aborted });
     });
 
     if (opts.input !== undefined && child.stdin) {
+      child.stdin.on?.("error", () => undefined);
       child.stdin.write(opts.input);
       child.stdin.end();
     }
@@ -352,6 +446,28 @@ const inputSchema = z
       .boolean()
       .default(false)
       .describe("If the chosen backend isn't installed, permit a consented global npm install before running."),
+    model: z
+      .string()
+      .max(80)
+      .optional()
+      .describe("Model for the harness (Claude: --model). Default: the Ares gateway house model."),
+    effort: z
+      .enum(["low", "medium", "high"])
+      .optional()
+      .describe("Reasoning effort for the harness (Codex: model_reasoning_effort; Claude: thinking-token budget)."),
+    isolate: z
+      .boolean()
+      .default(false)
+      .describe("Run in a throwaway git worktree on its own branch instead of the live checkout. The result card names the branch; you review and merge it. Needs a git repo."),
+    verify: z
+      .boolean()
+      .default(true)
+      .describe("After the run, Ares re-runs the project's own test command and puts the result on the card."),
+    verify_command: z
+      .string()
+      .max(400)
+      .optional()
+      .describe("Override the detected test command used by verify."),
     offer: z
       .boolean()
       .default(true)
@@ -366,6 +482,10 @@ export interface CodingBackendOutput {
   summary: string;
   filesTouched: string[];
   installed: boolean;
+  /** Structured end-of-run card: diff stat, test result, honest verification state. */
+  card?: BackendResultCard;
+  /** True when a retried call replayed an earlier completed run instead of re-running. */
+  replayed?: boolean;
 }
 
 function chooseBackend(requested: "auto" | BackendName): BackendSpec {
@@ -537,68 +657,273 @@ export function makeCodingBackendTool(deps: CodingBackendDeps) {
         }
       }
 
-      // Drive it headless, on the Ares account, in the workspace.
-      const delegatedPrompt = buildAresHarnessPrompt(spec, i.task);
-      ctx.emitProgress?.({
-        kind: "coding_backend",
-        backend: spec.name,
-        label: backendDisplayLabel(spec),
-        phase: "running",
-        version: detection.version,
-      });
-      const run = await runProc(spawnImpl, spec.bin, spec.runArgs(deps.gatewayBase, model), {
-        cwd: ctx.workspace,
-        env: buildBackendEnv(spec, deps, model, ctx.workspace),
-        input: delegatedPrompt,
-        timeoutMs: runTimeoutMs,
-        signal: ctx.signal,
-        onLine: (stream, line) =>
-          ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, phase: "running", stream, line }),
-      });
-
-      if (run.spawnError) {
-        ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: backendDisplayLabel(spec), phase: "failed" });
-        throw toolError(`Couldn't launch ${spec.label}: ${run.spawnError.message}`);
+      // ── durable run identity: never double-run a retried call ───────────────
+      const { key, fromToolCall } = runKeyFor({ toolUseId: ctx.toolUseId, workspace: ctx.workspace, backend: spec.name, model: i.model ?? model, task: i.task });
+      const prior = classifyPriorRun(await readRunRecord(ctx.workspace, key), fromToolCall);
+      if (prior.kind === "replay") {
+        return {
+          output: {
+            backend: spec.name,
+            label: backendDisplayLabel(spec),
+            status: "completed",
+            summary: `${prior.card.summary}\n\n(This call already completed earlier; replaying its recorded result instead of running the harness again.)\n${renderCard(prior.card)}`,
+            filesTouched: prior.card.git?.files.map((f) => f.path) ?? [],
+            installed: true,
+            card: prior.card,
+            replayed: true,
+          },
+          display: `Ares via ${spec.label}: replayed the completed run`,
+        };
       }
-
-      const parsed = spec.name === "claude" ? parseClaudeStream(run.stdout) : parseCodexStream(run.stdout);
-      const failed = run.timedOut || run.code !== 0 || parsed.isError;
-      const finalText =
-        parsed.result?.trim() ||
-        run.stdout.trim().split(/\r?\n/).slice(-40).join("\n") ||
-        run.stderr.trim().slice(-2000);
-
-      if (failed) {
-        // Let the cut-scene shatter, then surface the correctable error.
-        ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: backendDisplayLabel(spec), phase: "failed" });
+      if (prior.kind === "still-running") {
         throw toolError(
-          `${spec.label} ${run.timedOut ? "timed out" : `exited ${run.code}`}. ` +
-            `Last output:\n${(finalText || run.stderr).slice(-1500)}`,
+          `A ${spec.label} run for this task is still active (pid ${prior.record.childPid ?? prior.record.ownerPid}, started ${prior.record.startedAt}). ` +
+            `Not starting a second one on the same tree - wait for it, or stop that process first.`,
         );
       }
-
-      // Victory: the cut-scene celebrates with the final file tally.
-      ctx.emitProgress?.({
-        kind: "coding_backend",
+      const claim = claimWorkspace(ctx.workspace, key);
+      if (!claim.ok) {
+        throw toolError(`Another CodingBackend run (${claim.heldBy}) is active in this workspace; wait for it to finish.`);
+      }
+      const startedAt = Date.now();
+      const startedIso = new Date(startedAt).toISOString();
+      let runCwd = ctx.workspace;
+      let isolation: BackendResultCard["isolation"];
+      const record: BackendRunRecord = {
+        key,
         backend: spec.name,
-        label: backendDisplayLabel(spec),
-        phase: "done",
-        filesTouched: parsed.files.length,
-      });
-      return {
-        output: {
+        task: i.task.slice(0, 500),
+        status: "running",
+        startedAt: startedIso,
+        updatedAt: startedIso,
+        ownerPid: process.pid,
+        ...(prior.kind === "resume" && prior.record.sessionId ? { sessionId: prior.record.sessionId } : {}),
+      };
+      try {
+        // ── isolation: a throwaway worktree on its own branch ─────────────────
+        const repo = await snapshotRepo(ctx.workspace);
+        if (i.isolate) {
+          if (!repo.isRepo || !repo.root || !repo.head) {
+            throw toolError("isolate needs a git repository with at least one commit; run without isolate or `git init` first.");
+          }
+          const wt = path.join(ctx.workspace, ".ares", "backend-runs", key, "wt");
+          const branch = `ares/backend-${key.replace(/^(call|task)_/, "").slice(0, 12)}`;
+          await fsp.mkdir(path.dirname(wt), { recursive: true });
+          const reuse = await fsp.stat(wt).then(() => true).catch(() => false);
+          if (!reuse) {
+            const added = await runGit(repo.root, ["worktree", "add", "-b", branch, wt, repo.head], { timeoutMs: 60_000 });
+            if (added.code !== 0) throw toolError(`Could not create the isolated worktree: ${added.stderr.trim().slice(0, 300)}`);
+          }
+          runCwd = wt;
+          isolation = { branch, worktree: wt, base: repo.head.slice(0, 12) };
+        }
+        const before = await snapshotRepo(runCwd);
+
+        // ── run ────────────────────────────────────────────────────────────────
+        const resumeId = prior.kind === "resume" && spec.name === "claude" ? prior.record.sessionId : undefined;
+        const delegatedPrompt = buildAresHarnessPrompt(
+          spec,
+          resumeId
+            ? `${i.task}\n\n(You are RESUMING after an interruption. Check the working tree state first, then finish only what is left.)`
+            : i.task,
+        );
+        ctx.emitProgress?.({
+          kind: "coding_backend",
           backend: spec.name,
           label: backendDisplayLabel(spec),
-          status: "completed",
+          phase: "running",
+          version: detection.version,
+          ...(isolation ? { isolation } : {}),
+          ...(resumeId ? { resumed: true } : {}),
+        });
+        await writeRunRecord(ctx.workspace, record);
+        const env = buildBackendEnv(spec, deps, i.model ?? model, runCwd);
+        const budget = spec.name === "claude" ? thinkingBudgetFor(i.effort) : undefined;
+        if (budget) env.MAX_THINKING_TOKENS = String(budget);
+        let sessionId = record.sessionId;
+        const run = await runProc(
+          spawnImpl,
+          spec.bin,
+          spec.runArgs(deps.gatewayBase, i.model ?? model, { model: i.model, effort: i.effort, resumeSessionId: resumeId }),
+          {
+            cwd: runCwd,
+            env,
+            input: delegatedPrompt,
+            timeoutMs: runTimeoutMs,
+            signal: ctx.signal,
+            onSpawn: (pid) => {
+              record.childPid = pid;
+              void writeRunRecord(ctx.workspace, record);
+            },
+            onLine: (stream, line) => {
+              const sid = extractSessionId(line);
+              if (sid && sid !== sessionId) {
+                sessionId = sid;
+                record.sessionId = sid;
+                void writeRunRecord(ctx.workspace, record);
+              }
+              const summary = summarizeBackendLine(spec.name, line);
+              ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, phase: "running", stream, line, ...(summary ? { summary } : {}) });
+            },
+          },
+        );
+
+        if (run.spawnError) {
+          record.status = "failed";
+          await writeRunRecord(ctx.workspace, record);
+          ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: backendDisplayLabel(spec), phase: "failed" });
+          throw toolError(`Couldn't launch ${spec.label}: ${run.spawnError.message}`);
+        }
+
+        const parsed = spec.name === "claude" ? parseClaudeStream(run.stdout) : parseCodexStream(run.stdout);
+        const failed = run.timedOut || run.aborted === true || run.code !== 0 || parsed.isError;
+        const finalText =
+          parsed.result?.trim() ||
+          run.stdout.trim().split(/\r?\n/).slice(-40).join("\n") ||
+          run.stderr.trim().slice(-2000);
+
+        // ── result card: what changed + the project's own tests, re-run by Ares ──
+        const card = await buildResultCard({
+          spec,
+          label: backendDisplayLabel(spec),
+          model: i.model ?? model,
+          effort: i.effort,
+          cwd: runCwd,
+          before,
+          status: run.timedOut ? "timed_out" : failed ? "failed" : "completed",
+          startedAt,
+          sessionId,
+          resumed: Boolean(resumeId),
+          isolation,
           summary: finalText || "(no textual output)",
-          filesTouched: parsed.files,
-          installed: true,
-        },
-        touchedFiles: parsed.files,
-        display: `⚡ ${backendDisplayLabel(spec)} → done${parsed.files.length ? ` (${parsed.files.length} file(s))` : ""}`,
-      };
+          verify: i.verify && !failed,
+          verifyCommand: i.verify_command,
+          signal: ctx.signal,
+        });
+        record.status = run.aborted ? "interrupted" : card.status === "completed" ? "completed" : card.status === "timed_out" ? "timed_out" : "failed";
+        record.card = card;
+        await writeRunRecord(ctx.workspace, record);
+
+        if (failed) {
+          // Let the cut-scene shatter, then surface the correctable error.
+          ctx.emitProgress?.({ kind: "coding_backend", backend: spec.name, label: backendDisplayLabel(spec), phase: "failed" });
+          throw toolError(
+            `${spec.label} ${run.aborted ? "was stopped" : run.timedOut ? "timed out (stopped gracefully, then killed)" : `exited ${run.code}`}. ` +
+              `Last output:\n${(finalText || run.stderr).slice(-1500)}\n\n${renderCard(card)}` +
+              (sessionId && spec.name === "claude" ? "\nRetrying the same call resumes the harness session." : ""),
+          );
+        }
+
+        // Victory: the cut-scene celebrates with the final file tally.
+        const touched = card.git ? [...card.git.files.map((f) => f.path), ...card.git.untracked] : parsed.files;
+        ctx.emitProgress?.({
+          kind: "coding_backend",
+          backend: spec.name,
+          label: backendDisplayLabel(spec),
+          phase: "done",
+          filesTouched: touched.length,
+        });
+        return {
+          output: {
+            backend: spec.name,
+            label: backendDisplayLabel(spec),
+            status: "completed",
+            summary: `${finalText || "(no textual output)"}${card.git || card.tests ? `\n\n${renderCard(card)}` : ""}`,
+            filesTouched: parsed.files.length > 0 ? parsed.files : touched,
+            installed: true,
+            card,
+          },
+          touchedFiles: parsed.files.length > 0 ? parsed.files : touched,
+          display: `⚡ ${backendDisplayLabel(spec)} → done${touched.length ? ` (${touched.length} file(s))` : ""}${card.verification === "tests-failed" ? " - TESTS FAIL" : ""}`,
+        };
+      } finally {
+        releaseWorkspace(ctx.workspace, key);
+      }
     },
   });
+}
+
+async function buildResultCard(args: {
+  spec: BackendSpec;
+  label: string;
+  model: string;
+  effort?: string;
+  cwd: string;
+  before: Awaited<ReturnType<typeof snapshotRepo>>;
+  status: BackendResultCard["status"];
+  startedAt: number;
+  sessionId?: string;
+  resumed: boolean;
+  isolation?: BackendResultCard["isolation"];
+  summary: string;
+  verify: boolean;
+  verifyCommand?: string;
+  signal: AbortSignal;
+}): Promise<BackendResultCard> {
+  const card: BackendResultCard = {
+    backend: args.spec.name,
+    label: args.label,
+    status: args.status,
+    durationMs: Date.now() - args.startedAt,
+    model: args.model,
+    ...(args.effort ? { effort: args.effort } : {}),
+    ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+    resumed: args.resumed,
+    ...(args.isolation ? { isolation: args.isolation } : {}),
+    verification: "not-run",
+    summary: args.summary,
+  };
+  if (!args.before.isRepo) return card;
+  try {
+    const changed = await changedSince(args.cwd, args.before.head ?? "HEAD");
+    // Files already dirty BEFORE the run are not this run's doing.
+    const preDirty = new Set(args.before.dirty.map((l) => l.slice(3).trim()));
+    const files = changed.numstat.files.filter((f) => !preDirty.has(f.path) || args.isolation);
+    const untracked = changed.untracked.filter((f) => !preDirty.has(f) || args.isolation);
+    const after = await snapshotRepo(args.cwd);
+    card.git = {
+      branch: after.branch,
+      head: after.head?.slice(0, 12),
+      filesChanged: files.length + untracked.length,
+      added: files.reduce((n, f) => n + (f.added ?? 0), 0),
+      removed: files.reduce((n, f) => n + (f.removed ?? 0), 0),
+      files: files.slice(0, 200),
+      untracked: untracked.slice(0, 200),
+    };
+  } catch {
+    /* card stays without a git section */
+  }
+  if (card.git && card.git.filesChanged === 0) {
+    card.verification = "no-changes";
+    return card;
+  }
+  if (!args.verify) return card;
+  let command = args.verifyCommand?.trim();
+  if (!command) {
+    const checks = await resolveProjectChecks(args.cwd).catch(() => undefined);
+    command = checks?.test?.command;
+  }
+  if (!command) {
+    card.verification = "no-test-command";
+    return card;
+  }
+  const started = Date.now();
+  try {
+    const bash = await resolveBashProgram();
+    const res = await runShell(bash, ["-lc", command], args.cwd, 5 * 60_000, args.signal);
+    const combined = `${res.stdout}${res.stdout && res.stderr ? "\n" : ""}${res.stderr}`;
+    card.tests = {
+      command,
+      exitCode: res.exitCode,
+      durationMs: Date.now() - started,
+      timedOut: res.timedOut,
+      summary: summarizeTestOutput(combined).text,
+    };
+    card.verification = res.exitCode === 0 && !res.timedOut ? "tests-passed" : "tests-failed";
+  } catch {
+    card.verification = "not-run";
+  }
+  return card;
 }
 
 function buildDescription(): string {

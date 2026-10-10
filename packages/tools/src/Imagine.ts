@@ -350,7 +350,7 @@ const inputSchema = z
     prompt: z.string().optional().describe("image/video: what to make. Be concrete: subject, style, framing, lighting."),
     size: z.enum(["1024x1024", "1536x1024", "1024x1536", "auto"]).optional().describe("image: square, landscape or portrait (default auto)."),
     edit_from: z.string().optional().describe("image: path of an existing png/jpg/webp to edit instead of generating from scratch."),
-    provider: z.enum(["openai", "gemini", "openrouter"]).optional().describe("image: force a provider (default: OpenAI if connected, else Gemini, else OpenRouter)."),
+    provider: z.string().optional().describe("image: preferred provider - openai, gemini or openrouter (default: OpenAI if connected, else Gemini, else OpenRouter). An unknown or unconnected value falls back to a connected provider."),
     model: z.string().optional().describe("image: model id for the OpenRouter provider, e.g. \"inclusionai/ming-image-0.1-design\" — list them at GET /api/v1/images/models (default: ARES_IMAGINE_OPENROUTER_MODEL)."),
     seconds: z.number().int().positive().optional().describe("video: length, 4/6/8 (default 8)."),
     aspect: z.enum(["16:9", "9:16"]).optional().describe("video: landscape (default) or vertical."),
@@ -368,6 +368,16 @@ export interface ImagineOutput {
   path?: string;
   provider?: string;
   message: string;
+}
+
+/** Map a model-written provider name to a supported one; undefined when unknown. */
+export function normalizeImageProvider(raw: string | undefined): "openai" | "gemini" | "openrouter" | undefined {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (!v) return undefined;
+  if (/openrouter|^or$/.test(v)) return "openrouter";
+  if (/openai|gpt|dall|chatgpt/.test(v)) return "openai";
+  if (/gemini|google|imagen|nano/.test(v)) return "gemini";
+  return undefined;
 }
 
 const NO_IMAGE_KEY =
@@ -420,8 +430,16 @@ export const ImagineTool = buildTool<typeof inputSchema, ImagineOutput>({
           const openaiKey = await getCredential("OPENAI_API_KEY").catch(() => undefined);
           const geminiKey = await getCredential("GEMINI_API_KEY", { envFallback: ["GOOGLE_API_KEY"] }).catch(() => undefined);
           const openrouterKey = await getCredential("OPENROUTER_API_KEY").catch(() => undefined);
-          const provider =
-            input.provider ?? (openaiKey ? "openai" : geminiKey ? "gemini" : openrouterKey ? "openrouter" : undefined);
+          // Never hard-fail on a provider the model merely guessed: map aliases,
+          // and fall back to whatever IS connected (field: 'openrouter' was an
+          // enum miss for a deployment that only has OpenRouter credits).
+          const connected: Array<"openai" | "gemini" | "openrouter"> = [
+            ...(openaiKey ? (["openai"] as const) : []),
+            ...(geminiKey ? (["gemini"] as const) : []),
+            ...(openrouterKey ? (["openrouter"] as const) : []),
+          ];
+          const wanted = normalizeImageProvider(input.provider);
+          const provider = wanted && connected.includes(wanted) ? wanted : connected[0] ?? wanted;
           if (!provider) return fail(NO_IMAGE_KEY);
           const key = provider === "openai" ? openaiKey : provider === "gemini" ? geminiKey : openrouterKey;
           if (!key)

@@ -13,6 +13,7 @@ import {
   openWorkspaceSessionKernel,
   runReliabilityTriage,
   setConnectBroker,
+  setProviderSignInHost,
   writeCrashLogSync,
   type ChildVerificationDebt,
   type ChildSessionCompositionOptions,
@@ -29,6 +30,7 @@ import { createInstancesApi } from "../phoneInstances.js";
 import { createTerminalApi } from "../phoneTerminal.js";
 import { connectorsSource, createSystemSignals, instancesSource, startSystemSurfaces } from "../systemWiring.js";
 import { createProvidersApi } from "../phoneProviders.js";
+import { createProviderSignInHost } from "../providerSignInHost.js";
 import { createDeviceApi } from "../phoneDevice.js";
 import { createAskApi } from "../phoneAsk.js";
 import { createTimelineApi } from "../phoneTimeline.js";
@@ -78,6 +80,8 @@ import { configureSharedMarketplace } from "../marketplace/tool.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
 import { deliverHeartbeatAlerts } from "../heartbeatAlerts.js";
 import { PersonaRuntime } from "./personaRuntime.js";
+import { hostCardFor, primeHostSha } from "./prompt/hostCard.js";
+import { cliVersion } from "./runtime.js";
 import type { ProviderSelection } from "./providers.js";
 
 // The owner's standing blanket approval for this box (ARES_TRUST_ALL=1): every
@@ -92,6 +96,9 @@ export type VerifiedGarrisonCoreSession = ComposedVerifiedChildSession;
 /** Production Garrison composition seam. Remote sessions must get the same
  * post-edit verifier/proof loop as interactive sessions; keeping the wiring in
  * one testable helper prevents the inline gateway factory from drifting. */
+/** Version for the per-session host card; filled at garrison start. */
+let hostVersion = "";
+
 export function createVerifiedGarrisonCoreSession(
   options: Omit<ChildSessionCompositionOptions, "surface" | "verifierOptions" | "persistedDebt">,
   verifierOptions: Omit<VerifierOptions, "workspace"> = {},
@@ -382,7 +389,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       // shared prompt, per session — never baked into the common prefix.
       const buildPrompt = (mode: AresRuntimeState["permissionMode"]) =>
         promptTailForTenant(req.tenant, composeGarrisonSystemPrompt, composeGuestSystemPrompt)(mode) +
-        personaRuntime.promptLayers(req.sessionId, req.surface, req.personaId);
+        // The host card (where this agent runs) is per-session, owner sessions only: a guest never learns the LAN layout.
+        personaRuntime.promptLayers(req.sessionId, req.surface, req.personaId, hostCardFor(req.tenant, { version: () => hostVersion, phoneUrl: () => remoteAgentServer?.linkBaseUrl() }));
       sessionPromptBuilders.set(req.sessionId, buildPrompt);
       const liveSystemPrompt = () => buildPrompt(planModes.stateFor(req.sessionId).permissionMode);
       const fileReadStamps = new Map<string, FileReadStamp>();
@@ -875,6 +883,19 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
 
   // "Check my email" → a Connect card on the phone. The hub is the broker the
   // Connect tool hands flows to; its links live on the same public origin.
+  // Provider sign-ins (/gateway/providers) and the agent side of them: Connect
+  // {service:"provider:<id>"} reads state here and is woken when the owner signs in.
+  const providersApi = createProvidersApi({
+    home: context.home,
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "providers", line } }) + "\n"),
+  });
+  const providerSignInHost = createProviderSignInHost(providersApi, {
+    wake: (sessionId, text) => sessions.send(sessionId, text, { delivery: "queue" }),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "providers", line } }) + "\n"),
+  });
+  setProviderSignInHost(providerSignInHost);
+  void cliVersion().then((v) => { hostVersion = v; });
+  primeHostSha();
   const connectHub = new ConnectHub({
     publicUrl: () => remoteAgentServer?.linkBaseUrl(),
     home: context.home,
@@ -996,10 +1017,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           ...(process.platform === "linux"
             ? { instances: createInstancesApi(new Instances(), (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "instances", line } }) + "\n")) }
             : {}),
-          providers: createProvidersApi({
-            home: context.home,
-            log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "providers", line } }) + "\n"),
-          }),
+          providers: providersApi,
           ask: createAskApi(sessions, {
             home: context.home,
             log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "ask", line } }) + "\n"),
@@ -1167,6 +1185,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       void remoteAgentServer?.close().catch(() => {});
       void connectHub.close().catch(() => {});
       browserWatchHub.close();
+      providerSignInHost.close();
+      providersApi.close();
       setBrowserWatchHub(null);
       setRemoteAgentServer(null);
       void aresNetworkHostStop();

@@ -30,6 +30,7 @@ import {
   serviceDomain,
 } from "@ares/core";
 import { buildTool, type ToolResult } from "./_shared.js";
+import { connectProvider, isProviderAsk } from "./connectProvider.js";
 
 const inputSchema = z.object({
   action: z.enum(["connect", "services", "list", "status", "set_credentials", "disconnect"]).describe(
@@ -40,7 +41,7 @@ const inputSchema = z.object({
     "set_credentials: store OAuth client_id and client_secret for a provider. " +
     "disconnect: remove stored tokens for a provider.",
   ),
-  service: z.string().optional().describe("For connect: what to connect — a service id or plain name (gmail, stripe, supabase, vercel, twilio, doordash) or any website domain to sign in to (e.g. 'chipotle.com')."),
+  service: z.string().optional().describe("For connect: what to connect — a service id or plain name (gmail, stripe, supabase, vercel, twilio, doordash) or any website domain to sign in to (e.g. 'chipotle.com'). For a coding agent or model login pass 'provider:<id>' (provider:claude-code, provider:codex, provider:kimi-cli, provider:ares-anthropic, provider:ares-openai, provider:ares-kimi)."),
   reason: z.string().optional().describe("For connect: one short line shown on the card — why you need it (e.g. 'to check your inbox')."),
   provider: z.string().optional().describe("The provider id (google, spotify, github, etc). Required for status/set_credentials/disconnect."),
   client_id: z.string().optional().describe("OAuth client ID — required for set_credentials."),
@@ -71,6 +72,8 @@ export const ConnectTool = buildTool<typeof inputSchema, ConnectOutput>({
     "or ANY website that needs a login — call action 'connect' with the service. The owner gets a one-tap card on their phone " +
     "(OAuth sign-in, a secure key form, or a live browser to sign in on) and this call waits until they finish, then tells you " +
     "exactly how to use the new connection — continue the original task right away. Never ask the owner to paste keys or passwords into chat. " +
+    "To get the owner signed in to Claude Code, Codex, Kimi CLI or Ares's own Anthropic/OpenAI/Kimi login, call 'connect' with service 'provider:<id>' (e.g. 'provider:claude-code'): it shows an in-app sign-in card and returns AT ONCE (end your turn; you are woken when they finish). " +
+    "That is the ONLY way to request a provider sign-in: never print OAuth links, never ask for a code or token, never run a CLI login yourself. " +
     "'services' lists everything connectable and what is already connected. 'disconnect' removes a classic OAuth provider's tokens.",
   safety: "workspace-write",
   concurrency: "parallel-safe",
@@ -192,13 +195,14 @@ export const ConnectTool = buildTool<typeof inputSchema, ConnectOutput>({
 
 async function connectService(
   input: Input,
-  ctx: { signal: AbortSignal; emitProgress?(data: unknown): void },
+  ctx: { signal: AbortSignal; sessionId?: string; emitProgress?(data: unknown): void },
 ): Promise<ToolResult<ConnectOutput>> {
   const asked = (input.service ?? input.provider ?? "").trim();
   if (!asked) {
     const message = "Say which service to connect (e.g. service: \"gmail\", \"stripe\", \"doordash\", or a website domain).";
     return { output: { message }, display: "No service named", failure: message };
   }
+  if (isProviderAsk(asked)) return connectProvider(asked, input.reason, ctx);
   const service = resolveConnectService(asked);
   if (!service) {
     const message = `I don't know how to connect "${asked}". Call Connect action "services" for the list, or pass the site's domain (e.g. "example.com") to sign in on the browser.`;

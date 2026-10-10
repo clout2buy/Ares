@@ -122,9 +122,9 @@ export class PersonaRuntime<Brain = unknown> {
   }
 
   /** The per-session prompt tail: texting doctrine (phone/Telegram) + role. */
-  promptLayers(sessionId: string, surface: string | undefined, personaId?: string): string {
+  promptLayers(sessionId: string, surface: string | undefined, personaId?: string, hostCard = ""): string {
     const persona = this.personaFor({ sessionId, personaId });
-    return sessionPromptLayers(surface, persona ?? null);
+    return sessionPromptLayers(surface, persona ?? null, hostCard);
   }
 
   sessionHooks(): SessionPersonaHooks {

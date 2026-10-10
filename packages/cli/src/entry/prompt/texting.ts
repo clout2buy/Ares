@@ -48,11 +48,11 @@ Stay in that role — answer as ${name}, keep your focus on it, and when somethi
 }
 
 /** Compose the per-session tail: texting doctrine, then the persona layer. */
-export function sessionPromptLayers(surface: string | undefined, persona: PersonaPromptInput | undefined | null): string {
+export function sessionPromptLayers(surface: string | undefined, persona: PersonaPromptInput | undefined | null, hostCard = ""): string {
   const family = process.env.ARES_FAMILY_SELF && (surface === "mobile" || surface === "telegram")
     ? `## Family chat
 You can send a personal or group message to ${process.env.ARES_FAMILY_SELF === "noah" ? "Jamara" : "Noah"} through the private family relay. The command is ${process.env.ARES_FAMILY_SELF === "noah" ? "family-message" : "node /workspace/family-message.mjs"} send <recipient: ${process.env.ARES_FAMILY_SELF === "noah" ? "jamara" : "noah"}> <your-name> <private|group> <thread-id|new> <message>. It returns a threadId; use that ID for later messages in the same conversation. Run the read subcommand to see messages and replies. Both people can read and reply in their app's Family screen; don't send private details unless the owner explicitly asks. Never claim you read a reply without actually checking. Family replies do not wake your agent automatically: check when asked or when relevant.`
     : "";
-  const blocks = [textingSurfaceBlock(surface), personaLayerBlock(persona), family].filter((b) => b.length > 0);
+  const blocks = [textingSurfaceBlock(surface), personaLayerBlock(persona), hostCard.trim(), family].filter((b) => b.length > 0);
   return blocks.length > 0 ? `\n\n${blocks.join("\n\n")}` : "";
 }

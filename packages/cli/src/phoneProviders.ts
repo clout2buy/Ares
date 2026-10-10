@@ -231,6 +231,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
   const log = (line: string): void => opts.log?.(`providers: ${line}`);
   const flows = new Map<string, Flow>();
   const active = new Map<string, Flow>(); // provider id -> its pending flow
+  const signedInListeners = new Set<(id: string) => void>();
 
   const audit = (action: string, target: string, params: Record<string, unknown>, result: string): void => {
     void appendAudit({ actor: "owner", action, target, params, result }, opts.home).catch(() => undefined);
@@ -377,6 +378,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
         flow.status = status;
         if (error) flow.error = error;
         flow.finishedAt = now();
+        if (status === "signed_in") for (const cb of signedInListeners) { try { cb(provider); } catch { /* a listener never breaks a login */ } }
         if (flow.timer) clearTimeout(flow.timer);
         if (active.get(provider) === flow) active.delete(provider);
         if (flow.shimDir) void fs.rm(flow.shimDir, { recursive: true, force: true }).catch(() => undefined);
@@ -751,5 +753,13 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
     for (const flow of [...active.values()]) { try { void flow.cancel(); } catch { /* gone */ } }
   }
 
-  return Object.assign(handle, { close });
+  /** Every provider with live state (the same rows GET /gateway/providers answers). */
+  const list = (): Promise<ProviderView[]> => Promise.all([...CLI_IDS, ...OWN_IDS].map((id) => viewOf(id)));
+  /** Hear a login finish signed in (the agent Connect tool's wake-up). Returns the unsubscribe. */
+  const onSignedIn = (cb: (id: string) => void): (() => void) => {
+    signedInListeners.add(cb);
+    return () => signedInListeners.delete(cb);
+  };
+
+  return Object.assign(handle, { close, list, onSignedIn });
 }

@@ -723,6 +723,7 @@ export {
   type ConnectOutcome,
   type ConnectBroker,
 } from "./connectServices.js";
+export * from "./providerSignIn.js";
 export {
   mintSecretHandle,
   describeSecretHandle,

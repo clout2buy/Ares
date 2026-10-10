@@ -336,7 +336,7 @@ test("a browser sign-in: the owner drives a live page, Done saves the session fo
   assert.match(outcome.detail, /session is saved/);
   const saved = JSON.parse(await fsp.readFile(browserSessionFile("doordash", home), "utf8"));
   assert.equal(saved.cookies[0].name, "dd_session");
-  assert.equal((await fsp.stat(browserSessionFile("doordash", home))).mode & 0o077, 0, "session cookies are owner-only on disk");
+  if (process.platform !== "win32") assert.equal((await fsp.stat(browserSessionFile("doordash", home))).mode & 0o077, 0, "session cookies are owner-only on disk");
   assert.equal(await isServiceConnected(resolveConnectService("doordash"), home), true);
   assert.ok(actions.some((a) => a[0] === "closed"), "the login browser is torn down");
 

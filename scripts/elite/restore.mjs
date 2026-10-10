@@ -21,10 +21,10 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { restoreBackup, resolveArchive, verifyBackup, loadKey, backupRoot } = await import(path.join(here, "..", "..", "packages", "cli", "dist", "systemBackup.js"));
+const { restoreBackup, resolveArchive, verifyBackup, loadKey, backupRoot } = await import(pathToFileURL(path.join(here, "..", "..", "packages", "cli", "dist", "systemBackup.js")).href);
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);

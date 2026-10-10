@@ -5,7 +5,12 @@
 // timeouts, concurrent-login refusal, cancel, logout, token scrubbing, and
 // Ares's own in-process Anthropic / ChatGPT / Kimi logins.
 
-import test from "node:test";
+import baseTest from "node:test";
+
+// Provider sign-in drives the CLIs under util-linux `script` (a pty) and these fakes are sh
+// scripts, so the flow only exists on Linux; elsewhere it reports "unsupported" by design.
+const LINUX_ONLY = process.platform === "linux" ? false : "provider sign-in runs CLIs under util-linux script (Linux hosts only)";
+const test = (name, ...rest) => baseTest(name, { skip: LINUX_ONLY }, rest.at(-1));
 import assert from "node:assert/strict";
 import net from "node:net";
 import http from "node:http";

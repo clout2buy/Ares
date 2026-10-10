@@ -487,7 +487,12 @@ test("a one-time alarm runs exactly once even when its send fails; unapproved an
   scheduler.tick();
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(sends, 1, "only the one-shot fired; the unapproved alarm did not");
-  const left = await scheduler.listAlarms();
+  // Consuming the one-shot is a file write; poll rather than bet on 20ms (slow Windows disks lose that bet).
+  let left = await scheduler.listAlarms();
+  for (let i = 0; i < 100 && left.some((a) => a.label === "one shot"); i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    left = await scheduler.listAlarms();
+  }
   assert.deepEqual(left.map((a) => a.label), ["unapproved"], "the one-shot is consumed despite the failed send");
 });
 

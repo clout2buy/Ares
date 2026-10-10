@@ -399,6 +399,11 @@ export function resolveConnectService(query: string): ConnectService | null {
   if (plaidVariant) return plaidVariant;
   const q = normalize(query);
   if (!q) return null;
+  // A built-in API preset of the exact name wins over a same-named MCP server: it needs nothing
+  // installed, so "home assistant" means the same thing on every machine (the stdio entry only
+  // exists where uvx/npx happen to be on PATH).
+  const preset = CONNECT_SERVICES.find((s) => s.id === `api-${q.replace(/ /g, "-")}`);
+  if (preset) return preset;
   const byId = CONNECT_SERVICES.find((s) => s.id === q || s.id === q.replace(/ /g, "-"));
   if (byId) return byId;
   const byLabel = CONNECT_SERVICES.find((s) => normalize(s.label) === q);

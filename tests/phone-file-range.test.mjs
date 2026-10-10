@@ -17,6 +17,11 @@ import { RemoteAgentServer } from "../packages/cli/dist/remoteAgentServer.js";
 import { ARTIFACT_TYPES, PAGE_CSP, MAX_FILE_BYTES, parseRange, mayServe } from "../packages/cli/dist/phoneFile.js";
 import { listArtifacts, kindOfExtension } from "../packages/cli/dist/phoneLibrary.js";
 
+
+/** An absolute path spelled as a URL path, the way the phone builds it:
+ *  POSIX as-is, Windows "C:\a\b" as "/C:/a/b" (the server strips the slash). */
+const urlPath = (p) => (/^[A-Za-z]:[\\/]/.test(p) ? "/" + p.replaceAll("\\", "/") : p);
+
 const SIZE = 5 * 1024 * 1024;
 const AUTH = { authorization: "Bearer tok" };
 
@@ -231,7 +236,7 @@ test("no bearer, or the wrong one, is 401 on GET, HEAD and ranged requests", asy
       await res.arrayBuffer();
     }
   }
-  const pathStyle = await fetch(`${w.base}/gateway/file${file}`);
+  const pathStyle = await fetch(`${w.base}/gateway/file${urlPath(file)}`);
   assert.equal(pathStyle.status, 401, "the path-in-URL spelling needs the bearer too");
 });
 
@@ -289,7 +294,7 @@ test("the same refusals hold for the path-in-URL spelling", async (t) => {
   await fsp.writeFile(path.join(outside, "secret.mp4"), "SECRET VIDEO");
   await fsp.writeFile(path.join(w.work, "ok.mp4"), "fine");
   await fsp.symlink(path.join(outside, "secret.mp4"), path.join(w.work, "bait.mp4"));
-  const at = (raw, headers = {}) => fetch(`${w.base}/gateway/file${raw}`, { headers: { ...AUTH, ...headers } });
+  const at = (raw, headers = {}) => fetch(`${w.base}/gateway/file${urlPath(raw)}`, { headers: { ...AUTH, ...headers } });
 
   const ok = await at(`${w.work}/ok.mp4`, { range: "bytes=1-2" });
   assert.equal(ok.status, 206);
@@ -319,7 +324,7 @@ test("a made page finds its sibling picture at the path-shaped URL", async (t) =
   await fsp.writeFile(path.join(w.work, "site", "index.html"), '<img src="img/cat.png"><video src="../clip.mp4"></video>');
   await fsp.writeFile(path.join(w.work, "site", "img", "cat.png"), Buffer.from("89504e470d0a1a0a", "hex"));
   await fsp.writeFile(path.join(w.work, "clip.mp4"), "video");
-  const page = `${w.base}/gateway/file${w.work.split(path.sep).map(encodeURIComponent).join("/")}/site/index.html`;
+  const page = `${w.base}/gateway/file${urlPath(w.work).split("/").map((seg) => (/^[A-Za-z]:$/.test(seg) ? seg : encodeURIComponent(seg))).join("/")}/site/index.html`;
   const res = await fetch(page, { headers: AUTH });
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type"), /text\/html/);

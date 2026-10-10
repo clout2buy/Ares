@@ -29,7 +29,6 @@ const SECRET = "sk-test-SENTINEL-do-not-leak-0123456789abcdef";
 
 async function rig(t) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "ares-bk-test-"));
-  t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home", ".ares");
   const ws = path.join(root, "ws");
   const backups = path.join(root, "backups");
@@ -58,8 +57,14 @@ async function rig(t) {
   const kernelFile = path.join(ws, ".ares", "session-kernel.sqlite");
   const kernel = await SessionKernelStore.open({ filename: kernelFile });
   kernel.createSession({ id: "sess_backup_probe" });
-  t.after(() => { try { kernel.close(); } catch { /* closed */ } });
-  return { root, home, ws, backups, kernel, kernelFile, w };
+  // Every database a test opens is closed BEFORE the folder goes: Windows refuses to delete an
+  // open SQLite file, and a store left open keeps the test process alive (Linux noticed neither).
+  const closers = [() => kernel.close()];
+  t.after(async () => {
+    for (const close of closers.reverse()) { try { close(); } catch { /* closed */ } }
+    await fsp.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  return { root, home, ws, backups, kernel, kernelFile, w, onClose: (fn) => closers.push(fn) };
 }
 
 const env = (backups) => ({ ...process.env, ARES_BACKUP_DIR: backups, ARES_BACKUP_KEY: undefined, ARES_BACKUP_OFFSITE_DIR: undefined });
@@ -81,7 +86,7 @@ test("a backup encrypts at rest: no plaintext secret, no readable names, 0600 ke
   assert.equal(JSON.stringify(manifest).includes(SECRET), false);
   assert.equal(manifest.kernels.length, 1);
   const keyFile = path.join(r.backups, ".backup.key");
-  assert.equal((await fsp.stat(keyFile)).mode & 0o077, 0, "the key is private");
+  if (process.platform !== "win32") assert.equal((await fsp.stat(keyFile)).mode & 0o077, 0, "the key is private");
   assert.equal(path.relative(r.home, keyFile).startsWith(".."), true, "and lives outside the home it protects");
   // Status is recorded for the System screen.
   const status = await readBackupStatus(r.backups);
@@ -128,7 +133,7 @@ test("restore round trip: every byte and permission comes back, and the kernel d
   // The restored kernel is a real database holding the session.
   assert.equal(rep.kernels.length, 1);
   const reopened = await SessionKernelStore.open({ filename: rep.kernels[0] });
-  t.after(() => reopened.close());
+  r.onClose(() => reopened.close());
   assert.ok(reopened.getSession("sess_backup_probe"), "the session survived the round trip");
 });
 
@@ -140,7 +145,7 @@ test("the kernel is captured through SQLite, consistent while another connection
   const out = path.join(r.root, "rh");
   const rep = await restoreBackup({ from: res.dir, to: out, key });
   const copy = await SessionKernelStore.open({ filename: rep.kernels[0] });
-  t.after(() => copy.close());
+  r.onClose(() => copy.close());
   assert.ok(copy.getSession("sess_load_49"));
   assert.equal(copy.checkpoint !== undefined, true);
 });

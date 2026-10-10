@@ -51,7 +51,7 @@ test("sync → Device tool reads it back with its age; forget removes it", async
   assert.deepEqual(await post("health", { days: [{ date: "2026-09-22", steps: 9000 }] }), { ok: true, stored: 1 });
   await post("contacts", { contacts: [{ name: "Sam Lee", emails: ["sam@example.com"] }, { name: "Alex" }] });
   await post("calendar", { events: [{ title: "Dentist", start: soon }], reminders: [{ title: "Buy milk" }] });
-  assert.equal((await fsp.stat(deviceFile("contacts", home))).mode & 0o077, 0, "owner-only on disk");
+  if (process.platform !== "win32") assert.equal((await fsp.stat(deviceFile("contacts", home))).mode & 0o077, 0, "owner-only on disk");
 
   const health = await DeviceTool.call({ action: "health", days: 7, limit: 25 }, { signal });
   assert.equal(health.output.items[0].steps, 9000);

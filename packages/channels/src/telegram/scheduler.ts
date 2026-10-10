@@ -78,7 +78,15 @@ export async function loadSchedule(home: string): Promise<ScheduleData> {
 export async function saveSchedule(home: string, data: ScheduleData): Promise<void> {
   const file = scheduleFile(home);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(data, null, 2) + "\n");
+  // Write-then-rename: a reader never sees a half-written file.
+  const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(data, null, 2) + "\n");
+  try {
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 // ─── Alarm CRUD ──────────────────────────────────────────────────────────
@@ -161,6 +169,9 @@ export interface SchedulerOptions {
 export class TelegramScheduler {
   private readonly outbound: TelegramOutbound;
   private readonly home: string;
+  /** Saves run one at a time, and every reload waits for them: a reload that read the file
+   *  while a one-shot's removal was still being written resurrected the alarm. */
+  private pendingSave: Promise<void> = Promise.resolve();
   private readonly buildMessage: CheckInBuilder;
   private readonly now: () => Date;
   private readonly tickMs: number;
@@ -187,6 +198,7 @@ export class TelegramScheduler {
 
   async start(): Promise<void> {
     if (this.timer) return;
+    await this.pendingSave;
     this.schedule = await loadSchedule(this.home);
     this.lastDay = this.now().getDate();
     this.timer = setInterval(() => this.tick(), this.tickMs);
@@ -206,21 +218,23 @@ export class TelegramScheduler {
 
   /** Add an alarm at runtime (from the Remind tool or /remind command). */
   async addAlarm(input: Omit<Alarm, "id" | "createdAt">): Promise<Alarm> {
+    await this.pendingSave;
     this.schedule = await loadSchedule(this.home);
     const { data, alarm } = addAlarm(this.schedule, input);
     this.schedule = data;
-    await saveSchedule(this.home, data);
+    await this.persistNow(data);
     this.log(`alarm added: ${alarm.id} "${alarm.label}" at ${alarm.hour}:${String(alarm.minute).padStart(2, "0")}`);
     return alarm;
   }
 
   /** Remove an alarm at runtime. */
   async removeAlarm(id: string): Promise<Alarm | undefined> {
+    await this.pendingSave;
     this.schedule = await loadSchedule(this.home);
     const { data, removed } = removeAlarm(this.schedule, id);
     if (removed) {
       this.schedule = data;
-      await saveSchedule(this.home, data);
+      await this.persistNow(data);
       this.log(`alarm removed: ${id}`);
     }
     return removed;
@@ -228,19 +242,36 @@ export class TelegramScheduler {
 
   /** List alarms (for the Remind tool or /alarms command). */
   async listAlarms(): Promise<Alarm[]> {
+    await this.pendingSave;
     this.schedule = await loadSchedule(this.home);
     return listAlarms(this.schedule);
   }
 
   /** Human-readable alarm list. */
   async renderAlarms(): Promise<string> {
+    await this.pendingSave;
     this.schedule = await loadSchedule(this.home);
     return renderAlarms(this.schedule);
   }
 
   /** Reload the schedule from disk (picks up external edits). */
   async reload(): Promise<void> {
+    await this.pendingSave;
     this.schedule = await loadSchedule(this.home);
+  }
+
+  /** Queue a save behind any in flight (fire-and-forget callers). */
+  private persist(data: ScheduleData): void {
+    this.pendingSave = this.pendingSave.then(() => saveSchedule(this.home, data)).catch((err) => {
+      this.log(`schedule save failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  /** Queue a save and wait for it, surfacing its error to the caller. */
+  private async persistNow(data: ScheduleData): Promise<void> {
+    const run = this.pendingSave.then(() => saveSchedule(this.home, data));
+    this.pendingSave = run.catch(() => {});
+    await run;
   }
 
   /** Exposed for tests and the control plane; the interval calls it. */
@@ -276,7 +307,7 @@ export class TelegramScheduler {
     if (alarm.once) {
       const { data } = removeAlarm(this.schedule, alarm.id);
       this.schedule = data;
-      void saveSchedule(this.home, data).catch(() => {});
+      this.persist(data);
       this.log(`one-shot alarm "${alarm.id}" consumed`);
     }
     const routed: Promise<boolean> = this.routeAlarm
@@ -312,7 +343,7 @@ export class TelegramScheduler {
     if (!current) return;
     current.lastRunAt = now.toISOString();
     current.lastResult = result;
-    void saveSchedule(this.home, this.schedule).catch(() => {});
+    this.persist(this.schedule);
   }
 }
 

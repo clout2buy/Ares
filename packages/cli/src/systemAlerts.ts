@@ -97,7 +97,7 @@ export const DISK_PUSH_PCT = 85;
 export const DISK_CRITICAL_PCT = 95;
 
 /** Pure: which alert conditions hold right now. */
-export function candidatesFrom(snapshot: SystemSnapshot, signals: Signals = {}, backup: { ok?: boolean; error?: string } | undefined = snapshot.backup as { ok?: boolean; error?: string } | undefined): AlertCandidate[] {
+export function candidatesFrom(snapshot: SystemSnapshot, signals: Signals = {}, backup: { ok?: boolean; error?: string } | undefined = snapshot.backup as { ok?: boolean; error?: string } | undefined, nowMs: number = Date.now()): AlertCandidate[] {
   const out: AlertCandidate[] = [];
   const pct = snapshot.disk.usedPct;
   if (snapshot.disk.totalBytes > 0 && pct >= 80) {
@@ -169,7 +169,7 @@ export function candidatesFrom(snapshot: SystemSnapshot, signals: Signals = {}, 
   const deploys = (snapshot.maintainer as { deploys?: Array<{ status?: string; id?: string; finishedAt?: string; at?: string }> } | undefined)?.deploys;
   for (const d of Array.isArray(deploys) ? deploys.slice(0, 5) : []) {
     const at = Date.parse(d.finishedAt ?? d.at ?? "");
-    if (d.status === "rolled-back" && Number.isFinite(at) && Date.now() - at <= 24 * 3_600_000) {
+    if (d.status === "rolled-back" && Number.isFinite(at) && nowMs - at <= 24 * 3_600_000) {
       out.push({ key: `deploy:${d.id ?? at}`, kind: "deploy_rolled_back", title: "A deploy was rolled back", body: "The maintainer's last deploy failed its checks and was reverted.", feedOnly: true });
     }
   }
@@ -255,7 +255,8 @@ export class AlertEngine {
   // ── internals ──
 
   private async evaluateNow(snapshot: SystemSnapshot, signals: Signals): Promise<SystemEvent[]> {
-    return this.apply(candidatesFrom(snapshot, signals), true);
+    // The engine's clock, not the wall clock: "rolled back in the last day" must agree with every other window here.
+    return this.apply(candidatesFrom(snapshot, signals, snapshot.backup as { ok?: boolean; error?: string } | undefined, this.now()), true);
   }
 
   private quiet(): boolean {

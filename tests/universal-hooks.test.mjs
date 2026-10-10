@@ -215,7 +215,10 @@ test("oversize payloads are refused before they are read in full — declared or
   const auth = { authorization: `Bearer ${secret}` };
   assert.equal((await post(hook.id, "x".repeat(1024), auth)).status, 202, "exactly at the cap is fine");
   assert.equal((await post(hook.id, "x".repeat(1025), auth)).status, 413);
-  assert.equal((await post(hook.id, "x".repeat(200_000), auth)).status, 413);
+  // Refused before the body is read: on Windows the early close can surface as a reset to a client
+  // still writing 200 KB, the same outcome the chunked case below already accepts.
+  const oversize = await post(hook.id, "x".repeat(200_000), auth).catch((e) => (/ECONNRESET|EPIPE/.test(String(e?.cause?.code ?? e?.code)) ? { status: 413 } : Promise.reject(e)));
+  assert.equal(oversize.status, 413);
 
   // streamed with no content-length (chunked): cut off at the cap
   const status = await new Promise((resolve, reject) => {
@@ -230,7 +233,8 @@ test("oversize payloads are refused before they are read in full — declared or
   assert.equal(status, 413);
 
   // an unknown id has the default cap (64 KB), not a bigger one
-  assert.equal((await post("z".repeat(32), "x".repeat(70_000))).status, 413);
+  const bigUnknown = await post("z".repeat(32), "x".repeat(70_000)).catch((e) => (/ECONNRESET|EPIPE/.test(String(e?.cause?.code ?? e?.code)) ? { status: 413 } : Promise.reject(e)));
+  assert.equal(bigUnknown.status, 413);
   assert.equal((await post("z".repeat(32), "x".repeat(2000))).status, 404);
   await settle();
   assert.equal(fired.length, 1, "only the in-limit request started a turn");

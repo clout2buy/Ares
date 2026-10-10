@@ -19,7 +19,7 @@ export interface ChangeHighlight {
   /** One-line, non-technical explanation of why it's good. */
   blurb: string;
   /** Optional pill tag, e.g. "New", "Faster", "Safer". */
-  tag?: "New" | "Safer" | "Faster" | "Polished";
+  tag?: "New" | "Safer" | "Faster" | "Polished" | "Fixed";
 }
 
 export interface ChangelogEntry {

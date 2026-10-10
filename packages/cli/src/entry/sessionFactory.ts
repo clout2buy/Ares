@@ -1036,7 +1036,6 @@ export async function createSessionWithSelection(
       requestPermission,
       drainSystemReminders,
       confirmTurnEnd: process.env.ARES_CODING_PROOF_GATE === "1" ? () => confirmTurnEndWith(verifier) : undefined,
-      subagentRunner: runtime.subagentRunner,
       planBeforeEdit: () => planPressure.next,
       recallFailureFix: (input) => recallFailureFixFromMemory(context.mind.memoryFile, input),
       hookManager: hooks,

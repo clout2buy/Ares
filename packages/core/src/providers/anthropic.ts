@@ -473,7 +473,11 @@ export class AnthropicProvider implements Provider {
       const block = blocks.get(idx)!;
       if (block.kind === "text" && block.text) {
         content.push({ type: "text", text: block.text });
-      } else if (block.kind === "thinking" && block.thinking) {
+      } else if (block.kind === "thinking" && (block.thinking || block.signature)) {
+        // Current Claude models return thinking with display omitted: empty text
+        // plus a signature. Keep it — dropping it hid thinking-only replies from
+        // the empty-turn guard's accounting and stripped the reasoning chain from
+        // replayed tool loops.
         content.push({
           type: "thinking",
           text: block.thinking,

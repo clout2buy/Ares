@@ -1535,6 +1535,10 @@ export class QueryEngine {
    * real datapoint; EWMA-smoothed and clamped so one weird turn can't wreck it.
    */
   private tokenScale = 1;
+  /** Estimated system-prompt + tool-schema tokens of the latest provider request. */
+  private lastOverheadTokens = 0;
+  /** Set while an empty-turn retry runs with thinking off; restores the dial afterwards. */
+  private emptyRetryRestore: { level: ReasoningLevel | null } | null = null;
   /** Derived project checks (resolveProjectChecks), resolved once per engine. */
   private projectChecksPromise: Promise<ProjectChecks | null> | null = null;
   /** The provider's REAL prompt ceiling, learned from rejections/stalls at
@@ -1708,6 +1712,13 @@ export class QueryEngine {
       this.projectChecksPromise = resolveProjectChecks(this.cfg.workspace).catch(() => null);
     }
     return this.projectChecksPromise;
+  }
+
+  /** Calibrated real-token size of a request carrying `estMessages` of history —
+   *  includes the system prompt and tool schemas, which the provider also counts
+   *  against the window (calibration compares real usage to messages + overhead). */
+  private realPromptEstimate(estMessages: number): number {
+    return (estMessages + this.lastOverheadTokens) * this.tokenScale;
   }
 
   /** Fold a real usage datapoint into the token-scale calibration (S4). */
@@ -2133,7 +2144,7 @@ export class QueryEngine {
     // screenshot is re-charged on every request regardless of history size.
     const imagePass = this.clearStaleScreenshots();
     const textPass =
-      threshold > 0 && estBefore * this.tokenScale > threshold * MICROCOMPACT_TRIGGER_RATIO
+      threshold > 0 && this.realPromptEstimate(estBefore) > threshold * MICROCOMPACT_TRIGGER_RATIO
         ? this.microcompactTextPass()
         : null;
     if (!imagePass && !textPass) return null;
@@ -2146,7 +2157,7 @@ export class QueryEngine {
     // watermark response, so it neither builds nor resets the thrash signal.)
     if (textPass) {
       this.ineffectiveMicroStreak =
-        estAfter * this.tokenScale > threshold * MICROCOMPACT_TRIGGER_RATIO
+        this.realPromptEstimate(estAfter) > threshold * MICROCOMPACT_TRIGGER_RATIO
           ? this.ineffectiveMicroStreak + 1
           : 0;
     }
@@ -2332,7 +2343,7 @@ export class QueryEngine {
     // micro trigger force the real summarizer even below the threshold —
     // otherwise the 0.72T..T band is a thrash zone micro can never exit.
     const forcedByMicroThrash = this.ineffectiveMicroStreak >= 3;
-    if (!forcedByMicroThrash && estBefore * this.tokenScale <= threshold) return null;
+    if (!forcedByMicroThrash && this.realPromptEstimate(estBefore) <= threshold) return null;
 
     // Keep the most recent ~35% of the threshold at full fidelity. keepTokens is
     // in estimate units (chooseCompactionSplit sums the raw estimator), so divide
@@ -2620,6 +2631,7 @@ export class QueryEngine {
     // (turnAbort was already armed at the top of the turn — see above.)
     this.todoGateFired = false; // re-arm the todo-completion gate for this turn
     this.turnReasoningOverride = null; // effort dial resets each turn
+    this.emptyRetryRestore = null;
     this.lastRoundHadFailure = false; // tactical dial starts clean
     // Coding completion truth. Tool-reported mutations arm the proof gate;
     // only a successful manual check or host verifier result AFTER the latest
@@ -2860,6 +2872,8 @@ export class QueryEngine {
             (s, t) => s + estimateTextTokens(t.name) + estimateTextTokens(t.description) + estimateTextTokens(JSON.stringify(t.input_schema)) + 8,
             0,
           );
+
+        this.lastOverheadTokens = overheadTokens;
 
         // Budget attempts are real-token targets; convert to estimate units via
         // the live calibration so budgetMessages (which sums the raw estimator)
@@ -3108,6 +3122,10 @@ export class QueryEngine {
                     terminalMessageEvent = ev;
                     addUsageInto(totalUsage, ev.usage);
                     stopReason = ev.stopReason;
+                    if (this.emptyRetryRestore && !messageHasNoVisibleOutput(ev.message)) {
+                      this.turnReasoningOverride = this.emptyRetryRestore.level;
+                      this.emptyRetryRestore = null;
+                    }
                     // The provider just completed a call — it is alive; the
                     // dead-endpoint stall counter starts over.
                     guards.zeroOutputStalls = 0;
@@ -3571,28 +3589,40 @@ export class QueryEngine {
           continue;
         }
         // "Typing then nothing" guard: a valid message_done with end_turn but
-        // EMPTY content (no text, no thinking, no tool calls) is the silent-success
-        // path — the model produced literally nothing yet the turn ends "completed".
-        // Nudge it once to actually produce output; if it stalls again, fall through
-        // so the turn still ends instead of looping.
+        // EMPTY content (no text, no tool calls) is the silent-success path — the
+        // model produced nothing (or only omitted thinking) yet the turn ends
+        // "completed". Nudge it, and on the retry turn thinking OFF: a
+        // thinking-only dead end repeats with thinking on, and the owner sees
+        // silence. If it still stalls, surface an error instead of ending "completed".
         if (
           stopReason === "end_turn" &&
           messageHasNoVisibleOutput(assistantMessage) &&
-          guards.emptyTurnNudges < 1 &&
           !this.liveSignal().aborted
         ) {
-          guards.emptyTurnNudges++;
-          this.messages.push({
-            id: cryptoId(),
-            role: "user",
-            content: [{
-              type: "system_reminder",
-              text: "You ended the turn without producing any output — no text and no tool calls. If the task is done, say so and summarize what you did; otherwise continue the work now.",
-            }],
-            createdAt: new Date().toISOString(),
-          });
-          yield { type: "system_reminder_injected", text: "empty assistant turn — nudging for output", source: "instructions" };
-          continue;
+          if (guards.emptyTurnNudges < 2) {
+            guards.emptyTurnNudges++;
+            if (this.emptyRetryRestore === null) this.emptyRetryRestore = { level: this.turnReasoningOverride };
+            this.turnReasoningOverride = "off";
+            this.messages.push({
+              id: cryptoId(),
+              role: "user",
+              content: [{
+                type: "system_reminder",
+                text: "You ended the turn without producing any output — no text and no tool calls. If the task is done, say so and summarize what you did; otherwise continue the work now.",
+              }],
+              createdAt: new Date().toISOString(),
+            });
+            yield { type: "system_reminder_injected", text: "empty assistant turn — nudging for output", source: "instructions" };
+            continue;
+          }
+          yield {
+            type: "error",
+            error: {
+              code: "empty_response",
+              message: "The model returned an empty reply after retries. Send the message again, or say \"continue\".",
+              retriable: true,
+            },
+          };
         }
         // Todo-completion gate: if the model wrote a plan (TodoWrite) and is now
         // trying to end while items are still pending/in-progress, push back ONCE

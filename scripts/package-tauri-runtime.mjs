@@ -14,6 +14,23 @@ const binOut = path.join(runtime, "bin");
 const modulesOut = path.join(runtime, "node_modules");
 const nodeName = process.platform === "win32" ? "node.exe" : "node";
 
+// The runtime ships THIS node binary next to native modules compiled for the
+// Node that installed the workspace. A mismatch only surfaces at daemon start,
+// as "NODE_MODULE_VERSION 127 vs 137" and an "Agent Down" desktop window (a
+// dev run packaged under Node 24 on 2026-10-15). Prove the pairing BEFORE the
+// old runtime is wiped, so a wrong Node leaves the last good bundle in place.
+try {
+  // Requiring the package only loads JS; the native addon binds on first open.
+  const Database = createRequire(path.join(root, "packages", "core", "package.json"))("better-sqlite3");
+  new Database(":memory:").close();
+} catch (error) {
+  console.error(
+    `package-tauri-runtime: better-sqlite3 does not load under ${process.execPath} (${process.version}): ${error instanceof Error ? error.message.split("\n")[0] : String(error)}\n` +
+      "Run this script with the Node the workspace was installed for (the bundled runtime ships Node 22), or rebuild the native modules for this Node first.",
+  );
+  process.exit(1);
+}
+
 await rm(runtime, { recursive: true, force: true });
 await mkdir(path.dirname(cliOut), { recursive: true });
 await mkdir(templatesOut, { recursive: true });

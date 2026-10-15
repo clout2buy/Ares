@@ -25,6 +25,7 @@ import { MemoryStore } from "@ares/mind";
 import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, fillEffect, navigateEffect, challengePrompt, type BrowserConnector, type HumanCheckHandler } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
+import { serveLocalTarget } from "./previewServer.js";
 import { BrowserBridgeServer, ExtensionBrowserConnector } from "@ares/browser-extension-connector";
 
 // ── Embedded-browser bridge: the daemon ⇄ UI request/response channel that lets
@@ -117,7 +118,7 @@ const browserInput = z
       "Embedded actions: preview(html) to load, then click_text/fill_selector/eval/console/screenshot(snapshot).",
     ),
     html: z.string().optional().describe("Self-contained HTML to render in the embedded browser (engine:'embedded', action:'preview')."),
-    headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true for plain web tasks — the owner does NOT want to watch navigation. The 'preview' action overrides this to VISIBLE so the owner can watch the UI test. Pass false to watch any action."),
+    headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true. 'preview' is ALWAYS headless (the value is ignored): the owner watches in the Forge, which shows the page you preview. For other actions pass false ONLY when the owner explicitly asks to watch a real browser window."),
     note: z.string().optional().describe("Optional note attached to screenshot frames."),
     limit: z.number().int().min(1).max(100).optional().describe("Maximum tree/filmstrip/console entries returned."),
     steps: z.array(browserStep).min(1).max(24).optional().describe("act: ordered DOM-first actions to execute as one transaction, followed by one screenshot and page-state verification."),
@@ -594,7 +595,15 @@ export function makeBrowserTool(
       // a real logged-in tab without launching another profile. Once attached,
       // the connector remains selected for subsequent act/click/fill calls.
       const extensionAttach = extensionBridge?.connected() && ["handshake", "tabs", "attach"].includes(i.action);
-      const br = await ensureBrowser(i.action === "preview" ? false : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
+      // preview used to FORCE a visible browser window "so the owner can watch".
+      // The owner watches in the Forge (the Live tab embeds the served page or
+      // streams the filmstrip); a second Edge window popping over the desktop
+      // read as "wtf it opened a browser" (2026-10-15). Headless unless asked.
+      // preview is ALWAYS headless, whatever the model passes: small models
+      // kept sending headless:false out of habit and a second Edge window
+      // popped over the desktop every time. The Forge toolbar's "Open separate
+      // copy" is the owner's way to a real window.
+      const br = await ensureBrowser(i.action === "preview" ? true : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
       announceWatch(br, i, ctx);
       if (i.action === "login" || i.action === "fill_secret") return fillFromVault(br, i, ctx);
       const orderRefusal = await checkoutGuard(br, i, ctx);
@@ -769,13 +778,29 @@ export function makeBrowserTool(
           url = pathToFileURL(tmp).href;
         }
         if (!url) throw new Error("Browser preview requires `url` (or `html` to render inline)");
+        // A project file is hosted, not file://-opened: its folder is served on
+        // 127.0.0.1 so module scripts, import maps and relative assets resolve,
+        // and the Forge embeds the localhost origin. Inline html (temp file)
+        // stays file:// — it is self-contained by contract.
+        const served = i.url ? await serveLocalTarget(i.url) : null;
+        if (served) url = served.url;
         await br.navigate(url);
         const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
         emitTarget(state);
         const frame = await strip.record({ action: "preview", url: state.url, screenshot: shot, note: i.note });
+        // The page's errors ride along with the preview: the model learns what
+        // broke in the SAME call (no follow-up console round-trip), and the
+        // Forge shows them over the Live tab instead of a silent grey canvas.
+        const consoleErrors = br.consoleLogs
+          ? await br.consoleLogs({ onlyErrors: true, limit: 8 }).then((logs) => logs.map((l) => `${l.type}: ${l.text}`.slice(0, 400))).catch(() => [] as string[])
+          : [];
+        ctx?.emitProgress?.({ kind: "browser_console", url: state.url, errors: consoleErrors, served: served ? { root: served.root, origin: served.origin } : null });
+        const servedNote = served ? `Serving ${served.root} at ${served.origin} (static, loopback only) — paths in the page resolve against that folder.` : undefined;
+        const errorNote = consoleErrors.length ? `${consoleErrors.length} console error(s) on load — see result.consoleErrors.` : undefined;
+        const note = [servedNote, errorNote].filter(Boolean).join(" ") || undefined;
         return {
-          output: { action: i.action, status: "ok", result: { ...state, frame: frame.frame }, filmstripDir: filmstripDir(strip) },
-          display: `preview ${state.url}`,
+          output: { action: i.action, status: "ok", result: { ...state, frame: frame.frame, consoleErrors, ...(served ? { served: { root: served.root, origin: served.origin } } : {}) }, ...(note ? { note } : {}), filmstripDir: filmstripDir(strip) },
+          display: served ? `preview ${state.url} (serving ${served.root})` : `preview ${state.url}`,
           images: [{ mediaType: `image/${shot.format ?? "png"}`, data: shot.bytes }],
         };
       }
@@ -865,15 +890,20 @@ export function makeBrowserTool(
 
       if (i.action === "open") {
         if (!i.url) throw new Error("Browser open requires url");
+        // Same hosting rule as preview: a local project file is served from
+        // its folder and opened over localhost (see previewServer.ts).
+        const served = await serveLocalTarget(i.url);
+        const openUrl = served ? served.url : i.url;
         // If CDP can see a matching user/Ares tab, bind to it before navigating.
         // This preserves that tab's authenticated context and avoids duplicates.
-        await br.attachToExisting?.(i.url).catch(() => false);
-        const effect = navigateEffect(br, i.url, { filmstrip: strip, idemPrefix });
+        await br.attachToExisting?.(openUrl).catch(() => false);
+        const effect = navigateEffect(br, openUrl, { filmstrip: strip, idemPrefix });
         const result = await runEffect(effect, rails);
         emitTarget(await br.state());
+        const note = [railsNote(result), served ? `Serving ${served.root} at ${served.origin} (static, loopback only).` : undefined].filter(Boolean).join(" ") || undefined;
         return {
-          output: { action: i.action, status: result.status, result, note: railsNote(result), filmstripDir: filmstripDir(strip) },
-          display: `open ${i.url}: ${result.status}`,
+          output: { action: i.action, status: result.status, result, note, filmstripDir: filmstripDir(strip) },
+          display: `open ${openUrl}: ${result.status}`,
         };
       }
 

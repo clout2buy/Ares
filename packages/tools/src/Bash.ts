@@ -115,7 +115,7 @@ export const BashTool = buildTool({
         program: bash,
         args: ["-lc", i.command],
         cwd,
-        description: i.description,
+        description: i.description ?? i.command.trim().replace(/\s+/g, " ").slice(0, 72),
         sessionId: ctx.sessionId,
         invocationKey: ctx.toolUseId ?? `legacy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
       });

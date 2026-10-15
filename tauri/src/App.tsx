@@ -708,6 +708,11 @@ function App() {
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
   const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
   const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number } | null>(null);
+  // What the previewed page said on load: console errors and, when Ares served
+  // a project folder for it, which folder. A grey canvas with no words is how
+  // "open it in the Forge" read as broken (2026-10-15) — the errors belong on
+  // the stage, not only in the model's tool result.
+  const [liveConsole, setLiveConsole] = useState<{ url: string; errors: string[]; served: { root: string; origin: string } | null; at: number } | null>(null);
   // A non-browser live source (a Godot game/editor Ares is driving). Frames
   // land in liveBrowser like the screencast; this carries what it is, whether
   // the daemon is still polling it between turns, and whether it takes input.
@@ -2523,10 +2528,18 @@ function App() {
           return;
         }
       }
+      if (ev.type === "tool_progress" && ev.data?.kind === "browser_console" && typeof ev.data.url === "string") {
+        const d = ev.data as { url: string; errors?: unknown; served?: { root?: unknown; origin?: unknown } | null };
+        const errors = Array.isArray(d.errors) ? d.errors.filter((e): e is string => typeof e === "string") : [];
+        const served = d.served && typeof d.served.root === "string" && typeof d.served.origin === "string" ? { root: d.served.root, origin: d.served.origin } : null;
+        setLiveConsole({ url: d.url, errors, served, at: Date.now() });
+        // falls through: the progress event still belongs in the tool's activity stream
+      }
       if (ev.type === "tool_progress" && ev.data?.kind === "browser_target" && typeof ev.data.url === "string") {
         const target = { url: ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
         setLiveTarget(target);
         setLiveUrl(target.url);
+        setLiveConsole((c) => (c && c.url === target.url ? c : null));
         setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
         // Do not return: the progress event also belongs in the running tool's
         // activity stream, so the transcript and Forge stay in sync.
@@ -4658,7 +4671,25 @@ function App() {
                   : liveFeed && (!liveTarget || liveFeed.at >= liveTarget.at)
                     ? `${liveFeed.label}${liveFeed.step ? ` · ${liveFeed.step}` : ""}${liveFeed.note ? ` · ${liveFeed.note}` : liveFeed.watching ? " · watching" : ""}`
                     : liveTarget?.title || liveTarget?.url || "Launch a local app or let Ares open one"}
+                {!embeddedActive && liveConsole?.served && liveTarget && liveConsole.url === liveTarget.url ? (
+                  <span className="liveServed" title={`Ares serves this folder at ${liveConsole.served.origin}`}> · serving {liveConsole.served.root}</span>
+                ) : null}
               </div>
+              {/* What the page said on load. Errors sit on the stage so a grey
+                  canvas is never a mystery; one click clears them. */}
+              {!embeddedActive && liveConsole && liveTarget && liveConsole.url === liveTarget.url && liveConsole.errors.length > 0 ? (
+                <div className="liveConsole" role="status">
+                  <div className="liveConsoleHead">
+                    <strong>{liveConsole.errors.length} error{liveConsole.errors.length === 1 ? "" : "s"} on load</strong>
+                    <button type="button" onClick={() => setLiveConsole(null)} aria-label="Dismiss page errors">×</button>
+                  </div>
+                  <ul>
+                    {liveConsole.errors.slice(0, 6).map((line, idx) => (
+                      <li key={idx}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {/* interactive embedded browser (Ares's own HTML apps/games) */}
               <div className="liveStage embed" data-on={embeddedActive ? "1" : "0"}>
                 <EmbeddedBrowser ref={embeddedRef} onActivity={setEmbeddedActivity} />

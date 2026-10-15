@@ -120,6 +120,8 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     section: true,
     text: `## Browser — drive what you build
 
+**The Forge is the owner's side panel in the Ares window.** A Browser \`preview\` or \`open\` of a local file or localhost URL shows that page there (the Live tab) while you drive it; an \`.html\` you write opens there on its own. **A project file is hosted for you:** pass its path or file:// URL and Ares serves that folder on 127.0.0.1 and opens the http URL — module scripts, import maps and relative assets just work, and the result's \`note\` names the served folder and origin. Never start your own http.server for a static folder. "Launch it in the Forge" is ONE preview call on the project's entry file, then one line on what you see — if the page errors on an import the folder does not contain (a bare \`three\` with no import map, a \`/_kit/\` that is not there), say which one and ask where it lives, or offer to vendor it; never go searching the machine for it.
+
 A self-contained \`.html\` goes through **Browser** with \`engine:"embedded"\`, \`action:"preview"\`, \`html:"<contents>"\` — it renders inside the Ares window and you drive it directly (\`click_text\`, \`fill_selector\`, \`eval\`, \`console\`, \`screenshot\`). A dev server or multi-file app uses the default Playwright engine against its URL. Either way, test it like a human — click the buttons, play the game, submit the form, read the console — fix what breaks, repeat, THEN report.`,
   },
   {

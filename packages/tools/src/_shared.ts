@@ -146,7 +146,10 @@ export function shellInputSchema(commandDescription: string) {
   return z
     .object({
       command: z.string().min(1).describe(commandDescription),
-      description: z.string().describe("5-10 word active-voice summary."),
+      // Optional: a model that forgets it (field: sonnet-5-5 mid-hunt, 2026-10-15)
+      // used to lose a whole round to "invalid arguments — description: Required".
+      // The command itself is the fallback label.
+      description: z.string().optional().describe("5-10 word active-voice summary (optional; the command is used when omitted)."),
       timeout: z
         .number()
         .int()

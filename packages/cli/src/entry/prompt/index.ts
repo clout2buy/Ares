@@ -44,6 +44,9 @@ export interface ComposePromptOptions {
    *  the system prompt itself, after the doctrine it outranks, and is never
    *  part of any budgeted context. Empty string when no laws exist. */
   laws?: string;
+  /** The ORSI-evolved operating rules (orsiOverlay.ts). Sits right after the
+   *  laws it can never outrank; empty when there is nothing to say. */
+  evolved?: string;
 }
 
 /** Join non-empty blocks with exactly one blank line between them. */
@@ -60,6 +63,7 @@ export function composeSystemPrompt(opts: ComposePromptOptions): string {
     // precedence the block itself states — and BEFORE the surfaces, so tool
     // doctrine and environment can still reference them.
     opts.laws,
+    opts.evolved,
     opts.surfaces.tools,
     opts.surfaces.workflows,
     opts.surfaces.environment,

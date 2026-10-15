@@ -35,6 +35,7 @@ import { printHelp } from "./entry/runtime.js";
 import { telegramCommand } from "./entry/telegramWiring.js";
 import { loadSavedTheme, saveTheme } from "./entry/terminalLines.js";
 import { triageCommand } from "./entry/triage.js";
+import { orsiCommand } from "./entry/orsiCmd.js";
 
 const INTERACTIVE_THEME_COMMANDS = new Set([
   "launcher",
@@ -97,6 +98,11 @@ async function main(): Promise<void> {
     }
     case "garrison": {
       process.exit(await garrisonCommand(args));
+      return;
+    }
+    case "orsi": {
+      // Ares at the ORSI door: register, work jobs, read the evolved rules.
+      process.exit(await orsiCommand(args));
       return;
     }
     case "connectors": {

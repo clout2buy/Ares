@@ -93,6 +93,7 @@ import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
+import { TurnCollector, refreshGenomeSoon, reportTurn } from "./orsiDoor.js";
 
 const providerUsageCache = new Map<string, { at: number; usage: ProviderUsage | undefined; error: string | undefined }>();
 let ollamaUsageCache: { at: number; usage: OllamaUsage | undefined; error: string | undefined } | undefined;
@@ -4122,6 +4123,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // interrupt between the two halves of one tool call.
           const toolNamesById = new Map<string, string>();
           let promotedSteerApplied = false;
+          // ORSI: collect this turn (tool calls, results, errors, reply, status)
+          // and report it to the door at turn_end. Env-gated, fire-and-forget;
+          // the evolved rules file is refreshed on the side (orsiDoor.ts).
+          const orsiTurn = new TurnCollector(typeof goal === "string" ? goal : "");
+          refreshGenomeSoon(entry.live.context.home);
           // ── stuck-turn watchdog ──────────────────────────────────────────
           // Resets on every streamed event. When silence exceeds the
           // threshold, injects synthetic interrupts that walk the existing
@@ -4167,6 +4173,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               // verifier (same as the chat paths); the engine's end-of-turn gate
               // settles it and refuses "done" over red verdicts.
               if (ev.touchedFiles?.length) entry.live.verifier.scheduleFor(ev.touchedFiles);
+              orsiTurn.observe(ev as unknown as Record<string, unknown>);
+              if (ev.type === "turn_end") reportTurn(orsiTurn.report());
               if (ev.type === "turn_end" && ev.status) turnState.status = ev.status;
               if (ev.type === "error" && isProviderFatalError(ev.error)) {
                 turnState.fatalProvider = `${ev.error?.code ?? "provider_error"}: ${ev.error?.message ?? ""}`.slice(0, 200);

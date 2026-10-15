@@ -20,6 +20,7 @@ import { suggestConnectorsFor } from "./mcpTools.js";
 import { applyPlanPressure } from "./planPressure.js";
 import { crossSurfaceBeforeTurn } from "./crossSurfaceDigest.js";
 import { composeSystemPrompt, promptEnvironment, promptWorkflowSurfaces, toolDoctrineFor, type PersonaConfig, type ProviderFamily } from "./prompt/index.js";
+import { currentRules, evolvedRulesBlock } from "./orsiOverlay.js";
 
 // ─── tenant scope ─────────────────────────────────────────────────────────────
 //
@@ -691,7 +692,7 @@ export async function mindSessionEnded(): Promise<void> {
 export function buildSystemPrompt(
   permissionMode: PermissionMode = "workspace-write",
   context = cliRuntimeContext(),
-  opts: { providerFamily?: ProviderFamily; model?: string; persona?: PersonaConfig; tools?: readonly string[] } = {},
+  opts: { providerFamily?: ProviderFamily; model?: string; persona?: PersonaConfig; tools?: readonly string[]; rules?: string } = {},
 ): string {
   const platform = process.platform === "win32" ? "Windows (PowerShell first)" : process.platform;
   const cwd = context.workspace;
@@ -705,6 +706,9 @@ export function buildSystemPrompt(
     // compose, so a law recorded this turn is in force in the very next
     // provider call, in EVERY session, agent runtime or not.
     laws: lawsPromptBlock(),
+    // The one gene ORSI may evolve: read from <home>/orsi-genome.json every
+    // compose (mtime-cached), or the seed. A sandbox job passes its own.
+    evolved: evolvedRulesBlock(opts.rules ?? currentRules(context.home)),
     surfaces: {
       tools: toolDoctrineFor(opts.tools),
       workflows: promptWorkflowSurfaces(permissionMode),

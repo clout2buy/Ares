@@ -627,6 +627,24 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       items.push({ kind: "notice", key: nextKey(), text: compact(text, 400), tone });
       break;
     }
+    case "orsi_learned": {
+      // Ares got better: the improvement loop proved a change to its operating
+      // rules in practice runs and it is in force from this turn. One line in
+      // the transcript; the shell does the border pulse and the card.
+      const rules = typeof e.rules === "string" ? e.rules : "";
+      const first = rules.split("\n").map((l: string) => l.trim()).filter(Boolean)[0] ?? "";
+      items.push({ kind: "notice", key: nextKey(), text: `Ares got better · new operating rule in force: ${compact(first, 200)}`, tone: "dim" });
+      break;
+    }
+    case "orsi_finding": {
+      // The loop saw this turn stumble (a tool error, a repeated call, a thumb
+      // down). Say so once, quietly; the fix arrives as orsi_learned.
+      const kinds = Array.isArray(e.findings) ? [...new Set((e.findings as Array<{ kind?: string }>).map((f) => String(f.kind ?? "")))] : [];
+      if (!kinds.length) break;
+      const named = kinds.map((k) => k.replace(/_/g, " ")).join(", ");
+      items.push({ kind: "notice", key: nextKey(), text: `Noted for improvement: ${named}${e.cycle_started ? " · learning from it now" : ""}`, tone: "dim" });
+      break;
+    }
     case "compaction": {
       // Microcompaction is silent storage maintenance. It does not call a
       // summarizer and must not impersonate a long-running activity in chat.

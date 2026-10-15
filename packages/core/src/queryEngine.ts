@@ -4118,7 +4118,7 @@ export class QueryEngine {
           novelGather = true;
         }
       }
-      if (novelGather || pendingToolUses.some((use) => PROGRESS_TOOLS.has(use.name))) {
+      if (novelGather || pendingToolUses.some(isProgressToolUse)) {
         guards.recordProgress(iter);
       }
       if (guards.gatherStalled(iter, gatherStallRounds)) {
@@ -5862,8 +5862,17 @@ function gatherSignature(name: string, input: unknown): string {
       return `grep:${s(i.pattern)}:${s(i.path)}`;
     case "Glob":
       return `glob:${s(i.pattern)}`;
-    case "Browser":
-      return `browser:${s(i.action)}:${s(i.url)}`;
+    case "Browser": {
+      // A verification loop is a run of `eval`s with DIFFERENT scripts (or
+      // `act` batches with different steps) against the same page. Keying on
+      // action+url alone collapsed every one of them to "browser:eval:" — ten
+      // distinct checks read as ten re-runs of the same thing, the stall
+      // tripped, and the model was told to "STOP gathering and act" in the
+      // middle of shipping (Owlogy session, 2026-10-15). Fold the payload in.
+      const payload = i.js ?? i.steps ?? i.query ?? i.selector ?? i.html ?? i.text;
+      const body = typeof payload === "string" ? payload : payload === undefined ? "" : JSON.stringify(payload);
+      return `browser:${s(i.action)}:${s(i.url)}:${body.trim().toLowerCase().slice(0, 240)}`;
+    }
     case "LSP":
       return `lsp:${s(i.action)}:${s(i.file_path)}`;
     default:
@@ -5892,6 +5901,23 @@ const PROGRESS_TOOLS = new Set([
   // not be nagged to "stop gathering and deliver" mid-task.
   "ComputerUse",
 ]);
+
+/** Browser actions that CHANGE the page (navigate, click, type, run a batch,
+ *  render a preview) are progress in the same sense ComputerUse is; only the
+ *  pure observations (eval/console/screenshot/read) stay on the gather side,
+ *  where their novelty is tracked by gatherSignature. */
+const BROWSER_PROGRESS_ACTIONS = new Set([
+  "act", "open", "navigate", "preview", "attach", "handshake", "tabs",
+  "click", "click_text", "click_selector", "fill", "fill_selector", "type",
+  "press", "key", "select", "scroll", "hover", "drag", "upload", "close",
+]);
+
+function isProgressToolUse(use: { name: string; input: unknown }): boolean {
+  if (PROGRESS_TOOLS.has(use.name)) return true;
+  if (use.name !== "Browser") return false;
+  const action = typeof use.input === "object" && use.input !== null ? (use.input as Record<string, unknown>).action : undefined;
+  return typeof action === "string" && BROWSER_PROGRESS_ACTIONS.has(action.trim().toLowerCase());
+}
 
 /** The anchored verification-command grammar shared by acceptance and family
  *  extraction. One alternation, one place to extend — the two regexes drifting

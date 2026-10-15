@@ -15,7 +15,7 @@ export { summarizeTestOutput, looksLikeTestCommand, testSummaryMinChars, type Te
 export { checkSyntax, gateEdit, syntaxGateMode, isSyntaxCheckable, type SyntaxVerdict, type GateResult } from "./syntaxGate.js";
 export { runGit, snapshotRepo, changedSince, parseNumstat, type GitResult, type RepoSnapshot } from "./gitUtil.js";
 export { GrepTool, regexInputProblem } from "./Grep.js";
-export { BashTool, runShell, type BashOutput } from "./Bash.js";
+export { BashTool, runShell, bashAvailable, type BashOutput } from "./Bash.js";
 export { PowerShellTool } from "./PowerShell.js";
 export { classifyShellFailure, shellFlavorOf, powerShellDialect, type ShellFlavor } from "./shellHints.js";
 export { LspTool, type LspOutput, type LspLocation, type LspSymbol } from "./LSP.js";

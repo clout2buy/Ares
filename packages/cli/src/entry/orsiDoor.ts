@@ -11,7 +11,7 @@
 //   ORSI_DOOR    https://orsi.mistiqueai.com
 //   ORSI_TOKEN   the token the door's owner minted for "ares"
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -190,8 +190,12 @@ export async function runJob(job: DoorJob, opts: { selection?: ProviderSelection
   const home = await mkdtemp(path.join(os.tmpdir(), "ares-orsi-home-"));
   const result: JobResult = { reply: "", trace: [], tokens: 0, error: "", files: "" };
   const shellRegistry = new ShellRegistry();
+  // The task's files live under work/ (tasks say "work/x.txt"); the agent runs with the workspace as cwd, exactly
+  // like the Python client. Only work/ goes back: that is what the graders read.
+  const work = path.join(workspace, "work");
   try {
-    await unpackTo(job.files ?? "", workspace);
+    await mkdir(work, { recursive: true });
+    await unpackTo(job.files ?? "", work);
     const context = cliRuntimeContext({ workspace, home });
     const runtime: AresRuntimeState = { permissionMode: "workspace-write" };
     const [pathPermissions, commandPermissions] = await Promise.all([
@@ -231,7 +235,7 @@ export async function runJob(job: DoorJob, opts: { selection?: ProviderSelection
   } finally {
     await shellRegistry.killAll().catch(() => 0);
     try {
-      result.files = await packFrom(workspace);
+      result.files = await packFrom(work);
     } catch (err) {
       result.error ||= `could not pack workspace: ${err instanceof Error ? err.message : String(err)}`;
     }

@@ -229,7 +229,6 @@ async function runNoChecksScenario(root, command) {
     systemPrompt: "code",
     tools: [editTool(path.join(root, "src", "feature.ts")), bashTool()],
     workspace: root,
-    requireVerificationEvidence: true,
     verificationEvidence: noChecks,
   }, `sess_nochecks_${command.replace(/\W+/g, "_")}`);
   engine.appendUserMessage("change the feature");
@@ -238,7 +237,7 @@ async function runNoChecksScenario(root, command) {
   return events;
 }
 
-test("no_checks hatch: a green typecheck that exercised nothing changed is REJECTED and the gate says why", async (t) => {
+test("no_checks hatch: a green typecheck that exercised nothing changed is REJECTED and the gap says why", async (t) => {
   const root = await workspace(t, {
     "package.json": JSON.stringify({ name: "@acme/core", scripts: { test: "node --test" } }),
     "tests/feature.test.mjs": "",
@@ -248,9 +247,9 @@ test("no_checks hatch: a green typecheck that exercised nothing changed is REJEC
   const end = events.findLast((e) => e.type === "turn_end");
   assert.equal(end.workStatus, "unverified");
   assert.equal(end.status, "needs_verification");
-  const nag = events.find((e) => e.type === "system_reminder_injected" && /did NOT count/.test(e.text));
-  assert.ok(nag, "the proof gate explains why the manual run did not count");
-  assert.match(nag.text, /npx tsc --noemit -p \./);
+  // No proof-gate nag is injected any more (dropped 2026-10-15); the reason
+  // lives only in the structured turn_end gap for telemetry/evals.
+  assert.ok(!events.some((e) => e.type === "system_reminder_injected" && /did NOT count/.test(e.text)), "no nag re-opens the turn");
   assert.ok(end.unverified.checksRun.some((c) => /NOT counted/.test(c)), "the structured gap says why the run did not count");
 });
 

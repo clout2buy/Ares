@@ -1,10 +1,12 @@
 // C1 — the verified edit loop, engine contract:
 //   1. Mid-turn drain: reminders that become ready while tools run reach the
 //      model in the SAME turn, attached to the tool-results message.
-//   2. End-of-turn gate: when the model wants to finish, confirmTurnEnd() can
-//      object with red verdicts — the engine injects them and keeps the turn
-//      alive instead of ending it. The gate fires at most twice (no infinite
-//      engine-level repair loops).
+//   2. Turn-end settle (confirmTurnEnd, durable children only): when the model
+//      finishes, the host may settle an in-flight verifier run. Red verdicts
+//      mark the turn blocked / needs_verification and are surfaced as
+//      UNRESOLVED — they NEVER re-open the loop. The old "inject and keep the
+//      turn alive" end gate was dropped on 2026-10-15 together with every other
+//      end-of-turn re-verification push.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -114,46 +116,10 @@ test("C1 mid-turn drain: a reminder ready after a tool batch lands in the SAME t
   await rm(dir, { recursive: true, force: true });
 });
 
-test("C1 end-of-turn gate: red blocks 'done', the model gets to repair, green ends the turn", async () => {
+test("turn-end settle: a red confirmTurnEnd verdict marks the turn blocked WITHOUT re-opening the loop", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
   let gateCalls = 0;
-  const provider = scriptedProvider([
-    { text: "all done!" }, // tries to finish immediately
-    { text: "fixed it properly now" }, // after the gate objects
-  ]);
-  const engine = QueryEngine.forTesting(
-    {
-      provider,
-      model: "scripted",
-      systemPrompt: "s",
-      tools: [],
-      workspace: dir,
-      confirmTurnEnd: async () => {
-        gateCalls++;
-        // First gate: red. Second gate: green.
-        return gateCalls === 1 ? [{ text: "GATE: typecheck is red on files you touched", source: "verifier" }] : [];
-      },
-    },
-    "sess_c1_gate",
-  );
-  engine.appendUserMessage("do the thing");
-  const events = await drain(engine);
-
-  assert.equal(gateCalls, 2, "gate consulted on both completion attempts");
-  const injected = events.filter((e) => e.type === "system_reminder_injected" && /GATE:/.test(e.text));
-  assert.equal(injected.length, 1);
-  const end = events.find((e) => e.type === "turn_end");
-  assert.equal(end.status, "completed");
-  // The model's second reply exists in history AFTER the gate reminder.
-  const history = engine.history();
-  const lastAssistant = history.at(-1);
-  assert.match(lastAssistant.content[0].text, /fixed it/);
-  await rm(dir, { recursive: true, force: true });
-});
-
-test("C1 gate cap: a permanently-red gate cannot trap the turn forever", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
-  let gateCalls = 0;
+  // Three scripted replies are available; only the FIRST may ever be used.
   const provider = scriptedProvider([{ text: "done (1)" }, { text: "done (2)" }, { text: "done (3)" }]);
   const engine = QueryEngine.forTesting(
     {
@@ -162,64 +128,36 @@ test("C1 gate cap: a permanently-red gate cannot trap the turn forever", async (
       systemPrompt: "s",
       tools: [],
       workspace: dir,
-      confirmTurnEnd: async () => {
-        gateCalls++;
-        return [{ text: "GATE: still red, forever", source: "verifier" }];
-      },
-    },
-    "sess_c1_cap",
-  );
-  engine.appendUserMessage("do the thing");
-  const events = await drain(engine);
-
-  assert.equal(gateCalls, 2, "the gate fires at most twice per turn");
-  const end = events.find((e) => e.type === "turn_end");
-  assert.equal(end.status, "needs_verification", "the turn still ends (no hang) — but a blocked loop is never stamped completed");
-  assert.equal(end.workStatus, "blocked");
-  await rm(dir, { recursive: true, force: true });
-});
-
-test("C1 gate honesty: a stuck red gate ends the turn but SURFACES the failure (no silent success)", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
-  let gateCalls = 0;
-  const provider = scriptedProvider([{ text: "done (1)" }, { text: "done (2)" }, { text: "done (3)" }]);
-  const engine = QueryEngine.forTesting(
-    {
-      provider,
-      model: "scripted",
-      systemPrompt: "s",
-      tools: [],
-      workspace: dir,
-      // Permanently red, same objection every time — the agent is NOT resolving it.
       confirmTurnEnd: async () => {
         gateCalls++;
         return [{ text: "typecheck is still red on a.ts", source: "verifier" }];
       },
     },
-    "sess_c1_honest",
+    "sess_c1_settle_red",
   );
   engine.appendUserMessage("do the thing");
   const events = await drain(engine);
 
-  // The OLD bug: after 2 fires it silently yielded status "completed" with the
-  // red check unmentioned. New contract: it still ends (no infinite loop) but the
-  // unresolved failure is surfaced, so the turn cannot pass off red as done.
-  const unresolved = events.filter(
-    (e) => e.type === "system_reminder_injected" && /UNRESOLVED at turn end/.test(e.text),
+  assert.equal(gateCalls, 1, "the settle hook runs exactly once, when the model finishes");
+  assert.equal(provider.calls.length, 1, "the model is NOT sent back in to 'fix it before finishing'");
+  assert.ok(
+    !events.some((e) => e.type === "system_reminder_injected" && /^typecheck is still red/.test(e.text)),
+    "the verdict is never injected as a system reminder into this turn",
   );
-  assert.ok(unresolved.length >= 1, "the still-red failure is surfaced as UNRESOLVED, not silently completed");
+  const unresolved = events.filter((e) => e.type === "system_reminder_injected" && /UNRESOLVED at turn end/.test(e.text));
+  assert.equal(unresolved.length, 1, "the red verdict is surfaced once, honestly");
   const end = events.find((e) => e.type === "turn_end");
-  assert.equal(end.status, "needs_verification", "a completed loop over red checks is needs_verification, never completed");
-  assert.equal(end.workStatus, "blocked", "execution finished, but work truth remains blocked");
+  assert.equal(end.status, "needs_verification");
+  assert.equal(end.workStatus, "blocked");
   assert.ok(end.unverified.missing.some((m) => /never resolved/.test(m)), "the gap rides the event structurally");
-  assert.ok(!events.some((e) => e.type === "system_reminder_injected" && /VERIFICATION INCOMPLETE/.test(e.text)), "no user-facing warning line (standing order)");
+  assert.equal(engine.history().at(-1).role, "assistant", "history ends on the model's own message, not an engine push");
   await rm(dir, { recursive: true, force: true });
 });
 
-test("C1 gate progress: NEW objections each round keep the model working past the old 2-fire cap", async () => {
+test("turn-end settle: a green confirmTurnEnd ends the turn completed in one round", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
   let gateCalls = 0;
-  const provider = scriptedProvider([{ text: "a" }, { text: "b" }, { text: "c" }, { text: "d" }, { text: "done" }]);
+  const provider = scriptedProvider([{ text: "all done!" }, { text: "never reached" }]);
   const engine = QueryEngine.forTesting(
     {
       provider,
@@ -227,19 +165,41 @@ test("C1 gate progress: NEW objections each round keep the model working past th
       systemPrompt: "s",
       tools: [],
       workspace: dir,
-      // A DIFFERENT objection each round (the model is making progress), then green.
       confirmTurnEnd: async () => {
         gateCalls++;
-        return gateCalls < 4 ? [{ text: `round ${gateCalls}: fix item ${gateCalls}`, source: "verifier" }] : [];
+        return [];
       },
     },
-    "sess_c1_progress",
+    "sess_c1_settle_green",
   );
   engine.appendUserMessage("do the thing");
   const events = await drain(engine);
-
-  assert.ok(gateCalls > 2, `gate fired ${gateCalls}× — fresh feedback keeps it working past the old hard cap of 2`);
+  assert.equal(gateCalls, 1);
+  assert.equal(provider.calls.length, 1);
   assert.equal(events.find((e) => e.type === "turn_end").status, "completed");
+  assert.match(engine.history().at(-1).content[0].text, /all done/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("turn-end settle: a hook that throws is reported as unresolved, not retried", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-c1-"));
+  const provider = scriptedProvider([{ text: "done" }, { text: "never reached" }]);
+  const engine = QueryEngine.forTesting(
+    {
+      provider,
+      model: "scripted",
+      systemPrompt: "s",
+      tools: [],
+      workspace: dir,
+      confirmTurnEnd: async () => { throw new Error("spawn EACCES"); },
+    },
+    "sess_c1_settle_throw",
+  );
+  engine.appendUserMessage("do the thing");
+  const events = await drain(engine);
+  assert.equal(provider.calls.length, 1, "no re-run of the checks is demanded from the model");
+  assert.ok(events.some((e) => e.type === "system_reminder_injected" && /UNRESOLVED at turn end.*spawn EACCES/.test(e.text)));
+  assert.equal(events.find((e) => e.type === "turn_end").workStatus, "blocked");
   await rm(dir, { recursive: true, force: true });
 });
 

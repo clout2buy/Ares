@@ -37,10 +37,6 @@ export interface CodingJournalState {
   touchedFiles: string[];
   /** True when the exact touched-file set exceeded the durable tail cap. */
   touchedFilesTruncated?: boolean;
-  /** Spec/requirements docs (.md) read while this objective is active. The
-   *  engine's spec-checklist gate forces a requirements-vs-artifacts diff
-   *  against these before the first completion claim. */
-  specDocs?: string[];
   todos: Todo[];
   checks: CodingCheckRecord[];
   failures: CodingFailureRecord[];
@@ -174,7 +170,6 @@ export class CodingJournal {
       this.state.todos = [];
       this.state.checks = [];
       this.state.failures = [];
-      this.state.specDocs = [];
       this.state.phase = "discover";
       this.pendingRequest = null;
     } else if (request !== this.state.objective) {
@@ -205,29 +200,6 @@ export class CodingJournal {
     return this.currentTurnLatestMutationAt;
   }
 
-  /** Spec docs anchoring the active objective (empty when no objective). */
-  specDocsForCurrentTurn(): string[] {
-    if (!this.state.objective && !this.pendingRequest) return [];
-    return this.state.specDocs ?? [];
-  }
-
-  /** Record a task-spec document the moment the model Reads it. A .md read
-   *  during an active coding objective is treated as requirements: specs are
-   *  what completion later gets diffed against. Memory/vendor noise excluded. */
-  private maybeRecordSpecDoc(toolName: string, input: unknown): void {
-    if (toolName !== "Read") return;
-    if (!this.state.objective && !this.pendingRequest) return;
-    if (!input || typeof input !== "object") return;
-    const raw = (input as Record<string, unknown>)["file_path"] ?? (input as Record<string, unknown>)["path"];
-    if (typeof raw !== "string" || !/\.(?:md|markdown)$/i.test(raw)) return;
-    if (/node_modules|[\\/]\.ares[\\/]|[\\/]\.git[\\/]|MEMORY\.md$|CHANGELOG/i.test(raw)) return;
-    const display = relativeDisplay(this.state.workspace, raw);
-    const docs = this.state.specDocs ?? [];
-    if (docs.includes(display)) return;
-    this.state.specDocs = [...docs, display].slice(-8);
-    this.touch();
-  }
-
   recordTurnEvent(event: TurnEvent): void {
     if (event.type === "input_admitted" && event.delivery === "steer") {
       const correction = messageText(event.userMessage).trim();
@@ -243,7 +215,6 @@ export class CodingJournal {
     }
     if (event.type === "tool_start") {
       this.tools.set(event.id, { name: event.name, input: event.input });
-      this.maybeRecordSpecDoc(event.name, event.input);
       return;
     }
     if (event.type === "tool_end") {
@@ -342,12 +313,6 @@ export class CodingJournal {
       `phase: ${this.state.phase}; coding turns: ${this.state.turns}; last turn: ${this.state.lastTurnStatus ?? "n/a"}/${this.state.lastWorkStatus ?? "n/a"}`,
       `touched files (${this.state.touchedFiles.length}): ${this.state.touchedFiles.slice(-24).join(", ") || "none"}`,
     ];
-    if (this.state.touchedFilesTruncated) {
-      lines.push("WARNING: exact touched-file history overflowed its 240-file tail. A broad repository/package verification command is required; tail-only automatic checks cannot certify completion.");
-    }
-    if (this.state.specDocs?.length) {
-      lines.push(`spec docs (completion is diffed against these): ${this.state.specDocs.join(", ")}`);
-    }
     if (openTodos.length) {
       lines.push("open plan items:", ...openTodos.slice(0, 12).map((todo) => `- [${todo.status}] ${todo.content}`));
     }

@@ -1046,8 +1046,9 @@ function App() {
       { id: "helm", icon: "🛡️", label: "HELM", hint: "Open the war room — missions, usage, autonomy", run: () => setView("helm") },
       { id: "settings", icon: "⚙️", label: "Settings", hint: "Open settings", run: () => setSettingsOpen(true) },
       { id: "bug", icon: "🐛", label: "Report a bug", hint: "Send a bug report with this session's log", run: () => setReportOpen(true) },
+      { id: "export", icon: "⤓", label: "Download chat", hint: "Save this session (chat + tool calls + errors) as a text file", run: () => void exportSessionLog() },
     ],
-    [daemonCmd],
+    [daemonCmd, exportSessionLog],
   );
 
   // Promise-correlated skill invocation: send skill_invoke with a unique id and
@@ -3921,6 +3922,15 @@ function App() {
               data-on={forge.open ? "1" : "0"}
             >
               <Medallion glyph="forge" size={30} />
+            </button>
+            <button
+              className="titleIcon"
+              onClick={() => void exportSessionLog()}
+              disabled={!active?.id}
+              title="Download this chat (session log: chat + tool calls + errors) as a text file"
+              aria-label="Download chat"
+            >
+              <Medallion glyph="download" size={30} />
             </button>
             <button className="titleIcon" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">
               <Medallion glyph="settings" size={30} />

@@ -101,14 +101,13 @@ test("unverified coding changes end needs_verification with a structural gap, no
     systemPrompt: "code",
     tools: [editTool(path.join(root, "src", "feature.ts"))],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_term_unverified");
   engine.appendUserMessage("change the feature");
   const events = await collect(engine);
   const end = events.findLast((e) => e.type === "turn_end");
   assert.equal(end.status, "needs_verification");
   assert.equal(end.workStatus, "unverified", "workStatus is preserved alongside the new status");
-  assert.equal(provider.calls, 3, "the anti-spiral cap is untouched — no extra loop iterations");
+  assert.equal(provider.calls, 2, "edit round + ONE completion round — no end-of-turn re-verification push re-opens the turn");
   assert.deepEqual(end.unverified.files, [path.join("src", "feature.ts")], "names the changed file");
   assert.deepEqual(end.unverified.checksRun, [], "names which checks ran (none)");
   assert.ok(end.unverified.missing.some((m) => /behavioral/.test(m)), "names what is missing");
@@ -120,9 +119,9 @@ test("verified coding changes still end completed with no gap", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ares-term-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const engine = QueryEngine.forTesting({
+    // The model runs its own check BEFORE saying done — nothing pushes it to.
     provider: scriptedProvider([
       { tool: { name: "Edit", input: { file_path: "src/feature.ts" } } },
-      { text: "done" },
       { tool: { name: "Bash", input: { command: "pnpm test", description: "Run tests" } } },
       { text: "verified" },
     ]),
@@ -130,7 +129,6 @@ test("verified coding changes still end completed with no gap", async (t) => {
     systemPrompt: "code",
     tools: [editTool(path.join(root, "src", "feature.ts")), bashTool()],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_term_verified");
   engine.appendUserMessage("fix the feature");
   const events = await collect(engine);
@@ -149,7 +147,6 @@ test("a conversational turn (no coding) ends completed / not_applicable", async 
     systemPrompt: "chat",
     tools: [],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_term_chat");
   engine.appendUserMessage("hi");
   const events = await collect(engine);
@@ -159,11 +156,12 @@ test("a conversational turn (no coding) ends completed / not_applicable", async 
   assert.equal(end.unverified, undefined);
 });
 
-test("a stuck red end-gate ends needs_verification / blocked and the gap says the checks were never resolved", async (t) => {
+test("a red turn-end settle ends needs_verification / blocked in ONE round and the gap says the checks were never resolved", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ares-term-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  const provider = scriptedProvider([{ text: "done (1)" }, { text: "done (2)" }, { text: "done (3)" }]);
   const engine = QueryEngine.forTesting({
-    provider: scriptedProvider([{ text: "done (1)" }, { text: "done (2)" }, { text: "done (3)" }]),
+    provider,
     model: "scripted",
     systemPrompt: "code",
     tools: [],
@@ -172,6 +170,7 @@ test("a stuck red end-gate ends needs_verification / blocked and the gap says th
   }, "sess_term_blocked");
   engine.appendUserMessage("do the thing");
   const events = await collect(engine);
+  assert.equal(provider.calls, 1, "the red verdict is reported, never pushed back into the loop");
   const end = events.findLast((e) => e.type === "turn_end");
   assert.equal(end.status, "needs_verification");
   assert.equal(end.workStatus, "blocked");
@@ -203,7 +202,6 @@ test("the gap names a failed manual check and the stale static host verifier run
     systemPrompt: "code",
     tools: [editTool(path.join(root, "a.ts")), bashTool(() => 1)],
     workspace: root,
-    requireVerificationEvidence: true,
     verificationEvidence: evidence,
   }, "sess_term_detail");
   engine.appendUserMessage("change a.ts");
@@ -230,7 +228,6 @@ test("ARES_STRICT_VERIFY=0 restores legacy completed stamping (workStatus still 
       systemPrompt: "code",
       tools: [editTool(path.join(root, "a.ts"))],
       workspace: root,
-      requireVerificationEvidence: true,
     }, "sess_term_legacy");
     engine.appendUserMessage("change a.ts");
     const events = await collect(engine);

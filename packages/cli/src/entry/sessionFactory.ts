@@ -159,25 +159,12 @@ export interface LiveSession {
   codingJournal: CodingJournal;
 }
 
-/**
- * C1 — the end-of-turn gate, composed: flush+await the continuous verifier,
- * then hand any red verdicts to the engine, which injects them and keeps the
- * turn alive. The model cannot say "done" while its own edits are broken.
- */
-export async function confirmTurnEndWith(
-  verifier: ContinuousVerifier,
-): Promise<Array<{ text: string; source: "verifier" | "hook" }>> {
-  // A verdict that's about to land must not be abandoned: 10s was shorter than
-  // a typical tsc/test run, so the gate saw "still running" twice, called
-  // itself stuck, and let the turn end with the verdict never delivered.
-  const settleMs = Number(process.env.ARES_VERIFY_SETTLE_MS) > 0 ? Number(process.env.ARES_VERIFY_SETTLE_MS) : 25_000;
-  await verifier.settle(settleMs);
-  return verifier
-    .drainReminders()
-    .map((r) => ({ text: `${r.text}
-
-Fix this before finishing. The edited scope is red; establish whether this change introduced the failure or it is a documented baseline issue, and provide evidence either way.`, source: "verifier" as const }));
-}
+// There is no end-of-turn verification gate for interactive sessions. The
+// continuous verifier still runs after edits; a red verdict reaches the model
+// as a reminder at the start of its NEXT turn (drainSystemReminders below),
+// never as a push that re-opens the turn the model just finished. The owner
+// dropped every re-verification pass on 2026-10-15 after a field session
+// re-tested each deliverable three to four times unprompted.
 
 export async function createSession(
   args: ParsedArgs,
@@ -1035,7 +1022,6 @@ export async function createSessionWithSelection(
       loadedDeferredTools: () => (deferredHolder.id ? loadedDeferredToolNames(deferredHolder.id) : []),
       requestPermission,
       drainSystemReminders,
-      confirmTurnEnd: process.env.ARES_CODING_PROOF_GATE === "1" ? () => confirmTurnEndWith(verifier) : undefined,
       planBeforeEdit: () => planPressure.next,
       recallFailureFix: (input) => recallFailureFixFromMemory(context.mind.memoryFile, input),
       hookManager: hooks,
@@ -1043,13 +1029,11 @@ export async function createSessionWithSelection(
       initialMessages: snapshot.messages,
       initialTodos: snapshot.todos,
       initialSeq: snapshot.nextSeq,
-      requireVerificationEvidence: process.env.ARES_CODING_PROOF_GATE === "1",
       verificationEvidence: () => verifier.evidenceSnapshot(),
       outstandingVerificationRequired: () => codingJournal?.verificationRequiredForCurrentTurn() ?? false,
       persistedVerificationDebt: () => codingJournal?.persistedVerificationDebtForCurrentTurn() ?? false,
       persistedVerificationScopeComplete: () => codingJournal?.persistedVerificationScopeCompleteForCurrentTurn() ?? true,
       observedMutationAt: () => codingJournal?.latestObservedMutationAtForCurrentTurn() ?? 0,
-      specDocs: () => codingJournal?.specDocsForCurrentTurn() ?? [],
       selfTerritoryRoots: context.selfTerritoryRoots,
       reasoningLevel: resolveReasoningLevel(settings),
       maxOutputTokens: chatMaxOutputTokens(selection),
@@ -1140,15 +1124,12 @@ export async function createSessionWithSelection(
     sessionId: opts.sessionId,
     requestPermission,
     drainSystemReminders,
-    confirmTurnEnd: () => confirmTurnEndWith(verifier),
     planBeforeEdit: () => planPressure.next,
-    requireVerificationEvidence: process.env.ARES_CODING_PROOF_GATE !== "0",
     verificationEvidence: () => verifier.evidenceSnapshot(),
     outstandingVerificationRequired: () => codingJournal?.verificationRequiredForCurrentTurn() ?? false,
     persistedVerificationDebt: () => codingJournal?.persistedVerificationDebtForCurrentTurn() ?? false,
     persistedVerificationScopeComplete: () => codingJournal?.persistedVerificationScopeCompleteForCurrentTurn() ?? true,
     observedMutationAt: () => codingJournal?.latestObservedMutationAtForCurrentTurn() ?? 0,
-    specDocs: () => codingJournal?.specDocsForCurrentTurn() ?? [],
     recallFailureFix: (input) => recallFailureFixFromMemory(context.mind.memoryFile, input),
     hookManager: hooks,
     selfTerritoryRoots: context.selfTerritoryRoots,

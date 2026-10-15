@@ -1,11 +1,11 @@
 // Production verifier composition for durable child Sessions.
 //
-// Task and Conductor used to set `requireVerificationEvidence` without giving
-// their child QueryEngine a verifier. That made the proof gate honest (writes
-// stayed unverified), but incapable of ever producing the fresh, child-local
-// evidence needed to become verified. Keep the full composition in one place so
-// every durable child gets the same scheduler, end gate, evidence snapshot, and
-// lifecycle cleanup.
+// Task and Conductor used to track verification debt without giving their
+// child QueryEngine a verifier, so a child's writes could never become
+// verified from fresh, child-local evidence. Keep the full composition in one
+// place so every durable child gets the same scheduler, turn-end settle hook
+// (the verdict lands before the child reports to its parent — it never
+// re-opens the child's turn), evidence snapshot, and lifecycle cleanup.
 
 import path from "node:path";
 import { Session, type SessionOptions } from "./session.js";
@@ -14,7 +14,6 @@ import { ContinuousVerifier, type VerifierOptions } from "./verifier.js";
 
 type VerifierOwnedSessionOption =
   | "confirmTurnEnd"
-  | "requireVerificationEvidence"
   | "verificationEvidence"
   | "outstandingVerificationRequired"
   | "persistedVerificationDebt"
@@ -54,10 +53,10 @@ export async function confirmChildTurnEnd(
   const configured = Number(process.env.ARES_VERIFY_SETTLE_MS);
   const settleMs = Number.isFinite(configured) && configured > 0 ? configured : 60_000;
   await verifier.settle(settleMs);
+  // Red verdicts are reported upward (the child turn ends blocked /
+  // needs_verification); they never re-open the child's turn.
   return verifier.drainReminders().map((reminder) => ({
-    text: `${reminder.text}
-
-Fix this before finishing. The child workspace is red; establish whether this change introduced the failure or it is a documented baseline issue, and provide evidence either way.`,
+    text: reminder.text,
     source: "verifier" as const,
   }));
 }
@@ -108,7 +107,6 @@ export function createVerifiedChildSession(
               ...verifier.drainReminders(),
             ],
             confirmTurnEnd: () => confirmChildTurnEnd(verifier),
-            requireVerificationEvidence: requiresProof,
             verificationEvidence: () => verifier.evidenceSnapshot(),
             outstandingVerificationRequired: () => requiresProof && (restoredDebt || currentTurnMutation),
             persistedVerificationDebt: () => restoredDebt,

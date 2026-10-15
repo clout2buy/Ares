@@ -15,9 +15,6 @@
 
 export class TurnGuards {
   // ── Thresholds (exposed so tests never restate magic numbers) ─────────
-  /** End-of-turn verification gate: hard cap on NEW objections pushed back to
-   *  the model before the turn ends honestly with the failures surfaced. */
-  static readonly END_GATE_HARDCAP = 6;
   /** C3 — shared cap on auto-continues after the model hit its output-token
    *  ceiling (plain text continues, withheld truncated tool calls, and the
    *  mixed-batch leg all count against the same cap). */
@@ -52,14 +49,6 @@ export class TurnGuards {
    *  text note" notice has been surfaced this turn. Without the one-shot the
    *  notice repeats on every shrink-ladder rung of the same turn. */
   blindImageNoticeShown = false;
-
-  // ── End-of-turn gates ─────────────────────────────────────────────────
-  /** Times the C1 end-of-turn verification gate has pushed back this turn. */
-  endGateFired = 0;
-  /** Signature of the last end-gate objection, so we can tell "the model made
-   *  progress on the failures" (new objection → keep pushing) from "the model
-   *  is stuck re-claiming done against the SAME red checks" (stop, but honestly). */
-  private lastGateSig = "";
 
   // ── Failure detectors ─────────────────────────────────────────────────
   /** Repeated-failure circuit-breaker: tracks consecutive identical tool
@@ -120,13 +109,6 @@ export class TurnGuards {
   sleepCalls = 0;
   private sleepPollHinted = false;
 
-  // ── Verification gate one-shots ───────────────────────────────────────
-  proofGateFired = false;
-  unverifiedSurfaced = false;
-  guiGateFired = false;
-  guiUnverifiedSurfaced = false;
-  specGateFired = false;
-
   // ── Evidence freshness ticks ──────────────────────────────────────────
   /** Freshness is ordered by a monotonic per-turn counter, NOT by wall clock.
    *  Two tool outcomes in the same turn routinely land in the same millisecond,
@@ -142,26 +124,6 @@ export class TurnGuards {
    *  order — and return the new tick. */
   nextEvidenceTick(): number {
     return ++this.evidenceTick;
-  }
-
-  /** C1 end-of-turn gate admission: keep pushing the model as long as the
-   *  objection is NEW (it's making progress), up to the hard cap; when it's
-   *  stuck re-claiming done against the SAME red checks (or hits the cap),
-   *  return false so the turn ends HONESTLY — the failures surface as
-   *  UNRESOLVED rather than pretending success. */
-  recordEndGate(sig: string): boolean {
-    const stuck = sig === this.lastGateSig; // same objection as last time → no progress
-    if (!stuck && this.endGateFired < TurnGuards.END_GATE_HARDCAP) {
-      this.lastGateSig = sig;
-      this.endGateFired++;
-      return true;
-    }
-    return false;
-  }
-
-  /** True once the end gate has pushed back END_GATE_HARDCAP times. */
-  endGateExhausted(): boolean {
-    return this.endGateFired >= TurnGuards.END_GATE_HARDCAP;
   }
 
   /** C3 — whether another auto-continue after a max_tokens stop is allowed. */

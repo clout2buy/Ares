@@ -30,13 +30,14 @@ export type SigilName =
   | "skills"
   | "shield"
   | "scroll"
-  | "flame";
+  | "flame"
+  | "download";
 
 /** Every sigil name, for runtime validation of author-supplied glyphs. */
 export const SIGIL_NAMES: readonly SigilName[] = [
   "helm", "new-session", "sessions", "artifacts", "search", "undo", "forge",
   "settings", "voice", "send", "usage", "messaging", "skills", "shield",
-  "scroll", "flame",
+  "scroll", "flame", "download",
 ];
 
 /**
@@ -136,6 +137,12 @@ export function AresSigils(): React.ReactElement {
       </symbol>
       <symbol id="ares-flame" viewBox="0 0 48 48">
         <path d="M24 4c2 8-6 10-6 18a6 6 0 0 0 12 0c0-3-1-5-1-5 4 3 7 7 7 12a12 12 0 0 1-24 0C12 18 22 14 24 4Z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+      </symbol>
+      <symbol id="ares-download" viewBox="0 0 48 48">
+        <path d="M24 7v22" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+        <path d="M15.5 21 24 29.5 32.5 21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M9 31v6.5A2.5 2.5 0 0 0 11.5 40h25a2.5 2.5 0 0 0 2.5-2.5V31" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+        <path d="M19 35.5h10" stroke="#a02b1e" strokeWidth="2.2" strokeLinecap="round"/>
       </symbol>
     </svg>
   );

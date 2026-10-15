@@ -7,6 +7,12 @@ import type { Prefs, PermSettings, EngineConfig } from "./prefs";
 
 export interface AresEvent {
   type: string;
+  /** orsi_learned — the evolved operating rules now in force, and the genome version. */
+  rules?: string;
+  /** orsi_finding — what the improvement loop saw in the last turn. */
+  findings?: unknown[];
+  cycle_started?: boolean;
+  version?: string;
   id?: string;
   text?: string;
   /** computer_setup_progress — one provisioning progress line. */

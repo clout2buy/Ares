@@ -64,7 +64,7 @@ import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { fileURLToPath } from "node:url";
 import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
-import { ParsedArgs, cliVersion, transitionPermissionMode } from "./runtime.js";
+import { ParsedArgs, cliVersion, transitionPermissionMode, cliRuntimeContext } from "./runtime.js";
 import { LiveSession, chatContextBudget, contextControls, primeContextCeilings, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { PluginHost } from "@ares/plugins";
 import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
@@ -94,6 +94,7 @@ import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
 import { LiveFeedHub, type LiveControl, type LiveInputEvent } from "./daemon/liveFeed.js";
+import { CONSENT_TEXT, TurnCollector, doorConfig, join as orsiJoin, leave as orsiLeave, onLearned, readMembership, refreshGenomeSoon, reportTurn, startWorker, status as orsiStatus } from "./orsiDoor.js";
 
 const providerUsageCache = new Map<string, { at: number; usage: ProviderUsage | undefined; error: string | undefined }>();
 let ollamaUsageCache: { at: number; usage: OllamaUsage | undefined; error: string | undefined } | undefined;
@@ -136,6 +137,20 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }, 20_000);
     gwPoll.unref?.();
   }
+  // ORSI: if this install has joined the fleet, run the loop's practice jobs in
+  // here (one at a time, throwaway folders) and tell the UI when Ares learns
+  // something. Nothing runs without a membership file (consent) or an env token.
+  const orsiEmit = (ev: Record<string, unknown>) => process.stdout.write(JSON.stringify(ev) + "\n");
+  const orsiWorker: { stop: (() => void) | null } = { stop: null };
+  const orsiHome = cliRuntimeContext().home;
+  const startOrsi = () => {
+    if (orsiWorker.stop || !doorConfig(process.env, orsiHome)) return;
+    orsiWorker.stop = startWorker(orsiHome, orsiEmit);
+    const m = readMembership(orsiHome);
+    orsiEmit({ type: "orsi_status", joined: true, agent: m?.agent ?? null, fleet: m?.fleet ?? null });
+  };
+  onLearned((l) => orsiEmit({ type: "orsi_learned", version: l.version, proposal: l.proposal, rules: l.rules }));
+  startOrsi();
   // Scrub the daemon's diagnostic stream. The desktop shell forwards this
   // process's stderr straight into the webview; a verbose provider/library debug
   // line with an embedded key would otherwise reach the UI (and a copied error
@@ -1904,6 +1919,30 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const routingMode = command.enabled === true ? "auto" : "manual";
         await updateUiSettings({ routingMode });
         process.stdout.write(JSON.stringify({ type: "routing_mode_set", routingMode }) + "\n");
+        continue;
+      }
+      if (command.type === "orsi_join" || command.type === "orsi_leave" || command.type === "orsi_status") {
+        // The owner's choice, from the desktop: join the improvement loop (the
+        // UI shows CONSENT_TEXT first), leave it, or ask where things stand.
+        try {
+          if (command.type === "orsi_join") {
+            const m = await orsiJoin(orsiHome, undefined, await cliVersion());
+            startOrsi();
+            orsiEmit({ type: "orsi_status", joined: true, agent: m.agent, fleet: m.fleet, just_joined: true });
+          } else if (command.type === "orsi_leave") {
+            orsiWorker.stop?.();
+            orsiWorker.stop = null;
+            await orsiLeave(orsiHome);
+            orsiEmit({ type: "orsi_status", joined: false, agent: null, fleet: null });
+          } else {
+            const cfg = doorConfig(process.env, orsiHome);
+            const m = readMembership(orsiHome);
+            orsiEmit({ type: "orsi_status", joined: Boolean(cfg), agent: m?.agent ?? null, fleet: m?.fleet ?? null,
+              consent_text: CONSENT_TEXT, door: cfg ? (await orsiStatus(cfg).catch(() => null)) : null });
+          }
+        } catch (err) {
+          orsiEmit({ type: "orsi_status", joined: Boolean(doorConfig(process.env, orsiHome)), error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
+        }
         continue;
       }
       if (command.type === "persona_style") {
@@ -4186,6 +4225,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // interrupt between the two halves of one tool call.
           const toolNamesById = new Map<string, string>();
           let promotedSteerApplied = false;
+          // ORSI: collect this turn (tool calls, results, errors, reply, status)
+          // and report it to the door at turn_end. Env-gated, fire-and-forget;
+          // the evolved rules file is refreshed on the side (orsiDoor.ts).
+          const orsiTurn = new TurnCollector(typeof goal === "string" ? goal : "");
+          refreshGenomeSoon(entry.live.context.home);
           // ── stuck-turn watchdog ──────────────────────────────────────────
           // Resets on every streamed event. When silence exceeds the
           // threshold, injects synthetic interrupts that walk the existing
@@ -4237,6 +4281,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               // verifier (same as the chat paths); the engine's end-of-turn gate
               // settles it and refuses "done" over red verdicts.
               if (ev.touchedFiles?.length) entry.live.verifier.scheduleFor(ev.touchedFiles);
+              orsiTurn.observe(ev as unknown as Record<string, unknown>);
+              if (ev.type === "turn_end") {
+                reportTurn(orsiTurn.report(), process.env, entry.live.context.home, (v) => {
+                  if (v.findings.length) orsiEmit({ type: "orsi_finding", findings: v.findings.slice(0, 6), fresh: v.fresh, cycle_started: v.cycle_started });
+                });
+              }
               if (ev.type === "turn_end" && ev.status) turnState.status = ev.status;
               if (ev.type === "error" && isProviderFatalError(ev.error)) {
                 turnState.fatalProvider = `${ev.error?.code ?? "provider_error"}: ${ev.error?.message ?? ""}`.slice(0, 200);

@@ -38,6 +38,19 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.56.0",
+    date: "October 2026",
+    title: "Gets Better On Its Own",
+    tagline: "Ares now learns from every stumble, across every Ares, and proves each fix before it ships to you.",
+    highlights: [
+      { icon: "🧬", title: "It improves itself", blurb: "When Ares fumbles a tool call or repeats itself, the improvement loop notices, practises, and ships a proven fix to its own rules.", tag: "New" },
+      { icon: "🟣", title: "You'll see it learn", blurb: "The window pulses purple and a card tells you exactly what got better, the moment it does." },
+      { icon: "🛡️", title: "Proven, never guessed", blurb: "A change goes live only after it passes real practice runs, keeps every safety rule, and costs no more than before.", tag: "Safer" },
+      { icon: "🤝", title: "Every Ares helps every Ares", blurb: "Fixes proven on one machine reach all of them. Your laws and your data stay yours." },
+      { icon: "🚪", title: "Your call, any time", blurb: "Say yes once to join; `ares orsi leave` takes you out and Ares goes back to its stock rules." },
+    ],
+  },
+  {
     version: "0.55.1",
     date: "October 2026",
     title: "GitHub, connected",

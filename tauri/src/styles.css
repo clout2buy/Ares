@@ -4860,3 +4860,32 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .aresosShotPlaceholder { border: 1px dashed var(--line); border-radius: 6px; padding: 1.1rem; text-align: center; font-size: .78rem; color: var(--faint); background: var(--bg); }
 .aresosShotErr { color: var(--muted); }
 .aresosShotBtn { width: 100%; }
+
+
+/* ── ORSI: "it just got better" ─────────────────────────────────────────────
+   A 1-bit pixel pulse crawling the window edge (two colours, stepped, no
+   anti-aliasing), then gone. Four edges, each a strip of 6px purple blocks
+   marching in steps; opacity blinks on a coarse clock. Hard edges only. */
+.orsiPulse { position: fixed; inset: 0; pointer-events: none; z-index: 119; image-rendering: pixelated; }
+.orsiPulse i { position: absolute; display: block; background-repeat: repeat;
+  animation: orsiMarch 480ms steps(6) infinite, orsiBlink 3.2s steps(1) infinite, orsiFade 6s steps(12) forwards; }
+.orsiPulse i:nth-child(1), .orsiPulse i:nth-child(3) { left: 0; right: 0; height: 6px;
+  background-image: repeating-linear-gradient(90deg, #a855f7 0 6px, #3b0764 6px 12px, transparent 12px 18px); background-size: 18px 6px; }
+.orsiPulse i:nth-child(1) { top: 0; } .orsiPulse i:nth-child(3) { bottom: 0; animation-direction: reverse, normal, normal; }
+.orsiPulse i:nth-child(2), .orsiPulse i:nth-child(4) { top: 0; bottom: 0; width: 6px;
+  background-image: repeating-linear-gradient(180deg, #a855f7 0 6px, #3b0764 6px 12px, transparent 12px 18px); background-size: 6px 18px; }
+.orsiPulse i:nth-child(2) { right: 0; } .orsiPulse i:nth-child(4) { left: 0; animation-direction: reverse, normal, normal; }
+@keyframes orsiMarch { from { background-position: 0 0; } to { background-position: 18px 18px; } }
+@keyframes orsiBlink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: .35; } }
+@keyframes orsiFade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
+.orsiCard { position: fixed; right: 18px; bottom: 120px; width: min(420px, calc(100vw - 36px)); z-index: 121;
+  background: #0b0712; color: #e9ddff; border: 2px solid #a855f7; border-radius: 0; box-shadow: 6px 6px 0 #3b0764;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; font-size: 12.5px; animation: orsiCardIn 240ms steps(4) both; }
+.orsiCardHead { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 2px solid #3b0764; letter-spacing: .04em; text-transform: uppercase; }
+.orsiCardDot { width: 8px; height: 8px; background: #a855f7; box-shadow: 0 0 0 2px #0b0712, 0 0 0 4px #3b0764; animation: orsiBlink 1.2s steps(1) infinite; }
+.orsiCardClose { margin-left: auto; background: none; border: 0; color: #a855f7; font-size: 16px; cursor: pointer; padding: 0 2px; }
+.orsiCardBody { padding: 10px; }
+.orsiCardLabel { color: #b794f6; margin-bottom: 6px; }
+.orsiCardRules { margin: 0; white-space: pre-wrap; line-height: 1.45; color: #f3eaff; }
+@keyframes orsiCardIn { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }

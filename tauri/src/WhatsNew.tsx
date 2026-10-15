@@ -70,7 +70,7 @@ function entriesSince(seen: string | null): ChangelogEntry[] {
   return CHANGELOG.slice(0, idx);
 }
 
-export function WhatsNew(): React.ReactElement | null {
+export function WhatsNew({ onGo }: { onGo?: () => void } = {}): React.ReactElement | null {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [showOlder, setShowOlder] = useState(false);
@@ -202,7 +202,7 @@ export function WhatsNew(): React.ReactElement | null {
 
         <footer className="wnFoot">
           <span className="wnStamp">Ares · {hero.date}</span>
-          <button className="wnGo" onClick={dismiss} autoFocus>
+          <button className="wnGo" onClick={() => { onGo?.(); dismiss(); }} autoFocus>
             Let's go
           </button>
         </footer>

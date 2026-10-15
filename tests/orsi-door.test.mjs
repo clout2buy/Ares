@@ -52,3 +52,42 @@ test("TurnCollector turns engine events into the door's trace shape; doorConfig 
   assert.equal(doorConfig({}), null);
   assert.deepEqual(doorConfig({ ORSI_DOOR: "https://d/", ORSI_TOKEN: "t" }), { door: "https://d", token: "t" });
 });
+
+test("membership file joins the door without env; env wins; leave removes it", async () => {
+  const { doorConfig, membershipPath, readMembership, leave } = await import("../packages/cli/dist/entry/orsiDoor.js");
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "orsi-member-"));
+  assert.equal(doorConfig({}, home), null);
+  await fs.writeFile(membershipPath(home), JSON.stringify({ door: "https://d/", token: "t1", agent: "ares-x", fleet: "ares", install_id: "i", joined_at: "now", consent: true }));
+  assert.deepEqual(doorConfig({}, home), { door: "https://d", token: "t1" });
+  assert.equal(readMembership(home).agent, "ares-x");
+  assert.deepEqual(doorConfig({ ORSI_DOOR: "https://env", ORSI_TOKEN: "e" }, home), { door: "https://env", token: "e" });
+  await fs.writeFile(membershipPath(home), JSON.stringify({ door: "https://d/", token: "t1", consent: false }));
+  assert.equal(doorConfig({}, home), null, "no consent, no door");
+  assert.equal(await leave(home), true);
+  assert.equal(readMembership(home), null);
+});
+
+test("a new genome version fires onLearned with the rules; same version is silent", async () => {
+  const { refreshGenome, onLearned } = await import("../packages/cli/dist/entry/orsiDoor.js");
+  const { genomePath } = await import("../packages/cli/dist/entry/orsiOverlay.js");
+  const http = await import("node:http");
+  let payload = { genome: { rules: "Act, then verify." }, version: "v1" };
+  const srv = http.createServer((req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(payload)); });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const cfg = { door: `http://127.0.0.1:${srv.address().port}`, token: "t" };
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "orsi-learn-"));
+  const heard = [];
+  const off = onLearned((l) => heard.push(l));
+  try {
+    await refreshGenome(cfg, home);                       // first fetch: nothing to compare against
+    await refreshGenome(cfg, home);                       // same version: silent
+    assert.equal(heard.length, 0);
+    payload = { genome: { rules: "Read back after writing." }, version: "v2", proposal: "p2" };
+    await refreshGenome(cfg, home);
+    assert.deepEqual(heard, [{ version: "v2", proposal: "p2", rules: "Read back after writing." }]);
+    assert.equal(JSON.parse(await fs.readFile(genomePath(home), "utf8")).version, "v2");
+  } finally {
+    off();
+    srv.close();
+  }
+});

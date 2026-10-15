@@ -11,7 +11,9 @@
 //   ORSI_DOOR    https://orsi.mistiqueai.com
 //   ORSI_TOKEN   the token the door's owner minted for "ares"
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -31,10 +33,84 @@ export interface DoorConfig {
   token: string;
 }
 
-export function doorConfig(env: NodeJS.ProcessEnv = process.env): DoorConfig | null {
+/** The door every Ares joins unless told otherwise. */
+export const DEFAULT_DOOR = "https://orsi.mistiqueai.com";
+export const FLEET = "ares";
+
+/** <home>/orsi.json — written by `join`, the install's membership of the fleet. */
+export interface OrsiMembership {
+  door: string;
+  token: string;
+  agent: string;
+  fleet: string;
+  install_id: string;
+  joined_at: string;
+  /** The owner said yes to what leaves the machine. Nothing runs without it. */
+  consent: true;
+}
+
+export function membershipPath(home: string): string {
+  return path.join(home, "orsi.json");
+}
+
+export function readMembership(home: string): OrsiMembership | null {
+  try {
+    const m = JSON.parse(fs.readFileSync(membershipPath(home), "utf8")) as OrsiMembership;
+    return m && m.consent === true && m.door && m.token ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Env wins (a manually minted token); otherwise the install's membership file. */
+export function doorConfig(env: NodeJS.ProcessEnv = process.env, home?: string): DoorConfig | null {
   const door = (env.ORSI_DOOR ?? "").replace(/\/+$/, "");
   const token = env.ORSI_TOKEN ?? "";
-  return door && token ? { door, token } : null;
+  if (door && token) return { door, token };
+  if (!home) return null;
+  const m = readMembership(home);
+  return m ? { door: m.door.replace(/\/+$/, ""), token: m.token } : null;
+}
+
+/** What the owner is agreeing to. Shown before `join`; the UI shows the same text. */
+export const CONSENT_TEXT = [
+  "Ares can get better over time by joining ORSI, the improvement loop on the Ares network.",
+  "If you say yes, Ares will: report each turn's prompt, reply, tool calls and outcome (keys and tokens scrubbed);",
+  "run short practice tasks in throwaway folders when the loop asks; and use the operating rules the loop proves.",
+  "Nothing else leaves this machine. You can leave any time: `ares orsi leave`.",
+].join("\n");
+
+/** Enrol this install in the fleet: mint its token, declare the gene, fetch the genome. Idempotent per install id. */
+export async function join(home: string, door = process.env.ORSI_DOOR || DEFAULT_DOOR, version = "unknown"): Promise<OrsiMembership> {
+  const existing = readMembership(home);
+  const install_id = existing?.install_id ?? `ares-${randomUUID()}`;
+  const res = await fetch(`${door.replace(/\/+$/, "")}/v1/enrol`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "ares-orsi/1" },
+    body: JSON.stringify({ fleet: FLEET, install_id, version, info: { agent: "ares", os: process.platform } }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; agent?: string; token?: string; fleet?: string; error?: string };
+  if (res.status !== 200 || !body.token || !body.agent) throw new Error(`enrol failed: ${res.status} ${body.error ?? ""}`);
+  const m: OrsiMembership = { door: door.replace(/\/+$/, ""), token: body.token, agent: body.agent, fleet: body.fleet ?? FLEET,
+    install_id, joined_at: new Date().toISOString(), consent: true };
+  await mkdir(home, { recursive: true });
+  await writeFile(`${membershipPath(home)}.tmp`, JSON.stringify(m, null, 1), { mode: 0o600 });
+  await rename(`${membershipPath(home)}.tmp`, membershipPath(home));
+  const cfg = { door: m.door, token: m.token };
+  await register(cfg, `ares-${version}`);
+  await refreshGenome(cfg, home).catch(() => null);
+  return m;
+}
+
+export async function leave(home: string): Promise<boolean> {
+  try {
+    await rm(membershipPath(home), { force: true });
+    await rm(genomePath(home), { force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function call<T = unknown>(cfg: DoorConfig, method: string, route: string, body?: unknown, timeoutMs = 20_000): Promise<{ status: number; body: T | null }> {
@@ -60,15 +136,32 @@ export async function refreshGenome(cfg: DoorConfig, home: string): Promise<Orsi
   if (status !== 200 || !body) return null;
   const file: OrsiGenomeFile = { ...body, fetched_at: new Date().toISOString() };
   const target = genomePath(home);
+  let previous: OrsiGenomeFile | null = null;
+  try {
+    previous = JSON.parse(await readFile(target, "utf8")) as OrsiGenomeFile;
+  } catch {
+    previous = null;
+  }
   await writeFile(`${target}.tmp`, JSON.stringify(file, null, 1), "utf8");
-  await (await import("node:fs/promises")).rename(`${target}.tmp`, target);
+  await rename(`${target}.tmp`, target);
+  if (previous && previous.version !== file.version && file.genome?.[GENE]) {
+    for (const fn of learnedListeners) fn({ version: file.version ?? "", proposal: file.proposal ?? null, rules: file.genome[GENE] });
+  }
   return file;
+}
+
+export interface Learned { version: string; proposal: string | null; rules: string }
+const learnedListeners = new Set<(l: Learned) => void>();
+/** Hear it when a new genome lands: that is the "Ares just learned" moment. */
+export function onLearned(fn: (l: Learned) => void): () => void {
+  learnedListeners.add(fn);
+  return () => learnedListeners.delete(fn);
 }
 
 let lastRefresh = 0;
 /** Called on the turn path: refresh at most once a minute, never block, never throw. */
 export function refreshGenomeSoon(home: string, env: NodeJS.ProcessEnv = process.env): void {
-  const cfg = doorConfig(env);
+  const cfg = doorConfig(env, home);
   if (!cfg) return;
   const now = Date.now();
   if (now - lastRefresh < 60_000) return;
@@ -102,11 +195,16 @@ export interface ReportedTurn {
   tokens?: number;
 }
 
-/** Fire-and-forget: a reported turn must never slow or break the turn it describes. */
-export function reportTurn(turn: ReportedTurn, env: NodeJS.ProcessEnv = process.env): void {
-  const cfg = doorConfig(env);
+export interface TurnVerdict { findings: Array<{ kind: string; call?: string; detail: string }>; fresh: number; cycle_started: boolean }
+
+/** Fire-and-forget: a reported turn must never slow or break the turn it describes. `onVerdict` hears what the
+ *  door saw in it (the named failures), for the UI. */
+export function reportTurn(turn: ReportedTurn, env: NodeJS.ProcessEnv = process.env, home?: string, onVerdict?: (v: TurnVerdict) => void): void {
+  const cfg = doorConfig(env, home);
   if (!cfg) return;
-  void call(cfg, "POST", "/v1/turns", { ...turn, trace: turn.trace.slice(-400) }, 10_000).catch(() => null);
+  void call<TurnVerdict>(cfg, "POST", "/v1/turns", { ...turn, trace: turn.trace.slice(-400) }, 10_000)
+    .then((r) => { if (r.status === 200 && r.body && onVerdict) onVerdict(r.body); })
+    .catch(() => null);
 }
 
 /** Collects one live turn from engine events into a door report. */
@@ -279,6 +377,41 @@ export async function work(cfg: DoorConfig, home: string, log: (line: string) =>
 
 export async function status(cfg: DoorConfig): Promise<unknown> {
   return (await call(cfg, "GET", "/v1/status")).body;
+}
+
+/** The worker inside a running Ares: one job at a time, events out for the UI. Returns a stop function. */
+export function startWorker(home: string, emit: (ev: Record<string, unknown>) => void, env: NodeJS.ProcessEnv = process.env): () => void {
+  const ac = new AbortController();
+  const cfg = doorConfig(env, home);
+  if (!cfg) return () => undefined;
+  void (async () => {
+    let selection: ProviderSelection | null = null;
+    while (!ac.signal.aborted) {
+      let job: DoorJob | null = null;
+      try {
+        const r = await call<DoorJob>(cfg, "GET", "/v1/jobs/next");
+        job = r.status === 200 ? r.body : null;
+      } catch {
+        await sleep(20_000, ac.signal);
+        continue;
+      }
+      if (!job) {
+        await sleep(4_000, ac.signal);
+        continue;
+      }
+      emit({ type: "orsi_job", phase: "start", job: job.id, task: job.task.id });
+      const t0 = Date.now();
+      try {
+        selection ??= await selectProvider(new Map());
+        const res = await runJob(job, { selection, signal: ac.signal });
+        await call(cfg, "POST", `/v1/jobs/${job.id}`, res, 120_000);
+        emit({ type: "orsi_job", phase: "end", job: job.id, task: job.task.id, seconds: Math.round((Date.now() - t0) / 1000), error: res.error || null });
+      } catch (err) {
+        emit({ type: "orsi_job", phase: "end", job: job.id, task: job.task.id, seconds: Math.round((Date.now() - t0) / 1000), error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
+      }
+    }
+  })();
+  return () => ac.abort();
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

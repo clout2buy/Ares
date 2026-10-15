@@ -624,6 +624,15 @@ function App() {
   const [gatewayAccount, setGatewayAccount] = useState<GatewayAccountVm | null>(null);
   const [gatewayToasts, setGatewayToasts] = useState<Array<{ id: number; text: string }>>([]);
   const gwToastId = useRef(0);
+  // ORSI "it just got better": the purple pixel pulse around the window and
+  // the card that says what changed. Driven by orsi_learned from the daemon.
+  const [orsiLearned, setOrsiLearned] = useState<{ rules: string; version: string; at: number } | null>(null);
+  const [orsiPulse, setOrsiPulse] = useState(false);
+  useEffect(() => {
+    if (!orsiPulse) return;
+    const t = setTimeout(() => setOrsiPulse(false), 6000);
+    return () => clearTimeout(t);
+  }, [orsiPulse]);
   const pushGatewayToast = useCallback((text: string) => {
     const id = ++gwToastId.current;
     setGatewayToasts((t) => [...t, { id, text }]);
@@ -1899,6 +1908,16 @@ function App() {
           return true;
         case "gateway_account":
           setGatewayAccount(e as unknown as GatewayAccountVm);
+          return true;
+        case "orsi_learned": {
+          setOrsiLearned({ rules: typeof e.rules === "string" ? e.rules : "", version: typeof e.version === "string" ? e.version : "", at: Date.now() });
+          setOrsiPulse(true);
+          return true;
+        }
+        case "orsi_finding":
+          // Folded into the transcript as a quiet notice; nothing else to do here.
+          return false;
+        case "orsi_status":
           return true;
         case "gateway_grant": {
           // A credit grant landed while the app is open — ember toast, live.
@@ -3492,7 +3511,21 @@ function App() {
         </button>
       ) : null}
       <UpdateBanner />
-      <WhatsNew />
+      <WhatsNew onGo={() => daemonCmd({ type: "orsi_join" })} />
+      {orsiPulse ? <div className="orsiPulse" aria-hidden="true"><i /><i /><i /><i /></div> : null}
+      {orsiLearned ? (
+        <div className="orsiCard" role="status">
+          <div className="orsiCardHead">
+            <span className="orsiCardDot" />
+            <strong>Ares got better</strong>
+            <button className="orsiCardClose" onClick={() => setOrsiLearned(null)} aria-label="Dismiss">×</button>
+          </div>
+          <div className="orsiCardBody">
+            <div className="orsiCardLabel">New operating rules, proven in practice runs, in force now:</div>
+            <pre className="orsiCardRules">{orsiLearned.rules}</pre>
+          </div>
+        </div>
+      ) : null}
       <FirstRunGate
         active={native && daemon !== "starting" && noUsableKeys(keyStatus)}
         onOpenKeys={() => {

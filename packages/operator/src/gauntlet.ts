@@ -277,7 +277,6 @@ export async function runGauntlet(opts: GauntletOptions): Promise<GauntletReport
                   await verifier.settle(60_000);
                   return verifier.drainReminders();
                 },
-                requireVerificationEvidence: true,
                 verificationEvidence: () => verifier.evidenceSnapshot(),
               }
             : { drainSystemReminders: () => startup.splice(0) }),

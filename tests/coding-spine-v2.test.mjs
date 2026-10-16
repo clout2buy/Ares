@@ -65,13 +65,12 @@ function bashTool() {
   };
 }
 
-test("coding proof gate marks post-edit checked work verified", async () => {
+test("coding work the model checked itself before 'done' ends verified — with no proof-gate push", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ares-proof-"));
   const file = path.join(root, "src", "feature.ts");
   const engine = QueryEngine.forTesting({
     provider: scriptedProvider([
       { tool: { name: "Edit", input: { file_path: "src/feature.ts" } } },
-      { text: "done" },
       { tool: { name: "Bash", input: { command: "pnpm test", description: "Run tests" } } },
       { text: "verified" },
     ]),
@@ -79,18 +78,17 @@ test("coding proof gate marks post-edit checked work verified", async () => {
     systemPrompt: "code",
     tools: [editTool(file), bashTool()],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_proof_green");
   engine.appendUserMessage("fix the feature");
   const events = await collect(engine);
-  assert.ok(events.some((event) => event.type === "system_reminder_injected" && /no complete all-green behavior-capable verifier run/i.test(event.text)));
+  assert.ok(!events.some((event) => event.type === "system_reminder_injected" && /behavior-capable verifier run/i.test(event.text)), "no proof-gate push exists");
   const end = events.findLast((event) => event.type === "turn_end");
   assert.equal(end.status, "completed");
   assert.equal(end.workStatus, "verified");
   await rm(root, { recursive: true, force: true });
 });
 
-test("coding proof gate surfaces an honest unverified work status", async () => {
+test("unchecked coding work ends unverified on the first 'done' — honest telemetry, no nag, no re-run", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ares-proof-"));
   const engine = QueryEngine.forTesting({
     provider: scriptedProvider([
@@ -102,11 +100,11 @@ test("coding proof gate surfaces an honest unverified work status", async () => 
     systemPrompt: "code",
     tools: [editTool(path.join(root, "a.ts"))],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_proof_missing");
   engine.appendUserMessage("change a.ts");
   const events = await collect(engine);
-  assert.ok(events.some((event) => event.type === "system_reminder_injected" && /UNVERIFIED at turn end/.test(event.text)));
+  assert.ok(!events.some((event) => event.type === "system_reminder_injected" && /UNVERIFIED at turn end|behavior-capable verifier run/.test(event.text)));
+  assert.equal(engine.history().filter((m) => m.role === "assistant").length, 2, "edit round + one completion round");
   assert.equal(events.findLast((event) => event.type === "turn_end").workStatus, "unverified");
   await rm(root, { recursive: true, force: true });
 });
@@ -125,7 +123,6 @@ test("manual proof rejects lookalike commands and shell-chain forgery", async ()
       systemPrompt: "code",
       tools: [editTool(path.join(root, "a.ts")), bashTool()],
       workspace: root,
-      requireVerificationEvidence: true,
     }, `sess_forgery_${command.length}`);
     engine.appendUserMessage("change a.ts");
     const events = await collect(engine);
@@ -155,7 +152,6 @@ test("a later failed manual check invalidates an earlier pass", async () => {
     systemPrompt: "code",
     tools: [editTool(path.join(root, "a.ts")), shell],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_proof_order");
   engine.appendUserMessage("change a.ts");
   const events = await collect(engine);
@@ -184,7 +180,6 @@ test("a narrower manual pass cannot clear a broader failed command", async () =>
     systemPrompt: "code",
     tools: [editTool(path.join(root, "a.ts")), shell],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_proof_scope");
   engine.appendUserMessage("change a.ts");
   const events = await collect(engine);
@@ -205,7 +200,6 @@ test("manual proof cannot reuse no-checks evidence from an older mutation genera
     systemPrompt: "code",
     tools: [editTool(path.join(root, "a.unknown")), bashTool()],
     workspace: root,
-    requireVerificationEvidence: true,
     verificationEvidence: () => ({
       mutationGeneration: 2,
       scheduledRuns: 1,
@@ -236,7 +230,6 @@ test("persisted proof cannot certify a brand-new mutation in the resumed turn", 
     systemPrompt: "code",
     tools: [editTool(path.join(root, "fresh.ts"))],
     workspace: root,
-    requireVerificationEvidence: true,
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
     verificationEvidence: () => ({
@@ -265,7 +258,6 @@ test("syntax-only automatic evidence is not behavioral completion", async () => 
     systemPrompt: "code",
     tools: [],
     workspace: root,
-    requireVerificationEvidence: true,
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
     verificationEvidence: () => ({
@@ -301,7 +293,6 @@ test("a broader manual failure after automatic green invalidates completion", as
     systemPrompt: "code",
     tools: [shell],
     workspace: root,
-    requireVerificationEvidence: true,
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
     verificationEvidence: () => ({
@@ -355,7 +346,6 @@ test("a later narrow automatic pass cannot erase an unresolved broader manual fa
     systemPrompt: "code",
     tools: [shell, refresh],
     workspace: root,
-    requireVerificationEvidence: true,
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
     verificationEvidence: () => evidence,
@@ -858,7 +848,6 @@ test("truncated restart scope cannot be certified by tail-only automatic checks"
     systemPrompt: "code",
     tools: [],
     workspace: root,
-    requireVerificationEvidence: true,
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
     persistedVerificationScopeComplete: () => false,
@@ -877,7 +866,6 @@ test("truncated restart scope cannot be certified by tail-only automatic checks"
     systemPrompt: "code",
     tools: [bashTool()],
     workspace: root,
-    requireVerificationEvidence: true,
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
     persistedVerificationScopeComplete: () => false,

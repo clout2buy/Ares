@@ -70,7 +70,6 @@ async function runProofScenario(root, scripts, tools) {
     systemPrompt: "code",
     tools,
     workspace: root,
-    requireVerificationEvidence: true,
   }, `sess_proof_${Math.random().toString(36).slice(2, 8)}`);
   engine.appendUserMessage("do the work");
   return collect(engine);
@@ -82,7 +81,6 @@ test("a green dotnet build counts as manual proof", async (t) => {
   const file = path.join(root, "Game.cs");
   const events = await runProofScenario(root, [
     { tool: { name: "Edit", input: { file_path: "Game.cs" } } },
-    { text: "done" },
     { tool: { name: "PowerShell", input: { command: "dotnet build --nologo", description: "Build" } } },
     { text: "verified" },
   ], [editTool(file), powershellTool()]);
@@ -95,7 +93,6 @@ test("a green Unreal Build.bat via the call operator counts as manual proof", as
   const file = path.join(root, "Source", "FPSWeapon.h");
   const events = await runProofScenario(root, [
     { tool: { name: "Edit", input: { file_path: "Source/FPSWeapon.h" } } },
-    { text: "done" },
     { tool: { name: "PowerShell", input: { command: String.raw`& "C:\Program Files\Epic Games\UE_5.4\Engine\Build\BatchFiles\Build.bat" FPSgameEditor Win64 Development`, description: "Engine build" } } },
     { text: "verified" },
   ], [editTool(file), powershellTool()]);
@@ -113,7 +110,6 @@ test("make clean and script-chain forgery still never count", async (t) => {
     const file = path.join(root, "a.c");
     const events = await runProofScenario(root, [
       { tool: { name: "Edit", input: { file_path: "a.c" } } },
-      { text: "done" },
       { tool: { name: "PowerShell", input: { command, description: "Attempt" } } },
       { text: "claiming done" },
       { text: "still claiming" },
@@ -175,19 +171,4 @@ test("cross-spelling pytest invocations cover each other", async (t) => {
   ], [editTool(file), exitCodedShellTool((command) => command === "python -m pytest" ? 0 : 1)]);
   assert.equal(events.findLast((e) => e.type === "turn_end").workStatus, "verified",
     "python -m pytest is the same suite as pytest — it must clear the scoped red run");
-});
-
-test("the unverified nag names project-appropriate proof for an Unreal workspace", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "ares-proof-hint-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await writeFile(path.join(root, "FPSgame.uproject"), "{}");
-  const file = path.join(root, "Source", "A.cpp");
-  const events = await runProofScenario(root, [
-    { tool: { name: "Edit", input: { file_path: "Source/A.cpp" } } },
-    { text: "done" },
-    { text: "still done" },
-  ], [editTool(file)]);
-  const nag = events.find((e) => e.type === "system_reminder_injected" && /behavior-capable verifier run/.test(e.text));
-  assert.ok(nag, "proof-gate nag fired");
-  assert.match(nag.text, /Unreal|Build\.bat/i, "nag names the Unreal verification floor instead of demanding nonexistent tests");
 });

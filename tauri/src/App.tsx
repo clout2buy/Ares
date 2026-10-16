@@ -33,9 +33,11 @@ import { getCurrentWindow, LogicalSize, PhysicalSize, PhysicalPosition } from "@
 import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packages/cli/src/holotable";
 import { redactSecrets } from "../../packages/protocol/src/secretRedact";
 import { daemonExitMessage } from "../../packages/protocol/src/daemonExit";
+import { createLiveExplain, settled as settledKitPage } from "./liveExplain";
 import { UpdateBanner } from "./UpdateBanner";
 import { PhonePairCard, type PhonePairState } from "./PhonePair";
 import { WhatsNew } from "./WhatsNew";
+import { ForgeIntro } from "./ForgeIntro";
 import { LivingSurface } from "./LivingSurface";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle, useUiStyle } from "./newStyle";
 import { AresSigils, Medallion, Sigil, asSigilName } from "./modernIcons";
@@ -130,6 +132,7 @@ import {
   readCustomModels,
 } from "./models/catalog";
 import { STREAM_SPEECH_SENTENCE_MIN, STREAM_SPEECH_BATCH_MIN, takeStreamSpeechChunk } from "./voice/streamSpeech";
+import "./devBridge";
 import "./styles.css";
 import "./modern.css";
 // LAST on purpose: the Basic themes neutralize tokens the skins above set, so
@@ -137,6 +140,8 @@ import "./modern.css";
 import "./basic.css";
 import "./cyber.generated.css";
 import "./cyber.css";
+import "./forge.css";
+import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./forgePixels";
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
@@ -708,6 +713,57 @@ function App() {
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
   const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
   const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number } | null>(null);
+  // What the previewed page said on load: console errors and, when Ares served
+  // a project folder for it, which folder. A grey canvas with no words is how
+  // "open it in the Forge" read as broken (2026-10-15) — the errors belong on
+  // the stage, not only in the model's tool result.
+  const [liveConsole, setLiveConsole] = useState<{ url: string; errors: string[]; served: { root: string; origin: string } | null; at: number } | null>(null);
+  // The folder Ares is serving into the Live tab, readable from the event
+  // ingest closure. When a tool touches a file under it, the iframe reloads
+  // on its own — the owner should never have to press ↻ to see an edit.
+  const servedRootRef = useRef<string | null>(null);
+  const liveRefreshTimer = useRef<number | null>(null);
+  // The Forge sensor: what the served page reports while the owner tests it
+  // (frame rate, exceptions, failed loads, console errors/warnings). Rendered
+  // as the HUD pills over the Live tab; the daemon also hands it to Ares.
+  const [forgeTelemetry, setForgeTelemetry] = useState<{
+    url: string; root: string; at: number; fps: number | null; longestMs: number; loadMs: number | null;
+    errors: string[]; warnings: string[]; errorCount: number; warningCount: number; lowFps: boolean;
+  } | null>(null);
+  const [forgeDrawer, setForgeDrawer] = useState<"errors" | "warnings" | null>(null);
+  // 2-bit pixel resolves: one run per open (panel), one per page landing
+  // (stage). Closing runs the reverse before the panel unmounts.
+  const [forgePixelKey, setForgePixelKey] = useState(0);
+  const [forgeClosing, setForgeClosing] = useState(false);
+  const [stageRevealKey, setStageRevealKey] = useState(0);
+  // Frame-rate history for the HUD sparkline and the last few stage events
+  // for the ticker line — both reset when a new page lands.
+  const [fpsHistory, setFpsHistory] = useState<number[]>([]);
+  const [forgeLog, setForgeLog] = useState<Array<{ at: number; text: string; tone: "info" | "good" | "warn" | "error" }>>([]);
+  const logForge = useCallback((text: string, tone: "info" | "good" | "warn" | "error" = "info") => {
+    setForgeLog((l) => [...l.slice(-7), { at: Date.now(), text, tone }]);
+  }, []);
+  // Markdown artifacts render as documents in the Artifacts tab.
+  const [forgeDoc, setForgeDoc] = useState<{ path: string; html: string } | null>(null);
+  const [artifactRevealKey, setArtifactRevealKey] = useState(0);
+  // Two Forge modes. "explain": Ares generated what is on the stage (a kit
+  // explainer) — the panel goes warm/gold and bursts; "project": a real app,
+  // site or file — blue. The daemon says which with each target; the flip
+  // itself is a full pixel resolve.
+  const [forgeMode, setForgeMode] = useState<"project" | "explain">("project");
+  const forgeModeRef = useRef(forgeMode);
+  useEffect(() => {
+    if (forgeModeRef.current !== forgeMode) {
+      forgeModeRef.current = forgeMode;
+      setForgePixelKey((k) => k + 1);
+    }
+  }, [forgeMode]);
+  // Iframe lifecycle: true from the moment a target/revision is set until the
+  // page's load event (or 8s), so the stage shows Ares forging instead of a
+  // white rectangle.
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveLoadedAt, setLiveLoadedAt] = useState<number | null>(null);
+  const [hudNow, setHudNow] = useState(() => Date.now());
   // A non-browser live source (a Godot game/editor Ares is driving). Frames
   // land in liveBrowser like the screencast; this carries what it is, whether
   // the daemon is still polling it between turns, and whether it takes input.
@@ -730,8 +786,37 @@ function App() {
   // apps/games in-window (same-origin), no Playwright. Driven via webview_cmd.
   const embeddedRef = useRef<EmbeddedBrowserHandle>(null);
   const [embeddedActive, setEmbeddedActive] = useState(false);
+  // Live explain: model/story blocks build in the Forge while Ares is still writing the call.
+  const liveExplain = useMemo(() => createLiveExplain({
+    host: () => embeddedRef.current,
+    show: () => { setEmbeddedActive(true); setForge((f) => ({ ...f, open: true, tab: "live" })); setForgeMode("explain"); },
+  }), []);
   const [embeddedActivity, setEmbeddedActivity] = useState("");
-  const [forge, setForge] = useState<ForgeState>({ open: false, tab: "preview" });
+  const [forge, setForge] = useState<ForgeState>({ open: false, tab: "live" });
+  // Live tab lifecycle: the stage shows Ares forging from the moment a target
+  // or revision changes until the page's load event (8s fallback), and the
+  // HUD clock ticks only while the Live tab is showing something.
+  useEffect(() => {
+    if (!liveTarget) { setLiveLoading(false); return; }
+    setLiveLoading(true);
+    const fallback = window.setTimeout(() => setLiveLoading(false), 8000);
+    return () => window.clearTimeout(fallback);
+  }, [liveTarget, liveRevision]);
+  useEffect(() => {
+    if (!forge.open || forge.tab !== "live" || !liveTarget) return;
+    const timer = window.setInterval(() => setHudNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [forge.open, forge.tab, liveTarget]);
+  // Every open is a resolve: the pixel run keys off the open edge.
+  useEffect(() => {
+    if (forge.open) { setForgeClosing(false); setForgePixelKey((k) => k + 1); }
+  }, [forge.open]);
+  const requestForgeClose = useCallback(() => {
+    if (forgeClosing) return;
+    setForgeClosing(true);
+    // the "out" run (reverse resolve) takes ~480ms; unmount right after
+    window.setTimeout(() => { setForge((f) => ({ ...f, open: false })); setForgeClosing(false); }, 500);
+  }, [forgeClosing]);
   const [forgeWidth, setForgeWidth] = useState(() => Math.min(560, Math.round(window.innerWidth * 0.36)));
   // True only during an active grip drag — flips off the 280ms grid transition
   // so the panel tracks the pointer 1:1 instead of rubber-banding behind it.
@@ -1046,8 +1131,9 @@ function App() {
       { id: "helm", icon: "🛡️", label: "HELM", hint: "Open the war room — missions, usage, autonomy", run: () => setView("helm") },
       { id: "settings", icon: "⚙️", label: "Settings", hint: "Open settings", run: () => setSettingsOpen(true) },
       { id: "bug", icon: "🐛", label: "Report a bug", hint: "Send a bug report with this session's log", run: () => setReportOpen(true) },
+      { id: "export", icon: "⤓", label: "Download chat", hint: "Save this session (chat + tool calls + errors) as a text file", run: () => void exportSessionLog() },
     ],
-    [daemonCmd],
+    [daemonCmd, exportSessionLog],
   );
 
   // Promise-correlated skill invocation: send skill_invoke with a unique id and
@@ -2436,6 +2522,8 @@ function App() {
         }
         if ((ev.type === "text_delta" || ev.type === "thinking_delta") && ev.text) pushTokenFlow(ev.text.length);
         else if (ev.type === "tool_use_input_delta" && ev.deltaJson) pushTokenFlow(ev.deltaJson.length);
+        liveExplain.onEvent(ev as { type?: string; id?: string; name?: string; deltaJson?: string });
+        if (ev.type === "turn_end" || ev.type === "turn_settled" || ev.type === "interrupt_settled") liveExplain.reset();
         // Voice: speak natural phrases while reply text streams. Only the session
         // you're looking at speaks; thinking + tool noise never do.
         if (prefs.voiceEnabled && sid !== livingSessionRef.current) {
@@ -2522,10 +2610,70 @@ function App() {
           return;
         }
       }
+      if (ev.type === "tool_progress" && ev.data?.kind === "browser_console" && typeof ev.data.url === "string") {
+        const d = ev.data as { url: string; errors?: unknown; served?: { root?: unknown; origin?: unknown } | null };
+        const errors = Array.isArray(d.errors) ? d.errors.filter((e): e is string => typeof e === "string") : [];
+        const served = d.served && typeof d.served.root === "string" && typeof d.served.origin === "string" ? { root: d.served.root, origin: d.served.origin } : null;
+        setLiveConsole({ url: d.url, errors, served, at: Date.now() });
+        servedRootRef.current = served ? served.root : null;
+        // falls through: the progress event still belongs in the tool's activity stream
+      }
+      if ((ev as { type?: string }).type === "forge_telemetry") {
+        const d = ev as unknown as { url?: unknown; root?: unknown; at?: unknown; fps?: unknown; longestMs?: unknown; loadMs?: unknown; errors?: unknown; warnings?: unknown; errorCount?: unknown; warningCount?: unknown; lowFps?: unknown };
+        const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+        const errors = strs(d.errors);
+        setForgeTelemetry({
+          url: typeof d.url === "string" ? d.url : "",
+          root: typeof d.root === "string" ? d.root : "",
+          at: typeof d.at === "number" ? d.at : Date.now(),
+          fps: typeof d.fps === "number" ? d.fps : null,
+          longestMs: typeof d.longestMs === "number" ? d.longestMs : 0,
+          loadMs: typeof d.loadMs === "number" ? d.loadMs : null,
+          errors,
+          warnings: strs(d.warnings),
+          errorCount: typeof d.errorCount === "number" ? d.errorCount : errors.length,
+          warningCount: typeof d.warningCount === "number" ? d.warningCount : 0,
+          lowFps: d.lowFps === true,
+        });
+        if (errors.length > 0) setForgeDrawer((cur) => cur ?? "errors");
+        if (typeof d.fps === "number") setFpsHistory((h) => [...h.slice(-39), d.fps as number]);
+        if (errors.length > 0) logForge(errors[errors.length - 1]!, "error");
+        else if (typeof d.loadMs === "number") logForge(`page loaded in ${d.loadMs}ms`, "good");
+        else if (d.lowFps === true && typeof d.fps === "number") logForge(`frame rate ${d.fps} fps — dropping frames`, "warn");
+        if (typeof d.loadMs === "number") { setLiveLoading(false); setLiveLoadedAt(Date.now()); }
+        return;
+      }
+      // Auto-refresh: an edit under the served folder reloads the Live tab
+      // (debounced, so a burst of edits is one reload). The load-error strip
+      // belongs to the previous load, so it clears with the reload.
+      if (ev.type === "tool_end" && servedRootRef.current && Array.isArray(ev.touchedFiles) && ev.touchedFiles.length > 0) {
+        const root = servedRootRef.current.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") + "/";
+        const touched = ev.touchedFiles.some((f) => typeof f === "string" && f.replace(/\\/g, "/").toLowerCase().startsWith(root));
+        if (touched) {
+          if (liveRefreshTimer.current !== null) window.clearTimeout(liveRefreshTimer.current);
+          liveRefreshTimer.current = window.setTimeout(() => {
+            liveRefreshTimer.current = null;
+            setLiveRevision((n) => n + 1);
+            setLiveConsole((c) => (c && c.errors.length ? { ...c, errors: [] } : c));
+            const edited = (ev.touchedFiles ?? []).map((f) => String(f).split(/[\\/]/).pop()).filter(Boolean);
+            logForge(`Ares edited ${edited.slice(0, 2).join(", ")}${edited.length > 2 ? ` +${edited.length - 2}` : ""} — reloading`, "info");
+            setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
+          }, 350);
+        }
+      }
       if (ev.type === "tool_progress" && ev.data?.kind === "browser_target" && typeof ev.data.url === "string") {
-        const target = { url: ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
+        // A page Ares just finished writing, right after the Forge showed it building live, opens already
+        // settled (?settled=1) so it does not replay the build; and the live stage (embedded) steps aside.
+        const handedOff = (ev.data as { mode?: unknown }).mode === "explain" && liveExplain.handoff();
+        setEmbeddedActive(false);
+        const target = { url: handedOff ? `${ev.data.url}${ev.data.url.includes("?") ? "&" : "?"}settled=1` : ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
         setLiveTarget(target);
         setLiveUrl(target.url);
+        setForgeMode((ev.data as { mode?: unknown }).mode === "explain" ? "explain" : "project");
+        setLiveConsole((c) => (c && c.url === target.url ? c : null));
+        setFpsHistory([]);
+        setForgeDrawer(null);
+        logForge(`opened ${target.url.replace(/^https?:\/\//, "")}`, "info");
         setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
         // Do not return: the progress event also belongs in the running tool's
         // activity stream, so the transcript and Forge stay in sync.
@@ -2534,17 +2682,19 @@ function App() {
       // return the result over the same channel. This is the request/response
       // bridge that lets the agent operate its own embedded browser.
       if ((ev as { type?: string }).type === "webview_cmd") {
-        const c = ev as unknown as { cmdId?: string; op?: string; html?: string; query?: string; selector?: string; value?: string; js?: string; onlyErrors?: boolean };
+        const c = ev as unknown as { cmdId?: string; op?: string; html?: string; query?: string; selector?: string; value?: string; js?: string; onlyErrors?: boolean; explainer?: boolean };
         void (async () => {
           let ok = true, result: unknown, error: string | undefined;
           try {
             if (c.op === "load") {
               setEmbeddedActive(true);
               setForge((f) => ({ ...f, open: true, tab: "live" }));
+              setForgeMode(c.explainer ? "explain" : "project");
+              logForge(c.explainer ? "Ares is showing you something" : "Ares loaded a page", "info");
               let h = embeddedRef.current;
               for (let i = 0; i < 40 && !h; i++) { await new Promise((r) => setTimeout(r, 33)); h = embeddedRef.current; }
               if (!h) throw new Error("embedded browser unavailable");
-              result = await h.load(c.html ?? "");
+              result = await h.load(c.explainer && liveExplain.handoff() ? settledKitPage(c.html ?? "") : (c.html ?? ""));
             } else {
               const h = embeddedRef.current;
               if (!h) throw new Error("nothing loaded — call load first");
@@ -3140,6 +3290,21 @@ function App() {
   const [sandboxSrc, setSandboxSrc] = useState<{ src?: string; srcdoc?: string; path?: string } | null>(null);
   const [holoSrc, setHoloSrc] = useState<{ src?: string; srcdoc?: string; path?: string } | null>(null);
   const [previewRevision, setPreviewRevision] = useState(0);
+  // A markdown artifact becomes a rendered document in the Artifacts tab.
+  useEffect(() => {
+    const p = forge.artifact?.path;
+    if (!p || !/\.(md|markdown)$/i.test(p)) { setForgeDoc(null); return; }
+    let alive = true;
+    (async () => {
+      try {
+        const raw = native ? await invoke<string>("ares_read_text_file", { path: p }) : "# Document\n\nMarkdown artifacts render here in the desktop app.";
+        if (alive) setForgeDoc({ path: p, html: renderMarkdown(raw) });
+      } catch (err) {
+        if (alive) setForgeDoc({ path: p, html: `<p>Could not read ${p}: ${String(err)}</p>` });
+      }
+    })();
+    return () => { alive = false; };
+  }, [forge.artifact?.path, previewRevision, native]);
 
   const [holoMeta, setHoloMeta] = useState<string>("MECH MK I — built-in showpiece");
 
@@ -3563,6 +3728,21 @@ function App() {
   useEffect(() => {
     // no-op: action strikes no longer flash the screen
   }, [activity]);
+  // The working label counts up while the model has not said anything yet.
+  // A 1 Hz tick, only while busy; the clock itself lives on the session.
+  const [workingNow, setWorkingNow] = useState(() => Date.now());
+  const workingBusy = !!active?.busy;
+  useEffect(() => {
+    if (!workingBusy) return;
+    setWorkingNow(Date.now());
+    const timer = window.setInterval(() => setWorkingNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [workingBusy]);
+  const workingElapsedS = active?.activityAt ? Math.max(0, Math.floor((workingNow - active.activityAt) / 1000)) : 0;
+  const workingHint =
+    active?.busy && workingElapsedS >= 6 && (active.activity === "generating" || active.activity === "responding to steer")
+      ? "waiting for the model's first token"
+      : null;
 
   // In pill mode presence belongs to the DESKTOP, not inside the controller.
   // Rust owns a monitor-sized, click-through WebView so the pulse and captions
@@ -3723,6 +3903,7 @@ function App() {
       ) : null}
       <UpdateBanner />
       <WhatsNew />
+      <ForgeIntro />
       <FirstRunGate
         active={native && daemon !== "starting" && noUsableKeys(keyStatus)}
         onOpenKeys={() => {
@@ -3915,12 +4096,21 @@ function App() {
             </button>
             <button
               className="titleIcon"
-              onClick={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : liveTarget ? "live" : "preview" }))}
+              onClick={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "live" }))}
               title={forge.open ? "Close the Forge" : "Open the Forge"}
               aria-label="Forge"
               data-on={forge.open ? "1" : "0"}
             >
               <Medallion glyph="forge" size={30} />
+            </button>
+            <button
+              className="titleIcon"
+              onClick={() => void exportSessionLog()}
+              disabled={!active?.id}
+              title="Download this chat (session log: chat + tool calls + errors) as a text file"
+              aria-label="Download chat"
+            >
+              <Medallion glyph="download" size={30} />
             </button>
             <button className="titleIcon" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">
               <Medallion glyph="settings" size={30} />
@@ -4084,7 +4274,7 @@ function App() {
           <button className="ghost" data-act="undo" disabled={!native || daemon !== "running" || active?.busy} onClick={undoLastChange}>
             Undo last agent change
           </button>
-          <button className="ghost" data-act="forge" onClick={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : liveTarget ? "live" : "preview" }))}>
+          <button className="ghost" data-act="forge" onClick={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "live" }))}>
             {forge.open ? "Close the Forge" : "Open the Forge"}
           </button>
           <button className="ghost" data-act="settings" onClick={() => setSettingsOpen(true)}>
@@ -4289,6 +4479,8 @@ function App() {
                 <span className="workingLabel" key={active.activity ?? "working"}>
                   {active.activity ?? "working"}
                 </span>
+                {workingElapsedS >= 3 ? <span className="workingElapsed">{workingElapsedS}s</span> : null}
+                {workingHint ? <span className="workingHint">{workingHint}</span> : null}
               </div>
             ) : null}
             {!pinned ? (
@@ -4534,8 +4726,8 @@ function App() {
               />
             ) : null}
           <span className="grow" />
-          <span className="hudReadout" title={`${fmtTokens(active?.cacheReadTokens ?? 0)} input tokens reused from cache`}>
-            ↑<SpringNumber value={Math.max(0, (active?.tokensIn ?? 0) - (active?.cacheReadTokens ?? 0))} format={fmtTokens} /> fresh ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
+          <span className="hudReadout" title={`This session: ${fmtTokens(active?.tokensOut ?? 0)} written by the model. ${fmtTokens(Math.max(0, (active?.tokensIn ?? 0) - (active?.cacheReadTokens ?? 0)))} new input; ${fmtTokens(active?.cacheReadTokens ?? 0)} re-read from cache (each call re-reads the conversation, so raw input totals are large and not a cost).`}>
+            ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} /> written{active && active.tokensIn > 0 && active.cacheReadTokens / active.tokensIn >= 0.5 ? ` · ${Math.round((active.cacheReadTokens / active.tokensIn) * 100)}% cached` : ""}
           </span>
           <div className="statusGroup statusActions">
             {native && daemon !== "running" && daemon !== "starting" ? (
@@ -4552,18 +4744,28 @@ function App() {
       </main>
 
       {forge.open ? (
-        <aside className="forge">
+        <aside className="forge" data-closing={forgeClosing ? "1" : "0"} data-mode={forgeMode}>
           <div className="forgeGrip" onPointerDown={onForgeGrip} />
+          <ForgePixelRim palette={forgeMode === "explain" ? "gold" : "blue"} />
           <header>
-            <strong>THE FORGE</strong>
+            {(() => {
+              const st = embeddedActive || (liveFeed && liveFeed.watching) ? "live" : liveTarget ? (liveLoading ? "loading" : "live") : "idle";
+              return (
+                <strong>
+                  <PixelIcon name="ares" size={15} palette={st === "live" ? "green" : st === "loading" ? "ember" : "blue"} className={`forgeMark ${st}`} />
+                  THE FORGE
+                </strong>
+              );
+            })()}
             <div className="forgeTabs" role="tablist">
-              <button role="tab" data-on={forge.tab !== "background" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: f.artifact ? "preview" : liveTarget ? "live" : "preview" }))}>Preview</button>
+              <button role="tab" data-on={forge.tab === "live" ? "1" : "0"} data-live={forge.tab !== "live" && liveTarget ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "live" }))}><PixelIcon name="live" size={10} palette={forge.tab === "live" ? "blue" : "dim"} />Live</button>
+              <button role="tab" data-on={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "preview" }))}><PixelIcon name="artifacts" size={10} palette={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "blue" : "dim"} />Artifacts</button>
               <button role="tab" data-on={forge.tab === "background" ? "1" : "0"} onClick={() => { setForge((f) => ({ ...f, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); }}>Background</button>
             </div>
             <span className="forgeSurfaceState" data-live={forge.tab === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"}>
               {forge.tab === "live" ? (embeddedActive ? "interactive canvas" : liveTarget ? "browser canvas" : "canvas ready") : forge.tab === "holo" ? "spatial artifact" : forge.artifact ? forge.artifact.label : "artifact canvas"}
             </span>
-            <button className="ghost" onClick={() => setForge((f) => ({ ...f, open: false }))}>
+            <button className="ghost" onClick={requestForgeClose}>
               Close
             </button>
           </header>
@@ -4587,22 +4789,42 @@ function App() {
             forge.artifact ? (
               <div className="forgeBody">
                 <div className="forgeToolbar">
-                  <span className="forgeMeta">{forge.artifact.label}</span>
-                  <button onClick={() => setPreviewRevision((n) => n + 1)}>↻ Refresh</button>
+                  <span className="forgeMeta"><PixelIcon name="artifacts" size={11} palette="gold" />{forge.artifact.label}</span>
+                  <button onClick={() => setPreviewRevision((n) => n + 1)}><PixelIcon name="reload" size={9} palette="dim" />Refresh</button>
                   {native ? <button onClick={() => void invoke("ares_open_path", { path: forge.artifact!.path })}>↗ Launch</button> : null}
                 </div>
-                <iframe
-                  key={`${forge.artifact.path}-${previewRevision}`}
-                  title={forge.artifact.label}
-                  src={native ? `${convertFileSrc(forge.artifact.path)}?forge=${previewRevision}` : undefined}
-                  srcDoc={native ? undefined : holoDefaultHtml()}
-                  sandbox={PREVIEW_SANDBOX}
-                />
+                {forgeDoc && forgeDoc.path === forge.artifact.path ? (
+                  <div className="forgeDoc" dangerouslySetInnerHTML={{ __html: forgeDoc.html }} />
+                ) : /\.(md|markdown)$/i.test(forge.artifact.path) ? (
+                  <div className="forgeDoc"><p>Reading {forge.artifact.label}…</p></div>
+                ) : (
+                  <div className="liveStage interactive artifactStage">
+                    <iframe
+                      key={`${forge.artifact.path}-${previewRevision}`}
+                      title={forge.artifact.label}
+                      src={native ? `${convertFileSrc(forge.artifact.path)}?forge=${previewRevision}` : undefined}
+                      srcDoc={native ? undefined : holoDefaultHtml()}
+                      sandbox={PREVIEW_SANDBOX}
+                      onLoad={() => setArtifactRevealKey((k) => k + 1)}
+                    />
+                    <div className="forgeStageFx" key={`afx-${artifactRevealKey}`} data-sweep={artifactRevealKey > 0 ? "1" : "0"} aria-hidden="true">
+                      <i className="forgeCorner tl" /><i className="forgeCorner tr" /><i className="forgeCorner bl" /><i className="forgeCorner br" />
+                    </div>
+                    <ForgePixelReveal runKey={artifactRevealKey} mode="in" cell={8} durationMs={640} />
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="forgeEmpty">
-                <div className="emptyEmblem" aria-hidden="true" />
-                <p>No artifact yet. When Ares forges an HTML or SVG file, it lands here.</p>
+              <div className="forgeIdle">
+                <ForgePixelPulse cell={8} period={3400} />
+                <div className="forgeOrbital" aria-hidden="true">
+                  <div className="forgeOrbit" /><div className="forgeOrbit o2" />
+                  <div className="forgeCube"><i /><i /><i /><i /><i /><i /></div>
+                  <PixelIcon name="artifacts" size={30} palette="gold" className="forgeLoadingSigil" />
+                </div>
+                <div className="forgeIdleTitle">Artifacts · nothing forged yet</div>
+                <p className="forgeIdleLead">HTML, SVG, markdown and holotable files Ares writes land here the moment they exist, rendered — documents as documents, pages as pages.</p>
+                <div className="forgeIdleReadout"><span>watch <b>armed</b></span><span>render <b>ready</b></span></div>
               </div>
             )
           ) : null}
@@ -4642,13 +4864,82 @@ function App() {
                 <button type="button" onClick={() => setLiveRevision((n) => n + 1)} disabled={!liveTarget}>↻</button>
                 {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })}>Open separate copy ↗</button> : null}
               </form>
-              <div className="forgeMeta">
-                {embeddedActive
+              {/* The HUD: one row of pills that says, at a glance, what the
+                  stage is showing and how the page is doing — state, title,
+                  served folder, frame rate, errors, warnings, load time, age.
+                  Fed by the Forge sensor inside the served page. */}
+              {(() => {
+                const telemetryCurrent = !!(forgeTelemetry && liveTarget && !embeddedActive && (forgeTelemetry.url === liveTarget.url || forgeTelemetry.url.startsWith(liveTarget.url.split("?")[0]!)));
+                const tele = telemetryCurrent ? forgeTelemetry : null;
+                const served = !embeddedActive && liveConsole?.served && liveTarget && liveConsole.url === liveTarget.url ? liveConsole.served : null;
+                const loadErrors = !embeddedActive && liveConsole && liveTarget && liveConsole.url === liveTarget.url ? liveConsole.errors : [];
+                const errorLines = tele && tele.errors.length ? tele.errors : loadErrors;
+                const errorCount = tele ? Math.max(tele.errorCount, loadErrors.length) : loadErrors.length;
+                const warnCount = tele?.warningCount ?? 0;
+                const title = embeddedActive
                   ? embeddedActivity || "Interactive app controlled by Ares"
                   : liveFeed && (!liveTarget || liveFeed.at >= liveTarget.at)
                     ? `${liveFeed.label}${liveFeed.step ? ` · ${liveFeed.step}` : ""}${liveFeed.note ? ` · ${liveFeed.note}` : liveFeed.watching ? " · watching" : ""}`
-                    : liveTarget?.title || liveTarget?.url || "Launch a local app or let Ares open one"}
-              </div>
+                    : liveTarget?.title || liveTarget?.url || "Nothing on the stage yet";
+                const state = embeddedActive || (liveFeed && liveFeed.watching) ? "live" : liveTarget ? (liveLoading ? "loading" : "live") : "idle";
+                const ageS = liveLoadedAt ? Math.max(0, Math.floor((hudNow - liveLoadedAt) / 1000)) : null;
+                const fpsTone = tele?.fps == null ? "" : tele.fps < 30 ? "bad" : tele.fps < 50 ? "warn" : "ok";
+                return (
+                  <>
+                    <div className="forgeHud" data-state={state}>
+                      <span className="hudPill hudState" data-state={state}>
+                        <PixelIcon name={state === "live" ? "live" : state === "loading" ? "reload" : "idle"} size={10} palette={state === "live" ? "green" : state === "loading" ? "ember" : "dim"} />
+                        {state === "loading" ? "forging" : forgeMode === "explain" && state === "live" ? "explaining" : state}
+                      </span>
+                      <span className="hudPill hudTitle" title={liveTarget?.url ?? ""}>{title}</span>
+                      {served ? <span className="hudPill hudServed" title={`Served from ${served.root} at ${served.origin}`}><PixelIcon name="host" size={10} palette="gold" />{served.root.split(/[\\/]/).filter(Boolean).pop()}</span> : null}
+                      {tele?.fps != null ? (
+                        <span className="hudPill hudFps" data-tone={fpsTone} title={`longest frame ${tele.longestMs}ms`}>
+                          {fpsHistory.length > 1 ? (
+                            <svg className="hudSpark" viewBox="0 0 44 12" preserveAspectRatio="none" aria-hidden="true">
+                              <line x1="0" y1="6" x2="44" y2="6" />
+                              <polyline points={fpsHistory.slice(-24).map((v, i, arr) => `${(i / Math.max(1, arr.length - 1)) * 44},${12 - Math.min(12, (Math.max(0, Math.min(v, 90)) / 90) * 12)}`).join(" ")} />
+                            </svg>
+                          ) : null}
+                          {tele.fps} fps
+                        </span>
+                      ) : null}
+                      {errorCount > 0 ? (
+                        <button type="button" className="hudPill hudErr" data-on={forgeDrawer === "errors" ? "1" : "0"} onClick={() => setForgeDrawer((d) => (d === "errors" ? null : "errors"))}><PixelIcon name="error" size={9} palette="red" />{errorCount} error{errorCount === 1 ? "" : "s"}</button>
+                      ) : null}
+                      {warnCount > 0 ? (
+                        <button type="button" className="hudPill hudWarn" data-on={forgeDrawer === "warnings" ? "1" : "0"} onClick={() => setForgeDrawer((d) => (d === "warnings" ? null : "warnings"))}><PixelIcon name="warn" size={10} palette="gold" />{warnCount} warn</button>
+                      ) : null}
+                      {tele?.loadMs != null ? <span className="hudPill hudLoad"><PixelIcon name="clock" size={10} palette="dim" />{tele.loadMs}ms</span> : null}
+                      {ageS != null && state === "live" ? <span className="hudPill hudAge"><PixelIcon name="reload" size={10} palette="dim" />{ageS < 5 ? "fresh" : `${ageS}s ago`}</span> : null}
+                    </div>
+                    {forgeLog.length > 0 && liveTarget && !embeddedActive ? (() => {
+                      const last = forgeLog[forgeLog.length - 1]!;
+                      const age = Math.max(0, Math.floor((hudNow - last.at) / 1000));
+                      return (
+                        <div className="forgeTicker" data-tone={last.tone} title={forgeLog.map((l) => l.text).join("\n")}>
+                          <span key={last.at}>{last.text}</span>
+                          <time>{age < 2 ? "now" : `${age}s`}</time>
+                        </div>
+                      );
+                    })() : null}
+                    {forgeDrawer && (forgeDrawer === "errors" ? errorLines.length > 0 : (tele?.warnings.length ?? 0) > 0) ? (
+                      <div className={`forgeDrawer ${forgeDrawer}`} role="status">
+                        <div className="forgeDrawerHead">
+                          <strong>{forgeDrawer === "errors" ? "What the page threw" : "Warnings from the page"}</strong>
+                          <span>{forgeDrawer === "errors" ? "Ares has these too and will fix what its edits broke" : "visible to Ares as well"}</span>
+                          <button type="button" onClick={() => setForgeDrawer(null)} aria-label="Close">×</button>
+                        </div>
+                        <ul>
+                          {(forgeDrawer === "errors" ? errorLines : tele?.warnings ?? []).slice(-8).map((line, idx) => (
+                            <li key={idx}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
               {/* interactive embedded browser (Ares's own HTML apps/games) */}
               <div className="liveStage embed" data-on={embeddedActive ? "1" : "0"}>
                 <EmbeddedBrowser ref={embeddedRef} onActivity={setEmbeddedActivity} />
@@ -4757,8 +5048,30 @@ function App() {
                 <div className={`liveStage interactive ${forgeCanEmbed(liveTarget.url) ? "localTarget" : "externalTarget"}`}>
                   {forgeCanEmbed(liveTarget.url) ? (
                     <>
-                      <iframe key={`${liveTarget.url}-${liveRevision}`} title={liveTarget.title || "Live preview"} src={forgeFrameUrl(liveTarget.url, native, liveRevision)} sandbox={PREVIEW_SANDBOX} />
-                      {liveBrowser ? <LiveFrameCanvas className="liveTelemetry" frame={liveBrowser.frame} title="Latest frame seen by Ares" /> : null}
+                      <iframe
+                        key={`${liveTarget.url}-${liveRevision}`}
+                        title={liveTarget.title || "Live preview"}
+                        src={forgeFrameUrl(liveTarget.url, native, liveRevision)}
+                        sandbox={PREVIEW_SANDBOX}
+                        data-loading={liveLoading ? "1" : "0"}
+                        onLoad={() => { setLiveLoading(false); setLiveLoadedAt(Date.now()); setStageRevealKey((k) => k + 1); }}
+                      />
+                      {/* While the page loads the stage shows Ares at the anvil, never a
+                          white rectangle. The "latest frame seen by Ares" thumbnail that
+                          used to sit bottom-right is gone: for an embedded local page it
+                          duplicated what you were already looking at (owner, 2026-10-15). */}
+                      <div className="forgeLoading" data-on={liveLoading ? "1" : "0"} aria-hidden={!liveLoading}>
+                        <div className="forgeLoadingRings"><i /><i /><i /><Medallion glyph="forge" size={46} tone="ember" className="forgeLoadingSigil" /></div>
+                        <span className="forgeLoadingText">forging the view</span>
+                        <span className="forgeLoadingBar" aria-hidden="true" />
+                        <span className="forgeLoadingUrl">{liveTarget.url.replace(/^https?:\/\//, "")}</span>
+                      </div>
+                      {/* console frame over the page: scanlines, vignette, brackets,
+                          one scan sweep per landing; then the 2-bit resolve. */}
+                      <div className="forgeStageFx" data-sweep={stageRevealKey > 0 && !liveLoading ? "1" : "0"} key={`fx-${stageRevealKey}`} aria-hidden="true">
+                        <i className="forgeCorner tl" /><i className="forgeCorner tr" /><i className="forgeCorner bl" /><i className="forgeCorner br" />
+                      </div>
+                      <ForgePixelReveal runKey={stageRevealKey} mode="in" cell={8} durationMs={640} palette={forgeMode === "explain" ? "gold" : "blue"} />
                     </>
                   ) : liveBrowser ? (
                     <LiveFrameCanvas className="liveTelemetryMain" frame={liveBrowser.frame} title="Live browser controlled by Ares" />
@@ -4771,13 +5084,27 @@ function App() {
                 </div>
               ) : null}
               {!embeddedActive && !liveTarget && !(liveFeed && liveBrowser) ? (
-                <div className="forgeEmpty">
-                  <div className="emptyEmblem" aria-hidden="true" />
-                  <p>When Ares tests a page, app, or game it built, you'll watch it here — cursor moving, clicking, navigating at human speed. A Godot game Ares runs shows up here too, and you can grab the controls.</p>
+                <div className="forgeIdle">
+                  <ForgePixelPulse cell={8} period={2800} />
+                  <div className="forgeOrbital" aria-hidden="true">
+                    <div className="forgeOrbit" /><div className="forgeOrbit o2" />
+                    <div className="forgeCube"><i /><i /><i /><i /><i /><i /></div>
+                    <Medallion glyph="forge" size={44} tone="ember" className="forgeLoadingSigil" />
+                  </div>
+                  <div className="forgeIdleTitle">The Forge · standing by</div>
+                  <p className="forgeIdleLead">Ask Ares to open a project, or paste a localhost URL above. The page runs here, hosted and watched by Ares.</p>
+                  <ul className="forgeIdleAbilities">
+                    <li><PixelIcon name="host" size={14} palette="gold" /><b>Hosts</b>your folder so modules, import maps and assets resolve</li>
+                    <li><PixelIcon name="watch" size={14} palette="green" /><b>Watches</b>exceptions, failed loads, warnings, frame rate — live</li>
+                    <li><PixelIcon name="reload" size={14} palette="blue" /><b>Reloads</b>itself the moment Ares edits a served file</li>
+                    <li><PixelIcon name="rescue" size={14} palette="ember" /><b>Rescues</b>bare imports like <code>three</code> with an import map</li>
+                  </ul>
+                  <div className="forgeIdleReadout"><span>sensor <b>armed</b></span><span>host <b>ready</b></span><span>stage <b>idle</b></span></div>
                 </div>
               ) : null}
             </div>
           ) : null}
+          <ForgePixelReveal runKey={forgePixelKey + (forgeClosing ? 1000 : 0)} mode={forgeClosing ? "out" : "in"} cell={10} durationMs={forgeClosing ? 460 : 760} palette={forgeMode === "explain" ? "gold" : "blue"} />
         </aside>
       ) : null}
 
@@ -5550,8 +5877,8 @@ function ModelPopover({
             <div className="mdlUsage" title="Your last 30 days through this provider (spend estimated from live OpenRouter pricing)">
               <span className="mdlUsageLabel">30d</span>
               <span><b>{providerUsage.calls}</b> requests</span>
-              <span>↑ <b>{fmtTokens(providerUsage.tokensIn)}</b></span>
-              <span>↓ <b>{fmtTokens(providerUsage.tokensOut)}</b></span>
+              <span title="Includes the conversation re-read on every call, so it is large; it is not what you are charged for."><b>{fmtTokens(providerUsage.tokensIn)}</b> read</span>
+              <span><b>{fmtTokens(providerUsage.tokensOut)}</b> written</span>
               <span className="mdlUsageCost">{providerUsage.costUsd !== undefined ? <>≈ <b>${providerUsage.costUsd.toFixed(2)}</b></> : "cost n/a"}</span>
             </div>
           ) : null}
@@ -8442,6 +8769,8 @@ export interface EmbeddedBrowserHandle {
   evalJs: (js: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
   getConsole: (onlyErrors?: boolean) => { type: string; text: string }[];
   snapshot: () => { title: string; text: string; controls: string[] };
+  /** Post a live-build piece to the page (see liveExplain). */
+  post: (msg: unknown) => void;
 }
 
 const EmbeddedBrowser = React.forwardRef<EmbeddedBrowserHandle, { paceMs?: number; onActivity?: (label: string) => void }>(
@@ -8553,6 +8882,7 @@ const EmbeddedBrowser = React.forwardRef<EmbeddedBrowserHandle, { paceMs?: numbe
           f.addEventListener("load", onLoad);
           f.srcdoc = html;
         }),
+      post: (msg: unknown) => { iframeRef.current?.contentWindow?.postMessage({ ares: "live", piece: msg }, "*"); },
       click: async (query: string) => {
         const el = findEl(query);
         if (!el) return { ok: false, error: `no element matching "${query}"` };
@@ -8826,12 +9156,20 @@ const ItemView = React.memo(function ItemView({
   }
   if (item.kind === "tools") return <ToolGroup item={item} technical={toolDisplay === "technical"} />;
   if (item.kind === "usage") {
+    // A turn is many calls and every call re-reads the whole conversation, so the SUM of input tokens (1.9M, 600k...)
+    // is a big scary number that means nothing about cost or size. Lead with what a person can read: how long, how many
+    // calls, how much the model wrote, and how big the conversation is per call. Totals live in the tooltip.
     const freshInput = Math.max(0, item.input - item.cacheRead);
+    const calls = Math.max(1, item.modelCalls);
+    const perCall = Math.round(item.input / calls);
+    const cachedPct = item.input > 0 ? Math.min(100, Math.round((item.cacheRead / item.input) * 100)) : 0;
+    const why = `Each call re-reads the conversation so far. ${calls} call${calls === 1 ? "" : "s"} x ~${fmtTokens(perCall)} = ${fmtTokens(item.input)} tokens read` +
+      `${item.cacheRead > 0 ? `, ${cachedPct}% of it served from cache (cheap)` : ""}. New input this turn: ${fmtTokens(freshInput)}. Written by the model: ${fmtTokens(item.output)}.`;
     return (
-      <div className="usage" data-status={item.status}>
+      <div className="usage" data-status={item.status} title={why}>
         {item.status !== "completed" ? `${item.status} · ` : ""}
-        {fmtMs(item.durationMs)} · {item.modelCalls} call{item.modelCalls === 1 ? "" : "s"} · ↑{fmtTokens(freshInput)} fresh ↓{fmtTokens(item.output)}
-        {item.cacheRead > 0 ? ` · ${fmtTokens(item.cacheRead)} reused (${Math.round((item.cacheRead / Math.max(1, item.input)) * 100)}%)` : ""}
+        {fmtMs(item.durationMs)} · {calls} call{calls === 1 ? "" : "s"} · {fmtTokens(perCall)} context · ↓{fmtTokens(item.output)} written
+        {item.cacheRead > 0 && cachedPct >= 50 ? ` · ${cachedPct}% cached` : ""}
         {item.model ? <span className="usageModelTag">{item.model}{item.provider ? ` (${item.provider})` : ""}{item.lane ? ` · ${item.lane}` : ""}</span> : null}
       </div>
     );
@@ -11248,6 +11586,12 @@ function Settings({
                 >
                   Show release popup
                 </button>
+                <button
+                  className="updatesReplay"
+                  onClick={() => window.dispatchEvent(new CustomEvent("ares:show-forge-intro"))}
+                >
+                  Forge tour
+                </button>
               </div>
               <div className="updatesList">
                 {CHANGELOG.map((e) => (
@@ -12146,9 +12490,9 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
           <div className="usageStats">
             <div className="usageCard"><span>Sessions</span><strong>{usage.sessions}</strong></div>
             <div className="usageCard"><span>API calls</span><strong>{usage.apiCalls}</strong></div>
-            <div className="usageCard"><span>Tokens in</span><strong>{fmtTokens(usage.tokensIn)}</strong></div>
-            <div className="usageCard"><span>Tokens out</span><strong>{fmtTokens(usage.tokensOut)}</strong></div>
-            <div className="usageCard"><span>Cache reads</span><strong>{fmtTokens(usage.cacheReadTokens)}</strong></div>
+            <div className="usageCard" title="Input the models had not seen before. This is what you pay full price for."><span>New input</span><strong>{fmtTokens(Math.max(0, usage.tokensIn - usage.cacheReadTokens))}</strong></div>
+            <div className="usageCard" title="What the models wrote."><span>Written</span><strong>{fmtTokens(usage.tokensOut)}</strong></div>
+            <div className="usageCard" title="Every call re-reads the conversation. Cached re-reads are served at a fraction of the price, so this big number is not a cost."><span>Re-read from cache</span><strong>{fmtTokens(usage.cacheReadTokens)}</strong></div>
             <div className="usageCard"><span>Est. spend</span><strong>{fmtSpend(usage)}</strong></div>
           </div>
           {(usage.providers ?? []).length > 0 ? (
@@ -12159,7 +12503,7 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
                   <div key={p.provider} className="usageRow">
                     <span className="usageModel">{p.provider}</span>
                     <span className="usageCalls">{p.calls} calls</span>
-                    <span className="usageTok">↑{fmtTokens(p.tokensIn)} ↓{fmtTokens(p.tokensOut)}</span>
+                    <span className="usageTok" title={`${fmtTokens(p.cacheReadTokens)} more re-read from cache`}>↑{fmtTokens(Math.max(0, p.tokensIn - p.cacheReadTokens))} new ↓{fmtTokens(p.tokensOut)}</span>
                     <span className="usageCost">{p.costUsd !== undefined ? `≈$${p.costUsd.toFixed(2)}` : "—"}</span>
                   </div>
                 ))}
@@ -12186,7 +12530,7 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
                   <div key={`${m.provider ?? ""}/${m.model}`} className="usageRow">
                     <span className="usageModel">{m.model}{m.provider ? <em className="usageProv"> {m.provider}</em> : null}</span>
                     <span className="usageCalls">{m.calls} calls</span>
-                    <span className="usageTok">↑{fmtTokens(m.tokensIn)} ↓{fmtTokens(m.tokensOut)}</span>
+                    <span className="usageTok" title={`${fmtTokens(m.cacheReadTokens)} more re-read from cache`}>↑{fmtTokens(Math.max(0, m.tokensIn - m.cacheReadTokens))} new ↓{fmtTokens(m.tokensOut)}</span>
                     <span className="usageCost">{m.costUsd !== undefined ? `≈$${m.costUsd.toFixed(2)}` : "—"}</span>
                   </div>
                 ))}

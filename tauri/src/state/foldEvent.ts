@@ -173,10 +173,12 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       }
       if (prior?.id === e.attemptId) {
         session.activity = (session.steerQueued ?? 0) > 0 ? "responding to steer" : "generating";
+        session.activityAt = Date.now();
         break;
       }
       session.providerAttempt = { id: e.attemptId, itemBoundary: items.length };
       session.activity = (session.steerQueued ?? 0) > 0 ? "responding to steer" : "generating";
+      session.activityAt = Date.now();
       break;
     }
     case "provider_attempt_superseded": {
@@ -284,8 +286,10 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
     }
     case "thinking_delta": {
       const a = openAssistant();
-      items[items.length - 1] = { ...a, thinking: a.thinking + (e.text ?? "") };
-      session.activity = "thinking";
+      const thinking = a.thinking + (e.text ?? "");
+      items[items.length - 1] = { ...a, thinking };
+      // A counter, so a long think reads as motion: "thinking · 1.8k".
+      session.activity = thinking.length >= 1000 ? `thinking · ${(thinking.length / 1000).toFixed(1)}k` : "thinking";
       break;
     }
     case "message_done": {

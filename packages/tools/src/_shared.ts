@@ -146,7 +146,10 @@ export function shellInputSchema(commandDescription: string) {
   return z
     .object({
       command: z.string().min(1).describe(commandDescription),
-      description: z.string().describe("5-10 word active-voice summary."),
+      // Optional: a model that forgets it (field: sonnet-5-5 mid-hunt, 2026-10-15)
+      // used to lose a whole round to "invalid arguments — description: Required".
+      // The command itself is the fallback label.
+      description: z.string().optional().describe("5-10 word active-voice summary (optional; the command is used when omitted)."),
       timeout: z
         .number()
         .int()
@@ -1183,6 +1186,11 @@ export async function resolveWorkspacePath(
 const MUTATION_ROOT_MARKERS = [
   ".git",
   ".hg",
+  // A static web project (index.html + assets, no package manager) is a
+  // project too. Without this, writes under D:\game\assets\ journaled into
+  // D:\game\assets\.ares and a brand-new assets\ folder was refused as "the
+  // workspace does not exist" (runestone session, 2026-10-15).
+  "index.html",
   "package.json",
   "pnpm-workspace.yaml",
   "pyproject.toml",
@@ -1222,9 +1230,17 @@ export async function mutationWorkspaceForPaths(
     );
   }
 
-  const common = commonMutationDirectory(resolved.map((target) => path.dirname(target)));
+  let common = commonMutationDirectory(resolved.map((target) => path.dirname(target)));
   if (!common || common === path.parse(common).root) {
     throw new Error("One atomic mutation cannot span unrelated filesystem roots. Run one edit per target project.");
+  }
+  // A write into a folder that does not exist yet (assets/new.svg) must not
+  // pick that missing folder as its journal root: climb to the nearest
+  // directory that is actually there so the mutation can create the rest.
+  while (!(await fs.stat(common).then((s) => s.isDirectory(), () => false))) {
+    const parent = path.dirname(common);
+    if (parent === common || parent === path.parse(common).root) break;
+    common = parent;
   }
   return common;
 }

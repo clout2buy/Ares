@@ -118,7 +118,7 @@ test("Bash: a huge failing test log is collapsed; the full log stays on disk; sm
   const dir = await tmp();
   await fs.writeFile(
     path.join(dir, "noisy.mjs"),
-    'for (let i = 0; i < 3000; i++) console.log("# noise " + i + " lorem ipsum dolor sit amet");\nconsole.log("not ok 1 - the real failure");\nconsole.log("# tests 3");\nconsole.log("# pass 2");\nconsole.log("# fail 1");\nprocess.exit(1);\n',
+    'for (let i = 0; i < 3000; i++) console.log("# noise " + i + " lorem ipsum dolor sit amet");\nconsole.log("not ok 1 - the real failure");\nconsole.log("# tests 3");\nconsole.log("# pass 2");\nconsole.log("# fail 1");\nprocess.exitCode = 1;\n',
   );
   const run = (command) => BashTool.call({ command, description: "t", timeout: 60000, target_paths: [], run_in_background: false }, ctx(dir));
   // Not a test command by name -> untouched even when large.

@@ -236,15 +236,13 @@ export interface SessionOptions {
     source: ReminderSource;
     instructionClaims?: RepositoryInstructionClaim[];
   }>;
-  /** C1 end-of-turn gate — see QueryEngineConfig.confirmTurnEnd. */
+  /** Turn-end settle hook — see QueryEngineConfig.confirmTurnEnd. */
   confirmTurnEnd?: () => Promise<Array<{ text: string; source: "verifier" | "hook" }>>;
-  requireVerificationEvidence?: boolean;
   verificationEvidence?: QueryEngineConfig["verificationEvidence"];
   outstandingVerificationRequired?: QueryEngineConfig["outstandingVerificationRequired"];
   persistedVerificationDebt?: QueryEngineConfig["persistedVerificationDebt"];
   persistedVerificationScopeComplete?: QueryEngineConfig["persistedVerificationScopeComplete"];
   observedMutationAt?: QueryEngineConfig["observedMutationAt"];
-  specDocs?: QueryEngineConfig["specDocs"];
   /** Failure-signature recall — see QueryEngineConfig.recallFailureFix. */
   recallFailureFix?: (input: { tool: string; signature: string; error: string }) => Promise<string | null>;
   /** Nesting depth of this session's engine (0 = top-level). */
@@ -500,13 +498,11 @@ export class Session {
         claimSteeringMessages: async () => this.claimKernelSteeringMessages(),
         consumeSteeringInputs: async (inputIds) => this.consumeKernelSteeringInputs(inputIds),
         confirmTurnEnd: opts.confirmTurnEnd,
-        requireVerificationEvidence: opts.requireVerificationEvidence,
         verificationEvidence: opts.verificationEvidence,
         outstandingVerificationRequired: opts.outstandingVerificationRequired,
         persistedVerificationDebt: opts.persistedVerificationDebt,
         persistedVerificationScopeComplete: opts.persistedVerificationScopeComplete,
         observedMutationAt: opts.observedMutationAt,
-        specDocs: opts.specDocs,
         recallFailureFix: opts.recallFailureFix,
         subagentDepth: opts.subagentDepth,
         planBeforeEdit: opts.planBeforeEdit,

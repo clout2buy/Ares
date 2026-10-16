@@ -115,7 +115,7 @@ export const BashTool = buildTool({
         program: bash,
         args: ["-lc", i.command],
         cwd,
-        description: i.description,
+        description: i.description ?? i.command.trim().replace(/\s+/g, " ").slice(0, 72),
         sessionId: ctx.sessionId,
         invocationKey: ctx.toolUseId ?? `legacy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
       });
@@ -434,6 +434,19 @@ let cachedBashProgram: Promise<string> | null = null;
 export function resolveBashProgram(): Promise<string> {
   cachedBashProgram ??= resolveBashProgramUncached();
   return cachedBashProgram;
+}
+
+/** True when a working bash can actually be spawned on this host. On Windows
+ *  without Git Bash the resolver falls through to the bare "bash" so spawn
+ *  surfaces the real ENOENT — but a tool belt that still ADVERTISES Bash
+ *  there sends every model that prefers it (field: deepseek subagents, 8 of 12
+ *  Task calls dead on `spawn bash ENOENT`, ~4.5 min each) into a wall. Hosts
+ *  gate the Bash tool on this. */
+export async function bashAvailable(): Promise<boolean> {
+  if (process.platform !== "win32") return true;
+  const program = await resolveBashProgram();
+  if (program === "bash") return false;
+  return exists(program);
 }
 
 async function resolveBashProgramUncached(): Promise<string> {

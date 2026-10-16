@@ -32,11 +32,33 @@ export interface ChangelogEntry {
   /** A one-sentence hook shown under the title. */
   tagline: string;
   highlights: ChangeHighlight[];
+  /** Offer the interactive Forge tour from this entry's What's New card. */
+  tour?: boolean;
 }
 
 // Newest first. The modal showcases CHANGELOG[0]; older entries are reachable
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.56.0",
+    date: "October 2026",
+    title: "The Forge goes live",
+    tagline: "Ares can show you things now: explain, build, edit and animate, live, right in front of you.",
+    tour: true,
+    highlights: [
+      { icon: "🎬", title: "Explanations that play out", blurb: "Ask Ares to explain anything and it plays it out on the Forge: people appear, cities rise, armies march, charts draw themselves.", tag: "New" },
+      { icon: "🧊", title: "3D models, built live", blurb: "Ask for a model and watch it assemble piece by piece while Ares is still writing it: a fox, a chest, a car, in low-poly, clay, wireframe or holographic styles.", tag: "New" },
+      { icon: "✏️", title: "Say what to change", blurb: "Ares edits the same model in place (a rounder head, new colours, a pastel backdrop) and checks its own work from every angle before it answers.", tag: "New" },
+      { icon: "🦴", title: "Joints and animation", blurb: "Models get skeletons: legs swing, lids hinge, tails wag. Ares writes the animation, plays it, and shows you the rig when you ask.", tag: "New" },
+      { icon: "🎮", title: "Straight into your game", blurb: "Export a model into any three.js game with a tiny runtime: the same shapes, joints and animations, one model in as many colourways as you like.", tag: "New" },
+      { icon: "🌊", title: "Ares writes its own effects", blurb: "Water, lava, rain, textures and physics are not built in, on purpose: Ares writes them as live scripts and fixes them from the errors it reads back.", tag: "New" },
+      { icon: "🖼️", title: "Copy from a picture", blurb: "Put a reference image beside the model and Ares matches it, or build inside your own game's page as the backdrop.", tag: "New" },
+      { icon: "🧼", title: "A calmer Forge", blurb: "The studio is just the model now. Wireframe, spin, lighting and playback happen when you ask for them, in plain words.", tag: "Polished" },
+      { icon: "🔢", title: "Token counts that make sense", blurb: "Each message shows how long it took, how many calls, and how much Ares wrote. The huge totals (every call re-reads the conversation) are in a tooltip, with how much came from cache.", tag: "Fixed" },
+      { icon: "🛡️", title: "Safer previews", blurb: "The local preview server only answers this computer and refuses secret folders, and the model tools can no longer read or write outside your project.", tag: "Safer" },
+      { icon: "🎓", title: "A tour of it all", blurb: "A short interactive tour runs the real systems for you. Open it from this card or from Settings.", tag: "New" },
+    ],
+  },
   {
     version: "0.55.1",
     date: "October 2026",

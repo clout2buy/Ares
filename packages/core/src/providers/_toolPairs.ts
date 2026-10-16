@@ -128,6 +128,64 @@ export const TOOL_ARGS_ERROR_KEY = "__tool_use_error__";
  * Stream-parse callers that cannot throw should catch this and stash
  * `{ [TOOL_ARGS_ERROR_KEY]: err.message }` as the input instead.
  */
+/**
+ * Tolerant repair for the JSON slips models actually make in tool arguments,
+ * tried only AFTER a strict parse fails (field: three malformed Browser calls
+ * in a row cost ~28s of regeneration before any visual appeared, 2026-10-16):
+ *   - an unescaped `"` inside a string ("Greek "Demonic" Deities") — a quote is
+ *     a closing quote only when the next non-space char is , } ] : or the end;
+ *   - raw newlines/tabs/control chars inside a string;
+ *   - trailing commas before } or ];
+ *   - when `closeOpen` (never for file-content tools): unbalanced brackets and
+ *     an unterminated string at the end, closed so the structure parses.
+ * Returns the repaired object or null; never throws.
+ */
+export function repairToolJson(raw: string, closeOpen: boolean): Record<string, unknown> | null {
+  let out = "";
+  const stack: string[] = [];
+  let inStr = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (inStr) {
+      if (ch === "\\") { out += ch + (raw[i + 1] ?? ""); i++; continue; }
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < raw.length && /\s/.test(raw[j]!)) j++;
+        const next = raw[j];
+        if (next === undefined || next === "," || next === "}" || next === "]" || next === ":") { inStr = false; out += ch; }
+        else out += '\\"';
+        continue;
+      }
+      if (ch === "\n") { out += "\\n"; continue; }
+      if (ch === "\r") { out += "\\r"; continue; }
+      if (ch === "\t") { out += "\\t"; continue; }
+      if (ch < " ") { out += " "; continue; }
+      out += ch;
+      continue;
+    }
+    if (ch === '"') { inStr = true; out += ch; continue; }
+    if (ch === "{" || ch === "[") { stack.push(ch === "{" ? "}" : "]"); out += ch; continue; }
+    if (ch === "}" || ch === "]") {
+      out = out.replace(/,\s*$/, "");
+      if (stack[stack.length - 1] === ch) stack.pop();
+      out += ch;
+      continue;
+    }
+    out += ch;
+  }
+  if (closeOpen) {
+    if (inStr) out += '"';
+    out = out.replace(/,\s*$/, "");
+    while (stack.length) out += stack.pop();
+  }
+  try {
+    const parsed = JSON.parse(out);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function coerceToolArgs(raw: string, toolName: string): Record<string, unknown> {
   const trimmed = raw.trim();
   // Empty args is a valid no-argument call ({}), not a parse failure.
@@ -143,6 +201,11 @@ export function coerceToolArgs(raw: string, toolName: string): Record<string, un
     // evidence points at size, give the strategy that actually fits.
     const looksTruncated = trimmed.length > 2_000 && !trimmed.endsWith("}");
     const writesContent = /^(?:Write|Edit|ApplyPatch|NotebookEdit|ApplyIntent)$/i.test(toolName);
+    // Slips first: fix what can be fixed instead of costing a regeneration.
+    // File-content tools only get the safe fixes (no auto-closing a cut-off
+    // payload — a half-written file must never land as if it were whole).
+    const repaired = repairToolJson(trimmed, !writesContent);
+    if (repaired) return repaired;
     if (looksTruncated && writesContent) {
       throw new Error(
         `<tool_use_error>${toolName}: the arguments JSON was cut off mid-value (${trimmed.length} chars received, no closing brace) — ` +

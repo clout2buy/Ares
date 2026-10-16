@@ -60,8 +60,10 @@ test("the prompt is materially smaller than the pre-split monolith", () => {
   const p = prompt();
   // Budget raised 26k → 28.5k for the machine card (the agent-computer's
   // standing awareness block, ~0.4k unprovisioned / ~1.6k provisioned) — a
-  // deliberate surface, not paraphrase creep. Still well under the old 33,819.
-  assert.ok(p.length < 28_500, `expected well under the old 33,819 chars, got ${p.length}`);
+  // deliberate surface, not paraphrase creep. Raised again 28.5k -> 30.5k for the
+  // Forge doctrine (hosted previews, the page sensor, the explain/model/sim
+  // actions) - a deliberate surface too. Still well under the old 33,819.
+  assert.ok(p.length < 30_500, `expected well under the old 33,819 chars, got ${p.length}`);
   assert.ok(p.length > 12_000, `suspiciously small (${p.length}) — a section may have been dropped entirely`);
 });
 

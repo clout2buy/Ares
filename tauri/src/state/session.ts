@@ -193,6 +193,10 @@ export interface SessionVm {
   tokensOut: number;
   /** Live one-liner of what the agent is doing right now (the activity ticker). */
   activity?: string;
+  /** When the current provider attempt began — the working label counts up
+   *  from it, so a long wait for the model's first token reads as a live
+   *  clock, never a frozen "GENERATING" (2026-10-15). */
+  activityAt?: number;
   /** Unfinished requests from before Ares last closed, waiting for the owner:
    *  Resume runs them, Discard retires them, a new message replaces them.
    *  Nothing runs until one of those happens. */
@@ -439,5 +443,7 @@ export function sessionFromHistory(id: string, rawMessages: unknown, meta: unkno
   };
 }
 
-export const PREVIEWABLE = /\.(html?|svg)$/i;
+// .md too: a report or plan Ares writes renders as a document in the Forge's
+// Artifacts tab (owner, 2026-10-15: "good markdowns").
+export const PREVIEWABLE = /\.(html?|svg|md|markdown)$/i;
 export const HOLO_SPEC_FILE = /\.holo\.json$/i;

@@ -101,6 +101,9 @@ jobs:
     # of racing and clobbering each other. The embedded runtime script is
     # platform-aware: on this runner it bundles a Linux node binary.
     needs: release
+    # Windows-only by default (owner, 2026-10-16). Set the repository variable
+    # RELEASE_LINUX=true to build and publish the Linux installers again.
+    if: ${{ vars.RELEASE_LINUX == 'true' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

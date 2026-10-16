@@ -352,14 +352,10 @@ export async function prepareUserTurn(
         }
       }
     }
-    if (live.codingJournal.persistedVerificationDebtForCurrentTurn()) {
-      // The last 40 touched files, not the whole 240-file tail: the verifier
-      // has to finish inside the settle window to be worth anything.
-      const persistedFiles = live.codingJournal.snapshot().touchedFiles.slice(-40).map((file) =>
-        path.isAbsolute(file) ? file : path.resolve(live.context.workspace, file),
-      );
-      if (persistedFiles.length) live.verifier.scheduleFor(persistedFiles);
-    }
+    // Persisted verification debt from an earlier turn is NOT re-scheduled
+    // here. Re-running checks over old touched files at the start of every
+    // later turn was a re-verification pass the owner dropped (2026-10-15);
+    // the verifier only runs for edits made in the current turn.
     // Unlike the session-creation prompt, this captures the CURRENT dirty tree
     // after prior edits or external changes in a long-running task.
     const git = await loadGitContext(live.context);

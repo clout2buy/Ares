@@ -35,7 +35,6 @@ test("a chat-only turn with standing journal debt gets NO verification nag and e
     systemPrompt: "chat",
     tools: [],
     workspace: root,
-    requireVerificationEvidence: true,
     // Standing debt from a PRIOR turn's objective (the persisted journal).
     outstandingVerificationRequired: () => true,
     persistedVerificationDebt: () => true,
@@ -54,7 +53,7 @@ test("a chat-only turn with standing journal debt gets NO verification nag and e
   assert.equal(end.workStatus, "not_applicable", "a turn that did no coding work makes no claims to verify");
 });
 
-test("a turn that DOES mutate still gets the gate — the doctrine silences chat, not work", async (t) => {
+test("a turn that DOES mutate ends on its first 'done' too — honest workStatus, no push", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ares-transition-work-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, "a.ts");
@@ -92,14 +91,16 @@ test("a turn that DOES mutate still gets the gate — the doctrine silences chat
       async call() { return { output: "edited", touchedFiles: [file] }; },
     }],
     workspace: root,
-    requireVerificationEvidence: true,
   }, "sess_transition_work");
   engine.appendUserMessage("change a.ts");
   const events = [];
   for await (const ev of engine.streamTurn()) events.push(ev);
+  // Since 2026-10-15 there is no proof-gate push at all: the mutating turn
+  // ends on the model's first "done" with honest telemetry and no nag.
   assert.ok(
-    events.some((e) => e.type === "system_reminder_injected" && /behavior-capable verifier run/i.test(e.text)),
-    "a mutating turn still faces the proof gate",
+    !events.some((e) => e.type === "system_reminder_injected" && /behavior-capable verifier run|UNVERIFIED at turn end/i.test(e.text)),
+    "no proof-gate push re-opens a mutating turn either",
   );
+  assert.equal(call, 2, "edit round + one completion round");
   assert.equal(events.findLast((e) => e.type === "turn_end").workStatus, "unverified");
 });

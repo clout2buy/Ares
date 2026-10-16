@@ -13,6 +13,18 @@ You are working on your own codebase. The bar is elite: staged small diffs, ever
 - `packages/protocol` — shared types (TurnEvent, ReasoningLevel…). `packages/effects` — rails/budget/killswitch. `packages/garrison` — server. `packages/channels` — Telegram.
 - `tauri/` — desktop app (React in `tauri/src`, Rust in `tauri/src-tauri`). `tests/` — node:test files importing from **dist**.
 
+## The Forge studio (explain / model / story) — know this before touching it
+
+Ares shows things instead of describing them. All of it lives in `packages/cli/src/entry/forge*.ts` + `modelStudio.ts`:
+
+- `Browser action:"explain"` renders `blocks[]` (stats, charts, `sim`, `scene3d`, `model`, `story`…) into a kit page (`forgeKit.ts`).
+- `Browser action:"model"` edits a persistent 3D model (`modelStudio.ts`): parts (primitives, `loft`, `mesh`, `extrude`…), clips (`tracks`/`motion`/`events`), `view`, `backdrop`, `ref`, `scripts`. The Forge page (`forgeModel.ts`) polls `/__ares/studio/<id>` and reconciles in place; every call returns screenshots (`views`). `help:true` returns the on-demand reference (`forgeScriptDocs.ts`).
+- Effects are NOT engine features: water/lava/rain/physics/textures are studio **scripts** Ares writes (api in `forgeModel.ts` `makeApi`). Do not add a built-in pond.
+- `export` writes a standalone game runtime (`forgeRuntime.ts`, built from the same `forgeModelCore.ts` as the studio) + `<id>.game.json` into the project.
+- Live build: the desktop feeds `tool_use_input_delta` through `ExplainStream` (`forgeLive.ts`) into a live stage (`tauri/src/liveExplain.ts`).
+- The engines are TypeScript template literals: **no backticks, no `${`, no backslashes** inside them (tests enforce it).
+- Tour: `tauri/src/ForgeIntro.tsx` runs the real engines; keep it in step when the systems change.
+
 ## Build & verify (do this narrow → wide)
 
 - Typecheck one package + its deps: `npx tsc -b packages/<name>` — do this after edits, it's fast.

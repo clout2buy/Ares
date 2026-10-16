@@ -33,7 +33,6 @@ import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { promises as fs } from "node:fs";
 import type { HookInvocation, HookManager } from "./hooks.js";
-import { verificationHintFor } from "./verifier.js";
 import { resolveProjectChecks, type ProjectChecks } from "./repoCartography.js";
 import { TurnGuards } from "./turnGuards.js";
 import { modelLikelyHasVision } from "./modelVision.js";
@@ -351,19 +350,14 @@ export interface QueryEngineConfig {
   consumeSteeringInputs?(inputIds: readonly string[]): Promise<void>;
   hookManager?: HookManager;
   /**
-   * C1 — the end-of-turn gate. Called when the model wants to finish the turn
-   * (no tool calls in its last message). Return reminders (e.g. settled
-   * verifier failures on files this turn touched) and the engine injects them
-   * and CONTINUES the loop instead of ending — the model cannot claim "done"
-   * while its own edits are red. Pushes a NEW objection up to TurnGuards.END_GATE_HARDCAP
-   * (6) times per turn as long as the model keeps making progress; once it's
-   * stuck re-claiming done against the SAME red checks (or hits that cap) the
-   * turn ends honestly — surfacing the failures as UNRESOLVED, never an infinite
-   * repair loop at the engine level.
+   * Turn-end settle hook (durable child sessions). Called once when the model
+   * finishes the turn, so the host can let an in-flight verifier run land
+   * before the child reports to its parent. Any returned red verdicts mark
+   * the turn blocked / needs_verification and are surfaced as UNRESOLVED. The
+   * engine NEVER injects them and re-enters the loop: there is no end-of-turn
+   * re-verification push in Ares (owner's standing decision, 2026-10-15).
    */
   confirmTurnEnd?(): Promise<Array<{ text: string; source: "verifier" | "hook" }>>;
-  /** Require concrete successful proof after a tool reports changed files. */
-  requireVerificationEvidence?: boolean;
   /** Host-owned automatic verifier evidence. Empty reminders alone are not
    * proof because they also mean no checks or skipped tooling. */
   verificationEvidence?(): {
@@ -386,12 +380,6 @@ export interface QueryEngineConfig {
   persistedVerificationScopeComplete?(): boolean;
   /** Latest exact mutation observed below the engine (e.g. checkpoint-derived shell diff). */
   observedMutationAt?(): number;
-  /** Spec/requirements docs (e.g. the task .md) read during this coding
-   *  objective. When non-empty, the engine forces a requirements-vs-artifacts
-   *  diff before the first completion claim: re-open the spec, enumerate every
-   *  explicit deliverable and verification artifact, and confirm each exists —
-   *  the guard against silent scope reduction. */
-  specDocs?(): string[];
   /**
    * Failure-signature recall. When a tool fails the SAME way twice in a row (an
    * approach that's about to be declared dead), the engine asks the host whether
@@ -3572,171 +3560,41 @@ export class QueryEngine {
           yield { type: "system_reminder_injected", text: `todo gate: ${pending.length} unfinished item(s) — finish or explain`, source: "instructions" };
           continue;
         }
-        // C1 end-of-turn gate: before accepting "done", give verification a
-        // chance to object. The old logic fired at most twice then SILENTLY
-        // accepted "done" even if checks were still red — which let the agent
-        // declare victory over a failing build/test. New logic: keep pushing the
-        // model as long as the objection is NEW (it's making progress), up to a
-        // hard cap; but when it's stuck re-claiming done against the SAME red
-        // checks (or hits the cap), end the turn HONESTLY — surface the failures
-        // as UNRESOLVED rather than pretending success.
+        // Turn end is the model's call. There is deliberately NO re-verification
+        // gate here: the engine never pushes the model back into the loop to
+        // "re-open the spec", "take a fresh screenshot" or "run the suite once
+        // more" after it has said done. Field data (2026-10-15 game session):
+        // those pushes produced three to four unprompted re-test passes per
+        // deliverable, a README latched on as a "spec" for the rest of the
+        // session, and the owner's verdict that the re-verification "has
+        // always held us back". Verification evidence still flows into
+        // workStatus / turn_end telemetry below, and a red continuous-verifier
+        // verdict still reaches the model — once, at the start of the next
+        // turn via drainSystemReminders — it just never re-opens this one.
+        //
+        // confirmTurnEnd (durable child sessions only) lets the host settle an
+        // in-flight verifier run so the verdict lands before the child reports
+        // to its parent. Red verdicts mark the turn blocked / needs_verification
+        // and are surfaced as UNRESOLVED; they do not re-enter the loop.
         if (this.cfg.confirmTurnEnd && !this.liveSignal().aborted) {
-          let gateReminders: Array<{ text: string; source: "verifier" | "hook" }> = [];
+          let unresolved: Array<{ text: string; source: "verifier" | "hook" }> = [];
           try {
-            gateReminders = await this.cfg.confirmTurnEnd();
+            unresolved = await this.cfg.confirmTurnEnd();
           } catch (err) {
-            // FAIL CLOSED: a verifier that itself crashed (spawn failure, parse
-            // error, settle() timeout rejection) must NOT silently bless the turn
-            // as "completed" — that's the exact false-victory the gate exists to
-            // prevent. Inject an UNRESOLVED objection so the model cannot claim
-            // done over checks that never actually ran, and re-runs them.
             const detail = err instanceof Error ? err.message : String(err);
-            gateReminders = [{
-              text: `verification could not run: ${detail} — do not claim the task is complete; re-run the checks (build/test/typecheck) and confirm they pass before finishing.`,
-              source: "verifier",
-            }];
+            unresolved = [{ text: `verification could not run: ${detail}`, source: "verifier" }];
           }
-          if (gateReminders.length > 0) {
-            const sig = gateReminders.map((r) => r.text).join("");
-            if (guards.recordEndGate(sig)) {
-              this.messages.push({
-                id: cryptoId(),
-                role: "user",
-                content: gateReminders.map((r) => ({ type: "system_reminder" as const, text: r.text })),
-                createdAt: new Date().toISOString(),
-              });
-              for (const r of gateReminders) {
-                yield { type: "system_reminder_injected", text: r.text, source: r.source };
-              }
-              continue;
-            }
-            // Stuck or capped: do NOT loop forever, but do NOT bless it as done.
-            // Surface every unresolved failure so the turn ends with the red
-            // checks visible, not a clean "completed" over a broken result. The
-            // loop terminates here; the terminal status becomes
-            // needs_verification (workStatus blocked) — see completionStatus.
-            for (const r of gateReminders) {
-              workStatus = "blocked";
-              yield {
-                type: "system_reminder_injected",
-                text: `UNRESOLVED at turn end (verification still failing): ${r.text}`,
-                source: r.source,
-              };
-            }
-          }
-        }
-        // GUI ground-truth gate. A manifest-matched environment artifact can
-        // pass every headless check and still open broken — pixels are proof. Require a
-        // successful screenshot NEWER than the last mutation before accepting
-        // "done". One push; a second unsupported finish ends honestly as
-        // GUI-UNVERIFIED (and resolvedWorkStatus stays unverified).
-        if (
-          this.cfg.requireVerificationEvidence &&
-          workStatus !== "blocked" &&
-          requiresVerification() &&
-          guiNeedsVisualProof() &&
-          !this.liveSignal().aborted
-        ) {
-          // Without a screenshot-capable tool in the belt (headless workers,
-          // non-Windows builds) demanding one is a dead order — skip straight
-          // to the honest GUI-UNVERIFIED disclosure instead.
-          const hasVisualTool = this.cfg.tools.some((t) => /^(?:computeruse|browser|capability)$/i.test(t.schema.name));
-          if (!guards.guiGateFired && hasVisualTool) {
-            guards.guiGateFired = true;
-            const what = [...guiSignals].slice(0, 4).join(", ");
-            const text = `This task produced a WINDOWED app artifact (${what}), and there is no screenshot of the running app newer than your last change. Headless boots and unit tests do not prove the UI renders — an app can pass every logic test and still open to a broken/grey screen. Use the matching environment Capability's read-only observation operation (acquire one if missing), ComputerUse {action:"screenshot"}, or Browser screenshot for a web UI. Inspect the fresh pixels and confirm what is on screen matches the claim. If this environment cannot expose pixels, say so plainly instead of claiming the UI works.`;
-            this.messages.push({
-              id: cryptoId(),
-              role: "user",
-              content: [{ type: "system_reminder", text }],
-              createdAt: new Date().toISOString(),
-            });
-            yield { type: "system_reminder_injected", text, source: "verifier" };
-            continue;
-          }
-          if (!guards.guiUnverifiedSurfaced) {
-            guards.guiUnverifiedSurfaced = true;
+          for (const r of unresolved) {
+            workStatus = "blocked";
             yield {
               type: "system_reminder_injected",
-              text: "GUI-UNVERIFIED at turn end: a windowed-app artifact changed, but no screenshot of the running app was captured after the last change. The UI may not render as claimed.",
-              source: "verifier",
+              text: `UNRESOLVED at turn end (verification still failing): ${r.text}`,
+              source: r.source,
             };
           }
         }
-        // Spec-checklist gate: when a spec/requirements doc anchored this
-        // coding objective, force one requirements-vs-artifacts diff before
-        // the first completion claim — the guard against silent scope
-        // reduction (spec demanded screenshots/commits/tests that were never
-        // produced, yet "done" was claimed).
-        {
-          const specDocs = this.cfg.specDocs?.() ?? [];
-          if (
-            this.cfg.requireVerificationEvidence &&
-            workStatus !== "blocked" &&
-            requiresVerification() &&
-            hasCurrentTurnEngagement() &&
-            specDocs.length > 0 &&
-            !guards.specGateFired &&
-            !this.liveSignal().aborted
-          ) {
-            guards.specGateFired = true;
-            const docs = specDocs.slice(0, 4).join(", ");
-            const text = `Before finishing: re-open the task spec (${docs}) and diff it against what you actually produced. Enumerate every EXPLICIT deliverable and verification artifact it demands — files, screenshots, tests, builds, commits — and confirm each exists on disk right now. List anything missing or cut and why; do not silently reduce scope. If the spec calls for committed milestones, confirm the working tree is actually committed (git status), not just edited.`;
-            this.messages.push({
-              id: cryptoId(),
-              role: "user",
-              content: [{ type: "system_reminder", text }],
-              createdAt: new Date().toISOString(),
-            });
-            yield { type: "system_reminder_injected", text, source: "verifier" };
-            continue;
-          }
-        }
-        // Post-edit proof gate. The verifier's empty reminder queue is NOT a
-        // green verdict: it can also mean no command was derived or every tool
-        // was skipped. Settle the normal end gate first, then require concrete
-        // pass evidence newer than the last mutation. One retry gives the model
-        // a chance to run the right package check; a second unsupported finish
-        // ends honestly as UNVERIFIED rather than looping forever.
-        if (
-          this.cfg.requireVerificationEvidence &&
-          workStatus !== "blocked" &&
-          requiresVerification() &&
-          hasCurrentTurnEngagement() &&
-          !hasPostMutationProof() &&
-          !this.liveSignal().aborted
-        ) {
-          workStatus = "unverified";
-          if (!guards.proofGateFired) {
-            guards.proofGateFired = true;
-            const sample = [...changedFiles].slice(0, 8).map((file) => file.startsWith("<") ? file : path.relative(this.cfg.workspace, file)).join(", ");
-            const scope = changedFiles.size > 0 ? `You changed ${changedFiles.size} file(s)` : "This long-running coding task still has unverified persisted changes";
-            // Name what would actually count for THIS project — "run the
-            // affected tests" is a dead instruction in a project with none.
-            const projectHint = await verificationHintFor(this.cfg.workspace).catch(() => "");
-            const unscopedNote = unscopedManualVerificationCommand && !latestManualVerificationCommand
-              ? ` Your green \`${unscopedManualVerificationCommand}\` run did NOT count: it references no changed file, its directory, its package, or a test root, so it is static proof at best — run the check that exercises the changed module, or the project's own suite.`
-              : "";
-            const text = `${scope}, but Ares has no complete all-green behavior-capable verifier run for the newest mutation generation${sample ? ` (${sample})` : ""}. Static syntax/type/lint checks are useful but do not prove requested behavior.${unscopedNote}${projectHint ? ` ${projectHint}` : " Run the narrowest meaningful affected tests or real reproduction now."} A skipped tool, an older run, one passing command inside a red run, or a verbal claim is not proof.`;
-            this.messages.push({
-              id: cryptoId(),
-              role: "user",
-              content: [{ type: "system_reminder", text }],
-              createdAt: new Date().toISOString(),
-            });
-            yield { type: "system_reminder_injected", text, source: "verifier" };
-            continue;
-          }
-          if (!guards.unverifiedSurfaced) {
-            guards.unverifiedSurfaced = true;
-            yield {
-              type: "system_reminder_injected",
-              text: "UNVERIFIED at turn end: coding changes remain, but no complete all-green behavior-capable check run is tied to the newest mutation generation. Static checks may pass, but requested behavior is not verified complete.",
-              source: "verifier",
-            };
-          }
-        } else if (requiresVerification() && hasPostMutationProof()) {
-          workStatus = "verified";
+        if (workStatus !== "blocked" && requiresVerification() && hasCurrentTurnEngagement()) {
+          workStatus = hasPostMutationProof() ? "verified" : "unverified";
         }
         // If we got here still capped at the output-token limit (the 3 auto-
         // continues at C3 were exhausted), the assistant's message is literally
@@ -4260,7 +4118,7 @@ export class QueryEngine {
           novelGather = true;
         }
       }
-      if (novelGather || pendingToolUses.some((use) => PROGRESS_TOOLS.has(use.name))) {
+      if (novelGather || pendingToolUses.some(isProgressToolUse)) {
         guards.recordProgress(iter);
       }
       if (guards.gatherStalled(iter, gatherStallRounds)) {
@@ -6004,8 +5862,17 @@ function gatherSignature(name: string, input: unknown): string {
       return `grep:${s(i.pattern)}:${s(i.path)}`;
     case "Glob":
       return `glob:${s(i.pattern)}`;
-    case "Browser":
-      return `browser:${s(i.action)}:${s(i.url)}`;
+    case "Browser": {
+      // A verification loop is a run of `eval`s with DIFFERENT scripts (or
+      // `act` batches with different steps) against the same page. Keying on
+      // action+url alone collapsed every one of them to "browser:eval:" — ten
+      // distinct checks read as ten re-runs of the same thing, the stall
+      // tripped, and the model was told to "STOP gathering and act" in the
+      // middle of shipping (Owlogy session, 2026-10-15). Fold the payload in.
+      const payload = i.js ?? i.steps ?? i.query ?? i.selector ?? i.html ?? i.text;
+      const body = typeof payload === "string" ? payload : payload === undefined ? "" : JSON.stringify(payload);
+      return `browser:${s(i.action)}:${s(i.url)}:${body.trim().toLowerCase().slice(0, 240)}`;
+    }
     case "LSP":
       return `lsp:${s(i.action)}:${s(i.file_path)}`;
     default:
@@ -6034,6 +5901,23 @@ const PROGRESS_TOOLS = new Set([
   // not be nagged to "stop gathering and deliver" mid-task.
   "ComputerUse",
 ]);
+
+/** Browser actions that CHANGE the page (navigate, click, type, run a batch,
+ *  render a preview) are progress in the same sense ComputerUse is; only the
+ *  pure observations (eval/console/screenshot/read) stay on the gather side,
+ *  where their novelty is tracked by gatherSignature. */
+const BROWSER_PROGRESS_ACTIONS = new Set([
+  "act", "open", "navigate", "preview", "attach", "handshake", "tabs",
+  "click", "click_text", "click_selector", "fill", "fill_selector", "type",
+  "press", "key", "select", "scroll", "hover", "drag", "upload", "close",
+]);
+
+function isProgressToolUse(use: { name: string; input: unknown }): boolean {
+  if (PROGRESS_TOOLS.has(use.name)) return true;
+  if (use.name !== "Browser") return false;
+  const action = typeof use.input === "object" && use.input !== null ? (use.input as Record<string, unknown>).action : undefined;
+  return typeof action === "string" && BROWSER_PROGRESS_ACTIONS.has(action.trim().toLowerCase());
+}
 
 /** The anchored verification-command grammar shared by acceptance and family
  *  extraction. One alternation, one place to extend — the two regexes drifting

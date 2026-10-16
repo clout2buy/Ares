@@ -138,20 +138,18 @@ test("dead failure loop-kill surfaces the signature at the kill limit; failure r
   assert.equal(fresh.shouldRecallFailureFix(sig, TurnGuards.FAILURE_RECALL_COUNT), false, "at most once per distinct signature");
 });
 
-// ── end-of-turn verification gate ────────────────────────────────────────────
+// ── end-of-turn verification gate: removed 2026-10-15 ───────────────────────
+// TurnGuards no longer carries end-gate / proof-gate / GUI-gate / spec-gate
+// state: the engine never re-opens a finished turn for re-verification.
 
-test("end gate: new objections push back up to the hardcap; a repeated (stuck) objection never does", () => {
+test("end gate state is gone from TurnGuards", () => {
   const guards = new TurnGuards();
-  for (let i = 0; i < TurnGuards.END_GATE_HARDCAP; i++) {
-    assert.equal(guards.recordEndGate(`objection-${i}`), true, `new objection ${i + 1} pushes back`);
-    // The anti-spiral rule: re-claiming done against the SAME red checks is
-    // "stuck" and ends the turn honestly — even with cap budget remaining.
-    assert.equal(guards.recordEndGate(`objection-${i}`), false, "identical objection is stuck, not progress");
+  assert.equal(TurnGuards.END_GATE_HARDCAP, undefined);
+  assert.equal(guards.recordEndGate, undefined);
+  assert.equal(guards.endGateExhausted, undefined);
+  for (const field of ["proofGateFired", "guiGateFired", "specGateFired", "unverifiedSurfaced", "guiUnverifiedSurfaced", "endGateFired"]) {
+    assert.ok(!(field in guards), `${field} removed`);
   }
-  assert.equal(guards.endGateFired, TurnGuards.END_GATE_HARDCAP);
-  assert.equal(guards.endGateExhausted(), true);
-  assert.equal(guards.recordEndGate("brand-new-objection"), false, "hardcap binds even for new objections");
-  assert.equal(guards.endGateFired, TurnGuards.END_GATE_HARDCAP, "capped counter never advances");
 });
 
 // ── evidence ticks ───────────────────────────────────────────────────────────

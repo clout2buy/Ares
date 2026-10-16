@@ -202,7 +202,18 @@ export function WhatsNew(): React.ReactElement | null {
 
         <footer className="wnFoot">
           <span className="wnStamp">Ares · {hero.date}</span>
-          <button className="wnGo" onClick={dismiss} autoFocus>
+          {hero.tour ? (
+            <button
+              className="wnGo wnTour"
+              onClick={() => {
+                dismiss();
+                window.setTimeout(() => window.dispatchEvent(new CustomEvent("ares:show-forge-intro")), 260);
+              }}
+            >
+              Watch the tour
+            </button>
+          ) : null}
+          <button className="wnGo" onClick={dismiss} autoFocus={!hero.tour}>
             Let's go
           </button>
         </footer>

@@ -33,7 +33,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FORGE_KIT_CSS, FORGE_KIT_JS } from "./forgeKit.js";
 
-import { studioPoll } from "./modelStudio.js";
+import { addStudioLog, studioPoll } from "./modelStudio.js";
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -385,6 +385,14 @@ async function handle(served: ServedFolder, req: IncomingMessage, res: ServerRes
     const body = await readBody(req).catch(() => "");
     res.writeHead(204, { "access-control-allow-origin": "*" }).end();
     if (body) ingestTelemetry(served, body);
+    return;
+  }
+  // scripts in a model-studio page report their errors / log lines here so Ares sees them in its next tool result
+  if (req.method === "POST" && urlPath.startsWith("/__ares/studio/") && urlPath.endsWith("/log")) {
+    const id = urlPath.slice("/__ares/studio/".length, -"/log".length).replace(/[^a-z0-9_-]/gi, "");
+    const body = await readBody(req).catch(() => "");
+    res.writeHead(204, { "access-control-allow-origin": "*" }).end();
+    try { const j = JSON.parse(body) as { name?: unknown; msg?: unknown }; addStudioLog(id, `[${String(j.name ?? "script").slice(0, 24)}] ${String(j.msg ?? "").slice(0, 260)}`); } catch { /* ignore */ }
     return;
   }
   if (req.method !== "GET" && req.method !== "HEAD") {

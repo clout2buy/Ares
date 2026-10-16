@@ -27,7 +27,8 @@ import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecisio
 import { CliRuntimeContext } from "./runtime.js";
 import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
-import { applyEdit, ensureStudio, saveStudio, studioId, studioSpec } from "./modelStudio.js";
+import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
+import { applyEdit, drainStudioLogs, ensureStudio, saveStudio, studioId, studioSpec } from "./modelStudio.js";
 import { BrowserBridgeServer, ExtensionBrowserConnector } from "@ares/browser-extension-connector";
 
 // ── Embedded-browser bridge: the daemon ⇄ UI request/response channel that lets
@@ -71,9 +72,24 @@ export async function runModelAction(
   br: BrowserConnector,
   d: { cwd: string; sessionId?: string; emitTarget: (state: { url?: string; title?: string }, mode?: "project" | "explain") => void; filmstripDir: string },
 ): Promise<BrowserResult> {
+  if (i.help) return { output: { action: "model", status: "ok", result: { docs: FORGE_SCRIPT_DOCS }, filmstripDir: d.filmstripDir }, display: "studio scripts reference" };
   const id = studioId(i.model ?? i.title);
   const st = ensureStudio(id);
-  const { touched, errors } = await applyEdit(st, { title: i.title, style: i.style, look: i.look, edge: i.edge, reset: i.reset, parts: i.parts, ops: i.ops, remove: i.remove, anims: i.anims, ref: i.ref, load: i.load }, d.cwd);
+  let backdrop: string | undefined;
+  if (i.backdrop !== undefined) {
+    backdrop = "";
+    if (i.backdrop) {
+      if (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(i.backdrop)) backdrop = i.backdrop;
+      else {
+        const target = path.resolve(d.cwd, i.backdrop);
+        if (target !== path.resolve(d.cwd) && !target.startsWith(path.resolve(d.cwd) + path.sep)) throw new Error("backdrop must be inside the project or a localhost URL");
+        const hosted = await serveLocalTarget(target, { sessionId: d.sessionId });
+        if (!hosted) throw new Error(`could not serve backdrop ${i.backdrop}`);
+        backdrop = hosted.url;
+      }
+    }
+  }
+  const { touched, errors } = await applyEdit(st, { backdrop, title: i.title, style: i.style, look: i.look, edge: i.edge, reset: i.reset, parts: i.parts, ops: i.ops, remove: i.remove, anims: i.anims, ref: i.ref, load: i.load, scripts: i.scripts }, d.cwd);
   let state = await br.state().catch(() => ({ url: "", title: "" } as { url?: string; title?: string }));
   const firstOpen = !st.url || !state.url || String(state.url).split("#")[0] !== st.url.split("#")[0];
   if (firstOpen) {
@@ -92,6 +108,7 @@ export async function runModelAction(
   const t0 = Date.now();
   while (st.seen < st.version && Date.now() - t0 < 7000) await new Promise((r) => setTimeout(r, 120));
   await new Promise((r) => setTimeout(r, 900));
+  const scriptLogs = drainStudioLogs(st);
   const wanted = (i.views && i.views.length ? i.views : ["3q"]).map((v) => (["front", "back", "side", "top", "3q"].includes(v) ? v : "3q")).slice(0, 4);
   const images: Array<{ mediaType: string; data: string }> = [];
   for (const v of wanted) {
@@ -102,12 +119,13 @@ export async function runModelAction(
   }
   let saved: string | undefined;
   if (i.save) saved = await saveStudio(st, d.cwd, i.save).catch((err) => { errors.push(`save: ${err instanceof Error ? err.message : String(err)}`); return undefined; });
+  scriptLogs.push(...drainStudioLogs(st));
   const spec = studioSpec(st) as { parts: Array<{ name: string }>; anims: Array<{ name: string }> };
   return {
     output: {
       action: "model",
       status: errors.length ? "edited-with-warnings" : "ok",
-      result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: spec.anims.map((a) => a.name), changed: touched.slice(0, 40), ...(errors.length ? { problems: errors } : {}), ...(saved ? { saved } : {}), views: wanted },
+      result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: spec.anims.map((a) => a.name), changed: touched.slice(0, 40), ...(errors.length ? { problems: errors } : {}), ...(scriptLogs.length ? { scriptLogs: scriptLogs.slice(-15) } : {}), ...(saved ? { saved } : {}), views: wanted },
       filmstripDir: d.filmstripDir,
       ...(errors.length ? { note: `Some edits did not apply: ${errors.join("; ")}` } : {}),
     },
@@ -173,7 +191,7 @@ const browserInput = z
     html: z.string().optional().describe("Self-contained HTML to render in the embedded browser (engine:'embedded', action:'preview')."),
     title: z.string().optional().describe("explain: the page title."),
     eyebrow: z.string().optional().describe("explain: small label above the title."),
-    blocks: z.array(z.record(z.string(), z.unknown())).optional().describe("explain: ordered blocks, each {type, ...}: text{text} heading{text} cards{items:[{title,text}]} stats{items:[{label,value,note?,tone?}]} steps{items:[{title,text,state?:done|now}]} timeline{items:[{when,title,text}]} pills{items:[{text,tone?:ok|warn|bad}]} bars{items:[{label,value 0-100}]} callout{title,text,tone?} kv{items:[{key,value}]} table{columns,rows} code{text} chart{kind:bar|line|donut,labels,values} diagram{nodes:[{id,text}],links:[[a,b]]} scene3d{shape:cube|sphere|torus|pyramid|knot,color?,caption?,interactive?:true (drag to orbit),controls?:true|[{key:speed|scale,label,min,max,value,step}]} sim{kind:projectile|pendulum|orbit|plot,params?:[{key,label,min,max,value,step}],formula? (plot: x + param keys + Math fns, e.g. \"a*sin(b*x)\"),xmin?,xmax?,caption?} model{title?,style?:smooth|lowpoly|wire (lowpoly = faceted triangles; wire = + triangle wireframe),look?:studio|clay|slate|pastel|gallery|noir|holo,edge?:colour,parts:[{name,shape:box|sphere|cylinder|cone|pyramid|prism|torus|capsule|poly{detail?,jitter?} (faceted blob/rock)|loft{sections:[[x,y,z,rx,ry]..] (ordered cross-section rings along a spine: BEST for organic bodies, necks, heads, legs, tails; rx=0 closes a tip),seg?}|mesh{verts:[[x,y,z]..],faces:[[i,j,k(,l)]..],fcolors?:[colour per face]} (hand-placed triangles)|arch|stairs{steps?}|extrude{pts:[[x,y]..],depth,bevel?}|lathe{pts:[[radius,y]..]}|tube{pts:[[x,y,z]..],r,r2?},pos:[x,y,z],size:[x,y,z] (bbox),rot:[deg],color:#hex|name,color2?+grad?:x|y|z+mid?:0-1 (facet gradient: color at the low end → color2 at the high end; mid = where it switches),shade? (facet variation 0-.5),mat?:matte|clay|plastic|metal|glossy|glass|glow|holo,smooth?,mirror?:true (copy across x),repeat?:{n,step:[x,y,z]},stage?:label (blockout|form|detail|paint),parent?:part name,pivot?:[x,y,z] (joint to rotate about; default pos)}],anims?:[{name,dur,loop?,motion:[{part,kind:swing|wag|bob|spin|pulse,axis,amp,speed (Hz),phase}],tracks:[{part,rot?|pos?|scale?:[[t,[x,y,z]]..]}]}] (part \"leg*\" = prefix; mirrors follow)} = a coloured 3D model that BUILDS itself part by part while you write it (y up, origin on the ground; order = build order: big forms first, then details; 20-60 parts; viewer can orbit, click parts to recolour/move/resize, play anims, show the rig, export GLB / copy asset JSON). Animals: loft torso/neck+head/legs/tail (seg 6-7, color=belly/socks, color2=back, grad y), ears as pyramids, mirror legs/ears. Animate by giving limbs parent+pivot and a motion clip (e.g. trot = swing on legs, wag on tail). story{title?,scenes:[{t:\"753 BC\",say,bg?:day|dawn|dusk|night|desert|sea|storm|snow,do:[{op:spawn,sprite,n?,at?:[x,y],spread?:[w,h],scale?:1-4,color?,text?,id?}|{op:move,id,to:[x,y],dur?}|{op:fall|fade,id}|{op:tint,id,color}|{op:meter,id,label,value 0-100}|{op:clear}]}]} = a live animated 2D pixel story (world 160x90, ground y 66-86; sprites person soldier house temple column tower wall castle tree ship horse flag mountain sun moon cloud coin fire arrow pyramid scroll crown sword label{text}; ~6-10 scenes, 2-4 ops each). sim/scene3d-interactive = live sliders. \"interactive\"/\"simulate\" → sim; make/build/show a 3D model → model; explain history/process visually → story."),
+    blocks: z.array(z.record(z.string(), z.unknown())).optional().describe("explain: ordered blocks, each {type, ...}: text{text} heading{text} cards{items:[{title,text}]} stats{items:[{label,value,note?,tone?}]} steps{items:[{title,text,state?:done|now}]} timeline{items:[{when,title,text}]} pills{items:[{text,tone?:ok|warn|bad}]} bars{items:[{label,value 0-100}]} callout{title,text,tone?} kv{items:[{key,value}]} table{columns,rows} code{text} chart{kind:bar|line|donut,labels,values} diagram{nodes:[{id,text}],links:[[a,b]]} scene3d{shape:cube|sphere|torus|pyramid|knot,color?,caption?,interactive?:true (drag to orbit),controls?:true|[{key:speed|scale,label,min,max,value,step}]} sim{kind:projectile|pendulum|orbit|plot,params?:[{key,label,min,max,value,step}],formula? (plot: x + param keys + Math fns, e.g. \"a*sin(b*x)\"),xmin?,xmax?,caption?} model{title?,style?:smooth|lowpoly|wire (lowpoly = faceted triangles; wire = + triangle wireframe),look?:studio|clay|slate|pastel|gallery|noir|holo,edge?:colour,parts:[{name,shape:box|sphere|cylinder|cone|pyramid|prism|torus|capsule|poly{detail?,jitter?} (faceted blob/rock)|loft{sections:[[x,y,z,rx,ry]..] (ordered cross-section rings along a spine: BEST for organic bodies, necks, heads, legs, tails; rx=0 closes a tip),seg?}|mesh{verts:[[x,y,z]..],faces:[[i,j,k(,l)]..],fcolors?:[colour per face]} (hand-placed triangles)|arch|stairs{steps?}|extrude{pts:[[x,y]..],depth,bevel?}|lathe{pts:[[radius,y]..]}|tube{pts:[[x,y,z]..],r,r2?},pos:[x,y,z],size:[x,y,z] (bbox),rot:[deg],color:#hex|name,color2?+grad?:x|y|z+mid?:0-1 (facet gradient: color at the low end → color2 at the high end; mid = where it switches),shade? (facet variation 0-.5),mat?:matte|clay|plastic|metal|glossy|glass|glow|holo,smooth?,mirror?:true (copy across x),repeat?:{n,step:[x,y,z]},stage?:label (blockout|form|detail|paint),parent?:part name,pivot?:[x,y,z] (joint to rotate about; default pos),scenery?:true (environment: ignored when framing the camera)}],anims?:[{name,dur,loop?,events?:[{t,name,data?}] (named moments scripts can react to),motion:[{part,kind:swing|wag|bob|spin|pulse,axis,amp,speed (Hz),phase}],tracks:[{part,rot?|pos?|scale?:[[t,[x,y,z]]..]}]}] (part \"leg*\" = prefix; mirrors follow)} = a coloured 3D model that BUILDS itself part by part while you write it (y up, origin on the ground; order = build order: big forms first, then details; 20-60 parts; viewer can orbit, click parts to recolour/move/resize, play anims, show the rig, export GLB / copy asset JSON). Animals: loft torso/neck+head/legs/tail (seg 6-7, color=belly/socks, color2=back, grad y), ears as pyramids, mirror legs/ears. Animate by giving limbs parent+pivot and a motion clip (e.g. trot = swing on legs, wag on tail). story{title?,scenes:[{t:\"753 BC\",say,bg?:day|dawn|dusk|night|desert|sea|storm|snow,do:[{op:spawn,sprite,n?,at?:[x,y],spread?:[w,h],scale?:1-4,color?,text?,id?}|{op:move,id,to:[x,y],dur?}|{op:fall|fade,id}|{op:tint,id,color}|{op:meter,id,label,value 0-100}|{op:clear}]}]} = a live animated 2D pixel story (world 160x90, ground y 66-86; sprites person soldier house temple column tower wall castle tree ship horse flag mountain sun moon cloud coin fire arrow pyramid scroll crown sword label{text}; ~6-10 scenes, 2-4 ops each). sim/scene3d-interactive = live sliders. \"interactive\"/\"simulate\" → sim; make/build/show a 3D model → model; explain history/process visually → story."),
     model: z.string().optional().describe("model: studio id (a short slug). One id = one persistent 3D model you keep editing."),
     parts: z.array(z.record(z.string(), z.unknown())).optional().describe("model: parts to add or replace by name (same part schema as explain's model block)."),
     ops: z.array(z.record(z.string(), z.unknown())).optional().describe("model: ordered edits {op:set,name|\"leg*\",<any part field>,move?:[dx,dy,dz],scale?:n,to?:newName} {op:remove,name} {op:add,parts} {op:use,file,names?,at?,scale?,prefix?} (pull parts from a saved .model.json) {op:anim,anim} {op:remove_anim,name}."),
@@ -186,6 +204,9 @@ const browserInput = z
     ref: z.string().optional().describe("model: a reference picture (png/jpg/webp ≤2MB, project path or data: URL) shown beside the model, so you and the owner compare."),
     save: z.string().optional().describe("model: write the model to a project file (path ending .json, or true-ish \"assets/models/<id>.model.json\"). Reload with load / reuse parts with ops use."),
     load: z.string().optional().describe("model: load a saved .model.json into this studio."),
+    backdrop: z.string().optional().describe("model: a project page (html path, or a localhost URL) shown BEHIND the model, so you build the asset inside the actual game and see how it sits in it. \"\" removes it."),
+    scripts: z.array(z.record(z.string(), z.unknown())).optional().describe("model: [{name, code}] JS the studio runs every frame - YOUR way to make anything the engine has no feature for (water, lava, rain, wind, fire, physics, particles, deforming a mesh). code defines function init(api){…} (may be async), update(api){…}, cleanup(api){…}. api: THREE, scene, camera, renderer, time, dt, state (yours), part(name)→{group,mesh,geometry,node,spec}, parts(), add(obj3d)/remove(obj3d) (auto-cleaned), on(event,fn)/emit(event,data) (events: clip events, \"click\" {point:[x,y,z],part}), lib(name) (async; physics: \"cannon-es\",\"rapier\"), rand(), noise(x,y,z), log(msg). Errors come back to you in the tool result (problems/scriptLogs) - read them and fix."),
+    help: z.boolean().optional().describe("model: return the studio-scripts reference + worked patterns (procedural textures, live water, control panels, physics) and edit nothing. Read it before writing a script."),
     views: z.array(z.string()).optional().describe("model: angles to screenshot after the edit: 3q (default), front, back, side, top. Look at them, then edit again."),
     headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true. 'preview' is ALWAYS headless (the value is ignored): the owner watches in the Forge, which shows the page you preview. For other actions pass false ONLY when the owner explicitly asks to watch a real browser window."),
     note: z.string().optional().describe("Optional note attached to screenshot frames."),

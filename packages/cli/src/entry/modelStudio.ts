@@ -13,7 +13,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { sanitizeAnim, sanitizeModelPart, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
+import { sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
 
@@ -25,7 +25,13 @@ export interface Studio {
   edge: string;
   raw: Obj[];
   anims: Obj[];
+  /** JS the page runs every frame (water, lava, rain, physics…): authored by Ares, see sanitizeScript */
+  scripts: Obj[];
+  /** errors / log lines scripts reported back (drained into the next tool result) */
+  logs: string[];
   ref?: string;
+  /** served URL of a project page shown behind the model (the real game it will live in) */
+  backdrop?: string;
   version: number;
   /** highest version a page has fetched (so Ares can wait for the Forge to apply an edit) */
   seen: number;
@@ -39,10 +45,18 @@ export const studioId = (v: unknown): string => String(v ?? "model").toLowerCase
 export const getStudio = (id: string): Studio | undefined => studios.get(id);
 export function ensureStudio(id: string): Studio {
   let st = studios.get(id);
-  if (!st) { st = { id, title: "", style: "", look: "", edge: "", raw: [], anims: [], version: 0, seen: 0 }; studios.set(id, st); }
+  if (!st) { st = { id, title: "", style: "", look: "", edge: "", raw: [], anims: [], scripts: [], logs: [], version: 0, seen: 0 }; studios.set(id, st); }
   return st;
 }
 export function dropStudios(): void { studios.clear(); }
+export function addStudioLog(id: string, line: string): void {
+  const st = studios.get(id);
+  if (!st) return;
+  st.logs.push(line.slice(0, 300));
+  if (st.logs.length > 40) st.logs.splice(0, st.logs.length - 40);
+}
+/** Take (and clear) what scripts reported since the last call. */
+export function drainStudioLogs(st: Studio): string[] { return st.logs.splice(0); }
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
@@ -68,8 +82,8 @@ function inside(cwd: string, rel: string): string {
 
 export interface ModelEdit {
   title?: string; style?: string; look?: string; edge?: string; reset?: boolean;
-  parts?: unknown[]; ops?: unknown[]; remove?: unknown[]; anims?: unknown[];
-  ref?: string; load?: string;
+  parts?: unknown[]; ops?: unknown[]; remove?: unknown[]; anims?: unknown[]; scripts?: unknown[];
+  ref?: string; load?: string; backdrop?: string;
 }
 
 function moveBy(p: Obj, d: number[]): void {
@@ -112,11 +126,12 @@ async function importParts(cwd: string, o: Obj): Promise<Obj[]> {
 /** Apply one edit call to a studio. Returns what changed and any op that could not apply. */
 export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<{ touched: string[]; errors: string[] }> {
   const touched: string[] = [], errors: string[] = [];
-  if (e.reset) { st.raw = []; st.anims = []; st.ref = undefined; }
+  if (e.reset) { st.raw = []; st.anims = []; st.scripts = []; st.ref = undefined; st.backdrop = undefined; }
+  if (e.backdrop !== undefined) { st.backdrop = e.backdrop || undefined; touched.push(e.backdrop ? "backdrop" : "- backdrop"); }
   if (e.load) {
     try {
       const doc = obj(JSON.parse(await readFile(inside(cwd, e.load), "utf8")));
-      st.raw = arr(doc.parts).map(obj); st.anims = arr(doc.anims).map(obj);
+      st.raw = arr(doc.parts).map(obj); st.anims = arr(doc.anims).map(obj); st.scripts = arr(doc.scripts).map(obj);
       st.style = String(doc.style ?? ""); st.look = String(doc.look ?? ""); st.edge = String(doc.edge ?? ""); st.title = String(doc.title ?? st.title);
       touched.push(`loaded ${e.load}`);
     } catch (err) { errors.push(`load: ${err instanceof Error ? err.message : String(err)}`); }
@@ -127,6 +142,7 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
   if (e.edge !== undefined) st.edge = colour(e.edge) ?? "";
   for (const p of arr(e.parts).slice(0, 120)) { const o = obj(p); upsert(st.raw, o); touched.push(nameOf(o)); }
   for (const a of arr(e.anims).slice(0, 12)) { const o = obj(a), n = String(o.name ?? "anim"); const i = st.anims.findIndex((x) => x.name === n); if (i >= 0) st.anims[i] = o; else st.anims.push(o); touched.push(`anim ${n}`); }
+  for (const sc of arr(e.scripts).slice(0, 8)) { const s2 = sanitizeScript(sc); if (!s2) { errors.push("script needs a slug name and non-empty code"); continue; } const i = st.scripts.findIndex((x) => x.name === s2.name); if (i >= 0) st.scripts[i] = s2; else st.scripts.push(s2); touched.push(`script ${String(s2.name)}`); }
   for (const raw of arr(e.remove).slice(0, 60)) { const sel = String(raw); const before = st.raw.length; st.raw = st.raw.filter((p) => !matches(sel, nameOf(p))); if (st.raw.length === before) errors.push(`remove: no part "${sel}"`); else touched.push(`- ${sel}`); }
   for (const rawOp of arr(e.ops).slice(0, 60)) {
     const o = obj(rawOp), op = String(o.op);
@@ -149,7 +165,18 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
       } else if (op === "add") {
         for (const p of arr(o.parts)) { upsert(st.raw, obj(p)); touched.push(nameOf(obj(p))); }
       } else if (op === "use") {
-        for (const p of await importParts(cwd, o)) { upsert(st.raw, p); touched.push(nameOf(p)); }
+        if (o.parts !== false) for (const p of await importParts(cwd, o)) { upsert(st.raw, p); touched.push(nameOf(p)); }
+        // scripts ride along when asked: use:{file, scripts:["water"]} pulls a saved behaviour (a library of Ares's own tricks)
+        const want = arr(o.scripts).map(String);
+        if (want.length) {
+          const doc = obj(JSON.parse(await readFile(inside(cwd, String(o.file ?? "")), "utf8")));
+          for (const sc of arr(doc.scripts)) { const s2 = sanitizeScript(sc); if (s2 && want.includes(String(s2.name))) { const i = st.scripts.findIndex((x) => x.name === s2.name); if (i >= 0) st.scripts[i] = s2; else st.scripts.push(s2); touched.push(`script ${String(s2.name)}`); } }
+        }
+      } else if (op === "script") {
+        const s2 = sanitizeScript(o); if (!s2) { errors.push("script needs a slug name and non-empty code"); continue; }
+        const i = st.scripts.findIndex((x) => x.name === s2.name); if (i >= 0) st.scripts[i] = s2; else st.scripts.push(s2); touched.push(`script ${String(s2.name)}`);
+      } else if (op === "remove_script") {
+        st.scripts = st.scripts.filter((x) => x.name !== String(o.name)); touched.push(`- script ${String(o.name)}`);
       } else if (op === "anim") {
         const a = obj(o.anim), n = String(a.name ?? "anim"); const i = st.anims.findIndex((x) => x.name === n); if (i >= 0) st.anims[i] = a; else st.anims.push(a); touched.push(`anim ${n}`);
       } else if (op === "remove_anim") {
@@ -186,7 +213,8 @@ export function studioSpec(st: Studio): Obj {
     parts.push(...sanitizeModelPart(raw, st.style, 220 - parts.length, st.edge));
   }
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
-  return { title: st.title, style: st.style, look: st.look, parts, anims, ...(st.ref ? { ref: st.ref } : {}) };
+  const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
+  return { title: st.title, style: st.style, look: st.look, parts, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}) };
 }
 
 /** GET /__ares/studio/<id>?since=N → { v } or { v, spec } when there is something newer. */
@@ -203,6 +231,6 @@ export async function saveStudio(st: Studio, cwd: string, target: string): Promi
   if (!rel.endsWith(".json")) throw new Error("save path must end in .json");
   const abs = inside(cwd, rel);
   await mkdir(path.dirname(abs), { recursive: true });
-  await writeFile(abs, JSON.stringify({ format: "ares-model/1", title: st.title, style: st.style, look: st.look, edge: st.edge, parts: st.raw, anims: st.anims }, null, 1), "utf8");
+  await writeFile(abs, JSON.stringify({ format: "ares-model/1", title: st.title, style: st.style, look: st.look, edge: st.edge, parts: st.raw, anims: st.anims, scripts: st.scripts }, null, 1), "utf8");
   return path.relative(cwd, abs);
 }

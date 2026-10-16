@@ -306,3 +306,58 @@ test("live stream also understands action:model (parts at the root of the call)"
   assert.equal(out[2].parts.length, 2);
   assert.equal(out[0].style, undefined, "style after parts isn't known yet; parts are sanitised with what is");
 });
+
+// ── scripts: the studio has no built-in water/lava/physics; Ares writes the behaviour ──
+import { FORGE_SCRIPT_DOCS } from "../packages/cli/dist/entry/forgeScriptDocs.js";
+import { sanitizeScript } from "../packages/cli/dist/entry/forgeBlocks.js";
+import { addStudioLog, drainStudioLogs } from "../packages/cli/dist/entry/modelStudio.js";
+
+test("engines hold no backslashes (the template-literal trap that silently broke a script runner once)", () => {
+  for (const [n, js] of [["model", FORGE_MODEL_JS], ["story", FORGE_STORY_JS], ["sim", FORGE_SIM_JS], ["live", LIVE_RUNTIME_JS]]) assert.ok(!js.includes("\\"), `${n}: no backslash`);
+});
+
+test("scripts: sanitised, upserted by name, removable, carried by save/load/use, and their errors reach Ares", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-studio-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  assert.equal(sanitizeScript({ name: "bad name!", code: "x" }), null);
+  assert.equal(sanitizeScript({ name: "ok", code: "   " }), null);
+  assert.equal(sanitizeScript({ name: "ok", code: "x".repeat(50_000) }).code.length, 24_000);
+  const st = ensureStudio("s");
+  let r = await applyEdit(st, { parts: [{ name: "a", shape: "box" }], scripts: [{ name: "water", code: "function init(api){}" }, { name: "x y", code: "1" }] }, root);
+  assert.equal(r.errors.length, 1, "bad script name reported");
+  r = await applyEdit(st, { ops: [{ op: "script", name: "water", code: "function update(api){}" }, { op: "script", name: "rain", code: "function init(api){}" }] }, root);
+  assert.deepEqual(studioSpec(st).scripts.map((s) => s.name), ["water", "rain"]);
+  assert.equal(studioSpec(st).scripts[0].code, "function update(api){}", "same name replaces");
+  const rel = await saveStudio(st, root, "");
+  const b = ensureStudio("b");
+  await applyEdit(b, { ops: [{ op: "use", file: rel, parts: false, scripts: ["rain"] }] }, root);
+  assert.deepEqual(studioSpec(b).scripts.map((s) => s.name), ["rain"]);
+  assert.equal(studioSpec(b).parts.length, 0, "parts:false pulls only the script");
+  await applyEdit(st, { ops: [{ op: "remove_script", name: "water" }] }, root);
+  assert.deepEqual(studioSpec(st).scripts.map((s) => s.name), ["rain"]);
+  addStudioLog("s", "[rain] init: boom");
+  assert.deepEqual(drainStudioLogs(st), ["[rain] init: boom"]);
+  assert.deepEqual(drainStudioLogs(st), [], "drained");
+  // a page POSTs script errors to the preview server
+  await writeFile(path.join(root, "index.html"), "<!doctype html><body>x</body>");
+  const served = await serveLocalTarget(path.join(root, "index.html"));
+  addStudioLog("s", "seed");
+  drainStudioLogs(st);
+  const res = await fetch(`${served.origin}/__ares/studio/s/log`, { method: "POST", body: JSON.stringify({ name: "water", msg: "update: x is not defined" }) });
+  assert.equal(res.status, 204);
+  assert.deepEqual(drainStudioLogs(st), ["[water] update: x is not defined"]);
+});
+
+test("clip events are generic named moments, and the on-demand docs' example scripts all compile", () => {
+  const a = sanitizeAnim({ name: "drink", events: [{ t: 1, name: "splash", data: { x: 1, z: 2 } }, { t: 2, name: "bad name!" }, { t: 99, name: "late", data: "x".repeat(2000) }] });
+  assert.deepEqual(a.events.map((e) => e.name), ["splash", "late"]);
+  assert.deepEqual(a.events[0].data, { x: 1, z: 2 });
+  assert.equal(a.events[1].data, null, "oversized event data is dropped");
+  assert.equal(a.events[1].t, 20);
+  const sect = (from, to) => FORGE_SCRIPT_DOCS.slice(FORGE_SCRIPT_DOCS.indexOf("\n", FORGE_SCRIPT_DOCS.indexOf(from)) + 1, FORGE_SCRIPT_DOCS.indexOf(to, FORGE_SCRIPT_DOCS.indexOf(from)));
+  for (const code of [sect("1) Procedural pixel texture", "2) Live water"), sect("2) Live water", "   (Lava"), sect("3) Controls + live stats", "4) Physics")]) {
+    assert.doesNotThrow(() => new vm.Script(`(function(api){${code}\nreturn {init:typeof init==='function'?init:null,update:typeof update==='function'?update:null}})`), "example compiles");
+  }
+  assert.ok(!FORGE_SCRIPT_DOCS.includes("`"));
+});

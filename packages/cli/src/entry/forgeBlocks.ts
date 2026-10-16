@@ -73,6 +73,7 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   base.pivot = pv;
   const ec = colour(edge); if (ec) base.edgeColor = ec;
   if (p.stage !== undefined && String(p.stage)) base.stage = str(p.stage, 16);
+  if (p.scenery === true) base.scenery = true;
   if (low) base.low = true;
   if (style === "wire") base.wire = true;
   if (typeof p.facets === "boolean" ? p.facets : low) base.facets = true;
@@ -106,6 +107,14 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
 }
 
 // ── animation: keyframe tracks and procedural motions over named parts ──────
+/** A studio script: JS the page runs every frame (init/update/cleanup with an `api`). Ares writes these itself for anything
+ *  the engine has no feature for: water, lava, rain, wind, physics, particles. Size-capped; name is a slug. */
+export function sanitizeScript(raw: unknown): Obj | null {
+  const o = obj(raw), name = String(o.name ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{1,24}$/.test(name) || typeof o.code !== "string" || !o.code.trim()) return null;
+  return { name, code: o.code.slice(0, 24_000), enabled: o.enabled !== false };
+}
+
 export const MOTION_KINDS = ["swing", "wag", "bob", "spin", "pulse"];
 const keys = (v: unknown, lo: number, hi: number, d: number): [number, number[]][] =>
   arr(v).slice(0, 32).flatMap((k) => { const a = arr(k); if (a.length < 2) return []; const val = arr(a[1]); return [[clamp(a[0], 0, 20, 0), [clamp(val[0], lo, hi, d), clamp(val[1], lo, hi, d), clamp(val[2], lo, hi, d)]] as [number, number[]]]; }).sort((x, y) => x[0] - y[0]);
@@ -129,8 +138,16 @@ export function sanitizeAnim(raw: unknown): Obj | null {
     if (!part || !MOTION_KINDS.includes(kind)) return [];
     return [{ part, kind, axis: ["x", "y", "z"].includes(String(o.axis)) ? String(o.axis) : kind === "bob" ? "y" : kind === "wag" ? "y" : "x", amp: clamp(o.amp, -720, 720, kind === "pulse" ? 0.1 : kind === "bob" ? 0.2 : 20), speed: clamp(o.speed, 0.05, 8, 1), phase: clamp(o.phase, -7, 7, 0), mirror: o.mirror !== false }];
   });
-  if (!tracks.length && !motion.length) return null;
-  return { name: str(a.name || "anim", 24), dur: clamp(a.dur, 0.2, 20, 1), loop: a.loop !== false, tracks, motion };
+  // named moments inside a clip: a script (see sanitizeScript) listens with api.on(name, fn) — a hoof lands, a muzzle touches water
+  const events = arr(a.events).slice(0, 24).flatMap((e): Obj[] => {
+    const o = obj(e), name = str(o.name, 24);
+    if (!/^[A-Za-z0-9_-]{1,24}$/.test(name)) return [];
+    let data: unknown = null;
+    try { const j = JSON.stringify(o.data ?? null); if (j.length <= 600) data = JSON.parse(j); } catch { data = null; }
+    return [{ t: clamp(o.t, 0, 20, 0), name, data }];
+  });
+  if (!tracks.length && !motion.length && !events.length) return null;
+  return { name: str(a.name || "anim", 24), dur: clamp(a.dur, 0.2, 20, 1), loop: a.loop !== false, tracks, motion, events };
 }
 
 export function sanitizeModel(b: Obj): Obj {

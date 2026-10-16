@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 
 import { expandForgeKit, FORGE_KIT_MARKER, FORGE_KIT_CSS, FORGE_KIT_JS } from "../packages/cli/dist/entry/forgeKit.js";
@@ -512,7 +512,7 @@ test("preview server answers loopback hosts only, and refuses to publish secrets
   assert.equal(await get(`localhost:${port}`), 200);
   assert.equal(await get("evil.example"), 403, "a rebound hostname is refused");
   assert.equal(await get(`127.0.0.1:${port}`, { origin: "http://evil.example" }), 403, "a foreign Origin is refused");
-  await assert.rejects(() => serveTarget(path.join(process.env.HOME ?? "/root", ".ares", "ui.json")), /refusing to serve|^$/);
+  await assert.rejects(() => serveTarget(path.join(os.homedir(), ".ares", "ui.json")), /refusing to serve|^$/);
   await assert.rejects(() => serveTarget(path.parse(process.cwd()).root), /refusing to serve/);
 });
 

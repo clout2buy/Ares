@@ -86,6 +86,9 @@ table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12.5px}th,td{b
 .k-hud-h{font:800 10.5px/1.3 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#f0a32f}.k-hud-t{font:11px/1.45 var(--mono);color:#cfdcff;white-space:pre-wrap}
 .k-hud-b{font:700 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:#9cc5ff;background:transparent;border:1px solid #2f6df0;border-radius:0;padding:6px 9px;cursor:pointer;text-align:left}.k-hud-b:hover{background:rgba(47,109,240,.2)}.k-hud-b.on{background:#f0a32f;color:#070a13;border-color:#f0a32f}
 .k-hud-r{display:grid;grid-template-columns:1fr auto;gap:2px 8px;font:700 9px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:#9cc5ff}.k-hud-r input,.k-hud-r select{grid-column:1/-1;width:100%}.k-hud-r b{color:#f0a32f}
+.k-rig.k-min .k-sim-head,.k-rig.k-min .k-cap,.k-rig.k-min .k-panel{display:none}.k-rig.k-min{border-color:transparent;box-shadow:none;background:transparent}
+.k-mini{position:absolute;left:10px;bottom:8px;z-index:2;font:700 9.5px/1.3 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:rgba(223,231,255,.55);pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.5)}
+.k-tools{position:absolute;right:8px;bottom:6px;z-index:3;font:700 9px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:rgba(223,231,255,.4);background:transparent;border:0;padding:5px 7px;cursor:pointer}.k-tools:hover{color:#9cc5ff}
 .k-ref{position:absolute;right:8px;top:8px;width:26%;max-width:230px;border:1px solid #f0a32f;background:#070a13;box-shadow:3px 3px 0 #15347a;z-index:2;cursor:pointer;transition:opacity .2s}
 @media(prefers-reduced-motion:reduce){.k-reveal,.k-rim{display:none}.k-cube,.k-grow,.k-draw{animation:none}.k-draw{stroke-dashoffset:0}}
 `.trim();
@@ -275,6 +278,6 @@ export function buildLiveStageHtml(): string {
 /** The persistent model-studio page: an empty live rig that polls /__ares/studio/<id> (see modelStudio.ts). */
 export function buildStudioHtml(id: string, title = "Model studio"): string {
   const spec = esc(JSON.stringify({ studio: id, parts: [], title }));
-  const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><!--ares:kit--></head><body><div class="k-eyebrow">Ares · model studio</div><h1>${esc(title)}</h1><div class="k-rig" data-spec="${spec}"></div></body></html>`;
+  const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><!--ares:kit--></head><body><style>body{padding:0}.k-rig{margin:0}</style><div class="k-rig" data-spec="${spec}"></div></body></html>`;
   return expandForgeKit(page);
 }

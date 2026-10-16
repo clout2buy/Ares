@@ -28,7 +28,7 @@ import { CliRuntimeContext } from "./runtime.js";
 import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
-import { applyEdit, drainStudioLogs, ensureStudio, saveStudio, studioId, studioSpec } from "./modelStudio.js";
+import { applyEdit, drainStudioLogs, ensureStudio, exportGame, saveStudio, studioId, studioSpec } from "./modelStudio.js";
 import { BrowserBridgeServer, ExtensionBrowserConnector } from "@ares/browser-extension-connector";
 
 // ── Embedded-browser bridge: the daemon ⇄ UI request/response channel that lets
@@ -89,7 +89,7 @@ export async function runModelAction(
       }
     }
   }
-  const { touched, errors } = await applyEdit(st, { backdrop, title: i.title, style: i.style, look: i.look, edge: i.edge, reset: i.reset, parts: i.parts, ops: i.ops, remove: i.remove, anims: i.anims, ref: i.ref, load: i.load, scripts: i.scripts }, d.cwd);
+  const { touched, errors } = await applyEdit(st, { backdrop, title: i.title, style: i.style, look: i.look, edge: i.edge, reset: i.reset, parts: i.parts, ops: i.ops, remove: i.remove, anims: i.anims, ref: i.ref, load: i.load, scripts: i.scripts, view: i.view }, d.cwd);
   let state = await br.state().catch(() => ({ url: "", title: "" } as { url?: string; title?: string }));
   const firstOpen = !st.url || !state.url || String(state.url).split("#")[0] !== st.url.split("#")[0];
   if (firstOpen) {
@@ -117,6 +117,8 @@ export async function runModelAction(
     const shot = await br.screenshot();
     images.push({ mediaType: `image/${shot.format ?? "png"}`, data: shot.bytes });
   }
+  let exported: { runtime: string; model: string; usage: string } | undefined;
+  if (i.export) exported = await exportGame(st, d.cwd, { dir: typeof i.export === "string" ? i.export : undefined, three: i.three }).catch((err) => { errors.push(`export: ${err instanceof Error ? err.message : String(err)}`); return undefined; });
   let saved: string | undefined;
   if (i.save) saved = await saveStudio(st, d.cwd, i.save).catch((err) => { errors.push(`save: ${err instanceof Error ? err.message : String(err)}`); return undefined; });
   scriptLogs.push(...drainStudioLogs(st));
@@ -125,7 +127,7 @@ export async function runModelAction(
     output: {
       action: "model",
       status: errors.length ? "edited-with-warnings" : "ok",
-      result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: spec.anims.map((a) => a.name), changed: touched.slice(0, 40), ...(errors.length ? { problems: errors } : {}), ...(scriptLogs.length ? { scriptLogs: scriptLogs.slice(-15) } : {}), ...(saved ? { saved } : {}), views: wanted },
+      result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: spec.anims.map((a) => a.name), changed: touched.slice(0, 40), ...(errors.length ? { problems: errors } : {}), ...(scriptLogs.length ? { scriptLogs: scriptLogs.slice(-15) } : {}), ...(saved ? { saved } : {}), ...(exported ? { exported } : {}), views: wanted },
       filmstripDir: d.filmstripDir,
       ...(errors.length ? { note: `Some edits did not apply: ${errors.join("; ")}` } : {}),
     },
@@ -206,6 +208,9 @@ const browserInput = z
     load: z.string().optional().describe("model: load a saved .model.json into this studio."),
     backdrop: z.string().optional().describe("model: a project page (html path, or a localhost URL) shown BEHIND the model, so you build the asset inside the actual game and see how it sits in it. \"\" removes it."),
     scripts: z.array(z.record(z.string(), z.unknown())).optional().describe("model: [{name, code}] JS the studio runs every frame - YOUR way to make anything the engine has no feature for (water, lava, rain, wind, fire, physics, particles, deforming a mesh). code defines function init(api){…} (may be async), update(api){…}, cleanup(api){…}. api: THREE, scene, camera, renderer, time, dt, state (yours), part(name)→{group,mesh,geometry,node,spec}, parts(), add(obj3d)/remove(obj3d) (auto-cleaned), on(event,fn)/emit(event,data) (events: clip events, \"click\" {point:[x,y,z],part}), lib(name) (async; physics: \"cannon-es\",\"rapier\"), rand(), noise(x,y,z), log(msg). Errors come back to you in the tool result (problems/scriptLogs) - read them and fix."),
+    export: z.union([z.boolean(), z.string()]).optional().describe("model: GAME INTEGRATION. Writes ares-model.js (a standalone three.js runtime) + models/<id>.game.json into the project (dir = the string, default assets/). The game then does loadModel(url).instance(), play(clip), update(dt). Same geometry, materials, joints and animation as the Forge. See help."),
+    three: z.string().optional().describe("model export: how the game imports three: \"three\" (import map, default), an https URL, or a relative path."),
+    view: z.record(z.string(), z.unknown()).optional().describe("model: how the studio shows it: {wire?:bool (wireframe), smooth?:bool (smooth vs faceted shading), spin?:bool (turntable), rig?:bool (bones/joints), camera?:3q|front|back|side|top, anim?:clip name, play?:bool, speed?:0.1-3}. The screen is a bare viewport; YOU do wireframe/spin/rig/camera/playback when the owner asks, in words."),
     help: z.boolean().optional().describe("model: return the studio-scripts reference + worked patterns (procedural textures, live water, control panels, physics) and edit nothing. Read it before writing a script."),
     views: z.array(z.string()).optional().describe("model: angles to screenshot after the edit: 3q (default), front, back, side, top. Look at them, then edit again."),
     headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true. 'preview' is ALWAYS headless (the value is ignored): the owner watches in the Forge, which shows the page you preview. For other actions pass false ONLY when the owner explicitly asks to watch a real browser window."),
@@ -519,7 +524,7 @@ export function makeBrowserTool(
     description:
       "Ares's DOM-first eyes and hands for the web — the ONLY tool for anything inside a web page. It drives CDP/Playwright input without touching the owner's OS mouse. Before opening a duplicate page it reuses a matching attached tab; use tabs/attach when the owner names an already-open tab. For multi-field or multi-click work use one act call with ordered steps, then inspect its final screenshot; do not spend one model call per click. Use APIs/MCP/CLI first when better. ComputerUse is forbidden for browser content. Run headless by default, visible only when the owner asks to watch or an authenticated Ares browser is needed. External websites may block the Forge iframe: the Forge then shows the Playwright screencast, while human sign-in happens in the real visible Ares browser (or an attached signed-in Chrome), never claim an iframe sign-in is available. For visual verification use real screenshots; accessibility text alone cannot verify canvas/WebGL. Self-contained HTML must inline JS/CSS because offline webviews block CDN scripts. NEVER verify time-dependent behaviour (timers, countdowns, intervals, animations, anything \"every N seconds/minutes\") by sleeping and re-checking — real-time waiting cannot prove a minute-scale rule and burns the turn. Instead drive the logic directly with eval: call the page's own update/tick/randomise function N times in a loop and collect the results, or stub the clock (override Date.now/performance.now, or call the interval callback yourself) and assert on the returned values. One eval that exercises 60 ticks proves more than ten screenshots taken a minute apart.",
     safety: "workspace-write",
-    dynamicSafety: (i) => (READ_ONLY_BROWSER_ACTIONS.has(i.action) || (i.action === "model" && !i.save && !i.load)) ? "read-only" : "external-state",
+    dynamicSafety: (i) => (READ_ONLY_BROWSER_ACTIONS.has(i.action) || (i.action === "model" && !i.save && !i.load && !i.export)) ? "read-only" : "external-state",
     concurrency: "exclusive",
     inputZod: browserInput,
     // login / fill_secret ask the owner afresh every time, naming the exact

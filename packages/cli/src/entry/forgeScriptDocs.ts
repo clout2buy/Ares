@@ -65,4 +65,14 @@ PATTERNS (adapt them; they are examples, not features):
 
 4) Physics: var C=await api.lib("cannon-es") inside an async init; build a world, mirror bodies to your meshes in update (world.step(1/60, dt)).
 
+5) Game integration (put the model INTO the game, like a real asset):
+   Browser model {export:true}  ->  assets/ares-model.js + assets/models/<id>.game.json   (export:"src/lib" changes the folder; three:"<url>" if the game has no import map)
+   In the game:   import { loadModel, attachScripts } from "./assets/ares-model.js";
+                  const m = await loadModel("assets/models/chest.game.json");
+                  const chest = m.instance({ material: (part, shared) => tinted(part, shared) });  // instances share geometry; override materials for variants
+                  scene.add(chest.group); chest.group.position.set(x,0,z); chest.play("open",{loop:false});   // each frame: chest.update(dt)
+                  chest.on("lid-up", fn); chest.part("lid"); chest.triangles();
+   Model scripts (water, glow...) are NOT run in the game unless you call attachScripts(m, chest, {scene,camera,renderer}); skip them when they would cost too much there.
+   Same core as the studio: geometry, facet colours, joints, clips and events match. Then Edit the game's own code to place instances, load it with Browser preview, and check it in the real game from every side.
+
 Not in the engine on purpose: water, lava, rain, fire, wind, textures, UI, physics. Write them.`;

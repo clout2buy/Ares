@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { buildRuntimeModule } from "./forgeRuntime.js";
 import { sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
@@ -32,6 +33,8 @@ export interface Studio {
   ref?: string;
   /** served URL of a project page shown behind the model (the real game it will live in) */
   backdrop?: string;
+  /** how the page presents the model, set by Ares from what the owner says (wireframe, spin, rig, camera, which clip plays) */
+  view: Obj;
   version: number;
   /** highest version a page has fetched (so Ares can wait for the Forge to apply an edit) */
   seen: number;
@@ -45,7 +48,7 @@ export const studioId = (v: unknown): string => String(v ?? "model").toLowerCase
 export const getStudio = (id: string): Studio | undefined => studios.get(id);
 export function ensureStudio(id: string): Studio {
   let st = studios.get(id);
-  if (!st) { st = { id, title: "", style: "", look: "", edge: "", raw: [], anims: [], scripts: [], logs: [], version: 0, seen: 0 }; studios.set(id, st); }
+  if (!st) { st = { id, title: "", style: "", look: "", edge: "", raw: [], anims: [], scripts: [], logs: [], view: {}, version: 0, seen: 0 }; studios.set(id, st); }
   return st;
 }
 export function dropStudios(): void { studios.clear(); }
@@ -83,7 +86,19 @@ function inside(cwd: string, rel: string): string {
 export interface ModelEdit {
   title?: string; style?: string; look?: string; edge?: string; reset?: boolean;
   parts?: unknown[]; ops?: unknown[]; remove?: unknown[]; anims?: unknown[]; scripts?: unknown[];
-  ref?: string; load?: string; backdrop?: string;
+  ref?: string; load?: string; backdrop?: string; view?: unknown;
+}
+
+const VIEW_BOOL = ["wire", "smooth", "spin", "rig", "play"];
+const VIEW_CAMERAS = ["3q", "front", "back", "side", "top"];
+/** Only known view settings survive; everything is a bool, a camera preset, a clip name or a bounded number. */
+function mergeView(cur: Obj, raw: unknown): Obj {
+  const o = obj(raw), out: Obj = { ...cur };
+  for (const k of VIEW_BOOL) if (typeof o[k] === "boolean") out[k] = o[k];
+  if (typeof o.camera === "string" && VIEW_CAMERAS.includes(o.camera)) out.camera = o.camera;
+  if (typeof o.anim === "string") out.anim = o.anim.slice(0, 24);
+  if (typeof o.speed === "number" && Number.isFinite(o.speed)) out.speed = Math.min(3, Math.max(0.1, o.speed));
+  return out;
 }
 
 function moveBy(p: Obj, d: number[]): void {
@@ -126,7 +141,8 @@ async function importParts(cwd: string, o: Obj): Promise<Obj[]> {
 /** Apply one edit call to a studio. Returns what changed and any op that could not apply. */
 export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<{ touched: string[]; errors: string[] }> {
   const touched: string[] = [], errors: string[] = [];
-  if (e.reset) { st.raw = []; st.anims = []; st.scripts = []; st.ref = undefined; st.backdrop = undefined; }
+  if (e.view !== undefined) { st.view = mergeView(st.view, e.view); touched.push("view"); }
+  if (e.reset) { st.view = {}; st.raw = []; st.anims = []; st.scripts = []; st.ref = undefined; st.backdrop = undefined; }
   if (e.backdrop !== undefined) { st.backdrop = e.backdrop || undefined; touched.push(e.backdrop ? "backdrop" : "- backdrop"); }
   if (e.load) {
     try {
@@ -214,7 +230,7 @@ export function studioSpec(st: Studio): Obj {
   }
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
   const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
-  return { title: st.title, style: st.style, look: st.look, parts, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}) };
+  return { title: st.title, style: st.style, look: st.look, parts, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
 }
 
 /** GET /__ares/studio/<id>?since=N → { v } or { v, spec } when there is something newer. */
@@ -233,4 +249,19 @@ export async function saveStudio(st: Studio, cwd: string, target: string): Promi
   await mkdir(path.dirname(abs), { recursive: true });
   await writeFile(abs, JSON.stringify({ format: "ares-model/1", title: st.title, style: st.style, look: st.look, edge: st.edge, parts: st.raw, anims: st.anims, scripts: st.scripts }, null, 1), "utf8");
   return path.relative(cwd, abs);
+}
+
+/** Game integration: write the standalone runtime and the model's runtime-ready (expanded) JSON into the project. */
+export async function exportGame(st: Studio, cwd: string, o: { dir?: string; three?: string } = {}): Promise<{ runtime: string; model: string; usage: string }> {
+  const three = o.three ?? "three";
+  if (!/^(three|https?:\/\/[\w./@:~-]+|\.{0,2}\/[\w./-]+)$/.test(three)) throw new Error(`three must be "three", an https URL or a relative path (got ${three})`);
+  const dir = (o.dir && o.dir !== "true" ? o.dir : "assets").replace(/\/+$/, "");
+  const runtimeAbs = inside(cwd, `${dir}/ares-model.js`), modelAbs = inside(cwd, `${dir}/models/${st.id}.game.json`);
+  await mkdir(path.dirname(modelAbs), { recursive: true });
+  const spec = studioSpec(st);
+  await writeFile(runtimeAbs, buildRuntimeModule(three), "utf8");
+  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: spec.parts, anims: spec.anims, scripts: spec.scripts }), "utf8");
+  const runtime = path.relative(cwd, runtimeAbs).split(path.sep).join("/"), model = path.relative(cwd, modelAbs).split(path.sep).join("/");
+  const usage = `import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({material:(part, shared)=>…}) for tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;
+  return { runtime, model, usage };
 }

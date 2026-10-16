@@ -1,6 +1,8 @@
 // Extracted from entry.ts — browserBridge.
 
-import { studioDir } from "./modelStudio.js";
+import { projectPath, studioDir } from "./modelStudio.js";
+import { generateModel } from "./forgeGenerate.js";
+import { getCredential } from "@ares/core";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -94,9 +96,27 @@ export async function runModelAction(
       }
     }
   }
-  const { touched, errors: edited } = await applyEdit(st, { backdrop, title: i.title, style: i.style, look: i.look, edge: i.edge, reset: i.reset, parts: i.parts, ops: i.ops, remove: i.remove, anims: i.anims, ref: i.ref, load: i.load, scripts: i.scripts, view: i.view }, d.cwd);
+  // image -> 3D: reconstruct the picture as a textured mesh first, then place it as a part of this model
+  const genNotes: string[] = [];
+  let genParts: Record<string, unknown>[] = [];
+  if (i.generate) {
+    const keys = { meshy: await getCredential("MESHY_API_KEY").catch(() => undefined), fal: await getCredential("FAL_KEY", { envFallback: ["FAL_API_KEY"] }).catch(() => undefined) };
+    const provider = i.generate.provider ?? (keys.meshy ? "meshy" : keys.fal ? "fal" : undefined);
+    const key = provider ? keys[provider] : undefined;
+    if (!provider || !key) {
+      genNotes.push(`generate: no image-to-3D key. Ask the owner to add MESHY_API_KEY (meshy.ai, takes 1-4 views) or FAL_KEY (fal.ai, Hunyuan3D / TRELLIS) to Ares credentials, then call again. Until then build it by sculpting.`);
+    } else {
+      const name = (i.generate.name ?? "generated").replace(/[^\w -]/g, "").slice(0, 32) || "generated";
+      try {
+        const g = await generateModel({ images: i.generate.images, provider, key, model: i.generate.model, cwd: d.cwd, out: `assets/models/${id}-${name.replace(/\s+/g, "-")}.glb`, resolvePath: projectPath });
+        genParts = [{ name, shape: "gltf", src: g.glb, ...(i.generate.height ? { height: i.generate.height } : {}), pos: [0, 0, 0] }];
+        genNotes.push(`generate: ${g.model} reconstructed ${i.generate.images.length} view(s) in ${g.seconds}s -> ${g.glb} (placed as part "${name}"). Compare its views with the reference; fix what is off by sculpting parts on top, rig it with joints, recolour with variants.`);
+      } catch (err) { genNotes.push(`generate failed: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+  }
+  const { touched, errors: edited } = await applyEdit(st, { backdrop, title: i.title, style: i.style, look: i.look, edge: i.edge, reset: i.reset, parts: [...genParts, ...(i.parts ?? [])], ops: i.ops, remove: i.remove, anims: i.anims, ref: i.ref, load: i.load, scripts: i.scripts, view: i.view }, d.cwd);
   // the quality bar rides separately from errors: it is not a failure, it is what to improve next
-  const errors = edited.filter((e) => !e.startsWith("quality:")), quality = edited.filter((e) => e.startsWith("quality:")).map((e) => e.slice(9));
+  const errors = [...genNotes.filter((n) => !n.startsWith("generate: ") || n.includes("no image-to-3D")), ...edited.filter((e) => !e.startsWith("quality:"))], quality = edited.filter((e) => e.startsWith("quality:")).map((e) => e.slice(9));
   let state = await br.state().catch(() => ({ url: "", title: "" } as { url?: string; title?: string }));
   const firstOpen = !st.url || !state.url || String(state.url).split("#")[0] !== st.url.split("#")[0];
   if (firstOpen) {
@@ -142,7 +162,7 @@ export async function runModelAction(
     output: {
       action: "model",
       status: errors.length ? "edited-with-warnings" : "ok",
-      result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: (studioSpec(st).anims as Array<{ name: string; dur: number; loop: boolean; tracks: unknown[]; motion: unknown[]; events: unknown[] }>).map((a) => ({ name: a.name, dur: a.dur, loop: a.loop, tracks: a.tracks.length, motion: a.motion.length, events: a.events.length })), changed: touched.slice(0, 40), ...(errors.length ? { problems: errors } : {}), ...(quality.length ? { quality } : {}), ...(scriptLogs.length ? { scriptLogs: scriptLogs.slice(-15) } : {}), ...(saved ? { saved } : {}), ...(exported ? { exported } : {}), views: wanted.map((w) => (w.t === undefined ? w.name : `${w.name}@${w.t}`)) },
+      result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: (studioSpec(st).anims as Array<{ name: string; dur: number; loop: boolean; tracks: unknown[]; motion: unknown[]; events: unknown[] }>).map((a) => ({ name: a.name, dur: a.dur, loop: a.loop, tracks: a.tracks.length, motion: a.motion.length, events: a.events.length })), changed: touched.slice(0, 40), ...(genNotes.length ? { generated: genNotes } : {}), ...(errors.length ? { problems: errors } : {}), ...(quality.length ? { quality } : {}), ...(scriptLogs.length ? { scriptLogs: scriptLogs.slice(-15) } : {}), ...(saved ? { saved } : {}), ...(exported ? { exported } : {}), views: wanted.map((w) => (w.t === undefined ? w.name : `${w.name}@${w.t}`)) },
       filmstripDir: d.filmstripDir,
       ...(errors.length || quality.length ? { note: [errors.length ? `Warnings (the edit was applied except where a warning says otherwise): ${errors.join("; ")}` : "", quality.length ? `Below the quality bar - fold these into your next edit, unasked (no separate re-check pass): ${quality.join(" | ")}` : ""].filter(Boolean).join("\n") } : {}),
     },
@@ -226,6 +246,13 @@ const browserInput = z
     export: z.union([z.boolean(), z.string()]).optional().describe("model: GAME INTEGRATION. Writes ares-model.js (a standalone three.js runtime) + models/<id>.game.json into the project (dir = the string, default assets/). The game then does loadModel(url).instance(), play(clip), update(dt). Same geometry, materials, joints and animation as the Forge. See help."),
     three: z.string().optional().describe("model export: how the game imports three: \"three\" (import map, default), an https URL, or a relative path."),
     view: z.record(z.string(), z.unknown()).optional().describe("model: how the studio shows it: {wire?:bool (wireframe), smooth?:bool (smooth vs faceted shading), spin?:bool (turntable), rig?:bool (bones/joints), camera?:3q|front|back|side|top, anim?:clip name, play?:bool, speed?:0.1-3}. The screen is a bare viewport; YOU do wireframe/spin/rig/camera/playback when the owner asks, in words. Also variant:name, zoom:0.3-3, t:seconds (freeze a clip at that moment to check a pose), fit:\"anim\" (frame the whole clip so nothing is cropped)."),
+    generate: z.object({
+      images: z.array(z.string()).min(1).max(4).describe("project paths of the reference picture(s): the FRONT view first, then side / back / 3-4 views (crop each view out of a turnaround sheet first). png/jpg/webp."),
+      provider: z.enum(["meshy", "fal"]).optional().describe("image-to-3D service (default: whichever key exists, meshy first). meshy takes up to 4 views."),
+      model: z.string().optional().describe("fal model id (default fal-ai/hunyuan3d/v2; fal-ai/trellis)."),
+      name: z.string().optional().describe("part name for the result (default \"generated\")."),
+      height: z.number().optional().describe("real height in metres to scale it to."),
+    }).optional().describe("model: EXACT REPLICA of a picture. Sends the reference image(s) to an image-to-3D model (Meshy / fal Hunyuan3D / TRELLIS), which reconstructs the real mesh and paints its texture from the picture; the textured GLB is saved to assets/models/ and placed as a gltf part you then rig, animate, recolour and export. Costs the owner provider credits (cents to ~1 USD per model): say so. Takes 1-5 minutes."),
     help: z.boolean().optional().describe("model: return the studio reference and edit nothing: SCULPTING creatures/characters (the method + a worked, rigged bear), parts/clips, scripts with worked patterns (procedural textures, live water, control panels, physics), game export. Read it before your first creature or script."),
     views: z.array(z.string()).optional().describe("model: angles to screenshot after the edit: 3q (default), front, back, side, top; \"side@1.2\" freezes the clip at 1.2s for a deterministic pose (check the OPEN lid). Look at them, then edit again."),
     headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true. 'preview' is ALWAYS headless (the value is ignored): the owner watches in the Forge, which shows the page you preview. For other actions pass false ONLY when the owner explicitly asks to watch a real browser window."),

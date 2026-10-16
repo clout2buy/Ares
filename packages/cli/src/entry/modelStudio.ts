@@ -82,6 +82,7 @@ function upsert(list: Obj[], p: Obj): void {
 }
 
 /** Same containment as inside(), but follows symlinks: the nearest existing ancestor must really live in the project. */
+export async function projectPath(cwd: string, rel: string): Promise<string> { return insideReal(cwd, rel); }
 async function insideReal(cwd: string, rel: string): Promise<string> {
   const abs = inside(cwd, rel);
   const root = await realpath(path.resolve(cwd)).catch(() => path.resolve(cwd));

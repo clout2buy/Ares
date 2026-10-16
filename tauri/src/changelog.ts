@@ -54,6 +54,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "🐊", title: "Real surface detail", blurb: "Scales, wrinkles, fur grain, wood grain, stone, cloth weave, hammered metal and skin pores, drawn right on the model.", tag: "New" },
       { icon: "🖼️", title: "Real textures", blurb: "Photo textures (bark, rock, metal, leather, fabric) wrap any model with real colour, relief and roughness, and your painted colours stay on top.", tag: "New" },
       { icon: "🚘", title: "Built like real cars", blurb: "Cars are drawn from side outlines like blueprints: a hollow shell in clearcoat paint, real see-through glass, an interior, projector headlights and detailed wheels.", tag: "New" },
+      { icon: "🪄", title: "Picture to 3D", blurb: "Show Ares a picture or a turnaround sheet and it reconstructs it as a textured 3D model (Meshy or fal, with your key), then rigs and animates it.", tag: "New" },
       { icon: "📦", title: "Real 3D models", blurb: "Ares can drop professional downloaded models (glTF/GLB from Kenney, Quaternius, Poly Pizza, Sketchfab) into the Forge, mix them with its own sculpts, animate them and ship them in your game.", tag: "New" },
       { icon: "📐", title: "Sharp hard edges", blurb: "Machines, weapons and buildings keep crisp edges and flat panels instead of melting into soft blobs.", tag: "New" },
       { icon: "✒️", title: "Razor-sharp details", blurb: "Window rubbers, stripes, markings and eye rims are drawn per pixel, so their edges stay crisp up close.", tag: "Polished" },

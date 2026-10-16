@@ -12,12 +12,16 @@
 // The kit's JS gives every page the same pixel resolve on load.
 
 import { FORGE_SIM_JS } from "./forgeSim.js";
+import { FORGE_MODEL_JS } from "./forgeModel.js";
+import { FORGE_STORY_JS } from "./forgeStory.js";
+import { sanitizeModel, sanitizeStory } from "./forgeBlocks.js";
+import { LIVE_RUNTIME_JS } from "./forgeLive.js";
 
 export const FORGE_KIT_MARKER = /<!--\s*ares:kit\s*-->|<link\b[^>]*rel=["']ares-kit["'][^>]*>/i;
 
 export const FORGE_KIT_CSS = `
 :root{--k0:#07122b;--k1:#15347a;--k2:#2f6df0;--k3:#9cc5ff;--ink:#070a13;--panel:rgba(10,14,27,.92);--text:#dfe7ff;--muted:rgba(190,205,240,.7);--faint:rgba(190,205,240,.42);--gold:#ffd36a;--ember:#ff8a3a;--mint:#7ef0c3;--red:#ff8a6a;--mono:"JetBrains Mono","Cascadia Mono","Fira Code",ui-monospace,Consolas,monospace;--sans:"Inter","Segoe UI",system-ui,sans-serif}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%}
+*{box-sizing:border-box}[hidden]{display:none!important}html,body{margin:0;min-height:100%}
 body{background:radial-gradient(1200px 500px at 110% -10%,rgba(47,109,240,.16),transparent 60%),radial-gradient(700px 420px at -20% 110%,rgba(255,138,58,.08),transparent 60%),linear-gradient(180deg,#0c1120,#070a13);color:var(--text);font:14px/1.6 var(--sans);padding:26px 28px 48px;position:relative}
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(47,109,240,.05) 31px 32px),repeating-linear-gradient(90deg,transparent 0 31px,rgba(47,109,240,.05) 31px 32px);mask-image:radial-gradient(ellipse at 50% 40%,#000 20%,transparent 85%)}
 h1,h2,h3{font-family:var(--mono);letter-spacing:.08em;color:#fff;margin:1.1em 0 .45em;line-height:1.25}
@@ -57,7 +61,7 @@ table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12.5px}th,td{b
 .k-scene{position:relative;height:260px;margin:12px 0;border:1px solid rgba(47,109,240,.22);border-radius:12px;background:radial-gradient(ellipse at 50% 60%,rgba(47,109,240,.18),transparent 65%),rgba(3,6,14,.6);overflow:hidden;display:grid;place-items:center;perspective:700px}.k-scene canvas{position:absolute;inset:0;width:100%;height:100%}
 .k-cube{position:relative;width:90px;height:90px;transform-style:preserve-3d;animation:kspin 14s linear infinite}.k-cube i{position:absolute;inset:0;border:1px solid #2f6df0;background:rgba(47,109,240,.1)}.k-cube i:nth-child(1){transform:translateZ(45px)}.k-cube i:nth-child(2){transform:rotateY(180deg) translateZ(45px)}.k-cube i:nth-child(3){transform:rotateY(90deg) translateZ(45px)}.k-cube i:nth-child(4){transform:rotateY(-90deg) translateZ(45px)}.k-cube i:nth-child(5){transform:rotateX(90deg) translateZ(45px)}.k-cube i:nth-child(6){transform:rotateX(-90deg) translateZ(45px)}@keyframes kspin{to{transform:rotateX(-24deg) rotateY(360deg)}}
 .k-grow{transform-origin:bottom;animation:kgrow .9s cubic-bezier(.2,.9,.3,1) both;transform-box:fill-box}@keyframes kgrow{from{transform:scaleY(0)}}.k-draw{stroke-dasharray:1200;stroke-dashoffset:1200;animation:kdraw 1.4s ease forwards}@keyframes kdraw{to{stroke-dashoffset:0}}
-.k-play{margin:14px 0;border:1px solid #2f6df0;background:rgba(3,6,14,.72);box-shadow:3px 3px 0 #15347a}
+.k-play,.k-rig,.k-tale{margin:14px 0;border:1px solid #2f6df0;background:rgba(3,6,14,.72);box-shadow:3px 3px 0 #15347a}
 .k-sim-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 10px;border-bottom:1px solid #15347a;background:rgba(47,109,240,.1)}
 .k-sim-tag{font:700 9.5px/1.3 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:#9cc5ff}
 .k-sim-cap{margin:0;padding:8px 12px;font:12px/1.5 var(--mono);color:var(--muted);border-top:1px solid #15347a}
@@ -70,6 +74,13 @@ table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12.5px}th,td{b
 .k-slider input:focus-visible{outline:1px solid #9cc5ff;outline-offset:3px}
 .k-slider b{color:#f0a32f;font-weight:800;letter-spacing:.04em}
 .k-btn{font:700 9.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:#070a13;background:#9cc5ff;border:1px solid #2f6df0;border-radius:0;padding:6px 11px;cursor:pointer;box-shadow:2px 2px 0 #15347a}.k-btn:hover{background:#fff}.k-btn:active{transform:translate(2px,2px);box-shadow:none}.k-btn:focus-visible{outline:1px solid #f0a32f;outline-offset:2px}
+.k-sim-btns{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}.k-btn:disabled{opacity:.4;cursor:default;box-shadow:none}
+.k-cap{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:9px 12px;border-top:1px solid #15347a;font:13px/1.5 var(--sans);color:var(--text);min-height:44px}.k-cap-n{font:800 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:#f0a32f}.k-cap-x{flex:1;min-width:0}
+.k-prog{flex-basis:100%;height:4px;background:#15347a;border:1px solid #2f6df0}.k-prog span{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,#2f6df0 0 6px,#9cc5ff 6px 8px)}
+.k-chips{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}.k-chip{background:transparent;color:#9cc5ff;box-shadow:none;padding:5px 9px}.k-chip.on{background:#f0a32f;color:#070a13;border-color:#f0a32f}
+.k-insp{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 18px;padding:10px;border:1px solid #f0a32f;background:rgba(240,163,47,.05)}.k-insp-h{grid-column:1/-1;font:800 10.5px/1.4 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:#f0a32f}.k-insp-btns{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
+.k-color{height:22px;padding:0;border:1px solid #2f6df0;background:#070a13;border-radius:0;cursor:pointer;width:100%}.k-sel{grid-column:1/-1;font:700 11px var(--mono);color:#dfe7ff;background:#070a13;border:1px solid #2f6df0;border-radius:0;padding:4px 6px;text-transform:uppercase}
+.k-btn.on{background:#f0a32f;border-color:#f0a32f}
 @media(prefers-reduced-motion:reduce){.k-reveal,.k-rim{display:none}.k-cube,.k-grow,.k-draw{animation:none}.k-draw{stroke-dashoffset:0}}
 `.trim();
 
@@ -82,10 +93,11 @@ export const FORGE_KIT_JS = `
   function fit(c){var d=Math.min(2,devicePixelRatio||1),w=innerWidth,h=innerHeight;if(c.width!==w*d||c.height!==h*d){c.width=w*d;c.height=h*d}return{w:w,h:h,d:d}}
   if(matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches)return;
   // resolve-in: the page appears out of pixel blocks, like the Forge itself
-  var rv=document.createElement("canvas");rv.className="k-reveal";document.body.appendChild(rv);var ctx=rv.getContext("2d"),t0=performance.now(),cell=10;
+  // (a page handed over from the live stage opens already settled: no second resolve)
+  if(!window.__aresInstant){var rv=document.createElement("canvas");rv.className="k-reveal";document.body.appendChild(rv);var ctx=rv.getContext("2d"),t0=performance.now(),cell=10;
   (function frame(now){var f=fit(rv),raw=Math.min(1,(now-t0)/720),t=1-Math.pow(1-raw,2.2);ctx.setTransform(f.d,0,0,f.d,0,0);ctx.clearRect(0,0,f.w,f.h);var cols=Math.ceil(f.w/cell),rows=Math.ceil(f.h/cell),cx=cols/2,cy=rows/2,md=Math.hypot(cx,cy)||1;
     for(var y=0;y<rows;y++)for(var x=0;x<cols;x++){var d=Math.hypot(x+.5-cx,y+.5-cy)/md,th=d*.72+noise(x,y,5)*.28;if(th<=t)continue;var e=th-t,tone=e<.04?3:e<.1?2:e<.2?1:0;ctx.fillStyle=P[tone];ctx.fillRect(x*cell,y*cell,cell-1,cell-1)}
-    if(raw<1)requestAnimationFrame(frame);else rv.remove()})(t0);
+    if(raw<1)requestAnimationFrame(frame);else rv.remove()})(t0);}
   // rim: a dotted pixel border with a travelling pulse
   var rc=document.createElement("canvas");rc.className="k-rim";document.body.appendChild(rc);var rx=rc.getContext("2d"),c6=6,start=performance.now();
   (function rim(now){var f=fit(rc);rx.setTransform(f.d,0,0,f.d,0,0);rx.clearRect(0,0,f.w,f.h);var cols=Math.max(2,Math.floor(f.w/c6)),rows=Math.max(2,Math.floor(f.h/c6)),per=[];
@@ -104,11 +116,12 @@ export const FORGE_KIT_JS = `
 
 /** Expand the kit marker in a page Ares wrote. Idempotent: a page without the
  *  marker comes back unchanged. */
-export function expandForgeKit(html: string): string {
+export function expandForgeKit(html: string, force: readonly ("sim" | "model" | "story")[] = []): string {
   if (!FORGE_KIT_MARKER.test(html)) return html;
   // interactive blocks ship their ES module only on pages that use them
-  const sim = /\bk-play\b/.test(html) ? `<script type="module" data-ares-sim>${FORGE_SIM_JS}</script>` : "";
-  return html.replace(FORGE_KIT_MARKER, () => `<style data-ares-kit>${FORGE_KIT_CSS}</style><script data-ares-kit>${FORGE_KIT_JS}</script>${sim}`);
+  const mod = (re: RegExp, attr: "sim" | "model" | "story", js: string): string => (re.test(html) || force.includes(attr) ? `<script type="module" data-ares-${attr}>${js}</script>` : "");
+  const extra = mod(/\bk-play\b/, "sim", FORGE_SIM_JS) + mod(/\bk-rig\b/, "model", FORGE_MODEL_JS) + mod(/\bk-tale\b/, "story", FORGE_STORY_JS);
+  return html.replace(FORGE_KIT_MARKER, () => `<style data-ares-kit>${FORGE_KIT_CSS}</style><script data-ares-kit>${FORGE_KIT_JS}</script>${extra}`);
 }
 
 // ── explain: a compact block list → a finished kit page ──────────────────────
@@ -143,7 +156,7 @@ function simParams(v: unknown): Block[] {
     return [{ key, label: String(p.label ?? key).slice(0, 32), min, max, value: Math.min(max, Math.max(min, num(p.value, min))), step: num(p.step, (max - min) / 100) || (max - min) / 100 }];
   });
 }
-const playDiv = (spec: Block): string => `<div class="k-play" data-spec="${esc(JSON.stringify(spec))}"></div>`;
+const playDiv = (spec: Block, cls = "k-play"): string => `<div class="${cls}" data-spec="${esc(JSON.stringify(spec))}"></div>`;
 
 function renderBlock(b: Block): string {
   switch (b.type) {
@@ -201,6 +214,14 @@ function renderBlock(b: Block): string {
       const boxes = nodes.map((nd, i) => { const [px, py] = pos.get(String(nd.id ?? i))!; return `<rect x="${px}" y="${py}" width="${w}" height="${h}" fill="rgba(47,109,240,.12)" stroke="#2f6df0"/><text x="${px + w / 2}" y="${py + h / 2 + 4}" fill="#fff" font-size="11" text-anchor="middle" font-family="monospace">${esc(nd.text ?? nd.id)}</text>`; }).join("");
       return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;margin:12px 0"><defs><marker id="k-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9cc5ff"/></marker></defs>${links}${boxes}</svg>`;
     }
+    case "model": {
+      const m = sanitizeModel(b);
+      return (m.parts as unknown[]).length ? playDiv(m, "k-rig") : "";
+    }
+    case "story": {
+      const st = sanitizeStory(b);
+      return (st.scenes as unknown[]).length ? playDiv(st, "k-tale") : "";
+    }
     case "sim": {
       const kind = ["projectile", "pendulum", "orbit", "plot"].includes(String(b.kind)) ? String(b.kind) : "projectile";
       let params = simParams(b.params);
@@ -234,4 +255,11 @@ export function renderExplainer(spec: { title?: unknown; eyebrow?: unknown; bloc
   const title = esc(spec.title || "Explainer");
   const body = arr(spec.blocks).map((b) => renderBlock((b ?? {}) as Block)).join("\n");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><!--ares:kit--></head><body><div class="k-eyebrow">${esc(spec.eyebrow || "Ares · explainer")}</div><h1>${title}</h1>\n${body}\n</body></html>`;
+}
+
+/** The empty page the Forge shows while a `model` / `story` block is still being
+ *  written: engines in live mode, fed by postMessage (see forgeLive). */
+export function buildLiveStageHtml(): string {
+  const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Building live</title><!--ares:kit--></head><body><div class="k-eyebrow">Ares · building live</div><div id="lv-host"></div><script data-ares-live>${LIVE_RUNTIME_JS}</script></body></html>`;
+  return expandForgeKit(page, ["model", "story"]);
 }

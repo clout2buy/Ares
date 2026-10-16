@@ -33,6 +33,7 @@ import { getCurrentWindow, LogicalSize, PhysicalSize, PhysicalPosition } from "@
 import { buildHolotableHtml, validateHoloSpec, type HoloSpec } from "../../packages/cli/src/holotable";
 import { redactSecrets } from "../../packages/protocol/src/secretRedact";
 import { daemonExitMessage } from "../../packages/protocol/src/daemonExit";
+import { createLiveExplain, settled as settledKitPage } from "./liveExplain";
 import { UpdateBanner } from "./UpdateBanner";
 import { PhonePairCard, type PhonePairState } from "./PhonePair";
 import { WhatsNew } from "./WhatsNew";
@@ -783,6 +784,11 @@ function App() {
   // apps/games in-window (same-origin), no Playwright. Driven via webview_cmd.
   const embeddedRef = useRef<EmbeddedBrowserHandle>(null);
   const [embeddedActive, setEmbeddedActive] = useState(false);
+  // Live explain: model/story blocks build in the Forge while Ares is still writing the call.
+  const liveExplain = useMemo(() => createLiveExplain({
+    host: () => embeddedRef.current,
+    show: () => { setEmbeddedActive(true); setForge((f) => ({ ...f, open: true, tab: "live" })); setForgeMode("explain"); },
+  }), []);
   const [embeddedActivity, setEmbeddedActivity] = useState("");
   const [forge, setForge] = useState<ForgeState>({ open: false, tab: "live" });
   // Live tab lifecycle: the stage shows Ares forging from the moment a target
@@ -2514,6 +2520,7 @@ function App() {
         }
         if ((ev.type === "text_delta" || ev.type === "thinking_delta") && ev.text) pushTokenFlow(ev.text.length);
         else if (ev.type === "tool_use_input_delta" && ev.deltaJson) pushTokenFlow(ev.deltaJson.length);
+        liveExplain.onEvent(ev as { type?: string; id?: string; name?: string; deltaJson?: string });
         // Voice: speak natural phrases while reply text streams. Only the session
         // you're looking at speaks; thinking + tool noise never do.
         if (prefs.voiceEnabled && sid !== livingSessionRef.current) {
@@ -2680,7 +2687,7 @@ function App() {
               let h = embeddedRef.current;
               for (let i = 0; i < 40 && !h; i++) { await new Promise((r) => setTimeout(r, 33)); h = embeddedRef.current; }
               if (!h) throw new Error("embedded browser unavailable");
-              result = await h.load(c.html ?? "");
+              result = await h.load(c.explainer && liveExplain.handoff() ? settledKitPage(c.html ?? "") : (c.html ?? ""));
             } else {
               const h = embeddedRef.current;
               if (!h) throw new Error("nothing loaded — call load first");
@@ -8754,6 +8761,8 @@ export interface EmbeddedBrowserHandle {
   evalJs: (js: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
   getConsole: (onlyErrors?: boolean) => { type: string; text: string }[];
   snapshot: () => { title: string; text: string; controls: string[] };
+  /** Post a live-build piece to the page (see liveExplain). */
+  post: (msg: unknown) => void;
 }
 
 const EmbeddedBrowser = React.forwardRef<EmbeddedBrowserHandle, { paceMs?: number; onActivity?: (label: string) => void }>(
@@ -8865,6 +8874,7 @@ const EmbeddedBrowser = React.forwardRef<EmbeddedBrowserHandle, { paceMs?: numbe
           f.addEventListener("load", onLoad);
           f.srcdoc = html;
         }),
+      post: (msg: unknown) => { iframeRef.current?.contentWindow?.postMessage({ ares: "live", piece: msg }, "*"); },
       click: async (query: string) => {
         const el = findEl(query);
         if (!el) return { ok: false, error: `no element matching "${query}"` };

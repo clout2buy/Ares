@@ -9,9 +9,14 @@
 // and no backslashes (they would be eaten). Keep it that way — tests/forge-kit
 // parses it with vm to catch a slip.
 
-export const FORGE_SIM_JS = `
+/** Shared by every three.js-backed block: pinned CDN load that degrades to
+ *  T=null instead of throwing, so a blocked CDN never takes the page down. */
+export const FORGE_THREE_LOAD = `
 var T=null,OrbitControls=null;
 try{T=await import("https://esm.sh/three@0.160.0");OrbitControls=(await import("https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js")).OrbitControls}catch(e){T=null}
+`.trim();
+
+export const FORGE_SIM_JS = FORGE_THREE_LOAD + `
 var reduced=!!(matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches);
 var DEFAULTS={
   projectile:[["angle","Launch angle",5,85,45,1],["speed","Speed",5,40,22,1],["gravity","Gravity",1,25,9.8,0.1],["drag","Air drag",0,0.5,0.05,0.01]],

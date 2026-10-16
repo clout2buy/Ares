@@ -7,6 +7,8 @@
 export const FORGE_SCRIPT_DOCS = `MODELS: parts and clips (what the tool wants)
 Part: {name, shape, pos:[x,y,z], size:[x,y,z], rot:[deg], color, mat, pivot:[x,y,z], parent:"name", mirror:true, ...}. y is up; origin on the ground. size is the bounding box (a sphere of size [2,1,3] is an ellipsoid).
 A part with a pivot rotates ABOUT that point when animated; parent makes it follow another part (a lid follows its chest base). Unknown fields, unknown shapes and bad vectors come back as warnings (problems), never silently.
+Textures: texture:{kind:"planks|bricks|noise|checker|stripes|dots",colors:["#8a5a2b","#5a3818"],scale:1,repeat:[2,1],pixel:true} on a part; it is part of the model JSON so it exports to the game with no script (frost = kind "noise" with pale blues).
+Variants (one model, many colourways, no copied parts or clips): {op:"variant",name:"frost",set:{"base":{texture:{...}},"lid*":{color:"#9fd0ff",mat:"glossy"},"strap*":{color:"#e8f4ff"}}}; preview with view:{variant:"frost"}; in the game instance({variant:"frost"}).
 Curved shapes: loft{sections:[[x,y,z,rx,ry],...]} for organic bodies, extrude{pts:[[x,y]...],depth} for any 2D profile, lathe{pts:[[radius,y]...]} for round things, tube{pts:[[x,y,z]...],r,r2}.
   Curved chest lid = a half-ellipse profile extruded along the chest depth:
   {name:"lid",shape:"extrude",pts:[[1,0],[0.97,0.13],[0.87,0.25],[0.71,0.35],[0.5,0.43],[0.26,0.48],[0,0.5],[-0.26,0.48],[-0.5,0.43],[-0.71,0.35],[-0.87,0.25],[-0.97,0.13],[-1,0]],depth:1.3,pos:[0,1.1,0],pivot:[0,1.1,-0.65],parent:"base"}
@@ -86,6 +88,7 @@ PATTERNS (adapt them; they are examples, not features):
                   scene.add(chest.group); chest.group.position.set(x,0,z); chest.play("open",{loop:false});   // each frame: chest.update(dt)
                   chest.on("lid-up", fn); chest.part("lid"); chest.triangles();
    Model scripts (water, glow...) are NOT run in the game unless you call attachScripts(m, chest, {scene,camera,renderer}); skip them when they would cost too much there.
-   Same core as the studio: geometry, facet colours, joints, clips and events match. Then Edit the game's own code to place instances, load it with Browser preview, and check it in the real game from every side.
+   Variants: m.variants lists them; chest.instance({variant:"frost"}) builds that colourway (geometry shared per variant). Clips are the same for every variant.
+  Same core as the studio: geometry, facet colours, joints, clips and events match. Then Edit the game's own code to place instances, load it with Browser preview, and check it in the real game from every side.
 
 Not in the engine on purpose: water, lava, rain, fire, wind, textures, UI, physics. Write them.`;

@@ -119,6 +119,7 @@ function buildPartObject(p,o){
   o=o||{};var g=new T.Group(),c=o.cache,gm=c&&c.gm;
   if(!gm){gm=geo(p);if(p.facets||p.fcolors){if(gm.index)gm=gm.toNonIndexed();paint(gm,p)}if(c)c.gm=gm}
   var m=(c&&c.m)||material(p);if(c)c.m=m;
+  if(p.texture&&!(c&&c.tx)){m.map=procTexture(p.texture);m.color.set(0xffffff);m.vertexColors=false;m.needsUpdate=true;if(c)c.tx=1}
   var mesh=new T.Mesh(gm,m);mesh.castShadow=true;mesh.receiveShadow=true;g.add(mesh);
   if(p.shape==="tube"&&p.caps){[[0,p.r],[p.pts.length-1,p.r2]].forEach(function(cc){var cp=p.pts[cc[0]],cm=(p.facets||p.fcolors)?new T.MeshStandardMaterial({color:cc[0]===0?p.color:(p.color2||p.color),roughness:0.85,flatShading:!!p.low}):m,cap=new T.Mesh(new T.SphereGeometry(cc[1],p.low?6:16,p.low?4:12),cm);cap.position.set(cp[0],cp[1],cp[2]);cap.castShadow=true;g.add(cap)})}
   var ed=null;
@@ -144,6 +145,24 @@ function disposeObject(g,keep){
     if(o.geometry&&!(keep&&keep.has(o.geometry)))o.geometry.dispose();
     var m=o.material;if(!m)return;
     (Array.isArray(m)?m:[m]).forEach(function(x){if(keep&&keep.has(x))return;if(x.map)x.map.dispose();x.dispose()})})}
+// data-driven procedural textures (kind + colours + scale): they live in the model JSON, so they survive export to a game with no script
+var texCache={};
+function parseHex(c){c=String(c||"#888888");return[parseInt(c.slice(1,3),16)||0,parseInt(c.slice(3,5),16)||0,parseInt(c.slice(5,7),16)||0]}
+function mixc(a,b,t){return[Math.round(a[0]+(b[0]-a[0])*t),Math.round(a[1]+(b[1]-a[1])*t),Math.round(a[2]+(b[2]-a[2])*t)]}
+function procTexture(t){
+  var key=JSON.stringify(t);if(texCache[key])return texCache[key];
+  var n=t.size||64,cols=(t.colors&&t.colors.length?t.colors:["#8a5a2b","#5a3818"]).map(parseHex),seed=t.seed||1,k=t.kind||"noise",sc=t.scale||1;
+  var tex=makeCanvasTexture(n,n,function(x,w,h){
+    for(var j=0;j<h;j++)for(var i=0;i<w;i++){
+      var c,u=i/w,v=j/h,g=fbm(i*0.12*sc+seed*7,j*(k==="planks"?0.9:0.12)*sc+seed,0,3);
+      if(k==="planks"){var rows=8,row=Math.floor(v*rows),edge=(j%Math.max(1,Math.floor(h/rows))===0)?0.55:1,tone=0.75+0.25*hsh(row*13+seed);c=mixc(cols[0],cols[1],Math.min(1,g*0.9)).map(function(q){return Math.round(q*edge*tone)})}
+      else if(k==="bricks"){var rows2=6,row2=Math.floor(v*rows2),off=(row2%2)*0.5,bu=(u*3+off)%1,bv=(v*rows2)%1;c=(bu<0.06||bv<0.1)?cols[1]:mixc(cols[0],cols[2]||cols[0],Math.min(1,g*0.8+0.2*hsh(row2*7+Math.floor(u*3+off)*3+seed)))}
+      else if(k==="checker"){c=((Math.floor(u*4*sc)+Math.floor(v*4*sc))%2)?cols[0]:cols[1]}
+      else if(k==="stripes"){c=(Math.floor(v*8*sc)%2)?cols[0]:cols[1]}
+      else if(k==="dots"){var du=(u*6*sc)%1-0.5,dv=(v*6*sc)%1-0.5;c=(du*du+dv*dv<0.12)?cols[1]:cols[0]}
+      else c=mixc(cols[0],cols[1],Math.min(1,g));
+      x.fillStyle="rgb("+c[0]+","+c[1]+","+c[2]+")";x.fillRect(i,j,1,1)}},{repeat:t.repeat||[1,1],pixel:t.pixel!==false});
+  texCache[key]=tex;return tex}
 function makeCanvasTexture(w,h,draw,o){
   o=o||{};var c=document.createElement("canvas");c.width=w;c.height=h;var x=c.getContext("2d");draw(x,w,h);
   var t=new T.CanvasTexture(c);t.colorSpace=T.SRGBColorSpace;t.wrapS=t.wrapT=T.RepeatWrapping;if(o.repeat)t.repeat.set(o.repeat[0],o.repeat[1]);

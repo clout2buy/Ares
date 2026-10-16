@@ -29,6 +29,32 @@ export function colour(v: unknown, d?: string): string | undefined {
 
 // ── model: parts that assemble one by one ────────────────────────────────────
 export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube"];
+export const TEXTURE_KINDS = ["planks", "bricks", "noise", "checker", "stripes", "dots"];
+/** A procedural texture description: small, bounded, and part of the model JSON (so it exports to a game with no script). */
+export function sanitizeTexture(raw: unknown): Obj | null {
+  const t = obj(raw);
+  if (!TEXTURE_KINDS.includes(String(t.kind))) return null;
+  const colors = arr(t.colors).slice(0, 3).map((c) => colour(c)).filter((c): c is string => !!c);
+  const rep = arr(t.repeat);
+  return {
+    kind: String(t.kind), colors: colors.length ? colors : ["#8a5a2b", "#5a3818"], scale: clamp(t.scale, 0.2, 8, 1),
+    repeat: [clamp(rep[0], 0.1, 16, 1), clamp(rep[1], 0.1, 16, 1)], pixel: t.pixel !== false, size: Math.round(clamp(t.size, 16, 128, 64)), seed: Math.round(clamp(t.seed, 0, 999, 1)),
+  };
+}
+
+/** A variant override: the few fields that change how a part LOOKS (so one model + clips serves many colourways). */
+export function sanitizeOverride(raw: unknown): Obj | null {
+  const o = obj(raw), out: Obj = {};
+  const c = colour(o.color); if (c) out.color = c;
+  const c2 = colour(o.color2); if (c2) { out.color2 = c2; out.grad = ["x", "y", "z"].includes(String(o.grad)) ? String(o.grad) : "y"; out.mid = clamp(o.mid, 0.05, 0.95, 0.5); }
+  if (MODEL_MATS.includes(String(o.mat))) out.mat = String(o.mat);
+  if (typeof o.smooth === "boolean") out.smooth = o.smooth;
+  if (o.shade !== undefined) out.shade = clamp(o.shade, 0, 0.5, 0);
+  if (o.texture === null) out.texture = null;
+  else if (o.texture !== undefined) { const t = sanitizeTexture(o.texture); if (t) out.texture = t; }
+  return Object.keys(out).length ? out : null;
+}
+
 export const MODEL_STYLES = ["smooth", "lowpoly", "wire", "flat"];
 export const MODEL_LOOKS = ["studio", "clay", "slate", "pastel", "gallery", "noir", "holo", "sunset", "night", "flat"];
 export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow"];
@@ -74,6 +100,7 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   const ec = colour(edge); if (ec) base.edgeColor = ec;
   if (p.stage !== undefined && String(p.stage)) base.stage = str(p.stage, 16);
   if (p.scenery === true) base.scenery = true;
+  if (p.texture !== undefined) { const tx = sanitizeTexture(p.texture); if (tx) base.texture = tx; }
   if (low) base.low = true;
   if (style === "wire") base.wire = true;
   if (typeof p.facets === "boolean" ? p.facets : low) base.facets = true;

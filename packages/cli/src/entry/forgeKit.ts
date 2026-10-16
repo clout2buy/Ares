@@ -277,8 +277,8 @@ export function buildLiveStageHtml(): string {
 }
 
 /** The persistent model-studio page: an empty live rig that polls /__ares/studio/<id> (see modelStudio.ts). */
-export function buildStudioHtml(id: string, title = "Model studio"): string {
-  const spec = esc(JSON.stringify({ studio: id, parts: [], title }));
+export function buildStudioHtml(id: string, title = "Model studio", opts: { manual?: boolean } = {}): string {
+  const spec = esc(JSON.stringify({ studio: id, parts: [], title, ...(opts.manual ? { manual: true } : {}) }));
   const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><!--ares:kit--></head><body><style>body{padding:0}.k-rig{margin:0}</style><div class="k-rig" data-spec="${spec}"></div></body></html>`;
   return expandForgeKit(page);
 }

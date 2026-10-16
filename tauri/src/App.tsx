@@ -37,6 +37,7 @@ import { createLiveExplain, settled as settledKitPage } from "./liveExplain";
 import { UpdateBanner } from "./UpdateBanner";
 import { PhonePairCard, type PhonePairState } from "./PhonePair";
 import { WhatsNew } from "./WhatsNew";
+import { ForgeIntro } from "./ForgeIntro";
 import { LivingSurface } from "./LivingSurface";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle, useUiStyle } from "./newStyle";
 import { AresSigils, Medallion, Sigil, asSigilName } from "./modernIcons";
@@ -3901,6 +3902,7 @@ function App() {
       ) : null}
       <UpdateBanner />
       <WhatsNew />
+      <ForgeIntro />
       <FirstRunGate
         active={native && daemon !== "starting" && noUsableKeys(keyStatus)}
         onOpenKeys={() => {
@@ -4723,8 +4725,8 @@ function App() {
               />
             ) : null}
           <span className="grow" />
-          <span className="hudReadout" title={`${fmtTokens(active?.cacheReadTokens ?? 0)} input tokens reused from cache`}>
-            ↑<SpringNumber value={Math.max(0, (active?.tokensIn ?? 0) - (active?.cacheReadTokens ?? 0))} format={fmtTokens} /> fresh ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} />
+          <span className="hudReadout" title={`This session: ${fmtTokens(active?.tokensOut ?? 0)} written by the model. ${fmtTokens(Math.max(0, (active?.tokensIn ?? 0) - (active?.cacheReadTokens ?? 0)))} new input; ${fmtTokens(active?.cacheReadTokens ?? 0)} re-read from cache (each call re-reads the conversation, so raw input totals are large and not a cost).`}>
+            ↓<SpringNumber value={active?.tokensOut ?? 0} format={fmtTokens} /> written{active && active.tokensIn > 0 && active.cacheReadTokens / active.tokensIn >= 0.5 ? ` · ${Math.round((active.cacheReadTokens / active.tokensIn) * 100)}% cached` : ""}
           </span>
           <div className="statusGroup statusActions">
             {native && daemon !== "running" && daemon !== "starting" ? (
@@ -5874,8 +5876,8 @@ function ModelPopover({
             <div className="mdlUsage" title="Your last 30 days through this provider (spend estimated from live OpenRouter pricing)">
               <span className="mdlUsageLabel">30d</span>
               <span><b>{providerUsage.calls}</b> requests</span>
-              <span>↑ <b>{fmtTokens(providerUsage.tokensIn)}</b></span>
-              <span>↓ <b>{fmtTokens(providerUsage.tokensOut)}</b></span>
+              <span title="Includes the conversation re-read on every call, so it is large; it is not what you are charged for."><b>{fmtTokens(providerUsage.tokensIn)}</b> read</span>
+              <span><b>{fmtTokens(providerUsage.tokensOut)}</b> written</span>
               <span className="mdlUsageCost">{providerUsage.costUsd !== undefined ? <>≈ <b>${providerUsage.costUsd.toFixed(2)}</b></> : "cost n/a"}</span>
             </div>
           ) : null}
@@ -9153,12 +9155,20 @@ const ItemView = React.memo(function ItemView({
   }
   if (item.kind === "tools") return <ToolGroup item={item} technical={toolDisplay === "technical"} />;
   if (item.kind === "usage") {
+    // A turn is many calls and every call re-reads the whole conversation, so the SUM of input tokens (1.9M, 600k...)
+    // is a big scary number that means nothing about cost or size. Lead with what a person can read: how long, how many
+    // calls, how much the model wrote, and how big the conversation is per call. Totals live in the tooltip.
     const freshInput = Math.max(0, item.input - item.cacheRead);
+    const calls = Math.max(1, item.modelCalls);
+    const perCall = Math.round(item.input / calls);
+    const cachedPct = item.input > 0 ? Math.min(100, Math.round((item.cacheRead / item.input) * 100)) : 0;
+    const why = `Each call re-reads the conversation so far. ${calls} call${calls === 1 ? "" : "s"} x ~${fmtTokens(perCall)} = ${fmtTokens(item.input)} tokens read` +
+      `${item.cacheRead > 0 ? `, ${cachedPct}% of it served from cache (cheap)` : ""}. New input this turn: ${fmtTokens(freshInput)}. Written by the model: ${fmtTokens(item.output)}.`;
     return (
-      <div className="usage" data-status={item.status}>
+      <div className="usage" data-status={item.status} title={why}>
         {item.status !== "completed" ? `${item.status} · ` : ""}
-        {fmtMs(item.durationMs)} · {item.modelCalls} call{item.modelCalls === 1 ? "" : "s"} · ↑{fmtTokens(freshInput)} fresh ↓{fmtTokens(item.output)}
-        {item.cacheRead > 0 ? ` · ${fmtTokens(item.cacheRead)} reused (${Math.round((item.cacheRead / Math.max(1, item.input)) * 100)}%)` : ""}
+        {fmtMs(item.durationMs)} · {calls} call{calls === 1 ? "" : "s"} · {fmtTokens(perCall)} context · ↓{fmtTokens(item.output)} written
+        {item.cacheRead > 0 && cachedPct >= 50 ? ` · ${cachedPct}% cached` : ""}
         {item.model ? <span className="usageModelTag">{item.model}{item.provider ? ` (${item.provider})` : ""}{item.lane ? ` · ${item.lane}` : ""}</span> : null}
       </div>
     );
@@ -11575,6 +11585,12 @@ function Settings({
                 >
                   Show release popup
                 </button>
+                <button
+                  className="updatesReplay"
+                  onClick={() => window.dispatchEvent(new CustomEvent("ares:show-forge-intro"))}
+                >
+                  Forge tour
+                </button>
               </div>
               <div className="updatesList">
                 {CHANGELOG.map((e) => (
@@ -12473,9 +12489,9 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
           <div className="usageStats">
             <div className="usageCard"><span>Sessions</span><strong>{usage.sessions}</strong></div>
             <div className="usageCard"><span>API calls</span><strong>{usage.apiCalls}</strong></div>
-            <div className="usageCard"><span>Tokens in</span><strong>{fmtTokens(usage.tokensIn)}</strong></div>
-            <div className="usageCard"><span>Tokens out</span><strong>{fmtTokens(usage.tokensOut)}</strong></div>
-            <div className="usageCard"><span>Cache reads</span><strong>{fmtTokens(usage.cacheReadTokens)}</strong></div>
+            <div className="usageCard" title="Input the models had not seen before. This is what you pay full price for."><span>New input</span><strong>{fmtTokens(Math.max(0, usage.tokensIn - usage.cacheReadTokens))}</strong></div>
+            <div className="usageCard" title="What the models wrote."><span>Written</span><strong>{fmtTokens(usage.tokensOut)}</strong></div>
+            <div className="usageCard" title="Every call re-reads the conversation. Cached re-reads are served at a fraction of the price, so this big number is not a cost."><span>Re-read from cache</span><strong>{fmtTokens(usage.cacheReadTokens)}</strong></div>
             <div className="usageCard"><span>Est. spend</span><strong>{fmtSpend(usage)}</strong></div>
           </div>
           {(usage.providers ?? []).length > 0 ? (
@@ -12486,7 +12502,7 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
                   <div key={p.provider} className="usageRow">
                     <span className="usageModel">{p.provider}</span>
                     <span className="usageCalls">{p.calls} calls</span>
-                    <span className="usageTok">↑{fmtTokens(p.tokensIn)} ↓{fmtTokens(p.tokensOut)}</span>
+                    <span className="usageTok" title={`${fmtTokens(p.cacheReadTokens)} more re-read from cache`}>↑{fmtTokens(Math.max(0, p.tokensIn - p.cacheReadTokens))} new ↓{fmtTokens(p.tokensOut)}</span>
                     <span className="usageCost">{p.costUsd !== undefined ? `≈$${p.costUsd.toFixed(2)}` : "—"}</span>
                   </div>
                 ))}
@@ -12513,7 +12529,7 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
                   <div key={`${m.provider ?? ""}/${m.model}`} className="usageRow">
                     <span className="usageModel">{m.model}{m.provider ? <em className="usageProv"> {m.provider}</em> : null}</span>
                     <span className="usageCalls">{m.calls} calls</span>
-                    <span className="usageTok">↑{fmtTokens(m.tokensIn)} ↓{fmtTokens(m.tokensOut)}</span>
+                    <span className="usageTok" title={`${fmtTokens(m.cacheReadTokens)} more re-read from cache`}>↑{fmtTokens(Math.max(0, m.tokensIn - m.cacheReadTokens))} new ↓{fmtTokens(m.tokensOut)}</span>
                     <span className="usageCost">{m.costUsd !== undefined ? `≈$${m.costUsd.toFixed(2)}` : "—"}</span>
                   </div>
                 ))}

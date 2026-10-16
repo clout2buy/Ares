@@ -4973,3 +4973,5 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .aresosShotPlaceholder { border: 1px dashed var(--line); border-radius: 6px; padding: 1.1rem; text-align: center; font-size: .78rem; color: var(--faint); background: var(--bg); }
 .aresosShotErr { color: var(--muted); }
 .aresosShotBtn { width: 100%; }
+
+.wnTour{margin-right:8px;background:transparent;border:1px solid currentColor;box-shadow:none}

@@ -22,17 +22,20 @@ function mkEvents(){var L={};return{on:function(n,f){(L[n]=L[n]||[]).push(f);ret
 export function buildModel(doc,opts){
   opts=opts||{};
   if(!doc||doc.expanded!==true||!Array.isArray(doc.parts))throw new Error("ares-model: pass the <id>.game.json that Browser model export writes");
-  var parts=doc.parts,clips={},cache=parts.map(function(){return{}});
+  var parts=doc.parts,clips={},cache={},variants=doc.variants||{};
+  function vhit(sel,name){var base=name.replace(/ [(]mirror[)]$/,"");return sel.charAt(sel.length-1)==="*"?base.indexOf(sel.slice(0,-1))===0:(sel===name||sel===base)}
+  function partFor(p,variant){var v=variant&&variants[variant];if(!v)return p;var q=p;Object.keys(v).forEach(function(sel){if(vhit(sel,p.name))q=Object.assign({},q,v[sel])});return q}
   (doc.anims||[]).forEach(function(c){clips[c.name]=c});
-  var model={doc:doc,clips:Object.keys(clips),instance:null,dispose:function(){cache.forEach(function(c){if(c.gm)c.gm.dispose();if(c.m&&c.m.dispose)c.m.dispose()})}};
+  var model={doc:doc,clips:Object.keys(clips),variants:Object.keys(variants),instance:null,dispose:function(){Object.keys(cache).forEach(function(k){var c=cache[k];if(c.gm)c.gm.dispose();if(c.m&&c.m.dispose)c.m.dispose()})}};
 
-  // io: {edges, shadows:false, material(part, shared) -> per-instance material (tints, variants)}
+  // io: {variant:"frost", edges, shadows:false, material(part, shared) -> per-instance material override}
   model.instance=function(io){
     io=io||{};
     var group=new T.Group(),items=[],nodes=[],byName={},ev=mkEvents(),cur=null,clock=0,playing=false,speed=1,loop=true,hold=false;
     group.name=doc.title||"ares-model";
     parts.forEach(function(p,i){
-      var g=buildPartObject(p,{edges:!!(io.edges||opts.edges),cache:cache[i]});
+      var vk=(io.variant||"")+":"+i,pv0=partFor(p,io.variant);cache[vk]=cache[vk]||{};
+      var g=buildPartObject(pv0,{edges:!!(io.edges||opts.edges),cache:cache[vk]});
       if(io.material){var m2=io.material(p,g.userData.mat);if(m2)g.userData.mesh.material=m2}
       if(io.shadows===false||opts.shadows===false)g.traverse(function(o){if(o.isMesh){o.castShadow=false;o.receiveShadow=false}});
       var node=new T.Group(),pv=p.pivot||p.pos;node.add(g);node.position.set(pv[0],pv[1],pv[2]);node.userData.rest=node.position.clone();
@@ -57,7 +60,7 @@ export function buildModel(doc,opts){
         if(hold){hold=false;ev.emit("end",cur.name)}
         return inst},
       // frees this instance (edges, caps, per-instance materials); the model's shared geometry/materials stay until model.dispose()
-      dispose:function(){var keep=new Set();cache.forEach(function(c){if(c.gm)keep.add(c.gm);if(c.m)keep.add(c.m)});disposeObject(group,keep);group.removeFromParent();nodes.forEach(function(nd){nd.removeFromParent()})}};
+      dispose:function(){var keep=new Set();Object.keys(cache).forEach(function(k){var c=cache[k];if(c.gm)keep.add(c.gm);if(c.m)keep.add(c.m)});disposeObject(group,keep);group.removeFromParent();nodes.forEach(function(nd){nd.removeFromParent()})}};
     return inst};
   return model}
 

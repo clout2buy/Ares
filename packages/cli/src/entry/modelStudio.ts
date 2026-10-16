@@ -14,7 +14,7 @@ import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildRuntimeModule } from "./forgeRuntime.js";
-import { MODEL_MATS, MODEL_SHAPES, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
+import { MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
 
@@ -28,6 +28,8 @@ export interface Studio {
   anims: Obj[];
   /** JS the page runs every frame (water, lava, rain, physics…): authored by Ares, see sanitizeScript */
   scripts: Obj[];
+  /** colourways: name -> { "lid*": {color,color2,mat,texture,...} }. One model + its clips serves many looks; the game picks one per instance. */
+  variants: Record<string, Record<string, Obj>>;
   /** errors / log lines scripts reported back (drained into the next tool result) */
   logs: string[];
   ref?: string;
@@ -48,7 +50,7 @@ export const studioId = (v: unknown): string => String(v ?? "model").toLowerCase
 export const getStudio = (id: string): Studio | undefined => studios.get(id);
 export function ensureStudio(id: string): Studio {
   let st = studios.get(id);
-  if (!st) { st = { id, title: "", style: "", look: "", edge: "", raw: [], anims: [], scripts: [], logs: [], view: {}, version: 0, seen: 0 }; studios.set(id, st); }
+  if (!st) { st = { id, title: "", style: "", look: "", edge: "", raw: [], anims: [], scripts: [], variants: {}, logs: [], view: {}, version: 0, seen: 0 }; studios.set(id, st); }
   return st;
 }
 export function dropStudios(): void { studios.clear(); }
@@ -119,11 +121,32 @@ export interface ModelEdit {
 const VIEW_BOOL = ["wire", "smooth", "spin", "rig", "play"];
 const VIEW_CAMERAS = ["3q", "front", "back", "side", "top"];
 /** Only known view settings survive; everything is a bool, a camera preset, a clip name or a bounded number. */
+const SEL_RE = /^[A-Za-z0-9_ ()-]{1,40}\*?$/;
+function cleanVariants(raw: unknown): Record<string, Record<string, Obj>> {
+  const out: Record<string, Record<string, Obj>> = {};
+  for (const [vn, sets] of Object.entries(obj(raw)).slice(0, 12)) {
+    if (!/^[A-Za-z0-9_-]{1,24}$/.test(vn)) continue;
+    const one: Record<string, Obj> = {};
+    for (const [sel, ov] of Object.entries(obj(sets)).slice(0, 40)) { const c = SEL_RE.test(sel) ? sanitizeOverride(ov) : null; if (c) one[sel] = c; }
+    if (Object.keys(one).length) out[vn] = one;
+  }
+  return out;
+}
+const variantHit = (sel: string, name: string): boolean => { const base = name.replace(/ \(mirror\)$/, ""); return sel.endsWith("*") ? base.startsWith(sel.slice(0, -1)) : sel === name || sel === base; };
+/** What a part looks like in a variant: the base part with every matching override applied (later keys win). */
+export function applyVariant(p: Obj, v: Record<string, Obj> | undefined): Obj {
+  if (!v) return p;
+  let q = p;
+  for (const [sel, ov] of Object.entries(v)) if (variantHit(sel, String(p.name))) q = { ...q, ...ov };
+  return q;
+}
+
 function mergeView(cur: Obj, raw: unknown): Obj {
   const o = obj(raw), out: Obj = { ...cur };
   for (const k of VIEW_BOOL) if (typeof o[k] === "boolean") out[k] = o[k];
   if (typeof o.camera === "string" && VIEW_CAMERAS.includes(o.camera)) out.camera = o.camera;
   if (typeof o.anim === "string") out.anim = o.anim.slice(0, 24);
+  if (typeof o.variant === "string") out.variant = o.variant.slice(0, 24);
   if (typeof o.speed === "number" && Number.isFinite(o.speed)) out.speed = Math.min(3, Math.max(0.1, o.speed));
   if (typeof o.t === "number" && Number.isFinite(o.t)) out.t = Math.min(20, Math.max(0, o.t));
   if (typeof o.zoom === "number" && Number.isFinite(o.zoom)) out.zoom = Math.min(3, Math.max(0.3, o.zoom));
@@ -132,7 +155,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -142,6 +165,7 @@ function lintPart(p: Obj): string[] {
   if (p.mat !== undefined && !MODEL_MATS.includes(String(p.mat))) w.push(`part "${n}": unknown mat "${String(p.mat)}" (mats: ${MODEL_MATS.join(", ")})`);
   for (const k of ["pos", "rot", "pivot"]) if (p[k] !== undefined && !vec(p[k])) w.push(`part "${n}": ${k} should be [x,y,z] numbers`);
   if (p.size !== undefined && !vec(p.size) && typeof p.size !== "number") w.push(`part "${n}": size should be [x,y,z] or one number`);
+  if (p.texture !== undefined && !sanitizeTexture(p.texture)) w.push(`part "${n}": texture needs {kind: planks|bricks|noise|checker|stripes|dots, colors:[#hex...]}`);
   if (p.color !== undefined && !colour(p.color)) w.push(`part "${n}": colour "${String(p.color)}" not recognised (use #rrggbb or a name like orange/gold/white)`);
   return w;
 }
@@ -168,10 +192,10 @@ function lintAnim(raw: Obj, partNames: string[]): string[] {
 
 function moveBy(p: Obj, d: number[]): void {
   const add = (v: unknown): number[] => { const a = arr(v); return [Number(a[0] ?? 0) + d[0]!, Number(a[1] ?? 0) + d[1]!, Number(a[2] ?? 0) + d[2]!]; };
+  // The part's geometry (sections / verts / pts / profile) is local to its node at the pivot, so moving a part moves
+  // pos and pivot ONLY. Shifting the geometry as well double-offset every loft/extrude/mesh part (lids floated away).
   if (p.pos !== undefined) p.pos = add(p.pos); else p.pos = d;
   if (p.pivot !== undefined) p.pivot = add(p.pivot);
-  for (const key of ["sections", "verts"]) if (Array.isArray(p[key])) p[key] = (p[key] as unknown[]).map((q) => { const a = arr(q).slice(); for (let k = 0; k < 3; k++) a[k] = Number(a[k] ?? 0) + d[k]!; return a; });
-  if (Array.isArray(p.pts)) p.pts = (p.pts as unknown[]).map((q) => { const a = arr(q).slice(); for (let k = 0; k < Math.min(3, a.length); k++) a[k] = Number(a[k] ?? 0) + (k < 3 ? d[k]! : 0); return a; });
 }
 
 function scaleBy(p: Obj, f: number): void {
@@ -206,12 +230,12 @@ async function importParts(cwd: string, o: Obj): Promise<Obj[]> {
 export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<{ touched: string[]; errors: string[] }> {
   const touched: string[] = [], errors: string[] = [];
   if (e.view !== undefined) { st.view = mergeView(st.view, e.view); touched.push("view"); }
-  if (e.reset) { st.view = {}; st.raw = []; st.anims = []; st.scripts = []; st.ref = undefined; st.backdrop = undefined; }
+  if (e.reset) { st.view = {}; st.variants = {}; st.raw = []; st.anims = []; st.scripts = []; st.ref = undefined; st.backdrop = undefined; }
   if (e.backdrop !== undefined) { st.backdrop = e.backdrop || undefined; touched.push(e.backdrop ? "backdrop" : "- backdrop"); }
   if (e.load) {
     try {
       const doc = obj(await readJsonFile(cwd, e.load));
-      st.raw = arr(doc.parts).map(obj); st.anims = arr(doc.anims).map(obj); st.scripts = arr(doc.scripts).map(obj);
+      st.raw = arr(doc.parts).map(obj); st.anims = arr(doc.anims).map(obj); st.scripts = arr(doc.scripts).map(obj); st.variants = cleanVariants(doc.variants);
       st.style = String(doc.style ?? ""); st.look = String(doc.look ?? ""); st.edge = String(doc.edge ?? ""); st.title = String(doc.title ?? st.title);
       touched.push(`loaded ${e.load}`);
     } catch (err) { errors.push(`load: ${err instanceof Error ? err.message : String(err)}`); }
@@ -246,6 +270,20 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
         for (const p of arr(o.parts).slice(0, 120)) { upsert(st.raw, obj(p)); touched.push(nameOf(obj(p))); }
       } else if (op === "use") {
         if (o.parts !== false) for (const p of await importParts(cwd, o)) { upsert(st.raw, p); touched.push(nameOf(p)); }
+        // clips ride along when asked (anims:true or ["open"]); with a prefix, their targets follow the renamed parts
+        if (o.anims) {
+          const wantA = o.anims === true ? null : arr(o.anims).map(String);
+          const src = obj(await readJsonFile(cwd, String(o.file ?? "")));
+          const pre = o.prefix ? String(o.prefix).slice(0, 16) : "";
+          for (const c of arr(src.anims).map(obj)) {
+            if (wantA && !wantA.includes(String(c.name))) continue;
+            const clip = JSON.parse(JSON.stringify(c)) as Obj;
+            clip.name = `${pre}${String(c.name ?? "anim")}`.slice(0, 24);
+            for (const key of ["tracks", "motion"]) clip[key] = arr(clip[key]).map((t) => { const x = obj(t); return { ...x, part: `${pre}${String(x.part ?? "")}` }; });
+            const i = st.anims.findIndex((x) => x.name === clip.name); if (i >= 0) st.anims[i] = clip; else st.anims.push(clip);
+            touched.push(`anim ${String(clip.name)}`);
+          }
+        }
         // scripts ride along when asked: use:{file, scripts:["water"]} pulls a saved behaviour (a library of Ares's own tricks)
         const want = arr(o.scripts).map(String);
         if (want.length) {
@@ -255,6 +293,15 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
       } else if (op === "script") {
         const s2 = sanitizeScript(o); if (!s2) { errors.push("script needs a slug name and non-empty code"); continue; }
         const i = st.scripts.findIndex((x) => x.name === s2.name); if (i >= 0) st.scripts[i] = s2; else st.scripts.push(s2); touched.push(`script ${String(s2.name)}`);
+      } else if (op === "variant") {
+        const vn = String(o.name ?? "").trim();
+        if (!/^[A-Za-z0-9_-]{1,24}$/.test(vn)) { errors.push("variant needs a slug name"); continue; }
+        const set = cleanVariants({ [vn]: o.set })[vn];
+        if (!set || !Object.keys(set).length) { errors.push(`variant "${vn}": nothing usable in set (each entry is "partName*": {color|color2|mat|texture|smooth|shade})`); continue; }
+        st.variants[vn] = { ...(st.variants[vn] ?? {}), ...set };
+        touched.push(`variant ${vn}`);
+      } else if (op === "remove_variant") {
+        delete st.variants[String(o.name)]; touched.push(`- variant ${String(o.name)}`);
       } else if (op === "remove_script") {
         st.scripts = st.scripts.filter((x) => x.name !== String(o.name)); touched.push(`- script ${String(o.name)}`);
       } else if (op === "anim") {
@@ -290,6 +337,13 @@ async function refDataUrl(cwd: string, src: string): Promise<string> {
   return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
+/** The expanded parts WITHOUT any variant applied (what a game loads; variants ride separately). */
+function baseParts(st: Studio): Obj[] {
+  const out: Obj[] = [];
+  for (const raw of st.raw) { if (out.length >= 220) break; out.push(...sanitizeModelPart(raw, st.style, 220 - out.length, st.edge)); }
+  return uniqueNames(out);
+}
+
 /** The sanitised spec the page renders. */
 export function studioSpec(st: Studio): Obj {
   const parts: Obj[] = [];
@@ -298,9 +352,11 @@ export function studioSpec(st: Studio): Obj {
     parts.push(...sanitizeModelPart(raw, st.style, 220 - parts.length, st.edge));
   }
   uniqueNames(parts);
+  const showVariant = typeof st.view.variant === "string" ? st.variants[st.view.variant] : undefined;
+  const shown = showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts;
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
   const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
-  return { title: st.title, style: st.style, look: st.look, parts, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
+  return { title: st.title, style: st.style, look: st.look, parts: shown, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
 }
 
 /** GET /__ares/studio/<id>?since=N → { v } or { v, spec } when there is something newer. */
@@ -317,7 +373,7 @@ export async function saveStudio(st: Studio, cwd: string, target: string | boole
   if (!rel.endsWith(".model.json")) throw new Error("save path must end in .model.json (e.g. assets/models/chest.model.json)");
   const abs = await insideReal(cwd, rel);
   await mkdir(path.dirname(abs), { recursive: true });
-  await writeFile(abs, JSON.stringify({ format: "ares-model/1", title: st.title, style: st.style, look: st.look, edge: st.edge, parts: st.raw, anims: st.anims, scripts: st.scripts }, null, 1), "utf8");
+  await writeFile(abs, JSON.stringify({ format: "ares-model/1", title: st.title, style: st.style, look: st.look, edge: st.edge, parts: st.raw, anims: st.anims, scripts: st.scripts, variants: st.variants }, null, 1), "utf8");
   return path.relative(cwd, abs);
 }
 
@@ -330,9 +386,9 @@ export async function exportGame(st: Studio, cwd: string, o: { dir?: string; thr
   await mkdir(path.dirname(modelAbs), { recursive: true });
   const spec = studioSpec(st);
   await writeFile(runtimeAbs, buildRuntimeModule(three), "utf8");
-  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: spec.parts, anims: spec.anims, scripts: spec.scripts }), "utf8");
+  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: baseParts(st), anims: spec.anims, scripts: spec.scripts, variants: st.variants }), "utf8");
   const runtime = path.relative(cwd, runtimeAbs).split(path.sep).join("/"), model = path.relative(cwd, modelAbs).split(path.sep).join("/");
   const nScripts = (studioSpec(st).scripts as unknown[]).length;
-  const usage = `${nScripts ? `NOTE: this model has ${nScripts} script(s) (textures, tints, effects): they only run in the game if you call attachScripts(m, a, {scene, camera, renderer}). ` : ""}import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({material:(part, shared)=>…}) for tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;
+  const usage = `${nScripts ? `NOTE: this model has ${nScripts} script(s) (textures, tints, effects): they only run in the game if you call attachScripts(m, a, {scene, camera, renderer}). ` : ""}import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({variant:"name"}) for a colourway (${Object.keys(st.variants).join(", ") || "none defined"}), instance({material:(part, shared)=>…}) for custom tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;
   return { runtime, model, usage };
 }

@@ -264,7 +264,7 @@ function build(el){
   // ── studio mode: Ares edits this model while you watch. The server holds the document; this page polls it and
   //    reconciles in place - unchanged parts morph to their new transform, new/changed parts pop in, removed ones shrink out ──
   var tweens=[],ghosts=[],refImg=null,settledOnce=false;
-  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor])}
+  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture])}
   function setRef(src){
     if(!src){if(refImg){refImg.remove();refImg=null}return}
     if(!refImg){refImg=document.createElement("img");refImg.className="k-ref";refImg.alt="reference";refImg.title="reference - click to fade";refImg.addEventListener("click",function(){refImg.style.opacity=refImg.style.opacity==="0.2"?"1":"0.2"});stage.appendChild(refImg)}
@@ -297,7 +297,8 @@ function build(el){
     refreshAnimUI();
     if(ns.look&&LOOKS[ns.look]&&ns.look!==curLook){curLook=ns.look;lookSel.value=ns.look;look(ns.look)}
     if(ns.title)tag.textContent="3D studio · "+ns.title;
-    setRef(ns.ref);setBackdrop(ns.backdrop);emit("parts",null);syncScripts(ns.scripts);applyView(ns.view);select(-1);settledOnce=true;pose();draw()}
+    setRef(ns.ref);setBackdrop(ns.backdrop);emit("parts",null);syncScripts(ns.scripts);applyView(ns.view);
+    if(curA>=0&&!animOn&&animT>0)applyAnim(anims[curA],animT);select(-1);settledOnce=true;pose();draw()}
   var lastView={},viewZoom=1,lastCam="3q";
   function applyView(v0){
     if(!v0)return;var v={};Object.keys(v0).forEach(function(k){if(JSON.stringify(v0[k])!==JSON.stringify(lastView[k]))v[k]=v0[k]});lastView=JSON.parse(JSON.stringify(v0));
@@ -328,11 +329,21 @@ function build(el){
       if(k>=1)tweens.splice(i,1)}
     for(i=ghosts.length-1;i>=0;i--){var gh=ghosts[i],q=Math.min(1,(now-gh.t0)/260),s3=1-q;gh.g.scale.set(Math.max(0.001,gh.g.userData.base[0]*s3),Math.max(0.001,gh.g.userData.base[1]*s3),Math.max(0.001,gh.g.userData.base[2]*s3));
       if(q>=1){var nd=gh.g.userData.node;if(nd.parent)nd.parent.remove(nd);disposeObject(gh.g);ghosts.splice(i,1)}}}
-  window.__aresView=function(name){
+  // a deterministic pose for screenshots: __aresView("side", 1.2) freezes the current clip at t=1.2s; __aresResume() lets it play on
+  var heldPlay=null;
+  window.__aresResume=function(){if(heldPlay!==null){animOn=heldPlay&&!reduced;heldPlay=null;bAnim.textContent=animOn?"pause":"play"}};
+  window.__aresView=function(name,t){
+    if(typeof t==="number"&&curA>=0){if(heldPlay===null)heldPlay=animOn;animOn=false;animT=t;applyAnim(anims[curA],t)}
     var dirs={front:[0,0.12,1],back:[0,0.12,-1],side:[1,0.12,0],top:[0,1,0.001],"3q":[1.05,0.55,1.55]},d=dirs[name]||dirs["3q"],v=new T.Vector3(d[0],d[1],d[2]).normalize();
     ctl.autoRotate=false;bSpin.classList.remove("on");userTook=true;sel=-1;ctl.target.copy(tctr);cam.position.copy(tctr).addScaledVector(v,trad*2.7*viewZoom);ctl.update();
     if(el.scrollIntoView)el.scrollIntoView({block:"center"});draw();return name};
-  if(studio){
+  // a hosting page that opted in (spec.manual, e.g. the in-app tour) drives the studio by postMessage instead of polling a server
+  if(studio&&spec.manual){
+    addEventListener("message",function(e){var m=e.data;if(e.source!==parent||!m||typeof m!=="object")return;
+      if(m.ares==="studio"&&m.spec){try{setModel(m.spec)}catch(err){report("studio","apply: "+(err&&err.message||err))}}
+      else if(m.ares==="view"&&typeof m.name==="string"&&window.__aresView)window.__aresView(m.name)})
+    try{parent.postMessage({ares:"studio-ready"},"*")}catch(err){}}
+  if(studio&&!spec.manual){
     capX.textContent="waiting for Ares";var sv=0;
     (function poll(){fetch("/__ares/studio/"+studio+"?since="+sv,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.v!==undefined&&d.v<sv)sv=0;if(d&&d.spec&&d.v>sv){sv=d.v;try{setModel(d.spec)}catch(e){report("studio","apply: "+(e&&e.message||e))}}else if(d&&d.v!==undefined&&d.v>sv)sv=d.v}).catch(function(){}).then(function(){setTimeout(poll,350)})})()}
   pose();draw();

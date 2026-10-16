@@ -32,7 +32,7 @@ export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "pr
 export const BLOB_KINDS = ["ball", "stick", "box", "chain", "cyl", "torus", "profile"];
 /** Surface detail the sculpt shader draws per pixel (a blob's `tex`, or the default for its mat). */
 export const SCULPT_TEX = ["none", "fur", "scales", "wrinkles", "rock", "wood", "cloth", "hammered", "pores"];
-const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex", "flow", "shag", "axis", "taper"]);
+const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex", "flow", "shag", "axis", "taper", "and"]);
 const MIRROR_SUFFIX = " (mirror)";
 const mirrorBone = (b: string): string => (b.endsWith(MIRROR_SUFFIX) ? b.slice(0, -MIRROR_SUFFIX.length) : `${b}${MIRROR_SUFFIX}`.slice(0, 41));
 /** A blob's problems in words (shown back to the author; the blob is still sanitised as well as it can be). */
@@ -75,8 +75,9 @@ function sanitizeBlobs(v: unknown): Obj[] {
     const b = obj(raw);
     let s = BLOB_KINDS.includes(String(b.s)) ? String(b.s) : "ball";
     const one: Obj = {};
-    const sub = b.sub === true, paint = !sub && b.paint === true;
+    const sub = b.sub === true, and = !sub && b.and === true, paint = !sub && !and && b.paint === true;
     if (sub) one.sub = true;
+    if (and) one.and = true;
     if (paint) { one.paint = true; one.soft = clamp(b.soft, 0.002, 2, 0.04); }
     const c = colour(b.color); if (c) one.color = c;
     if (b.bone !== undefined && String(b.bone) && !sub && !paint) one.bone = str(b.bone, 41);
@@ -173,7 +174,7 @@ export function sanitizeOverride(raw: unknown): Obj | null {
 
 export const MODEL_STYLES = ["smooth", "lowpoly", "wire", "flat"];
 export const MODEL_LOOKS = ["studio", "clay", "slate", "pastel", "gallery", "noir", "holo", "sunset", "night", "flat"];
-export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow", "fur", "skin", "leather", "wood", "stone", "cloth"];
+export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow", "fur", "skin", "leather", "wood", "stone", "cloth", "paint", "rubber", "chrome"];
 const vec3 = (v: unknown, d: [number, number, number], lo: number, hi: number): [number, number, number] => {
   if (typeof v === "number") return [clamp(v, lo, hi, d[0]), clamp(v, lo, hi, d[1]), clamp(v, lo, hi, d[2])];
   const a = arr(v);
@@ -229,13 +230,14 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   if (shape === "loft") { base.sections = sections; base.seg = Math.round(clamp(p.seg, 3, 24, low ? 6 : 16)); }
   if (shape === "sculpt") {
     base.blobs = blobs;
-    if (p.res !== undefined) base.res = Math.round(clamp(p.res, 12, 160, 96));
+    if (p.res !== undefined) base.res = Math.round(clamp(p.res, 12, 256, 96));
     if (SCULPT_TEX.includes(String(p.tex))) base.tex = String(p.tex);
     if (p.grain !== undefined) base.grain = clamp(p.grain, 0.2, 5, 1);
     if (p.bone !== undefined && String(p.bone)) base.bone = str(p.bone, 41);
     if (arr(p.flow).length >= 3) base.flow = vec3(p.flow, [0, -0.45, -1], -1, 1);
     if (p.shag !== undefined) base.shag = clamp(p.shag, 0, 1, 0.5);
     if (p.maps !== undefined) { const mp = sanitizeMaps(p.maps); if (mp) base.maps = mp; }
+    if (p.crisp === false) base.crisp = false;
     if (p.poly !== undefined) base.poly = Math.round(clamp(p.poly, 200, 60000, 1400));
     const nz = obj(p.noise); if (p.noise !== undefined && nz.amp !== undefined) base.noise = { amp: clamp(nz.amp, 0, 0.2, 0.01), scale: clamp(nz.scale, 0.5, 60, 6) };
     if (p.tint !== undefined) base.tint = clamp(p.tint, 0, 0.4, 0.06);

@@ -623,7 +623,7 @@ import { lintBlob } from "../packages/cli/dist/entry/forgeBlocks.js";
 /** The worked examples from the help docs (they must stay valid, clean input): the grizzly's parts + clips, and the sword. */
 function docsExamples() {
   const D = FORGE_SCRIPT_DOCS, from = D.indexOf("WORKED EXAMPLE"), start = D.indexOf("\n", from) + 1, clips = D.indexOf("\nCLIPS:", start), hard = D.indexOf("\nHARD SURFACE EXAMPLE", clips);
-  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nLOW-POLY", swordStart);
+  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nHARD SURFACE LIKE", swordStart);
   return { parts: vm.runInNewContext(D.slice(start, clips)), anims: vm.runInNewContext(D.slice(clips + 7, hard)), sword: vm.runInNewContext(D.slice(swordStart, swordEnd)) };
 }
 
@@ -648,7 +648,7 @@ test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirr
   assert.ok(b.blobs.find((x) => x.sub).k <= 0.05, "carves default tight");
   assert.equal(b.blobs.at(-1).s, "ball", "a stick without `to` degrades to a ball");
   assert.equal(sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "ball", at: [0, 0, 0], paint: true }] }] }).parts[0].shape, "box");
-  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex, flow, shag, axis, taper)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
+  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex, flow, shag, axis, taper, and)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
   const mirrored = sanitizeModel({ parts: [{ name: "ear", shape: "sculpt", mirror: true, blobs: [{ s: "ball", at: [0.3, 1, 0], r: 0.1, bone: "head" }] }] }).parts;
   assert.deepEqual(mirrored.map((p) => [p.name, p.blobs[0].at[0], p.blobs[0].bone]), [["ear", 0.3, "head"], ["ear (mirror)", -0.3, "head (mirror)"]]);
 });
@@ -762,6 +762,7 @@ test("live: a sculpt grows blob by blob while it streams (coarse partials), then
 });
 
 // ── the same process for props, real gaits, eased keys, crossfades, and the quality bar ──
+function root0() { return tmpdir(); }
 async function runtimeFor(t) {
   let threePath;
   for (const c of [path.resolve("node_modules/three/build/three.module.js"), path.resolve("tauri/node_modules/three/build/three.module.js")]) {
@@ -775,24 +776,28 @@ async function runtimeFor(t) {
   return { root, ...(await import(pathToFileURL(file).href)) };
 }
 
-test("hard surface is sculpted too: the docs sword is one watertight mesh with steel, gold and leather on it", async (t) => {
+test("hard surface like a 3D artist: the docs car - a hollow painted shell with openings, glass, mirrored lights and 4 wheels", async (t) => {
   const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
   dropStudios();
-  const st = ensureStudio("sword");
-  const r = await applyEdit(st, { parts: docsExamples().sword }, rt.root);
-  assert.deepEqual(r.errors.filter((e) => !e.startsWith("quality:")), []);
+  const st = ensureStudio("car");
+  const r = await applyEdit(st, { parts: docsExamples().sword, anims: [{ name: "idle", dur: 2, motion: [{ part: "body", kind: "bob", amp: 0.003, speed: 6 }] }] }, root0());
+  assert.deepEqual(r.errors, [], "the docs car is clean input and meets the quality bar");
   const spec = studioSpec(st);
-  assert.ok(spec.parts[0].blobs.some((b) => b.s === "cyl") && spec.parts[0].blobs.some((b) => b.s === "torus"));
-  const inst = rt.buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: [], scripts: [] }).instance();
-  const g = inst.part("sword").mesh.geometry, idx = g.index.array, edges = new Map();
-  for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const p = idx[k + e], q = idx[k + (e + 1) % 3], key = p < q ? `${p}_${q}` : `${q}_${p}`; edges.set(key, (edges.get(key) ?? 0) + 1); }
-  assert.ok([...edges.values()].every((n) => n === 2), "watertight");
-  const P = g.attributes.position, RME = g.attributes.rme;
-  const at = (x, y, z) => { let best = 0, bd = 1e9; for (let i = 0; i < P.count; i++) { const d = Math.hypot(P.getX(i) - x, P.getY(i) - y, P.getZ(i) - z); if (d < bd) { bd = d; best = i; } } return best; };
-  assert.ok(RME.getY(at(0, 1.6, 0.02)) > 0.85, "the blade is metal");
-  assert.ok(RME.getY(at(0.03, 0.75, 0)) < 0.1 && RME.getX(at(0.03, 0.75, 0)) > 0.4, "the grip is leather (rough, not metal)");
-  assert.ok(RME.getZ(at(0, 0.565, 0.04)) > 0.5, "the gem glows");
-  assert.ok(g.attributes.dtB.getY(at(0.03, 0.75, 0)) === 0 && g.attributes.dtA.getZ(at(0.03, 0.75, 0)) > 0.5, "leather brings its wrinkles");
+  const names = spec.parts.map((p) => p.name);
+  assert.equal(names.filter((n) => n.startsWith("wheel")).length, 4, "4 wheels (2 parts + their mirrors)");
+  assert.ok(names.includes("headlight (mirror)") && names.includes("mirror (mirror)"));
+  const inst = rt.buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: spec.anims, scripts: [] }).instance();
+  assert.equal(inst.part("wheelF (mirror)").node.parent, inst.part("frontAxle (mirror)").node, "mirrored wheels hang on the mirrored axle");
+  const body = inst.part("body").mesh, glass = inst.part("glass").mesh;
+  assert.ok(body.material.clearcoat > 0.9, "car paint has a clearcoat");
+  assert.ok(glass.material.transparent && glass.material.opacity < 0.6, "glass is transparent");
+  assert.ok(body.geometry.userData.gp.length >= 5, "window surrounds are crisp GPU paints");
+  const g = body.geometry, P = g.attributes.position, RME = g.attributes.rme;
+  let painted = 0; for (let i = 0; i < P.count; i++) if (RME.getY(i) > 0.4 && RME.getX(i) < 0.4) painted++;
+  assert.ok(painted > P.count * 0.5, "most of the shell is metallic car paint");
+  // the shell is hollow: a ray across the cabin at window height meets the outside, then the inside
+  let inner = 0; for (let i = 0; i < P.count; i++) if (Math.abs(P.getX(i)) < 0.5 && P.getY(i) > 0.95 && P.getY(i) < 1.2 && Math.abs(P.getZ(i) + 0.35) < 0.3) inner++;
+  assert.ok(inner < 50, `the cabin interior is empty space (${inner} surface points inside)`);
 });
 
 test("gaits plant the foot (step) and lift only in the air (lift); keys ease; clips crossfade instead of popping", async (t) => {

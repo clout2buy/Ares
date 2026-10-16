@@ -48,14 +48,14 @@ function sdBlob(b,x,y,z){
   var k0=Math.sqrt(px*px/(a*a)+py*py/(c*c)+pz*pz/(e*e)),k1=Math.sqrt(px*px/(a*a*a*a)+py*py/(c*c*c*c)+pz*pz/(e*e*e*e));
   return k1<1e-9?-Math.min(a,c,e):k0*(k0-1)/k1}
 // surface materials per blob: [roughness, metalness, emissive]; surface detail kinds the shader draws (fur, scales, wrinkles...)
-var SC_MAT={matte:[0.85,0.05,0],clay:[0.62,0,0],plastic:[0.3,0,0],metal:[0.3,0.92,0],glossy:[0.2,0.1,0],glass:[0.06,0.1,0],glow:[0.5,0,1],holo:[0.2,0,0.6],fur:[0.92,0,0],skin:[0.56,0,0],leather:[0.5,0,0],wood:[0.72,0,0],stone:[0.9,0,0],cloth:[0.95,0,0]};
+var SC_MAT={matte:[0.85,0.05,0],clay:[0.62,0,0],plastic:[0.3,0,0],metal:[0.3,0.92,0],glossy:[0.2,0.1,0],glass:[0.06,0.1,0],glow:[0.5,0,1],holo:[0.2,0,0.6],fur:[0.92,0,0],skin:[0.56,0,0],leather:[0.5,0,0],wood:[0.72,0,0],stone:[0.9,0,0],cloth:[0.95,0,0],paint:[0.3,0.5,0],rubber:[0.88,0,0],chrome:[0.08,1,0]};
 var SC_TEX=["fur","scales","wrinkles","rock","wood","cloth","hammered","pores"],SC_MATTEX={fur:"fur",stone:"rock",leather:"wrinkles",wood:"wood",cloth:"cloth",skin:"pores"};
 function scSurf(mat,tex,fb){var rm=SC_MAT[mat]||fb.rm,t=tex!==undefined?tex:(mat&&SC_MAT[mat]?SC_MATTEX[mat]||"none":fb.tex);return{rm:rm,ti:SC_TEX.indexOf(t)}}
 function sculptPrep(p){
   var B=[],mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9],bones=[""],nz=p.noise||{},kmax=0,base=scSurf(p.mat,p.tex,{rm:SC_MAT.matte,tex:"none"});base={rm:base.rm,tex:p.tex!==undefined?p.tex:(SC_MATTEX[p.mat]||"none")};
   (p.blobs||[]).forEach(function(q){
     var sf=scSurf(q.mat,q.tex,base);
-    var b={s:q.s,at:q.at,r:q.r,k:Math.max(1e-4,q.k||0.08),sub:!!q.sub,paint:!!q.paint,soft:q.soft||0.05,col:new T.Color(q.color||p.color),m:null,round:q.round||0,bi:0,rm:sf.rm,ti:sf.ti,pm:q.paint&&(q.mat!==undefined||q.tex!==undefined),pc:!q.paint||q.color!==undefined,fl:q.flow||p.flow||[0,-0.45,-1],sg:q.shag!==undefined?q.shag:(p.shag===undefined?0.5:p.shag)};
+    var b={s:q.s,at:q.at,r:q.r,k:Math.max(1e-4,q.k||0.08),sub:!!q.sub,and:!!q.and,paint:!!q.paint,soft:q.soft||0.05,col:new T.Color(q.color||p.color),m:null,round:q.round||0,bi:0,rm:sf.rm,ti:sf.ti,pm:q.paint&&(q.mat!==undefined||q.tex!==undefined),pc:!q.paint||q.color!==undefined,fl:q.flow||p.flow||[0,-0.45,-1],sg:q.shag!==undefined?q.shag:(p.shag===undefined?0.5:p.shag)};
     var bn=q.bone||p.bone;if(bn&&!b.sub&&!b.paint){var bi=bones.indexOf(bn);if(bi<0&&bones.length<32){bones.push(bn);bi=bones.length-1}b.bi=Math.max(0,bi)}
     if(q.s==="stick"||q.s==="cyl"){var A=q.at,C=q.to,ba=[C[0]-A[0],C[1]-A[1],C[2]-A[2]],l2=ba[0]*ba[0]+ba[1]*ba[1]+ba[2]*ba[2],r2=q.s==="cyl"?q.r:q.r2,rr=q.r-r2,a2=l2-rr*rr;
       if(a2<=1e-8||l2<1e-8){var R0=Math.max(q.r,r2);b.s="ball";b.r=[R0,R0,R0];b.at=q.r>=r2?A:C}
@@ -70,7 +70,7 @@ function sculptPrep(p){
         var wo=mm?[mm[0]*lo2[0]+mm[3]*lo2[1]+mm[6]*lo2[2],mm[1]*lo2[0]+mm[4]*lo2[1]+mm[7]*lo2[2],mm[2]*lo2[0]+mm[5]*lo2[1]+mm[8]*lo2[2]]:lo2;
         b.pc0=[q.at[0]+wo[0],q.at[1]+wo[1],q.at[2]+wo[2]];b.R=Math.sqrt(Math.pow((u1-u0)/2,2)+Math.pow((v1-v0)/2,2)+b.hw*b.hw)+b.round}
       b.c=b.pc0||b.at;if(b.s!=="torus"&&b.s!=="profile")b.R=b.s==="box"?Math.sqrt(b.r[0]*b.r[0]+b.r[1]*b.r[1]+b.r[2]*b.r[2]):Math.max(b.r[0],b.r[1],b.r[2])}
-    if(!b.sub&&!b.paint){for(var j=0;j<3;j++){mn[j]=Math.min(mn[j],b.c[j]-b.R-b.k);mx[j]=Math.max(mx[j],b.c[j]+b.R+b.k)}}
+    if(!b.sub&&!b.paint&&!b.and){for(var j=0;j<3;j++){mn[j]=Math.min(mn[j],b.c[j]-b.R-b.k);mx[j]=Math.max(mx[j],b.c[j]+b.R+b.k)}}
     if(!b.paint)kmax=Math.max(kmax,b.k);
     B.push(b)});
   var amp=nz.amp||0;for(var j2=0;j2<3;j2++){mn[j2]-=amp;mx[j2]+=amp}
@@ -80,6 +80,7 @@ function sField(S,x,y,z,L){
   var B=L||S.F,d=1e9,i;
   for(i=0;i<B.length;i++){var b=B[i];
     var dx=x-b.c[0],dy=y-b.c[1],dz=z-b.c[2],lb=Math.sqrt(dx*dx+dy*dy+dz*dz)-b.R;
+    if(b.and){d=smax(d,sdBlob(b,x,y,z),b.k);continue}
     if(b.sub){if(lb>=b.k-d)continue;d=smax(d,-sdBlob(b,x,y,z),b.k)}
     else{if(lb>=d+b.k)continue;d=smin(d,sdBlob(b,x,y,z),b.k)}}
   if(S.amp)d+=S.amp*(fbm(x*S.fs,y*S.fs,z*S.fs,3)-0.44)*2;
@@ -96,7 +97,7 @@ function sculptGeo(p){
   var BS=4,bR=BS*0.5*h*Math.sqrt(3),far=bR*1.3+S.amp*2,bi,bj,bk,BX=Math.ceil(nx/BS),BY=Math.ceil(ny/BS),BL=[];
   for(bk=0;bk<nz;bk+=BS)for(bj=0;bj<ny;bj+=BS)for(bi=0;bi<nx;bi+=BS){
     var cx0=ox+(bi+BS*0.5)*h,cy0=oy+(bj+BS*0.5)*h,cz0=oz+(bk+BS*0.5)*h,fc=sField(S,cx0,cy0,cz0),i1=Math.min(nx,bi+BS),j1=Math.min(ny,bj+BS),k1=Math.min(nz,bk+BS),fill=Math.abs(fc)>far,L=null;
-    if(!fill){var reach=Math.abs(fc)+2*bR+S.kmax+S.amp*2;L=S.F.filter(function(b){var dx=cx0-b.c[0],dy=cy0-b.c[1],dz=cz0-b.c[2];return Math.sqrt(dx*dx+dy*dy+dz*dz)-b.R<reach});BL[(bi/BS)+BX*((bj/BS)+BY*(bk/BS))]=L}
+    if(!fill){var reach=Math.abs(fc)+2*bR+S.kmax+S.amp*2;L=S.F.filter(function(b){if(b.and)return true;var dx=cx0-b.c[0],dy=cy0-b.c[1],dz=cz0-b.c[2];return Math.sqrt(dx*dx+dy*dy+dz*dz)-b.R<reach});BL[(bi/BS)+BX*((bj/BS)+BY*(bk/BS))]=L}
     for(k=bk;k<k1;k++)for(j=bj;j<j1;j++)for(i=bi;i<i1;i++)F[i+nx*j+NXY*k]=fill?fc:sField(S,ox+i*h,oy+j*h,oz+k*h,L)}
   var CO=[],ED=[];for(n=0;n<8;n++)CO.push([n&1,(n>>1)&1,(n>>2)&1]);
   for(n=0;n<8;n++)[1,2,4].forEach(function(bit){if(!(n&bit))ED.push([n,n|bit])});
@@ -122,7 +123,8 @@ function sculptGeo(p){
     var d02=0,d13=0;for(var c=0;c<3;c++){d02+=Math.pow(pos[q[0]*3+c]-pos[q[2]*3+c],2);d13+=Math.pow(pos[q[1]*3+c]-pos[q[3]*3+c],2)}
     if(d02<=d13)idx.push(q[0],q[1],q[2],q[0],q[2],q[3]);else idx.push(q[0],q[1],q[3],q[1],q[2],q[3])}
   for(k=1;k<nz-1;k++)for(j=1;j<ny-1;j++)for(i=1;i<nx-1;i++){
-    if(!near(i,j,k)&&!near(i+1,j,k)&&!near(i,j+1,k)&&!near(i,j,k+1)){continue}
+    // every quad around the three edges leaving this grid point uses THIS cell's vertex: no vertex, no quads
+    if(V[i+nx*j+NXY*k]<0)continue;
     var f0=F[i+nx*j+NXY*k],in0=f0<0;
     if(in0!==(F[i+1+nx*j+NXY*k]<0))quad([VC(i,j-1,k-1),VC(i,j,k-1),VC(i,j,k),VC(i,j-1,k)],in0);
     if(in0!==(F[i+nx*(j+1)+NXY*k]<0))quad([VC(i-1,j,k-1),VC(i-1,j,k),VC(i,j,k),VC(i,j,k-1)],in0);
@@ -137,27 +139,29 @@ function sculptGeo(p){
     var il=gl>1e-12?1/Math.sqrt(gl):0;NR[3*n]=g[0]*il;NR[3*n+1]=g[1]*il;NR[3*n+2]=g[2]*il}
   // per vertex: colour (blobs blend where they melt, paint lays soft markings), material (roughness/metal/glow),
   // surface detail weights for the shader (fur, scales, wrinkles...), crease darkening (SDF ambient occlusion), skin weights
-  var COL=new Float32Array(NV*3),FLW=new Float32Array(NV*3),SHG=new Float32Array(NV),fl=[0,0,0],sgv=0,RME=new Float32Array(NV*3),DA=new Float32Array(NV*4),DB=new Float32Array(NV*4),nb=S.bones.length,skin=nb>1,SI=skin?new Uint16Array(NV*4):null,SW=skin?new Float32Array(NV*4):null,acc=new Float64Array(nb),tc=new T.Color(),ao=p.ao===undefined?1:p.ao,tint=p.tint===undefined?0.06:p.tint,fq=4/Math.max(0.2,ext);
+  var SHD=new Float32Array(NV),COL=new Float32Array(NV*3),FLW=new Float32Array(NV*3),SHG=new Float32Array(NV),fl=[0,0,0],sgv=0,RME=new Float32Array(NV*3),DA=new Float32Array(NV*4),DB=new Float32Array(NV*4),nb=S.bones.length,skin=nb>1,SI=skin?new Uint16Array(NV*4):null,SW=skin?new Float32Array(NV*4):null,acc=new Float64Array(nb),tc=new T.Color(),ao=p.ao===undefined?1:p.ao,tint=p.tint===undefined?0.06:p.tint,fq=4/Math.max(0.2,ext);
   // the grid already holds the field: crease darkening samples it (trilinear) instead of re-evaluating every blob
   function fAt(x,y,z){var fx=(x-ox)/h,fy=(y-oy)/h,fz=(z-oz)/h;fx=Math.max(0,Math.min(nx-1.001,fx));fy=Math.max(0,Math.min(ny-1.001,fy));fz=Math.max(0,Math.min(nz-1.001,fz));
     var i0=fx|0,j0=fy|0,k0=fz|0,tx=fx-i0,ty=fy-j0,tz=fz-k0,b0=i0+nx*j0+NXY*k0,
       c00=F[b0]+(F[b0+1]-F[b0])*tx,c10=F[b0+nx]+(F[b0+nx+1]-F[b0+nx])*tx,c01=F[b0+NXY]+(F[b0+NXY+1]-F[b0+NXY])*tx,c11=F[b0+NXY+nx]+(F[b0+NXY+nx+1]-F[b0+NXY+nx])*tx,
       c0=c00+(c10-c00)*ty,c1=c01+(c11-c01)*ty;return c0+(c1-c0)*tz}
+  // markings drawn per PIXEL on the GPU (crisp at any mesh resolution): up to 16 colour paints, profiles up to 24 points; the rest bake
+  var GP=[];if(!lo&&p.crisp!==false)S.P.forEach(function(pb){if(!pb.pc||GP.length>=16||(pb.s==="profile"&&pb.pts.length>24))return;pb.gpu=true;GP.push(pb)});
   var aoD=[0.012,0.035,0.07,0.13].map(function(v){return v*ext}),aoW=[0.42,0.3,0.18,0.1],rm=[0,0,0],dt=new Float64Array(8),hasDet=[0,0,0,0,0,0,0,0];
   for(n=0;n<NV;n++){
     var X=P[3*n],Y=P[3*n+1],Z=P[3*n+2],best=1e9,q2,LB=VL[n]||S.F,dists=new Array(LB.length);
-    var bestK=1;for(q2=0;q2<LB.length;q2++){var bb=LB[q2];if(bb.sub){dists[q2]=1e9;continue}var dd=sdBlob(bb,X,Y,Z);dists[q2]=dd;if(dd<best){best=dd;bestK=bb.k}}
+    var bestK=1;for(q2=0;q2<LB.length;q2++){var bb=LB[q2];if(bb.sub||bb.and){dists[q2]=1e9;continue}var dd=sdBlob(bb,X,Y,Z);dists[q2]=dd;if(dd<best){best=dd;bestK=bb.k}}
     var r0=0,g0=0,b0=0,ws=0;for(q2=0;q2<nb;q2++)acc[q2]=0;rm[0]=rm[1]=rm[2]=0;fl[0]=fl[1]=fl[2]=0;sgv=0;for(q2=0;q2<8;q2++)dt[q2]=0;
-    for(q2=0;q2<LB.length;q2++){var bl=LB[q2];if(bl.sub)continue;var dz=(dists[q2]-best)/Math.max(0.004,Math.min(bl.k,bestK)*0.45),w=Math.exp(-dz*dz);if(w<1e-4)continue;
+    for(q2=0;q2<LB.length;q2++){var bl=LB[q2];if(bl.sub||bl.and)continue;var dz=(dists[q2]-best)/Math.max(0.004,Math.min(bl.k,bestK)*0.45),w=Math.exp(-dz*dz);if(w<1e-4)continue;
       r0+=bl.col.r*w;g0+=bl.col.g*w;b0+=bl.col.b*w;ws+=w;acc[bl.bi]+=w;rm[0]+=bl.rm[0]*w;rm[1]+=bl.rm[1]*w;rm[2]+=bl.rm[2]*w;fl[0]+=bl.fl[0]*w;fl[1]+=bl.fl[1]*w;fl[2]+=bl.fl[2]*w;sgv+=bl.sg*w;if(bl.ti>=0)dt[bl.ti]+=w}
     if(ws<=0){ws=1;r0=tc.r;g0=tc.g;b0=tc.b}
     tc.setRGB(r0/ws,g0/ws,b0/ws);rm[0]/=ws;rm[1]/=ws;rm[2]/=ws;for(q2=0;q2<8;q2++)dt[q2]/=ws;
-    for(q2=0;q2<S.P.length;q2++){var pb=S.P[q2],pd=sdBlob(pb,X,Y,Z),tt=Math.max(0,Math.min(1,1-pd/pb.soft));if(tt<=0)continue;tt=tt*tt*(3-2*tt);
-      if(pb.pc)tc.lerp(pb.col,tt);
+    for(q2=0;q2<S.P.length;q2++){var pb=S.P[q2];if(pb.gpu&&!pb.pm)continue;var pd=sdBlob(pb,X,Y,Z),tt=Math.max(0,Math.min(1,1-pd/pb.soft));if(tt<=0)continue;tt=tt*tt*(3-2*tt);
+        if(pb.pc&&!pb.gpu)tc.lerp(pb.col,tt);
       if(pb.pm){rm[0]+=(pb.rm[0]-rm[0])*tt;rm[1]+=(pb.rm[1]-rm[1])*tt;rm[2]+=(pb.rm[2]-rm[2])*tt;for(var d8=0;d8<8;d8++)dt[d8]*=1-tt;if(pb.ti>=0)dt[pb.ti]+=tt}}
     var occ=0;for(q2=0;q2<4;q2++){var hh=aoD[q2],fv=fAt(X+NR[3*n]*hh,Y+NR[3*n+1]*hh,Z+NR[3*n+2]*hh);occ+=aoW[q2]*Math.max(0,(hh-fv)/hh)}
     var shade=(1-ao*Math.min(0.62,occ*1.15))*(1+tint*((fbm(X*fq*3,Y*fq*3,Z*fq*3,3)-0.44)*2.2));
-    COL[3*n]=tc.r*shade;COL[3*n+1]=tc.g*shade;COL[3*n+2]=tc.b*shade;SHG[n]=sgv/ws;FLW[3*n]=fl[0]/ws;FLW[3*n+1]=fl[1]/ws;FLW[3*n+2]=fl[2]/ws;RME[3*n]=rm[0];RME[3*n+1]=rm[1];RME[3*n+2]=rm[2];
+    COL[3*n]=tc.r*shade;COL[3*n+1]=tc.g*shade;COL[3*n+2]=tc.b*shade;SHD[n]=shade;SHG[n]=sgv/ws;FLW[3*n]=fl[0]/ws;FLW[3*n+1]=fl[1]/ws;FLW[3*n+2]=fl[2]/ws;RME[3*n]=rm[0];RME[3*n+1]=rm[1];RME[3*n+2]=rm[2];
     for(q2=0;q2<4;q2++){DA[4*n+q2]=dt[q2];DB[4*n+q2]=dt[q2+4];if(dt[q2]>0.01)hasDet[q2]=1;if(dt[q2+4]>0.01)hasDet[q2+4]=1}
     if(skin){var top=[];for(q2=0;q2<nb;q2++)if(acc[q2]>0)top.push([acc[q2],q2]);top.sort(function(u,v){return v[0]-u[0]});top=top.slice(0,4);var tw=0;top.forEach(function(e){tw+=e[0]});
       for(q2=0;q2<4;q2++){SI[4*n+q2]=top[q2]?top[q2][1]:0;SW[4*n+q2]=top[q2]&&tw>0?top[q2][0]/tw:(q2?0:1)}}}
@@ -173,11 +177,13 @@ function sculptGeo(p){
         lock=0.7*r1*r1+0.3*r2,dsp=amp*wf*(lock-0.45)*2.2;
       P[3*n]+=nX*dsp;P[3*n+1]+=nY*dsp;P[3*n+2]+=nZ*dsp;displaced=true}}
   var gm=new T.BufferGeometry();gm.setAttribute("position",new T.BufferAttribute(P,3));gm.setAttribute("normal",new T.BufferAttribute(NR,3));gm.setAttribute("color",new T.BufferAttribute(COL,3));gm.setAttribute("flow",new T.BufferAttribute(FLW,3));
-  gm.setAttribute("rme",new T.BufferAttribute(RME,3));gm.setAttribute("dtA",new T.BufferAttribute(DA,4));gm.setAttribute("dtB",new T.BufferAttribute(DB,4));
+  gm.setAttribute("rme",new T.BufferAttribute(RME,3));gm.setAttribute("shd",new T.BufferAttribute(SHD,1));gm.setAttribute("dtA",new T.BufferAttribute(DA,4));gm.setAttribute("dtB",new T.BufferAttribute(DB,4));
   if(skin){gm.setAttribute("skinIndex",new T.BufferAttribute(SI,4));gm.setAttribute("skinWeight",new T.BufferAttribute(SW,4))}
   gm.setIndex(NV>65535?new T.Uint32BufferAttribute(idx,1):new T.Uint16BufferAttribute(idx,1));
   if(displaced)gm.computeVertexNormals();
   gm.userData.bones=skin?S.bones:null;gm.userData.sculpt=true;gm.userData.det=hasDet;gm.userData.ext=ext;
+  gm.userData.gp=GP.map(function(b){var K={ball:0,box:1,stick:2,cyl:3,profile:4,torus:5}[b.s]||0,to=b.ba?[b.at[0]+b.ba[0],b.at[1]+b.ba[1],b.at[2]+b.ba[2]]:[0,0,0];
+    return{k:K,at:b.at,r:K<=1?b.r:K===5?[b.tR,0,0]:[b.r1||0,0,0],round:b.round||0,to:K===4?[b.hw,b.taper,b.ax==="y"?1:b.ax==="z"?2:0]:to,e:K===4?[b.pts.length,b.vmin,b.vspan,0]:[0,0,0,K===5?b.tr:(b.r2||0)],m:b.m,col:[b.col.r,b.col.g,b.col.b],soft:b.soft,pts:b.pts||null}});
   // poly = a triangle budget: decimate the high-detail surface (game LODs; and the real low-poly look)
   var budget=p.poly||(lo?1400:0);if(budget)gm=decimate(gm,budget);
   if(lo){var ud=gm.userData;gm=gm.toNonIndexed();gm.userData=ud;var fs=p.shade===undefined?0.07:p.shade;
@@ -274,29 +280,57 @@ function sculptMaps(mp){
     var tx=L.load(url,function(){U[k[2]].value=mix},undefined,function(){});
     tx.wrapS=tx.wrapT=T.RepeatWrapping;tx.anisotropy=8;if(k[0]==="albedo")tx.colorSpace=T.SRGBColorSpace;U[k[1]].value=tx});
   return{U:U,has:has}}
+var SG_PAINT=[
+"uniform int pN;uniform vec4 pA[16];uniform vec4 pB[16];uniform vec4 pC[16];uniform vec4 pD[16];uniform vec4 pE[16];uniform mat3 pM[16];uniform vec2 pP[384];varying float vShd;",
+"float gBox(vec3 p,vec3 b,float r){vec3 q=abs(p)-b+r;return length(max(q,0.0))+min(max(q.x,max(q.y,q.z)),0.0)-r;}",
+"float gEll(vec3 p,vec3 r){if(abs(r.x-r.y)<1e-6&&abs(r.y-r.z)<1e-6)return length(p)-r.x;float k0=length(p/r),k1=length(p/(r*r));return k1<1e-9?-min(r.x,min(r.y,r.z)):k0*(k0-1.0)/k1;}",
+"float gCone(vec3 p,vec3 a,vec3 b,float r1,float r2){vec3 ba=b-a;float l2=dot(ba,ba),rr=r1-r2,a2=l2-rr*rr,il2=1.0/l2;vec3 pa=p-a;float y=dot(pa,ba),z=y-l2;vec3 xv=pa*l2-ba*y;float x2=dot(xv,xv),y2=y*y*l2,z2=z*z*l2,k=sign(rr)*rr*rr*x2;",
+"  if(sign(z)*a2*z2>k)return sqrt(x2+z2)*il2-r2;if(sign(y)*a2*y2<k)return sqrt(x2+y2)*il2-r1;return(sqrt(x2*a2*il2)+y*rr)*il2-r1;}",
+"float gCyl(vec3 p,vec3 a,vec3 b,float r){vec3 ba=b-a,pa=p-a;float bb=dot(ba,ba),pb=dot(pa,ba),x=length(pa*bb-ba*pb)-r*bb,y=abs(pb-bb*0.5)-bb*0.5,d=(max(x,y)<0.0)?-min(x*x,y*y*bb):(((x>0.0)?x*x:0.0)+((y>0.0)?y*y*bb:0.0));return sign(d)*sqrt(abs(d))/bb;}",
+"float gProf(vec3 q,int i){float ax=pC[i].z,U,V,W;if(ax>1.5){U=q.x;V=q.y;W=q.z;}else if(ax>0.5){U=q.x;V=q.z;W=q.y;}else{U=q.z;V=q.y;W=q.x;}",
+"  int n=int(pE[i].x);float dd=1e18,sg=1.0;vec2 pt=vec2(U,V);",
+"  for(int j=0;j<24;j++){if(j>=n)break;int jj=j==0?n-1:j-1;vec2 vi=pP[i*24+j],vj=pP[i*24+jj],e=vj-vi,w=pt-vi;float el=dot(e,e);vec2 bq=w-e*clamp(el>0.0?dot(w,e)/el:0.0,0.0,1.0);dd=min(dd,dot(bq,bq));",
+"    bvec3 c=bvec3(pt.y>=vi.y,pt.y<vj.y,e.x*w.y>e.y*w.x);if(all(c)||all(not(c)))sg=-sg;}",
+"  float rd=pB[i].w,d2=sg*sqrt(dd)+rd,hw=pC[i].x*(1.0-pC[i].y*clamp((V-pE[i].y)/pE[i].z,0.0,1.0)),dw=abs(W)-hw+rd;return length(max(vec2(d2,dw),0.0))+min(max(d2,dw),0.0)-rd;}",
+"float gSd(vec3 p,int i){int k=int(pA[i].w+0.5);vec3 a=pA[i].xyz;if(k==2)return gCone(p,a,pC[i].xyz,pB[i].x,pE[i].w);if(k==3)return gCyl(p,a,pC[i].xyz,pB[i].x)-pB[i].w;",
+"  vec3 q=pM[i]*(p-a);if(k==1)return gBox(q,pB[i].xyz,pB[i].w);if(k==4)return gProf(q,i);if(k==5){vec2 t=vec2(length(q.xz)-pB[i].x,q.y);return length(t)-pE[i].w;}return gEll(q,pB[i].xyz);}",
+"void gPaint(inout vec3 col,vec3 p){for(int i=0;i<16;i++){if(i>=pN)break;float d=gSd(p,i),s=max(pD[i].w,fwidth(d)*1.5),t=clamp(1.0-d/s,0.0,1.0);t=t*t*(3.0-2.0*t);col=mix(col,pD[i].rgb*vShd,t);}}"
+].join(SG_NL);
+function paintUniforms(gp){
+  var A=[],B=[],C=[],D=[],E=[],M=[],P=[],i,j;
+  for(i=0;i<16;i++){var g=gp[i];
+    if(!g){A.push(new T.Vector4());B.push(new T.Vector4());C.push(new T.Vector4());D.push(new T.Vector4());E.push(new T.Vector4());M.push(new T.Matrix3());continue}
+    A.push(new T.Vector4(g.at[0],g.at[1],g.at[2],g.k));B.push(new T.Vector4(g.r[0],g.r[1],g.r[2],g.round));C.push(new T.Vector4(g.to[0],g.to[1],g.to[2],0));
+    D.push(new T.Vector4(g.col[0],g.col[1],g.col[2],g.soft));E.push(new T.Vector4(g.e[0],g.e[1],g.e[2],g.e[3]));
+    var m=g.m,mm=new T.Matrix3();if(m)mm.set(m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8]);M.push(mm)}
+  for(i=0;i<16;i++)for(j=0;j<24;j++){var q=gp[i]&&gp[i].pts&&gp[i].pts[j];P.push(new T.Vector2(q?q[0]:0,q?q[1]:0))}
+  return{pN:{value:Math.min(16,gp.length)},pA:{value:A},pB:{value:B},pC:{value:C},pD:{value:D},pE:{value:E},pM:{value:M},pP:{value:P}}}
 function sculptMaterial(p,gm){
   var det=gm.userData.det||[],lo=!!p.low,fur=det[0],o={color:0xffffff,vertexColors:true,flatShading:lo,roughness:1,metalness:1};
   if(fur){o.sheen=0.4;o.sheenRoughness=0.75;o.sheenColor=new T.Color(0.22,0.2,0.18)}
   if(p.mat==="plastic"||p.mat==="glossy"){o.clearcoat=0.5;o.clearcoatRoughness=0.3}
   if(p.mat==="skin"){o.clearcoat=0.1;o.clearcoatRoughness=0.55}
   var m=new T.MeshPhysicalMaterial(o),useDet=det.some(function(x){return x}),ds=(90/Math.max(0.02,gm.userData.ext||1))*(p.grain||1),NL=SG_NL;
-  var MP=p.maps?sculptMaps(p.maps):{U:{},has:{}},H=MP.has,MW=p.maps&&MP_ON[p.maps.on]||"1.0",useN=useDet||!!H.normal;
+  var MP=p.maps?sculptMaps(p.maps):{U:{},has:{}},H=MP.has,MW=p.maps&&MP_ON[p.maps.on]||"1.0",useN=useDet||!!H.normal,GP=gm.userData.gp||[],PU=GP.length?paintUniforms(GP):null;
+  var blobMats=(p.blobs||[]).map(function(b){return b.mat});
+  if(p.mat==="paint"||blobMats.indexOf("paint")>=0){m.clearcoat=1;m.clearcoatRoughness=0.06}
+  if(p.mat==="glass"){m.transparent=true;m.opacity=0.42;m.depthWrite=false;m.side=T.DoubleSide;m.envMapIntensity=1.6}
   m.userData.maps=MP.U;
   m.onBeforeCompile=function(sh){
-    sh.uniforms.sdS={value:ds};Object.keys(MP.U).forEach(function(k){sh.uniforms[k]=MP.U[k]});
-    sh.vertexShader=sh.vertexShader.replace("#include <common>","#include <common>"+NL+"attribute vec3 rme;attribute vec4 dtA;attribute vec4 dtB;attribute vec3 flow;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;")
-      .replace("#include <begin_vertex>","#include <begin_vertex>"+NL+"vRest=position;vFlow=flow;vObjN=normal;vRme=rme;vDtA=dtA;vDtB=dtB;vNM0=normalMatrix*vec3(1.0,0.0,0.0);vNM1=normalMatrix*vec3(0.0,1.0,0.0);vNM2=normalMatrix*vec3(0.0,0.0,1.0);");
+    sh.uniforms.sdS={value:ds};Object.keys(MP.U).forEach(function(k){sh.uniforms[k]=MP.U[k]});if(PU)Object.keys(PU).forEach(function(k){sh.uniforms[k]=PU[k]});
+    sh.vertexShader=sh.vertexShader.replace("#include <common>","#include <common>"+NL+"attribute vec3 rme;attribute vec4 dtA;attribute vec4 dtB;attribute vec3 flow;attribute float shd;varying float vShd;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;")
+      .replace("#include <begin_vertex>","#include <begin_vertex>"+NL+"vRest=position;vShd=shd;vFlow=flow;vObjN=normal;vRme=rme;vDtA=dtA;vDtB=dtB;vNM0=normalMatrix*vec3(1.0,0.0,0.0);vNM1=normalMatrix*vec3(0.0,1.0,0.0);vNM2=normalMatrix*vec3(0.0,0.0,1.0);");
     var mapU=(H.albedo||H.normal||H.rough)?"uniform float mpS;uniform float mpStr;uniform float mpMA;uniform float mpMN;uniform float mpMR;uniform sampler2D mpA;uniform sampler2D mpN;uniform sampler2D mpR;"+NL+SG_MAPS:"";
     var mapC=H.albedo?NL+"{vec3 mw3=tpW(normalize(vObjN));vec3 ta=tpS(mpA,vRest*mpS,mw3).rgb,avg=textureLod(mpA,vec2(0.5),14.0).rgb;diffuseColor.rgb*=mix(vec3(1.0),clamp(ta/max(avg,vec3(0.02)),0.0,3.0),mpMA*"+MW+");}":"";
-    var fs=sh.fragmentShader.replace("#include <common>","#include <common>"+NL+"uniform float sdS;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;"+NL+SG_FN+NL+mapU)
-      .replace("#include <color_fragment>","#include <color_fragment>"+NL+(useDet?"sDetail(vRest*sdS,vDtA,vDtB,normalize(vObjN),normalize(vFlow+vec3(1e-5)));diffuseColor.rgb*=sdC;":"sdG=vec3(0.0);sdC=1.0;")+mapC)
+    var fs=sh.fragmentShader.replace("#include <common>","#include <common>"+NL+"uniform float sdS;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;"+NL+SG_FN+NL+mapU+(PU?NL+SG_PAINT:""))
+      .replace("#include <color_fragment>","#include <color_fragment>"+NL+(PU?"gPaint(diffuseColor.rgb,vRest);"+NL:"")+(useDet?"sDetail(vRest*sdS,vDtA,vDtB,normalize(vObjN),normalize(vFlow+vec3(1e-5)));diffuseColor.rgb*=sdC;":"sdG=vec3(0.0);sdC=1.0;")+mapC)
       .replace("#include <roughnessmap_fragment>","#include <roughnessmap_fragment>"+NL+"roughnessFactor=clamp(vRme.x*(1.0+0.25*(1.0-sdC)),0.04,1.0);"+(H.rough?NL+"roughnessFactor=mix(roughnessFactor,clamp(tpS(mpR,vRest*mpS,tpW(normalize(vObjN))).g,0.04,1.0),mpMR*"+MW+");":""))
       .replace("#include <metalnessmap_fragment>","#include <metalnessmap_fragment>"+NL+"metalnessFactor=vRme.y;")
       .replace("#include <emissivemap_fragment>","#include <emissivemap_fragment>"+NL+"totalEmissiveRadiance+=diffuseColor.rgb*vRme.z*1.6;");
     if(useN)fs=fs.replace("#include <normal_fragment_maps>","#include <normal_fragment_maps>"+NL+"{vec3 nO=normalize(vObjN);"+(H.normal?"sdG-=tpN(mpN,vRest*mpS,tpW(nO))*mpStr*mpMN*"+MW+"*2.4;":"")+"vec3 gT=sdG-dot(sdG,nO)*nO;normal=normalize(normal-(vNM0*gT.x+vNM1*gT.y+vNM2*gT.z)*0.35);}");
     if(fur)fs=fs.replace("#include <lights_physical_fragment>","#include <lights_physical_fragment>"+NL+"#ifdef USE_SHEEN"+NL+"material.sheenColor*=vDtA.x;"+NL+"#endif");
     sh.fragmentShader=fs};
-  m.customProgramCacheKey=function(){return "sculpt"+(useDet?1:0)+(fur?1:0)+(H.albedo?"a":"")+(H.normal?"n":"")+(H.rough?"r":"")+MW};
+  m.customProgramCacheKey=function(){return "sculpt"+(useDet?1:0)+(fur?1:0)+(H.albedo?"a":"")+(H.normal?"n":"")+(H.rough?"r":"")+MW+(PU?"p":"")};
   m.userData.sculpt=1;return m}
 // snap: put a part ON a sculpt's surface (eyes, nose, claws, horns, buttons): its centre is projected to the nearest surface point,
 // pushed out along the normal by p.out; align turns its +y to the surface normal. Returns new part objects; the input is untouched.

@@ -120,7 +120,7 @@ function build(el){
     insp.appendChild(mk("b","k-insp-h",p.name));
     var ci=document.createElement("input");ci.type="color";ci.value=p.color;ci.className="k-color";ci.addEventListener("input",function(){p.color=ci.value;if(p.facets||p.fcolors)paint(u.mesh.geometry,p);else u.mat.color.set(ci.value);if(p.mat==="glow")u.mat.emissive.set(ci.value);draw()});
     var cr=mk("label","k-slider");cr.appendChild(mk("span","","Colour"));cr.appendChild(mk("b","",""));cr.appendChild(ci);insp.appendChild(cr);
-    var ms=document.createElement("select");ms.className="k-sel";["matte","clay","plastic","metal","glossy","glass","glow","fur","skin","leather","wood","stone","cloth"].forEach(function(k){var o=document.createElement("option");o.value=k;o.textContent=k;if(k===p.mat)o.selected=true;ms.appendChild(o)});
+    var ms=document.createElement("select");ms.className="k-sel";["matte","clay","plastic","metal","glossy","glass","glow","fur","skin","leather","wood","stone","cloth","paint","rubber","chrome"].forEach(function(k){var o=document.createElement("option");o.value=k;o.textContent=k;if(k===p.mat)o.selected=true;ms.appendChild(o)});
     ms.addEventListener("change",function(){p.mat=ms.value;var nm=material(p);u.mesh.material=nm;u.mat=nm;mats[sel]=nm;u.ed.visible=edgeVis(p)&&!wire;draw()});
     var mr=mk("label","k-slider");mr.appendChild(mk("span","","Material"));mr.appendChild(mk("b","",""));mr.appendChild(ms);insp.appendChild(mr);
     var sm=mk("button","k-btn",p.smooth?"smooth":"faceted");sm.type="button";sm.addEventListener("click",function(){p.smooth=!p.smooth;sm.textContent=p.smooth?"smooth":"faceted";u.mat.flatShading=!p.smooth;u.mat.needsUpdate=true;u.ed.visible=edgeVis(p)&&!wire;draw()});
@@ -281,7 +281,7 @@ function build(el){
   // ── studio mode: Ares edits this model while you watch. The server holds the document; this page polls it and
   //    reconciles in place - unchanged parts morph to their new transform, new/changed parts pop in, removed ones shrink out ──
   var tweens=[],ghosts=[],refImg=null,settledOnce=false;
-  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone,p.poly,p.flow,p.shag,p.maps])}
+  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone,p.poly,p.flow,p.shag,p.maps,p.crisp])}
   function setRef(src){
     if(!src){if(refImg){refImg.remove();refImg=null}return}
     if(!refImg){refImg=document.createElement("img");refImg.className="k-ref";refImg.alt="reference";refImg.title="reference - click to fade";refImg.addEventListener("click",function(){refImg.style.opacity=refImg.style.opacity==="0.2"?"1":"0.2"});stage.appendChild(refImg)}

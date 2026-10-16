@@ -41,7 +41,10 @@ Blobs (applied IN ORDER: each melts into, or carves, what is already there):
   k: how far it melts in (0.002 crisp hard-surface seam .. 0.3 soft clay). Organic masses 0.2-0.3; a limb into the body 0.08-0.15;
      features 0.03-0.08; hard-surface 0.004-0.015.
   sub:true  carves (boolean): eye sockets, nostrils, mouth lines, ear cups, fullers, grooves, panel lines, bevels, holes.
+  and:true  intersects (keeps only what is inside both): a glass pane = the cabin shape AND a window band; a blade = a slab AND its outline.
   paint:true, soft:0.05  colour ONLY (the skin INSIDE the blob takes it, feathered over soft): muzzle, belly, socks, stripes, spots, edges.
+        The first 16 colour paints are drawn PER PIXEL on the GPU: razor-sharp edges at any mesh resolution (window rubber, racing
+        stripes, a tiger's stripes, eye rims). Profile paints up to 24 points.
   color, mat (per blob: one sculpt can be steel + gold + leather), tex (surface detail), bone, mirror:true (left/right copy, bone follows).
   mat: matte clay plastic glossy metal glass glow holo fur skin leather wood stone cloth. A mat brings its detail: fur=fur grain, skin=pores,
        leather=wrinkles, stone=rock, wood=wood grain, cloth=weave. tex overrides: none fur scales wrinkles rock wood cloth hammered pores
@@ -144,30 +147,106 @@ CLIPS:
   {name:"idle",dur:6,motion:[{part:"chest",kind:"pulse",amp:0.012,speed:0.33},{part:"head",kind:"swing",axis:"x",amp:3,speed:0.17},{part:"head",kind:"wag",axis:"y",amp:7,speed:0.083,phase:1},{part:"tail",kind:"wag",axis:"y",amp:10,speed:0.33}]},
   {name:"walk",dur:1.4,motion:[{part:"legF",kind:"step",axis:"x",amp:20,speed:0.714,duty:0.62},{part:"pawF",kind:"lift",axis:"x",amp:40,speed:0.714,duty:0.62},{part:"legB",kind:"step",axis:"x",amp:18,speed:0.714,duty:0.62,phase:-1.57},{part:"pawB",kind:"lift",axis:"x",amp:-30,speed:0.714,duty:0.62,phase:-1.57},{part:"root",kind:"bob",axis:"y",amp:0.025,speed:1.43},{part:"root",kind:"wag",axis:"z",amp:2,speed:0.714},{part:"head",kind:"swing",axis:"x",amp:4,speed:1.43,phase:1.2},{part:"tail",kind:"wag",axis:"y",amp:8,speed:0.714}]},
   {name:"roar",dur:2.4,loop:false,events:[{t:0.7,name:"roar"}],tracks:[{part:"root",ease:"back",rot:[[0,[0,0,0]],[0.6,[-6,0,0]],[1.7,[-6,0,0]],[2.4,[0,0,0]]]},{part:"head",ease:"back",rot:[[0,[0,0,0]],[0.25,[10,0,0]],[0.7,[-32,0,0]],[1.7,[-28,0,0]],[2.4,[0,0,0]]]},{part:"legF",ease:"out",rot:[[0,[0,0,0]],[0.6,[-28,0,0]],[1.7,[-28,0,0]],[2.4,[0,0,0]]]},{part:"pawF",ease:"out",rot:[[0,[0,0,0]],[0.6,[45,0,0]],[1.7,[45,0,0]],[2.4,[0,0,0]]]}]}]
-HARD SURFACE EXAMPLE - a longsword: ONE sculpt, bevelled boxes, a carved fuller, leather wraps (torus), gold, a glowing gem:
+HARD SURFACE EXAMPLE - a sports coupe built like a game asset: a hollow car-paint body from side profiles with the window openings cut through it, black window surrounds painted per pixel, real glass, mirrored light units and mirrors, an interior, and 2 mirrored wheel parts (4 wheels on 2 axles: wheelbase 2.7, track 1.6) on axle joints:
 [
-  {name:"sword",shape:"sculpt",color:"#c9ced6",mat:"metal",res:140,blobs:[
-    {id:"blade",s:"box",at:[0,1.55,0],r:[0.055,0.62,0.012],round:0.006,k:0.01},
-    {id:"tip",s:"box",at:[0,2.2,0],r:[0.04,0.04,0.012],rot:[0,0,45],round:0.004,k:0.03},
-    {id:"tipCut",s:"box",at:[0.07,2.25,0],r:[0.05,0.12,0.05],rot:[0,0,22],sub:true,k:0.004,mirror:true},
-    {id:"fuller",s:"box",at:[0,1.42,0.016],r:[0.012,0.42,0.008],round:0.006,sub:true,k:0.006},
-    {id:"fuller2",s:"box",at:[0,1.42,-0.016],r:[0.012,0.42,0.008],round:0.006,sub:true,k:0.006},
-    {id:"ricasso",s:"box",at:[0,0.97,0],r:[0.045,0.04,0.016],round:0.005,k:0.01},
-    {id:"guard",s:"box",at:[0,0.92,0],r:[0.24,0.022,0.03],round:0.012,k:0.012,color:"#c9962e",mat:"metal",tex:"hammered"},
-    {id:"quillon",s:"ball",at:[0.255,0.935,0],r:[0.035,0.035,0.035],k:0.02,color:"#c9962e",mat:"metal",mirror:true},
-    {id:"langet",s:"box",at:[0,0.95,0],r:[0.02,0.05,0.036],round:0.01,k:0.01,color:"#c9962e",mat:"metal"},
-    {id:"grip",s:"cyl",at:[0,0.9,0],to:[0,0.62,0],r:0.026,round:0.006,k:0.01,color:"#4a2c1a",mat:"leather"},
-    {id:"wrap0",s:"torus",at:[0,0.875,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
-    {id:"wrap1",s:"torus",at:[0,0.83,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
-    {id:"wrap2",s:"torus",at:[0,0.785,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
-    {id:"wrap3",s:"torus",at:[0,0.74,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
-    {id:"wrap4",s:"torus",at:[0,0.6950000000000001,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
-    {id:"wrap5",s:"torus",at:[0,0.65,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
-    {id:"collar",s:"cyl",at:[0,0.625,0],to:[0,0.6,0],r:0.032,round:0.004,k:0.006,color:"#c9962e",mat:"metal"},
-    {id:"pommel",s:"ball",at:[0,0.565,0],r:[0.045,0.04,0.03],k:0.01,color:"#c9962e",mat:"metal",tex:"hammered"},
-    {id:"gem",s:"ball",at:[0,0.565,0.026],r:[0.02,0.02,0.012],k:0.004,color:"#d12a3a",mat:"glow"},
-    {id:"gemBack",s:"ball",at:[0,0.565,-0.026],r:[0.02,0.02,0.012],k:0.004,color:"#d12a3a",mat:"glow"},
-    {id:"edge",s:"box",at:[0.05,1.55,0],r:[0.008,0.62,0.02],paint:true,soft:0.004,color:"#eef1f5",mirror:true}]}]
+  {name:"body",shape:"sculpt",color:"#a3101c",mat:"paint",res:200,blobs:[
+    {id:"lower",s:"profile",pts:[[-2.16,0.3],[-2.27,0.44],[-2.27,0.62],[-2.18,0.8],[-1.9,0.87],[-1.6,0.9],[-0.6,0.9],[0.6,0.885],[0.95,0.865],[1.6,0.8],[2.02,0.71],[2.24,0.6],[2.3,0.47],[2.25,0.34],[2.12,0.29]],at:[0,0,0],r:0.92,round:0.17,taper:0.07,k:0.01},
+    {id:"cabin",s:"profile",pts:[[-1.66,0.86],[-1.15,1.24],[-0.72,1.33],[0.12,1.34],[0.48,1.23],[0.96,0.865]],at:[0,0,0],r:0.8,round:0.13,taper:0.32,k:0.06},
+    {id:"flareF",s:"ball",at:[0.82,0.6,1.35],r:[0.11,0.17,0.56],k:0.18,mirror:true},
+    {id:"flareB",s:"ball",at:[0.84,0.63,-1.32],r:[0.14,0.19,0.62],k:0.2,mirror:true},
+    {id:"hollow",s:"profile",pts:[[-1.55,0.62],[-1.58,0.86],[-1.12,1.2],[-0.72,1.29],[0.12,1.3],[0.46,1.19],[0.9,0.85],[0.9,0.62]],at:[0,0,0],r:0.72,taper:0.3,round:0.06,sub:true,k:0.01},
+    {id:"screen",s:"profile",pts:[[0.6,0.915],[1.2,0.915],[0.62,1.275],[0,1.275]],at:[0,0,0],r:0.7,taper:0.26,round:0.03,sub:true,k:0.012},
+    {id:"rearScreen",s:"profile",pts:[[-1.75,0.915],[-1.15,1.27],[-0.75,1.27],[-1.3,0.915]],at:[0,0,0],r:0.64,taper:0.22,round:0.03,sub:true,k:0.012},
+    {id:"sideF",s:"profile",pts:[[0.78,0.93],[0.4,1.215],[-0.3,1.235],[-0.3,0.93]],at:[0.78,0,0],r:0.3,round:0.025,sub:true,k:0.01,mirror:true},
+    {id:"sideB",s:"profile",pts:[[-0.4,0.93],[-0.4,1.235],[-0.78,1.215],[-1.3,0.93]],at:[0.78,0,0],r:0.3,round:0.025,sub:true,k:0.01,mirror:true},
+    {id:"archF",s:"cyl",at:[1.05,0.34,1.35],to:[0.5,0.34,1.35],r:0.42,round:0.03,sub:true,k:0.02,mirror:true},
+    {id:"archB",s:"cyl",at:[1.05,0.34,-1.35],to:[0.5,0.34,-1.35],r:0.42,round:0.03,sub:true,k:0.02,mirror:true},
+    {id:"crease",s:"stick",at:[0.94,0.75,1.75],to:[0.97,0.77,-1.85],r:0.006,sub:true,k:0.008,mirror:true},
+    {id:"doorF",s:"box",at:[0.95,0.62,0.42],r:[0.05,0.27,0.003],sub:true,k:0.002,mirror:true},
+    {id:"doorB",s:"box",at:[0.95,0.62,-0.82],r:[0.05,0.27,0.003],sub:true,k:0.002,mirror:true},
+    {id:"intake",s:"box",at:[0,0.42,2.3],r:[0.5,0.075,0.12],round:0.04,sub:true,k:0.02},
+    {id:"grille",s:"box",at:[0,0.42,2.2],r:[0.5,0.07,0.02],round:0.02,k:0.004,color:"#0c0c0e",mat:"matte",tex:"cloth"},
+    {id:"lampF",s:"box",at:[0.64,0.66,2.16],r:[0.21,0.05,0.1],rot:[0,14,0],round:0.025,sub:true,k:0.01,mirror:true},
+    {id:"lampB",s:"box",at:[0.62,0.74,-2.24],r:[0.23,0.04,0.08],rot:[0,-6,0],round:0.02,sub:true,k:0.01,mirror:true},
+    {id:"sill",s:"box",at:[0.9,0.34,0],r:[0.04,0.04,0.88],round:0.03,k:0.03,color:"#0c0c0e",mat:"matte",mirror:true},
+    {id:"splitter",s:"box",at:[0,0.3,2.12],r:[0.82,0.018,0.12],round:0.012,k:0.01,color:"#0c0c0e",mat:"matte"},
+    {id:"diffuser",s:"box",at:[0,0.33,-2.18],r:[0.72,0.05,0.08],round:0.025,k:0.012,color:"#0c0c0e",mat:"matte"},
+    {id:"exhaust",s:"cyl",at:[0.45,0.36,-2.15],to:[0.45,0.36,-2.34],r:0.045,round:0.008,k:0.004,color:"#d4d8de",mat:"chrome",mirror:true},
+    {id:"exhaustHole",s:"cyl",at:[0.45,0.36,-2.2],to:[0.45,0.36,-2.4],r:0.032,sub:true,k:0.003,mirror:true},
+    {id:"handle",s:"box",at:[0.935,0.79,-0.6],r:[0.008,0.012,0.075],round:0.008,k:0.003,color:"#d4d8de",mat:"chrome",mirror:true},
+    {id:"cabinIn",s:"profile",pts:[[-1.55,0.62],[-1.58,0.86],[-1.12,1.2],[-0.72,1.29],[0.12,1.3],[0.46,1.19],[0.9,0.85],[0.9,0.62]],at:[0,0,0],r:0.712,taper:0.3,round:0.06,paint:true,soft:0.003,color:"#141417",mat:"matte"},
+    {id:"frameScreen",s:"profile",pts:[[0.6,0.895],[1.23,0.895],[0.63,1.295],[-0.02,1.295]],at:[0,0,0],r:0.74,taper:0.26,round:0,paint:true,soft:0.004,color:"#0c0c0e"},
+    {id:"frameRear",s:"profile",pts:[[-1.78,0.895],[-1.16,1.29],[-0.73,1.29],[-1.28,0.895]],at:[0,0,0],r:0.68,taper:0.22,round:0,paint:true,soft:0.004,color:"#0c0c0e"},
+    {id:"frameF",s:"profile",pts:[[0.81,0.91],[0.41,1.235],[-0.28,1.255],[-0.28,0.91]],at:[0.78,0,0],r:0.32,round:0,paint:true,soft:0.004,color:"#0c0c0e",mirror:true},
+    {id:"frameB",s:"profile",pts:[[-0.42,0.91],[-0.42,1.255],[-0.8,1.235],[-1.34,0.91]],at:[0.78,0,0],r:0.32,round:0,paint:true,soft:0.004,color:"#0c0c0e",mirror:true},
+    {id:"plateF",s:"box",at:[0,0.5,2.31],r:[0.26,0.055,0.008],round:0.004,k:0.002,color:"#eceae2",mat:"matte"},
+    {id:"plateB",s:"box",at:[0,0.52,-2.3],r:[0.26,0.055,0.008],round:0.004,k:0.002,color:"#eceae2",mat:"matte"}]},
+  {name:"glass",shape:"sculpt",color:"#0e1620",mat:"glass",res:140,blobs:[
+    {s:"profile",pts:[[-1.66,0.86],[-1.15,1.24],[-0.72,1.33],[0.12,1.34],[0.48,1.23],[0.96,0.865]],at:[0,0,0],r:0.785,round:0.12,taper:0.32,k:0.01},
+    {s:"box",at:[0,1.1,-0.35],r:[1,0.18,1.6],and:true,k:0.01}]},
+  {name:"headlight",shape:"sculpt",color:"#d4d8de",mat:"chrome",res:110,mirror:true,blobs:[
+    {s:"box",at:[0.64,0.66,2.13],r:[0.2,0.045,0.07],rot:[0,14,0],round:0.025,k:0.004},
+    {s:"box",at:[0.65,0.66,2.165],r:[0.19,0.036,0.04],rot:[0,14,0],round:0.02,sub:true,k:0.003},
+    {s:"cyl",at:[0.57,0.662,2.13],to:[0.566,0.662,2.19],r:0.03,round:0.008,k:0.003,color:"#1d2128",mat:"glossy"},
+    {s:"cyl",at:[0.69,0.662,2.115],to:[0.684,0.662,2.175],r:0.026,round:0.008,k:0.003,color:"#1d2128",mat:"glossy"},
+    {s:"box",at:[0.66,0.627,2.17],r:[0.17,0.0075,0.018],rot:[0,14,0],round:0.006,k:0.002,color:"#f2f6ff",mat:"glow"}]},
+  {name:"taillight",shape:"sculpt",color:"#3a0507",mat:"glossy",res:110,mirror:true,blobs:[
+    {s:"box",at:[0.62,0.74,-2.21],r:[0.22,0.034,0.055],rot:[0,-6,0],round:0.016,k:0.003},
+    {s:"box",at:[0.62,0.745,-2.255],r:[0.2,0.0085,0.012],rot:[0,-6,0],round:0.005,k:0.002,color:"#ff2420",mat:"glow"},
+    {s:"box",at:[0.5,0.722,-2.257],r:[0.05,0.007,0.01],rot:[0,-6,0],round:0.004,k:0.002,color:"#f0f0f0",mat:"glow"}]},
+  {name:"interior",shape:"sculpt",color:"#1b1b1f",mat:"leather",res:96,blobs:[
+    {s:"box",at:[0.36,0.72,-0.35],r:[0.22,0.08,0.24],round:0.06,k:0.03,mirror:true},
+    {s:"box",at:[0.36,0.98,-0.58],r:[0.21,0.26,0.06],rot:[-12,0,0],round:0.06,k:0.04,mirror:true},
+    {s:"box",at:[0,0.92,0.55],r:[0.72,0.08,0.18],round:0.06,k:0.05,color:"#232327",mat:"matte"},
+    {s:"torus",at:[0.36,1,0.32],r:0.17,r2:0.018,rot:[70,0,0],k:0.01,color:"#101012"},
+    {s:"box",at:[0,0.76,0.05],r:[0.08,0.1,0.4],round:0.04,k:0.03,color:"#232327",mat:"matte"}]},
+  {name:"mirror",shape:"sculpt",color:"#a3101c",mat:"paint",res:100,mirror:true,blobs:[
+    {s:"stick",at:[0.74,0.97,0.62],to:[0.9,1,0.58],r:0.018,r2:0.014,k:0.008,color:"#0c0c0e",mat:"matte"},
+    {s:"box",at:[0.96,1.02,0.56],r:[0.085,0.045,0.055],round:0.04,k:0.012},
+    {s:"box",at:[0.96,1.02,0.52],r:[0.07,0.034,0.03],round:0.025,sub:true,k:0.004},
+    {s:"box",at:[0.96,1.02,0.53],r:[0.066,0.031,0.006],round:0.006,k:0.002,color:"#c9d4e2",mat:"chrome"}]},
+  {name:"frontAxle",shape:"joint",pos:[0.8,0.34,1.35],mirror:true},
+  {name:"rearAxle",shape:"joint",pos:[0.8,0.34,-1.35],mirror:true},
+  {name:"wheelF",shape:"sculpt",color:"#141414",mat:"rubber",res:96,parent:"frontAxle",mirror:true,blobs:[
+    {s:"cyl",at:[0.67,0.34,1.35],to:[0.93,0.34,1.35],r:0.34,round:0.07,k:0.01,tex:"rock"},
+    {s:"torus",at:[0.915,0.34,1.35],r:0.255,r2:0.03,rot:[0,0,90],k:0.01,color:"#d4d8de",mat:"chrome"},
+    {s:"cyl",at:[0.8,0.34,1.35],to:[0.934,0.34,1.35],r:0.25,round:0.01,sub:true,k:0.01},
+    {s:"cyl",at:[0.78,0.34,1.35],to:[0.8300000000000001,0.34,1.35],r:0.2,round:0.005,k:0.004,color:"#7c8088",mat:"metal",tex:"hammered"},
+    {s:"box",at:[0.8350000000000001,0.46,1.29],r:[0.03,0.06,0.07],round:0.02,k:0.005,color:"#c41a1a",mat:"glossy"},
+    {s:"stick",at:[0.9,0.38,1.35],to:[0.918,0.575,1.35],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3723606797749979,1.373511410091699],to:[0.918,0.5301189936781127,1.4881295342887313],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3523606797749979,1.3880422606518061],to:[0.918,0.41261899367811267,1.5734982813293612],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.32763932022500214,1.3880422606518061],to:[0.918,0.26738100632188744,1.5734982813293612],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3076393202250021,1.373511410091699],to:[0.918,0.14988100632188742,1.4881295342887313],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.30000000000000004,1.35],to:[0.918,0.10500000000000004,1.35],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3076393202250021,1.3264885899083012],to:[0.918,0.1498810063218874,1.2118704657112689],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.32763932022500214,1.311957739348194],to:[0.918,0.2673810063218873,1.126501718670639],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3523606797749979,1.311957739348194],to:[0.918,0.4126189936781126,1.126501718670639],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3723606797749979,1.3264885899083012],to:[0.918,0.5301189936781127,1.2118704657112689],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"cyl",at:[0.88,0.34,1.35],to:[0.92,0.34,1.35],r:0.055,round:0.015,k:0.006,color:"#d4d8de",mat:"chrome"}]},
+  {name:"wheelR",shape:"sculpt",color:"#141414",mat:"rubber",res:96,parent:"rearAxle",mirror:true,blobs:[
+    {s:"cyl",at:[0.67,0.34,-1.35],to:[0.93,0.34,-1.35],r:0.34,round:0.07,k:0.01,tex:"rock"},
+    {s:"torus",at:[0.915,0.34,-1.35],r:0.255,r2:0.03,rot:[0,0,90],k:0.01,color:"#d4d8de",mat:"chrome"},
+    {s:"cyl",at:[0.8,0.34,-1.35],to:[0.934,0.34,-1.35],r:0.25,round:0.01,sub:true,k:0.01},
+    {s:"cyl",at:[0.78,0.34,-1.35],to:[0.8300000000000001,0.34,-1.35],r:0.2,round:0.005,k:0.004,color:"#7c8088",mat:"metal",tex:"hammered"},
+    {s:"box",at:[0.8350000000000001,0.46,-1.4100000000000001],r:[0.03,0.06,0.07],round:0.02,k:0.005,color:"#c41a1a",mat:"glossy"},
+    {s:"stick",at:[0.9,0.38,-1.35],to:[0.918,0.575,-1.35],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3723606797749979,-1.3264885899083012],to:[0.918,0.5301189936781127,-1.2118704657112689],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3523606797749979,-1.311957739348194],to:[0.918,0.41261899367811267,-1.126501718670639],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.32763932022500214,-1.311957739348194],to:[0.918,0.26738100632188744,-1.126501718670639],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3076393202250021,-1.3264885899083012],to:[0.918,0.14988100632188742,-1.2118704657112689],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.30000000000000004,-1.35],to:[0.918,0.10500000000000004,-1.35],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3076393202250021,-1.373511410091699],to:[0.918,0.1498810063218874,-1.4881295342887313],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.32763932022500214,-1.3880422606518061],to:[0.918,0.2673810063218873,-1.5734982813293612],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3523606797749979,-1.3880422606518061],to:[0.918,0.4126189936781126,-1.5734982813293612],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"stick",at:[0.9,0.3723606797749979,-1.373511410091699],to:[0.918,0.5301189936781127,-1.4881295342887313],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
+    {s:"cyl",at:[0.88,0.34,-1.35],to:[0.92,0.34,-1.35],r:0.055,round:0.015,k:0.006,color:"#d4d8de",mat:"chrome"}]}]
+HARD SURFACE LIKE A 3D ARTIST (cars, weapons, machines, buildings): one sculpt PER MATERIAL/OBJECT, not one for everything:
+ the body shell (mat paint = clearcoat car paint; metal; wood), glass (mat glass = transparent, reflective), light units, interior, each
+ wheel - every small part gets its own sculpt (a 40 cm headlight in its own part meshes finely; inside a 4.6 m part it turns lumpy).
+ mirror:true on a PART makes its left/right copy (wheels, lights, mirrors). Shells are hollow: carve the inside out with a slightly
+ smaller copy of the outline, cut openings THROUGH the shell (the cut must cross both walls), paint the inside dark, add the interior.
+ Mats for machines: paint (car paint), chrome, metal, rubber (tyres), glass, glow (lamps), matte (trim), leather (seats).
 LOW-POLY (the faceted papercraft look): the SAME sculpt + style "lowpoly" + poly:800-1500 (triangle budget) + mat "matte" + shade 0.05-0.1:
  the fine surface is decimated (quadric error, like Blender's Decimate) into big flat facets on the flanks and small ones on the face,
  each facet flat-coloured with a little variation. Warm mid-brown body, cream muzzle, black nose reads best. poly also works on smooth

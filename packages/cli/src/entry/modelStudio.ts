@@ -157,7 +157,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag", "maps"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag", "maps", "crisp"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -197,7 +197,8 @@ export function qualityNotes(st: Studio): string[] {
     const total = sculpts.reduce((t, q) => t + arr(q.blobs).map(obj).filter((b) => !b.sub && !b.paint).length, 0);
     if (total < 15 && p === sculpts.reduce((a, q) => (arr(q.blobs).length > arr(a.blobs).length ? q : a), sculpts[0]!)) out.push(`quality: "${n}" is a blockout (${total} masses in the model). Finished creatures carry 40-75 blobs, props 15-40: secondary forms (muscle groups, cheeks, brow, haunches; bevels, collars, panels) and details (toes, lips, nostrils, eyelids; rivets, wraps, grooves as small sub carves).`);
     const cols = new Set(blobs.map((b) => String(b.color ?? p.color ?? "")));
-    if (cols.size <= 1 && !blobs.some((b) => b.paint)) out.push(`quality: "${n}" is one flat colour. Paint it: lighter belly/muzzle/chest, darker extremities and back, markings, tonal variation (paint blobs with soft edges).`);
+    const uniform = ["glass", "chrome", "metal", "glow", "holo", "rubber"].includes(String(p.mat ?? "")) || (add.length < 6 && sculpts.length > 1);
+    if (cols.size <= 1 && !blobs.some((b) => b.paint) && !uniform) out.push(`quality: "${n}" is one flat colour. Paint it: lighter belly/muzzle/chest, darker extremities and back, markings, tonal variation (paint blobs with soft edges).`);
     if (bones && !raw.some((q) => q.snap === n && /eye/i.test(nameOf(q)))) out.push(`quality: "${n}" is a creature with no eyes on it: add glossy eye parts with snap:"${n}" (and a nose/claws/teeth where the animal has them).`);
     if (bones && !st.anims.length) out.push(`quality: "${n}" is rigged but not animated. Every creature/character ships with clips: idle (breathing pulse on the chest, slow head/tail drift), walk (step + lift), and its signature action; play idle.`);
     if (!p.mat && !blobs.some((b) => b.mat)) out.push(`quality: "${n}" has no material: fur, skin, leather, stone, wood, metal, cloth (per blob too) give real surface detail.`);

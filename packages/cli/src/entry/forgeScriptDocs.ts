@@ -254,6 +254,16 @@ REAL ASSETS FIRST for realistic vehicles, characters, guns, furniture, buildings
 HARD SURFACE: hard:true on a sculpt part = dual-contoured mesh (edges and corners land ON the sharp feature, not rounded off) +
  auto-smooth normals (crease:32 degrees: flat panels shade flat, every sharper edge is a crisp line). Use it for every machine, weapon,
  building and prop; leave it off for organic things.
+FROM A REFERENCE / TURNAROUND SHEET ("make this 1:1"): ref the image, then
+ 1. Measure in HEAD UNITS from the front and side views: total height, head width/height/depth, shoulder span, arm length (wrist vs
+    crotch), leg split, foot length. Write the numbers down; pick metres (a 1.6 m character, a 4.5 m car).
+ 2. Silhouettes first: front-view outlines (profile axis "z") for chest / hips / plates, side-view outlines (axis "x") for feet,
+    shins, fins, heads; render front + side at the SAME angles as the sheet and match outlines before any detail.
+ 3. One part per material group per limb (white shell, black mechanics, glass/screen), hard:true, parented to joints at the real
+    pivots (shoulder, elbow, hip, knee, neck) so it animates. Glow strips and lights = paint blobs with mat glow (per-pixel crisp).
+ 4. Detail shots on the sheet (head, hands, feet) are a checklist: panel seams (thin sub sticks), vents, rings, finger count.
+ 5. Expressions on a screen face = paint swaps on the screen part (op blob); colourways on the sheet = op variant per material.
+ 6. Compare view by view with the sheet (views ["front","side","back","3q"]); fix the biggest mismatch first with op blob/set.
 HARD SURFACE LIKE A 3D ARTIST (cars, weapons, machines, buildings): one sculpt PER MATERIAL/OBJECT, not one for everything:
  the body shell (mat paint = clearcoat car paint; metal; wood), glass (mat glass = transparent, reflective), light units, interior, each
  wheel - every small part gets its own sculpt (a 40 cm headlight in its own part meshes finely; inside a 4.6 m part it turns lumpy).

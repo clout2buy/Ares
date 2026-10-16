@@ -623,7 +623,7 @@ import { lintBlob } from "../packages/cli/dist/entry/forgeBlocks.js";
 /** The worked examples from the help docs (they must stay valid, clean input): the grizzly's parts + clips, and the sword. */
 function docsExamples() {
   const D = FORGE_SCRIPT_DOCS, from = D.indexOf("WORKED EXAMPLE"), start = D.indexOf("\n", from) + 1, clips = D.indexOf("\nCLIPS:", start), hard = D.indexOf("\nHARD SURFACE EXAMPLE", clips);
-  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nSame blobs", swordStart);
+  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nLOW-POLY", swordStart);
   return { parts: vm.runInNewContext(D.slice(start, clips)), anims: vm.runInNewContext(D.slice(clips + 7, hard)), sword: vm.runInNewContext(D.slice(swordStart, swordEnd)) };
 }
 
@@ -648,7 +648,7 @@ test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirr
   assert.ok(b.blobs.find((x) => x.sub).k <= 0.05, "carves default tight");
   assert.equal(b.blobs.at(-1).s, "ball", "a stick without `to` degrades to a ball");
   assert.equal(sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "ball", at: [0, 0, 0], paint: true }] }] }).parts[0].shape, "box");
-  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
+  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex, flow, shag)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
   const mirrored = sanitizeModel({ parts: [{ name: "ear", shape: "sculpt", mirror: true, blobs: [{ s: "ball", at: [0.3, 1, 0], r: 0.1, bone: "head" }] }] }).parts;
   assert.deepEqual(mirrored.map((p) => [p.name, p.blobs[0].at[0], p.blobs[0].bone]), [["ear", 0.3, "head"], ["ear (mirror)", -0.3, "head (mirror)"]]);
 });
@@ -724,15 +724,17 @@ test("sculpt runtime: the docs grizzly builds ONE closed skinned mesh, joints be
   const P = g.attributes.position, C = g.attributes.color;
   const near = (x, y, z) => { let best = 0, bd = 1e9; for (let i = 0; i < P.count; i++) { const d = Math.hypot(P.getX(i) - x, P.getY(i) - y, P.getZ(i) - z); if (d < bd) { bd = d; best = i; } } return best; };
   const lum = (i) => C.getX(i) + C.getY(i) + C.getZ(i);
-  assert.ok(lum(near(0, 1.18, 1.78)) > 3 * lum(near(0.5, 0.3, 0.65)), "light muzzle, dark painted legs");
+  assert.ok(lum(near(0, 1.4, 1.85)) > 3 * lum(near(0.5, 0.35, 0.65)), "light muzzle, dark painted legs");
+  const tip = (() => { let b = 0; for (let i = 0; i < P.count; i++) if (P.getZ(i) > P.getZ(b)) b = i; return b; })();
+  assert.ok(lum(tip) < 0.12, "a small sharp blob (the nose) keeps its own colour against a big soft one (the muzzle)");
   // the eye was snapped onto the surface of the skull
   const eye = a.part("eye").spec;
-  assert.ok(Math.hypot(eye.pos[0] - 0.13, eye.pos[1] - 1.27, eye.pos[2] - 1.5) < 0.2 && eye.snapped, "snapped near where it was asked");
+  assert.ok(Math.hypot(eye.pos[0] - 0.13, eye.pos[1] - 1.47, eye.pos[2] - 1.52) < 0.2 && eye.snapped, "snapped near where it was asked");
   const nearest = P.count && Math.min(...Array.from({ length: P.count }, (_, i) => Math.hypot(P.getX(i) - eye.pos[0], P.getY(i) - eye.pos[1], P.getZ(i) - eye.pos[2])));
   assert.ok(nearest < 0.05, `the eye sits on the skin (${nearest.toFixed(3)} from the nearest vertex)`);
   // bending: the walk moves a paw vertex far more than a vertex on the back (one skin, bent at the joints)
   a.group.updateMatrixWorld(true); body.skeleton.update();
-  const paw = near(0.33, 0.1, 0.8), back = near(0, 1.7, -0.2), v0 = body.getVertexPosition(paw, new T.Vector3()), w0 = body.getVertexPosition(back, new T.Vector3());
+  const paw = near(0.33, 0.1, 0.8), back = near(0, 1.9, -0.2), v0 = body.getVertexPosition(paw, new T.Vector3()), w0 = body.getVertexPosition(back, new T.Vector3());
   a.play("walk"); a.update(1.1); a.group.updateMatrixWorld(true); body.skeleton.update();
   const v1 = body.getVertexPosition(paw, new T.Vector3()), w1 = body.getVertexPosition(back, new T.Vector3());
   assert.ok(v1.distanceTo(v0) > 0.1, `the paw swings (${v1.distanceTo(v0).toFixed(3)})`);
@@ -834,4 +836,28 @@ test("the quality bar: stacked-primitive creatures, blockouts, flat colour, no e
   st = ensureStudio("chair");
   r = await applyEdit(st, { parts: ["seat", "back", "leg a", "leg b"].map((name) => ({ name, shape: "box" })) }, root);
   assert.ok(r.errors.some((e) => /props look real when sculpted too/.test(e)));
+});
+
+test("low-poly is real decimation: a triangle budget, big flat facets, still closed, still skinned; fur flows and is sculpted in", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const bear = docsExamples();
+  const lowParts = sanitizeModel({ style: "lowpoly", parts: bear.parts.map((p) => (p.shape === "sculpt" ? { ...p, poly: 900, mat: "matte" } : p)) }).parts;
+  const inst = rt.buildModel({ format: "ares-model/1", expanded: true, parts: lowParts, anims: [], scripts: [] }).instance();
+  const g = inst.part("body").mesh.geometry;
+  assert.ok(Math.abs(g.attributes.position.count / 3 - 900) <= 2, `hits the budget (${g.attributes.position.count / 3} triangles)`);
+  assert.ok(inst.part("body").mesh.isSkinnedMesh && g.attributes.skinIndex, "still rigged after decimation");
+  const P = g.attributes.position, key = (i) => [P.getX(i), P.getY(i), P.getZ(i)].map((n) => n.toFixed(5)).join(","), E = new Map();
+  for (let f = 0; f < P.count; f += 3) for (let e = 0; e < 3; e++) { const a = key(f + e), b = key(f + (e + 1) % 3), k = a < b ? a + "|" + b : b + "|" + a; E.set(k, (E.get(k) ?? 0) + 1); }
+  assert.equal([...E.values()].filter((n) => n === 1).length, 0, "no holes after decimation");
+  const areas = []; for (let f = 0; f < P.count; f += 3) { const a = [0, 1, 2].map((j) => [P.getX(f + j), P.getY(f + j), P.getZ(f + j)]); const u = a[1].map((v, i) => v - a[0][i]), w = a[2].map((v, i) => v - a[0][i]); areas.push(Math.hypot(u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]) / 2); }
+  areas.sort((x, y) => x - y);
+  assert.ok(areas[Math.floor(areas.length * 0.9)] > 4 * areas[Math.floor(areas.length * 0.1)], "adaptive facets: big on the flanks, small where it curves");
+  // smooth fur model: a flow attribute rides on the mesh and the shag pushed the skin in and out
+  const smooth = rt.buildModel({ format: "ares-model/1", expanded: true, parts: sanitizeModel({ parts: bear.parts }).parts, anims: [], scripts: [] }).instance();
+  const sg = smooth.part("body").mesh.geometry;
+  assert.ok(sg.attributes.flow, "fur flow per vertex");
+  const flat = rt.buildModel({ format: "ares-model/1", expanded: true, parts: sanitizeModel({ parts: bear.parts.map((p) => (p.shape === "sculpt" ? { ...p, shag: 0 } : p)) }).parts, anims: [], scripts: [] }).instance();
+  const fg = flat.part("body").mesh.geometry;
+  let moved = 0; for (let i = 0; i < Math.min(fg.attributes.position.count, sg.attributes.position.count); i++) if (Math.abs(fg.attributes.position.getY(i) - sg.attributes.position.getY(i)) > 1e-4) moved++;
+  assert.ok(moved > fg.attributes.position.count * 0.3, `fur locks are in the geometry (${moved} vertices moved)`);
 });

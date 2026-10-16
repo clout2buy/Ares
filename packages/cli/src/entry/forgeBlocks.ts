@@ -32,7 +32,7 @@ export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "pr
 export const BLOB_KINDS = ["ball", "stick", "box", "chain", "cyl", "torus"];
 /** Surface detail the sculpt shader draws per pixel (a blob's `tex`, or the default for its mat). */
 export const SCULPT_TEX = ["none", "fur", "scales", "wrinkles", "rock", "wood", "cloth", "hammered", "pores"];
-const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex"]);
+const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex", "flow", "shag"]);
 const MIRROR_SUFFIX = " (mirror)";
 const mirrorBone = (b: string): string => (b.endsWith(MIRROR_SUFFIX) ? b.slice(0, -MIRROR_SUFFIX.length) : `${b}${MIRROR_SUFFIX}`.slice(0, 41));
 /** A blob's problems in words (shown back to the author; the blob is still sanitised as well as it can be). */
@@ -65,6 +65,8 @@ function sanitizeBlobs(v: unknown): Obj[] {
     if (b.bone !== undefined && String(b.bone) && !sub && !paint) one.bone = str(b.bone, 41);
     if (!sub && MODEL_MATS.includes(String(b.mat))) one.mat = String(b.mat);
     if (!sub && SCULPT_TEX.includes(String(b.tex))) one.tex = String(b.tex);
+    if (!sub && !paint && arr(b.flow).length >= 3) one.flow = vec3(b.flow, [0, -0.45, -1], -1, 1);
+    if (!sub && !paint && b.shag !== undefined) one.shag = clamp(b.shag, 0, 1, 0.5);
     const rDef = 0.2;
     const pieces: Obj[] = [];
     if (s === "chain") {
@@ -110,6 +112,7 @@ function mirrorBlobs(blobs: Obj[]): Obj[] {
     if (q.to) m.to = [-(q.to as number[])[0]!, (q.to as number[])[1], (q.to as number[])[2]];
     if (q.rot) m.rot = [(q.rot as number[])[0], -(q.rot as number[])[1]!, -(q.rot as number[])[2]!];
     if (q.bone) m.bone = mirrorBone(String(q.bone));
+    if (q.flow) m.flow = [-(q.flow as number[])[0]!, (q.flow as number[])[1], (q.flow as number[])[2]];
     return m;
   });
 }
@@ -201,6 +204,9 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
     if (SCULPT_TEX.includes(String(p.tex))) base.tex = String(p.tex);
     if (p.grain !== undefined) base.grain = clamp(p.grain, 0.2, 5, 1);
     if (p.bone !== undefined && String(p.bone)) base.bone = str(p.bone, 41);
+    if (arr(p.flow).length >= 3) base.flow = vec3(p.flow, [0, -0.45, -1], -1, 1);
+    if (p.shag !== undefined) base.shag = clamp(p.shag, 0, 1, 0.5);
+    if (p.poly !== undefined) base.poly = Math.round(clamp(p.poly, 200, 60000, 1400));
     const nz = obj(p.noise); if (p.noise !== undefined && nz.amp !== undefined) base.noise = { amp: clamp(nz.amp, 0, 0.2, 0.01), scale: clamp(nz.scale, 0.5, 60, 6) };
     if (p.tint !== undefined) base.tint = clamp(p.tint, 0, 0.4, 0.06);
     if (p.ao !== undefined) base.ao = clamp(p.ao, 0, 1, 1);

@@ -191,7 +191,9 @@ export function qualityNotes(st: Studio): string[] {
   for (const p of sculpts) {
     const blobs = arr(p.blobs).map(obj), add = blobs.filter((b) => !b.sub && !b.paint), n = nameOf(p);
     const bones = blobs.some((b) => b.bone);
-    if (add.length < 12) out.push(`quality: "${n}" is a blockout (${add.length} masses). Real models carry 25-60 blobs: secondary forms (muscle groups, cheeks, brow, knuckles, belly, haunches) and details (toes, lips, nostrils, eyelids, creases as small sub carves).`);
+    // judged on the whole model: a wheel of 8 blobs is a finished component of a 40-blob car, not a blockout
+    const total = sculpts.reduce((t, q) => t + arr(q.blobs).map(obj).filter((b) => !b.sub && !b.paint).length, 0);
+    if (total < 15 && p === sculpts.reduce((a, q) => (arr(q.blobs).length > arr(a.blobs).length ? q : a), sculpts[0]!)) out.push(`quality: "${n}" is a blockout (${total} masses in the model). Finished creatures carry 40-75 blobs, props 15-40: secondary forms (muscle groups, cheeks, brow, haunches; bevels, collars, panels) and details (toes, lips, nostrils, eyelids; rivets, wraps, grooves as small sub carves).`);
     const cols = new Set(blobs.map((b) => String(b.color ?? p.color ?? "")));
     if (cols.size <= 1 && !blobs.some((b) => b.paint)) out.push(`quality: "${n}" is one flat colour. Paint it: lighter belly/muzzle/chest, darker extremities and back, markings, tonal variation (paint blobs with soft edges).`);
     if (bones && !raw.some((q) => q.snap === n && /eye/i.test(nameOf(q)))) out.push(`quality: "${n}" is a creature with no eyes on it: add glossy eye parts with snap:"${n}" (and a nose/claws/teeth where the animal has them).`);

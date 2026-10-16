@@ -6,7 +6,10 @@
 
 export const FORGE_SCRIPT_DOCS = `THE QUALITY BAR (always, unasked): every model is sculpted, painted, rigged and animated like a finished game asset.
 The owner should never have to ask for detail, colour, joints or motion. "make a bear" means a realistic, furry, rigged bear with idle,
-walk and a signature action. The tool result's "quality" notes list what is still below the bar: fix them all before you answer, then LOOK.
+walk and a signature action. Build it to this bar in the FIRST pass; the tool result's "quality" notes name anything still missing - fold
+them into your next edit. One look at the views, no separate re-check passes.
+Know the object first: parts, counts, sizes, how it moves (a car = 4 wheels on 2 axles, front pair steers; a horse's hock bends back):
+SkillRead gamedev -> references/objects.md, or a reference picture for a specific real model.
 
 SCULPT: the ONE process for every model - creatures, characters, props, weapons, furniture, rocks, food, vehicles.
 ONE sculpt part per object: its blobs MELT together like clay into a single smooth, watertight, high-poly mesh (real silhouettes, bevelled
@@ -50,7 +53,9 @@ METHOD - blockout, form, detail, paint, rig, animate (LOOK at views after each s
  7. Rig: root -> chest -> head, limbs, tail at the real anatomical pivots; bones on every blob.
  8. Animate (always): idle (chest pulse 0.01-0.015 at 0.3 Hz, slow head/tail drift), walk/run (kind step + lift, below), and its signature action
     (roar, attack, open, swing) with eased tracks. Show idle by default. Props get an idle too (slow spin, sway, pulse of a gem).
- 9. views ["side","front","top","3q","side@0.35"]: compare with the reference and fix with op blob until it reads at a glance.
+ 9. views ["side","front","3q"] on the build call itself: compare with the reference; fix what is off with op blob in the same flow.
+ When the owner points at something ("left ear too low", "snout too short"): change exactly that blob/part/clip with op blob / op set,
+ nothing else, and show one view of it.
 ANIMATION THAT LOOKS REAL:
   walk/run/trot = motion kind:"step" on each upper limb (the foot plants forward, pushes back linearly for duty of the cycle, then lifts and
   swings forward) + kind:"lift" on the lower limb (flexes only while the foot is in the air), same speed/phase; mirror:true offsets left/right.

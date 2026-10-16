@@ -143,7 +143,7 @@ export async function runModelAction(
       status: errors.length ? "edited-with-warnings" : "ok",
       result: { model: id, version: st.version, parts: spec.parts.length, names: spec.parts.map((p) => p.name).slice(0, 80), anims: (studioSpec(st).anims as Array<{ name: string; dur: number; loop: boolean; tracks: unknown[]; motion: unknown[]; events: unknown[] }>).map((a) => ({ name: a.name, dur: a.dur, loop: a.loop, tracks: a.tracks.length, motion: a.motion.length, events: a.events.length })), changed: touched.slice(0, 40), ...(errors.length ? { problems: errors } : {}), ...(quality.length ? { quality } : {}), ...(scriptLogs.length ? { scriptLogs: scriptLogs.slice(-15) } : {}), ...(saved ? { saved } : {}), ...(exported ? { exported } : {}), views: wanted.map((w) => (w.t === undefined ? w.name : `${w.name}@${w.t}`)) },
       filmstripDir: d.filmstripDir,
-      ...(errors.length || quality.length ? { note: [errors.length ? `Warnings (the edit was applied except where a warning says otherwise): ${errors.join("; ")}` : "", quality.length ? `Quality bar not met yet: fix these before you show the owner, unasked (look at the views too): ${quality.join(" | ")}` : ""].filter(Boolean).join("\n") } : {}),
+      ...(errors.length || quality.length ? { note: [errors.length ? `Warnings (the edit was applied except where a warning says otherwise): ${errors.join("; ")}` : "", quality.length ? `Below the quality bar - fold these into your next edit, unasked (no separate re-check pass): ${quality.join(" | ")}` : ""].filter(Boolean).join("\n") } : {}),
     },
     display: `model ${id}: ${touched.length} change${touched.length === 1 ? "" : "s"}, ${spec.parts.length} parts`,
     images,

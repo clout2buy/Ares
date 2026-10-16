@@ -40,6 +40,22 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.57.0",
+    date: "October 2026",
+    title: "Real creatures",
+    tagline: "Ares sculpts now: animals and characters come out as one smooth, furry, rigged body instead of a stack of balls.",
+    tour: true,
+    highlights: [
+      { icon: "🐻", title: "Sculpted, not stacked", blurb: "Ask for an animal or a character and Ares sculpts it like clay: masses melt into one smooth body with real silhouettes, shoulders, haunches and snouts.", tag: "New" },
+      { icon: "👀", title: "Watch it take shape", blurb: "While Ares is still writing, the clay appears and melts together blob by blob on the Forge, from the first mass to the finished animal.", tag: "New" },
+      { icon: "🦴", title: "One skin that bends", blurb: "Legs, heads and tails bend at real joints with the body stretching smoothly around them, in the Forge and in your game.", tag: "New" },
+      { icon: "🧶", title: "Fur and markings", blurb: "A fur finish with fine grain, soft creases that shade themselves, and painted markings: socks, bibs, muzzles, stripes and grizzled backs.", tag: "New" },
+      { icon: "🎯", title: "Eyes where they belong", blurb: "Eyes, noses, claws and horns snap onto the skin, so nothing floats in the air or sinks into the head.", tag: "Fixed" },
+      { icon: "🔺", title: "Low-poly too", blurb: "The same creature in low-poly style comes out as clean faceted triangles, ready for a stylised game.", tag: "New" },
+      { icon: "✏️", title: "Precise touch-ups", blurb: "\"Longer snout\", \"bigger ears\": Ares reshapes just that piece of the sculpt and checks it from every side.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.56.0",
     date: "October 2026",
     title: "The Forge goes live",

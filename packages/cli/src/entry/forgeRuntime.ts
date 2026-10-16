@@ -22,7 +22,7 @@ function mkEvents(){var L={};return{on:function(n,f){(L[n]=L[n]||[]).push(f);ret
 export function buildModel(doc,opts){
   opts=opts||{};
   if(!doc||doc.expanded!==true||!Array.isArray(doc.parts))throw new Error("ares-model: pass the <id>.game.json that Browser model export writes");
-  var parts=doc.parts,clips={},cache={},variants=doc.variants||{};
+  var parts=snapParts(doc.parts),clips={},cache={},variants=doc.variants||{};
   function vhit(sel,name){var base=name.replace(/ [(]mirror[)]$/,"");return sel.charAt(sel.length-1)==="*"?base.indexOf(sel.slice(0,-1))===0:(sel===name||sel===base)}
   function partFor(p,variant){var v=variant&&variants[variant];if(!v)return p;var q=p;Object.keys(v).forEach(function(sel){if(vhit(sel,p.name))q=Object.assign({},q,v[sel])});return q}
   (doc.anims||[]).forEach(function(c){clips[c.name]=c});
@@ -41,7 +41,7 @@ export function buildModel(doc,opts){
       var node=new T.Group(),pv=p.pivot||p.pos;node.add(g);node.position.set(pv[0],pv[1],pv[2]);node.userData.rest=node.position.clone();
       group.add(node);items.push(g);nodes.push(node);if(!byName[p.name])byName[p.name]={group:g,mesh:g.userData.mesh,node:node,spec:p};
     });
-    rigLink(parts,nodes,group);
+    rigLink(parts,nodes,group);skinLink(parts,nodes,items);
     function pose(c,t){rigApply(parts,nodes,c,t)}
     function rest(){nodes.forEach(function(nd){nd.rotation.set(0,0,0);nd.scale.set(1,1,1);nd.position.copy(nd.userData.rest)})}
     var inst={group:group,part:function(n){return byName[n]||null},parts:function(){return parts.map(function(p){return byName[p.name]})},

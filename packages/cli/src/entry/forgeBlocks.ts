@@ -28,7 +28,75 @@ export function colour(v: unknown, d?: string): string | undefined {
 }
 
 // ── model: parts that assemble one by one ────────────────────────────────────
-export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube"];
+export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube", "sculpt", "joint"];
+export const BLOB_KINDS = ["ball", "stick", "box", "chain"];
+const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror"]);
+const MIRROR_SUFFIX = " (mirror)";
+const mirrorBone = (b: string): string => (b.endsWith(MIRROR_SUFFIX) ? b.slice(0, -MIRROR_SUFFIX.length) : `${b}${MIRROR_SUFFIX}`.slice(0, 41));
+/** A blob's problems in words (shown back to the author; the blob is still sanitised as well as it can be). */
+export function lintBlob(raw: unknown, i: number): string[] {
+  const b = obj(raw), w: string[] = [], tag = `blob ${i}${b.bone ? ` (${String(b.bone)})` : ""}`;
+  for (const k of Object.keys(b)) if (!BLOB_KEYS.has(k)) w.push(`${tag}: unknown field "${k}" (blob fields: ${[...BLOB_KEYS].join(", ")})`);
+  const s = b.s === undefined ? "ball" : String(b.s);
+  if (!BLOB_KINDS.includes(s)) w.push(`${tag}: unknown s "${s}" (ball|stick|box|chain)`);
+  if (s === "stick" && arr(b.to).length < 3) w.push(`${tag}: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)`);
+  if (s === "chain" && arr(b.pts).length < 2) w.push(`${tag}: a chain needs pts:[[x,y,z,r],...] (2+ points)`);
+  if (s !== "chain" && arr(b.at).length < 3) w.push(`${tag}: at should be [x,y,z]`);
+  return w;
+}
+/** Sculpt blobs: validated, chains expanded into sticks, mirrored copies added (their bone follows the mirrored joint). */
+function sanitizeBlobs(v: unknown): Obj[] {
+  const out: Obj[] = [];
+  const P = (q: unknown, d: [number, number, number] = [0, 0, 0]) => vec3(q, d, -50, 50);
+  for (const raw of arr(v).slice(0, 64)) {
+    if (out.length >= 96) break;
+    const b = obj(raw);
+    let s = BLOB_KINDS.includes(String(b.s)) ? String(b.s) : "ball";
+    const one: Obj = {};
+    const sub = b.sub === true, paint = !sub && b.paint === true;
+    if (sub) one.sub = true;
+    if (paint) { one.paint = true; one.soft = clamp(b.soft, 0.002, 2, 0.04); }
+    const c = colour(b.color); if (c) one.color = c;
+    if (b.bone !== undefined && String(b.bone) && !sub && !paint) one.bone = str(b.bone, 41);
+    const rDef = 0.2;
+    const pieces: Obj[] = [];
+    if (s === "chain") {
+      const pts = arr(b.pts).slice(0, 16).flatMap((q) => { const a = arr(q); return a.length >= 3 ? [[clamp(a[0], -50, 50, 0), clamp(a[1], -50, 50, 0), clamp(a[2], -50, 50, 0), clamp(a[3], 0.002, 20, rDef)]] : []; });
+      if (pts.length < 2) s = "ball";
+      else for (let i = 0; i < pts.length - 1; i++) pieces.push({ ...one, s: "stick", at: pts[i]!.slice(0, 3), to: pts[i + 1]!.slice(0, 3), r: pts[i]![3], r2: pts[i + 1]![3] });
+    }
+    if (s === "stick") {
+      const to = arr(b.to).length >= 3 ? P(b.to) : null;
+      if (!to) s = "ball";
+      else { const r = clamp(Array.isArray(b.r) ? arr(b.r)[0] : b.r, 0.002, 20, rDef); pieces.push({ ...one, s, at: P(b.at), to, r, r2: clamp(b.r2, 0.002, 20, r) }); }
+    }
+    if (s === "ball" || s === "box") {
+      const r = vec3(b.r, [rDef, rDef, rDef], 0.002, 20);
+      const piece: Obj = { ...one, s, at: P(b.at), r };
+      const rot = vec3(b.rot, [0, 0, 0], -360, 360); if (rot.some((n) => n)) piece.rot = rot;
+      if (s === "box") piece.round = clamp(b.round, 0, Math.min(...r), Math.min(...r) * 0.25);
+      pieces.push(piece);
+    }
+    // k = how far it melts into what is already there (the "clay" radius); carving and markings default softer/tighter
+    const minR = Math.min(...pieces.map((q) => Math.min(...(Array.isArray(q.r) ? (q.r as number[]) : [q.r as number, (q.r2 as number) ?? (q.r as number)]))));
+    const k = clamp(b.k, 0.001, 2, sub ? 0.03 : Math.max(0.01, Math.min(0.25, minR * 0.5)));
+    for (const q of pieces) {
+      q.k = k;
+      out.push(q);
+      if (b.mirror === true && out.length < 96) out.push(mirrorBlobs([q])[0]!);
+    }
+  }
+  return out;
+}
+function mirrorBlobs(blobs: Obj[]): Obj[] {
+  return blobs.map((q) => {
+    const m: Obj = { ...q, at: [-(q.at as number[])[0]!, (q.at as number[])[1], (q.at as number[])[2]] };
+    if (q.to) m.to = [-(q.to as number[])[0]!, (q.to as number[])[1], (q.to as number[])[2]];
+    if (q.rot) m.rot = [(q.rot as number[])[0], -(q.rot as number[])[1]!, -(q.rot as number[])[2]!];
+    if (q.bone) m.bone = mirrorBone(String(q.bone));
+    return m;
+  });
+}
 export const TEXTURE_KINDS = ["planks", "bricks", "noise", "checker", "stripes", "dots"];
 /** A procedural texture description: small, bounded, and part of the model JSON (so it exports to a game with no script). */
 export function sanitizeTexture(raw: unknown): Obj | null {
@@ -57,7 +125,7 @@ export function sanitizeOverride(raw: unknown): Obj | null {
 
 export const MODEL_STYLES = ["smooth", "lowpoly", "wire", "flat"];
 export const MODEL_LOOKS = ["studio", "clay", "slate", "pastel", "gallery", "noir", "holo", "sunset", "night", "flat"];
-export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow"];
+export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow", "fur", "skin"];
 const vec3 = (v: unknown, d: [number, number, number], lo: number, hi: number): [number, number, number] => {
   if (typeof v === "number") return [clamp(v, lo, hi, d[0]), clamp(v, lo, hi, d[1]), clamp(v, lo, hi, d[2])];
   const a = arr(v);
@@ -83,11 +151,13 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   const verts = shape === "mesh" ? arr(p.verts).slice(0, 240).map((q) => { const a = arr(q); return [clamp(a[0], -50, 50, 0), clamp(a[1], -50, 50, 0), clamp(a[2], -50, 50, 0)]; }) : [];
   const faces = shape === "mesh" ? arr(p.faces).slice(0, 400).flatMap((f) => { const a = arr(f).map((v) => Math.round(Number(v))); return a.length >= 3 && a.length <= 6 && a.every((v) => Number.isInteger(v) && v >= 0 && v < verts.length) ? [a] : []; }) : [];
   const sections = shape === "loft" ? arr(p.sections).slice(0, 24).flatMap((q) => { const a = arr(q); return a.length >= 5 ? [[clamp(a[0], -50, 50, 0), clamp(a[1], -50, 50, 0), clamp(a[2], -50, 50, 0), clamp(a[3], 0, 20, 0.2), clamp(a[4], 0, 20, 0.2)]] : []; }) : [];
+  const blobs = shape === "sculpt" ? sanitizeBlobs(p.blobs) : [];
+  if (shape === "sculpt" && !blobs.some((b) => !b.sub && !b.paint)) shape = "box";
   if (shape === "loft" && sections.length < 2) shape = "box";
   if (shape === "mesh" && (verts.length < 3 || !faces.length)) shape = "box";
   if ((shape === "extrude" && pts.length < 3) || (shape === "lathe" && pts.length < 2) || (shape === "tube" && pts.length < 2)) shape = "box";
   const pos = vec3(p.pos, [0, 0, 0], -50, 50), size = vec3(p.size, [1, 1, 1], 0.02, 50), rot = vec3(p.rot, [0, 0, 0], -360, 360);
-  const curved = shape === "lathe" || shape === "tube";
+  const curved = shape === "lathe" || shape === "tube" || shape === "sculpt";
   const low = style === "lowpoly" || style === "wire";
   const base: Obj = {
     name: str(p.name || shape, 32), shape, pos, size, rot, color: colour(p.color, "#9cc5ff"),
@@ -100,6 +170,8 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   const ec = colour(edge); if (ec) base.edgeColor = ec;
   if (p.stage !== undefined && String(p.stage)) base.stage = str(p.stage, 16);
   if (p.scenery === true) base.scenery = true;
+  if (p.fuzz !== undefined) base.fuzz = clamp(p.fuzz, 0, 1, 0.5);
+  if (p.snap !== undefined && String(p.snap)) { base.snap = str(p.snap, 32); base.out = clamp(p.out, -2, 2, 0); if (p.align === true) base.align = true; }
   if (p.texture !== undefined) { const tx = sanitizeTexture(p.texture); if (tx) base.texture = tx; }
   if (low) base.low = true;
   if (style === "wire") base.wire = true;
@@ -107,6 +179,13 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   base.shade = clamp(p.shade, 0, 0.5, low ? 0.1 : 0);
   const c2 = colour(p.color2); if (c2) { base.color2 = c2; base.grad = ["x", "y", "z"].includes(String(p.grad)) ? String(p.grad) : "y"; base.mid = clamp(p.mid, 0.05, 0.95, 0.5); }
   if (shape === "loft") { base.sections = sections; base.seg = Math.round(clamp(p.seg, 3, 24, low ? 6 : 16)); }
+  if (shape === "sculpt") {
+    base.blobs = blobs;
+    if (p.res !== undefined) base.res = Math.round(clamp(p.res, 12, 128, 64));
+    const nz = obj(p.noise); if (p.noise !== undefined && nz.amp !== undefined) base.noise = { amp: clamp(nz.amp, 0, 0.2, 0.01), scale: clamp(nz.scale, 0.5, 60, 6) };
+    if (p.tint !== undefined) base.tint = clamp(p.tint, 0, 0.4, 0.06);
+    if (p.ao !== undefined) base.ao = clamp(p.ao, 0, 1, 1);
+  }
   if (shape === "stairs") base.steps = Math.round(clamp(p.steps, 2, 16, 4));
   if (shape === "tube") base.caps = p.caps !== false;
   if (shape === "poly") { base.detail = Math.round(clamp(p.detail, 0, 3, low ? 0 : 1)); base.jitter = clamp(p.jitter, 0, 0.4, low ? 0.06 : 0); }
@@ -120,13 +199,14 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
     const one = { ...base, name: n > 1 ? `${base.name} ${i + 1}` : base.name, pos: at, pivot: [pv[0] + step[0] * i, pv[1] + step[1] * i, pv[2] + step[2] * i] };
     out.push(one);
     // authored-in-place geometry (loft / mesh / extrude / tube) is off-axis through its points, not pos
-    const offAxis = Math.abs(at[0]) > 1e-3 || [...sections, ...verts, ...pts].some((q) => Math.abs(q[0]) > 1e-3);
+    const offAxis = Math.abs(at[0]) > 1e-3 || [...sections, ...verts, ...pts].some((q) => Math.abs(q[0]) > 1e-3) || blobs.some((b) => Math.abs((b.at as number[])[0]!) > 1e-3);
     if (p.mirror === true && offAxis && out.length < room) {
       const opv = one.pivot as number[];
       const m: Obj = { ...one, name: `${one.name} (mirror)`, pos: [-at[0], at[1], at[2]], pivot: [-opv[0], opv[1], opv[2]], rot: [rot[0], -rot[1], -rot[2]] };
       if (shape === "loft") m.sections = (sections as number[][]).map((q) => [-q[0], ...q.slice(1)]);
       if (shape === "mesh") m.verts = (verts as number[][]).map((q) => [-q[0], q[1], q[2]]);
       if (shape === "extrude" || shape === "tube") m.pts = (pts as number[][]).map((q) => [-q[0], ...q.slice(1)]);
+      if (shape === "sculpt") m.blobs = mirrorBlobs(blobs);
       out.push(m);
     }
   }

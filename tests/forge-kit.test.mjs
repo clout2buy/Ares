@@ -616,3 +616,138 @@ test("runtime variants: a colourway is built once per variant and shared by its 
   assert.equal(f1.part("base").mesh.material, f2.part("base").mesh.material);
   assert.notEqual(a.part("base").mesh.material, f1.part("base").mesh.material);
 });
+
+// ── sculpt: blobs melt into one skinned mesh; joints bend it; snapped features sit on the skin ──
+import { lintBlob } from "../packages/cli/dist/entry/forgeBlocks.js";
+
+/** The worked bear from the help docs, as parts (the docs example must stay valid input). */
+function docsBear() {
+  const from = FORGE_SCRIPT_DOCS.indexOf("WORKED EXAMPLE"), start = FORGE_SCRIPT_DOCS.indexOf("\n", from) + 1, end = FORGE_SCRIPT_DOCS.indexOf(" Walk:", start);
+  const walk = FORGE_SCRIPT_DOCS.slice(end + 6, FORGE_SCRIPT_DOCS.indexOf("\n Same blobs", end)).trim();
+  return { parts: vm.runInNewContext(`[${FORGE_SCRIPT_DOCS.slice(start, end)}]`), walk: vm.runInNewContext(`(${walk})`) };
+}
+
+test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirrored joint, and a sculpt with nothing to melt falls back", () => {
+  const m = sanitizeModel({ parts: [{ name: "b", shape: "sculpt", blobs: [
+    { s: "ball", at: [0, 1, 0], r: [0.5, 0.4, 0.6], k: 0.2 },
+    { s: "chain", pts: [[0.3, 1, 0, 0.2], [0.3, 0.5, 0.1, 0.15], [0.3, 0.1, 0.1, 0.12]], bone: "leg", mirror: true },
+    { s: "stick", at: [0, 1, 0.5], to: [0, 1.1, 1], r: 0.2, r2: 0.1, k: 0.1 },
+    { s: "ball", at: [0, 1.2, 0.3], r: 0.1, paint: true, color: "white", bone: "ignored" },
+    { s: "ball", at: [0, 1.2, 0.5], r: 0.05, sub: true },
+    { s: "stick", at: [0, 0, 0] },
+  ] }] });
+  const b = m.parts[0];
+  assert.equal(b.shape, "sculpt");
+  assert.equal(b.smooth, true, "sculpts are smooth unless low-poly");
+  const sticks = b.blobs.filter((x) => x.s === "stick");
+  assert.equal(sticks.length, 5, "2 chain segments x2 (mirror) + 1 stick");
+  assert.deepEqual(b.blobs.filter((x) => x.bone).map((x) => x.bone), ["leg", "leg (mirror)", "leg", "leg (mirror)"]);
+  assert.equal(b.blobs.find((x) => x.bone === "leg (mirror)").at[0], -0.3);
+  const paint = b.blobs.find((x) => x.paint);
+  assert.equal(paint.color, "#f4efe0"); assert.equal(paint.bone, undefined, "paint never carries a bone");
+  assert.ok(b.blobs.find((x) => x.sub).k <= 0.05, "carves default tight");
+  assert.equal(b.blobs.at(-1).s, "ball", "a stick without `to` degrades to a ball");
+  assert.equal(sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "ball", at: [0, 0, 0], paint: true }] }] }).parts[0].shape, "box");
+  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
+  const mirrored = sanitizeModel({ parts: [{ name: "ear", shape: "sculpt", mirror: true, blobs: [{ s: "ball", at: [0.3, 1, 0], r: 0.1, bone: "head" }] }] }).parts;
+  assert.deepEqual(mirrored.map((p) => [p.name, p.blobs[0].at[0], p.blobs[0].bone]), [["ear", 0.3, "head"], ["ear (mirror)", -0.3, "head (mirror)"]]);
+});
+
+test("sculpt studio: unknown blob fields, missing bones and bad snaps are reported; op blob patches/adds/removes one blob; scale reaches the blobs", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-sculpt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  const st = ensureStudio("sc");
+  let r = await applyEdit(st, { parts: [
+    { name: "body", shape: "sculpt", blobs: [{ id: "chest", s: "ball", at: [0, 1, 0], r: [0.5, 0.5, 0.6], wobble: 1 }, { id: "leg", s: "stick", at: [0.3, 1, 0], to: [0.3, 0.1, 0], r: 0.15, bone: "legF" }] },
+    { name: "eye", shape: "sphere", size: 0.05, pos: [0.1, 1.2, 0.6], snap: "nope" },
+  ] }, root);
+  const text = r.errors.join("\n");
+  assert.match(text, /unknown field "wobble"/);
+  assert.match(text, /blob bone\(s\) "legF" name no part.*shape:"joint"/);
+  assert.match(text, /snaps to "nope", which is not a sculpt part/);
+  r = await applyEdit(st, { parts: [{ name: "legF", shape: "joint", pos: [0.3, 1, 0], mirror: true }], ops: [
+    { op: "blob", name: "body", id: "leg", r: 0.2 },
+    { op: "blob", name: "body", id: "tail", s: "stick", at: [0, 1, -0.5], to: [0, 1.2, -1], r: 0.08 },
+    { op: "blob", name: "body", id: "chest", remove: true },
+    { op: "blob", name: "body", id: "ghost", remove: true },
+    { op: "blob", name: "eye", id: "x" },
+  ] }, root);
+  assert.ok(r.errors.some((e) => /"ghost" not found/.test(e)));
+  assert.ok(r.errors.some((e) => /no sculpt part "eye"/.test(e)));
+  const raw = st.raw.find((p) => p.name === "body");
+  assert.deepEqual(raw.blobs.map((b) => b.id), ["leg", "tail"]);
+  assert.equal(raw.blobs[0].r, 0.2);
+  await applyEdit(st, { ops: [{ op: "set", name: "body", scale: 2 }] }, root);
+  assert.deepEqual(raw.blobs[1].at, [0, 2, -1]);
+  assert.equal(raw.blobs[1].r, 0.16);
+  assert.equal(raw.size, undefined, "a sculpt scales its blobs, not a bounding box");
+});
+
+test("sculpt runtime: the docs bear builds ONE closed skinned mesh, joints bend it, eyes land on the skin, and it loads in a game", async (t) => {
+  let threePath;
+  for (const c of [path.resolve("node_modules/three/build/three.module.js"), path.resolve("tauri/node_modules/three/build/three.module.js")]) {
+    if (await readFile(c).then(() => true, () => false)) { threePath = c; break; }
+  }
+  if (!threePath) return t.skip("three is not installed in this checkout");
+  const root = await mkdtemp(path.join(tmpdir(), "ares-sculpt-rt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "ares-model.mjs");
+  await writeFile(file, buildRuntimeModule(pathToFileURL(threePath).href), "utf8");
+  const { buildModel } = await import(pathToFileURL(file).href);
+  const T = await import(pathToFileURL(threePath).href);
+  dropStudios();
+  const st = ensureStudio("bear");
+  const bear = docsBear();
+  const r = await applyEdit(st, { parts: bear.parts, anims: [bear.walk] }, root);
+  assert.deepEqual(r.errors, [], "the docs example is clean input");
+  const spec = studioSpec(st);
+  const model = buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: spec.anims, scripts: [] });
+  const a = model.instance(), b = model.instance();
+  const body = a.part("body").mesh;
+  assert.ok(body.isSkinnedMesh, "a sculpt with bones is skinned");
+  assert.equal(body.geometry, b.part("body").mesh.geometry, "instances share the sculpted geometry");
+  assert.notEqual(body.skeleton, b.part("body").mesh.skeleton, "each instance has its own skeleton");
+  const g = body.geometry, idx = g.index.array, edges = new Map();
+  for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const p = idx[k + e], q = idx[k + (e + 1) % 3], key = p < q ? `${p}_${q}` : `${q}_${p}`; edges.set(key, (edges.get(key) ?? 0) + 1); }
+  assert.ok([...edges.values()].every((n) => n === 2), "watertight: every edge has exactly two triangles");
+  assert.ok(g.attributes.position.count > 2000, `a real surface (${g.attributes.position.count} verts)`);
+  assert.deepEqual(g.userData.bones.slice(0, 4), ["", "head", "head (mirror)", "legF"]);
+  // colours: the muzzle blob is light, the paint on the lower legs is dark
+  const P = g.attributes.position, C = g.attributes.color;
+  const near = (x, y, z) => { let best = 0, bd = 1e9; for (let i = 0; i < P.count; i++) { const d = Math.hypot(P.getX(i) - x, P.getY(i) - y, P.getZ(i) - z); if (d < bd) { bd = d; best = i; } } return best; };
+  const lum = (i) => C.getX(i) + C.getY(i) + C.getZ(i);
+  assert.ok(lum(near(0, 1.18, 1.78)) > 3 * lum(near(0.5, 0.3, 0.65)), "light muzzle, dark painted legs");
+  // the eye was snapped onto the surface of the skull
+  const eye = a.part("eye").spec;
+  assert.ok(Math.hypot(eye.pos[0] - 0.13, eye.pos[1] - 1.27, eye.pos[2] - 1.5) < 0.2 && eye.snapped, "snapped near where it was asked");
+  const nearest = P.count && Math.min(...Array.from({ length: P.count }, (_, i) => Math.hypot(P.getX(i) - eye.pos[0], P.getY(i) - eye.pos[1], P.getZ(i) - eye.pos[2])));
+  assert.ok(nearest < 0.05, `the eye sits on the skin (${nearest.toFixed(3)} from the nearest vertex)`);
+  // bending: a paw vertex moves when the walk swings the leg; a back vertex barely does
+  a.group.updateMatrixWorld(true); body.skeleton.update();
+  const paw = near(0.33, 0.1, 0.8), back = near(0, 1.7, -0.2), v0 = body.getVertexPosition(paw, new T.Vector3()), w0 = body.getVertexPosition(back, new T.Vector3());
+  a.play("walk"); a.update(0.35); a.group.updateMatrixWorld(true); body.skeleton.update();
+  const v1 = body.getVertexPosition(paw, new T.Vector3()), w1 = body.getVertexPosition(back, new T.Vector3());
+  assert.ok(v1.distanceTo(v0) > 0.1, `the paw swings (${v1.distanceTo(v0).toFixed(3)})`);
+  assert.ok(w1.distanceTo(w0) < 0.02, `the back stays (${w1.distanceTo(w0).toFixed(3)})`);
+  // the claws follow the paw joint (rigid parts and skin agree)
+  assert.equal(a.part("claw 1").node.parent, a.part("pawF").node);
+  a.dispose(); b.dispose(); model.dispose();
+});
+
+test("live: a sculpt grows blob by blob while it streams (coarse partials), then the finished part lands once", () => {
+  const call = JSON.stringify({ action: "model", model: "b", parts: [{ name: "body", shape: "sculpt", res: 80, blobs: [{ s: "ball", at: [0, 1, 0], r: 0.5 }, { s: "ball", at: [0, 1, 0.6], r: 0.3 }, { s: "stick", at: [0, 1, 0.8], to: [0, 1.2, 1.2], r: 0.2, r2: 0.1 }] }, { name: "eye", shape: "sphere", snap: "body" }] });
+  for (const size of [1, 7, 1000]) {
+    const s = new ExplainStream(); const pieces = [];
+    for (let i = 0; i < call.length; i += size) pieces.push(...s.feed(call.slice(i, i + size)));
+    const parts = pieces.filter((p) => p.op === "part");
+    const partial = parts.filter((p) => p.partial);
+    assert.deepEqual(partial.map((p) => p.parts[0].blobs.length), [1, 2, 3], `chunk ${size}: one partial per finished blob`);
+    assert.ok(partial.every((p) => p.parts[0].res === 30), "partials are coarse (fast to rebuild)");
+    const full = parts.filter((p) => !p.partial);
+    assert.deepEqual(full.map((p) => p.parts[0].name), ["body", "eye"]);
+    assert.equal(full[0].parts[0].res, 80, "the final part keeps its resolution");
+  }
+  assert.match(LIVE_RUNTIME_JS, /m\.partial&&el\.__live\.sculpt/);
+  assert.match(FORGE_MODEL_JS, /sculpt:function\(list\)/);
+});

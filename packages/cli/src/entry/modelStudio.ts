@@ -14,7 +14,7 @@ import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildRuntimeModule } from "./forgeRuntime.js";
-import { MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
+import { lintBlob, MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
 
@@ -155,7 +155,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -166,6 +166,12 @@ function lintPart(p: Obj): string[] {
   for (const k of ["pos", "rot", "pivot"]) if (p[k] !== undefined && !vec(p[k])) w.push(`part "${n}": ${k} should be [x,y,z] numbers`);
   if (p.size !== undefined && !vec(p.size) && typeof p.size !== "number") w.push(`part "${n}": size should be [x,y,z] or one number`);
   if (p.texture !== undefined && !sanitizeTexture(p.texture)) w.push(`part "${n}": texture needs {kind: planks|bricks|noise|checker|stripes|dots, colors:[#hex...]}`);
+  if (p.shape === "sculpt") {
+    const bl = arr(p.blobs);
+    if (!bl.length) w.push(`part "${n}": a sculpt needs blobs:[{s:"ball",at:[x,y,z],r:[rx,ry,rz]}, {s:"stick",at,to,r,r2}, ...] (help:true has a worked creature)`);
+    bl.slice(0, 64).forEach((b, i) => { for (const x of lintBlob(b, i)) w.push(`part "${n}": ${x}`); });
+    if (bl.length > 64) w.push(`part "${n}": ${bl.length} blobs, only the first 64 are used`);
+  }
   if (p.color !== undefined && !colour(p.color)) w.push(`part "${n}": colour "${String(p.color)}" not recognised (use #rrggbb or a name like orange/gold/white)`);
   return w;
 }
@@ -200,13 +206,20 @@ function moveBy(p: Obj, d: number[]): void {
 
 function scaleBy(p: Obj, f: number): void {
   const mul = (v: unknown): number[] => arr(v).map((n) => Number(n) * f);
-  if (p.size !== undefined) p.size = typeof p.size === "number" ? p.size * f : mul(p.size); else if (!["loft", "mesh", "extrude", "lathe", "tube"].includes(String(p.shape))) p.size = [f, f, f];
+  if (p.size !== undefined) p.size = typeof p.size === "number" ? p.size * f : mul(p.size); else if (!["loft", "mesh", "extrude", "lathe", "tube", "sculpt", "joint"].includes(String(p.shape))) p.size = [f, f, f];
   if (p.pos !== undefined) p.pos = mul(p.pos);
   if (p.pivot !== undefined) p.pivot = mul(p.pivot);
   for (const key of ["verts"]) if (Array.isArray(p[key])) p[key] = (p[key] as unknown[]).map((q) => mul(q));
   if (Array.isArray(p.sections)) p.sections = (p.sections as unknown[]).map((q) => arr(q).map((n) => Number(n) * f));
   if (Array.isArray(p.pts)) p.pts = (p.pts as unknown[]).map((q) => mul(q));
   for (const k of ["r", "r2", "depth"]) if (typeof p[k] === "number") p[k] = (p[k] as number) * f;
+  if (Array.isArray(p.blobs)) p.blobs = (p.blobs as unknown[]).map((raw) => {
+    const b = { ...obj(raw) };
+    for (const k of ["at", "to"]) if (Array.isArray(b[k])) b[k] = mul(b[k]);
+    for (const k of ["r", "r2", "k", "soft", "round"]) if (typeof b[k] === "number") b[k] = (b[k] as number) * f; else if (k === "r" && Array.isArray(b.r)) b.r = mul(b.r);
+    if (Array.isArray(b.pts)) b.pts = (b.pts as unknown[]).map((q) => arr(q).map((v) => Number(v) * f));
+    return b;
+  });
 }
 
 /** Pull parts out of a saved model file (an asset library entry). */
@@ -263,6 +276,20 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
           if (typeof to === "string" && to) p.name = to.slice(0, 32);
           touched.push(nameOf(p));
         }
+      } else if (op === "blob") {
+        // edit ONE blob of a sculpt by its id (patch fields, remove:true, or add a new id) instead of re-sending every blob
+        const part = st.raw.find((p) => nameOf(p) === String(o.name ?? ""));
+        if (!part || part.shape !== "sculpt") { errors.push(`blob: no sculpt part "${String(o.name ?? "")}"`); continue; }
+        const id = String(o.id ?? "").slice(0, 24);
+        if (!id) { errors.push("blob: needs id (give blobs ids like \"muzzle\", \"hump\" when you write them)"); continue; }
+        const list = arr(part.blobs).map(obj), i = list.findIndex((b) => String(b.id ?? "") === id);
+        const { op: _o, name: _n, id: _i, remove, ...rest } = o as Obj & { remove?: unknown };
+        void _o; void _n; void _i;
+        if (remove === true) { if (i < 0) { errors.push(`blob: "${id}" not found in ${nameOf(part)}`); continue; } list.splice(i, 1); }
+        else if (i >= 0) list[i] = { ...list[i], ...rest };
+        else list.push({ id, ...rest });
+        part.blobs = list;
+        touched.push(nameOf(part));
       } else if (op === "remove") {
         const sel = String(o.name ?? ""); const before = st.raw.length; st.raw = st.raw.filter((p) => !matches(sel, nameOf(p)));
         if (st.raw.length === before) errors.push(`remove: no part "${sel}"`); else touched.push(`- ${sel}`);
@@ -322,6 +349,12 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
   // a part that points at a parent which doesn't exist is almost always a typo: say so
   const have = new Set(st.raw.map(nameOf));
   for (const p of st.raw) if (p.parent && !have.has(String(p.parent))) errors.push(`part "${nameOf(p)}" has parent "${String(p.parent)}" which doesn't exist`);
+  for (const p of st.raw) if (p.snap && !st.raw.some((q) => nameOf(q) === String(p.snap) && q.shape === "sculpt")) errors.push(`part "${nameOf(p)}" snaps to "${String(p.snap)}", which is not a sculpt part`);
+  // a blob bone that names no part is skinned to the sculpt itself (it will not bend): say which
+  for (const p of st.raw) if (p.shape === "sculpt" && names.has(nameOf(p))) {
+    const missing = [...new Set(arr(p.blobs).map((b) => String(obj(b).bone ?? "")).filter((b) => b && !have.has(b)))];
+    if (missing.length) errors.push(`part "${nameOf(p)}": blob bone(s) ${missing.map((b) => `"${b}"`).join(", ")} name no part — add {name, shape:"joint", pos:[pivot]} parts for them (mirror:true for left/right), or those blobs will not bend`);
+  }
   st.version += 1;
   return { touched, errors };
 }

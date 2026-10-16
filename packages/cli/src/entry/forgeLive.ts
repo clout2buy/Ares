@@ -16,7 +16,7 @@ import { sanitizeAnim, sanitizeModelPart, sanitizeScene } from "./forgeBlocks.js
 export type LivePiece =
   | { op: "begin"; idx: number; kind: "model" | "story"; title?: string; style?: string; look?: string }
   | { op: "title"; idx: number; title: string }
-  | { op: "part"; idx: number; parts: Record<string, unknown>[] }
+  | { op: "part"; idx: number; parts: Record<string, unknown>[]; partial?: boolean }
   | { op: "scene"; idx: number; scene: Record<string, unknown> }
   | { op: "anim"; idx: number; anim: Record<string, unknown> }
   | { op: "end"; idx: number };
@@ -76,6 +76,22 @@ export class ExplainStream {
     return out;
   }
 
+  private sculptSoFar(depth: number, end: number, out: LivePiece[]): void {
+    const part = this.stack[depth - 2], list = this.stack[depth - 3];
+    const rootParts = depth === 4 && list?.key === "parts";
+    const blockParts = depth === 6 && list?.key === "parts" && this.stack[1]?.key === "blocks";
+    if (!part || part.t !== "o" || !(rootParts || blockParts)) return;
+    if (rootParts && this.blockIdx < 0) this.blockIdx = 0;
+    if (this.blockIdx < 0) return;
+    let raw: Record<string, unknown>;
+    try { raw = JSON.parse(this.buf.slice(part.start, end + 1) + "]}") as Record<string, unknown>; } catch { return; }
+    if (raw.shape !== "sculpt" || !raw.name) return;
+    const idx = this.blockIdx;
+    this.begin("model", out);
+    const parts = sanitizeModelPart({ ...raw, res: Math.min(Number(raw.res) || 64, 30) }, this.style.get(idx) ?? "", 2, this.edge.get(idx) ?? "");
+    if (parts.length && parts[0]!.shape === "sculpt") out.push({ op: "part", idx, parts, partial: true });
+  }
+
   private begin(kind: "model" | "story", out: LivePiece[]): void {
     if (this.begun.has(this.blockIdx)) return;
     this.begun.set(this.blockIdx, kind);
@@ -103,6 +119,8 @@ export class ExplainStream {
   private closed(f: Frame, end: number, out: LivePiece[]): void {
     const depth = this.stack.length, parent = this.stack[depth - 1];
     if (!parent || parent.t !== "a") return;
+    // a sculpt grows blob by blob: each finished blob re-sends the part so far (coarse), so the clay is seen melting together
+    if (parent.key === "blobs" && depth >= 4) this.sculptSoFar(depth, end, out);
     // blocks[i].parts[j] / blocks[i].scenes[j]
     const inBlocks = depth === 4 && this.stack[1]?.key === "blocks";
     const rootAnims = depth === 2 && parent.key === "anims";
@@ -156,7 +174,8 @@ export const LIVE_RUNTIME_JS = `
       return}
     el=els[m.idx];if(m.op==="title"){var h=els["t"+m.idx];if(h)h.textContent=m.title}
     if(!el||!el.__live)return;
-    if(m.op==="part")el.__live.addParts(m.parts);
+    if(m.op==="part"&&m.partial&&el.__live.sculpt)el.__live.sculpt(m.parts);
+    else if(m.op==="part")el.__live.addParts(m.parts);
     else if(m.op==="scene")el.__live.addScene(m.scene);
     else if(m.op==="anim")el.__live.addAnim(m.anim);
     else if(m.op==="end")el.__live.finish();

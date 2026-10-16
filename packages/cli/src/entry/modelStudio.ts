@@ -10,8 +10,8 @@
 // and editable; the sanitised, mirror/repeat-expanded spec is derived for the
 // page on every change.
 
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { copyFile, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { buildRuntimeModule } from "./forgeRuntime.js";
 import { lintBlob, sanitizeMaps, MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
@@ -30,6 +30,8 @@ export interface Studio {
   scripts: Obj[];
   /** colourways: name -> { "lid*": {color,color2,mat,texture,...} }. One model + its clips serves many looks; the game picks one per instance. */
   variants: Record<string, Record<string, Obj>>;
+  /** imported model files (gltf parts), by the path the model uses -> the copy served next to the studio page */
+  modelFiles?: Record<string, string>;
   /** project texture files read for maps, by the path the model uses: served to the page as data: URLs */
   mapData?: Record<string, string>;
   /** errors / log lines scripts reported back (drained into the next tool result) */
@@ -48,6 +50,8 @@ export interface Studio {
 const studios = new Map<string, Studio>();
 const REF_MAX_BYTES = 2_000_000;
 
+/** The folder the studio page is served from (imported models are copied next to it). */
+export const studioDir = (id: string): string => path.join(tmpdir(), "ares-explainers", `studio-${id}`);
 export const studioId = (v: unknown): string => String(v ?? "model").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "model";
 export const getStudio = (id: string): Studio | undefined => studios.get(id);
 export function ensureStudio(id: string): Studio {
@@ -157,7 +161,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag", "maps", "crisp"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag", "maps", "crisp", "hard", "crease", "src", "height"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -187,6 +191,7 @@ export function qualityNotes(st: Studio): string[] {
   const out: string[] = [], raw = st.raw;
   if (!raw.length) return out;
   const sculpts = raw.filter((p) => p.shape === "sculpt");
+  if (raw.some((p) => p.shape === "gltf")) return out;
   const organic = raw.filter((p) => PRIMITIVE.has(String(p.shape ?? "box")) && ORGANIC_NAME.test(nameOf(p)) && !p.snap);
   if (!sculpts.length && organic.length >= 4) out.push(`quality: this is a creature/character stacked from primitives (${organic.slice(0, 6).map(nameOf).join(", ")}...): the toy look. Rebuild it as ONE sculpt part (blobs melt into one skin; help:true has the method) with joints, and remove these parts.`);
   else if (!sculpts.length && raw.filter((p) => PRIMITIVE.has(String(p.shape ?? "box"))).length >= 4 && !raw.some((p) => p.texture)) out.push("quality: props look real when sculpted too: one sculpt with box/cyl blobs (round = bevelled edges), sub carves for grooves/panel lines, and per-blob mat (metal, leather, wood, stone) + tex. Bare primitives read as a blockout.");
@@ -401,6 +406,24 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
       try { (st.mapData ??= {})[v] = await textureDataUrl(cwd, v); } catch (err) { errors.push(`part "${nameOf(p)}": maps.${k}: ${err instanceof Error ? err.message : String(err)}`); }
     }
   }
+  // imported models: project .glb/.gltf files are copied next to the studio page (inside the project only, 60MB max)
+  for (const p of st.raw) {
+    if (!names.has(nameOf(p)) || p.shape !== "gltf") continue;
+    const src = String(p.src ?? "");
+    if (!src) { errors.push(`part "${nameOf(p)}": a gltf part needs src (a project .glb/.gltf path or an https URL)`); continue; }
+    if (/^(https?:|data:)/.test(src)) continue;
+    try {
+      const abs = await insideReal(cwd, src);
+      if (!/\.(glb|gltf)$/i.test(abs)) throw new Error("src must be a .glb or .gltf file");
+      const info = await stat(abs);
+      if (info.size > 60_000_000) throw new Error(`${src} is ${(info.size / 1e6).toFixed(0)}MB (max 60MB)`);
+      const name = `${path.basename(abs, path.extname(abs)).replace(/[^\w-]/g, "_")}-${info.size}${path.extname(abs).toLowerCase()}`, dst = path.join(studioDir(st.id), "models", name);
+      await mkdir(path.dirname(dst), { recursive: true });
+      await copyFile(abs, dst);
+      (st.modelFiles ??= {})[src] = `models/${name}`;
+      if (/\.gltf$/i.test(abs)) errors.push(`part "${nameOf(p)}": .gltf with separate .bin/texture files may not load from the studio copy - prefer a single .glb`);
+    } catch (err) { errors.push(`part "${nameOf(p)}": src: ${err instanceof Error ? err.message : String(err)}`); }
+  }
   errors.push(...qualityNotes(st));
   st.version += 1;
   return { touched, errors };
@@ -455,7 +478,7 @@ export function studioSpec(st: Studio): Obj {
   }
   uniqueNames(parts);
   const showVariant = typeof st.view.variant === "string" ? st.variants[st.view.variant] : undefined;
-  const shown = withMapData(st, showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts);
+  const shown = withMapData(st, showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts).map((p) => (p.shape === "gltf" && st.modelFiles?.[String(p.src)] ? { ...p, src: st.modelFiles[String(p.src)] } : p));
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
   const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
   return { title: st.title, style: st.style, look: st.look, parts: shown, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
@@ -489,7 +512,13 @@ export async function exportGame(st: Studio, cwd: string, o: { dir?: string; thr
   const spec = studioSpec(st);
   await writeFile(runtimeAbs, buildRuntimeModule(three), "utf8");
   const gameParts: Obj[] = [];
-  for (const p of baseParts(st)) {
+  for (const p0 of baseParts(st)) {
+    let p = p0;
+    if (p.shape === "gltf" && typeof p.src === "string" && !/^(https?:|data:)/.test(p.src)) {
+      const srcAbs = await insideReal(cwd, p.src), name = path.basename(srcAbs), dst = await insideReal(cwd, `${dir}/models/${name}`);
+      if (srcAbs !== dst) { await mkdir(path.dirname(dst), { recursive: true }); await copyFile(srcAbs, dst); }
+      p = { ...p, src: name };
+    }
     const mp = p.maps as Obj | undefined;
     if (!mp) { gameParts.push(p); continue; }
     const out: Obj = { ...mp };

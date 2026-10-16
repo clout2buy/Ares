@@ -14,12 +14,15 @@ import { FORGE_MODEL_CORE_JS } from "./forgeModelCore.js";
 export const FORGE_MODEL_JS = FORGE_THREE_LOAD + FORGE_MODEL_CORE_JS + `
 var reduced=!!(matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches);
 function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
+// a photo-studio environment (what glossy paint, chrome and glass reflect): dark floor, a bright horizon band, a soft sky,
+// two long overhead strip lights and side softboxes - the reflections that make a car or a blade read as real
 function envMap(r){
-  var es=new T.Scene(),sky=new T.Mesh(new T.SphereGeometry(20,24,12),new T.MeshBasicMaterial({vertexColors:true,side:T.BackSide})),pa=sky.geometry.attributes.position,cols=[],c=new T.Color(),i;
-  for(i=0;i<pa.count;i++){var y=(pa.getY(i)/20+1)/2;c.setRGB(0.04+0.42*y*y,0.04+0.42*y*y,0.05+0.45*y*y);cols.push(c.r,c.g,c.b)}
+  var es=new T.Scene(),sky=new T.Mesh(new T.SphereGeometry(20,48,24),new T.MeshBasicMaterial({vertexColors:true,side:T.BackSide})),pa=sky.geometry.attributes.position,cols=[],c=new T.Color(),i;
+  for(i=0;i<pa.count;i++){var y=pa.getY(i)/20,v;if(y<-0.02)v=0.03+0.05*(1+y);else if(y<0.08)v=0.9-6*Math.abs(y-0.03);else v=0.22+0.3*y;c.setRGB(v,v,v*1.04);cols.push(c.r,c.g,c.b)}
   sky.geometry.setAttribute("color",new T.Float32BufferAttribute(cols,3));es.add(sky);
-  [[8,10,6,6],[-9,6,-4,4],[0,12,-9,5]].forEach(function(q){var b=new T.Mesh(new T.BoxGeometry(q[3],0.4,q[3]),new T.MeshBasicMaterial({color:0xffffff}));b.position.set(q[0],q[1],q[2]);b.lookAt(0,0,0);es.add(b)});
-  var pm=new T.PMREMGenerator(r),rt=pm.fromScene(es,0.02);pm.dispose();return rt.texture;
+  function card(w,hh,x,y,z,k){var b=new T.Mesh(new T.PlaneGeometry(w,hh),new T.MeshBasicMaterial({color:new T.Color(k,k,k),side:T.DoubleSide}));b.position.set(x,y,z);b.lookAt(0,0,0);es.add(b)}
+  card(16,1.2,0,14,3,4);card(16,1.2,0,14,-3,4);card(5,7,15,5,6,2.2);card(5,7,-15,5,-6,1.6);card(10,3,0,4,-16,1.2);
+  var pm=new T.PMREMGenerator(r),rt=pm.fromScene(es,0.015);pm.dispose();return rt.texture;
 }
 var LOOKS={
   studio:{bg:"radial-gradient(ellipse at 50% 70%,rgba(47,109,240,.2),transparent 65%),rgba(3,6,14,.6)",sun:0xfff4e6,si:2.8,rim:0x8fb4ff,hemi:0xe8eeff,hg:0x2a2620,hi:0.45,ex:1.1},
@@ -33,6 +36,9 @@ var LOOKS={
   holo:{bg:"radial-gradient(ellipse at 50% 90%,#12307a,#080c24 60%,#2a0f4a)",sun:0x9cc5ff,si:1.6,rim:0xb06bff,hemi:0x6a8cff,hg:0x0a1030,hi:0.6,ex:1.05},
   flat:{bg:"#1a2036",sun:0xffffff,si:1.2,rim:0xffffff,hemi:0xffffff,hg:0xffffff,hi:1.6,ex:1}
 };
+// imported models: three's own GLTFLoader (meshopt + KTX2-free glTF/GLB; DRACO via the decoder CDN)
+if(T)setGltfLoader(function(src){return import("https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js").then(function(M){
+  var L=new M.GLTFLoader();return import("https://esm.sh/three@0.160.0/examples/jsm/loaders/DRACOLoader.js").then(function(D){var d=new D.DRACOLoader();d.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");L.setDRACOLoader(d);return L},function(){return L})}).then(function(L){return L.loadAsync(src)}).then(function(gl){return gl.scene})});
 function build(el){
   var spec={};try{spec=JSON.parse(el.getAttribute("data-spec")||"{}")}catch(e){}
   var parts=(spec.parts||[]).slice(),N=parts.length,live=!!spec.live,inst=!!window.__aresInstant,studio=spec.studio||"";
@@ -68,7 +74,7 @@ function build(el){
   ctl.addEventListener("start",function(){ctl.autoRotate=false;bSpin.classList.remove("on")});
   var root=new T.Group(),items=[],mats=[],edges=[];sc.add(root);
   function make(p){
-    var g=buildPartObject(p,{edges:true}),m=g.userData.mat,mesh=g.userData.mesh,ed=g.userData.ed;
+    var g=buildPartObject(p,{edges:true,onLoad:function(){rebox();fitWorld();if(lastShot)window.__aresView(lastShot[0],lastShot[1]);else{settleUntil=performance.now()+2500;userTook=false}draw()},onError:function(q,e){report("studio","model "+q.name+": could not load "+String(q.src).slice(0,80)+" ("+(e&&e.message||e)+")")}}),m=g.userData.mat,mesh=g.userData.mesh,ed=g.userData.ed;
     // every part hangs off a joint node (the pivot) so animation can rotate it - and its children - about that point
     var pv=p.pivot||p.pos,node=new T.Group();node.name="n"+(uid++);
     g.userData.node=node;
@@ -281,7 +287,7 @@ function build(el){
   // ── studio mode: Ares edits this model while you watch. The server holds the document; this page polls it and
   //    reconciles in place - unchanged parts morph to their new transform, new/changed parts pop in, removed ones shrink out ──
   var tweens=[],ghosts=[],refImg=null,settledOnce=false;
-  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone,p.poly,p.flow,p.shag,p.maps,p.crisp])}
+  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone,p.poly,p.flow,p.shag,p.maps,p.crisp,p.hard,p.crease,p.src,p.height])}
   function setRef(src){
     if(!src){if(refImg){refImg.remove();refImg=null}return}
     if(!refImg){refImg=document.createElement("img");refImg.className="k-ref";refImg.alt="reference";refImg.title="reference - click to fade";refImg.addEventListener("click",function(){refImg.style.opacity=refImg.style.opacity==="0.2"?"1":"0.2"});stage.appendChild(refImg)}
@@ -347,9 +353,9 @@ function build(el){
     for(i=ghosts.length-1;i>=0;i--){var gh=ghosts[i],q=Math.min(1,(now-gh.t0)/260),s3=1-q;gh.g.scale.set(Math.max(0.001,gh.g.userData.base[0]*s3),Math.max(0.001,gh.g.userData.base[1]*s3),Math.max(0.001,gh.g.userData.base[2]*s3));
       if(q>=1){var nd=gh.g.userData.node;if(nd.parent)nd.parent.remove(nd);disposeObject(gh.g);ghosts.splice(i,1)}}}
   // a deterministic pose for screenshots: __aresView("side", 1.2) freezes the current clip at t=1.2s; __aresResume() lets it play on
-  var heldPlay=null;
+  var heldPlay=null,lastShot=null;
   window.__aresResume=function(){if(heldPlay!==null){animOn=heldPlay&&!reduced;heldPlay=null;bAnim.textContent=animOn?"pause":"play"}};
-  window.__aresView=function(name,t){
+  window.__aresView=function(name,t){lastShot=[name,t];
     if(typeof t==="number"&&curA>=0){if(heldPlay===null)heldPlay=animOn;animOn=false;animT=t;applyAnim(anims[curA],t)}
     var dirs={front:[0,0.12,1],back:[0,0.12,-1],side:[1,0.12,0],top:[0,1,0.001],"3q":[1.05,0.55,1.55]},d=dirs[name]||dirs["3q"],v=new T.Vector3(d[0],d[1],d[2]).normalize();
     ctl.autoRotate=false;bSpin.classList.remove("on");userTook=true;sel=-1;ctl.target.copy(tctr);cam.position.copy(tctr).addScaledVector(v,trad*2.7*viewZoom);ctl.update();

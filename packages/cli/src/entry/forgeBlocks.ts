@@ -28,7 +28,7 @@ export function colour(v: unknown, d?: string): string | undefined {
 }
 
 // ── model: parts that assemble one by one ────────────────────────────────────
-export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube", "sculpt", "joint"];
+export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube", "sculpt", "joint", "gltf"];
 export const BLOB_KINDS = ["ball", "stick", "box", "chain", "cyl", "torus", "profile"];
 /** Surface detail the sculpt shader draws per pixel (a blob's `tex`, or the default for its mat). */
 export const SCULPT_TEX = ["none", "fur", "scales", "wrinkles", "rock", "wood", "cloth", "hammered", "pores"];
@@ -228,6 +228,11 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   base.shade = clamp(p.shade, 0, 0.5, low ? 0.1 : 0);
   const c2 = colour(p.color2); if (c2) { base.color2 = c2; base.grad = ["x", "y", "z"].includes(String(p.grad)) ? String(p.grad) : "y"; base.mid = clamp(p.mid, 0.05, 0.95, 0.5); }
   if (shape === "loft") { base.sections = sections; base.seg = Math.round(clamp(p.seg, 3, 24, low ? 6 : 16)); }
+  if (shape === "gltf") {
+    const src = String(p.src ?? "").trim();
+    if (src && src.length <= 600 && !/[<>"'`\s]/.test(src)) base.src = src;
+    if (p.height !== undefined) base.height = clamp(p.height, 0.01, 500, 1);
+  }
   if (shape === "sculpt") {
     base.blobs = blobs;
     if (p.res !== undefined) base.res = Math.round(clamp(p.res, 12, 256, 96));
@@ -238,6 +243,7 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
     if (p.shag !== undefined) base.shag = clamp(p.shag, 0, 1, 0.5);
     if (p.maps !== undefined) { const mp = sanitizeMaps(p.maps); if (mp) base.maps = mp; }
     if (p.crisp === false) base.crisp = false;
+    if (p.hard === true) { base.hard = true; base.crease = clamp(p.crease, 5, 89, 32); }
     if (p.poly !== undefined) base.poly = Math.round(clamp(p.poly, 200, 60000, 1400));
     const nz = obj(p.noise); if (p.noise !== undefined && nz.amp !== undefined) base.noise = { amp: clamp(nz.amp, 0, 0.2, 0.01), scale: clamp(nz.scale, 0.5, 60, 6) };
     if (p.tint !== undefined) base.tint = clamp(p.tint, 0, 0.4, 0.06);

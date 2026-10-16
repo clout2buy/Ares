@@ -86,7 +86,7 @@ function sField(S,x,y,z,L){
   if(S.amp)d+=S.amp*(fbm(x*S.fs,y*S.fs,z*S.fs,3)-0.44)*2;
   return d}
 function sculptGeo(p){
-  var S=sculptPrep(p);if(!S.ok)return new T.SphereGeometry(0.3,12,8);
+  var S=sculptPrep(p),hard=!!p.hard;if(!S.ok)return new T.SphereGeometry(0.3,12,8);
   // detail follows the finest feature: thin blades, toes and wrap rings get enough cells to exist (auto, capped for speed)
   var feat=1e9;S.F.forEach(function(b){if(b.sub)return;var f=b.s==="stick"?Math.min(b.r1,b.r2):b.s==="cyl"?b.r1+b.round:b.s==="torus"?b.tr:b.s==="profile"?Math.max(b.round*2,Math.min(b.hw,0.05)):Math.min(b.r[0],b.r[1],b.r[2]);if(f>0)feat=Math.min(feat,f)});
   var ext0=Math.max(S.max[0]-S.min[0],S.max[1]-S.min[1],S.max[2]-S.min[2]),lo=!!p.low,res=p.res||(lo?72:Math.round(Math.max(96,Math.min(128,ext0*2.6/feat)))),mn=S.min,mx=S.max,ext=Math.max(mx[0]-mn[0],mx[1]-mn[1],mx[2]-mn[2]),h=ext/res;
@@ -111,8 +111,24 @@ function sculptGeo(p){
     var sx=0,sy=0,sz=0,cnt=0;
     for(n=0;n<12;n++){var e0=ED[n][0],e1=ED[n][1],a=cv[e0],b=cv[e1];if((a<0)===(b<0))continue;var t=a/(a-b);
       sx+=CO[e0][0]+(CO[e1][0]-CO[e0][0])*t;sy+=CO[e0][1]+(CO[e1][1]-CO[e0][1])*t;sz+=CO[e0][2]+(CO[e1][2]-CO[e0][2])*t;cnt++}
-    V[i+nx*j+NXY*k]=pos.length/3;pos.push(ox+(i+sx/cnt)*h,oy+(j+sy/cnt)*h,oz+(k+sz/cnt)*h);
-    VL.push(BL[((i/BS)|0)+BX*(((j/BS)|0)+BY*((k/BS)|0))]||null)}
+    var vx=ox+(i+sx/cnt)*h,vy=oy+(j+sy/cnt)*h,vz=oz+(k+sz/cnt)*h,LBc=BL[((i/BS)|0)+BX*(((j/BS)|0)+BY*((k/BS)|0))]||null;
+    if(hard){
+      // dual contouring: the vertex that best fits every crossing's tangent plane (QEF, pulled toward the mass point),
+      // so edges and corners land ON the sharp feature instead of being averaged round
+      var a00=0,a01=0,a02=0,a11=0,a12=0,a22=0,b0=0,b1=0,b2=0,de=h*0.05;
+      for(n=0;n<12;n++){var f0=ED[n][0],f1=ED[n][1],ca=cv[f0],cb=cv[f1];if((ca<0)===(cb<0))continue;var tt2=ca/(ca-cb),
+          qx=ox+(i+CO[f0][0]+(CO[f1][0]-CO[f0][0])*tt2)*h,qy=oy+(j+CO[f0][1]+(CO[f1][1]-CO[f0][1])*tt2)*h,qz=oz+(k+CO[f0][2]+(CO[f1][2]-CO[f0][2])*tt2)*h,
+          gx=sField(S,qx+de,qy,qz,LBc)-sField(S,qx-de,qy,qz,LBc),gy=sField(S,qx,qy+de,qz,LBc)-sField(S,qx,qy-de,qz,LBc),gz=sField(S,qx,qy,qz+de,LBc)-sField(S,qx,qy,qz-de,LBc),gn=Math.sqrt(gx*gx+gy*gy+gz*gz)||1;
+        gx/=gn;gy/=gn;gz/=gn;var dq=gx*qx+gy*qy+gz*qz;
+        a00+=gx*gx;a01+=gx*gy;a02+=gx*gz;a11+=gy*gy;a12+=gy*gz;a22+=gz*gz;b0+=gx*dq;b1+=gy*dq;b2+=gz*dq}
+      var lam=0.06,m00=a00+lam,m11=a11+lam,m22=a22+lam,r0=b0-(a00*vx+a01*vy+a02*vz),r1=b1-(a01*vx+a11*vy+a12*vz),r2=b2-(a02*vx+a12*vy+a22*vz),
+        det=m00*(m11*m22-a12*a12)-a01*(a01*m22-a12*a02)+a02*(a01*a12-m11*a02);
+      if(Math.abs(det)>1e-12){
+        var ux2=(r0*(m11*m22-a12*a12)-a01*(r1*m22-a12*r2)+a02*(r1*a12-m11*r2))/det,uy2=(m00*(r1*m22-a12*r2)-r0*(a01*m22-a12*a02)+a02*(a01*r2-r1*a02))/det,uz2=(m00*(m11*r2-r1*a12)-a01*(a01*r2-r1*a02)+r0*(a01*a12-m11*a02))/det,
+          nx2=vx+ux2,ny2=vy+uy2,nz2=vz+uz2,mg=h*0.25;
+        if(nx2>ox+i*h-mg&&nx2<ox+(i+1)*h+mg&&ny2>oy+j*h-mg&&ny2<oy+(j+1)*h+mg&&nz2>oz+k*h-mg&&nz2<oz+(k+1)*h+mg){vx=nx2;vy=ny2;vz=nz2}}}
+    V[i+nx*j+NXY*k]=pos.length/3;pos.push(vx,vy,vz);
+    VL.push(LBc)}
   // one vertex per surface cell: watertight, but two sheets crossing ONE cell (features thinner than a cell) share it,
   // leaving a few 4-triangle edges - invisible; res (auto from the finest feature) keeps them rare
   var idx=[],VC=function(a,b,c){return V[a+nx*b+NXY*c]};
@@ -133,7 +149,7 @@ function sculptGeo(p){
   var NV=pos.length/3,P=new Float32Array(pos),NR=new Float32Array(NV*3),eps=h*0.3,g=[0,0,0],LL=null;
   function grad(x,y,z){g[0]=sField(S,x+eps,y,z,LL)-sField(S,x-eps,y,z,LL);g[1]=sField(S,x,y+eps,z,LL)-sField(S,x,y-eps,z,LL);g[2]=sField(S,x,y,z+eps,LL)-sField(S,x,y,z-eps,LL);return g}
   for(n=0;n<NV;n++){var x=P[3*n],y=P[3*n+1],z=P[3*n+2],gl=0,it;LL=VL[n];
-    for(it=0;it<1;it++){var f=sField(S,x,y,z,LL);grad(x,y,z);gl=g[0]*g[0]+g[1]*g[1]+g[2]*g[2];if(gl<1e-12)break;
+    for(it=0;it<(hard?0:1);it++){var f=sField(S,x,y,z,LL);grad(x,y,z);gl=g[0]*g[0]+g[1]*g[1]+g[2]*g[2];if(gl<1e-12)break;
       var sq=Math.sqrt(gl),mv=Math.max(-h,Math.min(h,f*2*eps/sq))/sq;x-=g[0]*mv;y-=g[1]*mv;z-=g[2]*mv}
     P[3*n]=x;P[3*n+1]=y;P[3*n+2]=z;grad(x,y,z);gl=g[0]*g[0]+g[1]*g[1]+g[2]*g[2];
     var il=gl>1e-12?1/Math.sqrt(gl):0;NR[3*n]=g[0]*il;NR[3*n+1]=g[1]*il;NR[3*n+2]=g[2]*il}
@@ -186,9 +202,23 @@ function sculptGeo(p){
     return{k:K,at:b.at,r:K<=1?b.r:K===5?[b.tR,0,0]:[b.r1||0,0,0],round:b.round||0,to:K===4?[b.hw,b.taper,b.ax==="y"?1:b.ax==="z"?2:0]:to,e:K===4?[b.pts.length,b.vmin,b.vspan,0]:[0,0,0,K===5?b.tr:(b.r2||0)],m:b.m,col:[b.col.r,b.col.g,b.col.b],soft:b.soft,pts:b.pts||null}});
   // poly = a triangle budget: decimate the high-detail surface (game LODs; and the real low-poly look)
   var budget=p.poly||(lo?1400:0);if(budget)gm=decimate(gm,budget);
+  if(hard&&!lo)gm=autoSmooth(gm,p.crease===undefined?32:p.crease);
   if(lo){var ud=gm.userData;gm=gm.toNonIndexed();gm.userData=ud;var fs=p.shade===undefined?0.07:p.shade;
     ["color","rme"].forEach(function(nm){var ca=gm.attributes[nm];for(n=0;n<ca.count;n+=3){var jt=nm==="color"?1+(hsh(n*7+3)-0.5)*2*fs:1;for(var ch=0;ch<3;ch++){var av=(ca.array[n*3+ch]+ca.array[n*3+3+ch]+ca.array[n*3+6+ch])/3*jt;ca.array[n*3+ch]=ca.array[n*3+3+ch]=ca.array[n*3+6+ch]=av}}});gm.computeVertexNormals()}
   return gm}
+// auto-smooth (Blender's): a face corner averages only the neighbouring faces within crease degrees of its own face, so
+// flat panels shade flat, curves stay smooth and every edge sharper than the crease angle is a crisp line
+function autoSmooth(gm,deg){
+  var I=gm.index.array,P=gm.attributes.position.array,NF=I.length/3,NV=P.length/3,FN=new Float32Array(NF*3),VF=[],f,v,k,cosT=Math.cos(deg*RAD);
+  for(v=0;v<NV;v++)VF.push([]);
+  for(f=0;f<NF;f++){var a=I[3*f],b=I[3*f+1],c=I[3*f+2],ux=P[3*b]-P[3*a],uy=P[3*b+1]-P[3*a+1],uz=P[3*b+2]-P[3*a+2],wx=P[3*c]-P[3*a],wy=P[3*c+1]-P[3*a+1],wz=P[3*c+2]-P[3*a+2],
+    x=uy*wz-uz*wy,y=uz*wx-ux*wz,z=ux*wy-uy*wx;FN[3*f]=x;FN[3*f+1]=y;FN[3*f+2]=z;VF[a].push(f);VF[b].push(f);VF[c].push(f)}
+  var out=gm.toNonIndexed(),N=new Float32Array(NF*9);
+  for(f=0;f<NF;f++){var fx=FN[3*f],fy=FN[3*f+1],fz=FN[3*f+2],fl=Math.sqrt(fx*fx+fy*fy+fz*fz)||1;
+    for(k=0;k<3;k++){var vv=I[3*f+k],sx=0,sy=0,sz=0;VF[vv].forEach(function(g){var gx=FN[3*g],gy=FN[3*g+1],gz=FN[3*g+2],gl=Math.sqrt(gx*gx+gy*gy+gz*gz)||1;
+        if((gx*fx+gy*fy+gz*fz)/(gl*fl)>=cosT){sx+=gx;sy+=gy;sz+=gz}});
+      var l=Math.sqrt(sx*sx+sy*sy+sz*sz)||1;N[9*f+3*k]=sx/l;N[9*f+3*k+1]=sy/l;N[9*f+3*k+2]=sz/l}}
+  out.setAttribute("normal",new T.BufferAttribute(N,3));out.userData=gm.userData;return out}
 // decimation (quadric error metrics, the Blender "Decimate" collapse): big flat facets where the form is flat, small ones where
 // it curves. Every attribute rides along (colour, material, detail, flow lerp; skin weights snap to the nearer end).
 // Edge collapses that would flip a face or pinch the surface (link condition) are refused, so the mesh stays closed.
@@ -314,7 +344,7 @@ function sculptMaterial(p,gm){
   var MP=p.maps?sculptMaps(p.maps):{U:{},has:{}},H=MP.has,MW=p.maps&&MP_ON[p.maps.on]||"1.0",useN=useDet||!!H.normal,GP=gm.userData.gp||[],PU=GP.length?paintUniforms(GP):null;
   var blobMats=(p.blobs||[]).map(function(b){return b.mat});
   if(p.mat==="paint"||blobMats.indexOf("paint")>=0){m.clearcoat=1;m.clearcoatRoughness=0.06}
-  if(p.mat==="glass"){m.transparent=true;m.opacity=0.42;m.depthWrite=false;m.side=T.DoubleSide;m.envMapIntensity=1.6}
+  if(p.mat==="glass"){m.transparent=true;m.opacity=0.6;m.depthWrite=false;m.side=T.DoubleSide;m.envMapIntensity=2.4;m.clearcoat=1;m.clearcoatRoughness=0.02;m.specularIntensity=1}
   m.userData.maps=MP.U;
   m.onBeforeCompile=function(sh){
     sh.uniforms.sdS={value:ds};Object.keys(MP.U).forEach(function(k){sh.uniforms[k]=MP.U[k]});if(PU)Object.keys(PU).forEach(function(k){sh.uniforms[k]=PU[k]});
@@ -367,7 +397,7 @@ function skinLink(parts,nodes,objs){
 function geo(p){
   var s=p.shape,pts=p.pts||[],i,lo=!!p.low;
   if(s==="sculpt")return sculptGeo(p);
-  if(s==="joint")return new T.BoxGeometry(0.001,0.001,0.001);
+  if(s==="joint"||s==="gltf")return new T.BoxGeometry(0.001,0.001,0.001);
   if(s==="sphere")return new T.SphereGeometry(0.5,lo?7:28,lo?5:20);
   if(s==="cylinder")return new T.CylinderGeometry(0.5,0.5,1,lo?7:24);
   if(s==="cone")return new T.ConeGeometry(0.5,1,lo?6:24);
@@ -498,7 +528,23 @@ function rigApply(parts,nodes,c,t){
 function rigSnap(nodes){return nodes.map(function(nd){return{q:nd.quaternion.clone(),p:nd.position.clone(),s:nd.scale.clone()}})}
 function rigBlend(nodes,snap,k){if(!snap||k>=1)return;k=k*k*(3-2*k);nodes.forEach(function(nd,i){var a=snap[i];if(!a)return;nd.quaternion.copy(a.q.clone().slerp(nd.quaternion,k));nd.position.lerpVectors(a.p,nd.position.clone(),k);nd.scale.lerpVectors(a.s,nd.scale.clone(),k)})}
 // one part -> a Group (mesh [+ tube end caps] [+ edge lines]) already placed relative to its pivot. o.cache shares geometry/material across instances.
+// imported real models (glTF / GLB): the consumer installs a loader (the studio: three's GLTFLoader; a game: its own or the runtime's)
+var gltfLoad=null,gltfCache={};
+function setGltfLoader(fn){gltfLoad=fn}
+function loadGltf(src){if(!gltfLoad)return Promise.reject(new Error("no glTF loader"));return gltfCache[src]||(gltfCache[src]=gltfLoad(src))}
+// a gltf part: the model is placed with its bottom centre at pos, scaled uniformly to height (metres) when given, times size
+function gltfPart(p,o){
+  var g=new T.Group(),holder=new T.Group(),m=new T.MeshStandardMaterial({visible:false}),mesh=new T.Mesh(new T.BufferGeometry(),m);mesh.visible=false;g.add(mesh);g.add(holder);
+  var pv=p.pivot||p.pos;g.name=p.name;g.position.set(p.pos[0]-pv[0],p.pos[1]-pv[1],p.pos[2]-pv[2]);g.rotation.set(p.rot[0]*RAD,p.rot[1]*RAD,p.rot[2]*RAD);g.scale.set(p.size[0],p.size[1],p.size[2]);
+  g.userData={base:[p.size[0],p.size[1],p.size[2]],y:p.pos[1]-pv[1],ed:null,mat:m,mesh:mesh,gltf:holder};
+  if(p.src)loadGltf(p.src).then(function(sc){
+    var obj=sc.clone(true),bb=new T.Box3().setFromObject(obj),sz=bb.getSize(new T.Vector3()),k=p.height?p.height/Math.max(1e-6,sz.y):1;
+    obj.scale.multiplyScalar(k);obj.position.set(-(bb.min.x+bb.max.x)/2*k,-bb.min.y*k,-(bb.min.z+bb.max.z)/2*k);
+    obj.traverse(function(q){if(q.isMesh){q.castShadow=true;q.receiveShadow=true}});holder.add(obj);
+    if(o&&o.onLoad)o.onLoad(g,obj)},function(e){if(o&&o.onError)o.onError(p,e)});
+  return g}
 function buildPartObject(p,o){
+  if(p.shape==="gltf")return gltfPart(p,o);
   o=o||{};var g=new T.Group(),c=o.cache,gm=c&&c.gm;
   if(!gm){gm=geo(p);if((p.facets||p.fcolors)&&!gm.userData.sculpt){if(gm.index)gm=gm.toNonIndexed();paint(gm,p)}if(c)c.gm=gm}
   var m=(c&&c.m)||(gm.userData.sculpt?sculptMaterial(p,gm):material(p));if(c)c.m=m;

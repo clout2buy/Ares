@@ -149,7 +149,7 @@ CLIPS:
   {name:"roar",dur:2.4,loop:false,events:[{t:0.7,name:"roar"}],tracks:[{part:"root",ease:"back",rot:[[0,[0,0,0]],[0.6,[-6,0,0]],[1.7,[-6,0,0]],[2.4,[0,0,0]]]},{part:"head",ease:"back",rot:[[0,[0,0,0]],[0.25,[10,0,0]],[0.7,[-32,0,0]],[1.7,[-28,0,0]],[2.4,[0,0,0]]]},{part:"legF",ease:"out",rot:[[0,[0,0,0]],[0.6,[-28,0,0]],[1.7,[-28,0,0]],[2.4,[0,0,0]]]},{part:"pawF",ease:"out",rot:[[0,[0,0,0]],[0.6,[45,0,0]],[1.7,[45,0,0]],[2.4,[0,0,0]]]}]}]
 HARD SURFACE EXAMPLE - a sports coupe built like a game asset: a hollow car-paint body from side profiles with the window openings cut through it, black window surrounds painted per pixel, real glass, mirrored light units and mirrors, an interior, and 2 mirrored wheel parts (4 wheels on 2 axles: wheelbase 2.7, track 1.6) on axle joints:
 [
-  {name:"body",shape:"sculpt",color:"#a3101c",mat:"paint",res:200,blobs:[
+  {name:"body",shape:"sculpt",color:"#a3101c",mat:"paint",res:200,hard:true,blobs:[
     {id:"lower",s:"profile",pts:[[-2.16,0.3],[-2.27,0.44],[-2.27,0.62],[-2.18,0.8],[-1.9,0.87],[-1.6,0.9],[-0.6,0.9],[0.6,0.885],[0.95,0.865],[1.6,0.8],[2.02,0.71],[2.24,0.6],[2.3,0.47],[2.25,0.34],[2.12,0.29]],at:[0,0,0],r:0.92,round:0.17,taper:0.07,k:0.01},
     {id:"cabin",s:"profile",pts:[[-1.66,0.86],[-1.15,1.24],[-0.72,1.33],[0.12,1.34],[0.48,1.23],[0.96,0.865]],at:[0,0,0],r:0.8,round:0.13,taper:0.32,k:0.06},
     {id:"flareF",s:"ball",at:[0.82,0.6,1.35],r:[0.11,0.17,0.56],k:0.18,mirror:true},
@@ -181,16 +181,16 @@ HARD SURFACE EXAMPLE - a sports coupe built like a game asset: a hollow car-pain
     {id:"frameB",s:"profile",pts:[[-0.42,0.91],[-0.42,1.255],[-0.8,1.235],[-1.34,0.91]],at:[0.78,0,0],r:0.32,round:0,paint:true,soft:0.004,color:"#0c0c0e",mirror:true},
     {id:"plateF",s:"box",at:[0,0.5,2.31],r:[0.26,0.055,0.008],round:0.004,k:0.002,color:"#eceae2",mat:"matte"},
     {id:"plateB",s:"box",at:[0,0.52,-2.3],r:[0.26,0.055,0.008],round:0.004,k:0.002,color:"#eceae2",mat:"matte"}]},
-  {name:"glass",shape:"sculpt",color:"#0e1620",mat:"glass",res:140,blobs:[
+  {name:"glass",shape:"sculpt",color:"#0e1620",mat:"glass",res:140,hard:true,blobs:[
     {s:"profile",pts:[[-1.66,0.86],[-1.15,1.24],[-0.72,1.33],[0.12,1.34],[0.48,1.23],[0.96,0.865]],at:[0,0,0],r:0.785,round:0.12,taper:0.32,k:0.01},
     {s:"box",at:[0,1.1,-0.35],r:[1,0.18,1.6],and:true,k:0.01}]},
-  {name:"headlight",shape:"sculpt",color:"#d4d8de",mat:"chrome",res:110,mirror:true,blobs:[
+  {name:"headlight",shape:"sculpt",color:"#d4d8de",mat:"chrome",res:110,hard:true,mirror:true,blobs:[
     {s:"box",at:[0.64,0.66,2.13],r:[0.2,0.045,0.07],rot:[0,14,0],round:0.025,k:0.004},
     {s:"box",at:[0.65,0.66,2.165],r:[0.19,0.036,0.04],rot:[0,14,0],round:0.02,sub:true,k:0.003},
     {s:"cyl",at:[0.57,0.662,2.13],to:[0.566,0.662,2.19],r:0.03,round:0.008,k:0.003,color:"#1d2128",mat:"glossy"},
     {s:"cyl",at:[0.69,0.662,2.115],to:[0.684,0.662,2.175],r:0.026,round:0.008,k:0.003,color:"#1d2128",mat:"glossy"},
     {s:"box",at:[0.66,0.627,2.17],r:[0.17,0.0075,0.018],rot:[0,14,0],round:0.006,k:0.002,color:"#f2f6ff",mat:"glow"}]},
-  {name:"taillight",shape:"sculpt",color:"#3a0507",mat:"glossy",res:110,mirror:true,blobs:[
+  {name:"taillight",shape:"sculpt",color:"#3a0507",mat:"glossy",res:110,hard:true,mirror:true,blobs:[
     {s:"box",at:[0.62,0.74,-2.21],r:[0.22,0.034,0.055],rot:[0,-6,0],round:0.016,k:0.003},
     {s:"box",at:[0.62,0.745,-2.255],r:[0.2,0.0085,0.012],rot:[0,-6,0],round:0.005,k:0.002,color:"#ff2420",mat:"glow"},
     {s:"box",at:[0.5,0.722,-2.257],r:[0.05,0.007,0.01],rot:[0,-6,0],round:0.004,k:0.002,color:"#f0f0f0",mat:"glow"}]},
@@ -241,6 +241,19 @@ HARD SURFACE EXAMPLE - a sports coupe built like a game asset: a hollow car-pain
     {s:"stick",at:[0.9,0.3523606797749979,-1.3880422606518061],to:[0.918,0.4126189936781126,-1.5734982813293612],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
     {s:"stick",at:[0.9,0.3723606797749979,-1.373511410091699],to:[0.918,0.5301189936781127,-1.4881295342887313],r:0.016,r2:0.012,k:0.006,color:"#d4d8de",mat:"chrome"},
     {s:"cyl",at:[0.88,0.34,-1.35],to:[0.92,0.34,-1.35],r:0.055,round:0.015,k:0.006,color:"#d4d8de",mat:"chrome"}]}]
+REAL ASSETS FIRST for realistic vehicles, characters, guns, furniture, buildings: a professional model beats anything sculpted from
+ numbers. When the owner wants realism (a real car, a soldier, a city), FIND one: Poly Pizza (poly.pizza, CC0/CC-BY, GLB), Kenney
+ (kenney.nl/assets, CC0 packs: cars, characters, nature, city), Quaternius (quaternius.com, CC0, rigged + animated), Sketchfab
+ (downloadable CC0/CC-BY, glTF), Poly Haven (polyhaven.com/models, CC0 photoreal props). Download the .glb into assets/models/ with your
+ own tools (Bash curl / Browser), note its license + author for credits, then place it as a part:
+   {name:"car", shape:"gltf", src:"assets/models/car.glb", height:1.4, pos:[0,0,0], rot:[0,90,0], parent?, mirror?}
+ height scales it uniformly to metres (bottom centre lands on pos); size multiplies after. It mixes with sculpted parts (a sculpted
+ driver in a downloaded car, armour on a downloaded knight), parents to joints, animates with clips, and exports with the game
+ (the .glb is copied next to the game json; the runtime loads it with three's GLTFLoader). Sculpt when nothing fits, for stylised
+ work, or for the parts no asset has.
+HARD SURFACE: hard:true on a sculpt part = dual-contoured mesh (edges and corners land ON the sharp feature, not rounded off) +
+ auto-smooth normals (crease:32 degrees: flat panels shade flat, every sharper edge is a crisp line). Use it for every machine, weapon,
+ building and prop; leave it off for organic things.
 HARD SURFACE LIKE A 3D ARTIST (cars, weapons, machines, buildings): one sculpt PER MATERIAL/OBJECT, not one for everything:
  the body shell (mat paint = clearcoat car paint; metal; wood), glass (mat glass = transparent, reflective), light units, interior, each
  wheel - every small part gets its own sculpt (a 40 cm headlight in its own part meshes finely; inside a 4.6 m part it turns lumpy).

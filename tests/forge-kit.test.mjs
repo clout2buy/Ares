@@ -623,7 +623,7 @@ import { lintBlob } from "../packages/cli/dist/entry/forgeBlocks.js";
 /** The worked examples from the help docs (they must stay valid, clean input): the grizzly's parts + clips, and the sword. */
 function docsExamples() {
   const D = FORGE_SCRIPT_DOCS, from = D.indexOf("WORKED EXAMPLE"), start = D.indexOf("\n", from) + 1, clips = D.indexOf("\nCLIPS:", start), hard = D.indexOf("\nHARD SURFACE EXAMPLE", clips);
-  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nHARD SURFACE LIKE", swordStart);
+  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nREAL ASSETS FIRST", swordStart);
   return { parts: vm.runInNewContext(D.slice(start, clips)), anims: vm.runInNewContext(D.slice(clips + 7, hard)), sword: vm.runInNewContext(D.slice(swordStart, swordEnd)) };
 }
 
@@ -790,7 +790,7 @@ test("hard surface like a 3D artist: the docs car - a hollow painted shell with 
   assert.equal(inst.part("wheelF (mirror)").node.parent, inst.part("frontAxle (mirror)").node, "mirrored wheels hang on the mirrored axle");
   const body = inst.part("body").mesh, glass = inst.part("glass").mesh;
   assert.ok(body.material.clearcoat > 0.9, "car paint has a clearcoat");
-  assert.ok(glass.material.transparent && glass.material.opacity < 0.6, "glass is transparent");
+  assert.ok(glass.material.transparent && glass.material.opacity < 0.7 && glass.material.clearcoat === 1, "glass is see-through and reflective");
   assert.ok(body.geometry.userData.gp.length >= 5, "window surrounds are crisp GPU paints");
   const g = body.geometry, P = g.attributes.position, RME = g.attributes.rme;
   let painted = 0; for (let i = 0; i < P.count; i++) if (RME.getY(i) > 0.4 && RME.getX(i) < 0.4) painted++;
@@ -915,4 +915,53 @@ test("texture maps: project files reach the page as data: URLs, export copies th
   const inst = m.instance();
   assert.ok(inst.part("trunk").mesh.material.userData.maps, "the sculpt material carries its map uniforms");
   assert.equal(sanitizeModel({ parts: [{ name: "a", shape: "sculpt", blobs: [{ s: "ball", at: [0, 1, 0] }], maps: { albedo: "x\" onerror=1" } }] }).parts[0].maps, undefined, "odd strings are refused");
+});
+
+test("real assets: a gltf part is copied next to the studio page, exported beside the game json, and the runtime loads it with GLTFLoader", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const { studioDir } = await import("../packages/cli/dist/entry/modelStudio.js");
+  const { gltfLoaderSpecifier } = await import("../packages/cli/dist/entry/forgeRuntime.js");
+  const root = rt.root;
+  await mkdir(path.join(root, "assets", "models"), { recursive: true });
+  await writeFile(path.join(root, "assets", "models", "car.glb"), Buffer.from("glTF fake binary"));
+  dropStudios();
+  const st = ensureStudio("garage");
+  let r = await applyEdit(st, { parts: [{ name: "car", shape: "gltf", src: "assets/models/car.glb", height: 1.4 }, { name: "bad", shape: "gltf", src: "../outside.glb" }, { name: "nosrc", shape: "gltf" }] }, root);
+  assert.ok(r.errors.some((e) => /"bad": src: path escapes the project/.test(e)));
+  assert.ok(r.errors.some((e) => /"nosrc": a gltf part needs src/.test(e)));
+  assert.ok(!r.errors.some((e) => /quality:/.test(e)), "a real asset is not judged as stacked primitives");
+  const spec = studioSpec(st), car = spec.parts.find((p) => p.name === "car");
+  assert.match(car.src, /^models\/car-\d+\.glb$/, "the page gets the copy next to it");
+  assert.equal(car.height, 1.4);
+  assert.ok((await readFile(path.join(studioDir("garage"), car.src))).toString().startsWith("glTF"));
+  await applyEdit(st, { remove: ["bad", "nosrc"] }, root);
+  const ex = await exportGame(st, root, { dir: "game" });
+  const doc = JSON.parse(await readFile(path.join(root, ex.model), "utf8"));
+  assert.equal(doc.parts[0].src, "car.glb");
+  assert.ok((await readFile(path.join(root, "game", "models", "car.glb"))).toString().startsWith("glTF"));
+  assert.equal(gltfLoaderSpecifier("three"), "three/examples/jsm/loaders/GLTFLoader.js");
+  assert.equal(gltfLoaderSpecifier("https://unpkg.com/three@0.160.0/build/three.module.js"), "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
+  assert.equal(gltfLoaderSpecifier("./vendor/three.js"), null);
+  // the runtime: a custom loader is used, the src is resolved against the json url, the model is placed bottom-centre at height
+  const T = await import(pathToFileURL(path.resolve("node_modules/three/build/three.module.js")).href).catch(() => null);
+  const seen = [];
+  const m = rt.buildModel(doc, { base: "https://game.example/game/models/garage.game.json", gltfLoader: (src) => { seen.push(src); const g = new rt.__T.Group(); const b = new rt.__T.Mesh(new rt.__T.BoxGeometry(4, 2.8, 2)); b.position.y = 5; g.add(b); return Promise.resolve(g); } });
+  const inst = m.instance();
+  await new Promise((r2) => setTimeout(r2, 10));
+  assert.deepEqual(seen, ["https://game.example/game/models/car.glb"]);
+  const box = new rt.__T.Box3().setFromObject(inst.group);
+  assert.ok(Math.abs(box.max.y - 1.4) < 1e-6 && Math.abs(box.min.y) < 1e-6, `scaled to height 1.4, standing on the ground (${box.min.y}..${box.max.y})`);
+  void T;
+});
+
+test("hard:true meshes with dual contouring: a cube keeps its corners (surface nets rounds them)", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const make = (hard) => rt.buildModel({ format: "ares-model/1", expanded: true, parts: sanitizeModel({ parts: [{ name: "c", shape: "sculpt", res: 24, hard, blobs: [{ s: "box", at: [0, 0.5, 0], r: [0.5, 0.5, 0.5], round: 0 }] }] }).parts, anims: [], scripts: [] }).instance().part("c").mesh.geometry;
+  const corner = (g) => { const P = g.attributes.position; let best = 0; for (let i = 0; i < P.count; i++) best = Math.max(best, P.getX(i) + P.getY(i) - 0.5 + P.getZ(i)); return best; };
+  const g0 = make(false), g1 = make(true), sharp = corner(g1);
+  assert.ok(sharp > 1.495, `dual contouring reaches the corner (${sharp.toFixed(4)} of 1.5)`);
+  // auto-smooth: on a hard cube almost every face corner has an axis-aligned normal (flat panels); smooth normals bend round the edges
+  const flat = (g) => { const N = g.attributes.normal; let k = 0; for (let i = 0; i < N.count; i++) if (Math.max(Math.abs(N.getX(i)), Math.abs(N.getY(i)), Math.abs(N.getZ(i))) > 0.999) k++; return k / N.count; };
+  assert.ok(flat(g1) > 0.95, `flat panels (${(flat(g1) * 100).toFixed(0)}% axis-aligned normals)`);
+  assert.ok(flat(g1) > flat(g0) + 0.1, `crisper than the smooth mesher (${(flat(g0) * 100).toFixed(0)}%)`);
 });

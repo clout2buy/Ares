@@ -11,6 +11,8 @@
 // embedded browser, or a served folder (/__ares/kit.css + /__ares/kit.js).
 // The kit's JS gives every page the same pixel resolve on load.
 
+import { FORGE_SIM_JS } from "./forgeSim.js";
+
 export const FORGE_KIT_MARKER = /<!--\s*ares:kit\s*-->|<link\b[^>]*rel=["']ares-kit["'][^>]*>/i;
 
 export const FORGE_KIT_CSS = `
@@ -55,6 +57,19 @@ table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12.5px}th,td{b
 .k-scene{position:relative;height:260px;margin:12px 0;border:1px solid rgba(47,109,240,.22);border-radius:12px;background:radial-gradient(ellipse at 50% 60%,rgba(47,109,240,.18),transparent 65%),rgba(3,6,14,.6);overflow:hidden;display:grid;place-items:center;perspective:700px}.k-scene canvas{position:absolute;inset:0;width:100%;height:100%}
 .k-cube{position:relative;width:90px;height:90px;transform-style:preserve-3d;animation:kspin 14s linear infinite}.k-cube i{position:absolute;inset:0;border:1px solid #2f6df0;background:rgba(47,109,240,.1)}.k-cube i:nth-child(1){transform:translateZ(45px)}.k-cube i:nth-child(2){transform:rotateY(180deg) translateZ(45px)}.k-cube i:nth-child(3){transform:rotateY(90deg) translateZ(45px)}.k-cube i:nth-child(4){transform:rotateY(-90deg) translateZ(45px)}.k-cube i:nth-child(5){transform:rotateX(90deg) translateZ(45px)}.k-cube i:nth-child(6){transform:rotateX(-90deg) translateZ(45px)}@keyframes kspin{to{transform:rotateX(-24deg) rotateY(360deg)}}
 .k-grow{transform-origin:bottom;animation:kgrow .9s cubic-bezier(.2,.9,.3,1) both;transform-box:fill-box}@keyframes kgrow{from{transform:scaleY(0)}}.k-draw{stroke-dasharray:1200;stroke-dashoffset:1200;animation:kdraw 1.4s ease forwards}@keyframes kdraw{to{stroke-dashoffset:0}}
+.k-play{margin:14px 0;border:1px solid #2f6df0;background:rgba(3,6,14,.72);box-shadow:3px 3px 0 #15347a}
+.k-sim-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 10px;border-bottom:1px solid #15347a;background:rgba(47,109,240,.1)}
+.k-sim-tag{font:700 9.5px/1.3 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:#9cc5ff}
+.k-sim-cap{margin:0;padding:8px 12px;font:12px/1.5 var(--mono);color:var(--muted);border-top:1px solid #15347a}
+.k-stage{position:relative;min-height:120px;background:radial-gradient(ellipse at 50% 70%,rgba(47,109,240,.16),transparent 65%)}.k-stage canvas{display:block;width:100%;image-rendering:pixelated}
+.k-panel{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 18px;padding:10px 12px;border-top:1px solid #15347a}.k-panel:empty{display:none}
+.k-slider{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font:700 9.5px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:#9cc5ff}
+.k-slider input{grid-column:1/-1;width:100%;height:14px;margin:0;appearance:none;-webkit-appearance:none;background:transparent;cursor:pointer}
+.k-slider input::-webkit-slider-runnable-track{height:4px;background:#15347a;border:1px solid #2f6df0}.k-slider input::-moz-range-track{height:4px;background:#15347a;border:1px solid #2f6df0}
+.k-slider input::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:14px;margin-top:-6px;background:#f0a32f;border:1px solid #070a13;border-radius:0}.k-slider input::-moz-range-thumb{width:10px;height:14px;background:#f0a32f;border:1px solid #070a13;border-radius:0}
+.k-slider input:focus-visible{outline:1px solid #9cc5ff;outline-offset:3px}
+.k-slider b{color:#f0a32f;font-weight:800;letter-spacing:.04em}
+.k-btn{font:700 9.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:#070a13;background:#9cc5ff;border:1px solid #2f6df0;border-radius:0;padding:6px 11px;cursor:pointer;box-shadow:2px 2px 0 #15347a}.k-btn:hover{background:#fff}.k-btn:active{transform:translate(2px,2px);box-shadow:none}.k-btn:focus-visible{outline:1px solid #f0a32f;outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.k-reveal,.k-rim{display:none}.k-cube,.k-grow,.k-draw{animation:none}.k-draw{stroke-dashoffset:0}}
 `.trim();
 
@@ -91,7 +106,9 @@ export const FORGE_KIT_JS = `
  *  marker comes back unchanged. */
 export function expandForgeKit(html: string): string {
   if (!FORGE_KIT_MARKER.test(html)) return html;
-  return html.replace(FORGE_KIT_MARKER, `<style data-ares-kit>${FORGE_KIT_CSS}</style><script data-ares-kit>${FORGE_KIT_JS}</script>`);
+  // interactive blocks ship their ES module only on pages that use them
+  const sim = /\bk-play\b/.test(html) ? `<script type="module" data-ares-sim>${FORGE_SIM_JS}</script>` : "";
+  return html.replace(FORGE_KIT_MARKER, () => `<style data-ares-kit>${FORGE_KIT_CSS}</style><script data-ares-kit>${FORGE_KIT_JS}</script>${sim}`);
 }
 
 // ── explain: a compact block list → a finished kit page ──────────────────────
@@ -104,6 +121,29 @@ type Block = Record<string, unknown>;
 const esc = (v: unknown): string => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const tone = (v: unknown): string => (["ok", "warn", "bad"].includes(String(v)) ? ` ${String(v)}` : "");
+
+const MATH_IDS = new Set(["sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "exp", "log", "log2", "log10", "sqrt", "cbrt", "abs", "pow", "min", "max", "floor", "ceil", "round", "sign", "PI", "E"]);
+const KEY_RE = /^[a-zA-Z_][a-zA-Z0-9_]{0,15}$/;
+/** A plot formula is evaluated in the page, so it is whitelisted here: only
+ *  arithmetic, x, the slider keys and Math names; no property access, strings
+ *  or calls to anything else. Returns null when it doesn't pass. */
+function safeFormula(raw: unknown, keys: string[]): string | null {
+  const f = String(raw ?? "").trim();
+  if (!f || f.length > 120 || !/^[0-9A-Za-z_+\-*/%^().,\s]+$/.test(f) || /[A-Za-z_)]\s*\./.test(f)) return null;
+  const ok = new Set(["x", ...keys]);
+  for (const id of f.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) if (!ok.has(id) && !MATH_IDS.has(id) && !/^\d+e\d+$/i.test(id)) return null;
+  return f.replace(/\^/g, "**");
+}
+const num = (v: unknown, d: number): number => (Number.isFinite(Number(v)) && v !== "" && v !== null ? Number(v) : d);
+function simParams(v: unknown): Block[] {
+  return arr(v).slice(0, 6).flatMap((c) => {
+    const p = c as Block; const key = String(p.key ?? "");
+    if (!KEY_RE.test(key)) return [];
+    const min = num(p.min, 0), max = Math.max(min + 1e-6, num(p.max, 10));
+    return [{ key, label: String(p.label ?? key).slice(0, 32), min, max, value: Math.min(max, Math.max(min, num(p.value, min))), step: num(p.step, (max - min) / 100) || (max - min) / 100 }];
+  });
+}
+const playDiv = (spec: Block): string => `<div class="k-play" data-spec="${esc(JSON.stringify(spec))}"></div>`;
 
 function renderBlock(b: Block): string {
   switch (b.type) {
@@ -161,8 +201,26 @@ function renderBlock(b: Block): string {
       const boxes = nodes.map((nd, i) => { const [px, py] = pos.get(String(nd.id ?? i))!; return `<rect x="${px}" y="${py}" width="${w}" height="${h}" fill="rgba(47,109,240,.12)" stroke="#2f6df0"/><text x="${px + w / 2}" y="${py + h / 2 + 4}" fill="#fff" font-size="11" text-anchor="middle" font-family="monospace">${esc(nd.text ?? nd.id)}</text>`; }).join("");
       return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;margin:12px 0"><defs><marker id="k-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9cc5ff"/></marker></defs>${links}${boxes}</svg>`;
     }
+    case "sim": {
+      const kind = ["projectile", "pendulum", "orbit", "plot"].includes(String(b.kind)) ? String(b.kind) : "projectile";
+      let params = simParams(b.params);
+      const spec: Block = { kind, caption: b.caption ? String(b.caption).slice(0, 240) : undefined };
+      if (kind === "plot") {
+        if (!params.length) params = simParams([{ key: "a", min: 0, max: 5, value: 2, step: 0.1 }, { key: "b", min: 0.2, max: 6, value: 1.5, step: 0.1 }]);
+        spec.formula = safeFormula(b.formula, params.map((p) => String(p.key))) ?? "a*sin(b*x)";
+        spec.xmin = num(b.xmin, -10);
+        spec.xmax = num(b.xmax, 10);
+      }
+      if (params.length) spec.params = params;
+      return playDiv(spec);
+    }
     case "scene3d": {
       const shape = ["cube", "sphere", "torus", "pyramid", "knot"].includes(String(b.shape)) ? String(b.shape) : "cube";
+      const colour = /^#[0-9a-fA-F]{6}$/.test(String(b.color)) ? String(b.color) : "#2f6df0";
+      if (b.interactive === true || b.controls) {
+        const ctl = Array.isArray(b.controls) ? simParams(b.controls) : [];
+        return playDiv({ kind: "shape", shape, color: colour, caption: b.caption ? String(b.caption).slice(0, 240) : undefined, ...(ctl.length ? { params: ctl } : {}) });
+      }
       const id = `s3d${Math.floor(Math.random() * 1e6)}`;
       return `<div class="k-scene" id="${id}" data-shape="${shape}" data-color="${esc(b.color ?? "#2f6df0")}"><div class="k-cube"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>${b.caption ? `<p style="text-align:center;font-size:12px">${esc(b.caption)}</p>` : ""}`;
     }

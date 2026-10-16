@@ -77,3 +77,38 @@ test("explain renders every block type into a finished kit page, and the kit scr
   assert.doesNotThrow(() => new vm.Script(FORGE_KIT_JS), "kit js parses");
   assert.match(FORGE_KIT_JS, /three@0\.160\.0/, "3D scenes use a pinned three build");
 });
+
+test("sim blocks: every kind renders, the module ships only when used, and both scripts parse", () => {
+  for (const kind of ["projectile", "pendulum", "orbit", "plot"]) {
+    const html = renderExplainer({ title: "Sim", blocks: [{ type: "sim", kind, caption: "c" }] });
+    assert.match(html, new RegExp(`class="k-play" data-spec="[^"]*&quot;kind&quot;:&quot;${kind}&quot;`), `${kind} renders a k-play`);
+  }
+  const plot = renderExplainer({ title: "P", blocks: [{ type: "sim", kind: "plot", formula: "a*sin(b*x)^2", params: [{ key: "a", min: 0, max: 5, value: 2 }, { key: "b", min: 0, max: 5, value: 1 }] }] });
+  assert.match(plot, /a\*sin\(b\*x\)\*\*2/, "^ becomes **");
+  const bad = renderExplainer({ title: "P", blocks: [{ type: "sim", kind: "plot", formula: "x.constructor.constructor(1)()" }] });
+  assert.match(bad, /a\*sin\(b\*x\)/, "unsafe formula falls back to the default");
+  assert.ok(!bad.includes("constructor"), "unsafe formula never reaches the page");
+
+  const out = expandForgeKit(plot);
+  const mod = out.match(/<script type="module" data-ares-sim>([\s\S]*?)<\/script>/);
+  assert.ok(mod, "sim module appended");
+  assert.match(mod[1], /esm\.sh\/three@0\.160\.0/);
+  assert.match(mod[1], /OrbitControls/);
+  // module syntax (top-level await) → wrap in an async fn to syntax-check it
+  assert.doesNotThrow(() => new vm.Script(`(async function(){${mod[1].replace(/^\s*var T=null/, "var T=null")}})`), "sim module parses");
+  assert.doesNotThrow(() => new vm.Script(FORGE_KIT_JS), "kit js parses");
+  assert.ok(!FORGE_KIT_JS.includes("`") && !mod[1].includes("`"), "no template-literal hazards");
+  assert.ok(!expandForgeKit(renderExplainer({ title: "n", blocks: [{ type: "text", text: "x" }] })).includes("data-ares-sim"), "plain pages carry no module");
+  for (const cls of [".k-play", ".k-stage", ".k-panel", ".k-slider", ".k-btn", ".k-sim-head", ".k-sim-tag"]) assert.ok(FORGE_KIT_CSS.includes(cls), `${cls} styled`);
+});
+
+test("scene3d: interactive / controls become an orbitable sim; plain scene3d is unchanged", () => {
+  const i = renderExplainer({ title: "S", blocks: [{ type: "scene3d", shape: "torus", interactive: true, controls: true }] });
+  assert.match(i, /k-play/);
+  assert.match(i, /&quot;kind&quot;:&quot;shape&quot;/);
+  const c = renderExplainer({ title: "S", blocks: [{ type: "scene3d", controls: [{ key: "speed", label: "Spin", min: 0, max: 3, value: 1, step: 0.1 }] }] });
+  assert.match(c, /Spin/);
+  const plain = renderExplainer({ title: "S", blocks: [{ type: "scene3d", shape: "cube" }] });
+  assert.match(plain, /class="k-scene"/);
+  assert.ok(!plain.includes("k-play"));
+});

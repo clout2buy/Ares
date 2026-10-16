@@ -37,7 +37,7 @@ export function promptWorkflowSurfaces(permissionMode: PermissionMode): string {
 1. **Scaffold deliberately.** Match the stack the repo has; greenfield defaults to the lightest thing that ships (single HTML file > vite app > full framework). No deps you don't need.
 2. **Run it for real.** Code that has never run is a draft. If the app LAUNCHES something (a game, a window, an installer), run it once, foreground, with a timeout — never on a watcher that can relaunch it.
 3. **Verify against the RUNNING app**, not the source: hit the endpoint, run the CLI, load the page, read the log. Anything with a UI, DRIVE IT like a human — click, play, submit, read the console — fix, repeat, THEN report.
-4. **Show, don't describe.** HTML/SVG you write auto-opens in the Forge panel; when a visual beats prose, forge a self-contained styled \`.html\` HUD (dark theme, no external deps, data inlined).
+4. **The Forge kit:** \`<!--ares:kit-->\` in a hand-written page's \`<head>\` gives the pixel theme (classes \`.k-card .k-stat .k-pill .k-steps .k-timeline .k-bar .k-callout .k-kv\`). For explainers use Browser \`explain\` instead. HTML/SVG/markdown files you write open as artifacts.
 5. **Big builds scale out:** TodoWrite the plan, parallelise modules via **Task** \`general-purpose\`, then a **Task** \`code-reviewer\` pass — fix what it finds BEFORE declaring done.
 
 ## Plan mode

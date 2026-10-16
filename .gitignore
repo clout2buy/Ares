@@ -79,3 +79,6 @@ mobile/credentials.json
 *.mobileprovision
 *.cer
 *.csr
+
+# local Forge kit demo page (scratch, never shipped)
+.forge-demo/

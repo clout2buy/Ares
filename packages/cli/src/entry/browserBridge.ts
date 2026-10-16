@@ -25,7 +25,8 @@ import { MemoryStore } from "@ares/mind";
 import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, fillEffect, navigateEffect, challengePrompt, type BrowserConnector, type HumanCheckHandler } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
-import { serveLocalTarget } from "./previewServer.js";
+import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
+import { FORGE_KIT_MARKER, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { BrowserBridgeServer, ExtensionBrowserConnector } from "@ares/browser-extension-connector";
 
 // ── Embedded-browser bridge: the daemon ⇄ UI request/response channel that lets
@@ -91,7 +92,7 @@ const browserStep = z
 const browserInput = z
   .object({
     action: z
-      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret"])
+      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "explain", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret"])
       .describe(
         "Browser action. DOM-first web actions: open/tree/fill/click/screenshot/state/close. " +
         "PREVIEW & VERIFY (drives a VISIBLE browser with an animated cursor so the owner watches Ares test the UI): " +
@@ -118,6 +119,9 @@ const browserInput = z
       "Embedded actions: preview(html) to load, then click_text/fill_selector/eval/console/screenshot(snapshot).",
     ),
     html: z.string().optional().describe("Self-contained HTML to render in the embedded browser (engine:'embedded', action:'preview')."),
+    title: z.string().optional().describe("explain: the page title."),
+    eyebrow: z.string().optional().describe("explain: small label above the title."),
+    blocks: z.array(z.record(z.string(), z.unknown())).optional().describe("explain: ordered blocks, each {type, ...}: text{text} heading{text} cards{items:[{title,text}]} stats{items:[{label,value,note?,tone?}]} steps{items:[{title,text,state?:done|now}]} timeline{items:[{when,title,text}]} pills{items:[{text,tone?:ok|warn|bad}]} bars{items:[{label,value 0-100}]} callout{title,text,tone?} kv{items:[{key,value}]} table{columns,rows} code{text} chart{kind:bar|line|donut,labels,values} diagram{nodes:[{id,text}],links:[[a,b]]} scene3d{shape:cube|sphere|torus|pyramid|knot,color?,caption?}."),
     headless: z.boolean().optional().describe("Run headless (invisible). DEFAULT true. 'preview' is ALWAYS headless (the value is ignored): the owner watches in the Forge, which shows the page you preview. For other actions pass false ONLY when the owner explicitly asks to watch a real browser window."),
     note: z.string().optional().describe("Optional note attached to screenshot frames."),
     limit: z.number().int().min(1).max(100).optional().describe("Maximum tree/filmstrip/console entries returned."),
@@ -132,6 +136,7 @@ const browserInput = z
   .strict();
 
 const READ_ONLY_BROWSER_ACTIONS = new Set([
+  "explain",
   "open",
   "handshake",
   "tabs",
@@ -492,10 +497,16 @@ export function makeBrowserTool(
       return embedded ? "Using the in-app browser" : "Browsing the web";
     },
 
-    async call(i, ctx): Promise<{ output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
+    async call(input, ctx): Promise<{ output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
+      // explain: ~500 tokens of blocks → a finished kit page, previewed in the Forge
+      const i = input.action === "explain"
+        ? { ...input, action: "preview" as const, html: renderExplainer(input), url: undefined, engine: undefined }
+        : input;
       const strip = ensureFilmstrip();
-      const emitTarget = (state: { url?: string; title?: string }) => {
-        if (state.url) ctx?.emitProgress?.({ kind: "browser_target", url: state.url, title: state.title ?? "" });
+      // mode: "explain" when the page is a Forge-kit explainer Ares generated
+      // (the Forge goes warm and bursts), "project" for a real app or site.
+      const emitTarget = (state: { url?: string; title?: string }, mode: "project" | "explain" = "project") => {
+        if (state.url) ctx?.emitProgress?.({ kind: "browser_target", url: state.url, title: state.title ?? "", mode });
       };
       // Route the browser's live frames into THIS turn's UI panel (the embedded
       // browser the owner watches). Cleared when the call ends.
@@ -523,7 +534,7 @@ export function makeBrowserTool(
         const snap = async () => (await embeddedBridge.exec("snapshot")).result;
         if (i.action === "preview" || i.action === "open") {
           if (!i.html) throw new Error("embedded preview requires `html` (the self-contained page to render)");
-          const r = await embeddedBridge.exec("load", { html: i.html });
+          const r = await embeddedBridge.exec("load", { html: expandForgeKit(i.html), explainer: FORGE_KIT_MARKER.test(i.html) });
           if (!r.ok) throw new Error(r.error ?? "embedded load failed");
           return done("ok", await snap(), "rendered in the embedded browser");
         }
@@ -773,20 +784,31 @@ export function makeBrowserTool(
           // Inline HTML → write to a temp .html and open it. The reliable way to
           // preview a self-contained page (the embedded engine's inline render is
           // flaky — agents waste turns on its blank result; a real file always works).
-          const tmp = path.join(os.tmpdir(), `ares-preview-${Date.now()}.html`);
-          await writeFile(tmp, i.html, "utf8");
-          url = pathToFileURL(tmp).href;
+          // Served, not file://: the desktop frame cannot load a temp file
+          // (blank stage, 2026-10-16). Each page gets its own folder under
+          // the OS temp dir and the local server hosts it, like a project.
+          const dir = path.join(os.tmpdir(), "ares-explainers", `p${Date.now()}`);
+          await mkdir(dir, { recursive: true });
+          const tmp = path.join(dir, "index.html");
+          // `<!--ares:kit-->` becomes the inline Forge kit (pixel theme).
+          await writeFile(tmp, expandForgeKit(i.html), "utf8");
+          const hosted = await serveLocalTarget(tmp, { sessionId: ctx?.sessionId });
+          url = hosted ? hosted.url : pathToFileURL(tmp).href;
         }
+        const explainer = !!i.html && FORGE_KIT_MARKER.test(i.html);
         if (!url) throw new Error("Browser preview requires `url` (or `html` to render inline)");
         // A project file is hosted, not file://-opened: its folder is served on
         // 127.0.0.1 so module scripts, import maps and relative assets resolve,
         // and the Forge embeds the localhost origin. Inline html (temp file)
         // stays file:// — it is self-contained by contract.
-        const served = i.url ? await serveLocalTarget(i.url) : null;
+        const served = i.url ? await serveLocalTarget(i.url, { sessionId: ctx?.sessionId }) : null;
         if (served) url = served.url;
         await br.navigate(url);
+        // The import map (if any) is decided while the HTML is served, i.e.
+        // during that navigate — read it back now for the result note.
+        const rescue = served ? await lastRescueFor(served.root) : undefined;
         const [shot, state] = await Promise.all([br.screenshot(), br.state()]);
-        emitTarget(state);
+        emitTarget(state, explainer ? "explain" : "project");
         const frame = await strip.record({ action: "preview", url: state.url, screenshot: shot, note: i.note });
         // The page's errors ride along with the preview: the model learns what
         // broke in the SAME call (no follow-up console round-trip), and the
@@ -795,11 +817,12 @@ export function makeBrowserTool(
           ? await br.consoleLogs({ onlyErrors: true, limit: 8 }).then((logs) => logs.map((l) => `${l.type}: ${l.text}`.slice(0, 400))).catch(() => [] as string[])
           : [];
         ctx?.emitProgress?.({ kind: "browser_console", url: state.url, errors: consoleErrors, served: served ? { root: served.root, origin: served.origin } : null });
-        const servedNote = served ? `Serving ${served.root} at ${served.origin} (static, loopback only) — paths in the page resolve against that folder.` : undefined;
+        const servedNote = served ? `Serving ${served.root} at ${served.origin} (static, loopback only) — paths in the page resolve against that folder. The Forge sensor is on this page: its errors, warnings and frame rate reach you as reminders while the owner tests it.` : undefined;
+        const rescueNote = rescue ? `Bare imports had no import map; one was injected (${rescue.source}): ${Object.entries(rescue.mapped).map(([k, v]) => `${k} → ${v}`).join(", ")}. The project file is untouched — add a real import map or vendor the package when you ship.` : undefined;
         const errorNote = consoleErrors.length ? `${consoleErrors.length} console error(s) on load — see result.consoleErrors.` : undefined;
-        const note = [servedNote, errorNote].filter(Boolean).join(" ") || undefined;
+        const note = [servedNote, rescueNote, errorNote].filter(Boolean).join(" ") || undefined;
         return {
-          output: { action: i.action, status: "ok", result: { ...state, frame: frame.frame, consoleErrors, ...(served ? { served: { root: served.root, origin: served.origin } } : {}) }, ...(note ? { note } : {}), filmstripDir: filmstripDir(strip) },
+          output: { action: i.action, status: "ok", result: { ...state, frame: frame.frame, consoleErrors, ...(served ? { served: { root: served.root, origin: served.origin, ...(rescue ? { importMap: rescue } : {}) } } : {}) }, ...(note ? { note } : {}), filmstripDir: filmstripDir(strip) },
           display: served ? `preview ${state.url} (serving ${served.root})` : `preview ${state.url}`,
           images: [{ mediaType: `image/${shot.format ?? "png"}`, data: shot.bytes }],
         };
@@ -892,7 +915,7 @@ export function makeBrowserTool(
         if (!i.url) throw new Error("Browser open requires url");
         // Same hosting rule as preview: a local project file is served from
         // its folder and opened over localhost (see previewServer.ts).
-        const served = await serveLocalTarget(i.url);
+        const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId });
         const openUrl = served ? served.url : i.url;
         // If CDP can see a matching user/Ares tab, bind to it before navigating.
         // This preserves that tab's authenticated context and avoids duplicates.

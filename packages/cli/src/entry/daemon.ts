@@ -94,6 +94,7 @@ import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
 import { LiveFeedHub, type LiveControl, type LiveInputEvent } from "./daemon/liveFeed.js";
+import { setForgeSink } from "./previewServer.js";
 
 const providerUsageCache = new Map<string, { at: number; usage: ProviderUsage | undefined; error: string | undefined }>();
 let ollamaUsageCache: { at: number; usage: OllamaUsage | undefined; error: string | undefined } | undefined;
@@ -410,6 +411,17 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // The Forge's live window onto an engine Ares drives (a Godot game left
   // running, an open editor) between turns — plus the owner's input into it.
   const liveFeed = new LiveFeedHub({ emit: (obj, sessionId) => tagEmit(sessionId, obj) });
+  // The Forge sensor: a page Ares serves into the Forge reports its errors,
+  // warnings and frame rate while the owner tests it. The HUD gets every
+  // batch; the model gets a deduped reminder at its next boundary, so it
+  // spots what broke without being told.
+  setForgeSink({
+    event: (sessionId, payload) => tagEmit(sessionId, payload),
+    remind: (sessionId, text, key) => {
+      const entry = sessionId ? sessions.get(sessionId) : undefined;
+      entry?.live.queueSystemReminder(text, "hook", key);
+    },
+  });
 
   // ─── Resident-session ceiling ────────────────────────────────────────────
   //

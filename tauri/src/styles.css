@@ -2077,6 +2077,8 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
   background-repeat: no-repeat;
   animation: forgeSweep 1.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
+.workingElapsed { font: 500 10px/1.4 var(--mono); color: var(--faint); letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
+.workingHint { font: 500 10px/1.4 var(--mono); color: var(--muted); letter-spacing: 0.04em; }
 .workingLabel {
   font: 600 10px/1.4 var(--mono);
   letter-spacing: 0.16em;
@@ -3683,18 +3685,117 @@ button.small { padding: 5px 12px; font-size: 11px; border-radius: var(--r-sm); }
 }
 .liveToolbar input:focus { border-color: rgba(var(--accent-rgb), .65); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .08); }
 .idleDot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-.liveServed { color: var(--faint); font: 10.5px/1.4 var(--mono); }
-.liveConsole {
-  margin: 0 9px 6px; padding: 7px 9px 8px; border-radius: 7px;
-  border: 1px solid rgba(255, 87, 64, .45); background: rgba(255, 87, 64, .09);
-  color: var(--text); font-size: 11px; line-height: 1.45;
+/* ── the Forge Live tab: HUD, drawer, loading ────────────────────────────── */
+/* The Live body stacks toolbar → HUD → (drawer) → stage; the stage takes the
+   rest. Flex instead of a fixed grid so the optional drawer never steals the
+   stage's row. */
+.forgeBody.liveBrowser { display: flex; flex-direction: column; grid-template-rows: none; }
+.forgeBody.liveBrowser > .liveToolbar, .forgeBody.liveBrowser > .forgeHud, .forgeBody.liveBrowser > .forgeDrawer { flex: none; }
+.forgeBody.liveBrowser > .liveStage, .forgeBody.liveBrowser > .forgeEmpty { flex: 1 1 auto; min-height: 0; }
+
+.forgeHud {
+  display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow: hidden;
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(90deg, rgba(var(--accent-rgb, 90, 140, 255), .08), transparent 55%),
+    var(--bg-raised);
 }
-.liveConsoleHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-.liveConsoleHead strong { font-size: 11px; letter-spacing: .02em; }
-.liveConsoleHead button { border: 0; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px; }
-.liveConsoleHead button:hover { color: var(--text); }
-.liveConsole ul { margin: 0; padding-left: 14px; }
-.liveConsole li { font: 10.5px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.hudPill {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, .025); color: var(--muted);
+  font: 600 9.5px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap;
+}
+button.hudPill { cursor: pointer; }
+button.hudPill:hover { color: var(--text); border-color: var(--text); }
+.hudState i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.hudState[data-state="live"] { color: var(--mint, #7ef0c3); border-color: rgba(126, 240, 195, .4); }
+.hudState[data-state="live"] i { background: var(--mint, #7ef0c3); box-shadow: 0 0 8px var(--mint, #7ef0c3); animation: hudPulse 1.6s ease-in-out infinite; }
+.hudState[data-state="loading"] { color: var(--ember-hi); border-color: rgba(var(--ember-rgb), .45); }
+.hudState[data-state="loading"] i { background: var(--ember-hi); box-shadow: 0 0 8px var(--ember-hi); animation: hudPulse .8s ease-in-out infinite; }
+@keyframes hudPulse { 50% { opacity: .35; } }
+.hudTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; letter-spacing: .02em; color: var(--text); font-weight: 500; }
+.hudServed { color: var(--bronze-hi); }
+.hudFps[data-tone="ok"] { color: var(--mint, #7ef0c3); border-color: rgba(126, 240, 195, .35); }
+.hudFps[data-tone="warn"] { color: #ffd36a; border-color: rgba(255, 211, 106, .4); }
+.hudFps[data-tone="bad"] { color: #ff8a6a; border-color: rgba(255, 138, 106, .5); animation: hudPulse 1.2s ease-in-out infinite; }
+.hudErr { color: #ff8a6a; border-color: rgba(255, 87, 64, .5); background: rgba(255, 87, 64, .1); }
+.hudErr[data-on="1"] { background: rgba(255, 87, 64, .22); color: #fff; }
+.hudWarn { color: #ffd36a; border-color: rgba(255, 211, 106, .4); }
+.hudWarn[data-on="1"] { background: rgba(255, 211, 106, .18); color: #fff; }
+.hudAge, .hudLoad { color: var(--faint); }
+
+.forgeDrawer {
+  margin: 0; padding: 8px 12px 9px; border-bottom: 1px solid var(--line);
+  color: var(--text); font-size: 11px; line-height: 1.45; max-height: 38%; overflow: auto;
+  background: linear-gradient(180deg, rgba(255, 87, 64, .12), rgba(255, 87, 64, .04)), var(--bg-raised);
+}
+.forgeDrawer.warnings { background: linear-gradient(180deg, rgba(255, 211, 106, .12), rgba(255, 211, 106, .03)), var(--bg-raised); }
+.forgeDrawerHead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.forgeDrawerHead strong { font: 700 10px/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: #ff9b80; }
+.forgeDrawer.warnings .forgeDrawerHead strong { color: #ffd36a; }
+.forgeDrawerHead span { flex: 1; font-size: 10.5px; color: var(--muted); }
+.forgeDrawerHead button { border: 0; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.forgeDrawerHead button:hover { color: var(--text); }
+.forgeDrawer ul { margin: 0; padding-left: 14px; }
+.forgeDrawer li { font: 10.5px/1.55 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.forgeDrawer li:last-child { color: var(--text); }
+
+/* The stage while a page loads: Ares at the anvil, never a white rectangle. */
+.liveBrowser .liveStage.interactive iframe[data-loading="1"] { opacity: 0; }
+.liveBrowser .liveStage.interactive iframe { transition: opacity .35s ease; }
+.forgeLoading {
+  position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px;
+  background:
+    radial-gradient(ellipse at 50% 60%, rgba(var(--accent-rgb, 90, 140, 255), .14), transparent 60%),
+    radial-gradient(circle at 50% 40%, rgba(var(--ember-rgb), .12), transparent 45%),
+    #090b12;
+  color: var(--muted); pointer-events: none; opacity: 0; transition: opacity .25s ease;
+}
+.forgeLoading[data-on="1"] { opacity: 1; }
+.forgeLoadingRings { position: relative; width: 120px; height: 120px; display: grid; place-items: center; }
+.forgeLoadingRings i {
+  position: absolute; inset: 0; border-radius: 50%; border: 1px solid transparent;
+  border-top-color: rgba(var(--accent-rgb, 90, 140, 255), .9); border-right-color: rgba(var(--accent-rgb, 90, 140, 255), .25);
+  animation: forgeSpin 2.4s linear infinite;
+}
+.forgeLoadingRings i:nth-child(2) { inset: 14px; border-top-color: var(--ember-hi); border-right-color: rgba(var(--ember-rgb), .3); animation-duration: 1.7s; animation-direction: reverse; }
+.forgeLoadingRings i:nth-child(3) { inset: 28px; border-top-color: var(--bronze-hi); animation-duration: 3.1s; }
+@keyframes forgeSpin { to { transform: rotate(360deg); } }
+.forgeLoadingSigil { position: absolute; animation: forgeBreathe 2.2s ease-in-out infinite; }
+@keyframes forgeBreathe { 50% { transform: scale(1.08); filter: drop-shadow(0 0 14px rgba(var(--ember-rgb), .7)); } }
+.forgeLoadingText { font: 600 10px/1 var(--mono); letter-spacing: .32em; text-transform: uppercase; color: var(--bronze-hi); }
+.forgeLoadingUrl { font: 10px/1.3 var(--mono); color: var(--faint); max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Idle screens (Live with nothing on the stage; Artifacts with nothing
+   forged): the same rings as the loading state, slower, plus what the panel
+   can do — so the Forge reads as a machine with abilities, not an empty box. */
+.forgeIdle {
+  display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center;
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(var(--accent-rgb, 90, 140, 255), .12), transparent 58%),
+    radial-gradient(circle at 50% 36%, rgba(var(--ember-rgb), .08), transparent 42%),
+    repeating-linear-gradient(0deg, transparent 0 23px, rgba(255, 255, 255, .018) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, rgba(255, 255, 255, .018) 23px 24px);
+  color: var(--muted);
+}
+.forgeIdle .forgeLoadingRings { position: relative; width: 132px; height: 132px; display: grid; place-items: center; }
+.forgeIdle .forgeLoadingRings i { position: absolute; inset: 0; border-radius: 50%; border: 1px solid transparent; border-top-color: rgba(var(--accent-rgb, 90, 140, 255), .55); border-right-color: rgba(var(--accent-rgb, 90, 140, 255), .12); animation: forgeSpin 9s linear infinite; }
+.forgeIdle .forgeLoadingRings i:nth-child(2) { inset: 16px; border-top-color: rgba(var(--ember-rgb), .7); animation-duration: 7s; animation-direction: reverse; }
+.forgeIdle .forgeLoadingRings i:nth-child(3) { inset: 32px; border-top-color: var(--bronze-hi); animation-duration: 12s; }
+.forgeIdle .forgeLoadingSigil { position: absolute; animation: forgeBreathe 4s ease-in-out infinite; }
+.forgeIdleTitle { font: 700 10.5px/1 var(--mono); letter-spacing: .3em; text-transform: uppercase; color: var(--bronze-hi); margin-top: 4px; }
+.forgeIdleLead { margin: 0; max-width: 300px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+.forgeIdleAbilities { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; max-width: 320px; text-align: left; }
+.forgeIdleAbilities li {
+  font-size: 11.5px; line-height: 1.5; color: var(--muted); padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, .025);
+}
+.forgeIdleAbilities li b { color: var(--text); font-weight: 600; margin-right: 4px; letter-spacing: .02em; }
+.forgeIdleAbilities li code { font: 10.5px/1 var(--mono); color: var(--bronze-hi); }
+
+/* The tab row: an active tab glows, a Live tab with a page behind it pulses. */
+.forgeTabs button[data-on="1"] { box-shadow: 0 0 0 1px rgba(var(--accent-rgb, 90, 140, 255), .25), 0 0 14px rgba(var(--accent-rgb, 90, 140, 255), .18); }
 
 .forgeEmpty { display: grid; place-content: center; justify-items: center; gap: 12px; color: var(--muted); text-align: center; padding: 20px; }
 .forgeEmpty p { margin: 0; font-size: 12.5px; max-width: 260px; line-height: 1.6; }

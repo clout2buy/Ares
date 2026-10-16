@@ -1,11 +1,11 @@
 ---
 name: gamedev
-description: Build games in any stack at a senior level - web (HTML/JS, three.js, canvas, Phaser), Godot, Java (LibGDX, LWJGL, Minecraft mods), Unity, Unreal, Pygame, LOVE, Roblox, Bevy. Real physics (vehicles, characters, projectiles, ragdolls), how real things are built (a car has 4 wheels on 2 axles), game feel, AI, and surgical fixes when the owner points at something.
+description: Build games, professional 3D models and videos at a senior level - games in any stack (web/three.js/canvas/Phaser, Godot, Java/LibGDX/Minecraft, Unity, Unreal, Pygame, LOVE, Roblox, Bevy) with real physics; 3D modelling craft (proportions, forms, materials, rigging) in the Forge; rendered videos (turntables, reels, trailers) with no external generator; how real things are built; surgical fixes when the owner points at something.
 status: active
-version: 1
+version: 2
 ---
 
-# Game development, any stack
+# Games, 3D models and video, any stack
 
 Read the reference that matches the task (same folder as this file, `references/`). They are dense on purpose:
 numbers, formulas, APIs and the bugs that bite. Do not re-derive what is written there.
@@ -19,6 +19,8 @@ numbers, formulas, APIs and the bugs that bite. Do not re-derive what is written
 | Java: LibGDX, LWJGL, jMonkeyEngine, Java2D, Minecraft (Fabric / NeoForge / Paper) | `references/java.md` |
 | Godot, Unity, Unreal, Pygame, LOVE, Roblox, Bevy | `references/engines.md` (+ the `godot` skill for Godot projects) |
 | game feel, juice, camera, AI, level design, difficulty | `references/feel.md` |
+| 3D models that look professional: proportions, primary/secondary/tertiary forms, materials, wear, review | `references/modelling.md` |
+| videos: Forge record, frame-exact capture + ffmpeg, directing (shots, camera, light, motion, sound) | `references/video.md` |
 
 ## How Ares builds a game (fast, complete, once)
 

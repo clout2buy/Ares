@@ -254,14 +254,7 @@ REAL ASSETS FIRST for realistic vehicles, characters, guns, furniture, buildings
 HARD SURFACE: hard:true on a sculpt part = dual-contoured mesh (edges and corners land ON the sharp feature, not rounded off) +
  auto-smooth normals (crease:32 degrees: flat panels shade flat, every sharper edge is a crisp line). Use it for every machine, weapon,
  building and prop; leave it off for organic things.
-EXACT REPLICA OF A PICTURE ("make this 1:1", "exactly like this image"): hand-placed shapes only RESEMBLE a picture. Use image -> 3D:
- crop the views out of the sheet (front first; side, back, 3/4 if present) into assets/ref/*.png with your own tools (Bash + python
- PIL / sharp), then Browser model {generate:{images:["assets/ref/front.png","assets/ref/side.png","assets/ref/back.png"], height:1.6}}.
- An image-to-3D model (Meshy multi-view, fal Hunyuan3D / TRELLIS) reconstructs the mesh and paints its texture from the picture: real
- scratches, decals, panel lines. It lands as a gltf part: look at it from the sheet's angles, add joints (parent the pieces or sculpt
- joint covers), clips, variants, and fix anything off by sculpting on top. Needs the owner's MESHY_API_KEY or FAL_KEY (tell them the
- cost: cents to ~1 USD). No key -> say so and build it by hand with the method below.
-FROM A REFERENCE / TURNAROUND SHEET by hand (no generator, or stylised work): ref the image, then
+FROM A REFERENCE / TURNAROUND SHEET ("make this 1:1"): ref the image, then
  1. Measure in HEAD UNITS from the front and side views: total height, head width/height/depth, shoulder span, arm length (wrist vs
     crotch), leg split, foot length. Write the numbers down; pick metres (a 1.6 m character, a 4.5 m car).
  2. Silhouettes first: front-view outlines (profile axis "z") for chest / hips / plates, side-view outlines (axis "x") for feet,

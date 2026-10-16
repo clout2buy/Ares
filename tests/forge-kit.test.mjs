@@ -965,3 +965,23 @@ test("hard:true meshes with dual contouring: a cube keeps its corners (surface n
   assert.ok(flat(g1) > 0.95, `flat panels (${(flat(g1) * 100).toFixed(0)}% axis-aligned normals)`);
   assert.ok(flat(g1) > flat(g0) + 0.1, `crisper than the smooth mesher (${(flat(g0) * 100).toFixed(0)}%)`);
 });
+
+test("record: a studio page's video upload is saved next to the page and handed to Ares (loopback, size-checked)", async (t) => {
+  const { studioDir, studioVideo } = await import("../packages/cli/dist/entry/modelStudio.js");
+  const dir = studioDir("rec-test");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "index.html"), "<p>studio</p>");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const served = await serveLocalTarget(path.join(dir, "index.html"), {});
+  t.after(() => stopPreviewServers());
+  const url = new URL("/__ares/studio/rec-test/video", served.url).href;
+  assert.equal((await fetch(url, { method: "POST", body: "tiny" })).status, 400, "an empty / tiny upload is refused");
+  const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(4096, 7)]);
+  assert.equal((await fetch(url, { method: "POST", body: webm })).status, 204);
+  const v = studioVideo("rec-test");
+  assert.ok(v && v.bytes === webm.length && v.file.startsWith(dir), "saved next to the studio page");
+  assert.ok((await readFile(v.file)).equals(webm));
+  const { FORGE_MODEL_JS } = await import("../packages/cli/dist/entry/forgeModel.js");
+  assert.match(FORGE_MODEL_JS, /window\.__aresRecord=function/);
+  assert.match(FORGE_MODEL_JS, /MediaRecorder/);
+});

@@ -28,6 +28,8 @@ test("gamedev skill: valid frontmatter, every reference it names exists and carr
   assert.match(await ref("java.md"), /Fabric/);
   assert.match(await ref("web.md"), /importmap/);
   assert.match(md, /fix it surgically/);
+  assert.match(await ref("modelling.md"), /HEAD UNITS/);
+  assert.match(await ref("video.md"), /ffmpeg -framerate 30/);
   assert.doesNotMatch(md, /re-verif|verifier/i, "no verification loops: one run, one look");
   for (const f of present) assert.ok(!(await ref(f)).includes("\t"), `${f}: no tabs`);
 });
@@ -67,6 +69,6 @@ test("game projects at the working directory are recognised (and plain projects 
 
 test("the always-on prompt sends every game request to the handbook", () => {
   const p = buildSystemPrompt("workspace-write", undefined, { tools: ["Read", "Write", "Edit", "Bash"] });
-  assert.match(p, /Games: `SkillRead gamedev` first/);
+  assert.match(p, /Games\/3D\/video: `SkillRead gamedev` first/);
   assert.doesNotMatch(p, /fix every `quality` note/, "no re-check gate in the always-on prompt");
 });

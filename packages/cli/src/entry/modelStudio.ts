@@ -60,6 +60,10 @@ export function ensureStudio(id: string): Studio {
   return st;
 }
 export function dropStudios(): void { studios.clear(); }
+/** The last video a studio page recorded (Browser model {record}). */
+const videos = new Map<string, { file: string; bytes: number; at: number }>();
+export function setStudioVideo(id: string, file: string, bytes: number): void { videos.set(id, { file, bytes, at: Date.now() }); }
+export function studioVideo(id: string): { file: string; bytes: number; at: number } | undefined { return videos.get(id); }
 export function addStudioLog(id: string, line: string): void {
   const st = studios.get(id);
   if (!st) return;

@@ -209,16 +209,24 @@ function sculptGeo(p){
 // auto-smooth (Blender's): a face corner averages only the neighbouring faces within crease degrees of its own face, so
 // flat panels shade flat, curves stay smooth and every edge sharper than the crease angle is a crisp line
 function autoSmooth(gm,deg){
+  // stays INDEXED: a vertex is split only where its corners disagree (a crease), so a hard mesh keeps ~1.2x its vertex count
   var I=gm.index.array,P=gm.attributes.position.array,NF=I.length/3,NV=P.length/3,FN=new Float32Array(NF*3),VF=[],f,v,k,cosT=Math.cos(deg*RAD);
   for(v=0;v<NV;v++)VF.push([]);
   for(f=0;f<NF;f++){var a=I[3*f],b=I[3*f+1],c=I[3*f+2],ux=P[3*b]-P[3*a],uy=P[3*b+1]-P[3*a+1],uz=P[3*b+2]-P[3*a+2],wx=P[3*c]-P[3*a],wy=P[3*c+1]-P[3*a+1],wz=P[3*c+2]-P[3*a+2],
-    x=uy*wz-uz*wy,y=uz*wx-ux*wz,z=ux*wy-uy*wx;FN[3*f]=x;FN[3*f+1]=y;FN[3*f+2]=z;VF[a].push(f);VF[b].push(f);VF[c].push(f)}
-  var out=gm.toNonIndexed(),N=new Float32Array(NF*9);
-  for(f=0;f<NF;f++){var fx=FN[3*f],fy=FN[3*f+1],fz=FN[3*f+2],fl=Math.sqrt(fx*fx+fy*fy+fz*fz)||1;
-    for(k=0;k<3;k++){var vv=I[3*f+k],sx=0,sy=0,sz=0;VF[vv].forEach(function(g){var gx=FN[3*g],gy=FN[3*g+1],gz=FN[3*g+2],gl=Math.sqrt(gx*gx+gy*gy+gz*gz)||1;
-        if((gx*fx+gy*fy+gz*fz)/(gl*fl)>=cosT){sx+=gx;sy+=gy;sz+=gz}});
-      var l=Math.sqrt(sx*sx+sy*sy+sz*sz)||1;N[9*f+3*k]=sx/l;N[9*f+3*k+1]=sy/l;N[9*f+3*k+2]=sz/l}}
-  out.setAttribute("normal",new T.BufferAttribute(N,3));out.userData=gm.userData;return out}
+    x=uy*wz-uz*wy,y=uz*wx-ux*wz,z=ux*wy-uy*wx,l=Math.sqrt(x*x+y*y+z*z)||1;FN[3*f]=x;FN[3*f+1]=y;FN[3*f+2]=z;VF[a].push(f);VF[b].push(f);VF[c].push(f)}
+  var atts=Object.keys(gm.attributes).filter(function(n){return n!=="normal"}).map(function(n){return{n:n,a:gm.attributes[n].array,s:gm.attributes[n].itemSize}});
+  var outV=[],outN=[],NI=new Uint32Array(NF*3);
+  for(v=0;v<NV;v++){var fl=VF[v],clusters=[];
+    for(k=0;k<fl.length;k++){var g=fl[k],gx=FN[3*g],gy=FN[3*g+1],gz=FN[3*g+2],gl=Math.sqrt(gx*gx+gy*gy+gz*gz)||1,sx=0,sy=0,sz=0;
+      for(var m=0;m<fl.length;m++){var h=fl[m],hx=FN[3*h],hy=FN[3*h+1],hz=FN[3*h+2],hl=Math.sqrt(hx*hx+hy*hy+hz*hz)||1;if((gx*hx+gy*hy+gz*hz)/(gl*hl)>=cosT){sx+=hx;sy+=hy;sz+=hz}}
+      var ln=Math.sqrt(sx*sx+sy*sy+sz*sz)||1;sx/=ln;sy/=ln;sz/=ln;
+      var hit=-1;for(var q=0;q<clusters.length;q++){var cc=clusters[q];if(cc[0]*sx+cc[1]*sy+cc[2]*sz>0.9995){hit=cc[3];break}}
+      if(hit<0){hit=outV.length;outV.push(v);outN.push(sx,sy,sz);clusters.push([sx,sy,sz,hit])}
+      for(var j=0;j<3;j++)if(I[3*g+j]===v)NI[3*g+j]=hit}}
+  var out=new T.BufferGeometry(),n2=outV.length;
+  atts.forEach(function(at){var src=gm.attributes[at.n],arr=new src.array.constructor(n2*at.s);for(var i=0;i<n2;i++)for(var j=0;j<at.s;j++)arr[i*at.s+j]=at.a[outV[i]*at.s+j];out.setAttribute(at.n,new T.BufferAttribute(arr,at.s))});
+  out.setAttribute("normal",new T.BufferAttribute(new Float32Array(outN),3));
+  out.setIndex(n2>65535?new T.BufferAttribute(NI,1):new T.BufferAttribute(new Uint16Array(NI),1));out.userData=gm.userData;return out}
 // decimation (quadric error metrics, the Blender "Decimate" collapse): big flat facets where the form is flat, small ones where
 // it curves. Every attribute rides along (colour, material, detail, flow lerp; skin weights snap to the nearer end).
 // Edge collapses that would flip a face or pinch the surface (link condition) are refused, so the mesh stays closed.

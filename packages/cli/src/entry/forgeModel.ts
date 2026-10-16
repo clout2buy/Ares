@@ -360,6 +360,24 @@ function build(el){
     var dirs={front:[0,0.12,1],back:[0,0.12,-1],side:[1,0.12,0],top:[0,1,0.001],"3q":[1.05,0.55,1.55]},d=dirs[name]||dirs["3q"],v=new T.Vector3(d[0],d[1],d[2]).normalize();
     ctl.autoRotate=false;bSpin.classList.remove("on");userTook=true;sel=-1;ctl.target.copy(tctr);cam.position.copy(tctr).addScaledVector(v,trad*2.7*viewZoom);ctl.update();
     if(el.scrollIntoView)el.scrollIntoView({block:"center"});draw();return name};
+  // record this stage to a video (Browser model {record}): the canvas itself through MediaRecorder, an optional orbit,
+  // posted back to the studio server - no external service, works headless
+  window.__aresRecord=function(o){
+    o=o||{};var secs=Math.max(1,Math.min(30,+o.seconds||6)),fps=Math.max(10,Math.min(60,+o.fps||30)),orbit=o.orbit!==false;
+    if(!r.domElement.captureStream||typeof MediaRecorder==="undefined"){report("studio","record: this browser cannot capture the canvas");return "unsupported"}
+    if(o.clip){var ai=anims.findIndex(function(a){return a.name===o.clip});if(ai>=0){curA=ai;animT=0;animOn=true}}
+    if(o.size){var wv=+o.size[0]||1280,hv=+o.size[1]||720;r.setPixelRatio(1);r.setSize(wv,hv,false);cam.aspect=wv/hv;cam.updateProjectionMatrix()}
+    // the stage backdrop is CSS (transparent canvas): a video needs it IN the frame - a vertical studio gradient (or o.background)
+    var bgPrev=sc.background,bc=document.createElement("canvas");bc.width=2;bc.height=256;var bx=bc.getContext("2d"),bgr=bx.createLinearGradient(0,0,0,256),top=o.background||"#252b36";
+    bgr.addColorStop(0,top);bgr.addColorStop(0.55,o.background||"#151920");bgr.addColorStop(1,o.background||"#0b0d11");bx.fillStyle=bgr;bx.fillRect(0,0,2,256);var bt=new T.CanvasTexture(bc);bt.colorSpace=T.SRGBColorSpace;sc.background=bt;
+    if(window.__aresView)window.__aresView(o.camera||lastCam||"3q");
+    var stream=r.domElement.captureStream(fps),mt=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"].filter(function(m){return MediaRecorder.isTypeSupported(m)})[0]||"",rec=new MediaRecorder(stream,mt?{mimeType:mt,videoBitsPerSecond:o.bitrate||8000000}:{}),chunks=[],t0=performance.now(),off=cam.position.clone().sub(ctl.target),a0=Math.atan2(off.x,off.z),rad=Math.hypot(off.x,off.z);
+    ctl.autoRotate=false;userTook=true;
+    var spinFn=function(){if(!orbit)return;var k=Math.min(1,(performance.now()-t0)/(secs*1000)),a=a0+k*Math.PI*2*(o.turns||1);cam.position.set(ctl.target.x+Math.sin(a)*rad,cam.position.y,ctl.target.z+Math.cos(a)*rad);cam.lookAt(ctl.target)};
+    window.__aresRecFrame=spinFn;
+    rec.ondataavailable=function(e){if(e.data&&e.data.size)chunks.push(e.data)};
+    rec.onstop=function(){window.__aresRecFrame=null;sc.background=bgPrev;bt.dispose();var blob=new Blob(chunks,{type:mt||"video/webm"});fetch("/__ares/studio/"+studio+"/video",{method:"POST",body:blob}).catch(function(e){report("studio","record upload: "+(e&&e.message||e))})};
+    rec.start(250);setTimeout(function(){rec.stop()},secs*1000);return "recording "+secs+"s"};
   // a hosting page that opted in (spec.manual, e.g. the in-app tour) drives the studio by postMessage instead of polling a server
   if(studio&&spec.manual){
     addEventListener("message",function(e){var m=e.data;if(e.source!==parent||!m||typeof m!=="object")return;
@@ -377,7 +395,7 @@ function build(el){
     if(playing&&headP<N){headP=Math.min(N,headP+dt*rate);pose();if(headP>=N)playing=false}
     if(tweens.length||ghosts.length)stepTweens(now);if(studio)pose();
     if(animOn&&curA>=0){var pT=animT;animT+=dt*animSpeed;applyAnim(anims[curA],animT);if(xf){xf.t+=dt;rigBlend(items.map(function(g){return g.userData.node}),xf.s,xf.t/0.3);if(xf.t>=0.3)xf=null}var cd=anims[curA].dur||1;fireEvents(anims[curA],((pT%cd)+cd)%cd,((animT%cd)+cd)%cd)}
-    stepScripts(dt);
+    stepScripts(dt);if(window.__aresRecFrame)window.__aresRecFrame();
     updateRig();if(live)pose();draw();requestAnimationFrame(loop)})(last)}
   else ctl.addEventListener("change",draw);
   addEventListener("resize",function(){var nw=stage.clientWidth||w;h=stageH();r.setSize(nw,h);cam.aspect=nw/h;cam.updateProjectionMatrix();draw()});

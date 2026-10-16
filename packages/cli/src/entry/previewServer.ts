@@ -379,7 +379,24 @@ function sendFile(res: ServerResponse, file: string, size: number, head: boolean
   createReadStream(file).on("error", () => res.destroy()).pipe(res);
 }
 
+function isUnder(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/** DNS-rebinding guard: only answer requests addressed to loopback names, and POSTs that came from this origin (or no browser origin). */
+function loopbackRequest(req: IncomingMessage): boolean {
+  const host = String(req.headers.host ?? "").toLowerCase();
+  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return false;
+  const origin = req.headers.origin;
+  return !origin || origin === `http://${host}`;
+}
+
 async function handle(served: ServedFolder, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!loopbackRequest(req)) {
+    res.writeHead(403, { "content-type": "text/plain; charset=utf-8" }).end("loopback only");
+    return;
+  }
   const urlPath = (req.url ?? "/").split("?")[0]!;
   if (req.method === "POST" && urlPath === TELEMETRY_PATH) {
     const body = await readBody(req).catch(() => "");
@@ -404,7 +421,7 @@ async function handle(served: ServedFolder, req: IncomingMessage, res: ServerRes
     const id = urlPath.slice("/__ares/studio/".length).replace(/[^a-z0-9_-]/gi, "");
     const since = Number(new URL(req.url ?? "/", "http://x").searchParams.get("since")) || 0;
     const body = studioPoll(id, since);
-    res.writeHead(body ? 200 : 404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*" });
+    res.writeHead(body ? 200 : 404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(JSON.stringify(body ?? { v: 0 }));
     return;
   }
@@ -629,8 +646,13 @@ export async function serveLocalTarget(input: string, opts: { sessionId?: string
   const target = localTarget(input);
   if (!target) return null;
   const stat = await fs.stat(target.fsPath).catch(() => null);
+  const root = stat?.isDirectory() ? target.fsPath : path.dirname(target.fsPath);
+  // never publish secrets or whole disks over HTTP, whatever path a model names (checked on the path as written AND after symlinks)
+  const home = os.homedir();
+  const secret = (p: string): boolean => p === path.parse(p).root || p === home || [".ares", ".ssh", ".aws", ".gnupg"].some((d) => isUnder(p, path.join(home, d)));
+  const real = await fs.realpath(root).catch(() => root);
+  if (secret(path.resolve(root)) || secret(real)) throw new Error(`refusing to serve ${root}: it is (or is inside) a secrets or system folder`);
   if (!stat) return null;
-  const root = stat.isDirectory() ? target.fsPath : path.dirname(target.fsPath);
   const served = await serveFolder(root, opts);
   const rel = stat.isDirectory() ? "" : path.basename(target.fsPath);
   return {

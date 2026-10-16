@@ -150,6 +150,17 @@ export function sanitizeAnim(raw: unknown): Obj | null {
   return { name: str(a.name || "anim", 24), dur: clamp(a.dur, 0.2, 20, 1), loop: a.loop !== false, tracks, motion, events };
 }
 
+/** Part names are identities (parents, animations, edits): make duplicates unique ("leg", "leg #2"). */
+export function uniqueNames(parts: Obj[]): Obj[] {
+  const seen = new Map<string, number>();
+  for (const p of parts) {
+    const n = String(p.name), c = (seen.get(n) ?? 0) + 1;
+    seen.set(n, c);
+    if (c > 1) p.name = `${n.slice(0, 26)} #${c}`;
+  }
+  return parts;
+}
+
 export function sanitizeModel(b: Obj): Obj {
   const parts: Obj[] = [];
   const style = MODEL_STYLES.includes(String(b.style)) ? String(b.style) : "";
@@ -158,7 +169,7 @@ export function sanitizeModel(b: Obj): Obj {
     parts.push(...sanitizeModelPart(raw, style, 220 - parts.length, String(b.edge ?? "")));
   }
   const anims = arr(b.anims).slice(0, 12).map(sanitizeAnim).filter((x): x is Obj => !!x);
-  return { title: str(b.title, 60), caption: str(b.caption, 240), style, look: MODEL_LOOKS.includes(String(b.look)) ? String(b.look) : "", parts, anims };
+  return { title: str(b.title, 60), caption: str(b.caption, 240), style, look: MODEL_LOOKS.includes(String(b.look)) ? String(b.look) : "", parts: uniqueNames(parts), anims };
 }
 
 // ── story: an animated 2D pixel stage driven by scenes of short actions ─────

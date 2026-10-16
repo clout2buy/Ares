@@ -53,7 +53,8 @@ export class ExplainStream {
           const raw = this.buf.slice(this.strStart + 1, i);
           if (top && top.t === "o") {
             if (top.expectKey) { top.curKey = raw; top.expectKey = false; }
-            else if (this.stack.length === 3 && this.blockIdx >= 0) this.blockString(top.curKey, raw, out);
+            else if (this.stack.length === 3 && this.blockIdx >= 0 && this.stack[1]?.key === "blocks") this.blockString(top.curKey, raw, out);
+            else if (this.stack.length === 1) this.rootString(top.curKey, raw);
           }
         }
         continue;
@@ -81,7 +82,16 @@ export class ExplainStream {
     out.push({ op: "begin", idx: this.blockIdx, kind, style: this.style.get(this.blockIdx), look: this.look.get(this.blockIdx) });
   }
 
-  private blockString(key: string | null, val: string, out: LivePiece[]): void {
+  /** action:"model" keeps style/look/edge at the root of the call, next to parts[]. */
+  private rootString(key: string | null, val: string): void {
+    if (key === "style") this.style.set(0, val);
+    else if (key === "look") this.look.set(0, val);
+    else if (key === "edge") this.edge.set(0, val);
+  }
+
+  private blockString(key: string | null, raw: string, out: LivePiece[]): void {
+    let val = raw;
+    try { val = JSON.parse(`"${raw}"`) as string; } catch { /* keep the raw slice */ }
     const kind = this.begun.get(this.blockIdx);
     if (key === "type" && (val === "model" || val === "story")) this.begin(val, out);
     else if (key === "style") this.style.set(this.blockIdx, val);
@@ -94,7 +104,10 @@ export class ExplainStream {
     const depth = this.stack.length, parent = this.stack[depth - 1];
     if (!parent || parent.t !== "a") return;
     // blocks[i].parts[j] / blocks[i].scenes[j]
-    if (depth === 4 && parent.key === "anims" && this.blockIdx >= 0) {
+    const inBlocks = depth === 4 && this.stack[1]?.key === "blocks";
+    const rootAnims = depth === 2 && parent.key === "anims";
+    if (rootAnims && this.blockIdx < 0) this.blockIdx = 0;
+    if ((inBlocks || rootAnims) && parent.key === "anims" && this.blockIdx >= 0) {
       let raw: unknown;
       try { raw = JSON.parse(this.buf.slice(f.start, end + 1)); } catch { return; }
       const anim = sanitizeAnim(raw);
@@ -104,7 +117,7 @@ export class ExplainStream {
     // action:"model" puts parts at the root: { parts:[...] } is one model block
     if (depth === 2 && parent.key === "parts" && this.blockIdx < 0) this.blockIdx = 0;
     const rootParts = depth === 2 && parent.key === "parts";
-    if ((depth === 4 || rootParts) && (parent.key === "parts" || parent.key === "scenes") && this.blockIdx >= 0) {
+    if ((inBlocks || rootParts) && (parent.key === "parts" || parent.key === "scenes") && this.blockIdx >= 0) {
       let raw: unknown;
       try { raw = JSON.parse(this.buf.slice(f.start, end + 1)); } catch { return; }
       const idx = this.blockIdx, n = this.counts.get(idx) ?? 0;

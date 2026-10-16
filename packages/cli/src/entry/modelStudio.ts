@@ -10,11 +10,11 @@
 // and editable; the sanitised, mirror/repeat-expanded spec is derived for the
 // page on every change.
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildRuntimeModule } from "./forgeRuntime.js";
-import { sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
+import { MODEL_MATS, MODEL_SHAPES, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
 
@@ -73,6 +73,33 @@ function upsert(list: Obj[], p: Obj): void {
   if (i >= 0) list[i] = { ...p, name: n }; else list.push({ ...p, name: n });
 }
 
+/** Same containment as inside(), but follows symlinks: the nearest existing ancestor must really live in the project. */
+async function insideReal(cwd: string, rel: string): Promise<string> {
+  const abs = inside(cwd, rel);
+  const root = await realpath(path.resolve(cwd)).catch(() => path.resolve(cwd));
+  let probe = abs;
+  for (let i = 0; i < 40; i++) {
+    const real = await realpath(probe).catch(() => null);
+    if (real) {
+      if (real !== root && !real.startsWith(root + path.sep)) throw new Error(`path escapes the project through a symlink: ${rel}`);
+      const home = path.resolve(homedir(), ".ares");
+      if (real === home || real.startsWith(home + path.sep)) throw new Error("~/.ares is off limits");
+      return abs;
+    }
+    const up = path.dirname(probe);
+    if (up === probe) break;
+    probe = up;
+  }
+  return abs;
+}
+
+async function readJsonFile(cwd: string, rel: string, maxBytes = 2_000_000): Promise<unknown> {
+  const abs = await insideReal(cwd, rel);
+  const st = await stat(abs);
+  if (st.size > maxBytes) throw new Error(`${rel} is ${(st.size / 1e6).toFixed(1)}MB (max ${maxBytes / 1e6}MB)`);
+  return JSON.parse(await readFile(abs, "utf8"));
+}
+
 /** Resolve a path for reading/writing assets: relative paths live under cwd and may not escape it. */
 function inside(cwd: string, rel: string): string {
   const abs = path.resolve(cwd, rel);
@@ -98,7 +125,45 @@ function mergeView(cur: Obj, raw: unknown): Obj {
   if (typeof o.camera === "string" && VIEW_CAMERAS.includes(o.camera)) out.camera = o.camera;
   if (typeof o.anim === "string") out.anim = o.anim.slice(0, 24);
   if (typeof o.speed === "number" && Number.isFinite(o.speed)) out.speed = Math.min(3, Math.max(0.1, o.speed));
+  if (typeof o.t === "number" && Number.isFinite(o.t)) out.t = Math.min(20, Math.max(0, o.t));
+  if (typeof o.zoom === "number" && Number.isFinite(o.zoom)) out.zoom = Math.min(3, Math.max(0.3, o.zoom));
+  if (o.fit === "anim" || o.fit === "rest") out.fit = o.fit;
   return out;
+}
+
+// ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps"]);
+const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+
+function lintPart(p: Obj): string[] {
+  const n = nameOf(p), w: string[] = [];
+  for (const k of Object.keys(p)) if (!PART_KEYS.has(k)) w.push(`part "${n}": unknown field "${k}" was ignored (fields: ${[...PART_KEYS].join(", ")})`);
+  if (p.shape !== undefined && !MODEL_SHAPES.includes(String(p.shape))) w.push(`part "${n}": unknown shape "${String(p.shape)}", drawn as a box (shapes: ${MODEL_SHAPES.join(", ")})`);
+  if (p.mat !== undefined && !MODEL_MATS.includes(String(p.mat))) w.push(`part "${n}": unknown mat "${String(p.mat)}" (mats: ${MODEL_MATS.join(", ")})`);
+  for (const k of ["pos", "rot", "pivot"]) if (p[k] !== undefined && !vec(p[k])) w.push(`part "${n}": ${k} should be [x,y,z] numbers`);
+  if (p.size !== undefined && !vec(p.size) && typeof p.size !== "number") w.push(`part "${n}": size should be [x,y,z] or one number`);
+  if (p.color !== undefined && !colour(p.color)) w.push(`part "${n}": colour "${String(p.color)}" not recognised (use #rrggbb or a name like orange/gold/white)`);
+  return w;
+}
+
+/** Does a clip target match a part? Same rule the animation player uses: exact, or "name*" prefix; a mirror follows its original. */
+function targetMatches(sel: string, names: string[]): boolean {
+  return names.some((n) => {
+    const base = n.replace(/ \(mirror\)$/, "");
+    return sel.endsWith("*") ? base.startsWith(sel.slice(0, -1)) : sel === n || sel === base;
+  });
+}
+
+function lintAnim(raw: Obj, partNames: string[]): string[] {
+  const n = String(raw.name ?? "anim"), w: string[] = [];
+  const clean = sanitizeAnim(raw);
+  if (!clean) return [`clip "${n}" drives nothing and was dropped. A clip needs tracks:[{part, rot|pos|scale:[[t,[x,y,z]],...]}], motion:[{part,kind,axis,amp,speed}] or events:[{t,name}]. Example hinge: {name:"open",dur:1,loop:false,tracks:[{part:"lid",rot:[[0,[0,0,0]],[0.9,[-105,0,0]]]}]}`];
+  for (const key of Object.keys(raw)) if (!["name", "dur", "loop", "tracks", "motion", "events"].includes(key)) w.push(`clip "${n}": unknown field "${key}" was ignored (clip fields: name, dur, loop, tracks, motion, events)`);
+  for (const t of (clean.tracks as Obj[])) if (!targetMatches(String(t.part), partNames)) w.push(`clip "${n}": track part "${String(t.part)}" matches no part (parts: ${partNames.slice(0, 12).join(", ")})`);
+  for (const m of (clean.motion as Obj[])) if (!targetMatches(String(m.part), partNames)) w.push(`clip "${n}": motion part "${String(m.part)}" matches no part`);
+  const dropped = arr(raw.tracks).length - (clean.tracks as unknown[]).length;
+  if (dropped > 0) w.push(`clip "${n}": ${dropped} track(s) were unusable (a track is {part, rot|pos|scale:[[t,[x,y,z]],...]})`);
+  return w;
 }
 
 function moveBy(p: Obj, d: number[]): void {
@@ -122,10 +187,9 @@ function scaleBy(p: Obj, f: number): void {
 
 /** Pull parts out of a saved model file (an asset library entry). */
 async function importParts(cwd: string, o: Obj): Promise<Obj[]> {
-  const file = inside(cwd, String(o.file ?? ""));
-  const doc = obj(JSON.parse(await readFile(file, "utf8")));
+  const doc = obj(await readJsonFile(cwd, String(o.file ?? "")));
   const names = arr(o.names).map(String);
-  const at = arr(o.at).map(Number), f = Number(o.scale) || 1;
+  const at = arr(o.at).map(Number), f = Number(o.scale) > 0 ? Number(o.scale) : 1;
   let parts = arr(doc.parts).map(obj);
   if (names.length) parts = parts.filter((p) => names.some((s) => matches(s, nameOf(p))));
   const prefix = o.prefix ? String(o.prefix).slice(0, 16) : "";
@@ -146,7 +210,7 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
   if (e.backdrop !== undefined) { st.backdrop = e.backdrop || undefined; touched.push(e.backdrop ? "backdrop" : "- backdrop"); }
   if (e.load) {
     try {
-      const doc = obj(JSON.parse(await readFile(inside(cwd, e.load), "utf8")));
+      const doc = obj(await readJsonFile(cwd, e.load));
       st.raw = arr(doc.parts).map(obj); st.anims = arr(doc.anims).map(obj); st.scripts = arr(doc.scripts).map(obj);
       st.style = String(doc.style ?? ""); st.look = String(doc.look ?? ""); st.edge = String(doc.edge ?? ""); st.title = String(doc.title ?? st.title);
       touched.push(`loaded ${e.load}`);
@@ -179,13 +243,13 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
         const sel = String(o.name ?? ""); const before = st.raw.length; st.raw = st.raw.filter((p) => !matches(sel, nameOf(p)));
         if (st.raw.length === before) errors.push(`remove: no part "${sel}"`); else touched.push(`- ${sel}`);
       } else if (op === "add") {
-        for (const p of arr(o.parts)) { upsert(st.raw, obj(p)); touched.push(nameOf(obj(p))); }
+        for (const p of arr(o.parts).slice(0, 120)) { upsert(st.raw, obj(p)); touched.push(nameOf(obj(p))); }
       } else if (op === "use") {
         if (o.parts !== false) for (const p of await importParts(cwd, o)) { upsert(st.raw, p); touched.push(nameOf(p)); }
         // scripts ride along when asked: use:{file, scripts:["water"]} pulls a saved behaviour (a library of Ares's own tricks)
         const want = arr(o.scripts).map(String);
         if (want.length) {
-          const doc = obj(JSON.parse(await readFile(inside(cwd, String(o.file ?? "")), "utf8")));
+          const doc = obj(await readJsonFile(cwd, String(o.file ?? "")));
           for (const sc of arr(doc.scripts)) { const s2 = sanitizeScript(sc); if (s2 && want.includes(String(s2.name))) { const i = st.scripts.findIndex((x) => x.name === s2.name); if (i >= 0) st.scripts[i] = s2; else st.scripts.push(s2); touched.push(`script ${String(s2.name)}`); } }
         }
       } else if (op === "script") {
@@ -203,6 +267,11 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
   if (e.ref !== undefined) {
     try { st.ref = await refDataUrl(cwd, e.ref); touched.push("reference"); } catch (err) { errors.push(`ref: ${err instanceof Error ? err.message : String(err)}`); }
   }
+  // never silent: unknown fields / shapes / bad vectors on what this call touched, and clips that do nothing
+  const names = new Set(touched);
+  for (const p of st.raw) if (names.has(nameOf(p))) errors.push(...lintPart(p));
+  const partNames = st.raw.map(nameOf);
+  for (const a of st.anims) if (names.has(`anim ${String(a.name ?? "anim")}`)) errors.push(...lintAnim(a, partNames));
   // a part that points at a parent which doesn't exist is almost always a typo: say so
   const have = new Set(st.raw.map(nameOf));
   for (const p of st.raw) if (p.parent && !have.has(String(p.parent))) errors.push(`part "${nameOf(p)}" has parent "${String(p.parent)}" which doesn't exist`);
@@ -212,7 +281,7 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
 
 async function refDataUrl(cwd: string, src: string): Promise<string> {
   if (src.startsWith("data:image/")) { if (src.length > REF_MAX_BYTES * 1.4) throw new Error("reference image too large"); return src; }
-  const abs = path.isAbsolute(src) ? src : inside(cwd, src);
+  const abs = await insideReal(cwd, src);
   const ext = path.extname(abs).toLowerCase();
   const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : ext === ".gif" ? "image/gif" : /\.jpe?g$/.test(ext) ? "image/jpeg" : "";
   if (!mime) throw new Error("reference must be a png/jpg/webp/gif");
@@ -228,6 +297,7 @@ export function studioSpec(st: Studio): Obj {
     if (parts.length >= 220) break;
     parts.push(...sanitizeModelPart(raw, st.style, 220 - parts.length, st.edge));
   }
+  uniqueNames(parts);
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
   const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
   return { title: st.title, style: st.style, look: st.look, parts, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
@@ -242,10 +312,10 @@ export function studioPoll(id: string, since: number): { v: number; spec?: Obj }
   return { v: st.version, spec: studioSpec(st) };
 }
 
-export async function saveStudio(st: Studio, cwd: string, target: string): Promise<string> {
-  const rel = target && target !== "true" ? target : `assets/models/${st.id}.model.json`;
-  if (!rel.endsWith(".json")) throw new Error("save path must end in .json");
-  const abs = inside(cwd, rel);
+export async function saveStudio(st: Studio, cwd: string, target: string | boolean): Promise<string> {
+  const rel = typeof target === "string" && target && target !== "true" ? target : `assets/models/${st.id}.model.json`;
+  if (!rel.endsWith(".model.json")) throw new Error("save path must end in .model.json (e.g. assets/models/chest.model.json)");
+  const abs = await insideReal(cwd, rel);
   await mkdir(path.dirname(abs), { recursive: true });
   await writeFile(abs, JSON.stringify({ format: "ares-model/1", title: st.title, style: st.style, look: st.look, edge: st.edge, parts: st.raw, anims: st.anims, scripts: st.scripts }, null, 1), "utf8");
   return path.relative(cwd, abs);
@@ -256,12 +326,13 @@ export async function exportGame(st: Studio, cwd: string, o: { dir?: string; thr
   const three = o.three ?? "three";
   if (!/^(three|https?:\/\/[\w./@:~-]+|\.{0,2}\/[\w./-]+)$/.test(three)) throw new Error(`three must be "three", an https URL or a relative path (got ${three})`);
   const dir = (o.dir && o.dir !== "true" ? o.dir : "assets").replace(/\/+$/, "");
-  const runtimeAbs = inside(cwd, `${dir}/ares-model.js`), modelAbs = inside(cwd, `${dir}/models/${st.id}.game.json`);
+  const runtimeAbs = await insideReal(cwd, `${dir}/ares-model.js`), modelAbs = await insideReal(cwd, `${dir}/models/${st.id}.game.json`);
   await mkdir(path.dirname(modelAbs), { recursive: true });
   const spec = studioSpec(st);
   await writeFile(runtimeAbs, buildRuntimeModule(three), "utf8");
   await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: spec.parts, anims: spec.anims, scripts: spec.scripts }), "utf8");
   const runtime = path.relative(cwd, runtimeAbs).split(path.sep).join("/"), model = path.relative(cwd, modelAbs).split(path.sep).join("/");
-  const usage = `import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({material:(part, shared)=>…}) for tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;
+  const nScripts = (studioSpec(st).scripts as unknown[]).length;
+  const usage = `${nScripts ? `NOTE: this model has ${nScripts} script(s) (textures, tints, effects): they only run in the game if you call attachScripts(m, a, {scene, camera, renderer}). ` : ""}import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({material:(part, shared)=>…}) for tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;
   return { runtime, model, usage };
 }

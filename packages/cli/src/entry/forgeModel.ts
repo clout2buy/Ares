@@ -181,8 +181,8 @@ function build(el){
   // ── scripts: JS Ares writes for anything the engine has no feature for (water, lava, rain, wind, physics, particles...).
   //    Each runs in its own api with init/update/cleanup; objects it adds are removed when it changes; errors go back to Ares. ──
   var NL=String.fromCharCode(10),LIBS={"cannon-es":"https://esm.sh/cannon-es@0.20.0","rapier":"https://esm.sh/@dimforge/rapier3d-compat@0.12.1"},libCache={},runs={},evHandlers={},sClock=0,lastEvT=0;
-  function report(name,msg){
-    try{console.error("[studio script "+name+"] "+msg)}catch(e){}
+  function report(name,msg,info){
+    try{console[info?"log":"error"]("[studio script "+name+"] "+msg)}catch(e){}
     if(studio)try{fetch("/__ares/studio/"+studio+"/log",{method:"POST",body:JSON.stringify({name:name,msg:String(msg).slice(0,260)})}).catch(function(){})}catch(e){}}
   function emit(n,d){(evHandlers[n]||[]).slice().forEach(function(h){try{h.fn(d)}catch(e){report(h.owner,"on("+n+"): "+(e&&e.message||e))}})}
   function makeApi(name){
@@ -192,7 +192,8 @@ function build(el){
       add:function(o){sc.add(o);created.push(o);return o},remove:function(o){sc.remove(o);var k=created.indexOf(o);if(k>=0)created.splice(k,1)},
       on:function(n2,fn){var h={fn:fn,owner:name};(evHandlers[n2]=evHandlers[n2]||[]).push(h);mine.push([n2,h])},emit:emit,
       lib:function(n2){if(!LIBS[n2])return Promise.reject(new Error("unknown lib "+n2+" (have: "+Object.keys(LIBS).join(", ")+")"));return libCache[n2]||(libCache[n2]=import(LIBS[n2]))},
-      rand:function(){seed=(Math.imul(seed,1664525)+1013904223)|0;return((seed>>>0)%1000003)/1000003},noise:noise3,fbm:fbm,log:function(m){report(name,m)},
+      rand:function(){seed=(Math.imul(seed,1664525)+1013904223)|0;return((seed>>>0)%1000003)/1000003},noise:noise3,fbm:fbm,log:function(m){report(name,m,true)},
+      refreshEdges:function(n2){var i=parts.findIndex(function(q){return q.name===n2});if(i<0)return;var u=items[i].userData,gm=u.mesh.geometry;u.ed.geometry.dispose();u.ed.geometry=(parts[i].wire||parts[i].mat==="holo")?new T.WireframeGeometry(gm):new T.EdgesGeometry(gm,28)},
       stats:function(){var i=r.info;return{draws:i.render.calls,tris:i.render.triangles,parts:items.length}},
       canvasTexture:function(w,h,draw,o){var t=makeCanvasTexture(w,h,draw,o);created.push({dispose:function(){t.dispose()}});return t},
       ui:{}};
@@ -277,12 +278,13 @@ function build(el){
   function setModel(ns){
     var now=performance.now(),oldByName={},oldItems=items.slice(),oldParts=parts.slice(),keep={},nItems=[],nMats=[],nEdges=[],nParts=ns.parts||[];
     oldParts.forEach(function(q,k){oldByName[q.name]=k});
+    var fresh=nParts.filter(function(np){var k=oldByName[np.name];return k===undefined||geoKey(oldParts[k])!==geoKey(np)}).length,gap=Math.min(90,1600/Math.max(1,fresh)),nth=0;
     nParts.forEach(function(np){
       var k=oldByName[np.name],g;
       if(k!==undefined&&geoKey(oldParts[k])===geoKey(np)){
         g=oldItems[k];keep[k]=1;var u=g.userData,pv=np.pivot||np.pos;
         tweens.push({g:g,t0:now,dur:560,b0:u.base.slice(),b1:[np.size[0],np.size[1],np.size[2]],p0:[g.position.x,u.y,g.position.z],p1:[np.pos[0]-pv[0],np.pos[1]-pv[1],np.pos[2]-pv[2]],r0:[g.rotation.x,g.rotation.y,g.rotation.z],r1:[np.rot[0]*D,np.rot[1]*D,np.rot[2]*D]});
-      }else{g=make(np);g.userData.born=(reduced||(inst&&!settledOnce))?-1e9:now;items.pop();mats.pop();edges.pop()}
+      }else{g=make(np);g.userData.born=reduced?-1e9:now+(nth++)*gap;items.pop();mats.pop();edges.pop()}
       nItems.push(g);nMats.push(g.userData.mat);nEdges.push(g.userData.ed)});
     oldItems.forEach(function(g,k){if(!keep[k])ghosts.push({g:g,t0:now})});
     items.length=0;mats.length=0;edges.length=0;nItems.forEach(function(g){items.push(g)});nMats.forEach(function(m){mats.push(m)});nEdges.forEach(function(e){edges.push(e)});
@@ -296,8 +298,9 @@ function build(el){
     if(ns.look&&LOOKS[ns.look]&&ns.look!==curLook){curLook=ns.look;lookSel.value=ns.look;look(ns.look)}
     if(ns.title)tag.textContent="3D studio · "+ns.title;
     setRef(ns.ref);setBackdrop(ns.backdrop);emit("parts",null);syncScripts(ns.scripts);applyView(ns.view);select(-1);settledOnce=true;pose();draw()}
-  function applyView(v){
-    if(!v)return;
+  var lastView={},viewZoom=1,lastCam="3q";
+  function applyView(v0){
+    if(!v0)return;var v={};Object.keys(v0).forEach(function(k){if(JSON.stringify(v0[k])!==JSON.stringify(lastView[k]))v[k]=v0[k]});lastView=JSON.parse(JSON.stringify(v0));
     if(typeof v.wire==="boolean"&&v.wire!==wire)setWire(v.wire);
     if(typeof v.smooth==="boolean"&&v.smooth!==smoothOn)setSmoothShade(v.smooth);
     if(typeof v.rig==="boolean"&&v.rig!==rigOn)setRig(v.rig);
@@ -305,7 +308,17 @@ function build(el){
     if(typeof v.speed==="number"){animSpeed=v.speed}
     if(typeof v.anim==="string"){var ai=anims.findIndex(function(a){return a.name===v.anim});if(ai>=0&&ai!==curA){curA=ai;animT=0;aSel.value=ai;if(!animOn)applyAnim(anims[curA],0)}}
     if(typeof v.play==="boolean"&&anims.length){animOn=v.play&&!reduced;bAnim.textContent=animOn?"pause":"play"}
-    if(typeof v.camera==="string"&&window.__aresView)window.__aresView(v.camera)}
+    if(typeof v.t==="number"&&curA>=0){animOn=false;animT=v.t;applyAnim(anims[curA],v.t);bAnim.textContent="play"}
+    if(v.fit==="anim"&&curA>=0)fitAnim(anims[curA]);else if(v.fit==="rest"){rebox();fitWorld()}
+    if(typeof v.zoom==="number")viewZoom=v.zoom;
+    if(typeof v.camera==="string"&&window.__aresView)lastCam=v.camera;
+    if((typeof v.camera==="string"||typeof v.zoom==="number"||v.fit)&&window.__aresView)window.__aresView(lastCam)}
+  // frame the model across its WHOLE clip (an opened lid or a leaping fox must not be cropped)
+  function fitAnim(c){
+    var fb=new T.Box3(),dur=c.dur||1,k;
+    for(k=0;k<=8;k++){applyAnim(c,dur*k/8);root.updateMatrixWorld(true);items.forEach(function(g,i){if(!(parts[i]&&parts[i].scenery))fb.expandByObject(g)})}
+    if(curA>=0&&!animOn&&animT>0)applyAnim(c,animT);else if(!animOn)restPose();
+    if(!fb.isEmpty()){box.copy(fb);fitWorld()}}
   function stepTweens(now){
     var i;for(i=tweens.length-1;i>=0;i--){var t=tweens[i],k=Math.min(1,(now-t.t0)/t.dur),e=k*k*(3-2*k),u=t.g.userData,j;
       if(items.indexOf(t.g)<0){tweens.splice(i,1);continue}
@@ -314,14 +327,14 @@ function build(el){
       t.g.rotation.set(t.r0[0]+(t.r1[0]-t.r0[0])*e,t.r0[1]+(t.r1[1]-t.r0[1])*e,t.r0[2]+(t.r1[2]-t.r0[2])*e);
       if(k>=1)tweens.splice(i,1)}
     for(i=ghosts.length-1;i>=0;i--){var gh=ghosts[i],q=Math.min(1,(now-gh.t0)/260),s3=1-q;gh.g.scale.set(Math.max(0.001,gh.g.userData.base[0]*s3),Math.max(0.001,gh.g.userData.base[1]*s3),Math.max(0.001,gh.g.userData.base[2]*s3));
-      if(q>=1){var nd=gh.g.userData.node;if(nd.parent)nd.parent.remove(nd);gh.g.userData.mesh.geometry.dispose();ghosts.splice(i,1)}}}
+      if(q>=1){var nd=gh.g.userData.node;if(nd.parent)nd.parent.remove(nd);disposeObject(gh.g);ghosts.splice(i,1)}}}
   window.__aresView=function(name){
     var dirs={front:[0,0.12,1],back:[0,0.12,-1],side:[1,0.12,0],top:[0,1,0.001],"3q":[1.05,0.55,1.55]},d=dirs[name]||dirs["3q"],v=new T.Vector3(d[0],d[1],d[2]).normalize();
-    ctl.autoRotate=false;bSpin.classList.remove("on");userTook=true;sel=-1;ctl.target.copy(tctr);cam.position.copy(tctr).addScaledVector(v,trad*2.7);ctl.update();
+    ctl.autoRotate=false;bSpin.classList.remove("on");userTook=true;sel=-1;ctl.target.copy(tctr);cam.position.copy(tctr).addScaledVector(v,trad*2.7*viewZoom);ctl.update();
     if(el.scrollIntoView)el.scrollIntoView({block:"center"});draw();return name};
   if(studio){
     capX.textContent="waiting for Ares";var sv=0;
-    (function poll(){fetch("/__ares/studio/"+studio+"?since="+sv,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.spec&&d.v>sv){sv=d.v;setModel(d.spec)}else if(d&&d.v!==undefined&&d.v>sv)sv=d.v}).catch(function(){}).then(function(){setTimeout(poll,350)})})()}
+    (function poll(){fetch("/__ares/studio/"+studio+"?since="+sv,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.v!==undefined&&d.v<sv)sv=0;if(d&&d.spec&&d.v>sv){sv=d.v;try{setModel(d.spec)}catch(e){report("studio","apply: "+(e&&e.message||e))}}else if(d&&d.v!==undefined&&d.v>sv)sv=d.v}).catch(function(){}).then(function(){setTimeout(poll,350)})})()}
   pose();draw();
   if(!reduced){var last=performance.now();(function loop(now){var dt=Math.min(0.05,(now-last)/1000);last=now;
     if(live&&pending.length&&now>=nextAt){addOne(pending.shift());nextAt=now+Math.max(40,170-pending.length*25)}

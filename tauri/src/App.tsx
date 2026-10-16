@@ -2521,6 +2521,7 @@ function App() {
         if ((ev.type === "text_delta" || ev.type === "thinking_delta") && ev.text) pushTokenFlow(ev.text.length);
         else if (ev.type === "tool_use_input_delta" && ev.deltaJson) pushTokenFlow(ev.deltaJson.length);
         liveExplain.onEvent(ev as { type?: string; id?: string; name?: string; deltaJson?: string });
+        if (ev.type === "turn_end" || ev.type === "turn_settled" || ev.type === "interrupt_settled") liveExplain.reset();
         // Voice: speak natural phrases while reply text streams. Only the session
         // you're looking at speaks; thinking + tool noise never do.
         if (prefs.voiceEnabled && sid !== livingSessionRef.current) {

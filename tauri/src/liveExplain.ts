@@ -28,16 +28,18 @@ export function createLiveExplain(deps: { host: () => LiveHost | null; show: () 
     if (c.shown || c.loading) return;
     deps.show();
     c.loading = (async () => {
-      let h = deps.host();
-      for (let i = 0; i < 40 && !h; i++) { await new Promise((r) => setTimeout(r, 33)); h = deps.host(); }
-      if (!h) return false;
-      const r = await h.load(buildLiveStageHtml());
-      if (!r.ok || cur !== c) return false;
-      c.shown = true;
-      c.loading = null;
-      const q = c.queue.splice(0);
-      for (const piece of q) h.post(piece);
-      return true;
+      try {
+        let h = deps.host();
+        for (let i = 0; i < 40 && !h; i++) { await new Promise((r) => setTimeout(r, 33)); h = deps.host(); }
+        if (!h) return false;
+        const r = await h.load(buildLiveStageHtml());
+        if (!r.ok || cur !== c) return false;
+        c.shown = true;
+        const q = c.queue.splice(0);
+        for (const piece of q) h.post(piece);
+        return true;
+      } catch { return false; }
+      finally { c.loading = null; }
     })();
   };
 
@@ -53,6 +55,8 @@ export function createLiveExplain(deps: { host: () => LiveHost | null; show: () 
         deliver(cur, pieces);
       }
     },
+    /** The turn ended (or was cancelled) without the real page landing: forget the stream so nothing lingers. */
+    reset(): void { cur = null; },
     /** True when a live stage is on screen for the call that is now loading its
      *  final page. Consumes the live state either way. */
     handoff(): boolean {

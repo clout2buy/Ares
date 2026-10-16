@@ -102,26 +102,27 @@ export const FORGE_KIT_JS = `
   var P=["#07122b","#15347a","#2f6df0","#9cc5ff"];
   function noise(x,y,s){var h=(x*73856093)^(y*19349663)^(s*83492791);h^=h<<13;h^=h>>>17;h^=h<<5;return((h>>>0)%10000)/10000}
   function fit(c){var d=Math.min(2,devicePixelRatio||1),w=innerWidth,h=innerHeight;if(c.width!==w*d||c.height!==h*d){c.width=w*d;c.height=h*d}return{w:w,h:h,d:d}}
-  if(matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+  // reduced motion: no resolve, rim or spinning scene - but counters and bars still show their final values
+  var RM=!!(matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches);
   // resolve-in: the page appears out of pixel blocks, like the Forge itself
   // (a page handed over from the live stage opens already settled: no second resolve)
-  if(!window.__aresInstant){var rv=document.createElement("canvas");rv.className="k-reveal";document.body.appendChild(rv);var ctx=rv.getContext("2d"),t0=performance.now(),cell=10;
+  if(!window.__aresInstant&&!RM){var rv=document.createElement("canvas");rv.className="k-reveal";document.body.appendChild(rv);var ctx=rv.getContext("2d"),t0=performance.now(),cell=10;
   (function frame(now){var f=fit(rv),raw=Math.min(1,(now-t0)/720),t=1-Math.pow(1-raw,2.2);ctx.setTransform(f.d,0,0,f.d,0,0);ctx.clearRect(0,0,f.w,f.h);var cols=Math.ceil(f.w/cell),rows=Math.ceil(f.h/cell),cx=cols/2,cy=rows/2,md=Math.hypot(cx,cy)||1;
     for(var y=0;y<rows;y++)for(var x=0;x<cols;x++){var d=Math.hypot(x+.5-cx,y+.5-cy)/md,th=d*.72+noise(x,y,5)*.28;if(th<=t)continue;var e=th-t,tone=e<.04?3:e<.1?2:e<.2?1:0;ctx.fillStyle=P[tone];ctx.fillRect(x*cell,y*cell,cell-1,cell-1)}
     if(raw<1)requestAnimationFrame(frame);else rv.remove()})(t0);}
   // rim: a dotted pixel border with a travelling pulse
-  var rc=document.createElement("canvas");rc.className="k-rim";document.body.appendChild(rc);var rx=rc.getContext("2d"),c6=6,start=performance.now();
+  if(!RM){var rc=document.createElement("canvas");rc.className="k-rim";document.body.appendChild(rc);var rx=rc.getContext("2d"),c6=6,start=performance.now();
   (function rim(now){var f=fit(rc);rx.setTransform(f.d,0,0,f.d,0,0);rx.clearRect(0,0,f.w,f.h);var cols=Math.max(2,Math.floor(f.w/c6)),rows=Math.max(2,Math.floor(f.h/c6)),per=[];
     for(var x=0;x<cols;x++)per.push([x,0]);for(var y=1;y<rows;y++)per.push([cols-1,y]);for(x=cols-2;x>=0;x--)per.push([x,rows-1]);for(y=rows-2;y>=1;y--)per.push([0,y]);
     var N=per.length,head=((now-start)%8000)/8000*N;
     for(var i=0;i<N;i++){var p=per[i],n=noise(p[0],p[1],11),tone=-1,b=head-i;if(b<0)b+=N;if(b<4)tone=3;else if(b<12)tone=2;else if(b<26)tone=1;else if(n<.42)tone=0;
       var corner=(p[0]<3&&(p[1]===0||p[1]===rows-1))||(p[0]>cols-4&&(p[1]===0||p[1]===rows-1))||(p[1]<3&&(p[0]===0||p[0]===cols-1))||(p[1]>rows-4&&(p[0]===0||p[0]===cols-1));if(corner)tone=Math.max(tone,2);if(tone<0)continue;
       rx.globalAlpha=tone===0?.5:tone===1?.75:1;rx.fillStyle=P[tone];rx.fillRect(p[0]*c6,p[1]*c6,c6-1,c6-1)}
-    rx.globalAlpha=1;requestAnimationFrame(rim)})(start);
-  document.querySelectorAll('.k-scene').forEach(function(el){var s=document.createElement('script');s.type='module';s.textContent='import*as T from"https://esm.sh/three@0.160.0";var el=document.getElementById("' + el.id + '"),sh=el.dataset.shape,col=el.dataset.color;try{var r=new T.WebGLRenderer({antialias:true,alpha:true});r.setPixelRatio(Math.min(2,devicePixelRatio));el.appendChild(r.domElement);var sc=new T.Scene(),cam=new T.PerspectiveCamera(45,1,.1,100);cam.position.set(0,0,4.2);var g={cube:new T.BoxGeometry(1.6,1.6,1.6),sphere:new T.SphereGeometry(1.1,24,18),torus:new T.TorusGeometry(1,.38,16,40),pyramid:new T.ConeGeometry(1.2,1.8,4),knot:new T.TorusKnotGeometry(.8,.28,90,12)}[sh]||new T.BoxGeometry(1.6,1.6,1.6);var m=new T.Mesh(g,new T.MeshBasicMaterial({color:col,wireframe:true})),m2=new T.Mesh(g,new T.MeshBasicMaterial({color:col,transparent:true,opacity:.12}));sc.add(m);sc.add(m2);function fit(){var w=el.clientWidth,h=el.clientHeight;r.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}fit();addEventListener("resize",fit);el.querySelector(".k-cube").style.display="none";(function a(){m.rotation.x+=.006;m.rotation.y+=.01;m2.rotation.copy(m.rotation);r.render(sc,cam);requestAnimationFrame(a)})()}catch(e){}';document.head.appendChild(s)});
+    rx.globalAlpha=1;requestAnimationFrame(rim)})(start);}
+  if(!RM)document.querySelectorAll('.k-scene').forEach(function(el){var s=document.createElement('script');s.type='module';s.textContent='import*as T from"https://esm.sh/three@0.160.0";var el=document.getElementById("' + el.id + '"),sh=el.dataset.shape,col=el.dataset.color;try{var r=new T.WebGLRenderer({antialias:true,alpha:true});r.setPixelRatio(Math.min(2,devicePixelRatio));el.appendChild(r.domElement);var sc=new T.Scene(),cam=new T.PerspectiveCamera(45,1,.1,100);cam.position.set(0,0,4.2);var g={cube:new T.BoxGeometry(1.6,1.6,1.6),sphere:new T.SphereGeometry(1.1,24,18),torus:new T.TorusGeometry(1,.38,16,40),pyramid:new T.ConeGeometry(1.2,1.8,4),knot:new T.TorusKnotGeometry(.8,.28,90,12)}[sh]||new T.BoxGeometry(1.6,1.6,1.6);var m=new T.Mesh(g,new T.MeshBasicMaterial({color:col,wireframe:true})),m2=new T.Mesh(g,new T.MeshBasicMaterial({color:col,transparent:true,opacity:.12}));sc.add(m);sc.add(m2);function fit(){var w=el.clientWidth,h=el.clientHeight;r.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}fit();addEventListener("resize",fit);el.querySelector(".k-cube").style.display="none";(function a(){m.rotation.x+=.006;m.rotation.y+=.01;m2.rotation.copy(m.rotation);r.render(sc,cam);requestAnimationFrame(a)})()}catch(e){}';document.head.appendChild(s)});
   // animated bars + counters
-  document.querySelectorAll(".k-bar > span").forEach(function(s){var w=s.getAttribute("data-w")||s.style.width||"0%";s.style.width="0%";requestAnimationFrame(function(){s.style.transition="width 900ms cubic-bezier(.2,.9,.3,1)";s.style.width=w})});
-  document.querySelectorAll("[data-count]").forEach(function(el){var to=parseFloat(el.getAttribute("data-count")),dec=(String(to).split(".")[1]||"").length,t1=performance.now();(function tick(n){var k=Math.min(1,(n-t1)/900),v=to*(1-Math.pow(1-k,3));el.textContent=v.toFixed(dec);if(k<1)requestAnimationFrame(tick)})(t1)});
+  document.querySelectorAll(".k-bar > span").forEach(function(s){var w=s.getAttribute("data-w")||s.style.width||"0%";if(RM){s.style.width=w;return}s.style.width="0%";requestAnimationFrame(function(){s.style.transition="width 900ms cubic-bezier(.2,.9,.3,1)";s.style.width=w})});
+  document.querySelectorAll("[data-count]").forEach(function(el){var to=parseFloat(el.getAttribute("data-count")),dec=(String(to).split(".")[1]||"").length,t1=performance.now();if(RM){el.textContent=to.toFixed(dec);return}(function tick(n){var k=Math.min(1,(n-t1)/900),v=to*(1-Math.pow(1-k,3));el.textContent=v.toFixed(dec);if(k<1)requestAnimationFrame(tick)})(t1)});
 })();
 `.trim();
 

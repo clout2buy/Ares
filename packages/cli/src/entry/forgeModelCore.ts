@@ -138,6 +138,12 @@ function rigLink(parts,nodes,root){
   for(i=0;i<parts.length;i++){var nd=nodes[i],pr=pidx[i],pn=pr>=0?nodes[pr]:root,pv=parts[i].pivot||parts[i].pos,pp2=pr>=0?(parts[pr].pivot||parts[pr].pos):[0,0,0];
     if(nd.parent!==pn)pn.add(nd);nd.position.set(pv[0]-pp2[0],pv[1]-pp2[1],pv[2]-pp2[2]);nd.userData.rest=nd.position.clone();if(pr>=0)hasKids[pr]=true}
   return{pidx:pidx,hasKids:hasKids}}
+// free GPU resources of an object tree; keep (a Set) holds shared geometries/materials that other instances still use
+function disposeObject(g,keep){
+  g.traverse(function(o){
+    if(o.geometry&&!(keep&&keep.has(o.geometry)))o.geometry.dispose();
+    var m=o.material;if(!m)return;
+    (Array.isArray(m)?m:[m]).forEach(function(x){if(keep&&keep.has(x))return;if(x.map)x.map.dispose();x.dispose()})})}
 function makeCanvasTexture(w,h,draw,o){
   o=o||{};var c=document.createElement("canvas");c.width=w;c.height=h;var x=c.getContext("2d");draw(x,w,h);
   var t=new T.CanvasTexture(c);t.colorSpace=T.SRGBColorSpace;t.wrapS=t.wrapT=T.RepeatWrapping;if(o.repeat)t.repeat.set(o.repeat[0],o.repeat[1]);

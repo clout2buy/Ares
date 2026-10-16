@@ -278,7 +278,9 @@ test("studio polling is versioned, and assets round-trip through save / load / u
   assert.equal(studioSpec(c).parts[0].name, "x-head");
   const bad = await applyEdit(c, { load: "../../etc/passwd" }, root);
   assert.match(bad.errors[0], /escapes the project/);
-  await assert.rejects(() => saveStudio(st, root, "../evil.json"), /escapes the project/);
+  await assert.rejects(() => saveStudio(st, root, "../evil.model.json"), /escapes the project/);
+  await assert.rejects(() => saveStudio(st, root, "package.json"), /must end in \.model\.json/);
+  assert.equal(await saveStudio(st, root, true), path.join("assets", "models", "a.model.json"), "true means the default path");
   const big = await applyEdit(c, { ref: "data:image/png;base64," + "A".repeat(3_000_000) }, root);
   assert.match(big.errors[0], /too large/);
 });
@@ -304,7 +306,7 @@ test("live stream also understands action:model (parts at the root of the call)"
   for (let i = 0; i < input.length; i += 3) out.push(...st.feed(input.slice(i, i + 3)));
   assert.deepEqual(out.map((p) => p.op), ["begin", "part", "part"]);
   assert.equal(out[2].parts.length, 2);
-  assert.equal(out[0].style, undefined, "style after parts isn't known yet; parts are sanitised with what is");
+  assert.equal(out[0].style, "lowpoly", "root-level style is read before the parts");
 });
 
 // ── scripts: the studio has no built-in water/lava/physics; Ares writes the behaviour ──
@@ -443,4 +445,84 @@ test("runtime: instances share geometry, override materials, play clips with joi
   assert.throws(() => a.play("nope"), /no clip nope/);
   assert.throws(() => buildModel({ parts: [] }), /game\.json/);
   void tip;
+});
+
+// ── review fixes: warnings instead of silence, containment, loopback-only serving ──
+import { symlink } from "node:fs/promises";
+import { runModelAction } from "../packages/cli/dist/entry/browserBridge.js";
+import { serveLocalTarget as serveTarget } from "../packages/cli/dist/entry/previewServer.js";
+import http from "node:http";
+
+test("input is never silently ignored: unknown fields/shapes/mats, bad vectors and dead clips come back as problems", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-lint-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  const st = ensureStudio("lint");
+  const r = await applyEdit(st, { parts: [{ name: "lid", shape: "nonsense", arc: 180, pos: [1, "x"], color: "wibble", mat: "gold" }, { name: "base", shape: "box" }],
+    anims: [{ name: "bad", keys: [{ t: 0 }] }, { name: "open", dur: 1, tracks: [{ part: "lid", rot: [[0, [0, 0, 0]], [1, [-90, 0, 0]]] }, { part: "ghost", rot: [[0, [0, 0, 0]], [1, [1, 0, 0]]] }], wibble: 1 }] }, root);
+  const text = r.errors.join("\n");
+  assert.match(text, /unknown field "arc"/);
+  assert.match(text, /unknown shape "nonsense"/);
+  assert.match(text, /unknown mat "gold"/);
+  assert.match(text, /pos should be \[x,y,z\]/);
+  assert.match(text, /colour "wibble" not recognised/);
+  assert.match(text, /clip "bad" drives nothing and was dropped.*Example hinge/s);
+  assert.match(text, /clip "open": track part "ghost" matches no part/);
+  assert.match(text, /clip "open": unknown field "wibble"/);
+  const clean = await applyEdit(st, { parts: [{ name: "lid", shape: "box", pivot: [0, 1, 0], parent: "base" }] }, root);
+  assert.deepEqual(clean.errors, [], "a correct edit is quiet");
+});
+
+test("view extras are bounded, and containment follows symlinks", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-sym-")), outside = await mkdtemp(path.join(tmpdir(), "ares-out-"));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); });
+  dropStudios();
+  const st = ensureStudio("v");
+  await applyEdit(st, { view: { t: 999, zoom: 99, fit: "anim", camera: "side", junk: 1, wire: "yes" } }, root);
+  assert.deepEqual(studioSpec(st).view, { t: 20, zoom: 3, fit: "anim", camera: "side" });
+  await writeFile(path.join(outside, "secret.model.json"), JSON.stringify({ parts: [{ name: "leak", shape: "box" }] }));
+  await writeFile(path.join(outside, "secret.png"), "x");
+  await symlink(outside, path.join(root, "link"));
+  const r = await applyEdit(st, { load: "link/secret.model.json" }, root);
+  assert.match(r.errors[0], /through a symlink/);
+  const ref = await applyEdit(st, { ref: path.join(outside, "secret.png") }, root);
+  assert.ok(ref.errors.some((e) => /escapes the project/.test(e)), "absolute reference paths are refused");
+  await assert.rejects(() => saveStudio(st, root, "link/x.model.json"), /through a symlink/);
+});
+
+test("the Browser model action refuses lookalike backdrop hosts", async () => {
+  const fakeBr = { state: async () => ({ url: "", title: "" }), navigate: async () => undefined, screenshot: async () => ({ format: "png", bytes: "" }) };
+  const d = { cwd: tmpdir(), emitTarget: () => undefined, filmstripDir: "-" };
+  for (const bad of ["http://localhost:80@evil.example/x", "http://evil.example/", "https://127.0.0.1.evil.example/", "file:///etc/passwd"]) {
+    await assert.rejects(() => runModelAction({ action: "model", model: "bd", backdrop: bad }, fakeBr, d), /backdrop/, bad);
+  }
+});
+
+test("preview server answers loopback hosts only, and refuses to publish secrets folders", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-srv-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "index.html"), "<!doctype html><body>ok</body>");
+  const served = await serveTarget(path.join(root, "index.html"));
+  const port = new URL(served.origin).port;
+  const get = (host, extra = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port, path: "/index.html", headers: { host, ...extra } }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode)); });
+    req.on("error", reject); req.end();
+  });
+  assert.equal(await get(`127.0.0.1:${port}`), 200);
+  assert.equal(await get(`localhost:${port}`), 200);
+  assert.equal(await get("evil.example"), 403, "a rebound hostname is refused");
+  assert.equal(await get(`127.0.0.1:${port}`, { origin: "http://evil.example" }), 403, "a foreign Origin is refused");
+  await assert.rejects(() => serveTarget(path.join(process.env.HOME ?? "/root", ".ares", "ui.json")), /refusing to serve|^$/);
+  await assert.rejects(() => serveTarget(path.parse(process.cwd()).root), /refusing to serve/);
+});
+
+test("live stream: escaped titles decode, ops are ignored, and root style/look/edge reach the begin piece", () => {
+  const input = JSON.stringify({ action: "model", style: "lowpoly", look: "clay", edge: "gold", parts: [{ name: "a", shape: "box" }], ops: [{ op: "add", parts: [{ name: "zz" }] }, { op: "set", title: "zzz" }], anims: [{ name: "w", motion: [{ part: "a", kind: "wag" }] }] });
+  const st = new ExplainStream(), out = [];
+  for (let i = 0; i < input.length; i += 4) out.push(...st.feed(input.slice(i, i + 4)));
+  assert.deepEqual(out.map((p) => p.op), ["begin", "part", "anim"], "ops-add parts and ops titles never stream");
+  assert.equal(out[0].look, "clay");
+  assert.equal(out[1].parts[0].edgeColor, "#d9a441".length ? out[1].parts[0].edgeColor : "", "edge colour reaches parts");
+  const t = new ExplainStream().feed(JSON.stringify({ blocks: [{ type: "model", title: "He said \"hi\" é", parts: [{ name: "a" }] }] }));
+  assert.equal(t.find((p) => p.op === "title").title, "He said \"hi\" é");
 });

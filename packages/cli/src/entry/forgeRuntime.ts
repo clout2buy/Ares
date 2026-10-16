@@ -56,7 +56,8 @@ export function buildModel(doc,opts){
         (cur.events||[]).forEach(function(e){var a=((prev%d)+d)%d,b=((clock%d)+d)%d,hit=b>=a?(e.t>a&&e.t<=b):(e.t>a||e.t<=b);if(!loop&&clock>=d&&prev<d&&e.t<=d&&e.t>a)hit=true;if(hit)ev.emit(e.name,e.data)});
         if(hold){hold=false;ev.emit("end",cur.name)}
         return inst},
-      dispose:function(){group.removeFromParent();nodes.forEach(function(nd){nd.removeFromParent()})}};
+      // frees this instance (edges, caps, per-instance materials); the model's shared geometry/materials stay until model.dispose()
+      dispose:function(){var keep=new Set();cache.forEach(function(c){if(c.gm)keep.add(c.gm);if(c.m)keep.add(c.m)});disposeObject(group,keep);group.removeFromParent();nodes.forEach(function(nd){nd.removeFromParent()})}};
     return inst};
   return model}
 
@@ -68,18 +69,18 @@ export function loadModel(url,opts){
 export function attachScripts(model,instance,ctx){
   ctx=ctx||{};var runs=[],clock=0,created=[],none=function(){return{set:function(){}}};
   (model.doc.scripts||[]).filter(function(s){return s.enabled!==false}).forEach(function(s){
-    var seed=hash(s.name),owned=[],api={THREE:T,scene:ctx.scene,camera:ctx.camera,renderer:ctx.renderer,root:instance.group,time:0,dt:0,state:{},
+    var seed=hash(s.name),owned=[],offs=[],api={THREE:T,scene:ctx.scene,camera:ctx.camera,renderer:ctx.renderer,root:instance.group,time:0,dt:0,state:{},
       part:instance.part,parts:instance.parts,add:function(o){(ctx.scene||instance.group).add(o);owned.push(o);return o},remove:function(o){o.removeFromParent();var k=owned.indexOf(o);if(k>=0)owned.splice(k,1)},
-      on:instance.on,emit:instance.emit,lib:function(n){var u=(ctx.libs&&ctx.libs[n])||LIBS[n];return u?import(u):Promise.reject(new Error("unknown lib "+n))},
+      on:function(n,f){var off=instance.on(n,f);offs.push(off);return off},emit:instance.emit,lib:function(n){var u=(ctx.libs&&ctx.libs[n])||LIBS[n];return u?import(u):Promise.reject(new Error("unknown lib "+n))},
       rand:function(){seed=(Math.imul(seed,1664525)+1013904223)|0;return((seed>>>0)%1000003)/1000003},noise:noise3,fbm:fbm,
       log:function(m){console.log("[ares-model "+s.name+"] "+m)},stats:function(){var i=ctx.renderer&&ctx.renderer.info;return i?{draws:i.render.calls,tris:i.render.triangles,parts:parts_len(model)}:{draws:0,tris:0,parts:0}},
-      canvasTexture:makeCanvasTexture,ui:{title:none,text:none,button:none,toggle:none,slider:none,select:none}};
+      canvasTexture:function(w,h,d,o){var t=makeCanvasTexture(w,h,d,o);owned.push({dispose:function(){t.dispose()}});return t},ui:{title:none,text:none,button:none,toggle:none,slider:none,select:none}};
     var NL=String.fromCharCode(10),fns;
     try{fns=new Function("api","'use strict';"+NL+s.code+NL+";return {init:typeof init==='function'?init:null,update:typeof update==='function'?update:null,cleanup:typeof cleanup==='function'?cleanup:null};")(api)}catch(e){console.error("[ares-model "+s.name+"] compile: "+e.message);return}
-    var run={api:api,fns:fns,ready:false,dead:false,owned:owned};runs.push(run);
+    var run={api:api,fns:fns,ready:false,dead:false,owned:owned,offs:offs};runs.push(run);
     try{Promise.resolve(fns.init?fns.init(api):0).then(function(){run.ready=true},function(e){run.dead=true;console.error("[ares-model "+s.name+"] init: "+(e&&e.message||e))})}catch(e){run.dead=true;console.error("[ares-model "+s.name+"] init: "+e.message)}});
   return{update:function(dt){clock+=dt;runs.forEach(function(r){if(!r.ready||r.dead||!r.fns.update)return;r.api.time=clock;r.api.dt=dt;try{r.fns.update(r.api)}catch(e){r.dead=true;console.error("[ares-model] update: "+e.message)}})},
-    dispose:function(){runs.forEach(function(r){try{if(r.fns&&r.fns.cleanup)r.fns.cleanup(r.api)}catch(e){}r.owned.forEach(function(o){o.removeFromParent();if(o.geometry&&o.geometry.dispose)o.geometry.dispose();if(o.material&&o.material.dispose)o.material.dispose()})});runs.length=0}}}
+    dispose:function(){runs.forEach(function(r){r.offs.forEach(function(f){f()});try{if(r.fns&&r.fns.cleanup)r.fns.cleanup(r.api)}catch(e){}r.owned.forEach(function(o){if(o.removeFromParent)o.removeFromParent();if(o.dispose)o.dispose();if(o.geometry&&o.geometry.dispose)o.geometry.dispose();if(o.material&&o.material.dispose)o.material.dispose()})});runs.length=0}}}
 function parts_len(model){return model.doc.parts.length}
 `;
 

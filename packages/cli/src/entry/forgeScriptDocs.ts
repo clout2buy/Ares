@@ -4,7 +4,19 @@
 // the always-on prompt stays small. The examples are patterns to adapt, not
 // engine features: nothing in the studio knows what a "pond" or a "chest" is.
 
-export const FORGE_SCRIPT_DOCS = `STUDIO SCRIPTS — write the behaviour yourself.
+export const FORGE_SCRIPT_DOCS = `MODELS: parts and clips (what the tool wants)
+Part: {name, shape, pos:[x,y,z], size:[x,y,z], rot:[deg], color, mat, pivot:[x,y,z], parent:"name", mirror:true, ...}. y is up; origin on the ground. size is the bounding box (a sphere of size [2,1,3] is an ellipsoid).
+A part with a pivot rotates ABOUT that point when animated; parent makes it follow another part (a lid follows its chest base). Unknown fields, unknown shapes and bad vectors come back as warnings (problems), never silently.
+Curved shapes: loft{sections:[[x,y,z,rx,ry],...]} for organic bodies, extrude{pts:[[x,y]...],depth} for any 2D profile, lathe{pts:[[radius,y]...]} for round things, tube{pts:[[x,y,z]...],r,r2}.
+  Curved chest lid = a half-ellipse profile extruded along the chest depth:
+  {name:"lid",shape:"extrude",pts:[[1,0],[0.97,0.13],[0.87,0.25],[0.71,0.35],[0.5,0.43],[0.26,0.48],[0,0.5],[-0.26,0.48],[-0.5,0.43],[-0.71,0.35],[-0.87,0.25],[-0.97,0.13],[-1,0]],depth:1.3,pos:[0,1.1,0],pivot:[0,1.1,-0.65],parent:"base"}
+Clip: {name, dur, loop?, tracks:[{part, rot|pos|scale:[[t,[x,y,z]],...]}], motion:[{part,kind:"swing|wag|bob|spin|pulse",axis,amp,speed,phase}], events:[{t,name,data?}]}
+  rot is degrees about the part's pivot, as a DELTA from its rest pose; times are seconds; "leg*" targets every part starting with leg (mirrors follow).
+  A chest opening:  {name:"open",dur:1.2,loop:false,tracks:[{part:"lid",rot:[[0,[0,0,0]],[0.9,[-105,0,0]]]}],events:[{t:0.9,name:"lid-up"}]}
+  A clip that drives nothing is reported back, with this format. Reading a result: anims lists each clip with its track / motion / event counts.
+Views (view:{...}): wire, smooth, spin, rig, camera:3q|front|back|side|top, zoom:0.3-3, anim:"clip", play:bool, speed, t:seconds (freeze the clip at that moment: check the open pose), fit:"anim" (frame the whole clip so an opened lid is not cropped) | "rest".
+
+STUDIO SCRIPTS — write the behaviour yourself.
 A script is {name, code}. code defines any of: function init(api){...} (may be async), function update(api){...} (every frame), function cleanup(api){...}.
 Edit a script by sending the same name again; the old one is cleaned up (everything it add()ed is removed). Errors come back in the tool result (problems / scriptLogs) - read them, fix, resend.
 
@@ -23,6 +35,7 @@ api:
   ui.title/text/button/toggle/slider/select     a control panel over the stage (variants, open/close, LOD, debug toggles); ui.text(...).set(str) for live readouts
   stats() -> {draws, tris, parts}               draw calls / triangles right now
   log(msg)                                      comes back to you in the tool result
+  refreshEdges(partName)                        after you change a part's geometry in a script, redraw its edge lines (otherwise faint outlines of the old shape linger)
 
 PATTERNS (adapt them; they are examples, not features):
 

@@ -132,6 +132,7 @@ import {
   readCustomModels,
 } from "./models/catalog";
 import { STREAM_SPEECH_SENTENCE_MIN, STREAM_SPEECH_BATCH_MIN, takeStreamSpeechChunk } from "./voice/streamSpeech";
+import "./devBridge";
 import "./styles.css";
 import "./modern.css";
 // LAST on purpose: the Basic themes neutralize tokens the skins above set, so

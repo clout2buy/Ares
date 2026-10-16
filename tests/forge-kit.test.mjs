@@ -215,3 +215,94 @@ test("live stage page carries the runtime + all engines; the instant flag skips 
   assert.match(FORGE_KIT_JS, /__aresInstant/);
   assert.doesNotThrow(() => new vm.Script(FORGE_KIT_JS));
 });
+
+test("loft parts: sections are clamped, mirrored across x, and degenerate lofts fall back to a box", () => {
+  const m = sanitizeModel({ style: "lowpoly", parts: [
+    { name: "leg", shape: "loft", sections: [[0.3, 1, 0, 0.2, 0.2], [0.3, 0, 0, 0.1, 0.1], [1, 2]], mirror: true },
+    { name: "bad", shape: "loft", sections: [[0, 0, 0, 1, 1]] },
+  ] });
+  assert.equal(m.parts[0].sections.length, 2, "short rows dropped");
+  assert.equal(m.parts[1].sections[0][0], -0.3, "mirror flips x");
+  assert.equal(m.parts[0].seg, 6, "lowpoly default ring count");
+  assert.equal(m.parts[2].shape, "box");
+});
+
+// ── the model studio: Ares edits a persistent model; the Forge polls it ──
+import { ensureStudio, applyEdit, studioSpec, studioPoll, saveStudio, dropStudios } from "../packages/cli/dist/entry/modelStudio.js";
+
+test("studio edits: upsert, set by prefix with move/scale/rename, remove, anims, and typo'd targets are reported", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-studio-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  const st = ensureStudio("fx");
+  let r = await applyEdit(st, { style: "lowpoly", parts: [
+    { name: "leg a", shape: "cylinder", pos: [1, 1, 0] }, { name: "leg b", shape: "cylinder", pos: [2, 1, 0] },
+    { name: "tail", shape: "loft", sections: [[0, 1, 0, 0.1, 0.1], [0, 1, -1, 0.2, 0.2]], parent: "ghost" },
+  ], anims: [{ name: "w", motion: [{ part: "tail", kind: "wag" }] }] }, root);
+  assert.deepEqual(r.errors, ["part \"tail\" has parent \"ghost\" which doesn't exist"]);
+  assert.equal(st.version, 1);
+  r = await applyEdit(st, { ops: [
+    { op: "set", name: "leg*", move: [0, 0.5, 0], scale: 2 },
+    { op: "set", name: "tail", to: "brush", sections: [[0, 1, 0, 0.1, 0.1], [0, 1, -2, 0.3, 0.3]], parent: "leg a" },
+    { op: "set", name: "nothing", color: "red" },
+    { op: "explode" },
+    { op: "remove", name: "leg b" },
+  ] }, root);
+  assert.equal(r.errors.length, 2, "unknown set target + unknown op reported");
+  const spec = studioSpec(st);
+  assert.deepEqual(spec.parts.map((p) => p.name), ["leg a", "brush"]);
+  assert.deepEqual(spec.parts[0].pos, [2, 3, 0], "move then scale: (1,1,0)+(0,.5,0) = (1,1.5,0) ×2");
+  assert.equal(spec.parts[1].parent, "leg a");
+  assert.equal(spec.anims.length, 1);
+});
+
+test("studio polling is versioned, and assets round-trip through save / load / use without escaping the project", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-studio-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  const st = ensureStudio("a");
+  await applyEdit(st, { title: "A", parts: [{ name: "head", shape: "sphere", pos: [0, 2, 0], pivot: [0, 1.5, 0] }, { name: "eye", shape: "sphere", pos: [0.2, 2.1, 0.4], parent: "head" }] }, root);
+  assert.deepEqual(studioPoll("a", 1), { v: 1 }, "nothing newer → no spec");
+  assert.ok(studioPoll("a", 0).spec.parts.length >= 2);
+  assert.equal(st.seen, 1, "a page fetching the spec marks the version as seen");
+  assert.equal(studioPoll("missing", 0), null);
+  const rel = await saveStudio(st, root, "");
+  assert.equal(rel, path.join("assets", "models", "a.model.json"));
+  const b = ensureStudio("b");
+  await applyEdit(b, { load: rel }, root);
+  assert.deepEqual(studioSpec(b).parts.map((p) => p.name), ["head", "eye"]);
+  const c = ensureStudio("c");
+  const used = await applyEdit(c, { ops: [{ op: "use", file: rel, names: ["head"], at: [10, 0, 0], prefix: "x-" }] }, root);
+  assert.deepEqual(used.errors, []);
+  assert.deepEqual(studioSpec(c).parts[0].pos, [10, 2, 0]);
+  assert.equal(studioSpec(c).parts[0].name, "x-head");
+  const bad = await applyEdit(c, { load: "../../etc/passwd" }, root);
+  assert.match(bad.errors[0], /escapes the project/);
+  await assert.rejects(() => saveStudio(st, root, "../evil.json"), /escapes the project/);
+  const big = await applyEdit(c, { ref: "data:image/png;base64," + "A".repeat(3_000_000) }, root);
+  assert.match(big.errors[0], /too large/);
+});
+
+test("the preview server serves the studio document to the page", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-studio-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  const st = ensureStudio("srv");
+  await applyEdit(st, { parts: [{ name: "p", shape: "box" }] }, root);
+  await writeFile(path.join(root, "index.html"), "<!doctype html><body>x</body>");
+  const served = await serveLocalTarget(path.join(root, "index.html"));
+  const d = await (await fetch(`${served.origin}/__ares/studio/srv?since=0`)).json();
+  assert.equal(d.v, 1);
+  assert.equal(d.spec.parts[0].name, "p");
+  const none = await fetch(`${served.origin}/__ares/studio/nope`);
+  assert.equal(none.status, 404);
+});
+
+test("live stream also understands action:model (parts at the root of the call)", () => {
+  const input = JSON.stringify({ action: "model", model: "fox", style: "lowpoly", parts: [{ name: "a", shape: "sphere" }, { name: "b", shape: "cone", mirror: true, pos: [1, 0, 0] }] });
+  const st = new ExplainStream(), out = [];
+  for (let i = 0; i < input.length; i += 3) out.push(...st.feed(input.slice(i, i + 3)));
+  assert.deepEqual(out.map((p) => p.op), ["begin", "part", "part"]);
+  assert.equal(out[2].parts.length, 2);
+  assert.equal(out[0].style, undefined, "style after parts isn't known yet; parts are sanitised with what is");
+});

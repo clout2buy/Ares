@@ -81,11 +81,14 @@ table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12.5px}th,td{b
 .k-insp{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 18px;padding:10px;border:1px solid #f0a32f;background:rgba(240,163,47,.05)}.k-insp-h{grid-column:1/-1;font:800 10.5px/1.4 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:#f0a32f}.k-insp-btns{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
 .k-color{height:22px;padding:0;border:1px solid #2f6df0;background:#070a13;border-radius:0;cursor:pointer;width:100%}.k-sel{grid-column:1/-1;font:700 11px var(--mono);color:#dfe7ff;background:#070a13;border:1px solid #2f6df0;border-radius:0;padding:4px 6px;text-transform:uppercase}
 .k-btn.on{background:#f0a32f;border-color:#f0a32f}
+.k-ref{position:absolute;right:8px;top:8px;width:26%;max-width:230px;border:1px solid #f0a32f;background:#070a13;box-shadow:3px 3px 0 #15347a;z-index:2;cursor:pointer;transition:opacity .2s}
 @media(prefers-reduced-motion:reduce){.k-reveal,.k-rim{display:none}.k-cube,.k-grow,.k-draw{animation:none}.k-draw{stroke-dashoffset:0}}
 `.trim();
 
 export const FORGE_KIT_JS = `
 (function kit(){
+  // a page the Forge opens right after showing it live (?settled=1) opens finished: no second resolve / build
+  if(/[?&]settled=1/.test(location.search))window.__aresInstant=1;
   // the kit lives in <head>; wait for <body> before touching it
   if(!document.body){document.addEventListener("DOMContentLoaded",kit);return}
   var P=["#07122b","#15347a","#2f6df0","#9cc5ff"];
@@ -262,4 +265,11 @@ export function renderExplainer(spec: { title?: unknown; eyebrow?: unknown; bloc
 export function buildLiveStageHtml(): string {
   const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Building live</title><!--ares:kit--></head><body><div class="k-eyebrow">Ares · building live</div><div id="lv-host"></div><script data-ares-live>${LIVE_RUNTIME_JS}</script></body></html>`;
   return expandForgeKit(page, ["model", "story"]);
+}
+
+/** The persistent model-studio page: an empty live rig that polls /__ares/studio/<id> (see modelStudio.ts). */
+export function buildStudioHtml(id: string, title = "Model studio"): string {
+  const spec = esc(JSON.stringify({ studio: id, parts: [], title }));
+  const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><!--ares:kit--></head><body><div class="k-eyebrow">Ares · model studio</div><h1>${esc(title)}</h1><div class="k-rig" data-spec="${spec}"></div></body></html>`;
+  return expandForgeKit(page);
 }

@@ -101,7 +101,10 @@ export class ExplainStream {
       if (anim) out.push({ op: "anim", idx: this.blockIdx, anim });
       return;
     }
-    if (depth === 4 && (parent.key === "parts" || parent.key === "scenes") && this.blockIdx >= 0) {
+    // action:"model" puts parts at the root: { parts:[...] } is one model block
+    if (depth === 2 && parent.key === "parts" && this.blockIdx < 0) this.blockIdx = 0;
+    const rootParts = depth === 2 && parent.key === "parts";
+    if ((depth === 4 || rootParts) && (parent.key === "parts" || parent.key === "scenes") && this.blockIdx >= 0) {
       let raw: unknown;
       try { raw = JSON.parse(this.buf.slice(f.start, end + 1)); } catch { return; }
       const idx = this.blockIdx, n = this.counts.get(idx) ?? 0;

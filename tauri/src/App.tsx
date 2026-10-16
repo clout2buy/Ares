@@ -2659,7 +2659,11 @@ function App() {
         }
       }
       if (ev.type === "tool_progress" && ev.data?.kind === "browser_target" && typeof ev.data.url === "string") {
-        const target = { url: ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
+        // A page Ares just finished writing, right after the Forge showed it building live, opens already
+        // settled (?settled=1) so it does not replay the build; and the live stage (embedded) steps aside.
+        const handedOff = (ev.data as { mode?: unknown }).mode === "explain" && liveExplain.handoff();
+        setEmbeddedActive(false);
+        const target = { url: handedOff ? `${ev.data.url}${ev.data.url.includes("?") ? "&" : "?"}settled=1` : ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
         setLiveTarget(target);
         setLiveUrl(target.url);
         setForgeMode((ev.data as { mode?: unknown }).mode === "explain" ? "explain" : "project");

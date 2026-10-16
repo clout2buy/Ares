@@ -32,6 +32,14 @@ function geo(p){
   if(s==="mesh"){
     var pos=[],tf=[];p.faces.forEach(function(f,fi){for(var k=1;k<f.length-1;k++){[f[0],f[k],f[k+1]].forEach(function(vi){var v=p.verts[vi];pos.push(v[0],v[1],v[2])});tf.push(fi)}});
     var mg=new T.BufferGeometry();mg.setAttribute("position",new T.Float32BufferAttribute(pos,3));mg.computeVertexNormals();mg.userData.tf=tf;mg.userData.fc=p.fcolors||null;return mg}
+  if(s==="loft"){
+    // cross-section rings along a spine: [x,y,z,rx,ry] per ring; ellipse oriented by the spine direction
+    var sec=p.sections,seg=p.seg||8,rings=[],sub=lo?1:4,ci=new T.CatmullRomCurve3(sec.map(function(q){return new T.Vector3(q[0],q[1],q[2])}),false,"catmullrom",0.5),ri=new T.CatmullRomCurve3(sec.map(function(q){return new T.Vector3(q[3],q[4],0)}),false,"catmullrom",0.5),nr=(sec.length-1)*sub+1,k;
+    for(k=0;k<nr;k++){var u=k/(nr-1),c=ci.getPoint(u),rr=ri.getPoint(u),tn=ci.getTangent(u).normalize(),up=Math.abs(tn.y)>0.95?new T.Vector3(1,0,0):new T.Vector3(0,1,0),sd=new T.Vector3().crossVectors(up,tn).normalize(),ud=new T.Vector3().crossVectors(tn,sd).normalize();rings.push({c:c,sd:sd.multiplyScalar(Math.max(0,rr.x)),ud:ud.multiplyScalar(Math.max(0,rr.y))})}
+    var lp=[],pt=function(r,j){var a=j/seg*Math.PI*2;return new T.Vector3().copy(r.c).addScaledVector(r.sd,Math.cos(a)).addScaledVector(r.ud,Math.sin(a))},push=function(v){lp.push(v.x,v.y,v.z)};
+    for(k=0;k<nr-1;k++)for(var j=0;j<seg;j++){var a0=pt(rings[k],j),a1=pt(rings[k],j+1),b0=pt(rings[k+1],j),b1=pt(rings[k+1],j+1);push(a0);push(b0);push(a1);push(a1);push(b0);push(b1)}
+    for(var e=0;e<2;e++){var rg=rings[e?nr-1:0];for(j=0;j<seg;j++){var q0=pt(rg,j),q1=pt(rg,j+1);if(e){push(rg.c);push(q1);push(q0)}else{push(rg.c);push(q0);push(q1)}}}
+    var lg=new T.BufferGeometry();lg.setAttribute("position",new T.Float32BufferAttribute(lp,3));lg.computeVertexNormals();return lg}
   if(s==="arch"){
     var as=new T.Shape();as.moveTo(-0.5,0);as.lineTo(0.5,0);as.lineTo(0.5,1);as.lineTo(-0.5,1);as.closePath();
     var ah=new T.Path();ah.moveTo(-0.28,0);ah.lineTo(-0.28,0.5);ah.absarc(0,0.5,0.28,Math.PI,0,true);ah.lineTo(0.28,0);as.holes.push(ah);
@@ -58,7 +66,7 @@ function paint(g,p){
     var cx=(pa.getX(3*i)+pa.getX(3*i+1)+pa.getX(3*i+2))/3,cy=(pa.getY(3*i)+pa.getY(3*i+1)+pa.getY(3*i+2))/3,cz=(pa.getZ(3*i)+pa.getZ(3*i+1)+pa.getZ(3*i+2))/3,cv=ax==="x"?cx:ax==="y"?cy:cz;
     var fc=g.userData.fc&&g.userData.tf?g.userData.fc[g.userData.tf[i]]:null;
     tmp.copy(c1);
-    if(fc)tmp.set(fc);else if(c2){var t=Math.max(0,Math.min(1,((cv-mn)/Math.max(1e-6,mx-mn)-0.35)/0.3));tmp.lerp(c2,t)}
+    if(fc)tmp.set(fc);else if(c2){var t=Math.max(0,Math.min(1,((cv-mn)/Math.max(1e-6,mx-mn)-((p.mid||0.5)-0.15))/0.3));tmp.lerp(c2,t)}
     tmp.multiplyScalar(1+(hsh(i*7+13)-0.5)*2*(p.shade||0));
     for(j=0;j<3;j++){col[(3*i+j)*3]=tmp.r;col[(3*i+j)*3+1]=tmp.g;col[(3*i+j)*3+2]=tmp.b}
   }
@@ -68,7 +76,7 @@ function edgeVis(p){return !!p.wire||p.mat==="holo"||(!p.smooth&&p.mat!=="glass"
 function material(p){
   var o={color:p.color,flatShading:!p.smooth,roughness:0.85,metalness:0.05},m=p.mat;
   if(p.facets||p.fcolors){o.color=0xffffff;o.vertexColors=true;o.flatShading=true}
-  if(p.shape==="mesh")o.side=T.DoubleSide;
+  if(p.shape==="mesh"||p.shape==="loft")o.side=T.DoubleSide;
   if(m==="clay"){o.roughness=0.62;o.metalness=0}
   if(m==="plastic"){o.roughness=0.3;o.metalness=0;o.clearcoat=0.7;o.clearcoatRoughness=0.25}
   if(m==="holo"){o.transparent=true;o.opacity=0.55;o.emissive=p.color;o.emissiveIntensity=0.55;o.roughness=0.2;o.depthWrite=false;o.flatShading=true}
@@ -100,7 +108,7 @@ var LOOKS={
 };
 function build(el){
   var spec={};try{spec=JSON.parse(el.getAttribute("data-spec")||"{}")}catch(e){}
-  var parts=spec.parts||[],N=parts.length,live=!!spec.live,inst=!!window.__aresInstant;
+  var parts=spec.parts||[],N=parts.length,live=!!spec.live,inst=!!window.__aresInstant,studio=spec.studio||"";
   var head=mk("div","k-sim-head"),stage=mk("div","k-stage"),cap=mk("div","k-cap"),panel=mk("div","k-panel");
   var tag=mk("span","k-sim-tag","3D studio · "+N+" parts");head.appendChild(tag);
   var bar=mk("span","k-sim-btns"),bPlay=mk("button","k-btn","pause"),bRe=mk("button","k-btn","replay"),bStep=mk("button","k-btn","step"),bWire=mk("button","k-btn","wireframe"),bSpin=mk("button","k-btn","turntable"),bCopy=mk("button","k-btn","copy asset"),bGlb=mk("button","k-btn","export glb"),bShade=mk("button","k-btn","smooth shading");
@@ -109,7 +117,7 @@ function build(el){
   cap.appendChild(capT);cap.appendChild(capX);cap.appendChild(prog);
   el.appendChild(head);el.appendChild(stage);el.appendChild(cap);el.appendChild(panel);
   if(spec.caption)el.appendChild(mk("p","k-sim-cap",spec.caption));
-  if(!N&&!live){stage.appendChild(mk("p","k-sim-cap","no parts to build"));return}
+  if(!N&&!live&&!studio){stage.appendChild(mk("p","k-sim-cap","no parts to build"));return}
   if(!T||!OrbitControls){stage.appendChild(mk("p","k-sim-cap","3D view needs the three.js CDN (esm.sh) and it did not load."));return}
   var rate=Math.max(2,Math.min(10,N/6));
   function slider(lab,min,max,step,val,on){var row=mk("label","k-slider"),out=mk("b","",String(Math.round(val*100)/100)),inp=document.createElement("input");inp.type="range";inp.min=min;inp.max=max;inp.step=step;inp.value=val;row.appendChild(mk("span","",lab));row.appendChild(out);row.appendChild(inp);inp.addEventListener("input",function(){out.textContent=String(Math.round(+inp.value*100)/100);on(+inp.value)});row._set=function(v){inp.value=v;out.textContent=String(Math.round(v*100)/100)};return row}
@@ -184,7 +192,7 @@ function build(el){
   function draw(){if(sel>=0&&items[sel]){selBox.setFromObject(items[sel]);selBox.visible=true}else selBox.visible=false;ctl.update();r.render(sc,cam)}
   function look(k){var L=LOOKS[k];sun.color.setHex(L.sun);sun.intensity=L.si;rim.color.setHex(L.rim);hemi.color.setHex(L.hemi);hemi.groundColor.setHex(L.hg);hemi.intensity=L.hi;r.toneMappingExposure=L.ex;stage.style.background=L.bg;grid.visible=L.grid!==0;draw()}
   lookSel.addEventListener("change",function(){look(lookSel.value)});
-  if(spec.look&&LOOKS[spec.look]){lookSel.value=spec.look;look(spec.look)}
+  var curLook="studio";if(spec.look&&LOOKS[spec.look]){lookSel.value=spec.look;look(spec.look);curLook=spec.look}
   // ── studio inspector: edit the selected part live ──
   var inspRows={};
   function buildInsp(){
@@ -303,11 +311,59 @@ function build(el){
   };
   function flushAll(){while(pending.length)addOne(pending.shift());pose();draw()}
   if(live){bPlay.hidden=bRe.hidden=bStep.hidden=true;tag.textContent="3D studio · building live"}
+
+  // ── studio mode: Ares edits this model while you watch. The server holds the document; this page polls it and
+  //    reconciles in place - unchanged parts morph to their new transform, new/changed parts pop in, removed ones shrink out ──
+  var tweens=[],ghosts=[],refImg=null,settledOnce=false;
+  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor])}
+  function setRef(src){
+    if(!src){if(refImg){refImg.remove();refImg=null}return}
+    if(!refImg){refImg=document.createElement("img");refImg.className="k-ref";refImg.alt="reference";refImg.title="reference - click to fade";refImg.addEventListener("click",function(){refImg.style.opacity=refImg.style.opacity==="0.2"?"1":"0.2"});stage.appendChild(refImg)}
+    if(refImg.getAttribute("src")!==src)refImg.src=src}
+  function setModel(ns){
+    var now=performance.now(),oldByName={},oldItems=items.slice(),oldParts=parts.slice(),keep={},nItems=[],nMats=[],nEdges=[],nParts=ns.parts||[];
+    oldParts.forEach(function(q,k){oldByName[q.name]=k});
+    nParts.forEach(function(np){
+      var k=oldByName[np.name],g;
+      if(k!==undefined&&geoKey(oldParts[k])===geoKey(np)){
+        g=oldItems[k];keep[k]=1;var u=g.userData,pv=np.pivot||np.pos;
+        tweens.push({g:g,t0:now,dur:560,b0:u.base.slice(),b1:[np.size[0],np.size[1],np.size[2]],p0:[g.position.x,u.y,g.position.z],p1:[np.pos[0]-pv[0],np.pos[1]-pv[1],np.pos[2]-pv[2]],r0:[g.rotation.x,g.rotation.y,g.rotation.z],r1:[np.rot[0]*D,np.rot[1]*D,np.rot[2]*D]});
+      }else{g=make(np);g.userData.born=(reduced||(inst&&!settledOnce))?-1e9:now;items.pop();mats.pop();edges.pop()}
+      nItems.push(g);nMats.push(g.userData.mat);nEdges.push(g.userData.ed)});
+    oldItems.forEach(function(g,k){if(!keep[k])ghosts.push({g:g,t0:now})});
+    items.length=0;mats.length=0;edges.length=0;nItems.forEach(function(g){items.push(g)});nMats.forEach(function(m){mats.push(m)});nEdges.forEach(function(e){edges.push(e)});
+    parts.length=0;nParts.forEach(function(q){parts.push(q)});N=parts.length;headP=N;
+    relink();
+    root.updateMatrixWorld(true);box.makeEmpty();items.forEach(function(g){box.expandByObject(g)});if(!box.isEmpty())fitWorld();
+    if(reduced){ctr.copy(tctr);rad=trad}
+    settleUntil=now+2500;
+    anims.length=0;(ns.anims||[]).forEach(function(a){anims.push(a)});if(curA>=anims.length)curA=anims.length-1;if(curA<0&&anims.length){curA=0;animOn=!reduced}if(!anims.length)restPose();
+    refreshAnimUI();
+    if(ns.look&&LOOKS[ns.look]&&ns.look!==curLook){curLook=ns.look;lookSel.value=ns.look;look(ns.look)}
+    if(ns.title)tag.textContent="3D studio · "+ns.title;
+    setRef(ns.ref);select(-1);settledOnce=true;pose();draw()}
+  function stepTweens(now){
+    var i;for(i=tweens.length-1;i>=0;i--){var t=tweens[i],k=Math.min(1,(now-t.t0)/t.dur),e=k*k*(3-2*k),u=t.g.userData,j;
+      if(items.indexOf(t.g)<0){tweens.splice(i,1);continue}
+      for(j=0;j<3;j++)u.base[j]=t.b0[j]+(t.b1[j]-t.b0[j])*e;
+      t.g.position.x=t.p0[0]+(t.p1[0]-t.p0[0])*e;u.y=t.p0[1]+(t.p1[1]-t.p0[1])*e;t.g.position.z=t.p0[2]+(t.p1[2]-t.p0[2])*e;
+      t.g.rotation.set(t.r0[0]+(t.r1[0]-t.r0[0])*e,t.r0[1]+(t.r1[1]-t.r0[1])*e,t.r0[2]+(t.r1[2]-t.r0[2])*e);
+      if(k>=1)tweens.splice(i,1)}
+    for(i=ghosts.length-1;i>=0;i--){var gh=ghosts[i],q=Math.min(1,(now-gh.t0)/260),s3=1-q;gh.g.scale.set(Math.max(0.001,gh.g.userData.base[0]*s3),Math.max(0.001,gh.g.userData.base[1]*s3),Math.max(0.001,gh.g.userData.base[2]*s3));
+      if(q>=1){var nd=gh.g.userData.node;if(nd.parent)nd.parent.remove(nd);gh.g.userData.mesh.geometry.dispose();ghosts.splice(i,1)}}}
+  window.__aresView=function(name){
+    var dirs={front:[0,0.12,1],back:[0,0.12,-1],side:[1,0.12,0],top:[0,1,0.001],"3q":[1.05,0.55,1.55]},d=dirs[name]||dirs["3q"],v=new T.Vector3(d[0],d[1],d[2]).normalize();
+    ctl.autoRotate=false;bSpin.classList.remove("on");userTook=true;sel=-1;ctl.target.copy(tctr);cam.position.copy(tctr).addScaledVector(v,trad*2.7);ctl.update();
+    if(el.scrollIntoView)el.scrollIntoView({block:"center"});draw();return name};
+  if(studio){
+    capX.textContent="waiting for Ares";var sv=0;
+    (function poll(){fetch("/__ares/studio/"+studio+"?since="+sv,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.spec&&d.v>sv){sv=d.v;setModel(d.spec)}else if(d&&d.v!==undefined&&d.v>sv)sv=d.v}).catch(function(){}).then(function(){setTimeout(poll,350)})})()}
   pose();draw();
   if(!reduced){var last=performance.now();(function loop(now){var dt=Math.min(0.05,(now-last)/1000);last=now;
     if(live&&pending.length&&now>=nextAt){addOne(pending.shift());nextAt=now+Math.max(40,170-pending.length*25)}
     if((live||now<settleUntil)&&!userTook){ctl.target.lerp(tctr,0.08);var off=cam.position.clone().sub(ctl.target),dd=off.length();off.setLength(dd+(trad*1.95-dd)*0.06);cam.position.copy(ctl.target).add(off)}
     if(playing&&headP<N){headP=Math.min(N,headP+dt*rate);pose();if(headP>=N)playing=false}
+    if(tweens.length||ghosts.length)stepTweens(now);if(studio)pose();
     if(animOn&&curA>=0){animT+=dt*animSpeed;applyAnim(anims[curA],animT)}
     updateRig();if(live)pose();draw();requestAnimationFrame(loop)})(last)}
   else ctl.addEventListener("change",draw);

@@ -33,6 +33,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FORGE_KIT_CSS, FORGE_KIT_JS } from "./forgeKit.js";
 
+import { studioPoll } from "./modelStudio.js";
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -388,6 +389,15 @@ async function handle(served: ServedFolder, req: IncomingMessage, res: ServerRes
   }
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405).end();
+    return;
+  }
+  // Model studio: the Forge page polls its document here (see modelStudio.ts).
+  if (urlPath.startsWith("/__ares/studio/")) {
+    const id = urlPath.slice("/__ares/studio/".length).replace(/[^a-z0-9_-]/gi, "");
+    const since = Number(new URL(req.url ?? "/", "http://x").searchParams.get("since")) || 0;
+    const body = studioPoll(id, since);
+    res.writeHead(body ? 200 : 404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*" });
+    res.end(JSON.stringify(body ?? { v: 0 }));
     return;
   }
   if (urlPath === SENSOR_PATH) {

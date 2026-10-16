@@ -28,7 +28,7 @@ export function colour(v: unknown, d?: string): string | undefined {
 }
 
 // ── model: parts that assemble one by one ────────────────────────────────────
-export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "arch", "stairs", "extrude", "lathe", "tube"];
+export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube"];
 export const MODEL_STYLES = ["smooth", "lowpoly", "wire", "flat"];
 export const MODEL_LOOKS = ["studio", "clay", "slate", "pastel", "gallery", "noir", "holo", "sunset", "night", "flat"];
 export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow"];
@@ -56,6 +56,8 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   const pts = shape === "extrude" || shape === "lathe" || shape === "tube" ? points(p.pts, dims as 2 | 3) : [];
   const verts = shape === "mesh" ? arr(p.verts).slice(0, 240).map((q) => { const a = arr(q); return [clamp(a[0], -50, 50, 0), clamp(a[1], -50, 50, 0), clamp(a[2], -50, 50, 0)]; }) : [];
   const faces = shape === "mesh" ? arr(p.faces).slice(0, 400).flatMap((f) => { const a = arr(f).map((v) => Math.round(Number(v))); return a.length >= 3 && a.length <= 6 && a.every((v) => Number.isInteger(v) && v >= 0 && v < verts.length) ? [a] : []; }) : [];
+  const sections = shape === "loft" ? arr(p.sections).slice(0, 24).flatMap((q) => { const a = arr(q); return a.length >= 5 ? [[clamp(a[0], -50, 50, 0), clamp(a[1], -50, 50, 0), clamp(a[2], -50, 50, 0), clamp(a[3], 0, 20, 0.2), clamp(a[4], 0, 20, 0.2)]] : []; }) : [];
+  if (shape === "loft" && sections.length < 2) shape = "box";
   if (shape === "mesh" && (verts.length < 3 || !faces.length)) shape = "box";
   if ((shape === "extrude" && pts.length < 3) || (shape === "lathe" && pts.length < 2) || (shape === "tube" && pts.length < 2)) shape = "box";
   const pos = vec3(p.pos, [0, 0, 0], -50, 50), size = vec3(p.size, [1, 1, 1], 0.02, 50), rot = vec3(p.rot, [0, 0, 0], -360, 360);
@@ -75,7 +77,8 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   if (style === "wire") base.wire = true;
   if (typeof p.facets === "boolean" ? p.facets : low) base.facets = true;
   base.shade = clamp(p.shade, 0, 0.5, low ? 0.1 : 0);
-  const c2 = colour(p.color2); if (c2) { base.color2 = c2; base.grad = ["x", "y", "z"].includes(String(p.grad)) ? String(p.grad) : "y"; }
+  const c2 = colour(p.color2); if (c2) { base.color2 = c2; base.grad = ["x", "y", "z"].includes(String(p.grad)) ? String(p.grad) : "y"; base.mid = clamp(p.mid, 0.05, 0.95, 0.5); }
+  if (shape === "loft") { base.sections = sections; base.seg = Math.round(clamp(p.seg, 3, 24, low ? 6 : 16)); }
   if (shape === "stairs") base.steps = Math.round(clamp(p.steps, 2, 16, 4));
   if (shape === "tube") base.caps = p.caps !== false;
   if (shape === "poly") { base.detail = Math.round(clamp(p.detail, 0, 3, low ? 0 : 1)); base.jitter = clamp(p.jitter, 0, 0.4, low ? 0.06 : 0); }
@@ -88,9 +91,12 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
     const at: [number, number, number] = [pos[0] + step[0] * i, pos[1] + step[1] * i, pos[2] + step[2] * i];
     const one = { ...base, name: n > 1 ? `${base.name} ${i + 1}` : base.name, pos: at, pivot: [pv[0] + step[0] * i, pv[1] + step[1] * i, pv[2] + step[2] * i] };
     out.push(one);
-    if (p.mirror === true && Math.abs(at[0]) > 1e-3 && out.length < room) {
+    // authored-in-place geometry (loft / mesh / extrude / tube) is off-axis through its points, not pos
+    const offAxis = Math.abs(at[0]) > 1e-3 || [...sections, ...verts, ...pts].some((q) => Math.abs(q[0]) > 1e-3);
+    if (p.mirror === true && offAxis && out.length < room) {
       const opv = one.pivot as number[];
       const m: Obj = { ...one, name: `${one.name} (mirror)`, pos: [-at[0], at[1], at[2]], pivot: [-opv[0], opv[1], opv[2]], rot: [rot[0], -rot[1], -rot[2]] };
+      if (shape === "loft") m.sections = (sections as number[][]).map((q) => [-q[0], ...q.slice(1)]);
       if (shape === "mesh") m.verts = (verts as number[][]).map((q) => [-q[0], q[1], q[2]]);
       if (shape === "extrude" || shape === "tube") m.pts = (pts as number[][]).map((q) => [-q[0], ...q.slice(1)]);
       out.push(m);

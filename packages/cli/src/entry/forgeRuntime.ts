@@ -22,7 +22,8 @@ function mkEvents(){var L={};return{on:function(n,f){(L[n]=L[n]||[]).push(f);ret
 export function buildModel(doc,opts){
   opts=opts||{};
   if(!doc||doc.expanded!==true||!Array.isArray(doc.parts))throw new Error("ares-model: pass the <id>.game.json that Browser model export writes");
-  var parts=snapParts(doc.parts),clips={},cache={},variants=doc.variants||{};
+  // texture maps in the json are relative to the json file: resolve them against opts.base (loadModel passes its url)
+  var base=opts.base||null,parts=snapParts(doc.parts.map(function(p){if(!p.maps||!base)return p;var m=Object.assign({},p.maps);["albedo","normal","rough"].forEach(function(k){if(m[k]&&!/^(https?:|data:)/.test(m[k]))m[k]=new URL(m[k],base).href});return Object.assign({},p,{maps:m})})),clips={},cache={},variants=doc.variants||{};
   function vhit(sel,name){var base=name.replace(/ [(]mirror[)]$/,"");return sel.charAt(sel.length-1)==="*"?base.indexOf(sel.slice(0,-1))===0:(sel===name||sel===base)}
   function partFor(p,variant){var v=variant&&variants[variant];if(!v)return p;var q=p;Object.keys(v).forEach(function(sel){if(vhit(sel,p.name))q=Object.assign({},q,v[sel])});return q}
   (doc.anims||[]).forEach(function(c){clips[c.name]=c});
@@ -68,7 +69,8 @@ export function buildModel(doc,opts){
   return model}
 
 export function loadModel(url,opts){
-  return fetch(url).then(function(r){if(!r.ok)throw new Error("ares-model: "+url+" -> "+r.status);return r.json()}).then(function(d){return buildModel(d,opts)})}
+  var abs=typeof location!=="undefined"?new URL(url,location.href).href:url;
+  return fetch(url).then(function(r){if(!r.ok)throw new Error("ares-model: "+url+" -> "+r.status);return r.json()}).then(function(d){return buildModel(d,Object.assign({base:abs},opts||{}))})}
 
 // Optional: run the model's authored scripts (water, glow, rain...) inside THIS game.
 // ctx: {scene, camera, renderer} ; returns {update(dt), dispose()}. The control-panel api (ui) is a no-op here.

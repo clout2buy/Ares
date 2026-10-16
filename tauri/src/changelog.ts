@@ -52,6 +52,8 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "🧶", title: "Fur and markings", blurb: "A fur finish with fine grain, soft creases that shade themselves, and painted markings: socks, bibs, muzzles, stripes and grizzled backs.", tag: "New" },
       { icon: "🎯", title: "Eyes where they belong", blurb: "Eyes, noses, claws and horns snap onto the skin, so nothing floats in the air or sinks into the head.", tag: "Fixed" },
       { icon: "🐊", title: "Real surface detail", blurb: "Scales, wrinkles, fur grain, wood grain, stone, cloth weave, hammered metal and skin pores, drawn right on the model.", tag: "New" },
+      { icon: "🖼️", title: "Real textures", blurb: "Photo textures (bark, rock, metal, leather, fabric) wrap any model with real colour, relief and roughness, and your painted colours stay on top.", tag: "New" },
+      { icon: "🚘", title: "Drawn from blueprints", blurb: "Cars, boats, buildings and blades are drawn as side or top outlines and extruded with rounded edges, the way designers block them.", tag: "New" },
       { icon: "⚔️", title: "Props sculpted too", blurb: "Swords, chests and machines get bevelled edges, carved grooves and several materials in one piece: steel, gold, leather and glowing gems.", tag: "New" },
       { icon: "🐾", title: "Walks that plant", blurb: "Feet plant and push off, then lift and swing through. Actions wind up, hit and settle, and clips blend smoothly from one to the next.", tag: "New" },
       { icon: "🏅", title: "A quality bar", blurb: "Ares checks every model against a finished-asset bar (detail, colour, eyes, rig, idle, walk) and fixes what's missing before it shows you.", tag: "New" },

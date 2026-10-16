@@ -33,6 +33,14 @@ function sdBlob(b,x,y,z){
       cd=Math.max(cx,cy)<0?-Math.min(cx*cx,cy*cy*bb):((cx>0?cx*cx:0)+(cy>0?cy*cy*bb:0));
     return Math.sign(cd)*Math.sqrt(Math.abs(cd))/bb-b.round}
   if(b.m){var m=b.m,rx=m[0]*px+m[1]*py+m[2]*pz,ry=m[3]*px+m[4]*py+m[5]*pz,rz=m[6]*px+m[7]*py+m[8]*pz;px=rx;py=ry;pz=rz}
+  if(b.s==="profile"){
+    // an outline drawn in a plane (pts [u,v]), extruded +-r along the axis, edges rounded by round, narrowing by taper as v rises
+    var U,Vv,W;if(b.ax==="y"){U=px;Vv=pz;W=py}else if(b.ax==="z"){U=px;Vv=py;W=pz}else{U=pz;Vv=py;W=px}
+    var Q=b.pts,NQ=Q.length,dd=1e18,sg=1,i,j;
+    for(i=0,j=NQ-1;i<NQ;j=i++){var ex=Q[j][0]-Q[i][0],ey=Q[j][1]-Q[i][1],wx=U-Q[i][0],wy=Vv-Q[i][1],el=ex*ex+ey*ey,tq=el>0?Math.max(0,Math.min(1,(wx*ex+wy*ey)/el)):0,bx=wx-ex*tq,by=wy-ey*tq,qq=bx*bx+by*by;if(qq<dd)dd=qq;
+      var c1=Vv>=Q[i][1],c2=Vv<Q[j][1],c3=ex*wy>ey*wx;if((c1&&c2&&c3)||(!c1&&!c2&&!c3))sg=-sg}
+    var d2=sg*Math.sqrt(dd)+b.round,hw=b.hw*(1-b.taper*Math.max(0,Math.min(1,(Vv-b.vmin)/b.vspan))),dw=Math.abs(W)-hw+b.round,qx2=Math.max(d2,0),qy2=Math.max(dw,0);
+    return Math.sqrt(qx2*qx2+qy2*qy2)+Math.min(Math.max(d2,dw),0)-b.round}
   var a=b.r[0],c=b.r[1],e=b.r[2];
   if(b.s==="torus"){var tq=Math.sqrt(px*px+pz*pz)-b.tR;return Math.sqrt(tq*tq+py*py)-b.tr}
   if(b.s==="box"){var o=b.round,ux=Math.abs(px)-a+o,uy=Math.abs(py)-c+o,uz=Math.abs(pz)-e+o,mx=Math.max(ux,0),my=Math.max(uy,0),mz=Math.max(uz,0);return Math.sqrt(mx*mx+my*my+mz*mz)+Math.min(Math.max(ux,uy,uz),0)-o}
@@ -57,7 +65,11 @@ function sculptPrep(p){
     if(b.s!=="stick"&&b.s!=="cyl"){
       if(q.rot&&(q.rot[0]||q.rot[1]||q.rot[2])){var el=new T.Matrix4().makeRotationFromEuler(new T.Euler(q.rot[0]*RAD,q.rot[1]*RAD,q.rot[2]*RAD)).elements;b.m=[el[0],el[1],el[2],el[4],el[5],el[6],el[8],el[9],el[10]]}
       if(b.s==="torus"){b.tR=q.r[0];b.tr=q.r2||q.r[1]||0.05;b.R=b.tR+b.tr}
-      b.c=b.at;if(b.s!=="torus")b.R=b.s==="box"?Math.sqrt(b.r[0]*b.r[0]+b.r[1]*b.r[1]+b.r[2]*b.r[2]):Math.max(b.r[0],b.r[1],b.r[2])}
+      if(b.s==="profile"){b.pts=q.pts;b.ax=q.axis||"x";b.hw=q.r[0];b.taper=q.taper||0;var u0=1e9,u1=-1e9,v0=1e9,v1=-1e9;q.pts.forEach(function(pp){u0=Math.min(u0,pp[0]);u1=Math.max(u1,pp[0]);v0=Math.min(v0,pp[1]);v1=Math.max(v1,pp[1])});
+        b.vmin=v0;b.vspan=Math.max(1e-6,v1-v0);var cu=(u0+u1)/2,cv=(v0+v1)/2,lo2=b.ax==="y"?[cu,0,cv]:b.ax==="z"?[cu,cv,0]:[0,cv,cu],mm=b.m;
+        var wo=mm?[mm[0]*lo2[0]+mm[3]*lo2[1]+mm[6]*lo2[2],mm[1]*lo2[0]+mm[4]*lo2[1]+mm[7]*lo2[2],mm[2]*lo2[0]+mm[5]*lo2[1]+mm[8]*lo2[2]]:lo2;
+        b.pc0=[q.at[0]+wo[0],q.at[1]+wo[1],q.at[2]+wo[2]];b.R=Math.sqrt(Math.pow((u1-u0)/2,2)+Math.pow((v1-v0)/2,2)+b.hw*b.hw)+b.round}
+      b.c=b.pc0||b.at;if(b.s!=="torus"&&b.s!=="profile")b.R=b.s==="box"?Math.sqrt(b.r[0]*b.r[0]+b.r[1]*b.r[1]+b.r[2]*b.r[2]):Math.max(b.r[0],b.r[1],b.r[2])}
     if(!b.sub&&!b.paint){for(var j=0;j<3;j++){mn[j]=Math.min(mn[j],b.c[j]-b.R-b.k);mx[j]=Math.max(mx[j],b.c[j]+b.R+b.k)}}
     if(!b.paint)kmax=Math.max(kmax,b.k);
     B.push(b)});
@@ -75,7 +87,7 @@ function sField(S,x,y,z,L){
 function sculptGeo(p){
   var S=sculptPrep(p);if(!S.ok)return new T.SphereGeometry(0.3,12,8);
   // detail follows the finest feature: thin blades, toes and wrap rings get enough cells to exist (auto, capped for speed)
-  var feat=1e9;S.F.forEach(function(b){if(b.sub)return;var f=b.s==="stick"?Math.min(b.r1,b.r2):b.s==="cyl"?b.r1+b.round:b.s==="torus"?b.tr:Math.min(b.r[0],b.r[1],b.r[2]);if(f>0)feat=Math.min(feat,f)});
+  var feat=1e9;S.F.forEach(function(b){if(b.sub)return;var f=b.s==="stick"?Math.min(b.r1,b.r2):b.s==="cyl"?b.r1+b.round:b.s==="torus"?b.tr:b.s==="profile"?Math.max(b.round*2,Math.min(b.hw,0.05)):Math.min(b.r[0],b.r[1],b.r[2]);if(f>0)feat=Math.min(feat,f)});
   var ext0=Math.max(S.max[0]-S.min[0],S.max[1]-S.min[1],S.max[2]-S.min[2]),lo=!!p.low,res=p.res||(lo?72:Math.round(Math.max(96,Math.min(128,ext0*2.6/feat)))),mn=S.min,mx=S.max,ext=Math.max(mx[0]-mn[0],mx[1]-mn[1],mx[2]-mn[2]),h=ext/res;
   var ox=mn[0]-h*2,oy=mn[1]-h*2,oz=mn[2]-h*2,nx=Math.ceil((mx[0]-mn[0])/h)+5,ny=Math.ceil((mx[1]-mn[1])/h)+5,nz=Math.ceil((mx[2]-mn[2])/h)+5;
   var NXY=nx*ny,F=new Float32Array(NXY*nz),V=new Int32Array(NXY*nz).fill(-1),i,j,k,n,pos=[];
@@ -152,11 +164,11 @@ function sculptGeo(p){
   // fur locks in the GEOMETRY (the sculpted look): flow-aligned clumps push the skin in and out where the surface is fur, so the
   // silhouette itself is shaggy - long along the hair flow, narrow across it. shag 0 turns it off; low-poly skips it.
   var displaced=false;
-  if(!lo&&hasDet[0]){var cs=34/Math.max(0.2,ext),amp=0.011*ext;
+  if(!lo&&hasDet[0]){var cs=58/Math.max(0.2,ext),amp=0.008*ext;
     for(n=0;n<NV;n++){var wf=DA[4*n]*SHG[n];if(wf<0.02)continue;
       var nX=NR[3*n],nY=NR[3*n+1],nZ=NR[3*n+2],fx=FLW[3*n],fy=FLW[3*n+1],fz=FLW[3*n+2],fd=fx*nX+fy*nY+fz*nZ;fx-=fd*nX;fy-=fd*nY;fz-=fd*nZ;var fll=Math.sqrt(fx*fx+fy*fy+fz*fz)||1;fx/=fll;fy/=fll;fz/=fll;
       var sX=nY*fz-nZ*fy,sY=nZ*fx-nX*fz,sZ=nX*fy-nY*fx,px=P[3*n],py=P[3*n+1],pz=P[3*n+2],
-        u=(px*sX+py*sY+pz*sZ)*cs,vv2=(px*fx+py*fy+pz*fz)*cs*0.28,ww=(px*nX+py*nY+pz*nZ)*cs*0.5,
+        u=(px*sX+py*sY+pz*sZ)*cs,vv2=(px*fx+py*fy+pz*fz)*cs*0.36,ww=(px*nX+py*nY+pz*nZ)*cs*0.5,
         r1=1-Math.abs(noise3(u,vv2,ww)*2-1),r2=1-Math.abs(noise3(u*2.1+5.1,vv2*1.9,ww*2.1)*2-1),
         lock=0.7*r1*r1+0.3*r2,dsp=amp*wf*(lock-0.45)*2.2;
       P[3*n]+=nX*dsp;P[3*n+1]+=nY*dsp;P[3*n+2]+=nZ*dsp;displaced=true}}
@@ -234,9 +246,9 @@ var SG_FN=[
 "vec3 sdG;float sdC;",
 "void sDetail(vec3 p,vec4 A,vec4 B,vec3 nO,vec3 fl){sdG=vec3(0.0);sdC=1.0;",
 "  if(A.x>0.01){vec3 t=fl-dot(fl,nO)*nO;t=length(t)>1e-4?normalize(t):normalize(cross(nO,vec3(0.0,1.0,0.0))+1e-4);vec3 s=cross(nO,t);",
-"    vec3 q=p*3.2;q-=t*dot(q,t)*0.9;float r=1.0-abs(svn(q)*2.0-1.0),r2=1.0-abs(svn(q*2.3+7.7)*2.0-1.0),cl=svn(p*0.55+3.0);",
-"    float aa=clamp(1.6-length(fwidth(q))*1.4,0.0,1.0),strand=mix(0.55,smoothstep(0.35,1.0,0.65*r+0.35*r2),aa);sdC*=mix(1.0,(0.6+0.55*strand)*(0.8+0.4*cl),A.x);",
-"    vec3 e=s*0.03;float rp=1.0-abs(svn(q+e*3.2)*2.0-1.0),rm=1.0-abs(svn(q-e*3.2)*2.0-1.0);sdG+=A.x*aa*s*(rp-rm)*3.0;}","  if(A.y>0.01){vec3 q=p*1.15;vec4 v=svor(q);float id=sh1(floor(q+v.xyz+0.5));sdC*=mix(1.0,(0.42+0.58*smoothstep(0.0,0.35,v.w))*(0.82+0.36*id),A.y);sdG-=A.y*1.1*v.xyz*smoothstep(0.0,0.5,v.w);}",
+"    vec3 q=p*1.7;q-=t*dot(q,t)*0.88;float r=1.0-abs(svn(q)*2.0-1.0),r2=1.0-abs(svn(q*2.3+7.7)*2.0-1.0),cl=svn(p*0.55+3.0);",
+"    float aa=clamp(1.9-length(fwidth(q))*1.2,0.0,1.0),strand=mix(0.55,smoothstep(0.3,1.0,0.65*r+0.35*r2),aa);sdC*=mix(1.0,(0.5+0.75*strand)*(0.78+0.44*cl),A.x);",
+"    vec3 e=s*0.05;float rp=1.0-abs(svn(q+e*1.7)*2.0-1.0),rm=1.0-abs(svn(q-e*1.7)*2.0-1.0);sdG+=A.x*aa*s*(rp-rm)*2.2;}","  if(A.y>0.01){vec3 q=p*1.15;vec4 v=svor(q);float id=sh1(floor(q+v.xyz+0.5));sdC*=mix(1.0,(0.42+0.58*smoothstep(0.0,0.35,v.w))*(0.82+0.36*id),A.y);sdG-=A.y*1.1*v.xyz*smoothstep(0.0,0.5,v.w);}",
 "  if(A.z>0.01){vec3 q=vec3(p.x*0.8,p.y*2.8,p.z*0.8);float w=1.0-abs(svn(q)*2.0-1.0);sdC*=1.0-0.32*A.z*smoothstep(0.7,1.0,w);sdG+=A.z*0.5*sgr(q,0.05,1)*sign(0.5-svn(q));}",
 "  if(A.w>0.01){vec3 q=p*0.4;sdC*=mix(1.0,0.68+0.6*sfb(q),A.w);sdG+=A.w*0.9*sgr(q,0.06,0);}",
 "  if(B.x>0.01){vec3 q=vec3(p.x*2.5,p.y*0.12,p.z*2.5);float r=fract(length(p.xz)*0.18+svn(q)*1.2);sdC*=mix(1.0,0.72+0.28*smoothstep(0.0,0.35,r)*smoothstep(1.0,0.7,r)+0.12*(svn(q*vec3(3.0,1.0,3.0))-0.5),B.x);sdG+=B.x*0.2*sgr(q,0.08,1);}",
@@ -244,25 +256,47 @@ var SG_FN=[
 "  if(B.z>0.01){vec4 v=svor(p*0.35);sdG+=B.z*0.9*v.xyz;sdC*=1.0-0.06*B.z*(1.0-v.w);}",
 "  if(B.w>0.01){sdG+=B.w*0.35*(vec3(svn(p*6.0),svn(p*6.0+9.1),svn(p*6.0+3.3))-0.5);sdC*=1.0-0.05*B.w*svn(p*3.0);}}"
 ].join(SG_NL);
+// image textures on a sculpt (no UVs: triplanar from the rest position). Albedo is divided by its own average colour (its smallest
+// mip level, read on the GPU), so it adds
+// real photographic detail while the painted colours (markings, muzzle, metal vs leather) stay; normal + roughness maps add relief.
+var SG_MAPS=[
+"vec3 tpW(vec3 n){vec3 w=pow(abs(n),vec3(4.0));return w/(w.x+w.y+w.z);}",
+"vec4 tpS(sampler2D t,vec3 p,vec3 w){return texture2D(t,p.zy)*w.x+texture2D(t,p.xz)*w.y+texture2D(t,p.xy)*w.z;}",
+"vec3 tpN(sampler2D t,vec3 p,vec3 w){vec3 a=texture2D(t,p.zy).xyz*2.0-1.0,b=texture2D(t,p.xz).xyz*2.0-1.0,c=texture2D(t,p.xy).xyz*2.0-1.0;return vec3(0.0,a.y,a.x)*w.x+vec3(b.x,0.0,b.y)*w.y+vec3(c.x,c.y,0.0)*w.z;}"
+].join(SG_NL);
+var MP_ON={all:"1.0",fur:"vDtA.x",scales:"vDtA.y",wrinkles:"vDtA.z",rock:"vDtA.w",wood:"vDtB.x",cloth:"vDtB.y",hammered:"vDtB.z",pores:"vDtB.w"};
+function sculptMaps(mp){
+  var U={mpS:{value:1/(mp.scale||0.5)},mpStr:{value:mp.strength===undefined?1:mp.strength},mpMA:{value:0},mpMN:{value:0},mpMR:{value:0},mpA:{value:null},mpN:{value:null},mpR:{value:null}},mix=mp.mix===undefined?1:mp.mix;
+  if(typeof document==="undefined")return{U:U,has:{}};
+  var L=new T.TextureLoader(),has={};
+  [["albedo","mpA","mpMA"],["normal","mpN","mpMN"],["rough","mpR","mpMR"]].forEach(function(k){
+    var url=mp[k[0]];if(!url)return;has[k[0]]=1;
+    var tx=L.load(url,function(){U[k[2]].value=mix},undefined,function(){});
+    tx.wrapS=tx.wrapT=T.RepeatWrapping;tx.anisotropy=8;if(k[0]==="albedo")tx.colorSpace=T.SRGBColorSpace;U[k[1]].value=tx});
+  return{U:U,has:has}}
 function sculptMaterial(p,gm){
   var det=gm.userData.det||[],lo=!!p.low,fur=det[0],o={color:0xffffff,vertexColors:true,flatShading:lo,roughness:1,metalness:1};
   if(fur){o.sheen=0.4;o.sheenRoughness=0.75;o.sheenColor=new T.Color(0.22,0.2,0.18)}
   if(p.mat==="plastic"||p.mat==="glossy"){o.clearcoat=0.5;o.clearcoatRoughness=0.3}
   if(p.mat==="skin"){o.clearcoat=0.1;o.clearcoatRoughness=0.55}
   var m=new T.MeshPhysicalMaterial(o),useDet=det.some(function(x){return x}),ds=(90/Math.max(0.02,gm.userData.ext||1))*(p.grain||1),NL=SG_NL;
+  var MP=p.maps?sculptMaps(p.maps):{U:{},has:{}},H=MP.has,MW=p.maps&&MP_ON[p.maps.on]||"1.0",useN=useDet||!!H.normal;
+  m.userData.maps=MP.U;
   m.onBeforeCompile=function(sh){
-    sh.uniforms.sdS={value:ds};
+    sh.uniforms.sdS={value:ds};Object.keys(MP.U).forEach(function(k){sh.uniforms[k]=MP.U[k]});
     sh.vertexShader=sh.vertexShader.replace("#include <common>","#include <common>"+NL+"attribute vec3 rme;attribute vec4 dtA;attribute vec4 dtB;attribute vec3 flow;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;")
       .replace("#include <begin_vertex>","#include <begin_vertex>"+NL+"vRest=position;vFlow=flow;vObjN=normal;vRme=rme;vDtA=dtA;vDtB=dtB;vNM0=normalMatrix*vec3(1.0,0.0,0.0);vNM1=normalMatrix*vec3(0.0,1.0,0.0);vNM2=normalMatrix*vec3(0.0,0.0,1.0);");
-    var fs=sh.fragmentShader.replace("#include <common>","#include <common>"+NL+"uniform float sdS;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;"+NL+SG_FN)
-      .replace("#include <color_fragment>","#include <color_fragment>"+NL+(useDet?"sDetail(vRest*sdS,vDtA,vDtB,normalize(vObjN),normalize(vFlow+vec3(1e-5)));diffuseColor.rgb*=sdC;":"sdG=vec3(0.0);sdC=1.0;"))
-      .replace("#include <roughnessmap_fragment>","#include <roughnessmap_fragment>"+NL+"roughnessFactor=clamp(vRme.x*(1.0+0.25*(1.0-sdC)),0.04,1.0);")
+    var mapU=(H.albedo||H.normal||H.rough)?"uniform float mpS;uniform float mpStr;uniform float mpMA;uniform float mpMN;uniform float mpMR;uniform sampler2D mpA;uniform sampler2D mpN;uniform sampler2D mpR;"+NL+SG_MAPS:"";
+    var mapC=H.albedo?NL+"{vec3 mw3=tpW(normalize(vObjN));vec3 ta=tpS(mpA,vRest*mpS,mw3).rgb,avg=textureLod(mpA,vec2(0.5),14.0).rgb;diffuseColor.rgb*=mix(vec3(1.0),clamp(ta/max(avg,vec3(0.02)),0.0,3.0),mpMA*"+MW+");}":"";
+    var fs=sh.fragmentShader.replace("#include <common>","#include <common>"+NL+"uniform float sdS;varying vec3 vFlow;varying vec3 vRme;varying vec4 vDtA;varying vec4 vDtB;varying vec3 vRest;varying vec3 vObjN;varying vec3 vNM0;varying vec3 vNM1;varying vec3 vNM2;"+NL+SG_FN+NL+mapU)
+      .replace("#include <color_fragment>","#include <color_fragment>"+NL+(useDet?"sDetail(vRest*sdS,vDtA,vDtB,normalize(vObjN),normalize(vFlow+vec3(1e-5)));diffuseColor.rgb*=sdC;":"sdG=vec3(0.0);sdC=1.0;")+mapC)
+      .replace("#include <roughnessmap_fragment>","#include <roughnessmap_fragment>"+NL+"roughnessFactor=clamp(vRme.x*(1.0+0.25*(1.0-sdC)),0.04,1.0);"+(H.rough?NL+"roughnessFactor=mix(roughnessFactor,clamp(tpS(mpR,vRest*mpS,tpW(normalize(vObjN))).g,0.04,1.0),mpMR*"+MW+");":""))
       .replace("#include <metalnessmap_fragment>","#include <metalnessmap_fragment>"+NL+"metalnessFactor=vRme.y;")
       .replace("#include <emissivemap_fragment>","#include <emissivemap_fragment>"+NL+"totalEmissiveRadiance+=diffuseColor.rgb*vRme.z*1.6;");
-    if(useDet)fs=fs.replace("#include <normal_fragment_maps>","#include <normal_fragment_maps>"+NL+"{vec3 nO=normalize(vObjN);vec3 gT=sdG-dot(sdG,nO)*nO;normal=normalize(normal-(vNM0*gT.x+vNM1*gT.y+vNM2*gT.z)*0.35);}");
+    if(useN)fs=fs.replace("#include <normal_fragment_maps>","#include <normal_fragment_maps>"+NL+"{vec3 nO=normalize(vObjN);"+(H.normal?"sdG-=tpN(mpN,vRest*mpS,tpW(nO))*mpStr*mpMN*"+MW+"*2.4;":"")+"vec3 gT=sdG-dot(sdG,nO)*nO;normal=normalize(normal-(vNM0*gT.x+vNM1*gT.y+vNM2*gT.z)*0.35);}");
     if(fur)fs=fs.replace("#include <lights_physical_fragment>","#include <lights_physical_fragment>"+NL+"#ifdef USE_SHEEN"+NL+"material.sheenColor*=vDtA.x;"+NL+"#endif");
     sh.fragmentShader=fs};
-  m.customProgramCacheKey=function(){return "sculpt"+(useDet?1:0)+(fur?1:0)};
+  m.customProgramCacheKey=function(){return "sculpt"+(useDet?1:0)+(fur?1:0)+(H.albedo?"a":"")+(H.normal?"n":"")+(H.rough?"r":"")+MW};
   m.userData.sculpt=1;return m}
 // snap: put a part ON a sculpt's surface (eyes, nose, claws, horns, buttons): its centre is projected to the nearest surface point,
 // pushed out along the normal by p.out; align turns its +y to the surface normal. Returns new part objects; the input is untouched.

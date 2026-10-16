@@ -14,7 +14,7 @@ import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildRuntimeModule } from "./forgeRuntime.js";
-import { lintBlob, MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
+import { lintBlob, sanitizeMaps, MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
 
@@ -30,6 +30,8 @@ export interface Studio {
   scripts: Obj[];
   /** colourways: name -> { "lid*": {color,color2,mat,texture,...} }. One model + its clips serves many looks; the game picks one per instance. */
   variants: Record<string, Record<string, Obj>>;
+  /** project texture files read for maps, by the path the model uses: served to the page as data: URLs */
+  mapData?: Record<string, string>;
   /** errors / log lines scripts reported back (drained into the next tool result) */
   logs: string[];
   ref?: string;
@@ -155,7 +157,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag", "maps"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -387,9 +389,42 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
     const missing = [...new Set([...arr(p.blobs).map((b) => String(obj(b).bone ?? "")), String(p.bone ?? "")].filter((b) => b && !have.has(b)))];
     if (missing.length) errors.push(`part "${nameOf(p)}": blob bone(s) ${missing.map((b) => `"${b}"`).join(", ")} name no part — add {name, shape:"joint", pos:[pivot]} parts for them (mirror:true for left/right), or those blobs will not bend`);
   }
+  // texture maps: project files are read now (inside the project only) and handed to the page as data: URLs
+  for (const p of st.raw) {
+    if (!names.has(nameOf(p)) || p.maps === undefined) continue;
+    const mp = sanitizeMaps(p.maps);
+    if (!mp) { errors.push(`part "${nameOf(p)}": maps needs albedo / normal / rough as a project path, an https URL or a data: URL`); continue; }
+    for (const k of ["albedo", "normal", "rough"]) {
+      const v = mp[k] as string | undefined;
+      if (!v || /^(https?:|data:)/.test(v)) continue;
+      try { (st.mapData ??= {})[v] = await textureDataUrl(cwd, v); } catch (err) { errors.push(`part "${nameOf(p)}": maps.${k}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+  }
   errors.push(...qualityNotes(st));
   st.version += 1;
   return { touched, errors };
+}
+
+const TEX_MAX_BYTES = 6_000_000;
+async function textureDataUrl(cwd: string, rel: string): Promise<string> {
+  const abs = await insideReal(cwd, rel);
+  const ext = path.extname(abs).toLowerCase();
+  const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : /\.jpe?g$/.test(ext) ? "image/jpeg" : "";
+  if (!mime) throw new Error("textures must be png/jpg/webp");
+  const buf = await readFile(abs);
+  if (buf.length > TEX_MAX_BYTES) throw new Error(`${rel} is ${(buf.length / 1e6).toFixed(1)}MB (max 6MB; a 1k or 2k map is plenty)`);
+  return `data:${mime};base64,${buf.toString("base64")}`;
+}
+/** The page sees data: URLs for project texture files (it cannot read the project). */
+function withMapData(st: Studio, parts: Obj[]): Obj[] {
+  if (!st.mapData) return parts;
+  return parts.map((p) => {
+    const mp = p.maps as Obj | undefined;
+    if (!mp) return p;
+    const out: Obj = { ...mp };
+    for (const k of ["albedo", "normal", "rough"]) { const v = mp[k]; if (typeof v === "string" && st.mapData![v]) out[k] = st.mapData![v]; }
+    return { ...p, maps: out };
+  });
 }
 
 async function refDataUrl(cwd: string, src: string): Promise<string> {
@@ -419,7 +454,7 @@ export function studioSpec(st: Studio): Obj {
   }
   uniqueNames(parts);
   const showVariant = typeof st.view.variant === "string" ? st.variants[st.view.variant] : undefined;
-  const shown = showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts;
+  const shown = withMapData(st, showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts);
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
   const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
   return { title: st.title, style: st.style, look: st.look, parts: shown, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
@@ -452,7 +487,22 @@ export async function exportGame(st: Studio, cwd: string, o: { dir?: string; thr
   await mkdir(path.dirname(modelAbs), { recursive: true });
   const spec = studioSpec(st);
   await writeFile(runtimeAbs, buildRuntimeModule(three), "utf8");
-  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: baseParts(st), anims: spec.anims, scripts: spec.scripts, variants: st.variants }), "utf8");
+  const gameParts: Obj[] = [];
+  for (const p of baseParts(st)) {
+    const mp = p.maps as Obj | undefined;
+    if (!mp) { gameParts.push(p); continue; }
+    const out: Obj = { ...mp };
+    for (const k of ["albedo", "normal", "rough"]) {
+      const v = mp[k];
+      if (typeof v !== "string" || /^(https?:|data:)/.test(v)) continue;
+      const src = await insideReal(cwd, v), name = path.basename(src), dst = await insideReal(cwd, `${dir}/textures/${name}`);
+      await mkdir(path.dirname(dst), { recursive: true });
+      if (src !== dst) await writeFile(dst, await readFile(src));
+      out[k] = `../textures/${name}`;
+    }
+    gameParts.push({ ...p, maps: out });
+  }
+  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: gameParts, anims: spec.anims, scripts: spec.scripts, variants: st.variants }), "utf8");
   const runtime = path.relative(cwd, runtimeAbs).split(path.sep).join("/"), model = path.relative(cwd, modelAbs).split(path.sep).join("/");
   const nScripts = (studioSpec(st).scripts as unknown[]).length;
   const usage = `${nScripts ? `NOTE: this model has ${nScripts} script(s) (textures, tints, effects): they only run in the game if you call attachScripts(m, a, {scene, camera, renderer}). ` : ""}import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({variant:"name"}) for a colourway (${Object.keys(st.variants).join(", ") || "none defined"}), instance({material:(part, shared)=>…}) for custom tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;

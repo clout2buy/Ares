@@ -29,10 +29,10 @@ export function colour(v: unknown, d?: string): string | undefined {
 
 // ── model: parts that assemble one by one ────────────────────────────────────
 export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube", "sculpt", "joint"];
-export const BLOB_KINDS = ["ball", "stick", "box", "chain", "cyl", "torus"];
+export const BLOB_KINDS = ["ball", "stick", "box", "chain", "cyl", "torus", "profile"];
 /** Surface detail the sculpt shader draws per pixel (a blob's `tex`, or the default for its mat). */
 export const SCULPT_TEX = ["none", "fur", "scales", "wrinkles", "rock", "wood", "cloth", "hammered", "pores"];
-const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex", "flow", "shag"]);
+const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex", "flow", "shag", "axis", "taper"]);
 const MIRROR_SUFFIX = " (mirror)";
 const mirrorBone = (b: string): string => (b.endsWith(MIRROR_SUFFIX) ? b.slice(0, -MIRROR_SUFFIX.length) : `${b}${MIRROR_SUFFIX}`.slice(0, 41));
 /** A blob's problems in words (shown back to the author; the blob is still sanitised as well as it can be). */
@@ -47,8 +47,25 @@ export function lintBlob(raw: unknown, i: number): string[] {
   if (b.tex !== undefined && !SCULPT_TEX.includes(String(b.tex))) w.push(`${tag}: unknown tex "${String(b.tex)}" (${SCULPT_TEX.join(", ")})`);
   if (s === "chain" && arr(b.pts).length < 2) w.push(`${tag}: a chain needs pts:[[x,y,z,r],...] (2+ points)`);
   if (s !== "chain" && arr(b.at).length < 3) w.push(`${tag}: at should be [x,y,z]`);
+  if (s === "profile" && arr(b.pts).filter((q) => arr(q).length >= 2).length < 3) w.push(`${tag}: a profile needs pts:[[u,v],...] (3+ outline points; axis x = a side view [z,y], y = a top view [x,z], z = a front view [x,y])`);
   return w;
 }
+/** Image textures for a sculpt: albedo / normal / rough are a project path, an https URL or a data: URL. scale = metres per tile. */
+export function sanitizeMaps(raw: unknown): Obj | null {
+  const m = obj(raw), out: Obj = {};
+  for (const k of ["albedo", "normal", "rough"]) {
+    const v = String(m[k] ?? "").trim();
+    if (!v) continue;
+    if (v.startsWith("data:image/") ? v.length <= 8_000_000 : v.length <= 600 && !/[<>"'`\s]/.test(v)) out[k] = v;
+  }
+  if (!Object.keys(out).length) return null;
+  out.scale = clamp(m.scale, 0.02, 50, 0.5);
+  out.strength = clamp(m.strength, 0, 3, 1);
+  out.mix = clamp(m.mix, 0, 1, 1);
+  if (SCULPT_TEX.includes(String(m.on)) && m.on !== "none") out.on = String(m.on);
+  return out;
+}
+
 /** Sculpt blobs: validated, chains expanded into sticks, mirrored copies added (their bone follows the mirrored joint). */
 function sanitizeBlobs(v: unknown): Obj[] {
   const out: Obj[] = [];
@@ -82,6 +99,17 @@ function sanitizeBlobs(v: unknown): Obj[] {
         pieces.push(s === "cyl" ? { ...one, s, at: P(b.at), to, r, round: clamp(b.round, 0, r, Math.min(r * 0.15, 0.02)) } : { ...one, s, at: P(b.at), to, r, r2: clamp(b.r2, 0.002, 20, r) });
       }
     }
+    if (s === "profile") {
+      const pts = arr(b.pts).slice(0, 48).flatMap((q) => { const a = arr(q); return a.length >= 2 ? [[clamp(a[0], -50, 50, 0), clamp(a[1], -50, 50, 0)]] : []; });
+      if (pts.length < 3) s = "ball";
+      else {
+        const hw = clamp(Array.isArray(b.r) ? arr(b.r)[0] : b.r, 0.002, 20, 0.5);
+        const piece: Obj = { ...one, s, at: P(b.at), pts, r: [hw, hw, hw], round: clamp(b.round, 0, hw, Math.min(hw * 0.2, 0.03)), axis: ["x", "y", "z"].includes(String(b.axis)) ? String(b.axis) : "x" };
+        if (b.taper !== undefined) piece.taper = clamp(b.taper, 0, 0.95, 0);
+        const rot = vec3(b.rot, [0, 0, 0], -360, 360); if (rot.some((n) => n)) piece.rot = rot;
+        pieces.push(piece);
+      }
+    }
     if (s === "torus") {
       const R = clamp(Array.isArray(b.r) ? arr(b.r)[0] : b.r, 0.004, 20, rDef);
       const piece: Obj = { ...one, s, at: P(b.at), r: [R, R, R], r2: clamp(b.r2, 0.002, R, R * 0.25) };
@@ -96,7 +124,7 @@ function sanitizeBlobs(v: unknown): Obj[] {
       pieces.push(piece);
     }
     // k = how far it melts into what is already there (the "clay" radius); carving and markings default softer/tighter
-    const minR = Math.min(...pieces.map((q) => q.s === "torus" ? (q.r2 as number) : Math.min(...(Array.isArray(q.r) ? (q.r as number[]) : [q.r as number, (q.r2 as number) ?? (q.r as number)]))));
+    const minR = Math.min(...pieces.map((q) => q.s === "torus" ? (q.r2 as number) : q.s === "profile" ? Math.max(0.02, q.round as number) : Math.min(...(Array.isArray(q.r) ? (q.r as number[]) : [q.r as number, (q.r2 as number) ?? (q.r as number)]))));
     const k = clamp(b.k, 0.001, 2, sub ? 0.03 : Math.max(0.01, Math.min(0.25, minR * 0.5)));
     for (const q of pieces) {
       q.k = k;
@@ -113,6 +141,7 @@ function mirrorBlobs(blobs: Obj[]): Obj[] {
     if (q.rot) m.rot = [(q.rot as number[])[0], -(q.rot as number[])[1]!, -(q.rot as number[])[2]!];
     if (q.bone) m.bone = mirrorBone(String(q.bone));
     if (q.flow) m.flow = [-(q.flow as number[])[0]!, (q.flow as number[])[1], (q.flow as number[])[2]];
+    if (q.s === "profile" && q.axis !== "x") m.pts = (q.pts as number[][]).map((pp) => [-pp[0]!, pp[1]!]);
     return m;
   });
 }
@@ -206,6 +235,7 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
     if (p.bone !== undefined && String(p.bone)) base.bone = str(p.bone, 41);
     if (arr(p.flow).length >= 3) base.flow = vec3(p.flow, [0, -0.45, -1], -1, 1);
     if (p.shag !== undefined) base.shag = clamp(p.shag, 0, 1, 0.5);
+    if (p.maps !== undefined) { const mp = sanitizeMaps(p.maps); if (mp) base.maps = mp; }
     if (p.poly !== undefined) base.poly = Math.round(clamp(p.poly, 200, 60000, 1400));
     const nz = obj(p.noise); if (p.noise !== undefined && nz.amp !== undefined) base.noise = { amp: clamp(nz.amp, 0, 0.2, 0.01), scale: clamp(nz.scale, 0.5, 60, 6) };
     if (p.tint !== undefined) base.tint = clamp(p.tint, 0, 0.4, 0.06);

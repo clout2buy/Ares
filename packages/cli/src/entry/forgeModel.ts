@@ -281,7 +281,7 @@ function build(el){
   // ── studio mode: Ares edits this model while you watch. The server holds the document; this page polls it and
   //    reconciles in place - unchanged parts morph to their new transform, new/changed parts pop in, removed ones shrink out ──
   var tweens=[],ghosts=[],refImg=null,settledOnce=false;
-  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone,p.poly,p.flow,p.shag])}
+  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone,p.poly,p.flow,p.shag,p.maps])}
   function setRef(src){
     if(!src){if(refImg){refImg.remove();refImg=null}return}
     if(!refImg){refImg=document.createElement("img");refImg.className="k-ref";refImg.alt="reference";refImg.title="reference - click to fade";refImg.addEventListener("click",function(){refImg.style.opacity=refImg.style.opacity==="0.2"?"1":"0.2"});stage.appendChild(refImg)}

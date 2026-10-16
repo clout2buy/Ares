@@ -18,6 +18,12 @@ edges, carved grooves, creases that shade themselves). Never stack spheres/cylin
    res?:auto (96-128 from the finest feature; 140-160 for thin blades, 24 + style lowpoly = faceted low-poly),
    tint?:0.06 (organic colour variation), grain?:1 (surface-detail size: 2 = finer), ao?:1 (crease darkening), noise?:{amp:0.01,scale:8} (lumpy geometry),
    flow?:[0,-0.45,-1] (the way the fur lies: back and down from the head; a blob can set its own flow, e.g. a tail [0,-0.2,-1], a mane [0,-1,0]),
+   maps?:{albedo,normal,rough,scale:0.5,strength:1,mix:1,on?:"wood"} REAL image textures (no UVs needed: triplanar). Values are project
+   paths (or https/data: URLs). The albedo is used as detail relative to its own average colour, so your painted colours and markings
+   stay; on limits it to blobs with that tex. Get CC0 PBR sets with your own tools: Poly Haven (api.polyhaven.com/files/<id> lists the
+   jpg/png maps: Diffuse, nor_gl, Rough) or ambientCG (zips of Color/NormalGL/Roughness) - bark, rock, ground, brick, metal, leather,
+   fabric, wood planks - save 1k-2k maps under assets/textures/. Or paint one with the Imagine tool ("seamless tileable ... texture").
+   Export copies the files next to the game json.
    shag?:0.5 (fur locks sculpted INTO the geometry along the flow - the statue look; 0 = off; per blob too: a short-furred face 0.1,
    a shaggy mane or ruff 0.9), poly?:N (triangle budget, see LOW-POLY)}
 Blobs (applied IN ORDER: each melts into, or carves, what is already there):
@@ -27,6 +33,11 @@ Blobs (applied IN ORDER: each melts into, or carves, what is already there):
   {id:"grip",  s:"cyl", at, to, r, round:0.006}                     flat-ended cylinder (bevel = round): handles, barrels, wheels, posts, logs
   {id:"blade", s:"box", at, r:[half sizes], round:0.006, rot?}      bevelled box: blades, planks, plates, hooves, buildings, panels
   {id:"wrap",  s:"torus", at, r:0.026, r2:0.0065, rot?}             rings: grip wraps, bands, rims, eyelets, tyres, collars
+  {id:"body",  s:"profile", at, pts:[[u,v],...], r:0.9, round:0.12, taper?:0.25, axis?:"x"|"y"|"z"}
+        an OUTLINE extruded +-r with rounded edges - how designers block vehicles, boats, buildings, blades, furniture from blueprints.
+        axis "x" = a side view (u = z forward, v = y up), "y" = a top view (u = x, v = z), "z" = a front view (u = x, v = y).
+        taper narrows it as v rises (a car's glasshouse, a roof). A car: lower body side profile r 0.9 + cabin profile taper 0.28 on top,
+        wheel arches carved with cyl subs, glass painted with the cabin outline grown 0.08, roof/pillars painted back in body colour.
   k: how far it melts in (0.002 crisp hard-surface seam .. 0.3 soft clay). Organic masses 0.2-0.3; a limb into the body 0.08-0.15;
      features 0.03-0.08; hard-surface 0.004-0.015.
   sub:true  carves (boolean): eye sockets, nostrils, mouth lines, ear cups, fullers, grooves, panel lines, bevels, holes.
@@ -70,24 +81,26 @@ WORKED EXAMPLE - a grizzly at the quality bar (adapt the method, not the numbers
 [
   {name:"body",shape:"sculpt",mat:"fur",color:"#4f3524",tint:0.12,res:120,bone:"root",blobs:[
     {id:"chest",s:"ball",at:[0,1.25,0.5],r:[0.5,0.5,0.58],bone:"chest"},
-    {id:"hump",s:"ball",at:[0,1.62,0.42],r:[0.36,0.24,0.4],k:0.3,bone:"chest",shag:0.85},
+    {id:"hump",s:"ball",at:[0,1.66,0.4],r:[0.34,0.25,0.36],k:0.3,bone:"chest",shag:0.7},
     {id:"belly",s:"ball",at:[0,1.12,-0.12],r:[0.52,0.47,0.62],k:0.3},
     {id:"sag",s:"ball",at:[0,0.857,0.05],r:[0.34,0.14,0.45],k:0.25},
     {id:"hips",s:"ball",at:[0,1.2,-0.72],r:[0.46,0.46,0.46],k:0.3},
     {id:"rump",s:"ball",at:[0,1.36,-0.78],r:[0.36,0.26,0.38],k:0.2},
+    {id:"spine",s:"stick",at:[0,1.5,0.2],to:[0,1.42,-0.72],r:0.28,r2:0.31,k:0.26,shag:0.5},
     {id:"neck",s:"stick",at:[0,1.38,0.8],to:[0,1.4,1.12],r:0.38,r2:0.3,k:0.18,bone:"head"},
-    {id:"ruff",s:"ball",at:[0.2,1.32,1.06],r:[0.16,0.21,0.16],k:0.15,bone:"head",mirror:true,shag:0.85},
+    {id:"ruff",s:"ball",at:[0.2,1.32,1.06],r:[0.16,0.21,0.16],k:0.15,bone:"head",mirror:true,shag:0.7},
     {id:"skull",s:"ball",at:[0,1.43,1.24],r:[0.324,0.302,0.324],k:0.12,bone:"head",shag:0.25},
     {id:"cheek",s:"ball",at:[0.16,1.32,1.3],r:[0.173,0.173,0.194],k:0.1,bone:"head",mirror:true,shag:0.25},
     {id:"brow",s:"ball",at:[0.1,1.53,1.42],r:[0.1,0.05,0.08],k:0.06,bone:"head",mirror:true,shag:0.05},
     {id:"stop",s:"ball",at:[0,1.5,1.47],r:[0.11,0.06,0.08],k:0.08,bone:"head",shag:0.05},
-    {id:"muzzle",s:"stick",at:[0,1.35,1.38],to:[0,1.28,1.88],r:0.17,r2:0.092,k:0.12,color:"#8f6f52",bone:"head",shag:0.05},
+    {id:"muzzleBase",s:"ball",at:[0,1.32,1.5],r:[0.165,0.13,0.17],k:0.14,color:"#8f6f52",bone:"head",shag:0.05},
+    {id:"muzzle",s:"stick",at:[0,1.35,1.38],to:[0,1.285,1.8],r:0.185,r2:0.1,k:0.12,color:"#8f6f52",bone:"head",shag:0.05},
     {id:"bridge",s:"ball",at:[0,1.37,1.62],r:[0.08,0.05,0.16],k:0.06,color:"#8f6f52",bone:"head",shag:0.05},
-    {id:"lip",s:"ball",at:[0.05,1.23,1.77],r:[0.055,0.04,0.07],k:0.03,color:"#8f6f52",bone:"head",mirror:true,shag:0.05},
-    {id:"chin",s:"ball",at:[0,1.19,1.66],r:[0.09,0.05,0.13],k:0.06,color:"#8f6f52",bone:"head",shag:0.05},
+    {id:"lip",s:"ball",at:[0.05,1.23,1.72],r:[0.055,0.04,0.07],k:0.03,color:"#8f6f52",bone:"head",mirror:true,shag:0.05},
+    {id:"chin",s:"ball",at:[0,1.19,1.61],r:[0.09,0.05,0.13],k:0.06,color:"#8f6f52",bone:"head",shag:0.05},
     {id:"mouth",s:"stick",at:[0.13,1.22,1.5],to:[0.035,1.205,1.83],r:0.009,sub:true,k:0.012,mirror:true},
-    {id:"nose",s:"ball",at:[0,1.3,1.95],r:[0.072,0.052,0.05],k:0.02,color:"#120c09",mat:"glossy",tex:"pores",bone:"head",shag:0.05},
-    {id:"nostril",s:"ball",at:[0.034,1.288,2.008],r:[0.019,0.014,0.02],sub:true,k:0.006,mirror:true},
+    {id:"nose",s:"ball",at:[0,1.295,1.875],r:[0.082,0.054,0.048],k:0.02,color:"#120c09",mat:"glossy",tex:"pores",bone:"head",shag:0.05},
+    {id:"nostril",s:"ball",at:[0.032,1.285,1.922],r:[0.019,0.014,0.02],sub:true,k:0.006,mirror:true},
     {id:"socket",s:"ball",at:[0.13,1.47,1.5],r:[0.034,0.028,0.028],sub:true,k:0.02,mirror:true},
     {id:"ear",s:"ball",at:[0.23,1.66,1.16],r:[0.09,0.09,0.05],rot:[0,0,-20],k:0.06,bone:"head",mirror:true,shag:0.05},
     {id:"earCup",s:"ball",at:[0.235,1.66,1.215],r:[0.05,0.05,0.03],sub:true,k:0.02,mirror:true},

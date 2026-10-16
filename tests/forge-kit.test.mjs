@@ -6,7 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -648,7 +648,7 @@ test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirr
   assert.ok(b.blobs.find((x) => x.sub).k <= 0.05, "carves default tight");
   assert.equal(b.blobs.at(-1).s, "ball", "a stick without `to` degrades to a ball");
   assert.equal(sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "ball", at: [0, 0, 0], paint: true }] }] }).parts[0].shape, "box");
-  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex, flow, shag)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
+  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex, flow, shag, axis, taper)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
   const mirrored = sanitizeModel({ parts: [{ name: "ear", shape: "sculpt", mirror: true, blobs: [{ s: "ball", at: [0.3, 1, 0], r: 0.1, bone: "head" }] }] }).parts;
   assert.deepEqual(mirrored.map((p) => [p.name, p.blobs[0].at[0], p.blobs[0].bone]), [["ear", 0.3, "head"], ["ear (mirror)", -0.3, "head (mirror)"]]);
 });
@@ -860,4 +860,54 @@ test("low-poly is real decimation: a triangle budget, big flat facets, still clo
   const fg = flat.part("body").mesh.geometry;
   let moved = 0; for (let i = 0; i < Math.min(fg.attributes.position.count, sg.attributes.position.count); i++) if (Math.abs(fg.attributes.position.getY(i) - sg.attributes.position.getY(i)) > 1e-4) moved++;
   assert.ok(moved > fg.attributes.position.count * 0.3, `fur locks are in the geometry (${moved} vertices moved)`);
+});
+
+test("profile blobs: an outline extruded with rounded edges models a car body (closed), and mirrors flip off-axis outlines", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const body = [[-2.2, 0.34], [-2.2, 0.8], [-1.2, 0.9], [1.3, 0.84], [2.2, 0.66], [2.2, 0.34]], cabin = [[-1.6, 0.86], [-1.0, 1.3], [0.1, 1.37], [0.8, 0.86]];
+  const parts = sanitizeModel({ parts: [{ name: "car", shape: "sculpt", res: 64, blobs: [
+    { s: "profile", at: [0, 0, 0], pts: body, r: 0.9, round: 0.12 },
+    { s: "profile", at: [0, 0, 0], pts: cabin, r: 0.8, round: 0.1, taper: 0.3, k: 0.06 },
+    { s: "cyl", at: [1, 0.32, 1.35], to: [0.5, 0.32, 1.35], r: 0.4, sub: true, mirror: true },
+  ] }] }).parts;
+  assert.equal(parts[0].blobs[0].axis, "x");
+  assert.equal(parts[0].blobs[1].taper, 0.3);
+  const g = rt.buildModel({ format: "ares-model/1", expanded: true, parts, anims: [], scripts: [] }).instance().part("car").mesh.geometry;
+  g.computeBoundingBox();
+  const bb = g.boundingBox;
+  assert.ok(Math.abs(bb.max.z - 2.2) < 0.05 && Math.abs(bb.min.z + 2.2) < 0.05, `length follows the outline (${bb.min.z.toFixed(2)}..${bb.max.z.toFixed(2)})`);
+  assert.ok(Math.abs(bb.max.y - 1.37) < 0.05, `roof height follows the cabin outline (${bb.max.y.toFixed(2)})`);
+  assert.ok(Math.abs(bb.max.x - 0.9) < 0.03, `width = r (${bb.max.x.toFixed(2)})`);
+  const idx = g.index.array, E = new Map();
+  for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const a = idx[k + e], b = idx[k + (e + 1) % 3], key = a < b ? `${a}_${b}` : `${b}_${a}`; E.set(key, (E.get(key) ?? 0) + 1); }
+  assert.equal([...E.values()].filter((n) => n === 1).length, 0, "closed");
+  const top = sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "profile", axis: "y", at: [0.5, 0, 0], pts: [[0.1, 0], [0.4, 0], [0.4, 0.3]], r: 0.1, mirror: true }] }] }).parts[0].blobs;
+  assert.deepEqual(top[1].pts, [[-0.1, 0], [-0.4, 0], [-0.4, 0.3]], "a top-view outline mirrors across x");
+  assert.match(lintBlob({ s: "profile", at: [0, 0, 0], pts: [[0, 0]] }, 0).join(), /a profile needs pts/);
+});
+
+test("texture maps: project files reach the page as data: URLs, export copies them beside the game json, the runtime resolves them", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const root = rt.root;
+  await mkdir(path.join(root, "assets", "textures"), { recursive: true });
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==", "base64");
+  await writeFile(path.join(root, "assets", "textures", "bark.png"), png);
+  dropStudios();
+  const st = ensureStudio("tree");
+  let r = await applyEdit(st, { parts: [{ name: "trunk", shape: "sculpt", mat: "wood", blobs: [{ s: "stick", at: [0, 0, 0], to: [0, 2, 0], r: 0.3, r2: 0.2 }], maps: { albedo: "assets/textures/bark.png", normal: "../../etc/passwd", scale: 0.4, on: "wood" } }] }, root);
+  assert.ok(r.errors.some((e) => /maps\.normal: path escapes the project/.test(e)), "maps stay inside the project");
+  const spec = studioSpec(st);
+  assert.match(spec.parts[0].maps.albedo, /^data:image\/png;base64,/);
+  assert.equal(spec.parts[0].maps.scale, 0.4); assert.equal(spec.parts[0].maps.on, "wood");
+  r = await applyEdit(st, { ops: [{ op: "set", name: "trunk", maps: { albedo: "assets/textures/bark.png" } }] }, root);
+  const ex = await exportGame(st, root, { dir: "assets" });
+  const doc = JSON.parse(await readFile(path.join(root, ex.model), "utf8"));
+  assert.equal(doc.parts[0].maps.albedo, "../textures/bark.png", "relative to the game json");
+  assert.ok((await readFile(path.join(root, "assets", "textures", "bark.png"))).equals(png));
+  // the runtime resolves map paths against the json's url (no DOM in Node, so nothing loads - the material just records it)
+  const m = rt.buildModel(doc, { base: "https://game.example/assets/models/tree.game.json" });
+  assert.equal(m.doc.parts[0].maps.albedo, "../textures/bark.png", "the doc itself is untouched");
+  const inst = m.instance();
+  assert.ok(inst.part("trunk").mesh.material.userData.maps, "the sculpt material carries its map uniforms");
+  assert.equal(sanitizeModel({ parts: [{ name: "a", shape: "sculpt", blobs: [{ s: "ball", at: [0, 1, 0] }], maps: { albedo: "x\" onerror=1" } }] }).parts[0].maps, undefined, "odd strings are refused");
 });

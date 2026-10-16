@@ -155,7 +155,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -174,6 +174,36 @@ function lintPart(p: Obj): string[] {
   }
   if (p.color !== undefined && !colour(p.color)) w.push(`part "${n}": colour "${String(p.color)}" not recognised (use #rrggbb or a name like orange/gold/white)`);
   return w;
+}
+
+// ── the quality bar: what separates a real model from a toy, checked on every edit so Ares fixes it unprompted ──
+const ORGANIC_NAME = /head|leg|arm|ear|tail|eye|torso|body|snout|muzzle|paw|wing|neck|hand|foot|feet|belly|hip|nose|horn|fin|beak|thigh|shin|chest|jaw|mouth|claw|hoof|mane/i;
+const PRIMITIVE = new Set(["sphere", "capsule", "cylinder", "cone", "loft", "poly", "torus", "tube", "pyramid", "box", "prism"]);
+const GAIT_NAME = /walk|run|trot|gallop|jog|sprint|stride|march|crawl/i;
+/** Quality notes on the whole model (each starts "quality:"): stacked primitives, blockouts, flat colour, no eyes, no animation, sine-wave walks. */
+export function qualityNotes(st: Studio): string[] {
+  const out: string[] = [], raw = st.raw;
+  if (!raw.length) return out;
+  const sculpts = raw.filter((p) => p.shape === "sculpt");
+  const organic = raw.filter((p) => PRIMITIVE.has(String(p.shape ?? "box")) && ORGANIC_NAME.test(nameOf(p)) && !p.snap);
+  if (!sculpts.length && organic.length >= 4) out.push(`quality: this is a creature/character stacked from primitives (${organic.slice(0, 6).map(nameOf).join(", ")}...): the toy look. Rebuild it as ONE sculpt part (blobs melt into one skin; help:true has the method) with joints, and remove these parts.`);
+  else if (!sculpts.length && raw.filter((p) => PRIMITIVE.has(String(p.shape ?? "box"))).length >= 4 && !raw.some((p) => p.texture)) out.push("quality: props look real when sculpted too: one sculpt with box/cyl blobs (round = bevelled edges), sub carves for grooves/panel lines, and per-blob mat (metal, leather, wood, stone) + tex. Bare primitives read as a blockout.");
+  for (const p of sculpts) {
+    const blobs = arr(p.blobs).map(obj), add = blobs.filter((b) => !b.sub && !b.paint), n = nameOf(p);
+    const bones = blobs.some((b) => b.bone);
+    if (add.length < 12) out.push(`quality: "${n}" is a blockout (${add.length} masses). Real models carry 25-60 blobs: secondary forms (muscle groups, cheeks, brow, knuckles, belly, haunches) and details (toes, lips, nostrils, eyelids, creases as small sub carves).`);
+    const cols = new Set(blobs.map((b) => String(b.color ?? p.color ?? "")));
+    if (cols.size <= 1 && !blobs.some((b) => b.paint)) out.push(`quality: "${n}" is one flat colour. Paint it: lighter belly/muzzle/chest, darker extremities and back, markings, tonal variation (paint blobs with soft edges).`);
+    if (bones && !raw.some((q) => q.snap === n && /eye/i.test(nameOf(q)))) out.push(`quality: "${n}" is a creature with no eyes on it: add glossy eye parts with snap:"${n}" (and a nose/claws/teeth where the animal has them).`);
+    if (bones && !st.anims.length) out.push(`quality: "${n}" is rigged but not animated. Every creature/character ships with clips: idle (breathing pulse on the chest, slow head/tail drift), walk (step + lift), and its signature action; play idle.`);
+    if (!p.mat && !blobs.some((b) => b.mat)) out.push(`quality: "${n}" has no material: fur, skin, leather, stone, wood, metal, cloth (per blob too) give real surface detail.`);
+  }
+  if (st.anims.length && sculpts.some((p) => arr(p.blobs).some((b) => obj(b).bone)) && !st.anims.some((a) => /idle|breath|rest/i.test(String(a.name)))) out.push("quality: there is no idle clip: add one (breathing, small head/ear/tail motion) so the model is alive when nothing else plays.");
+  for (const a of st.anims) {
+    const motion = arr(a.motion).map(obj);
+    if (GAIT_NAME.test(String(a.name)) && motion.some((m) => m.kind === "swing") && !motion.some((m) => m.kind === "step")) out.push(`quality: clip "${String(a.name)}" swings legs on a sine (feet skate). Use kind:"step" on upper limbs (plant, push back, lift, swing forward) + kind:"lift" on knees/hocks/paws with the same speed/phase, a body bob at twice the speed, and head/tail counter-motion.`);
+  }
+  return out;
 }
 
 /** Does a clip target match a part? Same rule the animation player uses: exact, or "name*" prefix; a mirror follows its original. */
@@ -352,9 +382,10 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
   for (const p of st.raw) if (p.snap && !st.raw.some((q) => nameOf(q) === String(p.snap) && q.shape === "sculpt")) errors.push(`part "${nameOf(p)}" snaps to "${String(p.snap)}", which is not a sculpt part`);
   // a blob bone that names no part is skinned to the sculpt itself (it will not bend): say which
   for (const p of st.raw) if (p.shape === "sculpt" && names.has(nameOf(p))) {
-    const missing = [...new Set(arr(p.blobs).map((b) => String(obj(b).bone ?? "")).filter((b) => b && !have.has(b)))];
+    const missing = [...new Set([...arr(p.blobs).map((b) => String(obj(b).bone ?? "")), String(p.bone ?? "")].filter((b) => b && !have.has(b)))];
     if (missing.length) errors.push(`part "${nameOf(p)}": blob bone(s) ${missing.map((b) => `"${b}"`).join(", ")} name no part — add {name, shape:"joint", pos:[pivot]} parts for them (mirror:true for left/right), or those blobs will not bend`);
   }
+  errors.push(...qualityNotes(st));
   st.version += 1;
   return { touched, errors };
 }

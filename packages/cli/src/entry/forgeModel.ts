@@ -16,13 +16,13 @@ var reduced=!!(matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matche
 function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
 function envMap(r){
   var es=new T.Scene(),sky=new T.Mesh(new T.SphereGeometry(20,24,12),new T.MeshBasicMaterial({vertexColors:true,side:T.BackSide})),pa=sky.geometry.attributes.position,cols=[],c=new T.Color(),i;
-  for(i=0;i<pa.count;i++){var y=(pa.getY(i)/20+1)/2;c.setRGB(0.06+0.5*y*y,0.1+0.6*y*y,0.2+0.8*y);cols.push(c.r,c.g,c.b)}
+  for(i=0;i<pa.count;i++){var y=(pa.getY(i)/20+1)/2;c.setRGB(0.04+0.42*y*y,0.04+0.42*y*y,0.05+0.45*y*y);cols.push(c.r,c.g,c.b)}
   sky.geometry.setAttribute("color",new T.Float32BufferAttribute(cols,3));es.add(sky);
   [[8,10,6,6],[-9,6,-4,4],[0,12,-9,5]].forEach(function(q){var b=new T.Mesh(new T.BoxGeometry(q[3],0.4,q[3]),new T.MeshBasicMaterial({color:0xffffff}));b.position.set(q[0],q[1],q[2]);b.lookAt(0,0,0);es.add(b)});
   var pm=new T.PMREMGenerator(r),rt=pm.fromScene(es,0.02);pm.dispose();return rt.texture;
 }
 var LOOKS={
-  studio:{bg:"radial-gradient(ellipse at 50% 70%,rgba(47,109,240,.2),transparent 65%),rgba(3,6,14,.6)",sun:0xffffff,si:2.6,rim:0x6fa0ff,hemi:0xcfe0ff,hg:0x1a2340,hi:0.8,ex:1},
+  studio:{bg:"radial-gradient(ellipse at 50% 70%,rgba(47,109,240,.2),transparent 65%),rgba(3,6,14,.6)",sun:0xfff4e6,si:2.8,rim:0x8fb4ff,hemi:0xe8eeff,hg:0x2a2620,hi:0.45,ex:1.1},
   sunset:{bg:"linear-gradient(180deg,#2a1a4a,#c8563f 70%,#f0a32f)",sun:0xffc890,si:3.2,rim:0x7a5aff,hemi:0xffb890,hg:0x2a1a3a,hi:0.7,ex:1.05},
   night:{bg:"linear-gradient(180deg,#02040c,#0a1236)",sun:0x9cc5ff,si:1.4,rim:0x2f6df0,hemi:0x3a5aa0,hg:0x05081a,hi:0.5,ex:0.95},
   clay:{bg:"radial-gradient(ellipse at 50% 85%,#efe8dc,#d2c9ba 70%,#bdb3a2)",sun:0xfff1dd,si:2.5,rim:0xffffff,hemi:0xffffff,hg:0xb8ad9c,hi:1.0,ex:1,grid:0},
@@ -61,6 +61,8 @@ function build(el){
   var sc=new T.Scene(),cam=new T.PerspectiveCamera(42,w/h,0.05,500);
   tb.addEventListener("click",function(){var m=el.classList.toggle("k-min");tb.textContent=m?"tools":"hide";h=stageH();r.setSize(stage.clientWidth||w,h);cam.aspect=(stage.clientWidth||w)/h;cam.updateProjectionMatrix();draw()});
   r.shadowMap.enabled=true;r.shadowMap.type=T.PCFSoftShadowMap;sc.environment=envMap(r);
+  // filmic response: highlights roll off instead of clipping, so darks keep their colour (fur, wood, skin read as themselves)
+  r.toneMapping=T.ACESFilmicToneMapping;
   var hemi=new T.HemisphereLight(0xcfe0ff,0x1a2340,0.8),sun=new T.DirectionalLight(0xffffff,2.6),rim=new T.DirectionalLight(0x6fa0ff,1.1);rim.position.set(-6,3,-5);sc.add(hemi);sc.add(sun);sc.add(rim);
   var ctl=new OrbitControls(cam,r.domElement);ctl.enableDamping=true;ctl.autoRotate=!reduced;ctl.autoRotateSpeed=1.4;
   ctl.addEventListener("start",function(){ctl.autoRotate=false;bSpin.classList.remove("on")});
@@ -118,7 +120,7 @@ function build(el){
     insp.appendChild(mk("b","k-insp-h",p.name));
     var ci=document.createElement("input");ci.type="color";ci.value=p.color;ci.className="k-color";ci.addEventListener("input",function(){p.color=ci.value;if(p.facets||p.fcolors)paint(u.mesh.geometry,p);else u.mat.color.set(ci.value);if(p.mat==="glow")u.mat.emissive.set(ci.value);draw()});
     var cr=mk("label","k-slider");cr.appendChild(mk("span","","Colour"));cr.appendChild(mk("b","",""));cr.appendChild(ci);insp.appendChild(cr);
-    var ms=document.createElement("select");ms.className="k-sel";["matte","clay","plastic","metal","glossy","glass","glow","fur","skin"].forEach(function(k){var o=document.createElement("option");o.value=k;o.textContent=k;if(k===p.mat)o.selected=true;ms.appendChild(o)});
+    var ms=document.createElement("select");ms.className="k-sel";["matte","clay","plastic","metal","glossy","glass","glow","fur","skin","leather","wood","stone","cloth"].forEach(function(k){var o=document.createElement("option");o.value=k;o.textContent=k;if(k===p.mat)o.selected=true;ms.appendChild(o)});
     ms.addEventListener("change",function(){p.mat=ms.value;var nm=material(p);u.mesh.material=nm;u.mat=nm;mats[sel]=nm;u.ed.visible=edgeVis(p)&&!wire;draw()});
     var mr=mk("label","k-slider");mr.appendChild(mk("span","","Material"));mr.appendChild(mk("b","",""));mr.appendChild(ms);insp.appendChild(mr);
     var sm=mk("button","k-btn",p.smooth?"smooth":"faceted");sm.type="button";sm.addEventListener("click",function(){p.smooth=!p.smooth;sm.textContent=p.smooth?"smooth":"faceted";u.mat.flatShading=!p.smooth;u.mat.needsUpdate=true;u.ed.visible=edgeVis(p)&&!wire;draw()});
@@ -159,7 +161,8 @@ function build(el){
   function refreshAnimUI(){
     aSel.textContent="";anims.forEach(function(a,i){var o=document.createElement("option");o.value=i;o.textContent=a.name;aSel.appendChild(o)});aSel.value=curA;
     arow.hidden=!(anims.length||hasKids.some(Boolean)||parts.some(function(q){return q.shape==="joint"}));aSel.hidden=bAnim.hidden=aSpd.hidden=!anims.length;bAnim.textContent=animOn?"pause":"play"}
-  aSel.addEventListener("change",function(){curA=+aSel.value;animT=0;if(!animOn)applyAnim(anims[curA],0);draw()});
+  var xf=null;function crossfade(){xf={s:rigSnap(items.map(function(g){return g.userData.node})),t:0}}
+  aSel.addEventListener("change",function(){crossfade();curA=+aSel.value;animT=0;if(!animOn)applyAnim(anims[curA],0);draw()});
   bAnim.addEventListener("click",function(){animOn=!animOn;if(animOn&&reduced)animOn=false;bAnim.textContent=animOn?"pause":"play"});
   var rigOn=false,rigPts=new T.Points(new T.BufferGeometry(),new T.PointsMaterial({color:0xf0a32f,size:0.11,depthTest:false,transparent:true})),rigLines=new T.LineSegments(new T.BufferGeometry(),new T.LineBasicMaterial({color:0xf4efe0,depthTest:false,transparent:true,opacity:0.9}));
   rigPts.renderOrder=rigLines.renderOrder=999;rigPts.visible=rigLines.visible=false;rigPts.frustumCulled=rigLines.frustumCulled=false;sc.add(rigPts);sc.add(rigLines);
@@ -278,7 +281,7 @@ function build(el){
   // ── studio mode: Ares edits this model while you watch. The server holds the document; this page polls it and
   //    reconciles in place - unchanged parts morph to their new transform, new/changed parts pop in, removed ones shrink out ──
   var tweens=[],ghosts=[],refImg=null,settledOnce=false;
-  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz])}
+  function geoKey(p){return JSON.stringify([p.shape,p.pts,p.sections,p.verts,p.faces,p.seg,p.detail,p.jitter,p.low,p.steps,p.depth,p.bevel,p.r,p.r2,p.caps,p.facets,p.color,p.color2,p.grad,p.mid,p.shade,p.mat,p.smooth,p.fcolors,p.wire,p.edgeColor,p.texture,p.blobs,p.res,p.noise,p.tint,p.ao,p.fuzz,p.tex,p.grain,p.bone])}
   function setRef(src){
     if(!src){if(refImg){refImg.remove();refImg=null}return}
     if(!refImg){refImg=document.createElement("img");refImg.className="k-ref";refImg.alt="reference";refImg.title="reference - click to fade";refImg.addEventListener("click",function(){refImg.style.opacity=refImg.style.opacity==="0.2"?"1":"0.2"});stage.appendChild(refImg)}
@@ -321,7 +324,7 @@ function build(el){
     if(typeof v.rig==="boolean"&&v.rig!==rigOn)setRig(v.rig);
     if(typeof v.spin==="boolean"){ctl.autoRotate=v.spin;bSpin.classList.toggle("on",v.spin)}
     if(typeof v.speed==="number"){animSpeed=v.speed}
-    if(typeof v.anim==="string"){var ai=anims.findIndex(function(a){return a.name===v.anim});if(ai>=0&&ai!==curA){curA=ai;animT=0;aSel.value=ai;if(!animOn)applyAnim(anims[curA],0)}}
+    if(typeof v.anim==="string"){var ai=anims.findIndex(function(a){return a.name===v.anim});if(ai>=0&&ai!==curA){crossfade();curA=ai;animT=0;aSel.value=ai;if(!animOn)applyAnim(anims[curA],0)}}
     if(typeof v.play==="boolean"&&anims.length){animOn=v.play&&!reduced;bAnim.textContent=animOn?"pause":"play"}
     if(typeof v.t==="number"&&curA>=0){animOn=false;animT=v.t;applyAnim(anims[curA],v.t);bAnim.textContent="play"}
     if(v.fit==="anim"&&curA>=0)fitAnim(anims[curA]);else if(v.fit==="rest"){rebox();fitWorld()}
@@ -367,7 +370,7 @@ function build(el){
     if((live||now<settleUntil)&&!userTook){ctl.target.lerp(tctr,0.08);var off=cam.position.clone().sub(ctl.target),dd=off.length();off.setLength(dd+(trad*1.95-dd)*0.06);cam.position.copy(ctl.target).add(off)}
     if(playing&&headP<N){headP=Math.min(N,headP+dt*rate);pose();if(headP>=N)playing=false}
     if(tweens.length||ghosts.length)stepTweens(now);if(studio)pose();
-    if(animOn&&curA>=0){var pT=animT;animT+=dt*animSpeed;applyAnim(anims[curA],animT);var cd=anims[curA].dur||1;fireEvents(anims[curA],((pT%cd)+cd)%cd,((animT%cd)+cd)%cd)}
+    if(animOn&&curA>=0){var pT=animT;animT+=dt*animSpeed;applyAnim(anims[curA],animT);if(xf){xf.t+=dt;rigBlend(items.map(function(g){return g.userData.node}),xf.s,xf.t/0.3);if(xf.t>=0.3)xf=null}var cd=anims[curA].dur||1;fireEvents(anims[curA],((pT%cd)+cd)%cd,((animT%cd)+cd)%cd)}
     stepScripts(dt);
     updateRig();if(live)pose();draw();requestAnimationFrame(loop)})(last)}
   else ctl.addEventListener("change",draw);

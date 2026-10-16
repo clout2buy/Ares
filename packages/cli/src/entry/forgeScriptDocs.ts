@@ -4,74 +4,150 @@
 // the always-on prompt stays small. The examples are patterns to adapt, not
 // engine features: nothing in the studio knows what a "pond" or a "chest" is.
 
-export const FORGE_SCRIPT_DOCS = `SCULPT: creatures, characters, anything organic (animals, people, monsters, food, plants, blobs).
-Do NOT stack spheres/cylinders/lofts for a living thing: that is the toy look. Use ONE sculpt part whose blobs MELT together like clay
-into a single smooth mesh (one surface, real silhouettes, soft creases that darken on their own), bend it with joints, snap eyes/nose/claws on.
-  {name:"body", shape:"sculpt", mat:"fur"|"skin"|"clay"|"matte"|"plastic", color:"#5b3a22" (default blob colour), blobs:[...],
-   res?:64 (mesh detail; 96 for a close-up hero, 24 + style lowpoly = faceted low-poly), tint?:0.06 (organic colour variation),
-   fuzz?:0.5 (fur grain, mat fur), ao?:1 (crease darkening), noise?:{amp:0.01,scale:8} (lumpy rock/bark/skin surface)}
-Blobs (applied IN ORDER: each melts into or carves what is already there):
-  {id:"chest", s:"ball", at:[x,y,z], r:[rx,ry,rz], rot?:[deg]}      masses: chest, belly, hips, skull, cheeks, muscles, ears (flattened)
-  {id:"neck",  s:"stick", at:[x,y,z], to:[x,y,z], r:0.3, r2:0.2}    tapered: limbs, neck, muzzle, tail, horns, fingers
-  {id:"tail",  s:"chain", pts:[[x,y,z,r],[x,y,z,r],...]}            a bent limb / tail / neck / tentacle in one blob
-  {id:"hoof",  s:"box", at, r:[half sizes], round:0.03, rot?}       hooves, blocky toys, armour plates
-  k: how far it melts in (0.02 crisp seam .. 0.3 soft clay). Big masses 0.2-0.3; a limb into the body 0.08-0.15; small features 0.03-0.08.
-  sub:true  carves (eye sockets, nostrils, mouth line, ear hollows) - keep carves shallow and small.
-  paint:true, soft:0.05  colour ONLY, never changes the shape: the skin INSIDE the blob takes its colour, feathered over soft beyond it.
-                         Muzzle, belly, bib, socks, stripes, spots, inner ears, tail tip, a grizzled back.
-  color (per blob), bone:"legF" (the joint it bends with), mirror:true (adds the left/right copy; its bone becomes "legF (mirror)").
-  Edit one blob without re-sending all of them: {op:"blob", name:"body", id:"muzzle", r2:0.08} | {op:"blob",name:"body",id:"horn",s:"stick",...} (new id = add) | {..., remove:true}.
-Joints: {name:"legF", shape:"joint", pos:[x,y,z] (= the pivot: shoulder, elbow, hip, knee, neck base, tail base), parent?:"...", mirror:true}.
-  Invisible bones. Blobs with bone:"legF" bend with it; weights blend where blobs melt, so ONE skin bends smoothly at the joint. Clips animate joints like any part.
-Snap: rigid parts that sit ON the skin: {name:"eye", shape:"sphere", size:0.06, mat:"glossy", color:"#120c08", pos:[rough spot], snap:"body", out:-0.01, parent:"head", mirror:true}
-  pos is projected to the nearest surface point, then pushed along the normal by out (negative = sunk in). align:true turns the part's +y to the normal (horns, spikes, claws, fins).
+export const FORGE_SCRIPT_DOCS = `THE QUALITY BAR (always, unasked): every model is sculpted, painted, rigged and animated like a finished game asset.
+The owner should never have to ask for detail, colour, joints or motion. "make a bear" means a realistic, furry, rigged bear with idle,
+walk and a signature action. The tool result's "quality" notes list what is still below the bar: fix them all before you answer, then LOOK.
 
-METHOD - what separates a real model from a toy (do it in this order, LOOK at views after each step):
- 1. Proportions before anything. From the reference picture (ref) or anatomy you know: body length, shoulder height, head size, leg length, tail.
-    Bear: shoulder hump higher than the rump, small head, short thick plantigrade legs (whole foot flat). Fox/dog/cat: slim, digitigrade (walks on toes, hock bends BACK).
-    Horse/deer: long legs, hooves, deep chest, long head. Human: head = 1/7.5 of height, shoulders 2 heads wide, elbows at the waist, wrists at the crotch.
- 2. Primary masses: 3-5 big overlapping balls (chest, belly, hips / skull). Check side + top: is the silhouette right? Fix it BEFORE any detail.
- 3. Limbs: sticks from INSIDE the mass to the joint and on (upper segment thicker), flattened balls for paws/feet. Bones on every segment.
- 4. Head: skull ball, tapered muzzle stick, cheek/brow/jaw balls; ears = flattened rotated balls with a dark paint inside.
- 5. Snap features: eyes ON the surface (glossy, about 1/10 of the head width), nose, claws/teeth/horns (align:true).
- 6. Paint: lighter muzzle/belly/chest, darker legs, markings - soft paint blobs; mat "fur" + tint 0.06-0.1 for fur.
- 7. Joints at the real anatomical pivots; clips swing them (walk = legs in opposite phase, pawF/knees bend a beat later).
- 8. views ["side","front","top","3q"] (and "side@0.4" for a pose). Compare with the reference; fix with op blob; repeat until it reads at a glance.
-WORKED EXAMPLE - a grizzly (adapt the method, not the numbers):
- {name:"body",shape:"sculpt",mat:"fur",color:"#5b3a22",tint:0.08,blobs:[
-  {id:"chest",s:"ball",at:[0,1.05,0.5],r:[0.5,0.5,0.58]}, {id:"hump",s:"ball",at:[0,1.42,0.42],r:[0.36,0.24,0.4],k:0.3},
-  {id:"belly",s:"ball",at:[0,0.95,-0.15],r:[0.52,0.48,0.62],k:0.3}, {id:"hips",s:"ball",at:[0,1,-0.72],r:[0.46,0.46,0.46],k:0.3},
-  {id:"rump",s:"ball",at:[0,1.16,-0.78],r:[0.36,0.26,0.38],k:0.2},
-  {id:"neck",s:"stick",at:[0,1.18,0.8],to:[0,1.2,1.12],r:0.38,r2:0.3,k:0.18,bone:"head"},
-  {id:"skull",s:"ball",at:[0,1.22,1.24],r:[0.3,0.28,0.3],k:0.12,bone:"head"},
-  {id:"cheek",s:"ball",at:[0.16,1.12,1.3],r:[0.16,0.16,0.18],k:0.1,bone:"head",mirror:true},
-  {id:"brow",s:"ball",at:[0,1.3,1.4],r:[0.19,0.08,0.12],k:0.1,bone:"head"},
-  {id:"muzzle",s:"stick",at:[0,1.15,1.38],to:[0,1.07,1.8],r:0.165,r2:0.1,k:0.12,color:"#b48c60",bone:"head"},
-  {id:"chin",s:"ball",at:[0,1,1.62],r:[0.1,0.05,0.14],k:0.06,color:"#b48c60",bone:"head"},
-  {id:"ear",s:"ball",at:[0.23,1.46,1.16],r:[0.09,0.09,0.05],rot:[0,0,-20],k:0.06,bone:"head",mirror:true},
-  {id:"earIn",s:"ball",at:[0.235,1.46,1.22],r:[0.05,0.05,0.04],paint:true,soft:0.02,color:"#2e1d12",mirror:true},
-  {id:"shoulder",s:"ball",at:[0.3,1.02,0.58],r:[0.2,0.34,0.28],k:0.2,bone:"legF",mirror:true},
-  {id:"arm",s:"stick",at:[0.32,0.95,0.6],to:[0.33,0.55,0.64],r:0.22,r2:0.18,k:0.08,bone:"legF",mirror:true},
-  {id:"forearm",s:"stick",at:[0.33,0.55,0.64],to:[0.33,0.16,0.66],r:0.18,r2:0.15,k:0.06,bone:"pawF",mirror:true},
-  {id:"pawF",s:"ball",at:[0.33,0.085,0.74],r:[0.16,0.085,0.21],k:0.06,color:"#2e1d12",bone:"pawF",mirror:true},
-  {id:"thigh",s:"ball",at:[0.3,0.92,-0.72],r:[0.22,0.36,0.33],k:0.2,bone:"legB",mirror:true},
-  {id:"shin",s:"stick",at:[0.32,0.7,-0.62],to:[0.33,0.32,-0.82],r:0.2,r2:0.15,k:0.08,bone:"legB",mirror:true},
-  {id:"heel",s:"stick",at:[0.33,0.32,-0.82],to:[0.33,0.1,-0.84],r:0.15,r2:0.13,k:0.05,bone:"pawB",mirror:true},
-  {id:"foot",s:"stick",at:[0.33,0.08,-0.86],to:[0.33,0.075,-0.6],r:0.11,r2:0.13,k:0.06,color:"#2e1d12",bone:"pawB",mirror:true},
-  {id:"tail",s:"ball",at:[0,1.06,-1.2],r:[0.09,0.08,0.08],k:0.06},
-  {id:"grizzle",s:"ball",at:[0,1.5,0.3],r:[0.42,0.25,0.65],paint:true,soft:0.18,color:"#9a7348"},
-  {id:"legsF",s:"ball",at:[0.33,0.25,0.65],r:[0.22,0.32,0.25],paint:true,soft:0.12,color:"#2e1d12",mirror:true},
-  {id:"legsB",s:"ball",at:[0.33,0.25,-0.8],r:[0.22,0.3,0.25],paint:true,soft:0.12,color:"#2e1d12",mirror:true}]},
- {name:"head",shape:"joint",pos:[0,1.2,0.92]}, {name:"legF",shape:"joint",pos:[0.32,1,0.6],mirror:true},
- {name:"pawF",shape:"joint",pos:[0.33,0.55,0.64],parent:"legF",mirror:true}, {name:"legB",shape:"joint",pos:[0.32,0.9,-0.66],mirror:true},
- {name:"pawB",shape:"joint",pos:[0.33,0.32,-0.82],parent:"legB",mirror:true},
- {name:"eye",shape:"sphere",pos:[0.13,1.27,1.5],size:0.065,color:"#120c08",mat:"glossy",parent:"head",mirror:true,snap:"body",out:-0.012},
- {name:"nose",shape:"sphere",pos:[0,1.1,1.92],size:[0.15,0.1,0.09],color:"#1a1210",mat:"glossy",parent:"head",snap:"body",out:-0.01},
- {name:"claw",shape:"cone",pos:[0.24,0.05,0.94],size:[0.035,0.11,0.035],rot:[100,0,0],color:"#e6dcc4",mat:"glossy",parent:"pawF",mirror:true,snap:"body",out:0.02,repeat:{n:4,step:[0.06,0,0]}}
- Walk: {name:"walk",dur:1.4,motion:[{part:"legF",kind:"swing",axis:"x",amp:22,speed:0.714},{part:"legB",kind:"swing",axis:"x",amp:22,speed:0.714,phase:3.14},
-   {part:"pawF",kind:"swing",axis:"x",amp:18,speed:0.714,phase:1.2},{part:"pawB",kind:"swing",axis:"x",amp:18,speed:0.714,phase:4.3},{part:"head",kind:"swing",axis:"x",amp:4,speed:1.43}]}
- Same blobs + style "lowpoly" (res 24, flat facets) = the faceted low-poly look; mat "clay"/"plastic" + bigger eyes + rounder masses = toon.
-Hard-surface things (a sword, a chest, a car, a building) stay with box/extrude/lathe/tube parts; a creature's armour or saddle = those parts snapped on and parented to joints.
+SCULPT: the ONE process for every model - creatures, characters, props, weapons, furniture, rocks, food, vehicles.
+ONE sculpt part per object: its blobs MELT together like clay into a single smooth, watertight, high-poly mesh (real silhouettes, bevelled
+edges, carved grooves, creases that shade themselves). Never stack spheres/cylinders/lofts for anything organic: that is the toy look.
+  {name:"body", shape:"sculpt", mat:"fur", color:"#5b3a22" (default blob colour), bone:"root" (default bone for blobs without one), blobs:[...],
+   res?:auto (96-128 from the finest feature; 140-160 for thin blades, 24 + style lowpoly = faceted low-poly),
+   tint?:0.06 (organic colour variation), grain?:1 (surface-detail size: 2 = finer), ao?:1 (crease darkening), noise?:{amp:0.01,scale:8} (lumpy geometry)}
+Blobs (applied IN ORDER: each melts into, or carves, what is already there):
+  {id:"chest", s:"ball", at:[x,y,z], r:[rx,ry,rz], rot?:[deg]}      masses: chest, belly, hips, skull, cheeks, muscles, pommels, gems
+  {id:"neck",  s:"stick", at:[x,y,z], to:[x,y,z], r:0.3, r2:0.2}    tapered + rounded: limbs, neck, muzzle, tail, horns, fingers, claws
+  {id:"tail",  s:"chain", pts:[[x,y,z,r],[x,y,z,r],...]}            a bent limb / tail / neck / tentacle / cable in one blob
+  {id:"grip",  s:"cyl", at, to, r, round:0.006}                     flat-ended cylinder (bevel = round): handles, barrels, wheels, posts, logs
+  {id:"blade", s:"box", at, r:[half sizes], round:0.006, rot?}      bevelled box: blades, planks, plates, hooves, buildings, panels
+  {id:"wrap",  s:"torus", at, r:0.026, r2:0.0065, rot?}             rings: grip wraps, bands, rims, eyelets, tyres, collars
+  k: how far it melts in (0.002 crisp hard-surface seam .. 0.3 soft clay). Organic masses 0.2-0.3; a limb into the body 0.08-0.15;
+     features 0.03-0.08; hard-surface 0.004-0.015.
+  sub:true  carves (boolean): eye sockets, nostrils, mouth lines, ear cups, fullers, grooves, panel lines, bevels, holes.
+  paint:true, soft:0.05  colour ONLY (the skin INSIDE the blob takes it, feathered over soft): muzzle, belly, socks, stripes, spots, edges.
+  color, mat (per blob: one sculpt can be steel + gold + leather), tex (surface detail), bone, mirror:true (left/right copy, bone follows).
+  mat: matte clay plastic glossy metal glass glow holo fur skin leather wood stone cloth. A mat brings its detail: fur=fur grain, skin=pores,
+       leather=wrinkles, stone=rock, wood=wood grain, cloth=weave. tex overrides: none fur scales wrinkles rock wood cloth hammered pores
+       (dragons/fish/lizards: tex "scales"; elephants/rhinos: "wrinkles"; armour: "hammered"). Paint blobs may carry mat/tex too (a gold inlay).
+  Edit one blob without re-sending all of them: {op:"blob", name:"body", id:"muzzle", r2:0.08} | new id = add | {..., remove:true}.
+Joints (the rig): {name:"root", shape:"joint", pos:[pivot]}, {name:"chest", shape:"joint", pos, parent:"root"}, {name:"head", ..., parent:"chest"},
+  limbs parented to chest (front) / root (hind), lower limbs to upper, tail to root; mirror:true for left/right. Invisible bones.
+  EVERY blob needs a bone once there is a root (set the sculpt's bone:"root" as the default); weights blend where blobs melt, so ONE skin
+  bends smoothly. Animate joints with clips. Rigid parts (eyes, claws, armour) parent to a joint and move with it.
+Snap: rigid parts that sit ON the skin: {name:"eye", shape:"sphere", size:0.07, mat:"glossy", color:"#1c0f08", pos:[rough spot], snap:"body", out:-0.018, parent:"head", mirror:true}
+  pos is projected to the nearest surface point, then pushed along the normal by out (negative = set into a socket). align:true turns +y to the normal.
+
+METHOD - blockout, form, detail, paint, rig, animate (LOOK at views after each stage; the quality notes say what is missing):
+ 1. Proportions before anything, from the reference picture (ref) or anatomy/engineering you know. Bear: shoulder hump above the rump, small head,
+    thick plantigrade legs. Fox/dog/cat: slim, digitigrade (hock bends BACK). Horse/deer: long legs, deep chest. Human: 7.5 heads tall,
+    shoulders 2 heads wide, elbows at the waist. Longsword: blade 3/4 of the length, guard 1/2 the blade length wide.
+ 2. Blockout: 3-6 big masses. Side + top views: silhouette right? Fix it BEFORE detail.
+ 3. Form: secondary masses (muscle groups, haunches, cheeks, brow, belly sag; for props: bevels, ricasso, collars), limbs from INSIDE the mass.
+ 4. Detail: toes/knuckles/lips/ear cups/nostrils/mouth line/eye sockets (small balls + shallow carves); props: fullers, rivets, wraps, gems.
+    A finished creature has 40-75 blobs. A finished prop 15-40.
+ 5. Snap features: eyes into their sockets, claws/teeth/horns (align:true).
+ 6. Paint + materials: lighter muzzle/belly, darker legs and back, markings, edge highlights on metal; mat per blob; tex where the real thing has it.
+ 7. Rig: root -> chest -> head, limbs, tail at the real anatomical pivots; bones on every blob.
+ 8. Animate (always): idle (chest pulse 0.01-0.015 at 0.3 Hz, slow head/tail drift), walk/run (kind step + lift, below), and its signature action
+    (roar, attack, open, swing) with eased tracks. Show idle by default. Props get an idle too (slow spin, sway, pulse of a gem).
+ 9. views ["side","front","top","3q","side@0.35"]: compare with the reference and fix with op blob until it reads at a glance.
+ANIMATION THAT LOOKS REAL:
+  walk/run/trot = motion kind:"step" on each upper limb (the foot plants forward, pushes back linearly for duty of the cycle, then lifts and
+  swings forward) + kind:"lift" on the lower limb (flexes only while the foot is in the air), same speed/phase; mirror:true offsets left/right.
+  Walk duty 0.6-0.65, trot 0.5, run/gallop 0.35-0.4. Lateral walk: hind legs lead the front by a quarter cycle (phase -1.57).
+  Body: root bob at TWICE the step speed (amp 0.02-0.04), a little roll (wag on z), head counter-bob (swing x, phase offset), tail sway.
+  Actions: tracks with ease: anticipation first (a small move the other way), then the action with ease "back" or "out", hold, then settle.
+  ease per track: smooth (default) linear in out inout back elastic bounce. Games: play(name,{fade:0.25}) crossfades between clips.
+WORKED EXAMPLE - a grizzly at the quality bar (adapt the method, not the numbers):
+[
+  {name:"body",shape:"sculpt",mat:"fur",color:"#5b3a22",tint:0.08,res:112,bone:"root",blobs:[
+    {id:"chest",s:"ball",at:[0,1.05,0.5],r:[0.5,0.5,0.58],bone:"chest"},
+    {id:"hump",s:"ball",at:[0,1.42,0.42],r:[0.36,0.24,0.4],k:0.3,bone:"chest"},
+    {id:"belly",s:"ball",at:[0,0.92,-0.12],r:[0.52,0.47,0.62],k:0.3},
+    {id:"sag",s:"ball",at:[0,0.68,0.05],r:[0.34,0.14,0.45],k:0.25},
+    {id:"hips",s:"ball",at:[0,1,-0.72],r:[0.46,0.46,0.46],k:0.3},
+    {id:"rump",s:"ball",at:[0,1.16,-0.78],r:[0.36,0.26,0.38],k:0.2},
+    {id:"neck",s:"stick",at:[0,1.18,0.8],to:[0,1.2,1.12],r:0.38,r2:0.3,k:0.18,bone:"head"},
+    {id:"ruff",s:"ball",at:[0.2,1.12,1.06],r:[0.16,0.21,0.16],k:0.15,bone:"head",mirror:true},
+    {id:"skull",s:"ball",at:[0,1.23,1.24],r:[0.3,0.28,0.3],k:0.12,bone:"head"},
+    {id:"cheek",s:"ball",at:[0.16,1.12,1.3],r:[0.16,0.16,0.18],k:0.1,bone:"head",mirror:true},
+    {id:"brow",s:"ball",at:[0.1,1.33,1.42],r:[0.1,0.05,0.08],k:0.06,bone:"head",mirror:true},
+    {id:"stop",s:"ball",at:[0,1.3,1.47],r:[0.11,0.06,0.08],k:0.08,bone:"head"},
+    {id:"muzzle",s:"stick",at:[0,1.15,1.38],to:[0,1.07,1.8],r:0.165,r2:0.1,k:0.12,color:"#b8915f",bone:"head"},
+    {id:"bridge",s:"ball",at:[0,1.17,1.62],r:[0.08,0.05,0.16],k:0.06,color:"#b8915f",bone:"head"},
+    {id:"lip",s:"ball",at:[0.05,1.03,1.73],r:[0.055,0.04,0.07],k:0.03,color:"#b8915f",bone:"head",mirror:true},
+    {id:"chin",s:"ball",at:[0,0.99,1.62],r:[0.09,0.05,0.13],k:0.06,color:"#b8915f",bone:"head"},
+    {id:"mouth",s:"stick",at:[0.13,1.02,1.5],to:[0.035,1.005,1.77],r:0.009,sub:true,k:0.012,mirror:true},
+    {id:"nose",s:"ball",at:[0,1.1,1.885],r:[0.085,0.062,0.058],k:0.02,color:"#16100c",mat:"glossy",tex:"pores",bone:"head"},
+    {id:"nostril",s:"ball",at:[0.034,1.088,1.938],r:[0.019,0.014,0.02],sub:true,k:0.006,mirror:true},
+    {id:"socket",s:"ball",at:[0.13,1.27,1.5],r:[0.045,0.035,0.035],sub:true,k:0.025,mirror:true},
+    {id:"ear",s:"ball",at:[0.23,1.46,1.16],r:[0.09,0.09,0.05],rot:[0,0,-20],k:0.06,bone:"head",mirror:true},
+    {id:"earCup",s:"ball",at:[0.235,1.46,1.215],r:[0.05,0.05,0.03],sub:true,k:0.02,mirror:true},
+    {id:"shoulder",s:"ball",at:[0.3,1.02,0.58],r:[0.2,0.34,0.28],k:0.2,bone:"legF",mirror:true},
+    {id:"elbow",s:"ball",at:[0.34,0.64,0.52],r:[0.13,0.12,0.14],k:0.08,bone:"legF",mirror:true},
+    {id:"arm",s:"stick",at:[0.32,0.95,0.6],to:[0.33,0.55,0.64],r:0.22,r2:0.18,k:0.08,bone:"legF",mirror:true},
+    {id:"forearm",s:"stick",at:[0.33,0.55,0.64],to:[0.33,0.16,0.66],r:0.18,r2:0.15,k:0.06,bone:"pawF",mirror:true},
+    {id:"pawF",s:"ball",at:[0.33,0.085,0.74],r:[0.17,0.085,0.21],k:0.06,color:"#2b1b10",bone:"pawF",mirror:true},
+    {id:"toeF0",s:"ball",at:[0.24000000000000002,0.07,0.873],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawF",mirror:true},
+    {id:"toeF1",s:"ball",at:[0.30000000000000004,0.07,0.891],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawF",mirror:true},
+    {id:"toeF2",s:"ball",at:[0.36,0.07,0.891],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawF",mirror:true},
+    {id:"toeF3",s:"ball",at:[0.42000000000000004,0.07,0.873],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawF",mirror:true},
+    {id:"thigh",s:"ball",at:[0.3,0.92,-0.72],r:[0.22,0.36,0.33],k:0.2,bone:"legB",mirror:true},
+    {id:"haunch",s:"ball",at:[0.27,1.06,-0.86],r:[0.2,0.24,0.24],k:0.2,mirror:true},
+    {id:"shin",s:"stick",at:[0.32,0.7,-0.62],to:[0.33,0.32,-0.82],r:0.2,r2:0.15,k:0.08,bone:"legB",mirror:true},
+    {id:"heel",s:"stick",at:[0.33,0.32,-0.82],to:[0.33,0.1,-0.84],r:0.15,r2:0.13,k:0.05,bone:"pawB",mirror:true},
+    {id:"foot",s:"stick",at:[0.33,0.08,-0.86],to:[0.33,0.075,-0.6],r:0.11,r2:0.13,k:0.06,color:"#2b1b10",bone:"pawB",mirror:true},
+    {id:"toeB0",s:"ball",at:[0.24000000000000002,0.065,-0.547],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawB",mirror:true},
+    {id:"toeB1",s:"ball",at:[0.30000000000000004,0.065,-0.529],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawB",mirror:true},
+    {id:"toeB2",s:"ball",at:[0.36,0.065,-0.529],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawB",mirror:true},
+    {id:"toeB3",s:"ball",at:[0.42000000000000004,0.065,-0.547],r:[0.036,0.034,0.05],k:0.03,color:"#2b1b10",bone:"pawB",mirror:true},
+    {id:"tail",s:"ball",at:[0,1.06,-1.2],r:[0.09,0.08,0.08],k:0.06,bone:"tail"},
+    {id:"grizzle",s:"ball",at:[0,1.5,0.3],r:[0.42,0.22,0.65],paint:true,soft:0.2,color:"#a27b4f"},
+    {id:"browTint",s:"ball",at:[0,1.42,1.25],r:[0.16,0.08,0.16],paint:true,soft:0.08,color:"#7d5a37"},
+    {id:"legsF",s:"ball",at:[0.33,0.25,0.65],r:[0.22,0.3,0.25],paint:true,soft:0.14,color:"#2b1b10",mirror:true},
+    {id:"legsB",s:"ball",at:[0.33,0.25,-0.75],r:[0.22,0.28,0.3],paint:true,soft:0.14,color:"#2b1b10",mirror:true},
+    {id:"earIn",s:"ball",at:[0.235,1.46,1.21],r:[0.05,0.05,0.04],paint:true,soft:0.02,color:"#2b1b10",mirror:true}]},
+  {name:"root",shape:"joint",pos:[0,1,-0.4]},
+  {name:"chest",shape:"joint",pos:[0,1.1,0.2],parent:"root"},
+  {name:"head",shape:"joint",pos:[0,1.2,0.92],parent:"chest"},
+  {name:"legF",shape:"joint",pos:[0.32,1,0.6],parent:"chest",mirror:true},
+  {name:"pawF",shape:"joint",pos:[0.33,0.55,0.64],parent:"legF",mirror:true},
+  {name:"legB",shape:"joint",pos:[0.32,0.9,-0.66],parent:"root",mirror:true},
+  {name:"pawB",shape:"joint",pos:[0.33,0.32,-0.82],parent:"legB",mirror:true},
+  {name:"tail",shape:"joint",pos:[0,1.06,-1.1],parent:"root"},
+  {name:"eye",shape:"sphere",pos:[0.13,1.27,1.52],size:0.07,color:"#1c0f08",mat:"glossy",parent:"head",mirror:true,snap:"body",out:-0.018},
+  {name:"claw",shape:"cone",pos:[0.24,0.05,0.96],size:[0.03,0.12,0.03],rot:[105,0,0],color:"#d8cdb2",mat:"glossy",parent:"pawF",mirror:true,snap:"body",out:0.025,repeat:{n:4,step:[0.06,0,0]}},
+  {name:"clawB",shape:"cone",pos:[0.24,0.045,-0.46],size:[0.025,0.07,0.025],rot:[100,0,0],color:"#d8cdb2",mat:"glossy",parent:"pawB",mirror:true,snap:"body",out:0.015,repeat:{n:4,step:[0.06,0,0]}}]
+CLIPS:
+[
+  {name:"idle",dur:6,motion:[{part:"chest",kind:"pulse",amp:0.012,speed:0.33},{part:"head",kind:"swing",axis:"x",amp:3,speed:0.17},{part:"head",kind:"wag",axis:"y",amp:7,speed:0.083,phase:1},{part:"tail",kind:"wag",axis:"y",amp:10,speed:0.33}]},
+  {name:"walk",dur:1.4,motion:[{part:"legF",kind:"step",axis:"x",amp:20,speed:0.714,duty:0.62},{part:"pawF",kind:"lift",axis:"x",amp:40,speed:0.714,duty:0.62},{part:"legB",kind:"step",axis:"x",amp:18,speed:0.714,duty:0.62,phase:-1.57},{part:"pawB",kind:"lift",axis:"x",amp:-30,speed:0.714,duty:0.62,phase:-1.57},{part:"root",kind:"bob",axis:"y",amp:0.025,speed:1.43},{part:"root",kind:"wag",axis:"z",amp:2,speed:0.714},{part:"head",kind:"swing",axis:"x",amp:4,speed:1.43,phase:1.2},{part:"tail",kind:"wag",axis:"y",amp:8,speed:0.714}]},
+  {name:"roar",dur:2.4,loop:false,events:[{t:0.7,name:"roar"}],tracks:[{part:"root",ease:"back",rot:[[0,[0,0,0]],[0.6,[-6,0,0]],[1.7,[-6,0,0]],[2.4,[0,0,0]]]},{part:"head",ease:"back",rot:[[0,[0,0,0]],[0.25,[10,0,0]],[0.7,[-32,0,0]],[1.7,[-28,0,0]],[2.4,[0,0,0]]]},{part:"legF",ease:"out",rot:[[0,[0,0,0]],[0.6,[-28,0,0]],[1.7,[-28,0,0]],[2.4,[0,0,0]]]},{part:"pawF",ease:"out",rot:[[0,[0,0,0]],[0.6,[45,0,0]],[1.7,[45,0,0]],[2.4,[0,0,0]]]}]}]
+HARD SURFACE EXAMPLE - a longsword: ONE sculpt, bevelled boxes, a carved fuller, leather wraps (torus), gold, a glowing gem:
+[
+  {name:"sword",shape:"sculpt",color:"#c9ced6",mat:"metal",res:140,blobs:[
+    {id:"blade",s:"box",at:[0,1.55,0],r:[0.055,0.62,0.012],round:0.006,k:0.01},
+    {id:"tip",s:"box",at:[0,2.2,0],r:[0.04,0.04,0.012],rot:[0,0,45],round:0.004,k:0.03},
+    {id:"tipCut",s:"box",at:[0.07,2.25,0],r:[0.05,0.12,0.05],rot:[0,0,22],sub:true,k:0.004,mirror:true},
+    {id:"fuller",s:"box",at:[0,1.42,0.016],r:[0.012,0.42,0.008],round:0.006,sub:true,k:0.006},
+    {id:"fuller2",s:"box",at:[0,1.42,-0.016],r:[0.012,0.42,0.008],round:0.006,sub:true,k:0.006},
+    {id:"ricasso",s:"box",at:[0,0.97,0],r:[0.045,0.04,0.016],round:0.005,k:0.01},
+    {id:"guard",s:"box",at:[0,0.92,0],r:[0.24,0.022,0.03],round:0.012,k:0.012,color:"#c9962e",mat:"metal",tex:"hammered"},
+    {id:"quillon",s:"ball",at:[0.255,0.935,0],r:[0.035,0.035,0.035],k:0.02,color:"#c9962e",mat:"metal",mirror:true},
+    {id:"langet",s:"box",at:[0,0.95,0],r:[0.02,0.05,0.036],round:0.01,k:0.01,color:"#c9962e",mat:"metal"},
+    {id:"grip",s:"cyl",at:[0,0.9,0],to:[0,0.62,0],r:0.026,round:0.006,k:0.01,color:"#4a2c1a",mat:"leather"},
+    {id:"wrap0",s:"torus",at:[0,0.875,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
+    {id:"wrap1",s:"torus",at:[0,0.83,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
+    {id:"wrap2",s:"torus",at:[0,0.785,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
+    {id:"wrap3",s:"torus",at:[0,0.74,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
+    {id:"wrap4",s:"torus",at:[0,0.6950000000000001,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
+    {id:"wrap5",s:"torus",at:[0,0.65,0],r:0.026,r2:0.0065,k:0.004,color:"#4a2c1a",mat:"leather"},
+    {id:"collar",s:"cyl",at:[0,0.625,0],to:[0,0.6,0],r:0.032,round:0.004,k:0.006,color:"#c9962e",mat:"metal"},
+    {id:"pommel",s:"ball",at:[0,0.565,0],r:[0.045,0.04,0.03],k:0.01,color:"#c9962e",mat:"metal",tex:"hammered"},
+    {id:"gem",s:"ball",at:[0,0.565,0.026],r:[0.02,0.02,0.012],k:0.004,color:"#d12a3a",mat:"glow"},
+    {id:"gemBack",s:"ball",at:[0,0.565,-0.026],r:[0.02,0.02,0.012],k:0.004,color:"#d12a3a",mat:"glow"},
+    {id:"edge",s:"box",at:[0.05,1.55,0],r:[0.008,0.62,0.02],paint:true,soft:0.004,color:"#eef1f5",mirror:true}]}]
+Same blobs + style "lowpoly" (res 24, flat facets) = the faceted low-poly look; mat "clay"/"plastic", bigger eyes and rounder masses = toon.
 
 MODELS: parts and clips (what the tool wants)
 Part: {name, shape, pos:[x,y,z], size:[x,y,z], rot:[deg], color, mat, pivot:[x,y,z], parent:"name", mirror:true, ...}. y is up; origin on the ground. size is the bounding box (a sphere of size [2,1,3] is an ellipsoid).

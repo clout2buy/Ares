@@ -29,8 +29,10 @@ export function colour(v: unknown, d?: string): string | undefined {
 
 // ── model: parts that assemble one by one ────────────────────────────────────
 export const MODEL_SHAPES = ["box", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "capsule", "poly", "mesh", "loft", "arch", "stairs", "extrude", "lathe", "tube", "sculpt", "joint"];
-export const BLOB_KINDS = ["ball", "stick", "box", "chain"];
-const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror"]);
+export const BLOB_KINDS = ["ball", "stick", "box", "chain", "cyl", "torus"];
+/** Surface detail the sculpt shader draws per pixel (a blob's `tex`, or the default for its mat). */
+export const SCULPT_TEX = ["none", "fur", "scales", "wrinkles", "rock", "wood", "cloth", "hammered", "pores"];
+const BLOB_KEYS = new Set(["id", "s", "at", "to", "r", "r2", "pts", "rot", "round", "k", "sub", "paint", "soft", "color", "bone", "mirror", "mat", "tex"]);
 const MIRROR_SUFFIX = " (mirror)";
 const mirrorBone = (b: string): string => (b.endsWith(MIRROR_SUFFIX) ? b.slice(0, -MIRROR_SUFFIX.length) : `${b}${MIRROR_SUFFIX}`.slice(0, 41));
 /** A blob's problems in words (shown back to the author; the blob is still sanitised as well as it can be). */
@@ -38,8 +40,11 @@ export function lintBlob(raw: unknown, i: number): string[] {
   const b = obj(raw), w: string[] = [], tag = `blob ${i}${b.bone ? ` (${String(b.bone)})` : ""}`;
   for (const k of Object.keys(b)) if (!BLOB_KEYS.has(k)) w.push(`${tag}: unknown field "${k}" (blob fields: ${[...BLOB_KEYS].join(", ")})`);
   const s = b.s === undefined ? "ball" : String(b.s);
-  if (!BLOB_KINDS.includes(s)) w.push(`${tag}: unknown s "${s}" (ball|stick|box|chain)`);
+  if (!BLOB_KINDS.includes(s)) w.push(`${tag}: unknown s "${s}" (${BLOB_KINDS.join("|")})`);
   if (s === "stick" && arr(b.to).length < 3) w.push(`${tag}: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)`);
+  if (s === "cyl" && arr(b.to).length < 3) w.push(`${tag}: a cyl needs to:[x,y,z] (a flat-ended cylinder from at to to, radius r, bevel round)`);
+  if (b.mat !== undefined && !MODEL_MATS.includes(String(b.mat))) w.push(`${tag}: unknown mat "${String(b.mat)}" (${MODEL_MATS.join(", ")})`);
+  if (b.tex !== undefined && !SCULPT_TEX.includes(String(b.tex))) w.push(`${tag}: unknown tex "${String(b.tex)}" (${SCULPT_TEX.join(", ")})`);
   if (s === "chain" && arr(b.pts).length < 2) w.push(`${tag}: a chain needs pts:[[x,y,z,r],...] (2+ points)`);
   if (s !== "chain" && arr(b.at).length < 3) w.push(`${tag}: at should be [x,y,z]`);
   return w;
@@ -58,6 +63,8 @@ function sanitizeBlobs(v: unknown): Obj[] {
     if (paint) { one.paint = true; one.soft = clamp(b.soft, 0.002, 2, 0.04); }
     const c = colour(b.color); if (c) one.color = c;
     if (b.bone !== undefined && String(b.bone) && !sub && !paint) one.bone = str(b.bone, 41);
+    if (!sub && MODEL_MATS.includes(String(b.mat))) one.mat = String(b.mat);
+    if (!sub && SCULPT_TEX.includes(String(b.tex))) one.tex = String(b.tex);
     const rDef = 0.2;
     const pieces: Obj[] = [];
     if (s === "chain") {
@@ -65,10 +72,19 @@ function sanitizeBlobs(v: unknown): Obj[] {
       if (pts.length < 2) s = "ball";
       else for (let i = 0; i < pts.length - 1; i++) pieces.push({ ...one, s: "stick", at: pts[i]!.slice(0, 3), to: pts[i + 1]!.slice(0, 3), r: pts[i]![3], r2: pts[i + 1]![3] });
     }
-    if (s === "stick") {
+    if (s === "stick" || s === "cyl") {
       const to = arr(b.to).length >= 3 ? P(b.to) : null;
       if (!to) s = "ball";
-      else { const r = clamp(Array.isArray(b.r) ? arr(b.r)[0] : b.r, 0.002, 20, rDef); pieces.push({ ...one, s, at: P(b.at), to, r, r2: clamp(b.r2, 0.002, 20, r) }); }
+      else {
+        const r = clamp(Array.isArray(b.r) ? arr(b.r)[0] : b.r, 0.002, 20, rDef);
+        pieces.push(s === "cyl" ? { ...one, s, at: P(b.at), to, r, round: clamp(b.round, 0, r, Math.min(r * 0.15, 0.02)) } : { ...one, s, at: P(b.at), to, r, r2: clamp(b.r2, 0.002, 20, r) });
+      }
+    }
+    if (s === "torus") {
+      const R = clamp(Array.isArray(b.r) ? arr(b.r)[0] : b.r, 0.004, 20, rDef);
+      const piece: Obj = { ...one, s, at: P(b.at), r: [R, R, R], r2: clamp(b.r2, 0.002, R, R * 0.25) };
+      const rot = vec3(b.rot, [0, 0, 0], -360, 360); if (rot.some((n) => n)) piece.rot = rot;
+      pieces.push(piece);
     }
     if (s === "ball" || s === "box") {
       const r = vec3(b.r, [rDef, rDef, rDef], 0.002, 20);
@@ -78,7 +94,7 @@ function sanitizeBlobs(v: unknown): Obj[] {
       pieces.push(piece);
     }
     // k = how far it melts into what is already there (the "clay" radius); carving and markings default softer/tighter
-    const minR = Math.min(...pieces.map((q) => Math.min(...(Array.isArray(q.r) ? (q.r as number[]) : [q.r as number, (q.r2 as number) ?? (q.r as number)]))));
+    const minR = Math.min(...pieces.map((q) => q.s === "torus" ? (q.r2 as number) : Math.min(...(Array.isArray(q.r) ? (q.r as number[]) : [q.r as number, (q.r2 as number) ?? (q.r as number)]))));
     const k = clamp(b.k, 0.001, 2, sub ? 0.03 : Math.max(0.01, Math.min(0.25, minR * 0.5)));
     for (const q of pieces) {
       q.k = k;
@@ -125,7 +141,7 @@ export function sanitizeOverride(raw: unknown): Obj | null {
 
 export const MODEL_STYLES = ["smooth", "lowpoly", "wire", "flat"];
 export const MODEL_LOOKS = ["studio", "clay", "slate", "pastel", "gallery", "noir", "holo", "sunset", "night", "flat"];
-export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow", "fur", "skin"];
+export const MODEL_MATS = ["matte", "clay", "plastic", "holo", "metal", "glossy", "glass", "glow", "fur", "skin", "leather", "wood", "stone", "cloth"];
 const vec3 = (v: unknown, d: [number, number, number], lo: number, hi: number): [number, number, number] => {
   if (typeof v === "number") return [clamp(v, lo, hi, d[0]), clamp(v, lo, hi, d[1]), clamp(v, lo, hi, d[2])];
   const a = arr(v);
@@ -181,7 +197,10 @@ export function sanitizeModelPart(raw: unknown, style = "", room = 220, edge = "
   if (shape === "loft") { base.sections = sections; base.seg = Math.round(clamp(p.seg, 3, 24, low ? 6 : 16)); }
   if (shape === "sculpt") {
     base.blobs = blobs;
-    if (p.res !== undefined) base.res = Math.round(clamp(p.res, 12, 128, 64));
+    if (p.res !== undefined) base.res = Math.round(clamp(p.res, 12, 160, 96));
+    if (SCULPT_TEX.includes(String(p.tex))) base.tex = String(p.tex);
+    if (p.grain !== undefined) base.grain = clamp(p.grain, 0.2, 5, 1);
+    if (p.bone !== undefined && String(p.bone)) base.bone = str(p.bone, 41);
     const nz = obj(p.noise); if (p.noise !== undefined && nz.amp !== undefined) base.noise = { amp: clamp(nz.amp, 0, 0.2, 0.01), scale: clamp(nz.scale, 0.5, 60, 6) };
     if (p.tint !== undefined) base.tint = clamp(p.tint, 0, 0.4, 0.06);
     if (p.ao !== undefined) base.ao = clamp(p.ao, 0, 1, 1);
@@ -222,7 +241,8 @@ export function sanitizeScript(raw: unknown): Obj | null {
   return { name, code: o.code.slice(0, 24_000), enabled: o.enabled !== false };
 }
 
-export const MOTION_KINDS = ["swing", "wag", "bob", "spin", "pulse"];
+export const MOTION_KINDS = ["swing", "wag", "bob", "spin", "pulse", "step", "lift"];
+export const EASES = ["smooth", "linear", "in", "out", "inout", "back", "elastic", "bounce"];
 const keys = (v: unknown, lo: number, hi: number, d: number): [number, number[]][] =>
   arr(v).slice(0, 32).flatMap((k) => { const a = arr(k); if (a.length < 2) return []; const val = arr(a[1]); return [[clamp(a[0], 0, 20, 0), [clamp(val[0], lo, hi, d), clamp(val[1], lo, hi, d), clamp(val[2], lo, hi, d)]] as [number, number[]]]; }).sort((x, y) => x[0] - y[0]);
 
@@ -234,6 +254,7 @@ export function sanitizeAnim(raw: unknown): Obj | null {
     const o = obj(t), part = str(o.part, 33);
     if (!part) return [];
     const out: Obj = { part };
+    if (EASES.includes(String(o.ease)) && o.ease !== "smooth") out.ease = String(o.ease);
     const rot = keys(o.rot, -720, 720, 0), pos = keys(o.pos, -50, 50, 0), scale = keys(o.scale, 0.01, 20, 1);
     if (rot.length) out.rot = rot;
     if (pos.length) out.pos = pos;
@@ -243,7 +264,7 @@ export function sanitizeAnim(raw: unknown): Obj | null {
   const motion = arr(a.motion).slice(0, 40).flatMap((m): Obj[] => {
     const o = obj(m), part = str(o.part, 33), kind = String(o.kind);
     if (!part || !MOTION_KINDS.includes(kind)) return [];
-    return [{ part, kind, axis: ["x", "y", "z"].includes(String(o.axis)) ? String(o.axis) : kind === "bob" ? "y" : kind === "wag" ? "y" : "x", amp: clamp(o.amp, -720, 720, kind === "pulse" ? 0.1 : kind === "bob" ? 0.2 : 20), speed: clamp(o.speed, 0.05, 8, 1), phase: clamp(o.phase, -7, 7, 0), mirror: o.mirror !== false }];
+    return [{ part, kind, axis: ["x", "y", "z"].includes(String(o.axis)) ? String(o.axis) : kind === "bob" ? "y" : kind === "wag" ? "y" : "x", amp: clamp(o.amp, -720, 720, kind === "pulse" ? 0.1 : kind === "bob" ? 0.2 : 20), speed: clamp(o.speed, 0.05, 8, 1), phase: clamp(o.phase, -7, 7, 0), mirror: o.mirror !== false, ...(kind === "step" || kind === "lift" ? { duty: clamp(o.duty, 0.3, 0.9, 0.6) } : {}) }];
   });
   // named moments inside a clip: a script (see sanitizeScript) listens with api.on(name, fn) — a hoof lands, a muzzle touches water
   const events = arr(a.events).slice(0, 24).flatMap((e): Obj[] => {

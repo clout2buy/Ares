@@ -31,7 +31,7 @@ export function buildModel(doc,opts){
   // io: {variant:"frost", edges, shadows:false, material(part, shared) -> per-instance material override}
   model.instance=function(io){
     io=io||{};
-    var group=new T.Group(),items=[],nodes=[],byName={},ev=mkEvents(),cur=null,clock=0,playing=false,speed=1,loop=true,hold=false;
+    var group=new T.Group(),items=[],nodes=[],byName={},ev=mkEvents(),cur=null,clock=0,playing=false,speed=1,loop=true,hold=false,xf=null;
     group.name=doc.title||"ares-model";
     parts.forEach(function(p,i){
       var vk=(io.variant||"")+":"+i,pv0=partFor(p,io.variant);cache[vk]=cache[vk]||{};
@@ -48,14 +48,17 @@ export function buildModel(doc,opts){
       on:ev.on,emit:ev.emit,
       triangles:function(){var n=0;group.traverse(function(o){if(o.isMesh&&o.geometry){var g=o.geometry;n+=(g.index?g.index.count:g.attributes.position.count)/3}});return n},
       get playing(){return playing},get clip(){return cur?cur.name:null},get time(){return clock},
-      // play(name,{loop,speed,restart}); a clip with loop:false holds its last pose and emits "end"
-      play:function(name,o){var c=clips[name];if(!c)throw new Error("ares-model: no clip "+name+" (have: "+model.clips.join(", ")+")");o=o||{};if(cur===c&&playing&&!o.restart)return inst;cur=c;clock=0;playing=true;hold=false;speed=o.speed||1;loop=o.loop!==undefined?o.loop:c.loop!==false;pose(c,0);return inst},
-      stop:function(){playing=false;cur=null;rest();return inst},
+      // play(name,{loop,speed,restart,fade}); a clip with loop:false holds its last pose and emits "end".
+      // fade (seconds, default 0.25 when switching from another clip) blends from the current pose so clips never pop
+      play:function(name,o){var c=clips[name];if(!c)throw new Error("ares-model: no clip "+name+" (have: "+model.clips.join(", ")+")");o=o||{};if(cur===c&&playing&&!o.restart)return inst;
+        var fd=o.fade!==undefined?o.fade:(cur?0.25:0);xf=fd>0?{s:rigSnap(nodes),t:0,d:fd}:null;
+        cur=c;clock=0;playing=true;hold=false;speed=o.speed||1;loop=o.loop!==undefined?o.loop:c.loop!==false;pose(c,0);if(xf)rigBlend(nodes,xf.s,0);return inst},
+      stop:function(){playing=false;cur=null;xf=null;rest();return inst},
       update:function(dt){
         if(!playing||!cur)return inst;
         var d=cur.dur||1,prev=clock;clock+=dt*speed;
         if(!loop&&clock>=d){clock=d;playing=false;hold=true}
-        pose(cur,clock);
+        pose(cur,clock);if(xf){xf.t+=dt;rigBlend(nodes,xf.s,xf.t/xf.d);if(xf.t>=xf.d)xf=null}
         (cur.events||[]).forEach(function(e){var a=((prev%d)+d)%d,b=((clock%d)+d)%d,hit=b>=a?(e.t>a&&e.t<=b):(e.t>a||e.t<=b);if(!loop&&clock>=d&&prev<d&&e.t<=d&&e.t>a)hit=true;if(hit)ev.emit(e.name,e.data)});
         if(hold){hold=false;ev.emit("end",cur.name)}
         return inst},

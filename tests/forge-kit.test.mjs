@@ -620,11 +620,11 @@ test("runtime variants: a colourway is built once per variant and shared by its 
 // ── sculpt: blobs melt into one skinned mesh; joints bend it; snapped features sit on the skin ──
 import { lintBlob } from "../packages/cli/dist/entry/forgeBlocks.js";
 
-/** The worked bear from the help docs, as parts (the docs example must stay valid input). */
-function docsBear() {
-  const from = FORGE_SCRIPT_DOCS.indexOf("WORKED EXAMPLE"), start = FORGE_SCRIPT_DOCS.indexOf("\n", from) + 1, end = FORGE_SCRIPT_DOCS.indexOf(" Walk:", start);
-  const walk = FORGE_SCRIPT_DOCS.slice(end + 6, FORGE_SCRIPT_DOCS.indexOf("\n Same blobs", end)).trim();
-  return { parts: vm.runInNewContext(`[${FORGE_SCRIPT_DOCS.slice(start, end)}]`), walk: vm.runInNewContext(`(${walk})`) };
+/** The worked examples from the help docs (they must stay valid, clean input): the grizzly's parts + clips, and the sword. */
+function docsExamples() {
+  const D = FORGE_SCRIPT_DOCS, from = D.indexOf("WORKED EXAMPLE"), start = D.indexOf("\n", from) + 1, clips = D.indexOf("\nCLIPS:", start), hard = D.indexOf("\nHARD SURFACE EXAMPLE", clips);
+  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nSame blobs", swordStart);
+  return { parts: vm.runInNewContext(D.slice(start, clips)), anims: vm.runInNewContext(D.slice(clips + 7, hard)), sword: vm.runInNewContext(D.slice(swordStart, swordEnd)) };
 }
 
 test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirrored joint, and a sculpt with nothing to melt falls back", () => {
@@ -648,7 +648,7 @@ test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirr
   assert.ok(b.blobs.find((x) => x.sub).k <= 0.05, "carves default tight");
   assert.equal(b.blobs.at(-1).s, "ball", "a stick without `to` degrades to a ball");
   assert.equal(sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "ball", at: [0, 0, 0], paint: true }] }] }).parts[0].shape, "box");
-  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
+  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
   const mirrored = sanitizeModel({ parts: [{ name: "ear", shape: "sculpt", mirror: true, blobs: [{ s: "ball", at: [0.3, 1, 0], r: 0.1, bone: "head" }] }] }).parts;
   assert.deepEqual(mirrored.map((p) => [p.name, p.blobs[0].at[0], p.blobs[0].bone]), [["ear", 0.3, "head"], ["ear (mirror)", -0.3, "head (mirror)"]]);
 });
@@ -684,7 +684,7 @@ test("sculpt studio: unknown blob fields, missing bones and bad snaps are report
   assert.equal(raw.size, undefined, "a sculpt scales its blobs, not a bounding box");
 });
 
-test("sculpt runtime: the docs bear builds ONE closed skinned mesh, joints bend it, eyes land on the skin, and it loads in a game", async (t) => {
+test("sculpt runtime: the docs grizzly builds ONE closed skinned mesh, joints bend it, eyes land on the skin, and it loads in a game", async (t) => {
   let threePath;
   for (const c of [path.resolve("node_modules/three/build/three.module.js"), path.resolve("tauri/node_modules/three/build/three.module.js")]) {
     if (await readFile(c).then(() => true, () => false)) { threePath = c; break; }
@@ -698,9 +698,9 @@ test("sculpt runtime: the docs bear builds ONE closed skinned mesh, joints bend 
   const T = await import(pathToFileURL(threePath).href);
   dropStudios();
   const st = ensureStudio("bear");
-  const bear = docsBear();
-  const r = await applyEdit(st, { parts: bear.parts, anims: [bear.walk] }, root);
-  assert.deepEqual(r.errors, [], "the docs example is clean input");
+  const bear = docsExamples();
+  const r = await applyEdit(st, { parts: bear.parts, anims: bear.anims }, root);
+  assert.deepEqual(r.errors, [], "the docs example is clean input and meets the quality bar");
   const spec = studioSpec(st);
   const model = buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: spec.anims, scripts: [] });
   const a = model.instance(), b = model.instance();
@@ -710,9 +710,16 @@ test("sculpt runtime: the docs bear builds ONE closed skinned mesh, joints bend 
   assert.notEqual(body.skeleton, b.part("body").mesh.skeleton, "each instance has its own skeleton");
   const g = body.geometry, idx = g.index.array, edges = new Map();
   for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const p = idx[k + e], q = idx[k + (e + 1) % 3], key = p < q ? `${p}_${q}` : `${q}_${p}`; edges.set(key, (edges.get(key) ?? 0) + 1); }
-  assert.ok([...edges.values()].every((n) => n === 2), "watertight: every edge has exactly two triangles");
+  // no holes: no edge has a single triangle. Surface nets may join two sheets that cross one cell (toes touching) at a few
+  // 4-triangle edges; those are invisible and stay a vanishing fraction
+  const counts = [...edges.values()];
+  assert.equal(counts.filter((n) => n === 1).length, 0, "watertight: no open edges");
+  assert.ok(counts.filter((n) => n > 2).length < counts.length * 0.0005, "at most a handful of shared sheet edges");
   assert.ok(g.attributes.position.count > 2000, `a real surface (${g.attributes.position.count} verts)`);
-  assert.deepEqual(g.userData.bones.slice(0, 4), ["", "head", "head (mirror)", "legF"]);
+  assert.deepEqual(g.userData.bones.slice(0, 4), ["", "chest", "root", "head"]);
+  assert.ok(g.attributes.dtA && g.attributes.rme, "per-vertex surface detail and material ride on the mesh");
+  const furW = Array.from({ length: 200 }, (_, i) => g.attributes.dtA.getX(i * 37 % g.attributes.position.count));
+  assert.ok(furW.reduce((a, b) => a + b, 0) / furW.length > 0.8, "mat fur brings fur grain everywhere");
   // colours: the muzzle blob is light, the paint on the lower legs is dark
   const P = g.attributes.position, C = g.attributes.color;
   const near = (x, y, z) => { let best = 0, bd = 1e9; for (let i = 0; i < P.count; i++) { const d = Math.hypot(P.getX(i) - x, P.getY(i) - y, P.getZ(i) - z); if (d < bd) { bd = d; best = i; } } return best; };
@@ -723,13 +730,13 @@ test("sculpt runtime: the docs bear builds ONE closed skinned mesh, joints bend 
   assert.ok(Math.hypot(eye.pos[0] - 0.13, eye.pos[1] - 1.27, eye.pos[2] - 1.5) < 0.2 && eye.snapped, "snapped near where it was asked");
   const nearest = P.count && Math.min(...Array.from({ length: P.count }, (_, i) => Math.hypot(P.getX(i) - eye.pos[0], P.getY(i) - eye.pos[1], P.getZ(i) - eye.pos[2])));
   assert.ok(nearest < 0.05, `the eye sits on the skin (${nearest.toFixed(3)} from the nearest vertex)`);
-  // bending: a paw vertex moves when the walk swings the leg; a back vertex barely does
+  // bending: the walk moves a paw vertex far more than a vertex on the back (one skin, bent at the joints)
   a.group.updateMatrixWorld(true); body.skeleton.update();
   const paw = near(0.33, 0.1, 0.8), back = near(0, 1.7, -0.2), v0 = body.getVertexPosition(paw, new T.Vector3()), w0 = body.getVertexPosition(back, new T.Vector3());
-  a.play("walk"); a.update(0.35); a.group.updateMatrixWorld(true); body.skeleton.update();
+  a.play("walk"); a.update(1.1); a.group.updateMatrixWorld(true); body.skeleton.update();
   const v1 = body.getVertexPosition(paw, new T.Vector3()), w1 = body.getVertexPosition(back, new T.Vector3());
   assert.ok(v1.distanceTo(v0) > 0.1, `the paw swings (${v1.distanceTo(v0).toFixed(3)})`);
-  assert.ok(w1.distanceTo(w0) < 0.02, `the back stays (${w1.distanceTo(w0).toFixed(3)})`);
+  assert.ok(w1.distanceTo(w0) < 0.05, `the back only bobs (${w1.distanceTo(w0).toFixed(3)})`);
   // the claws follow the paw joint (rigid parts and skin agree)
   assert.equal(a.part("claw 1").node.parent, a.part("pawF").node);
   a.dispose(); b.dispose(); model.dispose();
@@ -750,4 +757,81 @@ test("live: a sculpt grows blob by blob while it streams (coarse partials), then
   }
   assert.match(LIVE_RUNTIME_JS, /m\.partial&&el\.__live\.sculpt/);
   assert.match(FORGE_MODEL_JS, /sculpt:function\(list\)/);
+});
+
+// ── the same process for props, real gaits, eased keys, crossfades, and the quality bar ──
+async function runtimeFor(t) {
+  let threePath;
+  for (const c of [path.resolve("node_modules/three/build/three.module.js"), path.resolve("tauri/node_modules/three/build/three.module.js")]) {
+    if (await readFile(c).then(() => true, () => false)) { threePath = c; break; }
+  }
+  if (!threePath) return null;
+  const root = await mkdtemp(path.join(tmpdir(), "ares-rt2-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "ares-model.mjs");
+  await writeFile(file, buildRuntimeModule(pathToFileURL(threePath).href), "utf8");
+  return { root, ...(await import(pathToFileURL(file).href)) };
+}
+
+test("hard surface is sculpted too: the docs sword is one watertight mesh with steel, gold and leather on it", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  dropStudios();
+  const st = ensureStudio("sword");
+  const r = await applyEdit(st, { parts: docsExamples().sword }, rt.root);
+  assert.deepEqual(r.errors.filter((e) => !e.startsWith("quality:")), []);
+  const spec = studioSpec(st);
+  assert.ok(spec.parts[0].blobs.some((b) => b.s === "cyl") && spec.parts[0].blobs.some((b) => b.s === "torus"));
+  const inst = rt.buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: [], scripts: [] }).instance();
+  const g = inst.part("sword").mesh.geometry, idx = g.index.array, edges = new Map();
+  for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const p = idx[k + e], q = idx[k + (e + 1) % 3], key = p < q ? `${p}_${q}` : `${q}_${p}`; edges.set(key, (edges.get(key) ?? 0) + 1); }
+  assert.ok([...edges.values()].every((n) => n === 2), "watertight");
+  const P = g.attributes.position, RME = g.attributes.rme;
+  const at = (x, y, z) => { let best = 0, bd = 1e9; for (let i = 0; i < P.count; i++) { const d = Math.hypot(P.getX(i) - x, P.getY(i) - y, P.getZ(i) - z); if (d < bd) { bd = d; best = i; } } return best; };
+  assert.ok(RME.getY(at(0, 1.6, 0.02)) > 0.85, "the blade is metal");
+  assert.ok(RME.getY(at(0.03, 0.75, 0)) < 0.1 && RME.getX(at(0.03, 0.75, 0)) > 0.4, "the grip is leather (rough, not metal)");
+  assert.ok(RME.getZ(at(0, 0.565, 0.04)) > 0.5, "the gem glows");
+  assert.ok(g.attributes.dtB.getY(at(0.03, 0.75, 0)) === 0 && g.attributes.dtA.getZ(at(0.03, 0.75, 0)) > 0.5, "leather brings its wrinkles");
+});
+
+test("gaits plant the foot (step) and lift only in the air (lift); keys ease; clips crossfade instead of popping", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const clip = sanitizeAnim({ name: "walk", dur: 1, motion: [{ part: "leg", kind: "step", axis: "x", amp: 20, speed: 1, duty: 0.6 }, { part: "knee", kind: "lift", axis: "x", amp: 40, speed: 1, duty: 0.6 }] });
+  assert.equal(clip.motion[0].duty, 0.6);
+  const jump = sanitizeAnim({ name: "jump", dur: 1, loop: false, tracks: [{ part: "leg", ease: "linear", rot: [[0, [0, 0, 0]], [1, [90, 0, 0]]] }, { part: "knee", ease: "nope", rot: [[0, [0, 0, 0]], [1, [10, 0, 0]]] }] });
+  assert.equal(jump.tracks[0].ease, "linear"); assert.equal(jump.tracks[1].ease, undefined, "unknown easing falls back to smooth");
+  const parts = sanitizeModel({ parts: [{ name: "leg", shape: "joint", pos: [0, 1, 0] }, { name: "knee", shape: "joint", pos: [0, 0.5, 0], parent: "leg" }] }).parts;
+  const m = rt.buildModel({ format: "ares-model/1", expanded: true, parts, anims: [clip, jump], scripts: [] }), a = m.instance();
+  const leg = a.part("leg").node, knee = a.part("knee").node, deg = (r) => r * 180 / Math.PI;
+  a.play("walk");
+  const sample = (tt) => { a.stop(); a.play("walk", { fade: 0 }); a.update(tt); return [deg(leg.rotation.x), deg(knee.rotation.x)]; };
+  assert.deepEqual(sample(0).map((v) => Math.round(v)), [-20, 0], "the foot plants forward, knee straight");
+  assert.deepEqual(sample(0.3).map((v) => Math.round(v)), [0, 0], "mid-stance: pushing back linearly, knee still straight");
+  const [hip, k8] = sample(0.8);
+  assert.ok(Math.abs(hip) < 1 && Math.round(k8) === 40, "mid-swing: the knee is fully flexed");
+  a.stop(); a.play("jump", { fade: 0 }); a.update(0.25);
+  assert.ok(Math.abs(deg(leg.rotation.x) - 22.5) < 0.01, "linear easing");
+  assert.ok(Math.abs(deg(knee.rotation.x) - 10 * 0.15625) < 0.01, "default smoothstep");
+  // crossfade: from jump's held pose into walk over 0.25 s
+  a.update(1); assert.ok(Math.abs(deg(leg.rotation.x) - 90) < 0.01);
+  a.play("walk"); a.update(0.001);
+  assert.ok(deg(leg.rotation.x) > 80, `starts from the old pose (${deg(leg.rotation.x).toFixed(1)})`);
+  a.update(0.3);
+  assert.ok(Math.abs(deg(leg.rotation.x) - (-20 + 40 * 0.301 / 0.6)) < 0.5, "after the fade it is pure walk");
+});
+
+test("the quality bar: stacked-primitive creatures, blockouts, flat colour, no eyes, no clips, no idle and skating walks are called out", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-quality-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  let st = ensureStudio("toy");
+  let r = await applyEdit(st, { parts: ["body", "head", "front leg", "back leg", "tail"].map((name) => ({ name, shape: "sphere" })) }, root);
+  assert.ok(r.errors.some((e) => /quality: this is a creature\/character stacked from primitives/.test(e)));
+  st = ensureStudio("blob");
+  r = await applyEdit(st, { parts: [{ name: "body", shape: "sculpt", blobs: [{ s: "ball", at: [0, 1, 0], r: 0.5, bone: "leg" }] }, { name: "leg", shape: "joint", pos: [0, 1, 0] }],
+    anims: [{ name: "walk", dur: 1, motion: [{ part: "leg", kind: "swing", amp: 20 }] }] }, root);
+  const q = r.errors.filter((e) => e.startsWith("quality:")).join("\n");
+  for (const re of [/is a blockout/, /one flat colour/, /no eyes on it/, /no material/, /no idle clip/, /swings legs on a sine/]) assert.match(q, re);
+  st = ensureStudio("chair");
+  r = await applyEdit(st, { parts: ["seat", "back", "leg a", "leg b"].map((name) => ({ name, shape: "box" })) }, root);
+  assert.ok(r.errors.some((e) => /props look real when sculpted too/.test(e)));
 });

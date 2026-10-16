@@ -42,8 +42,8 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "0.57.0",
     date: "October 2026",
-    title: "Real creatures",
-    tagline: "Ares sculpts now: animals and characters come out as one smooth, furry, rigged body instead of a stack of balls.",
+    title: "Ares sculpts",
+    tagline: "Every model is sculpted now: realistic animals, characters and props, detailed, rigged and animated without you asking.",
     tour: true,
     highlights: [
       { icon: "🐻", title: "Sculpted, not stacked", blurb: "Ask for an animal or a character and Ares sculpts it like clay: masses melt into one smooth body with real silhouettes, shoulders, haunches and snouts.", tag: "New" },
@@ -51,6 +51,11 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "🦴", title: "One skin that bends", blurb: "Legs, heads and tails bend at real joints with the body stretching smoothly around them, in the Forge and in your game.", tag: "New" },
       { icon: "🧶", title: "Fur and markings", blurb: "A fur finish with fine grain, soft creases that shade themselves, and painted markings: socks, bibs, muzzles, stripes and grizzled backs.", tag: "New" },
       { icon: "🎯", title: "Eyes where they belong", blurb: "Eyes, noses, claws and horns snap onto the skin, so nothing floats in the air or sinks into the head.", tag: "Fixed" },
+      { icon: "🐊", title: "Real surface detail", blurb: "Scales, wrinkles, fur grain, wood grain, stone, cloth weave, hammered metal and skin pores, drawn right on the model.", tag: "New" },
+      { icon: "⚔️", title: "Props sculpted too", blurb: "Swords, chests and machines get bevelled edges, carved grooves and several materials in one piece: steel, gold, leather and glowing gems.", tag: "New" },
+      { icon: "🐾", title: "Walks that plant", blurb: "Feet plant and push off, then lift and swing through. Actions wind up, hit and settle, and clips blend smoothly from one to the next.", tag: "New" },
+      { icon: "🏅", title: "A quality bar", blurb: "Ares checks every model against a finished-asset bar (detail, colour, eyes, rig, idle, walk) and fixes what's missing before it shows you.", tag: "New" },
+      { icon: "💡", title: "Truer colours", blurb: "New studio lighting with filmic tone mapping: dark fur, wood and leather keep their real colour instead of washing out.", tag: "Polished" },
       { icon: "🔺", title: "Low-poly too", blurb: "The same creature in low-poly style comes out as clean faceted triangles, ready for a stylised game.", tag: "New" },
       { icon: "✏️", title: "Precise touch-ups", blurb: "\"Longer snout\", \"bigger ears\": Ares reshapes just that piece of the sculpt and checks it from every side.", tag: "Polished" },
     ],

@@ -49,9 +49,10 @@ const ROUND = { skull: { r: [0.17, 0.16, 0.17] }, cheek: { r: [0.11, 0.095, 0.11
 const COLLAR: Obj = { id: "collar", s: "stick", at: [0, 0.9, 0.56], to: [0, 0.98, 0.64], r: 0.2, paint: true, soft: 0.012, color: "#c8453a" };
 
 export const TROT = { name: "trot", dur: 0.7, motion: [
-  { part: "legF", kind: "swing", axis: "x", amp: 26, speed: 1.43 },
-  { part: "legB", kind: "swing", axis: "x", amp: 26, speed: 1.43, phase: 3.14 },
-  { part: "pawB", kind: "swing", axis: "x", amp: 20, speed: 1.43, phase: 4.5 },
+  { part: "legF", kind: "step", axis: "x", amp: 26, speed: 1.43, duty: 0.5 },
+  { part: "legB", kind: "step", axis: "x", amp: 26, speed: 1.43, duty: 0.5, phase: 3.14 },
+  { part: "pawB", kind: "lift", axis: "x", amp: -40, speed: 1.43, duty: 0.5, phase: 3.14 },
+  { part: "body", kind: "bob", axis: "y", amp: 0.02, speed: 2.86 },
   { part: "tail", kind: "wag", axis: "y", amp: 14, speed: 1.43 },
   { part: "head", kind: "swing", axis: "x", amp: 3, speed: 2.86 },
 ] };

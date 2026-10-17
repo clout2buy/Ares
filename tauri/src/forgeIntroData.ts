@@ -9,32 +9,59 @@ type Obj = Record<string, unknown>;
 
 const O = "#e8742a", C = "#f6ead2", K = "#26201e";
 
-/** A low-poly fox, authored the way Ares authors: rings along a spine (loft), mirrored limbs, hinged joints. */
-export const FOX_RAW: Obj[] = [
-  { name: "torso", shape: "loft", seg: 7, color: C, color2: O, grad: "y", sections: [[0, 1.55, -1.7, 0.1, 0.12], [0, 1.62, -1.25, 0.55, 0.6], [0, 1.58, -0.3, 0.64, 0.62], [0, 1.5, 0.6, 0.62, 0.66], [0, 1.72, 1.25, 0.46, 0.52]], stage: "blockout" },
-  { name: "head", shape: "loft", seg: 7, color: C, color2: O, grad: "y", parent: "torso", pivot: [0, 1.95, 1.1], sections: [[0, 1.9, 1.05, 0.34, 0.4], [0, 2.32, 1.62, 0.46, 0.44], [0, 2.36, 2.0, 0.42, 0.36], [0, 2.22, 2.5, 0.22, 0.2], [0, 2.16, 2.92, 0.05, 0.05]], stage: "form" },
-  { name: "nose", shape: "poly", pos: [0, 2.17, 2.92], size: 0.15, color: K, detail: 0, parent: "head", stage: "detail" },
-  { name: "ear", shape: "pyramid", pos: [0.3, 2.95, 1.72], size: [0.42, 0.78, 0.2], rot: [-12, 0, -14], color: O, mirror: true, parent: "head", stage: "detail" },
-  { name: "inner ear", shape: "pyramid", pos: [0.3, 2.88, 1.8], size: [0.26, 0.5, 0.1], rot: [-12, 0, -14], color: K, mirror: true, parent: "head", stage: "detail" },
-  { name: "eye", shape: "poly", pos: [0.27, 2.4, 2.22], size: 0.1, color: K, detail: 0, mirror: true, parent: "head", stage: "detail" },
-  { name: "front leg", shape: "loft", seg: 6, color: K, color2: O, grad: "y", mirror: true, parent: "torso", pivot: [0.3, 1.5, 1.0], sections: [[0.3, 1.55, 1.0, 0.22, 0.24], [0.28, 1.0, 1.06, 0.15, 0.17], [0.28, 0.4, 1.1, 0.1, 0.11], [0.28, 0.06, 1.22, 0.13, 0.16]], stage: "form" },
-  { name: "back leg", shape: "loft", seg: 6, color: K, color2: O, grad: "y", mirror: true, parent: "torso", pivot: [0.4, 1.5, -1.1], sections: [[0.42, 1.75, -1.0, 0.3, 0.34], [0.4, 1.1, -1.3, 0.18, 0.22], [0.36, 0.55, -1.6, 0.1, 0.12], [0.36, 0.06, -1.45, 0.12, 0.16]], stage: "form" },
-  { name: "tail", shape: "loft", seg: 7, color: C, color2: O, grad: "z", mid: 0.3, parent: "torso", pivot: [0, 1.65, -1.6], sections: [[0, 1.65, -1.7, 0.12, 0.12], [0, 1.85, -2.35, 0.3, 0.3], [0, 2.1, -3.05, 0.46, 0.46], [0, 2.35, -3.7, 0.34, 0.34], [0, 2.5, -4.15, 0.03, 0.03]], stage: "form" },
+/** A fox, authored the way Ares authors creatures: ONE sculpt part whose blobs melt into a single skin, joints the blobs bend with, eyes and nose snapped onto the surface. */
+export const FOX_BLOBS: Obj[] = [
+  { id: "chest", s: "ball", at: [0, 0.78, 0.38], r: [0.24, 0.27, 0.3] },
+  { id: "belly", s: "ball", at: [0, 0.78, -0.05], r: [0.21, 0.21, 0.36], k: 0.2 },
+  { id: "hips", s: "ball", at: [0, 0.8, -0.42], r: [0.22, 0.23, 0.24], k: 0.18 },
+  { id: "neck", s: "stick", at: [0, 0.86, 0.5], to: [0, 1.06, 0.7], r: 0.17, r2: 0.13, k: 0.12, bone: "head" },
+  { id: "skull", s: "ball", at: [0, 1.1, 0.78], r: [0.15, 0.14, 0.16], k: 0.08, bone: "head" },
+  { id: "cheek", s: "ball", at: [0.09, 1.04, 0.8], r: [0.09, 0.08, 0.1], k: 0.06, bone: "head", mirror: true, color: C },
+  { id: "snout", s: "stick", at: [0, 1.07, 0.86], to: [0, 1.01, 1.12], r: 0.075, r2: 0.035, k: 0.06, bone: "head" },
+  { id: "jaw", s: "stick", at: [0, 1.0, 0.84], to: [0, 0.98, 1.06], r: 0.05, r2: 0.03, k: 0.05, bone: "head", color: C },
+  { id: "ear", s: "stick", at: [0.08, 1.2, 0.74], to: [0.12, 1.38, 0.72], r: 0.06, r2: 0.012, k: 0.04, bone: "head", mirror: true },
+  { id: "earIn", s: "ball", at: [0.1, 1.27, 0.77], r: [0.035, 0.07, 0.03], paint: true, soft: 0.02, color: K, mirror: true },
+  { id: "bib", s: "ball", at: [0, 0.82, 0.62], r: [0.16, 0.24, 0.14], paint: true, soft: 0.08, color: C },
+  { id: "chin", s: "ball", at: [0, 0.98, 0.95], r: [0.07, 0.04, 0.14], paint: true, soft: 0.03, color: C },
+  { id: "armF", s: "chain", pts: [[0.13, 0.78, 0.4, 0.09], [0.13, 0.45, 0.42, 0.055], [0.13, 0.12, 0.43, 0.04], [0.13, 0.035, 0.49, 0.045]], k: 0.06, bone: "legF", mirror: true },
+  { id: "thigh", s: "ball", at: [0.13, 0.72, -0.42], r: [0.1, 0.19, 0.15], k: 0.12, bone: "legB", mirror: true },
+  { id: "shin", s: "stick", at: [0.14, 0.6, -0.36], to: [0.14, 0.3, -0.5], r: 0.07, r2: 0.045, k: 0.05, bone: "legB", mirror: true },
+  { id: "hock", s: "chain", pts: [[0.14, 0.3, -0.5, 0.045], [0.14, 0.05, -0.44, 0.04], [0.14, 0.035, -0.37, 0.045]], k: 0.04, bone: "pawB", mirror: true },
+  { id: "sockF", s: "ball", at: [0.13, 0.12, 0.44], r: [0.08, 0.17, 0.09], paint: true, soft: 0.05, color: K, mirror: true },
+  { id: "sockB", s: "ball", at: [0.14, 0.13, -0.45], r: [0.08, 0.18, 0.1], paint: true, soft: 0.05, color: K, mirror: true },
+  { id: "tail", s: "chain", pts: [[0, 0.86, -0.6, 0.06], [0, 0.78, -0.82, 0.13], [0, 0.6, -1.05, 0.15], [0, 0.48, -1.22, 0.07]], k: 0.08, bone: "tail" },
+  { id: "tip", s: "ball", at: [0, 0.48, -1.22], r: [0.12, 0.12, 0.13], paint: true, soft: 0.06, color: C },
 ];
+const FOX_BODY: Obj = { name: "body", shape: "sculpt", mat: "fur", color: O, tint: 0.07, res: 72, blobs: FOX_BLOBS };
+export const FOX_RAW: Obj[] = [
+  FOX_BODY,
+  { name: "head", shape: "joint", pos: [0, 0.92, 0.55] },
+  { name: "legF", shape: "joint", pos: [0.13, 0.78, 0.4], mirror: true },
+  { name: "legB", shape: "joint", pos: [0.13, 0.72, -0.42], mirror: true },
+  { name: "pawB", shape: "joint", pos: [0.14, 0.3, -0.5], parent: "legB", mirror: true },
+  { name: "tail", shape: "joint", pos: [0, 0.84, -0.58] },
+  { name: "eye", shape: "sphere", pos: [0.07, 1.13, 0.9], size: [0.035, 0.03, 0.035], color: "#140d08", mat: "glossy", parent: "head", mirror: true, snap: "body", out: -0.006 },
+  { name: "nose", shape: "sphere", pos: [0, 1.03, 1.15], size: [0.045, 0.035, 0.04], color: K, mat: "glossy", parent: "head", snap: "body", out: -0.008 },
+];
+/** The fox with some blobs patched by id: exactly what {op:"blob", name:"body", id, ...} does in the studio. */
+const foxWith = (patch: Record<string, Obj>, add: Obj[] = []): Obj[] => FOX_RAW.map((p) => p === FOX_BODY ? { ...p, blobs: [...FOX_BLOBS.map((b) => patch[String(b.id)] ? { ...b, ...patch[String(b.id)] } : b), ...add] } : p);
+const ROUND = { skull: { r: [0.17, 0.16, 0.17] }, cheek: { r: [0.11, 0.095, 0.11] } };
+const COLLAR: Obj = { id: "collar", s: "stick", at: [0, 0.9, 0.56], to: [0, 0.98, 0.64], r: 0.2, paint: true, soft: 0.012, color: "#c8453a" };
 
-export const TROT = { name: "trot", dur: 1, motion: [
-  { part: "front leg*", kind: "swing", axis: "x", amp: 30, speed: 2 },
-  { part: "back leg*", kind: "swing", axis: "x", amp: 30, speed: 2, phase: 3.14 },
-  { part: "torso", kind: "bob", amp: 0.06, speed: 4 },
-  { part: "tail", kind: "wag", axis: "y", amp: 16, speed: 2 },
-  { part: "head", kind: "swing", axis: "x", amp: 5, speed: 2 },
+export const TROT = { name: "trot", dur: 0.7, motion: [
+  { part: "legF", kind: "step", axis: "x", amp: 26, speed: 1.43, duty: 0.5 },
+  { part: "legB", kind: "step", axis: "x", amp: 26, speed: 1.43, duty: 0.5, phase: 3.14 },
+  { part: "pawB", kind: "lift", axis: "x", amp: -40, speed: 1.43, duty: 0.5, phase: 3.14 },
+  { part: "body", kind: "bob", axis: "y", amp: 0.02, speed: 2.86 },
+  { part: "tail", kind: "wag", axis: "y", amp: 14, speed: 1.43 },
+  { part: "head", kind: "swing", axis: "x", amp: 3, speed: 2.86 },
 ] };
 
-const expand = (raw: Obj[], style = "lowpoly", edge = ""): Obj[] => raw.flatMap((p) => sanitizeModelPart(p, style, 220, edge));
+const expand = (raw: Obj[], style = "", edge = ""): Obj[] => raw.flatMap((p) => sanitizeModelPart(p, style, 220, edge));
 
 export interface StudioSpec { title: string; style: string; look: string; parts: Obj[]; anims: Obj[]; view: Obj; scripts: Obj[] }
 export const foxSpec = (over: Partial<StudioSpec> & { raw?: Obj[] } = {}): StudioSpec => ({
-  title: "Fox", style: "lowpoly", look: "clay", anims: [], view: {}, scripts: [],
+  title: "Fox", style: "", look: "clay", anims: [], view: {}, scripts: [],
   ...over,
   parts: expand(over.raw ?? FOX_RAW),
 });
@@ -42,16 +69,12 @@ export const withAnims = (anims: Obj[]): Obj[] => anims.map((a) => sanitizeAnim(
 
 /** The edit sequence the tour plays on the fox: each step is exactly the kind of op Ares sends. */
 export const FOX_EDITS: Array<{ say: string; op: string; spec: () => StudioSpec }> = [
-  { say: "make the head rounder", op: '{ op: "set", name: "head", sections: [...] }', spec: () => foxSpec({ raw: FOX_RAW.map((p) => p.name === "head" ? { ...p, sections: [[0, 1.9, 1.05, 0.4, 0.44], [0, 2.32, 1.62, 0.56, 0.52], [0, 2.36, 2.0, 0.5, 0.44], [0, 2.2, 2.45, 0.27, 0.24], [0, 2.14, 2.86, 0.1, 0.09]] } : p) }) },
-  { say: "now a pastel backdrop", op: '{ look: "pastel" }', spec: () => foxSpec({ look: "pastel", raw: FOX_RAW.map((p) => p.name === "head" ? { ...p, sections: [[0, 1.9, 1.05, 0.4, 0.44], [0, 2.32, 1.62, 0.56, 0.52], [0, 2.36, 2.0, 0.5, 0.44], [0, 2.2, 2.45, 0.27, 0.24], [0, 2.14, 2.86, 0.1, 0.09]] } : p) }) },
-  { say: "give it a collar and let it trot", op: '{ op: "add", parts: [collar] }, anims: [trot]', spec: () => foxSpec({
-    look: "pastel", anims: withAnims([TROT]), view: { play: true, camera: "3q" },
-    raw: [...FOX_RAW.map((p) => p.name === "head" ? { ...p, sections: [[0, 1.9, 1.05, 0.4, 0.44], [0, 2.32, 1.62, 0.56, 0.52], [0, 2.36, 2.0, 0.5, 0.44], [0, 2.2, 2.45, 0.27, 0.24], [0, 2.14, 2.86, 0.1, 0.09]] } : p),
-      { name: "collar", shape: "loft", seg: 7, color: "#f6ead2", sections: [[0, 1.95, 1.05, 0.5, 0.52], [0, 2.0, 1.2, 0.5, 0.52]], parent: "torso", pivot: [0, 1.95, 1.1] }] }) },
+  { say: "make the head rounder", op: '{ op: "blob", name: "body", id: "skull", r: [0.17, 0.16, 0.17] }', spec: () => foxSpec({ raw: foxWith(ROUND) }) },
+  { say: "now a pastel backdrop", op: '{ look: "pastel" }', spec: () => foxSpec({ look: "pastel", raw: foxWith(ROUND) }) },
+  { say: "give it a red collar and let it trot", op: '{ op: "blob", name: "body", id: "collar", paint: true, ... }, anims: [trot]', spec: () => foxSpec({
+    look: "pastel", anims: withAnims([TROT]), view: { play: true, camera: "3q" }, raw: foxWith(ROUND, [COLLAR]) }) },
   { say: "show me the skeleton", op: '{ view: { rig: true, camera: "side" } }', spec: () => foxSpec({
-    look: "pastel", anims: withAnims([TROT]), view: { rig: true, camera: "side", play: true },
-    raw: [...FOX_RAW.map((p) => p.name === "head" ? { ...p, sections: [[0, 1.9, 1.05, 0.4, 0.44], [0, 2.32, 1.62, 0.56, 0.52], [0, 2.36, 2.0, 0.5, 0.44], [0, 2.2, 2.45, 0.27, 0.24], [0, 2.14, 2.86, 0.1, 0.09]] } : p),
-      { name: "collar", shape: "loft", seg: 7, color: "#f6ead2", sections: [[0, 1.95, 1.05, 0.5, 0.52], [0, 2.0, 1.2, 0.5, 0.52]], parent: "torso", pivot: [0, 1.95, 1.1] }] }) },
+    look: "pastel", anims: withAnims([TROT]), view: { rig: true, camera: "side", play: true }, raw: foxWith(ROUND, [COLLAR]) }) },
 ];
 
 /** Three chest variants side by side, one clip that opens them in turn: what `instance({material})` gives a game. */
@@ -90,8 +113,13 @@ export const romeHtml = (): string => expandForgeKit(renderExplainer({ title: "R
 export const liveStageHtml = (): string => buildLiveStageHtml();
 export const manualStudioHtml = (title: string): string => buildStudioHtml("tour", title, { manual: true });
 
-/** The tool call the tour "writes" while the live stage builds the fox from it. Parts are on their own lines so the JSON reads like Ares's output. */
+/** The tool call the tour "writes" while the live stage builds the fox from it. Parts and blobs are on their own lines so the JSON reads like
+ *  Ares's output, and the live stage melts the sculpt together blob by blob as it streams. */
 export function foxCallJson(): string {
-  const parts = FOX_RAW.map((p) => JSON.stringify(p));
-  return `{"action":"model","model":"fox","style":"lowpoly","look":"clay","parts":[\n${parts.join(",\n")}\n]}`;
+  const parts = FOX_RAW.map((p) => {
+    if (p !== FOX_BODY) return JSON.stringify(p);
+    const { blobs, ...head } = p as Obj & { blobs: Obj[] };
+    return `${JSON.stringify(head).slice(0, -1)},"blobs":[\n  ${blobs.map((b) => JSON.stringify(b)).join(",\n  ")}\n]}`;
+  });
+  return `{"action":"model","model":"fox","look":"clay","parts":[\n${parts.join(",\n")}\n]}`;
 }

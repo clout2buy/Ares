@@ -6,7 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -615,4 +615,373 @@ test("runtime variants: a colourway is built once per variant and shared by its 
   assert.equal(f1.part("base").mesh.geometry, f2.part("base").mesh.geometry, "instances of one variant share geometry");
   assert.equal(f1.part("base").mesh.material, f2.part("base").mesh.material);
   assert.notEqual(a.part("base").mesh.material, f1.part("base").mesh.material);
+});
+
+// ── sculpt: blobs melt into one skinned mesh; joints bend it; snapped features sit on the skin ──
+import { lintBlob } from "../packages/cli/dist/entry/forgeBlocks.js";
+
+/** The worked examples from the help docs (they must stay valid, clean input): the grizzly's parts + clips, and the sword. */
+function docsExamples() {
+  const D = FORGE_SCRIPT_DOCS, from = D.indexOf("WORKED EXAMPLE"), start = D.indexOf("\n", from) + 1, clips = D.indexOf("\nCLIPS:", start), hard = D.indexOf("\nHARD SURFACE EXAMPLE", clips);
+  const swordStart = D.indexOf("\n", hard + 2) + 1, swordEnd = D.indexOf("\nREAL ASSETS FIRST", swordStart);
+  return { parts: vm.runInNewContext(D.slice(start, clips)), anims: vm.runInNewContext(D.slice(clips + 7, hard)), sword: vm.runInNewContext(D.slice(swordStart, swordEnd)) };
+}
+
+test("sculpt: blobs are validated, chains become sticks, mirrors follow the mirrored joint, and a sculpt with nothing to melt falls back", () => {
+  const m = sanitizeModel({ parts: [{ name: "b", shape: "sculpt", blobs: [
+    { s: "ball", at: [0, 1, 0], r: [0.5, 0.4, 0.6], k: 0.2 },
+    { s: "chain", pts: [[0.3, 1, 0, 0.2], [0.3, 0.5, 0.1, 0.15], [0.3, 0.1, 0.1, 0.12]], bone: "leg", mirror: true },
+    { s: "stick", at: [0, 1, 0.5], to: [0, 1.1, 1], r: 0.2, r2: 0.1, k: 0.1 },
+    { s: "ball", at: [0, 1.2, 0.3], r: 0.1, paint: true, color: "white", bone: "ignored" },
+    { s: "ball", at: [0, 1.2, 0.5], r: 0.05, sub: true },
+    { s: "stick", at: [0, 0, 0] },
+  ] }] });
+  const b = m.parts[0];
+  assert.equal(b.shape, "sculpt");
+  assert.equal(b.smooth, true, "sculpts are smooth unless low-poly");
+  const sticks = b.blobs.filter((x) => x.s === "stick");
+  assert.equal(sticks.length, 5, "2 chain segments x2 (mirror) + 1 stick");
+  assert.deepEqual(b.blobs.filter((x) => x.bone).map((x) => x.bone), ["leg", "leg (mirror)", "leg", "leg (mirror)"]);
+  assert.equal(b.blobs.find((x) => x.bone === "leg (mirror)").at[0], -0.3);
+  const paint = b.blobs.find((x) => x.paint);
+  assert.equal(paint.color, "#f4efe0"); assert.equal(paint.bone, undefined, "paint never carries a bone");
+  assert.ok(b.blobs.find((x) => x.sub).k <= 0.05, "carves default tight");
+  assert.equal(b.blobs.at(-1).s, "ball", "a stick without `to` degrades to a ball");
+  assert.equal(sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "ball", at: [0, 0, 0], paint: true }] }] }).parts[0].shape, "box");
+  assert.deepEqual(lintBlob({ s: "stick", at: [0, 0, 0], radius: 1 }, 2), ['blob 2: unknown field "radius" (blob fields: id, s, at, to, r, r2, pts, rot, round, k, sub, paint, soft, color, bone, mirror, mat, tex, flow, shag, axis, taper, and)', "blob 2: a stick needs to:[x,y,z] (it runs from at to to, radius r -> r2)"]);
+  const mirrored = sanitizeModel({ parts: [{ name: "ear", shape: "sculpt", mirror: true, blobs: [{ s: "ball", at: [0.3, 1, 0], r: 0.1, bone: "head" }] }] }).parts;
+  assert.deepEqual(mirrored.map((p) => [p.name, p.blobs[0].at[0], p.blobs[0].bone]), [["ear", 0.3, "head"], ["ear (mirror)", -0.3, "head (mirror)"]]);
+});
+
+test("sculpt studio: unknown blob fields, missing bones and bad snaps are reported; op blob patches/adds/removes one blob; scale reaches the blobs", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-sculpt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  const st = ensureStudio("sc");
+  let r = await applyEdit(st, { parts: [
+    { name: "body", shape: "sculpt", blobs: [{ id: "chest", s: "ball", at: [0, 1, 0], r: [0.5, 0.5, 0.6], wobble: 1 }, { id: "leg", s: "stick", at: [0.3, 1, 0], to: [0.3, 0.1, 0], r: 0.15, bone: "legF" }] },
+    { name: "eye", shape: "sphere", size: 0.05, pos: [0.1, 1.2, 0.6], snap: "nope" },
+  ] }, root);
+  const text = r.errors.join("\n");
+  assert.match(text, /unknown field "wobble"/);
+  assert.match(text, /blob bone\(s\) "legF" name no part.*shape:"joint"/);
+  assert.match(text, /snaps to "nope", which is not a sculpt part/);
+  r = await applyEdit(st, { parts: [{ name: "legF", shape: "joint", pos: [0.3, 1, 0], mirror: true }], ops: [
+    { op: "blob", name: "body", id: "leg", r: 0.2 },
+    { op: "blob", name: "body", id: "tail", s: "stick", at: [0, 1, -0.5], to: [0, 1.2, -1], r: 0.08 },
+    { op: "blob", name: "body", id: "chest", remove: true },
+    { op: "blob", name: "body", id: "ghost", remove: true },
+    { op: "blob", name: "eye", id: "x" },
+  ] }, root);
+  assert.ok(r.errors.some((e) => /"ghost" not found/.test(e)));
+  assert.ok(r.errors.some((e) => /no sculpt part "eye"/.test(e)));
+  const raw = st.raw.find((p) => p.name === "body");
+  assert.deepEqual(raw.blobs.map((b) => b.id), ["leg", "tail"]);
+  assert.equal(raw.blobs[0].r, 0.2);
+  await applyEdit(st, { ops: [{ op: "set", name: "body", scale: 2 }] }, root);
+  assert.deepEqual(raw.blobs[1].at, [0, 2, -1]);
+  assert.equal(raw.blobs[1].r, 0.16);
+  assert.equal(raw.size, undefined, "a sculpt scales its blobs, not a bounding box");
+});
+
+test("sculpt runtime: the docs grizzly builds ONE closed skinned mesh, joints bend it, eyes land on the skin, and it loads in a game", async (t) => {
+  let threePath;
+  for (const c of [path.resolve("node_modules/three/build/three.module.js"), path.resolve("tauri/node_modules/three/build/three.module.js")]) {
+    if (await readFile(c).then(() => true, () => false)) { threePath = c; break; }
+  }
+  if (!threePath) return t.skip("three is not installed in this checkout");
+  const root = await mkdtemp(path.join(tmpdir(), "ares-sculpt-rt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "ares-model.mjs");
+  await writeFile(file, buildRuntimeModule(pathToFileURL(threePath).href), "utf8");
+  const { buildModel } = await import(pathToFileURL(file).href);
+  const T = await import(pathToFileURL(threePath).href);
+  dropStudios();
+  const st = ensureStudio("bear");
+  const bear = docsExamples();
+  const r = await applyEdit(st, { parts: bear.parts, anims: bear.anims }, root);
+  assert.deepEqual(r.errors, [], "the docs example is clean input and meets the quality bar");
+  const spec = studioSpec(st);
+  const model = buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: spec.anims, scripts: [] });
+  const a = model.instance(), b = model.instance();
+  const body = a.part("body").mesh;
+  assert.ok(body.isSkinnedMesh, "a sculpt with bones is skinned");
+  assert.equal(body.geometry, b.part("body").mesh.geometry, "instances share the sculpted geometry");
+  assert.notEqual(body.skeleton, b.part("body").mesh.skeleton, "each instance has its own skeleton");
+  const g = body.geometry, idx = g.index.array, edges = new Map();
+  for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const p = idx[k + e], q = idx[k + (e + 1) % 3], key = p < q ? `${p}_${q}` : `${q}_${p}`; edges.set(key, (edges.get(key) ?? 0) + 1); }
+  // no holes: no edge has a single triangle. Surface nets may join two sheets that cross one cell (toes touching) at a few
+  // 4-triangle edges; those are invisible and stay a vanishing fraction
+  const counts = [...edges.values()];
+  assert.equal(counts.filter((n) => n === 1).length, 0, "watertight: no open edges");
+  assert.ok(counts.filter((n) => n > 2).length < counts.length * 0.0005, "at most a handful of shared sheet edges");
+  assert.ok(g.attributes.position.count > 2000, `a real surface (${g.attributes.position.count} verts)`);
+  assert.deepEqual(g.userData.bones.slice(0, 4), ["", "chest", "root", "head"]);
+  assert.ok(g.attributes.dtA && g.attributes.rme, "per-vertex surface detail and material ride on the mesh");
+  const furW = Array.from({ length: 200 }, (_, i) => g.attributes.dtA.getX(i * 37 % g.attributes.position.count));
+  assert.ok(furW.reduce((a, b) => a + b, 0) / furW.length > 0.8, "mat fur brings fur grain everywhere");
+  // colours: the muzzle blob is light, the paint on the lower legs is dark
+  const P = g.attributes.position, C = g.attributes.color;
+  const near = (x, y, z) => { let best = 0, bd = 1e9; for (let i = 0; i < P.count; i++) { const d = Math.hypot(P.getX(i) - x, P.getY(i) - y, P.getZ(i) - z); if (d < bd) { bd = d; best = i; } } return best; };
+  const lum = (i) => C.getX(i) + C.getY(i) + C.getZ(i);
+  assert.ok(lum(near(0, 1.4, 1.85)) > 3 * lum(near(0.5, 0.35, 0.65)), "light muzzle, dark painted legs");
+  const tip = (() => { let b = 0; for (let i = 0; i < P.count; i++) if (P.getZ(i) > P.getZ(b)) b = i; return b; })();
+  assert.ok(lum(tip) < 0.12, "a small sharp blob (the nose) keeps its own colour against a big soft one (the muzzle)");
+  // the eye was snapped onto the surface of the skull
+  const eye = a.part("eye").spec;
+  assert.ok(Math.hypot(eye.pos[0] - 0.13, eye.pos[1] - 1.47, eye.pos[2] - 1.52) < 0.2 && eye.snapped, "snapped near where it was asked");
+  const nearest = P.count && Math.min(...Array.from({ length: P.count }, (_, i) => Math.hypot(P.getX(i) - eye.pos[0], P.getY(i) - eye.pos[1], P.getZ(i) - eye.pos[2])));
+  assert.ok(nearest < 0.05, `the eye sits on the skin (${nearest.toFixed(3)} from the nearest vertex)`);
+  // bending: the walk moves a paw vertex far more than a vertex on the back (one skin, bent at the joints)
+  a.group.updateMatrixWorld(true); body.skeleton.update();
+  const paw = near(0.33, 0.1, 0.8), back = near(0, 1.9, -0.2), v0 = body.getVertexPosition(paw, new T.Vector3()), w0 = body.getVertexPosition(back, new T.Vector3());
+  a.play("walk"); a.update(1.1); a.group.updateMatrixWorld(true); body.skeleton.update();
+  const v1 = body.getVertexPosition(paw, new T.Vector3()), w1 = body.getVertexPosition(back, new T.Vector3());
+  assert.ok(v1.distanceTo(v0) > 0.1, `the paw swings (${v1.distanceTo(v0).toFixed(3)})`);
+  assert.ok(w1.distanceTo(w0) < 0.05, `the back only bobs (${w1.distanceTo(w0).toFixed(3)})`);
+  // the claws follow the paw joint (rigid parts and skin agree)
+  assert.equal(a.part("claw 1").node.parent, a.part("pawF").node);
+  a.dispose(); b.dispose(); model.dispose();
+});
+
+test("live: a sculpt grows blob by blob while it streams (coarse partials), then the finished part lands once", () => {
+  const call = JSON.stringify({ action: "model", model: "b", parts: [{ name: "body", shape: "sculpt", res: 80, blobs: [{ s: "ball", at: [0, 1, 0], r: 0.5 }, { s: "ball", at: [0, 1, 0.6], r: 0.3 }, { s: "stick", at: [0, 1, 0.8], to: [0, 1.2, 1.2], r: 0.2, r2: 0.1 }] }, { name: "eye", shape: "sphere", snap: "body" }] });
+  for (const size of [1, 7, 1000]) {
+    const s = new ExplainStream(); const pieces = [];
+    for (let i = 0; i < call.length; i += size) pieces.push(...s.feed(call.slice(i, i + size)));
+    const parts = pieces.filter((p) => p.op === "part");
+    const partial = parts.filter((p) => p.partial);
+    assert.deepEqual(partial.map((p) => p.parts[0].blobs.length), [1, 2, 3], `chunk ${size}: one partial per finished blob`);
+    assert.ok(partial.every((p) => p.parts[0].res === 30), "partials are coarse (fast to rebuild)");
+    const full = parts.filter((p) => !p.partial);
+    assert.deepEqual(full.map((p) => p.parts[0].name), ["body", "eye"]);
+    assert.equal(full[0].parts[0].res, 80, "the final part keeps its resolution");
+  }
+  assert.match(LIVE_RUNTIME_JS, /m\.partial&&el\.__live\.sculpt/);
+  assert.match(FORGE_MODEL_JS, /sculpt:function\(list\)/);
+});
+
+// ── the same process for props, real gaits, eased keys, crossfades, and the quality bar ──
+function root0() { return tmpdir(); }
+async function runtimeFor(t) {
+  let threePath;
+  for (const c of [path.resolve("node_modules/three/build/three.module.js"), path.resolve("tauri/node_modules/three/build/three.module.js")]) {
+    if (await readFile(c).then(() => true, () => false)) { threePath = c; break; }
+  }
+  if (!threePath) return null;
+  const root = await mkdtemp(path.join(tmpdir(), "ares-rt2-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "ares-model.mjs");
+  await writeFile(file, buildRuntimeModule(pathToFileURL(threePath).href), "utf8");
+  return { root, ...(await import(pathToFileURL(file).href)) };
+}
+
+test("hard surface like a 3D artist: the docs car - a hollow painted shell with openings, glass, mirrored lights and 4 wheels", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  dropStudios();
+  const st = ensureStudio("car");
+  const r = await applyEdit(st, { parts: docsExamples().sword, anims: [{ name: "idle", dur: 2, motion: [{ part: "body", kind: "bob", amp: 0.003, speed: 6 }] }] }, root0());
+  assert.deepEqual(r.errors, [], "the docs car is clean input and meets the quality bar");
+  const spec = studioSpec(st);
+  const names = spec.parts.map((p) => p.name);
+  assert.equal(names.filter((n) => n.startsWith("wheel")).length, 4, "4 wheels (2 parts + their mirrors)");
+  assert.ok(names.includes("headlight (mirror)") && names.includes("mirror (mirror)"));
+  const inst = rt.buildModel({ format: "ares-model/1", expanded: true, parts: spec.parts, anims: spec.anims, scripts: [] }).instance();
+  assert.equal(inst.part("wheelF (mirror)").node.parent, inst.part("frontAxle (mirror)").node, "mirrored wheels hang on the mirrored axle");
+  const body = inst.part("body").mesh, glass = inst.part("glass").mesh;
+  assert.ok(body.material.clearcoat > 0.9, "car paint has a clearcoat");
+  assert.ok(glass.material.transparent && glass.material.opacity < 0.7 && glass.material.clearcoat === 1, "glass is see-through and reflective");
+  assert.ok(body.geometry.userData.gp.length >= 5, "window surrounds are crisp GPU paints");
+  const g = body.geometry, P = g.attributes.position, RME = g.attributes.rme;
+  let painted = 0; for (let i = 0; i < P.count; i++) if (RME.getY(i) > 0.4 && RME.getX(i) < 0.4) painted++;
+  assert.ok(painted > P.count * 0.5, "most of the shell is metallic car paint");
+  // the shell is hollow: a ray across the cabin at window height meets the outside, then the inside
+  let inner = 0; for (let i = 0; i < P.count; i++) if (Math.abs(P.getX(i)) < 0.5 && P.getY(i) > 0.95 && P.getY(i) < 1.2 && Math.abs(P.getZ(i) + 0.35) < 0.3) inner++;
+  assert.ok(inner < 50, `the cabin interior is empty space (${inner} surface points inside)`);
+});
+
+test("gaits plant the foot (step) and lift only in the air (lift); keys ease; clips crossfade instead of popping", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const clip = sanitizeAnim({ name: "walk", dur: 1, motion: [{ part: "leg", kind: "step", axis: "x", amp: 20, speed: 1, duty: 0.6 }, { part: "knee", kind: "lift", axis: "x", amp: 40, speed: 1, duty: 0.6 }] });
+  assert.equal(clip.motion[0].duty, 0.6);
+  const jump = sanitizeAnim({ name: "jump", dur: 1, loop: false, tracks: [{ part: "leg", ease: "linear", rot: [[0, [0, 0, 0]], [1, [90, 0, 0]]] }, { part: "knee", ease: "nope", rot: [[0, [0, 0, 0]], [1, [10, 0, 0]]] }] });
+  assert.equal(jump.tracks[0].ease, "linear"); assert.equal(jump.tracks[1].ease, undefined, "unknown easing falls back to smooth");
+  const parts = sanitizeModel({ parts: [{ name: "leg", shape: "joint", pos: [0, 1, 0] }, { name: "knee", shape: "joint", pos: [0, 0.5, 0], parent: "leg" }] }).parts;
+  const m = rt.buildModel({ format: "ares-model/1", expanded: true, parts, anims: [clip, jump], scripts: [] }), a = m.instance();
+  const leg = a.part("leg").node, knee = a.part("knee").node, deg = (r) => r * 180 / Math.PI;
+  a.play("walk");
+  const sample = (tt) => { a.stop(); a.play("walk", { fade: 0 }); a.update(tt); return [deg(leg.rotation.x), deg(knee.rotation.x)]; };
+  assert.deepEqual(sample(0).map((v) => Math.round(v)), [-20, 0], "the foot plants forward, knee straight");
+  assert.deepEqual(sample(0.3).map((v) => Math.round(v)), [0, 0], "mid-stance: pushing back linearly, knee still straight");
+  const [hip, k8] = sample(0.8);
+  assert.ok(Math.abs(hip) < 1 && Math.round(k8) === 40, "mid-swing: the knee is fully flexed");
+  a.stop(); a.play("jump", { fade: 0 }); a.update(0.25);
+  assert.ok(Math.abs(deg(leg.rotation.x) - 22.5) < 0.01, "linear easing");
+  assert.ok(Math.abs(deg(knee.rotation.x) - 10 * 0.15625) < 0.01, "default smoothstep");
+  // crossfade: from jump's held pose into walk over 0.25 s
+  a.update(1); assert.ok(Math.abs(deg(leg.rotation.x) - 90) < 0.01);
+  a.play("walk"); a.update(0.001);
+  assert.ok(deg(leg.rotation.x) > 80, `starts from the old pose (${deg(leg.rotation.x).toFixed(1)})`);
+  a.update(0.3);
+  assert.ok(Math.abs(deg(leg.rotation.x) - (-20 + 40 * 0.301 / 0.6)) < 0.5, "after the fade it is pure walk");
+});
+
+test("the quality bar: stacked-primitive creatures, blockouts, flat colour, no eyes, no clips, no idle and skating walks are called out", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ares-quality-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  dropStudios();
+  let st = ensureStudio("toy");
+  let r = await applyEdit(st, { parts: ["body", "head", "front leg", "back leg", "tail"].map((name) => ({ name, shape: "sphere" })) }, root);
+  assert.ok(r.errors.some((e) => /quality: this is a creature\/character stacked from primitives/.test(e)));
+  st = ensureStudio("blob");
+  r = await applyEdit(st, { parts: [{ name: "body", shape: "sculpt", blobs: [{ s: "ball", at: [0, 1, 0], r: 0.5, bone: "leg" }] }, { name: "leg", shape: "joint", pos: [0, 1, 0] }],
+    anims: [{ name: "walk", dur: 1, motion: [{ part: "leg", kind: "swing", amp: 20 }] }] }, root);
+  const q = r.errors.filter((e) => e.startsWith("quality:")).join("\n");
+  for (const re of [/is a blockout/, /one flat colour/, /no eyes on it/, /no material/, /no idle clip/, /swings legs on a sine/]) assert.match(q, re);
+  st = ensureStudio("chair");
+  r = await applyEdit(st, { parts: ["seat", "back", "leg a", "leg b"].map((name) => ({ name, shape: "box" })) }, root);
+  assert.ok(r.errors.some((e) => /props look real when sculpted too/.test(e)));
+});
+
+test("low-poly is real decimation: a triangle budget, big flat facets, still closed, still skinned; fur flows and is sculpted in", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const bear = docsExamples();
+  const lowParts = sanitizeModel({ style: "lowpoly", parts: bear.parts.map((p) => (p.shape === "sculpt" ? { ...p, poly: 900, mat: "matte" } : p)) }).parts;
+  const inst = rt.buildModel({ format: "ares-model/1", expanded: true, parts: lowParts, anims: [], scripts: [] }).instance();
+  const g = inst.part("body").mesh.geometry;
+  assert.ok(Math.abs(g.attributes.position.count / 3 - 900) <= 2, `hits the budget (${g.attributes.position.count / 3} triangles)`);
+  assert.ok(inst.part("body").mesh.isSkinnedMesh && g.attributes.skinIndex, "still rigged after decimation");
+  const P = g.attributes.position, key = (i) => [P.getX(i), P.getY(i), P.getZ(i)].map((n) => n.toFixed(5)).join(","), E = new Map();
+  for (let f = 0; f < P.count; f += 3) for (let e = 0; e < 3; e++) { const a = key(f + e), b = key(f + (e + 1) % 3), k = a < b ? a + "|" + b : b + "|" + a; E.set(k, (E.get(k) ?? 0) + 1); }
+  assert.equal([...E.values()].filter((n) => n === 1).length, 0, "no holes after decimation");
+  const areas = []; for (let f = 0; f < P.count; f += 3) { const a = [0, 1, 2].map((j) => [P.getX(f + j), P.getY(f + j), P.getZ(f + j)]); const u = a[1].map((v, i) => v - a[0][i]), w = a[2].map((v, i) => v - a[0][i]); areas.push(Math.hypot(u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]) / 2); }
+  areas.sort((x, y) => x - y);
+  assert.ok(areas[Math.floor(areas.length * 0.9)] > 4 * areas[Math.floor(areas.length * 0.1)], "adaptive facets: big on the flanks, small where it curves");
+  // smooth fur model: a flow attribute rides on the mesh and the shag pushed the skin in and out
+  const smooth = rt.buildModel({ format: "ares-model/1", expanded: true, parts: sanitizeModel({ parts: bear.parts }).parts, anims: [], scripts: [] }).instance();
+  const sg = smooth.part("body").mesh.geometry;
+  assert.ok(sg.attributes.flow, "fur flow per vertex");
+  const flat = rt.buildModel({ format: "ares-model/1", expanded: true, parts: sanitizeModel({ parts: bear.parts.map((p) => (p.shape === "sculpt" ? { ...p, shag: 0 } : p)) }).parts, anims: [], scripts: [] }).instance();
+  const fg = flat.part("body").mesh.geometry;
+  let moved = 0; for (let i = 0; i < Math.min(fg.attributes.position.count, sg.attributes.position.count); i++) if (Math.abs(fg.attributes.position.getY(i) - sg.attributes.position.getY(i)) > 1e-4) moved++;
+  assert.ok(moved > fg.attributes.position.count * 0.3, `fur locks are in the geometry (${moved} vertices moved)`);
+});
+
+test("profile blobs: an outline extruded with rounded edges models a car body (closed), and mirrors flip off-axis outlines", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const body = [[-2.2, 0.34], [-2.2, 0.8], [-1.2, 0.9], [1.3, 0.84], [2.2, 0.66], [2.2, 0.34]], cabin = [[-1.6, 0.86], [-1.0, 1.3], [0.1, 1.37], [0.8, 0.86]];
+  const parts = sanitizeModel({ parts: [{ name: "car", shape: "sculpt", res: 64, blobs: [
+    { s: "profile", at: [0, 0, 0], pts: body, r: 0.9, round: 0.12 },
+    { s: "profile", at: [0, 0, 0], pts: cabin, r: 0.8, round: 0.1, taper: 0.3, k: 0.06 },
+    { s: "cyl", at: [1, 0.32, 1.35], to: [0.5, 0.32, 1.35], r: 0.4, sub: true, mirror: true },
+  ] }] }).parts;
+  assert.equal(parts[0].blobs[0].axis, "x");
+  assert.equal(parts[0].blobs[1].taper, 0.3);
+  const g = rt.buildModel({ format: "ares-model/1", expanded: true, parts, anims: [], scripts: [] }).instance().part("car").mesh.geometry;
+  g.computeBoundingBox();
+  const bb = g.boundingBox;
+  assert.ok(Math.abs(bb.max.z - 2.2) < 0.05 && Math.abs(bb.min.z + 2.2) < 0.05, `length follows the outline (${bb.min.z.toFixed(2)}..${bb.max.z.toFixed(2)})`);
+  assert.ok(Math.abs(bb.max.y - 1.37) < 0.05, `roof height follows the cabin outline (${bb.max.y.toFixed(2)})`);
+  assert.ok(Math.abs(bb.max.x - 0.9) < 0.03, `width = r (${bb.max.x.toFixed(2)})`);
+  const idx = g.index.array, E = new Map();
+  for (let k = 0; k < idx.length; k += 3) for (let e = 0; e < 3; e++) { const a = idx[k + e], b = idx[k + (e + 1) % 3], key = a < b ? `${a}_${b}` : `${b}_${a}`; E.set(key, (E.get(key) ?? 0) + 1); }
+  assert.equal([...E.values()].filter((n) => n === 1).length, 0, "closed");
+  const top = sanitizeModel({ parts: [{ name: "x", shape: "sculpt", blobs: [{ s: "profile", axis: "y", at: [0.5, 0, 0], pts: [[0.1, 0], [0.4, 0], [0.4, 0.3]], r: 0.1, mirror: true }] }] }).parts[0].blobs;
+  assert.deepEqual(top[1].pts, [[-0.1, 0], [-0.4, 0], [-0.4, 0.3]], "a top-view outline mirrors across x");
+  assert.match(lintBlob({ s: "profile", at: [0, 0, 0], pts: [[0, 0]] }, 0).join(), /a profile needs pts/);
+});
+
+test("texture maps: project files reach the page as data: URLs, export copies them beside the game json, the runtime resolves them", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const root = rt.root;
+  await mkdir(path.join(root, "assets", "textures"), { recursive: true });
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==", "base64");
+  await writeFile(path.join(root, "assets", "textures", "bark.png"), png);
+  dropStudios();
+  const st = ensureStudio("tree");
+  let r = await applyEdit(st, { parts: [{ name: "trunk", shape: "sculpt", mat: "wood", blobs: [{ s: "stick", at: [0, 0, 0], to: [0, 2, 0], r: 0.3, r2: 0.2 }], maps: { albedo: "assets/textures/bark.png", normal: "../../etc/passwd", scale: 0.4, on: "wood" } }] }, root);
+  assert.ok(r.errors.some((e) => /maps\.normal: path escapes the project/.test(e)), "maps stay inside the project");
+  const spec = studioSpec(st);
+  assert.match(spec.parts[0].maps.albedo, /^data:image\/png;base64,/);
+  assert.equal(spec.parts[0].maps.scale, 0.4); assert.equal(spec.parts[0].maps.on, "wood");
+  r = await applyEdit(st, { ops: [{ op: "set", name: "trunk", maps: { albedo: "assets/textures/bark.png" } }] }, root);
+  const ex = await exportGame(st, root, { dir: "assets" });
+  const doc = JSON.parse(await readFile(path.join(root, ex.model), "utf8"));
+  assert.equal(doc.parts[0].maps.albedo, "../textures/bark.png", "relative to the game json");
+  assert.ok((await readFile(path.join(root, "assets", "textures", "bark.png"))).equals(png));
+  // the runtime resolves map paths against the json's url (no DOM in Node, so nothing loads - the material just records it)
+  const m = rt.buildModel(doc, { base: "https://game.example/assets/models/tree.game.json" });
+  assert.equal(m.doc.parts[0].maps.albedo, "../textures/bark.png", "the doc itself is untouched");
+  const inst = m.instance();
+  assert.ok(inst.part("trunk").mesh.material.userData.maps, "the sculpt material carries its map uniforms");
+  assert.equal(sanitizeModel({ parts: [{ name: "a", shape: "sculpt", blobs: [{ s: "ball", at: [0, 1, 0] }], maps: { albedo: "x\" onerror=1" } }] }).parts[0].maps, undefined, "odd strings are refused");
+});
+
+test("real assets: a gltf part is copied next to the studio page, exported beside the game json, and the runtime loads it with GLTFLoader", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const { studioDir } = await import("../packages/cli/dist/entry/modelStudio.js");
+  const { gltfLoaderSpecifier } = await import("../packages/cli/dist/entry/forgeRuntime.js");
+  const root = rt.root;
+  await mkdir(path.join(root, "assets", "models"), { recursive: true });
+  await writeFile(path.join(root, "assets", "models", "car.glb"), Buffer.from("glTF fake binary"));
+  dropStudios();
+  const st = ensureStudio("garage");
+  let r = await applyEdit(st, { parts: [{ name: "car", shape: "gltf", src: "assets/models/car.glb", height: 1.4 }, { name: "bad", shape: "gltf", src: "../outside.glb" }, { name: "nosrc", shape: "gltf" }] }, root);
+  assert.ok(r.errors.some((e) => /"bad": src: path escapes the project/.test(e)));
+  assert.ok(r.errors.some((e) => /"nosrc": a gltf part needs src/.test(e)));
+  assert.ok(!r.errors.some((e) => /quality:/.test(e)), "a real asset is not judged as stacked primitives");
+  const spec = studioSpec(st), car = spec.parts.find((p) => p.name === "car");
+  assert.match(car.src, /^models\/car-\d+\.glb$/, "the page gets the copy next to it");
+  assert.equal(car.height, 1.4);
+  assert.ok((await readFile(path.join(studioDir("garage"), car.src))).toString().startsWith("glTF"));
+  await applyEdit(st, { remove: ["bad", "nosrc"] }, root);
+  const ex = await exportGame(st, root, { dir: "game" });
+  const doc = JSON.parse(await readFile(path.join(root, ex.model), "utf8"));
+  assert.equal(doc.parts[0].src, "car.glb");
+  assert.ok((await readFile(path.join(root, "game", "models", "car.glb"))).toString().startsWith("glTF"));
+  assert.equal(gltfLoaderSpecifier("three"), "three/examples/jsm/loaders/GLTFLoader.js");
+  assert.equal(gltfLoaderSpecifier("https://unpkg.com/three@0.160.0/build/three.module.js"), "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
+  assert.equal(gltfLoaderSpecifier("./vendor/three.js"), null);
+  // the runtime: a custom loader is used, the src is resolved against the json url, the model is placed bottom-centre at height
+  const T = await import(pathToFileURL(path.resolve("node_modules/three/build/three.module.js")).href).catch(() => null);
+  const seen = [];
+  const m = rt.buildModel(doc, { base: "https://game.example/game/models/garage.game.json", gltfLoader: (src) => { seen.push(src); const g = new rt.__T.Group(); const b = new rt.__T.Mesh(new rt.__T.BoxGeometry(4, 2.8, 2)); b.position.y = 5; g.add(b); return Promise.resolve(g); } });
+  const inst = m.instance();
+  await new Promise((r2) => setTimeout(r2, 10));
+  assert.deepEqual(seen, ["https://game.example/game/models/car.glb"]);
+  const box = new rt.__T.Box3().setFromObject(inst.group);
+  assert.ok(Math.abs(box.max.y - 1.4) < 1e-6 && Math.abs(box.min.y) < 1e-6, `scaled to height 1.4, standing on the ground (${box.min.y}..${box.max.y})`);
+  void T;
+});
+
+test("hard:true meshes with dual contouring: a cube keeps its corners (surface nets rounds them)", async (t) => {
+  const rt = await runtimeFor(t); if (!rt) return t.skip("three is not installed in this checkout");
+  const make = (hard) => rt.buildModel({ format: "ares-model/1", expanded: true, parts: sanitizeModel({ parts: [{ name: "c", shape: "sculpt", res: 24, hard, blobs: [{ s: "box", at: [0, 0.5, 0], r: [0.5, 0.5, 0.5], round: 0 }] }] }).parts, anims: [], scripts: [] }).instance().part("c").mesh.geometry;
+  const corner = (g) => { const P = g.attributes.position; let best = 0; for (let i = 0; i < P.count; i++) best = Math.max(best, P.getX(i) + P.getY(i) - 0.5 + P.getZ(i)); return best; };
+  const g0 = make(false), g1 = make(true), sharp = corner(g1);
+  assert.ok(sharp > 1.495, `dual contouring reaches the corner (${sharp.toFixed(4)} of 1.5)`);
+  // auto-smooth: on a hard cube almost every face corner has an axis-aligned normal (flat panels); smooth normals bend round the edges
+  const flat = (g) => { const N = g.attributes.normal; let k = 0; for (let i = 0; i < N.count; i++) if (Math.max(Math.abs(N.getX(i)), Math.abs(N.getY(i)), Math.abs(N.getZ(i))) > 0.999) k++; return k / N.count; };
+  assert.ok(flat(g1) > 0.95, `flat panels (${(flat(g1) * 100).toFixed(0)}% axis-aligned normals)`);
+  assert.ok(flat(g1) > flat(g0) + 0.1, `crisper than the smooth mesher (${(flat(g0) * 100).toFixed(0)}%)`);
+});
+
+test("record: a studio page's video upload is saved next to the page and handed to Ares (loopback, size-checked)", async (t) => {
+  const { studioDir, studioVideo } = await import("../packages/cli/dist/entry/modelStudio.js");
+  const dir = studioDir("rec-test");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "index.html"), "<p>studio</p>");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const served = await serveLocalTarget(path.join(dir, "index.html"), {});
+  t.after(() => stopPreviewServers());
+  const url = new URL("/__ares/studio/rec-test/video", served.url).href;
+  assert.equal((await fetch(url, { method: "POST", body: "tiny" })).status, 400, "an empty / tiny upload is refused");
+  const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(4096, 7)]);
+  assert.equal((await fetch(url, { method: "POST", body: webm })).status, 204);
+  const v = studioVideo("rec-test");
+  assert.ok(v && v.bytes === webm.length && v.file.startsWith(dir), "saved next to the studio page");
+  assert.ok((await readFile(v.file)).equals(webm));
+  const { FORGE_MODEL_JS } = await import("../packages/cli/dist/entry/forgeModel.js");
+  assert.match(FORGE_MODEL_JS, /window\.__aresRecord=function/);
+  assert.match(FORGE_MODEL_JS, /MediaRecorder/);
 });

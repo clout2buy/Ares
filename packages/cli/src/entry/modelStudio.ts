@@ -10,11 +10,11 @@
 // and editable; the sanitised, mirror/repeat-expanded spec is derived for the
 // page on every change.
 
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { copyFile, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { buildRuntimeModule } from "./forgeRuntime.js";
-import { MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
+import { lintBlob, sanitizeMaps, MODEL_MATS, MODEL_SHAPES, sanitizeOverride, sanitizeTexture, uniqueNames, sanitizeAnim, sanitizeModelPart, sanitizeScript, MODEL_LOOKS, MODEL_STYLES, colour } from "./forgeBlocks.js";
 
 type Obj = Record<string, unknown>;
 
@@ -30,6 +30,10 @@ export interface Studio {
   scripts: Obj[];
   /** colourways: name -> { "lid*": {color,color2,mat,texture,...} }. One model + its clips serves many looks; the game picks one per instance. */
   variants: Record<string, Record<string, Obj>>;
+  /** imported model files (gltf parts), by the path the model uses -> the copy served next to the studio page */
+  modelFiles?: Record<string, string>;
+  /** project texture files read for maps, by the path the model uses: served to the page as data: URLs */
+  mapData?: Record<string, string>;
   /** errors / log lines scripts reported back (drained into the next tool result) */
   logs: string[];
   ref?: string;
@@ -46,6 +50,8 @@ export interface Studio {
 const studios = new Map<string, Studio>();
 const REF_MAX_BYTES = 2_000_000;
 
+/** The folder the studio page is served from (imported models are copied next to it). */
+export const studioDir = (id: string): string => path.join(tmpdir(), "ares-explainers", `studio-${id}`);
 export const studioId = (v: unknown): string => String(v ?? "model").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "model";
 export const getStudio = (id: string): Studio | undefined => studios.get(id);
 export function ensureStudio(id: string): Studio {
@@ -54,6 +60,10 @@ export function ensureStudio(id: string): Studio {
   return st;
 }
 export function dropStudios(): void { studios.clear(); }
+/** The last video a studio page recorded (Browser model {record}). */
+const videos = new Map<string, { file: string; bytes: number; at: number }>();
+export function setStudioVideo(id: string, file: string, bytes: number): void { videos.set(id, { file, bytes, at: Date.now() }); }
+export function studioVideo(id: string): { file: string; bytes: number; at: number } | undefined { return videos.get(id); }
 export function addStudioLog(id: string, line: string): void {
   const st = studios.get(id);
   if (!st) return;
@@ -76,6 +86,7 @@ function upsert(list: Obj[], p: Obj): void {
 }
 
 /** Same containment as inside(), but follows symlinks: the nearest existing ancestor must really live in the project. */
+export async function projectPath(cwd: string, rel: string): Promise<string> { return insideReal(cwd, rel); }
 async function insideReal(cwd: string, rel: string): Promise<string> {
   const abs = inside(cwd, rel);
   const root = await realpath(path.resolve(cwd)).catch(() => path.resolve(cwd));
@@ -155,7 +166,7 @@ function mergeView(cur: Obj, raw: unknown): Obj {
 }
 
 // ── lint: input is never silently ignored; unknown fields, shapes and dead clips come back as warnings ──
-const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture"]);
+const PART_KEYS = new Set(["name", "shape", "pos", "size", "rot", "color", "color2", "grad", "mid", "shade", "mat", "smooth", "facets", "mirror", "repeat", "parent", "pivot", "stage", "scenery", "pts", "sections", "verts", "faces", "fcolors", "seg", "detail", "jitter", "depth", "bevel", "r", "r2", "caps", "steps", "texture", "blobs", "res", "noise", "tint", "ao", "snap", "out", "align", "fuzz", "tex", "grain", "bone", "poly", "flow", "shag", "maps", "crisp", "hard", "crease", "src", "height"]);
 const vec = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 
 function lintPart(p: Obj): string[] {
@@ -166,8 +177,48 @@ function lintPart(p: Obj): string[] {
   for (const k of ["pos", "rot", "pivot"]) if (p[k] !== undefined && !vec(p[k])) w.push(`part "${n}": ${k} should be [x,y,z] numbers`);
   if (p.size !== undefined && !vec(p.size) && typeof p.size !== "number") w.push(`part "${n}": size should be [x,y,z] or one number`);
   if (p.texture !== undefined && !sanitizeTexture(p.texture)) w.push(`part "${n}": texture needs {kind: planks|bricks|noise|checker|stripes|dots, colors:[#hex...]}`);
+  if (p.shape === "sculpt") {
+    const bl = arr(p.blobs);
+    if (!bl.length) w.push(`part "${n}": a sculpt needs blobs:[{s:"ball",at:[x,y,z],r:[rx,ry,rz]}, {s:"stick",at,to,r,r2}, ...] (help:true has a worked creature)`);
+    bl.slice(0, 64).forEach((b, i) => { for (const x of lintBlob(b, i)) w.push(`part "${n}": ${x}`); });
+    if (bl.length > 64) w.push(`part "${n}": ${bl.length} blobs, only the first 64 are used`);
+  }
   if (p.color !== undefined && !colour(p.color)) w.push(`part "${n}": colour "${String(p.color)}" not recognised (use #rrggbb or a name like orange/gold/white)`);
   return w;
+}
+
+// ── the quality bar: what separates a real model from a toy, checked on every edit so Ares fixes it unprompted ──
+const ORGANIC_NAME = /head|leg|arm|ear|tail|eye|torso|body|snout|muzzle|paw|wing|neck|hand|foot|feet|belly|hip|nose|horn|fin|beak|thigh|shin|chest|jaw|mouth|claw|hoof|mane/i;
+const PRIMITIVE = new Set(["sphere", "capsule", "cylinder", "cone", "loft", "poly", "torus", "tube", "pyramid", "box", "prism"]);
+const GAIT_NAME = /walk|run|trot|gallop|jog|sprint|stride|march|crawl/i;
+/** Quality notes on the whole model (each starts "quality:"): stacked primitives, blockouts, flat colour, no eyes, no animation, sine-wave walks. */
+export function qualityNotes(st: Studio): string[] {
+  const out: string[] = [], raw = st.raw;
+  if (!raw.length) return out;
+  const sculpts = raw.filter((p) => p.shape === "sculpt");
+  if (raw.some((p) => p.shape === "gltf")) return out;
+  const organic = raw.filter((p) => PRIMITIVE.has(String(p.shape ?? "box")) && ORGANIC_NAME.test(nameOf(p)) && !p.snap);
+  if (!sculpts.length && organic.length >= 4) out.push(`quality: this is a creature/character stacked from primitives (${organic.slice(0, 6).map(nameOf).join(", ")}...): the toy look. Rebuild it as ONE sculpt part (blobs melt into one skin; help:true has the method) with joints, and remove these parts.`);
+  else if (!sculpts.length && raw.filter((p) => PRIMITIVE.has(String(p.shape ?? "box"))).length >= 4 && !raw.some((p) => p.texture)) out.push("quality: props look real when sculpted too: one sculpt with box/cyl blobs (round = bevelled edges), sub carves for grooves/panel lines, and per-blob mat (metal, leather, wood, stone) + tex. Bare primitives read as a blockout.");
+  for (const p of sculpts) {
+    const blobs = arr(p.blobs).map(obj), add = blobs.filter((b) => !b.sub && !b.paint), n = nameOf(p);
+    const bones = blobs.some((b) => b.bone);
+    // judged on the whole model: a wheel of 8 blobs is a finished component of a 40-blob car, not a blockout
+    const total = sculpts.reduce((t, q) => t + arr(q.blobs).map(obj).filter((b) => !b.sub && !b.paint).length, 0);
+    if (total < 15 && p === sculpts.reduce((a, q) => (arr(q.blobs).length > arr(a.blobs).length ? q : a), sculpts[0]!)) out.push(`quality: "${n}" is a blockout (${total} masses in the model). Finished creatures carry 40-75 blobs, props 15-40: secondary forms (muscle groups, cheeks, brow, haunches; bevels, collars, panels) and details (toes, lips, nostrils, eyelids; rivets, wraps, grooves as small sub carves).`);
+    const cols = new Set(blobs.map((b) => String(b.color ?? p.color ?? "")));
+    const uniform = ["glass", "chrome", "metal", "glow", "holo", "rubber"].includes(String(p.mat ?? "")) || (add.length < 6 && sculpts.length > 1);
+    if (cols.size <= 1 && !blobs.some((b) => b.paint) && !uniform) out.push(`quality: "${n}" is one flat colour. Paint it: lighter belly/muzzle/chest, darker extremities and back, markings, tonal variation (paint blobs with soft edges).`);
+    if (bones && !raw.some((q) => q.snap === n && /eye/i.test(nameOf(q)))) out.push(`quality: "${n}" is a creature with no eyes on it: add glossy eye parts with snap:"${n}" (and a nose/claws/teeth where the animal has them).`);
+    if (bones && !st.anims.length) out.push(`quality: "${n}" is rigged but not animated. Every creature/character ships with clips: idle (breathing pulse on the chest, slow head/tail drift), walk (step + lift), and its signature action; play idle.`);
+    if (!p.mat && !blobs.some((b) => b.mat)) out.push(`quality: "${n}" has no material: fur, skin, leather, stone, wood, metal, cloth (per blob too) give real surface detail.`);
+  }
+  if (st.anims.length && sculpts.some((p) => arr(p.blobs).some((b) => obj(b).bone)) && !st.anims.some((a) => /idle|breath|rest/i.test(String(a.name)))) out.push("quality: there is no idle clip: add one (breathing, small head/ear/tail motion) so the model is alive when nothing else plays.");
+  for (const a of st.anims) {
+    const motion = arr(a.motion).map(obj);
+    if (GAIT_NAME.test(String(a.name)) && motion.some((m) => m.kind === "swing") && !motion.some((m) => m.kind === "step")) out.push(`quality: clip "${String(a.name)}" swings legs on a sine (feet skate). Use kind:"step" on upper limbs (plant, push back, lift, swing forward) + kind:"lift" on knees/hocks/paws with the same speed/phase, a body bob at twice the speed, and head/tail counter-motion.`);
+  }
+  return out;
 }
 
 /** Does a clip target match a part? Same rule the animation player uses: exact, or "name*" prefix; a mirror follows its original. */
@@ -200,13 +251,20 @@ function moveBy(p: Obj, d: number[]): void {
 
 function scaleBy(p: Obj, f: number): void {
   const mul = (v: unknown): number[] => arr(v).map((n) => Number(n) * f);
-  if (p.size !== undefined) p.size = typeof p.size === "number" ? p.size * f : mul(p.size); else if (!["loft", "mesh", "extrude", "lathe", "tube"].includes(String(p.shape))) p.size = [f, f, f];
+  if (p.size !== undefined) p.size = typeof p.size === "number" ? p.size * f : mul(p.size); else if (!["loft", "mesh", "extrude", "lathe", "tube", "sculpt", "joint"].includes(String(p.shape))) p.size = [f, f, f];
   if (p.pos !== undefined) p.pos = mul(p.pos);
   if (p.pivot !== undefined) p.pivot = mul(p.pivot);
   for (const key of ["verts"]) if (Array.isArray(p[key])) p[key] = (p[key] as unknown[]).map((q) => mul(q));
   if (Array.isArray(p.sections)) p.sections = (p.sections as unknown[]).map((q) => arr(q).map((n) => Number(n) * f));
   if (Array.isArray(p.pts)) p.pts = (p.pts as unknown[]).map((q) => mul(q));
   for (const k of ["r", "r2", "depth"]) if (typeof p[k] === "number") p[k] = (p[k] as number) * f;
+  if (Array.isArray(p.blobs)) p.blobs = (p.blobs as unknown[]).map((raw) => {
+    const b = { ...obj(raw) };
+    for (const k of ["at", "to"]) if (Array.isArray(b[k])) b[k] = mul(b[k]);
+    for (const k of ["r", "r2", "k", "soft", "round"]) if (typeof b[k] === "number") b[k] = (b[k] as number) * f; else if (k === "r" && Array.isArray(b.r)) b.r = mul(b.r);
+    if (Array.isArray(b.pts)) b.pts = (b.pts as unknown[]).map((q) => arr(q).map((v) => Number(v) * f));
+    return b;
+  });
 }
 
 /** Pull parts out of a saved model file (an asset library entry). */
@@ -263,6 +321,20 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
           if (typeof to === "string" && to) p.name = to.slice(0, 32);
           touched.push(nameOf(p));
         }
+      } else if (op === "blob") {
+        // edit ONE blob of a sculpt by its id (patch fields, remove:true, or add a new id) instead of re-sending every blob
+        const part = st.raw.find((p) => nameOf(p) === String(o.name ?? ""));
+        if (!part || part.shape !== "sculpt") { errors.push(`blob: no sculpt part "${String(o.name ?? "")}"`); continue; }
+        const id = String(o.id ?? "").slice(0, 24);
+        if (!id) { errors.push("blob: needs id (give blobs ids like \"muzzle\", \"hump\" when you write them)"); continue; }
+        const list = arr(part.blobs).map(obj), i = list.findIndex((b) => String(b.id ?? "") === id);
+        const { op: _o, name: _n, id: _i, remove, ...rest } = o as Obj & { remove?: unknown };
+        void _o; void _n; void _i;
+        if (remove === true) { if (i < 0) { errors.push(`blob: "${id}" not found in ${nameOf(part)}`); continue; } list.splice(i, 1); }
+        else if (i >= 0) list[i] = { ...list[i], ...rest };
+        else list.push({ id, ...rest });
+        part.blobs = list;
+        touched.push(nameOf(part));
       } else if (op === "remove") {
         const sel = String(o.name ?? ""); const before = st.raw.length; st.raw = st.raw.filter((p) => !matches(sel, nameOf(p)));
         if (st.raw.length === before) errors.push(`remove: no part "${sel}"`); else touched.push(`- ${sel}`);
@@ -322,8 +394,66 @@ export async function applyEdit(st: Studio, e: ModelEdit, cwd: string): Promise<
   // a part that points at a parent which doesn't exist is almost always a typo: say so
   const have = new Set(st.raw.map(nameOf));
   for (const p of st.raw) if (p.parent && !have.has(String(p.parent))) errors.push(`part "${nameOf(p)}" has parent "${String(p.parent)}" which doesn't exist`);
+  for (const p of st.raw) if (p.snap && !st.raw.some((q) => nameOf(q) === String(p.snap) && q.shape === "sculpt")) errors.push(`part "${nameOf(p)}" snaps to "${String(p.snap)}", which is not a sculpt part`);
+  // a blob bone that names no part is skinned to the sculpt itself (it will not bend): say which
+  for (const p of st.raw) if (p.shape === "sculpt" && names.has(nameOf(p))) {
+    const missing = [...new Set([...arr(p.blobs).map((b) => String(obj(b).bone ?? "")), String(p.bone ?? "")].filter((b) => b && !have.has(b)))];
+    if (missing.length) errors.push(`part "${nameOf(p)}": blob bone(s) ${missing.map((b) => `"${b}"`).join(", ")} name no part — add {name, shape:"joint", pos:[pivot]} parts for them (mirror:true for left/right), or those blobs will not bend`);
+  }
+  // texture maps: project files are read now (inside the project only) and handed to the page as data: URLs
+  for (const p of st.raw) {
+    if (!names.has(nameOf(p)) || p.maps === undefined) continue;
+    const mp = sanitizeMaps(p.maps);
+    if (!mp) { errors.push(`part "${nameOf(p)}": maps needs albedo / normal / rough as a project path, an https URL or a data: URL`); continue; }
+    for (const k of ["albedo", "normal", "rough"]) {
+      const v = mp[k] as string | undefined;
+      if (!v || /^(https?:|data:)/.test(v)) continue;
+      try { (st.mapData ??= {})[v] = await textureDataUrl(cwd, v); } catch (err) { errors.push(`part "${nameOf(p)}": maps.${k}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+  }
+  // imported models: project .glb/.gltf files are copied next to the studio page (inside the project only, 60MB max)
+  for (const p of st.raw) {
+    if (!names.has(nameOf(p)) || p.shape !== "gltf") continue;
+    const src = String(p.src ?? "");
+    if (!src) { errors.push(`part "${nameOf(p)}": a gltf part needs src (a project .glb/.gltf path or an https URL)`); continue; }
+    if (/^(https?:|data:)/.test(src)) continue;
+    try {
+      const abs = await insideReal(cwd, src);
+      if (!/\.(glb|gltf)$/i.test(abs)) throw new Error("src must be a .glb or .gltf file");
+      const info = await stat(abs);
+      if (info.size > 60_000_000) throw new Error(`${src} is ${(info.size / 1e6).toFixed(0)}MB (max 60MB)`);
+      const name = `${path.basename(abs, path.extname(abs)).replace(/[^\w-]/g, "_")}-${info.size}${path.extname(abs).toLowerCase()}`, dst = path.join(studioDir(st.id), "models", name);
+      await mkdir(path.dirname(dst), { recursive: true });
+      await copyFile(abs, dst);
+      (st.modelFiles ??= {})[src] = `models/${name}`;
+      if (/\.gltf$/i.test(abs)) errors.push(`part "${nameOf(p)}": .gltf with separate .bin/texture files may not load from the studio copy - prefer a single .glb`);
+    } catch (err) { errors.push(`part "${nameOf(p)}": src: ${err instanceof Error ? err.message : String(err)}`); }
+  }
+  errors.push(...qualityNotes(st));
   st.version += 1;
   return { touched, errors };
+}
+
+const TEX_MAX_BYTES = 6_000_000;
+async function textureDataUrl(cwd: string, rel: string): Promise<string> {
+  const abs = await insideReal(cwd, rel);
+  const ext = path.extname(abs).toLowerCase();
+  const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : /\.jpe?g$/.test(ext) ? "image/jpeg" : "";
+  if (!mime) throw new Error("textures must be png/jpg/webp");
+  const buf = await readFile(abs);
+  if (buf.length > TEX_MAX_BYTES) throw new Error(`${rel} is ${(buf.length / 1e6).toFixed(1)}MB (max 6MB; a 1k or 2k map is plenty)`);
+  return `data:${mime};base64,${buf.toString("base64")}`;
+}
+/** The page sees data: URLs for project texture files (it cannot read the project). */
+function withMapData(st: Studio, parts: Obj[]): Obj[] {
+  if (!st.mapData) return parts;
+  return parts.map((p) => {
+    const mp = p.maps as Obj | undefined;
+    if (!mp) return p;
+    const out: Obj = { ...mp };
+    for (const k of ["albedo", "normal", "rough"]) { const v = mp[k]; if (typeof v === "string" && st.mapData![v]) out[k] = st.mapData![v]; }
+    return { ...p, maps: out };
+  });
 }
 
 async function refDataUrl(cwd: string, src: string): Promise<string> {
@@ -353,7 +483,7 @@ export function studioSpec(st: Studio): Obj {
   }
   uniqueNames(parts);
   const showVariant = typeof st.view.variant === "string" ? st.variants[st.view.variant] : undefined;
-  const shown = showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts;
+  const shown = withMapData(st, showVariant ? parts.map((p) => applyVariant(p, showVariant)) : parts).map((p) => (p.shape === "gltf" && st.modelFiles?.[String(p.src)] ? { ...p, src: st.modelFiles[String(p.src)] } : p));
   const anims = st.anims.map(sanitizeAnim).filter((a): a is Obj => !!a);
   const scripts = st.scripts.map(sanitizeScript).filter((x): x is Obj => !!x);
   return { title: st.title, style: st.style, look: st.look, parts: shown, anims, scripts, ...(st.ref ? { ref: st.ref } : {}), ...(st.backdrop ? { backdrop: st.backdrop } : {}), view: st.view };
@@ -386,7 +516,28 @@ export async function exportGame(st: Studio, cwd: string, o: { dir?: string; thr
   await mkdir(path.dirname(modelAbs), { recursive: true });
   const spec = studioSpec(st);
   await writeFile(runtimeAbs, buildRuntimeModule(three), "utf8");
-  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: baseParts(st), anims: spec.anims, scripts: spec.scripts, variants: st.variants }), "utf8");
+  const gameParts: Obj[] = [];
+  for (const p0 of baseParts(st)) {
+    let p = p0;
+    if (p.shape === "gltf" && typeof p.src === "string" && !/^(https?:|data:)/.test(p.src)) {
+      const srcAbs = await insideReal(cwd, p.src), name = path.basename(srcAbs), dst = await insideReal(cwd, `${dir}/models/${name}`);
+      if (srcAbs !== dst) { await mkdir(path.dirname(dst), { recursive: true }); await copyFile(srcAbs, dst); }
+      p = { ...p, src: name };
+    }
+    const mp = p.maps as Obj | undefined;
+    if (!mp) { gameParts.push(p); continue; }
+    const out: Obj = { ...mp };
+    for (const k of ["albedo", "normal", "rough"]) {
+      const v = mp[k];
+      if (typeof v !== "string" || /^(https?:|data:)/.test(v)) continue;
+      const src = await insideReal(cwd, v), name = path.basename(src), dst = await insideReal(cwd, `${dir}/textures/${name}`);
+      await mkdir(path.dirname(dst), { recursive: true });
+      if (src !== dst) await writeFile(dst, await readFile(src));
+      out[k] = `../textures/${name}`;
+    }
+    gameParts.push({ ...p, maps: out });
+  }
+  await writeFile(modelAbs, JSON.stringify({ format: "ares-model/1", expanded: true, title: st.title, style: st.style, look: st.look, parts: gameParts, anims: spec.anims, scripts: spec.scripts, variants: st.variants }), "utf8");
   const runtime = path.relative(cwd, runtimeAbs).split(path.sep).join("/"), model = path.relative(cwd, modelAbs).split(path.sep).join("/");
   const nScripts = (studioSpec(st).scripts as unknown[]).length;
   const usage = `${nScripts ? `NOTE: this model has ${nScripts} script(s) (textures, tints, effects): they only run in the game if you call attachScripts(m, a, {scene, camera, renderer}). ` : ""}import { loadModel } from "./${runtime}"; const m = await loadModel("${model}"); const a = m.instance(); scene.add(a.group); a.play(${JSON.stringify((spec.anims as Array<{ name?: string }>)[0]?.name ?? "clip")}); /* each frame: a.update(dt) */ — a.part(name), a.on(event, fn), a.triangles(), instance({variant:"name"}) for a colourway (${Object.keys(st.variants).join(", ") || "none defined"}), instance({material:(part, shared)=>…}) for custom tints; attachScripts(m, a, {scene, camera, renderer}) runs the model's scripts.`;

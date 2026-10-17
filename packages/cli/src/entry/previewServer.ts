@@ -33,7 +33,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FORGE_KIT_CSS, FORGE_KIT_JS } from "./forgeKit.js";
 
-import { addStudioLog, studioPoll } from "./modelStudio.js";
+import { addStudioLog, setStudioVideo, studioDir, studioPoll } from "./modelStudio.js";
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -223,6 +223,15 @@ function resolveUnderRoot(root: string, urlPath: string): string | null {
   return full;
 }
 
+async function readBinary(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => { size += c.length; if (size > limit) { reject(new Error("body too large")); req.destroy(); return; } chunks.push(c); });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
 async function readBody(req: IncomingMessage, limit = 256 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -410,6 +419,18 @@ async function handle(served: ServedFolder, req: IncomingMessage, res: ServerRes
     const body = await readBody(req).catch(() => "");
     res.writeHead(204, { "access-control-allow-origin": "*" }).end();
     try { const j = JSON.parse(body) as { name?: unknown; msg?: unknown }; addStudioLog(id, `[${String(j.name ?? "script").slice(0, 24)}] ${String(j.msg ?? "").slice(0, 260)}`); } catch { /* ignore */ }
+    return;
+  }
+  // a studio page posts the video it just recorded from its own canvas (Browser model {record}); saved next to the page
+  if (req.method === "POST" && urlPath.startsWith("/__ares/studio/") && urlPath.endsWith("/video")) {
+    const id = urlPath.slice("/__ares/studio/".length, -"/video".length).replace(/[^a-z0-9_-]/gi, "");
+    const buf = await readBinary(req, 300 * 1024 * 1024).catch(() => null);
+    if (!buf || buf.length < 64) { res.writeHead(400).end(); return; }
+    const file = path.join(studioDir(id), `recording-${Date.now()}.webm`);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, buf);
+    setStudioVideo(id, file, buf.length);
+    res.writeHead(204, { "access-control-allow-origin": "*" }).end();
     return;
   }
   if (req.method !== "GET" && req.method !== "HEAD") {

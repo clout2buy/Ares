@@ -19,10 +19,17 @@ const RUNTIME_BODY = `
 var LIBS={"cannon-es":"https://esm.sh/cannon-es@0.20.0","rapier":"https://esm.sh/@dimforge/rapier3d-compat@0.12.1"};
 function mkEvents(){var L={};return{on:function(n,f){(L[n]=L[n]||[]).push(f);return function(){var k=(L[n]||[]).indexOf(f);if(k>=0)L[n].splice(k,1)}},emit:function(n,d){(L[n]||[]).slice().forEach(function(f){f(d)})}}}
 
+var GLTF_LOADER_URL=__GLTF__;
+export { setGltfLoader, T as __T };
 export function buildModel(doc,opts){
   opts=opts||{};
+  if(opts.gltfLoader)setGltfLoader(opts.gltfLoader);
+  else if(!gltfLoad&&GLTF_LOADER_URL&&(doc.parts||[]).some(function(p){return p.shape==="gltf"}))setGltfLoader(function(src){return import(GLTF_LOADER_URL).then(function(M){return new M.GLTFLoader().loadAsync(src)}).then(function(gl){return gl.scene})});
   if(!doc||doc.expanded!==true||!Array.isArray(doc.parts))throw new Error("ares-model: pass the <id>.game.json that Browser model export writes");
-  var parts=doc.parts,clips={},cache={},variants=doc.variants||{};
+  // texture maps in the json are relative to the json file: resolve them against opts.base (loadModel passes its url)
+  var base=opts.base||null,parts=snapParts(doc.parts.map(function(p){if(!base)return p;var q=p;
+    if(p.maps){var m=Object.assign({},p.maps);["albedo","normal","rough"].forEach(function(k){if(m[k]&&!/^(https?:|data:)/.test(m[k]))m[k]=new URL(m[k],base).href});q=Object.assign({},q,{maps:m})}
+    if(p.shape==="gltf"&&p.src&&!/^(https?:|data:)/.test(p.src))q=Object.assign({},q,{src:new URL(p.src,base).href});return q})),clips={},cache={},variants=doc.variants||{};
   function vhit(sel,name){var base=name.replace(/ [(]mirror[)]$/,"");return sel.charAt(sel.length-1)==="*"?base.indexOf(sel.slice(0,-1))===0:(sel===name||sel===base)}
   function partFor(p,variant){var v=variant&&variants[variant];if(!v)return p;var q=p;Object.keys(v).forEach(function(sel){if(vhit(sel,p.name))q=Object.assign({},q,v[sel])});return q}
   (doc.anims||[]).forEach(function(c){clips[c.name]=c});
@@ -31,7 +38,7 @@ export function buildModel(doc,opts){
   // io: {variant:"frost", edges, shadows:false, material(part, shared) -> per-instance material override}
   model.instance=function(io){
     io=io||{};
-    var group=new T.Group(),items=[],nodes=[],byName={},ev=mkEvents(),cur=null,clock=0,playing=false,speed=1,loop=true,hold=false;
+    var group=new T.Group(),items=[],nodes=[],byName={},ev=mkEvents(),cur=null,clock=0,playing=false,speed=1,loop=true,hold=false,xf=null;
     group.name=doc.title||"ares-model";
     parts.forEach(function(p,i){
       var vk=(io.variant||"")+":"+i,pv0=partFor(p,io.variant);cache[vk]=cache[vk]||{};
@@ -41,21 +48,24 @@ export function buildModel(doc,opts){
       var node=new T.Group(),pv=p.pivot||p.pos;node.add(g);node.position.set(pv[0],pv[1],pv[2]);node.userData.rest=node.position.clone();
       group.add(node);items.push(g);nodes.push(node);if(!byName[p.name])byName[p.name]={group:g,mesh:g.userData.mesh,node:node,spec:p};
     });
-    rigLink(parts,nodes,group);
+    rigLink(parts,nodes,group);skinLink(parts,nodes,items);
     function pose(c,t){rigApply(parts,nodes,c,t)}
     function rest(){nodes.forEach(function(nd){nd.rotation.set(0,0,0);nd.scale.set(1,1,1);nd.position.copy(nd.userData.rest)})}
     var inst={group:group,part:function(n){return byName[n]||null},parts:function(){return parts.map(function(p){return byName[p.name]})},
       on:ev.on,emit:ev.emit,
       triangles:function(){var n=0;group.traverse(function(o){if(o.isMesh&&o.geometry){var g=o.geometry;n+=(g.index?g.index.count:g.attributes.position.count)/3}});return n},
       get playing(){return playing},get clip(){return cur?cur.name:null},get time(){return clock},
-      // play(name,{loop,speed,restart}); a clip with loop:false holds its last pose and emits "end"
-      play:function(name,o){var c=clips[name];if(!c)throw new Error("ares-model: no clip "+name+" (have: "+model.clips.join(", ")+")");o=o||{};if(cur===c&&playing&&!o.restart)return inst;cur=c;clock=0;playing=true;hold=false;speed=o.speed||1;loop=o.loop!==undefined?o.loop:c.loop!==false;pose(c,0);return inst},
-      stop:function(){playing=false;cur=null;rest();return inst},
+      // play(name,{loop,speed,restart,fade}); a clip with loop:false holds its last pose and emits "end".
+      // fade (seconds, default 0.25 when switching from another clip) blends from the current pose so clips never pop
+      play:function(name,o){var c=clips[name];if(!c)throw new Error("ares-model: no clip "+name+" (have: "+model.clips.join(", ")+")");o=o||{};if(cur===c&&playing&&!o.restart)return inst;
+        var fd=o.fade!==undefined?o.fade:(cur?0.25:0);xf=fd>0?{s:rigSnap(nodes),t:0,d:fd}:null;
+        cur=c;clock=0;playing=true;hold=false;speed=o.speed||1;loop=o.loop!==undefined?o.loop:c.loop!==false;pose(c,0);if(xf)rigBlend(nodes,xf.s,0);return inst},
+      stop:function(){playing=false;cur=null;xf=null;rest();return inst},
       update:function(dt){
         if(!playing||!cur)return inst;
         var d=cur.dur||1,prev=clock;clock+=dt*speed;
         if(!loop&&clock>=d){clock=d;playing=false;hold=true}
-        pose(cur,clock);
+        pose(cur,clock);if(xf){xf.t+=dt;rigBlend(nodes,xf.s,xf.t/xf.d);if(xf.t>=xf.d)xf=null}
         (cur.events||[]).forEach(function(e){var a=((prev%d)+d)%d,b=((clock%d)+d)%d,hit=b>=a?(e.t>a&&e.t<=b):(e.t>a||e.t<=b);if(!loop&&clock>=d&&prev<d&&e.t<=d&&e.t>a)hit=true;if(hit)ev.emit(e.name,e.data)});
         if(hold){hold=false;ev.emit("end",cur.name)}
         return inst},
@@ -65,7 +75,8 @@ export function buildModel(doc,opts){
   return model}
 
 export function loadModel(url,opts){
-  return fetch(url).then(function(r){if(!r.ok)throw new Error("ares-model: "+url+" -> "+r.status);return r.json()}).then(function(d){return buildModel(d,opts)})}
+  var abs=typeof location!=="undefined"?new URL(url,location.href).href:url;
+  return fetch(url).then(function(r){if(!r.ok)throw new Error("ares-model: "+url+" -> "+r.status);return r.json()}).then(function(d){return buildModel(d,Object.assign({base:abs},opts||{}))})}
 
 // Optional: run the model's authored scripts (water, glow, rain...) inside THIS game.
 // ctx: {scene, camera, renderer} ; returns {update(dt), dispose()}. The control-panel api (ui) is a no-op here.
@@ -88,6 +99,14 @@ function parts_len(model){return model.doc.parts.length}
 `;
 
 /** The runtime as ES module text. `three` is the import specifier the game resolves (bare "three" with an import map, or a URL). */
+/** Where three's GLTFLoader lives for a given three import specifier (null when it cannot be derived: pass opts.gltfLoader). */
+export function gltfLoaderSpecifier(three: string): string | null {
+  if (three === "three") return "three/examples/jsm/loaders/GLTFLoader.js";
+  const m = /^(.*?)(\/build\/three\.module\.(?:min\.)?js)$/.exec(three);
+  if (m) return `${m[1]}/examples/jsm/loaders/GLTFLoader.js`;
+  if (/^https:\/\/esm\.sh\/three@[\d.]+$/.test(three)) return `${three}/examples/jsm/loaders/GLTFLoader.js`;
+  return null;
+}
 export function buildRuntimeModule(three = "three"): string {
-  return `// Generated by Ares (Browser model export). Edit the model in the Forge and re-export; do not hand-edit this file.\nimport * as T from ${JSON.stringify(three)};\n${FORGE_MODEL_CORE_JS}\n${RUNTIME_BODY.trim()}\n`;
+  return `// Generated by Ares (Browser model export). Edit the model in the Forge and re-export; do not hand-edit this file.\nimport * as T from ${JSON.stringify(three)};\n${FORGE_MODEL_CORE_JS}\n${RUNTIME_BODY.trim().replace("__GLTF__", JSON.stringify(gltfLoaderSpecifier(three)))}\n`;
 }

@@ -7,7 +7,7 @@
 // relative position, so the long cacheable prefix is byte-identical across
 // turns for a given catalog.
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { PermissionMode } from "@ares/protocol";
 import { machineCardPromptBlock } from "@ares/tools";
@@ -22,10 +22,38 @@ function workspaceHints(cwd: string): string {
     if (cwd && existsSync(path.join(cwd, "project.godot"))) {
       hints.push("- Godot 4 project at the working directory: `SkillRead godot` FIRST, then `Capability invoke provider_id:\"ares/godot\"` (inspect → mutate → check → run+screenshot). Never hand-edit .tscn text the provider can change; never claim a mechanic works without a check and a run whose screenshot you looked at.");
     }
+    const engine = gameStack(cwd);
+    if (engine) hints.push(`- Game project at the working directory (${engine}): \`SkillRead gamedev\` FIRST and the reference for this stack (physics, how real things are built, ${engine} APIs). When the owner points at something, fix exactly that, surgically.`);
   } catch {
     // a hint is never worth a failed compose
   }
   return hints.length ? `\n${hints.join("\n")}` : "";
+}
+
+/** Which game stack lives at cwd, from a few small manifest files (bounded reads, no directory walk). "" when none. */
+const GAME_MARKERS: Array<[RegExp, string]> = [
+  [/"(three|phaser|pixi\.js|babylonjs|@babylonjs\/core|kaboom|kaplay|cannon-es|@dimforge\/rapier[23]d(-compat)?|matter-js|excalibur|playcanvas)"/, "web"],
+  [/gdx|libgdx/i, "Java / LibGDX"],
+  [/fabric-loom|net\.fabricmc|neoforge|minecraftforge|io\.papermc|spigotmc|bukkit/i, "Java / Minecraft"],
+  [/jme3|jmonkeyengine|lwjgl/i, "Java"],
+  [/^\s*bevy\s*=|"bevy"/m, "Rust / Bevy"],
+];
+export function gameStack(cwd: string): string {
+  if (!cwd) return "";
+  const small = (f: string): string => { try { const p = path.join(cwd, f); return statSync(p).size < 200_000 ? readFileSync(p, "utf8") : ""; } catch { return ""; } };
+  if (existsSync(path.join(cwd, "project.godot"))) return "Godot";
+  if (existsSync(path.join(cwd, "ProjectSettings", "ProjectVersion.txt"))) return "Unity";
+  if (existsSync(path.join(cwd, "main.lua")) && existsSync(path.join(cwd, "conf.lua"))) return "LOVE";
+  if (existsSync(path.join(cwd, "default.project.json"))) return "Roblox / Rojo";
+  for (const f of ["package.json", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml", "Cargo.toml"]) {
+    const text = small(f);
+    if (!text) continue;
+    for (const [re, name] of GAME_MARKERS) if (re.test(text)) return name;
+  }
+  try { if (readdirSync(cwd).some((f) => f.endsWith(".uproject"))) return "Unreal"; } catch { /* unreadable cwd */ }
+  if (/pygame/.test(small("requirements.txt"))) return "Pygame";
+  if (/<canvas|requestAnimationFrame/.test(small("index.html"))) return "web";
+  return "";
 }
 
 /** Workflow surfaces: the app loop, the plan/build boundary, and hooks. The

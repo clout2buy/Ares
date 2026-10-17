@@ -104,7 +104,7 @@ function SceneLive({ active }: SceneProps): React.ReactElement {
       <div className="fiSide">
         <p className="fiLine">Ask for a <b>3D model</b> and watch it get built <b>piece by piece, while Ares is still writing it</b>.</p>
         <pre className="fiCode fiTail" aria-label="The tool call as Ares writes it">{tail}<b className="fiCaret" /></pre>
-        <p className="fiLine fiDim">Each part appears the moment it is written. No waiting for a finished file.</p>
+        <p className="fiLine fiDim">Creatures are sculpted: each blob melts into the clay the moment it is written. No waiting for a finished file.</p>
       </div>
       <div className="fiStage">{active ? <iframe ref={frame} className="fiFrame" title="Live build demo" sandbox="allow-scripts" srcDoc={html} onLoad={() => setLoaded(true)} /> : null}</div>
     </div>
@@ -263,12 +263,12 @@ function SceneDone(): React.ReactElement {
       <h3>That is the new Forge.</h3>
       <ul>
         <li><b>Explain it</b>: stories, charts and simulations that play out live.</li>
-        <li><b>Build it</b>: 3D models assembled piece by piece, in many styles.</li>
+        <li><b>Build it</b>: sculpted creatures and characters, props piece by piece, in many styles.</li>
         <li><b>Edit it</b>: say what to change; Ares edits and checks its own work.</li>
         <li><b>Ship it</b>: export into your game, with joints and animation.</li>
         <li><b>Script it</b>: Ares writes water, lava, rain and physics itself.</li>
       </ul>
-      <p className="fiLine fiDim">Try: <i>"make a low-poly fox for my game"</i></p>
+      <p className="fiLine fiDim">Try: <i>"sculpt a grizzly bear for my game and make it walk"</i></p>
     </div>
   );
 }

@@ -165,10 +165,50 @@ test("the Agents tool: list, text and create — but never delete", async () => 
   }
 });
 
+// A 1x1 PNG — the smallest real image the avatar store accepts.
+const PNG_1PX = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000" + "1f15c4890000000d49444154789c6360000002000154a24f5f0000000049454e44ae426082", "hex");
+
+test("profile pictures: the phone's avatar store, set by the owner or by the agent itself", async () => {
+  const { home, agents } = await harness();
+  const ava = await agents.create({ name: "Ava", instructions: "Designer." });
+  await agents.bind(ava.id, "sess_ava");
+  assert.equal(agents.list()[0].avatar, undefined);
+
+  const version = await agents.setAvatar(ava.id, `data:image/png;base64,${PNG_1PX.toString("base64")}`);
+  assert.ok(version);
+  assert.equal(agents.list().find((a) => a.id === ava.id).avatar, version, "the list carries the version");
+  const data = await agents.avatarData(ava.id);
+  assert.match(data.image, /^data:image\/png;base64,/);
+  // Same file the phone's /gateway/avatar/<id> serves.
+  assert.ok((await fs.readdir(path.join(home, "phone", "avatars"))).includes(`${ava.id}.png`));
+
+  // SVG (or anything that is not JPEG/PNG/WebP) is refused: it can carry script.
+  await assert.rejects(agents.setAvatar(ava.id, Buffer.from("<svg onload=alert(1)>")), /JPEG, PNG or WebP/);
+  await assert.rejects(agents.setAvatar("p_nobody00000", PNG_1PX), /unknown agent/);
+
+  // The agent sets its own picture through the Agents tool.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ares-pic-"));
+  await fs.writeFile(path.join(dir, "me.png"), PNG_1PX);
+  setAgentsHost(agents.host());
+  try {
+    const out = await makeAgentsTool().call({ action: "avatar", image: "me.png" }, { sessionId: "sess_ava", workspace: dir });
+    assert.equal(out.output.agent.name, "Ava");
+  } finally {
+    setAgentsHost(undefined);
+  }
+
+  await agents.setAvatar(ava.id, null);
+  assert.equal(await agents.avatarData(ava.id), null);
+  await agents.setAvatar(ava.id, PNG_1PX);
+  await agents.remove(ava.id);
+  assert.equal(await agents.avatarData(ava.id), null, "deleting an agent drops its picture");
+});
+
 test("the desktop agent layer keeps the working voice and names the texting protocol", () => {
   const block = desktopAgentLayerBlock({ name: "Ava", instructions: "Designer." }, [{ name: "Rex", role: "Engineer" }]);
   assert.match(block, /on their desktop/);
   assert.match(block, /every Ares tool — the Forge/);
   assert.match(block, /\[text from <name>\]/);
+  assert.match(block, /Agents \(action avatar\)/);
   assert.doesNotMatch(block, /texting them from their phone/);
 });

@@ -6,13 +6,15 @@
 // later as its own message in YOUR chat (they text you back with this same
 // tool). Every text shows up in the owner's sidebar, so nothing is private
 // from the owner. Agents may create agents; only the owner deletes one.
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { buildTool } from "@ares/tools";
 import { agentsHost, type AgentCard } from "./agentScope.js";
 
 const input = z
   .object({
-    action: z.enum(["list", "text", "create"]).describe("list the owner's agents, text one of them, or create a new agent"),
+    action: z.enum(["list", "text", "create", "avatar"]).describe("list the owner's agents, text one of them, create a new agent, or set YOUR OWN profile picture"),
     to: z.string().min(1).max(60).optional().describe("text: the agent's name (or id)"),
     message: z.string().min(1).max(4000).optional().describe("text: what to say — write it like a text to a colleague, with everything they need"),
     urgent: z.boolean().optional().describe("text: true only when it cannot wait for their current work to finish"),
@@ -21,6 +23,7 @@ const input = z
     emoji: z.string().max(8).optional().describe("create: one emoji for their avatar"),
     color: z.string().regex(/^#[0-9a-f]{6}$/i).optional().describe("create: avatar colour, hex"),
     model: z.string().max(120).optional().describe("create: model id (default: the owner's current model)"),
+    image: z.string().min(1).max(1024).optional().describe("avatar: path to a square JPEG/PNG/WebP (≤2 MB) you made — e.g. a Forge render or a screenshot of a portrait you drew. It becomes your face in the sidebar, in chats and on the owner's iPhone."),
   })
   .strict();
 
@@ -32,7 +35,7 @@ export function makeAgentsTool() {
     description:
       "The owner's personal agents (the desktop sidebar contacts — each has its own role, memory, Forge and model). " +
       "list shows who exists; text sends one of them a message (fire-and-acknowledge: it lands in their chat now, and their reply arrives later as a new message in yours — do not wait or poll for it); " +
-      "create makes a new agent when the owner asks for one or a job clearly needs its own specialist. Agents cannot delete agents — only the owner can.",
+      "create makes a new agent when the owner asks for one or a job clearly needs its own specialist; avatar sets your own profile picture from an image file you made (do it when the owner asks you to pick or make a pic). Agents cannot delete agents — only the owner can.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: input,
@@ -57,6 +60,15 @@ export function makeAgentsTool() {
           output: { ok: true, to: sent.to, threadId: sent.threadId },
           display: `texted ${sent.to.name} — their reply will arrive as a new message here`,
         };
+      }
+      if (i.action === "avatar") {
+        if (!i.image) throw new Error("avatar needs image (a file path)");
+        const base = (ctx as { workspace?: string } | undefined)?.workspace ?? process.cwd();
+        const file = path.resolve(base, i.image);
+        const bytes = await fs.readFile(file);
+        if (bytes.length > 2 * 1024 * 1024) throw new Error("the picture is over 2 MB — crop or shrink it first");
+        const who = await host.avatar(from, bytes);
+        return { output: { ok: true, agent: who }, display: `${who.name}'s profile picture is now ${path.basename(file)}` };
       }
       if (!i.name || !i.role) throw new Error("create needs name and role");
       const made = await host.create(from, { name: i.name, role: i.role, emoji: i.emoji, color: i.color, model: i.model });

@@ -30,6 +30,7 @@ import {
   newPersonaId,
   type Persona,
 } from "../../personas.js";
+import { AvatarError, AvatarStore, detectImage } from "../../phoneAvatars.js";
 import { clearAgentSessions, setSessionAgent, agentOfSession, type AgentCard, type AgentsHost } from "../agentScope.js";
 import { desktopAgentLayerBlock } from "../prompt/texting.js";
 
@@ -44,6 +45,9 @@ export interface AgentWire {
   reasoningLevel?: string;
   instructions: string;
   threads: string[];
+  /** Version of the agent's profile picture (the phone's avatar store); the
+   *  desktop fetches the bytes with agent_avatar when it changes. */
+  avatar?: string;
   /** It also has a phone thread (made on, or used from, the iPhone app). */
   onPhone: boolean;
   createdBy?: string;
@@ -90,8 +94,9 @@ function cleanString(v: unknown, max: number): string | undefined {
   return t ? t.slice(0, max) : undefined;
 }
 
-export function agentToWire(p: Persona): AgentWire {
+export function agentToWire(p: Persona, avatar?: string): AgentWire {
   return {
+    ...(avatar ? { avatar } : {}),
     id: p.id,
     name: p.name,
     ...(p.emoji ? { emoji: p.emoji } : {}),
@@ -124,11 +129,15 @@ export function agentTextGoal(fromName: string, message: string, urgent: boolean
 
 export class DesktopAgents {
   readonly store: PersonaStore;
+  /** Profile pictures — the SAME store the phone's /gateway/avatar uses, so a
+   *  picture set on either surface shows on both. */
+  readonly avatars: AvatarStore;
   private readonly pairLog = new Map<string, number[]>();
   private readonly now: () => number;
 
   constructor(private readonly deps: DesktopAgentsDeps) {
     this.store = new PersonaStore(deps.home);
+    this.avatars = new AvatarStore(deps.home);
     this.now = deps.now ?? Date.now;
   }
 
@@ -136,12 +145,47 @@ export class DesktopAgents {
    *  which session belongs to whom. */
   async load(): Promise<AgentWire[]> {
     await this.store.load();
+    await this.avatars.load().catch(() => undefined);
     for (const p of this.store.list()) for (const sid of p.desktopThreads ?? []) setSessionAgent(sid, p.id);
     return this.list();
   }
 
   list(): AgentWire[] {
-    return this.store.list().map(agentToWire);
+    return this.store.list().map((p) => agentToWire(p, this.avatars.version(p.id)));
+  }
+
+  wire(p: Persona): AgentWire {
+    return agentToWire(p, this.avatars.version(p.id));
+  }
+
+  /** An agent's picture as a data: URL (null when it has none). "ares" is the
+   *  default agent's own picture. */
+  async avatarData(id: string): Promise<{ version: string; image: string } | null> {
+    if (id !== "ares" && !this.store.get(id)) return null;
+    const hit = await this.avatars.read(id);
+    if (!hit) return null;
+    return { version: hit.meta.version, image: `data:${hit.meta.contentType};base64,${hit.bytes.toString("base64")}` };
+  }
+
+  /** Set (bytes) or clear (null) a picture. JPEG/PNG/WebP only, sniffed from
+   *  the bytes — never SVG, which can carry script. */
+  async setAvatar(id: string, image: Buffer | string | null): Promise<string | undefined> {
+    await this.store.load();
+    if (id !== "ares" && !this.store.get(id)) throw new AgentError("unknown agent");
+    if (image === null) {
+      await this.avatars.remove(id);
+    } else {
+      const bytes = typeof image === "string" ? Buffer.from(image.replace(/^data:[^,]*;base64,/, ""), "base64") : image;
+      if (!detectImage(bytes)) throw new AgentError("a profile picture must be a JPEG, PNG or WebP image");
+      try {
+        await this.avatars.put(id, bytes);
+      } catch (error) {
+        if (error instanceof AvatarError) throw new AgentError(error.message);
+        throw error;
+      }
+    }
+    this.emitChanged();
+    return this.avatars.version(id);
   }
 
   get(id: string): Persona | undefined {
@@ -236,6 +280,7 @@ export class DesktopAgents {
     const existing = this.store.get(id);
     if (!existing) return [];
     await this.store.remove(id);
+    await this.avatars.remove(id).catch(() => false);
     clearAgentSessions(id);
     this.emitChanged();
     return existing.desktopThreads ?? [];
@@ -362,6 +407,12 @@ export class DesktopAgents {
       text: async (fromSession, to, message, urgent) => {
         const sent = await this.text(fromSession, to, message, urgent);
         return { to: card(sent.to), threadId: sent.threadId };
+      },
+      avatar: async (fromSession, bytes) => {
+        const self = this.agentForSession(fromSession);
+        const id = self?.id ?? "ares";
+        await this.setAvatar(id, bytes);
+        return self ? card(self) : { id: "ares", name: "Ares", role: "the owner's main assistant", model: "" };
       },
       create: async (fromSession, spec) => {
         const maker = this.agentForSession(fromSession);

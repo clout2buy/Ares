@@ -46,6 +46,9 @@ export const CHANGELOG: ChangelogEntry[] = [
     tagline: "The sidebar is your contacts now: agents with their own role, memory, Forge and model, the same ones that live in your iPhone app.",
     highlights: [
       { icon: "👥", title: "Agents, not chats", blurb: "Every agent sits in the sidebar with its face, its last message and a live typing ring. Click one to open its chats, or start a new one.", tag: "New" },
+      { icon: "🖼️", title: "Profile pictures", blurb: "Give any agent a photo, or ask it to make its own pic in the Forge. The same pictures show up on your iPhone.", tag: "New" },
+      { icon: "😊", title: "Faces that live", blurb: "Agents without a photo get their own animated face: it blinks, and while the agent works its eyes dart around.", tag: "New" },
+      { icon: "💙", title: "Feels like iMessage", blurb: "Agent chats are a text thread: your messages in blue, theirs in grey next to their face, a typing bubble while they work, and Delivered and Read under your message.", tag: "New" },
       { icon: "🧠", title: "Their own memory", blurb: "Each agent remembers on its own. They all know what you told Ares, but what you tell Penny stays with Penny.", tag: "New" },
       { icon: "🛠️", title: "Their own Forge", blurb: "Each agent has its own Forge studios, so two agents can each build \"the car\" without touching each other's.", tag: "New" },
       { icon: "🎛️", title: "Their own model", blurb: "Give each agent its own provider and model: a heavy model for your engineer, a fast one for your finance check-ins.", tag: "New" },

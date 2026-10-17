@@ -21,7 +21,7 @@
 //
 // In a plain browser (no native bridge) the app runs in DEMO mode.
 
-import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -145,7 +145,7 @@ import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./f
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
-import { ARES_AGENT_ID, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
+import { ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -386,9 +386,10 @@ function demoSession(): SessionVm {
 }
 
 // ─── Demo agents (browser preview without a daemon) ─────────────────────────
-function demoChat(title: string, user: string, feed: AresEvent[], extra: Item[] = []): SessionVm {
+function demoChat(title: string, user: string, feed: AresEvent[], extra: Item[] = [], minutesAgo = 5): SessionVm {
   let s = freshSession();
   s.title = title;
+  s.updatedAt = new Date(Date.now() - minutesAgo * 60_000).toISOString();
   for (const e of [...feed, { type: "turn_settled" } as AresEvent]) s = foldEvent(s, e);
   s.busy = false;
   s.activity = undefined;
@@ -407,7 +408,7 @@ function demoAgentWorld(): { agents: AgentVm[]; sessions: SessionVm[] } {
     { type: "tool_end", id: "d2", durationMs: 120, display: "game/drift.js — vehicle, grip curve, skid decals, chase cam" },
     { type: "text_delta", text: "It's running in the Forge. The car is a real sculpt — windshield, four wheels on suspension, and the rear lets go when you flick it, so drifts feel earned.\n\n**Controls:** WASD, space for handbrake. Skid marks fade over ~6s, and the city is instanced so it holds 120fps." },
     { type: "turn_end", status: "completed", durationMs: 41000, usage: { inputTokens: 48000, outputTokens: 3100 } },
-  ], [{ kind: "artifact", key: nextKey(), path: "game/index.html", label: "Neon drift racer" }]);
+  ], [{ kind: "artifact", key: nextKey(), path: "game/index.html", label: "Neon drift racer" }], 3);
   const subs = demoChat("Subscriptions audit", "what am I paying for every month?", [
     { type: "turn_start" },
     { type: "text_delta", text: "Seven recurring charges, $143.96/mo total. Two look forgotten: **Dropbox Plus** ($11.99, last opened in June) and a **second Spotify** ($10.99 on the Amex). Want me to cancel those two?" },
@@ -415,14 +416,19 @@ function demoAgentWorld(): { agents: AgentVm[]; sessions: SessionVm[] } {
   ], [
     { kind: "user", key: nextKey(), text: "[text from Atlas] Found it — the second Spotify is a Duo plan your sister's account still points at. Safe to cancel; she has her own now." },
     { kind: "assistant", key: nextKey(), text: "Atlas checked the Spotify one — it's a leftover Duo plan, safe to cancel. I'll cancel both and keep watching for new charges over $50.", thinking: "", streaming: false },
-  ]);
+  ], 26);
   const research = demoChat("Spotify Duo leftover", "[text from Penny] Can you check whether the second Spotify charge on the Amex is a family/duo plan someone else uses?", [
     { type: "turn_start" },
     { type: "tool_start", id: "r1", name: "WebSearch", activityDescription: "Searching Spotify Duo billing" },
     { type: "tool_end", id: "r1", durationMs: 900, display: "Duo plans bill the manager's card; members show as linked accounts" },
     { type: "text_delta", text: "Texted Penny back: it's a Duo plan whose second seat is your sister's old account — safe to cancel." },
     { type: "turn_end", status: "completed", durationMs: 7000, usage: { inputTokens: 7000, outputTokens: 180 } },
-  ]);
+  ], [], 1500);
+  // Atlas is mid-reply: the typing bubble and the face that looks around.
+  research.items.push({ kind: "user", key: nextKey(), text: "while you're at it, is Dropbox Plus safe to drop? I think my photos backup uses it" });
+  research.busy = true;
+  research.activity = "thinking";
+  research.updatedAt = new Date(Date.now() - 30_000).toISOString();
   const moodboard = freshSession();
   const now = new Date().toISOString();
   const agents: AgentVm[] = [
@@ -691,6 +697,11 @@ function App() {
   const [agentEditor, setAgentEditor] = useState<null | { mode: "create" } | { mode: "edit"; id: string }>(null);
   const [agentError, setAgentError] = useState<string | undefined>();
   const [agentUnread, setAgentUnread] = useState<string[]>([]);
+  /** Profile pictures by agent id (data: URLs), fetched when a version changes. */
+  const [agentPhotos, setAgentPhotos] = useState<Record<string, string>>({});
+  const agentPhotoVersions = useRef<Record<string, string>>({});
+  /** A photo picked in the New agent sheet, uploaded once the agent exists. */
+  const pendingAgentPhoto = useRef<string | null>(null);
   /** Chats handed to an agent before the daemon's agents_list echo lands. */
   const [localAgentBindings, setLocalAgentBindings] = useState<Record<string, string>>({});
   /** sessionId → agent id, for every chat that belongs to a named agent. */
@@ -1661,6 +1672,7 @@ function App() {
     void invoke("ares_daemon_command", { command: { type: "operator_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "agent_avatar", agentId: "ares" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
     void invoke("ares_daemon_command", { command: { type: "computer_status" } }).catch(() => null);
@@ -2354,6 +2366,17 @@ function App() {
           if (Array.isArray(e.agents)) {
             const list = e.agents as AgentVm[];
             setAgents(list);
+            // Fetch any profile picture that is new or changed (the phone may
+            // have set it); drop the ones that were removed.
+            for (const a of list) {
+              if (a.avatar && agentPhotoVersions.current[a.id] !== a.avatar) {
+                agentPhotoVersions.current[a.id] = a.avatar;
+                daemonCmd({ type: "agent_avatar", agentId: a.id });
+              } else if (!a.avatar && agentPhotoVersions.current[a.id]) {
+                delete agentPhotoVersions.current[a.id];
+                setAgentPhotos((p) => { const n = { ...p }; delete n[a.id]; return n; });
+              }
+            }
             // The daemon knows the bindings now; drop the optimistic ones it echoed.
             setLocalAgentBindings((current) => {
               const echoed = new Set(list.flatMap((a) => a.threads ?? []));
@@ -2369,6 +2392,11 @@ function App() {
             setAgentEditor(null);
             setAgentError(undefined);
             pendingAgentChat.current = made.id;
+            if (pendingAgentPhoto.current) {
+              daemonCmd({ type: "agent_avatar_set", agentId: made.id, image: pendingAgentPhoto.current });
+              setAgentPhotos((p) => ({ ...p, [made.id]: pendingAgentPhoto.current! }));
+              pendingAgentPhoto.current = null;
+            }
           }
           return true;
         }
@@ -2394,6 +2422,21 @@ function App() {
           return true;
         case "agent_bound":
           return true;
+        case "agent_avatar": {
+          const id = String(e.agentId ?? "");
+          const image = typeof (e as { image?: unknown }).image === "string" ? String((e as { image?: unknown }).image) : "";
+          if (!id) return true;
+          const version = (e as { version?: unknown }).version;
+          if (version) agentPhotoVersions.current[id] = String(version);
+          setAgentPhotos((p) => {
+            if (image) return p[id] === image ? p : { ...p, [id]: image };
+            if (!(id in p)) return p;
+            const n = { ...p };
+            delete n[id];
+            return n;
+          });
+          return true;
+        }
         case "agent_text": {
           // One agent texted another: show it in the recipient's chat right
           // away (the turn it starts streams in behind it) and light their dot.
@@ -3316,20 +3359,37 @@ function App() {
   const saveAgent = (draft: AgentDraft) => {
     setAgentError(undefined);
     const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, instructions: draft.instructions };
+    const setPhotoLocal = (id: string, photo: string) =>
+      setAgentPhotos((p) => {
+        const n = { ...p };
+        if (photo) n[id] = photo;
+        else delete n[id];
+        return n;
+      });
     if (!native) {
       // Browser preview: no daemon — keep the directory in memory.
       if (agentEditor?.mode === "edit") {
         setAgents((current) => current.map((a) => (a.id === agentEditor.id ? { ...a, ...payload } : a)));
+        if (draft.photo !== undefined) setPhotoLocal(agentEditor.id, draft.photo);
       } else {
         const id = `p_demo${Math.random().toString(16).slice(2, 10)}`;
         setAgents((current) => [...current, { id, ...payload, threads: [], createdAt: new Date().toISOString() }]);
+        if (draft.photo) setPhotoLocal(id, draft.photo);
         pendingAgentChat.current = id;
       }
       setAgentEditor(null);
       return;
     }
-    if (agentEditor?.mode === "edit") daemonCmd({ type: "agent_update", agentId: agentEditor.id, agent: payload });
-    else daemonCmd({ type: "agent_create", agent: payload });
+    if (agentEditor?.mode === "edit") {
+      daemonCmd({ type: "agent_update", agentId: agentEditor.id, agent: payload });
+      if (draft.photo !== undefined) {
+        daemonCmd({ type: "agent_avatar_set", agentId: agentEditor.id, image: draft.photo || null });
+        setPhotoLocal(agentEditor.id, draft.photo);
+      }
+    } else {
+      pendingAgentPhoto.current = draft.photo || null;
+      daemonCmd({ type: "agent_create", agent: payload });
+    }
   };
 
   const deleteAgent = (id: string) => {
@@ -3845,7 +3905,7 @@ function App() {
       const it = s.items[i]!;
       if ((it.kind === "assistant" || it.kind === "user") && it.text.trim()) {
         const parsed = it.kind === "user" ? parseAgentText(it.text) : null;
-        const line = (parsed ? `${parsed.from}: ${parsed.body}` : it.kind === "user" ? `You: ${it.text}` : it.text).replace(/[#*`>|]/g, "").replace(/\s+/g, " ").trim();
+        const line = (parsed ? `${parsed.from}: ${parsed.body}` : it.kind === "user" ? `You: ${it.text}` : it.text).replace(/[#*`>|]/g, "").replace(/\s+/g, " ").replace(/^[-—–\s]+/, "").trim();
         return line.length > 70 ? line.slice(0, 69) + "…" : line;
       }
     }
@@ -3863,6 +3923,7 @@ function App() {
         busy: theirs.some((s) => s.busy),
         unread: agentUnread.includes(id),
         chats: theirs.filter((s) => s.items.length > 0 || s.title !== "New session").length,
+        at: theirs.map((s) => s.updatedAt).filter(Boolean).sort().at(-1),
       };
     });
   const visibleSessions = q ? railSessions.filter((s) => s.title.toLowerCase().includes(q)) : railSessions;
@@ -4045,6 +4106,7 @@ function App() {
 
   return (
     <StyleCtx.Provider value={prefs.uiStyle}>
+    <AgentPhotoContext.Provider value={agentPhotos}>
     <div
       className="ares"
       data-daemon={daemon}
@@ -4393,6 +4455,7 @@ function App() {
 
         <nav className="railNav">
           <button
+            title="Chats"
             data-on={view === "chat" ? "1" : "0"}
             onClick={() => {
               setView("chat");
@@ -4405,10 +4468,11 @@ function App() {
               }
             }}
           >
-            <Medallion glyph="sessions" /><i className="glyph" data-glyph="task" /> Sessions
+            <Medallion glyph="sessions" /><i className="glyph" data-glyph="task" /> Chats
           </button>
           <button
             className="helmNav"
+            title="HELM"
             data-on={view === "helm" ? "1" : "0"}
             onClick={() => {
               setView("helm");
@@ -4421,6 +4485,7 @@ function App() {
             {opStatus?.activeCount ? <em>{opStatus.activeCount}</em> : null}
           </button>
           <button
+            title="Artifacts"
             data-on={view === "artifacts" ? "1" : "0"}
             onClick={() => {
               setView("artifacts");
@@ -4431,6 +4496,7 @@ function App() {
             {vaultCount > 0 ? <em>{vaultCount}</em> : null}
           </button>
           <button
+            title="AresOS"
             data-on={view === "aresos" ? "1" : "0"}
             onClick={() => {
               setView("aresos");
@@ -4556,7 +4622,7 @@ function App() {
         {railCollapsed ? (
           <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
         ) : null}
-        <header className="stageHead">
+        <header className="stageHead" data-imsg={activeAgent ? "1" : "0"}>
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
@@ -4660,7 +4726,8 @@ function App() {
             }}
           />
         ) : (
-          <div className="chat" ref={scroller} onScroll={onChatScroll}>
+          <AgentChatContext.Provider value={activeAgent ?? null}>
+          <div className="chat" ref={scroller} onScroll={onChatScroll} data-imsg={activeAgent ? "1" : "0"}>
             {active?.loading ? (
               <div className="empty">
                 <div className="wordmark">LOADING</div>
@@ -4711,18 +4778,31 @@ function App() {
                 ? active.items.slice(-transcriptCap)
                 : active.items
               : []
-            ).map((item) => (
-              <ItemView
-                onConnectService={connectService}
-                onDismissConnect={dismissConnect}
-                key={item.key}
-                item={item}
-                onPermission={respondPermission}
-                onArtifact={openArtifact}
-                onSignIn={startAnthropicSignIn}
-                toolDisplay={prefs.toolDisplay}
-              />
+            ).map((item, index, shown) => (
+              <Fragment key={item.key}>
+                <ItemView
+                  onConnectService={connectService}
+                  onDismissConnect={dismissConnect}
+                  item={item}
+                  onPermission={respondPermission}
+                  onArtifact={openArtifact}
+                  onSignIn={startAnthropicSignIn}
+                  toolDisplay={prefs.toolDisplay}
+                />
+                {/* iMessage receipts: under the owner's latest message only. */}
+                {activeAgent && item.kind === "user" && !parseAgentText(item.text) && !shown.slice(index + 1).some((x) => x.kind === "user" && !parseAgentText(x.text)) ? (
+                  <div className="turn user imsgReceiptRow"><span className="imsgReceipt">{shown.slice(index + 1).some((x) => x.kind === "assistant" && x.text.trim()) ? "Read" : "Delivered"}</span></div>
+                ) : null}
+              </Fragment>
             ))}
+            {/* The typing bubble: the agent is working and has not started
+                talking yet (or is between tool calls). */}
+            {activeAgent && active?.busy && !(active.items.at(-1)?.kind === "assistant" && (active.items.at(-1) as Extract<Item, { kind: "assistant" }>).streaming && (active.items.at(-1) as Extract<Item, { kind: "assistant" }>).text.trim()) ? (
+              <div className="turn assistant imsgTyping" aria-label={`${activeAgent.name} is typing`}>
+                <span className="turnMark imsgFace"><AgentAvatar agent={activeAgent} size={30} busy /></span>
+                <div className="typingBubble"><i /><i /><i /></div>
+              </div>
+            ) : null}
             {/* Who is answering, and why. An adopted persona is never silent:
                 this chip plus the persona's own greeting are the disclosure,
                 and "Back to Ares" is always one click away. */}
@@ -4771,6 +4851,7 @@ function App() {
               </button>
             ) : null}
           </div>
+          </AgentChatContext.Provider>
         )}
 
         {active?.fleet && active.fleet.agents.length > 0 && (active.fleet.active || active.fleet.canResume) ? (
@@ -5685,6 +5766,7 @@ function App() {
         </div>
       ) : null}
     </div>
+    </AgentPhotoContext.Provider>
     </StyleCtx.Provider>
   );
 }
@@ -9347,6 +9429,7 @@ const ItemView = React.memo(function ItemView({
   onSignIn?: () => void;
   toolDisplay?: "product" | "technical";
 }) {
+  const chatAgent = useContext(AgentChatContext);
   if (item.kind === "authPrompt") {
     return (
       <div className="authPrompt">
@@ -9378,14 +9461,18 @@ const ItemView = React.memo(function ItemView({
   if (item.kind === "user") {
     const texted = item.text ? parseAgentText(item.text) : null;
     if (texted) {
+      // Another agent texting this one: a grey bubble on the left with the
+      // sender's face and name above it, like a group thread in iMessage.
+      const face = agentFaceByName(texted.from);
+      const sender = { id: texted.from.toLowerCase() === "ares" ? ARES_AGENT_ID : `from-${texted.from}`, name: texted.from, ...face };
       return (
-        <div className="turn user agentText">
-          <div className="bubble" style={{ ["--agent" as string]: agentFaceByName(texted.from).color ?? "#7c5cff" }}>
-            <div className="agentTextHead">
-              <AgentAvatar agent={{ id: texted.from.toLowerCase() === "ares" ? ARES_AGENT_ID : `from-${texted.from}`, name: texted.from, ...agentFaceByName(texted.from) }} size={20} />
-              <span><b>{texted.from}</b> texted{texted.urgent ? <span className="urgent"> · urgent</span> : null}</span>
+        <div className="turn user agentText" style={{ ["--agent" as string]: face.color ?? "#7c5cff" }}>
+          <span className="imsgFace"><AgentAvatar agent={sender} size={30} /></span>
+          <div className="agentTextCol">
+            <div className="agentTextHead"><b>{texted.from}</b>{texted.urgent ? <span className="urgent"> · urgent</span> : null}</div>
+            <div className="bubble">
+              <div className="bubbleText">{texted.body}</div>
             </div>
-            <div className="bubbleText">{texted.body}</div>
           </div>
         </div>
       );
@@ -9435,8 +9522,13 @@ const ItemView = React.memo(function ItemView({
     return (
       <div className="turn assistant" data-streaming={item.streaming ? "1" : "0"} data-proactive={item.proactive ? "1" : "0"}>
         {/* modern skin: the agent speaks from behind the helm, struck into the
-            left gutter. Hidden in Forged/Legacy like every other medallion. */}
-        <Medallion glyph="helm" size={34} className="turnMark" />
+            left gutter. Hidden in Forged/Legacy like every other medallion.
+            In an agent's chat it is that agent's face instead (iMessage). */}
+        {chatAgent ? (
+          <span className="turnMark imsgFace"><AgentAvatar agent={chatAgent} size={30} /></span>
+        ) : (
+          <Medallion glyph="helm" size={34} className="turnMark" />
+        )}
         <div className="turnBody">
         {item.proactive ? (
           <div className="watchBadge" title="Ares noticed this on your screen — unprompted">

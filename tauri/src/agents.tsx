@@ -6,7 +6,7 @@
 // Persona record the phone makes (daemon/agents.ts); each has many chats on
 // the desktop. "Ares" is the implicit default agent that owns every chat not
 // bound to anyone, so nothing made before agents existed moves.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import "./agents.css";
 
 export const ARES_AGENT_ID = "ares";
@@ -21,6 +21,8 @@ export interface AgentVm {
   reasoningLevel?: string;
   instructions: string;
   threads: string[];
+  /** Profile picture version (photos are fetched separately). */
+  avatar?: string;
   onPhone?: boolean;
   createdBy?: string;
   createdAt?: string;
@@ -28,6 +30,8 @@ export interface AgentVm {
 }
 
 export interface AgentDraft {
+  /** A new profile picture (data: URL), "" to remove it, undefined = unchanged. */
+  photo?: string;
   name: string;
   emoji: string;
   color: string;
@@ -51,7 +55,7 @@ export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string
 ];
 
 export function blankDraft(provider: string, model: string): AgentDraft {
-  return { name: "", emoji: "🦊", color: AGENT_COLORS[0]!, provider, model, instructions: "" };
+  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "" };
 }
 
 export function draftOf(agent: AgentVm): AgentDraft {
@@ -71,50 +75,172 @@ export function parseAgentText(text: string): { from: string; urgent: boolean; b
   return m ? { from: m[1]!.trim(), urgent: Boolean(m[2]), body: m[3] ?? "" } : null;
 }
 
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : name.slice(0, 2)).toUpperCase();
+
+/** Profile pictures by agent id (data: URLs from the daemon's avatar store —
+ *  the same pictures the iPhone app shows). Provided once at the App root so
+ *  every avatar, memoized transcript rows included, repaints when one lands. */
+export const AgentPhotoContext = createContext<Record<string, string>>({});
+
+/** The agent whose chat is on screen (null = plain Ares): the transcript
+ *  renders iMessage-style, with this agent's face beside its replies. */
+export const AgentChatContext = createContext<AgentVm | null>(null);
+
+function hashOf(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
-/** One agent's face: their emoji (or initials) on their colour. Ares wears
- *  the house mark. A busy agent gets a slow orbiting ring (rotation only —
- *  nothing flashes). */
+/**
+ * The default profile picture: a living face on a glossy orb, Codex-DOT
+ * style. Everything about it — eyes, mouth, cheeks, the little accessory,
+ * when it blinks — is derived from the agent's id, so each agent always looks
+ * like itself and no two look alike. Idle, it blinks now and then; working,
+ * its eyes dart and its mouth moves. Rotation/translation only, nothing
+ * flashes (and nothing moves at all under prefers-reduced-motion).
+ */
+export function AgentFace({ seed, color, busy }: { seed: string; color: string; busy?: boolean }) {
+  const h = hashOf(seed);
+  const eyes = h % 4; // 0 dots · 1 tall ovals · 2 happy arcs · 3 big shiny
+  const mouth = (h >>> 3) % 5; // 0 smile · 1 grin · 2 o · 3 cat · 4 smirk
+  const extra = (h >>> 6) % 6; // 0 none · 1 antenna · 2 ears · 3 halo · 4 headphones · 5 sprout
+  const blush = ((h >>> 9) & 1) === 1;
+  const blinkDelay = ((h >>> 11) % 50) / 10; // 0..5s, so a room of faces never blinks in sync
+  const id = `f${h.toString(36)}`;
+  const ink = "#16121f";
+  const eyeY = 46;
+  const eye = (cx: number) => {
+    switch (eyes) {
+      case 0: return <circle cx={cx} cy={eyeY} r="5.2" fill={ink} />;
+      case 1: return <ellipse cx={cx} cy={eyeY} rx="4.4" ry="7" fill={ink} />;
+      case 2: return <path d={`M${cx - 6} ${eyeY + 2} Q${cx} ${eyeY - 6} ${cx + 6} ${eyeY + 2}`} stroke={ink} strokeWidth="3.6" fill="none" strokeLinecap="round" />;
+      case 3: return (
+        <g>
+          <ellipse cx={cx} cy={eyeY} rx="7" ry="8" fill={ink} />
+          <circle cx={cx + 2.2} cy={eyeY - 3} r="2.6" fill="#fff" />
+          <circle cx={cx - 2.4} cy={eyeY + 2.6} r="1.2" fill="#fff" opacity=".7" />
+        </g>
+      );
+      default: return <path d={`M${cx - 6} ${eyeY} Q${cx} ${eyeY + 5} ${cx + 6} ${eyeY}`} stroke={ink} strokeWidth="3.4" fill="none" strokeLinecap="round" />;
+    }
+  };
+  const mouthEl = (() => {
+    switch (mouth) {
+      case 0: return <path d="M42 63 Q50 70 58 63" stroke={ink} strokeWidth="3.4" fill="none" strokeLinecap="round" />;
+      case 1: return <path d="M40 61 Q50 61 60 61 Q58 72 50 72 Q42 72 40 61Z" fill={ink} />;
+      case 2: return <ellipse cx="50" cy="65" rx="4.2" ry="5" fill={ink} />;
+      case 3: return <path d="M42 63 Q46 68 50 63 Q54 68 58 63" stroke={ink} strokeWidth="3" fill="none" strokeLinecap="round" />;
+      default: return <path d="M44 65 Q52 69 58 61" stroke={ink} strokeWidth="3.4" fill="none" strokeLinecap="round" />;
+    }
+  })();
+  return (
+    <svg viewBox="0 0 100 100" className="agentFace" data-busy={busy ? "1" : "0"} aria-hidden="true" style={{ ["--blink-delay" as string]: `${blinkDelay}s` }}>
+      <defs>
+        <radialGradient id={`${id}b`} cx="34%" cy="28%" r="78%">
+          <stop offset="0%" stopColor="#fff" stopOpacity=".95" />
+          <stop offset="22%" stopColor={color} stopOpacity="1" />
+          <stop offset="100%" stopColor={color} stopOpacity="1" />
+        </radialGradient>
+        <radialGradient id={`${id}s`} cx="50%" cy="100%" r="70%">
+          <stop offset="0%" stopColor="#000" stopOpacity=".35" />
+          <stop offset="100%" stopColor="#000" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <rect width="100" height="100" fill={color} />
+      <rect width="100" height="100" fill={`url(#${id}b)`} opacity=".55" />
+      <rect width="100" height="100" fill={`url(#${id}s)`} />
+      {extra === 1 ? <g className="agentFaceBob"><path d="M50 22 L50 10" stroke={ink} strokeWidth="3" strokeLinecap="round" /><circle cx="50" cy="8" r="4.6" fill="#fff" stroke={ink} strokeWidth="2.4" /></g> : null}
+      {extra === 2 ? <g fill={ink} opacity=".9"><path d="M22 30 L28 12 L38 26Z" /><path d="M78 30 L72 12 L62 26Z" /></g> : null}
+      {extra === 3 ? <ellipse cx="50" cy="14" rx="18" ry="5" fill="none" stroke="#fff6b8" strokeWidth="3.4" className="agentFaceBob" /> : null}
+      {extra === 4 ? <g fill="none" stroke={ink} strokeWidth="4" strokeLinecap="round"><path d="M20 52 Q20 18 50 18 Q80 18 80 52" /><rect x="13" y="46" width="11" height="18" rx="5" fill={ink} /><rect x="76" y="46" width="11" height="18" rx="5" fill={ink} /></g> : null}
+      {extra === 5 ? <g className="agentFaceBob"><path d="M50 24 Q50 14 50 10" stroke="#2f7d3a" strokeWidth="3" strokeLinecap="round" /><path d="M50 14 Q42 6 36 12 Q44 18 50 14Z" fill="#4cd28a" /><path d="M50 12 Q58 4 64 10 Q56 16 50 12Z" fill="#4cd28a" /></g> : null}
+      <g className="agentFaceEyes">
+        <g className="agentFaceLids">{eye(38)}{eye(62)}</g>
+      </g>
+      {blush ? <g fill="#ff6b8a" opacity=".38"><ellipse cx="28" cy="59" rx="6.5" ry="4" /><ellipse cx="72" cy="59" rx="6.5" ry="4" /></g> : null}
+      <g className="agentFaceMouth">{mouthEl}</g>
+      <ellipse cx="34" cy="22" rx="16" ry="9" fill="#fff" opacity=".22" transform="rotate(-24 34 22)" />
+    </svg>
+  );
+}
+
+/** One agent's profile picture: their photo when they have one, otherwise
+ *  their living face. Ares wears the house mark. A busy agent gets a slow
+ *  orbiting ring; an agent's emoji (from the phone) rides as a corner badge. */
 export function AgentAvatar({
   agent,
   size = 36,
   busy,
   unread,
   title,
+  photo,
 }: {
   agent: Pick<AgentVm, "id" | "name" | "emoji" | "color"> | null;
   size?: number;
   busy?: boolean;
   unread?: boolean;
   title?: string;
+  /** Override the stored photo (the editor's live preview); "" forces none. */
+  photo?: string;
 }) {
+  const photos = useContext(AgentPhotoContext);
   const isAres = !agent || agent.id === ARES_AGENT_ID;
+  const id = agent?.id ?? ARES_AGENT_ID;
   const color = isAres ? "#c8794a" : agent!.color ?? AGENT_COLORS[0]!;
+  const src = photo !== undefined ? photo : photos[id];
+  const badge = !isAres && agent!.emoji && size >= 36 ? agent!.emoji : null;
   return (
     <span
       className="agentAvatar"
       data-ares={isAres ? "1" : "0"}
       data-busy={busy ? "1" : "0"}
+      data-photo={src ? "1" : "0"}
       title={title ?? (isAres ? "Ares" : agent!.name)}
       style={{ width: size, height: size, ["--agent" as string]: color, fontSize: Math.round(size * 0.48) }}
     >
-      {isAres ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true" className="agentAresMark">
-          <path d="M12 2.5 20 7v10l-8 4.5L4 17V7Z" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M12 6.5 16.5 9v6L12 17.5 7.5 15V9Z" fill="currentColor" opacity=".9" />
-        </svg>
-      ) : agent!.emoji ? (
-        <span className="agentEmoji">{agent!.emoji}</span>
-      ) : (
-        <span className="agentInitials" style={{ fontSize: Math.round(size * 0.36) }}>{initials(agent!.name)}</span>
-      )}
+      <span className="agentAvatarClip">
+        {src ? (
+          <img src={src} alt="" draggable={false} />
+        ) : isAres ? (
+          <svg viewBox="0 0 24 24" aria-hidden="true" className="agentAresMark">
+            <path d="M12 2.5 20 7v10l-8 4.5L4 17V7Z" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M12 6.5 16.5 9v6L12 17.5 7.5 15V9Z" fill="currentColor" opacity=".9" />
+          </svg>
+        ) : (
+          <AgentFace seed={agent!.name.trim().toLowerCase() || agent!.id} color={color} busy={busy} />
+        )}
+      </span>
+      {badge && !src ? <span className="agentBadge" style={{ fontSize: Math.max(10, Math.round(size * 0.3)) }}>{badge}</span> : null}
       {unread ? <i className="agentUnread" aria-label="new messages" /> : null}
     </span>
   );
+}
+
+/** Square-crop and shrink a picked image to a 512px JPEG data: URL — what the
+ *  avatar store keeps (and what the iPhone app downloads). */
+export async function squareAvatar(file: Blob, edge = 512): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("that file is not an image"));
+      el.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = Math.min(edge, side);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no canvas");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.9);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export interface AgentRowVm {
@@ -123,6 +249,21 @@ export interface AgentRowVm {
   busy: boolean;
   unread: boolean;
   chats: number;
+  /** When the latest chat last moved (ISO). */
+  at?: string;
+}
+
+/** Messages-app time: "9:41 AM" today, "Yesterday", a weekday this week, else a date. */
+export function chatTime(iso: string | undefined, now = new Date()): string {
+  if (!iso) return "";
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return "";
+  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((day(now) - day(t)) / 86_400_000);
+  if (diff <= 0) return t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (diff === 1) return "Yesterday";
+  if (diff < 7) return t.toLocaleDateString([], { weekday: "long" });
+  return t.toLocaleDateString([], { month: "numeric", day: "numeric", year: "2-digit" });
 }
 
 /** The Codex-style dot strip: every agent as a dot, presence at a glance. */
@@ -178,14 +319,14 @@ export function AgentList({
         const id = r.agent?.id ?? ARES_AGENT_ID;
         const on = selectedId === id;
         return (
-          <div key={id} className="agentRowWrap" data-on={on ? "1" : "0"}>
+          <div key={id} className="agentRowWrap" data-on={on ? "1" : "0"} data-unread={r.unread && !on ? "1" : "0"}>
             <div className="agentRow" data-on={on ? "1" : "0"}>
               <button className="agentRowMain" onClick={() => onSelect(id)}>
                 <AgentAvatar agent={r.agent} size={38} busy={r.busy} unread={r.unread && !on} />
                 <span className="agentRowText">
                   <span className="agentRowTop">
                     <strong>{r.agent?.name ?? "Ares"}</strong>
-                    {r.busy ? <em className="agentTyping"><i /><i /><i /></em> : r.chats > 0 ? <em>{r.chats}</em> : null}
+                    {r.busy ? <em className="agentTyping"><i /><i /><i /></em> : r.at ? <span className="agentRowTime">{chatTime(r.at)}</span> : null}
                   </span>
                   <span className="agentRowPreview">{r.preview}</span>
                 </span>
@@ -231,6 +372,19 @@ export function AgentEditor({
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
   const nameRef = useRef<HTMLInputElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [photoErr, setPhotoErr] = useState<string | undefined>();
+  const storedPhoto = useContext(AgentPhotoContext)[existing?.id ?? ""];
+  const shownPhoto = draft.photo !== undefined ? draft.photo : storedPhoto ?? "";
+  const pickPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    setPhotoErr(undefined);
+    try {
+      set("photo", await squareAvatar(file));
+    } catch (error) {
+      setPhotoErr(error instanceof Error ? error.message : String(error));
+    }
+  };
   const set = <K extends keyof AgentDraft>(k: K, v: AgentDraft[K]) => setDraft((d) => ({ ...d, [k]: v }));
 
   useEffect(() => {
@@ -262,7 +416,11 @@ export function AgentEditor({
     <div className="agentScrim" onClick={onClose}>
       <div className="agentSheet" role="dialog" aria-label={existing ? `Edit ${existing.name}` : "New agent"} onClick={(e) => e.stopPropagation()}>
         <header className="agentSheetHead">
-          <AgentAvatar agent={preview} size={64} />
+          <button className="agentPhotoPick" onClick={() => fileRef.current?.click()} title="Choose a profile picture">
+            <AgentAvatar agent={preview} size={84} photo={shownPhoto} />
+            <span className="agentPhotoEdit">{shownPhoto ? "Change" : "Add photo"}</span>
+          </button>
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => { void pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
           <div>
             <h3>{existing ? draft.name || existing.name : "New agent"}</h3>
             <p>{existing ? "Their own memory, their own Forge, their own model." : "A contact with their own role, memory, Forge and model — like texting a specialist."}</p>
@@ -288,10 +446,16 @@ export function AgentEditor({
         </label>
 
         <div className="agentField">
-          <span>Face</span>
+          <span>Profile picture</span>
+          <div className="agentPhotoRow">
+            <button className="agentGhost" onClick={() => fileRef.current?.click()}>{shownPhoto ? "Choose another photo" : "Upload a photo"}</button>
+            {shownPhoto ? <button className="agentGhost" onClick={() => set("photo", "")}>Use their generated face</button> : <em>No photo: they get their own animated face.</em>}
+          </div>
+          {photoErr ? <em className="agentFieldErr">{photoErr}</em> : null}
+          <span className="agentSubLabel">Badge emoji (optional)</span>
           <div className="agentEmojiGrid">
             {AGENT_EMOJI.map((e) => (
-              <button key={e} data-on={draft.emoji === e ? "1" : "0"} onClick={() => set("emoji", e)}>{e}</button>
+              <button key={e} data-on={draft.emoji === e ? "1" : "0"} onClick={() => set("emoji", draft.emoji === e ? "" : e)}>{e}</button>
             ))}
           </div>
           <div className="agentSwatches">
@@ -395,10 +559,10 @@ export function AgentHero({
 
 /** name → face, for rendering an agent-to-agent text anywhere (a transcript
  *  item only carries the sender's name). Refreshed by App on every render. */
-const agentFaces = new Map<string, { emoji?: string; color?: string }>();
+const agentFaces = new Map<string, { id?: string; emoji?: string; color?: string }>();
 export function rememberAgentFaces(agents: readonly AgentVm[]): void {
-  for (const a of agents) agentFaces.set(a.name.toLowerCase(), { emoji: a.emoji, color: a.color });
+  for (const a of agents) agentFaces.set(a.name.toLowerCase(), { id: a.id, emoji: a.emoji, color: a.color });
 }
-export function agentFaceByName(name: string): { emoji?: string; color?: string } {
+export function agentFaceByName(name: string): { id?: string; emoji?: string; color?: string } {
   return agentFaces.get(name.toLowerCase()) ?? {};
 }

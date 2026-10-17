@@ -58,6 +58,8 @@ export interface AgentsHost {
   /** Deliver a text to another agent. Fire-and-acknowledge: resolves once it
    *  is queued in the recipient's chat, not when they answer. */
   text(fromSession: string, to: string, message: string, urgent: boolean): Promise<{ to: AgentCard; threadId: string }>;
+  /** Set the asking agent's own profile picture (JPEG/PNG/WebP bytes). */
+  avatar(fromSession: string, bytes: Buffer): Promise<AgentCard>;
   /** An agent makes an agent. Only the owner can delete one. */
   create(fromSession: string, spec: { name: string; role: string; emoji?: string; color?: string; model?: string }): Promise<AgentCard>;
 }

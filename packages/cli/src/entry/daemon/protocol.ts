@@ -67,6 +67,8 @@ export interface DaemonInputCommand {
   /** agent_create / agent_update payload (name, emoji, color, provider, model,
    *  reasoningLevel, instructions). */
   agent?: Record<string, unknown>;
+  /** agent_avatar_set — a data: URL (JPEG/PNG/WebP), or null/"" to clear. */
+  image?: string | null;
   /** Stable identity for one logical send/steer. Retrying the command must
    * reuse this value so canonical admission remains exactly once. */
   inputId?: string;

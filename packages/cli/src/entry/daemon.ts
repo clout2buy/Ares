@@ -73,7 +73,7 @@ import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
 import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetworkSyncNow, onAresNetworkStatus, oricleOnSessionEvent, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
-import { AgentError, DesktopAgents, agentToWire } from "./daemon/agents.js";
+import { AgentError, DesktopAgents } from "./daemon/agents.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
@@ -2335,7 +2335,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type === "agent_create" ||
         command.type === "agent_update" ||
         command.type === "agent_delete" ||
-        command.type === "agent_bind"
+        command.type === "agent_bind" ||
+        command.type === "agent_avatar" ||
+        command.type === "agent_avatar_set"
       ) {
         const kind = command.type;
         try {
@@ -2344,7 +2346,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           } else if (kind === "agent_create") {
             const made = await desktopAgents.create(command.agent ?? {});
             refreshAgentLayers();
-            process.stdout.write(JSON.stringify({ type: "agent_created", agent: agentToWire(made), ...(command.cmdId ? { cmdId: command.cmdId } : {}) }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "agent_created", agent: desktopAgents.wire(made), ...(command.cmdId ? { cmdId: command.cmdId } : {}) }) + "\n");
           } else if (kind === "agent_update") {
             const id = cleanCommandId(command.agentId);
             if (!id) throw new AgentError("agent_update requires agentId");
@@ -2369,7 +2371,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 tagEmit(sid, { type: "session_opened", model: brain.model, provider: brain.provider.name });
               }
             }
-            process.stdout.write(JSON.stringify({ type: "agent_updated", agent: agentToWire(persona) }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "agent_updated", agent: desktopAgents.wire(persona) }) + "\n");
           } else if (kind === "agent_delete") {
             const id = cleanCommandId(command.agentId);
             if (!id) throw new AgentError("agent_delete requires agentId");
@@ -2380,6 +2382,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             }
             refreshAgentLayers();
             process.stdout.write(JSON.stringify({ type: "agent_deleted", agentId: id, threads }) + "\n");
+          } else if (kind === "agent_avatar") {
+            const id = cleanCommandId(command.agentId) ?? "ares";
+            const hit = await desktopAgents.avatarData(id);
+            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null }) + "\n");
+          } else if (kind === "agent_avatar_set") {
+            const id = cleanCommandId(command.agentId) ?? "ares";
+            const image = typeof command.image === "string" && command.image ? command.image : null;
+            const version = await desktopAgents.setAvatar(id, image);
+            const hit = version ? await desktopAgents.avatarData(id) : null;
+            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null }) + "\n");
           } else {
             const sid = cleanCommandId(command.sessionId);
             if (!sid || sid === DEFAULT_SID) throw new AgentError("agent_bind requires a chat sessionId");

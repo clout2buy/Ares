@@ -926,7 +926,7 @@ fn ares_embed_release(hwnd: isize) -> Result<bool, String> {
 /// trusted, but a compromised page or injected artifact script shouldn't get a
 /// raw line into the engine).
 const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
-    "agent_bind", "agent_create", "agent_delete", "agent_update", "agents_list",
+    "agent_avatar", "agent_avatar_set", "agent_bind", "agent_create", "agent_delete", "agent_update", "agents_list",
     "anthropic_login_finish", "anthropic_login_start", "bug_report",
     "openai_login_start", "openai_auth_status",
     "ares_network_connect", "ares_network_disconnect", "ares_network_host", "ares_network_status", "ares_network_sync",

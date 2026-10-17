@@ -145,7 +145,7 @@ import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./f
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
-import { ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
+import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -439,6 +439,21 @@ function demoAgentWorld(): { agents: AgentVm[]; sessions: SessionVm[] } {
   ];
   return { agents, sessions: [demoSession(), racer, subs, research, moodboard] };
 }
+function demoAgentMemory(agentId: string): AgentMemoryVm {
+  const at = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const sets: Record<string, Array<[string, string, string[]?]>> = {
+    p_demo0penny1: [
+      ["semantic", "Owner wants a heads-up for any single charge over $50."],
+      ["semantic", "Second Spotify on the Amex is a leftover Duo plan (sister's old seat) — safe to cancel.", ["handed-from:p_demo0atlas1"]],
+      ["episodic", "Found 7 recurring charges totalling $143.96/mo on Oct 17."],
+      ["procedural", "Check the Amex and the debit card every morning; summarise only what changed."],
+      ["semantic", "Owner's rent is paid on the 1st from the checking account.", ["handed-from:ares"]],
+    ],
+  };
+  const items = (sets[agentId] ?? [["semantic", "Owner prefers short answers that lead with the result."], ["episodic", "First chat with the owner."]]).map(([kind, content, tags], i) => ({ id: `${agentId}-m${i}`, kind, content, at: at(i * 7 + 1), ...(tags ? { tags } : {}) }));
+  return { total: items.length, items };
+}
+
 const DEMO_AGENT_WORLD = typeof window !== "undefined" && !hasNativeBridge() ? demoAgentWorld() : null;
 
 // ─── First-run key gate ──────────────────────────────────────────────────────
@@ -700,6 +715,8 @@ function App() {
   /** Profile pictures by agent id (data: URLs), fetched when a version changes. */
   const [agentPhotos, setAgentPhotos] = useState<Record<string, string>>({});
   const agentPhotoVersions = useRef<Record<string, string>>({});
+  /** Each agent's own memories, loaded when its profile opens. */
+  const [agentMemory, setAgentMemory] = useState<Record<string, AgentMemoryVm>>({});
   /** A photo picked in the New agent sheet, uploaded once the agent exists. */
   const pendingAgentPhoto = useRef<string | null>(null);
   /** Chats handed to an agent before the daemon's agents_list echo lands. */
@@ -2417,11 +2434,29 @@ function App() {
           return true;
         }
         case "agent_error":
+          setAgentMemory((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, { ...v, busy: false }])));
           setAgentError(String(e.error ?? "agent change failed"));
           pushLog(`[agents] ${String(e.command ?? "")}: ${String(e.error ?? "")}`);
           return true;
         case "agent_bound":
           return true;
+        case "agent_memory": {
+          const id = String(e.agentId ?? "");
+          if (!id) return true;
+          const ev = e as { total?: number; items?: AgentMemoryVm["items"]; handed?: { copied: number; skipped: number }; exported?: { markdown: string; count: number }; forgot?: boolean };
+          const note = ev.handed
+            ? `Handed over ${ev.handed.copied} memor${ev.handed.copied === 1 ? "y" : "ies"}${ev.handed.skipped ? ` (${ev.handed.skipped} they already had)` : ""}.`
+            : ev.exported
+              ? `Exported ${ev.exported.count} memories to ${ev.exported.markdown} (and a .json next to it).`
+              : undefined;
+          setAgentMemory((m) => ({ ...m, [id]: { total: ev.total ?? 0, items: ev.items ?? [], note: note ?? m[id]?.note, busy: false } }));
+          return true;
+        }
+        case "agent_memory_changed": {
+          const id = String(e.agentId ?? "");
+          if (id) daemonCmd({ type: "agent_memory", agentId: id });
+          return true;
+        }
         case "agent_avatar": {
           const id = String(e.agentId ?? "");
           const image = typeof (e as { image?: unknown }).image === "string" ? String((e as { image?: unknown }).image) : "";
@@ -3347,6 +3382,19 @@ function App() {
     else newSession(agentId);
   };
 
+  // Opening an agent's profile loads what it remembers on its own.
+  useEffect(() => {
+    if (agentEditor?.mode !== "edit") return;
+    if (native) daemonCmd({ type: "agent_memory", agentId: agentEditor.id });
+    else setAgentMemory((m) => (m[agentEditor.id] ? m : { ...m, [agentEditor.id]: demoAgentMemory(agentEditor.id) }));
+  }, [agentEditor, native, daemonCmd]);
+
+  const memoryAction = (agentId: string, command: Record<string, unknown>, demoNote: string) => {
+    setAgentMemory((m) => ({ ...m, [agentId]: { ...(m[agentId] ?? { total: 0, items: [] }), busy: true, note: undefined } }));
+    if (native) daemonCmd({ agentId, ...command });
+    else setAgentMemory((m) => ({ ...m, [agentId]: { ...(m[agentId] ?? { total: 0, items: [] }), busy: false, note: demoNote } }));
+  };
+
   // An agent made from the sheet opens straight into a chat with them.
   useEffect(() => {
     const id = pendingAgentChat.current;
@@ -3910,6 +3958,21 @@ function App() {
       }
     }
     return s.title;
+  };
+  /** Hand a chat to another agent (or back to Ares): it keeps its whole
+   *  history and carries on with the new agent's role, memory and model. */
+  const giveChat = (sessionId: string, agentId: string) => {
+    setLocalAgentBindings((current) => ({ ...current, [sessionId]: agentId }));
+    if (native) daemonCmd({ type: "agent_bind", agentId: agentId === ARES_AGENT_ID ? null : agentId, sessionId });
+    else setAgents((current) => current.map((a) => ({ ...a, threads: a.id === agentId ? [...a.threads.filter((t) => t !== sessionId), sessionId] : a.threads.filter((t) => t !== sessionId) })));
+    selectedAgentRef.current = agentId;
+    setSelectedAgentIdState(agentId);
+    try { window.localStorage.setItem("ares.agent.selected", agentId); } catch { /* private mode */ }
+    openSession(sessionId);
+  };
+  const chatHandoff = {
+    agents: [{ id: ARES_AGENT_ID, name: "Ares" }, ...agents].filter((a) => a.id !== selectedAgentId),
+    onGive: giveChat,
   };
   const agentRows: AgentRowVm[] = [null, ...agents]
     .filter((a) => !q || (a ? a.name : "Ares").toLowerCase().includes(q) || (a ?? null)?.id === selectedAgentId || (!a && selectedAgentId === ARES_AGENT_ID))
@@ -4523,6 +4586,13 @@ function App() {
             2026-08-10). */}
         <div className="railScroll">
         <div className="railLabel" data-label="Agents">Agents<button className="railNew" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} title="New agent" aria-label="New agent">+</button></div>
+        {agents.length === 0 && !q ? (
+          <div className="agentFirst">
+            <strong>Make your own agents</strong>
+            <p>Anyone you want: a name, a face, a job. Each gets its own memory, Forge and model, still knows what you've told Ares, and can take over any of your chats.</p>
+            <button className="agentPrimary" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}>Create an agent</button>
+          </div>
+        ) : null}
         <AgentList
           rows={agentRows}
           selectedId={selectedAgentId}
@@ -4537,7 +4607,7 @@ function App() {
               <div className="railLabel">Pinned</div>
               <nav className="sessionList pinnedList">
                 {pinnedSessions.map((s) => (
-                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned project={sessionProjects[s.id]} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned project={sessionProjects[s.id]} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={chatHandoff} />
                 ))}
               </nav>
             </>
@@ -4561,7 +4631,7 @@ function App() {
                 {!collapsed ? (
                   <nav className="sessionList">
                     {members.map((s) => (
-                      <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} project={name} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
+                      <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} project={name} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={chatHandoff} />
                     ))}
                   </nav>
                 ) : null}
@@ -4575,7 +4645,7 @@ function App() {
               <div className="railLabel" data-label={selectedAgent ? `Chats with ${selectedAgent.name}` : "Recent sessions"}>{selectedAgent ? "Chats" : "Sessions"}</div>
               <nav className="sessionList">
                 {looseSessions.map((s) => (
-                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={chatHandoff} />
                 ))}
               </nav>
             </>
@@ -5495,6 +5565,15 @@ function App() {
             error={agentError}
             onSave={saveAgent}
             onDelete={editing ? () => deleteAgent(editing.id) : undefined}
+            memory={editing ? agentMemory[editing.id] ?? { total: 0, items: [], busy: true } : undefined}
+            memorySources={editing ? [{ id: ARES_AGENT_ID, name: "Ares" }, ...agents.filter((a) => a.id !== editing.id).map((a) => ({ id: a.id, name: a.name }))] : []}
+            onMemoryHand={(from, about) => editing && memoryAction(editing.id, { type: "agent_memory_hand", from, ...(about ? { about } : {}) }, `Handed over 14 memories${about ? ` about ${about}` : ""} from ${from === ARES_AGENT_ID ? "Ares" : agents.find((a) => a.id === from)?.name ?? "them"}.`)}
+            onMemoryExport={() => editing && memoryAction(editing.id, { type: "agent_memory_export" }, `Exported to exports/${editing.name}-memory-${new Date().toISOString().slice(0, 10)}.md (and a .json next to it).`)}
+            onMemoryForget={(memoryId) => {
+              if (!editing) return;
+              if (native) daemonCmd({ type: "agent_memory_forget", agentId: editing.id, memoryId });
+              else setAgentMemory((m) => ({ ...m, [editing.id]: { ...m[editing.id]!, total: m[editing.id]!.total - 1, items: m[editing.id]!.items.filter((x) => x.id !== memoryId) } }));
+            }}
             onClose={() => { setAgentEditor(null); setAgentError(undefined); }}
           />
         );
@@ -8029,9 +8108,12 @@ function SessionRow({
   onRename,
   onClose,
   onProject,
+  handoff,
 }: {
   s: SessionVm;
   activeId: string;
+  /** "Give to an agent": who can take this chat (its owner excluded). */
+  handoff?: { agents: Array<Pick<AgentVm, "id" | "name" | "emoji" | "color">>; onGive: (sessionId: string, agentId: string) => void };
   pinned?: boolean;
   /** Name of the project this session currently belongs to, if any. */
   project?: string;
@@ -8046,6 +8128,7 @@ function SessionRow({
   const [draft, setDraft] = useState(s.title);
   const [projectDraft, setProjectDraft] = useState(project ?? "");
   const [confirming, setConfirming] = useState(false);
+  const [giving, setGiving] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -8116,13 +8199,16 @@ function SessionRow({
   }
 
   return (
-    <div className={s.id === activeId ? "session on" : "session"}>
+    <div className={s.id === activeId ? "session on" : "session"} data-giving={giving ? "1" : "0"}>
       <button className="sessionMain" onClick={() => onSelect(s.id)} onDoubleClick={() => setEditing(true)} title="Double-click to rename">
         <i data-busy={s.busy ? "1" : "0"} />
         <span>{s.title}</span>
       </button>
       <div className="sessionActions">
         <button className="rowBtn" title="Rename" onClick={() => setEditing(true)}>✎</button>
+        {handoff && handoff.agents.length > 0 ? (
+          <button className="rowBtn" title="Give this chat to an agent (it keeps the whole history)" aria-label="Give to an agent" onClick={() => setGiving((v) => !v)}>⇢</button>
+        ) : null}
         <button className="rowBtn" data-project={project ? "1" : "0"} title={project ? `Project: ${project} — click to move or remove` : "Group into a project"} onClick={() => setEditingProject(true)}>▦</button>
         <button className="pinBtn" data-pinned={pinned ? "1" : "0"} title={pinned ? "unpin" : "pin"} onClick={() => onPin(s.id)}>
           {pinned ? "◆" : "◇"}
@@ -8133,6 +8219,17 @@ function SessionRow({
           <button className="rowBtn" title="Close session" onClick={() => { setConfirming(true); setTimeout(() => setConfirming(false), 2600); }}>✕</button>
         )}
       </div>
+      {giving && handoff ? (
+        <div className="handoffMenu" onMouseLeave={() => setGiving(false)}>
+          <b>Give this chat to</b>
+          {handoff.agents.map((a) => (
+            <button key={a.id} onClick={() => { setGiving(false); handoff.onGive(s.id, a.id); }}>
+              <AgentAvatar agent={a} size={22} />
+              {a.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

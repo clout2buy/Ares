@@ -543,3 +543,71 @@
   font-size: 9px;
 }
 .ares.ares .rail { gap: 10px; }
+
+/* ── build your own: ideas tucked away ──────────────────────────────── */
+.agentIdeas { display: flex; flex-direction: column; gap: 8px; }
+.agentIdeasToggle { align-self: flex-start; padding: 2px 0; font-size: 12.5px; color: var(--muted); }
+.agentIdeasToggle:hover { color: var(--text); }
+
+/* ── the agent's memory, in its profile ─────────────────────────────── */
+.agentMemoryWhy { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.agentMemoryHand { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.agentMemoryHand select, .agentMemoryHand input { padding: 8px 10px; font-size: 12.5px; }
+.agentMemoryHand .agentGhost { padding: 8px 12px; white-space: nowrap; }
+.agentMemoryNote { font-size: 12px; font-style: normal; color: #4cd28a; }
+.agentMemoryList {
+  max-height: 190px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel, #100e0b);
+}
+.agentMemoryEmpty { padding: 10px; font-size: 12.5px; color: var(--faint); }
+.agentMemoryItem { display: flex; align-items: flex-start; gap: 8px; padding: 6px 6px; border-radius: 7px; font-size: 12.5px; line-height: 1.4; color: var(--text); }
+.agentMemoryItem:hover { background: rgba(var(--accent-rgb), .07); }
+.agentMemoryItem > i { flex: none; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: #38bdf8; }
+.agentMemoryItem > i[data-kind="semantic"] { background: #4cd28a; }
+.agentMemoryItem > i[data-kind="procedural"] { background: #f5b942; }
+.agentMemoryItem > span { flex: 1; min-width: 0; }
+.agentMemoryItem > em { flex: none; font: 600 9.5px/1.6 var(--mono); font-style: normal; color: var(--faint); text-transform: uppercase; }
+.agentMemoryItem > button { flex: none; width: 20px; height: 20px; border-radius: 5px; color: var(--faint); opacity: 0; }
+.agentMemoryItem:hover > button { opacity: 1; }
+.agentMemoryItem > button:hover { color: #fff; background: rgba(239, 68, 68, .6); }
+.agentMemoryFoot { display: flex; justify-content: flex-end; }
+
+/* ── rail: no agents yet ────────────────────────────────────────────── */
+.agentFirst {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 4px 2px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px dashed rgba(var(--accent-rgb), .45);
+  background: rgba(var(--accent-rgb), .06);
+}
+.agentFirst strong { font-size: 13.5px; color: var(--text); }
+.agentFirst p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.agentFirst button { align-self: flex-start; }
+
+/* ── a chat's "give to agent" menu ──────────────────────────────────── */
+.handoffMenu {
+  position: absolute;
+  z-index: 40;
+  right: 6px; top: calc(100% - 4px);
+  min-width: 190px;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--bg-raised, #16130f);
+  border: 1px solid var(--line-strong, var(--line));
+  box-shadow: 0 18px 50px -12px rgba(0, 0, 0, .7);
+}
+.handoffMenu > b { padding: 4px 8px 6px; font: 600 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.handoffMenu > button { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 8px; font-size: 13px; color: var(--text); text-align: left; }
+.handoffMenu > button:hover { background: rgba(var(--accent-rgb), .12); }
+.session { position: relative; }
+.session[data-giving="1"] { z-index: 60; animation: none; transform: none; }
+.agentRowWrap:has(.session[data-giving="1"]) { position: relative; z-index: 60; }
+/* the skins clip .sessionList; an open "give to" menu must spill out of it */
+.ares.ares .sessionList:has(.session[data-giving="1"]) { overflow: visible; }

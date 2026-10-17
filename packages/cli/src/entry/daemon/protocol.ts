@@ -67,6 +67,12 @@ export interface DaemonInputCommand {
   /** agent_create / agent_update payload (name, emoji, color, provider, model,
    *  reasoningLevel, instructions). */
   agent?: Record<string, unknown>;
+  /** agent_memory_hand — copy memories into agentId from "ares" (main memory)
+   *  or another agent, optionally only those about a topic. */
+  from?: string;
+  about?: string;
+  /** agent_memory_forget — which of the agent's own memories. */
+  memoryId?: string;
   /** agent_avatar_set — a data: URL (JPEG/PNG/WebP), or null/"" to clear. */
   image?: string | null;
   /** Stable identity for one logical send/steer. Retrying the command must

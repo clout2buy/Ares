@@ -14,7 +14,7 @@ import { agentsHost, type AgentCard } from "./agentScope.js";
 
 const input = z
   .object({
-    action: z.enum(["list", "text", "create", "avatar"]).describe("list the owner's agents, text one of them, create a new agent, or set YOUR OWN profile picture"),
+    action: z.enum(["list", "text", "create", "avatar", "hand_memory", "export_memory"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, hand memories to an agent, or export an agent's memory to files"),
     to: z.string().min(1).max(60).optional().describe("text: the agent's name (or id)"),
     message: z.string().min(1).max(4000).optional().describe("text: what to say — write it like a text to a colleague, with everything they need"),
     urgent: z.boolean().optional().describe("text: true only when it cannot wait for their current work to finish"),
@@ -23,6 +23,7 @@ const input = z
     emoji: z.string().max(8).optional().describe("create: one emoji for their avatar"),
     color: z.string().regex(/^#[0-9a-f]{6}$/i).optional().describe("create: avatar colour, hex"),
     model: z.string().max(120).optional().describe("create: model id (default: the owner's current model)"),
+    about: z.string().min(1).max(200).optional().describe("hand_memory: only memories about this (e.g. 'my finances', 'the racing game'); omit to hand everything"),
     image: z.string().min(1).max(1024).optional().describe("avatar: path to a square JPEG/PNG/WebP (≤2 MB) you made — e.g. a Forge render or a screenshot of a portrait you drew. It becomes your face in the sidebar, in chats and on the owner's iPhone."),
   })
   .strict();
@@ -35,6 +36,7 @@ export function makeAgentsTool() {
     description:
       "The owner's personal agents (the desktop sidebar contacts — each has its own role, memory, Forge and model). " +
       "list shows who exists; text sends one of them a message (fire-and-acknowledge: it lands in their chat now, and their reply arrives later as a new message in yours — do not wait or poll for it); " +
+      "hand_memory copies what you remember (from Ares's chat: the owner's main memory; from an agent: its own) into the agent named in to — all of it, or just what is about a topic — when the owner asks to give an agent memory or history; export_memory writes an agent's own memories to Markdown + JSON files (from Ares's chat, name the agent in to). " +
       "create makes a new agent when the owner asks for one or a job clearly needs its own specialist; avatar sets your own profile picture from an image file you made (do it when the owner asks you to pick or make a pic). Agents cannot delete agents — only the owner can.",
     safety: "workspace-write",
     concurrency: "exclusive",
@@ -60,6 +62,18 @@ export function makeAgentsTool() {
           output: { ok: true, to: sent.to, threadId: sent.threadId },
           display: `texted ${sent.to.name} — their reply will arrive as a new message here`,
         };
+      }
+      if (i.action === "hand_memory") {
+        if (!i.to) throw new Error("hand_memory needs to (the agent receiving the memories)");
+        const done = await host.handMemory(from, i.to, i.about);
+        return {
+          output: { ok: true, to: done.to, copied: done.copied, skipped: done.skipped },
+          display: `handed ${done.copied} memor${done.copied === 1 ? "y" : "ies"} to ${done.to.name}${i.about ? ` about ${i.about}` : ""}${done.skipped ? ` (${done.skipped} they already had)` : ""}`,
+        };
+      }
+      if (i.action === "export_memory") {
+        const out = await host.exportMemory(from, i.to);
+        return { output: { ok: true, ...out }, display: `exported ${out.count} of ${out.agent.name}'s memories to ${out.markdown}` };
       }
       if (i.action === "avatar") {
         if (!i.image) throw new Error("avatar needs image (a file path)");

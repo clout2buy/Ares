@@ -75,6 +75,7 @@ import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetwo
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { AgentError, DesktopAgents } from "./daemon/agents.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
+import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
 // Satellite modules (extracted, closure-free helpers — command handlers and
@@ -1017,6 +1018,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     defaultBrain: () => ({ provider: mainProviderFamily, model: mainSelection.model }),
     deliver: (sessionId, goal, inputId) => commands.enqueue({ type: "send", goal, sessionId, inputId }),
     busy: (sessionId) => sessions.get(sessionId)?.turnActive === true,
+    memoryFile: live.context.mind.memoryFile,
+    exportDir: path.join(live.context.workspace, "exports"),
     emit: (payload) => {
       process.stdout.write(JSON.stringify(payload) + "\n");
       // The roster changed (possibly from the Agents tool, mid-turn): every
@@ -1055,6 +1058,22 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }
   };
 
+  /** Switch an idle live chat onto its agent's brain (after an edit or a handoff). */
+  const moveToAgentBrain = async (entry: DaemonEntry, sid: string): Promise<void> => {
+    if (entry.turnActive) return;
+    const brain = await agentBrain(sid);
+    if (!brain || (brain.model === entry.live.selection.model && brain.provider.name === entry.live.selection.provider.name)) return;
+    await primeContextCeilings(brain);
+    await entry.live.session.setProvider(brain.provider, brain.model, {
+      ...contextControls(brain),
+      summarizeSpan: makeSpanSummarizer(brain, (usage) =>
+        entry.live.session.recordAuxiliaryUsage("compaction", brain.provider.name, brain.model, usage),
+      ),
+    });
+    entry.live.selection = brain;
+    tagEmit(sid, { type: "session_opened", model: brain.model, provider: brain.provider.name });
+  };
+
   const resolveEntry = async (sessionId: string | undefined): Promise<DaemonEntry> => {
     const sid = sessionId || DEFAULT_SID;
     if (sid === DEFAULT_SID) {
@@ -1085,8 +1104,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     } catch (error) {
       if (!(error instanceof SessionNotFoundError)) throw error;
     }
-    // A brand-new chat with an agent runs on the agent's own brain.
-    const brainOfAgent = savedProvider ? undefined : await agentBrain(sid);
+    // An agent's chat always runs on the agent's own brain (a coherent
+    // provider+model pair from its profile) — a resumed one and one handed
+    // over from Ares included.
+    const brainOfAgent = await agentBrain(sid);
     const selection = brainOfAgent ?? await selectProvider(
       savedProvider
         ? new Map([
@@ -2337,7 +2358,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type === "agent_delete" ||
         command.type === "agent_bind" ||
         command.type === "agent_avatar" ||
-        command.type === "agent_avatar_set"
+        command.type === "agent_avatar_set" ||
+        command.type === "agent_memory" ||
+        command.type === "agent_memory_hand" ||
+        command.type === "agent_memory_forget" ||
+        command.type === "agent_memory_export"
       ) {
         const kind = command.type;
         try {
@@ -2357,18 +2382,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               // pick it up when they next open.
               for (const sid of persona.desktopThreads ?? []) {
                 const entry = sessions.get(sid);
-                if (!entry || entry.turnActive) continue;
-                const brain = await agentBrain(sid);
-                if (!brain) continue;
-                await primeContextCeilings(brain);
-                await entry.live.session.setProvider(brain.provider, brain.model, {
-                  ...contextControls(brain),
-                  summarizeSpan: makeSpanSummarizer(brain, (usage) =>
-                    entry.live.session.recordAuxiliaryUsage("compaction", brain.provider.name, brain.model, usage),
-                  ),
-                });
-                entry.live.selection = brain;
-                tagEmit(sid, { type: "session_opened", model: brain.model, provider: brain.provider.name });
+                if (entry) await moveToAgentBrain(entry, sid);
               }
             }
             process.stdout.write(JSON.stringify({ type: "agent_updated", agent: desktopAgents.wire(persona) }) + "\n");
@@ -2382,6 +2396,26 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             }
             refreshAgentLayers();
             process.stdout.write(JSON.stringify({ type: "agent_deleted", agentId: id, threads }) + "\n");
+          } else if (kind === "agent_memory" || kind === "agent_memory_hand" || kind === "agent_memory_forget" || kind === "agent_memory_export") {
+            const id = cleanCommandId(command.agentId);
+            const agent = id ? desktopAgents.get(id) : undefined;
+            if (!id || !agent) throw new AgentError("unknown agent");
+            const memoryFile = live.context.mind.memoryFile;
+            const extra: Record<string, unknown> = {};
+            if (kind === "agent_memory_hand") {
+              const from = cleanCommandId(command.from) ?? "ares";
+              if (from !== "ares" && !desktopAgents.get(from)) throw new AgentError("unknown source agent");
+              const about = typeof command.about === "string" ? command.about.slice(0, 200) : undefined;
+              extra.handed = await handMemories(memoryFile, { from, to: id, about, fromName: from === "ares" ? "Ares" : desktopAgents.get(from)?.name });
+            } else if (kind === "agent_memory_forget") {
+              const memoryId = cleanCommandId(command.memoryId);
+              if (!memoryId) throw new AgentError("agent_memory_forget requires memoryId");
+              extra.forgot = await forgetAgentMemory(memoryFile, id, memoryId);
+            } else if (kind === "agent_memory_export") {
+              extra.exported = await exportAgentMemory(memoryFile, agent, path.join(live.context.workspace, "exports"));
+            }
+            const list = await agentMemories(memoryFile, id);
+            process.stdout.write(JSON.stringify({ type: "agent_memory", agentId: id, total: list.total, items: list.items, ...extra }) + "\n");
           } else if (kind === "agent_avatar") {
             const id = cleanCommandId(command.agentId) ?? "ares";
             const hit = await desktopAgents.avatarData(id);
@@ -2398,7 +2432,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             const agentId = command.agentId ? cleanCommandId(command.agentId) ?? null : null;
             const agent = await desktopAgents.bind(agentId, sid);
             const entry = sessions.get(sid);
-            if (entry) applyAgent(entry, sid);
+            if (entry) {
+              applyAgent(entry, sid);
+              // A chat handed to an agent keeps its whole history and goes on
+              // with the agent's role, memory and model from the next message.
+              if (agent) await moveToAgentBrain(entry, sid);
+            }
             process.stdout.write(JSON.stringify({ type: "agent_bound", sessionId: sid, agentId: agent?.id ?? null }) + "\n");
           }
         } catch (error) {

@@ -26,7 +26,8 @@ import { agentOfSession, agentStudioId, agentMemoryScope, setAgentsHost } from "
 import { memoryScopeForTenant } from "../packages/cli/dist/entry/turnPipeline.js";
 import { makeAgentsTool } from "../packages/cli/dist/entry/agentsTool.js";
 import { desktopAgentLayerBlock } from "../packages/cli/dist/entry/prompt/texting.js";
-import { nodesInScope, OWNER_SCOPE } from "../packages/mind/dist/index.js";
+import { MemoryStore, nodesInScope, OWNER_SCOPE } from "../packages/mind/dist/index.js";
+import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "../packages/cli/dist/entry/agentMemory.js";
 
 async function harness() {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "ares-agents-"));
@@ -204,11 +205,71 @@ test("profile pictures: the phone's avatar store, set by the owner or by the age
   assert.equal(await agents.avatarData(ava.id), null, "deleting an agent drops its picture");
 });
 
+test("memory hand-off: copy from Ares or an agent, by topic or all, export, forget — never another agent's by asking", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ares-mem-"));
+  const memoryFile = path.join(dir, "memory.jsonl");
+  const store = await MemoryStore.open(memoryFile);
+  await store.add({ kind: "semantic", content: "Owner's rent is paid on the 1st from checking" });
+  await store.add({ kind: "semantic", content: "Owner's Amex card has a $5000 limit and bills on the 20th" });
+  await store.add({ kind: "semantic", content: "Owner likes neon racing games with drift physics" });
+  await store.add({ kind: "episodic", content: "Penny found a forgotten Dropbox plan", scope: "agent:p_penny0000000" });
+  await store.add({ kind: "episodic", content: "Rex refactored the auth guard", scope: "agent:p_rex000000000" });
+
+  // Everything from Ares's main memory.
+  const all = await handMemories(memoryFile, { from: "ares", to: "p_atlas0000000" });
+  assert.equal(all.copied, 3, "the owner's three, never an agent's private ones");
+  let atlas = await agentMemories(memoryFile, "p_atlas0000000");
+  assert.equal(atlas.total, 3);
+  assert.ok(atlas.items.every((m) => m.tags.includes("handed-from:ares")));
+  // Handing again duplicates nothing.
+  assert.equal((await handMemories(memoryFile, { from: "ares", to: "p_atlas0000000" })).copied, 0);
+
+  // Only what is about a topic.
+  const topic = await handMemories(memoryFile, { from: "ares", to: "p_penny0000000", about: "Amex card bills" });
+  assert.ok(topic.copied >= 1);
+  const penny = await agentMemories(memoryFile, "p_penny0000000");
+  assert.ok(penny.items.some((m) => /Amex/.test(m.content)));
+  assert.ok(!penny.items.some((m) => /racing/.test(m.content)), "an off-topic memory is not handed");
+
+  // Agent → agent hands only the source agent's OWN memories.
+  await handMemories(memoryFile, { from: "p_penny0000000", to: "p_muse00000000" });
+  const muse = await agentMemories(memoryFile, "p_muse00000000");
+  assert.ok(muse.items.some((m) => /Dropbox/.test(m.content)));
+  assert.ok(!muse.items.some((m) => /auth guard/.test(m.content)), "Rex's memory never leaks through Penny");
+
+  // Forget is scoped to the agent.
+  const rexNode = (await MemoryStore.open(memoryFile)).all().find((n) => n.scope === "agent:p_rex000000000");
+  assert.equal(await forgetAgentMemory(memoryFile, "p_penny0000000", rexNode.id), false, "Penny's profile can't forget Rex's memory");
+  assert.equal(await forgetAgentMemory(memoryFile, "p_muse00000000", muse.items[0].id), true);
+
+  // Export: Markdown + JSON on disk.
+  const out = await exportAgentMemory(memoryFile, { id: "p_atlas0000000", name: "Atlas", instructions: "Research." }, path.join(dir, "exports"), new Date("2026-10-17T12:00:00Z"));
+  assert.equal(out.count, 3);
+  assert.match(out.markdown, /Atlas-memory-2026-10-17\.md$/);
+  const md = await fs.readFile(out.markdown, "utf8");
+  assert.match(md, /# Atlas — memory/);
+  assert.match(md, /rent is paid/);
+  assert.equal(JSON.parse(await fs.readFile(out.json, "utf8")).memories.length, 3);
+});
+
+test("handing a chat to an agent rebinds it (the history stays, the agent takes over)", async () => {
+  const { agents } = await harness();
+  const ava = await agents.create({ name: "Ava", instructions: "Designer." });
+  const rex = await agents.create({ name: "Rex", instructions: "Engineer." });
+  await agents.bind(ava.id, "sess_old_ares_chat");
+  assert.equal(agentOfSession("sess_old_ares_chat"), ava.id);
+  await agents.bind(rex.id, "sess_old_ares_chat");
+  assert.equal(agentOfSession("sess_old_ares_chat"), rex.id);
+  assert.deepEqual(agents.get(ava.id).desktopThreads, []);
+  assert.deepEqual(agents.get(rex.id).desktopThreads, ["sess_old_ares_chat"]);
+});
+
 test("the desktop agent layer keeps the working voice and names the texting protocol", () => {
   const block = desktopAgentLayerBlock({ name: "Ava", instructions: "Designer." }, [{ name: "Rex", role: "Engineer" }]);
   assert.match(block, /on their desktop/);
   assert.match(block, /every Ares tool — the Forge/);
   assert.match(block, /\[text from <name>\]/);
   assert.match(block, /Agents \(action avatar\)/);
+  assert.match(block, /hand_memory/);
   assert.doesNotMatch(block, /texting them from their phone/);
 });

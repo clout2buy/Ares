@@ -44,6 +44,15 @@ export interface AgentDraft {
 export const AGENT_COLORS = ["#ff7a45", "#f5b942", "#4cd28a", "#38bdf8", "#7c5cff", "#ec4899", "#ef4444", "#94a3b8"];
 export const AGENT_EMOJI = ["🦊", "🐉", "🦉", "🐺", "🦁", "🐙", "🤖", "👾", "🧠", "💸", "📈", "🎨", "🎮", "🛠️", "🔬", "📚", "🏋️", "🍳", "✈️", "🎧", "🛡️", "🧭", "⚡", "🌙"];
 
+/** What an agent remembers on its own (the profile sheet's Memory section). */
+export interface AgentMemoryVm {
+  total: number;
+  items: Array<{ id: string; kind: string; content: string; at: string; tags?: string[] }>;
+  /** The last action's outcome ("Handed 12 memories from Ares", "Saved to …"). */
+  note?: string;
+  busy?: boolean;
+}
+
 /** Starting points — one click fills the form; everything stays editable. */
 export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string; role: string }> = [
   { name: "Penny", emoji: "💸", color: "#4cd28a", role: "You're my finance person. Keep track of what I spend, flag anything weird or recurring I forgot about, and keep me posted when I get charged for something big." },
@@ -356,6 +365,11 @@ export function AgentEditor({
   onSave,
   onDelete,
   onClose,
+  memory,
+  memorySources = [],
+  onMemoryHand,
+  onMemoryExport,
+  onMemoryForget,
 }: {
   initial: AgentDraft;
   /** Editing this agent (vs creating one). */
@@ -367,8 +381,18 @@ export function AgentEditor({
   onSave: (draft: AgentDraft) => void;
   onDelete?: () => void;
   onClose: () => void;
+  /** Edit mode: the agent's own memories and how to hand them over. */
+  memory?: AgentMemoryVm;
+  /** Where memories can be handed from: Ares's main memory, other agents. */
+  memorySources?: Array<{ id: string; name: string }>;
+  onMemoryHand?: (from: string, about: string) => void;
+  onMemoryExport?: () => void;
+  onMemoryForget?: (memoryId: string) => void;
 }) {
   const [draft, setDraft] = useState<AgentDraft>(initial);
+  const [showIdeas, setShowIdeas] = useState(false);
+  const [handFrom, setHandFrom] = useState("ares");
+  const [handAbout, setHandAbout] = useState("");
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -423,21 +447,11 @@ export function AgentEditor({
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => { void pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
           <div>
             <h3>{existing ? draft.name || existing.name : "New agent"}</h3>
-            <p>{existing ? "Their own memory, their own Forge, their own model." : "A contact with their own role, memory, Forge and model — like texting a specialist."}</p>
+            <p>{existing ? "Their own memory, their own Forge, their own model." : "Make anyone you want: give them a name, a face and a job. They get their own memory, Forge and model, and still know what you've told Ares."}</p>
           </div>
           <button className="agentClose" onClick={onClose} aria-label="Close">×</button>
         </header>
 
-        {!existing ? (
-          <div className="agentTemplates">
-            {AGENT_TEMPLATES.map((t) => (
-              <button key={t.name} className="agentTemplate" onClick={() => setDraft((d) => ({ ...d, name: takenNames.includes(t.name) ? d.name : t.name, emoji: t.emoji, color: t.color, instructions: t.role }))}>
-                <span>{t.emoji}</span>
-                {t.name}
-              </button>
-            ))}
-          </div>
-        ) : null}
 
         <label className="agentField">
           <span>Name</span>
@@ -491,6 +505,54 @@ export function AgentEditor({
             onChange={(e) => set("instructions", e.target.value)}
           />
         </label>
+
+        {!existing ? (
+          <div className="agentIdeas">
+            <button className="agentIdeasToggle" onClick={() => setShowIdeas((v) => !v)}>{showIdeas ? "▾" : "▸"} Need ideas?</button>
+            {showIdeas ? (
+              <div className="agentTemplates">
+                {AGENT_TEMPLATES.map((t) => (
+                  <button key={t.name} className="agentTemplate" title={t.role} onClick={() => setDraft((d) => ({ ...d, name: d.name.trim() || takenNames.includes(t.name) ? d.name : t.name, emoji: d.emoji || t.emoji, color: t.color, instructions: t.role }))}>
+                    <span>{t.emoji}</span>
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {existing && memory ? (
+          <div className="agentField agentMemory">
+            <span>Memory · {memory.total} of their own</span>
+            <p className="agentMemoryWhy">
+              {existing.name} already knows what you've told Ares. These are the things only they remember. Give them more from Ares or another agent: everything, or just one topic.
+            </p>
+            <div className="agentMemoryHand">
+              <select value={handFrom} onChange={(e) => setHandFrom(e.target.value)} aria-label="Hand memories from">
+                {memorySources.map((src) => <option key={src.id} value={src.id}>{src.id === "ares" ? "From Ares (your main memory)" : `From ${src.name}`}</option>)}
+              </select>
+              <input value={handAbout} maxLength={200} placeholder="About… (empty = everything)" spellCheck={false} onChange={(e) => setHandAbout(e.target.value)} />
+              <button className="agentGhost" disabled={memory.busy} onClick={() => onMemoryHand?.(handFrom, handAbout.trim())}>Hand over</button>
+            </div>
+            {memory.note ? <em className="agentMemoryNote">{memory.note}</em> : null}
+            <div className="agentMemoryList">
+              {memory.items.length === 0 ? (
+                <div className="agentMemoryEmpty">Nothing of their own yet: they'll remember as you talk, or hand them some above.</div>
+              ) : memory.items.slice(0, 60).map((m) => (
+                <div key={m.id} className="agentMemoryItem">
+                  <i data-kind={m.kind} />
+                  <span>{m.content}</span>
+                  {m.tags?.some((t) => t.startsWith("handed-from:")) ? <em>handed</em> : null}
+                  <button title="Forget this" aria-label="Forget this" onClick={() => onMemoryForget?.(m.id)}>×</button>
+                </div>
+              ))}
+            </div>
+            <div className="agentMemoryFoot">
+              <button className="agentGhost" disabled={memory.busy} onClick={() => onMemoryExport?.()}>Export memory</button>
+            </div>
+          </div>
+        ) : null}
 
         {error ? <p className="agentSheetErr">{error}</p> : null}
 

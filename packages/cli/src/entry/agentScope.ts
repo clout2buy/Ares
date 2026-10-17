@@ -60,6 +60,12 @@ export interface AgentsHost {
   text(fromSession: string, to: string, message: string, urgent: boolean): Promise<{ to: AgentCard; threadId: string }>;
   /** Set the asking agent's own profile picture (JPEG/PNG/WebP bytes). */
   avatar(fromSession: string, bytes: Buffer): Promise<AgentCard>;
+  /** Copy memories the caller can see (Ares: the owner's main memory; an
+   *  agent: its own) into another agent, optionally only about a topic. */
+  handMemory(fromSession: string, to: string, about?: string): Promise<{ to: AgentCard; copied: number; skipped: number }>;
+  /** Export the caller's own memories (an agent's, or a named agent's when
+   *  the owner's main chat asks) to Markdown + JSON files. */
+  exportMemory(fromSession: string, agent?: string): Promise<{ agent: AgentCard; markdown: string; json: string; count: number }>;
   /** An agent makes an agent. Only the owner can delete one. */
   create(fromSession: string, spec: { name: string; role: string; emoji?: string; color?: string; model?: string }): Promise<AgentCard>;
 }

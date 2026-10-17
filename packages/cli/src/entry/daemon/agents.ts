@@ -33,6 +33,7 @@ import {
 import { AvatarError, AvatarStore, detectImage } from "../../phoneAvatars.js";
 import { clearAgentSessions, setSessionAgent, agentOfSession, type AgentCard, type AgentsHost } from "../agentScope.js";
 import { desktopAgentLayerBlock } from "../prompt/texting.js";
+import { exportAgentMemory, handMemories } from "../agentMemory.js";
 
 /** What the desktop renders for one agent. */
 export interface AgentWire {
@@ -73,6 +74,9 @@ export interface DesktopAgentsDeps {
   deliver(sessionId: string, goal: string, inputId: string): void;
   /** Is that session mid-turn? A non-urgent text waits for it to finish. */
   busy(sessionId: string): boolean;
+  /** The living-memory file and where exports land (memory hand-offs). */
+  memoryFile?: string;
+  exportDir?: string;
   /** Untagged event to the desktop (agents_changed, agent_text). */
   emit(payload: Record<string, unknown>): void;
   now?: () => number;
@@ -413,6 +417,27 @@ export class DesktopAgents {
         const id = self?.id ?? "ares";
         await this.setAvatar(id, bytes);
         return self ? card(self) : { id: "ares", name: "Ares", role: "the owner's main assistant", model: "" };
+      },
+      handMemory: async (fromSession, to, about) => {
+        const memoryFile = this.deps.memoryFile;
+        if (!memoryFile) throw new AgentError("memory is not available here");
+        const self = this.agentForSession(fromSession);
+        const target = this.resolve(to);
+        if (!target) throw new AgentError(`no agent called "${to}"`);
+        const done = await handMemories(memoryFile, { from: self?.id ?? "ares", to: target.id, about, fromName: self?.name ?? "Ares" });
+        this.deps.emit({ type: "agent_memory_changed", agentId: target.id });
+        return { to: card(target), copied: done.copied, skipped: done.skipped };
+      },
+      exportMemory: async (fromSession, name) => {
+        const memoryFile = this.deps.memoryFile;
+        if (!memoryFile || !this.deps.exportDir) throw new AgentError("memory export is not available here");
+        const self = this.agentForSession(fromSession);
+        // An agent exports its own; the owner's main chat may export any agent's.
+        const target = self ?? (name ? this.resolve(name) : undefined);
+        if (!target) throw new AgentError(name ? `no agent called "${name}"` : "name the agent whose memory to export");
+        if (self && name && this.resolve(name)?.id !== self.id) throw new AgentError("an agent can only export its own memory");
+        const out = await exportAgentMemory(memoryFile, target, this.deps.exportDir);
+        return { agent: card(target), ...out };
       },
       create: async (fromSession, spec) => {
         const maker = this.agentForSession(fromSession);

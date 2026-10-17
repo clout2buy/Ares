@@ -134,7 +134,10 @@ export function isIsolatedScope(scope: string | undefined): boolean {
 export function nodesInScope<N extends { scope?: string }>(nodes: readonly N[], scope: string | undefined): readonly N[] {
   if (scope === undefined) return nodes;
   if (isIsolatedScope(scope)) return nodes.filter((n) => n.scope === scope);
-  return nodes.filter((n) => n.scope === scope || n.scope === undefined);
+  // A desktop agent (agent:<id>) also knows what the owner told Ares directly,
+  // whichever way those memories were stamped; it never sees another agent's.
+  const ownerToo = scope.startsWith("agent:");
+  return nodes.filter((n) => n.scope === scope || n.scope === undefined || (ownerToo && n.scope === OWNER_SCOPE));
 }
 
 const scopedNodes = nodesInScope<MemoryNode>;

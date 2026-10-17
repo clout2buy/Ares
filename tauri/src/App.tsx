@@ -145,6 +145,7 @@ import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./f
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
+import { ARES_AGENT_ID, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -383,6 +384,56 @@ function demoSession(): SessionVm {
   s.items.push({ kind: "permission", key: nextKey(), id: "demo-perm", toolName: "Bash", reason: "git push origin main — outward effect, staged for your approval" });
   return s;
 }
+
+// ─── Demo agents (browser preview without a daemon) ─────────────────────────
+function demoChat(title: string, user: string, feed: AresEvent[], extra: Item[] = []): SessionVm {
+  let s = freshSession();
+  s.title = title;
+  for (const e of [...feed, { type: "turn_settled" } as AresEvent]) s = foldEvent(s, e);
+  s.busy = false;
+  s.activity = undefined;
+  s.items.unshift({ kind: "user", key: nextKey(), text: user });
+  s.items.push(...extra);
+  return s;
+}
+
+function demoAgentWorld(): { agents: AgentVm[]; sessions: SessionVm[] } {
+  const racer = demoChat("Neon drift racer", "build me a drift racing game in a neon city — real car physics, 4 wheels, skid marks, the works", [
+    { type: "turn_start" },
+    { type: "thinking_delta", text: "Raycast-vehicle physics: four wheels with suspension springs, lateral grip curve so drifting happens when the rear breaks traction." },
+    { type: "tool_start", id: "d1", name: "Browser", activityDescription: "Sculpting the car body in the Forge" },
+    { type: "tool_end", id: "d1", durationMs: 4200, display: "studio forge-racer · 18 parts · glass windshield · 4 wheels skinned" },
+    { type: "tool_start", id: "d2", name: "Write", activityDescription: "Writing game/drift.js" },
+    { type: "tool_end", id: "d2", durationMs: 120, display: "game/drift.js — vehicle, grip curve, skid decals, chase cam" },
+    { type: "text_delta", text: "It's running in the Forge. The car is a real sculpt — windshield, four wheels on suspension, and the rear lets go when you flick it, so drifts feel earned.\n\n**Controls:** WASD, space for handbrake. Skid marks fade over ~6s, and the city is instanced so it holds 120fps." },
+    { type: "turn_end", status: "completed", durationMs: 41000, usage: { inputTokens: 48000, outputTokens: 3100 } },
+  ], [{ kind: "artifact", key: nextKey(), path: "game/index.html", label: "Neon drift racer" }]);
+  const subs = demoChat("Subscriptions audit", "what am I paying for every month?", [
+    { type: "turn_start" },
+    { type: "text_delta", text: "Seven recurring charges, $143.96/mo total. Two look forgotten: **Dropbox Plus** ($11.99, last opened in June) and a **second Spotify** ($10.99 on the Amex). Want me to cancel those two?" },
+    { type: "turn_end", status: "completed", durationMs: 9000, usage: { inputTokens: 9000, outputTokens: 220 } },
+  ], [
+    { kind: "user", key: nextKey(), text: "[text from Atlas] Found it — the second Spotify is a Duo plan your sister's account still points at. Safe to cancel; she has her own now." },
+    { kind: "assistant", key: nextKey(), text: "Atlas checked the Spotify one — it's a leftover Duo plan, safe to cancel. I'll cancel both and keep watching for new charges over $50.", thinking: "", streaming: false },
+  ]);
+  const research = demoChat("Spotify Duo leftover", "[text from Penny] Can you check whether the second Spotify charge on the Amex is a family/duo plan someone else uses?", [
+    { type: "turn_start" },
+    { type: "tool_start", id: "r1", name: "WebSearch", activityDescription: "Searching Spotify Duo billing" },
+    { type: "tool_end", id: "r1", durationMs: 900, display: "Duo plans bill the manager's card; members show as linked accounts" },
+    { type: "text_delta", text: "Texted Penny back: it's a Duo plan whose second seat is your sister's old account — safe to cancel." },
+    { type: "turn_end", status: "completed", durationMs: 7000, usage: { inputTokens: 7000, outputTokens: 180 } },
+  ]);
+  const moodboard = freshSession();
+  const now = new Date().toISOString();
+  const agents: AgentVm[] = [
+    { id: "p_demo0forge01", name: "Forge", emoji: "🎮", color: "#ff7a45", provider: "anthropic", model: "claude-opus-5-5", instructions: "You're my game developer. Build playable games and 3D scenes in the Forge — real physics, real models, polished feel. Show me it running, not a plan.", threads: [racer.id], createdAt: now },
+    { id: "p_demo0penny1", name: "Penny", emoji: "💸", color: "#4cd28a", provider: "openai", model: "gpt-5.6", instructions: "You're my finance person. Keep track of what I spend, flag anything weird or recurring I forgot about, and keep me posted when I get charged for something big.", threads: [subs.id], onPhone: true, createdAt: now },
+    { id: "p_demo0atlas1", name: "Atlas", emoji: "🔬", color: "#38bdf8", provider: "deepseek", model: "deepseek-v4", instructions: "You're my researcher. Dig into anything I ask, read the real sources, and give me the short answer first.", threads: [research.id], createdAt: now },
+    { id: "p_demo0muse01", name: "Muse", emoji: "🎨", color: "#ec4899", provider: "anthropic", model: "claude-sonnet-5-5", instructions: "You're my designer. Logos, UI, posters, brand looks — make it beautiful and opinionated, and show me options side by side.", threads: [moodboard.id], createdBy: "p_demo0forge01", createdAt: now },
+  ];
+  return { agents, sessions: [demoSession(), racer, subs, research, moodboard] };
+}
+const DEMO_AGENT_WORLD = typeof window !== "undefined" && !hasNativeBridge() ? demoAgentWorld() : null;
 
 // ─── First-run key gate ──────────────────────────────────────────────────────
 //
@@ -631,7 +682,29 @@ function App() {
   const native = useMemo(hasNativeBridge, []);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [daemon, setDaemon] = useState<DaemonState>(native ? "starting" : "running");
-  const [sessions, setSessions] = useState<SessionVm[]>(() => (native ? [freshSession()] : [demoSession()]));
+  const [sessions, setSessions] = useState<SessionVm[]>(() => (native ? [freshSession()] : DEMO_AGENT_WORLD?.sessions ?? [demoSession()]));
+  // ── desktop agents: the rail's contacts (agents.tsx, daemon/agents.ts) ──
+  const [agents, setAgents] = useState<AgentVm[]>(() => (native ? [] : DEMO_AGENT_WORLD?.agents ?? []));
+  const [selectedAgentId, setSelectedAgentIdState] = useState<string>(() => {
+    try { return window.localStorage.getItem("ares.agent.selected") || ARES_AGENT_ID; } catch { return ARES_AGENT_ID; }
+  });
+  const [agentEditor, setAgentEditor] = useState<null | { mode: "create" } | { mode: "edit"; id: string }>(null);
+  const [agentError, setAgentError] = useState<string | undefined>();
+  const [agentUnread, setAgentUnread] = useState<string[]>([]);
+  /** Chats handed to an agent before the daemon's agents_list echo lands. */
+  const [localAgentBindings, setLocalAgentBindings] = useState<Record<string, string>>({});
+  /** sessionId → agent id, for every chat that belongs to a named agent. */
+  const sessionAgentMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const a of agents) for (const t of a.threads ?? []) map[t] = a.id;
+    for (const [sid, id] of Object.entries(localAgentBindings)) {
+      if (id === ARES_AGENT_ID) delete map[sid];
+      else map[sid] = id;
+    }
+    return map;
+  }, [agents, localAgentBindings]);
+  rememberAgentFaces(agents);
+  const agentIdOf = (sessionId: string | undefined): string => (sessionId ? sessionAgentMap[sessionId] : undefined) ?? ARES_AGENT_ID;
   const [activeId, setActiveId] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
@@ -903,6 +976,10 @@ function App() {
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef("");
+  const selectedAgentRef = useRef(selectedAgentId);
+  selectedAgentRef.current = selectedAgentId;
+  /** An agent just created from the sheet: open a chat with them once it lands. */
+  const pendingAgentChat = useRef<string | null>(null);
   const sessionsRef = useRef(sessions);
   /** Synchronous click-to-ack gate. React state may not re-render between a
    * Stop click and an immediate Enter keypress, so this closes that tiny race. */
@@ -1583,6 +1660,7 @@ function App() {
     // populate the status bar's mission count + rail's disk-session log
     void invoke("ares_daemon_command", { command: { type: "operator_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
     void invoke("ares_daemon_command", { command: { type: "computer_status" } }).catch(() => null);
@@ -2271,6 +2349,69 @@ function App() {
           pushLog(`[oauth] ${e.provider ?? "service"} failed: ${e.error ? stringify(e.error) : "unknown"}`);
           if (e.provider === "ares") pushGatewayToast(`Sign-in failed: ${e.error ? stringify(e.error) : "unknown"}`);
           return true;
+        // ── desktop agents ──
+        case "agents_list":
+          if (Array.isArray(e.agents)) {
+            const list = e.agents as AgentVm[];
+            setAgents(list);
+            // The daemon knows the bindings now; drop the optimistic ones it echoed.
+            setLocalAgentBindings((current) => {
+              const echoed = new Set(list.flatMap((a) => a.threads ?? []));
+              const next = Object.fromEntries(Object.entries(current).filter(([sid]) => !echoed.has(sid)));
+              return Object.keys(next).length === Object.keys(current).length ? current : next;
+            });
+          }
+          return true;
+        case "agent_created": {
+          const made = e.agent as AgentVm | undefined;
+          if (made?.id) {
+            setAgents((current) => [...current.filter((a) => a.id !== made.id), made]);
+            setAgentEditor(null);
+            setAgentError(undefined);
+            pendingAgentChat.current = made.id;
+          }
+          return true;
+        }
+        case "agent_updated": {
+          const next = e.agent as AgentVm | undefined;
+          if (next?.id) {
+            setAgents((current) => current.map((a) => (a.id === next.id ? next : a)));
+            setAgentEditor(null);
+            setAgentError(undefined);
+          }
+          return true;
+        }
+        case "agent_deleted": {
+          const id = String(e.agentId ?? "");
+          setAgents((current) => current.filter((a) => a.id !== id));
+          setAgentEditor(null);
+          setSelectedAgentIdState((current) => (current === id ? ARES_AGENT_ID : current));
+          return true;
+        }
+        case "agent_error":
+          setAgentError(String(e.error ?? "agent change failed"));
+          pushLog(`[agents] ${String(e.command ?? "")}: ${String(e.error ?? "")}`);
+          return true;
+        case "agent_bound":
+          return true;
+        case "agent_text": {
+          // One agent texted another: show it in the recipient's chat right
+          // away (the turn it starts streams in behind it) and light their dot.
+          const threadId = String(e.threadId ?? "");
+          const to = (e.to ?? {}) as { id?: string; name?: string };
+          const from = (e.sender ?? {}) as { name?: string };
+          if (!threadId) return true;
+          if (to.id) setLocalAgentBindings((current) => (current[threadId] === to.id ? current : { ...current, [threadId]: to.id! }));
+          const text = `[text from ${from.name ?? "an agent"}${e.urgent ? " · urgent" : ""}] ${String(e.text ?? "")}`;
+          setSessions((prev) => {
+            const hit = prev.find((x) => x.id === threadId);
+            const item: Item = { kind: "user", key: nextKey(), inputId: String(e.inputId ?? "") || undefined, text };
+            if (!hit) return [{ ...freshSession(), id: threadId, title: `${from.name ?? "Agent"} → ${to.name ?? ""}`.trim(), items: [item] }, ...prev];
+            return prev.map((x) => (x.id === threadId ? { ...x, items: [...x.items, item] } : x));
+          });
+          if (to.id && to.id !== selectedAgentRef.current) setAgentUnread((u) => (u.includes(to.id!) ? u : [...u, to.id!]));
+          return true;
+        }
         case "sessions_list": {
           const disk = Array.isArray(e.sessions) ? (e.sessions as SessionSummaryWire[]) : [];
           pushLog(`[garrison] ${disk.length} sessions on disk`);
@@ -3113,20 +3254,92 @@ function App() {
    *  blank sessions in the rail. */
   const goHome = () => {
     setView("chat");
+    const agentId = selectedAgentRef.current;
     const current = sessionsRef.current.find((s) => s.id === activeRef.current);
-    if (current && current.items.length === 0 && !current.busy && !current.background) return;
-    const spare = sessionsRef.current.find((s) => s.items.length === 0 && !s.busy && !s.background && s.loaded !== false && s.title === "New session");
+    if (current && current.items.length === 0 && !current.busy && !current.background && agentIdOf(current.id) === agentId) return;
+    const spare = sessionsRef.current.find((s) => s.items.length === 0 && !s.busy && !s.background && s.loaded !== false && s.title === "New session" && agentIdOf(s.id) === agentId);
     if (spare) { openSession(spare.id); return; }
-    newSession();
+    newSession(agentId);
   };
 
-  const newSession = () => {
+  /** A new chat with an agent (the selected one by default). Wired straight
+   *  to onClick too, so a non-string argument means "the selected agent". */
+  const newSession = (agentArg?: unknown) => {
     // A new chat is just a new card — the multi-session daemon lazily spawns an
     // isolated session for it on first message. NEVER restart the daemon here
     // (that would kill every other running chat).
+    const agentId = typeof agentArg === "string" ? agentArg : selectedAgentRef.current;
     const fresh = freshSession();
+    if (agentId !== ARES_AGENT_ID) {
+      // Bound BEFORE the first send: the daemon builds the session on the
+      // agent's brain, memory scope and prompt layer from its first turn.
+      setLocalAgentBindings((current) => ({ ...current, [fresh.id]: agentId }));
+      daemonCmd({ type: "agent_bind", agentId, sessionId: fresh.id });
+    }
     setSessions((prev) => [fresh, ...prev]);
     openSession(fresh.id);
+  };
+
+  const requestAgentCatalog = useCallback((provider: string) => daemonCmd({ type: "model_catalog", provider }), [daemonCmd]);
+
+  // Opening a chat (search, a notification, a text landing) follows its agent.
+  useEffect(() => {
+    const owner = agentIdOf(activeId);
+    if (activeId && owner !== selectedAgentRef.current) {
+      setSelectedAgentIdState(owner);
+      selectedAgentRef.current = owner;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, sessionAgentMap]);
+
+  /** Pick an agent in the rail: their newest chat opens (or a fresh one). */
+  const selectAgent = (agentId: string) => {
+    setSelectedAgentIdState(agentId);
+    selectedAgentRef.current = agentId;
+    try { window.localStorage.setItem("ares.agent.selected", agentId); } catch { /* private mode */ }
+    setAgentUnread((u) => u.filter((id) => id !== agentId));
+    if (agentIdOf(activeRef.current) === agentId && view === "chat") return;
+    const theirs = sessionsRef.current.find((s) => agentIdOf(s.id) === agentId && (agentId !== ARES_AGENT_ID || !s.background));
+    if (theirs) openSession(theirs.id);
+    else newSession(agentId);
+  };
+
+  // An agent made from the sheet opens straight into a chat with them.
+  useEffect(() => {
+    const id = pendingAgentChat.current;
+    if (!id || !agents.some((a) => a.id === id)) return;
+    pendingAgentChat.current = null;
+    selectAgent(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents]);
+
+  const saveAgent = (draft: AgentDraft) => {
+    setAgentError(undefined);
+    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, instructions: draft.instructions };
+    if (!native) {
+      // Browser preview: no daemon — keep the directory in memory.
+      if (agentEditor?.mode === "edit") {
+        setAgents((current) => current.map((a) => (a.id === agentEditor.id ? { ...a, ...payload } : a)));
+      } else {
+        const id = `p_demo${Math.random().toString(16).slice(2, 10)}`;
+        setAgents((current) => [...current, { id, ...payload, threads: [], createdAt: new Date().toISOString() }]);
+        pendingAgentChat.current = id;
+      }
+      setAgentEditor(null);
+      return;
+    }
+    if (agentEditor?.mode === "edit") daemonCmd({ type: "agent_update", agentId: agentEditor.id, agent: payload });
+    else daemonCmd({ type: "agent_create", agent: payload });
+  };
+
+  const deleteAgent = (id: string) => {
+    if (!native) {
+      setAgents((current) => current.filter((a) => a.id !== id));
+      setAgentEditor(null);
+      if (selectedAgentRef.current === id) selectAgent(ARES_AGENT_ID);
+      return;
+    }
+    daemonCmd({ type: "agent_delete", agentId: id });
   };
 
   const toggleRail = useCallback(() => {
@@ -3617,7 +3830,41 @@ function App() {
 
   // ── rail: search, pins, and the artifact vault ───────────────────────────
   const q = sessionQuery.trim().toLowerCase();
-  const railSessions = sessions.filter((s) => !s.background || s.id === active?.id);
+  const railSessions = sessions.filter((s) => {
+    const owner = agentIdOf(s.id);
+    if (owner !== selectedAgentId) return false;
+    // An agent's chats are all real conversations, even ones it started for
+    // itself (a text from another agent); plain Ares still hides background cards.
+    return owner !== ARES_AGENT_ID || !s.background || s.id === active?.id;
+  });
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId);
+  const activeAgent = agents.find((a) => a.id === agentIdOf(active?.id));
+  const previewOf = (s: SessionVm | undefined): string => {
+    if (!s) return "No chats yet";
+    for (let i = s.items.length - 1; i >= 0; i--) {
+      const it = s.items[i]!;
+      if ((it.kind === "assistant" || it.kind === "user") && it.text.trim()) {
+        const parsed = it.kind === "user" ? parseAgentText(it.text) : null;
+        const line = (parsed ? `${parsed.from}: ${parsed.body}` : it.kind === "user" ? `You: ${it.text}` : it.text).replace(/[#*`>|]/g, "").replace(/\s+/g, " ").trim();
+        return line.length > 70 ? line.slice(0, 69) + "…" : line;
+      }
+    }
+    return s.title;
+  };
+  const agentRows: AgentRowVm[] = [null, ...agents]
+    .filter((a) => !q || (a ? a.name : "Ares").toLowerCase().includes(q) || (a ?? null)?.id === selectedAgentId || (!a && selectedAgentId === ARES_AGENT_ID))
+    .map((a) => {
+      const id = a?.id ?? ARES_AGENT_ID;
+      const theirs = sessions.filter((s) => agentIdOf(s.id) === id && (id !== ARES_AGENT_ID || !s.background));
+      const latest = theirs.find((s) => s.items.length > 0) ?? theirs[0];
+      return {
+        agent: a,
+        preview: a && theirs.every((s) => s.items.length === 0) ? (a.instructions.trim() ? a.instructions.trim().slice(0, 70) : "No chats yet") : previewOf(latest),
+        busy: theirs.some((s) => s.busy),
+        unread: agentUnread.includes(id),
+        chats: theirs.filter((s) => s.items.length > 0 || s.title !== "New session").length,
+      };
+    });
   const visibleSessions = q ? railSessions.filter((s) => s.title.toLowerCase().includes(q)) : railSessions;
   const pinnedSessions = visibleSessions.filter((s) => prefs.pinned.includes(s.id));
   const unpinnedSessions = visibleSessions.filter((s) => !prefs.pinned.includes(s.id));
@@ -4141,7 +4388,7 @@ function App() {
           <span>Collapse</span>
         </button>
         <button className="primary" onClick={prefs.surface === "cyber" ? goHome : newSession}>
-          <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">New session</span>
+          <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">{selectedAgent ? `New chat with ${selectedAgent.name}` : "New session"}</span>
         </button>
 
         <nav className="railNav">
@@ -4199,59 +4446,77 @@ function App() {
         <input
           className="railSearch"
           value={sessionQuery}
-          placeholder="Search sessions…"
+          placeholder="Search agents & chats…"
           spellCheck={false}
           onChange={(e) => setSessionQuery(e.target.value)}
         />
 
-        {/* ONE scroll container for every session group. The lists used to be
-            sibling flex:1 scrollers competing for the rail's height — past a
-            dozen sessions they overflowed the rail instead of scrolling and
-            crushed the controls above (field report, 2026-08-10). */}
+        {/* Agents, not chats: every contact owns its own chats (nested under
+            the selected one). ONE scroll container for all of it — sibling
+            flex:1 scrollers crushed the controls above (field report,
+            2026-08-10). */}
         <div className="railScroll">
-        {pinnedSessions.length > 0 ? (
-          <>
-            <div className="railLabel">Pinned</div>
-            <nav className="sessionList pinnedList">
-              {pinnedSessions.map((s) => (
-                <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned project={sessionProjects[s.id]} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
-              ))}
-            </nav>
-          </>
-        ) : null}
+        <div className="railLabel" data-label="Agents">Agents<button className="railNew" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} title="New agent" aria-label="New agent">+</button></div>
+        <AgentList
+          rows={agentRows}
+          selectedId={selectedAgentId}
+          onSelect={selectAgent}
+          onEdit={(id) => { setAgentError(undefined); setAgentEditor({ mode: "edit", id }); }}
+        >
+          <button className="agentNewChat" onClick={() => newSession(selectedAgentId)}>
+            <span>+</span> New chat{selectedAgent ? ` with ${selectedAgent.name}` : ""}
+          </button>
+          {pinnedSessions.length > 0 ? (
+            <>
+              <div className="railLabel">Pinned</div>
+              <nav className="sessionList pinnedList">
+                {pinnedSessions.map((s) => (
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned project={sessionProjects[s.id]} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
+                ))}
+              </nav>
+            </>
+          ) : null}
 
-        {projectNames.map((name) => {
-          const members = unpinnedSessions.filter((s) => sessionProjects[s.id] === name);
-          const collapsed = (prefs.collapsedProjects ?? []).includes(name);
-          return (
-            <div key={name} className="railProject">
-              <button
-                className="railLabel railProjectHeader"
-                data-collapsed={collapsed ? "1" : "0"}
-                onClick={() => toggleProjectCollapsed(name)}
-                title={collapsed ? "expand project" : "collapse project"}
-              >
-                <b>▸</b>
-                <span>{name}</span>
-                <em>{members.length}</em>
-              </button>
-              {!collapsed ? (
-                <nav className="sessionList">
-                  {members.map((s) => (
-                    <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} project={name} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
-                  ))}
-                </nav>
-              ) : null}
-            </div>
-          );
-        })}
+          {projectNames.map((name) => {
+            const members = unpinnedSessions.filter((s) => sessionProjects[s.id] === name);
+            const collapsed = (prefs.collapsedProjects ?? []).includes(name);
+            return (
+              <div key={name} className="railProject">
+                <button
+                  className="railLabel railProjectHeader"
+                  data-collapsed={collapsed ? "1" : "0"}
+                  onClick={() => toggleProjectCollapsed(name)}
+                  title={collapsed ? "expand project" : "collapse project"}
+                >
+                  <b>▸</b>
+                  <span>{name}</span>
+                  <em>{members.length}</em>
+                </button>
+                {!collapsed ? (
+                  <nav className="sessionList">
+                    {members.map((s) => (
+                      <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} project={name} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
+                    ))}
+                  </nav>
+                ) : null}
+              </div>
+            );
+          })}
 
-        <div className="railLabel">Sessions<button className="railNew" onClick={newSession} title="New session" aria-label="New session">+</button></div>
-        <nav className="sessionList">
-          {looseSessions.map((s) => (
-            <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
-          ))}
-        </nav>
+
+          {looseSessions.length > 0 ? (
+            <>
+              <div className="railLabel" data-label={selectedAgent ? `Chats with ${selectedAgent.name}` : "Recent sessions"}>{selectedAgent ? "Chats" : "Sessions"}</div>
+              <nav className="sessionList">
+                {looseSessions.map((s) => (
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
+                ))}
+              </nav>
+            </>
+          ) : pinnedSessions.length === 0 && projectNames.length === 0 ? (
+            <div className="agentEmptyChats">{q ? "No chats match." : "No chats yet."}</div>
+          ) : null}
+        </AgentList>
         </div>
         {/* Autocomplete of existing project names for the row-level assign input. */}
         <datalist id="aresProjectOptions">
@@ -4288,18 +4553,28 @@ function App() {
       </aside>
 
       <main className="stage" data-view={view}>
+        {railCollapsed ? (
+          <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
+        ) : null}
         <header className="stageHead">
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
             </button>
           ) : null}
+          <div className="stageHeadAgent">
+          {activeAgent ? (
+            <button className="stageAgent" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "edit", id: activeAgent.id }); }} title={`${activeAgent.name}'s profile`}>
+              <AgentAvatar agent={activeAgent} size={34} busy={active?.busy} />
+            </button>
+          ) : null}
           <div>
-            <h2>{active?.title ?? "Session"}</h2>
+            <h2>{activeAgent && (!active || active.title === "New session") ? activeAgent.name : active?.title ?? "Session"}</h2>
             <span>
-              {prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
+              {activeAgent ? `${activeAgent.name} · ${activeAgent.provider} / ${activeAgent.model}` : prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
               {prefs.routingMode === "auto" && routedLanes.length > 0 ? ` · ${routedLanes.length} lane${routedLanes.length === 1 ? "" : "s"}` : ""}
             </span>
+          </div>
           </div>
           {/* THE working signal — a small, contained, smoothly rotating ring
               beside the session title. Rotation only: luminance never flashes,
@@ -4391,6 +4666,13 @@ function App() {
                 <div className="wordmark">LOADING</div>
                 <p className="wordmarkSub">Restoring this session from its durable event log.</p>
               </div>
+            ) : active && active.items.length === 0 && activeAgent ? (
+              <AgentHero
+                agent={activeAgent}
+                others={agents.filter((a) => a.id !== activeAgent.id)}
+                onSend={(text) => send(text)}
+                onEdit={() => { setAgentError(undefined); setAgentEditor({ mode: "edit", id: activeAgent.id }); }}
+              />
             ) : active && active.items.length === 0 ? (
               <div className="empty">
                 <div className="emptyEmblem" aria-hidden="true">
@@ -4521,6 +4803,7 @@ function App() {
         {/* Kept MOUNTED on HELM (hidden, not unmounted) — unmounting destroyed
             the draft text and pending attachments every time the view flipped. */}
         <Composer
+          agentName={activeAgent?.name ?? "Ares"}
             hidden={view === "helm"}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
@@ -5117,6 +5400,24 @@ function App() {
           ))}
         </div>
       ) : null}
+      {agentEditor ? (() => {
+        const editing = agentEditor.mode === "edit" ? agents.find((a) => a.id === agentEditor.id) : undefined;
+        if (agentEditor.mode === "edit" && !editing) return null;
+        return (
+          <AgentEditor
+            key={editing?.id ?? "new"}
+            initial={editing ? draftOf(editing) : blankDraft(prefs.provider, prefs.model)}
+            existing={editing}
+            providers={PROVIDERS.filter((p) => p !== "mock" && p !== "moa")}
+            takenNames={agents.map((a) => a.name)}
+            requestCatalog={requestAgentCatalog}
+            error={agentError}
+            onSave={saveAgent}
+            onDelete={editing ? () => deleteAgent(editing.id) : undefined}
+            onClose={() => { setAgentEditor(null); setAgentError(undefined); }}
+          />
+        );
+      })() : null}
       {settingsOpen ? (
         <Settings
           recoveryMode={recoveryMode}
@@ -8226,6 +8527,7 @@ function PillBar({
 const Composer = React.memo(function Composer({
   hidden,
   busy,
+  agentName = "Ares",
   cancelling,
   model,
   autoRouting,
@@ -8248,6 +8550,8 @@ const Composer = React.memo(function Composer({
   /** display:none instead of unmount — preserves the draft across view flips. */
   hidden?: boolean;
   busy: boolean;
+  /** Who this chat talks to — the composer addresses them by name. */
+  agentName?: string;
   cancelling: boolean;
   model: string;
   autoRouting: boolean;
@@ -8654,8 +8958,8 @@ const Composer = React.memo(function Composer({
           placeholder={cancelling
             ? "Stopping current turn… your draft stays here"
             : busy
-              ? "Steer Ares now…"
-              : "Message Ares…  (paste or drop an image)"}
+              ? `Steer ${agentName} now…`
+              : `Message ${agentName}…  (paste or drop an image)`}
           rows={1}
           onChange={(e) => {
             setText(e.target.value);
@@ -9072,6 +9376,20 @@ const ItemView = React.memo(function ItemView({
     );
   }
   if (item.kind === "user") {
+    const texted = item.text ? parseAgentText(item.text) : null;
+    if (texted) {
+      return (
+        <div className="turn user agentText">
+          <div className="bubble" style={{ ["--agent" as string]: agentFaceByName(texted.from).color ?? "#7c5cff" }}>
+            <div className="agentTextHead">
+              <AgentAvatar agent={{ id: texted.from.toLowerCase() === "ares" ? ARES_AGENT_ID : `from-${texted.from}`, name: texted.from, ...agentFaceByName(texted.from) }} size={20} />
+              <span><b>{texted.from}</b> texted{texted.urgent ? <span className="urgent"> · urgent</span> : null}</span>
+            </div>
+            <div className="bubbleText">{texted.body}</div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="turn user">
         <div className="bubble">

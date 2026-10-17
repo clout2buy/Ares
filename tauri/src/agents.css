@@ -1,0 +1,325 @@
+/* Desktop agents — contacts in the rail, a face on every chat.
+   Uses only the shared surface tokens (--text, --muted, --line, --accent-rgb…)
+   so Cyber, Modern and Basic each paint it in their own palette; an agent's
+   own colour rides in --agent. */
+
+.agentAvatar {
+  --agent: #c8794a;
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background:
+    radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--agent) 55%, #fff 0%) 0%, var(--agent) 45%, color-mix(in srgb, var(--agent) 60%, #000) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent) 60%, transparent), 0 6px 18px -8px color-mix(in srgb, var(--agent) 80%, transparent);
+  line-height: 1;
+  user-select: none;
+}
+.agentAvatar[data-ares="1"] {
+  color: #ffe2c9;
+  background: radial-gradient(120% 120% at 30% 20%, #e3955f 0%, #a2532c 55%, #3a1a0c 100%);
+}
+.agentAresMark { width: 56%; height: 56%; }
+.agentEmoji { transform: translateY(1px); filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .25)); }
+.agentInitials { font-weight: 700; letter-spacing: .02em; }
+.agentAvatar[data-busy="1"]::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--agent);
+  border-right-color: color-mix(in srgb, var(--agent) 40%, transparent);
+  animation: agentOrbit 1.6s linear infinite;
+}
+@keyframes agentOrbit { to { transform: rotate(360deg); } }
+.agentUnread {
+  position: absolute;
+  top: -1px; right: -1px;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: #4c8dff;
+  box-shadow: 0 0 0 2px var(--bg-raised, #111);
+}
+
+/* ── the dot strip (Codex-style presence) ───────────────────────────── */
+.agentDock {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 2px 2px 4px;
+}
+.agentDot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.agentDot:hover { transform: translateY(-1px) scale(1.04); }
+.agentDot[data-on="1"] { box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .9); }
+.agentDotNew span {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  border: 1px dashed var(--line-strong, var(--line));
+  color: var(--muted);
+  font-size: 17px;
+}
+.agentDotNew:hover span { color: var(--text); border-color: rgba(var(--accent-rgb), .8); }
+
+/* ── contact rows ───────────────────────────────────────────────────── */
+.agentList { display: flex; flex-direction: column; gap: 3px; flex: none; }
+.agentRowWrap[data-on="1"] {
+  background: rgba(var(--accent-rgb), .06);
+  border-radius: var(--r-md, 10px);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .12);
+}
+.agentRow { display: flex; align-items: center; border-radius: var(--r-md, 10px); }
+.agentRow:hover { background: rgba(var(--accent-rgb), .06); }
+.agentRowMain {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 8px;
+  text-align: left;
+  color: var(--text);
+}
+.agentRowText { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.agentRowTop { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.agentRowTop strong { font-size: 13.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agentRowTop em {
+  flex: none;
+  font: 600 10px/1 var(--mono);
+  color: var(--faint);
+  font-style: normal;
+}
+.agentRowPreview {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agentRowEdit {
+  flex: none;
+  width: 26px; height: 26px;
+  margin-right: 4px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  color: var(--faint);
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+.agentRowEdit svg { width: 14px; height: 14px; fill: currentColor; }
+.agentRow:hover .agentRowEdit, .agentRowWrap[data-on="1"] .agentRowEdit { opacity: .85; }
+.agentRowEdit:hover { color: var(--text); background: rgba(var(--accent-rgb), .14); }
+.agentTyping { display: inline-flex; gap: 2px; }
+.agentTyping i {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: rgba(var(--accent-rgb), .9);
+  animation: agentBlink 1.2s ease-in-out infinite;
+}
+.agentTyping i:nth-child(2) { animation-delay: .15s; }
+.agentTyping i:nth-child(3) { animation-delay: .3s; }
+@keyframes agentBlink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+.agentChats {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 2px 6px 8px 14px;
+  margin-left: 18px;
+  border-left: 1px solid rgba(var(--accent-rgb), .18);
+}
+.agentChats .railLabel { margin-top: 2px; }
+.agentNewChat {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--r-sm, 6px);
+  color: var(--muted);
+  font-size: 12.5px;
+  border: 1px dashed var(--line);
+  text-align: left;
+}
+.agentNewChat:hover { color: var(--text); border-color: rgba(var(--accent-rgb), .6); background: rgba(var(--accent-rgb), .06); }
+.agentEmptyChats { font-size: 12px; color: var(--faint); padding: 2px 4px; }
+
+/* ── stage header face ──────────────────────────────────────────────── */
+.stageAgent {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 0; margin-right: 10px;
+  vertical-align: middle;
+}
+.stageAgent:hover .agentAvatar { transform: scale(1.05); }
+.stageAgent .agentAvatar { transition: transform 140ms ease; }
+
+
+/* ── agent-to-agent text bubble ─────────────────────────────────────── */
+.turn.agentText { justify-content: flex-start; }
+.turn.agentText .bubble {
+  --agent: #7c5cff;
+  margin-left: 0;
+  margin-right: auto;
+  background: color-mix(in srgb, var(--agent) 12%, var(--panel, #15120f));
+  border: 1px solid color-mix(in srgb, var(--agent) 45%, transparent);
+}
+.agentTextHead {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px;
+  font: 600 11px/1.2 var(--mono);
+  letter-spacing: .04em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.agentTextHead b { color: var(--text); }
+.agentTextHead .urgent { color: #ff6b6b; }
+
+/* ── empty chat hero ────────────────────────────────────────────────── */
+.agentHero { position: relative; overflow: hidden; }
+.agentHeroGlow {
+  position: absolute;
+  inset: -20% 15% auto;
+  height: 340px;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--agent) 32%, transparent), transparent);
+  filter: blur(18px);
+  pointer-events: none;
+}
+.agentHeroFace { position: relative; padding: 0; border-radius: 50%; }
+.agentHeroFace .agentAvatar { box-shadow: 0 0 0 4px color-mix(in srgb, var(--agent) 25%, transparent), 0 24px 60px -20px var(--agent); }
+.agentHeroName { position: relative; margin: 16px 0 8px; font-size: 30px; font-weight: 700; letter-spacing: -.01em; color: var(--text-hi, var(--text)); }
+.agentHeroChips { position: relative; margin-bottom: 4px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.agentHeroChips span {
+  font: 600 10.5px/1 var(--mono);
+  padding: 6px 9px;
+  border-radius: 999px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  background: rgba(var(--accent-rgb), .05);
+}
+.agentHeroChips span:first-child { color: var(--text); border-color: color-mix(in srgb, var(--agent) 50%, transparent); }
+.agentHeroRole {
+  position: relative;
+  max-width: 560px;
+  margin: 18px auto 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  text-align: center;
+}
+.agentHeroRoleEmpty button { color: var(--text); text-decoration: underline; padding: 0; }
+.agentHeroStarters { position: relative; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 22px; }
+.agentHeroStarters button {
+  padding: 9px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  background: rgba(var(--accent-rgb), .06);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.agentHeroStarters button:hover { border-color: color-mix(in srgb, var(--agent) 70%, transparent); background: color-mix(in srgb, var(--agent) 14%, transparent); }
+
+/* ── create / edit sheet ────────────────────────────────────────────── */
+.agentScrim {
+  position: fixed; inset: 0; z-index: 80;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(6px);
+  animation: agentFade 160ms ease both;
+}
+@keyframes agentFade { from { opacity: 0; } }
+.agentSheet {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 22px;
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--bg-raised, #16130f);
+  border: 1px solid var(--line-strong, var(--line));
+  box-shadow: 0 40px 120px -30px rgba(0, 0, 0, .8);
+  animation: agentRise 200ms cubic-bezier(.2, .9, .3, 1) both;
+}
+@keyframes agentRise { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+.agentSheetHead { display: flex; align-items: center; gap: 16px; }
+.agentSheetHead h3 { margin: 0 0 4px; font-size: 20px; }
+.agentSheetHead p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
+.agentClose { margin-left: auto; align-self: flex-start; font-size: 22px; color: var(--faint); width: 30px; height: 30px; border-radius: 8px; }
+.agentClose:hover { color: var(--text); background: rgba(var(--accent-rgb), .1); }
+.agentTemplates { display: flex; gap: 6px; flex-wrap: wrap; }
+.agentTemplate {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.agentTemplate:hover { color: var(--text); border-color: rgba(var(--accent-rgb), .6); background: rgba(var(--accent-rgb), .07); }
+.agentField { display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 0; }
+.agentField > span { font: 600 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.agentField input, .agentField select, .agentField textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font: inherit; font-size: 13.5px;
+  color: var(--text);
+  background: var(--panel, #100e0b);
+  border: 1px solid var(--line);
+  outline: none;
+  resize: vertical;
+}
+.agentField input:focus, .agentField select:focus, .agentField textarea:focus { border-color: rgba(var(--accent-rgb), .8); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .15); }
+.agentFieldErr { font-size: 11.5px; color: #ff6b6b; font-style: normal; }
+.agentFieldRow { display: flex; gap: 12px; }
+.agentEmojiGrid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; }
+.agentEmojiGrid button { height: 32px; border-radius: 8px; font-size: 17px; border: 1px solid transparent; }
+.agentEmojiGrid button:hover { background: rgba(var(--accent-rgb), .08); }
+.agentEmojiGrid button[data-on="1"] { border-color: rgba(var(--accent-rgb), .8); background: rgba(var(--accent-rgb), .12); }
+.agentSwatches { display: flex; gap: 8px; margin-top: 4px; }
+.agentSwatches button { width: 24px; height: 24px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2); }
+.agentSwatches button[data-on="1"] { box-shadow: 0 0 0 2px var(--bg-raised, #111), 0 0 0 4px currentColor; color: var(--text); }
+.agentSheetErr { margin: 0; padding: 9px 12px; border-radius: 9px; font-size: 12.5px; color: #ffb4b4; background: rgba(239, 68, 68, .12); border: 1px solid rgba(239, 68, 68, .35); }
+.agentSheetFoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 4px; }
+.agentSheetFoot > div { display: flex; gap: 8px; }
+.agentPrimary, .agentGhost, .agentDanger { padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 600; }
+.agentPrimary { color: #fff; background: rgb(var(--accent-rgb)); }
+.agentPrimary:disabled { opacity: .45; cursor: not-allowed; }
+.agentGhost { color: var(--muted); border: 1px solid var(--line); }
+.agentGhost:hover { color: var(--text); }
+.agentDanger { color: #fff; background: #c2413b; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agentAvatar[data-busy="1"]::after, .agentTyping i { animation: none; }
+}
+
+/* Cyber paints every rail label as "Recent sessions"; agent labels carry their
+   own text instead. */
+.ares[data-style="modern"][data-surface="cyber"] .railLabel[data-label]::before { content: attr(data-label); }
+.ares[data-style="modern"][data-surface="cyber"] .railLabel[data-label] { display: flex; align-items: center; justify-content: space-between; }
+.ares[data-style="modern"][data-surface="cyber"] .railLabel[data-label] .railNew { font-size: 14px; }
+/* The contacts are the rail now: the section nav gives them room. */
+.ares[data-style="modern"][data-surface="cyber"] .rail .railNav button { padding: 7px 12px; }
+.ares[data-style="modern"][data-surface="cyber"] .rail .railNav::after { margin: 8px 4px 6px; }
+.ares[data-style="modern"][data-surface="cyber"] .agentChats .sessionList > * { padding: 6px 10px; }
+.agentDock[data-floating="1"] {
+  position: fixed;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 10px;
+  padding: 10px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-raised, #111) 82%, transparent);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 18px 40px -18px rgba(0, 0, 0, .7);
+}
+/* .stageHead span is the subtitle style; an avatar is a span too. */
+.stageHead .agentAvatar { display: grid; margin-top: 0; font-family: inherit; color: #fff; line-height: 1; }
+.stageHead .agentAvatar span { display: inline; margin-top: 0; font: inherit; color: inherit; }
+.stageHeadAgent { display: flex; align-items: center; min-width: 0; }
+.stageHeadAgent > div { min-width: 0; }

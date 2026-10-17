@@ -8,6 +8,16 @@ import type { Prefs, PermSettings, EngineConfig } from "./prefs";
 export interface AresEvent {
   type: string;
   id?: string;
+  /** Desktop agents: agents_list / agent_created / agent_updated / agent_deleted /
+   *  agent_error / agent_text (one agent texting another). */
+  agents?: unknown[];
+  agent?: unknown;
+  agentId?: string;
+  command?: string;
+  threadId?: string;
+  to?: unknown;
+  sender?: unknown;
+  urgent?: boolean;
   text?: string;
   /** computer_setup_progress — one provisioning progress line. */
   line?: string;

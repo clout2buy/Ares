@@ -30,6 +30,7 @@ import { CliRuntimeContext } from "./runtime.js";
 import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
+import { agentStudioId } from "./agentScope.js";
 import { applyEdit, drainStudioLogs, ensureStudio, exportGame, saveStudio, studioId, studioSpec } from "./modelStudio.js";
 import { BrowserBridgeServer, ExtensionBrowserConnector } from "@ares/browser-extension-connector";
 
@@ -75,7 +76,8 @@ export async function runModelAction(
   d: { cwd: string; sessionId?: string; emitTarget: (state: { url?: string; title?: string }, mode?: "project" | "explain") => void; filmstripDir: string },
 ): Promise<BrowserResult> {
   if (i.help) return { output: { action: "model", status: "ok", result: { docs: FORGE_SCRIPT_DOCS }, filmstripDir: d.filmstripDir }, display: "studio scripts reference" };
-  const id = studioId(i.model ?? i.title);
+  // Each desktop agent has its own studios (agentScope.agentStudioId).
+  const id = agentStudioId(d.sessionId, studioId(i.model ?? i.title));
   const st = ensureStudio(id);
   let backdrop: string | undefined;
   if (i.backdrop !== undefined) {

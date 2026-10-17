@@ -30,6 +30,13 @@ export interface Persona {
   instructions: string;
   /** The persona's one dedicated garrison thread. */
   sessionId: string;
+  /** Desktop chats with this agent (daemon session ids, newest last). The
+   *  desktop is many-threads-per-agent; the phone keeps its one garrison
+   *  thread in `sessionId`, and the two never share an id. */
+  desktopThreads?: string[];
+  /** Another agent made this one (AGENT-SOCIETY: agents may create agents;
+   *  only the owner deletes). Absent = the owner made it. */
+  createdBy?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +45,8 @@ export interface Persona {
 export const DEFAULT_PERSONA_ID = "ares";
 export const PERSONA_INSTRUCTIONS_MAX = 4_000;
 export const PERSONA_NAME_MAX = 40;
+/** Old desktop threads past this fall off the agent (the sessions stay on disk). */
+export const DESKTOP_THREADS_MAX = 200;
 const PERSONA_ID_RE = /^p_[a-z0-9]{6,32}$/;
 
 export function newPersonaId(): string {
@@ -74,6 +83,10 @@ function normalize(raw: unknown): Persona | null {
     ...(str(r.reasoningLevel) ? { reasoningLevel: str(r.reasoningLevel) } : {}),
     instructions,
     sessionId: str(r.sessionId) ?? "",
+    ...(Array.isArray(r.desktopThreads)
+      ? { desktopThreads: [...new Set(r.desktopThreads.filter((t): t is string => typeof t === "string" && t.length > 0 && t.length <= 200))].slice(-DESKTOP_THREADS_MAX) }
+      : {}),
+    ...(isPersonaId(r.createdBy) ? { createdBy: r.createdBy as string } : {}),
     createdAt: str(r.createdAt) ?? now,
     updatedAt: str(r.updatedAt) ?? now,
   };
@@ -120,6 +133,13 @@ export class PersonaStore {
   bySession(sessionId: string): Persona | undefined {
     if (!sessionId) return undefined;
     for (const p of this.byId.values()) if (p.sessionId === sessionId) return p;
+    return undefined;
+  }
+
+  /** Which agent owns this DESKTOP chat (sync; the daemon's lookup). */
+  byDesktopThread(sessionId: string): Persona | undefined {
+    if (!sessionId) return undefined;
+    for (const p of this.byId.values()) if (p.desktopThreads?.includes(sessionId)) return p;
     return undefined;
   }
 

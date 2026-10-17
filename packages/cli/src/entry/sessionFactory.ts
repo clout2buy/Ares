@@ -125,6 +125,10 @@ export interface LiveSession {
   adoptPersona(persona: PersonaDef | null): void;
   /** The persona currently worn, or null. */
   activePersona(): PersonaDef | null;
+  /** The desktop agent's prompt layer ("" = plain Ares). Recomposes the
+   *  system prompt when it changes. Optional: only the factory's own
+   *  sessions carry it; test doubles and remote sessions may not. */
+  setAgentLayer?(layer: string): void;
   resumed?: ResumedSessionInfo;
   /** V6: living-memory ids injected into the current turn — settled at turn end. */
   lastRecallIds?: string[];
@@ -978,12 +982,21 @@ export async function createSessionWithSelection(
       persona: { style: settings.personaStyle, custom: settings.personaCustom },
     };
   };
+  // The desktop agent this session belongs to (its role, its contacts) rides
+  // after everything else, like the garrison's persona layer — so the shared
+  // prefix stays byte-identical across agents. Set via live.setAgentLayer.
+  let agentLayer = "";
   const composeCurrentSystemPrompt = () =>
-    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, { ...promptModelOpts(), tools: promptCatalogNames(tools) })) + promptTail;
+    agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, { ...promptModelOpts(), tools: promptCatalogNames(tools) })) + promptTail + agentLayer;
   runtime.composeChildSystemPrompt = async () =>
     agent.composeSystemPrompt(buildSystemPrompt(runtime.permissionMode, context, { ...promptModelOpts(), tools: promptCatalogNames(tools) })) +
     (await loadLiveMindContext(context)) +
     (await loadGitContext(context));
+  const makeAgentLayerSwap = (session: Session) => (layer: string) => {
+    if (layer === agentLayer) return;
+    agentLayer = layer;
+    session.setSystemPrompt(composeCurrentSystemPrompt());
+  };
   const toolCatalogHash = contextSourceHash(JSON.stringify(tools.map((tool) => tool.schema)));
   const contextSourceVersions = () => ({
     compiler: "ares-interactive-context-v1",
@@ -1088,6 +1101,7 @@ export async function createSessionWithSelection(
       codingJournal,
       adoptPersona: makePersonaSwap(session),
       activePersona: () => agent.activePersona(),
+      setAgentLayer: makeAgentLayerSwap(session),
     };
     liveRef = live;
     live.agentRuntime = new AresAgentRuntime(agent, {
@@ -1160,7 +1174,7 @@ export async function createSessionWithSelection(
   runtime.onPlanApproved = (plan) => session.approvePlan(plan);
   codingJournal = await CodingJournal.open({ workspace: context.workspace, sessionId: session.meta.id });
   session.observeEvents((event) => codingJournal?.recordTurnEvent(event));
-  const live: LiveSession = { session, planPressure, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings), codingJournal, adoptPersona: makePersonaSwap(session), activePersona: () => agent.activePersona() };
+  const live: LiveSession = { session, planPressure, selection, context, runtime, verifier, hooks, shellRegistry, todoStore, tools, queueSystemReminder, reasoningLevel: resolveReasoningLevel(settings), codingJournal, adoptPersona: makePersonaSwap(session), activePersona: () => agent.activePersona(), setAgentLayer: makeAgentLayerSwap(session) };
   liveRef = live;
   live.agentRuntime = new AresAgentRuntime(agent, {
     workspace: context.workspace,

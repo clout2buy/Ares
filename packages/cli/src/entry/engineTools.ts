@@ -458,6 +458,7 @@ export async function buildEngineTools(
   const livingMindTool = adaptToolForEngine(makeLivingMindTool(context), enrich) as EngineTool;
   const estateTool = adaptToolForEngine(makeEstateTool(() => selection.model), enrich) as EngineTool;
   const pointMapTool = adaptToolForEngine(makePointMapTool(), enrich) as EngineTool;
+  const agentsTool = adaptToolForEngine(makeAgentsTool(), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const watcherTool = adaptToolForEngine(makeWatcherTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
@@ -499,7 +500,7 @@ export async function buildEngineTools(
   const connectorsTool = adaptToolForEngine(makeConnectorsTool(() => context.workspace), enrich) as EngineTool;
   // Experimental Facebook Marketplace (deferred, loaded with ToolSearch). ARES_MARKETPLACE=0 keeps it out of the catalog entirely.
   const marketplaceTools = marketplaceEnabled() ? [adaptToolForEngine(makeMarketplaceTool(), enrich) as EngineTool] : [];
-  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool, ...marketplaceTools];
+  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, agentsTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool, ...marketplaceTools];
   // Connected MCP servers' tools ride in this same array, refilled in place
   // whenever a connector changes — the engine reads the array every turn.
   liveMcpTools.attach(all);
@@ -651,6 +652,8 @@ export async function buildCodingTools(
 
 import { makeEstateTool } from "./oricleAdapter.js";
 import { makePointMapTool } from "./pointMapTool.js";
+import { makeAgentsTool } from "./agentsTool.js";
+import { agentMemoryScope, agentOfSession } from "./agentScope.js";
 import { liveMcpTools, makeConnectorsTool } from "./mcpTools.js";
 
 const livingMindInput = z
@@ -682,15 +685,19 @@ function makeLivingMindTool(context: CliRuntimeContext) {
     inputZod: livingMindInput,
     activityDescription: (i) => `LivingMind ${i.action}`,
 
-    async call(i): Promise<{ output: LivingMindOutput; display: string }> {
+    async call(i, ctx): Promise<{ output: LivingMindOutput; display: string }> {
       const home = context.home;
       const store = await MemoryStore.open(context.mind.memoryFile);
       const limit = i.limit ?? 8;
+      // A desktop agent remembers into its own scope and recalls its own plus
+      // the owner's shared memories — never another agent's.
+      const agent = agentOfSession(ctx?.sessionId);
+      const scope = agent ? agentMemoryScope(agent) : undefined;
 
       if (i.action === "remember") {
         const content = i.content?.trim();
         if (!content) throw new Error("LivingMind remember requires content");
-        const report = await new MemoryRouter(store).write("manual", [{ kind: i.kind ?? "episodic", content, tags: ["chat-tool"] }]);
+        const report = await new MemoryRouter(store).write("manual", [{ kind: i.kind ?? "episodic", content, tags: ["chat-tool"], ...(scope ? { scope } : {}) }]);
         const node = report.written[0]?.node;
         if (!node) throw new Error("LivingMind remember was not accepted by the memory router");
         return {
@@ -702,7 +709,7 @@ function makeLivingMindTool(context: CliRuntimeContext) {
       if (i.action === "recall") {
         const cue = (i.cue ?? i.content)?.trim();
         if (!cue) throw new Error("LivingMind recall requires cue");
-        const result = await store.remember(cue, { limit });
+        const result = await store.remember(cue, { limit, ...(scope ? { scope } : {}) });
         return {
           output: { action: i.action, home, count: store.count(), result },
           display: result.length
@@ -732,7 +739,8 @@ function makeLivingMindTool(context: CliRuntimeContext) {
         };
       }
 
-      const result = store.all().slice(-limit).reverse();
+      const pool = scope ? store.all().filter((n) => n.scope === scope || n.scope === undefined) : store.all();
+      const result = pool.slice(-limit).reverse();
       return {
         output: { action: i.action, home, count: store.count(), result },
         display: `listed ${result.length}/${store.count()} memories`,

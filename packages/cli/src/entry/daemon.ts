@@ -73,6 +73,9 @@ import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js
 import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
 import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetworkSyncNow, onAresNetworkStatus, oricleOnSessionEvent, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
+import { AgentError, DesktopAgents } from "./daemon/agents.js";
+import { agentOfSession, setAgentsHost } from "./agentScope.js";
+import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
 
 // Satellite modules (extracted, closure-free helpers — command handlers and
@@ -1009,6 +1012,68 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return normalized;
   };
 
+  // ─── Desktop agents (the sidebar's contacts; see daemon/agents.ts) ──────
+  const desktopAgents = new DesktopAgents({
+    home: live.context.home,
+    defaultBrain: () => ({ provider: mainProviderFamily, model: mainSelection.model }),
+    deliver: (sessionId, goal, inputId) => commands.enqueue({ type: "send", goal, sessionId, inputId }),
+    busy: (sessionId) => sessions.get(sessionId)?.turnActive === true,
+    memoryFile: live.context.mind.memoryFile,
+    exportDir: path.join(live.context.workspace, "exports"),
+    emit: (payload) => {
+      process.stdout.write(JSON.stringify(payload) + "\n");
+      // The roster changed (possibly from the Agents tool, mid-turn): every
+      // live agent chat's contact list is stale.
+      if (payload.type === "agents_list") refreshAgentLayers();
+    },
+  });
+  await desktopAgents.load().catch((error) => {
+    process.stderr.write(`[ares] desktop agents failed to load: ${error instanceof Error ? error.message : String(error)}\n`);
+    return [];
+  });
+  setAgentsHost(desktopAgents.host());
+  /** Make a live session wear (or drop) its agent: memory scope + prompt
+   *  layer. The brain is chosen at creation (resolveEntry) or switched by
+   *  agent_update; a resumed chat keeps the model it was saved with. */
+  const applyAgent = (entry: DaemonEntry, sid: string): void => {
+    const agent = desktopAgents.agentForSession(sid);
+    entry.live.tenant = agent ? { role: "owner", agent: agent.id } : (entry.live.tenant?.role === "owner" ? { role: "owner" } : entry.live.tenant);
+    entry.live.setAgentLayer?.(desktopAgents.layerFor(agent?.id));
+  };
+  /** The roster changed (an agent made, renamed, deleted): every live agent
+   *  chat's contact list is now stale. */
+  const refreshAgentLayers = (): void => {
+    for (const [sid, entry] of sessions) if (agentOfSession(sid)) applyAgent(entry, sid);
+  };
+  const agentBrain = async (sid: string): Promise<ProviderSelection | undefined> => {
+    const agent = desktopAgents.agentForSession(sid);
+    if (!agent) return undefined;
+    try {
+      return await selectProvider(new Map([["provider", providerFlagForMetaName(agent.provider)], ["model", agent.model]]));
+    } catch (error) {
+      // A brain that no longer resolves (key removed, model retired) must not
+      // strand the agent: it runs on the daemon's lane and says so.
+      tagEmit(sid, { type: "desktop_error", error: `${agent.name}'s model ${agent.provider}/${agent.model} is unavailable (${error instanceof Error ? error.message : String(error)}); using ${mainSelection.model}` });
+      return undefined;
+    }
+  };
+
+  /** Switch an idle live chat onto its agent's brain (after an edit or a handoff). */
+  const moveToAgentBrain = async (entry: DaemonEntry, sid: string): Promise<void> => {
+    if (entry.turnActive) return;
+    const brain = await agentBrain(sid);
+    if (!brain || (brain.model === entry.live.selection.model && brain.provider.name === entry.live.selection.provider.name)) return;
+    await primeContextCeilings(brain);
+    await entry.live.session.setProvider(brain.provider, brain.model, {
+      ...contextControls(brain),
+      summarizeSpan: makeSpanSummarizer(brain, (usage) =>
+        entry.live.session.recordAuxiliaryUsage("compaction", brain.provider.name, brain.model, usage),
+      ),
+    });
+    entry.live.selection = brain;
+    tagEmit(sid, { type: "session_opened", model: brain.model, provider: brain.provider.name });
+  };
+
   const resolveEntry = async (sessionId: string | undefined): Promise<DaemonEntry> => {
     const sid = sessionId || DEFAULT_SID;
     if (sid === DEFAULT_SID) {
@@ -1039,7 +1104,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     } catch (error) {
       if (!(error instanceof SessionNotFoundError)) throw error;
     }
-    const selection = await selectProvider(
+    // An agent's chat always runs on the agent's own brain (a coherent
+    // provider+model pair from its profile) — a resumed one and one handed
+    // over from Ares included.
+    const brainOfAgent = await agentBrain(sid);
+    const selection = brainOfAgent ?? await selectProvider(
       savedProvider
         ? new Map([
             ["provider", providerFlagForMetaName(savedProvider.name)],
@@ -1081,6 +1150,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       lastActiveAt: Date.now(),
     };
     sessions.set(sid, entry);
+    applyAgent(entry, sid);
     // Surface + tenant stamp (owner by default; a channel frame can override
     // per message at the send path). Best-effort, off the critical path.
     void stampSessionIdentity(fresh, { surface: currentSurface(), tenant: fresh.tenant ?? { role: "owner" } });
@@ -2280,6 +2350,105 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         tagEmit(command.sessionId, { type: "rewind_result", text: lines.join("\n") });
         continue;
       }
+      // ─── Desktop agents ─────────────────────────────────────────────────
+      if (
+        command.type === "agents_list" ||
+        command.type === "agent_create" ||
+        command.type === "agent_update" ||
+        command.type === "agent_delete" ||
+        command.type === "agent_bind" ||
+        command.type === "agent_avatar" ||
+        command.type === "agent_avatar_set" ||
+        command.type === "agent_memory" ||
+        command.type === "agent_memory_hand" ||
+        command.type === "agent_memory_forget" ||
+        command.type === "agent_memory_export"
+      ) {
+        const kind = command.type;
+        try {
+          if (kind === "agents_list") {
+            process.stdout.write(JSON.stringify({ type: "agents_list", agents: await desktopAgents.load() }) + "\n");
+          } else if (kind === "agent_create") {
+            const made = await desktopAgents.create(command.agent ?? {});
+            refreshAgentLayers();
+            process.stdout.write(JSON.stringify({ type: "agent_created", agent: desktopAgents.wire(made), ...(command.cmdId ? { cmdId: command.cmdId } : {}) }) + "\n");
+          } else if (kind === "agent_update") {
+            const id = cleanCommandId(command.agentId);
+            if (!id) throw new AgentError("agent_update requires agentId");
+            const { persona, brainChanged, layerChanged } = await desktopAgents.update(id, command.agent ?? {});
+            if (layerChanged) refreshAgentLayers();
+            if (brainChanged) {
+              // Live chats of this agent move to the new brain now; idle ones
+              // pick it up when they next open.
+              for (const sid of persona.desktopThreads ?? []) {
+                const entry = sessions.get(sid);
+                if (entry) await moveToAgentBrain(entry, sid);
+              }
+            }
+            process.stdout.write(JSON.stringify({ type: "agent_updated", agent: desktopAgents.wire(persona) }) + "\n");
+          } else if (kind === "agent_delete") {
+            const id = cleanCommandId(command.agentId);
+            if (!id) throw new AgentError("agent_delete requires agentId");
+            const threads = await desktopAgents.remove(id);
+            for (const sid of threads) {
+              const entry = sessions.get(sid);
+              if (entry) applyAgent(entry, sid);
+            }
+            refreshAgentLayers();
+            process.stdout.write(JSON.stringify({ type: "agent_deleted", agentId: id, threads }) + "\n");
+          } else if (kind === "agent_memory" || kind === "agent_memory_hand" || kind === "agent_memory_forget" || kind === "agent_memory_export") {
+            const id = cleanCommandId(command.agentId);
+            const agent = id ? desktopAgents.get(id) : undefined;
+            if (!id || !agent) throw new AgentError("unknown agent");
+            const memoryFile = live.context.mind.memoryFile;
+            const extra: Record<string, unknown> = {};
+            if (kind === "agent_memory_hand") {
+              const from = cleanCommandId(command.from) ?? "ares";
+              if (from !== "ares" && !desktopAgents.get(from)) throw new AgentError("unknown source agent");
+              const about = typeof command.about === "string" ? command.about.slice(0, 200) : undefined;
+              extra.handed = await handMemories(memoryFile, { from, to: id, about, fromName: from === "ares" ? "Ares" : desktopAgents.get(from)?.name });
+            } else if (kind === "agent_memory_forget") {
+              const memoryId = cleanCommandId(command.memoryId);
+              if (!memoryId) throw new AgentError("agent_memory_forget requires memoryId");
+              extra.forgot = await forgetAgentMemory(memoryFile, id, memoryId);
+            } else if (kind === "agent_memory_export") {
+              extra.exported = await exportAgentMemory(memoryFile, agent, path.join(live.context.workspace, "exports"));
+            }
+            const list = await agentMemories(memoryFile, id);
+            process.stdout.write(JSON.stringify({ type: "agent_memory", agentId: id, total: list.total, items: list.items, ...extra }) + "\n");
+          } else if (kind === "agent_avatar") {
+            const id = cleanCommandId(command.agentId) ?? "ares";
+            const hit = await desktopAgents.avatarData(id);
+            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null }) + "\n");
+          } else if (kind === "agent_avatar_set") {
+            const id = cleanCommandId(command.agentId) ?? "ares";
+            const image = typeof command.image === "string" && command.image ? command.image : null;
+            const version = await desktopAgents.setAvatar(id, image);
+            const hit = version ? await desktopAgents.avatarData(id) : null;
+            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null }) + "\n");
+          } else {
+            const sid = cleanCommandId(command.sessionId);
+            if (!sid || sid === DEFAULT_SID) throw new AgentError("agent_bind requires a chat sessionId");
+            const agentId = command.agentId ? cleanCommandId(command.agentId) ?? null : null;
+            const agent = await desktopAgents.bind(agentId, sid);
+            const entry = sessions.get(sid);
+            if (entry) {
+              applyAgent(entry, sid);
+              // A chat handed to an agent keeps its whole history and goes on
+              // with the agent's role, memory and model from the next message.
+              if (agent) await moveToAgentBrain(entry, sid);
+            }
+            process.stdout.write(JSON.stringify({ type: "agent_bound", sessionId: sid, agentId: agent?.id ?? null }) + "\n");
+          }
+        } catch (error) {
+          process.stdout.write(JSON.stringify({
+            type: "agent_error",
+            command: kind,
+            error: error instanceof Error ? error.message : String(error),
+          }) + "\n");
+        }
+        continue;
+      }
       if (command.type === "sessions_list") {
         // SQLite is authoritative for canonical sessions. A projection/open
         // failure must surface, never masquerade as an empty session rail.
@@ -2936,6 +3105,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             sessions.delete(id);
           }
           const ok = await deleteSession(live.context.workspace, id);
+          await desktopAgents.forgetThread(id).catch(() => undefined);
           process.stdout.write(JSON.stringify({ type: "session_deleted", id, ok }) + "\n");
         } catch (err) {
           process.stdout.write(JSON.stringify({ type: "daemon_error", error: `session_delete: ${err instanceof Error ? err.message : String(err)}` }) + "\n");
@@ -4130,7 +4300,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // A per-message tenant on the send frame (a multi-user channel
             // relaying through this daemon) wins over the session's stamp;
             // otherwise prepareUserTurn resolves live.tenant → owner.
-            const frameTenant = tenantFromWire((command as { tenant?: unknown }).tenant);
+            const wireTenant = tenantFromWire((command as { tenant?: unknown }).tenant);
+            // An owner frame on an agent's chat is still that agent (its memory scope).
+            const frameTenant = wireTenant?.role === "owner" && entry.live.tenant?.role === "owner" ? entry.live.tenant : wireTenant;
             await prepareUserTurn(entry.live, semanticGoal, frameTenant ? { tenant: frameTenant } : {});
           }
           // Persona triggers. Runs BEFORE the prompt is sent so an "auto"

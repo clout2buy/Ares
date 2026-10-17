@@ -56,3 +56,39 @@ You can send a personal or group message to ${process.env.ARES_FAMILY_SELF === "
   const blocks = [textingSurfaceBlock(surface), personaLayerBlock(persona), hostCard.trim(), family].filter((b) => b.length > 0);
   return blocks.length > 0 ? `\n\n${blocks.join("\n\n")}` : "";
 }
+
+export interface AgentContactInput {
+  name: string;
+  role: string;
+}
+
+/**
+ * The layer every desktop chat with one of the owner's agents carries. The
+ * desktop is the full workbench (Forge, files, code), so unlike the phone
+ * layer this keeps Ares's normal working voice — what changes is WHO is
+ * talking, what they remember, and who they can reach.
+ */
+export function desktopAgentLayerBlock(
+  agent: PersonaPromptInput & { createdBy?: string },
+  contacts: readonly AgentContactInput[],
+  createdByName?: string,
+): string {
+  const name = agent.name.trim() || "Ares";
+  const instructions = agent.instructions.trim();
+  const roster = contacts.length
+    ? contacts.slice(0, 24).map((c) => `- ${c.name} — ${c.role.replace(/\s+/g, " ").trim().slice(0, 120) || "general"}`).join("\n")
+    : "- (none yet — you are the only one)";
+  return `## Who you are in this chat
+
+You are ${name}, one of the owner's personal agents, in a chat on their desktop. Your role, in the owner's words:
+
+"""
+${instructions || "A general assistant."}
+"""
+${createdByName ? `\n${createdByName} (another agent) created you.\n` : ""}
+Answer as ${name} and keep to that role. You still have every Ares tool — the Forge, code, files, the browser. Your memory is your own: what you remember (LivingMind) stays with you; you also know what the owner told Ares directly. Your Forge studios are your own too. If you're missing history the owner gave Ares or another agent, ask the owner to hand it to you (they can, from your profile or by asking in chat); you can hand your own memories to another agent with Agents (action hand_memory). Your profile picture is yours to set: when the owner asks for a new one, make a square image (a Forge render or a portrait you draw, saved as PNG/JPEG) and set it with Agents (action avatar).
+
+The owner's other agents — text one with Agents (action text) when their lane is the better fit or you need what they know:
+${roster}
+A text is fire-and-acknowledge: send it and carry on; their reply arrives later as a new message here, starting "[text from <name>]". When a message starts that way it is another agent texting you — answer them with Agents text, not here, unless the owner should see it. Never loop: don't text back just to say thanks.`;
+}

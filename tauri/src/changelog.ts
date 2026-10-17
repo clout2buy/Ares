@@ -40,6 +40,28 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.58.0",
+    date: "October 2026",
+    title: "Agents",
+    tagline: "The sidebar is your contacts now: agents with their own role, memory, Forge and model, the same ones that live in your iPhone app.",
+    highlights: [
+      { icon: "👥", title: "Agents, not chats", blurb: "Every agent sits in the sidebar with its face, its last message and a live typing ring. Click one to open its chats, or start a new one.", tag: "New" },
+      { icon: "🖼️", title: "Profile pictures", blurb: "Give any agent a photo, or ask it to make its own pic in the Forge. The same pictures show up on your iPhone.", tag: "New" },
+      { icon: "😊", title: "Faces that live", blurb: "Agents without a photo get their own animated face: it blinks, and while the agent works its eyes dart around.", tag: "New" },
+      { icon: "💙", title: "Feels like iMessage", blurb: "Agent chats are a text thread: your messages in blue, theirs in grey next to their face, a typing bubble while they work, and Delivered and Read under your message.", tag: "New" },
+      { icon: "🧠", title: "Their own memory", blurb: "Each agent remembers on its own. They all know what you told Ares, but what you tell Penny stays with Penny.", tag: "New" },
+      { icon: "🤝", title: "Hand over memories", blurb: "Give an agent more of what Ares or another agent knows, all of it or just one topic, from its profile or by asking in chat. Export any agent's memory to a file whenever you like.", tag: "New" },
+      { icon: "⇢", title: "Give a chat to an agent", blurb: "Hand any old chat to an agent. It keeps the whole history and carries on with that agent's role, memory and model.", tag: "New" },
+      { icon: "✨", title: "Make your own", blurb: "Create anyone you want with a name, a face and a job. The ideas list is there if you want a head start.", tag: "New" },
+      { icon: "🛠️", title: "Their own Forge", blurb: "Each agent has its own Forge studios, so two agents can each build \"the car\" without touching each other's.", tag: "New" },
+      { icon: "🎛️", title: "Their own model", blurb: "Give each agent its own provider and model: a heavy model for your engineer, a fast one for your finance check-ins.", tag: "New" },
+      { icon: "💬", title: "Agents text each other", blurb: "Agents message each other when another one's lane fits better. You see every text in their chats, and the replies arrive on their own.", tag: "New" },
+      { icon: "🐣", title: "Agents make agents", blurb: "Ask an agent to bring in a specialist and it creates one. Only you can delete an agent, and its chats stay behind as Ares.", tag: "New" },
+      { icon: "📱", title: "Same agents as your iPhone", blurb: "Desktop agents use the same records as the iPhone app's agents. On the machine that serves your phone, both apps show the same agents.", tag: "New" },
+      { icon: "⚪", title: "Agent dots", blurb: "Collapse the sidebar and your agents become a strip of dots on the left edge, with live presence, one click each.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.57.0",
     date: "October 2026",
     title: "Ares sculpts",

@@ -21,7 +21,7 @@
 //
 // In a plain browser (no native bridge) the app runs in DEMO mode.
 
-import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -145,6 +145,7 @@ import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./f
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
+import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -383,6 +384,77 @@ function demoSession(): SessionVm {
   s.items.push({ kind: "permission", key: nextKey(), id: "demo-perm", toolName: "Bash", reason: "git push origin main — outward effect, staged for your approval" });
   return s;
 }
+
+// ─── Demo agents (browser preview without a daemon) ─────────────────────────
+function demoChat(title: string, user: string, feed: AresEvent[], extra: Item[] = [], minutesAgo = 5): SessionVm {
+  let s = freshSession();
+  s.title = title;
+  s.updatedAt = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  for (const e of [...feed, { type: "turn_settled" } as AresEvent]) s = foldEvent(s, e);
+  s.busy = false;
+  s.activity = undefined;
+  s.items.unshift({ kind: "user", key: nextKey(), text: user });
+  s.items.push(...extra);
+  return s;
+}
+
+function demoAgentWorld(): { agents: AgentVm[]; sessions: SessionVm[] } {
+  const racer = demoChat("Neon drift racer", "build me a drift racing game in a neon city — real car physics, 4 wheels, skid marks, the works", [
+    { type: "turn_start" },
+    { type: "thinking_delta", text: "Raycast-vehicle physics: four wheels with suspension springs, lateral grip curve so drifting happens when the rear breaks traction." },
+    { type: "tool_start", id: "d1", name: "Browser", activityDescription: "Sculpting the car body in the Forge" },
+    { type: "tool_end", id: "d1", durationMs: 4200, display: "studio forge-racer · 18 parts · glass windshield · 4 wheels skinned" },
+    { type: "tool_start", id: "d2", name: "Write", activityDescription: "Writing game/drift.js" },
+    { type: "tool_end", id: "d2", durationMs: 120, display: "game/drift.js — vehicle, grip curve, skid decals, chase cam" },
+    { type: "text_delta", text: "It's running in the Forge. The car is a real sculpt — windshield, four wheels on suspension, and the rear lets go when you flick it, so drifts feel earned.\n\n**Controls:** WASD, space for handbrake. Skid marks fade over ~6s, and the city is instanced so it holds 120fps." },
+    { type: "turn_end", status: "completed", durationMs: 41000, usage: { inputTokens: 48000, outputTokens: 3100 } },
+  ], [{ kind: "artifact", key: nextKey(), path: "game/index.html", label: "Neon drift racer" }], 3);
+  const subs = demoChat("Subscriptions audit", "what am I paying for every month?", [
+    { type: "turn_start" },
+    { type: "text_delta", text: "Seven recurring charges, $143.96/mo total. Two look forgotten: **Dropbox Plus** ($11.99, last opened in June) and a **second Spotify** ($10.99 on the Amex). Want me to cancel those two?" },
+    { type: "turn_end", status: "completed", durationMs: 9000, usage: { inputTokens: 9000, outputTokens: 220 } },
+  ], [
+    { kind: "user", key: nextKey(), text: "[text from Atlas] Found it — the second Spotify is a Duo plan your sister's account still points at. Safe to cancel; she has her own now." },
+    { kind: "assistant", key: nextKey(), text: "Atlas checked the Spotify one — it's a leftover Duo plan, safe to cancel. I'll cancel both and keep watching for new charges over $50.", thinking: "", streaming: false },
+  ], 26);
+  const research = demoChat("Spotify Duo leftover", "[text from Penny] Can you check whether the second Spotify charge on the Amex is a family/duo plan someone else uses?", [
+    { type: "turn_start" },
+    { type: "tool_start", id: "r1", name: "WebSearch", activityDescription: "Searching Spotify Duo billing" },
+    { type: "tool_end", id: "r1", durationMs: 900, display: "Duo plans bill the manager's card; members show as linked accounts" },
+    { type: "text_delta", text: "Texted Penny back: it's a Duo plan whose second seat is your sister's old account — safe to cancel." },
+    { type: "turn_end", status: "completed", durationMs: 7000, usage: { inputTokens: 7000, outputTokens: 180 } },
+  ], [], 1500);
+  // Atlas is mid-reply: the typing bubble and the face that looks around.
+  research.items.push({ kind: "user", key: nextKey(), text: "while you're at it, is Dropbox Plus safe to drop? I think my photos backup uses it" });
+  research.busy = true;
+  research.activity = "thinking";
+  research.updatedAt = new Date(Date.now() - 30_000).toISOString();
+  const moodboard = freshSession();
+  const now = new Date().toISOString();
+  const agents: AgentVm[] = [
+    { id: "p_demo0forge01", name: "Forge", emoji: "🎮", color: "#ff7a45", provider: "anthropic", model: "claude-opus-5-5", instructions: "You're my game developer. Build playable games and 3D scenes in the Forge — real physics, real models, polished feel. Show me it running, not a plan.", threads: [racer.id], createdAt: now },
+    { id: "p_demo0penny1", name: "Penny", emoji: "💸", color: "#4cd28a", provider: "openai", model: "gpt-5.6", instructions: "You're my finance person. Keep track of what I spend, flag anything weird or recurring I forgot about, and keep me posted when I get charged for something big.", threads: [subs.id], onPhone: true, createdAt: now },
+    { id: "p_demo0atlas1", name: "Atlas", emoji: "🔬", color: "#38bdf8", provider: "deepseek", model: "deepseek-v4", instructions: "You're my researcher. Dig into anything I ask, read the real sources, and give me the short answer first.", threads: [research.id], createdAt: now },
+    { id: "p_demo0muse01", name: "Muse", emoji: "🎨", color: "#ec4899", provider: "anthropic", model: "claude-sonnet-5-5", instructions: "You're my designer. Logos, UI, posters, brand looks — make it beautiful and opinionated, and show me options side by side.", threads: [moodboard.id], createdBy: "p_demo0forge01", createdAt: now },
+  ];
+  return { agents, sessions: [demoSession(), racer, subs, research, moodboard] };
+}
+function demoAgentMemory(agentId: string): AgentMemoryVm {
+  const at = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const sets: Record<string, Array<[string, string, string[]?]>> = {
+    p_demo0penny1: [
+      ["semantic", "Owner wants a heads-up for any single charge over $50."],
+      ["semantic", "Second Spotify on the Amex is a leftover Duo plan (sister's old seat) — safe to cancel.", ["handed-from:p_demo0atlas1"]],
+      ["episodic", "Found 7 recurring charges totalling $143.96/mo on Oct 17."],
+      ["procedural", "Check the Amex and the debit card every morning; summarise only what changed."],
+      ["semantic", "Owner's rent is paid on the 1st from the checking account.", ["handed-from:ares"]],
+    ],
+  };
+  const items = (sets[agentId] ?? [["semantic", "Owner prefers short answers that lead with the result."], ["episodic", "First chat with the owner."]]).map(([kind, content, tags], i) => ({ id: `${agentId}-m${i}`, kind, content, at: at(i * 7 + 1), ...(tags ? { tags } : {}) }));
+  return { total: items.length, items };
+}
+
+const DEMO_AGENT_WORLD = typeof window !== "undefined" && !hasNativeBridge() ? demoAgentWorld() : null;
 
 // ─── First-run key gate ──────────────────────────────────────────────────────
 //
@@ -631,7 +703,36 @@ function App() {
   const native = useMemo(hasNativeBridge, []);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [daemon, setDaemon] = useState<DaemonState>(native ? "starting" : "running");
-  const [sessions, setSessions] = useState<SessionVm[]>(() => (native ? [freshSession()] : [demoSession()]));
+  const [sessions, setSessions] = useState<SessionVm[]>(() => (native ? [freshSession()] : DEMO_AGENT_WORLD?.sessions ?? [demoSession()]));
+  // ── desktop agents: the rail's contacts (agents.tsx, daemon/agents.ts) ──
+  const [agents, setAgents] = useState<AgentVm[]>(() => (native ? [] : DEMO_AGENT_WORLD?.agents ?? []));
+  const [selectedAgentId, setSelectedAgentIdState] = useState<string>(() => {
+    try { return window.localStorage.getItem("ares.agent.selected") || ARES_AGENT_ID; } catch { return ARES_AGENT_ID; }
+  });
+  const [agentEditor, setAgentEditor] = useState<null | { mode: "create" } | { mode: "edit"; id: string }>(null);
+  const [agentError, setAgentError] = useState<string | undefined>();
+  const [agentUnread, setAgentUnread] = useState<string[]>([]);
+  /** Profile pictures by agent id (data: URLs), fetched when a version changes. */
+  const [agentPhotos, setAgentPhotos] = useState<Record<string, string>>({});
+  const agentPhotoVersions = useRef<Record<string, string>>({});
+  /** Each agent's own memories, loaded when its profile opens. */
+  const [agentMemory, setAgentMemory] = useState<Record<string, AgentMemoryVm>>({});
+  /** A photo picked in the New agent sheet, uploaded once the agent exists. */
+  const pendingAgentPhoto = useRef<string | null>(null);
+  /** Chats handed to an agent before the daemon's agents_list echo lands. */
+  const [localAgentBindings, setLocalAgentBindings] = useState<Record<string, string>>({});
+  /** sessionId → agent id, for every chat that belongs to a named agent. */
+  const sessionAgentMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const a of agents) for (const t of a.threads ?? []) map[t] = a.id;
+    for (const [sid, id] of Object.entries(localAgentBindings)) {
+      if (id === ARES_AGENT_ID) delete map[sid];
+      else map[sid] = id;
+    }
+    return map;
+  }, [agents, localAgentBindings]);
+  rememberAgentFaces(agents);
+  const agentIdOf = (sessionId: string | undefined): string => (sessionId ? sessionAgentMap[sessionId] : undefined) ?? ARES_AGENT_ID;
   const [activeId, setActiveId] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("model");
@@ -903,6 +1004,10 @@ function App() {
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef("");
+  const selectedAgentRef = useRef(selectedAgentId);
+  selectedAgentRef.current = selectedAgentId;
+  /** An agent just created from the sheet: open a chat with them once it lands. */
+  const pendingAgentChat = useRef<string | null>(null);
   const sessionsRef = useRef(sessions);
   /** Synchronous click-to-ack gate. React state may not re-render between a
    * Stop click and an immediate Enter keypress, so this closes that tiny race. */
@@ -1583,6 +1688,8 @@ function App() {
     // populate the status bar's mission count + rail's disk-session log
     void invoke("ares_daemon_command", { command: { type: "operator_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "agent_avatar", agentId: "ares" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
     void invoke("ares_daemon_command", { command: { type: "computer_status" } }).catch(() => null);
@@ -2271,6 +2378,118 @@ function App() {
           pushLog(`[oauth] ${e.provider ?? "service"} failed: ${e.error ? stringify(e.error) : "unknown"}`);
           if (e.provider === "ares") pushGatewayToast(`Sign-in failed: ${e.error ? stringify(e.error) : "unknown"}`);
           return true;
+        // ── desktop agents ──
+        case "agents_list":
+          if (Array.isArray(e.agents)) {
+            const list = e.agents as AgentVm[];
+            setAgents(list);
+            // Fetch any profile picture that is new or changed (the phone may
+            // have set it); drop the ones that were removed.
+            for (const a of list) {
+              if (a.avatar && agentPhotoVersions.current[a.id] !== a.avatar) {
+                agentPhotoVersions.current[a.id] = a.avatar;
+                daemonCmd({ type: "agent_avatar", agentId: a.id });
+              } else if (!a.avatar && agentPhotoVersions.current[a.id]) {
+                delete agentPhotoVersions.current[a.id];
+                setAgentPhotos((p) => { const n = { ...p }; delete n[a.id]; return n; });
+              }
+            }
+            // The daemon knows the bindings now; drop the optimistic ones it echoed.
+            setLocalAgentBindings((current) => {
+              const echoed = new Set(list.flatMap((a) => a.threads ?? []));
+              const next = Object.fromEntries(Object.entries(current).filter(([sid]) => !echoed.has(sid)));
+              return Object.keys(next).length === Object.keys(current).length ? current : next;
+            });
+          }
+          return true;
+        case "agent_created": {
+          const made = e.agent as AgentVm | undefined;
+          if (made?.id) {
+            setAgents((current) => [...current.filter((a) => a.id !== made.id), made]);
+            setAgentEditor(null);
+            setAgentError(undefined);
+            pendingAgentChat.current = made.id;
+            if (pendingAgentPhoto.current) {
+              daemonCmd({ type: "agent_avatar_set", agentId: made.id, image: pendingAgentPhoto.current });
+              setAgentPhotos((p) => ({ ...p, [made.id]: pendingAgentPhoto.current! }));
+              pendingAgentPhoto.current = null;
+            }
+          }
+          return true;
+        }
+        case "agent_updated": {
+          const next = e.agent as AgentVm | undefined;
+          if (next?.id) {
+            setAgents((current) => current.map((a) => (a.id === next.id ? next : a)));
+            setAgentEditor(null);
+            setAgentError(undefined);
+          }
+          return true;
+        }
+        case "agent_deleted": {
+          const id = String(e.agentId ?? "");
+          setAgents((current) => current.filter((a) => a.id !== id));
+          setAgentEditor(null);
+          setSelectedAgentIdState((current) => (current === id ? ARES_AGENT_ID : current));
+          return true;
+        }
+        case "agent_error":
+          setAgentMemory((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, { ...v, busy: false }])));
+          setAgentError(String(e.error ?? "agent change failed"));
+          pushLog(`[agents] ${String(e.command ?? "")}: ${String(e.error ?? "")}`);
+          return true;
+        case "agent_bound":
+          return true;
+        case "agent_memory": {
+          const id = String(e.agentId ?? "");
+          if (!id) return true;
+          const ev = e as { total?: number; items?: AgentMemoryVm["items"]; handed?: { copied: number; skipped: number }; exported?: { markdown: string; count: number }; forgot?: boolean };
+          const note = ev.handed
+            ? `Handed over ${ev.handed.copied} memor${ev.handed.copied === 1 ? "y" : "ies"}${ev.handed.skipped ? ` (${ev.handed.skipped} they already had)` : ""}.`
+            : ev.exported
+              ? `Exported ${ev.exported.count} memories to ${ev.exported.markdown} (and a .json next to it).`
+              : undefined;
+          setAgentMemory((m) => ({ ...m, [id]: { total: ev.total ?? 0, items: ev.items ?? [], note: note ?? m[id]?.note, busy: false } }));
+          return true;
+        }
+        case "agent_memory_changed": {
+          const id = String(e.agentId ?? "");
+          if (id) daemonCmd({ type: "agent_memory", agentId: id });
+          return true;
+        }
+        case "agent_avatar": {
+          const id = String(e.agentId ?? "");
+          const image = typeof (e as { image?: unknown }).image === "string" ? String((e as { image?: unknown }).image) : "";
+          if (!id) return true;
+          const version = (e as { version?: unknown }).version;
+          if (version) agentPhotoVersions.current[id] = String(version);
+          setAgentPhotos((p) => {
+            if (image) return p[id] === image ? p : { ...p, [id]: image };
+            if (!(id in p)) return p;
+            const n = { ...p };
+            delete n[id];
+            return n;
+          });
+          return true;
+        }
+        case "agent_text": {
+          // One agent texted another: show it in the recipient's chat right
+          // away (the turn it starts streams in behind it) and light their dot.
+          const threadId = String(e.threadId ?? "");
+          const to = (e.to ?? {}) as { id?: string; name?: string };
+          const from = (e.sender ?? {}) as { name?: string };
+          if (!threadId) return true;
+          if (to.id) setLocalAgentBindings((current) => (current[threadId] === to.id ? current : { ...current, [threadId]: to.id! }));
+          const text = `[text from ${from.name ?? "an agent"}${e.urgent ? " · urgent" : ""}] ${String(e.text ?? "")}`;
+          setSessions((prev) => {
+            const hit = prev.find((x) => x.id === threadId);
+            const item: Item = { kind: "user", key: nextKey(), inputId: String(e.inputId ?? "") || undefined, text };
+            if (!hit) return [{ ...freshSession(), id: threadId, title: `${from.name ?? "Agent"} → ${to.name ?? ""}`.trim(), items: [item] }, ...prev];
+            return prev.map((x) => (x.id === threadId ? { ...x, items: [...x.items, item] } : x));
+          });
+          if (to.id && to.id !== selectedAgentRef.current) setAgentUnread((u) => (u.includes(to.id!) ? u : [...u, to.id!]));
+          return true;
+        }
         case "sessions_list": {
           const disk = Array.isArray(e.sessions) ? (e.sessions as SessionSummaryWire[]) : [];
           pushLog(`[garrison] ${disk.length} sessions on disk`);
@@ -3113,20 +3332,122 @@ function App() {
    *  blank sessions in the rail. */
   const goHome = () => {
     setView("chat");
+    const agentId = selectedAgentRef.current;
     const current = sessionsRef.current.find((s) => s.id === activeRef.current);
-    if (current && current.items.length === 0 && !current.busy && !current.background) return;
-    const spare = sessionsRef.current.find((s) => s.items.length === 0 && !s.busy && !s.background && s.loaded !== false && s.title === "New session");
+    if (current && current.items.length === 0 && !current.busy && !current.background && agentIdOf(current.id) === agentId) return;
+    const spare = sessionsRef.current.find((s) => s.items.length === 0 && !s.busy && !s.background && s.loaded !== false && s.title === "New session" && agentIdOf(s.id) === agentId);
     if (spare) { openSession(spare.id); return; }
-    newSession();
+    newSession(agentId);
   };
 
-  const newSession = () => {
+  /** A new chat with an agent (the selected one by default). Wired straight
+   *  to onClick too, so a non-string argument means "the selected agent". */
+  const newSession = (agentArg?: unknown) => {
     // A new chat is just a new card — the multi-session daemon lazily spawns an
     // isolated session for it on first message. NEVER restart the daemon here
     // (that would kill every other running chat).
+    const agentId = typeof agentArg === "string" ? agentArg : selectedAgentRef.current;
     const fresh = freshSession();
+    if (agentId !== ARES_AGENT_ID) {
+      // Bound BEFORE the first send: the daemon builds the session on the
+      // agent's brain, memory scope and prompt layer from its first turn.
+      setLocalAgentBindings((current) => ({ ...current, [fresh.id]: agentId }));
+      daemonCmd({ type: "agent_bind", agentId, sessionId: fresh.id });
+    }
     setSessions((prev) => [fresh, ...prev]);
     openSession(fresh.id);
+  };
+
+  const requestAgentCatalog = useCallback((provider: string) => daemonCmd({ type: "model_catalog", provider }), [daemonCmd]);
+
+  // Opening a chat (search, a notification, a text landing) follows its agent.
+  useEffect(() => {
+    const owner = agentIdOf(activeId);
+    if (activeId && owner !== selectedAgentRef.current) {
+      setSelectedAgentIdState(owner);
+      selectedAgentRef.current = owner;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, sessionAgentMap]);
+
+  /** Pick an agent in the rail: their newest chat opens (or a fresh one). */
+  const selectAgent = (agentId: string) => {
+    setSelectedAgentIdState(agentId);
+    selectedAgentRef.current = agentId;
+    try { window.localStorage.setItem("ares.agent.selected", agentId); } catch { /* private mode */ }
+    setAgentUnread((u) => u.filter((id) => id !== agentId));
+    if (agentIdOf(activeRef.current) === agentId && view === "chat") return;
+    const theirs = sessionsRef.current.find((s) => agentIdOf(s.id) === agentId && (agentId !== ARES_AGENT_ID || !s.background));
+    if (theirs) openSession(theirs.id);
+    else newSession(agentId);
+  };
+
+  // Opening an agent's profile loads what it remembers on its own.
+  useEffect(() => {
+    if (agentEditor?.mode !== "edit") return;
+    if (native) daemonCmd({ type: "agent_memory", agentId: agentEditor.id });
+    else setAgentMemory((m) => (m[agentEditor.id] ? m : { ...m, [agentEditor.id]: demoAgentMemory(agentEditor.id) }));
+  }, [agentEditor, native, daemonCmd]);
+
+  const memoryAction = (agentId: string, command: Record<string, unknown>, demoNote: string) => {
+    setAgentMemory((m) => ({ ...m, [agentId]: { ...(m[agentId] ?? { total: 0, items: [] }), busy: true, note: undefined } }));
+    if (native) daemonCmd({ agentId, ...command });
+    else setAgentMemory((m) => ({ ...m, [agentId]: { ...(m[agentId] ?? { total: 0, items: [] }), busy: false, note: demoNote } }));
+  };
+
+  // An agent made from the sheet opens straight into a chat with them.
+  useEffect(() => {
+    const id = pendingAgentChat.current;
+    if (!id || !agents.some((a) => a.id === id)) return;
+    pendingAgentChat.current = null;
+    selectAgent(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents]);
+
+  const saveAgent = (draft: AgentDraft) => {
+    setAgentError(undefined);
+    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, instructions: draft.instructions };
+    const setPhotoLocal = (id: string, photo: string) =>
+      setAgentPhotos((p) => {
+        const n = { ...p };
+        if (photo) n[id] = photo;
+        else delete n[id];
+        return n;
+      });
+    if (!native) {
+      // Browser preview: no daemon — keep the directory in memory.
+      if (agentEditor?.mode === "edit") {
+        setAgents((current) => current.map((a) => (a.id === agentEditor.id ? { ...a, ...payload } : a)));
+        if (draft.photo !== undefined) setPhotoLocal(agentEditor.id, draft.photo);
+      } else {
+        const id = `p_demo${Math.random().toString(16).slice(2, 10)}`;
+        setAgents((current) => [...current, { id, ...payload, threads: [], createdAt: new Date().toISOString() }]);
+        if (draft.photo) setPhotoLocal(id, draft.photo);
+        pendingAgentChat.current = id;
+      }
+      setAgentEditor(null);
+      return;
+    }
+    if (agentEditor?.mode === "edit") {
+      daemonCmd({ type: "agent_update", agentId: agentEditor.id, agent: payload });
+      if (draft.photo !== undefined) {
+        daemonCmd({ type: "agent_avatar_set", agentId: agentEditor.id, image: draft.photo || null });
+        setPhotoLocal(agentEditor.id, draft.photo);
+      }
+    } else {
+      pendingAgentPhoto.current = draft.photo || null;
+      daemonCmd({ type: "agent_create", agent: payload });
+    }
+  };
+
+  const deleteAgent = (id: string) => {
+    if (!native) {
+      setAgents((current) => current.filter((a) => a.id !== id));
+      setAgentEditor(null);
+      if (selectedAgentRef.current === id) selectAgent(ARES_AGENT_ID);
+      return;
+    }
+    daemonCmd({ type: "agent_delete", agentId: id });
   };
 
   const toggleRail = useCallback(() => {
@@ -3617,7 +3938,57 @@ function App() {
 
   // ── rail: search, pins, and the artifact vault ───────────────────────────
   const q = sessionQuery.trim().toLowerCase();
-  const railSessions = sessions.filter((s) => !s.background || s.id === active?.id);
+  const railSessions = sessions.filter((s) => {
+    const owner = agentIdOf(s.id);
+    if (owner !== selectedAgentId) return false;
+    // An agent's chats are all real conversations, even ones it started for
+    // itself (a text from another agent); plain Ares still hides background cards.
+    return owner !== ARES_AGENT_ID || !s.background || s.id === active?.id;
+  });
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId);
+  const activeAgent = agents.find((a) => a.id === agentIdOf(active?.id));
+  const previewOf = (s: SessionVm | undefined): string => {
+    if (!s) return "No chats yet";
+    for (let i = s.items.length - 1; i >= 0; i--) {
+      const it = s.items[i]!;
+      if ((it.kind === "assistant" || it.kind === "user") && it.text.trim()) {
+        const parsed = it.kind === "user" ? parseAgentText(it.text) : null;
+        const line = (parsed ? `${parsed.from}: ${parsed.body}` : it.kind === "user" ? `You: ${it.text}` : it.text).replace(/[#*`>|]/g, "").replace(/\s+/g, " ").replace(/^[-—–\s]+/, "").trim();
+        return line.length > 70 ? line.slice(0, 69) + "…" : line;
+      }
+    }
+    return s.title;
+  };
+  /** Hand a chat to another agent (or back to Ares): it keeps its whole
+   *  history and carries on with the new agent's role, memory and model. */
+  const giveChat = (sessionId: string, agentId: string) => {
+    setLocalAgentBindings((current) => ({ ...current, [sessionId]: agentId }));
+    if (native) daemonCmd({ type: "agent_bind", agentId: agentId === ARES_AGENT_ID ? null : agentId, sessionId });
+    else setAgents((current) => current.map((a) => ({ ...a, threads: a.id === agentId ? [...a.threads.filter((t) => t !== sessionId), sessionId] : a.threads.filter((t) => t !== sessionId) })));
+    selectedAgentRef.current = agentId;
+    setSelectedAgentIdState(agentId);
+    try { window.localStorage.setItem("ares.agent.selected", agentId); } catch { /* private mode */ }
+    openSession(sessionId);
+  };
+  const chatHandoff = {
+    agents: [{ id: ARES_AGENT_ID, name: "Ares" }, ...agents].filter((a) => a.id !== selectedAgentId),
+    onGive: giveChat,
+  };
+  const agentRows: AgentRowVm[] = [null, ...agents]
+    .filter((a) => !q || (a ? a.name : "Ares").toLowerCase().includes(q) || (a ?? null)?.id === selectedAgentId || (!a && selectedAgentId === ARES_AGENT_ID))
+    .map((a) => {
+      const id = a?.id ?? ARES_AGENT_ID;
+      const theirs = sessions.filter((s) => agentIdOf(s.id) === id && (id !== ARES_AGENT_ID || !s.background));
+      const latest = theirs.find((s) => s.items.length > 0) ?? theirs[0];
+      return {
+        agent: a,
+        preview: a && theirs.every((s) => s.items.length === 0) ? (a.instructions.trim() ? a.instructions.trim().slice(0, 70) : "No chats yet") : previewOf(latest),
+        busy: theirs.some((s) => s.busy),
+        unread: agentUnread.includes(id),
+        chats: theirs.filter((s) => s.items.length > 0 || s.title !== "New session").length,
+        at: theirs.map((s) => s.updatedAt).filter(Boolean).sort().at(-1),
+      };
+    });
   const visibleSessions = q ? railSessions.filter((s) => s.title.toLowerCase().includes(q)) : railSessions;
   const pinnedSessions = visibleSessions.filter((s) => prefs.pinned.includes(s.id));
   const unpinnedSessions = visibleSessions.filter((s) => !prefs.pinned.includes(s.id));
@@ -3798,6 +4169,7 @@ function App() {
 
   return (
     <StyleCtx.Provider value={prefs.uiStyle}>
+    <AgentPhotoContext.Provider value={agentPhotos}>
     <div
       className="ares"
       data-daemon={daemon}
@@ -4141,11 +4513,12 @@ function App() {
           <span>Collapse</span>
         </button>
         <button className="primary" onClick={prefs.surface === "cyber" ? goHome : newSession}>
-          <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">New session</span>
+          <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">{selectedAgent ? `New chat with ${selectedAgent.name}` : "New session"}</span>
         </button>
 
         <nav className="railNav">
           <button
+            title="Chats"
             data-on={view === "chat" ? "1" : "0"}
             onClick={() => {
               setView("chat");
@@ -4158,10 +4531,11 @@ function App() {
               }
             }}
           >
-            <Medallion glyph="sessions" /><i className="glyph" data-glyph="task" /> Sessions
+            <Medallion glyph="sessions" /><i className="glyph" data-glyph="task" /> Chats
           </button>
           <button
             className="helmNav"
+            title="HELM"
             data-on={view === "helm" ? "1" : "0"}
             onClick={() => {
               setView("helm");
@@ -4174,6 +4548,7 @@ function App() {
             {opStatus?.activeCount ? <em>{opStatus.activeCount}</em> : null}
           </button>
           <button
+            title="Artifacts"
             data-on={view === "artifacts" ? "1" : "0"}
             onClick={() => {
               setView("artifacts");
@@ -4184,6 +4559,7 @@ function App() {
             {vaultCount > 0 ? <em>{vaultCount}</em> : null}
           </button>
           <button
+            title="AresOS"
             data-on={view === "aresos" ? "1" : "0"}
             onClick={() => {
               setView("aresos");
@@ -4199,59 +4575,84 @@ function App() {
         <input
           className="railSearch"
           value={sessionQuery}
-          placeholder="Search sessions…"
+          placeholder="Search agents & chats…"
           spellCheck={false}
           onChange={(e) => setSessionQuery(e.target.value)}
         />
 
-        {/* ONE scroll container for every session group. The lists used to be
-            sibling flex:1 scrollers competing for the rail's height — past a
-            dozen sessions they overflowed the rail instead of scrolling and
-            crushed the controls above (field report, 2026-08-10). */}
+        {/* Agents, not chats: every contact owns its own chats (nested under
+            the selected one). ONE scroll container for all of it — sibling
+            flex:1 scrollers crushed the controls above (field report,
+            2026-08-10). */}
         <div className="railScroll">
-        {pinnedSessions.length > 0 ? (
-          <>
-            <div className="railLabel">Pinned</div>
-            <nav className="sessionList pinnedList">
-              {pinnedSessions.map((s) => (
-                <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned project={sessionProjects[s.id]} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
-              ))}
-            </nav>
-          </>
+        <div className="railLabel" data-label="Agents">Agents<button className="railNew" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} title="New agent" aria-label="New agent">+</button></div>
+        {agents.length === 0 && !q ? (
+          <div className="agentFirst">
+            <strong>Make your own agents</strong>
+            <p>Anyone you want: a name, a face, a job. Each gets its own memory, Forge and model, still knows what you've told Ares, and can take over any of your chats.</p>
+            <button className="agentPrimary" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}>Create an agent</button>
+          </div>
         ) : null}
+        <AgentList
+          rows={agentRows}
+          selectedId={selectedAgentId}
+          onSelect={selectAgent}
+          onEdit={(id) => { setAgentError(undefined); setAgentEditor({ mode: "edit", id }); }}
+        >
+          <button className="agentNewChat" onClick={() => newSession(selectedAgentId)}>
+            <span>+</span> New chat{selectedAgent ? ` with ${selectedAgent.name}` : ""}
+          </button>
+          {pinnedSessions.length > 0 ? (
+            <>
+              <div className="railLabel">Pinned</div>
+              <nav className="sessionList pinnedList">
+                {pinnedSessions.map((s) => (
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} pinned project={sessionProjects[s.id]} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={chatHandoff} />
+                ))}
+              </nav>
+            </>
+          ) : null}
 
-        {projectNames.map((name) => {
-          const members = unpinnedSessions.filter((s) => sessionProjects[s.id] === name);
-          const collapsed = (prefs.collapsedProjects ?? []).includes(name);
-          return (
-            <div key={name} className="railProject">
-              <button
-                className="railLabel railProjectHeader"
-                data-collapsed={collapsed ? "1" : "0"}
-                onClick={() => toggleProjectCollapsed(name)}
-                title={collapsed ? "expand project" : "collapse project"}
-              >
-                <b>▸</b>
-                <span>{name}</span>
-                <em>{members.length}</em>
-              </button>
-              {!collapsed ? (
-                <nav className="sessionList">
-                  {members.map((s) => (
-                    <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} project={name} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
-                  ))}
-                </nav>
-              ) : null}
-            </div>
-          );
-        })}
+          {projectNames.map((name) => {
+            const members = unpinnedSessions.filter((s) => sessionProjects[s.id] === name);
+            const collapsed = (prefs.collapsedProjects ?? []).includes(name);
+            return (
+              <div key={name} className="railProject">
+                <button
+                  className="railLabel railProjectHeader"
+                  data-collapsed={collapsed ? "1" : "0"}
+                  onClick={() => toggleProjectCollapsed(name)}
+                  title={collapsed ? "expand project" : "collapse project"}
+                >
+                  <b>▸</b>
+                  <span>{name}</span>
+                  <em>{members.length}</em>
+                </button>
+                {!collapsed ? (
+                  <nav className="sessionList">
+                    {members.map((s) => (
+                      <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} project={name} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={chatHandoff} />
+                    ))}
+                  </nav>
+                ) : null}
+              </div>
+            );
+          })}
 
-        <div className="railLabel">Sessions<button className="railNew" onClick={newSession} title="New session" aria-label="New session">+</button></div>
-        <nav className="sessionList">
-          {looseSessions.map((s) => (
-            <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} />
-          ))}
-        </nav>
+
+          {looseSessions.length > 0 ? (
+            <>
+              <div className="railLabel" data-label={selectedAgent ? `Chats with ${selectedAgent.name}` : "Recent sessions"}>{selectedAgent ? "Chats" : "Sessions"}</div>
+              <nav className="sessionList">
+                {looseSessions.map((s) => (
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={chatHandoff} />
+                ))}
+              </nav>
+            </>
+          ) : pinnedSessions.length === 0 && projectNames.length === 0 ? (
+            <div className="agentEmptyChats">{q ? "No chats match." : "No chats yet."}</div>
+          ) : null}
+        </AgentList>
         </div>
         {/* Autocomplete of existing project names for the row-level assign input. */}
         <datalist id="aresProjectOptions">
@@ -4288,18 +4689,28 @@ function App() {
       </aside>
 
       <main className="stage" data-view={view}>
-        <header className="stageHead">
+        {railCollapsed ? (
+          <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
+        ) : null}
+        <header className="stageHead" data-imsg={activeAgent ? "1" : "0"}>
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
             </button>
           ) : null}
+          <div className="stageHeadAgent">
+          {activeAgent ? (
+            <button className="stageAgent" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "edit", id: activeAgent.id }); }} title={`${activeAgent.name}'s profile`}>
+              <AgentAvatar agent={activeAgent} size={34} busy={active?.busy} />
+            </button>
+          ) : null}
           <div>
-            <h2>{active?.title ?? "Session"}</h2>
+            <h2>{activeAgent && (!active || active.title === "New session") ? activeAgent.name : active?.title ?? "Session"}</h2>
             <span>
-              {prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
+              {activeAgent ? `${activeAgent.name} · ${activeAgent.provider} / ${activeAgent.model}` : prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
               {prefs.routingMode === "auto" && routedLanes.length > 0 ? ` · ${routedLanes.length} lane${routedLanes.length === 1 ? "" : "s"}` : ""}
             </span>
+          </div>
           </div>
           {/* THE working signal — a small, contained, smoothly rotating ring
               beside the session title. Rotation only: luminance never flashes,
@@ -4385,12 +4796,20 @@ function App() {
             }}
           />
         ) : (
-          <div className="chat" ref={scroller} onScroll={onChatScroll}>
+          <AgentChatContext.Provider value={activeAgent ?? null}>
+          <div className="chat" ref={scroller} onScroll={onChatScroll} data-imsg={activeAgent ? "1" : "0"}>
             {active?.loading ? (
               <div className="empty">
                 <div className="wordmark">LOADING</div>
                 <p className="wordmarkSub">Restoring this session from its durable event log.</p>
               </div>
+            ) : active && active.items.length === 0 && activeAgent ? (
+              <AgentHero
+                agent={activeAgent}
+                others={agents.filter((a) => a.id !== activeAgent.id)}
+                onSend={(text) => send(text)}
+                onEdit={() => { setAgentError(undefined); setAgentEditor({ mode: "edit", id: activeAgent.id }); }}
+              />
             ) : active && active.items.length === 0 ? (
               <div className="empty">
                 <div className="emptyEmblem" aria-hidden="true">
@@ -4429,18 +4848,31 @@ function App() {
                 ? active.items.slice(-transcriptCap)
                 : active.items
               : []
-            ).map((item) => (
-              <ItemView
-                onConnectService={connectService}
-                onDismissConnect={dismissConnect}
-                key={item.key}
-                item={item}
-                onPermission={respondPermission}
-                onArtifact={openArtifact}
-                onSignIn={startAnthropicSignIn}
-                toolDisplay={prefs.toolDisplay}
-              />
+            ).map((item, index, shown) => (
+              <Fragment key={item.key}>
+                <ItemView
+                  onConnectService={connectService}
+                  onDismissConnect={dismissConnect}
+                  item={item}
+                  onPermission={respondPermission}
+                  onArtifact={openArtifact}
+                  onSignIn={startAnthropicSignIn}
+                  toolDisplay={prefs.toolDisplay}
+                />
+                {/* iMessage receipts: under the owner's latest message only. */}
+                {activeAgent && item.kind === "user" && !parseAgentText(item.text) && !shown.slice(index + 1).some((x) => x.kind === "user" && !parseAgentText(x.text)) ? (
+                  <div className="turn user imsgReceiptRow"><span className="imsgReceipt">{shown.slice(index + 1).some((x) => x.kind === "assistant" && x.text.trim()) ? "Read" : "Delivered"}</span></div>
+                ) : null}
+              </Fragment>
             ))}
+            {/* The typing bubble: the agent is working and has not started
+                talking yet (or is between tool calls). */}
+            {activeAgent && active?.busy && !(active.items.at(-1)?.kind === "assistant" && (active.items.at(-1) as Extract<Item, { kind: "assistant" }>).streaming && (active.items.at(-1) as Extract<Item, { kind: "assistant" }>).text.trim()) ? (
+              <div className="turn assistant imsgTyping" aria-label={`${activeAgent.name} is typing`}>
+                <span className="turnMark imsgFace"><AgentAvatar agent={activeAgent} size={30} busy /></span>
+                <div className="typingBubble"><i /><i /><i /></div>
+              </div>
+            ) : null}
             {/* Who is answering, and why. An adopted persona is never silent:
                 this chip plus the persona's own greeting are the disclosure,
                 and "Back to Ares" is always one click away. */}
@@ -4489,6 +4921,7 @@ function App() {
               </button>
             ) : null}
           </div>
+          </AgentChatContext.Provider>
         )}
 
         {active?.fleet && active.fleet.agents.length > 0 && (active.fleet.active || active.fleet.canResume) ? (
@@ -4521,6 +4954,7 @@ function App() {
         {/* Kept MOUNTED on HELM (hidden, not unmounted) — unmounting destroyed
             the draft text and pending attachments every time the view flipped. */}
         <Composer
+          agentName={activeAgent?.name ?? "Ares"}
             hidden={view === "helm"}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
@@ -5117,6 +5551,33 @@ function App() {
           ))}
         </div>
       ) : null}
+      {agentEditor ? (() => {
+        const editing = agentEditor.mode === "edit" ? agents.find((a) => a.id === agentEditor.id) : undefined;
+        if (agentEditor.mode === "edit" && !editing) return null;
+        return (
+          <AgentEditor
+            key={editing?.id ?? "new"}
+            initial={editing ? draftOf(editing) : blankDraft(prefs.provider, prefs.model)}
+            existing={editing}
+            providers={PROVIDERS.filter((p) => p !== "mock" && p !== "moa")}
+            takenNames={agents.map((a) => a.name)}
+            requestCatalog={requestAgentCatalog}
+            error={agentError}
+            onSave={saveAgent}
+            onDelete={editing ? () => deleteAgent(editing.id) : undefined}
+            memory={editing ? agentMemory[editing.id] ?? { total: 0, items: [], busy: true } : undefined}
+            memorySources={editing ? [{ id: ARES_AGENT_ID, name: "Ares" }, ...agents.filter((a) => a.id !== editing.id).map((a) => ({ id: a.id, name: a.name }))] : []}
+            onMemoryHand={(from, about) => editing && memoryAction(editing.id, { type: "agent_memory_hand", from, ...(about ? { about } : {}) }, `Handed over 14 memories${about ? ` about ${about}` : ""} from ${from === ARES_AGENT_ID ? "Ares" : agents.find((a) => a.id === from)?.name ?? "them"}.`)}
+            onMemoryExport={() => editing && memoryAction(editing.id, { type: "agent_memory_export" }, `Exported to exports/${editing.name}-memory-${new Date().toISOString().slice(0, 10)}.md (and a .json next to it).`)}
+            onMemoryForget={(memoryId) => {
+              if (!editing) return;
+              if (native) daemonCmd({ type: "agent_memory_forget", agentId: editing.id, memoryId });
+              else setAgentMemory((m) => ({ ...m, [editing.id]: { ...m[editing.id]!, total: m[editing.id]!.total - 1, items: m[editing.id]!.items.filter((x) => x.id !== memoryId) } }));
+            }}
+            onClose={() => { setAgentEditor(null); setAgentError(undefined); }}
+          />
+        );
+      })() : null}
       {settingsOpen ? (
         <Settings
           recoveryMode={recoveryMode}
@@ -5384,6 +5845,7 @@ function App() {
         </div>
       ) : null}
     </div>
+    </AgentPhotoContext.Provider>
     </StyleCtx.Provider>
   );
 }
@@ -7646,9 +8108,12 @@ function SessionRow({
   onRename,
   onClose,
   onProject,
+  handoff,
 }: {
   s: SessionVm;
   activeId: string;
+  /** "Give to an agent": who can take this chat (its owner excluded). */
+  handoff?: { agents: Array<Pick<AgentVm, "id" | "name" | "emoji" | "color">>; onGive: (sessionId: string, agentId: string) => void };
   pinned?: boolean;
   /** Name of the project this session currently belongs to, if any. */
   project?: string;
@@ -7663,6 +8128,7 @@ function SessionRow({
   const [draft, setDraft] = useState(s.title);
   const [projectDraft, setProjectDraft] = useState(project ?? "");
   const [confirming, setConfirming] = useState(false);
+  const [giving, setGiving] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -7733,13 +8199,16 @@ function SessionRow({
   }
 
   return (
-    <div className={s.id === activeId ? "session on" : "session"}>
+    <div className={s.id === activeId ? "session on" : "session"} data-giving={giving ? "1" : "0"}>
       <button className="sessionMain" onClick={() => onSelect(s.id)} onDoubleClick={() => setEditing(true)} title="Double-click to rename">
         <i data-busy={s.busy ? "1" : "0"} />
         <span>{s.title}</span>
       </button>
       <div className="sessionActions">
         <button className="rowBtn" title="Rename" onClick={() => setEditing(true)}>✎</button>
+        {handoff && handoff.agents.length > 0 ? (
+          <button className="rowBtn" title="Give this chat to an agent (it keeps the whole history)" aria-label="Give to an agent" onClick={() => setGiving((v) => !v)}>⇢</button>
+        ) : null}
         <button className="rowBtn" data-project={project ? "1" : "0"} title={project ? `Project: ${project} — click to move or remove` : "Group into a project"} onClick={() => setEditingProject(true)}>▦</button>
         <button className="pinBtn" data-pinned={pinned ? "1" : "0"} title={pinned ? "unpin" : "pin"} onClick={() => onPin(s.id)}>
           {pinned ? "◆" : "◇"}
@@ -7750,6 +8219,17 @@ function SessionRow({
           <button className="rowBtn" title="Close session" onClick={() => { setConfirming(true); setTimeout(() => setConfirming(false), 2600); }}>✕</button>
         )}
       </div>
+      {giving && handoff ? (
+        <div className="handoffMenu" onMouseLeave={() => setGiving(false)}>
+          <b>Give this chat to</b>
+          {handoff.agents.map((a) => (
+            <button key={a.id} onClick={() => { setGiving(false); handoff.onGive(s.id, a.id); }}>
+              <AgentAvatar agent={a} size={22} />
+              {a.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -8226,6 +8706,7 @@ function PillBar({
 const Composer = React.memo(function Composer({
   hidden,
   busy,
+  agentName = "Ares",
   cancelling,
   model,
   autoRouting,
@@ -8248,6 +8729,8 @@ const Composer = React.memo(function Composer({
   /** display:none instead of unmount — preserves the draft across view flips. */
   hidden?: boolean;
   busy: boolean;
+  /** Who this chat talks to — the composer addresses them by name. */
+  agentName?: string;
   cancelling: boolean;
   model: string;
   autoRouting: boolean;
@@ -8654,8 +9137,8 @@ const Composer = React.memo(function Composer({
           placeholder={cancelling
             ? "Stopping current turn… your draft stays here"
             : busy
-              ? "Steer Ares now…"
-              : "Message Ares…  (paste or drop an image)"}
+              ? `Steer ${agentName} now…`
+              : `Message ${agentName}…  (paste or drop an image)`}
           rows={1}
           onChange={(e) => {
             setText(e.target.value);
@@ -9043,6 +9526,7 @@ const ItemView = React.memo(function ItemView({
   onSignIn?: () => void;
   toolDisplay?: "product" | "technical";
 }) {
+  const chatAgent = useContext(AgentChatContext);
   if (item.kind === "authPrompt") {
     return (
       <div className="authPrompt">
@@ -9072,6 +9556,24 @@ const ItemView = React.memo(function ItemView({
     );
   }
   if (item.kind === "user") {
+    const texted = item.text ? parseAgentText(item.text) : null;
+    if (texted) {
+      // Another agent texting this one: a grey bubble on the left with the
+      // sender's face and name above it, like a group thread in iMessage.
+      const face = agentFaceByName(texted.from);
+      const sender = { id: texted.from.toLowerCase() === "ares" ? ARES_AGENT_ID : `from-${texted.from}`, name: texted.from, ...face };
+      return (
+        <div className="turn user agentText" style={{ ["--agent" as string]: face.color ?? "#7c5cff" }}>
+          <span className="imsgFace"><AgentAvatar agent={sender} size={30} /></span>
+          <div className="agentTextCol">
+            <div className="agentTextHead"><b>{texted.from}</b>{texted.urgent ? <span className="urgent"> · urgent</span> : null}</div>
+            <div className="bubble">
+              <div className="bubbleText">{texted.body}</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="turn user">
         <div className="bubble">
@@ -9117,8 +9619,13 @@ const ItemView = React.memo(function ItemView({
     return (
       <div className="turn assistant" data-streaming={item.streaming ? "1" : "0"} data-proactive={item.proactive ? "1" : "0"}>
         {/* modern skin: the agent speaks from behind the helm, struck into the
-            left gutter. Hidden in Forged/Legacy like every other medallion. */}
-        <Medallion glyph="helm" size={34} className="turnMark" />
+            left gutter. Hidden in Forged/Legacy like every other medallion.
+            In an agent's chat it is that agent's face instead (iMessage). */}
+        {chatAgent ? (
+          <span className="turnMark imsgFace"><AgentAvatar agent={chatAgent} size={30} /></span>
+        ) : (
+          <Medallion glyph="helm" size={34} className="turnMark" />
+        )}
         <div className="turnBody">
         {item.proactive ? (
           <div className="watchBadge" title="Ares noticed this on your screen — unprompted">

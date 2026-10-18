@@ -39,7 +39,9 @@ import { composeSystemPrompt, promptEnvironment, promptWorkflowSurfaces, toolDoc
 // or pass `opts.tenant` to prepareUserTurn and isolation switches on.
 
 export type TurnTenant =
-  | { role: "owner" }
+  // `agent`: the owner talking to one of their desktop agents — owner trust,
+  // the agent's own memory scope (see agentScope.ts).
+  | { role: "owner"; agent?: string }
   | { role: "guest"; chatId: string | number; name?: string };
 
 /** The optional field the session factory should add to LiveSession. */
@@ -49,7 +51,8 @@ export interface TenantAwareLiveSession {
 
 /** Memory scope for a tenant: the owner pool, or an isolated guest scope. */
 export function memoryScopeForTenant(tenant?: TurnTenant): string {
-  if (!tenant || tenant.role === "owner") return OWNER_SCOPE;
+  if (!tenant) return OWNER_SCOPE;
+  if (tenant.role === "owner") return tenant.agent ? `agent:${tenant.agent}` : OWNER_SCOPE;
   return `guest:${String(tenant.chatId).trim()}`;
 }
 

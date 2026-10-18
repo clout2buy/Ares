@@ -61,6 +61,20 @@ export interface DaemonInputCommand {
   error?: string;
   /** Which UI chat/session this command targets (multi-session daemon). */
   sessionId?: string;
+  /** agent_update / agent_delete / agent_bind — the desktop agent (persona id);
+   *  agent_bind with agentId null hands the chat back to plain Ares. */
+  agentId?: string | null;
+  /** agent_create / agent_update payload (name, emoji, color, provider, model,
+   *  reasoningLevel, instructions). */
+  agent?: Record<string, unknown>;
+  /** agent_memory_hand — copy memories into agentId from "ares" (main memory)
+   *  or another agent, optionally only those about a topic. */
+  from?: string;
+  about?: string;
+  /** agent_memory_forget — which of the agent's own memories. */
+  memoryId?: string;
+  /** agent_avatar_set — a data: URL (JPEG/PNG/WebP), or null/"" to clear. */
+  image?: string | null;
   /** Stable identity for one logical send/steer. Retrying the command must
    * reuse this value so canonical admission remains exactly once. */
   inputId?: string;

@@ -1,0 +1,309 @@
+/* Rooms — group chats of people + agents, Messages-style.
+   Shared surface tokens only (--text, --muted, --line, --accent-rgb, --panel…)
+   so every skin paints it; a member's own colour rides in --agent. */
+
+/* ── faces ─────────────────────────────────────────────────────────── */
+.roomFace {
+  --agent: #8e8e93;
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  overflow: hidden;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: .02em;
+  background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--agent) 55%, #fff 0%) 0%, var(--agent) 45%, color-mix(in srgb, var(--agent) 60%, #000) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent) 60%, transparent);
+  user-select: none;
+}
+.roomFaceAgent > svg, .roomFaceAgent > .agentFace { width: 100%; height: 100%; }
+.roomFaceEmoji { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .25)); }
+.roomFaceAgent[data-busy="1"]::after {
+  content: ""; position: absolute; inset: -4px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--agent);
+  animation: agentOrbit 1.6s linear infinite;
+}
+.roomIcon {
+  --agent: #0a84ff;
+  flex: none;
+  display: grid; place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--agent) 70%, #fff 0%) 0%, var(--agent) 55%, color-mix(in srgb, var(--agent) 65%, #000) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 6px 16px -10px color-mix(in srgb, var(--agent) 90%, transparent);
+  user-select: none;
+}
+.roomCluster { position: relative; flex: none; display: block; }
+.roomClusterFace { position: absolute; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-raised, #111); }
+
+/* ── the rail ──────────────────────────────────────────────────────── */
+.roomList { display: flex; flex-direction: column; gap: 2px; }
+.roomRow {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  text-align: left;
+  color: var(--text);
+}
+.roomRow:hover { background: rgba(var(--accent-rgb), .07); }
+.roomRow[data-on="1"] { background: rgba(var(--accent-rgb), .14); }
+.roomRowText { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.roomRowTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.roomRowTop strong { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roomRowTime { flex: none; font: 500 11px/1 var(--font, system-ui); color: var(--faint); }
+.roomRowPreview { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.35; }
+.roomRow[data-unread="1"] .roomRowTop strong::before { content: ""; display: inline-block; width: 8px; height: 8px; margin: 0 6px 1px -2px; border-radius: 50%; background: #0a84ff; vertical-align: middle; }
+.roomRowPaused { flex: none; font-size: 12px; color: var(--faint); }
+.roomRowActions { display: flex; gap: 6px; padding: 4px 6px 2px; }
+.roomNew {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 12.5px; font-weight: 600;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+}
+.roomNew:hover { color: var(--text); border-color: rgba(var(--accent-rgb), .6); }
+.roomNew > span { font-size: 15px; line-height: 1; }
+
+/* ── the room view ─────────────────────────────────────────────────── */
+.roomView { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.roomHead {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-raised, #111) 70%, transparent);
+  backdrop-filter: blur(14px);
+}
+.roomHeadId { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.roomHeadText { display: flex; flex-direction: column; min-width: 0; }
+.roomHeadText h2 { margin: 0; font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roomHeadText span { font-size: 11.5px; color: var(--muted); }
+.roomHeadFaces { display: flex; align-items: center; margin-left: 6px; cursor: pointer; }
+.roomHeadFace { display: block; margin-left: -8px; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-raised, #111); }
+.roomHeadFace:first-child { margin-left: 0; }
+.roomHeadFace[data-muted="1"] { opacity: .45; filter: grayscale(.6); }
+.roomHeadMore { margin-left: 4px; font: 600 11px/1 var(--mono); color: var(--faint); }
+.roomHeadActions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.roomHeadActions button {
+  position: relative;
+  padding: 6px 10px;
+  border-radius: 9px;
+  font-size: 12px; font-weight: 600;
+  color: var(--muted);
+}
+.roomHeadActions button:hover { color: var(--text); background: rgba(var(--accent-rgb), .08); }
+.roomHeadActions button[data-on="1"] { color: var(--text); background: rgba(var(--accent-rgb), .14); }
+.roomHeadActions button em { margin-left: 5px; padding: 1px 6px; border-radius: 999px; font: 700 10px/1.4 var(--mono); font-style: normal; color: #fff; background: #0a84ff; }
+.roomHeadActions .roomPause { color: #ffd60a; }
+.roomHeadActions .roomResume { color: #30d158; }
+.roomError { margin: 8px 16px 0; padding: 8px 12px; border-radius: 9px; font-size: 12.5px; color: #ffb4b4; background: rgba(239, 68, 68, .12); border: 1px solid rgba(239, 68, 68, .35); }
+
+.roomBody { display: flex; flex: 1; min-height: 0; }
+.roomThread {
+  flex: 1; min-width: 0;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 16px 18px 10px;
+}
+.roomEmpty { margin: auto; max-width: 440px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 40px 0; }
+.roomEmpty h3 { margin: 6px 0 0; font-size: 20px; }
+.roomEmpty p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+.roomDay { align-self: center; margin: 10px 0 6px; font: 600 11px/1 var(--font, system-ui); color: var(--faint); text-align: center; width: 100%; }
+.roomSystem { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 4px 0; }
+.roomSystemLine { max-width: 78%; font-size: 11.5px; color: var(--faint); text-align: center; line-height: 1.4; }
+.roomSystemLine b { color: var(--muted); font-weight: 600; }
+.roomSystem[data-kind="job"] .roomSystemLine::before { content: "▣ "; color: #0a84ff; }
+.roomSystem[data-kind="note"] .roomSystemLine::before { content: "✎ "; color: #bf5af2; }
+
+.roomRun { display: flex; flex-direction: column; animation: imsgPop 220ms cubic-bezier(.2, .9, .3, 1.2) both; }
+.roomRunMine { align-items: flex-end; gap: 3px; }
+.roomRunTheirs { --agent: #8e8e93; align-items: flex-start; }
+.roomRunRow { display: flex; align-items: flex-end; gap: 8px; max-width: 100%; }
+.roomRunFace { flex: none; display: block; width: 30px; height: 30px; margin-bottom: 1px; }
+.roomRunCol { display: flex; flex-direction: column; gap: 3px; max-width: min(68%, 760px); min-width: 0; }
+.roomRunName { display: flex; align-items: center; gap: 6px; margin: 0 0 1px 12px; font: 600 11px/1.2 var(--font, system-ui); }
+.roomRunName i { font-style: normal; font-weight: 500; color: var(--faint); }
+.roomPeek { padding: 1px 6px; border-radius: 999px; font: 600 10px/1.4 var(--mono); color: var(--faint); border: 1px solid var(--line); opacity: 0; transition: opacity 120ms; }
+.roomRunCol:hover .roomPeek { opacity: 1; }
+.roomPeek:hover { color: var(--text); }
+.roomBubble {
+  padding: 9px 15px;
+  font-size: 15px; line-height: 1.42;
+  white-space: pre-wrap; word-break: break-word;
+}
+.roomBubbleMine {
+  max-width: min(62%, 620px);
+  border-radius: 20px 20px 20px 20px;
+  color: #fff;
+  background: linear-gradient(180deg, #3b95ff 0%, #0a7cff 100%);
+  box-shadow: 0 6px 18px -10px rgba(10, 124, 255, .8);
+}
+.roomBubbleMine[data-last="1"] { border-radius: 20px 20px 6px 20px; }
+.roomBubbleTheirs {
+  border-radius: 20px;
+  color: var(--text-hi, #f2f4f8);
+  background: color-mix(in srgb, var(--agent) 18%, rgba(120, 128, 150, .2));
+  border: 1px solid color-mix(in srgb, var(--agent) 30%, transparent);
+  backdrop-filter: blur(12px);
+}
+.roomBubbleTheirs[data-last="1"] { border-radius: 20px 20px 20px 6px; }
+.roomMention { font-weight: 700; color: color-mix(in srgb, #0a84ff 70%, #fff); }
+.roomBubbleMine .roomMention { color: #fff; text-decoration: underline; text-decoration-color: rgba(255, 255, 255, .5); }
+.roomTypingRow .typingBubble { background: color-mix(in srgb, var(--agent) 18%, rgba(120, 128, 150, .2)); }
+
+/* ── board ─────────────────────────────────────────────────────────── */
+.roomBoard, .roomPanel {
+  flex: none;
+  width: 290px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px;
+  border-left: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-raised, #111) 55%, transparent);
+}
+.roomBoardHead, .roomPanelHead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.roomBoardHead strong, .roomPanelHead strong { font-size: 13px; }
+.roomBoardHead span { font: 500 11px/1 var(--font, system-ui); color: var(--faint); }
+.roomPanelHead button { font-size: 18px; color: var(--faint); width: 26px; height: 26px; border-radius: 7px; }
+.roomPanelHead button:hover { color: var(--text); background: rgba(var(--accent-rgb), .1); }
+.roomBoardAdd input, .roomNotes textarea, .roomSettings input, .roomSettings textarea, .roomSettings select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 9px;
+  font: inherit; font-size: 12.5px;
+  color: var(--text);
+  background: var(--panel, #100e0b);
+  border: 1px solid var(--line);
+  outline: none;
+}
+.roomBoardAdd input:focus, .roomNotes textarea:focus { border-color: rgba(10, 132, 255, .8); box-shadow: 0 0 0 3px rgba(10, 132, 255, .15); }
+.roomBoardCol { display: flex; flex-direction: column; gap: 6px; }
+.roomBoardColHead { display: flex; justify-content: space-between; font: 600 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); padding: 4px 2px 0; }
+.roomBoardCol[data-status="working"] .roomBoardColHead { color: #5aa9ff; }
+.roomBoardCol[data-status="blocked"] .roomBoardColHead { color: #ff5c5c; }
+.roomBoardCol[data-status="review"] .roomBoardColHead { color: #bf5af2; }
+.roomBoardCol[data-status="done"] .roomBoardColHead { color: #30d158; }
+.roomJob {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--line);
+}
+.roomJob[data-status="done"] { opacity: .6; }
+.roomJob[data-overdue="1"] { border-color: rgba(255, 92, 92, .5); }
+.roomJobTop { display: flex; align-items: center; gap: 7px; }
+.roomJobOwner { flex: none; display: block; width: 20px; height: 20px; }
+.roomJobTitle { font-size: 12.5px; font-weight: 600; line-height: 1.3; }
+.roomJob[data-status="done"] .roomJobTitle { text-decoration: line-through; }
+.roomJobNote { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+.roomJobLinks { display: flex; flex-wrap: wrap; gap: 4px; }
+.roomJobLinks code { font: 10.5px/1.5 var(--mono); padding: 0 5px; border-radius: 5px; color: #5aa9ff; background: rgba(10, 132, 255, .1); }
+.roomJobFoot { display: flex; align-items: center; gap: 4px; }
+.roomJobFoot select { flex: 1; min-width: 0; padding: 3px 4px; border-radius: 6px; font: inherit; font-size: 11px; color: var(--muted); background: var(--panel, #100e0b); border: 1px solid var(--line); }
+.roomJobDue { font: 500 10.5px/1 var(--font, system-ui); color: var(--faint); white-space: nowrap; }
+.roomJob[data-overdue="1"] .roomJobDue { color: #ff5c5c; }
+.roomJobX { flex: none; width: 20px; height: 20px; border-radius: 6px; font-size: 14px; color: var(--faint); }
+.roomJobX:hover { color: #ff5c5c; background: rgba(255, 92, 92, .12); }
+.roomBoardEmpty, .roomPanelWhy { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.roomPanelWhy code { font: 11px/1.4 var(--mono); color: var(--text); }
+
+/* ── members / notes / settings panels ─────────────────────────────── */
+.roomMember { display: flex; align-items: center; gap: 9px; padding: 4px 2px; }
+.roomMember[data-muted="1"] > :first-child { opacity: .45; filter: grayscale(.6); }
+.roomMemberText { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.roomMemberText strong { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roomMemberText em { font-size: 11px; font-style: normal; color: var(--faint); }
+.roomMemberBtns { display: flex; gap: 3px; flex: none; }
+.roomGhost { padding: 3px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); }
+.roomGhost:hover { color: var(--text); }
+.roomDangerText { color: #ff6b6b; }
+.roomNotYours { font-size: 10.5px; font-style: normal; color: var(--faint); }
+.roomPanelAdd { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.roomPanelAdd > span { font: 600 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.roomAddRow { display: flex; flex-wrap: wrap; gap: 5px; }
+.roomAddAgent { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 3px; border-radius: 999px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); }
+.roomAddAgent:hover { color: var(--text); border-color: rgba(10, 132, 255, .6); background: rgba(10, 132, 255, .08); }
+.roomInviteBtn { margin-top: 4px; }
+.roomNotes { display: flex; flex-direction: column; gap: 8px; }
+.roomNotes textarea { resize: vertical; min-height: 160px; }
+.roomNotesFoot { display: flex; justify-content: flex-end; gap: 6px; }
+.roomSettings { display: flex; flex-direction: column; gap: 12px; }
+.roomSettings .agentField input, .roomSettings .agentField select, .roomSettings .agentField textarea { font-size: 12.5px; }
+.roomEmojiRow { display: flex; flex-wrap: wrap; gap: 3px; }
+.roomEmojiRow button { width: 30px; height: 30px; border-radius: 8px; font-size: 16px; border: 1px solid transparent; }
+.roomEmojiRow button:hover { background: rgba(10, 132, 255, .08); }
+.roomEmojiRow button[data-on="1"] { border-color: rgba(10, 132, 255, .8); background: rgba(10, 132, 255, .12); }
+.roomConfirm { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 10px; background: rgba(239, 68, 68, .08); border: 1px solid rgba(239, 68, 68, .3); }
+.roomConfirm span { font-size: 12px; color: var(--muted); }
+
+/* ── composer ──────────────────────────────────────────────────────── */
+.roomComposer {
+  position: relative;
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-raised, #111) 70%, transparent);
+  backdrop-filter: blur(14px);
+}
+.roomComposer textarea {
+  flex: 1;
+  min-height: 40px; max-height: 160px;
+  padding: 10px 14px;
+  border-radius: 20px;
+  font: inherit; font-size: 14.5px; line-height: 1.4;
+  color: var(--text);
+  background: rgba(120, 128, 150, .14);
+  border: 1px solid var(--line);
+  outline: none;
+  resize: none;
+  field-sizing: content;
+}
+.roomComposer textarea:focus { border-color: rgba(10, 132, 255, .7); }
+.roomSend {
+  flex: none;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  font-size: 18px; font-weight: 700;
+  color: #fff;
+  background: #0a84ff;
+  box-shadow: 0 6px 16px -8px rgba(10, 132, 255, .9);
+}
+.roomSend:disabled { opacity: .35; }
+.roomMentionPop {
+  position: absolute; left: 16px; bottom: calc(100% - 4px);
+  display: flex; flex-direction: column;
+  min-width: 220px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--bg-raised, #16130f);
+  border: 1px solid var(--line-strong, var(--line));
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, .8);
+  z-index: 5;
+}
+.roomMentionPop button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 13px; color: var(--text); text-align: left; }
+.roomMentionPop button:hover, .roomMentionPop button:first-child { background: rgba(10, 132, 255, .12); }
+.roomMentionPop button em { margin-left: auto; font-size: 10.5px; font-style: normal; color: var(--faint); }
+
+/* ── sheets ────────────────────────────────────────────────────────── */
+.roomSheet { width: min(600px, calc(100vw - 32px)); }
+.roomPickGrid { display: flex; flex-wrap: wrap; gap: 6px; }
+.roomPick { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px 4px 4px; border-radius: 999px; font-size: 13px; color: var(--muted); border: 1px solid var(--line); }
+.roomPick:hover { color: var(--text); }
+.roomPick[data-on="1"] { color: var(--text); border-color: rgba(10, 132, 255, .8); background: rgba(10, 132, 255, .12); }
+.roomInviteLink { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--panel, #100e0b); border: 1px solid var(--line); }
+.roomInviteLink code { flex: 1; min-width: 0; font: 12px/1.5 var(--mono); color: var(--text); word-break: break-all; }
+.roomGuestRow { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.roomGuestRow em { font-style: normal; color: var(--faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  .roomRun { animation: none; }
+  .roomFaceAgent[data-busy="1"]::after { animation: none; }
+}
+
+/* A room or a tab takes the whole stage: the chat header steps aside. The
+   skins set display on .stageHead, which would otherwise beat `hidden`. */
+.ares .stageHead[hidden] { display: none !important; }

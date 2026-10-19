@@ -107,6 +107,16 @@ export interface DaemonInputCommand {
   autonomy?: string;
   effort?: string;
   maxTurns?: number;
+  /** Rooms (daemon/rooms.ts): which room, a create/update spec, agents to add
+   *  or bring, an invite link to join, a board job spec, a guest to remove. */
+  roomId?: string;
+  room?: Record<string, unknown>;
+  agents?: string[];
+  link?: string;
+  job?: Record<string, unknown>;
+  guestId?: string;
+  muted?: boolean;
+  notes?: string;
 }
 
 export class AsyncQueue<T> {

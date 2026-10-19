@@ -134,13 +134,18 @@ export function buildHolotableHtml(opts: HolotableOptions = {}): string {
   #title { top: 18px; left: 22px; font-size: 13px; opacity: 0.9; }
   #part { top: 40px; left: 22px; font-size: 11px; opacity: 0.8; max-width: 44vw; }
   #note { top: 58px; left: 22px; font-size: 10px; opacity: 0.55; max-width: 40vw; letter-spacing: 0.04em; }
-  #dock { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; gap: 14px; align-items: center;
+  /* The dock wraps and never outgrows the pane: in a narrow Forge the buttons
+     used to run off the right edge (owner, 2026-10-19: "if the forge is too
+     small it clips out stuff"). */
+  #dock { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 14px; align-items: center;
+          max-width: calc(100% - 24px); box-sizing: border-box;
           padding: 10px 18px; border: 1px solid ${accent}44; border-radius: 10px; background: #121013cc; backdrop-filter: blur(8px); }
   #dock label, #dock button { color: ${accent}; font-size: 10px; letter-spacing: 0.18em; font-family: inherit; }
   #dock button { background: none; border: 1px solid ${accent}55; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
   #dock button:hover { background: ${accent}22; }
   #dock button.on { background: ${accent}33; }
-  #explode { width: 220px; accent-color: ${accent}; }
+  #explode { width: min(220px, 40vw); accent-color: ${accent}; }
+  #hint { max-width: calc(100% - 24px); white-space: normal; text-align: center; }
   #steppanel { position: fixed; left: 50%; bottom: 78px; transform: translateX(-50%); display: none; max-width: 560px;
                padding: 10px 16px; border: 1px solid ${accent}44; border-radius: 10px; background: #121013d9; color: #e9dfd0; }
   #steppanel h3 { margin: 0 0 4px; font-size: 11px; color: ${accent}; letter-spacing: 0.16em; }

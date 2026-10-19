@@ -13,6 +13,14 @@ export interface AresEvent {
   agents?: unknown[];
   agent?: unknown;
   agentId?: string;
+  /** Rooms: rooms_list / room_created / room_changed / room_deleted /
+   *  room_history / room_message / room_posted / room_invite / room_error. */
+  rooms?: unknown[];
+  room?: unknown;
+  roomId?: string;
+  me?: unknown;
+  message?: unknown;
+  link?: string;
   command?: string;
   threadId?: string;
   to?: unknown;

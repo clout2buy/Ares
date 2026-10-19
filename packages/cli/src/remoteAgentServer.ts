@@ -282,6 +282,10 @@ export interface PhoneApiHooks {
   /** Morning/evening briefings (/gateway/briefings — phoneBriefings.ts). Asked
    *  right after the bearer check; false = not mine. */
   briefings?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** Group rooms for guests from other Ares installs (/gateway/rooms —
+   *  phoneRooms.ts). Authenticates itself with per-room tokens, so it is
+   *  asked BEFORE the owner bearer check; false = not mine. */
+  rooms?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
   /** Location triggers: places, rules and the phone's enter/exit events
    *  (/gateway/location — phoneLocation.ts). false = not mine. */
   location?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -1588,6 +1592,17 @@ export class RemoteAgentServer {
     }
     if (this.opts.phoneApi?.terminal && (url.pathname === "/gateway/terminal" || url.pathname.startsWith("/gateway/terminal/"))) {
       if (await this.opts.phoneApi.terminal.http(req, res, url)) return;
+    }
+    // Rooms: guests from OTHER Ares installs come in on a per-room token
+    // minted from an invite, never the owner's bearer (phoneRooms.ts).
+    if (this.opts.phoneApi?.rooms && url.pathname.startsWith("/gateway/rooms")) {
+      try {
+        if (await this.opts.phoneApi.rooms(req, res, url)) return;
+      } catch (err) {
+        this.log(`rooms error: ${err instanceof Error ? err.message : String(err)}`);
+        if (!res.headersSent) return json(500, { error: "internal error" });
+        return;
+      }
     }
     const expected = this.opts.controlToken;
     const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");

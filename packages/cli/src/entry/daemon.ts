@@ -74,6 +74,8 @@ import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, l
 import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetworkSyncNow, onAresNetworkStatus, oricleOnSessionEvent, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { AgentError, DesktopAgents } from "./daemon/agents.js";
+import { DesktopRooms, RoomError } from "./daemon/rooms.js";
+import { setRoomsHost } from "./roomScope.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
 import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
@@ -403,8 +405,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // the crash handler so a coworker's silent death leaves a diagnosable trail.
   const eventRing = new EventRing(40);
 
+  // Rooms listen to a seat's own stream (what the agent said, when its turn
+  // ended) — bound once the engine exists below.
+  let roomsTap: ((sessionId: string, obj: Record<string, unknown>) => void) | undefined;
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
+    if (roomsTap && sessionId && (obj.type === "message_done" || obj.type === "turn_end" || obj.type === "turn_start")) roomsTap(sessionId, obj);
     // Frames are ~100 KB of base64 each at several per second; the crash
     // ring only needs to know one arrived, not keep the pixels.
     eventRing.record({ at: Date.now(), ...(typeof payload.image === "string" ? { ...payload, image: `<${payload.image.length} chars>` } : payload) });
@@ -1032,13 +1038,62 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return [];
   });
   setAgentsHost(desktopAgents.host());
+  // ─── Rooms (group chats of people + agents; see daemon/rooms.ts) ────────
+  const desktopRooms = new DesktopRooms({
+    home: live.context.home,
+    workspace: live.context.workspace,
+    agents: desktopAgents,
+    deliver: (sessionId, goal, inputId) => commands.enqueue({ type: "send", goal, sessionId, inputId }),
+    busy: (sessionId) => sessions.get(sessionId)?.turnActive === true,
+    emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n"),
+    publicOrigin: async () => {
+      try {
+        const pair = await new RemoteAgentClient(live.context.home).phonePairing();
+        const u = new URL(pair.url);
+        const proto = u.protocol === "wss:" ? "https:" : u.protocol === "ws:" ? "http:" : u.protocol;
+        return `${proto}//${u.host}`;
+      } catch {
+        return null;
+      }
+    },
+    relayer: (sessionId) => {
+      const entry = sessions.get(sessionId);
+      if (entry) applyAgent(entry, sessionId);
+    },
+  });
+  await desktopRooms.load().catch((error) => {
+    process.stderr.write(`[ares] rooms failed to load: ${error instanceof Error ? error.message : String(error)}\n`);
+    return [];
+  });
+  setRoomsHost(desktopRooms.host());
+  roomsTap = (sessionId, obj) => {
+    if (!desktopRooms.isSeat(sessionId)) return;
+    if (obj.type === "turn_start") {
+      desktopRooms.onTurnStart(sessionId);
+      return;
+    }
+    if (obj.type === "turn_end") {
+      void desktopRooms.onTurnEnd(sessionId).catch(() => undefined);
+      return;
+    }
+    const message = obj.message as { role?: string; content?: unknown } | undefined;
+    if (!message || message.role !== "assistant") return;
+    const content = message.content;
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? String((b as { text?: unknown }).text ?? "") : "")).join("")
+        : "";
+    desktopRooms.onAssistantText(sessionId, text);
+  };
   /** Make a live session wear (or drop) its agent: memory scope + prompt
    *  layer. The brain is chosen at creation (resolveEntry) or switched by
-   *  agent_update; a resumed chat keeps the model it was saved with. */
+   *  agent_update; a resumed chat keeps the model it was saved with. A room
+   *  seat carries the room's layer on top of the agent's. */
   const applyAgent = (entry: DaemonEntry, sid: string): void => {
     const agent = desktopAgents.agentForSession(sid);
     entry.live.tenant = agent ? { role: "owner", agent: agent.id } : (entry.live.tenant?.role === "owner" ? { role: "owner" } : entry.live.tenant);
-    entry.live.setAgentLayer?.(desktopAgents.layerFor(agent?.id));
+    entry.live.setAgentLayer?.(desktopAgents.layerFor(agent?.id) + desktopRooms.layerFor(sid));
   };
   /** The roster changed (an agent made, renamed, deleted): every live agent
    *  chat's contact list is now stale. */
@@ -2446,6 +2501,90 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             command: kind,
             error: error instanceof Error ? error.message : String(error),
           }) + "\n");
+        }
+        continue;
+      }
+      // ─── Rooms ──────────────────────────────────────────────────────────
+      if (
+        command.type === "rooms_list" ||
+        command.type === "room_create" ||
+        command.type === "room_update" ||
+        command.type === "room_delete" ||
+        command.type === "room_post" ||
+        command.type === "room_history" ||
+        command.type === "room_agent_add" ||
+        command.type === "room_agent_remove" ||
+        command.type === "room_agent_mute" ||
+        command.type === "room_invite" ||
+        command.type === "room_join" ||
+        command.type === "room_job" ||
+        command.type === "room_notes" ||
+        command.type === "room_me" ||
+        command.type === "room_guest_remove"
+      ) {
+        const kind = command.type;
+        const out = (payload: Record<string, unknown>) => process.stdout.write(JSON.stringify(payload) + "\n");
+        const roomId = cleanCommandId(command.roomId);
+        const owner = { kind: "person" as const, id: "owner", name: desktopRooms.whoami().name, home: "local" };
+        try {
+          if (kind === "rooms_list") {
+            out({ type: "rooms_list", rooms: await desktopRooms.load(), me: desktopRooms.whoami() });
+          } else if (kind === "room_create") {
+            const made = await desktopRooms.create(command.room ?? {});
+            out({ type: "room_created", room: desktopRooms.wire(made), ...(command.cmdId ? { cmdId: command.cmdId } : {}) });
+          } else if (kind === "room_me") {
+            const name = typeof command.name === "string" ? command.name : "";
+            out({ type: "rooms_list", rooms: desktopRooms.list(), me: name ? await desktopRooms.rename(name) : desktopRooms.whoami() });
+          } else if (kind === "room_join") {
+            const link = typeof command.link === "string" ? command.link : "";
+            const joined = await desktopRooms.join(link, Array.isArray(command.agents) ? command.agents : []);
+            out({ type: "room_created", room: desktopRooms.wire(joined), joined: true });
+          } else {
+            if (!roomId) throw new RoomError(`${kind} requires roomId`);
+            if (kind === "room_update") {
+              const next = await desktopRooms.update(roomId, command.room ?? {});
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            } else if (kind === "room_delete") {
+              const threads = await desktopRooms.remove(roomId);
+              for (const sid of threads) {
+                await desktopAgents.forgetThread(sid).catch(() => undefined);
+                const entry = sessions.get(sid);
+                if (entry) applyAgent(entry, sid);
+              }
+              out({ type: "room_deleted", roomId, threads });
+            } else if (kind === "room_post") {
+              const text = typeof command.text === "string" ? command.text : "";
+              const message = await desktopRooms.postAsOwner(roomId, text);
+              out({ type: "room_posted", roomId, message });
+            } else if (kind === "room_history") {
+              const messages = await desktopRooms.store.messages(roomId, typeof command.limit === "number" ? command.limit : 400);
+              out({ type: "room_history", roomId, messages });
+            } else if (kind === "room_agent_add") {
+              const next = await desktopRooms.addAgent(roomId, cleanCommandId(command.agentId) ?? "");
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            } else if (kind === "room_agent_remove") {
+              const next = await desktopRooms.removeAgent(roomId, cleanCommandId(command.agentId) ?? "");
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            } else if (kind === "room_agent_mute") {
+              const next = await desktopRooms.setMuted(roomId, cleanCommandId(command.agentId) ?? "", command.muted !== false);
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            } else if (kind === "room_invite") {
+              const inv = await desktopRooms.invite(roomId, typeof command.label === "string" ? command.label : undefined);
+              out({ type: "room_invite", roomId, ...inv });
+            } else if (kind === "room_guest_remove") {
+              const next = await desktopRooms.revokeGuest(roomId, cleanCommandId(command.guestId) ?? "");
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            } else if (kind === "room_job") {
+              const spec = (command.job ?? {}) as { id?: string; title?: string; owner?: string; status?: string; due?: string; link?: string; note?: string; remove?: boolean };
+              const res = await desktopRooms.setJob(roomId, owner, spec);
+              out({ type: "room_changed", room: desktopRooms.wire(res.room) });
+            } else if (kind === "room_notes") {
+              const next = await desktopRooms.setNotes(roomId, owner, typeof command.notes === "string" ? command.notes : "");
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            }
+          }
+        } catch (error) {
+          out({ type: "room_error", command: kind, ...(roomId ? { roomId } : {}), error: error instanceof Error ? error.message : String(error) });
         }
         continue;
       }
@@ -4305,20 +4444,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             const frameTenant = wireTenant?.role === "owner" && entry.live.tenant?.role === "owner" ? entry.live.tenant : wireTenant;
             await prepareUserTurn(entry.live, semanticGoal, frameTenant ? { tenant: frameTenant } : {});
           }
-          // Persona triggers. Runs BEFORE the prompt is sent so an "auto"
-          // persona is worn for the very turn that summoned it. It never
-          // overrides a persona already in play, and it always emits an event —
-          // the owner sees the switch (and can revert) rather than wondering why
-          // the tone changed.
-          const autoPersona = ownerCancellationPending()
-            ? null
-            : await personaForMessage(entry.live, semanticGoal, (payload) => tagEmit(sid, payload), entry.personaGate).catch(() => null);
-          if (autoPersona && !ownerCancellationPending()) {
-            entry.live.queueSystemReminder(
-              `You are now wearing the ${autoPersona.label} persona (matched from the owner's message). Open your reply by greeting them briefly in that persona's voice — one or two sentences — so they know who they're talking to, then get to work. If they ask you to drop it, call Persona with action:"release".`,
-              "instructions",
-            );
-          }
+          // Personas (the HELM roster: Aegis & co.) were replaced by agents
+          // (owner, 2026-10-19): Ares never auto-wears one any more. The
+          // roster commands stay only so old sessions keep loading.
           // ── Vision guard: never ship a pasted image to a blind model. ──
           // A pinned text-only model (deepseek et al) used to receive the image
           // blocks anyway and answer "can't view the image" or guess blind

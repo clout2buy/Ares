@@ -37,6 +37,7 @@ import { createTimelineApi } from "../phoneTimeline.js";
 import { AVATAR_MAX_BYTES, AvatarStore, createAvatarsApi, detectImage } from "../phoneAvatars.js";
 import { DEFAULT_PERSONA_ID } from "../personas.js";
 import { createHooksApi, makeHookFirer } from "../phoneHooks.js";
+import { createRoomsApi } from "../phoneRooms.js";
 import { createInboxApi, makeInboxRunner } from "../phoneInbox.js";
 import { createShortcutsApi } from "../phoneShortcuts.js";
 import { isReasoningLevel, REASONING_LEVELS } from "@ares/protocol";
@@ -1027,6 +1028,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           briefings: briefingWiring.briefingsApi,
           location: briefingWiring.locationApi,
           hooks: hooksApi,
+          // Group rooms: guests from other Ares installs on per-room tokens.
+          rooms: createRoomsApi({ home: context.home, log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "rooms", line } }) + "\n") }),
           inbox: inboxApi.handle,
           shortcuts: createShortcutsApi({ directory: shortcutDirectory }),
           timeline: timelineApi.handle,

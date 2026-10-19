@@ -141,10 +141,13 @@ import "./basic.css";
 import "./cyber.generated.css";
 import "./cyber.css";
 import "./forge.css";
+import "./messages.css";
+import { FeedView, NowView } from "./messagesViews";
 import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./forgePixels";
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
+import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
 import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
@@ -715,6 +718,20 @@ function App() {
   /** Profile pictures by agent id (data: URLs), fetched when a version changes. */
   const [agentPhotos, setAgentPhotos] = useState<Record<string, string>>({});
   const agentPhotoVersions = useRef<Record<string, string>>({});
+  // ─── Rooms: group chats of people + agents (rooms.tsx, daemon/rooms.ts) ──
+  const [rooms, setRooms] = useState<RoomVm[]>([]);
+  const [roomsMe, setRoomsMe] = useState<RoomsMeVm>({ id: "", name: "You" });
+  const [roomMessages, setRoomMessages] = useState<Record<string, RoomMessageVm[]>>({});
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const activeRoomRef = useRef<string | null>(null);
+  activeRoomRef.current = activeRoomId;
+  const [roomUnread, setRoomUnread] = useState<string[]>([]);
+  const [roomSheet, setRoomSheet] = useState<null | { kind: "create" } | { kind: "join"; busy?: boolean } | { kind: "invite"; roomId: string; link?: string; busy?: boolean }>(null);
+  const [roomError, setRoomError] = useState<string | undefined>();
+  const roomMessagesRef = useRef(roomMessages);
+  roomMessagesRef.current = roomMessages;
+  /** Every seat session (an agent's private thread for a room): hidden from the chat lists. */
+  const roomSeatIds = useMemo(() => new Set(rooms.flatMap((r) => Object.values(r.threads))), [rooms]);
   /** Each agent's own memories, loaded when its profile opens. */
   const [agentMemory, setAgentMemory] = useState<Record<string, AgentMemoryVm>>({});
   /** A photo picked in the New agent sheet, uploaded once the agent exists. */
@@ -941,7 +958,7 @@ function App() {
   // How many chunks we've spoken this turn — the first fires small (fast start),
   // the rest batch larger to cut provider round-trips (the delay lever).
   const spokenChunkCount = useRef(0);
-  const [view, setView] = useState<"chat" | "artifacts" | "helm" | "aresos">("chat");
+  const [view, setView] = useState<"chat" | "artifacts" | "helm" | "aresos" | "feed" | "now">("chat");
   // AresOS: devices connected through the remote-PC agent, and the pending
   // connect link. Populated by the daemon's remote_pcs / remote_pc_link events.
   const [remotePcs, setRemotePcs] = useState<RemotePcRow[]>([]);
@@ -1153,6 +1170,16 @@ function App() {
     },
     [native],
   );
+  /** The phone API from the desktop (Feed, Now): one relayed request, one
+   *  gateway_response matched by requestId. */
+  const gatewayWaiters = useRef(new Map<string, (r: { status: number; data: unknown }) => void>());
+  const gatewayFetch = useCallback((method: "GET" | "POST" | "PUT", path: string, body?: unknown) => new Promise<{ status: number; data: unknown }>((resolve, reject) => {
+    if (!native) { reject(new Error("no gateway in the browser demo")); return; }
+    const requestId = `gw_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const timer = setTimeout(() => { gatewayWaiters.current.delete(requestId); reject(new Error("the gateway did not answer")); }, 50_000);
+    gatewayWaiters.current.set(requestId, (r) => { clearTimeout(timer); resolve(r); });
+    void invoke("ares_daemon_command", { command: { type: "gateway_request", requestId, method, path, ...(body !== undefined ? { body } : {}) } }).catch((e) => { clearTimeout(timer); gatewayWaiters.current.delete(requestId); reject(e); });
+  }), [native]);
 
   // Owner input into the live game: batched per animation frame so a mouse
   // drag does not become a hundred daemon commands.
@@ -1689,6 +1716,7 @@ function App() {
     void invoke("ares_daemon_command", { command: { type: "operator_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "rooms_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agent_avatar", agentId: "ares" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
@@ -2089,10 +2117,7 @@ function App() {
           if (typeof e.style === "string") setPersonaStyle(e.style);
           return true;
         case "persona_suggested":
-          setPersonaSuggestion({
-            persona: e.persona as PersonaVm,
-            matched: Array.isArray(e.matched) ? (e.matched as string[]) : [],
-          });
+          // Personas were replaced by agents (2026-10-19): nothing to show.
           return true;
         case "persona_written": {
           // Saving happens from HELM, where transcript notices are invisible —
@@ -2488,6 +2513,85 @@ function App() {
             return prev.map((x) => (x.id === threadId ? { ...x, items: [...x.items, item] } : x));
           });
           if (to.id && to.id !== selectedAgentRef.current) setAgentUnread((u) => (u.includes(to.id!) ? u : [...u, to.id!]));
+          return true;
+        }
+        case "gateway_response": {
+          const ev = e as { requestId?: string; status?: number; data?: unknown; error?: string };
+          const waiter = ev.requestId ? gatewayWaiters.current.get(ev.requestId) : undefined;
+          if (waiter && ev.requestId) {
+            gatewayWaiters.current.delete(ev.requestId);
+            waiter({ status: ev.status ?? 0, data: ev.error ? { error: ev.error } : ev.data });
+            return true;
+          }
+          return false;
+        }
+        case "rooms_list": {
+          if (Array.isArray(e.rooms)) setRooms(e.rooms as RoomVm[]);
+          const me = e.me as RoomsMeVm | undefined;
+          if (me?.id) setRoomsMe(me);
+          for (const r of (Array.isArray(e.rooms) ? (e.rooms as RoomVm[]) : [])) {
+            if (!roomMessagesRef.current[r.id]) daemonCmd({ type: "room_history", roomId: r.id });
+          }
+          return true;
+        }
+        case "room_created": {
+          const made = e.room as RoomVm | undefined;
+          if (!made?.id) return true;
+          setRooms((current) => [made, ...current.filter((r) => r.id !== made.id)]);
+          setRoomSheet(null);
+          setRoomError(undefined);
+          setActiveRoomId(made.id);
+          setView("chat");
+          daemonCmd({ type: "room_history", roomId: made.id });
+          return true;
+        }
+        case "room_changed": {
+          const next = e.room as RoomVm | undefined;
+          if (!next?.id) return true;
+          setRooms((current) => (current.some((r) => r.id === next.id) ? current.map((r) => (r.id === next.id ? next : r)) : [next, ...current]));
+          return true;
+        }
+        case "room_deleted": {
+          const id = String(e.roomId ?? "");
+          setRooms((current) => current.filter((r) => r.id !== id));
+          setRoomMessages((m) => { const n = { ...m }; delete n[id]; return n; });
+          if (activeRoomRef.current === id) setActiveRoomId(null);
+          setRoomSheet(null);
+          return true;
+        }
+        case "room_history": {
+          const id = String(e.roomId ?? "");
+          const list = Array.isArray(e.messages) ? (e.messages as RoomMessageVm[]) : [];
+          if (id) setRoomMessages((m) => ({ ...m, [id]: list }));
+          return true;
+        }
+        case "room_message":
+        case "room_posted": {
+          const id = String(e.roomId ?? "");
+          const msg = e.message as RoomMessageVm | undefined;
+          if (!id || !msg?.id) return true;
+          setRoomMessages((m) => {
+            const list = m[id] ?? [];
+            if (list.some((x) => x.id === msg.id)) return m;
+            return { ...m, [id]: [...list, msg].slice(-600) };
+          });
+          const mine = msg.from.kind === "person" && (msg.from.home ?? "local") === "local";
+          if (!mine && msg.kind === "text" && activeRoomRef.current !== id) setRoomUnread((u) => (u.includes(id) ? u : [...u, id]));
+          return true;
+        }
+        case "room_turn":
+          return true;
+        case "room_invite": {
+          const id = String(e.roomId ?? "");
+          const link = String(e.link ?? "");
+          setRoomSheet((sheet) => (sheet?.kind === "invite" && sheet.roomId === id ? { kind: "invite", roomId: id, link } : sheet));
+          return true;
+        }
+        case "room_error": {
+          const err = String(e.error ?? "room change failed");
+          setRoomError(err);
+          setRoomSheet((sheet) => (sheet && "busy" in sheet ? { ...sheet, busy: false } : sheet));
+          pushLog(`[rooms] ${String(e.command ?? "")}: ${err}`);
           return true;
         }
         case "sessions_list": {
@@ -3316,6 +3420,7 @@ function App() {
 
   const openSession = useCallback((id: string) => {
     setActiveId(id);
+    setActiveRoomId(null);
     setView("chat");
     const target = sessions.find((session) => session.id === id);
     if (native && target && target.loaded === false && !target.loading) {
@@ -3372,12 +3477,14 @@ function App() {
 
   /** Pick an agent in the rail: their newest chat opens (or a fresh one). */
   const selectAgent = (agentId: string) => {
+    setActiveRoomId(null);
     setSelectedAgentIdState(agentId);
     selectedAgentRef.current = agentId;
     try { window.localStorage.setItem("ares.agent.selected", agentId); } catch { /* private mode */ }
     setAgentUnread((u) => u.filter((id) => id !== agentId));
     if (agentIdOf(activeRef.current) === agentId && view === "chat") return;
-    const theirs = sessionsRef.current.find((s) => agentIdOf(s.id) === agentId && (agentId !== ARES_AGENT_ID || !s.background));
+    // Never a room seat: that is the agent's private thread for a room, reached from the room.
+    const theirs = sessionsRef.current.find((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === agentId && (agentId !== ARES_AGENT_ID || !s.background));
     if (theirs) openSession(theirs.id);
     else newSession(agentId);
   };
@@ -3938,7 +4045,35 @@ function App() {
 
   // ── rail: search, pins, and the artifact vault ───────────────────────────
   const q = sessionQuery.trim().toLowerCase();
+  const activeRoom = activeRoomId ? rooms.find((r) => r.id === activeRoomId) : undefined;
+  const roomTypingOf = (r: RoomVm): string[] => Object.entries(r.threads).filter(([, sid]) => sessions.find((s) => s.id === sid)?.busy).map(([agentId]) => agentId);
+  const roomRows: RoomRowVm[] = rooms
+    .filter((r) => !q || r.name.toLowerCase().includes(q))
+    .map((r) => {
+      const msgs = roomMessages[r.id] ?? [];
+      const last = [...msgs].reverse().find((m) => m.kind === "text") ?? msgs.at(-1);
+      const mine = last && last.from.kind === "person" && (last.from.home ?? "local") === "local";
+      const preview = last ? `${last.from.kind === "system" ? "" : mine ? "You: " : `${last.from.name}: `}${last.text}`.replace(/\s+/g, " ").trim() : r.purpose.trim() || "No messages yet";
+      return {
+        room: r,
+        preview: preview.length > 72 ? preview.slice(0, 71) + "…" : preview,
+        at: last?.at ?? r.updatedAt,
+        unread: roomUnread.includes(r.id),
+        typing: roomTypingOf(r).map((id) => r.members.find((m) => m.kind === "agent" && m.home === "local" && m.id === id)?.name ?? "").filter(Boolean),
+      };
+    });
+  const selectRoom = (id: string) => {
+    setActiveRoomId(id);
+    setRoomUnread((u) => u.filter((x) => x !== id));
+    setRoomError(undefined);
+    setView("chat");
+    setForge((current) => ({ ...current, open: false }));
+    if (!roomMessages[id]) daemonCmd({ type: "room_history", roomId: id });
+  };
   const railSessions = sessions.filter((s) => {
+    // A room seat is an agent's private thread for that room: it is reached
+    // from the room ("peek"), never listed as a chat.
+    if (roomSeatIds.has(s.id)) return false;
     const owner = agentIdOf(s.id);
     if (owner !== selectedAgentId) return false;
     // An agent's chats are all real conversations, even ones it started for
@@ -3978,7 +4113,7 @@ function App() {
     .filter((a) => !q || (a ? a.name : "Ares").toLowerCase().includes(q) || (a ?? null)?.id === selectedAgentId || (!a && selectedAgentId === ARES_AGENT_ID))
     .map((a) => {
       const id = a?.id ?? ARES_AGENT_ID;
-      const theirs = sessions.filter((s) => agentIdOf(s.id) === id && (id !== ARES_AGENT_ID || !s.background));
+      const theirs = sessions.filter((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === id && (id !== ARES_AGENT_ID || !s.background));
       const latest = theirs.find((s) => s.items.length > 0) ?? theirs[0];
       return {
         agent: a,
@@ -4534,6 +4669,21 @@ function App() {
             <Medallion glyph="sessions" /><i className="glyph" data-glyph="task" /> Chats
           </button>
           <button
+            title="Now"
+            data-on={view === "now" ? "1" : "0"}
+            onClick={() => { setView("now"); setForge((current) => ({ ...current, open: false })); }}
+          >
+            <Medallion glyph="flame" /><i className="glyph" data-glyph="dot" /> Now
+            {sessions.some((s) => s.items.some((it) => it.kind === "permission" && !it.decided)) ? <em>!</em> : null}
+          </button>
+          <button
+            title="Feed"
+            data-on={view === "feed" ? "1" : "0"}
+            onClick={() => { setView("feed"); setForge((current) => ({ ...current, open: false })); }}
+          >
+            <Medallion glyph="scroll" /><i className="glyph" data-glyph="dot" /> Feed
+          </button>
+          <button
             className="helmNav"
             title="HELM"
             data-on={view === "helm" ? "1" : "0"}
@@ -4653,6 +4803,18 @@ function App() {
             <div className="agentEmptyChats">{q ? "No chats match." : "No chats yet."}</div>
           ) : null}
         </AgentList>
+        {/* Rooms: group chats of you, your agents, and people you invite
+            (with their agents). Below the contacts, like Messages' groups. */}
+        <div className="railLabel" data-label="Rooms">Rooms<button className="railNew" onClick={() => { setRoomError(undefined); setRoomSheet({ kind: "create" }); }} title="New room" aria-label="New room">+</button></div>
+        <RoomList
+          rows={roomRows}
+          selectedId={activeRoomId}
+          agents={agents}
+          photos={agentPhotos}
+          onSelect={selectRoom}
+          onNew={() => { setRoomError(undefined); setRoomSheet({ kind: "create" }); }}
+          onJoin={() => { setRoomError(undefined); setRoomSheet({ kind: "join" }); }}
+        />
         </div>
         {/* Autocomplete of existing project names for the row-level assign input. */}
         <datalist id="aresProjectOptions">
@@ -4692,7 +4854,7 @@ function App() {
         {railCollapsed ? (
           <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
         ) : null}
-        <header className="stageHead" data-imsg={activeAgent ? "1" : "0"}>
+        <header className="stageHead" data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "feed"}>
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
@@ -4724,7 +4886,62 @@ function App() {
           ) : null}
         </header>
 
-        {view === "helm" ? (
+        {activeRoom && view === "chat" ? (
+          <RoomView
+            key={activeRoom.id}
+            room={activeRoom}
+            me={roomsMe}
+            messages={roomMessages[activeRoom.id] ?? []}
+            agents={agents}
+            photos={agentPhotos}
+            typing={roomTypingOf(activeRoom)}
+            error={roomError}
+            onSend={(text) => { setRoomError(undefined); daemonCmd({ type: "room_post", roomId: activeRoom.id, text }); }}
+            onPause={(paused) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: { rules: { paused } } })}
+            onMute={(agentId, muted) => daemonCmd({ type: "room_agent_mute", roomId: activeRoom.id, agentId, muted })}
+            onRecall={(agentId) => daemonCmd({ type: "room_agent_remove", roomId: activeRoom.id, agentId })}
+            onAddAgent={(agentId) => daemonCmd({ type: "room_agent_add", roomId: activeRoom.id, agentId })}
+            onInvite={() => { setRoomError(undefined); setRoomSheet({ kind: "invite", roomId: activeRoom.id }); }}
+            onJob={(job) => daemonCmd({ type: "room_job", roomId: activeRoom.id, job })}
+            onNotes={(notes) => daemonCmd({ type: "room_notes", roomId: activeRoom.id, notes })}
+            onRules={(rules) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: { rules } })}
+            onRename={(patch) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: patch })}
+            onDelete={() => daemonCmd({ type: "room_delete", roomId: activeRoom.id })}
+            onRemoveGuest={(guestId) => daemonCmd({ type: "room_guest_remove", roomId: activeRoom.id, guestId })}
+            onOpenSeat={(sessionId) => {
+              // A seat is a real session: open it like any chat (history loads on demand).
+              if (!sessions.some((s) => s.id === sessionId)) setSessions((prev) => [{ ...freshSession(), id: sessionId, title: `${activeRoom.name} · seat`, loaded: false }, ...prev]);
+              setActiveId(sessionId);
+              setActiveRoomId(null);
+              daemonCmd({ type: "session_history", id: sessionId });
+              daemonCmd({ type: "session_open", sessionId });
+            }}
+          />
+        ) : view === "now" ? (
+          <NowView
+            me={roomsMe.name}
+            sessions={sessions}
+            agents={agents}
+            photos={agentPhotos}
+            rooms={rooms}
+            roomMessages={roomMessages}
+            agentIdOf={agentIdOf}
+            onOpenSession={openSession}
+            onOpenRoom={selectRoom}
+            onPermission={(sessionId, id, decision) => { setActiveId(sessionId); respondPermission(id, decision); }}
+            onAsk={(text) => { setView("chat"); send(text); }}
+            onNewAgent={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}
+            onNewRoom={() => { setRoomError(undefined); setRoomSheet({ kind: "create" }); }}
+            onFeed={() => setView("feed")}
+          />
+        ) : view === "feed" ? (
+          <FeedView
+            gateway={gatewayFetch}
+            native={native}
+            onOpen={(url) => { window.open(url, "_blank", "noopener"); }}
+            onAsk={(text) => { setView("chat"); send(text); }}
+          />
+        ) : view === "helm" ? (
           <HelmView
             daemon={daemon}
             opStatus={opStatus}
@@ -4797,7 +5014,7 @@ function App() {
           />
         ) : (
           <AgentChatContext.Provider value={activeAgent ?? null}>
-          <div className="chat" ref={scroller} onScroll={onChatScroll} data-imsg={activeAgent ? "1" : "0"}>
+          <div className="chat" ref={scroller} onScroll={onChatScroll} data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"}>
             {active?.loading ? (
               <div className="empty">
                 <div className="wordmark">LOADING</div>
@@ -4873,38 +5090,6 @@ function App() {
                 <div className="typingBubble"><i /><i /><i /></div>
               </div>
             ) : null}
-            {/* Who is answering, and why. An adopted persona is never silent:
-                this chip plus the persona's own greeting are the disclosure,
-                and "Back to Ares" is always one click away. */}
-            {activePersona ? (
-              <div className="personaChip" data-kind="active">
-                <Medallion glyph={asSigilName(activePersona.glyph)} size={34} tone={activePersona.tone === "ivory" ? undefined : activePersona.tone} />
-                <div className="personaChipText">
-                  <span className="personaChipTitle">Ares · {activePersona.label}</span>
-                  <span className="personaChipWhy">{activePersona.description}</span>
-                </div>
-                <div className="personaChipActions">
-                  <button className="personaChipBtn" onClick={() => adoptPersona(null)}>Back to Ares</button>
-                </div>
-              </div>
-            ) : personaSuggestion ? (
-              <div className="personaChip" data-kind="suggestion">
-                <Medallion glyph={asSigilName(personaSuggestion.persona.glyph)} size={34} tone={personaSuggestion.persona.tone === "ivory" ? undefined : personaSuggestion.persona.tone} />
-                <div className="personaChipText">
-                  <span className="personaChipTitle">{personaSuggestion.persona.label} could take this</span>
-                  <span className="personaChipWhy">
-                    {personaSuggestion.persona.description}
-                    {personaSuggestion.matched.length > 0 ? <> · matched <em>{personaSuggestion.matched.slice(0, 3).join(", ")}</em></> : null}
-                  </span>
-                </div>
-                <div className="personaChipActions">
-                  <button className="personaChipBtn" data-primary="1" onClick={() => adoptPersona(personaSuggestion.persona.name)}>
-                    Wear it
-                  </button>
-                  <button className="personaChipBtn" onClick={() => setPersonaSuggestion(null)}>Dismiss</button>
-                </div>
-              </div>
-            ) : null}
             {active?.busy ? (
               <div className="working">
                 <span className="workingForge" />
@@ -4955,7 +5140,7 @@ function App() {
             the draft text and pending attachments every time the view flipped. */}
         <Composer
           agentName={activeAgent?.name ?? "Ares"}
-            hidden={view === "helm"}
+            hidden={view === "helm" || view === "now" || view === "feed" || Boolean(activeRoom)}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
             model={liveModel}
@@ -5021,20 +5206,6 @@ function App() {
                 }
               >
                 <b>computer</b><span>{computerMode === "sandbox" ? "sandbox only" : "host"}</span>
-              </button>
-            ) : null}
-            {/* WHO is answering. The transcript chip scrolls away with the
-                conversation, so after two replies there was nothing on screen
-                saying a persona was worn at all — the owner could only find out
-                by opening HELM. This never scrolls, and it opens the gallery. */}
-            {activePersona ? (
-              <button
-                className="statusSeg personaSeg"
-                data-seg="persona"
-                onClick={() => { setHelmTab("agents"); setView("helm"); }}
-                title={`Ares is wearing ${activePersona.label} — ${activePersona.description}\n\nClick to open the roster and take it off.`}
-              >
-                <b>persona</b><span>{activePersona.label}</span>
               </button>
             ) : null}
             {/* WHICH HANDS did the work. When Ares delegates to an external
@@ -5551,6 +5722,37 @@ function App() {
           ))}
         </div>
       ) : null}
+      {roomSheet?.kind === "create" ? (
+        <RoomCreateSheet
+          agents={agents}
+          photos={agentPhotos}
+          error={roomError}
+          onCreate={(spec) => { setRoomError(undefined); daemonCmd({ type: "room_create", room: spec }); }}
+          onClose={() => { setRoomSheet(null); setRoomError(undefined); }}
+        />
+      ) : roomSheet?.kind === "join" ? (
+        <RoomJoinSheet
+          agents={agents}
+          photos={agentPhotos}
+          error={roomError}
+          busy={roomSheet.busy}
+          onJoin={(link, bring) => { setRoomError(undefined); setRoomSheet({ kind: "join", busy: true }); daemonCmd({ type: "room_join", link, agents: bring }); }}
+          onClose={() => { setRoomSheet(null); setRoomError(undefined); }}
+        />
+      ) : roomSheet?.kind === "invite" ? (() => {
+        const room = rooms.find((r) => r.id === roomSheet.roomId);
+        if (!room) return null;
+        return (
+          <RoomInviteSheet
+            room={room}
+            link={roomSheet.link}
+            busy={roomSheet.busy}
+            error={roomError}
+            onMint={() => { setRoomError(undefined); setRoomSheet({ kind: "invite", roomId: room.id, busy: true }); daemonCmd({ type: "room_invite", roomId: room.id }); }}
+            onClose={() => { setRoomSheet(null); setRoomError(undefined); }}
+          />
+        );
+      })() : null}
       {agentEditor ? (() => {
         const editing = agentEditor.mode === "edit" ? agents.find((a) => a.id === agentEditor.id) : undefined;
         if (agentEditor.mode === "edit" && !editing) return null;
@@ -7018,7 +7220,6 @@ function HelmModern({
       <div className="hmTabs" role="tablist">
         {([
           { id: "overview" as const, label: "Overview", glyph: "helm" },
-          { id: "agents" as const, label: "Agents", glyph: "skills" },
           { id: "fleets" as const, label: "Fleets", glyph: "sessions" },
           { id: "mind" as const, label: "Mind", glyph: "search" },
         ]).map((t) => (
@@ -7032,7 +7233,6 @@ function HelmModern({
           >
             <Sigil name={asSigilName(t.glyph)} size={18} />
             <span>{t.label}</span>
-            {t.id === "agents" && roster.length > 0 ? <em className="hmTabCount">{roster.length}</em> : null}
             {t.id === "fleets" && fleetsLive > 0 ? <em className="hmTabCount">{fleetsLive}</em> : null}
             {t.id === "mind" && attention > 0 ? <em className="hmTabCount" data-alert="1">{attention}</em> : null}
           </button>
@@ -7048,16 +7248,6 @@ function HelmModern({
           history={fleetHistory}
           jobs={subagentJobs}
           onResume={onResumeFleet}
-        />
-      ) : tab === "agents" ? (
-        <HelmAgents
-          roster={roster}
-          activePersona={activePersona}
-          personaStyle={personaStyle}
-          onPersonaStyle={onPersonaStyle}
-          onAdopt={onAdoptPersona}
-          onDelete={onDeletePersona}
-          onWrite={onWritePersona}
         />
       ) : (
       <div className="hmPane" key="overview">
@@ -7465,327 +7655,6 @@ const AUTONOMY_COPY: Record<PersonaVm["autonomy"], { label: string; hint: string
 };
 
 const PERSONA_GLYPHS = ["helm", "forge", "shield", "search", "scroll", "skills", "sessions", "usage", "messaging", "flame"];
-
-function HelmAgents({
-  roster,
-  activePersona,
-  personaStyle,
-  onPersonaStyle,
-  onAdopt,
-  onDelete,
-  onWrite,
-}: {
-  roster: PersonaVm[];
-  activePersona: PersonaVm | null;
-  personaStyle?: string;
-  onPersonaStyle: (style: "ares" | "neutral") => void;
-  onAdopt: (name: string | null) => void;
-  onDelete: (name: string) => void;
-  onWrite: (draft: PersonaDraft) => void;
-}) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  // null = closed; "" = forging a new persona; a name = editing that one.
-  // Modelled as one piece of state so the composer can never be open in two
-  // modes at once, and so `key` remounts it when the target changes.
-  const [composing, setComposing] = useState<string | null>(null);
-
-  return (
-    <div className="hmPane hmAgents" key="agents">
-      <div className="hmAgentsLede">
-        <p>
-          Personas are specialists you can <strong>wear</strong> — Ares keeps this conversation and its full tool belt, and
-          shifts into that expertise. Ares can also <strong>delegate</strong> to any of them, so each one doubles as a
-          background worker with its own narrower tools.
-        </p>
-        <button className="hmForge" onClick={() => setComposing((v) => (v === null ? "" : null))} data-on={composing !== null ? "1" : "0"}>
-          <Sigil name={asSigilName("forge")} size={16} />
-          {composing !== null ? "Close" : "Forge a persona"}
-        </button>
-      </div>
-
-      {/* The VOICE dial — distinct from wearing a persona. This sets the tone
-          layer above Ares's engineering doctrine; the doctrine itself never
-          changes, whichever voice is chosen. */}
-      <div className="hmVoice">
-        <span className="hmVoiceLabel">Voice</span>
-        <div className="segment mini">
-          {([
-            { id: "ares", label: "Ares", hint: "Direct with an edge — the default." },
-            { id: "neutral", label: "Neutral", hint: "Plain and factual, no swagger." },
-          ] as const).map((v) => (
-            <button
-              key={v.id}
-              data-on={(personaStyle ?? "ares") === v.id ? "1" : "0"}
-              title={v.hint}
-              onClick={() => onPersonaStyle(v.id)}
-            >
-              {v.label}
-            </button>
-          ))}
-        </div>
-        <span className="hmVoiceHint">
-          {(personaStyle ?? "ares") === "neutral"
-            ? "Plain and factual. How Ares works is unchanged."
-            : "Direct with an edge. How Ares works is unchanged."}
-        </span>
-      </div>
-
-      {activePersona ? (
-        <div className="hmWearing">
-          <Medallion glyph={asSigilName(activePersona.glyph)} size={40} tone={activePersona.tone === "ivory" ? undefined : activePersona.tone} />
-          <div className="hmWearingText">
-            <span className="hmWearingLabel">Wearing now</span>
-            <strong>Ares · {activePersona.label}</strong>
-            <span className="hmWearingDesc">{activePersona.description}</span>
-          </div>
-          <button className="hmGhost" onClick={() => onAdopt(null)}>Back to Ares</button>
-        </div>
-      ) : null}
-
-      {composing !== null ? (
-        <PersonaComposer
-          key={composing || "__new__"}
-          editing={composing ? roster.find((p) => p.name === composing) ?? null : null}
-          onWrite={(d) => { onWrite(d); setComposing(null); }}
-          onCancel={() => setComposing(null)}
-        />
-      ) : null}
-
-      <div className="hmRoster">
-        {roster.length === 0 ? (
-          <p className="hmEmpty">No personas yet. Forge one, or ask Ares to build the specialist you keep needing.</p>
-        ) : (
-          roster.map((p) => {
-            const worn = activePersona?.name === p.name;
-            const open = expanded === p.name;
-            return (
-              <article className="hmCard" key={p.name} data-tone={p.tone} data-worn={worn ? "1" : "0"}>
-                <button
-                  className="hmCardTop"
-                  onClick={() => setExpanded(open ? null : p.name)}
-                  aria-expanded={open}
-                  title={open ? "Hide details" : "Show details"}
-                >
-                  <Medallion glyph={asSigilName(p.glyph)} size={44} tone={p.tone === "ivory" ? undefined : p.tone} />
-                  <div className="hmCardText">
-                    <div className="hmCardName">
-                      <strong>{p.label}</strong>
-                      {worn ? <em className="hmCardWorn">worn</em> : null}
-                      {p.source === "builtin" ? <em className="hmCardOrigin">built in</em> : null}
-                    </div>
-                    <p className="hmCardDesc">{p.description}</p>
-                  </div>
-                  <i className="hmCardChevron" data-open={open ? "1" : "0"} aria-hidden="true" />
-                </button>
-
-                <div className="hmCardMeta">
-                  <span className="hmPill" title={AUTONOMY_COPY[p.autonomy].hint}>{AUTONOMY_COPY[p.autonomy].label}</span>
-                  {p.tools.length > 0 ? (
-                    <span className="hmPill" title={`When delegated to, it can only use: ${p.tools.join(", ")}`}>
-                      {p.tools.length} tools when delegated
-                    </span>
-                  ) : (
-                    <span className="hmPill" title="Inherits the full tool belt when delegated to">Full belt</span>
-                  )}
-                  {p.model ? <span className="hmPill" title="Preferred model — your pin always wins">prefers {p.model}</span> : null}
-                </div>
-
-                <SpringHeight>
-                  {open ? (
-                  <div className="hmCardBody">
-                    {p.triggers.length > 0 ? (
-                      <div className="hmCardRow">
-                        <span className="hmCardRowLabel">Triggers on</span>
-                        <span className="hmTriggers">
-                          {p.triggers.map((t) => <em key={t}>{t}</em>)}
-                        </span>
-                      </div>
-                    ) : null}
-                    {p.greeting ? (
-                      <div className="hmCardRow">
-                        <span className="hmCardRowLabel">Greets with</span>
-                        <q className="hmGreeting">{p.greeting}</q>
-                      </div>
-                    ) : null}
-                    {p.tools.length > 0 ? (
-                      <div className="hmCardRow">
-                        <span className="hmCardRowLabel">Delegated tools</span>
-                        <span className="hmTriggers">{p.tools.map((t) => <em key={t}>{t}</em>)}</span>
-                      </div>
-                    ) : null}
-                    {p.file ? (
-                      <div className="hmCardRow">
-                        <span className="hmCardRowLabel">Defined in</span>
-                        <code className="hmCardFile">{p.file}</code>
-                      </div>
-                    ) : null}
-                  </div>
-                  ) : null}
-                </SpringHeight>
-
-                <div className="hmCardActions">
-                  {worn ? (
-                    <button className="hmGhost" onClick={() => onAdopt(null)}>Take it off</button>
-                  ) : (
-                    <button className="hmAdopt" onClick={() => onAdopt(p.name)}>Wear {p.label}</button>
-                  )}
-                  <button
-                    className="hmGhost"
-                    onClick={() => setComposing(p.name)}
-                    title={p.source === "builtin"
-                      ? `Editing ${p.label} writes your own version to disk, which shadows the built-in`
-                      : `Edit ${p.file}`}
-                  >
-                    Edit
-                  </button>
-                  {p.source === "roster" ? (
-                    <button className="hmGhost hmDanger" onClick={() => onDelete(p.name)} title="Delete this persona's AGENT.md">
-                      Delete
-                    </button>
-                  ) : null}
-                </div>
-              </article>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PersonaComposer({
-  editing,
-  onWrite,
-  onCancel,
-}: {
-  /** Seed the form from this persona. null = a brand-new one. */
-  editing: PersonaVm | null;
-  onWrite: (draft: PersonaDraft) => void;
-  onCancel: () => void;
-}) {
-  // Seeded via useState initialisers, not an effect: the parent remounts this
-  // component with `key` when the target changes, so the initialisers run
-  // exactly when they should and a half-typed draft can never be clobbered by
-  // an unrelated roster refresh.
-  const [label, setLabel] = useState(editing?.label ?? "");
-  const [description, setDescription] = useState(editing?.description ?? "");
-  const [greeting, setGreeting] = useState(editing?.greeting ?? "");
-  const [body, setBody] = useState(editing?.body ?? "");
-  const [triggers, setTriggers] = useState((editing?.triggers ?? []).join(", "));
-  const [glyph, setGlyph] = useState(editing?.glyph ?? "helm");
-  const [tone, setTone] = useState<PersonaDraft["tone"]>(editing?.tone ?? "ember");
-  const [autonomy, setAutonomy] = useState<PersonaDraft["autonomy"]>(editing?.autonomy ?? "suggest");
-  const ready = label.trim().length > 0 && body.trim().length > 0;
-
-  return (
-    <div className="hmComposer">
-      <div className="hmComposerHead">
-        <Medallion glyph={asSigilName(glyph)} size={40} tone={tone === "ivory" ? undefined : tone} />
-        <div>
-          <strong>{editing ? `Edit ${editing.label}` : "Forge a persona"}</strong>
-          <p>
-            {editing
-              ? editing.source === "builtin"
-                ? "This one ships built in. Saving writes your own copy to disk, which shadows it from now on — delete that copy to get the original back."
-                : "Saving overwrites this persona's AGENT.md."
-              : "A name and a method are all it needs. Ares can fill in the rest later — or write the whole thing for you if you ask."}
-          </p>
-        </div>
-      </div>
-
-      <label className="hmField">
-        <span>Name</span>
-        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Vitruvius" />
-      </label>
-      <label className="hmField">
-        <span>What it's expert at</span>
-        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Research and architecture — reads widely, cites everything." />
-      </label>
-      <label className="hmField">
-        <span>Method <em>— the persona itself</em></span>
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={6}
-          placeholder={"You are working as Vitruvius.\n\nMethod:\n- Read before you opine. Cite every claim.\n- Name the option you would NOT take, and why."}
-        />
-      </label>
-      <label className="hmField">
-        <span>Greeting <em>— optional</em></span>
-        <input value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Research hat on. What are we digging into?" />
-      </label>
-      <label className="hmField">
-        <span>Triggers <em>— comma separated</em></span>
-        <input value={triggers} onChange={(e) => setTriggers(e.target.value)} placeholder="research, look into, trade-off" />
-      </label>
-
-      <div className="hmFieldRow">
-        <label className="hmField">
-          <span>Sigil</span>
-          <div className="hmGlyphPick">
-            {PERSONA_GLYPHS.map((g) => (
-              <button key={g} data-on={glyph === g ? "1" : "0"} onClick={() => setGlyph(g)} title={g} type="button">
-                <Sigil name={asSigilName(g)} size={20} />
-              </button>
-            ))}
-          </div>
-        </label>
-        <label className="hmField">
-          <span>Accent</span>
-          <div className="hmTonePick">
-            {(["ember", "mint", "ivory"] as const).map((t) => (
-              <button key={t} data-tone={t} data-on={tone === t ? "1" : "0"} onClick={() => setTone(t)} type="button">{t}</button>
-            ))}
-          </div>
-        </label>
-      </div>
-
-      <label className="hmField">
-        <span>When should it step in?</span>
-        <div className="hmAutonomyPick">
-          {(["auto", "suggest", "manual"] as const).map((a) => (
-            <button key={a} data-on={autonomy === a ? "1" : "0"} onClick={() => setAutonomy(a)} type="button" title={AUTONOMY_COPY[a].hint}>
-              <strong>{AUTONOMY_COPY[a].label}</strong>
-              <span>{AUTONOMY_COPY[a].hint}</span>
-            </button>
-          ))}
-        </div>
-      </label>
-
-      <div className="hmComposerActions">
-        <button className="hmGhost" onClick={onCancel}>Cancel</button>
-        <button
-          className="hmAdopt"
-          disabled={!ready}
-          onClick={() =>
-            onWrite({
-              // Editing keeps the ORIGINAL slug: the name is the file path and
-              // the delegation key, so deriving it from a retyped label meant
-              // renaming "Forge" to "Forge v2" quietly forked a second persona
-              // and left the first one untouched.
-              name: editing?.name ?? label.trim(),
-              label: label.trim(),
-              description: description.trim(),
-              greeting: greeting.trim(),
-              body: body.trim(),
-              triggers: triggers.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
-              glyph,
-              tone,
-              autonomy,
-              // Carried, not edited — see PersonaDraft.
-              tools: editing?.tools,
-              model: editing?.model,
-              effort: editing?.effort,
-              maxTurns: editing?.maxTurns,
-            })
-          }
-        >
-          {editing ? "Save changes" : "Forge it"}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function HelmView({
   daemon,
@@ -11723,7 +11592,7 @@ function Settings({
                     onClick={() => {
                       // Cyber's light is blue→violet; landing on it with an ember
                       // accent would fight the surface, so it brings its accent along.
-                      const accent = s.id === "cyber" ? "blue" : draft.accent;
+                      const accent = s.id === "cyber" || s.id === "messages" ? "blue" : draft.accent;
                       const next = { ...draft, surface: s.id, accent, theme: surfaceToTheme(s.id), uiStyle: surfaceToStyle(s.id) };
                       setDraftPrefs(next);
                       onLivePref({ surface: s.id, accent, theme: next.theme, uiStyle: next.uiStyle });

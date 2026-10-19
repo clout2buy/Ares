@@ -980,6 +980,10 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // Permanent pairing: mint a pairing link, list paired devices, unpair one.
     "remote_pc_pair", "remote_devices", "remote_device_unpair",
     "phone_pair", "gateway_request",
+    // Rooms: group chats of people + agents (daemon/rooms.ts).
+    "rooms_list", "room_create", "room_update", "room_delete", "room_post", "room_history",
+    "room_agent_add", "room_agent_remove", "room_agent_mute", "room_invite", "room_join",
+    "room_job", "room_notes", "room_me", "room_guest_remove",
 ];
 
 #[tauri::command]

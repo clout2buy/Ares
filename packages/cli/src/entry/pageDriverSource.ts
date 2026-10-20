@@ -14,6 +14,30 @@ export const DRIVE_PATH = "/__ares/drive";
 
 export const PAGE_DRIVER_SOURCE = `(function(){
   if (window.__aresPageDriver || !window.fetch) return; window.__aresPageDriver = 1;
+  // ── step mode: time stands still while the agent thinks ──────────────────
+  // An agent takes seconds per decision; a real-time game kept running
+  // between its calls and killed it mid-thought. __aresFreeze(true) parks
+  // requestAnimationFrame and stops the page's clocks between commands; each
+  // command runs in real time. The owner's own input, or two idle minutes
+  // (the agent's turn ended), releases it.
+  var origRaf = window.requestAnimationFrame.bind(window), origNow = performance.now.bind(performance), origDateNow = Date.now;
+  var stepMode = false, frozen = false, frozenAt = 0, lag = 0, parked = [], releaseTimer = null;
+  window.requestAnimationFrame = function(cb){ if (frozen) { parked.push(cb); return 0; } return origRaf(function(t){ cb(t - lag); }); };
+  performance.now = function(){ return (frozen ? frozenAt : origNow()) - lag; };
+  Date.now = function(){ return origDateNow() - lag - (frozen ? origNow() - frozenAt : 0); };
+  function freeze(){
+    if (frozen) return; frozen = true; frozenAt = origNow();
+    clearTimeout(releaseTimer); releaseTimer = setTimeout(function(){ stepMode = false; thaw(); }, 120000);
+  }
+  function thaw(){
+    clearTimeout(releaseTimer);
+    if (!frozen) return; lag += origNow() - frozenAt; frozen = false;
+    var q = parked; parked = []; q.forEach(function(cb){ window.requestAnimationFrame(cb); });
+  }
+  window.__aresFreeze = function(on){ stepMode = !!on; if (!stepMode) thaw(); return stepMode; };
+  ["keydown", "mousedown", "pointerdown", "wheel"].forEach(function(t){
+    window.addEventListener(t, function(e){ if (e.isTrusted && stepMode) { stepMode = false; thaw(); } }, true);
+  });
   var pid = "p" + Math.random().toString(36).slice(2) + Date.now().toString(36);
   var logs = [], mouse = { x: 0, y: 0, known: false }, held = {};
   function keep(level, args){
@@ -290,9 +314,11 @@ export const PAGE_DRIVER_SOURCE = `(function(){
         else if (res.status !== 204) await sleep(2000);
       } catch (e) { await sleep(2000); continue; }
       if (!cmd) continue;
+      if (stepMode) thaw();
       var reply;
       try { reply = { id: cmd.id, ok: true, value: await run(cmd) }; }
       catch (e) { reply = { id: cmd.id, ok: false, error: String(e && e.message || e) }; }
+      if (stepMode) freeze();
       try { await fetch("${DRIVE_PATH}?page=" + pid, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(reply) }); } catch (e) {}
     }
   }

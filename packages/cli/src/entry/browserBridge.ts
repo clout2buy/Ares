@@ -28,7 +28,7 @@ import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, f
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
 import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
-import { forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
+import { claimForge, forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
 import { agentStudioId } from "./agentScope.js";
@@ -756,7 +756,10 @@ export function makeBrowserTool(
       const forge = forgeCdpUrl();
       let forgeNote: string | undefined;
       let onForge = false;
-      if (forge && !extensionAttach && i.action !== "handshake") {
+      if (forge && !extensionAttach && i.action !== "handshake" && !claimForge(ctx?.sessionId ?? "")) {
+        if (isForgeStrategy(browser?.strategy, forge)) { await browser!.close().catch(() => undefined); browser = null; }
+        forgeNote = "The Forge is in use by another chat right now, so this ran in Ares's background browser — the owner cannot see or use this page.";
+      } else if (forge && !extensionAttach && i.action !== "handshake") {
         if (isForgeStrategy(browser?.strategy, forge)) onForge = true;
         else {
           if (!(await forgeViewUp(forge, 300))) {

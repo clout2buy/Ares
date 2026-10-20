@@ -43,3 +43,25 @@ export function forgeWaitMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.ARES_FORGE_VIEW_WAIT_MS);
   return Number.isFinite(n) && n >= 0 ? n : 15_000;
 }
+
+/** One chat drives the Forge at a time: it is ONE page, and two agents
+ *  clicking in it at once would wreck each other's work. A chat holds it
+ *  while it keeps using it; after ARES_FORGE_HOLD_MS (default 2 min) without
+ *  a Browser call, the next chat may take it. The others use the background
+ *  browser meanwhile, and say so. */
+let holder: { id: string; at: number } | null = null;
+
+export function claimForge(sessionId: string, now = Date.now(), env: NodeJS.ProcessEnv = process.env): boolean {
+  const n = Number(env.ARES_FORGE_HOLD_MS);
+  const holdMs = Number.isFinite(n) && n >= 0 ? n : 120_000;
+  if (!holder || holder.id === sessionId || now - holder.at > holdMs) {
+    holder = { id: sessionId, at: now };
+    return true;
+  }
+  return false;
+}
+
+/** Tests only. */
+export function resetForgeHolder(): void {
+  holder = null;
+}

@@ -23,7 +23,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { makeBrowserTool } from "../packages/cli/dist/entry/browserBridge.js";
-import { forgeCdpUrl, forgeViewUp } from "../packages/cli/dist/entry/forgeView.js";
+import { claimForge, forgeCdpUrl, forgeViewUp, resetForgeHolder } from "../packages/cli/dist/entry/forgeView.js";
 
 const fakeBrowser = (strategy, log) => ({
   name: "fake",
@@ -179,4 +179,35 @@ test("the instructions never offer a screenshot or a 'can't open' in place of th
   assert.match(doctrine, /on the desktop it is a real browser/);
   assert.match(doctrine, /never a screenshot/);
   assert.doesNotMatch(makeOpenTool().schema.description, /those are pictures/);
+});
+
+test("one chat drives the Forge at a time; the next may take it once the first goes quiet", async () => {
+  resetForgeHolder();
+  const env = { ARES_FORGE_HOLD_MS: "1000" };
+  assert.equal(claimForge("chat-a", 0, env), true);
+  assert.equal(claimForge("chat-a", 500, env), true, "the holder keeps it");
+  assert.equal(claimForge("chat-b", 900, env), false, "another chat waits");
+  assert.equal(claimForge("chat-b", 2000, env), true, "after the hold lapses it may take it");
+  assert.equal(claimForge("chat-a", 2100, env), false);
+
+  // through the tool: chat B runs in the background browser and says why
+  resetForgeHolder();
+  const root = await mkdtemp(path.join(tmpdir(), "ares-forge-view-"));
+  const ep = await endpoint(0);
+  const calls = [];
+  const tool = makeBrowserTool({ browserFilmstripRoot: root }, async (opts) => { calls.push(opts); return fakeBrowser(opts.cdpUrl ? `cdp:${opts.cdpUrl}` : "launch:chrome", {}); });
+  try {
+    await withEnv({ ARES_FORGE_CDP_URL: ep.url }, async () => {
+      const a = await tool.call({ action: "state" }, { sessionId: "chat-a", signal: new AbortController().signal, emitProgress: () => undefined });
+      assert.equal(a.output.note, undefined);
+      assert.equal(calls.at(-1).cdpUrl, ep.url);
+      const b = await tool.call({ action: "state" }, { sessionId: "chat-b", signal: new AbortController().signal, emitProgress: () => undefined });
+      assert.match(b.output.note, /Forge is in use by another chat/);
+      assert.notEqual(calls.at(-1).cdpUrl, ep.url);
+    });
+  } finally {
+    resetForgeHolder();
+    await ep.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

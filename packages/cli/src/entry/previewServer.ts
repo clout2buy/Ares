@@ -726,6 +726,8 @@ interface DrivePage {
   firstSeenAt: number;
   queue: Array<{ id: string; op: string; args?: unknown }>;
   waiting: ServerResponse | null;
+  /** Commands handed to the page and not answered yet. */
+  inflight: Set<string>;
 }
 
 interface DriveState {
@@ -752,14 +754,34 @@ function flushPage(page: DrivePage): void {
   if (!page.waiting || page.queue.length === 0) return;
   const res = page.waiting;
   page.waiting = null;
-  res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(page.queue.shift()));
+  const cmd = page.queue.shift()!;
+  page.inflight.add(cmd.id);
+  res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(cmd));
 }
+
+/** Error text that tells the caller to retry on the page's next copy. */
+export const PAGE_GONE = "PAGE_GONE";
 
 async function handleDrive(served: ServedFolder, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const state = driveState(served);
   const query = new URL(req.url ?? "/", "http://x").searchParams;
   const pageId = (query.get("page") ?? "").replace(/[^a-z0-9]/gi, "").slice(0, 40);
   if (!pageId) { res.writeHead(400).end(); return; }
+  if (req.method === "POST" && query.get("bye")) {
+    res.writeHead(204).end();
+    const gone = state.pages.get(pageId);
+    if (!gone) return;
+    state.pages.delete(pageId);
+    if (gone.waiting) { gone.waiting.writeHead(204).end(); gone.waiting = null; }
+    for (const id of [...gone.queue.map((c) => c.id), ...gone.inflight]) {
+      const waiter = state.replies.get(id);
+      if (!waiter) continue;
+      state.replies.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(PAGE_GONE));
+    }
+    return;
+  }
   if (req.method === "POST") {
     const body = await readBody(req, 16 * 1024 * 1024).catch(() => "");
     res.writeHead(204).end();
@@ -767,6 +789,7 @@ async function handleDrive(served: ServedFolder, req: IncomingMessage, res: Serv
     try { reply = JSON.parse(body); } catch { return; }
     const waiter = reply.id ? state.replies.get(reply.id) : undefined;
     if (!waiter || !reply.id) return;
+    state.pages.get(pageId)?.inflight.delete(reply.id);
     state.replies.delete(reply.id);
     clearTimeout(waiter.timer);
     if (reply.ok) waiter.resolve(reply.value);
@@ -776,7 +799,7 @@ async function handleDrive(served: ServedFolder, req: IncomingMessage, res: Serv
   const now = Date.now();
   let page = state.pages.get(pageId);
   if (!page) {
-    page = { id: pageId, url: "", seenAt: now, firstSeenAt: now, queue: [], waiting: null };
+    page = { id: pageId, url: "", seenAt: now, firstSeenAt: now, queue: [], waiting: null, inflight: new Set() };
     state.pages.set(pageId, page);
   }
   page.seenAt = now;
@@ -843,4 +866,15 @@ export async function drivePage(root: string, pageId: string, op: string, args?:
     page.queue.push({ id, op, args });
     flushPage(page);
   });
+}
+
+/** The served folder behind a loopback URL Ares handed out (its origin), or null. */
+export async function servedForUrl(url: string): Promise<{ root: string; origin: string; url: string } | null> {
+  let origin: string;
+  try { origin = new URL(url).origin; } catch { return null; }
+  for (const p of servers.values()) {
+    const served = await p.catch(() => undefined);
+    if (served && served.origin === origin) return { root: served.root, origin, url };
+  }
+  return null;
 }

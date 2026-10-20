@@ -3,12 +3,28 @@
 // browser preview — instead of launching a hidden browser and streaming it.
 // Same-origin only: leaving the served folder means leaving this connector.
 import type { AccessibilityNode, BrowserConnector, BrowserState, ConsoleEntry, PointerGesture, Screenshot } from "@ares/connectors";
-import { drivePage, waitForDrivablePage } from "./previewServer.js";
+import { PAGE_GONE, drivablePage, drivePage, waitForDrivablePage } from "./previewServer.js";
 
 export function createServedPageBrowser(root: string, origin: string, page: { id: string; url: string }): BrowserConnector {
   let pageId = page.id;
   let lastUrl = page.url;
-  const run = <T>(op: string, args?: unknown, timeoutMs?: number) => drivePage(root, pageId, op, args, timeoutMs) as Promise<T>;
+  // Always the newest open copy: a reload (Ares's own edit, the owner's ↻)
+  // replaces the page, and commands must follow it rather than wait out a
+  // copy that is gone. If the copy leaves mid-command, wait for the next one
+  // and run it there once.
+  const run = async <T>(op: string, args?: unknown, timeoutMs?: number): Promise<T> => {
+    const newest = await drivablePage(root);
+    if (newest) pageId = newest.id;
+    try {
+      return (await drivePage(root, pageId, op, args, timeoutMs)) as T;
+    } catch (err) {
+      if (!(err instanceof Error && (err.message === PAGE_GONE || /no longer open/.test(err.message)))) throw err;
+      const next = await waitForDrivablePage(root, 10_000);
+      if (!next) throw new Error("the page closed or reloaded and did not come back");
+      pageId = next.id;
+      return (await drivePage(root, pageId, op, args, timeoutMs)) as T;
+    }
+  };
   const state = async (): Promise<BrowserState> => {
     const s = await run<BrowserState>("state");
     lastUrl = s.url;

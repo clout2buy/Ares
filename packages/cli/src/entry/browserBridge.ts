@@ -27,7 +27,7 @@ import { MemoryStore } from "@ares/mind";
 import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, fillEffect, navigateEffect, challengePrompt, type BrowserConnector, type HumanCheckHandler } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
-import { drivableRoots, lastRescueFor, serveLocalTarget, waitForDrivablePage } from "./previewServer.js";
+import { drivableRoots, lastRescueFor, serveLocalTarget, servedForUrl, waitForDrivablePage } from "./previewServer.js";
 import { createServedPageBrowser } from "./servedPageBrowser.js";
 import { claimForge, forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
@@ -1438,7 +1438,8 @@ async function servedPageFor(
 ): Promise<BrowserConnector | null> {
   if (NOT_PAGE_DRIVEN.has(i.action) || process.env.ARES_PAGE_DRIVER === "0") return null;
   if ((i.action === "open" || i.action === "preview") && i.url) {
-    const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId, cwd }).catch(() => null);
+    // A file path, or the loopback address of a page Ares already serves.
+    const served = (await serveLocalTarget(i.url, { sessionId: ctx?.sessionId, cwd }).catch(() => null)) ?? (await servedForUrl(i.url));
     if (!served) return null;
     const open = (await drivableRoots()).find((r) => r.root === served.root);
     if (!open) emitTarget({ url: served.url });

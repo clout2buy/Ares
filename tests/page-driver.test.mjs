@@ -69,3 +69,48 @@ test("a page named relative to the workspace, with a query, is served (not refus
   assert.equal(await serveLocalTarget("voxel-world/index.html"), null, "no workspace given: not guessed");
   assert.equal(await serveLocalTarget("example.com/page", { cwd: dir }), null, "a bare domain is not a local path");
 });
+
+test("a reload mid-command: the old copy says bye, the command runs on the new copy instead of timing out", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-reload-"));
+  t.after(async () => { await stopPreviewServers(); await rm(dir, { recursive: true, force: true }); });
+  await writeFile(path.join(dir, "index.html"), "<!doctype html><title>R</title>");
+  const served = await serveLocalTarget(path.join(dir, "index.html"));
+  const poll = (id) => fetch(`${served.origin}/__ares/drive?page=${id}&url=${encodeURIComponent(served.url)}`);
+  const reply = (id, body) => fetch(`${served.origin}/__ares/drive?page=${id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  // p1 takes the command, then reloads (bye) without answering.
+  const first = poll("p1");
+  const open = await waitForDrivablePage(served.root, 3000);
+  const br = createServedPageBrowser(served.root, served.origin, open);
+  const result = br.state();
+  const cmd = await (await first).json();
+  assert.equal(cmd.op, "state");
+  await fetch(`${served.origin}/__ares/drive?page=p1&bye=1`, { method: "POST" });
+
+  // p2 is the reloaded copy: it gets the command again and answers.
+  let running = true;
+  t.after(() => { running = false; });
+  (async () => {
+    while (running) {
+      const res = await poll("p2").catch(() => null);
+      if (!res || res.status !== 200) continue;
+      const c = await res.json();
+      await reply("p2", { id: c.id, ok: true, value: { url: served.url, title: "after reload" } });
+    }
+  })();
+  const t0 = Date.now();
+  assert.deepEqual(await result, { url: served.url, title: "after reload" });
+  assert.ok(Date.now() - t0 < 8000, "no 30s wait on the gone copy");
+  running = false;
+});
+
+test("the loopback address of a page Ares serves maps back to its folder", async (t) => {
+  const { servedForUrl } = await import("../packages/cli/dist/entry/previewServer.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-origin-"));
+  t.after(async () => { await stopPreviewServers(); await rm(dir, { recursive: true, force: true }); });
+  await writeFile(path.join(dir, "index.html"), "<!doctype html><title>O</title>");
+  const served = await serveLocalTarget(path.join(dir, "index.html"));
+  const hit = await servedForUrl(`${served.origin}/index.html?seed=2`);
+  assert.equal(hit?.root, served.root);
+  assert.equal(await servedForUrl("http://127.0.0.1:1/x"), null);
+});

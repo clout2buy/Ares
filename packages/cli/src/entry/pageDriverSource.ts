@@ -271,5 +271,8 @@ export const PAGE_DRIVER_SOURCE = `(function(){
       try { await fetch("${DRIVE_PATH}?page=" + pid, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(reply) }); } catch (e) {}
     }
   }
+  // Leaving (reload, navigation, closed tab): say so at once, so Ares moves to
+  // the next copy instead of waiting out a command this page will never answer.
+  window.addEventListener("pagehide", function(){ try { navigator.sendBeacon("${DRIVE_PATH}?page=" + pid + "&bye=1", ""); } catch (e) {} });
   loop();
 })();`;

@@ -59,6 +59,25 @@ origins never leave the server.
 
 Rate limits: 120 requests/min per IP, 10 claims per 10 min per IP.
 
+## Live
+
+Deployed 2026-10-19 on doingbox as `ares-directory.service` (DynamicUser,
+`ProtectSystem=strict`, data in `/var/lib/ares-directory`, code in
+`/opt/ares-directory` — the three dist files `directoryServer.js`,
+`phoneRooms.js`, `rooms.js` plus a `{"type":"module"}` package.json). Public at
+**https://people.mistiqueai.com** (ingress above the wildcard, DNS routed with
+`cloudflared tunnel route dns`). `people.oruna.org` is in the ingress too but
+its DNS is not routed yet (`route dns` can only write the mistiqueai.com zone
+from the box's cert; it left a stray `people.oruna.org.mistiqueai.com` CNAME to
+delete in the dashboard). To update: rebuild, `scp` the three files to
+`/tmp`, `sudo cp` into `/opt/ares-directory`, `sudo systemctl restart
+ares-directory`.
+
+What a stranger can reach: this service only. It returns usernames, display
+names, bios and agent names; never install ids, tokens or gateway origins.
+Owners' machines connect *out* to it (long-poll); nothing new listens on a
+member's PC. Rooms it hosts carry messages between members and nothing else.
+
 ## Running it on doingbox
 
 The box already fronts `*.mistiqueai.com` through cloudflared. The directory

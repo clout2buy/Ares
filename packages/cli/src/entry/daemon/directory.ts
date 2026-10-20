@@ -187,7 +187,9 @@ export class DesktopDirectory {
     const origin = await this.deps.publicOrigin();
     const out = await this.call<{ token: string; user: DirectoryProfile }>("POST", "/v1/claim", {
       username: username.trim().toLowerCase(),
-      displayName: (displayName ?? me.name).trim() || me.name,
+      // Never the OS account name by default (owner: "as long as they can't dox
+      // me"): shown as what they typed, else the username itself.
+      displayName: (displayName ?? "").trim() || username.trim().toLowerCase(),
       installId: me.id,
       ...(origin ? { origin } : {}),
       agents: this.shownAgentCards(),

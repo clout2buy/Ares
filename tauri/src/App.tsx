@@ -144,6 +144,7 @@ import "./forge.css";
 import "./messages.css";
 import { FeedView, NowView } from "./messagesViews";
 import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./forgePixels";
+import { ForgeNativeView, forgeNativeTarget, forgeViewControl } from "./forgeNativeView";
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
@@ -877,7 +878,7 @@ function App() {
   // The embedded live browser: latest JPEG frame Ares streamed while driving its
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
   const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
-  const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number } | null>(null);
+  const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number; driven?: boolean } | null>(null);
   // What the previewed page said on load: console errors and, when Ares served
   // a project folder for it, which folder. A grey canvas with no words is how
   // "open it in the Forge" read as broken (2026-10-15) — the errors belong on
@@ -3148,14 +3149,14 @@ function App() {
         // settled (?settled=1) so it does not replay the build; and the live stage (embedded) steps aside.
         const handedOff = (ev.data as { mode?: unknown }).mode === "explain" && liveExplain.handoff();
         setEmbeddedActive(false);
-        const target = { url: handedOff ? `${ev.data.url}${ev.data.url.includes("?") ? "&" : "?"}settled=1` : ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
+        const target = { url: handedOff ? `${ev.data.url}${ev.data.url.includes("?") ? "&" : "?"}settled=1` : ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now(), driven: (ev.data as { driven?: unknown }).driven === true };
         setLiveTarget(target);
         setLiveUrl(target.url);
         setForgeMode((ev.data as { mode?: unknown }).mode === "explain" ? "explain" : "project");
         setLiveConsole((c) => (c && c.url === target.url ? c : null));
         setFpsHistory([]);
         setForgeDrawer(null);
-        logForge(`opened ${target.url.replace(/^https?:\/\//, "")}`, "info");
+        if (target.url !== "about:blank") logForge(`opened ${target.url.replace(/^https?:\/\//, "")}`, "info");
         setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
         // Do not return: the progress event also belongs in the running tool's
         // activity stream, so the transcript and Forge stay in sync.
@@ -5734,6 +5735,12 @@ function App() {
                 <i className={embeddedActive || liveTarget ? "liveDot" : "idleDot"} />
                 <input aria-label="Preview URL" value={liveUrl} onChange={(e) => setLiveUrl(e.target.value)} placeholder="localhost:3000 or https://…" />
                 <button type="submit">Launch</button>
+                {native && liveTarget && forgeNativeTarget(liveTarget.url) ? (
+                  <>
+                    <button type="button" onClick={() => forgeViewControl("back")} aria-label="Back">←</button>
+                    <button type="button" onClick={() => forgeViewControl("forward")} aria-label="Forward">→</button>
+                  </>
+                ) : null}
                 <button type="button" onClick={() => setLiveRevision((n) => n + 1)} disabled={!liveTarget}>↻</button>
                 {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })}>Open separate copy ↗</button> : null}
               </form>
@@ -5917,7 +5924,29 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              {!embeddedActive && liveTarget && !(liveFeed && liveBrowser && liveFeed.at >= liveTarget.at) ? (
+              {/* The desktop shows every http(s) page in the Forge's NATIVE view
+                  (forgeNativeView.tsx): a real browser over the stage, so any
+                  site loads, sign-ins work, and Ares drives this same page —
+                  never a frame stream or a screenshot. */}
+              {!embeddedActive && liveTarget && native && forgeNativeTarget(liveTarget.url) && !(liveFeed && (liveBrowser || liveEmbed) && liveFeed.at >= liveTarget.at) ? (
+                <div className="liveStage interactive nativeTarget">
+                  <ForgeNativeView
+                    url={liveTarget.url}
+                    driven={liveTarget.driven}
+                    revision={liveRevision}
+                    visible={forge.open && forge.tab === "live"}
+                    onNav={(url, loading) => {
+                      setLiveLoading(loading);
+                      if (!loading) { setLiveLoadedAt(Date.now()); setLiveUrl(url); }
+                    }}
+                    onError={(message) => logForge(`the Forge view: ${message}`, "warn")}
+                  />
+                  <div className="forgeLoading" data-on={liveLoading ? "1" : "0"} aria-hidden={!liveLoading}>
+                    <span className="forgeLoadingUrl">{liveTarget.url.replace(/^https?:\/\//, "")}</span>
+                  </div>
+                </div>
+              ) : null}
+              {!embeddedActive && liveTarget && !(native && forgeNativeTarget(liveTarget.url)) && !(liveFeed && liveBrowser && liveFeed.at >= liveTarget.at) ? (
                 <div className={`liveStage interactive ${forgeCanEmbed(liveTarget.url) ? "localTarget" : "externalTarget"}`}>
                   {forgeCanEmbed(liveTarget.url) ? (
                     <>

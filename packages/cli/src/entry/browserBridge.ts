@@ -28,6 +28,7 @@ import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, f
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
 import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
+import { forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
 import { agentStudioId } from "./agentScope.js";
@@ -339,7 +340,7 @@ export function makeBrowserTool(
   // toolUseId → the page a fill was approved for (checkPermissions → call).
   const approvedFills = new Map<string, { origin: string; domain?: string }>();
   // Per-call flags (the tool is exclusive, so one call at a time).
-  let callState: { handbackNote?: string; orderSubmission?: boolean; release?: () => void } = {};
+  let callState: { handbackNote?: string; forgeNote?: string; orderSubmission?: boolean; release?: () => void } = {};
 
   const endWatch = () => {
     if (!watch) return;
@@ -543,7 +544,8 @@ export function makeBrowserTool(
         attachOnly,
         cdpUrl,
         onChallenge,
-        onFrame: (jpeg) => frameSink?.(jpeg),
+        // The Forge view IS the live page the owner sees: never stream frames of it.
+        ...(cdpUrl && cdpUrl === forgeCdpUrl() ? {} : { onFrame: (jpeg: string) => frameSink?.(jpeg) }),
         paceMs: Number(process.env.ARES_BROWSER_PACE_MS) || 480,
       });
     }
@@ -635,8 +637,10 @@ export function makeBrowserTool(
       const strip = ensureFilmstrip();
       // mode: "explain" when the page is a Forge-kit explainer Ares generated
       // (the Forge goes warm and bursts), "project" for a real app or site.
+      // driven: Ares already navigated the Forge view itself, so the Forge only
+      // shows it (navigating it again would cancel Ares's own load).
       const emitTarget = (state: { url?: string; title?: string }, mode: "project" | "explain" = "project") => {
-        if (state.url) ctx?.emitProgress?.({ kind: "browser_target", url: state.url, title: state.title ?? "", mode });
+        if (state.url) ctx?.emitProgress?.({ kind: "browser_target", url: state.url, title: state.title ?? "", mode, ...(isForgeStrategy(browser?.strategy, forgeCdpUrl()) ? { driven: true } : {}) });
       };
       // Route the browser's live frames into THIS turn's UI panel (the embedded
       // browser the owner watches). Cleared when the call ends.
@@ -744,7 +748,33 @@ export function makeBrowserTool(
       // kept sending headless:false out of habit and a second Edge window
       // popped over the desktop every time. The Forge toolbar's "Open separate
       // copy" is the owner's way to a real window.
-      const br = await ensureBrowser(i.action === "preview" ? true : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
+      // On the desktop, every page Ares works on is the Forge's native view —
+      // the real page the owner sees, never a background copy streamed as
+      // frames (forgeView.ts). The first call wakes the view (the Forge opens
+      // a blank page) and waits for it; only if it never comes up does this
+      // fall back to the background browser, and the result says so.
+      const forge = forgeCdpUrl();
+      let forgeNote: string | undefined;
+      let onForge = false;
+      if (forge && !extensionAttach && i.action !== "handshake") {
+        if (isForgeStrategy(browser?.strategy, forge)) onForge = true;
+        else {
+          if (!(await forgeViewUp(forge, 300))) {
+            ctx?.emitProgress?.({ kind: "browser_target", url: "about:blank", title: "", mode: "project", driven: true });
+          }
+          if (await forgeViewUp(forge, forgeWaitMs())) {
+            if (browser) await browser.close().catch(() => undefined);
+            browser = null;
+            onForge = true;
+          } else {
+            forgeNote = "The Forge view did not come up (is the Ares window open?), so this ran in Ares's background browser — the owner cannot see or use this page.";
+          }
+        }
+      }
+      const br = onForge
+        ? await ensureBrowser(true, true, forge)
+        : await ensureBrowser(i.action === "preview" ? true : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
+      if (forgeNote) callState.forgeNote = forgeNote;
       announceWatch(br, i, ctx);
       if (i.action === "model") return runModelAction(i, br, { cwd: context.workspace, sessionId: ctx?.sessionId, emitTarget, filmstripDir: filmstripDir(strip) });
       if (i.action === "login" || i.action === "fill_secret") return fillFromVault(br, i, ctx);
@@ -1123,6 +1153,7 @@ export function makeBrowserTool(
         if (callState.handbackNote) {
           result.output = { ...result.output, ownerTookOver: true, note: [callState.handbackNote, result.output.note].filter(Boolean).join(" ") };
         }
+        if (callState.forgeNote) result.output = { ...result.output, note: [callState.forgeNote, result.output.note].filter(Boolean).join(" ") };
         if (!prints.size) return result;
         return { ...result, output: redactDeep(result.output, redact), ...(result.display ? { display: redact(result.display) } : {}) };
       } catch (err) {

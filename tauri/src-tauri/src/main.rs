@@ -30,6 +30,8 @@ use windows_sys::Win32::Graphics::Dwm::{
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+mod forge_view;
+
 struct DaemonState {
     child: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -387,6 +389,9 @@ fn start_daemon(
         .current_dir(&runtime.workspace)
         .env("ARES_AGENT_ENABLED", "1")
         .env("ARES_HOME", desktop_ares_home_string())
+        // The Forge's native view (forge_view.rs): the Browser tool drives the
+        // page the owner sees through this DevTools endpoint.
+        .env("ARES_FORGE_CDP_URL", forge_view::cdp_url().unwrap_or_default())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2228,6 +2233,32 @@ fn ares_living_surface_ready(
     .map_err(|error| format!("failed to acknowledge Living Surface: {error}"))
 }
 
+/// Show the Forge's native browser view over the panel (creating it on first
+/// use) and navigate it to `url` when given. See forge_view.rs.
+#[tauri::command]
+fn ares_forge_view_show(app: tauri::AppHandle, url: Option<String>, navigate: Option<bool>, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    let profile = desktop_ares_home()
+        .unwrap_or_else(|| PathBuf::from(".ares-home"))
+        .join("forge-browser");
+    forge_view::show(&app, url, navigate.unwrap_or(true), forge_view::Bounds { x, y, w, h }, profile)
+}
+
+#[tauri::command]
+fn ares_forge_view_hide(app: tauri::AppHandle) -> Result<(), String> {
+    forge_view::hide(&app)
+}
+
+/// back | forward | reload | stop
+#[tauri::command]
+fn ares_forge_view_control(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    forge_view::control(&app, &action)
+}
+
+#[tauri::command]
+fn ares_forge_view_url(app: tauri::AppHandle) -> Option<String> {
+    forge_view::current_url(&app)
+}
+
 fn main() {
     // WebKitGTK's DMABUF renderer is the #1 cause of a stuttering/black-flashing
     // Tauri app on Linux (especially NVIDIA + Wayland). Disabling it falls back
@@ -2399,7 +2430,11 @@ fn main() {
             ares_living_surface_close,
             ares_living_surface_ready,
             ares_living_surface_context,
-            ares_living_surface_stage
+            ares_living_surface_stage,
+            ares_forge_view_show,
+            ares_forge_view_hide,
+            ares_forge_view_control,
+            ares_forge_view_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ares Tauri app")

@@ -428,3 +428,27 @@ test("superseded context epochs are pruned — only the latest two survive", asy
     kernel.close();
   }
 });
+
+test("a compacted chat whose history holds no typed text stays on the rail (preview falls back to the owner's own inputs)", async () => {
+  // Field, 2026-10-20: after compaction a long live chat projected only a recap
+  // reminder + tool results, the preview came back empty, and the husk filter
+  // hid it — clicking the agent then opened an older chat instead.
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "ares-compacted-rail-"));
+  const kernel = await openWorkspaceSessionKernel(workspace);
+  try {
+    kernel.createSession({ id: "compacted-live", workspaceKey: workspace, metadata: { provider: "p", model: "m", createdAt } });
+    kernel.admitInput({ id: "in-1", sessionId: "compacted-live", idempotencyKey: "in-1", delivery: "queue", payload: { content: [{ type: "text", text: "keep going till it's daily-play good" }] } });
+    const lease = kernel.acquireRunnerLease("compacted-live", "seed", 5_000);
+    const fence = fenceOf(lease);
+    kernel.appendMessage(fence, { id: "recap", role: "user", parts: [{ type: "system_reminder", data: { type: "system_reminder", text: "Compacted memory — the earlier part was summarized." } }] });
+    kernel.appendMessage(fence, { id: "a1", role: "assistant", model: "m", parts: [{ type: "text", data: { type: "text", text: "working" } }] });
+    kernel.releaseRunnerLease(fence, { executionState: "completed", workOutcome: "not_applicable" });
+
+    const listed = await listSessions(workspace, 20);
+    const hit = listed.find((s) => s.id === "compacted-live");
+    assert.ok(hit, "the chat is still listed");
+    assert.equal(hit.preview, "keep going till it's daily-play good");
+  } finally {
+    kernel.close();
+  }
+});

@@ -2969,7 +2969,11 @@ function canonicalSessionSummary(
     createdAt: meta.createdAt,
     updatedAt: new Date(session.updatedAtMs).toISOString(),
     eventCount: kernel.countEvents(session.id),
-    preview: previewFromMessages(messages),
+    // After compaction the projected history can hold no typed user text at
+    // all (a recap + tool results) — the preview came back empty and the
+    // husk filter hid a long, live chat from the rail. The owner's own
+    // admitted inputs are the durable record of what they typed.
+    preview: previewFromMessages(messages) || previewFromInputs(kernel.listInputs(session.id)),
     workflowMode: session.workflowMode,
     ...(session.title ? { label: session.title } : {}),
   };
@@ -3578,6 +3582,17 @@ async function scanRolloutForListing(eventsPath: string): Promise<{ eventCount: 
     }
   }
   return { eventCount, preview: "" };
+}
+
+function previewFromInputs(inputs: readonly AdmittedInputRecord[]): string {
+  for (let index = inputs.length - 1; index >= 0; index--) {
+    const payload = inputs[index]?.payload as { content?: unknown; text?: unknown } | null;
+    const blocks = Array.isArray(payload?.content) ? payload!.content as Array<{ type?: unknown; text?: unknown }> : [];
+    const text = (typeof payload?.text === "string" ? payload.text : blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string).join(" "))
+      .replace(/\s+/g, " ").trim();
+    if (text) return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+  return "";
 }
 
 function previewFromMessages(messages: readonly Message[]): string {

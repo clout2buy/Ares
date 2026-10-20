@@ -307,3 +307,13 @@
 /* A room or a tab takes the whole stage: the chat header steps aside. The
    skins set display on .stageHead, which would otherwise beat `hidden`. */
 .ares .stageHead[hidden] { display: none !important; }
+
+/* a room with other people: hosted on the directory */
+.roomSharedBox { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(10, 132, 255, 0.05); }
+.roomSharedBox[data-on="1"] { border-color: rgba(10, 132, 255, 0.5); }
+.roomSharedToggle { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.roomSharedToggle input { margin-top: 3px; accent-color: #0a84ff; }
+.roomSharedToggle span { font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.roomSharedToggle strong { color: var(--text); }
+.roomInviteNames { width: 100%; margin-top: 8px; padding: 9px 12px; border-radius: 10px; font: inherit; font-size: 13.5px; color: var(--text); background: var(--panel, #100e0b); border: 1px solid var(--line); outline: none; }
+.roomInviteNames:focus { border-color: rgba(10, 132, 255, 0.7); }

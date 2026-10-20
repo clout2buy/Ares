@@ -1,0 +1,59 @@
+/* People — discovery sheet + invite cards (people.tsx). Shared tokens only. */
+.peopleFace {
+  --agent: #0a84ff;
+  position: relative; flex: none;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  color: #fff; font-weight: 700; letter-spacing: .02em;
+  background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--agent) 55%, #fff 0%) 0%, var(--agent) 45%, color-mix(in srgb, var(--agent) 60%, #000) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent) 60%, transparent);
+  user-select: none;
+}
+.peopleFace[data-online="1"]::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%; background: #30d158; box-shadow: 0 0 0 2px var(--bg-raised, #111); }
+
+.peopleSheet { width: min(640px, calc(100vw - 32px)); gap: 14px; }
+.peopleMe { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
+.peopleMeRow { display: flex; align-items: center; gap: 12px; }
+.peopleMeText { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.peopleMeText strong { font-size: 14.5px; }
+.peopleMeText em { font-size: 12px; font-style: normal; color: var(--muted); }
+.peopleMeText span { font-size: 12.5px; color: var(--text); margin-top: 2px; }
+.peopleClaim { display: flex; flex-direction: column; gap: 10px; }
+.peopleClaimFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.peopleClaimFoot > div { display: flex; gap: 6px; }
+.peopleUrlToggle { font-size: 11.5px; color: var(--faint); }
+.peopleUrlToggle:hover { color: var(--muted); }
+.peopleUrl { display: flex; gap: 6px; }
+.peopleUrl input { flex: 1; padding: 7px 10px; border-radius: 9px; font: 12px/1.4 var(--mono); color: var(--text); background: var(--panel, #100e0b); border: 1px solid var(--line); outline: none; }
+.peopleSearch { display: flex; flex-direction: column; gap: 10px; }
+.peopleSearchField { width: 100%; padding: 11px 14px; border-radius: 12px; font: inherit; font-size: 14.5px; color: var(--text); background: var(--panel, #100e0b); border: 1px solid var(--line); outline: none; }
+.peopleSearchField:focus { border-color: rgba(10, 132, 255, 0.7); box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.14); }
+.peopleSearchField:disabled { opacity: .5; }
+.peopleList { display: flex; flex-direction: column; gap: 6px; max-height: 44vh; overflow-y: auto; }
+.peopleRow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
+.peopleRowText { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.peopleRowText strong { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peopleRowText strong em { font-weight: 500; font-style: normal; font-size: 12px; color: var(--muted); }
+.peopleRowText > span { font-size: 12px; color: var(--muted); }
+.peopleAgents { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.peopleAgentChip { --agent: #8e8e93; padding: 2px 8px; border-radius: 999px; font-size: 11px; color: var(--text); background: color-mix(in srgb, var(--agent) 22%, transparent); border: 1px solid color-mix(in srgb, var(--agent) 40%, transparent); }
+.peopleRowBtns { display: flex; align-items: center; gap: 6px; flex: none; }
+.peopleRowBtns select { padding: 6px 8px; border-radius: 9px; font: inherit; font-size: 12.5px; color: var(--text); background: var(--panel, #100e0b); border: 1px solid var(--line); }
+.peopleNote { width: 130px; padding: 7px 10px; border-radius: 999px; font: inherit; font-size: 12.5px; color: var(--text); background: var(--panel, #100e0b); border: 1px solid var(--line); outline: none; }
+.peopleNote:focus { border-color: rgba(10, 132, 255, 0.6); width: 180px; }
+.peopleMsg { padding: 7px 13px; }
+
+/* invites in the rail */
+.inviteCard { display: flex; align-items: center; gap: 10px; margin: 2px 4px 6px; padding: 9px 10px; border-radius: 14px; background: rgba(10, 132, 255, 0.08); border: 1px solid rgba(10, 132, 255, 0.35); }
+.inviteCardText { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.inviteCardText strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inviteCardText strong em { font-weight: 500; font-style: normal; font-size: 11px; color: var(--muted); }
+.inviteCardText span { font-size: 12px; color: var(--muted); }
+.inviteCardText span b { color: var(--text); font-weight: 600; }
+.inviteCardText q { font-size: 12px; color: var(--text); font-style: italic; }
+.inviteCardBtns { display: flex; align-items: center; gap: 4px; flex: none; }
+.inviteCardBtns .agentPrimary { padding: 6px 12px; font-size: 12px; }
+.inviteCardBtns .agentGhost { width: 26px; height: 26px; padding: 0; border-radius: 50%; display: grid; place-items: center; font-size: 15px; }
+.peopleBtn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 10px; font-size: 12.5px; font-weight: 600; color: var(--muted); border: 1px dashed var(--line); }
+.peopleBtn:hover { color: var(--text); border-color: rgba(10, 132, 255, 0.6); }
+.peopleBtn em { padding: 1px 6px; border-radius: 999px; font: 700 10px/1.4 var(--mono); font-style: normal; color: #fff; background: #ff375f; }

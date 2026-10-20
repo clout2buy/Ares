@@ -646,8 +646,10 @@ function RoomSettings({ room, onRename, onRules, onDelete }: { room: RoomVm; onR
 
 // ─── sheets ───────────────────────────────────────────────────────────────
 
-export function RoomCreateSheet({ agents, photos, error, onCreate, onClose }: { agents: AgentVm[]; photos: Record<string, string>; error?: string; onCreate: (spec: { name: string; emoji: string; color: string; purpose: string; agents: string[]; rules: Partial<RoomRulesVm> }) => void; onClose: () => void }) {
+export function RoomCreateSheet({ agents, photos, error, directoryUser, onCreate, onCreateShared, onClose }: { agents: AgentVm[]; photos: Record<string, string>; error?: string; /** Our username on the directory, when claimed: rooms can be hosted there and people invited by name. */ directoryUser?: string; onCreate: (spec: { name: string; emoji: string; color: string; purpose: string; agents: string[]; rules: Partial<RoomRulesVm> }) => void; onCreateShared?: (spec: { name: string; purpose: string; agents: string[]; invite: string[] }) => void; onClose: () => void }) {
   const [name, setName] = useState("");
+  const [shared, setShared] = useState(false);
+  const [invite, setInvite] = useState("");
   const [emoji, setEmoji] = useState(ROOM_EMOJI[0]!);
   const [color, setColor] = useState(ROOM_COLORS[0]!);
   const [purpose, setPurpose] = useState("");
@@ -689,6 +691,17 @@ export function RoomCreateSheet({ agents, photos, error, onCreate, onClose }: { 
             </div>
           )}
         </div>
+        {directoryUser && onCreateShared ? (
+          <div className="agentField roomSharedBox" data-on={shared ? "1" : "0"}>
+            <label className="roomSharedToggle">
+              <input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />
+              <span><strong>With other people</strong> — hosted on the Ares directory, so nobody needs a server. Invite them by username; their agents run on their machines.</span>
+            </label>
+            {shared ? (
+              <input className="roomInviteNames" value={invite} placeholder="@cupid, @dawg" spellCheck={false} onChange={(e) => setInvite(e.target.value)} />
+            ) : null}
+          </div>
+        ) : null}
         <div className="agentFieldRow">
           <div className="agentField">
             <span>Icon</span>
@@ -709,7 +722,16 @@ export function RoomCreateSheet({ agents, photos, error, onCreate, onClose }: { 
           <div />
           <div>
             <button className="agentGhost" onClick={onClose}>Cancel</button>
-            <button className="agentPrimary" disabled={!name.trim()} onClick={() => onCreate({ name: name.trim(), emoji, color, purpose: purpose.trim(), agents: picked, rules: { turns } })}>Open room</button>
+            <button
+              className="agentPrimary"
+              disabled={!name.trim()}
+              onClick={() => {
+                if (shared && onCreateShared) onCreateShared({ name: name.trim(), purpose: purpose.trim(), agents: picked, invite: invite.split(/[\s,]+/).map((x) => x.replace(/^@/, "").toLowerCase()).filter(Boolean) });
+                else onCreate({ name: name.trim(), emoji, color, purpose: purpose.trim(), agents: picked, rules: { turns } });
+              }}
+            >
+              {shared ? "Open & invite" : "Open room"}
+            </button>
           </div>
         </footer>
       </div>
@@ -717,8 +739,8 @@ export function RoomCreateSheet({ agents, photos, error, onCreate, onClose }: { 
   );
 }
 
-export function RoomJoinSheet({ agents, photos, error, busy, onJoin, onClose }: { agents: AgentVm[]; photos: Record<string, string>; error?: string; busy?: boolean; onJoin: (link: string, agents: string[]) => void; onClose: () => void }) {
-  const [link, setLink] = useState("");
+export function RoomJoinSheet({ agents, photos, error, busy, initialLink, intro, onJoin, onClose }: { agents: AgentVm[]; photos: Record<string, string>; error?: string; busy?: boolean; initialLink?: string; intro?: string; onJoin: (link: string, agents: string[]) => void; onClose: () => void }) {
+  const [link, setLink] = useState(initialLink ?? "");
   const [picked, setPicked] = useState<string[]>([]);
   const ok = /^ares:\/\/room\?/.test(link.trim());
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
@@ -727,8 +749,8 @@ export function RoomJoinSheet({ agents, photos, error, busy, onJoin, onClose }: 
       <div className="agentSheet roomSheet" role="dialog" aria-label="Join a room" onClick={(e) => e.stopPropagation()}>
         <header className="agentSheetHead">
           <div>
-            <h3>Join a room</h3>
-            <p>Paste the link someone sent you. The room lives on their Ares; your agents stay on yours and only messages travel. You can mute or recall your agents there at any time.</p>
+            <h3>{intro ? "You're invited" : "Join a room"}</h3>
+            <p>{intro ? `${intro} ` : "Paste the link someone sent you. "} The room lives on their Ares; your agents stay on yours and only messages travel. You can mute or recall your agents there at any time.</p>
           </div>
           <button className="agentClose" onClick={onClose} aria-label="Close">×</button>
         </header>

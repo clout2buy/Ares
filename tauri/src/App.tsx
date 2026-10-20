@@ -147,6 +147,7 @@ import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./f
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
+import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
 import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
 import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
@@ -730,6 +731,16 @@ function App() {
   const [roomError, setRoomError] = useState<string | undefined>();
   const roomMessagesRef = useRef(roomMessages);
   roomMessagesRef.current = roomMessages;
+  // ─── People: the directory (people.tsx, daemon/directory.ts) ─────────────
+  const [directory, setDirectory] = useState<DirectoryVm>({ url: "", shownAgents: [], connected: false, online: false, inbox: [] });
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [peopleResults, setPeopleResults] = useState<DirectoryProfileVm[]>([]);
+  const [peopleSearching, setPeopleSearching] = useState(false);
+  const [peopleBusy, setPeopleBusy] = useState(false);
+  const [peopleError, setPeopleError] = useState<string | undefined>();
+  const peopleSearchSeq = useRef(0);
+  /** An invite the owner accepted: the join sheet opens prefilled with its link. */
+  const [acceptingInvite, setAcceptingInvite] = useState<DirectoryInviteVm | null>(null);
   /** Every seat session (an agent's private thread for a room): hidden from the chat lists. */
   const roomSeatIds = useMemo(() => new Set(rooms.flatMap((r) => Object.values(r.threads))), [rooms]);
   /** Each agent's own memories, loaded when its profile opens. */
@@ -1717,6 +1728,7 @@ function App() {
     void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "rooms_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "directory_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agent_avatar", agentId: "ares" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
@@ -2524,6 +2536,40 @@ function App() {
             return true;
           }
           return false;
+        }
+        case "directory_state": {
+          const d = (e as { directory?: DirectoryVm }).directory;
+          if (d) setDirectory(d);
+          setPeopleBusy(false);
+          setPeopleError(undefined);
+          return true;
+        }
+        case "directory_results": {
+          const ev = e as { requestId?: string; users?: DirectoryProfileVm[] };
+          if (ev.requestId && ev.requestId !== `ps_${peopleSearchSeq.current}`) return true;
+          setPeopleResults(Array.isArray(ev.users) ? ev.users : []);
+          setPeopleSearching(false);
+          return true;
+        }
+        case "directory_sent": {
+          const ev = e as { roomId?: string; dm?: boolean };
+          setPeopleBusy(false);
+          setPeopleError(undefined);
+          if (ev.dm && ev.roomId) { setPeopleOpen(false); setActiveRoomId(ev.roomId); setView("chat"); daemonCmd({ type: "room_history", roomId: ev.roomId }); }
+          return true;
+        }
+        case "directory_invite": {
+          const item = (e as { item?: DirectoryInviteVm }).item;
+          if (item) pushLog(`[people] @${item.from.username} invited you to ${item.roomName}`);
+          return true;
+        }
+        case "directory_error": {
+          const ev = e as { error?: string; requestId?: string; command?: string };
+          setPeopleBusy(false);
+          setPeopleSearching(false);
+          if (ev.command === "directory_group") setRoomError(String(ev.error ?? "the directory did not answer"));
+          else setPeopleError(String(ev.error ?? "the directory did not answer"));
+          return true;
         }
         case "rooms_list": {
           if (Array.isArray(e.rooms)) setRooms(e.rooms as RoomVm[]);
@@ -4815,6 +4861,20 @@ function App() {
           onNew={() => { setRoomError(undefined); setRoomSheet({ kind: "create" }); }}
           onJoin={() => { setRoomError(undefined); setRoomSheet({ kind: "join" }); }}
         />
+        {directory.inbox.map((item) => (
+          <InviteCard
+            key={item.id}
+            item={item}
+            onAccept={() => { setAcceptingInvite(item); setRoomError(undefined); setRoomSheet({ kind: "join" }); }}
+            onDismiss={() => daemonCmd({ type: "directory_ack", id: item.id })}
+          />
+        ))}
+        <div className="roomRowActions">
+          <button className="peopleBtn" onClick={() => { setPeopleError(undefined); setPeopleOpen(true); if (directory.connected) { peopleSearchSeq.current += 1; setPeopleSearching(true); daemonCmd({ type: "directory_search", text: "", requestId: `ps_${peopleSearchSeq.current}` }); } }} title="Find people on Ares">
+            <span>@</span> {directory.connected ? `People · @${directory.username}` : "People — claim a username"}
+            {directory.inbox.length ? <em>{directory.inbox.length}</em> : null}
+          </button>
+        </div>
         </div>
         {/* Autocomplete of existing project names for the row-level assign input. */}
         <datalist id="aresProjectOptions">
@@ -5722,11 +5782,32 @@ function App() {
           ))}
         </div>
       ) : null}
+      {peopleOpen ? (
+        <PeopleSheet
+          directory={directory}
+          agents={agents}
+          photos={agentPhotos}
+          rooms={rooms}
+          results={peopleResults}
+          searching={peopleSearching}
+          error={peopleError}
+          busy={peopleBusy}
+          onSearch={(q) => { if (!directory.connected) return; peopleSearchSeq.current += 1; setPeopleSearching(true); daemonCmd({ type: "directory_search", text: q, requestId: `ps_${peopleSearchSeq.current}` }); }}
+          onClaim={(username, displayName) => { setPeopleBusy(true); setPeopleError(undefined); daemonCmd({ type: "directory_claim", name: username, label: displayName }); }}
+          onProfile={(patch) => { setPeopleError(undefined); daemonCmd({ type: "directory_profile", profile: patch }); }}
+          onMessage={(username, text) => { setPeopleBusy(true); setPeopleError(undefined); daemonCmd({ type: "directory_dm", name: username, ...(text.trim() ? { text: text.trim() } : {}) }); }}
+          onInvite={(username, roomId) => { setPeopleBusy(true); setPeopleError(undefined); daemonCmd({ type: "directory_invite", name: username, roomId }); }}
+          onUrl={(url) => { setPeopleError(undefined); daemonCmd({ type: "directory_url", url }); }}
+          onClose={() => setPeopleOpen(false)}
+        />
+      ) : null}
       {roomSheet?.kind === "create" ? (
         <RoomCreateSheet
           agents={agents}
           photos={agentPhotos}
           error={roomError}
+          directoryUser={directory.connected ? directory.username : undefined}
+          onCreateShared={(spec) => { setRoomError(undefined); daemonCmd({ type: "directory_group", room: spec }); }}
           onCreate={(spec) => { setRoomError(undefined); daemonCmd({ type: "room_create", room: spec }); }}
           onClose={() => { setRoomSheet(null); setRoomError(undefined); }}
         />
@@ -5736,8 +5817,15 @@ function App() {
           photos={agentPhotos}
           error={roomError}
           busy={roomSheet.busy}
-          onJoin={(link, bring) => { setRoomError(undefined); setRoomSheet({ kind: "join", busy: true }); daemonCmd({ type: "room_join", link, agents: bring }); }}
-          onClose={() => { setRoomSheet(null); setRoomError(undefined); }}
+          initialLink={acceptingInvite?.link}
+          intro={acceptingInvite ? `${acceptingInvite.from.displayName} (@${acceptingInvite.from.username}) invited you to ${acceptingInvite.roomName}.${acceptingInvite.text ? ` "${acceptingInvite.text}"` : ""}` : undefined}
+          onJoin={(link, bring) => {
+            setRoomError(undefined);
+            setRoomSheet({ kind: "join", busy: true });
+            daemonCmd({ type: "room_join", link, agents: bring });
+            if (acceptingInvite) { daemonCmd({ type: "directory_ack", id: acceptingInvite.id }); setAcceptingInvite(null); }
+          }}
+          onClose={() => { setRoomSheet(null); setRoomError(undefined); setAcceptingInvite(null); }}
         />
       ) : roomSheet?.kind === "invite" ? (() => {
         const room = rooms.find((r) => r.id === roomSheet.roomId);

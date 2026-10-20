@@ -21,6 +21,12 @@ export interface AresEvent {
   me?: unknown;
   message?: unknown;
   link?: string;
+  /** People directory: directory_state / directory_results / directory_sent /
+   *  directory_invite / directory_error. */
+  directory?: unknown;
+  users?: unknown[];
+  item?: unknown;
+  requestId?: string;
   command?: string;
   threadId?: string;
   to?: unknown;

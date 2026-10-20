@@ -117,6 +117,10 @@ export interface DaemonInputCommand {
   guestId?: string;
   muted?: boolean;
   notes?: string;
+  /** directory_profile — displayName / bio / shownAgents (persona ids). */
+  profile?: Record<string, unknown>;
+  /** directory_search / gateway_request correlation. */
+  requestId?: string;
 }
 
 export class AsyncQueue<T> {

@@ -75,6 +75,7 @@ import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetwo
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { AgentError, DesktopAgents } from "./daemon/agents.js";
 import { DesktopRooms, RoomError } from "./daemon/rooms.js";
+import { DesktopDirectory, DirectoryError } from "./daemon/directory.js";
 import { setRoomsHost } from "./roomScope.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
 import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
@@ -1066,6 +1067,28 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return [];
   });
   setRoomsHost(desktopRooms.host());
+  // ─── The people directory (usernames, lookup, invites; daemon/directory.ts) ─
+  const publicOriginOf = async (): Promise<string | null> => {
+    try {
+      const pair = await new RemoteAgentClient(live.context.home).phonePairing();
+      const u = new URL(pair.url);
+      const proto = u.protocol === "wss:" ? "https:" : u.protocol === "ws:" ? "http:" : u.protocol;
+      return `${proto}//${u.host}`;
+    } catch {
+      return null;
+    }
+  };
+  const desktopDirectory = new DesktopDirectory({
+    home: live.context.home,
+    agents: desktopAgents,
+    rooms: desktopRooms,
+    publicOrigin: publicOriginOf,
+    emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n"),
+  });
+  await desktopDirectory.load().catch((error) => {
+    process.stderr.write(`[ares] directory failed to load: ${error instanceof Error ? error.message : String(error)}\n`);
+    return undefined;
+  });
   roomsTap = (sessionId, obj) => {
     if (!desktopRooms.isSeat(sessionId)) return;
     if (obj.type === "turn_start") {
@@ -2585,6 +2608,59 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           }
         } catch (error) {
           out({ type: "room_error", command: kind, ...(roomId ? { roomId } : {}), error: error instanceof Error ? error.message : String(error) });
+        }
+        continue;
+      }
+      // ─── People directory ───────────────────────────────────────────────
+      if (
+        command.type === "directory_status" ||
+        command.type === "directory_claim" ||
+        command.type === "directory_profile" ||
+        command.type === "directory_search" ||
+        command.type === "directory_invite" ||
+        command.type === "directory_dm" ||
+        command.type === "directory_group" ||
+        command.type === "directory_ack" ||
+        command.type === "directory_url"
+      ) {
+        const kind = command.type;
+        const out = (payload: Record<string, unknown>) => process.stdout.write(JSON.stringify(payload) + "\n");
+        const requestId = typeof (command as { requestId?: unknown }).requestId === "string" ? (command as { requestId: string }).requestId : undefined;
+        try {
+          if (kind === "directory_status") out({ type: "directory_state", directory: desktopDirectory.wire() });
+          else if (kind === "directory_url") out({ type: "directory_state", directory: await desktopDirectory.setUrl(typeof command.url === "string" ? command.url : "") });
+          else if (kind === "directory_claim") out({ type: "directory_state", directory: await desktopDirectory.claim(typeof command.name === "string" ? command.name : "", typeof command.label === "string" ? command.label : undefined), claimed: true });
+          else if (kind === "directory_profile") {
+            const patch = (command as { profile?: { displayName?: string; bio?: string; shownAgents?: string[] } }).profile ?? {};
+            out({ type: "directory_state", directory: await desktopDirectory.updateProfile(patch) });
+          } else if (kind === "directory_search") {
+            const users = await desktopDirectory.search(typeof command.text === "string" ? command.text : "");
+            out({ type: "directory_results", ...(requestId ? { requestId } : {}), q: command.text ?? "", users });
+          } else if (kind === "directory_invite") {
+            const item = await desktopDirectory.invite(typeof command.name === "string" ? command.name : "", cleanCommandId(command.roomId) ?? "", typeof command.text === "string" ? command.text : undefined);
+            out({ type: "directory_sent", item, roomId: command.roomId });
+          } else if (kind === "directory_dm") {
+            const res = await desktopDirectory.dm(typeof command.name === "string" ? command.name : "", typeof command.text === "string" ? command.text : undefined);
+            out({ type: "directory_sent", item: res.item, roomId: res.roomId, dm: true });
+          } else if (kind === "directory_group") {
+            const spec = (command.room ?? {}) as { name?: unknown; purpose?: unknown; invite?: unknown; text?: unknown; agents?: unknown };
+            const res = await desktopDirectory.group(
+              typeof spec.name === "string" ? spec.name : "",
+              Array.isArray(spec.invite) ? spec.invite.filter((x): x is string => typeof x === "string") : [],
+              typeof spec.purpose === "string" ? spec.purpose : undefined,
+              typeof spec.text === "string" ? spec.text : undefined,
+            );
+            // our own agents come along right away
+            for (const id of Array.isArray(spec.agents) ? spec.agents.filter((x): x is string => typeof x === "string") : []) {
+              await desktopRooms.addAgent(res.roomId, id).catch(() => undefined);
+            }
+            const made = desktopRooms.get(res.roomId);
+            out({ type: "room_created", room: made ? desktopRooms.wire(made) : null, joined: true, invited: res.invited });
+          } else if (kind === "directory_ack") {
+            out({ type: "directory_state", directory: await desktopDirectory.ack(cleanCommandId(command.id) ?? "") });
+          }
+        } catch (error) {
+          out({ type: "directory_error", command: kind, ...(requestId ? { requestId } : {}), error: error instanceof Error ? error.message : String(error) });
         }
         continue;
       }

@@ -3,7 +3,7 @@
 // browser preview — instead of launching a hidden browser and streaming it.
 // Same-origin only: leaving the served folder means leaving this connector.
 import type { AccessibilityNode, BrowserConnector, BrowserState, ConsoleEntry, PointerGesture, Screenshot } from "@ares/connectors";
-import { PAGE_GONE, drivablePage, drivePage, waitForDrivablePage } from "./previewServer.js";
+import { PAGE_GONE, drivablePage, drivePage, rootChangedSince, waitForDrivablePage } from "./previewServer.js";
 
 export function createServedPageBrowser(root: string, origin: string, page: { id: string; url: string }): BrowserConnector {
   let pageId = page.id;
@@ -12,7 +12,21 @@ export function createServedPageBrowser(root: string, origin: string, page: { id
   // replaces the page, and commands must follow it rather than wait out a
   // copy that is gone. If the copy leaves mid-command, wait for the next one
   // and run it there once.
+  // Act on the CURRENT code: if a file under the folder changed after this
+  // copy loaded (the agent just edited it), reload once and use the new copy.
+  // The Forge no longer reloads mid-turn on every edit, which used to load
+  // half-applied changes between two edits and report their errors.
+  const freshen = async (op: string): Promise<void> => {
+    if (op === "navigate") return;
+    const page = await drivablePage(root);
+    if (!page || !(await rootChangedSince(root, page.loadedAt).catch(() => false))) return;
+    const since = Date.now();
+    await drivePage(root, page.id, "navigate", { url: page.url }, 5_000).catch(() => undefined);
+    const next = await waitForDrivablePage(root, 10_000, { since });
+    if (next) pageId = next.id;
+  };
   const run = async <T>(op: string, args?: unknown, timeoutMs?: number): Promise<T> => {
+    await freshen(op);
     const newest = await drivablePage(root);
     if (newest) pageId = newest.id;
     try {

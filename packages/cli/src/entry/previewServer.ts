@@ -830,11 +830,34 @@ async function handleDrive(served: ServedFolder, req: IncomingMessage, res: Serv
 }
 
 /** The newest open copy of a page under `root` that can take commands. */
-export async function drivablePage(root: string, opts: { since?: number } = {}): Promise<{ url: string; id: string } | null> {
+export async function drivablePage(root: string, opts: { since?: number } = {}): Promise<{ url: string; id: string; loadedAt: number } | null> {
   const served = await servers.get(canonicalRoot(root))?.catch(() => undefined);
   if (!served?.drive) return null;
   const page = alivePages(served.drive).find((p) => p.firstSeenAt >= (opts.since ?? 0));
-  return page ? { url: page.url, id: page.id } : null;
+  return page ? { url: page.url, id: page.id, loadedAt: page.firstSeenAt } : null;
+}
+
+/** Did any file under `root` change after `sinceMs`? (Bounded walk; skips
+ *  dependency folders.) The page driver uses it to act on fresh code. */
+export async function rootChangedSince(root: string, sinceMs: number): Promise<boolean> {
+  let seen = 0;
+  const walk = async (dir: string, depth: number): Promise<boolean> => {
+    if (depth > 6 || seen > 3000) return false;
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (++seen > 3000) return false;
+      if (e.name.startsWith(".") || e.name === "node_modules") continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (await walk(full, depth + 1)) return true;
+      } else {
+        const st = await fs.stat(full).catch(() => null);
+        if (st && st.mtimeMs > sinceMs) return true;
+      }
+    }
+    return false;
+  };
+  return walk(root, 0);
 }
 
 /** Wait (bounded) for a copy of a page under `root` to come up and poll. */

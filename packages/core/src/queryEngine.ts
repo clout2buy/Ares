@@ -1047,6 +1047,21 @@ function leadsWithToolResult(m: Message): boolean {
   return m.role === "user" && m.content[0]?.type === "tool_result";
 }
 
+function assistantText(m: Message | null | undefined): string {
+  return (m?.content ?? []).filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text").map((b) => b.text).join("\n");
+}
+
+/** The reply's LAST paragraph commits to more work by the agent itself
+ *  ("I'll keep going", "Next I'll…", "Continuing with…") and is not a question
+ *  that waits on the owner. Exported for tests. */
+export function promisesMoreWork(text: string): boolean {
+  const tail = text.trim().split(/\n\s*\n/).pop()?.trim() ?? "";
+  if (!tail || tail.length > 600) return false;
+  if (/\?\s*$/.test(tail)) return false; // asks the owner something
+  if (/\b(should I|do you want|would you like|want me to|let me know|which (one|do you)|your call)\b/i.test(tail)) return false;
+  return /\b(I['’]ll|I will|I'm going to|I am going to)\s+(keep going|continue|carry on|keep at it|keep working|move on to|start on|get (on|to) (it|that|those|them)|tackle)\b|^\s*(next|continuing|moving on)\b[^.]{0,80}\b(I['’]ll|I will)\b/im.test(tail);
+}
+
 /** True when an assistant message carries nothing the user/model can act on —
  *  no non-whitespace text, no thinking, no tool calls. An end_turn with this is
  *  the "typing then nothing" silent-success path the engine must not bless. */
@@ -1552,6 +1567,8 @@ export class QueryEngine {
   /** Whether the todo-completion gate has already fired this turn (fires once,
    *  then trusts the model — never an infinite "you have todos" loop). */
   private todoGateFired = false;
+  /** Fired once per turn: the reply promised more work, then ended. */
+  private promiseGateFired = false;
   /** Effort-dial override for the rest of THIS turn: set when a stalled attempt
    *  downgraded reasoning, cleared at the next turn start. */
   private turnReasoningOverride: ReasoningLevel | null = null;
@@ -2632,6 +2649,7 @@ export class QueryEngine {
     const gatherStallRounds = currentGatherStallRounds();
     // (turnAbort was already armed at the top of the turn — see above.)
     this.todoGateFired = false; // re-arm the todo-completion gate for this turn
+    this.promiseGateFired = false;
     this.turnReasoningOverride = null; // effort dial resets each turn
     this.lastRoundHadFailure = false; // tactical dial starts clean
     // Coding completion truth. Tool-reported mutations arm the proof gate;
@@ -3621,6 +3639,31 @@ export class QueryEngine {
             createdAt: new Date().toISOString(),
           });
           yield { type: "system_reminder_injected", text: `todo gate: ${pending.length} unfinished item(s) — finish or explain`, source: "instructions" };
+          continue;
+        }
+        // Promise gate: the reply SAYS it will keep working ("I'll keep going
+        // in that order", "Next I'll…") and then ends the turn. An owner who
+        // asked for "keep going till it's good" came back to a stopped agent
+        // and a to-do list (2026-10-20). Not a re-verification push: it acts
+        // only on the agent's own stated next step, once per turn, and never
+        // when the reply is waiting on the owner.
+        if (
+          !this.promiseGateFired &&
+          !this.liveSignal().aborted &&
+          stopReason === "end_turn" &&
+          promisesMoreWork(assistantText(assistantMessage))
+        ) {
+          this.promiseGateFired = true;
+          this.messages.push({
+            id: cryptoId(),
+            role: "user",
+            content: [{
+              type: "system_reminder",
+              text: "You just said you'd keep going, then ended the turn. Do that work now instead of describing it. End only when it's done, or when you genuinely need the owner (say plainly what you need).",
+            }],
+            createdAt: new Date().toISOString(),
+          });
+          yield { type: "system_reminder_injected", text: "promised more work — continuing", source: "instructions" };
           continue;
         }
         // Turn end is the model's call. There is deliberately NO re-verification

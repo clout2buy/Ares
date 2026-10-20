@@ -15,8 +15,7 @@
 //   4. twoClientCheck passes on the relay and FAILS, naming the binary frame,
 //      against a relay with the stick-fight bug.
 //   5. Rooms playtest runs it from an agent's turn; room work no longer tells
-//      agents to Open things, and a room work thread can open only the room's
-//      own links.
+//      agents to Open things unasked, and asked, it opens the real link live.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -246,15 +245,15 @@ test("Rooms playtest from an agent's turn; room work doesn't push things onto th
     const sid = await rooms.startWork(room, fax.id, "make a stick-figure fighting game");
     const goal = delivered.find((d) => d.sid === sid).goal;
     assert.doesNotMatch(goal, /use Open/);
-    assert.match(goal, /don't Open links, preview in the Forge or take screenshots unless they asked/);
+    assert.match(goal, /Don't put things on your owner's screen unasked/);
+    assert.match(goal, /open the REAL link live in the Forge .* never a screenshot, never a local copy/);
     assert.match(goal, /Rooms playtest/);
-    // and that work thread can only open the room's own links
-    assert.equal(await rooms.mayOpen(sid, "https://example.com/"), false);
-    assert.equal(await rooms.mayOpen(sid, `${origin}/gateway/rooms/${room.id}/files/stickfight.html`), true);
-    assert.equal(await rooms.mayOpen("sess_fax_private", "https://example.com/"), true, "a private chat still may");
+    // the work thread is never "blocked" from opening a link (a game on the owner's own domain)
+    assert.equal(await rooms.mayOpen(sid, "https://stick.example.org/"), true);
+    assert.equal(await rooms.mayOpen("sess_fax_private", "https://example.com/"), true, "a private chat may");
 
     const layer = roomLayerBlock({ name: "x", purpose: "", turns: "mention", maxAgentRun: 4, members: [], board: "", notes: "", folder: "/tmp/x" });
-    assert.match(layer, /Open it on YOUR owner's screen only when they ask/);
+    assert.match(layer, /on YOUR owner's screen only when they ask — then the real link, live/);
     assert.match(layer, /Rooms playtest/);
   } finally {
     rooms.stop();

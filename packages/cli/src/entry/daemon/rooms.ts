@@ -877,7 +877,7 @@ export class DesktopRooms {
       `You are ${member.name}, doing this on your full model for the room "${room.name}". Do the work for real: build it, run it, check it. ` +
       `Put every file people need into the room with Rooms share (room: "${room.name}") — fetch the latest copy first if it already exists. ` +
       `Keep the board true (Rooms job). When done, post ONE short message in the room with Rooms say (room: "${room.name}"): what changed, the link, and what you checked. ` +
-      `Your owner's screen is theirs: don't Open links, preview in the Forge or take screenshots unless they asked for exactly that — test headlessly (shell, scripts). ` +
+      `Don't put things on your owner's screen unasked; test headlessly (shell, scripts). When they ask to see it ("open it in the Forge"), open the REAL link live in the Forge (Browser open with the url) — never a screenshot, never a local copy. ` +
       `Anything multiplayer uses the room relay (see the Rooms tool), and Rooms playtest (name) must pass before you call it working; say what it did not prove. ` +
       `When a connection fails, read the close code and the step it stopped at before changing anything — never guess at NAT or firewalls.`;
     const inputId = `room_work_${randomUUID()}`;
@@ -906,13 +906,14 @@ export class DesktopRooms {
     return this.store.list().some((r) => Object.values(r.workThreads ?? {}).includes(sessionId));
   }
 
-  /** May this session open a link on the owner's screen? Private chats yes;
-   *  a room seat or a room WORK thread only that room's shared-file links —
-   *  a work thread's task comes from the room, where anyone may have asked. */
+  /** May this session open a link on the owner's screen? Private chats and
+   *  room WORK threads yes (owner, 2026-10-20: a game on a domain they own
+   *  must open, never "blocked"); a room seat only that room's shared-file
+   *  links — anyone in the room can talk to a seat. */
   async mayOpen(sessionId: string, url: string): Promise<boolean> {
     const seat = this.seats.get(sessionId);
-    const room = this.roomOfSession(sessionId);
-    if (!seat && !room) return true;
+    if (!seat) return true;
+    const room = this.store.get(seat.roomId);
     if (!room) return false;
     const prefix = room.host.kind === "remote"
       ? roomFileUrl(room.host.origin, room.host.roomId, "")

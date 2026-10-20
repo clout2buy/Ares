@@ -230,8 +230,14 @@ test("owner declines the card -> rejected, no deploy; the same issue is not retr
   await settle(r.maintainer);
   const [p] = await r.maintainer.listProposals();
   r.approvals.respond({ approvalId: `maintainer:${p.id}`, verb: "deny" });
-  await new Promise((res) => setTimeout(res, 30));
-  const after = await r.maintainer.getProposal(p.id);
+  // Wait for the decision to land rather than a fixed 30ms: under CI load the
+  // response handler can take longer, and a fixed sleep flakes (v0.59.1 run).
+  let after;
+  for (let i = 0; i < 200; i++) {
+    after = await r.maintainer.getProposal(p.id);
+    if (after.status !== "pending") break;
+    await new Promise((res) => setTimeout(res, 10));
+  }
   assert.equal(after.status, "rejected");
   assert.equal(r.calls.deploy.length, 0);
   assert.equal(r.calls.receipts.length, 0, "no approval receipt was ever written");

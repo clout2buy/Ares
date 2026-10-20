@@ -898,3 +898,68 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 26px -12px rgba(10, 124, 255, 0.9);
 }
 .ares.ares[data-style="modern"][data-surface="messages"] .chat > .jumpLatest:hover { filter: brightness(1.08); background: linear-gradient(180deg, #3b95ff, #0a7cff); }
+
+/* ── second pass (owner, 2026-10-20: "the old Ares logo is bleeding through",
+   "the buttons on top right and bottom left are old") ───────────────────── */
+/* no Spartan backdrop, no old wordmark or starter chips: the empty stage is
+   just the thread on the wallpaper */
+.ares.ares[data-style="modern"][data-surface="messages"] .backdrop::before,
+.ares.ares[data-style="modern"][data-surface="messages"] .chat:has(> .empty)::before,
+.ares.ares[data-style="modern"][data-surface="messages"] .hm::before { display: none !important; background: none !important; }
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty { background: none; }
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .emptyEmblem,
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .wordmark,
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .wordmarkSub,
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .emptyAsk,
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .starters { display: none !important; }
+.ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty::after {
+  content: "Make someone to start. Text them like a person.";
+  display: block;
+  text-align: center;
+  margin-top: 28vh;
+  font: 500 15px/1.4 var(--font);
+  color: var(--muted);
+}
+/* the title-bar icons: plain glass circles, no old coins or borders */
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .titleTools { gap: 4px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .titleIcon {
+  width: 30px; height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  color: var(--muted);
+}
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .titleIcon:hover { color: var(--text-hi); background: rgba(255, 255, 255, 0.14); }
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .titleIcon .medallion,
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .titleIcon > span { background: none; border: none; box-shadow: none; }
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .winControls button { width: 34px; height: 30px; border-radius: 50%; color: var(--muted); }
+.ares.ares[data-style="modern"][data-surface="messages"] .titlebar .winControls .winClose:hover { background: rgba(255, 92, 92, 0.85); color: #fff; }
+/* the bottom-left nav: a clean row of glyphs in a glass capsule; the active
+   one is a blue lozenge. No coins, no rings. */
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav {
+  flex-direction: row;
+  justify-content: space-around;
+  padding: 6px;
+  border-radius: 999px;
+}
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button {
+  width: 44px; height: 38px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button > .medallion,
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button .medallion {
+  width: 22px; height: 22px;
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--muted);
+}
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button[data-on="1"] .medallion { color: #fff; }
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button:not([data-on="1"]):hover { background: rgba(255, 255, 255, 0.08); }
+.ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button em { top: 2px; right: 2px; font-size: 9px; }

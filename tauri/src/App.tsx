@@ -3153,7 +3153,10 @@ function App() {
         // The sessions_list handler merges by id, so the duplicate request on a
         // fresh spawn (where daemon_ready also fires) is harmless.
         if (state.running) {
-          for (const type of ["sessions_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
+          // Agents, rooms and the people directory hydrate here too: they were
+          // only requested on daemon_ready, so a refresh showed no agents and an
+          // unclaimed username even though both sat on disk (owner, 2026-10-20).
+          for (const type of ["sessions_list", "agents_list", "rooms_list", "directory_status", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {

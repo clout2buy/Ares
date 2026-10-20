@@ -40,6 +40,17 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.59.1",
+    date: "October 2026",
+    title: "Stays put",
+    tagline: "Your agents and your username now come back exactly as you left them after a refresh, and the look is cleaner.",
+    highlights: [
+      { icon: "💾", title: "Agents stay", blurb: "Refreshing the window no longer empties your agent list. Everything you made is still there.", tag: "Fixed" },
+      { icon: "@", title: "Username stays claimed", blurb: "Your claimed username and People status come back after a refresh.", tag: "Fixed" },
+      { icon: "🧹", title: "Quieter look", blurb: "The old Ares emblem and starter buttons are gone from the Messages look, and the window and nav icons are plain.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.59.0",
     date: "October 2026",
     title: "People",

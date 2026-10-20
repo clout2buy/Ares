@@ -307,7 +307,7 @@ test("deploy: approval receipt must be signed, for this commit, from the owner, 
   const receipt = (sha, extra = {}) => sign({ kind: "deploy-approval", proposalId: "p1", sha, approvedBy: "owner", approvedAt: new Date().toISOString(), ackHighRisk: false, ...extra }, key);
   const put = async (name, doc) => { const p = path.join(f.root, name); await fsp.writeFile(p, JSON.stringify(doc)); return p; };
 
-  const forged = receipt(low.sha); forged.payload.approvedBy = "owner"; forged.sig = forged.sig.slice(0, -1) + "0";
+  const forged = receipt(low.sha); forged.payload.approvedBy = "owner"; forged.sig = forged.sig.slice(0, -1) + (forged.sig.endsWith("0") ? "1" : "0"); // always a DIFFERENT last char (a fixed "0" matched the real sig 1 run in 16)
   let out = await deployChange(f.deployOpts(low.sha, { yes: false, receiptFile: await put("forged.json", forged) }));
   assert.match(out.record.reason, /signature/);
   out = await deployChange(f.deployOpts(low.sha, { yes: false, receiptFile: await put("other.json", receipt("0".repeat(40))) }));

@@ -682,8 +682,16 @@ export function makeBrowserTool(
       };
       // Route the browser's live frames into THIS turn's UI panel (the embedded
       // browser the owner watches). Cleared when the call ends.
+      // ~8 fps is plenty to watch Ares work; an animating page would otherwise
+      // push a full JPEG per repaint into the UI.
+      let lastFrameAt = 0;
       frameSink = ctx?.emitProgress
-        ? (jpeg) => ctx.emitProgress?.({ kind: "browser_frame", image: jpeg } as Record<string, unknown>)
+        ? (jpeg) => {
+            const now = Date.now();
+            if (now - lastFrameAt < 120) return;
+            lastFrameAt = now;
+            ctx.emitProgress?.({ kind: "browser_frame", image: jpeg } as Record<string, unknown>);
+          }
         : null;
       // This turn's approval surface for staged effects and challenge handoffs —
       // the engine permission card, same transport as every gated tool.
@@ -1243,6 +1251,11 @@ export function makeBrowserTool(
         throw err;
       } finally {
         callState.release?.();
+        // The screencast keeps firing on every repaint after the call: a game
+        // repaints 60x a second, and each ~150KB frame went to a turn that had
+        // ended — the daemon heap hit 4GB in under five minutes and died.
+        frameSink = null;
+        progressSink = null;
       }
     },
   });

@@ -954,6 +954,10 @@ function App() {
   const liveHeldKeys = useRef<Set<string>>(new Set());
   const [liveUrl, setLiveUrl] = useState("http://127.0.0.1:3000");
   const [liveRevision, setLiveRevision] = useState(0);
+  // A reload is a fresh page: the last load's errors no longer apply.
+  useEffect(() => {
+    setForgeTelemetry((t) => (t && t.errors.length ? { ...t, errors: [], errorCount: 0 } : t));
+  }, [liveRevision]);
   // The INTERACTIVE embedded browser — Ares drives its own self-contained HTML
   // apps/games in-window (same-origin), no Playwright. Driven via webview_cmd.
   const embeddedRef = useRef<EmbeddedBrowserHandle>(null);
@@ -3124,7 +3128,8 @@ function App() {
           warningCount: typeof d.warningCount === "number" ? d.warningCount : 0,
           lowFps: d.lowFps === true,
         });
-        if (errors.length > 0) setForgeDrawer((cur) => cur ?? "errors");
+        // The drawer opens only from the red pill (owner: "that panel is annoying
+        // af"); the ticker line and Ares still get every error.
         if (typeof d.fps === "number") setFpsHistory((h) => [...h.slice(-39), d.fps as number]);
         if (errors.length > 0) logForge(errors[errors.length - 1]!, "error");
         else if (typeof d.loadMs === "number") logForge(`page loaded in ${d.loadMs}ms`, "good");

@@ -66,6 +66,9 @@ export interface AgentsHost {
   /** Export the caller's own memories (an agent's, or a named agent's when
    *  the owner's main chat asks) to Markdown + JSON files. */
   exportMemory(fromSession: string, agent?: string): Promise<{ agent: AgentCard; markdown: string; json: string; count: number }>;
+  /** Add or remove one of an agent's standing rules (the asking agent's own;
+   *  from Ares's main chat, the agent named in `to`). */
+  rules(fromSession: string, change: { to?: string; add?: string; remove?: string }): Promise<{ agent: AgentCard; rules: string[] }>;
   /** An agent makes an agent. Only the owner can delete one. */
   create(fromSession: string, spec: { name: string; role: string; emoji?: string; color?: string; model?: string }): Promise<AgentCard>;
 }

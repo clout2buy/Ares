@@ -231,12 +231,21 @@ export function AgentAvatar({
 /** Square-crop and shrink a picked image to a 512px JPEG data: URL — what the
  *  avatar store keeps (and what the iPhone app downloads). */
 export async function squareAvatar(file: Blob, edge = 512): Promise<string> {
-  const url = URL.createObjectURL(file);
-  try {
+  // A data: URL, never URL.createObjectURL: the desktop's CSP allows data: in
+  // img-src but not blob:, so a blob URL failed to load and EVERY photo was
+  // rejected as "not an image" (owner, 2026-10-20: "we can't add profile pictures").
+  if (file.type && !/^image\/(png|jpe?g|webp)$/i.test(file.type)) throw new Error("pick a PNG, JPEG or WebP picture");
+  const url = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("couldn't read that file"));
+    reader.readAsDataURL(file);
+  });
+  {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const el = new Image();
       el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error("that file is not an image"));
+      el.onerror = () => reject(new Error("that file is not a picture Ares can read — use PNG, JPEG or WebP"));
       el.src = url;
     });
     const side = Math.min(img.naturalWidth, img.naturalHeight);
@@ -247,8 +256,6 @@ export async function squareAvatar(file: Blob, edge = 512): Promise<string> {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.9);
-  } finally {
-    URL.revokeObjectURL(url);
   }
 }
 

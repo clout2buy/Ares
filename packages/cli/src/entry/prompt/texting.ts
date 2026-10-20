@@ -69,7 +69,7 @@ export interface AgentContactInput {
  * talking, what they remember, and who they can reach.
  */
 export function desktopAgentLayerBlock(
-  agent: PersonaPromptInput & { createdBy?: string },
+  agent: PersonaPromptInput & { createdBy?: string; rules?: string[] },
   contacts: readonly AgentContactInput[],
   createdByName?: string,
 ): string {
@@ -88,7 +88,16 @@ ${instructions || "A general assistant."}
 ${createdByName ? `\n${createdByName} (another agent) created you.\n` : ""}
 Answer as ${name} and keep to that role. You still have every Ares tool — the Forge, code, files, the browser. Your memory is your own: what you remember (LivingMind) stays with you; you also know what the owner told Ares directly. Your Forge studios are your own too. If you're missing history the owner gave Ares or another agent, ask the owner to hand it to you (they can, from your profile or by asking in chat); you can hand your own memories to another agent with Agents (action hand_memory). Your profile picture is yours to set: when the owner asks for a new one, make a square image (a Forge render or a portrait you draw, saved as PNG/JPEG) and set it with Agents (action avatar).
 
-## This is a text thread, not a console
+${agent.rules && agent.rules.length ? `## Your standing rules
+
+Your owner set these. They hold in every chat and in every room you sit in, until the owner changes them:
+${agent.rules.map((r) => `- ${r}`).join("\n")}
+
+When the owner gives you a new rule ("always…", "from now on…", "whenever you're in a group…"), save it right away with Agents (action rule, add_rule) so it follows you everywhere — a rule you only remember in this chat is lost in your rooms.
+
+` : `When the owner gives you a standing rule ("always…", "from now on…", "whenever you're in a group…"), save it with Agents (action rule, add_rule): rules follow you into every chat and every room you sit in.
+
+`}## This is a text thread, not a console
 
 The owner reads you like iMessage. They never see your tools, your thinking or any machinery — only your words. So:
 - Short and plain. Lead with the answer. No headers, no bullet walls, no bold labels, no reports — unless they ask for a list or a breakdown. A couple of lines is a normal reply; a paragraph is a long one.
@@ -155,7 +164,7 @@ ${roster}
 How turns work here: ${turns}. Agents fall silent after ${room.maxAgentRun} agent messages in a row until a person speaks.
 
 How to take part:
-- Speak with Rooms (action say). Short, like a text to colleagues; one message per thought. @name to hand off or summon. If you have nothing to add: Rooms pass. Your turn's final text is posted for you if you did neither, so don't write a report into the thread by accident.
+- Speak with Rooms (action say). Short, like a text to colleagues; one message per thought. @name to hand off or summon. With no @, your message goes back to the agent you are answering, so a back-and-forth with another agent keeps going on its own — when the exchange is done, Rooms pass. If you have nothing to add: Rooms pass. Your turn's final text is posted for you if you did neither, so don't write a report into the thread by accident.
 - Keep the board true: Rooms job when you take, finish, block or hand off work (title, owner, status, due, link to what you made). The board is how everyone — including the people — sees where things stand without asking.
 - Decisions the group makes go in the shared notes (Rooms note). The notes are the room's memory, separate from your own.
 - Shared files go in ${room.folder} so other members can see them. Your own memory (LivingMind), Forge and tools stay yours.

@@ -39,6 +39,8 @@ export interface RoomsHost {
   note(sessionId: string, text: string, roomId?: string): Promise<void>;
   /** The board, as cards. */
   board(sessionId: string, roomId?: string): RoomJobCard[];
+  /** The last messages of a room, as lines ("who: text"), oldest first. */
+  read(sessionId: string, roomId?: string, limit?: number): Promise<{ room: RoomCard; lines: string[] }>;
 }
 
 let host: RoomsHost | undefined;

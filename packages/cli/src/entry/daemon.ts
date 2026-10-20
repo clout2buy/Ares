@@ -1116,7 +1116,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   const applyAgent = (entry: DaemonEntry, sid: string): void => {
     const agent = desktopAgents.agentForSession(sid);
     entry.live.tenant = agent ? { role: "owner", agent: agent.id } : (entry.live.tenant?.role === "owner" ? { role: "owner" } : entry.live.tenant);
-    entry.live.setAgentLayer?.(desktopAgents.layerFor(agent?.id) + desktopRooms.layerFor(sid));
+    // A room seat carries that room; a private chat carries the list of rooms
+    // the agent sits in (so it can read them and speak there on request).
+    const roomLayer = desktopRooms.isSeat(sid) ? desktopRooms.layerFor(sid) : desktopRooms.privateLayerFor(agent?.id);
+    entry.live.setAgentLayer?.(desktopAgents.layerFor(agent?.id) + roomLayer);
   };
   /** The roster changed (an agent made, renamed, deleted): every live agent
    *  chat's contact list is now stale. */

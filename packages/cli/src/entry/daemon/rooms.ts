@@ -627,6 +627,19 @@ export class DesktopRooms {
 
   // ─── prompt layer ──────────────────────────────────────────────────────
 
+  /** For an agent's PRIVATE chat: the rooms it sits in, so "how's the
+   *  agency room going" or "tell Cupid's agent X" lands without a lookup. */
+  privateLayerFor(agentId: string | undefined): string {
+    if (!agentId) return "";
+    const mine = this.store.list().filter((r) => r.members.some((m) => m.kind === "agent" && m.home === "local" && m.id === agentId));
+    if (mine.length === 0) return "";
+    const lines = mine.slice(0, 12).map((r) => {
+      const others = r.members.filter((m) => !(m.kind === "agent" && m.home === "local" && m.id === agentId)).map((m) => m.name);
+      return `- ${r.emoji ? r.emoji + " " : ""}${r.name}${r.rules.paused ? " (paused)" : ""} — with ${others.slice(0, 8).join(", ") || "nobody yet"}${r.purpose ? ` · ${r.purpose.replace(/\s+/g, " ").slice(0, 100)}` : ""}`;
+    });
+    return `\n\n## Rooms you are in\n\nYou also sit in these group chats (your seat there is a separate thread, but it is still you — same memory, same rules):\n${lines.join("\n")}\nFrom here, Rooms read shows what's been said in one, and Rooms say (room: "<name>") speaks there as you. Replies to what you say come back to your seat in that room, not to this chat; read the room to follow up.`;
+  }
+
   layerFor(sessionId: string): string {
     const seat = this.seats.get(sessionId);
     if (!seat) return "";
@@ -1026,6 +1039,12 @@ export class DesktopRooms {
       board: (sid, roomName) => {
         const { room } = this.roomForCall(sid, roomName);
         return room.board.map((j) => this.jobCard(room, j));
+      },
+      read: async (sid, roomName, limit) => {
+        const { room } = this.roomForCall(sid, roomName);
+        const msgs = await this.store.messages(room.id, Math.max(1, Math.min(80, limit ?? 25)));
+        const lines = msgs.map((m) => `${m.kind === "system" || m.from.kind === "system" ? "·" : m.from.name}: ${m.text.replace(/\s+/g, " ").trim().slice(0, 500)}`);
+        return { room: this.card(room), lines };
       },
     };
   }

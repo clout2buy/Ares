@@ -26,6 +26,8 @@ import {
   DESKTOP_THREADS_MAX,
   PERSONA_INSTRUCTIONS_MAX,
   PERSONA_NAME_MAX,
+  PERSONA_RULES_MAX,
+  PERSONA_RULE_MAX,
   PersonaStore,
   newPersonaId,
   type Persona,
@@ -45,6 +47,8 @@ export interface AgentWire {
   model: string;
   reasoningLevel?: string;
   instructions: string;
+  /** Standing rules (every chat and room seat). */
+  rules: string[];
   threads: string[];
   /** Version of the agent's profile picture (the phone's avatar store); the
    *  desktop fetches the bytes with agent_avatar when it changes. */
@@ -64,6 +68,7 @@ export interface AgentSpec {
   model?: unknown;
   reasoningLevel?: unknown;
   instructions?: unknown;
+  rules?: unknown;
 }
 
 export interface DesktopAgentsDeps {
@@ -109,6 +114,7 @@ export function agentToWire(p: Persona, avatar?: string): AgentWire {
     model: p.model,
     ...(p.reasoningLevel ? { reasoningLevel: p.reasoningLevel } : {}),
     instructions: p.instructions,
+    rules: [...(p.rules ?? [])],
     threads: [...(p.desktopThreads ?? [])],
     onPhone: Boolean(p.sessionId),
     ...(p.createdBy ? { createdBy: p.createdBy } : {}),
@@ -228,6 +234,11 @@ export class DesktopAgents {
       if (typeof spec.instructions !== "string") throw new AgentError("instructions must be text");
       out.instructions = spec.instructions.trim().slice(0, PERSONA_INSTRUCTIONS_MAX);
     }
+    if (spec.rules !== undefined) {
+      const raw = Array.isArray(spec.rules) ? spec.rules : typeof spec.rules === "string" ? spec.rules.split(/\r?\n/) : null;
+      if (!raw) throw new AgentError("rules must be a list");
+      out.rules = raw.filter((x): x is string => typeof x === "string").map((x) => x.replace(/^[-*•]\s*/, "").trim()).filter(Boolean).map((x) => x.slice(0, PERSONA_RULE_MAX)).slice(0, PERSONA_RULES_MAX);
+    }
     return out;
   }
 
@@ -246,6 +257,7 @@ export class DesktopAgents {
       model: patch.model ?? brain.model,
       ...(patch.reasoningLevel ? { reasoningLevel: patch.reasoningLevel } : {}),
       instructions: patch.instructions ?? "",
+      ...(patch.rules && patch.rules.length ? { rules: patch.rules } : {}),
       sessionId: "",
       desktopThreads: [],
       ...(createdBy ? { createdBy } : {}),
@@ -273,7 +285,7 @@ export class DesktopAgents {
     return {
       persona: next,
       brainChanged: next.provider !== existing.provider || next.model !== existing.model,
-      layerChanged: next.name !== existing.name || next.instructions !== existing.instructions,
+      layerChanged: next.name !== existing.name || next.instructions !== existing.instructions || JSON.stringify(next.rules ?? []) !== JSON.stringify(existing.rules ?? []),
     };
   }
 
@@ -330,7 +342,7 @@ export class DesktopAgents {
       ...this.store.list().filter((p) => p.id !== agent.id).map((p) => ({ name: p.name, role: p.instructions })),
     ];
     const maker = agent.createdBy ? this.store.get(agent.createdBy)?.name : undefined;
-    return `\n\n${desktopAgentLayerBlock(agent, contacts, maker)}`;
+    return `\n\n${desktopAgentLayerBlock({ ...agent, rules: agent.rules ?? [] }, contacts, maker)}`;
   }
 
   /** Name or id → agent (case-insensitive name match). */
@@ -427,6 +439,24 @@ export class DesktopAgents {
         const done = await handMemories(memoryFile, { from: self?.id ?? "ares", to: target.id, about, fromName: self?.name ?? "Ares" });
         this.deps.emit({ type: "agent_memory_changed", agentId: target.id });
         return { to: card(target), copied: done.copied, skipped: done.skipped };
+      },
+      rules: async (fromSession, change) => {
+        const self = this.agentForSession(fromSession);
+        const target = self ?? (change.to ? this.resolve(change.to) : undefined);
+        if (!target) throw new AgentError(change.to ? `no agent called "${change.to}"` : "name the agent (to) whose rules to change");
+        if (self && change.to && this.resolve(change.to)?.id !== self.id) throw new AgentError("an agent can only change its own rules — ask the owner for another agent's");
+        let rules = [...(target.rules ?? [])];
+        if (change.add) {
+          const r = change.add.trim().slice(0, PERSONA_RULE_MAX);
+          if (r && !rules.some((x) => x.toLowerCase() === r.toLowerCase())) rules.push(r);
+        }
+        if (change.remove) {
+          const needle = change.remove.trim().toLowerCase();
+          rules = rules.filter((x) => !x.toLowerCase().includes(needle));
+        }
+        rules = rules.slice(-PERSONA_RULES_MAX);
+        await this.update(target.id, { rules });
+        return { agent: card(target), rules };
       },
       exportMemory: async (fromSession, name) => {
         const memoryFile = this.deps.memoryFile;

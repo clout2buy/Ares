@@ -37,6 +37,9 @@ export interface Persona {
   /** Another agent made this one (AGENT-SOCIETY: agents may create agents;
    *  only the owner deletes). Absent = the owner made it. */
   createdBy?: string;
+  /** Standing rules the owner gave this agent ("in group chats, keep it to
+   *  one line"). They ride in every chat and room seat of the agent. */
+  rules?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -45,6 +48,8 @@ export interface Persona {
 export const DEFAULT_PERSONA_ID = "ares";
 export const PERSONA_INSTRUCTIONS_MAX = 4_000;
 export const PERSONA_NAME_MAX = 40;
+export const PERSONA_RULES_MAX = 24;
+export const PERSONA_RULE_MAX = 400;
 /** Old desktop threads past this fall off the agent (the sessions stay on disk). */
 export const DESKTOP_THREADS_MAX = 200;
 const PERSONA_ID_RE = /^p_[a-z0-9]{6,32}$/;
@@ -87,6 +92,7 @@ function normalize(raw: unknown): Persona | null {
       ? { desktopThreads: [...new Set(r.desktopThreads.filter((t): t is string => typeof t === "string" && t.length > 0 && t.length <= 200))].slice(-DESKTOP_THREADS_MAX) }
       : {}),
     ...(isPersonaId(r.createdBy) ? { createdBy: r.createdBy as string } : {}),
+    ...(Array.isArray(r.rules) ? { rules: r.rules.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim().slice(0, PERSONA_RULE_MAX)).slice(0, PERSONA_RULES_MAX) } : {}),
     createdAt: str(r.createdAt) ?? now,
     updatedAt: str(r.updatedAt) ?? now,
   };

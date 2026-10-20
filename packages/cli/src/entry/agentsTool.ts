@@ -14,7 +14,7 @@ import { agentsHost, type AgentCard } from "./agentScope.js";
 
 const input = z
   .object({
-    action: z.enum(["list", "text", "create", "avatar", "hand_memory", "export_memory"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, hand memories to an agent, or export an agent's memory to files"),
+    action: z.enum(["list", "text", "create", "avatar", "hand_memory", "export_memory", "rule"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, hand memories to an agent, export an agent's memory to files, or add/remove one of your standing rules"),
     to: z.string().min(1).max(60).optional().describe("text: the agent's name (or id)"),
     message: z.string().min(1).max(4000).optional().describe("text: what to say — write it like a text to a colleague, with everything they need"),
     urgent: z.boolean().optional().describe("text: true only when it cannot wait for their current work to finish"),
@@ -24,6 +24,8 @@ const input = z
     color: z.string().regex(/^#[0-9a-f]{6}$/i).optional().describe("create: avatar colour, hex"),
     model: z.string().max(120).optional().describe("create: model id (default: the owner's current model)"),
     about: z.string().min(1).max(200).optional().describe("hand_memory: only memories about this (e.g. 'my finances', 'the racing game'); omit to hand everything"),
+    add_rule: z.string().min(1).max(400).optional().describe("rule: a standing rule to keep from now on — in every chat AND every room you sit in (e.g. 'in group chats, keep replies to one line'). Save one whenever the owner says 'always…', 'from now on…', 'whenever you're in a group…'."),
+    remove_rule: z.string().min(1).max(400).optional().describe("rule: drop the standing rule that contains this text"),
     image: z.string().min(1).max(1024).optional().describe("avatar: path to a square JPEG/PNG/WebP (≤2 MB) you made — e.g. a Forge render or a screenshot of a portrait you drew. It becomes your face in the sidebar, in chats and on the owner's iPhone."),
   })
   .strict();
@@ -70,6 +72,11 @@ export function makeAgentsTool() {
           output: { ok: true, to: done.to, copied: done.copied, skipped: done.skipped },
           display: `handed ${done.copied} memor${done.copied === 1 ? "y" : "ies"} to ${done.to.name}${i.about ? ` about ${i.about}` : ""}${done.skipped ? ` (${done.skipped} they already had)` : ""}`,
         };
+      }
+      if (i.action === "rule") {
+        if (!i.add_rule && !i.remove_rule) throw new Error("rule needs add_rule or remove_rule");
+        const out = await host.rules(from, { to: i.to, add: i.add_rule, remove: i.remove_rule });
+        return { output: { ok: true, agent: out.agent, rules: out.rules }, display: `${out.agent.name}'s rules:\n${out.rules.map((r) => `- ${r}`).join("\n") || "(none)"}` };
       }
       if (i.action === "export_memory") {
         const out = await host.exportMemory(from, i.to);

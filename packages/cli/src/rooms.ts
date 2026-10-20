@@ -476,6 +476,19 @@ export function mentionedMembers(text: string, members: readonly RoomMember[]): 
   return hits;
 }
 
+/** The agent this message answers: the last agent before it, since the last
+ *  person spoke, that is not its own author. */
+export function previousAgentSpeaker(message: RoomMessage, recent: readonly RoomMessage[]): RoomFrom | undefined {
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const m = recent[i]!;
+    if (m.seq >= message.seq) continue;
+    if (m.kind === "system" || m.kind === "job" || m.kind === "note") continue;
+    if (m.from.kind === "person") return undefined;
+    if (m.from.kind === "agent" && !(m.from.id === message.from.id && (m.from.home ?? "local") === (message.from.home ?? "local"))) return m.from;
+  }
+  return undefined;
+}
+
 /** How many agent messages have run since a person last spoke (newest last). */
 export function agentRun(messages: readonly RoomMessage[]): number {
   let n = 0;
@@ -541,6 +554,16 @@ export function dispatchFor(room: Room, message: RoomMessage, recent: readonly R
   if (message.from.kind === "person" || message.kind === "system") {
     const lead = agents[0];
     return { agents: lead && lead.home === "local" ? [lead.id] : [], waitingForHuman: false };
+  }
+  // An agent that names nobody is answering whoever spoke to it: the reply
+  // goes back to the last OTHER agent in the exchange (owner, 2026-10-20: "my
+  // agent talked to Cupid's, his responded, and it stopped"). Ends when a
+  // person speaks, an agent passes, or the run cap trips.
+  const replyTo = previousAgentSpeaker(message, recent);
+  if (replyTo) {
+    const member = agents.find((m) => sameMember(m, replyTo));
+    if (member && member.home === "local" && !member.muted) return { agents: [member.id], waitingForHuman: false };
+    if (member) return { agents: [], waitingForHuman: false, reason: "reply goes to another machine" };
   }
   return { agents: [], waitingForHuman: false, reason: "nobody mentioned" };
 }

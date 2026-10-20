@@ -440,3 +440,5 @@
 .liveStage.nativeTarget { position: relative; }
 .forgeNativeStage { position: absolute; inset: 0; background: #0b0d12; }
 .liveStage.nativeTarget .forgeLoading { pointer-events: none; }
+/* Ares's own browser streamed over the stage while it drives (preview build). */
+.forgeNativeStage ~ .forgeDrivenFeed { position: absolute; inset: 0; border: 0; border-radius: 0; z-index: 2; }

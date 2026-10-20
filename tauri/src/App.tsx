@@ -5952,6 +5952,12 @@ function App() {
                     }}
                     onError={(message) => logForge(`the Forge view: ${message}`, "warn")}
                   />
+                  {/* Where Ares can't drive this view (the browser preview), it plays
+                      in its own browser and streams it: while frames arrive, show
+                      those over the page so the owner sees Ares actually playing. */}
+                  {liveBrowser && liveBrowser.at >= liveTarget.at && hudNow - liveBrowser.at < 4000 ? (
+                    <LiveFrameCanvas className="liveTelemetryMain forgeDrivenFeed" frame={liveBrowser.frame} title="Ares playing, live" />
+                  ) : null}
                   <div className="forgeLoading" data-on={liveLoading ? "1" : "0"} aria-hidden={!liveLoading}>
                     <span className="forgeLoadingUrl">{liveTarget.url.replace(/^https?:\/\//, "")}</span>
                   </div>

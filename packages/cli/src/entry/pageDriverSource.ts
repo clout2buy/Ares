@@ -206,7 +206,11 @@ export const PAGE_DRIVER_SOURCE = `(function(){
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:' + w + 'px;height:' + h + 'px;overflow:hidden"><style>' + css + '</style><div style="transform:translate(' + (-scrollX) + 'px,' + (-scrollY) + 'px)">' + new XMLSerializer().serializeToString(clone) + '</div></div></foreignObject></svg>';
     var out = document.createElement("canvas"); out.width = Math.round(w * scale); out.height = Math.round(h * scale);
     var g = out.getContext("2d"); g.scale(scale, scale);
-    g.fillStyle = getComputedStyle(document.body).backgroundColor || "#fff"; g.fillRect(0, 0, w, h);
+    // What the browser paints behind the page: the html/body background, or
+    // white when both are transparent. Never leave the image transparent —
+    // a WebGL canvas with alpha would read as pale slabs to the model.
+    var bg = [document.documentElement, document.body].map(function(el){ return el ? getComputedStyle(el).backgroundColor : ""; }).filter(function(c){ return c && !/^rgba\\(.*,\\s*0\\)$|^transparent$/.test(c); })[0] || "#fff";
+    g.fillStyle = bg; g.fillRect(0, 0, w, h);
     var page = await loadImage("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
     if (page) g.drawImage(page, 0, 0, w, h);
     else {

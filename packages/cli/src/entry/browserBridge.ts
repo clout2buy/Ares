@@ -828,7 +828,8 @@ export function makeBrowserTool(
       // shown in the Forge and Ares drives THAT copy through its page driver
       // — never a hidden browser streamed as screenshots.
       const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot, context.workspace) : null;
-      if (i.action === "open" || i.action === "preview") pageRoot = pageBr ? pageBr.strategy ?? null : null;
+      // A new page takes over; a refused one leaves the current page in place.
+      if (pageBr && (i.action === "open" || i.action === "preview")) pageRoot = pageBr.strategy ?? null;
       // Never a hidden browser (owner, 2026-10-20: "none should use the hidden
       // browser ever"): Ares works only where the owner can see it — the
       // Forge's native view, a served page open in the Forge, or the owner's

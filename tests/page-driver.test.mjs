@@ -114,3 +114,24 @@ test("the loopback address of a page Ares serves maps back to its folder", async
   assert.equal(hit?.root, served.root);
   assert.equal(await servedForUrl("http://127.0.0.1:1/x"), null);
 });
+
+test("a page address from before a restart still opens: same folder, same port", async (t) => {
+  const { servedForUrl } = await import("../packages/cli/dist/entry/previewServer.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-port-"));
+  const home = await mkdtemp(path.join(tmpdir(), "ares-port-home-"));
+  const prevHome = process.env.ARES_HOME;
+  process.env.ARES_HOME = home;
+  t.after(async () => {
+    await stopPreviewServers();
+    if (prevHome === undefined) delete process.env.ARES_HOME; else process.env.ARES_HOME = prevHome;
+    await rm(dir, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  });
+  await writeFile(path.join(dir, "index.html"), "<!doctype html><title>P</title>");
+  const before = await serveLocalTarget(path.join(dir, "index.html"));
+  await stopPreviewServers(); // the daemon restarts
+  const again = await servedForUrl(`${before.url}?seed=9`);
+  assert.equal(again?.root, before.root, "the old address finds its folder");
+  assert.equal(again?.origin, before.origin, "on the same port");
+  assert.equal((await fetch(`${again.origin}/index.html`)).status, 200);
+});

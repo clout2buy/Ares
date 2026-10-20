@@ -26,7 +26,7 @@
 //      there (/__ares/nm/<pkg>/…), anything else maps to a pinned CDN build.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, mkdirSync, promises as fs, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -624,18 +624,29 @@ export function serveFolder(root: string, opts: { sessionId?: string } = {}): Pr
       });
     });
     served.server = server;
-    server.on("error", (err) => {
+    // The same folder gets the same port across daemon restarts, so a page
+    // address an agent (or the Forge) already holds keeps working.
+    const preferred = rememberedPorts()[key]?.port;
+    let retried = false;
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      if (!retried && preferred && err.code === "EADDRINUSE") {
+        retried = true;
+        server.listen(0, "127.0.0.1");
+        return;
+      }
       servers.delete(key);
       reject(err);
     });
-    server.listen(0, "127.0.0.1", () => {
+    server.on("listening", () => {
       const { port } = server.address() as AddressInfo;
       // Never keep the daemon alive on our account; the server lives as long
       // as the process does and dies with it.
       server.unref();
       served.origin = `http://127.0.0.1:${port}`;
+      rememberPort(key, absRoot, port);
       resolve(served);
     });
+    server.listen(preferred ?? 0, "127.0.0.1");
   });
   servers.set(key, started);
   return started;
@@ -868,13 +879,52 @@ export async function drivePage(root: string, pageId: string, op: string, args?:
   });
 }
 
-/** The served folder behind a loopback URL Ares handed out (its origin), or null. */
+/** The served folder behind a loopback URL Ares handed out (its origin), or
+ *  null. A port from before a restart is served again from its folder. */
 export async function servedForUrl(url: string): Promise<{ root: string; origin: string; url: string } | null> {
-  let origin: string;
-  try { origin = new URL(url).origin; } catch { return null; }
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  const origin = parsed.origin;
   for (const p of servers.values()) {
     const served = await p.catch(() => undefined);
     if (served && served.origin === origin) return { root: served.root, origin, url };
   }
-  return null;
+  if (!/^(127\.0\.0\.1|localhost)$/.test(parsed.hostname)) return null;
+  const port = Number(parsed.port);
+  const remembered = Object.values(rememberedPorts()).find((r) => r.port === port);
+  if (!remembered) return null;
+  const stat = await fs.stat(remembered.root).catch(() => null);
+  if (!stat?.isDirectory()) return null;
+  const served = await serveFolder(remembered.root);
+  return { root: served.root, origin: served.origin, url: `${served.origin}${parsed.pathname}${parsed.search}${parsed.hash}` };
+}
+
+function portsFile(): string {
+  return path.join(process.env.ARES_HOME ?? path.join(os.homedir(), ".ares"), "preview-ports.json");
+}
+
+function rememberedPorts(): Record<string, { port: number; root: string }> {
+  try {
+    const raw = JSON.parse(readFileSync(portsFile(), "utf8")) as Record<string, unknown>;
+    const out: Record<string, { port: number; root: string }> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const r = v as { port?: unknown; root?: unknown };
+      if (typeof r?.port === "number" && typeof r.root === "string") out[k] = { port: r.port, root: r.root };
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function rememberPort(key: string, root: string, port: number): void {
+  try {
+    const all = rememberedPorts();
+    if (all[key]?.port === port) return;
+    // one port per folder; a port reused by another folder belongs to it now
+    for (const [k, r] of Object.entries(all)) if (r.port === port) delete all[k];
+    all[key] = { port, root };
+    mkdirSync(path.dirname(portsFile()), { recursive: true });
+    writeFileSync(portsFile(), JSON.stringify(all));
+  } catch {
+    // a remembered port is a convenience; never fail serving over it
+  }
 }

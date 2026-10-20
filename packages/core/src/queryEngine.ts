@@ -923,9 +923,14 @@ function isMicrocompactableTool(name: string): boolean {
   return MICROCOMPACT_TOOLS.has(name) || name.startsWith("mcp_");
 }
 const MICROCOMPACT_KEEP_RECENT = 6;
-const MICROCOMPACT_TRIGGER_RATIO = 0.72;
+// Each clearing rewrites history and so re-bills the whole cached conversation
+// once (a ~150k-token cache write) — while what it frees is re-read from cache
+// at a tenth of the price. Clearing far from the limit, a few kB at a time,
+// was a net LOSS every ~45s of a long turn. Clear only when the window needs
+// it, and in big batches.
+const MICROCOMPACT_TRIGGER_RATIO = 0.85;
 const MICROCOMPACT_MIN_RESULTS = 8;
-const MICROCOMPACT_MIN_SAVED_TOKENS = 8_000;
+const MICROCOMPACT_MIN_SAVED_TOKENS = 16_000;
 const MICROCOMPACT_PLACEHOLDER =
   "[old tool output cleared to save context — re-run the tool or Read the file if you need it again]";
 
@@ -943,7 +948,7 @@ const IMAGE_MICROCOMPACT_PLACEHOLDER =
   "[screenshot cleared to save context — re-take with the Browser/ComputerUse tool if needed]";
 function imageClearBatch(): number {
   const raw = Number(process.env.ARES_IMAGE_CLEAR_BATCH);
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 4;
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 6;
 }
 function imageKeepRounds(): number {
   const raw = Number(process.env.ARES_IMAGE_KEEP_ROUNDS);

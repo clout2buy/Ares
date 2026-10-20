@@ -30,6 +30,7 @@ export const PAGE_DRIVER_SOURCE = `(function(){
   window.addEventListener("error", function(ev){ if (ev && ev.message) keep("error", [ev.message]); });
   window.addEventListener("unhandledrejection", function(ev){ var r = ev && ev.reason; keep("error", ["unhandled rejection: " + (r && r.message ? r.message : r)]); });
 
+  var TAP_MS = 60;
   function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
   function visible(el){
     if (!el || !el.getBoundingClientRect) return false;
@@ -106,11 +107,15 @@ export const PAGE_DRIVER_SOURCE = `(function(){
     return el;
   }
   function moveTo(x, y, extra){
+    // Whole pixels: movementX/Y are integers in the browser, so a fractional
+    // step (a short drag split 12 ways) truncated to 0 and the drag vanished.
+    // Rounded positions keep every step's delta whole and the sum exact.
+    x = Math.round(x); y = Math.round(y);
     var mv = mouse.known ? [x - mouse.x, y - mouse.y] : [0, 0];
     var o = { button: extra && extra.button, held: extra && extra.held, mv: mv };
     mouseAt("pointermove", x, y, o); mouseAt("mousemove", x, y, o);
   }
-  function teleport(x, y){ mouseAt("pointermove", x, y); mouseAt("mousemove", x, y); }
+  function teleport(x, y){ x = Math.round(x); y = Math.round(y); mouseAt("pointermove", x, y); mouseAt("mousemove", x, y); }
   async function clickEl(el){
     if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "center" });
     var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
@@ -137,6 +142,9 @@ export const PAGE_DRIVER_SOURCE = `(function(){
     teleport(g.x, g.y);
     for (var n = 0; n < times; n++) {
       mouseAt("pointerdown", g.x, g.y, opt); mouseAt("mousedown", g.x, g.y, opt);
+      // A real click lasts a few frames; a same-tick down+up is invisible to a
+      // game that reads the button state once per frame.
+      await sleep(TAP_MS);
       mouseAt("pointerup", g.x, g.y, opt); mouseAt("mouseup", g.x, g.y, opt);
       mouseAt(b === 2 ? "contextmenu" : "click", g.x, g.y, opt);
     }
@@ -164,7 +172,7 @@ export const PAGE_DRIVER_SOURCE = `(function(){
       for (var i = 0; i < parts.length - 1; i++) { mods[parts[i]] = true; keyEvent("keydown", parts[i], mods); }
       var target = keyEvent("keydown", main, mods);
       if (main.length === 1 && !mods.Control && !mods.Meta && target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) setValue(target, (target.value || "") + main);
-      if (holdMs) await sleep(holdMs);
+      await sleep(holdMs || TAP_MS); // a tap is held a few frames too (per-frame key polling)
       keyEvent("keyup", main, mods);
       for (var j = parts.length - 2; j >= 0; j--) { keyEvent("keyup", parts[j], mods); delete mods[parts[j]]; }
       if (repeat > 1) await sleep(30);

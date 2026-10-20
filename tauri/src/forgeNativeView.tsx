@@ -11,7 +11,7 @@
 // the stage is not showing or something of the app's own (a dialog, the
 // palette, the Forge drawer) covers it — otherwise that UI would sit
 // invisibly under the page.
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -37,6 +37,12 @@ export function forgeNativeTarget(url: string): boolean {
   return /^https?:\/\//i.test(url.trim()) || url.trim() === "about:blank";
 }
 
+/** The browser preview (`?bridge=`) has no native shell to host a child
+ *  webview: the view must fall back to a frame or it is a grey stage. */
+function devBridgeActive(): boolean {
+  return Boolean((globalThis as { __ARES_DEV_BRIDGE__?: string }).__ARES_DEV_BRIDGE__);
+}
+
 export function ForgeNativeView(props: {
   url: string;
   /** Bumped by the toolbar's reload and by Ares's edits to a served file. */
@@ -60,6 +66,12 @@ export function ForgeNativeView(props: {
   drivenRef.current = Boolean(props.driven);
   const cb = useRef(props);
   cb.current = props;
+  // No native view to show (dev preview) or it refused to open: show the page
+  // in a frame instead of leaving the stage grey. Sites that forbid framing
+  // still won't load here, but every local game and dev server does.
+  const [framed, setFramed] = useState(devBridgeActive);
+  const framedRef = useRef(framed);
+  framedRef.current = framed;
 
   // Geometry: follow the stage, hide when it isn't showing or is covered.
   // Calls go out only when something changed, so the 250 ms poll (sidebar
@@ -68,7 +80,7 @@ export function ForgeNativeView(props: {
     let alive = true;
     const place = () => {
       const el = stageRef.current;
-      if (!alive || !el) return;
+      if (!alive || !el || framedRef.current) return;
       const r = el.getBoundingClientRect();
       const show = visibleRef.current && document.visibilityState === "visible" && r.width > 8 && r.height > 8 && !covered(r);
       const url = urlRef.current;
@@ -79,7 +91,12 @@ export function ForgeNativeView(props: {
       if (!show) { void invoke("ares_forge_view_hide").catch(() => undefined); return; }
       if (nav) sentUrl.current = url;
       void invoke("ares_forge_view_show", { url: nav ? url : null, navigate: !drivenRef.current, x: r.left, y: r.top, w: r.width, h: r.height })
-        .catch((err) => { sentUrl.current = null; shown.current = ""; cb.current.onError?.(err instanceof Error ? err.message : String(err)); });
+        .catch((err) => {
+          sentUrl.current = null;
+          shown.current = "";
+          cb.current.onError?.(err instanceof Error ? err.message : String(err));
+          setFramed(true);
+        });
     };
     place();
     const el = stageRef.current;
@@ -105,7 +122,7 @@ export function ForgeNativeView(props: {
   // Reload on revision bumps (not on the first render: that load is the open).
   const firstRevision = useRef(props.revision);
   useEffect(() => {
-    if (props.revision === firstRevision.current) return;
+    if (props.revision === firstRevision.current || framedRef.current) return;
     void invoke("ares_forge_view_control", { action: "reload" }).catch(() => undefined);
   }, [props.revision]);
 
@@ -117,6 +134,19 @@ export function ForgeNativeView(props: {
     return () => { alive = false; for (const off of offs) off(); };
   }, []);
 
+  if (framed) {
+    return (
+      <div ref={stageRef} className="forgeNativeStage" aria-label="Live page">
+        <iframe
+          key={`${props.url}-${props.revision}`}
+          title="Live page"
+          src={props.url}
+          style={{ width: "100%", height: "100%", border: 0, background: "#fff" }}
+          onLoad={() => cb.current.onNav?.(props.url, false)}
+        />
+      </div>
+    );
+  }
   return <div ref={stageRef} className="forgeNativeStage" aria-label="Live page" />;
 }
 

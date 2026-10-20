@@ -1271,3 +1271,17 @@
 .ares.ares[data-surface="messages"] .settingsPane .displayModes button { background: rgba(255, 255, 255, .045); border: 1px solid rgba(255, 255, 255, .08); border-radius: 16px; box-shadow: none; }
 .ares.ares[data-surface="messages"] .settingsPane .displayModes button[data-on="1"] { background: rgba(10, 132, 255, .16); border-color: rgba(10, 132, 255, .7); box-shadow: 0 0 0 1px rgba(10, 132, 255, .35) inset; }
 .ares.ares[data-surface="messages"] .settingsPane .displayModes button strong { color: #fff; font-family: inherit; }
+
+/* Launch with no one picked: choose who to text (owner, 2026-10-20). */
+.agentPicker { display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 18vh 24px 40px; }
+.agentPicker h2 { margin: 0; font: 600 20px/1.3 var(--font); color: var(--text); letter-spacing: -0.01em; }
+.agentPickerGrid { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; max-width: 640px; }
+.agentPickerCard {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 150px; padding: 18px 12px 16px;
+  border: 1px solid var(--line, rgba(255,255,255,.08)); border-radius: 18px; background: rgba(255,255,255,.04);
+  color: var(--text); cursor: pointer; transition: background .15s ease, border-color .15s ease;
+}
+.agentPickerCard:hover { background: rgba(255,255,255,.08); border-color: rgba(10,124,255,.5); }
+.agentPickerCard:focus-visible { outline: 2px solid #0a7cff; outline-offset: 2px; }
+.agentPickerName { font: 600 14px/1.2 var(--font); }
+.agentPickerRole { font: 400 12px/1.35 var(--font); color: var(--muted); text-align: center; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

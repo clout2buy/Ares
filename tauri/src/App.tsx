@@ -5310,6 +5310,21 @@ function App() {
                 onSend={(text) => send(text)}
                 onEdit={() => { setAgentError(undefined); setAgentEditor({ mode: "edit", id: activeAgent.id }); }}
               />
+            ) : active && active.items.length === 0 && !activeRoom && agents.length > 0 ? (
+              // Launch lands here with no one picked: choose who to text,
+              // never a blank chat that belongs to no agent.
+              <div className="agentPicker">
+                <h2>Who do you want to text?</h2>
+                <div className="agentPickerGrid">
+                  {agents.map((a) => (
+                    <button key={a.id} type="button" className="agentPickerCard" onClick={() => selectAgent(a.id)}>
+                      <AgentAvatar agent={a} size={56} />
+                      <span className="agentPickerName">{a.name}</span>
+                      {a.instructions.trim() ? <span className="agentPickerRole">{a.instructions.trim().split(/\r?\n/)[0]}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ) : active && active.items.length === 0 ? (
               <div className="empty">
                 <div className="emptyEmblem" aria-hidden="true">
@@ -5424,7 +5439,7 @@ function App() {
             the draft text and pending attachments every time the view flipped. */}
         <Composer
           agentName={activeAgent?.name ?? "Ares"}
-            hidden={view === "helm" || view === "now" || view === "feed" || Boolean(activeRoom)}
+            hidden={view === "helm" || view === "now" || view === "feed" || Boolean(activeRoom) || (!activeAgent && agents.length > 0 && (active?.items.length ?? 0) === 0)}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
             model={liveModel}

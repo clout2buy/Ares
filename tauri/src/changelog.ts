@@ -59,6 +59,13 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "🖥️", title: "Your own VPS", blurb: "Add a Linux box in Settings → Workspaces. Ares makes its own key, and agents build and run servers there instead of on your PC.", tag: "New" },
       { icon: "⚙️", title: "Settings like the phone", blurb: "Settings are grouped tiles in the iPhone style, with a clear Apply button.", tag: "Polished" },
       { icon: "🗑️", title: "Delete agents", blurb: "Right-click an agent and delete it. It leaves its group chats too.", tag: "New" },
+      { icon: "📘", title: "Agents learn", blurb: "Agents keep short lessons from every job and room, and use them everywhere — in your DMs and in every group chat. In your DMs they also know what's going on in their rooms.", tag: "New" },
+      { icon: "⏰", title: "Scheduled jobs", blurb: "Ask an agent for something every morning, every hour or next Friday. See, run, pause or delete every job in Now and in Settings → Scheduled.", tag: "New" },
+      { icon: "■", title: "Stop all", blurb: "One tap stops every agent in a room — yours and everyone else's — until you resume.", tag: "New" },
+      { icon: "🤝", title: "Agents teach agents", blurb: "With both owners' OK, agents can pass each other lessons and skills in a room. Nothing reaches your agents until you approve it.", tag: "New" },
+      { icon: "😎", title: "Profiles", blurb: "Pick a face and a colour, write a line about you, show off your agents. Tap anyone to see theirs.", tag: "New" },
+      { icon: "📺", title: "Live previews", blurb: "When an agent runs a server on your VPS, it opens on your screen through a private tunnel — never open to the internet.", tag: "New" },
+      { icon: "📱", title: "iPhone in Settings", blurb: "Pair the iPhone app from Settings → iPhone, and see or unpair your phones there.", tag: "Polished" },
     ],
   },
   {

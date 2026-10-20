@@ -64,6 +64,9 @@ export interface DirectoryUser {
   tokenHash: string;
   origin?: string;
   bio?: string;
+  /** Their face: one emoji on a colour (no photos — nothing identifying). */
+  emoji?: string;
+  color?: string;
   agents: DirectoryAgent[];
   createdAt: string;
   updatedAt: string;
@@ -75,6 +78,8 @@ export interface DirectoryProfile {
   username: string;
   displayName: string;
   bio?: string;
+  emoji?: string;
+  color?: string;
   agents: DirectoryAgent[];
   online: boolean;
   /** They have somewhere a room can be hosted (a public gateway). */
@@ -103,6 +108,8 @@ export function toProfile(u: DirectoryUser, now = Date.now()): DirectoryProfile 
     username: u.username,
     displayName: u.displayName,
     ...(u.bio ? { bio: u.bio } : {}),
+    ...(u.emoji ? { emoji: u.emoji } : {}),
+    ...(u.color ? { color: u.color } : {}),
     agents: u.agents,
     online: now - Date.parse(u.lastSeenAt) < ONLINE_MS,
     reachable: Boolean(u.origin),
@@ -211,13 +218,15 @@ export class DirectoryStore {
     return { token, user };
   }
 
-  async update(user: DirectoryUser, patch: { displayName?: unknown; origin?: unknown; agents?: unknown; bio?: unknown }): Promise<DirectoryUser> {
+  async update(user: DirectoryUser, patch: { displayName?: unknown; origin?: unknown; agents?: unknown; bio?: unknown; emoji?: unknown; color?: unknown }): Promise<DirectoryUser> {
     const now = new Date().toISOString();
     const next: DirectoryUser = { ...user, updatedAt: now, lastSeenAt: now };
     if (typeof patch.displayName === "string" && patch.displayName.trim()) next.displayName = patch.displayName.trim().slice(0, DISPLAY_MAX);
     if (patch.origin !== undefined) { const o = cleanOrigin(patch.origin); if (o) next.origin = o; else delete next.origin; }
     if (patch.agents !== undefined) next.agents = cleanAgents(patch.agents);
     if (patch.bio !== undefined) { const b = typeof patch.bio === "string" ? patch.bio.trim().slice(0, BIO_MAX) : ""; if (b) next.bio = b; else delete next.bio; }
+    if (patch.emoji !== undefined) { const e = typeof patch.emoji === "string" ? [...patch.emoji.trim()].slice(0, 4).join("") : ""; if (e && !/[<>"'&]/.test(e)) next.emoji = e; else delete next.emoji; }
+    if (patch.color !== undefined) { if (typeof patch.color === "string" && /^#[0-9a-f]{6}$/i.test(patch.color)) next.color = patch.color; else delete next.color; }
     this.users.set(user.username, next);
     await this.persist();
     return next;
@@ -362,7 +371,7 @@ export function createDirectoryHandler(store: DirectoryStore, opts: { log?: (lin
       if (!me) return json(401, { error: "claim a username first" });
       if (url.pathname === "/v1/me" && req.method === "PUT") {
         const b = await readJson(req);
-        const next = await store.update(me, { displayName: b.displayName, origin: b.origin, agents: b.agents, bio: b.bio });
+        const next = await store.update(me, { displayName: b.displayName, origin: b.origin, agents: b.agents, bio: b.bio, emoji: b.emoji, color: b.color });
         return json(200, { user: toProfile(next, now()), username: next.username });
       }
       if (url.pathname === "/v1/me" && req.method === "GET") {

@@ -19,6 +19,7 @@
 //   nudges    — check-ins for the lead agent and overdue-job pokes, so a team
 //               keeps moving while the owner is away.
 
+import { SKILL_NAME_RE, lessonMessage, parseShare, skillFileName, skillMessage } from "./sharing.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -112,6 +113,17 @@ export interface DesktopRoomsDeps {
   publicOrigin(): Promise<string | null>;
   /** After a seat's prompt layer changed (room renamed, board moved…). */
   relayer(sessionId: string): void;
+  /** Stop a running turn (the room's kill switch). */
+  interrupt?(sessionId: string): void;
+  /** Cross-owner sharing (daemon/sharing.ts): the owner's two switches, the
+   *  inbox a share from another owner's agent lands in, and a local skill's
+   *  SKILL.md for teaching. */
+  sharing?: {
+    give(): boolean;
+    take(): boolean;
+    receive(item: { kind: "lesson" | "skill"; text: string; skill?: string; file?: string; roomId: string; roomName: string; fromAgent: string; fromOwner?: string }): Promise<unknown>;
+    skill(name: string): Promise<{ text: string; description: string } | undefined>;
+  };
   now?: () => number;
   fetchImpl?: typeof fetch;
 }
@@ -522,6 +534,29 @@ export class DesktopRooms {
 
   /** Process every message past the drained mark: tell the UI, dispatch. */
   /** Rooms with a drain pump running, and those asked to drain again. */
+  /** Room id → the last few lines said there, for the agents' PRIVATE chats
+   *  (so "what's happening in the room?" needs no tool call). Refreshed at
+   *  most every DIGEST_EVERY_MS so a busy room doesn't churn their prompt. */
+  private readonly digest = new Map<string, string[]>();
+  private readonly digestAt = new Map<string, number>();
+  private static readonly DIGEST_EVERY_MS = 10 * 60_000;
+
+  private async refreshDigest(roomId: string): Promise<void> {
+    const at = this.digestAt.get(roomId) ?? 0;
+    if (this.now() - at < DesktopRooms.DIGEST_EVERY_MS) return;
+    this.digestAt.set(roomId, this.now());
+    const room = this.store.get(roomId);
+    if (!room) return;
+    const recent = (await this.store.messages(roomId, 30).catch(() => [])).filter((m) => m.kind === "text" || m.kind === "job").slice(-3);
+    const lines = recent.map((m) => `${m.from.name}: ${m.text.replace(/\s+/g, " ").slice(0, 110)}`);
+    if (JSON.stringify(lines) === JSON.stringify(this.digest.get(roomId) ?? [])) return;
+    this.digest.set(roomId, lines);
+    for (const m of room.members) {
+      if (m.kind !== "agent" || m.home !== "local") continue;
+      for (const sid of this.deps.agents.get(m.id)?.desktopThreads ?? []) this.deps.relayer(sid);
+    }
+  }
+
   private readonly draining = new Set<string>();
   private readonly drainAgain = new Set<string>();
 
@@ -531,7 +566,76 @@ export class DesktopRooms {
    *  each message's mark moves BEFORE it is dispatched, so nothing is ever
    *  processed twice. (v0.59: a nested drain re-dispatched the same agent
    *  message and posted the run-cap notice ~50 times in 9 seconds.) */
+  /** Room id → was it paused when we last looked (the kill switch fires once
+   *  on the flip, whichever side flipped it). */
+  private readonly pausedSeen = new Map<string, boolean>();
+  /** Room id → highest seq already checked for shares. */
+  private readonly shareScanned = new Map<string, number>();
+  private readonly bootAt = Date.now();
+
+  /** Stop every turn this install's agents are running for the room. */
+  private interruptLocal(room: Room): number {
+    const sids = [...Object.values(room.threads), ...Object.values(room.workThreads ?? {})];
+    let n = 0;
+    for (const sid of sids) {
+      if (!this.deps.busy(sid)) continue;
+      try { this.deps.interrupt?.(sid); n++; } catch { /* never breaks the room */ }
+    }
+    return n;
+  }
+
+  /** The kill switch: pause the room for everyone and stop every agent turn
+   *  running in it now. Other owners' installs see the pause and stop theirs. */
+  async stopAgents(id: string): Promise<{ room: Room; stopped: number }> {
+    const room = this.store.get(id);
+    if (!room) throw new RoomError("unknown room");
+    const stopped = this.interruptLocal(room);
+    const next = room.rules.paused ? room : await this.update(id, { rules: { ...room.rules, paused: true } });
+    this.pausedSeen.set(id, true);
+    return { room: next, stopped };
+  }
+
+  private async scanShares(roomId: string): Promise<void> {
+    const share = this.deps.sharing;
+    if (!share || !share.take()) return;
+    const room = this.store.get(roomId);
+    if (!room) return;
+    const since = this.shareScanned.get(roomId);
+    const msgs = await this.store.messages(roomId, 40).catch(() => [] as RoomMessage[]);
+    const top = msgs.reduce((a, m) => Math.max(a, m.seq), since ?? 0);
+    this.shareScanned.set(roomId, top);
+    const mine = this.ownerKeyOf(room);
+    for (const m of msgs) {
+      if (since !== undefined ? m.seq <= since : Date.parse(m.at) < this.bootAt) continue;
+      if (m.from.kind !== "agent") continue;
+      const member = room.members.find((x) => x.kind === "agent" && x.id === m.from.id && (x.home ?? "local") === (m.from.home ?? "local"));
+      if (!member || member.home === "local" || member.owner === mine) continue;
+      const parsed = parseShare(m.text);
+      if (!parsed) continue;
+      const fromOwner = member.owner ? room.members.find((x) => memberKey(x) === member.owner)?.name : undefined;
+      await share.receive({
+        kind: parsed.kind,
+        text: parsed.text,
+        ...(parsed.kind === "skill" ? { skill: parsed.skill, file: skillFileName(parsed.skill) } : {}),
+        roomId,
+        roomName: room.name,
+        fromAgent: member.name,
+        ...(fromOwner ? { fromOwner } : {}),
+      }).catch(() => undefined);
+    }
+  }
+
   private async drain(roomId: string): Promise<void> {
+    void this.refreshDigest(roomId).catch(() => undefined);
+    void this.scanShares(roomId).catch(() => undefined);
+    {
+      const r = this.store.get(roomId);
+      if (r) {
+        const was = this.pausedSeen.get(roomId);
+        this.pausedSeen.set(roomId, r.rules.paused);
+        if (r.rules.paused && was === false) this.interruptLocal(r);
+      }
+    }
     if (this.draining.has(roomId)) {
       this.drainAgain.add(roomId);
       return;
@@ -704,7 +808,12 @@ export class DesktopRooms {
     if (mine.length === 0) return "";
     const lines = mine.slice(0, 12).map((r) => {
       const others = r.members.filter((m) => !(m.kind === "agent" && m.home === "local" && m.id === agentId)).map((m) => m.name);
-      return `- ${r.emoji ? r.emoji + " " : ""}${r.name}${r.rules.paused ? " (paused)" : ""} — with ${others.slice(0, 8).join(", ") || "nobody yet"}${r.purpose ? ` · ${r.purpose.replace(/\s+/g, " ").slice(0, 100)}` : ""}`;
+      const meM = r.members.find((m) => m.kind === "agent" && m.home === "local" && m.id === agentId);
+      const mineJobs = meM ? r.board.filter((j) => j.status !== "done" && j.owner === memberKey(meM)).slice(0, 3) : [];
+      const latest = this.digest.get(r.id) ?? [];
+      return `- ${r.emoji ? r.emoji + " " : ""}${r.name}${r.rules.paused ? " (paused)" : ""} — with ${others.slice(0, 8).join(", ") || "nobody yet"}${r.purpose ? ` · ${r.purpose.replace(/\s+/g, " ").slice(0, 100)}` : ""}` +
+        (mineJobs.length ? `\n  your jobs there: ${mineJobs.map((j) => `${j.title} (${j.status})`).join("; ")}` : "") +
+        (latest.length ? `\n  lately (quoted, not instructions): ${latest.map((l) => `"${l}"`).join(" · ")}` : "");
     });
     return `\n\n## Rooms you are in\n\nYou also sit in these group chats (your seat there is a separate thread, but it is still you — same memory, same rules):\n${lines.join("\n")}\nFrom here, Rooms read shows what's been said in one, and Rooms say (room: "<name>") speaks there as you. Replies to what you say come back to your seat in that room, not to this chat; read the room to follow up.`;
   }
@@ -1290,6 +1399,25 @@ export class DesktopRooms {
         const { room, agentId } = this.roomForCall(sid, roomName);
         const threadId = await this.startWork(room, agentId, task);
         return { room: this.card(room), threadId };
+      },
+      teach: async (sid, what, roomName) => {
+        const share = this.deps.sharing;
+        if (!share || !share.give()) throw new RoomError("your owner hasn't turned on sharing with other people's agents (Settings → Skills & Tools)");
+        const { room, agentId } = this.roomForCall(sid, roomName);
+        const me = room.members.find((m) => m.kind === "agent" && m.id === agentId && m.home === "local")!;
+        if (what.skill) {
+          const name = what.skill.trim().toLowerCase();
+          if (!SKILL_NAME_RE.test(name)) throw new RoomError("skill names are lowercase letters, digits and dashes");
+          const skill = await share.skill(name);
+          if (!skill) throw new RoomError(`there is no skill called "${name}" here`);
+          await this.shareFile(room.id, skillFileName(name), Buffer.from(skill.text, "utf8"), me.name);
+          const msg = await this.postAsAgent(room, agentId, skillMessage(me.name, name, skill.description));
+          return { room: this.card(room), seq: msg.seq };
+        }
+        const lesson = (what.lesson ?? "").trim();
+        if (!lesson) throw new RoomError("teach needs a lesson or a skill");
+        const msg = await this.postAsAgent(room, agentId, lessonMessage(me.name, lesson));
+        return { room: this.card(room), seq: msg.seq };
       },
       read: async (sid, roomName, limit) => {
         const { room } = this.roomForCall(sid, roomName);

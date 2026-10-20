@@ -69,6 +69,8 @@ export interface AgentsHost {
   /** Add or remove one of an agent's standing rules (the asking agent's own;
    *  from Ares's main chat, the agent named in `to`). */
   rules(fromSession: string, change: { to?: string; add?: string; remove?: string }): Promise<{ agent: AgentCard; rules: string[] }>;
+  /** Save (or drop) one of the asking agent's lessons. */
+  lessons(fromSession: string, change: { to?: string; add?: string; remove?: string; from?: string }): Promise<{ agent: AgentCard; lessons: string[] }>;
   /** An agent makes an agent. Only the owner can delete one. */
   create(fromSession: string, spec: { name: string; role: string; emoji?: string; color?: string; model?: string }): Promise<AgentCard>;
 }

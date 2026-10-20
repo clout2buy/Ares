@@ -12,6 +12,9 @@ export interface WorkspaceHost {
   run(sessionId: string, command: string, timeoutMs?: number): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; label: string; folder: string }>;
   put(sessionId: string, localPath: string, remoteName: string): Promise<{ ok: boolean; error?: string; label: string; folder: string }>;
   get(sessionId: string, remoteName: string, localPath?: string): Promise<{ ok: boolean; path: string; error?: string }>;
+  /** Open a server running on the box on the OWNER's screen, through a
+   *  private tunnel (never exposed to the internet). */
+  preview(sessionId: string, port: number, urlPath?: string): Promise<{ url: string; label: string }>;
 }
 
 let host: WorkspaceHost | undefined;
@@ -21,7 +24,8 @@ export function setWorkspaceHost(next: WorkspaceHost | undefined): void {
 
 const input = z
   .object({
-    action: z.enum(["run", "put", "get", "where"]).describe("run a shell command on the VPS, put a file from this machine onto it, get a file from it, or say which box and folder you are on"),
+    action: z.enum(["run", "put", "get", "where", "preview"]).describe("run a shell command on the VPS, put a file from this machine onto it, get a file from it, say which box and folder you are on, or preview a server you started there on your owner's screen"),
+    port: z.number().int().min(1).max(65535).optional().describe("preview: the port your server listens on, on the box (start it first, e.g. nohup python3 -m http.server 8080 &)"),
     command: z.string().min(1).max(8000).optional().describe("run: a bash command, run in your work folder on the box (e.g. 'npm i && node build.js', 'python3 sim.py'). Long-running servers: start them with nohup … & and say so."),
     path: z.string().min(1).max(600).optional().describe("put: the local file to upload; get: where to save it locally (default: your workspace folder)"),
     name: z.string().min(1).max(300).optional().describe("put/get: the file's path inside your work folder on the box"),
@@ -56,6 +60,11 @@ export function makeWorkspaceTool() {
           output: { code: out.code, timedOut: out.timedOut, stdout: out.stdout.slice(-12_000), stderr: out.stderr.slice(-6_000) },
           display: `${out.label}:~/ares-work/${out.folder} $ ${i.command.slice(0, 80)}\n${out.timedOut ? "(timed out)\n" : ""}exit ${out.code ?? "?"}${text ? `\n${text}` : ""}`,
         };
+      }
+      if (i.action === "preview") {
+        if (!i.port) throw new Error("preview needs port");
+        const out = await host.preview(sid, i.port, i.name);
+        return { output: { ok: true, url: out.url }, display: `opened ${out.label}:${i.port} on your owner's screen (${out.url}) — private to this PC` };
       }
       if (i.action === "put") {
         if (!i.path || !i.name) throw new Error("put needs path (local) and name (on the box)");

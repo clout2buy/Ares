@@ -28,6 +28,10 @@ import {
   PERSONA_NAME_MAX,
   PERSONA_RULES_MAX,
   PERSONA_RULE_MAX,
+  PERSONA_LESSONS_MAX,
+  PERSONA_LESSON_MAX,
+  parseLessons,
+  type AgentLesson,
   PersonaStore,
   newPersonaId,
   type Persona,
@@ -53,6 +57,8 @@ export interface AgentWire {
   instructions: string;
   /** Standing rules (every chat and room seat). */
   rules: string[];
+  /** What it has learned (newest last). */
+  lessons: AgentLesson[];
   threads: string[];
   /** Version of the agent's profile picture (the phone's avatar store); the
    *  desktop fetches the bytes with agent_avatar when it changes. */
@@ -75,6 +81,7 @@ export interface AgentSpec {
   reasoningLevel?: unknown;
   instructions?: unknown;
   rules?: unknown;
+  lessons?: unknown;
 }
 
 export interface DesktopAgentsDeps {
@@ -123,6 +130,7 @@ export function agentToWire(p: Persona, avatar?: string): AgentWire {
     ...(p.reasoningLevel ? { reasoningLevel: p.reasoningLevel } : {}),
     instructions: p.instructions,
     rules: [...(p.rules ?? [])],
+    lessons: [...(p.lessons ?? [])],
     threads: [...(p.desktopThreads ?? [])],
     onPhone: Boolean(p.sessionId),
     ...(p.createdBy ? { createdBy: p.createdBy } : {}),
@@ -249,6 +257,7 @@ export class DesktopAgents {
       if (!raw) throw new AgentError("rules must be a list");
       out.rules = raw.filter((x): x is string => typeof x === "string").map((x) => x.replace(/^[-*•]\s*/, "").trim()).filter(Boolean).map((x) => x.slice(0, PERSONA_RULE_MAX)).slice(0, PERSONA_RULES_MAX);
     }
+    if (spec.lessons !== undefined) out.lessons = parseLessons(spec.lessons);
     return out;
   }
 
@@ -296,8 +305,34 @@ export class DesktopAgents {
     return {
       persona: next,
       brainChanged: next.provider !== existing.provider || next.model !== existing.model || next.chatModel !== existing.chatModel,
-      layerChanged: next.name !== existing.name || next.instructions !== existing.instructions || JSON.stringify(next.rules ?? []) !== JSON.stringify(existing.rules ?? []),
+      layerChanged: next.name !== existing.name || next.instructions !== existing.instructions || JSON.stringify(next.rules ?? []) !== JSON.stringify(existing.rules ?? []) || JSON.stringify(next.lessons ?? []) !== JSON.stringify(existing.lessons ?? []),
     };
+  }
+
+  /** Add (or drop) a lesson. A near-duplicate replaces the older one so the
+   *  list stays a short, current playbook rather than a log. */
+  async learn(agentId: string, change: { add?: string; remove?: string; from?: string }): Promise<AgentLesson[]> {
+    await this.store.load();
+    const target = this.store.get(agentId);
+    if (!target) throw new AgentError("unknown agent");
+    let lessons = [...(target.lessons ?? [])];
+    if (change.add) {
+      const text = change.add.replace(/\s+/g, " ").trim().slice(0, PERSONA_LESSON_MAX);
+      const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+      const key = norm(text);
+      const near = (old: string) => { const o = norm(old); return o === key || o.startsWith(key) || key.startsWith(o) || (o.length >= 40 && o.slice(0, 40) === key.slice(0, 40)); };
+      if (text) {
+        lessons = lessons.filter((l) => !near(l.text));
+        lessons.push({ text, ...(change.from ? { from: change.from.slice(0, 80) } : {}), at: new Date(this.now()).toISOString() });
+      }
+    }
+    if (change.remove) {
+      const needle = change.remove.trim().toLowerCase();
+      lessons = lessons.filter((l) => !l.text.toLowerCase().includes(needle));
+    }
+    lessons = lessons.slice(-PERSONA_LESSONS_MAX);
+    await this.update(target.id, { lessons });
+    return lessons;
   }
 
   /** Owner-only: the desktop's delete button, never the Agents tool. Chats
@@ -353,7 +388,7 @@ export class DesktopAgents {
       ...this.store.list().filter((p) => p.id !== agent.id).map((p) => ({ name: p.name, role: p.instructions })),
     ];
     const maker = agent.createdBy ? this.store.get(agent.createdBy)?.name : undefined;
-    return `\n\n${desktopAgentLayerBlock({ ...agent, rules: agent.rules ?? [] }, contacts, maker)}`;
+    return `\n\n${desktopAgentLayerBlock({ ...agent, rules: agent.rules ?? [], lessons: agent.lessons ?? [] }, contacts, maker)}`;
   }
 
   /** Name or id → agent (case-insensitive name match). */
@@ -424,6 +459,22 @@ export class DesktopAgents {
     return { to: target, threadId, inputId };
   }
 
+  /** A scheduled job came due: queue it in the agent's latest chat. Returns
+   *  the thread, or undefined when that chat is mid-turn (try again later). */
+  async wake(agentId: string, goal: string, inputId: string): Promise<string | undefined> {
+    await this.store.load();
+    const target = this.store.get(agentId);
+    if (!target) throw new AgentError("unknown agent");
+    let threadId = target.desktopThreads?.at(-1);
+    if (!threadId) {
+      threadId = `sess_${randomUUID()}`;
+      await this.bind(target.id, threadId);
+    } else setSessionAgent(threadId, target.id);
+    if (this.deps.busy(threadId)) return undefined;
+    this.deps.deliver(threadId, goal, inputId);
+    return threadId;
+  }
+
   /** The Agents tool's view of this directory. */
   host(): AgentsHost {
     return {
@@ -468,6 +519,14 @@ export class DesktopAgents {
         rules = rules.slice(-PERSONA_RULES_MAX);
         await this.update(target.id, { rules });
         return { agent: card(target), rules };
+      },
+      lessons: async (fromSession, change) => {
+        const self = this.agentForSession(fromSession);
+        const target = self ?? (change.to ? this.resolve(change.to) : undefined);
+        if (!target) throw new AgentError(change.to ? `no agent called "${change.to}"` : "name the agent (to) whose lessons to change");
+        if (self && change.to && this.resolve(change.to)?.id !== self.id) throw new AgentError("an agent can only change its own lessons");
+        const lessons = await this.learn(target.id, change);
+        return { agent: card(target), lessons: lessons.map((l) => l.text) };
       },
       exportMemory: async (fromSession, name) => {
         const memoryFile = this.deps.memoryFile;

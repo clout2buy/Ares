@@ -1137,3 +1137,137 @@
 .ares.ares[data-surface="messages"] .settingsShell { grid-template-columns: 250px minmax(0, 1fr); }
 .ares.ares[data-surface="messages"] .settingsNav { min-width: 0; box-sizing: border-box; }
 @media (max-width: 760px) { .ares.ares[data-surface="messages"] .settingsShell { grid-template-columns: 200px minmax(0, 1fr); } }
+
+/* ── Settings, every pane: iOS building blocks (Messages surface) ───────── */
+.ares.ares[data-surface="messages"] .settingsPane .paneHint { color: rgba(235, 235, 245, .6); font-size: 13px; line-height: 1.45; }
+.ares.ares[data-surface="messages"] .settingsPane .fieldLabel { font-weight: 600; font-size: 12px; letter-spacing: .2px; text-transform: none; color: rgba(235, 235, 245, .55); margin: 14px 0 6px; }
+
+/* fields: one look for every input, select and textarea */
+.ares.ares[data-surface="messages"] .settingsPane input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.ares.ares[data-surface="messages"] .settingsPane select,
+.ares.ares[data-surface="messages"] .settingsPane textarea,
+.ares.ares[data-surface="messages"] .settingsPane .keyInput,
+.ares.ares[data-surface="messages"] .settingsPane .settingsSelect {
+  font-family: inherit; font-size: 14px; font-weight: 500; color: #fff;
+  background-color: rgba(118, 118, 128, .18); border: 1px solid rgba(255, 255, 255, .06); border-radius: 11px;
+  padding: 9px 12px; box-shadow: none; outline: none; letter-spacing: 0;
+}
+.ares.ares[data-surface="messages"] .settingsPane input:focus,
+.ares.ares[data-surface="messages"] .settingsPane select:focus,
+.ares.ares[data-surface="messages"] .settingsPane textarea:focus { border-color: rgba(10, 132, 255, .8); box-shadow: 0 0 0 3px rgba(10, 132, 255, .25); }
+.ares.ares[data-surface="messages"] .settingsPane input::placeholder,
+.ares.ares[data-surface="messages"] .settingsPane textarea::placeholder { color: rgba(235, 235, 245, .32); }
+.ares.ares[data-surface="messages"] .settingsPane input[type="number"] { width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
+.ares.ares[data-surface="messages"] .settingsPane .skillFilter { border-radius: 12px; }
+
+/* rows (Advanced, Permissions, Routing lanes): inset-grouped list rows */
+.ares.ares[data-surface="messages"] .settingsPane .engineRow,
+.ares.ares[data-surface="messages"] .settingsPane .routeLane {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 12px 14px; margin: 0 0 6px; border-radius: 14px;
+  background: rgba(255, 255, 255, .045); border: 1px solid rgba(255, 255, 255, .06);
+}
+.ares.ares[data-surface="messages"] .settingsPane .engineInfo strong { font-weight: 600; font-size: 14px; color: #fff; letter-spacing: 0; text-transform: none; }
+.ares.ares[data-surface="messages"] .settingsPane .engineInfo span { font-size: 12.5px; color: rgba(235, 235, 245, .55); }
+
+/* the old ember switch becomes the iPhone's green one */
+.ares.ares[data-surface="messages"] .settingsPane .toggle {
+  position: relative; flex: none; width: 51px; height: 31px; border-radius: 999px; border: none; padding: 0;
+  background: rgba(120, 120, 128, .32); box-shadow: none; transition: background 160ms ease;
+}
+.ares.ares[data-surface="messages"] .settingsPane .toggle i {
+  position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%;
+  background: #fff; box-shadow: 0 3px 8px rgba(0, 0, 0, .25); transition: transform 160ms ease;
+}
+.ares.ares[data-surface="messages"] .settingsPane .toggle[data-on="1"] { background: #30d158; }
+.ares.ares[data-surface="messages"] .settingsPane .toggle[data-on="1"] i { left: 2px; transform: translateX(20px); }
+
+/* stat tiles (Skills): big plain numbers, not blue monospace */
+.ares.ares[data-surface="messages"] .settingsPane .skillOverview > * {
+  border-radius: 16px; background: rgba(255, 255, 255, .045); border: 1px solid rgba(255, 255, 255, .06); padding: 12px 14px;
+}
+
+/* empty states: a soft card, not a dashed box */
+.ares.ares[data-surface="messages"] .settingsPane .paneEmpty {
+  border: none; border-radius: 16px; background: rgba(255, 255, 255, .035); color: rgba(235, 235, 245, .5);
+  font-size: 13px; padding: 22px 16px; text-align: center;
+}
+
+/* cards: keys, models, Skill Hub, voice, the living surface */
+.ares.ares[data-surface="messages"] .settingsPane .keyCard,
+.ares.ares[data-surface="messages"] .settingsPane .settingsModelCard,
+.ares.ares[data-surface="messages"] .settingsPane .skillHubSection,
+.ares.ares[data-surface="messages"] .settingsPane .customProv,
+.ares.ares[data-surface="messages"] .settingsPane .consciousWatch,
+.ares.ares[data-surface="messages"] .settingsPane .voiceHub,
+.ares.ares[data-surface="messages"] .settingsPane .livingLaunchCard {
+  border-radius: 18px; background: rgba(255, 255, 255, .045); border: 1px solid rgba(255, 255, 255, .07); box-shadow: none;
+}
+.ares.ares[data-surface="messages"] .settingsPane .keyGroupLabel { font-weight: 600; font-size: 12px; text-transform: none; letter-spacing: .2px; color: rgba(235, 235, 245, .5); }
+
+/* chips and pills */
+.ares.ares[data-surface="messages"] .settingsPane .provChip,
+.ares.ares[data-surface="messages"] .settingsPane .presetChip,
+.ares.ares[data-surface="messages"] .settingsPane .keyPill {
+  border-radius: 999px; border: 1px solid rgba(255, 255, 255, .1); background: rgba(255, 255, 255, .05); color: #e5e5ea; font-family: inherit;
+}
+.ares.ares[data-surface="messages"] .settingsPane .provChip[data-on="1"],
+.ares.ares[data-surface="messages"] .settingsPane .presetChip[data-on="1"] { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+
+/* segmented control (Usage) */
+.ares.ares[data-surface="messages"] .settingsPane .segment { background: rgba(118, 118, 128, .24); border: none; border-radius: 10px; padding: 2px; }
+.ares.ares[data-surface="messages"] .settingsPane .segment button { border: none; border-radius: 8px; background: transparent; color: #e5e5ea; font-family: inherit; font-weight: 600; font-size: 12.5px; padding: 6px 12px; }
+.ares.ares[data-surface="messages"] .settingsPane .segment button[data-on="1"],
+.ares.ares[data-surface="messages"] .settingsPane .segment button.on { background: #636366; color: #fff; }
+
+/* buttons: blue filled for the main action, grey pills for the rest */
+.ares.ares[data-surface="messages"] .settingsPane .btn,
+.ares.ares[data-surface="messages"] .settingsPane .ghost,
+.ares.ares[data-surface="messages"] .settingsPane .keySignInBtn,
+.ares.ares[data-surface="messages"] .settingsPane .settingsModelBrowse,
+.ares.ares[data-surface="messages"] .settingsPane .voiceEngineRepair,
+.ares.ares[data-surface="messages"] .settingsPane .updatesReplay {
+  border-radius: 999px; border: none; background: rgba(255, 255, 255, .1); color: #fff; font-family: inherit; font-weight: 600; font-size: 13px;
+  padding: 8px 14px; text-transform: none; letter-spacing: 0; box-shadow: none;
+}
+.ares.ares[data-surface="messages"] .settingsPane .primary,
+.ares.ares[data-surface="messages"] .settingsPane .aresosPrimary { border-radius: 999px; border: none; background: #0a84ff; color: #fff; font-family: inherit; font-weight: 600; font-size: 13px; padding: 9px 16px; text-transform: none; letter-spacing: 0; box-shadow: none; }
+.ares.ares[data-surface="messages"] .settingsPane .btn:hover,
+.ares.ares[data-surface="messages"] .settingsPane .ghost:hover { background: rgba(255, 255, 255, .16); }
+
+/* Skills counters: "0 enabled" spans with a <strong> number */
+.ares.ares[data-surface="messages"] .settingsPane .skillOverview > span { display: flex; flex-direction: column; gap: 2px; font-family: inherit; font-weight: 600; font-size: 11.5px; letter-spacing: .2px; text-transform: none; color: rgba(235, 235, 245, .5); }
+.ares.ares[data-surface="messages"] .settingsPane .skillOverview > span > strong, .ares.ares[data-surface="messages"] .settingsPane .skillOverview > span > b { font-family: inherit; font-weight: 700; font-size: 24px; line-height: 1.1; color: #fff; letter-spacing: -.4px; }
+
+/* no monospace labels anywhere in Settings */
+.ares.ares[data-surface="messages"] .settingsPane .keyGroupLabel,
+.ares.ares[data-surface="messages"] .settingsPane .laneAssign,
+.ares.ares[data-surface="messages"] .settingsPane .keyPill,
+.ares.ares[data-surface="messages"] .settingsPane .settingsModelBody strong,
+.ares.ares[data-surface="messages"] .settingsPane .updatesVer { font-family: inherit; }
+.ares.ares[data-surface="messages"] .settingsPane .keyGroupLabel { font-size: 12px; font-weight: 600; text-transform: none; letter-spacing: .2px; color: rgba(235, 235, 245, .5); margin: 16px 0 8px; }
+.ares.ares[data-surface="messages"] .settingsPane .keyPill { font-size: 10.5px; font-weight: 700; letter-spacing: .3px; padding: 2px 8px; }
+
+/* routing lanes: the whole row is the button */
+.ares.ares[data-surface="messages"] .settingsPane .routeLane { padding: 0; }
+.ares.ares[data-surface="messages"] .settingsPane .laneToggle { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; background: none; border: none; color: inherit; text-align: left; cursor: pointer; }
+.ares.ares[data-surface="messages"] .settingsPane .laneIcon { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; background: rgba(255, 255, 255, .08); font-size: 15px; }
+.ares.ares[data-surface="messages"] .settingsPane .laneName { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ares.ares[data-surface="messages"] .settingsPane .laneName strong { font-size: 14px; font-weight: 600; color: #fff; text-transform: capitalize; letter-spacing: 0; }
+.ares.ares[data-surface="messages"] .settingsPane .laneName em { font-style: normal; font-size: 12.5px; color: rgba(235, 235, 245, .55); }
+.ares.ares[data-surface="messages"] .settingsPane .laneAssign { font-size: 12.5px; font-weight: 500; color: rgba(235, 235, 245, .6); background: none; border: none; padding: 0; }
+.ares.ares[data-surface="messages"] .settingsPane .laneSwitch {
+  position: relative; flex: none; width: 51px; height: 31px; border-radius: 999px; border: none;
+  background: rgba(120, 120, 128, .32); transition: background 160ms ease;
+}
+.ares.ares[data-surface="messages"] .settingsPane .laneSwitch i {
+  position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%;
+  background: #fff; box-shadow: 0 3px 8px rgba(0, 0, 0, .25); transition: transform 160ms ease;
+}
+.ares.ares[data-surface="messages"] .settingsPane .laneSwitch[data-on="1"] { background: #30d158; }
+.ares.ares[data-surface="messages"] .settingsPane .laneSwitch[data-on="1"] i { left: 2px; transform: translateX(20px); }
+
+.ares.ares[data-surface="messages"] .settingsPane .profileClaim { align-self: flex-start; width: auto; padding: 10px 18px; }
+.ares.ares[data-surface="messages"] .settingsPane .displayModes button { background: rgba(255, 255, 255, .045); border: 1px solid rgba(255, 255, 255, .08); border-radius: 16px; box-shadow: none; }
+.ares.ares[data-surface="messages"] .settingsPane .displayModes button[data-on="1"] { background: rgba(10, 132, 255, .16); border-color: rgba(10, 132, 255, .7); box-shadow: 0 0 0 1px rgba(10, 132, 255, .35) inset; }
+.ares.ares[data-surface="messages"] .settingsPane .displayModes button strong { color: #fff; font-family: inherit; }

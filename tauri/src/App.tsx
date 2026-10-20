@@ -150,6 +150,7 @@ import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./poin
 import { Tutorial, markTutorialSeen, tutorialSeen } from "./tutorial";
 import { MsgTabBar, MsgTitlebar, type MsgTab } from "./shell";
 import { WorkspacesPane, type WorkspaceVm } from "./workspacesPane";
+import { IPhonePane, ProfilePane, ProfileSheet, ScheduledList, ScheduledPane, SharingPanel, type JobVm, type SharingVm } from "./aresMore";
 import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
 import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
 import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AvatarStyleContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
@@ -758,6 +759,16 @@ function App() {
   const [workspaces, setWorkspaces] = useState<WorkspaceVm[]>([]);
   const [workspaceBusy, setWorkspaceBusy] = useState<Record<string, string>>({});
   const [workspaceError, setWorkspaceError] = useState<string | undefined>();
+  const [jobs, setJobs] = useState<JobVm[]>([]);
+  const [jobError, setJobError] = useState<string | undefined>();
+  const [sharing, setSharing] = useState<SharingVm>({ settings: { give: false, take: false }, inbox: [] });
+  const [shareError, setShareError] = useState<string | undefined>();
+  const [profileView, setProfileView] = useState<{ username: string; user: DirectoryProfileVm | null; loading: boolean; error?: string } | null>(null);
+  const openProfile = (username: string) => {
+    const known = peopleResults.find((p) => p.username === username) ?? null;
+    setProfileView({ username, user: known, loading: true });
+    daemonCmd({ type: "directory_user", name: username });
+  };
   /** roomId → who on the OTHER machines is working right now. */
   const [roomPresence, setRoomPresence] = useState<Record<string, Array<{ key: string; name: string; activity: string }>>>({});
   /** Each agent's own memories, loaded when its profile opens. */
@@ -1755,6 +1766,8 @@ function App() {
     void invoke("ares_daemon_command", { command: { type: "rooms_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "directory_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "workspaces_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "jobs_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "agents_sharing" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agent_avatar", agentId: "ares" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
@@ -2595,6 +2608,7 @@ function App() {
           const ev = e as { error?: string; requestId?: string; command?: string };
           setPeopleBusy(false);
           setPeopleSearching(false);
+          if (ev.command === "directory_user") setProfileView((p) => (p ? { ...p, loading: false, error: String(ev.error ?? "couldn't load that profile") } : p));
           if (ev.command === "directory_group") setRoomError(String(ev.error ?? "the directory did not answer"));
           else setPeopleError(String(ev.error ?? "the directory did not answer"));
           return true;
@@ -2655,6 +2669,31 @@ function App() {
         }
         case "room_turn":
           return true;
+        case "jobs_list": {
+          const list = (e as unknown as { jobs?: JobVm[] }).jobs;
+          if (Array.isArray(list)) setJobs(list);
+          setJobError(undefined);
+          return true;
+        }
+        case "job_error": {
+          setJobError(String((e as { error?: unknown }).error ?? "that didn't work"));
+          return true;
+        }
+        case "agent_sharing": {
+          const ev = e as unknown as Partial<SharingVm>;
+          if (ev.settings) setSharing({ settings: ev.settings, inbox: Array.isArray(ev.inbox) ? ev.inbox : [] });
+          setShareError(undefined);
+          return true;
+        }
+        case "share_error": {
+          setShareError(String((e as { error?: unknown }).error ?? "that didn't work"));
+          return true;
+        }
+        case "directory_user": {
+          const user = (e as unknown as { user?: DirectoryProfileVm }).user;
+          if (user?.username) setProfileView((p) => (p && p.username === user.username ? { ...p, user, loading: false } : p));
+          return true;
+        }
         case "workspaces_list": {
           const list = (e as unknown as { workspaces?: WorkspaceVm[] }).workspaces;
           if (Array.isArray(list)) setWorkspaces(list);
@@ -3211,7 +3250,7 @@ function App() {
           // Agents, rooms and the people directory hydrate here too: they were
           // only requested on daemon_ready, so a refresh showed no agents and an
           // unclaimed username even though both sat on disk (owner, 2026-10-20).
-          for (const type of ["sessions_list", "agents_list", "rooms_list", "directory_status", "workspaces_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
+          for (const type of ["sessions_list", "agents_list", "rooms_list", "directory_status", "workspaces_list", "jobs_list", "agents_sharing", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -5111,7 +5150,7 @@ function App() {
             workspaces={workspaces.map((w) => ({ id: w.id, label: w.label }))}
             error={roomError}
             onSend={(text) => { setRoomError(undefined); daemonCmd({ type: "room_post", roomId: activeRoom.id, text }); }}
-            onPause={(paused) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: { rules: { paused } } })}
+            onPause={(paused) => daemonCmd(paused ? { type: "room_stop", roomId: activeRoom.id } : { type: "room_update", roomId: activeRoom.id, room: { rules: { paused } } })}
             onMute={(agentId, muted) => daemonCmd({ type: "room_agent_mute", roomId: activeRoom.id, agentId, muted })}
             onRecall={(agentId) => daemonCmd({ type: "room_agent_remove", roomId: activeRoom.id, agentId })}
             onAddAgent={(agentId) => daemonCmd({ type: "room_agent_add", roomId: activeRoom.id, agentId })}
@@ -5147,6 +5186,20 @@ function App() {
             onNewAgent={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}
             onNewRoom={() => { setRoomError(undefined); setRoomSheet({ kind: "create" }); }}
             onFeed={() => setView("feed")}
+            scheduled={
+              <ScheduledList
+                compact
+                jobs={jobs}
+                agents={agents}
+                photos={agentPhotos}
+                rooms={rooms}
+                {...(jobError ? { error: jobError } : {})}
+                onAdd={(spec) => { setJobError(undefined); daemonCmd({ type: "job_add", job: spec }); }}
+                onChange={(id, action) => { setJobError(undefined); daemonCmd({ type: "job_change", id, action }); }}
+                onOpenThread={(sid) => openSession(sid)}
+              />
+            }
+            onAllScheduled={() => { setSettingsTab("scheduled"); setSettingsOpen(true); }}
           />
         ) : view === "feed" ? (
           <FeedView
@@ -5960,6 +6013,17 @@ function App() {
           onInvite={(username, roomId) => { setPeopleBusy(true); setPeopleError(undefined); daemonCmd({ type: "directory_invite", name: username, roomId }); }}
           onUrl={(url) => { setPeopleError(undefined); daemonCmd({ type: "directory_url", url }); }}
           onClose={() => setPeopleOpen(false)}
+          onView={(username) => openProfile(username)}
+        />
+      ) : null}
+      {profileView ? (
+        <ProfileSheet
+          user={profileView.user}
+          loading={profileView.loading}
+          {...(profileView.error ? { error: profileView.error } : {})}
+          isMe={profileView.username === directory.username}
+          onMessage={(username) => { setProfileView(null); setPeopleBusy(true); setPeopleError(undefined); daemonCmd({ type: "directory_dm", name: username }); }}
+          onClose={() => setProfileView(null)}
         />
       ) : null}
       {roomSheet?.kind === "create" ? (
@@ -6069,6 +6133,56 @@ function App() {
           voiceEngine={voiceEngine}
           onRepairVoice={repairVoice}
           onOpenModelBrowser={() => setModelPopOpen(true)}
+          extraSlots={{
+            profile: (
+              <ProfilePane
+                directory={directory}
+                agents={agents}
+                photos={agentPhotos}
+                onSave={(patch) => { setPeopleError(undefined); daemonCmd({ type: "directory_profile", profile: patch }); }}
+                onOpenPeople={() => { setSettingsOpen(false); setPeopleOpen(true); }}
+              />
+            ),
+            iphone: (
+              <IPhonePane
+                state={phonePair}
+                devices={remoteDevices.map((d) => ({ id: d.id, label: d.name || d.hostname, detail: `${d.os}${d.online ? " · online" : ""}` }))}
+                onPair={() => {
+                  if (!native) {
+                    setPhonePair({ status: "ready", pairing: { url: "wss://ares.example.org/gateway", token: "demo-token-not-real", name: "demo", link: "ares://pair?url=wss%3A%2F%2Fares.example.org%2Fgateway&token=demo-token-not-real&name=demo", permanence: "tunnel", advice: "Demo mode: this is a sample code. In the desktop app it points at your own computer." } });
+                    return;
+                  }
+                  setPhonePair({ status: "loading" });
+                  daemonCmd({ type: "phone_pair" });
+                }}
+                onClose={() => setPhonePair({ status: "idle" })}
+                onUnpair={(deviceId) => daemonCmd({ type: "remote_device_unpair", deviceId })}
+              />
+            ),
+            scheduled: (
+              <ScheduledPane
+                jobs={jobs}
+                agents={agents}
+                photos={agentPhotos}
+                rooms={rooms}
+                {...(jobError ? { error: jobError } : {})}
+                onAdd={(spec) => { setJobError(undefined); daemonCmd({ type: "job_add", job: spec }); }}
+                onChange={(id, action) => { setJobError(undefined); daemonCmd({ type: "job_change", id, action }); }}
+                onOpenThread={(sid) => { setSettingsOpen(false); openSession(sid); }}
+              />
+            ),
+          }}
+          skillsTopSlot={
+            <SharingPanel
+              sharing={sharing}
+              agents={agents}
+              rooms={rooms}
+              {...(shareError ? { error: shareError } : {})}
+              onSet={(patch) => { setShareError(undefined); daemonCmd({ type: "agents_sharing_set", settings: patch }); }}
+              onAccept={(id, agentIds) => { setShareError(undefined); daemonCmd({ type: "share_accept", id, ...(agentIds ? { agentIds } : {}) }); }}
+              onReject={(id) => daemonCmd({ type: "share_reject", id })}
+            />
+          }
           workspacesSlot={
             <WorkspacesPane
               workspaces={workspaces}
@@ -9690,6 +9804,10 @@ const ItemView = React.memo(function ItemView({
     );
   }
   if (item.kind === "user") {
+    // A scheduled job coming due (daemon/jobs.ts): a quiet notice, not a
+    // bubble that looks like the owner typed it.
+    const job = item.text ? /^\(Scheduled job "([^"]{1,80})" — ([^.]{1,80})\./.exec(item.text) : null;
+    if (job) return <div className="jobNotice">⏰ Scheduled job · {job[1]} · {job[2]}</div>;
     const texted = item.text ? parseAgentText(item.text) : null;
     if (texted) {
       // Another agent texting this one: a grey bubble on the left with the
@@ -10989,7 +11107,7 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
   );
 }
 
-type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "mind" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about" | "workspaces";
+type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "mind" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about" | "workspaces" | "profile" | "iphone" | "scheduled";
 
 interface SkillSurface {
   id: string;
@@ -11102,14 +11220,17 @@ interface UsageStats {
 
 /** The iPhone app's Settings: grouped rows, each with a coloured icon tile. */
 const SETTINGS_GROUPS: Array<{ label: string; tabs: SettingsTab[] }> = [
-  { label: "You", tabs: ["account"] },
-  { label: "Agents & models", tabs: ["model", "routing", "workspaces", "permissions", "keys"] },
+  { label: "You", tabs: ["profile", "account", "iphone"] },
+  { label: "Agents & models", tabs: ["model", "routing", "workspaces", "scheduled", "permissions", "keys"] },
   { label: "Look & sound", tabs: ["appearance", "voice"] },
   { label: "Abilities", tabs: ["skills", "plugins", "mind"] },
   { label: "Ares", tabs: ["usage", "consciousness", "advanced", "updates", "about"] },
 ];
 const SETTINGS_TILES: Record<SettingsTab, { icon: string; bg: string }> = {
   account: { icon: "@", bg: "#0a84ff" },
+  profile: { icon: "☺", bg: "#ff375f" },
+  iphone: { icon: "▯", bg: "#5e5ce6" },
+  scheduled: { icon: "◷", bg: "#ff9f0a" },
   model: { icon: "✦", bg: "#7c5cff" },
   routing: { icon: "⇄", bg: "#ff9f0a" },
   workspaces: { icon: "▣", bg: "#30d158" },
@@ -11131,6 +11252,9 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = 
   { id: "account", label: "Ares Account", glyph: "dot" },
   { id: "routing", label: "Routing", glyph: "search" },
   { id: "workspaces", label: "Workspaces (VPS)", glyph: "shell" },
+  { id: "profile", label: "Your profile", glyph: "dot" },
+  { id: "iphone", label: "iPhone", glyph: "dot" },
+  { id: "scheduled", label: "Scheduled", glyph: "task" },
   { id: "appearance", label: "Appearance", glyph: "edit" },
   { id: "voice", label: "Voice", glyph: "dot" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
@@ -11678,9 +11802,15 @@ function Settings({
   onKimiSignIn,
   onLaunchLivingSurface,
   workspacesSlot,
+  extraSlots,
+  skillsTopSlot,
 }: {
   /** Settings → Workspaces, built by the app (it owns the boxes' state). */
   workspacesSlot?: React.ReactNode;
+  /** Panes the app builds (it owns their state): Profile, iPhone, Scheduled. */
+  extraSlots?: Partial<Record<SettingsTab, React.ReactNode>>;
+  /** Above the Skills list: sharing with other people's agents. */
+  skillsTopSlot?: React.ReactNode;
   recoveryMode: { mode: "ask" | "auto" | "never"; pinnedByEnv: boolean };
   setRecoveryMode: React.Dispatch<React.SetStateAction<{ mode: "ask" | "auto" | "never"; pinnedByEnv: boolean }>>;
   prefs: Prefs;
@@ -11727,7 +11857,9 @@ function Settings({
   // pull live data when entering data-backed tabs
   useEffect(() => {
     if (!native) return;
-    if (tab === "skills") onDaemonCommand({ type: "skills_list" });
+    if (tab === "skills") { onDaemonCommand({ type: "skills_list" }); onDaemonCommand({ type: "agents_sharing" }); }
+    if (tab === "scheduled") onDaemonCommand({ type: "jobs_list" });
+    if (tab === "iphone") onDaemonCommand({ type: "remote_devices" });
     if (tab === "plugins") onDaemonCommand({ type: "plugins_list" });
     if (tab === "mind") onDaemonCommand({ type: "mind_overview" });
     if (tab === "usage") onDaemonCommand({ type: "usage_stats", days: 30 });
@@ -11789,6 +11921,7 @@ function Settings({
 
         <div className="settingsMain">
           {tab === "workspaces" ? workspacesSlot : null}
+          {extraSlots?.[tab] ?? null}
           {tab === "model" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">Starting up</h3>
@@ -11829,7 +11962,7 @@ function Settings({
 
           {tab === "routing" ? (
             <div className="settingsPane">
-              <h3 className="paneTitle">Routing — the war table</h3>
+              <h3 className="paneTitle">Routing</h3>
               <p className="paneHint">Assign a model to each task lane. Unassigned lanes use the main model.</p>
               {ROUTE_LANES.map((lane) => {
                 const entry = draft.routing[lane];
@@ -11975,8 +12108,9 @@ function Settings({
 
           {tab === "skills" ? (
             <div className="settingsPane">
+              {skillsTopSlot}
               <h3 className="paneTitle">Skills & Tools</h3>
-              <p className="paneHint">Installed capabilities under ~/.ares/skills. Search, inspect readiness, test executable skills, and disable anything you do not want routed into a turn.</p>
+              <p className="paneHint">What your agents know how to do. Search, test, and switch off anything you don't want them using.</p>
               <div className="skillOverview">
                 <span><strong>{skills.filter((s) => s.enabled).length}</strong> enabled</span>
                 <span><strong>{skills.filter((s) => s.runnable).length}</strong> executable</span>

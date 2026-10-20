@@ -391,8 +391,8 @@ export function RoomView({
           <button data-on={board ? "1" : "0"} onClick={() => setBoard((b) => !b)} title="Job board">Board{open.length ? <em>{open.length}</em> : null}</button>
           <button data-on={panel === "notes" ? "1" : "0"} onClick={() => setPanel(panel === "notes" ? null : "notes")} title="Shared notes">Notes</button>
           {!room.remote ? <button onClick={onInvite} title="Invite a person (they bring their own agents)">Invite</button> : null}
-          <button className={room.rules.paused ? "roomResume" : "roomPause"} onClick={() => onPause(!room.rules.paused)} title={room.rules.paused ? "Let the agents speak again" : "Stop every agent until you resume"}>
-            {room.rules.paused ? "▶ Resume" : "⏸ Pause"}
+          <button className={`roomStop ${room.rules.paused ? "roomResume" : "roomPause"}`} data-paused={room.rules.paused ? "1" : "0"} onClick={() => onPause(!room.rules.paused)} title={room.rules.paused ? "Let the agents speak again" : "Kill switch: stop every agent in this room right now — yours and everyone else's — until you resume"}>
+            {room.rules.paused ? "▶ Resume" : "■ Stop all"}
           </button>
           <button data-on={panel === "settings" ? "1" : "0"} onClick={() => setPanel(panel === "settings" ? null : "settings")} title="Room settings" aria-label="Room settings">⋯</button>
         </div>

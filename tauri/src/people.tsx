@@ -16,6 +16,8 @@ export interface DirectoryProfileVm {
   username: string;
   displayName: string;
   bio?: string;
+  emoji?: string;
+  color?: string;
   agents: DirectoryAgentVm[];
   online: boolean;
   reachable: boolean;
@@ -38,6 +40,8 @@ export interface DirectoryVm {
   displayName?: string;
   shownAgents: string[];
   bio?: string;
+  emoji?: string;
+  color?: string;
   connected: boolean;
   online: boolean;
   error?: string;
@@ -52,10 +56,10 @@ function hashOf(text: string): number {
 }
 export const colorFor = (key: string) => PALETTE[hashOf(key) % PALETTE.length]!;
 
-export function PersonFace({ name, username, size = 36, online }: { name: string; username: string; size?: number; online?: boolean }) {
+export function PersonFace({ name, username, size = 36, online, emoji, color }: { name: string; username: string; size?: number; online?: boolean; emoji?: string; color?: string }) {
   return (
-    <span className="peopleFace" data-online={online ? "1" : "0"} style={{ width: size, height: size, fontSize: Math.round(size * 0.4), ["--agent" as string]: colorFor(username) }} title={`@${username}`}>
-      {initials(name)}
+    <span className="peopleFace" data-online={online ? "1" : "0"} data-emoji={emoji ? "1" : "0"} style={{ width: size, height: size, fontSize: Math.round(size * (emoji ? 0.52 : 0.4)), ["--agent" as string]: color ?? colorFor(username) }} title={`@${username}`}>
+      {emoji || initials(name)}
     </span>
   );
 }
@@ -76,7 +80,10 @@ export function PeopleSheet({
   onInvite,
   onUrl,
   onClose,
+  onView,
 }: {
+  /** Open someone's full profile. */
+  onView?: (username: string) => void;
   directory: DirectoryVm;
   agents: AgentVm[];
   photos: Record<string, string>;
@@ -122,7 +129,7 @@ export function PeopleSheet({
         <section className="peopleMe" data-on={directory.connected ? "1" : "0"}>
           {directory.connected && !editing ? (
             <div className="peopleMeRow">
-              <PersonFace name={directory.displayName ?? directory.username ?? "?"} username={directory.username ?? "me"} size={40} online={directory.online} />
+              <PersonFace name={directory.displayName ?? directory.username ?? "?"} username={directory.username ?? "me"} size={40} online={directory.online} emoji={directory.emoji} color={directory.color} />
               <div className="peopleMeText">
                 <strong>{directory.displayName ?? directory.username}</strong>
                 <em>@{directory.username} · {directory.online ? "online" : directory.error ? "can't reach the directory" : "connecting…"}</em>
@@ -187,8 +194,8 @@ export function PeopleSheet({
             <div className="peopleList">
               {results.map((p) => (
                 <div key={p.username} className="peopleRow">
-                  <PersonFace name={p.displayName} username={p.username} size={40} online={p.online} />
-                  <div className="peopleRowText">
+                  <button className="peopleFaceBtn" onClick={() => onView?.(p.username)} title="Profile"><PersonFace name={p.displayName} username={p.username} size={40} online={p.online} emoji={p.emoji} color={p.color} /></button>
+                  <div className="peopleRowText" role="button" tabIndex={0} onClick={() => onView?.(p.username)} style={onView ? { cursor: "pointer" } : undefined}>
                     <strong>{p.displayName} <em>@{p.username}</em></strong>
                     <span>{p.bio ? p.bio : p.online ? "online now" : `seen ${new Date(p.lastSeenAt).toLocaleDateString([], { month: "short", day: "numeric" })}`}{!p.reachable ? " · can't host rooms yet" : ""}</span>
                     {p.agents.length ? (

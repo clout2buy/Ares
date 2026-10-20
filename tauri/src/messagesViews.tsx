@@ -3,7 +3,7 @@
 // you, who is working). Both read the same garrison routes the phone reads
 // through the daemon's gateway relay, so an edition written for the phone is
 // the one you see here.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentVm } from "./agents";
 import { AgentAvatar } from "./agents";
 import type { RoomVm, RoomMessageVm } from "./rooms";
@@ -163,6 +163,9 @@ export interface NowProps {
   onNewAgent: () => void;
   onNewRoom: () => void;
   onFeed: () => void;
+  /** The Scheduled section (jobs your agents run on a timer). */
+  scheduled?: ReactNode;
+  onAllScheduled?: () => void;
 }
 
 export function NowView(p: NowProps) {
@@ -227,6 +230,13 @@ export function NowView(p: NowProps) {
           ))}
         </div>
       </section>
+
+      {p.scheduled ? (
+        <section className="nowSection">
+          <h3>Scheduled{p.onAllScheduled ? <button className="nowLink nowAll" onClick={p.onAllScheduled}>See all</button> : null}</h3>
+          {p.scheduled}
+        </section>
+      ) : null}
 
       <section className="nowSection">
         <h3>Rooms</h3>

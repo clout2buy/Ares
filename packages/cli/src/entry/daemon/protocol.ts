@@ -123,6 +123,10 @@ export interface DaemonInputCommand {
   requestId?: string;
   /** workspace_add — {label, host, user, port}. */
   workspace?: Record<string, unknown>;
+  /** agents_sharing_set — {give?, take?}. */
+  settings?: Record<string, unknown>;
+  /** share_accept (lesson) — which agents learn it (default: that room's). */
+  agentIds?: string[];
 }
 
 export class AsyncQueue<T> {

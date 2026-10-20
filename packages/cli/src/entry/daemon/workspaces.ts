@@ -17,6 +17,20 @@
 // (StrictHostKeyChecking=accept-new into the workspace's own known_hosts).
 
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+
+/** A free 127.0.0.1 port for a tunnel. */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const a = srv.address();
+      const port = typeof a === "object" && a ? a.port : 0;
+      srv.close(() => (port ? resolve(port) : reject(new Error("no free port"))));
+    });
+  });
+}
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -149,7 +163,45 @@ export class DesktopWorkspaces {
     return ws;
   }
 
+  /** Live previews: a PRIVATE tunnel from this PC to a port on the box
+   *  (ssh -L, bound to 127.0.0.1 only). Nothing is opened to the internet;
+   *  only this PC can load it. One per box+port, closed after TUNNEL_TTL_MS. */
+  private readonly tunnels = new Map<string, { port: number; child: { kill(): void }; timer: NodeJS.Timeout }>();
+  static readonly TUNNEL_TTL_MS = 2 * 60 * 60_000;
+
+  async forward(id: string, remotePort: number, opts: { spawnImpl?: typeof spawn; localPort?: number } = {}): Promise<{ url: string; localPort: number; reused: boolean }> {
+    const ws = this.get(id);
+    if (!ws) throw new WorkspaceError("unknown workspace");
+    if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) throw new WorkspaceError("port must be 1–65535");
+    const key = `${id}:${remotePort}`;
+    const open = this.tunnels.get(key);
+    if (open) return { url: `http://127.0.0.1:${open.port}/`, localPort: open.port, reused: true };
+    const localPort = opts.localPort ?? (await freePort());
+    const child = (opts.spawnImpl ?? spawn)("ssh", [...this.sshArgs(ws), "-N", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`, `${ws.user}@${ws.host}`], { stdio: "ignore", windowsHide: true });
+    const timer = setTimeout(() => this.unforward(key), DesktopWorkspaces.TUNNEL_TTL_MS);
+    timer.unref?.();
+    child.on?.("exit", () => { const t = this.tunnels.get(key); if (t && t.child === child) { clearTimeout(t.timer); this.tunnels.delete(key); } });
+    this.tunnels.set(key, { port: localPort, child, timer });
+    // give ssh a moment to bind (or fail fast on a refused forward)
+    await new Promise((r) => setTimeout(r, opts.spawnImpl ? 0 : 1200));
+    if (!this.tunnels.has(key)) throw new WorkspaceError(`couldn't reach port ${remotePort} on ${ws.label} — is the server running there?`);
+    return { url: `http://127.0.0.1:${localPort}/`, localPort, reused: false };
+  }
+
+  private unforward(key: string): void {
+    const t = this.tunnels.get(key);
+    if (!t) return;
+    clearTimeout(t.timer);
+    try { t.child.kill(); } catch { /* already gone */ }
+    this.tunnels.delete(key);
+  }
+
+  closeTunnels(id?: string): void {
+    for (const key of [...this.tunnels.keys()]) if (!id || key.startsWith(`${id}:`)) this.unforward(key);
+  }
+
   async remove(id: string): Promise<void> {
+    this.closeTunnels(id);
     this.list_ = this.list_.filter((w) => w.id !== id);
     await fs.rm(this.dir(id), { recursive: true, force: true }).catch(() => undefined);
     await this.save();

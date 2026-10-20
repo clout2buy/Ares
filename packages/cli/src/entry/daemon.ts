@@ -30,6 +30,7 @@ const STUCK_TURN_CHECK_MS = 30_000;
 import { liveMcpTools } from "./mcpTools.js";
 import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken, MCP_CATALOG, MCP_CATEGORIES, discoverMcpAuth } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -80,6 +81,9 @@ import { setRoomsHost } from "./roomScope.js";
 import { setOpenHost } from "./openTool.js";
 import { DesktopWorkspaces, WorkspaceError, workFolder } from "./daemon/workspaces.js";
 import { setWorkspaceHost } from "./workspaceTool.js";
+import { AgentSharing, sanitizeSharedSkill, SKILL_NAME_RE } from "./daemon/sharing.js";
+import { DesktopJobs, JobError, describeSchedule, type AgentJob } from "./daemon/jobs.js";
+import { setJobsHost, type JobCard } from "./jobsTool.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
 import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
@@ -1042,6 +1046,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return [];
   });
   setAgentsHost(desktopAgents.host());
+  // ─── Cross-owner sharing (daemon/sharing.ts) ─────────────────────────────
+  const agentSharing = new AgentSharing({ home: live.context.home, emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n") });
+  await agentSharing.load().catch(() => undefined);
+  const skillsRoot = path.join(aresAgentHome(live.context.home), "skills");
   // ─── Rooms (group chats of people + agents; see daemon/rooms.ts) ────────
   const desktopRooms = new DesktopRooms({
     home: live.context.home,
@@ -1063,6 +1071,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     relayer: (sessionId) => {
       const entry = sessions.get(sessionId);
       if (entry) applyAgent(entry, sessionId);
+    },
+    interrupt: (sessionId) => commands.onInterrupt?.({ type: "interrupt", sessionId } as DaemonInputCommand),
+    sharing: {
+      give: () => agentSharing.get().give,
+      take: () => agentSharing.get().take,
+      receive: (item) => agentSharing.receive(item),
+      skill: async (name) => {
+        if (!SKILL_NAME_RE.test(name)) return undefined;
+        const text = await fs.readFile(path.join(skillsRoot, name, "SKILL.md"), "utf8").catch(() => "");
+        if (!text) return undefined;
+        const description = /^description:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "";
+        return { text: text.slice(0, 20_000), description };
+      },
     },
   });
   await desktopRooms.load().catch((error) => {
@@ -1090,6 +1111,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return { id: ws.id, label: ws.label, host: ws.host, folder: workFolder(room ? room.name : agent?.name ?? "ares") };
   };
   setWorkspaceHost({
+    preview: async (sid, port, urlPath) => {
+      const w = workspaceFor(sid);
+      const out = await desktopWorkspaces.forward(w.id, port);
+      const url = out.url + (urlPath ? urlPath.replace(/^\/+/, "") : "");
+      process.stdout.write(JSON.stringify({ type: "agent_open_url", url, sessionId: sid, preview: true }) + "\n");
+      return { url, label: w.label };
+    },
     resolve: (sid) => workspaceFor(sid),
     run: async (sid, command, timeoutMs) => {
       const w = workspaceFor(sid);
@@ -1107,6 +1135,51 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       const dest = path.resolve(live.context.workspace, localPath ?? path.join("workspaces", w.folder, remoteName));
       const out = await desktopWorkspaces.get_(w.id, remoteName, w.folder, dest);
       return { ok: out.code === 0, path: dest, ...(out.code === 0 ? {} : { error: (out.stderr || out.stdout).trim().slice(0, 300) }) };
+    },
+  });
+  // ─── Scheduled jobs (daemon/jobs.ts) ───────────────────────────────────
+  const desktopJobs = new DesktopJobs({
+    home: live.context.home,
+    emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n"),
+    agentExists: (id) => Boolean(desktopAgents.get(id)),
+    roomName: (id) => desktopRooms.store.get(id)?.name,
+    wake: async (job, text) => desktopAgents.wake(job.agentId, text, `job_${job.id}_${Date.now()}`),
+  });
+  await desktopJobs.load().catch(() => []);
+  desktopJobs.start();
+  const jobCard = (j: AgentJob): JobCard => ({
+    id: j.id,
+    agent: desktopAgents.get(j.agentId)?.name ?? j.agentId,
+    title: j.title,
+    when: describeSchedule(j.schedule),
+    status: j.status,
+    ...(j.nextRunAt ? { next: new Date(j.nextRunAt).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }) } : {}),
+    ...(j.roomId ? { room: desktopRooms.store.get(j.roomId)?.name ?? j.roomId } : {}),
+  });
+  setJobsHost({
+    add: async (sid, spec) => {
+      const self = desktopAgents.agentForSession(sid);
+      const target = self ?? (spec.agent ? desktopAgents.resolve(spec.agent) : undefined);
+      if (!target) throw new JobError(spec.agent ? `no agent called "${spec.agent}"` : "say which agent runs it (agent)");
+      let roomId: string | undefined;
+      if (spec.room) {
+        const r = desktopRooms.store.list().find((x) => x.id === spec.room || x.name.toLowerCase() === spec.room!.toLowerCase());
+        if (!r) throw new JobError(`no room called "${spec.room}"`);
+        roomId = r.id;
+      }
+      const job = await desktopJobs.add({ agentId: target.id, task: spec.task, when: spec.when, ...(spec.title ? { title: spec.title } : {}), ...(roomId ? { roomId } : {}), createdBy: self ? "agent" : "owner" });
+      return jobCard(job);
+    },
+    list: (sid) => {
+      const self = desktopAgents.agentForSession(sid);
+      return desktopJobs.list().filter((j) => !self || j.agentId === self.id).map(jobCard);
+    },
+    change: async (sid, id, action) => {
+      const self = desktopAgents.agentForSession(sid);
+      const job = desktopJobs.get(id);
+      if (!job || (self && job.agentId !== self.id)) throw new JobError("no such job of yours");
+      const out = await desktopJobs.change(id, action);
+      return out ? jobCard(out) : undefined;
     },
   });
   setOpenHost({
@@ -2526,6 +2599,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           } else if (kind === "agent_delete") {
             const id = cleanCommandId(command.agentId);
             if (!id) throw new AgentError("agent_delete requires agentId");
+            await desktopJobs.dropAgent(id).catch(() => undefined);
             // out of every room first (its seats and work threads go with it)
             for (const r of desktopRooms.list()) {
               if (r.members.some((m) => m.kind === "agent" && m.home === "local" && m.id === id)) await desktopRooms.removeAgent(r.id, id).catch(() => undefined);
@@ -2606,7 +2680,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type === "room_job" ||
         command.type === "room_notes" ||
         command.type === "room_me" ||
-        command.type === "room_guest_remove"
+        command.type === "room_guest_remove" ||
+        command.type === "room_stop"
       ) {
         const kind = command.type;
         const out = (payload: Record<string, unknown>) => process.stdout.write(JSON.stringify(payload) + "\n");
@@ -2664,6 +2739,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               const spec = (command.job ?? {}) as { id?: string; title?: string; owner?: string; status?: string; due?: string; link?: string; note?: string; remove?: boolean };
               const res = await desktopRooms.setJob(roomId, owner, spec);
               out({ type: "room_changed", room: desktopRooms.wire(res.room) });
+            } else if (kind === "room_stop") {
+              const res = await desktopRooms.stopAgents(roomId);
+              out({ type: "room_changed", room: desktopRooms.wire(res.room), stopped: res.stopped });
             } else if (kind === "room_notes") {
               const next = await desktopRooms.setNotes(roomId, owner, typeof command.notes === "string" ? command.notes : "");
               out({ type: "room_changed", room: desktopRooms.wire(next) });
@@ -2671,6 +2749,78 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           }
         } catch (error) {
           out({ type: "room_error", command: kind, ...(roomId ? { roomId } : {}), error: error instanceof Error ? error.message : String(error) });
+        }
+        continue;
+      }
+      // ─── Scheduled jobs ────────────────────────────────────────────────
+      if (command.type === "jobs_list" || command.type === "job_add" || command.type === "job_change") {
+        const kind = command.type;
+        const out = (payload: Record<string, unknown>) => process.stdout.write(JSON.stringify(payload) + "\n");
+        try {
+          if (kind === "jobs_list") out({ type: "jobs_list", jobs: await desktopJobs.load() });
+          else if (kind === "job_add") {
+            const j = (command.job ?? {}) as Record<string, unknown>;
+            await desktopJobs.add({
+              agentId: typeof j.agentId === "string" ? j.agentId : "",
+              task: typeof j.task === "string" ? j.task : "",
+              when: typeof j.when === "string" ? j.when : "",
+              ...(typeof j.title === "string" && j.title.trim() ? { title: j.title } : {}),
+              ...(typeof j.roomId === "string" && j.roomId ? { roomId: j.roomId } : {}),
+              createdBy: "owner",
+            });
+          } else {
+            const id = cleanCommandId(command.id);
+            const action = command.action;
+            if (!id) throw new JobError("job_change requires id");
+            if (action !== "pause" && action !== "resume" && action !== "delete" && action !== "run") throw new JobError("action must be pause, resume, delete or run");
+            await desktopJobs.change(id, action);
+          }
+        } catch (error) {
+          out({ type: "job_error", command: kind, error: error instanceof Error ? error.message : String(error) });
+        }
+        continue;
+      }
+      // ─── Cross-owner sharing ──────────────────────────────────────────
+      if (command.type === "agents_sharing" || command.type === "agents_sharing_set" || command.type === "share_accept" || command.type === "share_reject") {
+        const kind = command.type;
+        const out = (payload: Record<string, unknown>) => process.stdout.write(JSON.stringify(payload) + "\n");
+        try {
+          if (kind === "agents_sharing") agentSharing.emit();
+          else if (kind === "agents_sharing_set") {
+            const s = (command as { settings?: { give?: unknown; take?: unknown } }).settings ?? {};
+            await agentSharing.set({ ...(typeof s.give === "boolean" ? { give: s.give } : {}), ...(typeof s.take === "boolean" ? { take: s.take } : {}) });
+            refreshAgentLayers();
+          } else {
+            const id = cleanCommandId(command.id);
+            if (!id) throw new Error(`${kind} requires id`);
+            if (kind === "share_reject") await agentSharing.take(id);
+            else {
+              const item = agentSharing.peek(id);
+              if (!item) throw new Error("that share is gone");
+              const from = `${item.fromAgent}${item.fromOwner ? ` (${item.fromOwner}'s agent)` : ""}`;
+              if (item.kind === "lesson") {
+                const wanted = Array.isArray((command as { agentIds?: unknown }).agentIds) ? ((command as { agentIds: unknown[] }).agentIds.filter((x): x is string => typeof x === "string")) : [];
+                const room = desktopRooms.store.get(item.roomId);
+                const inRoom = room ? room.members.filter((m) => m.kind === "agent" && m.home === "local").map((m) => m.id) : [];
+                const targets = wanted.length ? wanted : inRoom.length ? inRoom : desktopAgents.list().map((a) => a.id);
+                for (const aid of targets) await desktopAgents.learn(aid, { add: item.text, from }).catch(() => undefined);
+              } else {
+                if (!item.skill || !item.file || !SKILL_NAME_RE.test(item.skill)) throw new Error("that skill share is malformed");
+                const raw = (await desktopRooms.fetchFile(item.roomId, item.file)).toString("utf8");
+                const md = sanitizeSharedSkill(raw, { skill: item.skill, text: item.text, fromAgent: item.fromAgent, ...(item.fromOwner ? { fromOwner: item.fromOwner } : {}) });
+                let folder = item.skill;
+                const exists = async (n: string) => Boolean(await fs.stat(path.join(skillsRoot, n)).catch(() => null));
+                if (await exists(folder)) folder = `${item.skill}-shared`;
+                for (let k = 2; await exists(folder); k++) folder = `${item.skill}-shared-${k}`;
+                await fs.mkdir(path.join(skillsRoot, folder), { recursive: true });
+                await fs.writeFile(path.join(skillsRoot, folder, "SKILL.md"), md, "utf8");
+                out({ type: "skills_list", skills: await daemonSkillsList(live.context.home).catch(() => []) });
+              }
+              await agentSharing.take(id);
+            }
+          }
+        } catch (error) {
+          out({ type: "share_error", command: kind, error: error instanceof Error ? error.message : String(error) });
         }
         continue;
       }
@@ -2711,6 +2861,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type === "directory_status" ||
         command.type === "directory_claim" ||
         command.type === "directory_profile" ||
+        command.type === "directory_user" ||
         command.type === "directory_search" ||
         command.type === "directory_invite" ||
         command.type === "directory_dm" ||
@@ -2726,8 +2877,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           else if (kind === "directory_url") out({ type: "directory_state", directory: await desktopDirectory.setUrl(typeof command.url === "string" ? command.url : "") });
           else if (kind === "directory_claim") out({ type: "directory_state", directory: await desktopDirectory.claim(typeof command.name === "string" ? command.name : "", typeof command.label === "string" ? command.label : undefined), claimed: true });
           else if (kind === "directory_profile") {
-            const patch = (command as { profile?: { displayName?: string; bio?: string; shownAgents?: string[] } }).profile ?? {};
+            const patch = (command as { profile?: { displayName?: string; bio?: string; shownAgents?: string[]; emoji?: string; color?: string } }).profile ?? {};
             out({ type: "directory_state", directory: await desktopDirectory.updateProfile(patch) });
+          } else if (kind === "directory_user") {
+            const name = typeof command.name === "string" ? command.name.trim().toLowerCase().replace(/^@/, "") : "";
+            out({ type: "directory_user", user: await desktopDirectory.profile(name) });
           } else if (kind === "directory_search") {
             const users = await desktopDirectory.search(typeof command.text === "string" ? command.text : "");
             out({ type: "directory_results", ...(requestId ? { requestId } : {}), q: command.text ?? "", users });

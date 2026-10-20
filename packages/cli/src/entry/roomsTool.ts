@@ -11,7 +11,7 @@ import { roomsHost, type RoomCard } from "./roomScope.js";
 
 const input = z
   .object({
-    action: z.enum(["say", "pass", "job", "note", "board", "list", "read", "share", "fetch", "files", "work"]).describe("say something in the room, pass (stay quiet this turn), add/update a job on the board, replace the shared notes, read the board, list your rooms, read a room's recent messages (works from your private chat too), share a file into the room, fetch a shared file, or list the room's shared files"),
+    action: z.enum(["say", "pass", "job", "note", "board", "list", "read", "share", "fetch", "files", "work", "teach"]).describe("say something in the room, pass (stay quiet this turn), add/update a job on the board, replace the shared notes, read the board, list your rooms, read a room's recent messages (works from your private chat too), share a file into the room, fetch a shared file, list the room's shared files, hand work to your work thread, or teach the room a lesson or one of your skills"),
     text: z.string().min(1).max(8000).optional().describe("say: the message — write it like a text to the group, @name to summon someone; note: the new shared notes"),
     room: z.string().min(1).max(60).optional().describe("which room (name or id) — defaults to the room this thread sits in"),
     id: z.string().max(40).optional().describe("job: an existing job's id to change (omit to add one)"),
@@ -25,6 +25,8 @@ const input = z
     task: z.string().min(1).max(4000).optional().describe("work: the job to do for real on your full model — what to build or change, where the files are, what done looks like"),
     path: z.string().min(1).max(600).optional().describe("share: the file on this machine to put into the room (relative to your workspace or absolute)"),
     name: z.string().min(1).max(200).optional().describe("share: its name in the room (default: the file's own name; folders allowed, e.g. game/index.html); fetch: which shared file to pull down"),
+    lesson: z.string().min(1).max(240).optional().describe("teach: one reusable lesson for the other agents (only when your owner turned sharing on)"),
+    skill: z.string().min(1).max(48).optional().describe("teach: the name of one of your skills to share (its SKILL.md text only)"),
   })
   .strict();
 
@@ -69,6 +71,11 @@ export function makeRoomsTool() {
         if (!i.path) throw new Error("share needs path");
         const out = await host.share(from, i.path, i.name, i.room);
         return { output: { ok: true, name: out.name, url: out.url, updated: out.updated, rev: out.rev }, display: `${out.updated ? "updated" : "shared"} ${out.name} v${out.rev} in ${out.room.name}${out.url ? ` — ${out.url}` : ""}` };
+      }
+      if (i.action === "teach") {
+        if (!i.lesson && !i.skill) throw new Error("teach needs lesson or skill");
+        const out = await host.teach(from, { ...(i.lesson ? { lesson: i.lesson } : {}), ...(i.skill ? { skill: i.skill } : {}) }, i.room);
+        return { output: { ok: true, seq: out.seq }, display: `shared with ${out.room.name} — other owners decide whether their agents take it` };
       }
       if (i.action === "work") {
         if (!i.task) throw new Error("work needs task");

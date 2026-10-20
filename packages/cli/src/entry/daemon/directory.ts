@@ -34,6 +34,8 @@ export interface DirectoryState {
   /** Which of our agents are shown on our profile (persona ids). */
   shownAgents: string[];
   bio?: string;
+  emoji?: string;
+  color?: string;
   /** Highest inbox seq we have seen. */
   inboxSeq: number;
   /** username → the local mirror of our DM room with them (hosted on the directory). */
@@ -48,6 +50,8 @@ export interface DirectoryWire {
   displayName?: string;
   shownAgents: string[];
   bio?: string;
+  emoji?: string;
+  color?: string;
   connected: boolean;
   online: boolean;
   error?: string;
@@ -96,6 +100,8 @@ export class DesktopDirectory {
         ...(typeof raw.token === "string" ? { token: raw.token } : {}),
         shownAgents: Array.isArray(raw.shownAgents) ? raw.shownAgents.filter((a): a is string => typeof a === "string") : [],
         ...(typeof raw.bio === "string" ? { bio: raw.bio } : {}),
+        ...(typeof raw.emoji === "string" ? { emoji: raw.emoji } : {}),
+        ...(typeof raw.color === "string" ? { color: raw.color } : {}),
         inboxSeq: typeof raw.inboxSeq === "number" ? raw.inboxSeq : 0,
         dms: raw.dms && typeof raw.dms === "object" ? Object.fromEntries(Object.entries(raw.dms).filter(([, v]) => typeof v === "string")) as Record<string, string> : {},
         handled: Array.isArray(raw.handled) ? raw.handled.filter((a): a is string => typeof a === "string").slice(-500) : [],
@@ -125,6 +131,8 @@ export class DesktopDirectory {
       ...(this.state.displayName ? { displayName: this.state.displayName } : {}),
       shownAgents: this.state.shownAgents,
       ...(this.state.bio ? { bio: this.state.bio } : {}),
+      ...(this.state.emoji ? { emoji: this.state.emoji } : {}),
+      ...(this.state.color ? { color: this.state.color } : {}),
       connected: Boolean(this.state.token),
       online: this.online,
       ...(this.lastError ? { error: this.lastError } : {}),
@@ -207,7 +215,9 @@ export class DesktopDirectory {
     return this.wire();
   }
 
-  async updateProfile(patch: { displayName?: string; bio?: string; shownAgents?: string[] }): Promise<DirectoryWire> {
+  async updateProfile(patch: { displayName?: string; bio?: string; shownAgents?: string[]; emoji?: string; color?: string }): Promise<DirectoryWire> {
+    if (patch.emoji !== undefined) { const e = [...patch.emoji.trim()].slice(0, 4).join(""); if (e) this.state.emoji = e; else delete this.state.emoji; }
+    if (patch.color !== undefined) { if (/^#[0-9a-f]{6}$/i.test(patch.color)) this.state.color = patch.color; else delete this.state.color; }
     if (patch.shownAgents) this.state.shownAgents = patch.shownAgents.filter((id) => this.deps.agents.get(id)).slice(0, 12);
     if (patch.bio !== undefined) { const b = patch.bio.trim().slice(0, 160); if (b) this.state.bio = b; else delete this.state.bio; }
     if (patch.displayName && patch.displayName.trim()) this.state.displayName = patch.displayName.trim().slice(0, 40);
@@ -306,7 +316,7 @@ export class DesktopDirectory {
 
   private async presence(): Promise<void> {
     const origin = await this.deps.publicOrigin();
-    await this.call("PUT", "/v1/me", { ...(origin ? { origin } : {}), agents: this.shownAgentCards(), ...(this.state.displayName ? { displayName: this.state.displayName } : {}), ...(this.state.bio ? { bio: this.state.bio } : {}) });
+    await this.call("PUT", "/v1/me", { ...(origin ? { origin } : {}), agents: this.shownAgentCards(), ...(this.state.displayName ? { displayName: this.state.displayName } : {}), bio: this.state.bio ?? "", emoji: this.state.emoji ?? "", color: this.state.color ?? "" });
     this.online = true;
     this.lastError = undefined;
   }

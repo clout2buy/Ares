@@ -986,9 +986,11 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "room_job", "room_notes", "room_me", "room_guest_remove",
     // People directory: usernames, lookup, invites (daemon/directory.ts).
     "directory_status", "directory_claim", "directory_profile", "directory_search",
-    "directory_invite", "directory_dm", "directory_group", "directory_ack", "directory_url",
+    "directory_invite", "directory_dm", "directory_group", "directory_ack", "directory_url", "directory_user",
     // Workspaces: the owner's VPS boxes for agents (daemon/workspaces.ts).
     "workspaces_list", "workspace_add", "workspace_test", "workspace_setup", "workspace_remove",
+    // Scheduled agent jobs (daemon/jobs.ts), cross-owner sharing (daemon/sharing.ts), the room kill switch.
+    "jobs_list", "job_add", "job_change", "agents_sharing", "agents_sharing_set", "share_accept", "share_reject", "room_stop",
 ];
 
 #[tauri::command]

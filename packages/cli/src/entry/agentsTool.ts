@@ -14,7 +14,7 @@ import { agentsHost, type AgentCard } from "./agentScope.js";
 
 const input = z
   .object({
-    action: z.enum(["list", "text", "create", "avatar", "hand_memory", "export_memory", "rule"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, hand memories to an agent, export an agent's memory to files, or add/remove one of your standing rules"),
+    action: z.enum(["list", "text", "create", "avatar", "hand_memory", "export_memory", "rule", "lesson"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, hand memories to an agent, export an agent's memory to files, add/remove one of your standing rules, or save/drop a lesson you learned"),
     to: z.string().min(1).max(60).optional().describe("text: the agent's name (or id)"),
     message: z.string().min(1).max(4000).optional().describe("text: what to say — write it like a text to a colleague, with everything they need"),
     urgent: z.boolean().optional().describe("text: true only when it cannot wait for their current work to finish"),
@@ -26,6 +26,9 @@ const input = z
     about: z.string().min(1).max(200).optional().describe("hand_memory: only memories about this (e.g. 'my finances', 'the racing game'); omit to hand everything"),
     add_rule: z.string().min(1).max(400).optional().describe("rule: a standing rule to keep from now on — in every chat AND every room you sit in (e.g. 'in group chats, keep replies to one line'). Save one whenever the owner says 'always…', 'from now on…', 'whenever you're in a group…'."),
     remove_rule: z.string().min(1).max(400).optional().describe("rule: drop the standing rule that contains this text"),
+    add_lesson: z.string().min(1).max(240).optional().describe("lesson: one short, reusable lesson from a job (what worked, what failed, what these people like) — it rides in every chat and room you sit in, so you do better next time. Not a diary entry."),
+    remove_lesson: z.string().min(1).max(240).optional().describe("lesson: drop the lesson that contains this text (it turned out wrong)"),
+    learned_in: z.string().min(1).max(80).optional().describe("lesson: where you learned it, e.g. 'room Neon Brawl'"),
     image: z.string().min(1).max(1024).optional().describe("avatar: path to a square JPEG/PNG/WebP (≤2 MB) you made — e.g. a Forge render or a screenshot of a portrait you drew. It becomes your face in the sidebar, in chats and on the owner's iPhone."),
   })
   .strict();
@@ -77,6 +80,11 @@ export function makeAgentsTool() {
         if (!i.add_rule && !i.remove_rule) throw new Error("rule needs add_rule or remove_rule");
         const out = await host.rules(from, { to: i.to, add: i.add_rule, remove: i.remove_rule });
         return { output: { ok: true, agent: out.agent, rules: out.rules }, display: `${out.agent.name}'s rules:\n${out.rules.map((r) => `- ${r}`).join("\n") || "(none)"}` };
+      }
+      if (i.action === "lesson") {
+        if (!i.add_lesson && !i.remove_lesson) throw new Error("lesson needs add_lesson or remove_lesson");
+        const out = await host.lessons(from, { to: i.to, add: i.add_lesson, remove: i.remove_lesson, from: i.learned_in });
+        return { output: { ok: true, agent: out.agent.name, lessons: out.lessons.length }, display: `${out.agent.name} has ${out.lessons.length} lesson${out.lessons.length === 1 ? "" : "s"}` };
       }
       if (i.action === "export_memory") {
         const out = await host.exportMemory(from, i.to);

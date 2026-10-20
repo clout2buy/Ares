@@ -45,8 +45,20 @@ export interface Persona {
   /** Standing rules the owner gave this agent ("in group chats, keep it to
    *  one line"). They ride in every chat and room seat of the agent. */
   rules?: string[];
+  /** What the agent learned on the job (its own, or taught by another
+   *  owner's agent when this owner allows it). Short, newest last; they ride
+   *  in every chat and room seat like rules, so it gets better everywhere. */
+  lessons?: AgentLesson[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentLesson {
+  text: string;
+  /** Where it came from: "room Neon Brawl", "a chat with the owner",
+   *  "Cupid's agent Bop". */
+  from?: string;
+  at: string;
 }
 
 /** The implicit default persona id — the normal assistant. */
@@ -55,6 +67,22 @@ export const PERSONA_INSTRUCTIONS_MAX = 4_000;
 export const PERSONA_NAME_MAX = 40;
 export const PERSONA_RULES_MAX = 24;
 export const PERSONA_RULE_MAX = 400;
+export const PERSONA_LESSONS_MAX = 30;
+export const PERSONA_LESSON_MAX = 240;
+
+export function parseLessons(v: unknown): AgentLesson[] {
+  if (!Array.isArray(v)) return [];
+  const out: AgentLesson[] = [];
+  for (const x of v) {
+    if (!x || typeof x !== "object") continue;
+    const r = x as Record<string, unknown>;
+    const text = typeof r.text === "string" ? r.text.replace(/\s+/g, " ").trim().slice(0, PERSONA_LESSON_MAX) : "";
+    if (!text) continue;
+    const from = typeof r.from === "string" && r.from.trim() ? r.from.trim().slice(0, 80) : undefined;
+    out.push({ text, ...(from ? { from } : {}), at: typeof r.at === "string" ? r.at : new Date(0).toISOString() });
+  }
+  return out.slice(-PERSONA_LESSONS_MAX);
+}
 /** Old desktop threads past this fall off the agent (the sessions stay on disk). */
 export const DESKTOP_THREADS_MAX = 200;
 const PERSONA_ID_RE = /^p_[a-z0-9]{6,32}$/;
@@ -100,6 +128,7 @@ function normalize(raw: unknown): Persona | null {
       : {}),
     ...(isPersonaId(r.createdBy) ? { createdBy: r.createdBy as string } : {}),
     ...(Array.isArray(r.rules) ? { rules: r.rules.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim().slice(0, PERSONA_RULE_MAX)).slice(0, PERSONA_RULES_MAX) } : {}),
+    ...(parseLessons(r.lessons).length ? { lessons: parseLessons(r.lessons) } : {}),
     createdAt: str(r.createdAt) ?? now,
     updatedAt: str(r.updatedAt) ?? now,
   };

@@ -48,6 +48,9 @@ export interface RoomsHost {
   fetch(sessionId: string, name: string, roomId?: string): Promise<{ room: RoomCard; path: string; size: number; url: string | null }>;
   /** The room's shared files, with their links. */
   files(sessionId: string, roomId?: string): Promise<{ room: RoomCard; files: Array<{ name: string; size: number; at: string; url: string | null }> }>;
+  /** Share a lesson or one of this machine's skills with the room (other
+   *  owners' agents can take it only if THEIR owner approves). */
+  teach(sessionId: string, what: { lesson?: string; skill?: string }, roomId?: string): Promise<{ room: RoomCard; seq: number }>;
   /** The last messages of a room, as lines ("who: text"), oldest first. */
   read(sessionId: string, roomId?: string, limit?: number): Promise<{ room: RoomCard; lines: string[] }>;
 }

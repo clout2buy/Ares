@@ -8,6 +8,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { mkdtempSync } from "node:fs";
+// Served temp folders must not be remembered in the owner's ~/.ares port file.
+process.env.ARES_HOME ??= mkdtempSync(path.join(tmpdir(), "ares-drive-home-"));
 import { serveLocalTarget, stopPreviewServers, waitForDrivablePage, drivePage, drivableRoots } from "../packages/cli/dist/entry/previewServer.js";
 import { createServedPageBrowser } from "../packages/cli/dist/entry/servedPageBrowser.js";
 

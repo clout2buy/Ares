@@ -26,7 +26,7 @@
 //      there (/__ares/nm/<pkg>/…), anything else maps to a pinned CDN build.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createReadStream, mkdirSync, promises as fs, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, promises as fs, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -942,8 +942,11 @@ function rememberPort(key: string, root: string, port: number): void {
   try {
     const all = rememberedPorts();
     if (all[key]?.port === port) return;
-    // one port per folder; a port reused by another folder belongs to it now
-    for (const [k, r] of Object.entries(all)) if (r.port === port) delete all[k];
+    // one port per folder; a port reused by another folder belongs to it now;
+    // folders that are gone (test temp dirs) are forgotten; the file stays small
+    for (const [k, r] of Object.entries(all)) if (r.port === port || !existsSync(r.root)) delete all[k];
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 63))) delete all[k];
     all[key] = { port, root };
     mkdirSync(path.dirname(portsFile()), { recursive: true });
     writeFileSync(portsFile(), JSON.stringify(all));

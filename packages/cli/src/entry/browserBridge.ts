@@ -196,6 +196,7 @@ const gestureFields = {
   text: z.string().max(200).optional().describe("wait: until the page shows this text."),
   gone: z.boolean().optional().describe("wait: until the text/selector is GONE instead (a spinner, a sign-in form)."),
   timeoutSec: z.number().min(1).max(300).optional().describe("wait: give up after this many seconds (default 60, max 300)."),
+  ms: z.number().int().min(1).max(60_000).optional().describe("wait: just let the page run this many milliseconds (no text/selector/url) — e.g. let a game play out for 1000 ms."),
 };
 
 const browserStep = z
@@ -671,7 +672,7 @@ export function makeBrowserTool(
               action: "act" as const,
               steps: [{
                 action: gesture,
-                ...Object.fromEntries((["keys", "holdMs", "repeat", "x", "y", "toX", "toY", "dx", "dy", "button", "double", "text", "gone", "timeoutSec", "selector", "url"] as const)
+                ...Object.fromEntries((["keys", "holdMs", "repeat", "x", "y", "toX", "toY", "dx", "dy", "button", "double", "text", "gone", "timeoutSec", "ms", "selector", "url"] as const)
                   .filter((k) => input[k] !== undefined).map((k) => [k, input[k]])),
               }] as z.infer<typeof browserStep>[],
             }
@@ -829,7 +830,7 @@ export function makeBrowserTool(
       // — never a hidden browser streamed as screenshots.
       const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot, context.workspace) : null;
       // A new page takes over; a refused one leaves the current page in place.
-      if (pageBr && (i.action === "open" || i.action === "preview")) pageRoot = pageBr.strategy ?? null;
+      if (pageBr && (i.action === "open" || i.action === "preview" || (i.action === "act" && i.steps?.[0]?.action === "open"))) pageRoot = pageBr.strategy ?? null;
       // Never a hidden browser (owner, 2026-10-20: "none should use the hidden
       // browser ever"): Ares works only where the owner can see it — the
       // Forge's native view, a served page open in the Forge, or the owner's
@@ -986,7 +987,13 @@ export function makeBrowserTool(
                     x: step.x, y: step.y, toX: step.toX, toY: step.toY, dx: step.dx, dy: step.dy ?? (step.action === "scroll" ? 400 : undefined), button: step.button,
                   });
                 } else if (step.action === "wait") {
-                  if (!step.text && !step.selector && !step.url) throw new Error("wait needs text, selector or url");
+                  if (step.ms && !step.text && !step.selector && !step.url) {
+                    // A plain pause: the page runs (a game plays out) for ms.
+                    await new Promise((r) => setTimeout(r, step.ms));
+                    completed.push({ step: index + 1, action: step.action, result: { waitedMs: step.ms }, state: await br.state() });
+                    continue;
+                  }
+                  if (!step.text && !step.selector && !step.url) throw new Error("wait needs text, selector, url — or ms to just let the page run");
                   if (!br.waitFor) throw new Error("wait is not supported by this browser connector");
                   const waited = await br.waitFor({ text: step.text, selector: step.selector, url: step.url, gone: step.gone }, (step.timeoutSec ?? 60) * 1000, ctx?.signal);
                   completed.push({ step: index + 1, action: step.action, result: waited, state: await br.state() });
@@ -1441,16 +1448,19 @@ const NOT_PAGE_DRIVEN = new Set(["handshake", "tabs", "attach", "login", "fill_s
  * no Forge watching): the caller falls back to the background browser.
  */
 async function servedPageFor(
-  i: { action: string; url?: string },
+  i: { action: string; url?: string; steps?: Array<{ action: string; url?: string }> },
   ctx: RichToolContext | undefined,
   emitTarget: (state: { url?: string; title?: string }) => void,
   continuing: string | null,
   cwd: string,
 ): Promise<BrowserConnector | null> {
   if (NOT_PAGE_DRIVEN.has(i.action) || process.env.ARES_PAGE_DRIVER === "0") return null;
-  if ((i.action === "open" || i.action === "preview") && i.url) {
+  // An act that opens a page first ("open, wait, click Play") is an open too.
+  const openUrl = (i.action === "open" || i.action === "preview") ? i.url
+    : i.action === "act" && i.steps?.[0]?.action === "open" ? i.steps[0].url : undefined;
+  if (openUrl) {
     // A file path, or the loopback address of a page Ares already serves.
-    const served = (await serveLocalTarget(i.url, { sessionId: ctx?.sessionId, cwd }).catch(() => null)) ?? (await servedForUrl(i.url));
+    const served = (await serveLocalTarget(openUrl, { sessionId: ctx?.sessionId, cwd }).catch(() => null)) ?? (await servedForUrl(openUrl));
     if (!served) return null;
     const open = (await drivableRoots()).find((r) => r.root === served.root);
     if (!open) emitTarget({ url: served.url });

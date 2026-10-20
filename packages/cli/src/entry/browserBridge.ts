@@ -829,6 +829,20 @@ export function makeBrowserTool(
       // — never a hidden browser streamed as screenshots.
       const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot) : null;
       if (i.action === "open" || i.action === "preview") pageRoot = pageBr ? pageBr.strategy ?? null : null;
+      // Never a hidden browser (owner, 2026-10-20: "none should use the hidden
+      // browser ever"): Ares works only where the owner can see it — the
+      // Forge's native view, a served page open in the Forge, or the owner's
+      // own Chrome (extension / handshake). ARES_HIDDEN_BROWSER=1 is for a
+      // screenless server; test doubles of the launcher are unaffected.
+      if (!pageBr && !onForge && !extensionAttach && i.action !== "handshake" && createBrowser === createPlaywrightBrowser && process.env.ARES_HIDDEN_BROWSER !== "1") {
+        throw new Error(
+          forge
+            ? forgeNote?.startsWith("The Forge is in use")
+              ? "Another chat is using the Forge right now. Ares never browses in a hidden browser — wait for that chat to finish, or tell the owner."
+              : "The Forge view did not come up (is the Ares window open with the Forge showing?). Ares never browses in a hidden browser — tell the owner."
+            : "There is no Forge here to show this page in. Local pages (a file or folder path) open in the Forge in any build; websites need the Ares desktop app's Forge. Ares never browses in a hidden browser — tell the owner.",
+        );
+      }
       const br = pageBr
         ? pageBr
         : onForge

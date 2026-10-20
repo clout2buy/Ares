@@ -17,7 +17,10 @@ import { listen } from "@tauri-apps/api/event";
 
 /** App UI that may overlap the stage. Anything else that floats over the
  *  Forge can opt in with data-covers-forge. */
-const COVERS = '[role="dialog"], .paletteScrim, .backdrop, .forgeDrawer, .authModal, [data-covers-forge]';
+// Not ".backdrop": that is the app's full-window decorative background (the
+// Cyber field behind everything), so it always "covered" the stage and kept
+// the view hidden — the grey Forge.
+const COVERS = '[role="dialog"], .paletteScrim, .forgeDrawer, .authModal, [data-covers-forge]';
 
 /** Does anything of the app's own sit over this rect right now? */
 function covered(stage: DOMRect): boolean {

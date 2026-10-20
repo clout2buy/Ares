@@ -18,6 +18,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { access, chmod, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
+import type { RoomRelay } from "./roomRelay.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { createSocket as createUdpSocket } from "node:dgram";
@@ -286,6 +287,9 @@ export interface PhoneApiHooks {
    *  phoneRooms.ts). Authenticates itself with per-room tokens, so it is
    *  asked BEFORE the owner bearer check; false = not mine. */
   rooms?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+  /** The rooms' game relay (/gateway/rooms/<id>/relay/<CODE> — roomRelay.ts).
+   *  A WebSocket route; the room id in the path is the capability. */
+  roomRelay?: RoomRelay;
   /** Location triggers: places, rules and the phone's enter/exit events
    *  (/gateway/location — phoneLocation.ts). false = not mine. */
   location?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -516,6 +520,7 @@ export class RemoteAgentServer {
     wss.on("connection", (ws, req) => {
       const pathname = (req.url ?? "/").split("?")[0];
       if (pathname === "/gateway") this.proxyGateway(ws, req);
+      else if (this.opts.phoneApi?.roomRelay?.handles(pathname)) void this.opts.phoneApi.roomRelay.accept(ws, pathname);
       else if (pathname.startsWith("/gateway/terminal/")) {
         const terminal = this.opts.phoneApi?.terminal;
         if (terminal) terminal.ws(ws, req); else ws.close(1008, "no terminal on this machine");

@@ -65,6 +65,7 @@ import {
   type RoomRules,
 } from "../../rooms.js";
 import { roomLayerBlock } from "../prompt/texting.js";
+import { PLAYTEST_UNPROVEN, pageFindings, relayFor, twoClientCheck } from "./roomPlaytest.js";
 import type { RoomCard, RoomJobCard, RoomsHost } from "../roomScope.js";
 import type { DesktopAgents } from "./agents.js";
 import type { Persona } from "../../personas.js";
@@ -876,7 +877,9 @@ export class DesktopRooms {
       `You are ${member.name}, doing this on your full model for the room "${room.name}". Do the work for real: build it, run it, check it. ` +
       `Put every file people need into the room with Rooms share (room: "${room.name}") — fetch the latest copy first if it already exists. ` +
       `Keep the board true (Rooms job). When done, post ONE short message in the room with Rooms say (room: "${room.name}"): what changed, the link, and what you checked. ` +
-      `If your owner should see it on their screen, use Open with the room link.`;
+      `Your owner's screen is theirs: don't Open links, preview in the Forge or take screenshots unless they asked for exactly that — test headlessly (shell, scripts). ` +
+      `Anything multiplayer uses the room relay (see the Rooms tool), and Rooms playtest (name) must pass before you call it working; say what it did not prove. ` +
+      `When a connection fails, read the close code and the step it stopped at before changing anything — never guess at NAT or firewalls.`;
     const inputId = `room_work_${randomUUID()}`;
     if (!this.deps.busy(sid)) this.deps.deliver(sid, goal, inputId);
     else {
@@ -904,11 +907,12 @@ export class DesktopRooms {
   }
 
   /** May this session open a link on the owner's screen? Private chats yes;
-   *  a room seat only that room's shared-file links. */
+   *  a room seat or a room WORK thread only that room's shared-file links —
+   *  a work thread's task comes from the room, where anyone may have asked. */
   async mayOpen(sessionId: string, url: string): Promise<boolean> {
     const seat = this.seats.get(sessionId);
-    if (!seat) return true;
-    const room = this.store.get(seat.roomId);
+    const room = this.roomOfSession(sessionId);
+    if (!seat && !room) return true;
     if (!room) return false;
     const prefix = room.host.kind === "remote"
       ? roomFileUrl(room.host.origin, room.host.roomId, "")
@@ -1399,6 +1403,19 @@ export class DesktopRooms {
         const { room, agentId } = this.roomForCall(sid, roomName);
         const threadId = await this.startWork(room, agentId, task);
         return { room: this.card(room), threadId };
+      },
+      playtest: async (sid, name, roomName) => {
+        const { room } = this.roomForCall(sid, roomName);
+        const base = await this.fileUrl(room, name ?? "x");
+        if (!base) throw new RoomError("this room has no public link yet, so there is no relay to test");
+        const relay = relayFor(base);
+        const out = await twoClientCheck(relay);
+        let page: string[] = [];
+        if (name) {
+          const bytes = await this.fetchFile(room.id, name);
+          page = pageFindings(bytes.toString("utf8"));
+        }
+        return { room: this.card(room), relay, ...out, page, unproven: PLAYTEST_UNPROVEN };
       },
       teach: async (sid, what, roomName) => {
         const share = this.deps.sharing;

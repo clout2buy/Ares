@@ -98,3 +98,37 @@ test("MultiEdit: validateInput rejects an empty/no-op hunk with its index", asyn
   const ok = await EditTool.validateInput({ file_path: "f.txt", edits: [{ old_string: "a", new_string: "b" }] });
   assert.equal(ok.ok, true);
 });
+
+test("Edit line ranges: replace a block by Read's line numbers — no need to echo the old text", async () => {
+  const c = ctx(os.tmpdir());
+  const file = await tmpFile("a\nb\nc\nd\ne\n");
+  await ReadTool.call({ file_path: file }, c);
+  const r = await EditTool.call({ file_path: file, start_line: 2, end_line: 4, new_string: "B\nC" }, c);
+  assert.equal(r.output.replacements, 1);
+  assert.equal(await fs.readFile(file, "utf8"), "a\nB\nC\ne\n");
+});
+
+test("Edit line ranges: a batch applies bottom-up against the numbers the model read; deleting with \"\"", async () => {
+  const c = ctx(os.tmpdir());
+  const file = await tmpFile("1\n2\n3\n4\n5\n6\n");
+  await ReadTool.call({ file_path: file }, c);
+  await EditTool.call({ file_path: file, edits: [
+    { start_line: 1, end_line: 1, new_string: "one\nuno" },
+    { start_line: 3, end_line: 4, new_string: "" },
+    { start_line: 6, end_line: 6, new_string: "six" },
+  ] }, c);
+  assert.equal(await fs.readFile(file, "utf8"), "one\nuno\n2\n5\nsix\n");
+});
+
+test("Edit line ranges: refused on a file changed since the Read, past the end, overlapping, or mixed with text hunks", async () => {
+  const c = ctx(os.tmpdir());
+  const file = await tmpFile("x\ny\nz\n");
+  await ReadTool.call({ file_path: file }, c);
+  await assert.rejects(() => EditTool.call({ file_path: file, start_line: 2, end_line: 9, new_string: "Y" }, c), /past the end/);
+  await assert.rejects(() => EditTool.call({ file_path: file, edits: [{ start_line: 1, end_line: 2, new_string: "q" }, { start_line: 2, end_line: 3, new_string: "r" }] }, c), /overlap/);
+  const mixed = await EditTool.validateInput?.({ file_path: file, edits: [{ start_line: 1, end_line: 1, new_string: "q" }, { old_string: "z", new_string: "Z" }] }, c);
+  assert.equal(mixed?.ok, false);
+  await fs.writeFile(file, "inserted\nx\ny\nz\n", "utf8"); // someone else edits it
+  await assert.rejects(() => EditTool.call({ file_path: file, start_line: 2, end_line: 2, new_string: "Y" }, c), /changed since your last Read/);
+  assert.equal(await fs.readFile(file, "utf8"), "inserted\nx\ny\nz\n");
+});

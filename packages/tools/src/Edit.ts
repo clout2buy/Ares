@@ -61,9 +61,14 @@ type WrittenStamp = FileReadStamp & { writtenNotRead?: boolean };
 const FROM_FILE_DESC =
   "Path to a file whose ENTIRE contents become the replacement text. Use instead of new_string when inserting large content (a library, a generated asset, another file's body) so the bytes never pass through your output and cannot be truncated. Mutually exclusive with new_string.";
 
+const LINES_DESC =
+  "Replace a LINE RANGE instead of matching text: 1-based, inclusive, numbered exactly as Read showed them. Use for rewriting a large block (no need to echo the old text back). Refused if the file changed since your last Read. Omit old_string when using it.";
+
 const editHunk = z
   .object({
-    old_string: z.string().describe("Exact text to replace. Must be unique unless replace_all."),
+    old_string: z.string().optional().describe("Exact text to replace. Must be unique unless replace_all. Omit when using start_line/end_line."),
+    start_line: z.number().int().min(1).optional().describe(LINES_DESC),
+    end_line: z.number().int().min(1).optional().describe("Last line of the range (inclusive), with start_line."),
     new_string: z.string().optional().describe("Replacement text. Must differ from old_string."),
     new_string_from_file: zPath.optional().describe(FROM_FILE_DESC),
     replace_all: z.boolean().default(false).describe("If true, replace every occurrence of this hunk."),
@@ -74,7 +79,9 @@ const inputSchema = z
   .object({
     file_path: zPath,
     // Single-edit mode (omit when using `edits`).
-    old_string: z.string().optional().describe("Single-edit mode: exact text to replace. Omit when using `edits`."),
+    old_string: z.string().optional().describe("Single-edit mode: exact text to replace. Omit when using `edits` or start_line/end_line."),
+    start_line: z.number().int().min(1).optional().describe(`Single-edit mode: ${LINES_DESC}`),
+    end_line: z.number().int().min(1).optional().describe("Single-edit mode: last line of the range (inclusive)."),
     new_string: z.string().optional().describe("Single-edit mode: replacement text."),
     new_string_from_file: zPath.optional().describe(`Single-edit mode: ${FROM_FILE_DESC}`),
     replace_all: z.boolean().default(false).describe("Single-edit mode: replace every occurrence."),
@@ -92,6 +99,8 @@ type EditInput = z.infer<typeof inputSchema>;
 
 interface EditHunk {
   old_string: string;
+  /** Line-range hunk (1-based, inclusive) instead of a text match. */
+  lines?: { start: number; end: number };
   new_string: string;
   replace_all: boolean;
   /** Unresolved source path; new_string is empty until resolveHunks reads it. */
@@ -104,7 +113,8 @@ interface EditHunk {
 function editHunks(i: EditInput): EditHunk[] {
   if (Array.isArray(i.edits) && i.edits.length > 0) {
     return i.edits.map((h) => ({
-      old_string: h.old_string,
+      old_string: h.old_string ?? "",
+      ...(h.start_line !== undefined || h.end_line !== undefined ? { lines: { start: h.start_line ?? 0, end: h.end_line ?? 0 } } : {}),
       new_string: h.new_string ?? "",
       replace_all: h.replace_all,
       from_file: h.new_string_from_file,
@@ -112,10 +122,30 @@ function editHunks(i: EditInput): EditHunk[] {
   }
   return [{
     old_string: i.old_string ?? "",
+    ...(i.start_line !== undefined || i.end_line !== undefined ? { lines: { start: i.start_line ?? 0, end: i.end_line ?? 0 } } : {}),
     new_string: i.new_string ?? "",
     replace_all: i.replace_all,
     from_file: i.new_string_from_file,
   }];
+}
+
+/** Splice line ranges into `content` (1-based, inclusive), bottom-up so
+ *  earlier ranges keep their numbers; keeps the file's line endings. */
+function applyLineRanges(content: string, hunks: readonly EditHunk[], filePath: string): string {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  const trailingNewline = lines.length > 1 && lines[lines.length - 1] === "";
+  const count = trailingNewline ? lines.length - 1 : lines.length;
+  const ranges = hunks.map((h) => ({ ...h.lines!, text: h.new_string })).sort((a, b) => b.start - a.start);
+  for (let k = 0; k + 1 < ranges.length; k++) {
+    if (ranges[k + 1]!.end >= ranges[k]!.start) throw toolError(`Line ranges overlap (${ranges[k + 1]!.start}-${ranges[k + 1]!.end} and ${ranges[k]!.start}-${ranges[k]!.end}).`);
+  }
+  for (const r of ranges) {
+    if (r.end > count) throw toolError(`${filePath} has ${count} lines; end_line ${r.end} is past the end.`);
+    const replacement = r.text === "" ? [] : r.text.replace(/\r?\n$/, "").split(/\r?\n/);
+    lines.splice(r.start - 1, r.end - r.start + 1, ...replacement);
+  }
+  return lines.join(eol);
 }
 
 /** Read every `new_string_from_file` source into its hunk. Each source is
@@ -191,7 +221,7 @@ export interface EditOutput {
 export const EditTool = buildTool({
   name: "Edit",
   description:
-    "Replace exact text in a file (auto-reads the file if you have not Read it this session; tolerates CRLF/LF + trailing-whitespace drift). Single edit: old_string/new_string. Multi-site: pass `edits` — an ATOMIC, all-or-nothing batch applied in order (use this instead of many separate Edit calls on one file). Fails if an old_string is non-unique (set replace_all). Pick the SMALLEST old_string that is still unique — usually 2-4 adjacent lines with a distinctive token; over-long anchors are brittle to whitespace/edits, and single-line anchors are often non-unique. To insert LARGE content (inline a library, splice in a generated asset, merge another file's body) pass `new_string_from_file` instead of new_string: the bytes are read from disk and never pass through your output, so they cannot be truncated — this is the correct alternative to shell string-surgery.",
+    "Replace exact text in a file (auto-reads the file if you have not Read it this session; tolerates CRLF/LF + trailing-whitespace drift). Single edit: old_string/new_string. Multi-site: pass `edits` — an ATOMIC, all-or-nothing batch applied in order (use this instead of many separate Edit calls on one file). Fails if an old_string is non-unique (set replace_all). Pick the SMALLEST old_string that is still unique — usually 2-4 adjacent lines with a distinctive token; over-long anchors are brittle to whitespace/edits, and single-line anchors are often non-unique. To insert LARGE content (inline a library, splice in a generated asset, merge another file's body) pass `new_string_from_file` instead of new_string: the bytes are read from disk and never pass through your output, so they cannot be truncated — this is the correct alternative to shell string-surgery. To REWRITE A BLOCK you just Read, pass start_line/end_line (Read's numbers, inclusive) with new_string instead of echoing the old text back as old_string — far fewer output tokens.",
   safety: "workspace-write",
   concurrency: "exclusive",
   inputZod: inputSchema,
@@ -209,7 +239,7 @@ export const EditTool = buildTool({
     // new_string_from_file — this guard predates composition and would
     // otherwise reject the by-reference form before it reached the per-hunk
     // checks below.
-    if (!usingBatch && (i.old_string === undefined || (i.new_string === undefined && i.new_string_from_file === undefined))) {
+    if (!usingBatch && ((i.old_string === undefined && i.start_line === undefined) || (i.new_string === undefined && i.new_string_from_file === undefined))) {
       return {
         ok: false,
         message: "Provide old_string plus new_string (or new_string_from_file) for a single edit, or an `edits` array for an atomic batch.",
@@ -218,6 +248,20 @@ export const EditTool = buildTool({
     const hunks = editHunks(i);
     for (let idx = 0; idx < hunks.length; idx++) {
       const where = hunks.length > 1 ? ` (edit ${idx + 1})` : "";
+      const lines = hunks[idx].lines;
+      if (lines) {
+        if (hunks[idx].old_string) return { ok: false, message: `Use old_string OR start_line/end_line${where}, not both.` };
+        if (!(lines.start >= 1 && lines.end >= lines.start)) {
+          return { ok: false, message: `start_line/end_line${where} need 1 <= start_line <= end_line (lines as Read numbered them).` };
+        }
+        if (hunks.some((h) => !h.lines)) {
+          return { ok: false, message: "A batch is either all line ranges or all text matches — split them into two Edit calls." };
+        }
+        if (!hunks[idx].from_file && (i.edits ? i.edits[idx]?.new_string : i.new_string) === undefined) {
+          return { ok: false, message: `new_string is missing${where} (use "" to delete the lines).` };
+        }
+        continue;
+      }
       if (hunks[idx].old_string === "") {
         return {
           ok: false,
@@ -308,7 +352,16 @@ export const EditTool = buildTool({
     let working = content;
     let totalReplacements = 0;
     const matchedBys = new Set<string>();
-    for (let idx = 0; idx < hunks.length; idx++) {
+    if (hunks.some((h) => h.lines)) {
+      // Line numbers are only meaningful against the bytes the model READ:
+      // never fuzzy, never against a file it hasn't seen or that changed.
+      if (autoRead) throw toolError(`start_line/end_line need a Read of ${filePath} first — you have not seen its line numbers this session.`);
+      if (staleError) throw toolError(`${filePath} changed since your last Read, so its line numbers moved. Re-Read the region and retry.`);
+      working = applyLineRanges(content, hunks, filePath);
+      totalReplacements = hunks.length;
+      matchedBys.add("lines");
+    }
+    for (let idx = 0; idx < hunks.length && !hunks[0]!.lines; idx++) {
       const h = hunks[idx];
       const result = replaceResilient(working, h.old_string, h.new_string, h.replace_all);
       if (!result.ok) {

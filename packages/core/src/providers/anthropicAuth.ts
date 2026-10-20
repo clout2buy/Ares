@@ -35,7 +35,10 @@ const SCOPES = [
 export const ANTHROPIC_OAUTH_BETA = [
   "claude-code-20250219",
   "oauth-2025-04-20",
-  "fine-grained-tool-streaming-2025-05-14",
+  // NOT "fine-grained-tool-streaming": it streams tool arguments without
+  // validating them, and Claude 5 emitted broken JSON (a dropped quote) on up
+  // to 12 of 15 calls in a session — each one a failed tool call and a retry.
+  // Without it the arguments still stream, as validated JSON, at the same speed.
   "interleaved-thinking-2025-05-14",
 ].join(",");
 // The OAuth path is admitted as a Claude Code client, and the API gates newer

@@ -642,7 +642,7 @@ export function serveFolder(root: string, opts: { sessionId?: string } = {}): Pr
 }
 
 /** Local file or folder reference → { path, query } or null for anything else. */
-function localTarget(input: string): { fsPath: string; suffix: string } | null {
+function localTarget(input: string, cwd?: string): { fsPath: string; suffix: string } | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
   if (/^file:/i.test(trimmed)) {
@@ -654,7 +654,13 @@ function localTarget(input: string): { fsPath: string; suffix: string } | null {
     }
   }
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-zA-Z]:[\\/]/.test(trimmed)) return null; // http:, data:, about: …
-  if (path.isAbsolute(trimmed)) return { fsPath: trimmed, suffix: "" };
+  // A plain path may carry a query/hash for the page ("game/index.html?seed=1"),
+  // and a model often names it relative to the workspace.
+  const cut = trimmed.search(/[?#]/);
+  const bare = cut >= 0 ? trimmed.slice(0, cut) : trimmed;
+  const suffix = cut >= 0 ? trimmed.slice(cut) : "";
+  if (path.isAbsolute(bare)) return { fsPath: bare, suffix };
+  if (cwd && bare && !/^(?:\/\/|[a-z0-9-]+\.[a-z]{2,}(?:[:/]|$))/i.test(bare)) return { fsPath: path.resolve(cwd, bare), suffix };
   return null;
 }
 
@@ -671,8 +677,8 @@ export interface ServedTarget {
  * served from its own folder; a folder serves itself (index.html). Anything
  * that is not a local path (http, data, inline temp previews) returns null.
  */
-export async function serveLocalTarget(input: string, opts: { sessionId?: string } = {}): Promise<ServedTarget | null> {
-  const target = localTarget(input);
+export async function serveLocalTarget(input: string, opts: { sessionId?: string; cwd?: string } = {}): Promise<ServedTarget | null> {
+  const target = localTarget(input, opts.cwd);
   if (!target) return null;
   const stat = await fs.stat(target.fsPath).catch(() => null);
   const root = stat?.isDirectory() ? target.fsPath : path.dirname(target.fsPath);

@@ -827,7 +827,7 @@ export function makeBrowserTool(
       // No native Forge view (the browser preview / dev): a local page is
       // shown in the Forge and Ares drives THAT copy through its page driver
       // — never a hidden browser streamed as screenshots.
-      const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot) : null;
+      const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot, context.workspace) : null;
       if (i.action === "open" || i.action === "preview") pageRoot = pageBr ? pageBr.strategy ?? null : null;
       // Never a hidden browser (owner, 2026-10-20: "none should use the hidden
       // browser ever"): Ares works only where the owner can see it — the
@@ -1073,7 +1073,7 @@ export function makeBrowserTool(
         // 127.0.0.1 so module scripts, import maps and relative assets resolve,
         // and the Forge embeds the localhost origin. Inline html (temp file)
         // stays file:// — it is self-contained by contract.
-        const served = i.url ? await serveLocalTarget(i.url, { sessionId: ctx?.sessionId }) : null;
+        const served = i.url ? await serveLocalTarget(i.url, { sessionId: ctx?.sessionId, cwd: context.workspace }) : null;
         if (served) url = served.url;
         await br.navigate(url);
         // The import map (if any) is decided while the HTML is served, i.e.
@@ -1187,7 +1187,7 @@ export function makeBrowserTool(
         if (!i.url) throw new Error("Browser open requires url");
         // Same hosting rule as preview: a local project file is served from
         // its folder and opened over localhost (see previewServer.ts).
-        const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId });
+        const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId, cwd: context.workspace });
         const openUrl = served ? served.url : i.url;
         // If CDP can see a matching user/Ares tab, bind to it before navigating.
         // This preserves that tab's authenticated context and avoids duplicates.
@@ -1434,10 +1434,11 @@ async function servedPageFor(
   ctx: RichToolContext | undefined,
   emitTarget: (state: { url?: string; title?: string }) => void,
   continuing: string | null,
+  cwd: string,
 ): Promise<BrowserConnector | null> {
   if (NOT_PAGE_DRIVEN.has(i.action) || process.env.ARES_PAGE_DRIVER === "0") return null;
   if ((i.action === "open" || i.action === "preview") && i.url) {
-    const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId }).catch(() => null);
+    const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId, cwd }).catch(() => null);
     if (!served) return null;
     const open = (await drivableRoots()).find((r) => r.root === served.root);
     if (!open) emitTarget({ url: served.url });

@@ -168,28 +168,54 @@ export const PAGE_DRIVER_SOURCE = `(function(){
     }
     return out;
   }
-  // What is on screen: the page's canvases as they last drew (a game is
-  // nearly always one), else the DOM painted through an SVG foreignObject.
-  function nextFrame(){ return new Promise(function(r){ requestAnimationFrame(function(){ r(); }); }); }
+  // What is on screen, the way the owner sees it: the page's HTML (HUD, menus,
+  // overlays) composed over its canvases. WebGL keeps its picture only until
+  // the frame is shown, so every canvas is read inside a frame callback,
+  // after the page's own drawing for that frame; the canvases then go into a
+  // copy of the page as images and the whole copy is painted through an SVG
+  // foreignObject with the page's own CSS.
+  function canvasShots(list){
+    return new Promise(function(res){ requestAnimationFrame(function(){ res(list.map(function(c){ try { return c.toDataURL("image/png"); } catch (e) { return ""; } })); }); });
+  }
+  function pageCss(){
+    var out = [];
+    for (var i = 0; i < document.styleSheets.length; i++) {
+      try { var rules = document.styleSheets[i].cssRules; for (var j = 0; j < rules.length; j++) out.push(rules[j].cssText); } catch (e) {}
+    }
+    return out.join("\\n");
+  }
+  function loadImage(src){
+    return new Promise(function(res){ var img = new Image(); img.onload = function(){ res(img); }; img.onerror = function(){ res(null); }; img.src = src; });
+  }
   async function capture(){
     var w = Math.max(1, innerWidth), h = Math.max(1, innerHeight), scale = Math.min(1, 1280 / w);
+    var canvases = Array.prototype.slice.call(document.querySelectorAll("canvas"));
+    var shots = await canvasShots(canvases);
+    var clone = document.documentElement.cloneNode(true);
+    var copies = clone.querySelectorAll("canvas");
+    for (var i = 0; i < copies.length && i < canvases.length; i++) {
+      var src = canvases[i], r = src.getBoundingClientRect(), img = document.createElement("img");
+      if (shots[i]) img.setAttribute("src", shots[i]);
+      if (src.id) img.setAttribute("id", src.id);
+      if (src.getAttribute("class")) img.setAttribute("class", src.getAttribute("class"));
+      img.setAttribute("style", (src.getAttribute("style") || "") + ";width:" + r.width + "px;height:" + r.height + "px");
+      copies[i].parentNode.replaceChild(img, copies[i]);
+    }
+    Array.prototype.forEach.call(clone.querySelectorAll("script,link,iframe,video,audio,noscript"), function(n){ n.parentNode && n.parentNode.removeChild(n); });
+    var css = pageCss().replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:' + w + 'px;height:' + h + 'px;overflow:hidden"><style>' + css + '</style><div style="transform:translate(' + (-scrollX) + 'px,' + (-scrollY) + 'px)">' + new XMLSerializer().serializeToString(clone) + '</div></div></foreignObject></svg>';
     var out = document.createElement("canvas"); out.width = Math.round(w * scale); out.height = Math.round(h * scale);
     var g = out.getContext("2d"); g.scale(scale, scale);
     g.fillStyle = getComputedStyle(document.body).backgroundColor || "#fff"; g.fillRect(0, 0, w, h);
-    var canvases = Array.prototype.filter.call(document.querySelectorAll("canvas"), visible), covered = 0;
-    canvases.forEach(function(c){ var r = c.getBoundingClientRect(); covered += Math.max(0, Math.min(r.right, w) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, h) - Math.max(r.top, 0)); });
-    if (covered < w * h * 0.5) {
-      try {
-        var html = new XMLSerializer().serializeToString(document.documentElement);
-        var styles = Array.prototype.map.call(document.querySelectorAll("style"), function(s){ return s.textContent; }).join("\\n");
-        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="width:' + w + 'px;height:' + h + 'px;overflow:hidden"><style>' + styles.replace(/</g, "&lt;") + '</style>' + html.replace(/<script[\\s\\S]*?<\\/script>/gi, "") + '</div></foreignObject></svg>';
-        var img = new Image();
-        await new Promise(function(res){ img.onload = res; img.onerror = res; img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg); });
-        g.drawImage(img, -scrollX, -scrollY);
-      } catch (e) {}
+    var page = await loadImage("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
+    if (page) g.drawImage(page, 0, 0, w, h);
+    else {
+      // The page's markup would not render as an image: at least its canvases.
+      for (var k = 0; k < canvases.length; k++) {
+        var shot = shots[k] ? await loadImage(shots[k]) : null, cr = canvases[k].getBoundingClientRect();
+        if (shot) g.drawImage(shot, cr.left, cr.top, cr.width, cr.height);
+      }
     }
-    await nextFrame();
-    canvases.forEach(function(c){ var r = c.getBoundingClientRect(); try { g.drawImage(c, r.left, r.top, r.width, r.height); } catch (e) {} });
     var data = "";
     try { data = out.toDataURL("image/png"); } catch (e) { throw new Error("the page drew cross-origin content, so it can't be captured"); }
     return { format: "png", bytes: data.slice(data.indexOf(",") + 1), width: out.width, height: out.height };

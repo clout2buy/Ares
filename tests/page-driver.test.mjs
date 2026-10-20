@@ -56,3 +56,16 @@ test("a served page carries the driver; commands reach the open copy and its ans
   await stopPreviewServers();
   await page.catch(() => undefined);
 });
+
+test("a page named relative to the workspace, with a query, is served (not refused as 'not local')", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ares-rel-"));
+  t.after(async () => { await stopPreviewServers(); await rm(dir, { recursive: true, force: true }); });
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.join(dir, "voxel-world"));
+  await writeFile(path.join(dir, "voxel-world", "index.html"), "<!doctype html><title>V</title>");
+  const served = await serveLocalTarget("voxel-world/index.html?seed=1337", { cwd: dir });
+  assert.ok(served, "served");
+  assert.match(served.url, /\/index\.html\?seed=1337$/);
+  assert.equal(await serveLocalTarget("voxel-world/index.html"), null, "no workspace given: not guessed");
+  assert.equal(await serveLocalTarget("example.com/page", { cwd: dir }), null, "a bare domain is not a local path");
+});

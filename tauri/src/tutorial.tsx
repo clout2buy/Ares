@@ -89,8 +89,9 @@ function Art({ kind }: { kind: Step["art"] }) {
   );
 }
 
-export function Tutorial({ onDone, onMakeAgent }: { onDone: () => void; onMakeAgent: () => void }) {
+export function Tutorial({ onDone, onMakeAgent, hasAgents = false }: { onDone: () => void; onMakeAgent: () => void; hasAgents?: boolean }) {
   const [i, setI] = useState(0);
+  const makeLabel = hasAgents ? "Make an agent" : "Make my first agent";
   const step = STEPS[i]!;
   const last = i === STEPS.length - 1;
   useEffect(() => {
@@ -111,8 +112,8 @@ export function Tutorial({ onDone, onMakeAgent }: { onDone: () => void; onMakeAg
         <div className="tutDots" aria-hidden="true">{STEPS.map((_, k) => <i key={k} data-on={k === i ? "1" : "0"} onClick={() => setI(k)} />)}</div>
         <div className="tutBtns">
           <button className="tutSkip" onClick={onDone}>{last ? "Close" : "Skip"}</button>
-          {step.cta ? <button className="tutPrimary" onClick={() => { onDone(); onMakeAgent(); }}>{step.cta}</button> : null}
-          {!last ? <button className="tutNext" onClick={() => setI(i + 1)}>Next</button> : <button className="tutPrimary" onClick={() => { onDone(); onMakeAgent(); }}>Make my first agent</button>}
+          {step.cta ? <button className="tutPrimary" onClick={() => { onDone(); onMakeAgent(); }}>{makeLabel}</button> : null}
+          {!last ? <button className="tutNext" onClick={() => setI(i + 1)}>Next</button> : <button className="tutPrimary" onClick={() => { onDone(); onMakeAgent(); }}>{makeLabel}</button>}
         </div>
       </div>
     </div>

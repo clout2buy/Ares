@@ -221,6 +221,7 @@
   color: var(--text-hi);
 }
 .ares[data-style="modern"][data-surface="messages"] .railLabel .railNew {
+  display: grid; place-items: center; /* basic.css hides .railNew everywhere */
   width: 28px; height: 28px;
   border-radius: 50%;
   font: 500 20px/1 var(--font);

@@ -6088,6 +6088,7 @@ function App() {
         <Tutorial
           onDone={() => { markTutorialSeen(); setTutorialOpen(false); }}
           onMakeAgent={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}
+          hasAgents={agentRows.length > 0}
         />
       ) : null}
       {peopleOpen ? (

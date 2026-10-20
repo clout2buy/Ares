@@ -144,6 +144,7 @@ import "./forge.css";
 import "./messages.css";
 import { FeedView, NowView } from "./messagesViews";
 import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./forgePixels";
+import { ForgeNativeView, forgeNativeTarget, forgeViewControl } from "./forgeNativeView";
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
@@ -234,10 +235,10 @@ function forgeFrameUrl(url: string, native: boolean, revision: number): string {
   return `${url}${join}ares_forge=${revision}`;
 }
 
-/** External sites commonly deny iframe embedding with X-Frame-Options/CSP.
- * The Forge embeds only owner-built/local targets; real websites are rendered
- * from Ares's Playwright screencast so the panel never shows a fake blocked
- * page while claiming a sign-in form is available. */
+/** The browser-preview build only (no desktop): external sites commonly deny
+ * iframe embedding, so there the Forge frames only local targets and streams
+ * Ares's browser for the rest. The desktop shows every http(s) page in its
+ * native view instead (forgeNativeView.tsx), which no site can refuse. */
 function forgeCanEmbed(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -877,7 +878,7 @@ function App() {
   // The embedded live browser: latest JPEG frame Ares streamed while driving its
   // own browser (cursor, clicks, navigation) — shown in the Forge "Live" tab.
   const [liveBrowser, setLiveBrowser] = useState<{ frame: string; at: number } | null>(null);
-  const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number } | null>(null);
+  const [liveTarget, setLiveTarget] = useState<{ url: string; title: string; at: number; driven?: boolean } | null>(null);
   // What the previewed page said on load: console errors and, when Ares served
   // a project folder for it, which folder. A grey canvas with no words is how
   // "open it in the Forge" read as broken (2026-10-15) — the errors belong on
@@ -3148,14 +3149,14 @@ function App() {
         // settled (?settled=1) so it does not replay the build; and the live stage (embedded) steps aside.
         const handedOff = (ev.data as { mode?: unknown }).mode === "explain" && liveExplain.handoff();
         setEmbeddedActive(false);
-        const target = { url: handedOff ? `${ev.data.url}${ev.data.url.includes("?") ? "&" : "?"}settled=1` : ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now() };
+        const target = { url: handedOff ? `${ev.data.url}${ev.data.url.includes("?") ? "&" : "?"}settled=1` : ev.data.url, title: typeof ev.data.title === "string" ? ev.data.title : "", at: Date.now(), driven: (ev.data as { driven?: unknown }).driven === true };
         setLiveTarget(target);
         setLiveUrl(target.url);
         setForgeMode((ev.data as { mode?: unknown }).mode === "explain" ? "explain" : "project");
         setLiveConsole((c) => (c && c.url === target.url ? c : null));
         setFpsHistory([]);
         setForgeDrawer(null);
-        logForge(`opened ${target.url.replace(/^https?:\/\//, "")}`, "info");
+        if (target.url !== "about:blank") logForge(`opened ${target.url.replace(/^https?:\/\//, "")}`, "info");
         setForge((f) => (f.open && f.tab === "live" ? f : { ...f, open: true, tab: "live" }));
         // Do not return: the progress event also belongs in the running tool's
         // activity stream, so the transcript and Forge stay in sync.
@@ -5734,6 +5735,12 @@ function App() {
                 <i className={embeddedActive || liveTarget ? "liveDot" : "idleDot"} />
                 <input aria-label="Preview URL" value={liveUrl} onChange={(e) => setLiveUrl(e.target.value)} placeholder="localhost:3000 or https://…" />
                 <button type="submit">Launch</button>
+                {native && liveTarget && forgeNativeTarget(liveTarget.url) ? (
+                  <>
+                    <button type="button" onClick={() => forgeViewControl("back")} aria-label="Back">←</button>
+                    <button type="button" onClick={() => forgeViewControl("forward")} aria-label="Forward">→</button>
+                  </>
+                ) : null}
                 <button type="button" onClick={() => setLiveRevision((n) => n + 1)} disabled={!liveTarget}>↻</button>
                 {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })}>Open separate copy ↗</button> : null}
               </form>
@@ -5917,7 +5924,29 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              {!embeddedActive && liveTarget && !(liveFeed && liveBrowser && liveFeed.at >= liveTarget.at) ? (
+              {/* The desktop shows every http(s) page in the Forge's NATIVE view
+                  (forgeNativeView.tsx): a real browser over the stage, so any
+                  site loads, sign-ins work, and Ares drives this same page —
+                  never a frame stream or a screenshot. */}
+              {!embeddedActive && liveTarget && native && forgeNativeTarget(liveTarget.url) && !(liveFeed && (liveBrowser || liveEmbed) && liveFeed.at >= liveTarget.at) ? (
+                <div className="liveStage interactive nativeTarget">
+                  <ForgeNativeView
+                    url={liveTarget.url}
+                    driven={liveTarget.driven}
+                    revision={liveRevision}
+                    visible={forge.open && forge.tab === "live"}
+                    onNav={(url, loading) => {
+                      setLiveLoading(loading);
+                      if (!loading) { setLiveLoadedAt(Date.now()); setLiveUrl(url); }
+                    }}
+                    onError={(message) => logForge(`the Forge view: ${message}`, "warn")}
+                  />
+                  <div className="forgeLoading" data-on={liveLoading ? "1" : "0"} aria-hidden={!liveLoading}>
+                    <span className="forgeLoadingUrl">{liveTarget.url.replace(/^https?:\/\//, "")}</span>
+                  </div>
+                </div>
+              ) : null}
+              {!embeddedActive && liveTarget && !(native && forgeNativeTarget(liveTarget.url)) && !(liveFeed && liveBrowser && liveFeed.at >= liveTarget.at) ? (
                 <div className={`liveStage interactive ${forgeCanEmbed(liveTarget.url) ? "localTarget" : "externalTarget"}`}>
                   {forgeCanEmbed(liveTarget.url) ? (
                     <>
@@ -5950,8 +5979,8 @@ function App() {
                     <LiveFrameCanvas className="liveTelemetryMain" frame={liveBrowser.frame} title="Live browser controlled by Ares" />
                   ) : (
                     <div className="externalPreviewNotice">
-                      <strong>This site cannot run inside the Forge.</strong>
-                      <p>Ares is opening it in its controllable browser. If human sign-in is needed, switch to that Ares browser window and sign in there; “Open separate copy” is only for manual viewing.</p>
+                      <strong>Opening {liveTarget.url.replace(/^https?:\/\//, "")}</strong>
+                      <p>The desktop app shows every site live in the Forge. This preview build streams Ares's browser instead.</p>
                     </div>
                   )}
                 </div>
@@ -5965,7 +5994,7 @@ function App() {
                     <Medallion glyph="forge" size={44} tone="ember" className="forgeLoadingSigil" />
                   </div>
                   <div className="forgeIdleTitle">The Forge · standing by</div>
-                  <p className="forgeIdleLead">Ask Ares to open a project, or paste a localhost URL above. The page runs here, hosted and watched by Ares.</p>
+                  <p className="forgeIdleLead">Ask Ares to open something, or paste any link above. It runs here live: click, type and sign in, and Ares works in the same page.</p>
                   <ul className="forgeIdleAbilities">
                     <li><PixelIcon name="host" size={14} palette="gold" /><b>Hosts</b>your folder so modules, import maps and assets resolve</li>
                     <li><PixelIcon name="watch" size={14} palette="green" /><b>Watches</b>exceptions, failed loads, warnings, frame rate — live</li>

@@ -78,6 +78,7 @@ import { AgentError, DesktopAgents } from "./daemon/agents.js";
 import { DesktopRooms, RoomError } from "./daemon/rooms.js";
 import { DesktopDirectory, DirectoryError } from "./daemon/directory.js";
 import { setRoomsHost } from "./roomScope.js";
+import { forgeScreenNote } from "./forgeView.js";
 import { setOpenHost } from "./openTool.js";
 import { DesktopWorkspaces, WorkspaceError, workFolder } from "./daemon/workspaces.js";
 import { setWorkspaceHost } from "./workspaceTool.js";
@@ -4768,6 +4769,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // An owner frame on an agent's chat is still that agent (its memory scope).
             const frameTenant = wireTenant?.role === "owner" && entry.live.tenant?.role === "owner" ? entry.live.tenant : wireTenant;
             await prepareUserTurn(entry.live, semanticGoal, frameTenant ? { tenant: frameTenant } : {});
+            // The Forge's native view: what the owner has on screen, when it changed.
+            const forgeNote = await forgeScreenNote(command.sessionId ?? "").catch(() => null);
+            if (forgeNote) entry.live.queueSystemReminder(forgeNote, "hook", "forge-screen");
           }
           // Personas (the HELM roster: Aegis & co.) were replaced by agents
           // (owner, 2026-10-19): Ares never auto-wears one any more. The

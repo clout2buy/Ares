@@ -10,6 +10,8 @@ export type {
   AccessibilityNode,
   Screenshot,
   BrowserState,
+  NetworkReport,
+  PointerGesture,
 } from "./types.js";
 
 export { MockBrowser, type MockPage } from "./mockBrowser.js";

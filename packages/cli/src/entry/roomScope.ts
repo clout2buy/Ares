@@ -51,6 +51,9 @@ export interface RoomsHost {
   /** Share a lesson or one of this machine's skills with the room (other
    *  owners' agents can take it only if THEIR owner approves). */
   teach(sessionId: string, what: { lesson?: string; skill?: string }, roomId?: string): Promise<{ room: RoomCard; seq: number }>;
+  /** Two real clients through the room's game relay (and, given a shared
+   *  file's name, a read of that page for what broke multiplayer before). */
+  playtest(sessionId: string, name?: string, roomId?: string): Promise<{ room: RoomCard; relay: string; ok: boolean; steps: string[]; problems: string[]; page: string[]; unproven: string }>;
   /** The last messages of a room, as lines ("who: text"), oldest first. */
   read(sessionId: string, roomId?: string, limit?: number): Promise<{ room: RoomCard; lines: string[] }>;
 }

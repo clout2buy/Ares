@@ -13,7 +13,7 @@
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AccessibilityNode, BrowserConnector } from "./types.js";
+import type { AccessibilityNode, BrowserConnector, NetworkReport } from "./types.js";
 import { runChallengeHandoff, type HumanCheckHandler } from "./challenge.js";
 import { savedSessionLoader } from "./savedSessions.js";
 
@@ -337,6 +337,60 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
   };
   bindConsole(page);
 
+  // ── network: what the page did on the wire since Ares attached ──────────
+  // Owner, 2026-10-20: the stick-fight relay sent BINARY frames, the page's
+  // JSON.parse failed silently and the guest sat on a grey screen through
+  // five revisions. Playwright sees every frame and whether it was text, so
+  // "Browser network" answers that in one call. Passive: nothing in the page
+  // changes until the agent asks (then close codes are recorded too).
+  const net: NetworkReport = { failed: [], httpErrors: [], sockets: [] };
+  const cap = <T,>(list: T[], max: number) => { if (list.length > max) list.splice(0, list.length - max); };
+  const boundNet = new WeakSet<object>();
+  const bindNetwork = (target: any) => {
+    if (!target || boundNet.has(target)) return;
+    try {
+      target.on("requestfailed", (r: any) => {
+        net.failed.push({ url: String(r?.url?.() ?? "").slice(0, 300), method: r?.method?.() ?? "GET", error: String(r?.failure?.()?.errorText ?? "failed"), at: new Date().toISOString() });
+        cap(net.failed, 40);
+      });
+      target.on("response", (res: any) => {
+        const status = res?.status?.() ?? 0;
+        if (status < 400) return;
+        net.httpErrors.push({ url: String(res.url?.() ?? "").slice(0, 300), method: res.request?.()?.method?.() ?? "GET", status, at: new Date().toISOString() });
+        cap(net.httpErrors, 40);
+      });
+      target.on("websocket", (ws: any) => {
+        const rec: NetworkReport["sockets"][number] = { url: String(ws.url?.() ?? "").slice(0, 300), open: true, sent: 0, received: 0, binary: 0, last: [] };
+        net.sockets.push(rec);
+        cap(net.sockets, 12);
+        const frame = (dir: "in" | "out") => (f: any) => {
+          const payload = f?.payload;
+          const text = typeof payload === "string";
+          if (dir === "in") rec.received++; else rec.sent++;
+          if (!text) rec.binary++;
+          rec.last.push({ dir, type: text ? "text" : "binary", size: text ? payload.length : (payload?.length ?? 0), ...(text ? { text: payload.slice(0, 200) } : {}) });
+          cap(rec.last, 8);
+        };
+        ws.on("framesent", frame("out"));
+        ws.on("framereceived", frame("in"));
+        ws.on("socketerror", (e: unknown) => { rec.error = String(e).slice(0, 200); });
+        ws.on("close", () => { rec.open = false; });
+      });
+      boundNet.add(target);
+    } catch {
+      // older Playwright event shapes — best-effort
+    }
+  };
+  bindNetwork(page);
+  /** Records each socket's close code + reason inside the page (the wire
+   *  events don't carry them). Installed only when the agent asks. */
+  const WS_CLOSE_JS = `(() => { if (window.__aresWs) return; const W = window.WebSocket; if (!W) return; window.__aresWs = [];
+    const Wrapped = function (url, protocols) { const ws = protocols === undefined ? new W(url) : new W(url, protocols);
+      const rec = { url: String(url), close: null }; window.__aresWs.push(rec); if (window.__aresWs.length > 12) window.__aresWs.shift();
+      ws.addEventListener("close", (e) => { rec.close = { code: e.code, reason: e.reason, clean: e.wasClean }; }); return ws; };
+    Wrapped.prototype = W.prototype; Wrapped.CONNECTING = 0; Wrapped.OPEN = 1; Wrapped.CLOSING = 2; Wrapped.CLOSED = 3; window.WebSocket = Wrapped; })()`;
+  let closeWatch = false;
+
   // ── Continuous live stream (CDP screencast) ──────────────────────────────
   // The old "live" view only emitted a JPEG around discrete cursor/click/nav
   // actions, so between actions it froze on a stale frame and read as "just
@@ -564,6 +618,7 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
         if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }
         page = best.candidate;
         bindConsole(page);
+        bindNetwork(page);
         curX = viewW / 2;
         curY = viewH / 2;
         await page.bringToFront().catch(() => undefined);
@@ -681,6 +736,83 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
         .catch(() => false);
       await page.waitForLoadState?.("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
       return Boolean(how);
+    },
+    async press(keys, o) {
+      const repeat = Math.max(1, Math.min(50, o?.repeat ?? 1));
+      for (let n = 0; n < repeat; n++) {
+        if (o?.holdMs && o.holdMs > 0) {
+          const combo = keys.split("+");
+          for (const k of combo) await page.keyboard.down(k);
+          await sleep(Math.min(o.holdMs, 10_000));
+          for (const k of combo.reverse()) await page.keyboard.up(k);
+        } else {
+          await page.keyboard.press(keys);
+        }
+      }
+      await sleep(60);
+      await emitFrame();
+    },
+    async pointer(g) {
+      const button = g.button ?? "left";
+      await humanMoveTo(g.x, g.y);
+      if (g.kind === "move") { /* the glide is the move */ }
+      else if (g.kind === "click" || g.kind === "double") {
+        await pressCursor();
+        await rippleAt(g.x, g.y);
+        await page.mouse.click(g.x, g.y, { button, clickCount: g.kind === "double" ? 2 : 1 });
+      } else if (g.kind === "down") await page.mouse.down({ button });
+      else if (g.kind === "up") await page.mouse.up({ button });
+      else if (g.kind === "drag") {
+        await page.mouse.down({ button });
+        const steps = 12;
+        const tx = g.toX ?? g.x, ty = g.toY ?? g.y;
+        for (let k = 1; k <= steps; k++) {
+          const px = g.x + ((tx - g.x) * k) / steps, py = g.y + ((ty - g.y) * k) / steps;
+          await page.mouse.move(px, py);
+          await syncCursor(px, py);
+        }
+        await page.mouse.up({ button });
+      } else if (g.kind === "wheel") await page.mouse.wheel(g.dx ?? 0, g.dy ?? 0);
+      await sleep(80);
+      await emitFrame();
+    },
+    async waitFor(until, timeoutMs, signal) {
+      const started = Date.now();
+      const deadline = started + Math.max(0, timeoutMs);
+      const check = async (): Promise<boolean> => {
+        if (until.url && !page.url().toLowerCase().includes(until.url.toLowerCase())) return false;
+        if (until.text || until.selector) {
+          const found = await page.evaluate(
+            ({ text, selector }: { text?: string; selector?: string }) => {
+              if (selector) { const el = document.querySelector(selector); if (!el) return false; }
+              if (text && !(document.body?.innerText ?? "").toLowerCase().includes(text.toLowerCase())) return false;
+              return true;
+            },
+            { text: until.text, selector: until.selector },
+          ).catch(() => false);
+          if (until.gone ? found : !found) return false;
+        }
+        return true;
+      };
+      for (;;) {
+        if (await check()) return { met: true, waitedMs: Date.now() - started };
+        if (signal?.aborted || Date.now() >= deadline) return { met: false, waitedMs: Date.now() - started };
+        await new Promise((r) => setTimeout(r, Math.min(400, Math.max(0, deadline - Date.now()))));
+      }
+    },
+    async network(o) {
+      if (!closeWatch) {
+        closeWatch = true;
+        await page.context().addInitScript(WS_CLOSE_JS).catch(() => undefined);
+        await page.evaluate(WS_CLOSE_JS).catch(() => undefined);
+      }
+      const inPage = (await page.evaluate("window.__aresWs || []").catch(() => [])) as Array<{ url: string; close: NetworkReport["sockets"][number]["close"] | null }>;
+      const limit = Math.max(1, o?.limit ?? 20);
+      const sockets = net.sockets.slice(-limit).map((s) => {
+        const seen = [...inPage].reverse().find((p) => p.url === s.url && p.close);
+        return seen?.close ? { ...s, close: seen.close } : { ...s };
+      });
+      return { failed: net.failed.slice(-limit), httpErrors: net.httpErrors.slice(-limit), sockets };
     },
     async close() {
       if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }

@@ -55,6 +55,7 @@ origins never leave the server.
 | `POST /v1/rooms` (Bearer) | `{name, emoji?, purpose?, kind?, invite:[usernames], text?}` → `{roomId, link, invited}`. The room is made on the server; each invitee gets an inbox item with their own link; the creator gets theirs back and joins like everyone else. |
 | `POST /v1/rooms/:id/invite` (Bearer, a member) | `{username, text?}` → one more invite |
 | `/gateway/rooms/*` | the guest door (`phoneRooms.ts`): join, messages (long-poll), members, patch, leave — per-room tokens |
+| `/gateway/rooms/<id>/relay/<CODE>` | WebSocket: the rooms' game relay (`roomRelay.ts`, below) |
 | `GET /v1/health` | |
 
 Rate limits: 120 requests/min per IP, 10 claims per 10 min per IP.
@@ -63,12 +64,13 @@ Rate limits: 120 requests/min per IP, 10 claims per 10 min per IP.
 
 Deployed 2026-10-19 on doingbox as `ares-directory.service` (DynamicUser,
 `ProtectSystem=strict`, data in `/var/lib/ares-directory`, code in
-`/opt/ares-directory` — the three dist files `directoryServer.js`,
-`phoneRooms.js`, `rooms.js` plus a `{"type":"module"}` package.json). Public at
+`/opt/ares-directory` — the dist files `directoryServer.js`,
+`phoneRooms.js`, `rooms.js`, `roomRelay.js` plus a `{"type":"module"}` package.json;
+`roomRelay.js` is new in the relay change and the directory will not start without it). Public at
 **https://people.mistiqueai.com** (ingress above the wildcard, DNS routed with
 `cloudflared tunnel route dns`); that is the only hostname (an oruna.org alias
 was dropped). A stray `people.oruna.org.mistiqueai.com` CNAME from a mis-aimed
-`route dns` can be deleted in the Cloudflare dashboard. To update: rebuild, `scp` the three files to
+`route dns` can be deleted in the Cloudflare dashboard. To update: rebuild, `scp` the four files to
 `/tmp`, `sudo cp` into `/opt/ares-directory`, `sudo systemctl restart
 ares-directory`.
 
@@ -144,6 +146,34 @@ directory_search · directory_invite · directory_dm · directory_ack ·
 directory_url`. Events: `directory_state · directory_results · directory_sent ·
 directory_invite · directory_error`.
 
+## The game relay (`packages/cli/src/roomRelay.ts`)
+
+Multiplayer things agents build into a room (games, shared boards) connect to
+the room's own relay instead of PeerJS or a server someone set up on a box.
+A page shared into the room reaches it on its own host:
+
+```js
+const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host +
+  location.pathname.replace(/\/files\/.*$/, "/relay/") + CODE);
+```
+
+Everyone on the same CODE (4-12 letters/digits, case-insensitive) is in the
+same game. The room id in the path is the capability, like the file links; no
+token. The relay speaks first — `{relay:"hello", you, host, peers, maxBytes}`,
+then `{relay:"join"|"leave", id, host, peers}`; host is the oldest player and
+passes to the next oldest. Every other message goes verbatim, as a TEXT frame,
+to the other players on the code. Failures close with a code and a reason:
+1003 binary frame (send JSON as text), 1009 too big, 4404 no such room here,
+4409 game full / too many games, 4429 too many messages. Knobs:
+`ARES_ROOM_RELAY_MAX_BYTES` (16384), `ARES_ROOM_RELAY_PEERS` (8),
+`ARES_ROOM_RELAY_CODES` (32 live codes per room), `ARES_ROOM_RELAY_RATE`
+(120 messages/s per player). It pings every 25 s so tunnels keep the socket.
+
+The directory speaks the WebSocket wire format itself (no `ws` in
+`/opt/ares-directory`); the garrison hands its `ws` sockets to the same code.
+`Rooms playtest` runs two real clients through it before an agent may say a
+multiplayer thing works (`entry/daemon/roomPlaytest.ts`).
+
 ## What it does not do (yet)
 
 - No accounts, passwords or recovery: a username is bound to an install id and
@@ -159,4 +189,4 @@ directory_invite · directory_error`.
   (`roomLayerBlock`).
 
 Tests: `tests/v72-directory.test.mjs` (claims, search, relay, two installs end
-to end).
+to end), `tests/v79-room-relay.test.mjs` (the game relay and playtest).

@@ -27,6 +27,7 @@
 //                                       → {roomId, link}  (the room lives here; invitees get inbox items)
 //   POST /v1/rooms/:id/invite  Bearer   {username, text?} → {item}   (a member invites one more)
 //   /gateway/rooms/*                    the guest door (phoneRooms.ts): join, messages, members, patch, leave
+//   /gateway/rooms/<id>/relay/<CODE>    WebSocket: the rooms' game relay (roomRelay.ts)
 //   GET  /v1/health
 //
 // Storage: <data>/users.json (atomic rewrite) + <data>/inbox/<username>.jsonl.
@@ -39,6 +40,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRoomsApi } from "./phoneRooms.js";
+import { createRoomRelay } from "./roomRelay.js";
 import { DEFAULT_RULES, RoomStore, inviteLink, isRoomId, newInviteCode, newRoomId, type Room } from "./rooms.js";
 
 export const USERNAME_RE = /^[a-z0-9_]{3,24}$/;
@@ -495,6 +497,12 @@ export async function serveDirectory(opts: { dataDir: string; port: number; host
   await store.load();
   const handler = createDirectoryHandler(store, { log: opts.log, publicUrl: opts.publicUrl });
   const server = createServer((req, res) => void handler(req, res));
+  // The rooms' game relay (roomRelay.ts): the one WebSocket route here.
+  const relay = createRoomRelay({ home: store.dataDir, log: opts.log });
+  server.on("upgrade", (req, socket, head) => {
+    if (relay.handles((req.url ?? "/").split("?")[0]!)) relay.acceptUpgrade(req, socket, head);
+    else socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n");
+  });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(opts.port, opts.host ?? "127.0.0.1", () => resolve());
@@ -504,7 +512,7 @@ export async function serveDirectory(opts: { dataDir: string; port: number; host
   opts.log?.(`ares directory listening on ${opts.host ?? "127.0.0.1"}:${port} (data ${opts.dataDir})`);
   return {
     port,
-    close: () => new Promise<void>((resolve) => { server.closeAllConnections?.(); server.close(() => resolve()); }),
+    close: () => new Promise<void>((resolve) => { relay.close(); server.closeAllConnections?.(); server.close(() => resolve()); }),
   };
 }
 

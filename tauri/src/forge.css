@@ -434,3 +434,9 @@
 .fiPrimary{background:#9cc5ff;color:#070a13;box-shadow:2px 2px 0 #15347a}.fiPrimary:hover{background:#fff!important}
 @media(max-width:820px){.fiScene{grid-template-columns:1fr;grid-template-rows:auto 1fr}.fiStage{border-left:0;border-top:1px solid #15347a;min-height:240px}.fiTail{max-height:120px}}
 @media(prefers-reduced-motion:reduce){.fiCard,.fiBody,.fiAsk{animation:none}.fiStep i{transition:none}}
+
+/* The Forge's native view (forgeNativeView.tsx) is a real browser laid OVER
+   this box by the desktop; the box only gives it its place and size. */
+.liveStage.nativeTarget { position: relative; }
+.forgeNativeStage { position: absolute; inset: 0; background: #0b0d12; }
+.liveStage.nativeTarget .forgeLoading { pointer-events: none; }

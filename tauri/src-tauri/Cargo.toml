@@ -7,7 +7,9 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+# "unstable" = multi-webview: the Forge's native browser view is a child
+# webview of the main window (src/forge_view.rs).
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }

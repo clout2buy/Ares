@@ -781,7 +781,15 @@ export class Session {
       if (!row || row.sessionId !== this.meta.id) continue;
       if (row.state === "consumed" || row.state === "cancelled") continue;
       try {
-        this.kernel.cancelInput(id, { sessionId: this.meta.id, reason: { code: "STARTUP_RECOVERY_DISCARDED", message: reason } });
+        // A crashed run left it CLAIMED; the kernel cancels a claim only for
+        // the generation that holds it. Without it the cancel threw, was
+        // swallowed, and the dead turn kept the queue head forever: every new
+        // message sat behind it as "the previous turn is still stuck".
+        this.kernel.cancelInput(id, {
+          sessionId: this.meta.id,
+          ...(row.state === "claimed" && row.claimedGeneration != null ? { expectedGeneration: row.claimedGeneration } : {}),
+          reason: { code: "STARTUP_RECOVERY_DISCARDED", message: reason },
+        });
         retired.push(id);
       } catch {
         // a concurrent owner already settled it; nothing to retire

@@ -165,3 +165,45 @@ test("never: pending work is retired on open without asking", async () => {
     rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+test("ask: a run that died mid-turn (input CLAIMED) is retired by the owner's next message, which then runs", async () => {
+  // Field, 2026-10-20: the daemon was restarted mid-turn; the next message sat
+  // forever behind the dead turn ("the previous turn is still stuck") because
+  // cancelling a claimed input without its generation threw and was swallowed.
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-recovery-claimed-"));
+  const sessionId = "claimed-session";
+  const inputId = "claimed-input";
+  try {
+    const core = await seedPending(workspace, sessionId, inputId, "BUILD THE GAME");
+    const seed = await core.SessionKernelStore.open({ filename: core.workspaceSessionKernelPath(workspace) });
+    try {
+      const lease = seed.acquireRunnerLease(sessionId, "dead-daemon", 250);
+      seed.claimInput({ sessionId, generation: lease.generation, leaseToken: lease.leaseToken }, inputId);
+    } finally {
+      seed.close();
+    }
+    await new Promise((r) => setTimeout(r, 300)); // the dead daemon's lease expires
+    let sent = false;
+    const events = await runDaemon(workspace, "ask", (e, send) => {
+      if (e.type === "daemon_ready") send({ type: "session_open", sessionId });
+      if (e.type === "startup_recovery_available" && e.sessionId === sessionId && !sent) {
+        sent = true;
+        send({ type: "send", sessionId, goal: "keep going" });
+      }
+      if (e.type === "turn_end" && e.sessionId === sessionId) return "done";
+      if (e.type === "error" && e.sessionId === sessionId && /still stuck/.test(e.error?.message ?? "")) throw new Error("the new message queued behind the dead turn");
+      return undefined;
+    });
+    const retired = events.find((e) => e.type === "startup_recovery_discarded" && e.sessionId === sessionId);
+    assert.deepEqual(retired?.inputIds, [inputId], "the dead turn's request is retired");
+    assert.equal(events.find((e) => e.type === "turn_end" && e.sessionId === sessionId)?.status, "completed");
+    const store = await core.SessionKernelStore.open({ filename: core.workspaceSessionKernelPath(workspace) });
+    try {
+      assert.equal(store.getInput(inputId).state, "cancelled");
+    } finally {
+      store.close();
+    }
+  } finally {
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});

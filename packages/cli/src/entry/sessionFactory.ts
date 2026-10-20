@@ -596,6 +596,11 @@ export function chatMaxOutputTokens(selection?: ProviderSelection): number {
   const env = Number(process.env.ARES_MAX_OUTPUT_TOKENS);
   if (Number.isFinite(env) && env > 0) return Math.floor(env);
   if (!selection) return 8192;
+  // Claude 5 (Opus/Sonnet 5.x, Fable/Mythos 5) take 128k output, and adaptive
+  // thinking spends from the same allowance: at 32k an Opus 5.5 asked for a
+  // whole game thought for six minutes, hit the cap with nothing written, and
+  // the "continue" re-ran the same doomed call (2026-10-20). The API's own max.
+  if (/(?:opus|sonnet)-5|(?:fable|mythos)-?5/i.test(selection.model)) return 128_000;
   const window = modelContextWindow(selection.model);
   if (window >= 200_000) return 32_768; // Claude-class / large frontier models
   if (window >= 100_000) return 16_384;

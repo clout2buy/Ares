@@ -267,3 +267,13 @@ test("stale screenshots are cleared in a batch, not one per round (the prompt ca
   }
   assertPairingValid(engine);
 });
+
+test("fitImagesToBudget keeps the recent screenshots that fit instead of only the newest two (no cache break per screenshot)", async () => {
+  const { fitImagesToBudget } = await import("../packages/core/dist/queryEngine.js");
+  const shot = (i) => ({ id: `u${i}`, role: "user", createdAt: "now", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: [{ type: "text", text: `step ${i}` }, { type: "image", source: { kind: "base64", mediaType: "image/png", data: IMAGE_DATA } }] }] });
+  const messages = Array.from({ length: 5 }, (_, i) => shot(i));
+  const out = fitImagesToBudget(messages, 1_000_000, 0);
+  const kept = out.flatMap((m) => m.content).flatMap((b) => (Array.isArray(b.content) ? b.content : [])).filter((c) => c.type === "image").length;
+  assert.equal(kept, 5, "all five small screenshots fit, so none is swapped for a placeholder");
+  assert.equal(out[0], messages[0], "untouched messages keep their identity (byte-stable prefix)");
+});

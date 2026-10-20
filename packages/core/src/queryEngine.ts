@@ -1252,7 +1252,11 @@ export function fitImagesToBudget(
   budgetTokens: number,
   overheadTokens: number,
 ): Message[] {
-  for (const keep of [2, 1, 0]) {
+  // Start generous: dropping the 3rd-newest image on every new screenshot
+  // rewrote history behind the cache point on each call of a screenshot loop.
+  // The age-based batch clearing (clearStaleScreenshots) already bounds how
+  // many images live in history; this only steps down when size demands it.
+  for (const keep of [8, 4, 2, 1, 0]) {
     const trimmed = keepRecentImages(messages, keep);
     // Wire-size guard: even if the token budget says an image fits, a payload
     // over the provider's request-size limit hard-fails the call. Drop images

@@ -183,7 +183,7 @@ export function setExtensionBrowserBridge(bridge: BrowserBridgeServer | null): v
 /** Keyboard, pointer and wait fields shared by the tool and its act steps. */
 const gestureFields = {
   keys: z.string().max(60).optional().describe("press: a key or combo — Enter, Escape, Tab, ArrowLeft, Space, w, Control+L, Shift+Tab."),
-  holdMs: z.number().int().min(0).max(10_000).optional().describe("press: hold the key down this long (a game move: ArrowRight for 600 ms)."),
+  holdMs: z.number().int().min(0).max(10_000).optional().describe("press: hold the key down this long (a game move: ArrowRight for 600 ms). click_at: hold the mouse button down this long (mine a block, charge a shot, long-press)."),
   repeat: z.number().int().min(1).max(50).optional().describe("press: press it this many times."),
   x: z.number().optional().describe("click_at/drag/scroll: viewport x in CSS pixels (from a screenshot of the page)."),
   y: z.number().optional().describe("click_at/drag/scroll: viewport y in CSS pixels."),
@@ -227,7 +227,7 @@ const browserInput = z
         "Use 'act' with steps for a complete multi-control job; it executes the sequence and returns one final visual verification instead of burning a model round-trip per click. " +
         "'login' signs in with the owner's SAVED login for the current https page (username + password from the vault — you never see them; the owner approves each fill). " +
         "'fill_secret' fills a secret handle (\"sec_…\", e.g. an emailed sign-in code another tool gave you) into one field by selector or label, after the owner approves. " +
-        "HANDS: 'press' real keys (keys, holdMs, repeat — shortcuts, Enter, a game's ArrowRight held 600 ms); 'click_at' / 'drag' / 'scroll' at exact viewport x,y from the screenshot (canvas, WebGL, maps — no DOM there). All of them (and 'wait') also work as act steps, so a whole play-through is ONE call. " +
+        "HANDS: 'press' real keys (keys, holdMs, repeat — shortcuts, Enter, a game's ArrowRight held 600 ms); 'click_at' (holdMs = hold the button) / 'drag' / 'scroll' at exact viewport x,y from the screenshot (canvas, WebGL, maps — no DOM there). All of them (and 'wait') also work as act steps, so a whole play-through is ONE call. " +
         "'wait' blocks until the page shows (or, gone:true, stops showing) text / selector / a url fragment — e.g. after asking the owner to sign in in the Forge. " +
         "'network' = devtools for the page: failed requests, HTTP errors, and every WebSocket (text vs BINARY frames, last frames, close code + reason). Use it first when anything online misbehaves.",
       ),
@@ -971,6 +971,16 @@ export function makeBrowserTool(
                 } else if (step.action === "click_at" || step.action === "drag" || step.action === "scroll") {
                   if (step.x === undefined || step.y === undefined || !br.pointer) throw new Error(`${step.action} needs x and y (viewport CSS pixels, from the screenshot) and connector support`);
                   if (step.action === "drag" && (step.toX === undefined || step.toY === undefined)) throw new Error("drag needs toX and toY");
+                  if (step.action === "click_at" && step.holdMs) {
+                    // A held press: down, hold, up at the same point. A zero-length
+                    // drag (what agents improvised) is an instant tap.
+                    await br.pointer({ kind: "move", x: step.x, y: step.y });
+                    await br.pointer({ kind: "down", x: step.x, y: step.y, button: step.button });
+                    await new Promise((r) => setTimeout(r, step.holdMs));
+                    await br.pointer({ kind: "up", x: step.x, y: step.y, button: step.button });
+                    completed.push({ step: index + 1, action: step.action, result: { heldMs: step.holdMs }, state: await br.state() });
+                    continue;
+                  }
                   await br.pointer({
                     kind: step.action === "drag" ? "drag" : step.action === "scroll" ? "wheel" : step.double ? "double" : "click",
                     x: step.x, y: step.y, toX: step.toX, toY: step.toY, dx: step.dx, dy: step.dy ?? (step.action === "scroll" ? 400 : undefined), button: step.button,

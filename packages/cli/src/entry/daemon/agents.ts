@@ -45,6 +45,8 @@ export interface AgentWire {
   color?: string;
   provider: string;
   model: string;
+  /** The fast model it chats on in rooms. */
+  chatModel?: string;
   reasoningLevel?: string;
   instructions: string;
   /** Standing rules (every chat and room seat). */
@@ -66,6 +68,7 @@ export interface AgentSpec {
   color?: unknown;
   provider?: unknown;
   model?: unknown;
+  chatModel?: unknown;
   reasoningLevel?: unknown;
   instructions?: unknown;
   rules?: unknown;
@@ -112,6 +115,7 @@ export function agentToWire(p: Persona, avatar?: string): AgentWire {
     ...(p.color ? { color: p.color } : {}),
     provider: p.provider,
     model: p.model,
+    ...(p.chatModel ? { chatModel: p.chatModel } : {}),
     ...(p.reasoningLevel ? { reasoningLevel: p.reasoningLevel } : {}),
     instructions: p.instructions,
     rules: [...(p.rules ?? [])],
@@ -229,6 +233,7 @@ export class DesktopAgents {
     }
     if (spec.provider !== undefined) out.provider = cleanString(spec.provider, 60);
     if (spec.model !== undefined) out.model = cleanString(spec.model, 160);
+    if (spec.chatModel !== undefined) out.chatModel = cleanString(spec.chatModel, 160);
     if (spec.reasoningLevel !== undefined) out.reasoningLevel = cleanString(spec.reasoningLevel, 24);
     if (spec.instructions !== undefined) {
       if (typeof spec.instructions !== "string") throw new AgentError("instructions must be text");
@@ -255,6 +260,7 @@ export class DesktopAgents {
       ...(patch.color ? { color: patch.color } : {}),
       provider: patch.provider ?? brain.provider,
       model: patch.model ?? brain.model,
+      ...(patch.chatModel ? { chatModel: patch.chatModel } : {}),
       ...(patch.reasoningLevel ? { reasoningLevel: patch.reasoningLevel } : {}),
       instructions: patch.instructions ?? "",
       ...(patch.rules && patch.rules.length ? { rules: patch.rules } : {}),
@@ -277,14 +283,14 @@ export class DesktopAgents {
     const next: Persona = { ...existing, updatedAt: new Date(this.now()).toISOString() };
     for (const [k, v] of Object.entries(patch) as Array<[keyof Persona, unknown]>) {
       if (v === undefined) {
-        if (k === "emoji" || k === "color" || k === "reasoningLevel") delete (next as Partial<Persona>)[k];
+        if (k === "emoji" || k === "color" || k === "reasoningLevel" || k === "chatModel") delete (next as Partial<Persona>)[k];
       } else (next as unknown as Record<string, unknown>)[k] = v;
     }
     await this.store.save(next);
     this.emitChanged();
     return {
       persona: next,
-      brainChanged: next.provider !== existing.provider || next.model !== existing.model,
+      brainChanged: next.provider !== existing.provider || next.model !== existing.model || next.chatModel !== existing.chatModel,
       layerChanged: next.name !== existing.name || next.instructions !== existing.instructions || JSON.stringify(next.rules ?? []) !== JSON.stringify(existing.rules ?? []),
     };
   }

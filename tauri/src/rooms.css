@@ -319,3 +319,7 @@
 .roomInviteNames:focus { border-color: rgba(10, 132, 255, 0.7); }
 
 .roomRepeat { font-style: normal; font-weight: 700; color: var(--muted); }
+
+.roomMore { display: inline; margin-left: 4px; padding: 0; font: 600 12.5px/1 var(--font); color: #5aa9ff; background: none; }
+.roomMore:hover { text-decoration: underline; }
+.roomTypingRow .roomRunName i { font-style: normal; font-weight: 500; color: var(--faint); }

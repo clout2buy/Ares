@@ -752,7 +752,9 @@ function App() {
   /** An invite the owner accepted: the join sheet opens prefilled with its link. */
   const [acceptingInvite, setAcceptingInvite] = useState<DirectoryInviteVm | null>(null);
   /** Every seat session (an agent's private thread for a room): hidden from the chat lists. */
-  const roomSeatIds = useMemo(() => new Set(rooms.flatMap((r) => Object.values(r.threads))), [rooms]);
+  const roomSeatIds = useMemo(() => new Set(rooms.flatMap((r) => [...Object.values(r.threads), ...Object.values(r.workThreads ?? {})])), [rooms]);
+  /** roomId → who on the OTHER machines is working right now. */
+  const [roomPresence, setRoomPresence] = useState<Record<string, Array<{ key: string; name: string; activity: string }>>>({});
   /** Each agent's own memories, loaded when its profile opens. */
   const [agentMemory, setAgentMemory] = useState<Record<string, AgentMemoryVm>>({});
   /** A photo picked in the New agent sheet, uploaded once the agent exists. */
@@ -2647,6 +2649,21 @@ function App() {
         }
         case "room_turn":
           return true;
+        case "room_presence": {
+          const id = String(e.roomId ?? "");
+          const list = Array.isArray((e as { presence?: unknown }).presence) ? ((e as unknown as { presence: Array<{ key: string; name: string; activity: string }> }).presence) : [];
+          if (id) setRoomPresence((p) => ({ ...p, [id]: list }));
+          return true;
+        }
+        case "agent_open_url": {
+          // An agent opened something on the owner's screen: their real browser.
+          const url = String((e as { url?: unknown }).url ?? "");
+          if (/^https?:\/\//i.test(url)) {
+            if (native) void invoke("ares_open_url", { url }).catch(() => null);
+            else window.open(url, "_blank", "noopener");
+          }
+          return true;
+        }
         case "room_invite": {
           const id = String(e.roomId ?? "");
           const link = String(e.link ?? "");
@@ -3587,7 +3604,7 @@ function App() {
 
   const saveAgent = (draft: AgentDraft) => {
     setAgentError(undefined);
-    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
+    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, chatModel: draft.chatModel.trim(), instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
     const setPhotoLocal = (id: string, photo: string) =>
       setAgentPhotos((p) => {
         const n = { ...p };
@@ -4873,6 +4890,7 @@ function App() {
           selectedId={selectedAgentId}
           onSelect={selectAgent}
           onEdit={(id) => { setAgentError(undefined); setAgentEditor({ mode: "edit", id }); }}
+          onDelete={(id) => deleteAgent(id)}
         >
           <button className="agentNewChat" onClick={() => newSession(selectedAgentId)}>
             <span>+</span> New chat{selectedAgent ? ` with ${selectedAgent.name}` : ""}
@@ -5052,6 +5070,7 @@ function App() {
             agents={agents}
             photos={agentPhotos}
             typing={roomTypingOf(activeRoom)}
+            remoteTyping={roomPresence[activeRoom.id] ?? []}
             error={roomError}
             onSend={(text) => { setRoomError(undefined); daemonCmd({ type: "room_post", roomId: activeRoom.id, text }); }}
             onPause={(paused) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: { rules: { paused } } })}

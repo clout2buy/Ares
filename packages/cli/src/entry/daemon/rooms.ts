@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listRoomFiles } from "../../phoneRooms.js";
+import { RoomFileConflict, listRoomFiles, writeRoomFile, type RoomPresence } from "../../phoneRooms.js";
 import {
   ROOM_FILE_MAX,
   isRoomFileName,
@@ -40,6 +40,7 @@ import {
   agentRun,
   boardText,
   dispatchFor,
+  leadOf,
   inviteLink,
   isPass,
   memberKey,
@@ -85,6 +86,7 @@ export interface RoomWire {
   invites: Array<{ code: string; label?: string; createdAt: string; usedBy?: string }>;
   guests: Array<{ id: string; name: string; joinedAt: string; lastSeenAt?: string }>;
   threads: Record<string, string>;
+  workThreads: Record<string, string>;
   seq: number;
   folder: string;
   createdAt: string;
@@ -143,6 +145,7 @@ export function roomToWire(room: Room, workspace: string): RoomWire {
     invites: room.invites.map(({ code, label, createdAt, usedBy }) => ({ code, ...(label ? { label } : {}), createdAt, ...(usedBy ? { usedBy } : {}) })),
     guests: room.guests.map(({ id, name, joinedAt, lastSeenAt }) => ({ id, name, joinedAt, ...(lastSeenAt ? { lastSeenAt } : {}) })),
     threads: room.threads,
+    workThreads: room.workThreads ?? {},
     seq: room.seq,
     folder: path.join(workspace, "rooms", slug(room.name)),
     createdAt: room.createdAt,
@@ -174,6 +177,10 @@ export class DesktopRooms {
   private readonly nudged = new Map<string, Set<string>>();
   private readonly lastCheckin = new Map<string, number>();
   private readonly pollers = new Map<string, AbortController>();
+  /** roomId → file name → the rev this install last fetched or shared. */
+  private readonly fileRevs = new Map<string, Map<string, number>>();
+  /** roomId → who on the OTHER machines is working right now. */
+  private readonly remotePresence = new Map<string, RoomPresence[]>();
   private drainTimer?: NodeJS.Timeout;
   private nudgeTimer?: NodeJS.Timeout;
   private readonly now: () => number;
@@ -632,9 +639,16 @@ export class DesktopRooms {
   /** The daemon saw a turn start in a seat: a clean slate for what it says. */
   onTurnStart(sessionId: string): void {
     const seat = this.seats.get(sessionId);
-    if (!seat) return;
-    seat.spoke = false;
-    seat.lastText = "";
+    if (seat) {
+      seat.spoke = false;
+      seat.lastText = "";
+      this.reportPresence(seat.roomId, seat.agentId, true);
+      return;
+    }
+    for (const r of this.store.list()) {
+      const agentId = Object.entries(r.workThreads ?? {}).find(([, sid]) => sid === sessionId)?.[0];
+      if (agentId) this.reportPresence(r.id, agentId, true);
+    }
   }
 
   /** The daemon saw an assistant message finish in a session. */
@@ -648,7 +662,12 @@ export class DesktopRooms {
    *  never spoke through the tool (and didn't pass). */
   async onTurnEnd(sessionId: string): Promise<void> {
     const seat = this.seats.get(sessionId);
+    for (const r of this.store.list()) {
+      const agentId = Object.entries(r.workThreads ?? {}).find(([, sid]) => sid === sessionId)?.[0];
+      if (agentId) this.reportPresence(r.id, agentId, false);
+    }
     if (!seat) return;
+    this.reportPresence(seat.roomId, seat.agentId, false);
     const text = seat.lastText;
     const spoke = seat.spoke;
     seat.lastText = "";
@@ -699,6 +718,8 @@ export class DesktopRooms {
       purpose: room.purpose,
       turns: room.rules.turns,
       maxAgentRun: room.rules.maxAgentRun,
+      lead: leadOf(room)?.name,
+      iAmLead: (() => { const l = leadOf(room); return Boolean(l && l.kind === "agent" && l.home === "local" && l.id === seat.agentId); })(),
       members: room.members.map((m) => ({
         name: m.name,
         kind: m.kind,
@@ -724,6 +745,70 @@ export class DesktopRooms {
 
   // ─── shared files (kept by the room's host) ────────────────────────────
 
+  /** Hand real work from a seat to the agent's WORK thread for this room: a
+   *  separate chat bound to the agent (its full model, not the fast chat
+   *  model seats use), told to report back in the room when done. */
+  async startWork(stale: Room, agentId: string, task: string): Promise<string> {
+    const room = this.store.get(stale.id) ?? stale;
+    const member = room.members.find((m) => m.kind === "agent" && m.home === "local" && m.id === agentId);
+    if (!member) throw new RoomError("you are not in that room");
+    let sid = room.workThreads?.[agentId];
+    if (!sid) {
+      sid = `sess_${randomUUID()}`;
+      await this.deps.agents.bind(agentId, sid);
+      await this.store.save({ ...room, workThreads: { ...(room.workThreads ?? {}), [agentId]: sid }, updatedAt: this.stamp() });
+      const saved = this.store.get(room.id);
+      if (saved) this.emitRoom(saved);
+    }
+    const goal = `[work for room "${room.name}"] ${task.trim()}\n\n` +
+      `You are ${member.name}, doing this on your full model for the room "${room.name}". Do the work for real: build it, run it, check it. ` +
+      `Put every file people need into the room with Rooms share (room: "${room.name}") — fetch the latest copy first if it already exists. ` +
+      `Keep the board true (Rooms job). When done, post ONE short message in the room with Rooms say (room: "${room.name}"): what changed, the link, and what you checked. ` +
+      `If your owner should see it on their screen, use Open with the room link.`;
+    const inputId = `room_work_${randomUUID()}`;
+    if (!this.deps.busy(sid)) this.deps.deliver(sid, goal, inputId);
+    else {
+      const started = this.now();
+      const timer = setInterval(() => {
+        if (this.deps.busy(sid!) && this.now() - started < WAIT_IDLE_MS) return;
+        clearInterval(timer);
+        this.deps.deliver(sid!, goal, inputId);
+      }, 1_500);
+      timer.unref?.();
+    }
+    return sid;
+  }
+
+  /** Is this session a room WORK thread (not a seat)? */
+  isWorkThread(sessionId: string): boolean {
+    return this.store.list().some((r) => Object.values(r.workThreads ?? {}).includes(sessionId));
+  }
+
+  /** May this session open a link on the owner's screen? Private chats yes;
+   *  a room seat only that room's shared-file links. */
+  async mayOpen(sessionId: string, url: string): Promise<boolean> {
+    const seat = this.seats.get(sessionId);
+    if (!seat) return true;
+    const room = this.store.get(seat.roomId);
+    if (!room) return false;
+    const prefix = room.host.kind === "remote"
+      ? roomFileUrl(room.host.origin, room.host.roomId, "")
+      : (await this.deps.publicOrigin()) ? roomFileUrl((await this.deps.publicOrigin())!, room.id, "") : null;
+    return Boolean(prefix && url.startsWith(prefix));
+  }
+
+  /** What the agents on OTHER machines are doing right now in a room. */
+  presenceOf(roomId: string): RoomPresence[] {
+    return this.remotePresence.get(roomId) ?? [];
+  }
+
+  /** Tell the room's host one of OUR agents started / stopped working. */
+  private reportPresence(roomId: string, agentId: string, working: boolean): void {
+    const room = this.store.get(roomId);
+    if (!room || room.host.kind !== "remote") return;
+    void this.hostCall(room, "POST", "/presence", { agentId, state: working ? "working" : "idle", activity: working ? "working" : "" }).catch(() => undefined);
+  }
+
   /** Where a member opens a shared file: the host's public link. */
   async fileUrl(room: Room, name: string): Promise<string | null> {
     if (room.host.kind === "remote") return roomFileUrl(room.host.origin, room.host.roomId, name);
@@ -731,44 +816,64 @@ export class DesktopRooms {
     return origin ? roomFileUrl(origin, room.id, name) : null;
   }
 
-  async shareFile(roomId: string, name: string, bytes: Buffer, by: string): Promise<{ name: string; url: string | null; updated: boolean }> {
+  async shareFile(roomId: string, name: string, bytes: Buffer, by: string): Promise<{ name: string; url: string | null; updated: boolean; rev: number }> {
     const room = this.store.get(roomId);
     if (!room) throw new RoomError("unknown room");
     if (!isRoomFileName(name)) throw new RoomError("file names are letters, digits, . _ - and up to three folders (e.g. game/index.html)");
     if (bytes.length > ROOM_FILE_MAX) throw new RoomError(`a room file is at most ${ROOM_FILE_MAX / 1024 / 1024} MB`);
     let updated = false;
+    let rev = 0;
+    const revs = this.fileRevs.get(room.id) ?? new Map<string, number>();
+    this.fileRevs.set(room.id, revs);
+    const baseRev = revs.get(name);
     if (room.host.kind === "remote") {
-      const out = await this.hostCall<{ updated?: boolean }>(room, "POST", "/files", { name, data: bytes.toString("base64"), by }, 60_000);
-      updated = Boolean(out.updated);
+      try {
+        const out = await this.hostCall<{ updated?: boolean; rev?: number }>(room, "POST", "/files", { name, data: bytes.toString("base64"), by, ...(baseRev !== undefined ? { baseRev } : {}) }, 60_000);
+        updated = Boolean(out.updated);
+        rev = out.rev ?? 0;
+      } catch (error) {
+        throw new RoomError(error instanceof Error ? error.message : String(error));
+      }
     } else {
-      const file = path.join(roomFilesDir(this.deps.home, room.id), ...name.split("/"));
-      updated = await fs.stat(file).then(() => true, () => false);
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await fs.writeFile(file, bytes);
-      await this.commit(room, { kind: "system", id: "room", name: "room" }, `${by} ${updated ? "updated" : "shared"} ${name}`, "note");
+      try {
+        const out = await writeRoomFile(roomFilesDir(this.deps.home, room.id), name, bytes, by, baseRev);
+        updated = out.updated;
+        rev = out.rev;
+      } catch (error) {
+        if (error instanceof RoomFileConflict) throw new RoomError(error.message);
+        throw error;
+      }
+      await this.commit(room, { kind: "system", id: "room", name: "room" }, `${by} ${updated ? "updated" : "shared"} ${name} (v${rev})`, "note");
     }
-    return { name, url: await this.fileUrl(room, name), updated };
+    revs.set(name, rev);
+    return { name, url: await this.fileUrl(room, name), updated, rev };
   }
 
   async fetchFile(roomId: string, name: string): Promise<Buffer> {
     const room = this.store.get(roomId);
     if (!room) throw new RoomError("unknown room");
     if (!isRoomFileName(name)) throw new RoomError("no such file");
+    const revs = this.fileRevs.get(room.id) ?? new Map<string, number>();
+    this.fileRevs.set(room.id, revs);
     if (room.host.kind === "local") {
-      const bytes = await fs.readFile(path.join(roomFilesDir(this.deps.home, room.id), ...name.split("/"))).catch(() => null);
+      const dir = roomFilesDir(this.deps.home, room.id);
+      const bytes = await fs.readFile(path.join(dir, ...name.split("/"))).catch(() => null);
       if (!bytes) throw new RoomError(`no file called ${name} in ${room.name}`);
+      const index = JSON.parse(await fs.readFile(path.join(dir, ".index.json"), "utf8").catch(() => "{}")) as Record<string, { rev: number }>;
+      revs.set(name, index[name]?.rev ?? 1);
       return bytes;
     }
     const res = await this.fetch(roomFileUrl(room.host.origin, room.host.roomId, name), { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new RoomError(`no file called ${name} in ${room.name}`);
+    revs.set(name, Number(res.headers.get("x-room-file-rev") ?? "1") || 1);
     return Buffer.from(await res.arrayBuffer());
   }
 
-  async listFiles(roomId: string): Promise<Array<{ name: string; size: number; at: string; url: string | null }>> {
+  async listFiles(roomId: string): Promise<Array<{ name: string; size: number; at: string; rev?: number; by?: string; url: string | null }>> {
     const room = this.store.get(roomId);
     if (!room) throw new RoomError("unknown room");
     const list = room.host.kind === "remote"
-      ? (await this.hostCall<{ files: Array<{ name: string; size: number; at: string }> }>(room, "GET", "/files")).files
+      ? (await this.hostCall<{ files: Array<{ name: string; size: number; at: string; rev?: number; by?: string }> }>(room, "GET", "/files")).files
       : await listRoomFiles(roomFilesDir(this.deps.home, room.id));
     const out = [];
     for (const f of list) out.push({ ...f, url: await this.fileUrl(room, f.name) });
@@ -1069,6 +1174,11 @@ export class DesktopRooms {
             top = Math.max(top, msg.seq);
           }
           if (top !== current.seq) await this.store.save({ ...(this.store.get(roomId) ?? current), seq: top, updatedAt: this.stamp() });
+          const pres = ((data as { presence?: RoomPresence[] }).presence ?? []).filter((p) => !p.key.startsWith(`agent:${this.me.id}:`)).map((p) => ({ ...p, key: p.key }));
+          if (JSON.stringify(pres) !== JSON.stringify(this.remotePresence.get(roomId) ?? [])) {
+            this.remotePresence.set(roomId, pres);
+            this.deps.emit({ type: "room_presence", roomId, presence: pres });
+          }
           if (changed) { const r = this.store.get(roomId); if (r) { this.relayerAll(r); this.emitRoom(r); } }
           await this.drain(roomId);
         } catch (error) {
@@ -1152,7 +1262,7 @@ export class DesktopRooms {
         const bytes = await fs.readFile(abs).catch(() => null);
         if (!bytes) throw new RoomError(`can't read ${filePath}`);
         const out = await this.shareFile(room.id, (name ?? path.basename(abs)).replace(/\\/g, "/"), bytes, me.name);
-        return { room: this.card(room), ...out };
+        return { room: this.card(room), name: out.name, url: out.url, updated: out.updated, rev: out.rev };
       },
       fetch: async (sid, name, roomName) => {
         const { room } = this.roomForCall(sid, roomName);
@@ -1165,6 +1275,11 @@ export class DesktopRooms {
       files: async (sid, roomName) => {
         const { room } = this.roomForCall(sid, roomName);
         return { room: this.card(room), files: await this.listFiles(room.id) };
+      },
+      work: async (sid, task, roomName) => {
+        const { room, agentId } = this.roomForCall(sid, roomName);
+        const threadId = await this.startWork(room, agentId, task);
+        return { room: this.card(room), threadId };
       },
       read: async (sid, roomName, limit) => {
         const { room } = this.roomForCall(sid, roomName);

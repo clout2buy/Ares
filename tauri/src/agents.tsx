@@ -18,6 +18,7 @@ export interface AgentVm {
   color?: string;
   provider: string;
   model: string;
+  chatModel?: string;
   reasoningLevel?: string;
   instructions: string;
   /** Standing rules (every chat and room seat). */
@@ -42,6 +43,8 @@ export interface AgentDraft {
   instructions: string;
   /** One rule per line. */
   rules: string;
+  /** The fast model it chats on in rooms ("" = the provider's fast default). */
+  chatModel: string;
 }
 
 /** The colours the phone app offers, so an agent looks the same on both. */
@@ -68,7 +71,7 @@ export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string
 ];
 
 export function blankDraft(provider: string, model: string): AgentDraft {
-  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "" };
+  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "", chatModel: "" };
 }
 
 export function draftOf(agent: AgentVm): AgentDraft {
@@ -80,6 +83,7 @@ export function draftOf(agent: AgentVm): AgentDraft {
     model: agent.model,
     instructions: agent.instructions,
     rules: (agent.rules ?? []).join("\n"),
+    chatModel: agent.chatModel ?? "",
   };
 }
 
@@ -345,24 +349,46 @@ export function AgentList({
   selectedId,
   onSelect,
   onEdit,
+  onDelete,
   children,
 }: {
   rows: AgentRowVm[];
   selectedId: string;
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
+  /** Right-click → Delete (asks twice). */
+  onDelete?: (id: string) => void;
   /** The selected agent's chats, rendered under its row. */
   children?: ReactNode;
 }) {
+  const [menu, setMenu] = useState<null | { id: string; x: number; y: number; confirm: boolean }>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    return () => { window.removeEventListener("click", close); window.removeEventListener("blur", close); };
+  }, [menu]);
+  const menuAgent = menu ? rows.find((r) => r.agent?.id === menu.id)?.agent : undefined;
   return (
     <nav className="agentList">
+      {menu && menuAgent ? (
+        <div className="agentMenu" style={{ left: menu.x, top: menu.y }} onClick={(e) => e.stopPropagation()} role="menu">
+          <button role="menuitem" onClick={() => { setMenu(null); onEdit(menu.id); }}>Profile</button>
+          {onDelete ? (
+            menu.confirm
+              ? <button role="menuitem" className="agentMenuDanger" onClick={() => { setMenu(null); onDelete(menu.id); }}>Delete {menuAgent.name} for good</button>
+              : <button role="menuitem" className="agentMenuDanger" onClick={() => setMenu({ ...menu, confirm: true })}>Delete {menuAgent.name}…</button>
+          ) : null}
+        </div>
+      ) : null}
       {rows.map((r) => {
         const id = r.agent?.id ?? ARES_AGENT_ID;
         const on = selectedId === id;
         return (
           <div key={id} className="agentRowWrap" data-on={on ? "1" : "0"} data-unread={r.unread && !on ? "1" : "0"}>
             <div className="agentRow" data-on={on ? "1" : "0"}>
-              <button className="agentRowMain" onClick={() => onSelect(id)}>
+              <button className="agentRowMain" onClick={() => onSelect(id)} onContextMenu={(e) => { if (!r.agent) return; e.preventDefault(); setMenu({ id, x: e.clientX, y: e.clientY, confirm: false }); }}>
                 <AgentAvatar agent={r.agent} size={46} busy={r.busy} unread={r.unread && !on} />
                 <span className="agentRowText">
                   <span className="agentRowTop">
@@ -539,6 +565,12 @@ export function AgentEditor({
         </label>
 
         <label className="agentField">
+          <span>Chat model in group chats</span>
+          <input value={draft.chatModel} maxLength={160} spellCheck={false} placeholder={draft.provider === "anthropic" ? "claude-haiku-5-5 (fast default)" : `${draft.model || "same as above"}`} onChange={(e) => set("chatModel", e.target.value)} />
+          <em className="agentFieldHint">In rooms they chat on this fast model and hand real work (building, testing) to their full model above. Leave empty for the fast default.</em>
+        </label>
+
+        <label className="agentField">
           <span>Standing rules — one per line</span>
           <textarea
             value={draft.rules}
@@ -603,9 +635,9 @@ export function AgentEditor({
         <footer className="agentSheetFoot">
           {existing && onDelete ? (
             confirmDelete ? (
-              <button className="agentDanger" onClick={onDelete}>Delete {existing.name} — chats stay, as Ares</button>
+              <button className="agentDanger" onClick={onDelete}>Delete {existing.name} for good — chats go to Older chats</button>
             ) : (
-              <button className="agentGhost" onClick={() => setConfirmDelete(true)}>Delete agent</button>
+              <button className="agentGhost agentDeleteBtn" onClick={() => setConfirmDelete(true)}>Delete agent</button>
             )
           ) : <span />}
           <div>

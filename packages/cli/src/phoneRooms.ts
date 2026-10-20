@@ -81,8 +81,35 @@ async function readJson(req: IncomingMessage, max: number): Promise<Record<strin
   return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 }
 
-export async function listRoomFiles(dir: string): Promise<Array<{ name: string; size: number; at: string }>> {
-  const out: Array<{ name: string; size: number; at: string }> = [];
+export interface RoomFileIndex { [name: string]: { rev: number; by: string; at: string } }
+export async function readRoomFileIndex(dir: string): Promise<RoomFileIndex> {
+  try { return JSON.parse(await fsp.readFile(path.join(dir, ".index.json"), "utf8")) as RoomFileIndex; } catch { return {}; }
+}
+export class RoomFileConflict extends Error {
+  constructor(readonly name: string, readonly rev: number, readonly by: string) {
+    super(`${name} is at v${rev} (by ${by}) — fetch it first, then share your change on top`);
+  }
+}
+/** Write a shared file. Versioned: changing an existing file needs the rev you
+ *  last fetched (baseRev); a stale write is refused, so nobody silently
+ *  overwrites a newer copy ("you read an older copy" arguments). */
+export async function writeRoomFile(dir: string, name: string, bytes: Buffer, by: string, baseRev: number | undefined, now = () => new Date().toISOString()): Promise<{ rev: number; updated: boolean }> {
+  const index = await readRoomFileIndex(dir);
+  const file = path.join(dir, ...name.split("/"));
+  const exists = await fsp.stat(file).then(() => true, () => false);
+  const current = index[name]?.rev ?? (exists ? 1 : 0);
+  if (exists && baseRev !== current) throw new RoomFileConflict(name, current, index[name]?.by ?? "someone");
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, bytes);
+  const rev = current + 1;
+  index[name] = { rev, by, at: now() };
+  await fsp.writeFile(path.join(dir, ".index.json"), JSON.stringify(index));
+  return { rev, updated: exists };
+}
+
+export async function listRoomFiles(dir: string): Promise<Array<{ name: string; size: number; at: string; rev?: number; by?: string }>> {
+  const index = await readRoomFileIndex(dir);
+  const out: Array<{ name: string; size: number; at: string; rev?: number; by?: string }> = [];
   const walk = async (sub: string, depth: number): Promise<void> => {
     const entries = await fsp.readdir(path.join(dir, sub), { withFileTypes: true }).catch(() => []);
     for (const e of entries) {
@@ -90,7 +117,7 @@ export async function listRoomFiles(dir: string): Promise<Array<{ name: string; 
       if (e.isDirectory() && depth < 3) await walk(rel, depth + 1);
       else if (e.isFile() && isRoomFileName(rel)) {
         const st = await fsp.stat(path.join(dir, rel)).catch(() => null);
-        if (st) out.push({ name: rel, size: st.size, at: st.mtime.toISOString() });
+        if (st) out.push({ name: rel, size: st.size, at: st.mtime.toISOString(), ...(index[rel] ? { rev: index[rel].rev, by: index[rel].by } : { rev: 1 }) });
       }
     }
   };
@@ -98,8 +125,16 @@ export async function listRoomFiles(dir: string): Promise<Array<{ name: string; 
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export interface RoomPresence { key: string; name: string; activity: string; at: number }
+const PRESENCE_TTL_MS = 90_000;
+
 export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean> {
   const store = new RoomStore(opts.home);
+  // roomId → member key → what that agent is doing right now
+  const presence = new Map<string, Map<string, RoomPresence>>();
+  const presenceVersion = new Map<string, number>();
+  const presenceOf = (roomId: string, nowMs: number): RoomPresence[] =>
+    [...(presence.get(roomId)?.values() ?? [])].filter((p) => nowMs - p.at < PRESENCE_TTL_MS);
   const now = opts.now ?? Date.now;
   const stamp = () => new Date(now()).toISOString();
   let loaded = false;
@@ -180,7 +215,10 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
           const file = path.join(dir, ...name.split("/"));
           const bytes = await fsp.readFile(file).catch(() => null);
           if (!bytes) return json(404, { error: "not found" });
+          const rev = (await readRoomFileIndex(dir))[name]?.rev ?? 1;
           res.writeHead(200, {
+            "x-room-file-rev": String(rev),
+            "access-control-expose-headers": "x-room-file-rev",
             "content-type": roomFileType(name),
             "cache-control": "no-store",
             "x-content-type-options": "nosniff",
@@ -208,18 +246,23 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
           if (!existing && list.length >= ROOM_FILES_MAX) return json(409, { error: "the room holds too many files — remove some first" });
           const total = list.reduce((n, x) => n + x.size, 0) - (existing?.size ?? 0) + bytes.length;
           if (total > ROOM_FILES_TOTAL_MAX) return json(409, { error: "the room's files are full" });
-          const file = path.join(dir, ...name.split("/"));
-          await fsp.mkdir(path.dirname(file), { recursive: true });
-          await fsp.writeFile(file, bytes);
           const by = typeof body.by === "string" ? body.by.trim().slice(0, 60) : guest?.name ?? "someone";
-          await append(room, { kind: "system", id: "room", name: "room" }, `${by} ${existing ? "updated" : "shared"} ${name}`, "note");
-          return json(200, { ok: true, name, size: bytes.length, updated: Boolean(existing) });
+          const baseRev = typeof body.baseRev === "number" ? body.baseRev : undefined;
+          let written: { rev: number; updated: boolean };
+          try {
+            written = await writeRoomFile(dir, name, bytes, by, baseRev);
+          } catch (err) {
+            if (err instanceof RoomFileConflict) return json(409, { error: err.message, rev: err.rev, by: err.by });
+            throw err;
+          }
+          await append(room, { kind: "system", id: "room", name: "room" }, `${by} ${written.updated ? "updated" : "shared"} ${name} (v${written.rev})`, "note");
+          return json(200, { ok: true, name, size: bytes.length, updated: written.updated, rev: written.rev });
         }
         return json(405, { error: "method not allowed" });
       }
 
       // ── everything else: /gateway/rooms/<id>/<verb>, room-token bearer ──
-      const m = /^\/gateway\/rooms\/(room_[a-z0-9]+)\/(messages|members|patch|leave)\/?$/.exec(url.pathname);
+      const m = /^\/gateway\/rooms\/(room_[a-z0-9]+)\/(messages|members|patch|leave|presence)\/?$/.exec(url.pathname);
       if (!m) return json(404, { error: "not found" });
       const roomId = m[1]!;
       const verb = m[2]!;
@@ -235,12 +278,13 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
         const deadline = now() + wait * 1_000;
         let messages = await store.since(roomId, since, 200);
         let current = room;
+        const pv = presenceVersion.get(roomId) ?? 0;
         // A guest that hangs up (or a host shutting down) ends the wait at
         // once — a sleeping long-poll must never keep the process alive.
         let gone = req.destroyed;
         let wake: (() => void) | undefined;
         req.once("close", () => { gone = true; wake?.(); });
-        while (messages.length === 0 && now() < deadline && !gone) {
+        while (messages.length === 0 && now() < deadline && !gone && (presenceVersion.get(roomId) ?? 0) === pv) {
           await new Promise<void>((r) => { wake = r; const t = setTimeout(r, 1_000); t.unref?.(); });
           wake = undefined;
           if (gone || req.destroyed) return true;
@@ -251,7 +295,7 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
         const latest = store.get(roomId) ?? current;
         const seen = { ...guest, lastSeenAt: stamp() };
         void store.save({ ...latest, guests: latest.guests.map((g) => (g.id === guest.id ? seen : g)) }).catch(() => undefined);
-        return json(200, { room: guestView(latest), messages });
+        return json(200, { room: guestView(latest), messages, presence: presenceOf(roomId, now()) });
       }
 
       if (verb === "messages" && req.method === "POST") {
@@ -321,6 +365,21 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
         if (typeof body.notes === "string") next.notes = body.notes.slice(0, ROOM_NOTES_MAX);
         await store.save(next);
         return json(200, { room: guestView(next) });
+      }
+
+      if (verb === "presence" && req.method === "POST") {
+        // one of the guest's agents started or finished work in this room
+        const body = await readJson(req, 4 * 1024);
+        const id = typeof body.agentId === "string" ? body.agentId : "";
+        const member = room.members.find((x) => x.kind === "agent" && x.home === guest.id && x.id === id);
+        if (!member) return json(403, { error: "that agent is not yours in this room" });
+        const key = `agent:${guest.id}:${id}`;
+        const map = presence.get(roomId) ?? new Map<string, RoomPresence>();
+        presence.set(roomId, map);
+        if (body.state === "working") map.set(key, { key, name: member.name, activity: typeof body.activity === "string" ? body.activity.slice(0, 80) : "working", at: now() });
+        else map.delete(key);
+        presenceVersion.set(roomId, (presenceVersion.get(roomId) ?? 0) + 1);
+        return json(200, { ok: true });
       }
 
       if (verb === "leave" && req.method === "POST") {

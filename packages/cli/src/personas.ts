@@ -26,6 +26,9 @@ export interface Persona {
   color?: string;
   provider: string;
   model: string;
+  /** The fast model the agent CHATS on in rooms (same provider); real work
+   *  is handed to its full model. Unset = a fast default for the provider. */
+  chatModel?: string;
   reasoningLevel?: string;
   instructions: string;
   /** The persona's one dedicated garrison thread. */
@@ -85,6 +88,7 @@ function normalize(raw: unknown): Persona | null {
     ...(str(r.color) ? { color: str(r.color) } : {}),
     provider,
     model,
+    ...(str(r.chatModel) ? { chatModel: str(r.chatModel) } : {}),
     ...(str(r.reasoningLevel) ? { reasoningLevel: str(r.reasoningLevel) } : {}),
     instructions,
     sessionId: str(r.sessionId) ?? "",

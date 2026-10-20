@@ -77,6 +77,7 @@ import { AgentError, DesktopAgents } from "./daemon/agents.js";
 import { DesktopRooms, RoomError } from "./daemon/rooms.js";
 import { DesktopDirectory, DirectoryError } from "./daemon/directory.js";
 import { setRoomsHost } from "./roomScope.js";
+import { setOpenHost } from "./openTool.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
 import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
@@ -1067,6 +1068,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return [];
   });
   setRoomsHost(desktopRooms.host());
+  setOpenHost({
+    open: async (sid, url) => {
+      if (!(await desktopRooms.mayOpen(sid, url))) {
+        throw new Error("from a room you can only open that room's shared-file links — for anything else, ask your owner in your private chat");
+      }
+      process.stdout.write(JSON.stringify({ type: "agent_open_url", url, sessionId: sid }) + "\n");
+    },
+  });
   // ─── The people directory (usernames, lookup, invites; daemon/directory.ts) ─
   const publicOriginOf = async (): Promise<string | null> => {
     try {
@@ -1129,8 +1138,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   const agentBrain = async (sid: string): Promise<ProviderSelection | undefined> => {
     const agent = desktopAgents.agentForSession(sid);
     if (!agent) return undefined;
+    // A room SEAT chats on the agent's fast model; the agent's own chats and
+    // its room work threads run on its full model (owner, 2026-10-20: "accept
+    // the smaller / stronger model idea").
+    const chatModel = desktopRooms.isSeat(sid)
+      ? agent.chatModel ?? (providerFlagForMetaName(agent.provider) === "anthropic" ? "claude-haiku-5-5" : undefined)
+      : undefined;
     try {
-      return await selectProvider(new Map([["provider", providerFlagForMetaName(agent.provider)], ["model", agent.model]]));
+      return await selectProvider(new Map([["provider", providerFlagForMetaName(agent.provider)], ["model", chatModel ?? agent.model]]));
     } catch (error) {
       // A brain that no longer resolves (key removed, model retired) must not
       // strand the agent: it runs on the daemon's lane and says so.
@@ -2470,6 +2485,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           } else if (kind === "agent_delete") {
             const id = cleanCommandId(command.agentId);
             if (!id) throw new AgentError("agent_delete requires agentId");
+            // out of every room first (its seats and work threads go with it)
+            for (const r of desktopRooms.list()) {
+              if (r.members.some((m) => m.kind === "agent" && m.home === "local" && m.id === id)) await desktopRooms.removeAgent(r.id, id).catch(() => undefined);
+            }
             const threads = await desktopAgents.remove(id);
             for (const sid of threads) {
               const entry = sessions.get(sid);

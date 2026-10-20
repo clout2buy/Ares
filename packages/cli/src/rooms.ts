@@ -72,6 +72,9 @@ export interface RoomRules {
   paused: boolean;
   /** Minutes between the lead agent's board check-ins (0 = off). */
   checkinMinutes: number;
+  /** The lead agent (member key): takes requests nobody was named for, splits
+   *  work onto the board, assigns and reviews. Unset = the first agent. */
+  lead?: string;
 }
 
 export interface RoomInvite {
@@ -111,6 +114,9 @@ export interface Room {
   guests: RoomGuest[];
   /** Local agent id → the daemon session that is that agent's seat here. */
   threads: Record<string, string>;
+  /** Local agent id → its WORK thread for this room: real work handed off
+   *  from the seat (Rooms work), run on the agent's full model. */
+  workThreads?: Record<string, string>;
   /** Highest message seq appended (the host numbers them). */
   seq: number;
   createdAt: string;
@@ -272,7 +278,8 @@ export function normalizeRules(raw: unknown, base: RoomRules = DEFAULT_RULES): R
   const turns = r.turns === "round" || r.turns === "free" || r.turns === "mention" ? r.turns : base.turns;
   const run = typeof r.maxAgentRun === "number" && Number.isFinite(r.maxAgentRun) ? Math.max(1, Math.min(200, Math.round(r.maxAgentRun))) : base.maxAgentRun;
   const checkin = typeof r.checkinMinutes === "number" && Number.isFinite(r.checkinMinutes) ? Math.max(0, Math.min(24 * 60, Math.round(r.checkinMinutes))) : base.checkinMinutes;
-  return { turns, maxAgentRun: run, paused: typeof r.paused === "boolean" ? r.paused : base.paused, checkinMinutes: checkin };
+  const lead = r.lead === null || r.lead === "" ? undefined : typeof r.lead === "string" ? r.lead.slice(0, 200) : base.lead;
+  return { turns, maxAgentRun: run, paused: typeof r.paused === "boolean" ? r.paused : base.paused, checkinMinutes: checkin, ...(lead ? { lead } : {}) };
 }
 
 export function normalizeRoom(raw: unknown): Room | null {
@@ -290,6 +297,10 @@ export function normalizeRoom(raw: unknown): Room | null {
   if (r.threads && typeof r.threads === "object") {
     for (const [k, v] of Object.entries(r.threads as Record<string, unknown>)) if (typeof v === "string" && v) threads[k] = v;
   }
+  const workThreads: Record<string, string> = {};
+  if (r.workThreads && typeof r.workThreads === "object") {
+    for (const [k, v] of Object.entries(r.workThreads as Record<string, unknown>)) if (typeof v === "string" && v) workThreads[k] = v;
+  }
   return {
     id,
     name: name.slice(0, ROOM_NAME_MAX),
@@ -304,6 +315,7 @@ export function normalizeRoom(raw: unknown): Room | null {
     invites: Array.isArray(r.invites) ? r.invites.filter((i): i is RoomInvite => !!i && typeof i === "object" && typeof (i as RoomInvite).code === "string") : [],
     guests: Array.isArray(r.guests) ? r.guests.filter((g): g is RoomGuest => !!g && typeof g === "object" && typeof (g as RoomGuest).id === "string" && typeof (g as RoomGuest).tokenHash === "string") : [],
     threads,
+    ...(Object.keys(workThreads).length ? { workThreads } : {}),
     seq: typeof r.seq === "number" && Number.isFinite(r.seq) ? Math.max(0, Math.floor(r.seq)) : 0,
     createdAt: str(r.createdAt) ?? now,
     updatedAt: str(r.updatedAt) ?? now,
@@ -519,6 +531,12 @@ export function previousAgentSpeaker(message: RoomMessage, recent: readonly Room
   return undefined;
 }
 
+/** The room's lead agent: the one the rules name (if still here and not
+ *  muted), else the first agent. */
+export function leadOf(room: Room, agents: readonly RoomMember[] = room.members.filter((m) => m.kind === "agent" && !m.muted)): RoomMember | undefined {
+  return (room.rules.lead ? agents.find((m) => memberKey(m) === room.rules.lead) : undefined) ?? agents[0];
+}
+
 /** How many agent messages have run since a person last spoke (newest last). */
 export function agentRun(messages: readonly RoomMessage[]): number {
   let n = 0;
@@ -582,7 +600,7 @@ export function dispatchFor(room: Room, message: RoomMessage, recent: readonly R
   // lead; an agent who names nobody ends the exchange (the natural brake).
   if (named.length) return { agents: mentioned.map((m) => m.id), waitingForHuman: false };
   if (message.from.kind === "person" || message.kind === "system") {
-    const lead = agents[0];
+    const lead = leadOf(room, agents);
     return { agents: lead && lead.home === "local" ? [lead.id] : [], waitingForHuman: false };
   }
   // An agent that names nobody is answering whoever spoke to it: the reply

@@ -668,3 +668,20 @@
 .agentTileEmoji { line-height: 1; transform: translateY(1px); filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .25)); }
 .agentTileInitial { font-weight: 700; letter-spacing: .01em; line-height: 1; }
 .agentFieldHint { font-size: 11.5px; font-style: normal; color: var(--faint); line-height: 1.4; }
+
+/* right-click on an agent: Profile / Delete */
+.agentMenu {
+  position: fixed; z-index: 90;
+  display: flex; flex-direction: column;
+  min-width: 190px;
+  padding: 5px;
+  border-radius: 14px;
+  background: var(--bg-raised, #16171f);
+  border: 1px solid var(--line-strong, var(--line));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 20px 50px -18px rgba(0, 0, 0, .85);
+}
+.agentMenu button { padding: 8px 12px; border-radius: 9px; font-size: 13.5px; text-align: left; color: var(--text); }
+.agentMenu button:hover { background: rgba(255, 255, 255, .08); }
+.agentMenu .agentMenuDanger { color: #ff6b6b; }
+.agentMenu .agentMenuDanger:hover { background: rgba(255, 92, 92, .14); }
+.agentDeleteBtn { color: #ff6b6b !important; border-color: rgba(255, 92, 92, .35) !important; }

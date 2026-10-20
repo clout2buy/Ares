@@ -56,6 +56,7 @@ export interface RoomVm {
   invites: Array<{ code: string; label?: string; createdAt: string; usedBy?: string }>;
   guests: Array<{ id: string; name: string; joinedAt: string; lastSeenAt?: string }>;
   threads: Record<string, string>;
+  workThreads?: Record<string, string>;
   seq: number;
   folder: string;
   createdAt: string;
@@ -248,6 +249,18 @@ function inlineMentions(text: string, members: RoomMemberVm[]): ReactNode {
   return parts.map((p, i) => (i % 2 === 1 ? <b key={i} className="roomMention">{p}</b> : p));
 }
 
+/** A long message shows its first lines and folds the rest behind "Show more"
+ *  — one chatty agent can't fill the screen. */
+function Folded({ text, members }: { text: string; members: RoomMemberVm[] }) {
+  const [open, setOpen] = useState(false);
+  const LIMIT = 320;
+  if (text.length <= LIMIT + 60 || open) {
+    return <>{inlineMentions(text, members)}{open ? <button className="roomMore" onClick={() => setOpen(false)}>Show less</button> : null}</>;
+  }
+  const cut = text.slice(0, LIMIT).replace(/\s+\S*$/, "");
+  return <>{inlineMentions(cut, members)}… <button className="roomMore" onClick={() => setOpen(true)}>Show more</button></>;
+}
+
 export function RoomView({
   room,
   me,
@@ -255,6 +268,7 @@ export function RoomView({
   agents,
   photos,
   typing,
+  remoteTyping = [],
   error,
   onSend,
   onPause,
@@ -277,6 +291,8 @@ export function RoomView({
   photos: Record<string, string>;
   /** Local agent ids whose seat is mid-turn. */
   typing: string[];
+  /** Agents on OTHER machines working right now (key = member key). */
+  remoteTyping?: Array<{ key: string; name: string; activity: string }>;
   error?: string;
   onSend: (text: string) => void;
   onPause: (paused: boolean) => void;
@@ -426,8 +442,23 @@ export function RoomView({
                       {seat ? <button className="roomPeek" title={`Open ${run.from.name}'s seat (their private thread)`} onClick={() => onOpenSeat(seat)}>peek</button> : null}
                     </span>
                     {run.items.map((m, i) => (
-                      <div key={m.id} className="roomBubble roomBubbleTheirs" data-last={i === run.items.length - 1 ? "1" : "0"}>{inlineMentions(m.text, room.members)}</div>
+                      <div key={m.id} className="roomBubble roomBubbleTheirs" data-last={i === run.items.length - 1 ? "1" : "0"}><Folded text={m.text} members={room.members} /></div>
                     ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {remoteTyping.map((p) => {
+            const m = room.members.find((x) => memberKey(x) === p.key);
+            if (!m) return null;
+            return (
+              <div key={`rtyping-${p.key}`} className="roomRun roomRunTheirs roomTypingRow" style={{ ["--agent" as string]: m.color ?? paletteFor(memberKey(m)) }}>
+                <div className="roomRunRow">
+                  <span className="roomRunFace"><MemberAvatar member={m} agents={agents} size={30} busy /></span>
+                  <div className="roomRunCol">
+                    <span className="roomRunName">{m.name} <i>{p.activity && p.activity !== "working" ? p.activity : "working…"}</i></span>
+                    <div className="typingBubble"><i /><i /><i /></div>
                   </div>
                 </div>
               </div>

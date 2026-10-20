@@ -80,7 +80,7 @@ test("two installs share one copy of a file through a directory-hosted room", as
     await A.agents.bind(bob.id, "sess_bob_private");
     setRoomsHost(A.rooms.host());
     const shared = await makeRoomsTool().call({ action: "share", path: "build/brawl.html", name: "neon-brawl.html", room: "Brawl" }, { sessionId: "sess_bob_private" });
-    assert.match(shared.display, /shared neon-brawl\.html in Brawl — http/);
+    assert.match(shared.display, /shared neon-brawl\.html v1 in Brawl — http/);
     const link = shared.output.url;
     assert.ok(link.startsWith(url), "the link is on the directory, reachable by everyone in the room");
 
@@ -92,7 +92,7 @@ test("two installs share one copy of a file through a directory-hosted room", as
     const got = await makeRoomsTool().call({ action: "fetch", name: "neon-brawl.html", room: mirrorB.name }, { sessionId: "sess_bop_private" });
     assert.equal(await fs.readFile(got.output.path, "utf8"), game);
 
-    // bop edits and shares back; bob fetches the update
+    // bop edits and shares back (he fetched first, so his v1 base is current); bob fetches the update
     await fs.writeFile(got.output.path, game.replace("window.v=1", "window.v=2"));
     const back = await makeRoomsTool().call({ action: "share", path: got.output.path, name: "neon-brawl.html", room: mirrorB.name }, { sessionId: "sess_bop_private" });
     assert.match(back.display, /updated neon-brawl\.html/);
@@ -111,7 +111,8 @@ test("two installs share one copy of a file through a directory-hosted room", as
     assert.equal((await fetch(`${url}/gateway/rooms/${hostRoomId}/files/..%2F..%2Fusers.json`)).status, 404);
 
     // each join/add is announced ONCE (the host records it; the guest no longer repeats it)
-    await new Promise((r) => setTimeout(r, 300));
+    for (let i = 0; i < 60 && !(await A.rooms.store.messages(g.roomId)).some((m) => /added bop/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 1500));
     const thread = await A.rooms.store.messages(g.roomId);
     const adds = thread.filter((m) => /added bop/.test(m.text));
     assert.equal(adds.length, 1, `"added bop" once, got ${adds.length}`);

@@ -1096,6 +1096,35 @@ export function budgetMessages(
   return { messages: kept, trimmed, dropped };
 }
 
+/**
+ * budgetMessages with a STICKY cut, so the prompt cache survives a long
+ * session. Trimming "exactly to budget" moved the cut a few messages forward
+ * on every call once history sat at the limit — the prompt's front changed
+ * every time and each call re-billed the whole conversation (a real 170k-token
+ * session re-wrote ~120k tokens of cache per call). Now: reuse the previous
+ * cut while what follows it still fits; when it doesn't, cut once with
+ * headroom (to `slack` of the budget) so the next cut is many calls away.
+ */
+export function budgetMessagesSticky(
+  messages: readonly Message[],
+  budgetTokens: number,
+  overheadTokens: number,
+  minKeep: number,
+  anchor: Message | null,
+  slack = 0.75,
+): { messages: Message[]; trimmed: number; dropped: Message[]; anchor: Message | null } {
+  const full = budgetMessages(messages, budgetTokens, overheadTokens, minKeep);
+  if (full.trimmed === 0) return { ...full, anchor: null };
+  const at = anchor ? messages.indexOf(anchor) : -1;
+  if (at > 0 && messages.length - at > Math.max(1, minKeep) - 1) {
+    const kept = messages.slice(at);
+    const total = overheadTokens + kept.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+    if (total <= budgetTokens) return { messages: [...kept], trimmed: at, dropped: messages.slice(0, at), anchor };
+  }
+  const recut = budgetMessages(messages, Math.floor(budgetTokens * slack), overheadTokens, minKeep);
+  return { ...recut, anchor: recut.trimmed > 0 ? recut.messages[0] ?? null : null };
+}
+
 const STALE_IMAGE_PLACEHOLDER = "[screenshot from an earlier step — omitted to save context]";
 
 /**
@@ -1518,6 +1547,8 @@ export class QueryEngine {
   /** Effort-dial override for the rest of THIS turn: set when a stalled attempt
    *  downgraded reasoning, cleared at the next turn start. */
   private turnReasoningOverride: ReasoningLevel | null = null;
+  /** First kept message of the last budget cut (budgetMessagesSticky). */
+  private trimAnchor: Message | null = null;
   /** Did the previous tool round contain a failure? Failure recovery earns the
    *  full effort ceiling back (see tacticalReasoningLevel). */
   private lastRoundHadFailure = false;
@@ -2879,12 +2910,20 @@ export class QueryEngine {
             // providers need it enforced exactly) and the LAST rung, the
             // last resort reachable only by hard context-limit evidence,
             // where a pending-message-only prompt beats a hard-failed turn.
-            const budgeted = budgetMessages(
-              this.messages,
-              budgetAttempts[attempt],
-              overheadTokens,
-              attempt === 0 || attempt === budgetAttempts.length - 1 ? 1 : 4,
-            );
+            // The top rung keeps a sticky cut (cache-friendly); descent rungs
+            // are one-off emergency shapes and trim exactly.
+            const budgeted = attempt === 0
+              ? (() => {
+                  const sticky = budgetMessagesSticky(this.messages, budgetAttempts[attempt], overheadTokens, 1, this.trimAnchor);
+                  this.trimAnchor = sticky.anchor;
+                  return sticky;
+                })()
+              : budgetMessages(
+                  this.messages,
+                  budgetAttempts[attempt],
+                  overheadTokens,
+                  attempt === budgetAttempts.length - 1 ? 1 : 4,
+                );
             if (budgeted.trimmed > 0) {
               // File contents in the dropped span are no longer visible to the
               // model — let the host invalidate read stamps so re-reads pass.

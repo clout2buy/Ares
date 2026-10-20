@@ -225,7 +225,9 @@ test("AnthropicProvider: request shape — cache breakpoints, adaptive effort, h
     { role: "user", content: [{ type: "text", text: "go", cache_control: { type: "ephemeral" } }] },
   ]);
 
-  // Without reasoningLevel: no thinking param, default 8192 max_tokens.
+  // Without reasoningLevel (or "off"): Claude 5 can't turn thinking off, and an
+  // omitted field means the API's default effort — so the floor, "low", is
+  // sent explicitly. Default 8192 max_tokens.
   const captured2 = {};
   const provider2 = new AnthropicProvider({
     apiKey: "test-key",
@@ -240,7 +242,8 @@ test("AnthropicProvider: request shape — cache breakpoints, adaptive effort, h
   })) {
     // drain
   }
-  assert.equal(Object.hasOwn(captured2.body, "thinking"), false);
+  assert.deepEqual(captured2.body.thinking, { type: "adaptive" });
+  assert.deepEqual(captured2.body.output_config, { effort: "low" });
   assert.equal(captured2.body.max_tokens, 8192);
 });
 

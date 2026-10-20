@@ -4772,6 +4772,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // The Forge's native view: what the owner has on screen, when it changed.
             const forgeNote = await forgeScreenNote(command.sessionId ?? "").catch(() => null);
             if (forgeNote) entry.live.queueSystemReminder(forgeNote, "hook", "forge-screen");
+            // Room talk changes all the time: it rides this turn, not the
+            // (cached) system prompt.
+            const turnSid = command.sessionId ?? "";
+            const lately = desktopRooms.isSeat(turnSid) ? null : desktopRooms.latelyNoteFor(desktopAgents.agentForSession(turnSid)?.id, turnSid);
+            if (lately) entry.live.queueSystemReminder(lately, "hook", "rooms-lately");
           }
           // Personas (the HELM roster: Aegis & co.) were replaced by agents
           // (owner, 2026-10-19): Ares never auto-wears one any more. The

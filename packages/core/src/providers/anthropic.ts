@@ -161,6 +161,14 @@ export class AnthropicProvider implements Provider {
       wireNames = oauthWireToolNames(body);
     }
 
+    // Opt-in full-body trace (ARES_ANTHROPIC_TRACE_DIR): what the wire log's
+    // size digest can't show — e.g. why consecutive calls miss the cache.
+    if (process.env.ARES_ANTHROPIC_TRACE_DIR) {
+      try {
+        fs.mkdirSync(process.env.ARES_ANTHROPIC_TRACE_DIR, { recursive: true });
+        fs.writeFileSync(path.join(process.env.ARES_ANTHROPIC_TRACE_DIR, `req-${Date.now()}.json`), JSON.stringify(body));
+      } catch { /* diagnostics only */ }
+    }
     // Stall watchdog: abort the fetch when no bytes arrive for the stall
     // window so a hung connection becomes a retriable error, not a freeze.
     const guard = createStallGuard(req.signal);
@@ -633,6 +641,13 @@ export function buildMessagesBody(
   // thinking back on / 400s the adaptive-only models.
   if (isDeepseek && req.reasoningLevel === "off") {
     body.thinking = { type: "disabled" };
+  } else if (!isDeepseek && !reasoningEnabled(req.reasoningLevel) && usesNativeAdaptiveThinking(req.model) && supportsAnthropicEffort(req.model)) {
+    // Claude 5 always thinks: "thinking.type.disabled is not supported for
+    // this model", and an omitted field means the API's DEFAULT effort — so
+    // the owner's "off" dial ran every call at full depth (26k thinking
+    // tokens, 288s, before a single file Read). The lowest it goes is "low".
+    body.thinking = { type: "adaptive" };
+    body.output_config = { effort: "low" };
   } else if (reasoningEnabled(req.reasoningLevel)) {
     if (isDeepseek) {
       // DeepSeek ignores budget_tokens; enable thinking and do NOT inflate

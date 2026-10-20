@@ -328,3 +328,30 @@ test("stall descent: a thinking model that stalls repeatedly cannot erase recent
     delete process.env.ARES_THINK_CEILING_MS;
   }
 });
+
+test("budgetMessagesSticky: the cut stays put while what follows it fits, then moves once with headroom (prompt cache survives)", async () => {
+  const { budgetMessagesSticky } = await import("../packages/core/dist/index.js");
+  const msg = (i) => ({ id: `m${i}`, role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: `${i} `.padEnd(400, "x") }], createdAt: "now" });
+  let history = Array.from({ length: 40 }, (_, i) => msg(i));
+  const one = budgetMessagesSticky(history, 0, 0, 1, null);
+  assert.equal(one.trimmed, 0, "budget off: untouched");
+  // Find a budget that just forces a trim.
+  const per = budgetMessagesSticky([msg(0)], 1e9, 0, 1, null).messages.length && 1;
+  let budget = 3000;
+  let r = budgetMessagesSticky(history, budget, 0, 1, null);
+  assert.ok(r.trimmed > 0 && r.anchor, "over budget: cut with an anchor");
+  const firstCut = r.anchor;
+  // Two more messages arrive: the cut must NOT move while the tail still fits.
+  let moves = 0;
+  let anchor = r.anchor;
+  for (let i = 40; i < 46; i++) {
+    history = [...history, msg(i)];
+    const next = budgetMessagesSticky(history, budget, 0, 1, anchor);
+    if (next.anchor !== anchor) moves++;
+    anchor = next.anchor;
+    assert.equal(next.messages[0], anchor, "the first kept message is the anchor");
+  }
+  assert.ok(moves <= 1, `the cut moved ${moves} times in 6 calls (exact-to-budget trimming moves it every call)`);
+  assert.equal(per, 1);
+  assert.ok(firstCut);
+});

@@ -9,6 +9,7 @@
 export {
   QueryEngine,
   budgetMessages,
+  budgetMessagesSticky,
   buildContextLedger,
   recentFilePathsFromSpan,
   collectTrimmedFilePaths,

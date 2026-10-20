@@ -360,11 +360,12 @@
 }
 
 /* chats under the selected agent: plain indented rows, no bullets, no chips */
-.ares.ares[data-style="modern"][data-surface="messages"] .agentChats { padding: 0 0 6px; }
-.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .railLabel { margin: 6px 0 2px 54px; font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentChats { padding: 0 0 6px; margin-left: 0; gap: 2px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionList { margin: 0; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .railLabel { margin: 8px 0 4px 22px; font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .railLabel::before { content: none; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionList > .session {
-  margin: 0 0 0 46px;
+  margin: 0 0 0 12px;
   padding: 6px 10px;
   border-radius: 10px;
   border: none;
@@ -374,7 +375,7 @@
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionMain { gap: 6px; font-size: 13px; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionMain > i { display: none; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionMain > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ares.ares[data-style="modern"][data-surface="messages"] .agentNewChat { margin: 2px 0 2px 46px; padding: 6px 10px; font-size: 13px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentNewChat { margin: 2px 0 2px 12px; padding: 6px 10px; font-size: 13px; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentRowWrap { padding: 0; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentRow { padding: 8px 8px; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentRowEdit { opacity: 0; }
@@ -401,8 +402,10 @@
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionList > .session { display: flex; align-items: center; width: auto; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionMain { flex: 1; min-width: 0; width: auto; max-width: none; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionMain > span { flex: 1; max-width: none; }
-.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionActions { opacity: 0; }
-.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .session:hover .sessionActions { opacity: 1; }
+/* Hidden actions take no room, so the title runs the full row until hover. */
+.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionActions { display: none; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .session:hover .sessionActions,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .session:focus-within .sessionActions { display: flex; }
 
 /* ══ Liquid glass ═══════════════════════════════════════════════════════════
    Owner, 2026-10-19: "make the ui like apple glass style ui". Panes float

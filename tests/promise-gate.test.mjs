@@ -19,3 +19,9 @@ test("a finished report or a real question to the owner is left alone", () => {
   assert.equal(promisesMoreWork("Want me to keep going on the caves?"), false);
   assert.equal(promisesMoreWork(""), false);
 });
+
+test("'I'll do those next.' after a list of unchecked items is a promise too (field miss, 2026-10-20)", () => {
+  assert.equal(promisesMoreWork("Not checked yet:\n- skeleton drops\n- the Warden fight\n\nI'll do those next."), true);
+  assert.equal(promisesMoreWork("I'll check the bed crafting next."), true);
+  assert.equal(promisesMoreWork("Next time you open it, the save loads at dawn."), false);
+});

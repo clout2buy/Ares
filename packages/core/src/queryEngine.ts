@@ -1064,7 +1064,7 @@ export function promisesMoreWork(text: string): boolean {
   if (!tail || tail.length > 600) return false;
   if (/\?\s*$/.test(tail)) return false; // asks the owner something
   if (/\b(should I|do you want|would you like|want me to|let me know|which (one|do you)|your call)\b/i.test(tail)) return false;
-  return /\b(I['’]ll|I will|I'm going to|I am going to)\s+(keep going|continue|carry on|keep at it|keep working|move on to|start on|get (on|to) (it|that|those|them)|tackle)\b|^\s*(next|continuing|moving on)\b[^.]{0,80}\b(I['’]ll|I will)\b/im.test(tail);
+  return /\b(I['’]ll|I will|I'm going to|I am going to)\s+(keep going|continue|carry on|keep at it|keep working|move on to|start on|get (on|to) (it|that|those|them)|tackle)\b|^\s*(next|continuing|moving on)\b[^.]{0,80}\b(I['’]ll|I will)\b|\b(I['’]ll|I will)\s+(do|handle|finish|work on|pick up|tackle|start|check|test|fix|cover)\b[^.?!]{0,60}\bnext\b/im.test(tail);
 }
 
 /** True when an assistant message carries nothing the user/model can act on —

@@ -40,6 +40,22 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.61.0",
+    date: "October 2026",
+    title: "Hands on the page",
+    tagline: "Agents play and test the page you're looking at, right in the Forge, and long jobs get much faster and cheaper.",
+    highlights: [
+      { icon: "🕹️", title: "Plays it in front of you", blurb: "Agents click, type and play the page open in your Forge. No hidden browser, no slideshow of screenshots.", tag: "New" },
+      { icon: "🧪", title: "Your dev server in the Forge", blurb: "Run a Vite (or similar) project and the agent opens it in the Forge with live reload. It never pops your own browser.", tag: "New" },
+      { icon: "⚡", title: "Way faster long jobs", blurb: "Long coding turns keep their cache. Calls that took minutes now take seconds and cost far less.", tag: "Faster" },
+      { icon: "💳", title: "No fake usage errors", blurb: "\"Out of extra usage\" with plenty of plan left is gone. A real used-up limit says when it resets.", tag: "Fixed" },
+      { icon: "🧱", title: "No grey Forge", blurb: "The Forge no longer goes grey or blank, and errors stop popping a panel over it.", tag: "Fixed" },
+      { icon: "🏁", title: "Agents finish the job", blurb: "\"I'll do that next\" means it keeps going. A chat stuck after a restart picks back up.", tag: "Fixed" },
+      { icon: "👋", title: "Pick who to text", blurb: "Ares opens on your agents, not a blank chat. The + makes a new agent without going through setup again.", tag: "Polished" },
+      { icon: "📋", title: "Cleaner chat list", blurb: "Chat names use the whole row, and chats under an agent sit in one tidy group.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.60.0",
     date: "October 2026",
     title: "Like the phone",

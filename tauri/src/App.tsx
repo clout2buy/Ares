@@ -977,7 +977,11 @@ function App() {
     setLiveLoading(true);
     const fallback = window.setTimeout(() => setLiveLoading(false), 8000);
     return () => window.clearTimeout(fallback);
-  }, [liveTarget, liveRevision]);
+    // Keyed on the URL, not the target object: Ares re-announces the same page
+    // after every action, which doesn't reload it — so no load event ever came
+    // to lift the cover and the Forge sat blank for 8s after each move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveTarget?.url, liveRevision]);
   useEffect(() => {
     if (!forge.open || forge.tab !== "live" || !liveTarget) return;
     const timer = window.setInterval(() => setHudNow(Date.now()), 1000);
@@ -5952,12 +5956,6 @@ function App() {
                     }}
                     onError={(message) => logForge(`the Forge view: ${message}`, "warn")}
                   />
-                  {/* Where Ares can't drive this view (the browser preview), it plays
-                      in its own browser and streams it: while frames arrive, show
-                      those over the page so the owner sees Ares actually playing. */}
-                  {liveBrowser && liveBrowser.at >= liveTarget.at && hudNow - liveBrowser.at < 4000 ? (
-                    <LiveFrameCanvas className="liveTelemetryMain forgeDrivenFeed" frame={liveBrowser.frame} title="Ares playing, live" />
-                  ) : null}
                   <div className="forgeLoading" data-on={liveLoading ? "1" : "0"} aria-hidden={!liveLoading}>
                     <span className="forgeLoadingUrl">{liveTarget.url.replace(/^https?:\/\//, "")}</span>
                   </div>

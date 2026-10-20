@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { FORGE_KIT_CSS, FORGE_KIT_JS } from "./forgeKit.js";
 
 import { addStudioLog, setStudioVideo, studioDir, studioPoll } from "./modelStudio.js";
+import { DRIVE_PATH, PAGE_DRIVER_SOURCE } from "./pageDriverSource.js";
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -182,6 +183,8 @@ export interface ServedFolder {
   lastRescue?: ImportMapRescue;
   /** Rolling sensor state for the HUD + reminders. */
   sensor: SensorState;
+  /** Open copies of pages under this root that Ares can drive (pageDriverSource.ts). */
+  drive?: DriveState;
 }
 
 interface SensorState {
@@ -407,6 +410,10 @@ async function handle(served: ServedFolder, req: IncomingMessage, res: ServerRes
     return;
   }
   const urlPath = (req.url ?? "/").split("?")[0]!;
+  if (urlPath === DRIVE_PATH) {
+    await handleDrive(served, req, res);
+    return;
+  }
   if (req.method === "POST" && urlPath === TELEMETRY_PATH) {
     const body = await readBody(req).catch(() => "");
     res.writeHead(204, { "access-control-allow-origin": "*" }).end();
@@ -448,7 +455,8 @@ async function handle(served: ServedFolder, req: IncomingMessage, res: ServerRes
   }
   if (urlPath === SENSOR_PATH) {
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
-    res.end(req.method === "HEAD" ? undefined : SENSOR_SOURCE);
+    res.end(req.method === "HEAD" ? undefined : `${SENSOR_SOURCE}
+${PAGE_DRIVER_SOURCE}`);
     return;
   }
   // The Forge kit for served pages: <link rel="stylesheet" href="/__ares/kit.css">
@@ -697,4 +705,136 @@ export async function stopPreviewServers(): Promise<void> {
   await Promise.all(
     open.map((p) => p.then((s) => new Promise<void>((r) => s.server.close(() => r()))).catch(() => undefined)),
   );
+}
+
+// ── driving the page the owner sees ─────────────────────────────────────────
+// Every served HTML page runs the page driver (pageDriverSource.ts), which
+// long-polls DRIVE_PATH. Ares sends a command to the copy the owner looked at
+// most recently and awaits its reply — so it plays, clicks and reads the very
+// page in the Forge instead of a hidden copy.
+
+interface DrivePage {
+  id: string;
+  url: string;
+  seenAt: number;
+  firstSeenAt: number;
+  queue: Array<{ id: string; op: string; args?: unknown }>;
+  waiting: ServerResponse | null;
+}
+
+interface DriveState {
+  pages: Map<string, DrivePage>;
+  replies: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
+}
+
+const DRIVE_POLL_MS = 20_000;
+/** A page that hasn't polled for this long is gone (closed tab, reload). */
+const DRIVE_ALIVE_MS = DRIVE_POLL_MS + 5_000;
+let driveSeq = 0;
+
+function driveState(served: ServedFolder): DriveState {
+  if (!served.drive) served.drive = { pages: new Map(), replies: new Map() };
+  return served.drive;
+}
+
+function alivePages(state: DriveState, now = Date.now()): DrivePage[] {
+  for (const [id, page] of state.pages) if (!page.waiting && now - page.seenAt > DRIVE_ALIVE_MS) state.pages.delete(id);
+  return [...state.pages.values()].sort((a, b) => b.firstSeenAt - a.firstSeenAt);
+}
+
+function flushPage(page: DrivePage): void {
+  if (!page.waiting || page.queue.length === 0) return;
+  const res = page.waiting;
+  page.waiting = null;
+  res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(page.queue.shift()));
+}
+
+async function handleDrive(served: ServedFolder, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const state = driveState(served);
+  const query = new URL(req.url ?? "/", "http://x").searchParams;
+  const pageId = (query.get("page") ?? "").replace(/[^a-z0-9]/gi, "").slice(0, 40);
+  if (!pageId) { res.writeHead(400).end(); return; }
+  if (req.method === "POST") {
+    const body = await readBody(req, 16 * 1024 * 1024).catch(() => "");
+    res.writeHead(204).end();
+    let reply: { id?: string; ok?: boolean; value?: unknown; error?: string };
+    try { reply = JSON.parse(body); } catch { return; }
+    const waiter = reply.id ? state.replies.get(reply.id) : undefined;
+    if (!waiter || !reply.id) return;
+    state.replies.delete(reply.id);
+    clearTimeout(waiter.timer);
+    if (reply.ok) waiter.resolve(reply.value);
+    else waiter.reject(new Error(String(reply.error ?? "the page failed the command")));
+    return;
+  }
+  const now = Date.now();
+  let page = state.pages.get(pageId);
+  if (!page) {
+    page = { id: pageId, url: "", seenAt: now, firstSeenAt: now, queue: [], waiting: null };
+    state.pages.set(pageId, page);
+  }
+  page.seenAt = now;
+  page.url = query.get("url") ?? page.url;
+  if (page.waiting) page.waiting.writeHead(204).end();
+  page.waiting = res;
+  const current = page;
+  const timer = setTimeout(() => {
+    if (current.waiting === res) { current.waiting = null; current.seenAt = Date.now(); res.writeHead(204).end(); }
+  }, DRIVE_POLL_MS);
+  timer.unref?.();
+  res.on("close", () => {
+    clearTimeout(timer);
+    if (current.waiting === res) { current.waiting = null; current.seenAt = Date.now(); }
+  });
+  flushPage(page);
+}
+
+/** The newest open copy of a page under `root` that can take commands. */
+export async function drivablePage(root: string, opts: { since?: number } = {}): Promise<{ url: string; id: string } | null> {
+  const served = await servers.get(canonicalRoot(root))?.catch(() => undefined);
+  if (!served?.drive) return null;
+  const page = alivePages(served.drive).find((p) => p.firstSeenAt >= (opts.since ?? 0));
+  return page ? { url: page.url, id: page.id } : null;
+}
+
+/** Wait (bounded) for a copy of a page under `root` to come up and poll. */
+export async function waitForDrivablePage(root: string, timeoutMs: number, opts: { since?: number } = {}): Promise<{ url: string; id: string } | null> {
+  const t0 = Date.now();
+  for (;;) {
+    const page = await drivablePage(root, opts);
+    if (page || Date.now() - t0 >= timeoutMs) return page;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
+/** Every served root that has an open, drivable page right now (newest first). */
+export async function drivableRoots(): Promise<Array<{ root: string; url: string; seenAt: number }>> {
+  const out: Array<{ root: string; url: string; seenAt: number }> = [];
+  for (const p of servers.values()) {
+    const served = await p.catch(() => undefined);
+    if (!served?.drive) continue;
+    const page = alivePages(served.drive)[0];
+    if (page) out.push({ root: served.root, url: page.url, seenAt: page.firstSeenAt });
+  }
+  return out.sort((a, b) => b.seenAt - a.seenAt);
+}
+
+/** Run one command in the page with that id (see pageDriverSource.ts for ops). */
+export async function drivePage(root: string, pageId: string, op: string, args?: unknown, timeoutMs = 30_000): Promise<unknown> {
+  const served = await servers.get(canonicalRoot(root))?.catch(() => undefined);
+  const state = served ? driveState(served) : null;
+  const page = state?.pages.get(pageId);
+  if (!state || !page) throw new Error("the page is no longer open in the Forge");
+  const id = `c${++driveSeq}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      state.replies.delete(id);
+      page.queue = page.queue.filter((c) => c.id !== id);
+      reject(new Error(`the page did not answer "${op}" within ${Math.round(timeoutMs / 1000)}s (closed, reloading, or busy)`));
+    }, timeoutMs);
+    timer.unref?.();
+    state.replies.set(id, { resolve, reject, timer });
+    page.queue.push({ id, op, args });
+    flushPage(page);
+  });
 }

@@ -27,7 +27,8 @@ import { MemoryStore } from "@ares/mind";
 import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, fillEffect, navigateEffect, challengePrompt, type BrowserConnector, type HumanCheckHandler } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
-import { lastRescueFor, serveLocalTarget } from "./previewServer.js";
+import { drivableRoots, lastRescueFor, serveLocalTarget, waitForDrivablePage } from "./previewServer.js";
+import { createServedPageBrowser } from "./servedPageBrowser.js";
 import { claimForge, forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
@@ -329,6 +330,9 @@ export function makeBrowserTool(
   // Set per-call to the current turn's progress emitter, so the persistent
   // browser streams its live frames into THIS turn's UI panel.
   let frameSink: ((jpegBase64: string) => void) | null = null;
+  // Set while Ares works in a served page the owner has open (page driver):
+  // later calls keep acting there until an open goes somewhere else.
+  let pageRoot: string | null = null;
   // Set per-call to the current turn's permission prompt, so the PERSISTENT
   // browser's challenge handler (bound once at creation) reaches THIS turn's
   // approval card instead of only the garrison gateway.
@@ -820,7 +824,14 @@ export function makeBrowserTool(
           }
         }
       }
-      const br = onForge
+      // No native Forge view (the browser preview / dev): a local page is
+      // shown in the Forge and Ares drives THAT copy through its page driver
+      // — never a hidden browser streamed as screenshots.
+      const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot) : null;
+      if (i.action === "open" || i.action === "preview") pageRoot = pageBr ? pageBr.strategy ?? null : null;
+      const br = pageBr
+        ? pageBr
+        : onForge
         ? await ensureBrowser(true, true, forge)
         : await ensureBrowser(i.action === "preview" ? true : i.headless, i.action === "handshake" || !!extensionAttach, i.url);
       if (forgeNote) callState.forgeNote = forgeNote;
@@ -1392,4 +1403,36 @@ function isLoopbackUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Actions that need a whole browser (tabs, sign-ins, extension) or build their own page. */
+const NOT_PAGE_DRIVEN = new Set(["handshake", "tabs", "attach", "login", "fill_secret", "model", "close", "network", "filmstrip"]);
+
+/**
+ * The page Ares should act in when there is no native Forge view: the copy of
+ * a served page the owner has open. `open`/`preview` of a local file serves it,
+ * shows it in the Forge and waits for that copy to connect; anything else
+ * continues on the page already open there. Null = no such page (an http site,
+ * no Forge watching): the caller falls back to the background browser.
+ */
+async function servedPageFor(
+  i: { action: string; url?: string },
+  ctx: RichToolContext | undefined,
+  emitTarget: (state: { url?: string; title?: string }) => void,
+  continuing: string | null,
+): Promise<BrowserConnector | null> {
+  if (NOT_PAGE_DRIVEN.has(i.action) || process.env.ARES_PAGE_DRIVER === "0") return null;
+  if ((i.action === "open" || i.action === "preview") && i.url) {
+    const served = await serveLocalTarget(i.url, { sessionId: ctx?.sessionId }).catch(() => null);
+    if (!served) return null;
+    const open = (await drivableRoots()).find((r) => r.root === served.root);
+    if (!open) emitTarget({ url: served.url });
+    const page = await waitForDrivablePage(served.root, Number(process.env.ARES_PAGE_DRIVER_WAIT_MS) || 8_000);
+    return page ? createServedPageBrowser(served.root, served.origin, page) : null;
+  }
+  if (!continuing) return null;
+  const newest = (await drivableRoots()).find((r) => `page:${new URL(r.url).origin}` === continuing);
+  if (!newest) return null;
+  const page = await waitForDrivablePage(newest.root, 0);
+  return page ? createServedPageBrowser(newest.root, new URL(newest.url).origin, page) : null;
 }

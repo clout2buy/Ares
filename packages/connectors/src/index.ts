@@ -12,6 +12,7 @@ export type {
   BrowserState,
   NetworkReport,
   PointerGesture,
+  ConsoleEntry,
 } from "./types.js";
 
 export { MockBrowser, type MockPage } from "./mockBrowser.js";

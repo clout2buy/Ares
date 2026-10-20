@@ -1160,7 +1160,11 @@ export function makeBrowserTool(
         // This preserves that tab's authenticated context and avoids duplicates.
         await br.attachToExisting?.(openUrl).catch(() => false);
         const effect = navigateEffect(br, openUrl, { filmstrip: strip, idemPrefix });
-        const result = await runEffect(effect, rails);
+        // Showing a page on this machine (a served project file, a local dev
+        // server) touches nothing in the world, so the operator kill switch —
+        // which halts outward commits — must not stop it: it left the owner
+        // unable to see their own game in the Forge.
+        const result = await runEffect(effect, isLoopbackUrl(openUrl) ? { ...rails, killSwitch: KillSwitch.memory() } : rails);
         emitTarget(await br.state());
         const note = [railsNote(result), served ? `Serving ${served.root} at ${served.origin} (static, loopback only).` : undefined].filter(Boolean).join(" ") || undefined;
         return {
@@ -1365,4 +1369,14 @@ async function browserRailsContext(
 
 function filmstripDir(strip: Filmstrip): string {
   return (strip as unknown as { dir?: string }).dir ?? "filmstrip";
+}
+
+/** http(s) on this machine only — 127.0.0.1, localhost, [::1]. */
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname);
+  } catch {
+    return false;
+  }
 }

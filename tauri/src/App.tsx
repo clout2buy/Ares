@@ -2776,6 +2776,14 @@ function App() {
             const merged = disk.map((summary) => {
               const existing = byId.get(summary.id);
               if (!existing) return sessionFromSummary(summary);
+              // A busy chat's live events can land before this list (a reload
+              // mid-turn): it was adopted as a placeholder "Background session".
+              // The disk knows what it really is — its title, and that it's
+              // the owner's chat, not a background job.
+              if (existing.background && existing.title === "Background session") {
+                const real = sessionFromSummary(summary);
+                return { ...existing, title: real.title, background: real.background, workflowMode: summary.workflowMode ?? existing.workflowMode };
+              }
               const workflowMode = summary.workflowMode ?? existing.workflowMode;
               // A rename done on disk (meta.label) should refresh the rail title.
               if (summary.label) {

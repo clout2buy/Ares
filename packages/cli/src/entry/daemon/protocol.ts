@@ -121,6 +121,8 @@ export interface DaemonInputCommand {
   profile?: Record<string, unknown>;
   /** directory_search / gateway_request correlation. */
   requestId?: string;
+  /** workspace_add — {label, host, user, port}. */
+  workspace?: Record<string, unknown>;
 }
 
 export class AsyncQueue<T> {

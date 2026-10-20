@@ -999,3 +999,132 @@
 .ares.ares[data-style="modern"][data-surface="messages"] .agentRow { padding: 10px 10px; gap: 12px; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop strong { font: 700 15.5px/1.2 var(--font); letter-spacing: -.2px; }
 .ares.ares[data-style="modern"][data-surface="messages"] .agentRowPreview { font-size: 13px; line-height: 1.35; }
+
+
+/* ══ Settings, iPhone-style (owner, 2026-10-20: "settings should be revamped like
+   the iOS app") — grouped rows with coloured icon tiles, inset cards ══════ */
+.ares .setTile, .ares .setGroupLabel { display: none; }
+.ares.ares[data-surface="messages"] .settingsShell {
+  width: min(980px, calc(100vw - 40px));
+  height: min(720px, calc(100vh - 60px));
+  border-radius: 26px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  background: #121319;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 40px 120px -30px rgba(0, 0, 0, .9);
+  overflow: hidden;
+}
+.ares.ares[data-surface="messages"] .settingsNav {
+  width: 250px;
+  padding: 16px 10px;
+  gap: 2px;
+  background: rgba(255, 255, 255, .025);
+  border-right: 1px solid rgba(255, 255, 255, .07);
+  overflow-y: auto;
+}
+.ares.ares[data-surface="messages"] .settingsBrand { padding: 2px 8px 10px; }
+.ares.ares[data-surface="messages"] .settingsBrand strong { font: 800 26px/1.1 var(--display); letter-spacing: -.6px; color: var(--text-hi); text-transform: none; }
+.ares.ares[data-surface="messages"] .settingsHeroMark { display: none; }
+.ares.ares[data-surface="messages"] .setGroup { display: flex; flex-direction: column; gap: 1px; margin: 4px 0 8px; padding: 4px; border-radius: 14px; background: rgba(255, 255, 255, .04); }
+.ares.ares[data-surface="messages"] .setGroupLabel { display: block; padding: 6px 10px 4px; font: 600 11.5px/1 var(--font); color: var(--faint); }
+.ares.ares[data-surface="messages"] .settingsNav button[data-tab] {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 10px;
+  font: 500 14px/1.2 var(--font);
+  letter-spacing: -.1px;
+  text-transform: none;
+  color: var(--text);
+  background: transparent;
+}
+.ares.ares[data-surface="messages"] .settingsNav button[data-tab] .glyph { display: none; }
+.ares.ares[data-surface="messages"] .settingsNav button[data-tab]:hover { background: rgba(255, 255, 255, .06); }
+.ares.ares[data-surface="messages"] .settingsNav button[data-tab][data-on="1"] { color: #fff; background: #0a84ff; }
+.ares.ares[data-surface="messages"] .setTile {
+  display: grid; place-items: center; flex: none;
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  font: 700 14px/1 var(--font);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3);
+}
+.ares.ares[data-surface="messages"] .settingsNavFoot { margin-top: auto; padding-top: 8px; }
+.ares.ares[data-surface="messages"] .settingsNavFoot button { width: 100%; border-radius: 999px; }
+.ares.ares[data-surface="messages"] .settingsMain { padding: 24px 28px; background: transparent; overflow-y: auto; }
+.ares.ares[data-surface="messages"] .settingsPane { gap: 10px; }
+.ares.ares[data-surface="messages"] .paneTitle { margin: 14px 0 2px; font: 700 20px/1.2 var(--display); letter-spacing: -.4px; text-transform: none; color: var(--text-hi); }
+.ares.ares[data-surface="messages"] .paneTitle:first-child { margin-top: 0; }
+.ares.ares[data-surface="messages"] .paneHint { font-size: 13px; line-height: 1.5; color: var(--muted); }
+.ares.ares[data-surface="messages"] .fieldLabel { font: 600 13px/1.2 var(--font); text-transform: none; letter-spacing: 0; color: var(--muted); }
+.ares.ares[data-surface="messages"] .settingsSelect,
+.ares.ares[data-surface="messages"] .settingsMain input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.ares.ares[data-surface="messages"] .settingsMain select,
+.ares.ares[data-surface="messages"] .settingsMain textarea {
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, .08);
+  color: var(--text-hi);
+}
+.ares.ares[data-surface="messages"] .settingsModelCard,
+.ares.ares[data-surface="messages"] .modelNativeReasoning,
+.ares.ares[data-surface="messages"] .routeLane,
+.ares.ares[data-surface="messages"] .surfaceCard { border-radius: 16px; border-color: rgba(255, 255, 255, .08); background: rgba(255, 255, 255, .05); }
+.ares.ares[data-surface="messages"] .settingsMain .btn,
+.ares.ares[data-surface="messages"] .settingsMain button.primary { border-radius: 999px; }
+
+/* Settings → Workspaces */
+.wsPane { max-width: 720px; }
+.wsCard { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 16px; background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .08); }
+.wsCard[data-status="ok"] { border-color: rgba(48, 209, 88, .3); }
+.wsCard[data-status="error"] { border-color: rgba(255, 92, 92, .35); }
+.wsCardTop { display: flex; align-items: center; gap: 12px; }
+.wsDot { width: 10px; height: 10px; border-radius: 50%; background: #8e8e93; flex: none; }
+.wsDot[data-status="ok"] { background: #30d158; box-shadow: 0 0 0 3px rgba(48, 209, 88, .2); }
+.wsDot[data-status="error"] { background: #ff5c5c; }
+.wsDot[data-status="busy"] { background: #ffd60a; animation: wsPulse 1.2s ease-in-out infinite; }
+@keyframes wsPulse { 50% { opacity: .4; } }
+.wsCardText { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.wsCardText strong { font-size: 15px; }
+.wsCardText em { font-style: normal; font-size: 12.5px; color: var(--muted); font-family: var(--mono); }
+.wsCardBtns, .wsKeyBtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.wsInfo { margin: 0; font-size: 12.5px; color: var(--muted); }
+.wsError { margin: 0; font-size: 12.5px; color: #ff8585; }
+.wsKey { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: rgba(0, 0, 0, .25); }
+.wsKey span { font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.wsKey b { color: var(--text); }
+.wsKey code { display: block; padding: 8px 10px; border-radius: 8px; font: 11.5px/1.5 var(--mono); color: var(--text-hi); background: rgba(255, 255, 255, .06); word-break: break-all; user-select: all; }
+.wsSmall { font-size: 12px; color: var(--faint); }
+.wsFoot { display: flex; justify-content: flex-end; }
+.wsRemove { font-size: 12.5px; color: #ff6b6b; padding: 4px 8px; border-radius: 8px; }
+.wsRemove:hover { background: rgba(255, 92, 92, .12); }
+.wsAdd strong { font-size: 15px; }
+.wsAddBtn { align-self: flex-start; }
+.wsAgents { display: flex; flex-direction: column; gap: 4px; padding: 6px; border-radius: 14px; background: rgba(255, 255, 255, .04); }
+.wsAgentRow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; }
+.wsAgentRow span { flex: 1; font-size: 14px; }
+.wsAgentRow select { width: 200px; padding: 7px 10px; border-radius: 10px; border: none; color: var(--text); background: rgba(255, 255, 255, .08); }
+.ares.ares[data-surface="messages"] .settingsFooter { border-top: 1px solid rgba(255, 255, 255, .07); background: transparent; }
+.ares.ares[data-surface="messages"] .settingsFooter button.primary {
+  border: none; border-radius: 999px; padding: 10px 20px;
+  font: 600 14px/1 var(--font); letter-spacing: 0; text-transform: none;
+  color: #fff; background: linear-gradient(180deg, #3b95ff, #0a7cff);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 10px 24px -12px rgba(10, 124, 255, .9);
+}
+.ares.ares[data-surface="messages"] .settingsNav::-webkit-scrollbar,
+.ares.ares[data-surface="messages"] .settingsMain::-webkit-scrollbar { width: 6px; }
+.ares.ares[data-surface="messages"] .settingsNav::-webkit-scrollbar-thumb,
+.ares.ares[data-surface="messages"] .settingsMain::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .14); border-radius: 3px; }
+.ares.ares[data-surface="messages"] .settingsNav::-webkit-scrollbar-track,
+.ares.ares[data-surface="messages"] .settingsMain::-webkit-scrollbar-track { background: transparent; }
+/* no old ember scrollbars anywhere in a Settings window on Messages */
+.ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
+.ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .14); border-radius: 3px; border: none; }
+.ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar-track { background: transparent; }
+.ares.ares[data-surface="messages"] .settingsShell *, .ares.ares[data-surface="messages"] .settingsShell { scrollbar-color: rgba(255, 255, 255, .14) transparent; }
+/* text selection in the phone's blue, never the old ember; headings and the nav don't select */
+.ares.ares[data-surface="messages"] ::selection { background: rgba(10, 132, 255, .38); color: inherit; }
+.ares.ares[data-surface="messages"] .paneTitle,
+.ares.ares[data-surface="messages"] .settingsBrand,
+.ares.ares[data-surface="messages"] .settingsNav,
+.ares.ares[data-surface="messages"] .settingsFooter { user-select: none; -webkit-user-select: none; }

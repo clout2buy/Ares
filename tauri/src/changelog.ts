@@ -53,6 +53,12 @@ export const CHANGELOG: ChangelogEntry[] = [
       { icon: "📱", title: "The phone's tab bar", blurb: "Chats, Now, Feed, Made and Devices in one bar at the bottom, each with its own light. HELM is out of the way.", tag: "New" },
       { icon: "🪟", title: "A real title bar", blurb: "Clean search, Forge and settings buttons, plus minimize, maximize and close that do what they say.", tag: "Polished" },
       { icon: "🟧", title: "Agents look like the app", blurb: "Agents wear their emoji on a glass tile in their colour, the same faces as your iPhone. Profiles are cleaner too.", tag: "Polished" },
+      { icon: "🎮", title: "Opens the real thing", blurb: "When an agent makes a game or a page, it opens the playable file for you, not a screenshot or a copy served somewhere else.", tag: "Fixed" },
+      { icon: "🧠", title: "Smarter teamwork", blurb: "Rooms have a lead, files keep versions so agents don't overwrite each other, and agents show proof instead of claims.", tag: "New" },
+      { icon: "⚡", title: "Fast chat, strong work", blurb: "Agents chat on a quick model and hand real work to their full model, so group chats stay snappy.", tag: "New" },
+      { icon: "🖥️", title: "Your own VPS", blurb: "Add a Linux box in Settings → Workspaces. Ares makes its own key, and agents build and run servers there instead of on your PC.", tag: "New" },
+      { icon: "⚙️", title: "Settings like the phone", blurb: "Settings are grouped tiles in the iPhone style, with a clear Apply button.", tag: "Polished" },
+      { icon: "🗑️", title: "Delete agents", blurb: "Right-click an agent and delete it. It leaves its group chats too.", tag: "New" },
     ],
   },
   {

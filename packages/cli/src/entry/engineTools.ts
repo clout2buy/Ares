@@ -461,6 +461,7 @@ export async function buildEngineTools(
   const agentsTool = adaptToolForEngine(makeAgentsTool(), enrich) as EngineTool;
   const roomsTool = adaptToolForEngine(makeRoomsTool(), enrich) as EngineTool;
   const openTool = adaptToolForEngine(makeOpenTool(), enrich) as EngineTool;
+  const workspaceTool = adaptToolForEngine(makeWorkspaceTool(), enrich) as EngineTool;
   const standingOrderTool = adaptToolForEngine(makeStandingOrderTool(context), enrich) as EngineTool;
   const watcherTool = adaptToolForEngine(makeWatcherTool(context), enrich) as EngineTool;
   const browserTool = adaptToolForEngine(makeBrowserTool(context), enrich) as EngineTool;
@@ -502,7 +503,7 @@ export async function buildEngineTools(
   const connectorsTool = adaptToolForEngine(makeConnectorsTool(() => context.workspace), enrich) as EngineTool;
   // Experimental Facebook Marketplace (deferred, loaded with ToolSearch). ARES_MARKETPLACE=0 keeps it out of the catalog entirely.
   const marketplaceTools = marketplaceEnabled() ? [adaptToolForEngine(makeMarketplaceTool(), enrich) as EngineTool] : [];
-  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, agentsTool, roomsTool, openTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool, ...marketplaceTools];
+  const all = [...workerTools, livingMindTool, estateTool, pointMapTool, agentsTool, roomsTool, openTool, workspaceTool, connectorsTool, standingOrderTool, watcherTool, operatorTool, browserTool, conductorTool, codingBackendTool, skillHubTool, ...marketplaceTools];
   // Connected MCP servers' tools ride in this same array, refilled in place
   // whenever a connector changes — the engine reads the array every turn.
   liveMcpTools.attach(all);
@@ -657,6 +658,7 @@ import { makePointMapTool } from "./pointMapTool.js";
 import { makeAgentsTool } from "./agentsTool.js";
 import { makeRoomsTool } from "./roomsTool.js";
 import { makeOpenTool } from "./openTool.js";
+import { makeWorkspaceTool } from "./workspaceTool.js";
 import { agentMemoryScope, agentOfSession } from "./agentScope.js";
 import { liveMcpTools, makeConnectorsTool } from "./mcpTools.js";
 

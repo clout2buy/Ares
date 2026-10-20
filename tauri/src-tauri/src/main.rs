@@ -987,6 +987,8 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // People directory: usernames, lookup, invites (daemon/directory.ts).
     "directory_status", "directory_claim", "directory_profile", "directory_search",
     "directory_invite", "directory_dm", "directory_group", "directory_ack", "directory_url",
+    // Workspaces: the owner's VPS boxes for agents (daemon/workspaces.ts).
+    "workspaces_list", "workspace_add", "workspace_test", "workspace_setup", "workspace_remove",
 ];
 
 #[tauri::command]

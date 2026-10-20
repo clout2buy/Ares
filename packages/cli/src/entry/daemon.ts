@@ -78,6 +78,8 @@ import { DesktopRooms, RoomError } from "./daemon/rooms.js";
 import { DesktopDirectory, DirectoryError } from "./daemon/directory.js";
 import { setRoomsHost } from "./roomScope.js";
 import { setOpenHost } from "./openTool.js";
+import { DesktopWorkspaces, WorkspaceError, workFolder } from "./daemon/workspaces.js";
+import { setWorkspaceHost } from "./workspaceTool.js";
 import { agentOfSession, setAgentsHost } from "./agentScope.js";
 import { agentMemories, exportAgentMemory, forgetAgentMemory, handMemories } from "./agentMemory.js";
 import { currentSurface, setProcessSurface, stampSessionIdentity, tenantFromWire } from "./sessionSurface.js";
@@ -1068,6 +1070,45 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return [];
   });
   setRoomsHost(desktopRooms.host());
+  // ─── Workspaces: the owner's VPS boxes (daemon/workspaces.ts) ────────────
+  const desktopWorkspaces = new DesktopWorkspaces({
+    home: live.context.home,
+    emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n"),
+  });
+  await desktopWorkspaces.load().catch(() => []);
+  const workspaceFor = (sid: string): { id: string; label: string; folder: string; host: string } => {
+    const room = desktopRooms.roomOfSession(sid);
+    const agent = desktopAgents.agentForSession(sid);
+    const all = desktopWorkspaces.list();
+    const id = room?.workspaceId ?? agent?.workspaceId ?? (all.length === 1 ? all[0]!.id : undefined);
+    const ws = id ? desktopWorkspaces.get(id) : undefined;
+    if (!ws) {
+      throw new WorkspaceError(all.length === 0
+        ? "your owner hasn't added a VPS yet — they can in Settings → Workspaces"
+        : "no VPS is picked for this — your owner can pick one for you (your profile) or for the room (room settings)");
+    }
+    return { id: ws.id, label: ws.label, host: ws.host, folder: workFolder(room ? room.name : agent?.name ?? "ares") };
+  };
+  setWorkspaceHost({
+    resolve: (sid) => workspaceFor(sid),
+    run: async (sid, command, timeoutMs) => {
+      const w = workspaceFor(sid);
+      const out = await desktopWorkspaces.exec(w.id, command, { folder: w.folder, timeoutMs });
+      return { ...out, label: w.label, folder: w.folder };
+    },
+    put: async (sid, localPath, remoteName) => {
+      const w = workspaceFor(sid);
+      const abs = path.resolve(live.context.workspace, localPath);
+      const out = await desktopWorkspaces.put(w.id, abs, remoteName, w.folder);
+      return { ok: out.code === 0, ...(out.code === 0 ? {} : { error: (out.stderr || out.stdout).trim().slice(0, 300) }), label: w.label, folder: w.folder };
+    },
+    get: async (sid, remoteName, localPath) => {
+      const w = workspaceFor(sid);
+      const dest = path.resolve(live.context.workspace, localPath ?? path.join("workspaces", w.folder, remoteName));
+      const out = await desktopWorkspaces.get_(w.id, remoteName, w.folder, dest);
+      return { ok: out.code === 0, path: dest, ...(out.code === 0 ? {} : { error: (out.stderr || out.stdout).trim().slice(0, 300) }) };
+    },
+  });
   setOpenHost({
     open: async (sid, url) => {
       if (!(await desktopRooms.mayOpen(sid, url))) {
@@ -2630,6 +2671,38 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           }
         } catch (error) {
           out({ type: "room_error", command: kind, ...(roomId ? { roomId } : {}), error: error instanceof Error ? error.message : String(error) });
+        }
+        continue;
+      }
+      // ─── Workspaces (VPS) ───────────────────────────────────────────────
+      if (
+        command.type === "workspaces_list" ||
+        command.type === "workspace_add" ||
+        command.type === "workspace_test" ||
+        command.type === "workspace_setup" ||
+        command.type === "workspace_remove"
+      ) {
+        const kind = command.type;
+        const out = (payload: Record<string, unknown>) => process.stdout.write(JSON.stringify(payload) + "\n");
+        const wid = cleanCommandId(command.id);
+        try {
+          if (kind === "workspaces_list") out({ type: "workspaces_list", workspaces: await desktopWorkspaces.load() });
+          else if (kind === "workspace_add") {
+            const ws = await desktopWorkspaces.add((command as { workspace?: Record<string, unknown> }).workspace ?? {});
+            out({ type: "workspace_added", workspace: ws });
+          } else {
+            if (!wid) throw new WorkspaceError(`${kind} requires id`);
+            if (kind === "workspace_remove") {
+              await desktopWorkspaces.remove(wid);
+              out({ type: "workspaces_list", workspaces: desktopWorkspaces.list() });
+            } else {
+              out({ type: "workspace_busy", id: wid, step: kind === "workspace_setup" ? "setup" : "test" });
+              const ws = kind === "workspace_setup" ? await desktopWorkspaces.setUp(wid) : await desktopWorkspaces.test(wid);
+              out({ type: "workspace_checked", workspace: ws });
+            }
+          }
+        } catch (error) {
+          out({ type: "workspace_error", command: kind, ...(wid ? { id: wid } : {}), error: error instanceof Error ? error.message : String(error) });
         }
         continue;
       }

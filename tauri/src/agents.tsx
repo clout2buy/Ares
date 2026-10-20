@@ -19,6 +19,8 @@ export interface AgentVm {
   provider: string;
   model: string;
   chatModel?: string;
+  /** Its default VPS (Settings → Workspaces). */
+  workspaceId?: string;
   reasoningLevel?: string;
   instructions: string;
   /** Standing rules (every chat and room seat). */
@@ -45,6 +47,8 @@ export interface AgentDraft {
   rules: string;
   /** The fast model it chats on in rooms ("" = the provider's fast default). */
   chatModel: string;
+  /** Its default VPS ("" = none / the only one). */
+  workspaceId: string;
 }
 
 /** The colours the phone app offers, so an agent looks the same on both. */
@@ -71,7 +75,7 @@ export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string
 ];
 
 export function blankDraft(provider: string, model: string): AgentDraft {
-  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "", chatModel: "" };
+  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "", chatModel: "", workspaceId: "" };
 }
 
 export function draftOf(agent: AgentVm): AgentDraft {
@@ -84,6 +88,7 @@ export function draftOf(agent: AgentVm): AgentDraft {
     instructions: agent.instructions,
     rules: (agent.rules ?? []).join("\n"),
     chatModel: agent.chatModel ?? "",
+    workspaceId: agent.workspaceId ?? "",
   };
 }
 
@@ -428,6 +433,7 @@ export function AgentEditor({
   onMemoryHand,
   onMemoryExport,
   onMemoryForget,
+  workspaces = [],
 }: {
   initial: AgentDraft;
   /** Editing this agent (vs creating one). */
@@ -446,6 +452,8 @@ export function AgentEditor({
   onMemoryHand?: (from: string, about: string) => void;
   onMemoryExport?: () => void;
   onMemoryForget?: (memoryId: string) => void;
+  /** The owner's VPS boxes, for "works on". */
+  workspaces?: Array<{ id: string; label: string }>;
 }) {
   const [draft, setDraft] = useState<AgentDraft>(initial);
   const [showIdeas, setShowIdeas] = useState(false);
@@ -569,6 +577,16 @@ export function AgentEditor({
           <input value={draft.chatModel} maxLength={160} spellCheck={false} placeholder={draft.provider === "anthropic" ? "claude-haiku-5-5 (fast default)" : `${draft.model || "same as above"}`} onChange={(e) => set("chatModel", e.target.value)} />
           <em className="agentFieldHint">In rooms they chat on this fast model and hand real work (building, testing) to their full model above. Leave empty for the fast default.</em>
         </label>
+
+        {workspaces.length ? (
+          <label className="agentField">
+            <span>Works on (VPS)</span>
+            <select value={draft.workspaceId} onChange={(e) => set("workspaceId", e.target.value)}>
+              <option value="">{workspaces.length === 1 ? `${workspaces[0]!.label} (the only one)` : "No VPS"}</option>
+              {workspaces.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+            </select>
+          </label>
+        ) : null}
 
         <label className="agentField">
           <span>Standing rules — one per line</span>

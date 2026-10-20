@@ -117,6 +117,8 @@ export interface Room {
   /** Local agent id → its WORK thread for this room: real work handed off
    *  from the seat (Rooms work), run on the agent's full model. */
   workThreads?: Record<string, string>;
+  /** The VPS THIS install's agents use for this room (a workspaces.json id). */
+  workspaceId?: string;
   /** Highest message seq appended (the host numbers them). */
   seq: number;
   createdAt: string;
@@ -316,6 +318,7 @@ export function normalizeRoom(raw: unknown): Room | null {
     guests: Array.isArray(r.guests) ? r.guests.filter((g): g is RoomGuest => !!g && typeof g === "object" && typeof (g as RoomGuest).id === "string" && typeof (g as RoomGuest).tokenHash === "string") : [],
     threads,
     ...(Object.keys(workThreads).length ? { workThreads } : {}),
+    ...(str(r.workspaceId) ? { workspaceId: str(r.workspaceId) } : {}),
     seq: typeof r.seq === "number" && Number.isFinite(r.seq) ? Math.max(0, Math.floor(r.seq)) : 0,
     createdAt: str(r.createdAt) ?? now,
     updatedAt: str(r.updatedAt) ?? now,

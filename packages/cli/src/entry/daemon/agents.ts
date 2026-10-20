@@ -47,6 +47,8 @@ export interface AgentWire {
   model: string;
   /** The fast model it chats on in rooms. */
   chatModel?: string;
+  /** Its default VPS. */
+  workspaceId?: string;
   reasoningLevel?: string;
   instructions: string;
   /** Standing rules (every chat and room seat). */
@@ -69,6 +71,7 @@ export interface AgentSpec {
   provider?: unknown;
   model?: unknown;
   chatModel?: unknown;
+  workspaceId?: unknown;
   reasoningLevel?: unknown;
   instructions?: unknown;
   rules?: unknown;
@@ -116,6 +119,7 @@ export function agentToWire(p: Persona, avatar?: string): AgentWire {
     provider: p.provider,
     model: p.model,
     ...(p.chatModel ? { chatModel: p.chatModel } : {}),
+    ...(p.workspaceId ? { workspaceId: p.workspaceId } : {}),
     ...(p.reasoningLevel ? { reasoningLevel: p.reasoningLevel } : {}),
     instructions: p.instructions,
     rules: [...(p.rules ?? [])],
@@ -234,6 +238,7 @@ export class DesktopAgents {
     if (spec.provider !== undefined) out.provider = cleanString(spec.provider, 60);
     if (spec.model !== undefined) out.model = cleanString(spec.model, 160);
     if (spec.chatModel !== undefined) out.chatModel = cleanString(spec.chatModel, 160);
+    if (spec.workspaceId !== undefined) out.workspaceId = cleanString(spec.workspaceId, 40);
     if (spec.reasoningLevel !== undefined) out.reasoningLevel = cleanString(spec.reasoningLevel, 24);
     if (spec.instructions !== undefined) {
       if (typeof spec.instructions !== "string") throw new AgentError("instructions must be text");
@@ -283,7 +288,7 @@ export class DesktopAgents {
     const next: Persona = { ...existing, updatedAt: new Date(this.now()).toISOString() };
     for (const [k, v] of Object.entries(patch) as Array<[keyof Persona, unknown]>) {
       if (v === undefined) {
-        if (k === "emoji" || k === "color" || k === "reasoningLevel" || k === "chatModel") delete (next as Partial<Persona>)[k];
+        if (k === "emoji" || k === "color" || k === "reasoningLevel" || k === "chatModel" || k === "workspaceId") delete (next as Partial<Persona>)[k];
       } else (next as unknown as Record<string, unknown>)[k] = v;
     }
     await this.store.save(next);

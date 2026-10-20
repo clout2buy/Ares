@@ -149,6 +149,7 @@ import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
 import { Tutorial, markTutorialSeen, tutorialSeen } from "./tutorial";
 import { MsgTabBar, MsgTitlebar, type MsgTab } from "./shell";
+import { WorkspacesPane, type WorkspaceVm } from "./workspacesPane";
 import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
 import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
 import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AvatarStyleContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
@@ -753,6 +754,10 @@ function App() {
   const [acceptingInvite, setAcceptingInvite] = useState<DirectoryInviteVm | null>(null);
   /** Every seat session (an agent's private thread for a room): hidden from the chat lists. */
   const roomSeatIds = useMemo(() => new Set(rooms.flatMap((r) => [...Object.values(r.threads), ...Object.values(r.workThreads ?? {})])), [rooms]);
+  // ─── Workspaces: the owner's VPS boxes (workspacesPane.tsx) ───────────────
+  const [workspaces, setWorkspaces] = useState<WorkspaceVm[]>([]);
+  const [workspaceBusy, setWorkspaceBusy] = useState<Record<string, string>>({});
+  const [workspaceError, setWorkspaceError] = useState<string | undefined>();
   /** roomId → who on the OTHER machines is working right now. */
   const [roomPresence, setRoomPresence] = useState<Record<string, Array<{ key: string; name: string; activity: string }>>>({});
   /** Each agent's own memories, loaded when its profile opens. */
@@ -1749,6 +1754,7 @@ function App() {
     void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "rooms_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "directory_status" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "workspaces_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "agent_avatar", agentId: "ares" } }).catch(() => null);
     // The computer chip must show the REAL posture on a cold start, not the
     // "host" default it was initialised with.
@@ -2649,6 +2655,37 @@ function App() {
         }
         case "room_turn":
           return true;
+        case "workspaces_list": {
+          const list = (e as unknown as { workspaces?: WorkspaceVm[] }).workspaces;
+          if (Array.isArray(list)) setWorkspaces(list);
+          setWorkspaceError(undefined);
+          return true;
+        }
+        case "workspace_added": {
+          const w = (e as unknown as { workspace?: WorkspaceVm }).workspace;
+          if (w?.id) setWorkspaces((cur) => [...cur.filter((x) => x.id !== w.id), w]);
+          setWorkspaceError(undefined);
+          return true;
+        }
+        case "workspace_busy": {
+          const ev = e as unknown as { id?: string; step?: string };
+          if (ev.id) setWorkspaceBusy((b) => ({ ...b, [ev.id!]: ev.step ?? "test" }));
+          return true;
+        }
+        case "workspace_checked": {
+          const w = (e as unknown as { workspace?: WorkspaceVm }).workspace;
+          if (w?.id) {
+            setWorkspaces((cur) => cur.map((x) => (x.id === w.id ? w : x)));
+            setWorkspaceBusy((b) => { const n = { ...b }; delete n[w.id]; return n; });
+          }
+          return true;
+        }
+        case "workspace_error": {
+          const ev = e as unknown as { id?: string; error?: string };
+          setWorkspaceError(String(ev.error ?? "that didn't work"));
+          if (ev.id) setWorkspaceBusy((b) => { const n = { ...b }; delete n[ev.id!]; return n; });
+          return true;
+        }
         case "room_presence": {
           const id = String(e.roomId ?? "");
           const list = Array.isArray((e as { presence?: unknown }).presence) ? ((e as unknown as { presence: Array<{ key: string; name: string; activity: string }> }).presence) : [];
@@ -3174,7 +3211,7 @@ function App() {
           // Agents, rooms and the people directory hydrate here too: they were
           // only requested on daemon_ready, so a refresh showed no agents and an
           // unclaimed username even though both sat on disk (owner, 2026-10-20).
-          for (const type of ["sessions_list", "agents_list", "rooms_list", "directory_status", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
+          for (const type of ["sessions_list", "agents_list", "rooms_list", "directory_status", "workspaces_list", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -3604,7 +3641,7 @@ function App() {
 
   const saveAgent = (draft: AgentDraft) => {
     setAgentError(undefined);
-    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, chatModel: draft.chatModel.trim(), instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
+    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, chatModel: draft.chatModel.trim(), workspaceId: draft.workspaceId, instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
     const setPhotoLocal = (id: string, photo: string) =>
       setAgentPhotos((p) => {
         const n = { ...p };
@@ -5071,6 +5108,7 @@ function App() {
             photos={agentPhotos}
             typing={roomTypingOf(activeRoom)}
             remoteTyping={roomPresence[activeRoom.id] ?? []}
+            workspaces={workspaces.map((w) => ({ id: w.id, label: w.label }))}
             error={roomError}
             onSend={(text) => { setRoomError(undefined); daemonCmd({ type: "room_post", roomId: activeRoom.id, text }); }}
             onPause={(paused) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: { rules: { paused } } })}
@@ -5988,6 +6026,7 @@ function App() {
               else setAgentMemory((m) => ({ ...m, [editing.id]: { ...m[editing.id]!, total: m[editing.id]!.total - 1, items: m[editing.id]!.items.filter((x) => x.id !== memoryId) } }));
             }}
             onClose={() => { setAgentEditor(null); setAgentError(undefined); }}
+            workspaces={workspaces.map((w) => ({ id: w.id, label: w.label }))}
           />
         );
       })() : null}
@@ -6030,6 +6069,20 @@ function App() {
           voiceEngine={voiceEngine}
           onRepairVoice={repairVoice}
           onOpenModelBrowser={() => setModelPopOpen(true)}
+          workspacesSlot={
+            <WorkspacesPane
+              workspaces={workspaces}
+              busy={workspaceBusy}
+              error={workspaceError}
+              agents={agents}
+              photos={agentPhotos}
+              onAdd={(spec) => { setWorkspaceError(undefined); daemonCmd({ type: "workspace_add", workspace: spec }); }}
+              onTest={(id) => { setWorkspaceError(undefined); setWorkspaceBusy((b) => ({ ...b, [id]: "test" })); daemonCmd({ type: "workspace_test", id }); }}
+              onSetup={(id) => { setWorkspaceError(undefined); setWorkspaceBusy((b) => ({ ...b, [id]: "setup" })); daemonCmd({ type: "workspace_setup", id }); }}
+              onRemove={(id) => daemonCmd({ type: "workspace_remove", id })}
+              onAgentWorkspace={(agentId, workspaceId) => daemonCmd({ type: "agent_update", agentId, agent: { workspaceId } })}
+            />
+          }
           openaiAuth={openaiAuth}
           onOpenaiSignIn={startOpenaiSignIn}
           kimiAuth={kimiAuth}
@@ -10936,7 +10989,7 @@ function ModelDetail({ model, selected, onUse, onBack }: { model: ModelOption; s
   );
 }
 
-type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "mind" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about";
+type SettingsTab = "account" | "model" | "appearance" | "voice" | "skills" | "plugins" | "mind" | "usage" | "routing" | "keys" | "consciousness" | "permissions" | "advanced" | "updates" | "about" | "workspaces";
 
 interface SkillSurface {
   id: string;
@@ -11047,10 +11100,37 @@ interface UsageStats {
   providers?: Array<{ provider: string; tokensIn: number; tokensOut: number; cacheReadTokens: number; calls: number; costUsd?: number }>;
 }
 
+/** The iPhone app's Settings: grouped rows, each with a coloured icon tile. */
+const SETTINGS_GROUPS: Array<{ label: string; tabs: SettingsTab[] }> = [
+  { label: "You", tabs: ["account"] },
+  { label: "Agents & models", tabs: ["model", "routing", "workspaces", "permissions", "keys"] },
+  { label: "Look & sound", tabs: ["appearance", "voice"] },
+  { label: "Abilities", tabs: ["skills", "plugins", "mind"] },
+  { label: "Ares", tabs: ["usage", "consciousness", "advanced", "updates", "about"] },
+];
+const SETTINGS_TILES: Record<SettingsTab, { icon: string; bg: string }> = {
+  account: { icon: "@", bg: "#0a84ff" },
+  model: { icon: "✦", bg: "#7c5cff" },
+  routing: { icon: "⇄", bg: "#ff9f0a" },
+  workspaces: { icon: "▣", bg: "#30d158" },
+  permissions: { icon: "⛨", bg: "#5e6573" },
+  keys: { icon: "⚿", bg: "#ffb340" },
+  appearance: { icon: "◐", bg: "#0a84ff" },
+  voice: { icon: "◉", bg: "#ff375f" },
+  skills: { icon: "✚", bg: "#5856d6" },
+  plugins: { icon: "⚙", bg: "#8e8e93" },
+  mind: { icon: "✺", bg: "#ff5fa2" },
+  usage: { icon: "▤", bg: "#30b0c7" },
+  consciousness: { icon: "◎", bg: "#af52de" },
+  advanced: { icon: "⋯", bg: "#636366" },
+  updates: { icon: "★", bg: "#ff7a1a" },
+  about: { icon: "i", bg: "#636366" },
+};
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = [
   { id: "model", label: "Model", glyph: "task" },
   { id: "account", label: "Ares Account", glyph: "dot" },
   { id: "routing", label: "Routing", glyph: "search" },
+  { id: "workspaces", label: "Workspaces (VPS)", glyph: "shell" },
   { id: "appearance", label: "Appearance", glyph: "edit" },
   { id: "voice", label: "Voice", glyph: "dot" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
@@ -11597,7 +11677,10 @@ function Settings({
   kimiAuth,
   onKimiSignIn,
   onLaunchLivingSurface,
+  workspacesSlot,
 }: {
+  /** Settings → Workspaces, built by the app (it owns the boxes' state). */
+  workspacesSlot?: React.ReactNode;
   recoveryMode: { mode: "ask" | "auto" | "never"; pinnedByEnv: boolean };
   setRecoveryMode: React.Dispatch<React.SetStateAction<{ mode: "ask" | "auto" | "never"; pinnedByEnv: boolean }>>;
   prefs: Prefs;
@@ -11681,10 +11764,21 @@ function Settings({
             <div className="settingsHeroMark" aria-hidden="true" />
             <strong>Settings</strong>
           </div>
-          {SETTINGS_TABS.map((t) => (
-            <button key={t.id} data-on={tab === t.id ? "1" : "0"} onClick={() => setTab(t.id)}>
-              <i className="glyph" data-glyph={t.glyph} /> {t.label}
-            </button>
+          {SETTINGS_GROUPS.map((g) => (
+            <div key={g.label} className="setGroup">
+              <div className="setGroupLabel">{g.label}</div>
+              {g.tabs.map((id) => {
+                const t = SETTINGS_TABS.find((x) => x.id === id);
+                if (!t) return null;
+                const tile = SETTINGS_TILES[id];
+                return (
+                  <button key={t.id} data-tab={t.id} data-on={tab === t.id ? "1" : "0"} onClick={() => setTab(t.id)}>
+                    <span className="setTile" style={{ background: tile.bg }} aria-hidden="true">{tile.icon}</span>
+                    <i className="glyph" data-glyph={t.glyph} /> {t.label}
+                  </button>
+                );
+              })}
+            </div>
           ))}
           <div className="settingsNavFoot">
             <button className="ghost" onClick={closeSettings}>
@@ -11694,6 +11788,7 @@ function Settings({
         </aside>
 
         <div className="settingsMain">
+          {tab === "workspaces" ? workspacesSlot : null}
           {tab === "model" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">Starting up</h3>

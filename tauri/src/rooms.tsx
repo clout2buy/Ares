@@ -41,6 +41,7 @@ export interface RoomRulesVm {
   maxAgentRun: number;
   paused: boolean;
   checkinMinutes: number;
+  lead?: string;
 }
 export interface RoomVm {
   id: string;
@@ -57,6 +58,8 @@ export interface RoomVm {
   guests: Array<{ id: string; name: string; joinedAt: string; lastSeenAt?: string }>;
   threads: Record<string, string>;
   workThreads?: Record<string, string>;
+  /** The VPS this install's agents use for the room. */
+  workspaceId?: string;
   seq: number;
   folder: string;
   createdAt: string;
@@ -269,6 +272,7 @@ export function RoomView({
   photos,
   typing,
   remoteTyping = [],
+  workspaces = [],
   error,
   onSend,
   onPause,
@@ -293,6 +297,8 @@ export function RoomView({
   typing: string[];
   /** Agents on OTHER machines working right now (key = member key). */
   remoteTyping?: Array<{ key: string; name: string; activity: string }>;
+  /** The owner's VPS boxes, for "this room works on". */
+  workspaces?: Array<{ id: string; label: string }>;
   error?: string;
   onSend: (text: string) => void;
   onPause: (paused: boolean) => void;
@@ -302,8 +308,8 @@ export function RoomView({
   onInvite: () => void;
   onJob: (spec: { id?: string; title?: string; owner?: string; status?: string; due?: string; link?: string; note?: string; remove?: boolean }) => void;
   onNotes: (notes: string) => void;
-  onRules: (rules: Partial<RoomRulesVm>) => void;
-  onRename: (patch: { name?: string; emoji?: string; color?: string; purpose?: string }) => void;
+  onRules: (rules: Partial<RoomRulesVm> & { lead?: string }) => void;
+  onRename: (patch: { name?: string; emoji?: string; color?: string; purpose?: string; workspaceId?: string }) => void;
   onDelete: () => void;
   onRemoveGuest: (guestId: string) => void;
   /** Open an agent's seat (its private thread) to see its reasoning. */
@@ -582,7 +588,7 @@ export function RoomView({
         {panel === "settings" ? (
           <aside className="roomPanel">
             <div className="roomPanelHead"><strong>Room</strong><button onClick={() => setPanel(null)} aria-label="Close">×</button></div>
-            <RoomSettings room={room} onRename={onRename} onRules={onRules} onDelete={onDelete} />
+            <RoomSettings room={room} workspaces={workspaces} onRename={onRename} onRules={onRules} onDelete={onDelete} />
           </aside>
         ) : null}
       </div>
@@ -632,7 +638,7 @@ function NotesEditor({ value, onSave }: { value: string; onSave: (v: string) => 
   );
 }
 
-function RoomSettings({ room, onRename, onRules, onDelete }: { room: RoomVm; onRename: (patch: { name?: string; emoji?: string; color?: string; purpose?: string }) => void; onRules: (rules: Partial<RoomRulesVm>) => void; onDelete: () => void }) {
+function RoomSettings({ room, workspaces, onRename, onRules, onDelete }: { room: RoomVm; workspaces: Array<{ id: string; label: string }>; onRename: (patch: { name?: string; emoji?: string; color?: string; purpose?: string; workspaceId?: string }) => void; onRules: (rules: Partial<RoomRulesVm> & { lead?: string }) => void; onDelete: () => void }) {
   const [name, setName] = useState(room.name);
   const [purpose, setPurpose] = useState(room.purpose);
   const [confirm, setConfirm] = useState(false);
@@ -652,6 +658,20 @@ function RoomSettings({ room, onRename, onRules, onDelete }: { room: RoomVm; onR
         </div>
       </div>
       {dirty ? <button className="agentPrimary" onClick={() => onRename({ name: name.trim(), purpose: purpose.trim() })}>Save</button> : null}
+      <label className="agentField">
+        <span>Lead</span>
+        <select value={room.rules.lead ?? ""} onChange={(e) => onRules({ lead: e.target.value })} disabled={room.remote}>
+          <option value="">The first agent</option>
+          {room.members.filter((m) => m.kind === "agent").map((m) => <option key={memberKey(m)} value={memberKey(m)}>{m.name}</option>)}
+        </select>
+      </label>
+      <label className="agentField">
+        <span>Your agents work on (VPS)</span>
+        <select value={room.workspaceId ?? ""} onChange={(e) => onRename({ workspaceId: e.target.value })} disabled={workspaces.length === 0}>
+          <option value="">{workspaces.length === 0 ? "Add a VPS in Settings → Workspaces" : "Their own box"}</option>
+          {workspaces.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+        </select>
+      </label>
       {!room.remote ? (
         <>
           <label className="agentField">

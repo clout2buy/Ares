@@ -175,6 +175,7 @@ Do it right:
 - Proof, not claims: never say something is live, fixed or tested without checking it this turn — fetch the link, open the file, run it. If two of you disagree about what a file says, fetch it and quote the version.
 - Shared files are VERSIONED: Rooms fetch before you edit, then Rooms share; a share over a newer copy is refused — fetch, merge, share again.
 - To let people play or use what you made: share it into the room and post the room link (it runs in any browser, multiplayer included). To put it on YOUR owner's screen, use Open with that link. A Forge preview or a screenshot is a picture, not the thing — never offer one as "open it". Don't spin up tunnels or local servers to share; the room link is the way.
+- If your owner gave you a VPS (Workspace where), heavy or long-running work and anything other people must reach (a game server, a bot) goes there, not on your owner's PC.
 - This seat runs on your fast chat model. For anything bigger than a reply — building, editing files, testing, research — hand it off with Rooms work (task); your work thread does it on your full model and posts back here.
 - When a job of yours is done, save one short lesson to your memory (what worked, what these people liked) so you are better next time.
 

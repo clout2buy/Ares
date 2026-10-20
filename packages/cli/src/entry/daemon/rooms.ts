@@ -87,6 +87,7 @@ export interface RoomWire {
   guests: Array<{ id: string; name: string; joinedAt: string; lastSeenAt?: string }>;
   threads: Record<string, string>;
   workThreads: Record<string, string>;
+  workspaceId?: string;
   seq: number;
   folder: string;
   createdAt: string;
@@ -146,6 +147,7 @@ export function roomToWire(room: Room, workspace: string): RoomWire {
     guests: room.guests.map(({ id, name, joinedAt, lastSeenAt }) => ({ id, name, joinedAt, ...(lastSeenAt ? { lastSeenAt } : {}) })),
     threads: room.threads,
     workThreads: room.workThreads ?? {},
+    ...(room.workspaceId ? { workspaceId: room.workspaceId } : {}),
     seq: room.seq,
     folder: path.join(workspace, "rooms", slug(room.name)),
     createdAt: room.createdAt,
@@ -374,7 +376,7 @@ export class DesktopRooms {
     return room;
   }
 
-  async update(id: string, spec: { name?: unknown; emoji?: unknown; color?: unknown; purpose?: unknown; rules?: unknown; notes?: unknown }): Promise<Room> {
+  async update(id: string, spec: { name?: unknown; emoji?: unknown; color?: unknown; purpose?: unknown; rules?: unknown; notes?: unknown; workspaceId?: unknown }): Promise<Room> {
     const room = this.store.get(id);
     if (!room) throw new RoomError("unknown room");
     const next: Room = { ...room, updatedAt: this.stamp() };
@@ -388,6 +390,7 @@ export class DesktopRooms {
     if (spec.purpose !== undefined) next.purpose = clean(spec.purpose, ROOM_PURPOSE_MAX) ?? "";
     if (spec.notes !== undefined) next.notes = clean(spec.notes, ROOM_NOTES_MAX) ?? "";
     if (spec.rules !== undefined) next.rules = normalizeRules(spec.rules, room.rules);
+    if (spec.workspaceId !== undefined) { const w = clean(spec.workspaceId, 40); if (w) next.workspaceId = w; else delete next.workspaceId; }
     await this.store.save(next);
     await this.ensureFolder(next);
     if (room.rules.paused !== next.rules.paused) await this.system(next, next.rules.paused ? `${this.me.name} paused the agents.` : `${this.me.name} resumed the agents.`);
@@ -777,6 +780,13 @@ export class DesktopRooms {
       timer.unref?.();
     }
     return sid;
+  }
+
+  /** The room this session works for (a seat or a room work thread). */
+  roomOfSession(sessionId: string): Room | undefined {
+    const seat = this.seats.get(sessionId);
+    if (seat) return this.store.get(seat.roomId);
+    return this.store.list().find((r) => Object.values(r.workThreads ?? {}).includes(sessionId));
   }
 
   /** Is this session a room WORK thread (not a seat)? */

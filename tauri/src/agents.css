@@ -637,3 +637,34 @@
 .agentRowWrap:has(.session[data-giving="1"]) { position: relative; z-index: 60; }
 /* the skins clip .sessionList; an open "give to" menu must spill out of it */
 .ares.ares .sessionList:has(.session[data-giving="1"]) { overflow: visible; }
+
+/* ── chats render (owner, 2026-10-20: "how the chats render is broken") ──
+   backdrop-filter on anything inside a scrolling thread makes Chromium (and so
+   WebView2) paint bubbles BLANK — the element is there, the pixels are not.
+   Threads are solid colour; blur stays on chrome outside the scroller. */
+.ares .chat,
+.ares .roomThread,
+.ares .chat .turn,
+.ares .chat .turn *,
+.ares .chat > *,
+.ares .roomThread * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+/* an agent turn that only held hidden machinery (thinking, a tool) left a
+   lone face floating in the thread */
+.ares.ares .chat[data-imsg="1"] > .turn.assistant:not(:has(.turnBody > .prose)) { display: none; }
+/* iMessage: the face sits on the LAST bubble of a run, not every one */
+.ares.ares .chat[data-imsg="1"] > .turn.assistant:has(+ .turn.assistant .turnBody > .prose) .imsgFace { visibility: hidden; }
+.ares.ares .chat[data-imsg="1"] > .turn.assistant:has(+ .turn.assistant .turnBody > .prose) .turnBody > .prose { border-bottom-left-radius: 20px; }
+
+/* ── the iPhone app's avatar: a glass tile in the agent's colour ─────── */
+.agentAvatar.agentTile {
+  display: grid; place-items: center;
+  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--agent) 60%, transparent);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--agent) 60%, transparent) 0%, color-mix(in srgb, var(--agent) 14%, transparent) 100%),
+    color-mix(in srgb, var(--agent) 20%, #14151c);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .32), inset 0 -2px 4px rgba(0, 0, 0, .28), 0 5px 16px -6px color-mix(in srgb, var(--agent) 55%, transparent);
+}
+.agentTileEmoji { line-height: 1; transform: translateY(1px); filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .25)); }
+.agentTileInitial { font-weight: 700; letter-spacing: .01em; line-height: 1; }
+.agentFieldHint { font-size: 11.5px; font-style: normal; color: var(--faint); line-height: 1.4; }

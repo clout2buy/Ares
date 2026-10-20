@@ -40,6 +40,22 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.60.0",
+    date: "October 2026",
+    title: "Like the phone",
+    tagline: "The desktop finally looks and feels like the iPhone app, and agents in group chats keep the conversation going and remember your rules.",
+    highlights: [
+      { icon: "💬", title: "Chats render right", blurb: "Messages in agent chats no longer go blank. Your bubbles, their replies and their faces show up every time.", tag: "Fixed" },
+      { icon: "🔁", title: "Agents keep talking", blurb: "In a group chat, when another agent answers yours, your agent hears it and replies — no @ needed. It stops when a person speaks or someone's done.", tag: "Fixed" },
+      { icon: "📌", title: "Standing rules", blurb: "Give an agent rules in its profile, or just say \"from now on…\". They follow it into every chat and every group chat.", tag: "New" },
+      { icon: "🧭", title: "Agents know their rooms", blurb: "Ask an agent about a group chat from its own chat and it can read the room and speak there for you.", tag: "New" },
+      { icon: "🖼️", title: "Profile pictures work", blurb: "Pick a PNG, JPEG or WebP and it sticks. Photos used to be rejected as \"not an image\".", tag: "Fixed" },
+      { icon: "📱", title: "The phone's tab bar", blurb: "Chats, Now, Feed, Made and Devices in one bar at the bottom, each with its own light. HELM is out of the way.", tag: "New" },
+      { icon: "🪟", title: "A real title bar", blurb: "Clean search, Forge and settings buttons, plus minimize, maximize and close that do what they say.", tag: "Polished" },
+      { icon: "🟧", title: "Agents look like the app", blurb: "Agents wear their emoji on a glass tile in their colour, the same faces as your iPhone. Profiles are cleaner too.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.59.1",
     date: "October 2026",
     title: "Stays put",

@@ -963,3 +963,39 @@
 .ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button[data-on="1"] .medallion { color: #fff; }
 .ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button:not([data-on="1"]):hover { background: rgba(255, 255, 255, 0.08); }
 .ares.ares[data-style="modern"][data-surface="messages"] .rail .railNav button em { top: 2px; right: 2px; font-size: 9px; }
+
+/* ── sheets, iPhone-style: sentence-case labels, filled rounded fields ─── */
+.ares.ares[data-style="modern"][data-surface="messages"] .agentSheet { gap: 14px; padding: 22px 22px 18px; border-radius: 26px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetHead h3 { font: 800 22px/1.15 var(--display); letter-spacing: -.4px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField > span,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentSubLabel,
+.ares.ares[data-style="modern"][data-surface="messages"] .roomPanelAdd > span {
+  font: 600 13px/1.2 var(--font);
+  letter-spacing: -.1px;
+  text-transform: none;
+  color: var(--muted);
+}
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField input,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField select,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField textarea {
+  padding: 11px 13px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, .08);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField input:focus,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField select:focus,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentField textarea:focus { border-color: rgba(10, 132, 255, .7); box-shadow: 0 0 0 3px rgba(10, 132, 255, .15); }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid button { border-radius: 10px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid button[data-on="1"] { border-color: rgba(10, 132, 255, .8); background: rgba(10, 132, 255, .16); }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentPhotoEdit { background: #0a84ff; color: #fff; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetFoot { padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .06); }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentDanger { border-radius: 999px; background: rgba(255, 92, 92, .16); color: #ff8585; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentPrimary,
+.ares.ares[data-style="modern"][data-surface="messages"] .agentGhost { border-radius: 999px; padding: 9px 16px; }
+/* the chat list rows: iOS proportions */
+.ares.ares[data-style="modern"][data-surface="messages"] .agentRow { padding: 10px 10px; gap: 12px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop strong { font: 700 15.5px/1.2 var(--font); letter-spacing: -.2px; }
+.ares.ares[data-style="modern"][data-surface="messages"] .agentRowPreview { font-size: 13px; line-height: 1.35; }

@@ -148,9 +148,10 @@ import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
 import { Tutorial, markTutorialSeen, tutorialSeen } from "./tutorial";
+import { MsgTabBar, MsgTitlebar, type MsgTab } from "./shell";
 import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
 import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
-import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
+import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AvatarStyleContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -3586,7 +3587,7 @@ function App() {
 
   const saveAgent = (draft: AgentDraft) => {
     setAgentError(undefined);
-    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, instructions: draft.instructions };
+    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
     const setPhotoLocal = (id: string, photo: string) =>
       setAgentPhotos((p) => {
         const n = { ...p };
@@ -4379,6 +4380,7 @@ function App() {
   return (
     <StyleCtx.Provider value={prefs.uiStyle}>
     <AgentPhotoContext.Provider value={agentPhotos}>
+    <AvatarStyleContext.Provider value={prefs.surface === "messages" ? "tile" : "face"}>
     <div
       className="ares"
       data-daemon={daemon}
@@ -4557,6 +4559,22 @@ function App() {
         </defs>
       </svg>
 
+      {prefs.surface === "messages" ? (
+        <MsgTitlebar
+          daemon={daemon}
+          forgeOpen={forge.open}
+          credits={gatewayAccount?.connected ? gatewayAccount.balance_usd ?? 0 : undefined}
+          native={native}
+          onDrag={dragWindow}
+          onAccount={() => { setSettingsOpen(true); setSettingsTab("account"); }}
+          onSearch={() => setPaletteOpen(true)}
+          onForge={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "live" }))}
+          onSettings={() => setSettingsOpen(true)}
+          onMinimize={() => { void getCurrentWindow().minimize().catch(() => null); }}
+          onMaximize={() => void invoke("ares_window_toggle_maximize").catch(() => null)}
+          onClose={() => void invoke("ares_window_close").catch(() => null)}
+        />
+      ) : (
       <header className="titlebar" onMouseDown={dragWindow}>
         <button
           className="brand brandBtn"
@@ -4714,6 +4732,7 @@ function App() {
           ) : null}
         </div>
       </header>
+      )}
 
       <aside className="rail">
         <div className="railBrand" aria-hidden="true">ARES</div>
@@ -4725,6 +4744,24 @@ function App() {
           <Medallion glyph="new-session" tone="ember" /><svg className="cyberHome" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-4H8v4H4a1 1 0 0 1-1-1Z" /></svg><span className="primaryLabel">{selectedAgent ? `New chat with ${selectedAgent.name}` : "New session"}</span>
         </button>
 
+        {prefs.surface === "messages" ? (
+          <MsgTabBar
+            active={(view === "chat" ? "chat" : view === "now" ? "now" : view === "feed" ? "feed" : view === "artifacts" ? "made" : view === "aresos" ? "devices" : null) as MsgTab | null}
+            badges={{
+              chat: (agentUnread.length + roomUnread.length + directory.inbox.length) || undefined,
+              now: sessions.some((x) => x.items.some((it) => it.kind === "permission" && !it.decided)) ? "!" : undefined,
+            }}
+            live={{ now: sessions.some((x) => x.busy && !x.background) }}
+            onChange={(tab) => {
+              setForge((current) => ({ ...current, open: false }));
+              if (tab === "chat") setView("chat");
+              else if (tab === "now") setView("now");
+              else if (tab === "feed") setView("feed");
+              else if (tab === "made") setView("artifacts");
+              else { setView("aresos"); daemonCmd({ type: "remote_pcs" }); }
+            }}
+          />
+        ) : (
         <nav className="railNav">
           <button
             title="Chats"
@@ -4795,6 +4832,7 @@ function App() {
             {remotePcs.length > 0 ? <em>{remotePcs.length}</em> : null}
           </button>
         </nav>
+        )}
 
         <input
           className="railSearch"
@@ -4984,7 +5022,11 @@ function App() {
           <div>
             <h2>{activeAgent && (!active || active.title === "New session") ? activeAgent.name : active?.title ?? "Session"}</h2>
             <span>
-              {activeAgent ? `${activeAgent.name} · ${activeAgent.provider} / ${activeAgent.model}` : prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
+              {activeAgent
+                ? prefs.surface === "messages"
+                  ? active?.busy ? (active.activity && !/^(thinking|working|response committed|settling proposed actions)$/i.test(active.activity) ? active.activity : "working…") : "tap for profile"
+                  : `${activeAgent.name} · ${activeAgent.provider} / ${activeAgent.model}`
+                : prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
               {prefs.routingMode === "auto" && routedLanes.length > 0 ? ` · ${routedLanes.length} lane${routedLanes.length === 1 ? "" : "s"}` : ""}
             </span>
           </div>
@@ -6197,6 +6239,7 @@ function App() {
         </div>
       ) : null}
     </div>
+    </AvatarStyleContext.Provider>
     </AgentPhotoContext.Provider>
     </StyleCtx.Provider>
   );

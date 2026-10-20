@@ -20,6 +20,8 @@ export interface AgentVm {
   model: string;
   reasoningLevel?: string;
   instructions: string;
+  /** Standing rules (every chat and room seat). */
+  rules?: string[];
   threads: string[];
   /** Profile picture version (photos are fetched separately). */
   avatar?: string;
@@ -38,6 +40,8 @@ export interface AgentDraft {
   provider: string;
   model: string;
   instructions: string;
+  /** One rule per line. */
+  rules: string;
 }
 
 /** The colours the phone app offers, so an agent looks the same on both. */
@@ -64,7 +68,7 @@ export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string
 ];
 
 export function blankDraft(provider: string, model: string): AgentDraft {
-  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "" };
+  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "" };
 }
 
 export function draftOf(agent: AgentVm): AgentDraft {
@@ -75,6 +79,7 @@ export function draftOf(agent: AgentVm): AgentDraft {
     provider: agent.provider,
     model: agent.model,
     instructions: agent.instructions,
+    rules: (agent.rules ?? []).join("\n"),
   };
 }
 
@@ -93,6 +98,10 @@ export const AgentPhotoContext = createContext<Record<string, string>>({});
 /** The agent whose chat is on screen (null = plain Ares): the transcript
  *  renders iMessage-style, with this agent's face beside its replies. */
 export const AgentChatContext = createContext<AgentVm | null>(null);
+
+/** How a face is drawn: the living orb face, or the iPhone app's glass tile
+ *  (emoji or initial on the agent's colour). The Messages surface uses tiles. */
+export const AvatarStyleContext = createContext<"face" | "tile">("face");
 
 function hashOf(text: string): number {
   let h = 2166136261;
@@ -196,11 +205,27 @@ export function AgentAvatar({
   photo?: string;
 }) {
   const photos = useContext(AgentPhotoContext);
+  const avatarStyle = useContext(AvatarStyleContext);
   const isAres = !agent || agent.id === ARES_AGENT_ID;
   const id = agent?.id ?? ARES_AGENT_ID;
   const color = isAres ? "#c8794a" : agent!.color ?? AGENT_COLORS[0]!;
   const src = photo !== undefined ? photo : photos[id];
   const badge = !isAres && agent!.emoji && size >= 36 ? agent!.emoji : null;
+  if (avatarStyle === "tile" && !isAres && !src) {
+    const words = agent!.name.trim().split(/\s+/).filter(Boolean);
+    const initial = words.length > 1 ? (words[0]![0]! + words[words.length - 1]![0]!).toUpperCase() : (words[0]?.[0] ?? "?").toUpperCase();
+    return (
+      <span
+        className="agentAvatar agentTile"
+        data-busy={busy ? "1" : "0"}
+        title={title ?? agent!.name}
+        style={{ width: size, height: size, ["--agent" as string]: color }}
+      >
+        {agent!.emoji ? <span className="agentTileEmoji" style={{ fontSize: Math.round(size * 0.5) }}>{agent!.emoji}</span> : <span className="agentTileInitial" style={{ fontSize: Math.round(size * 0.42) }}>{initial}</span>}
+        {unread ? <i className="agentUnread" aria-label="new messages" /> : null}
+      </span>
+    );
+  }
   return (
     <span
       className="agentAvatar"
@@ -338,7 +363,7 @@ export function AgentList({
           <div key={id} className="agentRowWrap" data-on={on ? "1" : "0"} data-unread={r.unread && !on ? "1" : "0"}>
             <div className="agentRow" data-on={on ? "1" : "0"}>
               <button className="agentRowMain" onClick={() => onSelect(id)}>
-                <AgentAvatar agent={r.agent} size={38} busy={r.busy} unread={r.unread && !on} />
+                <AgentAvatar agent={r.agent} size={46} busy={r.busy} unread={r.unread && !on} />
                 <span className="agentRowText">
                   <span className="agentRowTop">
                     <strong>{r.agent?.name ?? "Ares"}</strong>
@@ -470,7 +495,7 @@ export function AgentEditor({
           <span>Profile picture</span>
           <div className="agentPhotoRow">
             <button className="agentGhost" onClick={() => fileRef.current?.click()}>{shownPhoto ? "Choose another photo" : "Upload a photo"}</button>
-            {shownPhoto ? <button className="agentGhost" onClick={() => set("photo", "")}>Use their generated face</button> : <em>No photo: they get their own animated face.</em>}
+            {shownPhoto ? <button className="agentGhost" onClick={() => set("photo", "")}>Use their generated face</button> : <em>No photo: they wear their emoji (or their face, in the other looks).</em>}
           </div>
           {photoErr ? <em className="agentFieldErr">{photoErr}</em> : null}
           <span className="agentSubLabel">Badge emoji (optional)</span>
@@ -511,6 +536,18 @@ export function AgentEditor({
             placeholder="You're my finance guy. Keep me posted when I get charged for anything over $50…"
             onChange={(e) => set("instructions", e.target.value)}
           />
+        </label>
+
+        <label className="agentField">
+          <span>Standing rules — one per line</span>
+          <textarea
+            value={draft.rules}
+            rows={3}
+            maxLength={6000}
+            placeholder={"In group chats, keep it to one line\nAlways @ the person you're answering"}
+            onChange={(e) => set("rules", e.target.value)}
+          />
+          <em className="agentFieldHint">They follow {draft.name.trim() || "them"} everywhere — every chat and every room. You can also just tell them "from now on…" and they'll save it here.</em>
         </label>
 
         {!existing ? (

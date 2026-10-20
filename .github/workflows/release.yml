@@ -53,8 +53,12 @@ jobs:
       # flaky under a full 16-way parallel run on a loaded runner — a release
       # gate that fails at random is a gate people learn to bypass. Raise this
       # back to the CI default once those assertions no longer race.
+      # scripts/test-gate.mjs: the full suite, then ONLY the failed files rerun
+      # alone; a real failure fails twice and still blocks the release, a flake
+      # passes with a ::warning:: naming it. Hung tests time out per test.
       - name: Test
-        run: node --import ./tests/_isolate-home.mjs --test --test-concurrency=2 tests/*.test.mjs
+        timeout-minutes: 60
+        run: node scripts/test-gate.mjs
 
       # Bundle the embedded node + CLI runtime into tauri/src-tauri/runtime/.
       # tauri-build validates this resource path exists at compile time, and the
@@ -137,8 +141,12 @@ jobs:
       # flaky under a full 16-way parallel run on a loaded runner — a release
       # gate that fails at random is a gate people learn to bypass. Raise this
       # back to the CI default once those assertions no longer race.
+      # scripts/test-gate.mjs: the full suite, then ONLY the failed files rerun
+      # alone; a real failure fails twice and still blocks the release, a flake
+      # passes with a ::warning:: naming it. Hung tests time out per test.
       - name: Test
-        run: node --import ./tests/_isolate-home.mjs --test --test-concurrency=2 tests/*.test.mjs
+        timeout-minutes: 60
+        run: node scripts/test-gate.mjs
 
       - name: Build embedded runtime
         run: pnpm --filter ares-tauri build:runtime

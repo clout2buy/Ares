@@ -238,7 +238,15 @@ export const PAGE_DRIVER_SOURCE = `(function(){
       case "eval": return safe(await (0, eval)(a.js));
       case "press": await press(a.keys, a.holdMs, a.repeat); return true;
       case "pointer": await pointer(a); return true;
-      case "clickText": var el = findText(a.query); if (!el) throw new Error("nothing on the page matches " + JSON.stringify(a.query)); await clickEl(el); return true;
+      case "clickText":
+        var el = findText(a.query);
+        if (!el) {
+          // Say WHY: a selector that matches a hidden element (a menu already
+          // closed) is a different situation from one that isn't there.
+          var hidden = (function(){ try { return document.querySelector(a.query); } catch (e) { return null; } })();
+          throw new Error(hidden ? JSON.stringify(a.query) + " is on the page but not visible right now (hidden or zero-size) — check the page state" : "nothing on the page matches " + JSON.stringify(a.query));
+        }
+        await clickEl(el); return true;
       case "clickRole": var er = findRole(a.role, a.name); if (!er) throw new Error("no " + a.role + " named " + JSON.stringify(a.name)); await clickEl(er); return true;
       case "fill": var f = a.selector ? (function(){ try { return document.querySelector(a.selector); } catch (e) { return null; } })() : findField(a.label); if (!f) throw new Error("no field " + JSON.stringify(a.selector || a.label)); setValue(f, a.value); return true;
       case "tree": return tree();

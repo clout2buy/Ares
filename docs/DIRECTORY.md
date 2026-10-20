@@ -66,10 +66,9 @@ Deployed 2026-10-19 on doingbox as `ares-directory.service` (DynamicUser,
 `/opt/ares-directory` — the three dist files `directoryServer.js`,
 `phoneRooms.js`, `rooms.js` plus a `{"type":"module"}` package.json). Public at
 **https://people.mistiqueai.com** (ingress above the wildcard, DNS routed with
-`cloudflared tunnel route dns`). `people.oruna.org` is in the ingress too but
-its DNS is not routed yet (`route dns` can only write the mistiqueai.com zone
-from the box's cert; it left a stray `people.oruna.org.mistiqueai.com` CNAME to
-delete in the dashboard). To update: rebuild, `scp` the three files to
+`cloudflared tunnel route dns`); that is the only hostname (an oruna.org alias
+was dropped). A stray `people.oruna.org.mistiqueai.com` CNAME from a mis-aimed
+`route dns` can be deleted in the Cloudflare dashboard. To update: rebuild, `scp` the three files to
 `/tmp`, `sudo cp` into `/opt/ares-directory`, `sudo systemctl restart
 ares-directory`.
 

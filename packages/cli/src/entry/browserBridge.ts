@@ -27,7 +27,7 @@ import { MemoryStore } from "@ares/mind";
 import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, fillEffect, navigateEffect, challengePrompt, type BrowserConnector, type HumanCheckHandler } from "@ares/connectors";
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
-import { drivableRoots, lastRescueFor, serveLocalTarget, servedForUrl, waitForDrivablePage } from "./previewServer.js";
+import { drivableRoots, lastRescueFor, serveDevServer, serveLocalTarget, servedForUrl, waitForDrivablePage } from "./previewServer.js";
 import { createServedPageBrowser } from "./servedPageBrowser.js";
 import { claimForge, forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
@@ -842,7 +842,7 @@ export function makeBrowserTool(
             ? forgeNote?.startsWith("The Forge is in use")
               ? "Another chat is using the Forge right now. Ares never browses in a hidden browser — wait for that chat to finish, or tell the owner."
               : "The Forge view did not come up (is the Ares window open with the Forge showing?). Ares never browses in a hidden browser — tell the owner."
-            : "There is no Forge here to show this page in. Local pages (a file or folder path) open in the Forge in any build; websites need the Ares desktop app's Forge. Ares never browses in a hidden browser — tell the owner.",
+            : "There is no Forge here to show this website in: local pages, files and your own dev servers (http://127.0.0.1:<port>) open in the Forge in any build; other websites need the Ares desktop app's Forge. Do NOT open it another way — no Start-Process, no browser of your own, no installing Playwright: tell the owner in one line and carry on with the rest.",
         );
       }
       const br = pageBr
@@ -1460,7 +1460,11 @@ async function servedPageFor(
     : i.action === "act" && i.steps?.[0]?.action === "open" ? i.steps[0].url : undefined;
   if (openUrl) {
     // A file path, or the loopback address of a page Ares already serves.
-    const served = (await serveLocalTarget(openUrl, { sessionId: ctx?.sessionId, cwd }).catch(() => null)) ?? (await servedForUrl(openUrl));
+    // A file path, the loopback address of a page Ares serves, or the
+    // project's own dev server (Vite & co), fronted so its pages can be driven.
+    const served = (await serveLocalTarget(openUrl, { sessionId: ctx?.sessionId, cwd }).catch(() => null))
+      ?? (await servedForUrl(openUrl))
+      ?? (await serveDevServer(openUrl, { sessionId: ctx?.sessionId }).catch(() => null));
     if (!served) return null;
     const open = (await drivableRoots()).find((r) => r.root === served.root);
     if (!open) emitTarget({ url: served.url });

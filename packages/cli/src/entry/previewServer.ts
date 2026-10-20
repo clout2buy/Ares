@@ -27,7 +27,8 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, mkdirSync, promises as fs, readFileSync, writeFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
+import { connect as netConnect, type AddressInfo, type Socket } from "node:net";
+import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,6 +186,8 @@ export interface ServedFolder {
   sensor: SensorState;
   /** Open copies of pages under this root that Ares can drive (pageDriverSource.ts). */
   drive?: DriveState;
+  /** Set when this "folder" is a local dev server Ares fronts (Vite & co). */
+  proxyTarget?: string;
 }
 
 interface SensorState {
@@ -203,6 +206,7 @@ interface SensorState {
 const servers = new Map<string, Promise<ServedFolder>>();
 
 function canonicalRoot(root: string): string {
+  if (root.startsWith("proxy:")) return root; // a local dev server, not a folder
   const resolved = path.resolve(root);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
@@ -478,6 +482,10 @@ ${PAGE_DRIVER_SOURCE}`);
     sendFile(res, file, stat.size, req.method === "HEAD");
     return;
   }
+  if (served.proxyTarget) {
+    await proxyRequest(served, req, res);
+    return;
+  }
   let file = resolveUnderRoot(served.root, urlPath);
   if (!file) {
     res.writeHead(403).end();
@@ -605,7 +613,7 @@ export async function sensorSnapshot(root: string): Promise<{ errors: number; wa
 // ── lifecycle ───────────────────────────────────────────────────────────────
 
 /** Serve `root` on 127.0.0.1 (one server per folder, reused across calls). */
-export function serveFolder(root: string, opts: { sessionId?: string } = {}): Promise<ServedFolder> {
+export function serveFolder(root: string, opts: { sessionId?: string; proxyTarget?: string } = {}): Promise<ServedFolder> {
   const key = canonicalRoot(root);
   const existing = servers.get(key);
   if (existing) {
@@ -615,8 +623,8 @@ export function serveFolder(root: string, opts: { sessionId?: string } = {}): Pr
     });
   }
   const started = new Promise<ServedFolder>((resolve, reject) => {
-    const absRoot = path.resolve(root);
-    const served: ServedFolder = { root: absRoot, origin: "", server: undefined as unknown as Server, sessionId: opts.sessionId, sensor: freshSensor() };
+    const absRoot = opts.proxyTarget ? root : path.resolve(root);
+    const served: ServedFolder = { root: absRoot, origin: "", server: undefined as unknown as Server, sessionId: opts.sessionId, sensor: freshSensor(), ...(opts.proxyTarget ? { proxyTarget: opts.proxyTarget } : {}) };
     const server = createServer((req, res) => {
       void handle(served, req, res).catch(() => {
         if (!res.headersSent) res.writeHead(500);
@@ -624,6 +632,7 @@ export function serveFolder(root: string, opts: { sessionId?: string } = {}): Pr
       });
     });
     served.server = server;
+    if (opts.proxyTarget) server.on("upgrade", (req, socket, head) => tunnelUpgrade(opts.proxyTarget!, req, socket, head));
     // The same folder gets the same port across daemon restarts, so a page
     // address an agent (or the Forge) already holds keeps working.
     const preferred = rememberedPorts()[key]?.port;
@@ -643,7 +652,7 @@ export function serveFolder(root: string, opts: { sessionId?: string } = {}): Pr
       // as the process does and dies with it.
       server.unref();
       served.origin = `http://127.0.0.1:${port}`;
-      rememberPort(key, absRoot, port);
+      if (!opts.proxyTarget) rememberPort(key, absRoot, port);
       resolve(served);
     });
     server.listen(preferred ?? 0, "127.0.0.1");
@@ -953,4 +962,75 @@ function rememberPort(key: string, root: string, port: number): void {
   } catch {
     // a remembered port is a convenience; never fail serving over it
   }
+}
+
+
+// ── local dev servers (Vite, Next, …) shown and driven in the Forge ────────
+// A project's own dev server isn't a folder Ares serves, so the page driver
+// wasn't in its pages: the preview refused it, and an agent spent 15 minutes
+// installing its own Playwright before opening the owner's browser instead.
+// Ares fronts it: same pages, the sensor + driver injected into HTML, every
+// other request and the HMR websocket passed straight through. Loopback only.
+
+/** Front a loopback dev server; returns the address to open in the Forge. */
+export async function serveDevServer(url: string, opts: { sessionId?: string } = {}): Promise<{ root: string; origin: string; url: string } | null> {
+  let target: URL;
+  try { target = new URL(url); } catch { return null; }
+  if (!/^https?:$/.test(target.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) || !target.port) return null;
+  // Something must be listening there, or there is nothing to show.
+  const alive = await fetch(`${target.origin}/`, { method: "HEAD", signal: AbortSignal.timeout(2_000) }).then(() => true, () => false);
+  if (!alive) return null;
+  const served = await serveFolder(`proxy:${target.origin}`, { ...opts, proxyTarget: target.origin });
+  return { root: served.root, origin: served.origin, url: `${served.origin}${target.pathname}${target.search}${target.hash}` };
+}
+
+async function proxyRequest(served: ServedFolder, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const target = new URL(served.proxyTarget!);
+  const headers = { ...req.headers, host: target.host } as Record<string, string | string[] | undefined>;
+  delete headers["accept-encoding"]; // plain bytes, so HTML can take the driver
+  if (headers.origin) headers.origin = target.origin;
+  if (typeof headers.referer === "string") headers.referer = headers.referer.replace(served.origin, target.origin);
+  await new Promise<void>((resolve) => {
+    const upstream = httpRequest({ host: target.hostname, port: target.port, method: req.method, path: req.url, headers }, (up) => {
+      const type = String(up.headers["content-type"] ?? "");
+      if (/text\/html/i.test(type)) {
+        const chunks: Buffer[] = [];
+        up.on("data", (c: Buffer) => chunks.push(c));
+        up.on("end", () => {
+          const html = injectIntoHead(Buffer.concat(chunks).toString("utf8"), `<script src="${SENSOR_PATH}"></script>`);
+          const out = { ...up.headers } as Record<string, string | string[] | undefined>;
+          delete out["content-length"]; delete out["content-encoding"]; delete out["transfer-encoding"];
+          res.writeHead(up.statusCode ?? 200, { ...out, "content-length": Buffer.byteLength(html), "cache-control": "no-store" });
+          res.end(html);
+          resolve();
+        });
+        return;
+      }
+      res.writeHead(up.statusCode ?? 502, up.headers);
+      up.pipe(res);
+      up.on("end", () => resolve());
+    });
+    upstream.on("error", (err) => {
+      if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+      res.end(`the dev server at ${target.origin} did not answer: ${err.message}`);
+      resolve();
+    });
+    req.pipe(upstream);
+  });
+}
+
+function tunnelUpgrade(targetOrigin: string, req: IncomingMessage, socket: Socket | import("node:stream").Duplex, head: Buffer): void {
+  const target = new URL(targetOrigin);
+  const up = netConnect(Number(target.port), target.hostname, () => {
+    const lines = [`${req.method} ${req.url} HTTP/1.1`];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const name = req.rawHeaders[i]!;
+      lines.push(`${name}: ${/^host$/i.test(name) ? target.host : /^origin$/i.test(name) ? target.origin : req.rawHeaders[i + 1]}`);
+    }
+    up.write(lines.join("\r\n") + "\r\n\r\n");
+    if (head.length) up.write(head);
+    socket.pipe(up).pipe(socket);
+  });
+  up.on("error", () => socket.destroy());
+  socket.on("error", () => up.destroy());
 }

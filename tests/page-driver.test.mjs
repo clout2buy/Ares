@@ -138,3 +138,37 @@ test("a page address from before a restart still opens: same folder, same port",
   assert.equal(again?.origin, before.origin, "on the same port");
   assert.equal((await fetch(`${again.origin}/index.html`)).status, 200);
 });
+
+test("a project's own dev server (Vite & co) is fronted: HTML gets the driver, assets pass through, the page can be driven", async (t) => {
+  const { createServer } = await import("node:http");
+  const { serveDevServer } = await import("../packages/cli/dist/entry/previewServer.js");
+  const dev = createServer((req, res) => {
+    if (req.url === "/app.js") { res.writeHead(200, { "content-type": "text/javascript" }); res.end("console.log('app')"); return; }
+    res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><html><head><title>Dev</title></head><body>hi</body></html>");
+  });
+  await new Promise((r) => dev.listen(0, "127.0.0.1", r));
+  const devOrigin = `http://127.0.0.1:${dev.address().port}`;
+  t.after(async () => { await stopPreviewServers(); dev.close(); });
+
+  const fronted = await serveDevServer(`${devOrigin}/?x=1`);
+  assert.ok(fronted, "a live loopback dev server is fronted");
+  assert.notEqual(fronted.origin, devOrigin);
+  assert.match(fronted.url, /\/\?x=1$/);
+  const html = await (await fetch(fronted.url)).text();
+  assert.match(html, /__ares\/forge-sensor\.js/, "the driver rides in its HTML");
+  assert.match(html, /<title>Dev<\/title>/);
+  assert.equal(await (await fetch(`${fronted.origin}/app.js`)).text(), "console.log('app')", "assets pass through untouched");
+
+  // the drive channel answers on the fronted origin
+  const poll = fetch(`${fronted.origin}/__ares/drive?page=d1&url=${encodeURIComponent(fronted.url)}`);
+  const open = await waitForDrivablePage(fronted.root, 3000);
+  assert.equal(open?.id, "d1");
+  const br = createServedPageBrowser(fronted.root, fronted.origin, open);
+  const state = br.state();
+  const cmd = await (await poll).json();
+  await fetch(`${fronted.origin}/__ares/drive?page=d1`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: cmd.id, ok: true, value: { url: fronted.url, title: "Dev" } }) });
+  assert.deepEqual(await state, { url: fronted.url, title: "Dev" });
+
+  assert.equal(await serveDevServer("http://127.0.0.1:1/"), null, "nothing listening → nothing to show");
+  assert.equal(await serveDevServer("https://example.com/"), null, "never a remote site");
+});

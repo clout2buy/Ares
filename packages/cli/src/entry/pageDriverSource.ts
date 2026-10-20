@@ -15,7 +15,7 @@ export const DRIVE_PATH = "/__ares/drive";
 export const PAGE_DRIVER_SOURCE = `(function(){
   if (window.__aresPageDriver || !window.fetch) return; window.__aresPageDriver = 1;
   var pid = "p" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-  var logs = [], mouse = { x: 0, y: 0 }, held = {};
+  var logs = [], mouse = { x: 0, y: 0, known: false }, held = {};
   function keep(level, args){
     try {
       var text = Array.prototype.map.call(args, function(a){ return a instanceof Error ? (a.stack || a.message) : (typeof a === "object" ? JSON.stringify(a) : String(a)); }).join(" ");
@@ -90,19 +90,31 @@ export const PAGE_DRIVER_SOURCE = `(function(){
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
+  // movementX/Y is what mouse-look games read. Only a MOVE carries it (the
+  // same delta on pointermove AND mousemove); a click "teleports" with zero
+  // movement. The cursor's first position is unknown, so the first move is a
+  // teleport too — otherwise the first gesture reported a jump from (0,0) and
+  // flipped a game camera.
   function mouseAt(type, x, y, extra){
     var el = document.elementFromPoint(x, y) || document.body;
-    var init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, screenX: x, screenY: y, button: (extra && extra.button) || 0, buttons: type === "mouseup" || type === "pointerup" || type === "click" ? 0 : 1, movementX: x - mouse.x, movementY: y - mouse.y };
+    var mv = (extra && extra.mv) || [0, 0];
+    var init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, screenX: x, screenY: y, button: (extra && extra.button) || 0, buttons: /down$/.test(type) || (extra && extra.held) ? 1 : 0, movementX: mv[0], movementY: mv[1] };
     if (type.indexOf("pointer") === 0) { init.pointerId = 1; init.pointerType = "mouse"; init.isPrimary = true; el.dispatchEvent(new PointerEvent(type, init)); }
     else if (type === "wheel") { init.deltaX = (extra && extra.dx) || 0; init.deltaY = (extra && extra.dy) || 0; el.dispatchEvent(new WheelEvent("wheel", init)); }
     else el.dispatchEvent(new MouseEvent(type, init));
-    mouse = { x: x, y: y };
+    mouse = { x: x, y: y, known: true };
     return el;
   }
+  function moveTo(x, y, extra){
+    var mv = mouse.known ? [x - mouse.x, y - mouse.y] : [0, 0];
+    var o = { button: extra && extra.button, held: extra && extra.held, mv: mv };
+    mouseAt("pointermove", x, y, o); mouseAt("mousemove", x, y, o);
+  }
+  function teleport(x, y){ mouseAt("pointermove", x, y); mouseAt("mousemove", x, y); }
   async function clickEl(el){
     if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "center" });
     var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
-    mouseAt("pointermove", x, y); mouseAt("mousemove", x, y);
+    teleport(x, y);
     mouseAt("pointerdown", x, y); mouseAt("mousedown", x, y);
     if (el.focus) el.focus();
     mouseAt("pointerup", x, y); mouseAt("mouseup", x, y);
@@ -110,18 +122,19 @@ export const PAGE_DRIVER_SOURCE = `(function(){
   }
   async function pointer(g){
     var b = g.button === "right" ? 2 : g.button === "middle" ? 1 : 0, opt = { button: b };
-    if (g.kind === "move") { mouseAt("pointermove", g.x, g.y); mouseAt("mousemove", g.x, g.y); return; }
+    if (g.kind === "move") { moveTo(g.x, g.y); return; }
     if (g.kind === "wheel") { mouseAt("wheel", g.x, g.y, { dx: g.dx, dy: g.dy }); window.scrollBy(g.dx || 0, g.dy || 0); return; }
     if (g.kind === "down") { mouseAt("pointerdown", g.x, g.y, opt); mouseAt("mousedown", g.x, g.y, opt); return; }
     if (g.kind === "up") { mouseAt("pointerup", g.x, g.y, opt); mouseAt("mouseup", g.x, g.y, opt); return; }
     if (g.kind === "drag") {
+      teleport(g.x, g.y);
       mouseAt("pointerdown", g.x, g.y, opt); mouseAt("mousedown", g.x, g.y, opt);
       var steps = 12, tx = g.toX == null ? g.x : g.toX, ty = g.toY == null ? g.y : g.toY;
-      for (var i = 1; i <= steps; i++) { var x = g.x + (tx - g.x) * i / steps, y = g.y + (ty - g.y) * i / steps; mouseAt("pointermove", x, y, opt); mouseAt("mousemove", x, y, opt); await sleep(16); }
+      for (var i = 1; i <= steps; i++) { var x = g.x + (tx - g.x) * i / steps, y = g.y + (ty - g.y) * i / steps; moveTo(x, y, { button: b, held: true }); await sleep(16); }
       mouseAt("pointerup", tx, ty, opt); mouseAt("mouseup", tx, ty, opt); return;
     }
     var times = g.kind === "double" ? 2 : 1;
-    mouseAt("pointermove", g.x, g.y); mouseAt("mousemove", g.x, g.y);
+    teleport(g.x, g.y);
     for (var n = 0; n < times; n++) {
       mouseAt("pointerdown", g.x, g.y, opt); mouseAt("mousedown", g.x, g.y, opt);
       mouseAt("pointerup", g.x, g.y, opt); mouseAt("mouseup", g.x, g.y, opt);

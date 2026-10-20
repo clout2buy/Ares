@@ -37,6 +37,7 @@ import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard
 import { parseRetryAfterMs } from "./retryAfter.js";
 import { coerceToolArgs, sanitizeToolPairs, toolResultsFirst, TOOL_ARGS_ERROR_KEY } from "./_toolPairs.js";
 import { imageMediaTypeFor } from "./imageMediaType.js";
+import { fetchAnthropicUsage } from "./usage.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -278,6 +279,17 @@ export class AnthropicProvider implements Provider {
       // reads it ("prompt is too long"), and 529s carry overloaded_error.
       const text = consumedErrorText ?? await response.text().catch(() => "");
       if (oauthToken && /extra usage/i.test(text)) dumpOAuthRequest("extra-usage", headers, body, text);
+      // A subscription 429 is often not congestion but a used-up plan window
+      // (5-hour / weekly). Retrying 4x60s then failing with raw JSON helped
+      // nobody: say which limit, when it resets, and stop retrying so the
+      // failover ladder can move the chat to another provider.
+      if (response.status === 429 && oauthToken) {
+        const planStop = await planLimitStop(oauthToken, this.fetchImpl);
+        if (planStop) {
+          yield { type: "error", error: { code: "plan_limit", message: planStop, retriable: false } };
+          return;
+        }
+      }
       yield {
         type: "error",
         error: {
@@ -1021,4 +1033,21 @@ export function oauthWireToolNames(body: Record<string, unknown>): Map<string, s
     if (w) choice.name = w;
   }
   return fromWire.size ? fromWire : undefined;
+}
+
+/** "Your Claude Max (5x) plan's 5-hour limit is used up — resets at 5:50 PM."
+ *  when the plan's own usage says a window is exhausted, else null. */
+async function planLimitStop(token: string, fetchImpl: typeof fetch): Promise<string | null> {
+  try {
+    const usage = await fetchAnthropicUsage(token, { fetchImpl, timeoutMs: 4_000 });
+    const full = usage.windows.find((w) => typeof w.utilization === "number" && w.utilization >= 0.99);
+    if (!full) return null;
+    const at = full.resetsAt ? new Date(full.resetsAt) : null;
+    const when = at && Number.isFinite(at.getTime())
+      ? ` It resets at ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${at.getTime() - Date.now() > 20 * 3_600_000 ? ` on ${at.toLocaleDateString([], { weekday: "long" })}` : ""}.`
+      : "";
+    return `Your Claude ${usage.plan ? `${usage.plan} ` : ""}plan's ${full.label.toLowerCase()} is used up.${when} Switch this chat to another provider to keep going, or wait for the reset.`;
+  } catch {
+    return null;
+  }
 }

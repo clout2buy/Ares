@@ -303,7 +303,7 @@ export function modelContextWindow(modelId: string): number {
 export function isQuotaOrBillingError(text: string): boolean {
   const blob = text.toLowerCase();
   if (/rate.?limit/.test(blob)) return false;
-  return /out of (?:extra )?usage|extra usage|credit balance|insufficient.?(?:credit|quota|balance|funds)|out.?of.?balance|exceeded your current quota|quota exceeded|insufficient_quota|payment required|billing/.test(
+  return /plan_limit|limit is used up|out of (?:extra )?usage|extra usage|credit balance|insufficient.?(?:credit|quota|balance|funds)|out.?of.?balance|exceeded your current quota|quota exceeded|insufficient_quota|payment required|billing/.test(
     blob,
   );
 }

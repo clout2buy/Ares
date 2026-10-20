@@ -114,3 +114,11 @@ test("402 out-of-balance keeps working the way it already did", () => {
   assert.equal(isProviderFatalError({ code: "http_402", message: "insufficient balance" }), true);
   assert.equal(isPermanentRecoveryPoison("http_402 insufficient balance"), false);
 });
+
+test("a used-up Claude plan window (plan_limit) is a quota stop: fatal for this provider, so failover moves the chat", async () => {
+  const { isQuotaOrBillingError, isProviderFatalError } = await import("../packages/cli/dist/entry/sessionFactory.js");
+  const msg = "Your Claude Max (5x) plan's 5-hour limit is used up. It resets at 5:50 PM.";
+  assert.equal(isQuotaOrBillingError(`plan_limit ${msg}`), true);
+  assert.equal(isProviderFatalError({ code: "plan_limit", message: msg }), true);
+  assert.equal(isProviderFatalError({ code: "http_429", message: "rate_limit_error: slow down" }), false, "plain congestion still rides the retry ladder");
+});

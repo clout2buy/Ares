@@ -769,3 +769,28 @@ test("AnthropicProvider: steer reminder ahead of tool_results is reordered, not 
   const useMsg = wire.find((m) => m.content.some((b) => b.type === "tool_use" && b.id === "toolu_STEER"));
   assert.ok(useMsg, "the paired tool_use must survive as a real tool block");
 });
+
+test("AnthropicProvider: a subscription 429 with a used-up plan window says which limit and when it resets, and stops retrying", async () => {
+  const previous = process.env.ARES_ANTHROPIC_OAUTH_TOKEN;
+  process.env.ARES_ANTHROPIC_OAUTH_TOKEN = "oauth-token";
+  const resetsAt = new Date(Date.now() + 40 * 60_000).toISOString();
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    if (u.includes("/api/oauth/usage")) return new Response(JSON.stringify({ five_hour: { utilization: 100, resets_at: resetsAt }, seven_day: { utilization: 40 } }), { status: 200, headers: { "content-type": "application/json" } });
+    if (u.includes("/api/oauth/profile")) return new Response(JSON.stringify({ account: { has_claude_max: true } }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "This request would exceed your account's rate limit." } }), { status: 429 });
+  };
+  try {
+    const provider = new AnthropicProvider({ fetchImpl, endpointUrl: "http://x/v1/messages" });
+    const events = [];
+    for await (const e of provider.stream({ model: "claude-opus-5-5", system: "s", messages: [userMessage("go")], tools: [] })) events.push(e);
+    const err = events.find((e) => e.type === "error");
+    assert.equal(err?.error.code, "plan_limit");
+    assert.equal(err.error.retriable, false, "no 4x60s retries against a window that resets in 40 minutes");
+    assert.match(err.error.message, /5-hour limit is used up/i);
+    assert.match(err.error.message, /resets at/i);
+  } finally {
+    if (previous === undefined) delete process.env.ARES_ANTHROPIC_OAUTH_TOKEN;
+    else process.env.ARES_ANTHROPIC_OAUTH_TOKEN = previous;
+  }
+});

@@ -105,8 +105,10 @@ function assertPairingValid(engine) {
   assert.deepEqual([...useIds].sort(), [...resultIds].sort(), "tool_use/tool_result pairing intact");
 }
 
-test("images older than the keep window are cleared; recent rounds keep full fidelity", async () => {
+test("images older than the keep window are cleared; recent rounds keep full fidelity", async (t) => {
   delete process.env.ARES_IMAGE_KEEP_ROUNDS; // default 3
+  process.env.ARES_IMAGE_CLEAR_BATCH = "1"; // clear as soon as one ages out (the batching has its own test)
+  t.after(() => { delete process.env.ARES_IMAGE_CLEAR_BATCH; });
   const engine = makeEngine("sess_img_micro");
   engine.appendUserMessage("look around");
   const events = [];
@@ -169,8 +171,10 @@ test("ARES_IMAGE_KEEP_ROUNDS=0 disables the image rung entirely", async () => {
   }
 });
 
-test("ARES_IMAGE_KEEP_ROUNDS=1 keeps only the newest round", async () => {
+test("ARES_IMAGE_KEEP_ROUNDS=1 keeps only the newest round", async (t) => {
   process.env.ARES_IMAGE_KEEP_ROUNDS = "1";
+  process.env.ARES_IMAGE_CLEAR_BATCH = "1";
+  t.after(() => { delete process.env.ARES_IMAGE_CLEAR_BATCH; });
   try {
     const engine = makeEngine("sess_img_micro_keep1");
     engine.appendUserMessage("look around");
@@ -247,4 +251,19 @@ test("recorder falls back to scanning output for protocol-shaped image blocks; l
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("stale screenshots are cleared in a batch, not one per round (the prompt cache survives a screenshot loop)", async () => {
+  delete process.env.ARES_IMAGE_KEEP_ROUNDS; // keep 3
+  delete process.env.ARES_IMAGE_CLEAR_BATCH; // default batch 4
+  const engine = makeEngine("sess_img_batch");
+  engine.appendUserMessage("look around");
+  for await (const _ of engine.streamTurn()) { /* drain */ }
+  const results = toolResultsById(engine);
+  // Six rounds: r0..r2 are stale, but three is under the batch of four — no
+  // history rewrite yet, so every call kept its cached prefix.
+  for (const id of ["r0", "r1", "r2", "r3", "r4", "r5"]) {
+    assert.equal(results.get(id).content.filter((b) => b.type === "image").length, 1, `${id} not cleared yet`);
+  }
+  assertPairingValid(engine);
 });

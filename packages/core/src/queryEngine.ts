@@ -941,6 +941,10 @@ const MICROCOMPACT_PLACEHOLDER =
 // ARES_IMAGE_KEEP_ROUNDS tunes N (default 3); 0 disables and keeps everything.
 const IMAGE_MICROCOMPACT_PLACEHOLDER =
   "[screenshot cleared to save context — re-take with the Browser/ComputerUse tool if needed]";
+function imageClearBatch(): number {
+  const raw = Number(process.env.ARES_IMAGE_CLEAR_BATCH);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 4;
+}
 function imageKeepRounds(): number {
   const raw = Number(process.env.ARES_IMAGE_KEEP_ROUNDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 3;
@@ -2197,6 +2201,22 @@ export class QueryEngine {
     }
     if (rounds <= keepRounds) return null;
     const staleBelow = rounds - keepRounds;
+    // Batch the clearing. Clearing the one image that just aged out, every
+    // round, rewrote history ~6 messages back on EVERY call of a screenshot
+    // play loop — behind the last cache point, so each call re-billed the whole
+    // conversation (~140k tokens). Waiting for a batch costs a few cached
+    // images (~1.6k tokens each, at cache-read price) and breaks the cache
+    // once per batch instead of once per round.
+    let staleImages = 0;
+    for (const m of this.messages) {
+      for (const b of m.content) {
+        if (b.type !== "tool_result" || !Array.isArray(b.content)) continue;
+        const round = roundByToolUseId.get(b.tool_use_id);
+        if (round === undefined || round >= staleBelow) continue;
+        staleImages += b.content.filter((block) => block.type === "image").length;
+      }
+    }
+    if (staleImages < imageClearBatch()) return null;
 
     let images = 0;
     let results = 0;

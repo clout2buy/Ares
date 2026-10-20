@@ -5386,7 +5386,13 @@ function App() {
               <div className="turn assistant imsgTyping" aria-label={`${activeAgent.name} is typing`}>
                 <span className="turnMark imsgFace"><AgentAvatar agent={activeAgent} size={30} busy /></span>
                 <div className="typingBubble"><i /><i /><i /></div>
-                {active.activity && !/^(thinking|working|response committed|settling proposed actions)$/i.test(active.activity) ? <span className="typingNow">{active.activity}</span> : null}
+                {(() => {
+                  // What it's doing and for how long: a long think (Opus can go
+                  // minutes before its first word) must never look frozen.
+                  const doing = active.activity && !/^(working|response committed|settling proposed actions|generating)$/i.test(active.activity) ? active.activity : workingElapsedS >= 6 ? "thinking" : null;
+                  const took = workingElapsedS >= 6 ? (workingElapsedS >= 60 ? `${Math.floor(workingElapsedS / 60)}m ${workingElapsedS % 60}s` : `${workingElapsedS}s`) : null;
+                  return doing || took ? <span className="typingNow">{[doing, took].filter(Boolean).join(" · ")}</span> : null;
+                })()}
               </div>
             ) : null}
             {active?.busy ? (

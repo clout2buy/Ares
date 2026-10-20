@@ -650,7 +650,9 @@
 .ares .roomThread * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 /* an agent turn that only held hidden machinery (thinking, a tool) left a
    lone face floating in the thread */
-.ares.ares .chat[data-imsg="1"] > .turn.assistant:not(:has(.turnBody > .prose)) { display: none; }
+/* (never the typing bubble: it has no prose by design, and hiding it left a
+   long think with no sign of life in the thread) */
+.ares.ares .chat[data-imsg="1"] > .turn.assistant:not(.imsgTyping):not(:has(.turnBody > .prose)) { display: none; }
 /* iMessage: the face sits on the LAST bubble of a run, not every one */
 .ares.ares .chat[data-imsg="1"] > .turn.assistant:has(+ .turn.assistant .turnBody > .prose) .imsgFace { visibility: hidden; }
 .ares.ares .chat[data-imsg="1"] > .turn.assistant:has(+ .turn.assistant .turnBody > .prose) .turnBody > .prose { border-bottom-left-radius: 20px; }

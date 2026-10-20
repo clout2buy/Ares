@@ -39,6 +39,7 @@ const post = (url, body, token) => fetch(url, { method: "POST", headers: { "cont
 
 test("directory: usernames are rules-checked, unique per install, and re-claimable by their owner", async () => {
   const d = await directory();
+  try {
   assert.equal(USERNAME_RE.test("oh_cupid"), true);
   assert.equal(USERNAME_RE.test("Oh Cupid"), false);
   const a = await post(`${d.url}/v1/claim`, { username: "crix", displayName: "Crix", installId: "me_aaaaaaaaaaaa" });
@@ -61,7 +62,7 @@ test("directory: usernames are rules-checked, unique per install, and re-claimab
   assert.equal(moved.user.username, "crix_builder");
   assert.equal((await fetch(`${d.url}/v1/users/crix`)).status, 404);
   assert.equal((await post(`${d.url}/v1/claim`, { username: "bad name", displayName: "x", installId: "me_cccccccccccc" })).status, 400);
-  await d.close();
+  } finally { await d.close(); }
 });
 
 test("directory: search ranks exact > prefix > contains, shows presence, and leaks nothing", async () => {
@@ -93,6 +94,7 @@ test("directory: search ranks exact > prefix > contains, shows presence, and lea
 
 test("directory: an invite is a relayed room link; the inbox long-polls and acks stick", async () => {
   const d = await directory();
+  try {
   const a = await (await post(`${d.url}/v1/claim`, { username: "crix", displayName: "Crix", installId: "me_aaaaaaaaaaaa" })).json();
   const b = await (await post(`${d.url}/v1/claim`, { username: "cupid", displayName: "OhCupid", installId: "me_bbbbbbbbbbbb" })).json();
   assert.equal((await post(`${d.url}/v1/users/cupid/invite`, { kind: "room", link: "https://evil/x", roomName: "Agency" }, a.token)).status, 400, "only ares://room links");
@@ -110,7 +112,7 @@ test("directory: an invite is a relayed room link; the inbox long-polls and acks
   assert.equal((await post(`${d.url}/v1/inbox/${got.items[0].id}/ack`, {}, b.token)).status, 200);
   const after = await (await fetch(`${d.url}/v1/inbox?since=0`, { headers: { authorization: `Bearer ${b.token}` } })).json();
   assert.equal(after.items[0].acked, true);
-  await d.close();
+  } finally { await d.close(); }
 });
 
 /** One whole install: agents + rooms (+ the garrison door for guests) + directory client. */
@@ -138,9 +140,13 @@ test("directory: two installs — A messages B through a room the DIRECTORY host
   const d = await directory();
   const A = await install("Crix", d.url);
   const B = await install("OhCupid", d.url);
-  await A.dir.claim("crix");
-  await B.dir.claim("cupid");
+  // Cleanup must run even when an assertion fails: a live long-poll would
+  // otherwise keep the test runner alive forever (this hung CI on v0.59.0).
+  try {
+  await A.dir.claim("crix", "Crix");
+  await B.dir.claim("cupid", "OhCupid");
   assert.equal(A.dir.wire().username, "crix");
+  assert.equal(A.dir.wire().displayName, "Crix");
   const found = await A.dir.search("cup");
   assert.equal(found[0].username, "cupid");
 
@@ -194,7 +200,9 @@ test("directory: two installs — A messages B through a room the DIRECTORY host
   assert.deepEqual(g.invited, ["cupid"]);
   for (let i = 0; i < 60 && B.events.filter((e) => e.type === "directory_invite").length < 2; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(B.events.filter((e) => e.type === "directory_invite").length, 2);
-  await A.close();
-  await B.close();
-  await d.close();
+  } finally {
+    await A.close();
+    await B.close();
+    await d.close();
+  }
 });

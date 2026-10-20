@@ -318,6 +318,7 @@ test("rooms: a guest install mirrors a remote room, dispatches to ITS agents onl
   const gh = await home();
   const gws = await home();
   const { agents, rooms, delivered } = harness(gh, gws);
+  try {
   await agents.load();
   const cupid = await agents.create({ name: "cupid", instructions: "matchmaker" });
   await rooms.load();
@@ -346,7 +347,9 @@ test("rooms: a guest install mirrors a remote room, dispatches to ITS agents onl
   assert.ok(reply, "the guest agent's reply landed on the host");
   assert.equal(reply.from.kind, "agent");
   assert.equal(reply.from.home, rooms.whoami().id);
-  rooms.stop();
-  server.closeAllConnections?.();
-  server.close();
+  } finally {
+    rooms.stop();
+    server.closeAllConnections?.();
+    server.close();
+  }
 });

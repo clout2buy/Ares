@@ -235,10 +235,10 @@ function forgeFrameUrl(url: string, native: boolean, revision: number): string {
   return `${url}${join}ares_forge=${revision}`;
 }
 
-/** External sites commonly deny iframe embedding with X-Frame-Options/CSP.
- * The Forge embeds only owner-built/local targets; real websites are rendered
- * from Ares's Playwright screencast so the panel never shows a fake blocked
- * page while claiming a sign-in form is available. */
+/** The browser-preview build only (no desktop): external sites commonly deny
+ * iframe embedding, so there the Forge frames only local targets and streams
+ * Ares's browser for the rest. The desktop shows every http(s) page in its
+ * native view instead (forgeNativeView.tsx), which no site can refuse. */
 function forgeCanEmbed(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -5979,8 +5979,8 @@ function App() {
                     <LiveFrameCanvas className="liveTelemetryMain" frame={liveBrowser.frame} title="Live browser controlled by Ares" />
                   ) : (
                     <div className="externalPreviewNotice">
-                      <strong>This site cannot run inside the Forge.</strong>
-                      <p>Ares is opening it in its controllable browser. If human sign-in is needed, switch to that Ares browser window and sign in there; “Open separate copy” is only for manual viewing.</p>
+                      <strong>Opening {liveTarget.url.replace(/^https?:\/\//, "")}</strong>
+                      <p>The desktop app shows every site live in the Forge. This preview build streams Ares's browser instead.</p>
                     </div>
                   )}
                 </div>
@@ -5994,7 +5994,7 @@ function App() {
                     <Medallion glyph="forge" size={44} tone="ember" className="forgeLoadingSigil" />
                   </div>
                   <div className="forgeIdleTitle">The Forge · standing by</div>
-                  <p className="forgeIdleLead">Ask Ares to open a project, or paste a localhost URL above. The page runs here, hosted and watched by Ares.</p>
+                  <p className="forgeIdleLead">Ask Ares to open something, or paste any link above. It runs here live: click, type and sign in, and Ares works in the same page.</p>
                   <ul className="forgeIdleAbilities">
                     <li><PixelIcon name="host" size={14} palette="gold" /><b>Hosts</b>your folder so modules, import maps and assets resolve</li>
                     <li><PixelIcon name="watch" size={14} palette="green" /><b>Watches</b>exceptions, failed loads, warnings, frame rate — live</li>

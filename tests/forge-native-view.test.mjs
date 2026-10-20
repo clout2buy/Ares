@@ -167,3 +167,16 @@ test("end to end: Ares's preview lands in the very browser behind the endpoint",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the instructions never offer a screenshot or a 'can't open' in place of the live page", async () => {
+  const { toolDoctrineFor } = await import("../packages/cli/dist/entry/prompt/index.js");
+  const { makeOpenTool } = await import("../packages/cli/dist/entry/openTool.js");
+  const desc = makeBrowserTool({ browserFilmstripRoot: tmpdir() }).schema.description;
+  assert.doesNotMatch(desc, /may block the Forge|iframe sign-in/);
+  assert.match(desc, /every site loads there/);
+  assert.match(desc, /never with a screenshot, a local copy or "I can't open it"/);
+  const doctrine = toolDoctrineFor(["Browser"]);
+  assert.match(doctrine, /on the desktop it is a real browser/);
+  assert.match(doctrine, /never a screenshot/);
+  assert.doesNotMatch(makeOpenTool().schema.description, /those are pictures/);
+});

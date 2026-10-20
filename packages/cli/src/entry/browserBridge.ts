@@ -837,6 +837,13 @@ export function makeBrowserTool(
       // own Chrome (extension / handshake). ARES_HIDDEN_BROWSER=1 is for a
       // screenless server; test doubles of the launcher are unaffected.
       if (!pageBr && !onForge && !extensionAttach && i.action !== "handshake" && createBrowser === createPlaywrightBrowser && process.env.ARES_HIDDEN_BROWSER !== "1") {
+        // A local address with nothing behind it is not a "no Forge" problem:
+        // say what is wrong and what fixes it, so the agent fixes it itself.
+        const wanted = (i.action === "open" || i.action === "preview") ? i.url : i.action === "act" && i.steps?.[0]?.action === "open" ? i.steps[0].url : undefined;
+        const local = wanted ? (() => { try { const u = new URL(wanted); return /^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname) && u.port ? u : null; } catch { return null; } })() : null;
+        if (local) {
+          throw new Error(`Nothing is running at ${local.origin}. Start the project's dev server in the background (find its folder yourself), wait until it listens, then open ${local.href} again — it shows in the Forge.`);
+        }
         throw new Error(
           forge
             ? forgeNote?.startsWith("The Forge is in use")

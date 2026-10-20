@@ -15,7 +15,15 @@
 //   POST /gateway/rooms/<id>/leave
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { promises as fsp } from "node:fs";
+import path from "node:path";
 import {
+  ROOM_FILE_MAX,
+  ROOM_FILES_MAX,
+  ROOM_FILES_TOTAL_MAX,
+  isRoomFileName,
+  roomFileType,
+  roomFilesDir,
   ROOM_BOARD_MAX,
   ROOM_MEMBERS_MAX,
   ROOM_MESSAGE_MAX,
@@ -35,6 +43,8 @@ import {
 
 export interface RoomsApiOptions {
   home: string;
+  /** The host's owner may write files too (their own daemon, not a guest). */
+  ownerToken?: (presented: string) => boolean;
   log?: (line: string) => void;
   now?: () => number;
 }
@@ -69,6 +79,23 @@ async function readJson(req: IncomingMessage, max: number): Promise<Record<strin
   if (!chunks.length) return {};
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+}
+
+export async function listRoomFiles(dir: string): Promise<Array<{ name: string; size: number; at: string }>> {
+  const out: Array<{ name: string; size: number; at: string }> = [];
+  const walk = async (sub: string, depth: number): Promise<void> => {
+    const entries = await fsp.readdir(path.join(dir, sub), { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      const rel = sub ? `${sub}/${e.name}` : e.name;
+      if (e.isDirectory() && depth < 3) await walk(rel, depth + 1);
+      else if (e.isFile() && isRoomFileName(rel)) {
+        const st = await fsp.stat(path.join(dir, rel)).catch(() => null);
+        if (st) out.push({ name: rel, size: st.size, at: st.mtime.toISOString() });
+      }
+    }
+  };
+  await walk("", 0);
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean> {
@@ -133,6 +160,62 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
         opts.log?.(`rooms: ${guestName} (${guestId}) joined ${room.name}`);
         const latest = (await fresh(roomId)) ?? next;
         return json(200, { token, room: guestView(latest), messages: await store.messages(roomId, 80) });
+      }
+
+      // ── a room's shared files ──
+      // GET /gateway/rooms/<id>/files/<name>  — anyone with the link (a room id
+      //   is unguessable); served sandboxed so a page can never act as this origin
+      // GET /gateway/rooms/<id>/files         — members: the list
+      // POST /gateway/rooms/<id>/files        — members: {name, data (base64), by}
+      const f = /^\/gateway\/rooms\/(room_[a-z0-9]+)\/files(?:\/(.+))?$/.exec(url.pathname);
+      if (f) {
+        const roomId = f[1]!;
+        const room = await fresh(roomId);
+        if (!room || room.host.kind !== "local") return json(404, { error: "no such room" });
+        const dir = roomFilesDir(opts.home, roomId);
+        if (f[2] && (req.method === "GET" || req.method === "HEAD")) {
+          let name = "";
+          try { name = decodeURIComponent(f[2]); } catch { return json(404, { error: "not found" }); }
+          if (!isRoomFileName(name)) return json(404, { error: "not found" });
+          const file = path.join(dir, ...name.split("/"));
+          const bytes = await fsp.readFile(file).catch(() => null);
+          if (!bytes) return json(404, { error: "not found" });
+          res.writeHead(200, {
+            "content-type": roomFileType(name),
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            // its own opaque origin: scripts and multiplayer run, but the page
+            // can never read or act as the server it is served from
+            "content-security-policy": "sandbox allow-scripts allow-forms allow-popups allow-modals allow-pointer-lock allow-downloads allow-orientation-lock",
+            "access-control-allow-origin": "*",
+          });
+          res.end(req.method === "HEAD" ? undefined : bytes);
+          return true;
+        }
+        const presented = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
+        const guest = presented ? room.guests.find((g) => g.tokenHash === tokenHash(presented)) : undefined;
+        if (!guest && !opts.ownerToken?.(presented)) return json(401, { error: "unauthorized" });
+        if (!f[2] && req.method === "GET") return json(200, { files: await listRoomFiles(dir) });
+        if (!f[2] && req.method === "POST") {
+          const body = await readJson(req, Math.ceil(ROOM_FILE_MAX * 1.4) + 4096);
+          const name = typeof body.name === "string" ? body.name.trim() : "";
+          if (!isRoomFileName(name)) return json(400, { error: "file names are letters, digits, . _ - and up to three folders" });
+          const bytes = typeof body.data === "string" ? Buffer.from(body.data, "base64") : null;
+          if (!bytes) return json(400, { error: "data (base64) required" });
+          if (bytes.length > ROOM_FILE_MAX) return json(413, { error: `a room file is at most ${ROOM_FILE_MAX / 1024 / 1024} MB` });
+          const list = await listRoomFiles(dir);
+          const existing = list.find((x) => x.name === name);
+          if (!existing && list.length >= ROOM_FILES_MAX) return json(409, { error: "the room holds too many files — remove some first" });
+          const total = list.reduce((n, x) => n + x.size, 0) - (existing?.size ?? 0) + bytes.length;
+          if (total > ROOM_FILES_TOTAL_MAX) return json(409, { error: "the room's files are full" });
+          const file = path.join(dir, ...name.split("/"));
+          await fsp.mkdir(path.dirname(file), { recursive: true });
+          await fsp.writeFile(file, bytes);
+          const by = typeof body.by === "string" ? body.by.trim().slice(0, 60) : guest?.name ?? "someone";
+          await append(room, { kind: "system", id: "room", name: "room" }, `${by} ${existing ? "updated" : "shared"} ${name}`, "note");
+          return json(200, { ok: true, name, size: bytes.length, updated: Boolean(existing) });
+        }
+        return json(405, { error: "method not allowed" });
       }
 
       // ── everything else: /gateway/rooms/<id>/<verb>, room-token bearer ──
@@ -204,7 +287,15 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
         }
         const before = room.members.filter((x) => x.kind === "agent" && x.home === guest.id);
         const keep = room.members.filter((x) => !(x.kind === "agent" && x.home === guest.id));
-        const next: Room = { ...room, members: [...keep, ...agents].slice(0, ROOM_MEMBERS_MAX), updatedAt: stamp() };
+        // A guest may rename THEMSELVES (never anyone else).
+        const newName = typeof body.name === "string" ? body.name.trim().slice(0, 60) : "";
+        const renamed = newName ? keep.map((x) => (x.kind === "person" && x.home === guest.id ? { ...x, name: newName } : x)) : keep;
+        const next: Room = {
+          ...room,
+          members: [...renamed, ...agents].slice(0, ROOM_MEMBERS_MAX),
+          guests: newName ? room.guests.map((g) => (g.id === guest.id ? { ...g, name: newName } : g)) : room.guests,
+          updatedAt: stamp(),
+        };
         await store.save(next);
         const added = agents.filter((a) => !before.some((b) => b.id === a.id)).map((a) => a.name);
         const removed = before.filter((b) => !agents.some((a) => a.id === b.id)).map((b) => b.name);

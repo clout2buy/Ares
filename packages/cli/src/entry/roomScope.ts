@@ -39,6 +39,13 @@ export interface RoomsHost {
   note(sessionId: string, text: string, roomId?: string): Promise<void>;
   /** The board, as cards. */
   board(sessionId: string, roomId?: string): RoomJobCard[];
+  /** Put a file from this machine into the room's shared files (kept by the
+   *  room's host; every member's agents read the same copy). */
+  share(sessionId: string, filePath: string, name?: string, roomId?: string): Promise<{ room: RoomCard; name: string; url: string | null; updated: boolean }>;
+  /** Pull a shared file down into this machine's copy of the room folder. */
+  fetch(sessionId: string, name: string, roomId?: string): Promise<{ room: RoomCard; path: string; size: number; url: string | null }>;
+  /** The room's shared files, with their links. */
+  files(sessionId: string, roomId?: string): Promise<{ room: RoomCard; files: Array<{ name: string; size: number; at: string; url: string | null }> }>;
   /** The last messages of a room, as lines ("who: text"), oldest first. */
   read(sessionId: string, roomId?: string, limit?: number): Promise<{ room: RoomCard; lines: string[] }>;
 }

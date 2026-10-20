@@ -225,6 +225,11 @@ function runsOf(messages: RoomMessageVm[]): Run[] {
     lastAt = t;
     const system = m.kind === "system" || m.from.kind === "system" || m.kind === "job" || m.kind === "note";
     const prev = runs.at(-1);
+    // the same notice again (a burst) folds into the one before it
+    if (system && prev && prev.system && prev.items.at(-1)!.text === m.text && fromKey(prev.items.at(-1)!.from) === fromKey(m.from)) {
+      prev.items[prev.items.length - 1] = { ...prev.items.at(-1)!, repeat: ((prev.items.at(-1) as RoomMessageVm & { repeat?: number }).repeat ?? 1) + 1 } as RoomMessageVm;
+      continue;
+    }
     if (prev && !system && !prev.system && fromKey(prev.from) === fromKey(m.from) && t - (Date.parse(prev.items.at(-1)!.at) || 0) < 3 * 60_000 && !showDay) {
       prev.items.push(m);
       continue;
@@ -390,6 +395,7 @@ export function RoomView({
                   {run.items.map((m) => (
                     <div key={m.id} className="roomSystemLine">
                       {m.from.kind !== "system" ? <b>{m.from.name}</b> : null} {m.text}
+                      {(m as RoomMessageVm & { repeat?: number }).repeat ? <em className="roomRepeat"> ×{(m as RoomMessageVm & { repeat?: number }).repeat}</em> : null}
                     </div>
                   ))}
                 </div>

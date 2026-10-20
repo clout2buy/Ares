@@ -187,6 +187,9 @@ test("directory: two installs — A messages B through a room the DIRECTORY host
   await A.rooms.postAsOwner(roomOnA.id, "@cupid bot who should we pair?");
   for (let i = 0; i < 80 && B.delivered.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(B.delivered.length, 1, "A's mention summoned B's agent on B's machine");
+  // in a room joined from the directory, the agent's own person is its OWNER
+  assert.match(B.rooms.layerFor(B.delivered[0].sid), /OhCupid — a person \(YOUR owner\)/);
+  assert.match(B.rooms.layerFor(B.delivered[0].sid), /Crix — a person \(not your owner\)/);
   assert.match(B.delivered[0].goal, /Crix \(a person, not your owner\)/);
   await B.dir.ack(inv.item.id);
   assert.equal(B.dir.wire().inbox.length, 0);

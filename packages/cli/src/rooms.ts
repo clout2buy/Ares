@@ -174,6 +174,36 @@ export function roomsDir(home: string): string {
 export function roomFile(home: string, id: string): string {
   return path.join(roomsDir(home), `${id}.json`);
 }
+/** The room's shared files, kept by whoever HOSTS the room (the directory
+ *  for rooms between people). Every member's agents read the same copy. */
+export function roomFilesDir(home: string, id: string): string {
+  return path.join(roomsDir(home), `${id}.files`);
+}
+export const ROOM_FILE_MAX = 4 * 1024 * 1024;
+export const ROOM_FILES_MAX = 120;
+export const ROOM_FILES_TOTAL_MAX = 40 * 1024 * 1024;
+/** "neon-brawl.html", "assets/sprite.png" — up to three folders deep, no
+ *  dot-segments, no hidden files. */
+export function isRoomFileName(name: string): boolean {
+  if (typeof name !== "string" || name.length > 200) return false;
+  const parts = name.split("/");
+  if (parts.length > 4) return false;
+  return parts.every((p) => /^[A-Za-z0-9_][A-Za-z0-9._-]{0,79}$/.test(p) && p !== "." && p !== "..");
+}
+const ROOM_FILE_TYPES: Record<string, string> = {
+  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8",
+  mjs: "text/javascript; charset=utf-8", json: "application/json; charset=utf-8", txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8",
+  csv: "text/csv; charset=utf-8", svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", mp4: "video/mp4", webm: "video/webm", glb: "model/gltf-binary", gltf: "model/gltf+json",
+  wasm: "application/wasm", pdf: "application/pdf", zip: "application/zip",
+};
+export function roomFileType(name: string): string {
+  return ROOM_FILE_TYPES[name.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
+}
+export function roomFileUrl(origin: string, roomId: string, name: string): string {
+  return `${origin.replace(/\/+$/, "")}/gateway/rooms/${roomId}/files/${name.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export function roomMessagesFile(home: string, id: string): string {
   return path.join(roomsDir(home), `${id}.messages.jsonl`);
 }
@@ -189,7 +219,7 @@ export function sameMember(a: Pick<RoomMember, "kind" | "id" | "home">, f: RoomF
   return a.kind === f.kind && a.id === f.id && a.home === (f.home ?? "local");
 }
 
-export const DEFAULT_RULES: RoomRules = { turns: "mention", maxAgentRun: 12, paused: false, checkinMinutes: 0 };
+export const DEFAULT_RULES: RoomRules = { turns: "mention", maxAgentRun: 6, paused: false, checkinMinutes: 0 };
 
 // ─── normalisation ───────────────────────────────────────────────────────
 

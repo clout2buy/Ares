@@ -317,3 +317,5 @@
 .roomSharedToggle strong { color: var(--text); }
 .roomInviteNames { width: 100%; margin-top: 8px; padding: 9px 12px; border-radius: 10px; font: inherit; font-size: 13.5px; color: var(--text); background: var(--panel, #100e0b); border: 1px solid var(--line); outline: none; }
 .roomInviteNames:focus { border-color: rgba(10, 132, 255, 0.7); }
+
+.roomRepeat { font-style: normal; font-weight: 700; color: var(--muted); }

@@ -126,3 +126,32 @@ test("profile pictures load through a data: URL — the desktop CSP has no blob:
   const conf = JSON.parse(await fs.readFile(path.resolve("tauri/src-tauri/tauri.conf.json"), "utf8"));
   assert.match(conf.app.security.csp, /img-src[^;]*data:/);
 });
+
+test("hitting the run cap posts ONE notice, not a storm (v0.59: ~50 in 9 seconds from a re-entrant drain)", async () => {
+  const home = await tmp();
+  const ws = await tmp();
+  const delivered = [];
+  const agents = new DesktopAgents({ home, defaultBrain: () => ({ provider: "mock", model: "m" }), deliver: () => undefined, busy: () => false, emit: () => undefined });
+  await agents.load();
+  const a = await agents.create({ name: "bob", instructions: "x" });
+  const b = await agents.create({ name: "bop", instructions: "y" });
+  const rooms = new DesktopRooms({ home, workspace: ws, agents, deliver: (sid, goal) => delivered.push({ sid, goal }), busy: () => false, emit: () => undefined, publicOrigin: async () => null, relayer: () => undefined });
+  await rooms.load();
+  const r = await rooms.create({ name: "Brawl", agents: [a.id, b.id], rules: { maxAgentRun: 3 } });
+  await rooms.postAsOwner(r.id, "@bob tell bop the plan");
+  setRoomsHost(rooms.host());
+  const say = makeRoomsTool();
+  const seat = (id) => rooms.get(r.id).threads[id];
+  // bob and bop volley with no person in between, well past the cap
+  await say.call({ action: "say", text: "@bop plan is punch rc 13" }, { sessionId: seat(a.id) });
+  await say.call({ action: "say", text: "@bob got it, kick 24?" }, { sessionId: seat(b.id) });
+  await say.call({ action: "say", text: "@bop yes kick 24" }, { sessionId: seat(a.id) });
+  await say.call({ action: "say", text: "@bob live?" }, { sessionId: seat(b.id) }).catch(() => undefined);
+  await say.call({ action: "say", text: "@bop live." }, { sessionId: seat(a.id) }).catch(() => undefined);
+  const thread = await rooms.store.messages(r.id);
+  const notices = thread.filter((m) => m.from.kind === "system" && m.text.startsWith("⏸"));
+  assert.equal(notices.length, 1, `one run-cap notice, got ${notices.length}`);
+  const seqs = thread.map((m) => m.seq);
+  assert.equal(new Set(seqs).size, seqs.length, "no message was processed into the thread twice");
+  rooms.stop();
+});

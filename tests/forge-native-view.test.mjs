@@ -23,6 +23,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { makeBrowserTool } from "../packages/cli/dist/entry/browserBridge.js";
+import { cliRuntimeContext } from "../packages/cli/dist/entry/runtime.js";
 import { claimForge, forgeCdpUrl, forgeViewUp, resetForgeHolder } from "../packages/cli/dist/entry/forgeView.js";
 
 const fakeBrowser = (strategy, log) => ({
@@ -176,8 +177,11 @@ test("the instructions never offer a screenshot or a 'can't open' in place of th
   assert.match(desc, /every site loads there/);
   assert.match(desc, /never with a screenshot, a local copy or "I can't open it"/);
   const doctrine = toolDoctrineFor(["Browser"]);
-  assert.match(doctrine, /on the desktop it is a real browser/);
+  assert.match(doctrine, /The Forge is the owner's side panel, a real browser/);
   assert.match(doctrine, /never a screenshot/);
+  assert.match(doctrine, /Work in the Forge like a person at the keyboard/);
+  assert.match(doctrine, /`network` first/);
+  assert.match(JSON.stringify(makeBrowserTool({ browserFilmstripRoot: tmpdir() }).schema.inputJsonSchema), /'network' = devtools for the page/);
   assert.doesNotMatch(makeOpenTool().schema.description, /those are pictures/);
 });
 
@@ -208,6 +212,105 @@ test("one chat drives the Forge at a time; the next may take it once the first g
   } finally {
     resetForgeHolder();
     await ep.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("end to end: Ares plays a canvas game in the Forge, waits for the page, reads the wire, and knows what's on screen", async (t) => {
+  let pw;
+  try { pw = await import("../packages/connectors/node_modules/playwright/index.mjs"); } catch { t.skip("playwright not installed"); return; }
+  const { WebSocketServer } = await import("../packages/cli/node_modules/ws/wrapper.mjs");
+  const { forgeScreenNote, resetForgeScreenNotes } = await import("../packages/cli/dist/entry/forgeView.js");
+  const port = 9800 + Math.floor(Math.random() * 150);
+  const args = [`--remote-debugging-port=${port}`];
+  let chromium;
+  try { chromium = await pw.chromium.launch({ args }); }
+  catch {
+    try { chromium = await pw.chromium.launch({ args, executablePath: "/opt/pw-browsers/chromium" }); } catch { t.skip("no Chromium here"); return; }
+  }
+  await (await chromium.newContext({ viewport: { width: 800, height: 600 } })).newPage(); // the "Forge view"
+  // a relay with the stick-fight bug: answers with a BINARY frame, then says the game is full
+  const site = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<title>Stick Fight</title><body style="margin:0"><canvas id=c width=800 height=600></canvas><div id=lobby>loading</div><script>
+      window.log = [];
+      addEventListener("keydown", (e) => log.push("down:" + e.key));
+      addEventListener("keyup", (e) => log.push("up:" + e.key));
+      c.addEventListener("click", (e) => log.push("click:" + e.clientX + "," + e.clientY));
+      c.addEventListener("mousedown", (e) => log.push("press:" + e.clientX + "," + e.clientY));
+      c.addEventListener("mouseup", (e) => log.push("release:" + e.clientX + "," + e.clientY));
+      setTimeout(() => { document.getElementById("lobby").textContent = "Player 2 joined"; }, 900);
+      const ws = new WebSocket("ws://" + location.host + "/relay/ABCD");
+      ws.onopen = () => ws.send(JSON.stringify({ t: "hello" }));
+    </script>`);
+  });
+  const wss = new WebSocketServer({ server: site });
+  wss.on("connection", (ws) => ws.on("message", (m) => { ws.send(Buffer.from(m)); setTimeout(() => ws.close(4409, "game ABCD is full"), 150); }));
+  await new Promise((r) => site.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${site.address().port}/game.html`;
+  const root = await mkdtemp(path.join(tmpdir(), "ares-forge-play-"));
+  const tool = makeBrowserTool(cliRuntimeContext({ workspace: root, home: root }));
+  const asked = [];
+  // the owner's approval card (guarded mode gates clicks — canvas clicks included)
+  const ctx = { sessionId: "chat-play", signal: new AbortController().signal, emitProgress: () => undefined, requestPermission: async (r) => { asked.push(r); return "allow_once"; } };
+  resetForgeHolder();
+  resetForgeScreenNotes();
+  try {
+    await withEnv({ ARES_FORGE_CDP_URL: `http://127.0.0.1:${port}`, ARES_BROWSER_CDP_DISCOVERY: "0" }, async () => {
+      await tool.call({ action: "preview", url }, ctx);
+      // the turn-start line: what the owner has on screen, once per change
+      const note = await forgeScreenNote("chat-play");
+      assert.match(note, /The Forge .* showing the page titled "Stick Fight" \(quoted from the site\) at http:\/\/127\.0\.0\.1:\d+\/game\.html/);
+      assert.equal(await forgeScreenNote("chat-play"), null, "not repeated while nothing changed");
+
+      // one act = a whole play-through: hold a key, tap another, click and drag on the canvas
+      const played = await tool.call({ action: "act", steps: [
+        { action: "press", keys: "ArrowRight", holdMs: 200 },
+        { action: "press", keys: "Space", repeat: 2 },
+        { action: "click_at", x: 120, y: 140 },
+        { action: "drag", x: 200, y: 200, toX: 320, toY: 260 },
+      ] }, ctx);
+      assert.equal(played.output.status, "committed", JSON.stringify(played.output));
+      const log = (await tool.call({ action: "eval", js: "window.log" }, ctx)).output.result;
+      assert.deepEqual(log.filter((e) => /ArrowRight/.test(e)), ["down:ArrowRight", "up:ArrowRight"], "a real held key, down then up");
+      assert.equal(log.filter((e) => e === "down: ").length, 2, "Space tapped twice");
+      assert.ok(log.includes("click:120,140"), `clicked at the exact spot: ${log}`);
+      assert.ok(log.includes("press:200,200") && log.includes("release:320,260"), "dragged from → to");
+      assert.equal(played.images?.length, 1, "one look at the end, not one per step");
+      assert.equal(asked.length, 1, "one approval for the whole batch (it has canvas clicks), not one per step");
+      // game keys alone don't need the card
+      asked.length = 0;
+      const keysOnly = await tool.call({ action: "press", keys: "ArrowLeft", repeat: 3 }, ctx);
+      assert.equal(keysOnly.output.status, "committed");
+      assert.equal(asked.length, 0, "arrow keys move a game; no approval card");
+
+      // the owner's turn: wait for the page to change, then carry on
+      const waited = await tool.call({ action: "wait", text: "Player 2 joined", timeoutSec: 5 }, ctx);
+      assert.equal(waited.output.status, "committed");
+      assert.equal(waited.output.result.completed[0].result.met, true);
+      await assert.rejects(tool.call({ action: "wait", text: "never appears", timeoutSec: 1 }, ctx), /waited 1s and the page never showed "never appears"/);
+
+      // devtools for the wire: the binary frame and (after a reload with close
+      // codes on) the close code are named
+      let net = await tool.call({ action: "network" }, ctx);
+      assert.match(net.output.note, /BINARY frame/);
+      await tool.call({ action: "open", url }, ctx);
+      await new Promise((r) => setTimeout(r, 600));
+      net = await tool.call({ action: "network" }, ctx);
+      const sock = net.output.result.sockets.at(-1);
+      assert.equal(sock.close?.code, 4409);
+      assert.equal(sock.close?.reason, "game ABCD is full");
+      assert.ok(sock.last.some((f) => f.dir === "out" && f.type === "text"));
+      assert.ok(sock.last.some((f) => f.dir === "in" && f.type === "binary"));
+      assert.match(net.output.note, /closed 4409 "game ABCD is full"/);
+    });
+  } finally {
+    resetForgeHolder();
+    await tool.call({ action: "close" }, ctx).catch(() => undefined);
+    await chromium.close();
+    wss.close();
+    site.closeAllConnections?.();
+    site.close();
     await rm(root, { recursive: true, force: true });
   }
 });

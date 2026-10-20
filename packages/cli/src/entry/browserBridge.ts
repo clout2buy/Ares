@@ -179,9 +179,28 @@ export function setExtensionBrowserBridge(bridge: BrowserBridgeServer | null): v
   extensionBridge = bridge;
 }
 
+/** Keyboard, pointer and wait fields shared by the tool and its act steps. */
+const gestureFields = {
+  keys: z.string().max(60).optional().describe("press: a key or combo — Enter, Escape, Tab, ArrowLeft, Space, w, Control+L, Shift+Tab."),
+  holdMs: z.number().int().min(0).max(10_000).optional().describe("press: hold the key down this long (a game move: ArrowRight for 600 ms)."),
+  repeat: z.number().int().min(1).max(50).optional().describe("press: press it this many times."),
+  x: z.number().optional().describe("click_at/drag/scroll: viewport x in CSS pixels (from a screenshot of the page)."),
+  y: z.number().optional().describe("click_at/drag/scroll: viewport y in CSS pixels."),
+  toX: z.number().optional().describe("drag: where to release, x."),
+  toY: z.number().optional().describe("drag: where to release, y."),
+  dx: z.number().optional().describe("scroll: horizontal wheel delta."),
+  dy: z.number().optional().describe("scroll: vertical wheel delta (positive = down)."),
+  button: z.enum(["left", "right", "middle"]).optional().describe("click_at/drag: mouse button (default left)."),
+  double: z.boolean().optional().describe("click_at: double-click."),
+  text: z.string().max(200).optional().describe("wait: until the page shows this text."),
+  gone: z.boolean().optional().describe("wait: until the text/selector is GONE instead (a spinner, a sign-in form)."),
+  timeoutSec: z.number().min(1).max(300).optional().describe("wait: give up after this many seconds (default 60, max 300)."),
+};
+
 const browserStep = z
   .object({
-    action: z.enum(["open", "click", "click_text", "fill", "fill_selector", "eval"]),
+    action: z.enum(["open", "click", "click_text", "fill", "fill_selector", "eval", "press", "click_at", "drag", "scroll", "wait"]),
+    ...gestureFields,
     url: z.string().optional(),
     role: z.string().optional(),
     name: z.string().optional(),
@@ -196,7 +215,7 @@ const browserStep = z
 const browserInput = z
   .object({
     action: z
-      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "explain", "model", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret"])
+      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "explain", "model", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret", "press", "click_at", "drag", "scroll", "wait", "network"])
       .describe(
         "Browser action. DOM-first web actions: open/tree/fill/click/screenshot/state/close. " +
         "PREVIEW & VERIFY (drives a VISIBLE browser with an animated cursor so the owner watches Ares test the UI): " +
@@ -206,8 +225,12 @@ const browserInput = z
         "Use 'handshake' to attach ONLY to an already-open CDP-enabled Chrome/Edge without launching a replacement. " +
         "Use 'act' with steps for a complete multi-control job; it executes the sequence and returns one final visual verification instead of burning a model round-trip per click. " +
         "'login' signs in with the owner's SAVED login for the current https page (username + password from the vault — you never see them; the owner approves each fill). " +
-        "'fill_secret' fills a secret handle (\"sec_…\", e.g. an emailed sign-in code another tool gave you) into one field by selector or label, after the owner approves.",
+        "'fill_secret' fills a secret handle (\"sec_…\", e.g. an emailed sign-in code another tool gave you) into one field by selector or label, after the owner approves. " +
+        "HANDS: 'press' real keys (keys, holdMs, repeat — shortcuts, Enter, a game's ArrowRight held 600 ms); 'click_at' / 'drag' / 'scroll' at exact viewport x,y from the screenshot (canvas, WebGL, maps — no DOM there). All of them (and 'wait') also work as act steps, so a whole play-through is ONE call. " +
+        "'wait' blocks until the page shows (or, gone:true, stops showing) text / selector / a url fragment — e.g. after asking the owner to sign in in the Forge. " +
+        "'network' = devtools for the page: failed requests, HTTP errors, and every WebSocket (text vs BINARY frames, last frames, close code + reason). Use it first when anything online misbehaves.",
       ),
+    ...gestureFields,
     url: z.string().optional().describe("URL for open/preview (e.g. http://localhost:1420)."),
     label: z.string().optional().describe("Accessible label for fill."),
     value: z.string().optional().describe("Value for fill / fill_selector."),
@@ -546,7 +569,9 @@ export function makeBrowserTool(
         onChallenge,
         // The Forge view IS the live page the owner sees: never stream frames of it.
         ...(cdpUrl && cdpUrl === forgeCdpUrl() ? {} : { onFrame: (jpeg: string) => frameSink?.(jpeg) }),
-        paceMs: Number(process.env.ARES_BROWSER_PACE_MS) || 480,
+        // In the Forge the owner watches Ares work in their own panel: a
+        // visible but quick glide, not a slow demo (ARES_BROWSER_PACE_MS wins).
+        paceMs: Number(process.env.ARES_BROWSER_PACE_MS) || (cdpUrl && cdpUrl === forgeCdpUrl() ? 160 : 480),
       });
     }
     return browser;
@@ -631,9 +656,22 @@ export function makeBrowserTool(
 
     async call(input, ctx): Promise<{ output: BrowserToolOutput; display: string; images?: Array<{ mediaType: string; data: string }> }> {
       // explain: ~500 tokens of blocks → a finished kit page, previewed in the Forge
+      // A lone gesture (press / click_at / drag / scroll / wait) is a one-step
+      // act: same rails, same final screenshot + state, one code path.
+      const gesture = (["press", "click_at", "drag", "scroll", "wait"] as const).find((g) => g === input.action);
       const i = input.action === "explain"
         ? { ...input, action: "preview" as const, html: renderExplainer(input), url: undefined, engine: undefined }
-        : input;
+        : gesture
+          ? {
+              ...input,
+              action: "act" as const,
+              steps: [{
+                action: gesture,
+                ...Object.fromEntries((["keys", "holdMs", "repeat", "x", "y", "toX", "toY", "dx", "dy", "button", "double", "text", "gone", "timeoutSec", "selector", "url"] as const)
+                  .filter((k) => input[k] !== undefined).map((k) => [k, input[k]])),
+              }] as z.infer<typeof browserStep>[],
+            }
+          : input;
       const strip = ensureFilmstrip();
       // mode: "explain" when the page is a Forge-kit explainer Ares generated
       // (the Forge goes warm and bursts), "project" for a real app or site.
@@ -829,6 +867,23 @@ export function makeBrowserTool(
         };
       }
 
+      if (i.action === "network") {
+        if (!br.network) throw new Error("network is not supported by this browser connector");
+        const report = await br.network({ limit: i.limit ?? 20 });
+        const binary = report.sockets.filter((sk) => sk.binary > 0);
+        const abnormal = report.sockets.filter((sk) => sk.close && sk.close.code !== 1000 && sk.close.code !== 1001);
+        const hints = [
+          ...binary.map((sk) => `${sk.url}: ${sk.binary} BINARY frame(s) — a page that does JSON.parse(ev.data) gets a Blob and fails silently; send text (JSON.stringify) on both ends.`),
+          ...abnormal.map((sk) => `${sk.url}: closed ${sk.close!.code}${sk.close!.reason ? ` "${sk.close!.reason}"` : ""} — that code is the cause; fix what it names before anything else.`),
+          ...report.sockets.filter((sk) => sk.open && sk.sent > 0 && sk.received === 0).map((sk) => `${sk.url}: sent ${sk.sent}, received nothing — the other side or the relay isn't answering.`),
+        ];
+        const display = `network: ${report.failed.length} failed, ${report.httpErrors.length} HTTP errors, ${report.sockets.length} socket(s)${hints.length ? ` — ${hints.length} problem(s)` : ""}`;
+        return {
+          output: { action: i.action, status: "ok", result: report, ...(hints.length ? { note: hints.join(" ") } : {}), filmstripDir: filmstripDir(strip) },
+          display,
+        };
+      }
+
       if (i.action === "act") {
         if (!i.steps?.length) throw new Error("Browser act requires steps");
         const initial = await br.state();
@@ -850,7 +905,10 @@ export function makeBrowserTool(
         const rails = await browserRailsContext(context, promptApprover);
         const effect = browserActionEffect(
           "browser.act",
-          hasClick ? "recoverable" : "reversible",
+          // A canvas click/drag can hit "Buy" like any click, and Enter or a
+          // Ctrl/⌘ combo can submit: those stay under the click rule. Arrows,
+          // letters, Space, Escape, Tab move a game or a cursor and don't.
+          hasClick || i.steps.some((step) => step.action === "click_at" || step.action === "drag" || (step.action === "press" && /(^|\+)(enter|control|ctrl|meta|cmd|command)(\+|$)/i.test(step.keys ?? ""))) ? "recoverable" : "reversible",
           `act:${sequence++}`,
           async () => {
             const completed: Array<{ step: number; action: string; state?: unknown; result?: unknown }> = [];
@@ -873,6 +931,23 @@ export function makeBrowserTool(
                 } else if (step.action === "fill_selector") {
                   if (!step.selector || step.value === undefined || !br.fillBySelector) throw new Error("fill_selector needs selector, value, and connector support");
                   await br.fillBySelector(step.selector, step.value);
+                } else if (step.action === "press") {
+                  if (!step.keys || !br.press) throw new Error("press needs keys (e.g. Enter, ArrowLeft, Control+L) and connector support");
+                  await br.press(step.keys, { holdMs: step.holdMs, repeat: step.repeat });
+                } else if (step.action === "click_at" || step.action === "drag" || step.action === "scroll") {
+                  if (step.x === undefined || step.y === undefined || !br.pointer) throw new Error(`${step.action} needs x and y (viewport CSS pixels, from the screenshot) and connector support`);
+                  if (step.action === "drag" && (step.toX === undefined || step.toY === undefined)) throw new Error("drag needs toX and toY");
+                  await br.pointer({
+                    kind: step.action === "drag" ? "drag" : step.action === "scroll" ? "wheel" : step.double ? "double" : "click",
+                    x: step.x, y: step.y, toX: step.toX, toY: step.toY, dx: step.dx, dy: step.dy ?? (step.action === "scroll" ? 400 : undefined), button: step.button,
+                  });
+                } else if (step.action === "wait") {
+                  if (!step.text && !step.selector && !step.url) throw new Error("wait needs text, selector or url");
+                  if (!br.waitFor) throw new Error("wait is not supported by this browser connector");
+                  const waited = await br.waitFor({ text: step.text, selector: step.selector, url: step.url, gone: step.gone }, (step.timeoutSec ?? 60) * 1000, ctx?.signal);
+                  completed.push({ step: index + 1, action: step.action, result: waited, state: await br.state() });
+                  if (!waited.met) throw new Error(`waited ${Math.round(waited.waitedMs / 1000)}s and the page never ${step.gone ? "lost" : "showed"} ${step.text ? `"${step.text}"` : step.selector ?? step.url}`);
+                  continue;
                 } else {
                   if (!step.js || !br.evaluate) throw new Error("eval needs js and connector support");
                   completed.push({ step: index + 1, action: step.action, result: await br.evaluate(step.js) });

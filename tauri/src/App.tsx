@@ -895,6 +895,10 @@ function App() {
   // on its own — the owner should never have to press ↻ to see an edit.
   const servedRootRef = useRef<string | null>(null);
   const liveRefreshTimer = useRef<number | null>(null);
+  /** Last time Ares used the Browser (it drives the Forge page). */
+  const forgeDrivenAt = useRef(0);
+  /** An edit was held back from reloading the Forge mid-turn. */
+  const forgeReloadPending = useRef(false);
   // The Forge sensor: what the served page reports while the owner tests it
   // (frame rate, exceptions, failed loads, console errors/warnings). Rendered
   // as the HUD pills over the Live tab; the daemon also hands it to Ares.
@@ -3012,6 +3016,14 @@ function App() {
       if (ev.type === "turn_settled" || ev.type === "turn_end") {
         stoppingSessionsRef.current.delete(sid ?? (primarySessionRef.current || activeRef.current));
       }
+      // Ares is working in the Forge page (any Browser call): note it, and at
+      // turn end show the owner the final code if edits were held back.
+      if (ev.type === "tool_start" && (ev as { name?: string }).name === "Browser") forgeDrivenAt.current = Date.now();
+      if ((ev.type === "turn_end" || ev.type === "turn_settled") && forgeReloadPending.current) {
+        forgeReloadPending.current = false;
+        forgeDrivenAt.current = 0;
+        setLiveRevision((n) => n + 1);
+      }
       // Feed the composer's token-flow strip: count every streamed character of
       // the session you're LOOKING at (text, thinking, tool-input authoring).
       // One integer addition on a module-level accumulator — no React involved.
@@ -3155,7 +3167,16 @@ function App() {
       if (ev.type === "tool_end" && servedRootRef.current && Array.isArray(ev.touchedFiles) && ev.touchedFiles.length > 0) {
         const root = servedRootRef.current.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") + "/";
         const touched = ev.touchedFiles.some((f) => typeof f === "string" && f.replace(/\\/g, "/").toLowerCase().startsWith(root));
-        if (touched) {
+        if (touched && Date.now() - forgeDrivenAt.current < 120_000) {
+          // Ares is working IN this page this turn: reloading after every edit
+          // loaded half-applied changes between two edits and fed their errors
+          // back to it. Its next action on the page reloads it first (the
+          // page driver checks for changed files); the owner's view refreshes
+          // when the turn ends.
+          forgeReloadPending.current = true;
+          const edited = (ev.touchedFiles ?? []).map((f) => String(f).split(/[\\/]/).pop()).filter(Boolean);
+          logForge(`Ares edited ${edited.slice(0, 2).join(", ")}${edited.length > 2 ? ` +${edited.length - 2}` : ""} — refreshes when it looks again`, "info");
+        } else if (touched) {
           if (liveRefreshTimer.current !== null) window.clearTimeout(liveRefreshTimer.current);
           liveRefreshTimer.current = window.setTimeout(() => {
             liveRefreshTimer.current = null;

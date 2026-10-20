@@ -1121,10 +1121,19 @@
 .ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
 .ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .14); border-radius: 3px; border: none; }
 .ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar-track { background: transparent; }
-.ares.ares[data-surface="messages"] .settingsShell *, .ares.ares[data-surface="messages"] .settingsShell { scrollbar-color: rgba(255, 255, 255, .14) transparent; }
+/* (no scrollbar-color here: Chromium then drops the styled bar for the classic arrowed one) */
+.ares.ares[data-surface="messages"] .settingsShell ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+/* the nav scrolls like the phone: no bar, and the "Settings" title stays put */
+.ares.ares[data-surface="messages"] .settingsNav { scrollbar-width: none; padding-top: 0; }
+.ares.ares[data-surface="messages"] .settingsNav::-webkit-scrollbar { display: none; width: 0; }
+.ares.ares[data-surface="messages"] .settingsBrand { position: sticky; top: 0; z-index: 2; margin: 0 -10px 6px; padding: 16px 18px 10px; background: rgb(18, 19, 25); }
 /* text selection in the phone's blue, never the old ember; headings and the nav don't select */
 .ares.ares[data-surface="messages"] ::selection { background: rgba(10, 132, 255, .38); color: inherit; }
 .ares.ares[data-surface="messages"] .paneTitle,
 .ares.ares[data-surface="messages"] .settingsBrand,
 .ares.ares[data-surface="messages"] .settingsNav,
 .ares.ares[data-surface="messages"] .settingsFooter { user-select: none; -webkit-user-select: none; }
+/* the nav's column fits the nav: grouped tiles never spill over the pane's title */
+.ares.ares[data-surface="messages"] .settingsShell { grid-template-columns: 250px minmax(0, 1fr); }
+.ares.ares[data-surface="messages"] .settingsNav { min-width: 0; box-sizing: border-box; }
+@media (max-width: 760px) { .ares.ares[data-surface="messages"] .settingsShell { grid-template-columns: 200px minmax(0, 1fr); } }

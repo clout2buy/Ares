@@ -723,6 +723,12 @@ function App() {
   // agents you make. Older chats (never bound to an agent) stay on a shelf,
   // every one of them hand-able to an agent with its whole history.
   const [tutorialOpen, setTutorialOpen] = useState<boolean>(() => !tutorialSeen());
+  // The "seen" flag lives in this webview's storage, which a new origin (dev
+  // build, reinstall, browser preview) starts without — so it popped up for an
+  // owner with agents already made. Having agents means you've been through it.
+  useEffect(() => {
+    if (agents.length > 0 && !tutorialSeen()) { markTutorialSeen(); setTutorialOpen(false); }
+  }, [agents.length]);
   const [olderOpen, setOlderOpen] = useState(false);
   /** Right after the first agent is made: offer to hand it the older chats. */
   const [handOver, setHandOver] = useState<{ agentId: string } | null>(null);

@@ -37,6 +37,9 @@ import { createStallGuard, stallErrorEvent, type StallGuard } from "./stallGuard
 import { parseRetryAfterMs } from "./retryAfter.js";
 import { coerceToolArgs, sanitizeToolPairs, toolResultsFirst, TOOL_ARGS_ERROR_KEY } from "./_toolPairs.js";
 import { imageMediaTypeFor } from "./imageMediaType.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   resolveAnthropicAccessToken,
   ANTHROPIC_OAUTH_BETA,
@@ -127,6 +130,7 @@ export class AnthropicProvider implements Provider {
 
     const url = this.overrideUrl ?? ANTHROPIC_MESSAGES_URL;
     const body = buildMessagesBody(req, this.dialect);
+    let wireNames: Map<string, string> | undefined;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
@@ -154,6 +158,7 @@ export class AnthropicProvider implements Provider {
         { type: "text", text: ANTHROPIC_OAUTH_IDENTITY },
         ...existingSystem,
       ];
+      wireNames = oauthWireToolNames(body);
     }
 
     // Stall watchdog: abort the fetch when no bytes arrive for the stall
@@ -264,6 +269,7 @@ export class AnthropicProvider implements Provider {
       // Surface the body verbatim: the engine's context-limit matcher
       // reads it ("prompt is too long"), and 529s carry overloaded_error.
       const text = consumedErrorText ?? await response.text().catch(() => "");
+      if (oauthToken && /extra usage/i.test(text)) dumpOAuthRequest("extra-usage", headers, body, text);
       yield {
         type: "error",
         error: {
@@ -287,13 +293,14 @@ export class AnthropicProvider implements Provider {
       return;
     }
 
-    yield* this.parseSSE(response.body, req.signal, guard);
+    yield* this.parseSSE(response.body, req.signal, guard, wireNames);
   }
 
   private async *parseSSE(
     body: ReadableStream<Uint8Array>,
     signal: AbortSignal | undefined,
     guard?: StallGuard,
+    wireNames?: Map<string, string>,
   ): AsyncGenerator<StreamEvent> {
     const decoder = new TextDecoder("utf8");
     const reader = body.getReader();
@@ -376,7 +383,7 @@ export class AnthropicProvider implements Provider {
               blocks.set(evt.index, freshBlock("thinking"));
             } else if (cb?.type === "tool_use") {
               const toolId = cb.id ?? `toolu_${evt.index}`;
-              const toolName = cb.name ?? "";
+              const toolName = wireNames?.get(cb.name ?? "") ?? cb.name ?? "";
               const state = freshBlock("tool_use");
               state.toolId = toolId;
               state.toolName = toolName;
@@ -933,4 +940,70 @@ function parseAnthropicSSE(raw: string): AnthropicSSEEvent | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Forensics for the "You're out of extra usage" 400 that a subscription with
+ * plenty of plan usage left still hits: Anthropic decides per request whether
+ * it bills the plan or extra usage, so the only evidence is the request itself.
+ * Keeps every rejected body under ~/.ares/debug (auth header stripped) so it
+ * can be replayed and bisected — that is how the mcp_ tool-name trigger below
+ * was found.
+ */
+function dumpOAuthRequest(kind: "extra-usage", headers: Record<string, string>, body: unknown, error?: string): void {
+  try {
+    const dir = path.join(process.env.ARES_HOME ?? path.join(os.homedir(), ".ares"), "debug");
+    fs.mkdirSync(dir, { recursive: true });
+    const { Authorization: _auth, ...safeHeaders } = headers;
+    const file = `anthropic-${kind}-${Date.now()}.json`;
+    fs.writeFileSync(path.join(dir, file), JSON.stringify({ at: new Date().toISOString(), headers: safeHeaders, error, body }));
+  } catch {
+    // Diagnostics must never break a turn.
+  }
+}
+
+/**
+ * Anthropic bills a subscription request to EXTRA USAGE — and, with none
+ * bought, rejects it ("You're out of extra usage") while the plan sits mostly
+ * unused — whenever a tool name starts with "mcp_" + one underscore, Ares's
+ * per-server MCP naming (mcp_vercel_list_access_groups). Claude Code's own
+ * shape, "mcp__…", is plan-billed. Reproduced by replaying a dumped request:
+ * the same body passes or fails on that one rename alone. Because a loaded
+ * MCP tool stays in every later request, one discovery bricked the session
+ * for good while a fresh chat worked.
+ *
+ * Rewrites those names on the wire (tools, history tool_use, tool_choice) and
+ * returns wire → original so streamed tool calls map back exactly.
+ */
+export function oauthWireToolNames(body: Record<string, unknown>): Map<string, string> | undefined {
+  const toWire = new Map<string, string>();
+  const fromWire = new Map<string, string>();
+  const wire = (name: unknown): string | undefined => {
+    if (typeof name !== "string" || !/^mcp_(?!_)/.test(name)) return undefined;
+    const known = toWire.get(name);
+    if (known) return known;
+    let out = `mcp__${name.slice(4)}`.slice(0, 64);
+    for (let i = 2; fromWire.has(out); i++) out = `${out.slice(0, 64 - String(i).length)}${i}`;
+    toWire.set(name, out);
+    fromWire.set(out, name);
+    return out;
+  };
+  for (const tool of (Array.isArray(body.tools) ? body.tools : []) as Array<{ name?: unknown }>) {
+    const w = wire(tool.name);
+    if (w) tool.name = w;
+  }
+  for (const msg of (Array.isArray(body.messages) ? body.messages : []) as Array<{ content?: unknown }>) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content as Array<{ type?: string; name?: unknown }>) {
+      if (block.type !== "tool_use") continue;
+      const w = wire(block.name);
+      if (w) block.name = w;
+    }
+  }
+  const choice = body.tool_choice as { type?: string; name?: unknown } | undefined;
+  if (choice?.type === "tool") {
+    const w = wire(choice.name);
+    if (w) choice.name = w;
+  }
+  return fromWire.size ? fromWire : undefined;
 }

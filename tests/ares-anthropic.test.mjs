@@ -279,6 +279,48 @@ test("AnthropicProvider: OAuth uses the Claude Code request contract", async () 
   }
 });
 
+test("AnthropicProvider: OAuth sends mcp_ tools as mcp__ (plan-billed) and maps tool calls back", async () => {
+  // A tool named "mcp_<server>_…" makes Anthropic bill a subscription request
+  // to extra usage ("You're out of extra usage") and bricks the session.
+  const previous = process.env.ARES_ANTHROPIC_OAUTH_TOKEN;
+  process.env.ARES_ANTHROPIC_OAUTH_TOKEN = "oauth-token";
+  const captured = {};
+  const body = [
+    sse("message_start", { message: { id: "msg_mcp", usage: { input_tokens: 1, output_tokens: 0 } } }),
+    sse("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_2", name: "mcp__vercel_list_projects" } }),
+    sse("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: "{}" } }),
+    sse("content_block_stop", { index: 0 }),
+    sse("message_delta", { delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } }),
+    sse("message_stop", {}),
+  ].join("");
+  try {
+    const provider = new AnthropicProvider({ fetchImpl: captureFetch(body, captured), endpointUrl: "http://x" });
+    const events = [];
+    for await (const e of provider.stream({
+      model: "claude-opus-5-5",
+      system: "Ares system",
+      messages: [
+        userMessage("list"),
+        { id: "a1", role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "mcp_vercel_list_projects", input: {} }], createdAt: "now" },
+        { id: "u2", role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "[]" }], createdAt: "now" },
+      ],
+      tools: [
+        { name: "Read", description: "read", input_schema: { type: "object" } },
+        { name: "mcp_vercel_list_projects", description: "list", input_schema: { type: "object" } },
+      ],
+    })) events.push(e);
+
+    assert.deepEqual(captured.body.tools.map((t) => t.name), ["Read", "mcp__vercel_list_projects"]);
+    assert.ok(!JSON.stringify(captured.body).includes('"mcp_vercel'), "no single-underscore mcp_ name reaches the wire");
+    assert.equal(events.find((e) => e.type === "tool_use_start").name, "mcp_vercel_list_projects");
+    const toolUse = events.at(-1).message.content.find((b) => b.type === "tool_use");
+    assert.equal(toolUse.name, "mcp_vercel_list_projects");
+  } finally {
+    if (previous === undefined) delete process.env.ARES_ANTHROPIC_OAUTH_TOKEN;
+    else process.env.ARES_ANTHROPIC_OAUTH_TOKEN = previous;
+  }
+});
+
 test("AnthropicProvider: 429 → single error event, retriable", async () => {
   const provider = new AnthropicProvider({
     apiKey: "test-key",

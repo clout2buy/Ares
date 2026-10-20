@@ -264,9 +264,11 @@ test("handing a chat to an agent rebinds it (the history stays, the agent takes 
   assert.deepEqual(agents.get(rex.id).desktopThreads, ["sess_old_ares_chat"]);
 });
 
-test("the desktop agent layer keeps the working voice and names the texting protocol", () => {
+test("the desktop agent layer texts like a person (owner, 2026-10-19: no console, say what you're doing) and names the texting protocol", () => {
   const block = desktopAgentLayerBlock({ name: "Ava", instructions: "Designer." }, [{ name: "Rex", role: "Engineer" }]);
-  assert.match(block, /on their desktop/);
+  assert.match(block, /texting them from their desktop/);
+  assert.match(block, /text thread, not a console/);
+  assert.match(block, /Say what you are about to do, then do it/);
   assert.match(block, /every Ares tool — the Forge/);
   assert.match(block, /\[text from <name>\]/);
   assert.match(block, /Agents \(action avatar\)/);

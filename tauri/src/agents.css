@@ -437,18 +437,44 @@
 }
 .ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody > .prose > :first-child { margin-top: 0; }
 .ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody > .prose > :last-child { margin-bottom: 0; }
-/* thinking stays available but whispers: a small line, not a card */
-.ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody > :not(.prose) { font-size: 12px; opacity: .72; }
+/* no thinking, no machinery: the owner sees words (owner, 2026-10-19:
+   "people shouldn't see tool calls, or see pretty much anything — it's just
+   like iMessage") */
+.ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody > :not(.prose) { display: none; }
 /* the machinery (token counts) is noise in a text thread */
 .ares.ares .chat[data-imsg="1"] > .usage { display: none; }
-/* tool work collapses to a quiet centred line, like "Penny shared a file" */
-.ares.ares .chat[data-imsg="1"] > .toolCard {
+/* tool work is invisible once done; while it runs it is ONE quiet line —
+   "searching the web" — never a card, never a log */
+.ares.ares .chat[data-imsg="1"] > .toolCard:not([data-state="running"]) { display: none; }
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] {
   align-self: center;
-  max-width: min(78%, 680px);
+  width: auto; max-width: min(78%, 680px);
   margin: 2px auto;
-  opacity: .82;
-  transform: scale(.94);
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  animation: none;
+  opacity: .8;
+  transform: none;
 }
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolCardHead { padding: 4px 10px; gap: 8px; pointer-events: none; }
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolCardIcon { width: 18px; height: 18px; border-radius: 50%; background: transparent; }
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolCardTitle { font: 500 12px/1.3 var(--font, system-ui); letter-spacing: 0; text-transform: none; color: var(--muted); animation: none; }
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolCardSub,
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolCardTrail,
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .caret,
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolProgressRail,
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .stepLiveTail,
+.ares.ares .chat[data-imsg="1"] > .toolCard[data-state="running"] .toolBody { display: none; }
+/* the rest of the console stays out of a text thread (approvals and errors still show) */
+.ares.ares .chat[data-imsg="1"] > .diffCard,
+.ares.ares .chat[data-imsg="1"] > .diff,
+.ares.ares .chat[data-imsg="1"] > .subagent,
+.ares.ares .chat[data-imsg="1"] > .notice[data-tone="dim"] { display: none; }
+/* the typing bubble says what the agent is doing right now */
+.imsgTyping .typingNow { margin: 0 0 0 10px; font: 500 11.5px/1.3 var(--font, system-ui); color: var(--faint); align-self: center; }
 .ares.ares .chat[data-imsg="1"] > .working { display: none; }
 
 /* typing… */

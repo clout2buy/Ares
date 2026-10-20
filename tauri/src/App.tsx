@@ -147,6 +147,7 @@ import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./f
 import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
+import { Tutorial, markTutorialSeen, tutorialSeen } from "./tutorial";
 import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
 import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
 import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
@@ -714,6 +715,14 @@ function App() {
     try { return window.localStorage.getItem("ares.agent.selected") || ARES_AGENT_ID; } catch { return ARES_AGENT_ID; }
   });
   const [agentEditor, setAgentEditor] = useState<null | { mode: "create" } | { mode: "edit"; id: string }>(null);
+  // Ares is retired as a contact (owner, 2026-10-19): the sidebar is only the
+  // agents you make. Older chats (never bound to an agent) stay on a shelf,
+  // every one of them hand-able to an agent with its whole history.
+  const [tutorialOpen, setTutorialOpen] = useState<boolean>(() => !tutorialSeen());
+  const [olderOpen, setOlderOpen] = useState(false);
+  /** Right after the first agent is made: offer to hand it the older chats. */
+  const [handOver, setHandOver] = useState<{ agentId: string } | null>(null);
+  const agentsCountRef = useRef(0);
   const [agentError, setAgentError] = useState<string | undefined>();
   const [agentUnread, setAgentUnread] = useState<string[]>([]);
   /** Profile pictures by agent id (data: URLs), fetched when a version changes. */
@@ -760,6 +769,14 @@ function App() {
     return map;
   }, [agents, localAgentBindings]);
   rememberAgentFaces(agents);
+  useEffect(() => {
+    if (agents.length === 0) return;
+    if (selectedAgentId === ARES_AGENT_ID || !agents.some((a) => a.id === selectedAgentId)) {
+      const first = agents[0]!.id;
+      selectedAgentRef.current = first;
+      setSelectedAgentIdState(first);
+    }
+  }, [agents, selectedAgentId]);
   const agentIdOf = (sessionId: string | undefined): string => (sessionId ? sessionAgentMap[sessionId] : undefined) ?? ARES_AGENT_ID;
   const [activeId, setActiveId] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2419,6 +2436,7 @@ function App() {
         case "agents_list":
           if (Array.isArray(e.agents)) {
             const list = e.agents as AgentVm[];
+            agentsCountRef.current = list.length;
             setAgents(list);
             // Fetch any profile picture that is new or changed (the phone may
             // have set it); drop the ones that were removed.
@@ -2441,6 +2459,7 @@ function App() {
           return true;
         case "agent_created": {
           const made = e.agent as AgentVm | undefined;
+          if (made?.id && agentsCountRef.current === 0) setHandOver({ agentId: made.id });
           if (made?.id) {
             setAgents((current) => [...current.filter((a) => a.id !== made.id), made]);
             setAgentEditor(null);
@@ -3497,7 +3516,12 @@ function App() {
     // A new chat is just a new card — the multi-session daemon lazily spawns an
     // isolated session for it on first message. NEVER restart the daemon here
     // (that would kill every other running chat).
-    const agentId = typeof agentArg === "string" ? agentArg : selectedAgentRef.current;
+    let agentId = typeof agentArg === "string" ? agentArg : selectedAgentRef.current;
+    if (agentId === ARES_AGENT_ID) {
+      const first = agents[0]?.id;
+      if (!first) { setAgentError(undefined); setAgentEditor({ mode: "create" }); return; }
+      agentId = first;
+    }
     const fresh = freshSession();
     if (agentId !== ARES_AGENT_ID) {
       // Bound BEFORE the first send: the daemon builds the session on the
@@ -4155,8 +4179,9 @@ function App() {
     agents: [{ id: ARES_AGENT_ID, name: "Ares" }, ...agents].filter((a) => a.id !== selectedAgentId),
     onGive: giveChat,
   };
-  const agentRows: AgentRowVm[] = [null, ...agents]
-    .filter((a) => !q || (a ? a.name : "Ares").toLowerCase().includes(q) || (a ?? null)?.id === selectedAgentId || (!a && selectedAgentId === ARES_AGENT_ID))
+  const olderChats = sessions.filter((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === ARES_AGENT_ID && !s.background && (s.items.length > 0 || s.title !== "New session"));
+  const agentRows: AgentRowVm[] = agents
+    .filter((a) => !q || a.name.toLowerCase().includes(q) || a.id === selectedAgentId)
     .map((a) => {
       const id = a?.id ?? ARES_AGENT_ID;
       const theirs = sessions.filter((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === id && (id !== ARES_AGENT_ID || !s.background));
@@ -4781,12 +4806,25 @@ function App() {
             flex:1 scrollers crushed the controls above (field report,
             2026-08-10). */}
         <div className="railScroll">
-        <div className="railLabel" data-label="Agents">Agents<button className="railNew" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} title="New agent" aria-label="New agent">+</button></div>
+        <div className="railLabel" data-label="Agents">Agents<span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><button className="railHelp" onClick={() => setTutorialOpen(true)} title="How Ares works" aria-label="Tutorial">?</button><button className="railNew" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} title="New agent" aria-label="New agent">+</button></span></div>
         {agents.length === 0 && !q ? (
           <div className="agentFirst">
-            <strong>Make your own agents</strong>
-            <p>Anyone you want: a name, a face, a job. Each gets its own memory, Forge and model, still knows what you've told Ares, and can take over any of your chats.</p>
-            <button className="agentPrimary" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}>Create an agent</button>
+            <h3>Make someone</h3>
+            <p>A name, a face, a job. They get their own memory, their own model and the whole machine. Text them like a person.</p>
+            <div className="agentFirstBtns">
+              <button className="agentPrimary" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}>Make my first agent</button>
+              <button className="agentGhost" onClick={() => setTutorialOpen(true)}>How it works</button>
+            </div>
+          </div>
+        ) : null}
+        {handOver && agents.some((a) => a.id === handOver.agentId) && olderChats.length > 0 ? (
+          <div className="handOverCard">
+            <strong>Hand your older chats to {agents.find((a) => a.id === handOver.agentId)?.name}?</strong>
+            <p>{olderChats.length} chat{olderChats.length === 1 ? "" : "s"} from before. They keep everything and carry on with {agents.find((a) => a.id === handOver.agentId)?.name}'s memory and model. You can also hand them one at a time from the shelf below.</p>
+            <div>
+              <button className="agentPrimary" onClick={() => { for (const s of olderChats) giveChat(s.id, handOver.agentId); setHandOver(null); }}>Hand them over</button>
+              <button className="agentGhost" onClick={() => setHandOver(null)}>Later</button>
+            </div>
           </div>
         ) : null}
         <AgentList
@@ -4849,6 +4887,20 @@ function App() {
             <div className="agentEmptyChats">{q ? "No chats match." : "No chats yet."}</div>
           ) : null}
         </AgentList>
+        {olderChats.length > 0 ? (
+          <div className="olderChats">
+            <button className="olderChatsHead" onClick={() => setOlderOpen((v) => !v)} title="Chats from before agents — hand any of them to an agent, history and all">
+              <span>{olderOpen ? "▾" : "▸"} Older chats</span><em>{olderChats.length}</em>
+            </button>
+            {olderOpen ? (
+              <nav className="sessionList">
+                {(q ? olderChats.filter((s) => s.title.toLowerCase().includes(q)) : olderChats).slice(0, 200).map((s) => (
+                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={{ agents: agents.map((a) => ({ id: a.id, name: a.name })), onGive: giveChat }} />
+                ))}
+              </nav>
+            ) : null}
+          </div>
+        ) : null}
         {/* Rooms: group chats of you, your agents, and people you invite
             (with their agents). Below the contacts, like Messages' groups. */}
         <div className="railLabel" data-label="Rooms">Rooms<button className="railNew" onClick={() => { setRoomError(undefined); setRoomSheet({ kind: "create" }); }} title="New room" aria-label="New room">+</button></div>
@@ -5148,6 +5200,7 @@ function App() {
               <div className="turn assistant imsgTyping" aria-label={`${activeAgent.name} is typing`}>
                 <span className="turnMark imsgFace"><AgentAvatar agent={activeAgent} size={30} busy /></span>
                 <div className="typingBubble"><i /><i /><i /></div>
+                {active.activity && !/^(thinking|working|response committed|settling proposed actions)$/i.test(active.activity) ? <span className="typingNow">{active.activity}</span> : null}
               </div>
             ) : null}
             {active?.busy ? (
@@ -5781,6 +5834,12 @@ function App() {
             </div>
           ))}
         </div>
+      ) : null}
+      {tutorialOpen ? (
+        <Tutorial
+          onDone={() => { markTutorialSeen(); setTutorialOpen(false); }}
+          onMakeAgent={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}
+        />
       ) : null}
       {peopleOpen ? (
         <PeopleSheet

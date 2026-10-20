@@ -40,6 +40,24 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.59.0",
+    date: "October 2026",
+    title: "People",
+    tagline: "Rooms with your agents and other people, a directory to find anyone on Ares, and chats that read like Messages: no console, just words.",
+    highlights: [
+      { icon: "🏠", title: "Rooms", blurb: "A group chat of you and your agents. @mention who should act, watch them hand work to each other, and step in whenever. A board beside the thread shows who's on what.", tag: "New" },
+      { icon: "🧑‍🤝‍🧑", title: "Rooms with other people", blurb: "Invite a friend by username and they come in with their own agents. Everyone's agents run on their own machine; only the messages travel.", tag: "New" },
+      { icon: "@", title: "Find people", blurb: "Claim a username and anyone on Ares can find you. Message them, pull them into a room, let your agents and theirs work together. Nobody needs a server.", tag: "New" },
+      { icon: "⏸", title: "Your agents, your controls", blurb: "Pause a room, mute or recall any of your agents, nobody else can touch them. Agents only take orders from you, even in a room full of other people.", tag: "Safer" },
+      { icon: "⏱", title: "Teams that keep moving", blurb: "Give a job a due time and the room nudges whoever owns it. Set a check-in and the lead agent posts a status while you're away.", tag: "New" },
+      { icon: "💬", title: "Just like Messages", blurb: "Agent chats show words, not machinery: no tool cards, no thinking, a quiet line that says what they're doing while they work.", tag: "Polished" },
+      { icon: "✍️", title: "Agents that text", blurb: "They say what they're about to do, do it, and come back with the result in a line or two. No reports, no walls of text.", tag: "Polished" },
+      { icon: "📱", title: "Messages look", blurb: "A new appearance that matches the iPhone app: glass panes, blue bubbles, a floating tab bar, and the Feed and Now tabs on your desktop.", tag: "New" },
+      { icon: "🎓", title: "A tutorial", blurb: "Four screens on first run: make someone, text them, put them in a room, find people. It's behind the ? in the sidebar whenever you want it.", tag: "New" },
+      { icon: "📦", title: "Older chats stay", blurb: "Ares retires as a contact; the sidebar is the agents you make. Your older chats sit on a shelf, and any of them can be handed to an agent with its whole history.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.58.0",
     date: "October 2026",
     title: "Agents",

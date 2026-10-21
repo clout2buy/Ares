@@ -1350,6 +1350,22 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       existing.lastActiveAt = Date.now();
       return existing;
     }
+    // One load per session at a time: a card opened in the background and a
+    // send that arrives while it loads share the same promise, so a session is
+    // never built twice.
+    const pending = entriesLoading.get(sid);
+    if (pending) return pending;
+    const loading = loadEntry(sid).finally(() => entriesLoading.delete(sid));
+    entriesLoading.set(sid, loading);
+    return loading;
+  };
+
+  const entriesLoading = new Map<string, Promise<DaemonEntry>>();
+  const loadEntry = async (sid: string): Promise<DaemonEntry> => {
+    const testOpenDelayMs = Number(process.env.ARES_TEST_DAEMON_OPEN_DELAY_MS ?? 0);
+    if (Number.isFinite(testOpenDelayMs) && testOpenDelayMs > 0 && sid.startsWith("slow-open")) {
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(120_000, testOpenDelayMs)));
+    }
     // A RESUMED card must come back on ITS OWN saved provider+model pair. The
     // daemon's main lane is a moving target (failover and model switches mutate
     // it), and pairing main's provider with another session's model built
@@ -1456,7 +1472,50 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   const staleLeaseRecoveryRetries = new Set<string>();
   const enqueueStartupRecoveryCommand = (command: DaemonInputCommand): void => {
     internalStartupRecoveryCommands.add(command);
-    commands.enqueue(command);
+    // A send parked on this chat's load arrived first: it must be handled
+    // before anything the load itself schedules, exactly as when the load ran
+    // inline on the command loop.
+    const held = heldUntilParkedSends.get(command.sessionId || DEFAULT_SID);
+    if (held) held.push(command);
+    else commands.enqueue(command);
+  };
+
+  /** Sends waiting on their chat's load, in arrival order, and the commands
+   *  that load scheduled meanwhile (released after the sends). */
+  const parkedSends = new Map<string, DaemonInputCommand[]>();
+  const heldUntilParkedSends = new Map<string, DaemonInputCommand[]>();
+  const parkSendUntilLoaded = (sid: string, command: DaemonInputCommand, inputId: string): void => {
+    const waiting = parkedSends.get(sid);
+    if (waiting) { waiting.push(command); return; }
+    parkedSends.set(sid, [command]);
+    heldUntilParkedSends.set(sid, []);
+    const release = (): DaemonInputCommand[] => {
+      const sends = parkedSends.get(sid) ?? [];
+      const held = heldUntilParkedSends.get(sid) ?? [];
+      parkedSends.delete(sid);
+      heldUntilParkedSends.delete(sid);
+      for (const held1 of held) commands.enqueue(held1);
+      return sends;
+    };
+    void resolveEntry(sid).then(
+      () => {
+        const sends = parkedSends.get(sid) ?? [];
+        parkedSends.delete(sid);
+        for (const parked of sends) commands.enqueue(parked);
+        const held = heldUntilParkedSends.get(sid) ?? [];
+        heldUntilParkedSends.delete(sid);
+        for (const later of held) commands.enqueue(later);
+      },
+      (error: unknown) => {
+        for (const failed of release()) {
+          tagEmit(failed.sessionId, {
+            type: "daemon_error",
+            inputId: typeof failed.inputId === "string" ? failed.inputId : inputId,
+            error: `could not open this chat: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      },
+    );
   };
 
   const scheduleNextStartupRecovery = async (entry: DaemonEntry): Promise<boolean> => {
@@ -3004,8 +3063,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // The desktop opened a session card. Materialize it so unfinished work
         // from a previous run is DISCOVERED and offered (startup_recovery_available)
         // — never run — before the owner types anything.
+        // Detached: loading a session (hooks, memory, recovery checks) can be
+        // slow, and awaiting it here held every other chat's commands.
         const sid = cleanCommandId(command.sessionId ?? command.id);
-        if (sid) await resolveEntry(sid).catch(() => undefined);
+        if (sid) void resolveEntry(sid).catch(() => undefined);
         continue;
       }
       if (command.type === "session_history") {
@@ -4514,6 +4575,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         continue;
       }
       const inputId = requestedInputId || `input_${randomUUID()}`;
+      if (sid !== DEFAULT_SID && (!sessions.has(sid) || parkedSends.has(sid))) {
+        // Not loaded yet: load it off the loop, then re-queue this exact
+        // command (identity preserved for the recovery bookkeeping), ahead of
+        // anything the load scheduled for this chat.
+        parkSendUntilLoaded(sid, command, inputId);
+        continue;
+      }
       const entry = await resolveEntry(command.sessionId);
       if (entry.startupRecoveryOffer?.length && !internalStartupRecoveryCommands.has(command)) {
         // The owner typed something new instead of pressing Resume: the old

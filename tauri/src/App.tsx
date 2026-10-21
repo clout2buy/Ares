@@ -89,6 +89,7 @@ import {
   sessionFromSummary,
   sessionFromHistory,
   workingHintFor,
+  setTurnTokenWarn,
 } from "./state/session";
 import { foldEvent, toolKind, summarizeSteps } from "./state/foldEvent";
 import { daemonHealth, loopStuckNote, turnStatusNote, type Pong } from "./state/health";
@@ -713,6 +714,7 @@ function BubbleImage({ src, alt }: { src: string; alt: string }) {
 function App() {
   const native = useMemo(hasNativeBridge, []);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
+  setTurnTokenWarn(prefs.turnTokenWarn);
   const [daemon, setDaemon] = useState<DaemonState>(native ? "starting" : "running");
   // Out-of-band health probe: the daemon answers a ping even mid-turn, so a
   // missing pong means the daemon itself is wedged, not just a slow chat.
@@ -12241,6 +12243,15 @@ function Settings({
                   </div>
                 </>
               ) : null}
+              <label className="fieldLabel">Turn token warning</label>
+              <div className="displayModes">
+                {([[0, "Off", "Never warn."], [250_000, "250k", "Warn early on heavy turns."], [500_000, "500k", "The default."], [1_000_000, "1M", "Only for very long runs."]] as const).map(([value, label, hint]) => (
+                  <button key={label} data-on={(draft.turnTokenWarn ?? 500_000) === value ? "1" : "0"} onClick={() => setDraftPrefs({ ...draft, turnTokenWarn: value })}>
+                    <strong>{label}</strong>
+                    <span>{hint}</span>
+                  </button>
+                ))}
+              </div>
               <label className="fieldLabel">Tool call display</label>
               <div className="displayModes">
                 <button data-on={draft.toolDisplay === "product" ? "1" : "0"} onClick={() => setDraftPrefs({ ...draft, toolDisplay: "product" })}>

@@ -3,6 +3,7 @@
 
 import type { AresEvent } from "./events";
 import {
+  currentTurnTokenWarn,
   nextKey,
   PREVIEWABLE,
   HOLO_SPEC_FILE,
@@ -106,6 +107,9 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.activity = "marshalling";
       session.activityAt = Date.now();
       session.preparing = true;
+      session.turnFreshTokens = 0;
+      session.turnModelCalls = 0;
+      session.turnBudgetWarned = false;
       session.authFailedTurn = undefined;
       // Clear last turn's fleet board — UNLESS it can still resume or has
       // agents still running (background fleets survive turn boundaries; a new
@@ -338,6 +342,22 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       }
       session.providerAttempt = undefined;
       session.activity = e.stopReason === "tool_use" ? "settling proposed actions" : "response committed";
+      if (e.usage) {
+        const fresh = Math.max(0, (e.usage.inputTokens ?? 0) - (e.usage.cacheReadTokens ?? 0)) + (e.usage.outputTokens ?? 0);
+        session.turnFreshTokens = (session.turnFreshTokens ?? 0) + fresh;
+        session.turnModelCalls = (session.turnModelCalls ?? 0) + 1;
+        const limit = currentTurnTokenWarn();
+        if (limit > 0 && !session.turnBudgetWarned && session.turnFreshTokens >= limit) {
+          session.turnBudgetWarned = true;
+          const k = (t: number) => (t >= 1_000_000 ? `${(t / 1_000_000).toFixed(1)}M` : `${Math.round(t / 1000)}k`);
+          items.push({
+            kind: "notice",
+            key: nextKey(),
+            text: `This turn has used ${k(session.turnFreshTokens)} fresh tokens over ${session.turnModelCalls} model call${session.turnModelCalls === 1 ? "" : "s"}, past your ${k(limit)} warning. It keeps going; Stop is available if it's running away.`,
+            tone: "warn",
+          });
+        }
+      }
       break;
     }
     case "tool_use_start": {

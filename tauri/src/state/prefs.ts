@@ -21,6 +21,9 @@ export interface Prefs {
   routingMode: "manual" | "auto";
   /** Tool-call rendering: product = concise summaries; technical = raw input/output. */
   toolDisplay: "product" | "technical";
+  /** Warn once when a single turn has used this many fresh tokens (new input
+   *  plus output, cache reads excluded). 0 = off. Absent = 500k. */
+  turnTokenWarn?: number;
   /** Working-state EFFECTS. Photosensitive-safe by design: nothing flashes,
    *  nothing strobes. "glow" = a STATIC ember rim + slow ember drift while
    *  working; "minimal" = only the small header indicator; "off" = nothing.

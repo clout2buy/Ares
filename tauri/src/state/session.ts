@@ -201,6 +201,10 @@ export interface SessionVm {
   lastEventAt?: number;
   /** Between turn_start and the first provider attempt: gathering context. */
   preparing?: boolean;
+  /** This turn's fresh tokens so far (new input + output across model calls). */
+  turnFreshTokens?: number;
+  turnModelCalls?: number;
+  turnBudgetWarned?: boolean;
   /** Unfinished requests from before Ares last closed, waiting for the owner:
    *  Resume runs them, Discard retires them, a new message replaces them.
    *  Nothing runs until one of those happens. */
@@ -468,4 +472,14 @@ export function workingHintFor(activity: string | undefined, elapsedS: number, q
     return `nothing heard for ${quiet}, long tools can be silent; Stop is available`;
   }
   return null;
+}
+
+export const DEFAULT_TURN_TOKEN_WARN = 500_000;
+let turnTokenWarn = DEFAULT_TURN_TOKEN_WARN;
+/** Set from the owner's prefs; foldEvent reads it (0 turns the warning off). */
+export function setTurnTokenWarn(tokens: number | undefined): void {
+  turnTokenWarn = typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? tokens : DEFAULT_TURN_TOKEN_WARN;
+}
+export function currentTurnTokenWarn(): number {
+  return turnTokenWarn;
 }

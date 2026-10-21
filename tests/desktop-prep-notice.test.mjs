@@ -90,3 +90,29 @@ test("desktop tells the owner where the stall report was saved", async () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("desktop warns once when a turn passes the owner's fresh-token limit", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "ares-turn-budget-"));
+  try {
+    const outfile = path.join(tmp, "fold.mjs");
+    await esbuild({ entryPoints: [path.join(here, "..", "tauri", "src", "state", "foldEvent.ts")], bundle: true, platform: "node", format: "esm", outfile, logLevel: "silent" });
+    const { foldEvent } = await import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
+    let s = { id: "s", title: "t", items: [], busy: false, workflowMode: "build", tokensIn: 0, cacheReadTokens: 0, tokensOut: 0, todos: [], steerQueued: 0 };
+    s = foldEvent(s, { type: "turn_start" });
+    const call = (input, cached, output) => ({ type: "message_done", stopReason: "tool_use", usage: { inputTokens: input, cacheReadTokens: cached, outputTokens: output } });
+    s = foldEvent(s, call(300_000, 290_000, 2_000)); // mostly cache: 12k fresh
+    assert.equal(s.items.filter((i) => i.kind === "notice").length, 0);
+    s = foldEvent(s, call(400_000, 0, 50_000));
+    assert.equal(s.items.filter((i) => i.kind === "notice").length, 0, "462k is under the 500k default");
+    s = foldEvent(s, call(60_000, 0, 1_000));
+    const notices = s.items.filter((i) => i.kind === "notice");
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].text, /523k fresh tokens over 3 model calls, past your 500k warning/);
+    s = foldEvent(s, call(100_000, 0, 0));
+    assert.equal(s.items.filter((i) => i.kind === "notice").length, 1, "only once per turn");
+    s = foldEvent(s, { type: "turn_start" });
+    assert.equal(s.turnFreshTokens, 0, "a new turn starts from zero");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

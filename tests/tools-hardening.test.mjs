@@ -18,6 +18,7 @@ import {
   ReadTool,
   GrepTool,
   GlobTool,
+  normalizeGlobRequest,
   makeWebFetchTool,
   makeWebSearchTool,
   makeComputerUseTool,
@@ -231,17 +232,31 @@ test("Grep: through the engine gate the bad pattern is a correctable <tool_use_e
 
 // ─── Glob ────────────────────────────────────────────────────────────────────
 
-test("Glob: backslash and absolute patterns are rejected with the fix", async () => {
+test("Glob: backslash and absolute patterns are normalized, never bounced", async () => {
   const bs = await GlobTool.validateInput({ pattern: "src\\**\\*.ts", max_results: 500 });
-  assert.equal(bs.ok, false);
-  assert.match(bs.message, /forward slashes/);
+  assert.equal(bs.ok, true);
+  const blank = await GlobTool.validateInput({ pattern: "  ", max_results: 500 });
+  assert.equal(blank.ok, false);
 
-  const abs = await GlobTool.validateInput({ pattern: "C:/proj/src/**/*.ts", max_results: 500 });
-  assert.equal(abs.ok, false);
-  assert.match(abs.message, /`cwd`/);
+  assert.deepEqual(normalizeGlobRequest("src\\**\\*.ts"), { pattern: "src/**/*.ts" });
+  assert.deepEqual(normalizeGlobRequest("./src/*.ts", "pkg"), { pattern: "src/*.ts", cwd: "pkg" });
+  assert.deepEqual(normalizeGlobRequest("C:\\proj\\src\\**\\*.ts"), { pattern: "**/*.ts", cwd: "C:/proj/src" });
+  assert.deepEqual(normalizeGlobRequest("C:/proj/src/**/*.ts", "D:/other"), { pattern: "**/*.ts", cwd: "C:/proj/src" });
+  assert.deepEqual(normalizeGlobRequest("C:\\*.txt"), { pattern: "*.txt", cwd: "C:/" });
+  assert.deepEqual(normalizeGlobRequest("/home/u/proj/a.ts"), { pattern: "a.ts", cwd: "/home/u/proj" });
+  assert.deepEqual(normalizeGlobRequest("/*.ts"), { pattern: "*.ts", cwd: "/" });
 
-  const ok = await GlobTool.validateInput({ pattern: "src/**/*.{ts,tsx}", max_results: 500 });
-  assert.equal(ok.ok, true);
+  // End to end: a backslash pattern and an absolute pattern both find the file.
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), "ares-glob-norm-"));
+  await fs.mkdir(path.join(ws, "src", "deep"), { recursive: true });
+  await fs.writeFile(path.join(ws, "src", "deep", "a.ts"), "x");
+  const c = ctx(ws);
+  const viaBackslash = await GlobTool.call({ pattern: "src\\**\\*.ts", max_results: 10 }, c);
+  assert.equal(viaBackslash.output.matches.length, 1);
+  const absPattern = `${ws.replace(/\\/g, "/")}/src/**/*.ts`;
+  const viaAbsolute = await GlobTool.call({ pattern: absPattern, max_results: 10 }, c);
+  assert.equal(viaAbsolute.output.matches.length, 1);
+  assert.equal(viaAbsolute.output.pattern, "**/*.ts");
 });
 
 // ─── WebFetch / WebSearch ────────────────────────────────────────────────────

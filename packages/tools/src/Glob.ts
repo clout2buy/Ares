@@ -47,32 +47,21 @@ export const GlobTool = buildTool({
   inputZod: inputSchema,
   activityDescription: (i) => `Globbing ${i.pattern}`,
 
-  // Pattern sanity: the two shapes that silently match NOTHING today are
-  // backslash separators (Windows paths pasted as patterns) and absolute
-  // patterns (matching runs against workspace-relative paths).
+  // A blank pattern is the only one bounced. Backslash separators and absolute
+  // patterns used to be refused here (26 field errors, each a wasted round
+  // trip for a path style); call() now normalizes them instead.
   async validateInput(i) {
     if (i.pattern.trim() === "") {
       return { ok: false, message: "pattern is blank — pass a glob like `src/**/*.ts`." };
-    }
-    if (i.pattern.includes("\\")) {
-      return {
-        ok: false,
-        message: `pattern "${i.pattern}" contains backslashes — glob patterns use forward slashes even on Windows (e.g. src/**/*.ts).`,
-      };
-    }
-    if (/^([A-Za-z]:|\/)/.test(i.pattern)) {
-      return {
-        ok: false,
-        message: `pattern "${i.pattern}" is an absolute path — pass the root via \`cwd\` and a relative pattern (e.g. cwd: "D:/proj", pattern: "src/**/*.ts").`,
-      };
     }
     return { ok: true };
   },
 
   async call(i, ctx): Promise<{ output: GlobOutput; display: string }> {
-    const root = await resolveWorkspacePath(ctx, i.cwd, "cwd", "read");
+    const request = normalizeGlobRequest(i.pattern, i.cwd);
+    const root = await resolveWorkspacePath(ctx, request.cwd, "cwd", "read");
     const walkState: WalkState = { capped: false };
-    const matches = await glob(root, i.pattern, i.max_results + 1, walkState);
+    const matches = await glob(root, request.pattern, i.max_results + 1, walkState);
     const rules = await repositoryInstructionsText(ctx, [root]);
     const stats = await Promise.all(
       matches.slice(0, i.max_results).map(async (rel) => {
@@ -89,7 +78,7 @@ export const GlobTool = buildTool({
     valid.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return {
       output: {
-        pattern: i.pattern,
+        pattern: request.pattern,
         matches: valid,
         truncated: matches.length > i.max_results || walkState.capped,
         ...(walkState.capped ? { capped: true } : {}),
@@ -99,6 +88,29 @@ export const GlobTool = buildTool({
     };
   },
 });
+
+/**
+ * Never bounce the model for a path style. Backslashes become forward slashes
+ * (a Windows path pasted as a pattern), and an absolute pattern is split at the
+ * last separator before its first wildcard into a root (`cwd`) and a relative
+ * pattern, since matching runs on root-relative paths. A literal absolute file
+ * path becomes its directory + its name.
+ */
+export function normalizeGlobRequest(pattern: string, cwd?: string): { pattern: string; cwd?: string } {
+  let normalized = pattern.trim().replace(/\\/g, "/");
+  if (!/^([A-Za-z]:\/|\/)/.test(normalized)) {
+    while (normalized.startsWith("./")) normalized = normalized.slice(2);
+    return { pattern: normalized || "**/*", ...(cwd !== undefined ? { cwd } : {}) };
+  }
+  const firstMeta = normalized.search(/[*?[{]/);
+  const cut = normalized.lastIndexOf("/", (firstMeta < 0 ? normalized.length : firstMeta) - 1);
+  // Keep the separator when the root IS the drive or filesystem root.
+  const root = normalized.slice(0, cut);
+  return {
+    pattern: normalized.slice(cut + 1) || "**/*",
+    cwd: root === "" || /^[A-Za-z]:$/.test(root) ? `${root}/` : root,
+  };
+}
 
 // Minimal recursive glob implementation. Supports **, *, ?, character classes.
 // Production version (M3) will use a real glob library + .gitignore.

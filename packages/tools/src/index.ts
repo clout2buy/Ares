@@ -8,7 +8,7 @@ export { WriteTool } from "./Write.js";
 export { EditTool, nearMissHint, looksLineNumberPrefixed, weakestLayer, type EditLayer, type EditOutput } from "./Edit.js";
 export { ApplyPatchTool, type ApplyPatchOutput } from "./ApplyPatch.js";
 export { safeOverwrite, assessShrink, type SafeOverwriteOptions, type SafeOverwriteResult, type ShrinkVerdict } from "./safeWrite.js";
-export { GlobTool } from "./Glob.js";
+export { GlobTool, normalizeGlobRequest } from "./Glob.js";
 export { DiffTool, type DiffOutput } from "./Diff.js";
 export { BisectTool, type BisectOutput } from "./Bisect.js";
 export { summarizeTestOutput, looksLikeTestCommand, testSummaryMinChars, type TestSummary } from "./testSummary.js";

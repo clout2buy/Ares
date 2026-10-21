@@ -65,7 +65,7 @@ import { buildEngineTools } from "./engineTools.js";
 import { AresCommandPermissionStore, AresPathPermissionStore } from "./permissions.js";
 import { daemonModelCatalog, providerFamilyForSelection, selectProvider, TERMINAL_PROVIDERS } from "./providers.js";
 import { AresRuntimeState, ParsedArgs, cliRuntimeContext } from "./runtime.js";
-import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, makeSpanSummarizer, resolveReasoningLevel } from "./sessionFactory.js";
+import { chatContextBudget, chatMaxOutputTokens, invalidateTrimmedReadStamps, makeSpanSummarizer, modelContextWindow, resolveReasoningLevel } from "./sessionFactory.js";
 import { TelegramModelControl, buildOperatorReporter, sendWarMapBriefing, startTelegramBridge, startTelegramCheckins, keepTelegramBridgeUp } from "./telegramWiring.js";
 import { persistTerminalModelPreference, terminalModelCatalogLines } from "./terminalLines.js";
 import { buildSystemPrompt, captureRemoteTurn, loadGitContext, loadLiveMindContext } from "./turnPipeline.js";
@@ -279,6 +279,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     home: context.home,
     workspace: context.workspace,
     enabled: process.env.ARES_AGENT_ENABLED === "1" || (!isMock && process.env.ARES_AGENT_ENABLED !== "0"),
+    contextWindowTokens: modelContextWindow(selection.model),
   });
   const gitTail = await loadGitContext(context);
   const promptTail = (await loadLiveMindContext(context)) + gitTail;

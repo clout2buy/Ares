@@ -13,7 +13,7 @@ export {
   type BootstrapState,
 } from "./bootstrap/bootstrap.js";
 export { VIBE_RULES, vibeRulesMarkdown } from "./bootstrap/vibeRules.js";
-export { loadAgentSystemContext, composeAgentSystemPrompt, resolveAgentName, type AgentSystemContext, type AgentContextBlock, type ComposeOptions } from "./identity/context.js";
+export { loadAgentSystemContext, composeAgentSystemPrompt, resolveAgentName, selfContextBudgetTokens, MIN_SELF_CONTEXT_TOKENS, type AgentSystemContext, type AgentContextBlock, type ComposeOptions } from "./identity/context.js";
 export { embedText, embedOptionsFromConfig, lexicalEmbedding, type EmbedOptions } from "./memory/embed.js";
 export { createMemoryStore, formatRecallReminder, type MemoryStore } from "./memory/vectorStore.js";
 export type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult, CanonicalMemoryInput } from "./memory/types.js";

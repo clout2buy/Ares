@@ -11,6 +11,7 @@ import path from "node:path";
 
 import {
   loadAgentSystemContext,
+  selfContextBudgetTokens,
   composeAgentSystemPrompt,
   BootstrapTool,
   agentPaths,
@@ -66,7 +67,7 @@ test("loaded context never exceeds the budget (default and env override)", async
   await writeBigDailyLog(home, today);
 
   const def = await loadAgentSystemContext({ home, workspace, today });
-  assert.ok(def.contextTokens <= 3500, `default budget respected (${def.contextTokens} <= 3500)`);
+  assert.ok(def.contextTokens <= 12_000, `default budget respected (${def.contextTokens} <= 12000)`);
 
   process.env.ARES_CONTEXT_MEMORY_BUDGET = "200";
   try {
@@ -134,4 +135,29 @@ test("the prompt frames the budgeted blocks as one operating-context section", a
   const ctx = await loadAgentSystemContext({ home, workspace });
   const composed = composeAgentSystemPrompt("BASE", ctx);
   assert.match(composed, /# Relevant operating context/);
+});
+
+// ── Move 2: self-context scales with the model; curated memory is pinned ─────
+
+test("the self-context budget is 5% of the model window, never under 12k", () => {
+  assert.equal(selfContextBudgetTokens(undefined), 12_000);
+  assert.equal(selfContextBudgetTokens(128_000), 12_000);
+  assert.equal(selfContextBudgetTokens(1_000_000), 50_000);
+  process.env.ARES_CONTEXT_MEMORY_BUDGET = "900";
+  try {
+    assert.equal(selfContextBudgetTokens(1_000_000), 900, "the env override still wins");
+  } finally {
+    delete process.env.ARES_CONTEXT_MEMORY_BUDGET;
+  }
+});
+
+test("curated memory is never budgeted out, even when everything else is", async () => {
+  const { home, workspace } = await bootstrapHome();
+  const today = new Date();
+  await writeBigDailyLog(home, today);
+  await fs.writeFile(agentPaths(home).memory, "# MEMORY\n\n- CURATEDMARKER the owner wants plans before edits\n", "utf8");
+  const ctx = await loadAgentSystemContext({ home, workspace, today, contextBudget: 1 });
+  assert.match(ctx.systemText, /CURATEDMARKER/);
+  assert.ok(!ctx.droppedLabels.includes("curated memory"));
+  assert.ok(ctx.droppedLabels.includes("identity"), "the rest of the budget still applies");
 });

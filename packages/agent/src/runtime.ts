@@ -38,6 +38,8 @@ export async function prepareAresAgent(opts: {
   workspace: string;
   includeMemory?: boolean;
   enabled?: boolean;
+  /** The session model's context window — scales the self-context budget. */
+  contextWindowTokens?: number;
 }): Promise<PreparedAgent> {
   const enabled = opts.enabled ?? process.env.ARES_AGENT_ENABLED !== "0";
   const home = aresAgentHome(opts.home);
@@ -56,7 +58,12 @@ export async function prepareAresAgent(opts: {
   }
 
   await ensureAgentScaffold({ home, workspace: opts.workspace });
-  const context = await loadAgentSystemContext({ home, workspace: opts.workspace, includeMemory: opts.includeMemory ?? true });
+  const context = await loadAgentSystemContext({
+    home,
+    workspace: opts.workspace,
+    includeMemory: opts.includeMemory ?? true,
+    ...(opts.contextWindowTokens !== undefined ? { contextWindowTokens: opts.contextWindowTokens } : {}),
+  });
   const bootstrap = await bootstrapReminder(home);
   const startupReminders = bootstrap
     ? [{ text: bootstrap, source: "instructions" as const }]

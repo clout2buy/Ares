@@ -929,6 +929,7 @@ export async function createSessionWithSelection(
   const agent = await prepareAresAgent({
     workspace: context.workspace,
     enabled: agentEnabled,
+    contextWindowTokens: modelContextWindow(selection.model),
   });
   startupReminders.push(...agent.startupReminders);
   const manualReminders: Array<{ text: string; source: ManualReminderSource; key?: string }> = [];

@@ -4,6 +4,7 @@ import {
   budgetForMessage,
   missionFragments,
   detectWorkspaceProjectId,
+  estimateTokensDefault,
   type MemoryFragment,
   type MemoryTier,
 } from "@ares/mind";
@@ -31,10 +32,27 @@ export interface AgentSystemContext {
   droppedLabels: string[];
 }
 
-/** Default token ceiling for the loaded ~/.ares context blocks. Override with
- *  ARES_CONTEXT_MEMORY_BUDGET. Keeps identity/CAPABILITIES/daily-log files from
- *  flooding every turn — charter + the sealed core are always-on, separately. */
-const DEFAULT_CONTEXT_BUDGET = 3_500;
+/**
+ * Token ceiling for the loaded ~/.ares context blocks (identity, soul, user,
+ * capabilities, curated memory, workspace tools, daily logs). It was a flat
+ * 3,500 tokens whatever the model, while the same turn routinely carried
+ * hundreds of thousands of tokens of tool output: Ares spent its window on
+ * exhaust and almost none on itself. It now scales with the model: 5% of the
+ * context window, never under 12k. ARES_CONTEXT_MEMORY_BUDGET still wins.
+ * The charter and sealed core are always-on, separately.
+ */
+export const MIN_SELF_CONTEXT_TOKENS = 12_000;
+export function selfContextBudgetTokens(contextWindowTokens?: number): number {
+  const envBudget = Number(process.env.ARES_CONTEXT_MEMORY_BUDGET);
+  if (Number.isFinite(envBudget) && envBudget > 0) return Math.floor(envBudget);
+  const window = contextWindowTokens !== undefined && Number.isFinite(contextWindowTokens) && contextWindowTokens > 0 ? contextWindowTokens : 0;
+  return Math.max(MIN_SELF_CONTEXT_TOKENS, Math.floor(window * 0.05));
+}
+
+/** Blocks that are never in a drop tier: the owner's curated long-term memory
+ *  is what DEEP dreaming distilled, and dropping it to fit a daily log made
+ *  Ares forget exactly what it had decided was worth keeping. */
+const PINNED_BLOCKS = new Set(["curated memory"]);
 
 /** Which memory tier each loaded block belongs to (drives drop priority). */
 function tierForBlock(label: string): MemoryTier {
@@ -78,9 +96,8 @@ function scoreForBlock(label: string): number {
   }
 }
 
-function resolveContextBudget(opts: { userMessage?: string; contextBudget?: number }): number {
-  const envBudget = Number(process.env.ARES_CONTEXT_MEMORY_BUDGET);
-  const base = opts.contextBudget ?? (Number.isFinite(envBudget) && envBudget > 0 ? Math.floor(envBudget) : DEFAULT_CONTEXT_BUDGET);
+function resolveContextBudget(opts: { userMessage?: string; contextBudget?: number; contextWindowTokens?: number }): number {
+  const base = opts.contextBudget ?? selfContextBudgetTokens(opts.contextWindowTokens);
   // A trivial message ("hi") earns a smaller slice — don't haul the daily logs in.
   return opts.userMessage ? budgetForMessage(opts.userMessage, base) : base;
 }
@@ -93,12 +110,18 @@ function resolveContextBudget(opts: { userMessage?: string; contextBudget?: numb
 function budgetBlocks(
   blocks: readonly AgentContextBlock[],
   extraFragments: readonly MemoryFragment[],
-  opts: { userMessage?: string; activeProject?: string; contextBudget?: number },
+  opts: { userMessage?: string; activeProject?: string; contextBudget?: number; contextWindowTokens?: number },
 ): { systemText: string; tokens: number; dropped: string[] } {
   if (blocks.length === 0 && extraFragments.length === 0) return { systemText: "", tokens: 0, dropped: [] };
+  // Pinned blocks are rendered whatever the budget (each is already capped at
+  // load) and their size comes off the top of what the compiler may spend.
+  const pinned = blocks.filter((b) => PINNED_BLOCKS.has(b.label));
+  const pinnedText = pinned.map(formatBlock);
+  const pinnedTokens = pinnedText.reduce((sum, text) => sum + estimateTokensDefault(text), 0);
+  const budgeted = blocks.filter((b) => !PINNED_BLOCKS.has(b.label));
   // The ~/.ares file blocks render in the familiar per-file format; mission/
   // project packets render inline (their content is already a compact briefing).
-  const blockFragments: MemoryFragment[] = blocks.map((b) => ({
+  const blockFragments: MemoryFragment[] = budgeted.map((b) => ({
     tier: tierForBlock(b.label),
     content: b.text,
     score: scoreForBlock(b.label),
@@ -108,19 +131,22 @@ function budgetBlocks(
   const packet = compileContext({
     userMessage: opts.userMessage ?? "",
     activeProject: opts.activeProject,
-    tokenBudget: resolveContextBudget(opts),
+    tokenBudget: Math.max(0, resolveContextBudget(opts) - pinnedTokens),
+    // A greeting never hauls the raw daily logs in, however big the budget.
+    ...(opts.userMessage !== undefined && budgetForMessage(opts.userMessage, 100) < 100 ? { tierBudgets: { recent: 0 } } : {}),
     fragments: [...extraFragments, ...blockFragments],
   });
   const rendered = packet.included.map((f) => {
     const block = f.source ? byLabel.get(f.source) : undefined;
     return block ? formatBlock(block) : `## ${sectionTitle(f.source)}\n\n${f.content}`;
   });
-  let systemText = rendered.join("\n\n");
+  let systemText = [...rendered, ...pinnedText].join("\n\n");
+  const tokens = packet.tokens + pinnedTokens;
   const dropped = packet.dropped.map((f) => f.source ?? "?");
   if (systemText && process.env.ARES_CONTEXT_DEBUG === "1") {
-    systemText += `\n\n<!-- context: ~${packet.tokens} tokens loaded; dropped (over budget): ${dropped.join(", ") || "none"} -->`;
+    systemText += `\n\n<!-- context: ~${tokens} tokens loaded; dropped (over budget): ${dropped.join(", ") || "none"} -->`;
   }
-  return { systemText, tokens: packet.tokens, dropped };
+  return { systemText, tokens, dropped };
 }
 
 function sectionTitle(source: string | undefined): string {
@@ -140,6 +166,8 @@ export async function loadAgentSystemContext(opts: {
   activeProject?: string;
   /** Override the loaded-context token budget (else ARES_CONTEXT_MEMORY_BUDGET / default). */
   contextBudget?: number;
+  /** The model's context window; the default budget is 5% of it (min 12k). */
+  contextWindowTokens?: number;
 }): Promise<AgentSystemContext> {
   const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);

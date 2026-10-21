@@ -1,6 +1,21 @@
 # Overnight report — 2026-10-21 (branch `overnight/2026-10-21`)
 
-Cut from `36e3ac4` (v0.61.2). 15 commits including this report and its correction, all pushed. Nothing merged, no version bump, no tag, no release.
+Cut from `36e3ac4` (v0.61.2). 19 commits including this report and its correction, all pushed. Nothing merged, no version bump, no tag, no release.
+
+## 0. Update (second pass, same night): desktop follow-ups and a green gate
+
+Four more commits on this branch, all pushed.
+
+| Commit | What |
+| --- | --- |
+| `df3ee7b` | Desktop showed none of the "Memory and workspace context took over Ns" notice: `foldEvent` only surfaces allow-listed reminders. It is now on the list. |
+| `2f92f35` | The desktop working clock started at the first provider attempt, so the prepare phase (where the chat froze) had no timer or explanation. It now starts at `turn_start`; after 8 s it says it is gathering context, after 20 s it adds that Stop is available. |
+| `2592aa8` | Every event stamps `lastEventAt`; after 90 s of silence the working label says so and that Stop is available. Information only, no action. |
+| `2fb9e3b` | Phone terminal: tmux can lose the exit status of a command that dies within milliseconds, and the poller then reported exit 0. The pane now runs the shell under a small `sh` wrapper that writes its own status file, used when tmux has none. This was the failing gate test; the new regression test fails on the old code. |
+
+**Gate after these commits: green.** `node scripts/test-gate.mjs` with an empty HOME after `pnpm check` and `pnpm build`: 3,991 tests, 3,949 pass, 0 fail, 0 cancelled, 42 skipped, exit 0 (from the gate log). This supersedes the failure described in section 5 and the "pre-existing gate failure" item in section 6.
+
+Desktop changes are covered by tests and a clean type-check only. Nobody has looked at them on the real app.
 
 ## 1. Bricked chat (top priority) — two causes found and fixed
 

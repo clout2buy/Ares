@@ -189,7 +189,7 @@ test("an unknown id is a 404 that costs the same as a known one, and reveals not
   const { hook } = await createHook({ name: uniq("real"), auth: "hmac" });
   const before = api.stats.dummyVerifications;
   const bodies = new Set();
-  for (const id of ["x".repeat(32), "A".repeat(16), "short", "..%2F..%2Fetc%2Fpasswd", `${hook.id.slice(0, 31)}X`, "a".repeat(64), "a".repeat(200)]) {
+  for (const id of ["x".repeat(32), "A".repeat(16), "short", "..%2F..%2Fetc%2Fpasswd", `${hook.id.slice(0, 31)}${hook.id.endsWith("X") ? "Y" : "X"}`, "a".repeat(64), "a".repeat(200)]) {
     const r = await post(id, "hello", { authorization: "Bearer whatever", "x-ares-signature": `t=1,v1=${"0".repeat(64)}` });
     assert.equal(r.status, 404, id);
     bodies.add(await r.text());

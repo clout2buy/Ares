@@ -26,6 +26,8 @@ test("a pinned memory is in MEMORY.md now and after a deep dream", async () => {
 
     await assert.rejects(pinOwnerMemory({ home, text: "   " }), /nothing to remember/);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    // Windows keeps the SQLite file locked a moment after the test; a leftover
+    // temp dir must not fail the test.
+    try { rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* the OS reaps temp */ }
   }
 });

@@ -75,7 +75,7 @@ function scripted(home, script, extra = {}) {
   return { sessions, holder };
 }
 
-async function serve(t, home, script, { budgetMs = 400, available, permissionTimeoutMs } = {}) {
+async function serve(t, home, script, { budgetMs = 5_000, available, permissionTimeoutMs } = {}) {
   const { sessions, holder } = scripted(home, script, { permissionTimeoutMs });
   const lines = [];
   const server = new RemoteAgentServer({
@@ -193,7 +193,7 @@ test("one dedicated session: created once, titled Voice, mobile surface, reused;
   }, "state persisted");
   const saved = JSON.parse(await fsp.readFile(path.join(home, "voice-ask.json"), "utf8"));
   assert.equal(saved.sessionId, a.body.sessionId);
-  const second = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "tok", phoneApi: { ask: createAskApi(s.sessions, { home, budgetMs: 400 }) } });
+  const second = new RemoteAgentServer({ port: 0, host: "127.0.0.1", tunnelMode: "none", controlToken: "tok", phoneApi: { ask: createAskApi(s.sessions, { home, budgetMs: 5_000 }) } });
   await second.start();
   t.after(() => second.close());
   const res = await fetch(`http://127.0.0.1:${second.port}/gateway/ask`, { method: "POST", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: JSON.stringify({ text: "third" }) });

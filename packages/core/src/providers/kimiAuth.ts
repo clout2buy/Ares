@@ -13,6 +13,7 @@
 // is renewed before it is handed out, so a long session never fails mid-turn on an
 // expired credential.
 
+import { withRefreshDeadline } from "./refreshDeadline.js";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -257,11 +258,11 @@ export async function refreshKimiTokens(
   if (refreshInFlight !== null) return refreshInFlight;
   refreshInFlight = (async () => {
     try {
-      const { ok, body } = await postForm(TOKEN_PATH, {
+      const { ok, body } = await withRefreshDeadline((signal) => postForm(TOKEN_PATH, {
         client_id: OAUTH_CLIENT_ID,
         grant_type: "refresh_token",
         refresh_token: tokens.refreshToken,
-      }, fetchImpl);
+      }, fetchImpl, signal));
       if (!ok) return null;
       try {
         const refreshed = tokensFromBody(body, tokens.refreshToken);

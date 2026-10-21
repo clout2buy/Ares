@@ -8,6 +8,7 @@
 // Bypass for tests/CI: $ARES_OPENAI_OAUTH_TOKEN env var (still an OAuth
 // access token — just sourced from env instead of file).
 
+import { withRefreshDeadline } from "./refreshDeadline.js";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -112,7 +113,8 @@ export async function refreshOpenAIToken(fetchImpl: typeof fetch = fetch): Promi
     try {
       const file = await readAuthFile();
       if (!file?.tokens.refreshToken) return null;
-      const res = await fetchImpl(`${OAUTH_ISSUER}/oauth/token`, {
+      const res = await withRefreshDeadline((signal) => fetchImpl(`${OAUTH_ISSUER}/oauth/token`, {
+        signal,
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         body: new URLSearchParams({
@@ -120,9 +122,9 @@ export async function refreshOpenAIToken(fetchImpl: typeof fetch = fetch): Promi
           client_id: OAUTH_CLIENT_ID,
           refresh_token: file.tokens.refreshToken,
         }),
-      });
+      }).then(async (response) => ({ ok: response.ok, body: response.ok ? await response.json() : null })));
       if (!res.ok) return null;
-      const tok = (await res.json()) as { access_token?: string; refresh_token?: string; id_token?: string; expires_in?: number };
+      const tok = (res.body) as { access_token?: string; refresh_token?: string; id_token?: string; expires_in?: number };
       if (!tok.access_token) return null;
       const updated: AuthFile = {
         ...file,

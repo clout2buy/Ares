@@ -45,6 +45,9 @@ export interface AcquireCoordinatedLeaseOptions {
   waitForLease?: boolean;
   /** Called exactly once when renewal proves this generation lost authority. */
   onLeaseLost?: (error: unknown) => void;
+  /** With waitForLease: give up after this long and rethrow LeaseHeldError,
+   * so a holder that never lets go fails the turn instead of hanging it. */
+  maxWaitMs?: number;
 }
 
 export interface CoordinatedRunLease {
@@ -129,6 +132,7 @@ export class RunLeaseCoordinator {
   ): Promise<CoordinatedRunLease> {
     if (this.closed) throw new SessionKernelError("KERNEL_CLOSED", "Run lease coordinator is closed");
     let durableLease: RunnerLease;
+    const waitUntil = options.maxWaitMs && options.maxWaitMs > 0 ? Date.now() + options.maxWaitMs : Infinity;
     while (true) {
       throwIfAborted(options.signal);
       try {
@@ -136,6 +140,7 @@ export class RunLeaseCoordinator {
         break;
       } catch (error) {
         if (!(error instanceof LeaseHeldError) || !options.waitForLease) throw error;
+        if (Date.now() >= waitUntil) throw error;
         await abortableDelay(this.retryIntervalMs, options.signal);
       }
     }

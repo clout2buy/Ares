@@ -1686,6 +1686,13 @@ export class Session {
     if (firstError !== undefined) throw firstError;
   }
 
+  /** Stop renewing any run lease this session holds. Used when the daemon
+   *  abandons a wedged session (force-Stop, eviction) so its replacement can
+   *  take the lease over once it expires instead of waiting forever. */
+  async releaseRunLease(reason = "session abandoned"): Promise<void> {
+    await this.kernelLeaseCoordinator?.shutdown(new Error(reason)).catch(() => undefined);
+  }
+
   private async beginKernelRun(): Promise<RunFence> {
     if (!this.kernel) throw new Error("session kernel is not configured");
     if (this.kernelFence) return this.kernelFence;
@@ -1693,6 +1700,10 @@ export class Session {
     const lease = await this.kernelLeaseCoordinator.acquire(this.meta.id, {
       signal: this.opts.signal,
       waitForLease: true,
+      // A live holder renews forever; a dead one expires within one TTL. Past
+      // two TTLs the holder is wedged in this process or another, and the turn
+      // must fail loudly rather than sit silent behind it.
+      maxWaitMs: this.kernelLeaseTtlMs * 2 + 5_000,
       onLeaseLost: () => {
         // Losing the generation fence revokes authority immediately. Interrupt
         // provider/tools; the replacement owner will reconcile unknown effects.

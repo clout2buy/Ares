@@ -716,6 +716,9 @@ async function witnessPass(
  * background supervisors intentionally survive ordinary host/session teardown;
  * session deletion and evaluation cleanup call killAll explicitly. */
 export async function disposeLiveSession(live: LiveSession): Promise<void> {
+  // First, before anything that can hang: a disposed session must never keep
+  // heartbeating its run lease, or the session rebuilt in its place waits on it.
+  await live.session.releaseRunLease("live session disposed");
   await live.verifier.cancel().catch(() => undefined);
   live.shellRegistry.detachAll();
   await live.agentRuntime?.sessionEnded().catch(() => undefined);

@@ -146,6 +146,8 @@ export interface LiveSession {
   lastRecallSummary?: { ids: string[]; won: boolean; at: number };
   /** Lazy coding-only repository cartography cadence. */
   repositoryMapCodingTurns?: number;
+  /** A python-challenge is being coached in this chat ("challenge me"). */
+  challengeActive?: boolean;
   repositoryMapLastTurn?: number;
   repositoryMapTouchedCount?: number;
   repositoryMapText?: string;

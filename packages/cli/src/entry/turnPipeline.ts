@@ -432,7 +432,40 @@ export async function prepareUserTurn(
   // reminder is hard-capped in items + chars so it can't dominate the window.
   const awareness = consciousnessContextReminder();
   if (awareness) live.queueSystemReminder(awareness, "memory", "awareness");
+  if (!isSubagentSession(live)) {
+    const challenge = challengeReminder(semanticMessage, live.challengeActive === true);
+    live.challengeActive = challenge.active;
+    if (challenge.text) live.queueSystemReminder(challenge.text, "instructions", "challenge");
+  }
   if (!isSubagentSession(live)) live.queueSystemReminder(buildForegroundReminder(semanticMessage), "instructions", "foreground");
+}
+
+const CHALLENGE_START = /^\s*(?:hey\s+)?(?:ares[,!\s]+)?(?:challenge me|give me (?:a|another|the next)(?: \w+)? (?:python |coding )?challenge|next challenge)\b/i;
+const CHALLENGE_FOLLOW_UP = /^\s*(?:done|hint|another hint|skip|next|check (?:my|it)|grade (?:it|me|my)|rate (?:it|me|my)|show me the answer|i'?m stuck|stuck)\b/i;
+const CHALLENGE_END = /^\s*(?:stop (?:the )?challenge|quit (?:the )?challenge|end (?:the )?challenge)\b/i;
+
+/**
+ * "challenge me" routes to the python-challenge skill deterministically: the
+ * skill catalog is deferred and the system prompt has no room for a trigger
+ * line, so the reminder rides only the turns that need it. Short follow-ups
+ * ("done", "hint") keep the coach in coaching mode while a challenge is open.
+ */
+export function challengeReminder(message: string, active: boolean): { text?: string; active: boolean } {
+  const text = message.trim();
+  if (CHALLENGE_END.test(text)) return { active: false };
+  if (CHALLENGE_START.test(text)) {
+    return {
+      active: true,
+      text: "The owner asked for a coding challenge. Call SkillRead python-challenge first and follow it exactly: read python-challenges/PROGRESS.md, give ONE challenge sized to their level with the file structure, imports and links, then only step 1. Coach; never write their solution unless they say \"show me the answer\".",
+    };
+  }
+  if (active && CHALLENGE_FOLLOW_UP.test(text)) {
+    return {
+      active: true,
+      text: "A python-challenge is in progress in this chat (see python-challenges/ in the workspace). Coach per the python-challenge skill (SkillRead it again if it is no longer in context): check their code by reading and running it, one step at a time, hint ladder, never write their solution unless they asked to see the answer.",
+    };
+  }
+  return { active };
 }
 
 /**

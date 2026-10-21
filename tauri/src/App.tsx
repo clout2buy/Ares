@@ -4490,7 +4490,7 @@ function App() {
   const health = native && daemon === "running" ? daemonHealth(lastPingAtRef.current, lastPongAtRef.current, healthNow) : "ok";
   const loopNote = loopStuckNote(pong);
   const activeTurnStatus = active?.busy
-    ? pong?.turns.find((t) => (t.sessionId === "__primary__" ? primarySessionRef.current : t.sessionId) === active.id)
+    ? pong?.turns.find((t) => t.sessionId === active.id)
     : undefined;
   // The daemon's own account of a quiet turn beats a guess from the UI clock.
   const workingHint = active?.busy
@@ -5467,6 +5467,11 @@ function App() {
                 </span>
                 {workingElapsedS >= 3 ? <span className="workingElapsed">{workingElapsedS}s</span> : null}
                 {workingHint ? <span className="workingHint">{workingHint}</span> : null}
+                {native && (quietS >= 90 || (activeTurnStatus?.lastEventMs ?? 0) >= 90_000) ? (
+                  <button className="pillBtn" onClick={() => daemonCmd({ type: "stall_report", sessionId: active.id })} title="save what this chat is stuck on to a file you can send">
+                    save stall report
+                  </button>
+                ) : null}
               </div>
             ) : null}
             {!pinned ? (

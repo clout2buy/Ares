@@ -70,3 +70,19 @@ test("a turn silent in preparation shows a counter and a hint before it looks fr
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("desktop tells the owner where the stall report was saved", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "ares-stall-notice-"));
+  try {
+    const outfile = path.join(tmp, "fold.mjs");
+    await esbuild({ entryPoints: [path.join(here, "..", "tauri", "src", "state", "foldEvent.ts")], bundle: true, platform: "node", format: "esm", outfile, logLevel: "silent" });
+    const { foldEvent } = await import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
+    const base = { id: "s", title: "t", items: [], busy: true, workflowMode: "build", tokensIn: 0, cacheReadTokens: 0, tokensOut: 0, todos: [], steerQueued: 0 };
+    const ok = foldEvent(base, { type: "stall_report_saved", path: "C:/Users/x/.ares/stall-reports/r.json" });
+    assert.match(ok.items.at(-1).text, /Stall report saved: C:\/Users\/x\/\.ares\/stall-reports\/r\.json/);
+    const bad = foldEvent(base, { type: "stall_report_saved", error: "EACCES" });
+    assert.equal(bad.items.at(-1).tone, "warn");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

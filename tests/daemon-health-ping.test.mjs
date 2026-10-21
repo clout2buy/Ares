@@ -3,7 +3,7 @@
 // names its own cause and a missing pong means the daemon itself is down.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,7 +13,7 @@ import { build as esbuild } from "esbuild";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliEntry = path.join(here, "..", "packages", "cli", "dist", "entry.js");
 
-test("a ping mid-turn gets a pong describing the stuck turn", { timeout: 60_000 }, async () => {
+test("a ping mid-turn gets a pong describing the stuck turn, and a stall report captures it", { timeout: 60_000 }, async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "ares-ping-ws-"));
   const home = mkdtempSync(path.join(os.tmpdir(), "ares-ping-home-"));
   writeFileSync(path.join(home, "ui.json"), JSON.stringify({ dangerousBypass: false, routingMode: "manual" }) + "\n");
@@ -26,6 +26,9 @@ test("a ping mid-turn gets a pong describing the stuck turn", { timeout: 60_000 
   const write = (c) => child.stdin.write(JSON.stringify(c) + "\n");
   let buffer = "";
   let pong;
+  let gotPong;
+  let saved;
+  let report;
   try {
     pong = await new Promise((resolve, reject) => {
       const deadline = setTimeout(() => reject(new Error("no pong")), 40_000);
@@ -41,11 +44,13 @@ test("a ping mid-turn gets a pong describing the stuck turn", { timeout: 60_000 
             sentPing = true;
             setTimeout(() => write({ type: "ping", nonce: "n1" }), 1_200);
           }
-          if (e.type === "pong") { clearTimeout(deadline); resolve(e); }
+          if (e.type === "pong") { gotPong = e; write({ type: "stall_report", sessionId: "stuck-chat" }); }
+          if (e.type === "stall_report_saved") { saved = e; clearTimeout(deadline); resolve(gotPong); }
         }
       });
       child.once("exit", (code) => reject(new Error(`exited ${code}`)));
     });
+    report = JSON.parse(readFileSync(saved.path, "utf8"));
   } finally {
     write({ type: "interrupt", sessionId: "stuck-chat" });
     try { write({ type: "exit" }); } catch {}
@@ -61,6 +66,12 @@ test("a ping mid-turn gets a pong describing the stuck turn", { timeout: 60_000 
   assert.ok(turn.lastEventMs >= 1_000, `time since the last event is reported (${turn.lastEventMs}ms)`);
   assert.equal(typeof turn.lastEvent, "string");
   assert.equal(pong.loop, null, "the command loop is free while the turn runs detached");
+  assert.equal(pong.turns.filter((t) => t.inputId === "hang").length, 1, "each turn is listed once");
+  assert.equal(report.kind, "ares-stall-report");
+  assert.equal(report.session.turnActive, true);
+  assert.equal(report.session.activeInputId, "hang");
+  assert.ok(report.events.some((e) => e.sid === "stuck-chat" && e.type === "provider_attempt_started" && typeof e.at === "number"), "timestamped events of the stuck chat are in the report");
+  assert.ok(!JSON.stringify(report.events).includes("__mock_stall__"), "message text stays out of the report");
 });
 
 test("desktop health: a missing pong reads as unresponsive, and quiet turns explain themselves", async () => {

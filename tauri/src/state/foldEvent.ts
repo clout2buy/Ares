@@ -165,6 +165,17 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         tone: "warn",
       });
       break;
+    case "stall_report_saved": {
+      items.push({
+        kind: "notice",
+        key: nextKey(),
+        text: typeof e.path === "string" && e.path
+          ? `Stall report saved: ${e.path}. It holds this chat's recent events and Ares's log, nothing else; send it to whoever is fixing Ares.`
+          : `Could not save the stall report${e.error ? `: ${compact(stringify(e.error), 200)}` : "."}`,
+        tone: typeof e.path === "string" && e.path ? "dim" : "warn",
+      });
+      break;
+    }
     case "turn_phase": {
       // Live step of turn preparation (memory, repo map, git…). The clock keeps
       // running from turn_start so a slow step reads as slow, not as fresh.

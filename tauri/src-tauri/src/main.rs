@@ -951,7 +951,7 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "skillhub_install", "skillhub_list", "skillhub_publish", "skills_list",
     "steer", "undo", "usage_stats", "webview_result",
     // Health probe: answered out of band, carries what each turn is doing.
-    "ping",
+    "ping", "stall_report",
     // plugins_list was the same silent-dead class below: the Engine Room tab
     // sent it via onDaemonCommand (which the routing test's regex did not scan)
     // and this list rejected it — the pane never refreshed in a packaged app.

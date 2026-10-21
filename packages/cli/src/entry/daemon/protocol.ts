@@ -232,7 +232,7 @@ export class DaemonCommandRouter {
         }
         if (command.type === "permission_response" || command.type === "permission") {
           this.pushPermissionResponse(command);
-        } else if (command.type === "ping") {
+        } else if (command.type === "ping" || command.type === "stall_report") {
           // Answered straight from the reader, like interrupt: a reply proves
           // the process and its event loop are alive even while the command
           // loop is busy, and the reply says what it is busy with.

@@ -463,9 +463,36 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // ended) — bound once the engine exists below.
   let roomsTap: ((sessionId: string, obj: Record<string, unknown>) => void) | undefined;
   const lastEventBySession = new Map<string, { type: string; at: number }>();
+  // Stall reports: a longer, compact trail (no text bodies, no pixels) of every
+  // session's events plus the daemon's own log lines.
+  const traceRing = new EventRing(600);
+  const logRing = new EventRing(150);
+  const writeStderr = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    try {
+      const text = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : "";
+      for (const line of text.split("\n")) if (line.trim()) logRing.record({ at: Date.now(), line: line.slice(0, 500) });
+    } catch { /* logging must never throw */ }
+    return (writeStderr as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  const traceOf = (sessionId: string, obj: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = { at: Date.now(), sid: sessionId, type: obj.type };
+    for (const key of ["inputId", "id", "name", "phase", "status", "attemptId", "reason", "stopReason", "continuing"]) {
+      const value = obj[key];
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out[key] = value;
+    }
+    const error = obj.error as { code?: unknown; message?: unknown } | string | undefined;
+    if (typeof error === "string") out.error = error.slice(0, 300);
+    else if (error && typeof error === "object") out.error = `${String(error.code ?? "")} ${String(error.message ?? "")}`.trim().slice(0, 300);
+    if (typeof obj.text === "string") out.chars = obj.text.length;
+    return out;
+  };
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
-    if (typeof obj.type === "string") lastEventBySession.set(sessionId || DEFAULT_SID, { type: obj.type, at: Date.now() });
+    if (typeof obj.type === "string") {
+      lastEventBySession.set(sessionId || DEFAULT_SID, { type: obj.type, at: Date.now() });
+      traceRing.record(traceOf(sessionId || DEFAULT_SID, obj));
+    }
     if (roomsTap && sessionId && (obj.type === "message_done" || obj.type === "turn_end" || obj.type === "turn_start")) roomsTap(sessionId, obj);
     // Frames are ~100 KB of base64 each at several per second; the crash
     // ring only needs to know one arrived, not keep the pixels.
@@ -2283,12 +2310,78 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // loop is busy with and, per running turn, the last thing that happened and
   // how long ago, so a stuck chat names its own cause.
   let loopBusy: { type: string; sessionId?: string; since: number } | null = null;
+  /** The primary session's events are tagged under its id or untagged. */
+  const lastEventFor = (sessionId: string, entry: DaemonEntry | undefined): { type: string; at: number } | undefined => {
+    const own = lastEventBySession.get(sessionId);
+    const untagged = entry === primaryEntry ? lastEventBySession.get(DEFAULT_SID) : undefined;
+    if (!own) return untagged;
+    if (!untagged) return own;
+    return own.at >= untagged.at ? own : untagged;
+  };
+
+  const writeStallReport = async (command: DaemonInputCommand): Promise<void> => {
+    // One file with everything needed to diagnose a stuck chat: the
+    // session's state, every recent event (compact, timestamped) and the
+    // daemon's own log tail. Nothing is sent anywhere.
+    const sid = command.sessionId || DEFAULT_SID;
+    const now = Date.now();
+    const entry = sid === DEFAULT_SID ? primaryEntry : sessions.get(sid);
+    const lastEvent = lastEventFor(sid, entry);
+    const report = {
+      kind: "ares-stall-report",
+      at: new Date(now).toISOString(),
+      sessionId: sid,
+      appVersion: await cliVersion().catch(() => "unknown"),
+      platform: `${process.platform} ${process.arch} node ${process.version}`,
+      uptimeS: Math.round(process.uptime()),
+      memoryMb: Math.round(process.memoryUsage().rss / 1e6),
+      activeResources: (process as { getActiveResourcesInfo?: () => string[] }).getActiveResourcesInfo?.() ?? [],
+      commandLoop: loopBusy ? { busyWith: loopBusy.type, sessionId: loopBusy.sessionId, forMs: now - loopBusy.since } : null,
+      queued: commands.queued,
+      session: entry
+        ? {
+            loaded: true,
+            turnActive: entry.turnActive,
+            activeInputId: entry.activeInputId,
+            turnStartedMsAgo: entry.turnStartedAt ? now - entry.turnStartedAt : null,
+            cancelRequested: entry.cancelRequested,
+            forceStopRequested: entry.forceStopRequested === true,
+            steeringPhase: entry.steeringPhase,
+            activeTools: entry.activeToolIds.size,
+            pendingSteers: entry.pendingSteerInputIds.size,
+            provider: entry.live.selection.provider.name,
+            model: entry.live.selection.model,
+          }
+        : { loaded: false, loading: entriesLoading.has(sid), parkedSends: parkedSends.get(sid)?.length ?? 0 },
+      lastEvent: lastEvent ? { type: lastEvent.type, msAgo: now - lastEvent.at } : null,
+      events: traceRing.snapshot(),
+      log: logRing.snapshot(),
+    };
+    try {
+      const dir = path.join(live.context.aresHome, "stall-reports");
+      await mkdir(dir, { recursive: true });
+      const file = path.join(dir, `${new Date(now).toISOString().replace(/[:.]/g, "-")}-${sid.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60)}.json`);
+      await writeFile(file, JSON.stringify(report, null, 2) + "\n", "utf8");
+      tagEmit(command.sessionId, { type: "stall_report_saved", path: file });
+    } catch (error) {
+      tagEmit(command.sessionId, { type: "stall_report_saved", error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   commands.onPing = (command) => {
+    if (command.type === "stall_report") {
+      // Out of band for the same reason as ping: the case worth reporting is
+      // the one where the command loop itself is stuck.
+      void writeStallReport(command).catch(() => undefined);
+      return;
+    }
     const now = Date.now();
     const turns: Array<Record<string, unknown>> = [];
-    for (const [sessionId, entry] of [[DEFAULT_SID, primaryEntry] as const, ...sessions.entries()]) {
-      if (!entry.turnActive) continue;
-      const last = lastEventBySession.get(sessionId);
+    const seen = new Set<DaemonEntry>();
+    for (const [sessionId, entry] of sessions.entries()) {
+      if (!entry.turnActive || seen.has(entry)) continue;
+      seen.add(entry);
+      const last = lastEventFor(sessionId, entry);
       turns.push({
         sessionId,
         inputId: entry.activeInputId,

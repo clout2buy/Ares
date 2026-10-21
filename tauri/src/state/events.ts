@@ -133,6 +133,8 @@ export interface AresEvent {
   /** persona_style_set — the voice layer the daemon persisted. */
   style?: string;
   error?: unknown;
+  /** stall_report_saved — where the report was written. */
+  path?: string;
   event?: AresEvent;
   usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; reasoningTokens?: number; modelCalls?: number };
   todos?: Array<{ id?: string; content?: string; activeForm?: string; status?: string }>;

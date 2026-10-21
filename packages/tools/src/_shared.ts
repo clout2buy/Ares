@@ -814,9 +814,37 @@ export function describeShellActivity(rawCommand: string, background: boolean): 
  * the whole remedy. Deleting a known set of files by name is also unaffected.
  * Returns a refusal message, or null when the command is fine.
  */
+/** A shell line that would open a page or a browser on the owner's desktop
+ *  (Start-Process on an .html or a URL, `start chrome`, xdg-open, open -a
+ *  Safari). Owner, 2026-10-21: Ares shows pages ONLY in its own Forge — a
+ *  friend's agent, failing to load a game there, Start-Process'd it into
+ *  their browser where nobody could see or drive it. */
+export function ownerBrowserRefusal(command: string): string | null {
+  const line = command.replace(/\s+/g, " ").trim();
+  const browserExe = /(?:\b|[\\/])(?:chrome|msedge|edge|firefox|brave|opera|vivaldi|iexplore|safari|chromium)(?:\.exe)?\b/i;
+  const pageArg = /(?:https?:\/\/|file:\/\/|\b[\w.\\/:~-]+\.html?\b)/i;
+  const opener = /(?:^|[;&|(]\s*)(?:Start-Process|saps|start|Invoke-Item|ii|explorer(?:\.exe)?|rundll32(?:\.exe)?\s+url(?:\.dll)?,FileProtocolHandler|xdg-open|open|cmd(?:\.exe)?\s+\/c\s+start)\b([^;&|]*)/gi;
+  for (const m of line.matchAll(opener)) {
+    const args = m[1] ?? "";
+    if (pageArg.test(args) || browserExe.test(args)) {
+      return (
+        "Refused: that opens a page in the owner's own browser, where neither of you can see or drive it. " +
+        "Ares shows pages ONLY in its Forge: call Browser {action:\"open\"} (or \"preview\") with the file path or URL. " +
+        "If that failed, tell the owner what it said in one line and stop — never open it another way."
+      );
+    }
+  }
+  if (new RegExp(`(?:^|[;&|(]\\s*)(?:&\\s*)?["']?[^;&|"']*${browserExe.source}["']?\\s`, "i").test(line + " ") && pageArg.test(line)) {
+    return "Refused: that launches a browser outside the Forge. Ares shows pages ONLY in its Forge: call Browser {action:\"open\"} with the URL.";
+  }
+  return null;
+}
+
 export function irrecoverableShellRefusal(command: string): string | null {
   const selfKill = selfHostKillRefusal(command);
   if (selfKill) return selfKill;
+  const browser = ownerBrowserRefusal(command);
+  if (browser) return browser;
   const normalized = command.replace(/\s+/g, " ").trim();
   // every `git clean` invocation in the line, including chained ones
   // Pre-subcommand git options may take a VALUE (`git -C <path> clean …`,

@@ -34,6 +34,12 @@ function covered(stage: DOMRect): boolean {
   return false;
 }
 
+/** Where a view that is not showing lives: off-screen, at the stage's size or a
+ *  usual viewport when the stage has none, so the page lays out and runs. */
+export function parkedBounds(stage: { width: number; height: number }): { x: number; y: number; w: number; h: number } {
+  return { x: -32000, y: -32000, w: stage.width > 8 ? stage.width : 1024, h: stage.height > 8 ? stage.height : 720 };
+}
+
 /** Native views open http(s) only (forge_view.rs); other targets stay framed.
  *  about:blank is the daemon waking the view before it drives it. */
 export function forgeNativeTarget(url: string): boolean {
@@ -88,12 +94,18 @@ export function ForgeNativeView(props: {
       const show = visibleRef.current && document.visibilityState === "visible" && r.width > 8 && r.height > 8 && !covered(r);
       const url = urlRef.current;
       const nav = url !== sentUrl.current;
-      const key = show ? `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}` : "hidden";
-      if (key === shown.current && !(show && nav)) return;
+      const key = show ? `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}` : "parked";
+      if (key === shown.current && !nav) return;
       shown.current = key;
-      if (!show) { void invoke("ares_forge_view_hide").catch(() => undefined); return; }
+      // Not showing (the Forge closed, covered by a dialog, the window hidden):
+      // the view still EXISTS, parked off-screen at a real size, so a page
+      // Ares opens now loads and runs — a hidden WebView2 stops rendering,
+      // and one that was never created left the daemon waiting 15 s for a
+      // view that could not come up (friend's log, 2026-10-21: the What's New
+      // card covered the stage; every open hung).
       if (nav) sentUrl.current = url;
-      void invoke("ares_forge_view_show", { url: nav ? url : null, navigate: !drivenRef.current, x: r.left, y: r.top, w: r.width, h: r.height })
+      const bounds = show ? { x: r.left, y: r.top, w: r.width, h: r.height } : parkedBounds(r);
+      void invoke("ares_forge_view_show", { url: nav ? url : null, navigate: !drivenRef.current, ...bounds })
         .catch((err) => {
           sentUrl.current = null;
           shown.current = "";

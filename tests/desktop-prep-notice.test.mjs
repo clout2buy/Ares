@@ -27,6 +27,8 @@ test("desktop shows the skipped-context notice and still hides plumbing reminder
       text: "Memory and workspace context took over 20s to gather, so this reply goes ahead without them.",
     });
     assert.ok(shown.items.some((i) => i.kind === "notice" && /took over 20s/.test(i.text)));
+    const offline = foldEvent(base, { type: "system_reminder_injected", source: "instructions", text: "Can't reach the model's server (fetch failed) — waiting for the connection, retrying in 3.0s (attempt 2/6). Your message is safe." });
+    assert.ok(offline.items.some((i) => i.kind === "notice" && /waiting for the connection/.test(i.text)));
     const hidden = foldEvent(base, { type: "system_reminder_injected", source: "verifier", text: "Repository map: ..." });
     assert.equal(hidden.items.length, 0);
   } finally {

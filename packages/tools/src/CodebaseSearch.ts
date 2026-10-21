@@ -689,9 +689,15 @@ function finish(
   return { cosRaw, cosNorm, stats };
 }
 
-function withinBudget<T>(p: Promise<T>, deadline: number): Promise<T> {
+export function withinBudget<T>(p: Promise<T>, deadline: number): Promise<T> {
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return Promise.reject(new Error("embedding budget exhausted"));
+  if (remaining <= 0) {
+    // The request is abandoned, not cancelled: its later failure (Ollama 404
+    // for a model that is not pulled) must not surface as an unhandled
+    // rejection in the daemon's crash log.
+    p.catch(() => undefined);
+    return Promise.reject(new Error("embedding budget exhausted"));
+  }
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("embedding budget exhausted")), remaining);
     p.then(

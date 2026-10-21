@@ -67,6 +67,7 @@ import { prepareEngineBinary } from "../engineBinary.js";
 import { captureScreen } from "../screenCapture.js";
 import { ConsciousnessWatch, WATCHER_VOICE_PROMPT } from "../watch.js";
 import { recordConsciousnessObservation } from "../consciousnessContext.js";
+import { runSelfTest, type SelfTestResult } from "../selfTest.js";
 import { aresAgentHome, deletePersona, listPersonas, loadAgentConfig, onLifecycle, pinOwnerMemory, runDeepDream, runSkill, skillHubProbe, skillHubList, skillHubGet, skillHubPublish, installHubSkill, readLocalSkillFiles, writePersona } from "@ares/agent";
 import { adoptPersonaByName, applyPersonaToolResult, newPersonaGate, personaForMessage, personaToWire, type PersonaGate } from "./daemon/personas.js";
 import { assembleCognitiveState } from "./daemon/cognitiveState.js";
@@ -931,6 +932,40 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }),
   );
   await pluginHost.mount(maintenanceTimerPlugin({ name: "idle-sweep", everyMs: 60_000, task: idleSweepTask }));
+
+  // ─── Daily self-test ──────────────────────────────────────────────────────
+  // Once a day, while nothing is running, a throwaway offline daemon is put
+  // through the paths that have bricked chats before. A failure is surfaced on
+  // the primary chat so a regression is caught before the owner hits it.
+  // ARES_SELFTEST_DAILY=0 turns it off.
+  const selfTestFile = path.join(live.context.aresHome, "selftest.json");
+  const daemonEntryScript = process.argv[1] ?? "";
+  let selfTestRunning = false;
+  const runAndReportSelfTest = async (origin: "owner" | "daily", sessionId?: string): Promise<SelfTestResult | undefined> => {
+    if (selfTestRunning || !/\.(?:c|m)?js$/i.test(daemonEntryScript)) return undefined;
+    selfTestRunning = true;
+    try {
+      const result = await runSelfTest(daemonEntryScript);
+      await writeFile(selfTestFile, JSON.stringify(result, null, 2) + "\n", "utf8").catch(() => undefined);
+      if (origin === "owner" || !result.ok) tagEmit(sessionId, { type: "selftest_result", origin, ...result });
+      return result;
+    } finally {
+      selfTestRunning = false;
+    }
+  };
+  if (process.env.ARES_SELFTEST_DAILY !== "0") {
+    await pluginHost.mount(maintenanceTimerPlugin({
+      name: "selftest",
+      everyMs: 60 * 60_000,
+      task: async () => {
+        if ([primaryEntry, ...sessions.values()].some((entry) => entry.turnActive)) return undefined;
+        const last = await readFile(selfTestFile, "utf8").then((raw) => Date.parse((JSON.parse(raw) as { at?: string }).at ?? ""), () => NaN);
+        if (Number.isFinite(last) && Date.now() - last < 20 * 60 * 60_000) return undefined;
+        const result = await runAndReportSelfTest("daily");
+        return result ? `selftest ${result.ok ? "passed" : "FAILED"}` : undefined;
+      },
+    }));
+  }
   await pluginHost.mount(
     maintenanceTimerPlugin({
       name: "deep-dream",
@@ -3176,6 +3211,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             error: `sessions_list: ${error instanceof Error ? error.message : String(error)}`,
           }) + "\n");
         }
+        continue;
+      }
+      if (command.type === "selftest") {
+        void runAndReportSelfTest("owner", command.sessionId).then((result) => {
+          if (!result) tagEmit(command.sessionId, { type: "selftest_result", origin: "owner", ok: false, checks: [], error: "a self-test is already running, or this build cannot run one" });
+        }, (error: unknown) => tagEmit(command.sessionId, { type: "selftest_result", origin: "owner", ok: false, checks: [], error: error instanceof Error ? error.message : String(error) }));
         continue;
       }
       if (command.type === "memory_pin") {

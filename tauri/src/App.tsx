@@ -3409,6 +3409,10 @@ function App() {
     // resets the spoken buffer so the next turn starts clean.
     voiceRef.current.stop();
     resetSpokenStream();
+    if (/^\/selftest$/i.test(trimmed)) {
+      daemonCmd({ type: "selftest", sessionId: activeRef.current });
+      return true;
+    }
     // "/remember <text>": pin it into long-term memory instead of sending.
     const remember = /^\/remember\s+([\s\S]+)$/i.exec(trimmed);
     if (remember) {
@@ -4154,6 +4158,7 @@ function App() {
   const paletteActions: PaletteAction[] = [
     { label: "New session", hint: "fresh Garrison session", run: newSession },
     { label: "Undo last agent change", hint: "restore the latest workspace checkpoint", run: undoLastChange },
+    { label: "Run self-test", hint: "check this machine for the known ways a chat can get stuck · /selftest", run: () => daemonCmd({ type: "selftest", sessionId: activeRef.current }) },
     {
       label: "Remember selection",
       hint: "pin the highlighted text into long-term memory · or type /remember …",

@@ -88,6 +88,11 @@ test("desktop tells the owner where the stall report was saved", async () => {
     assert.match(pinned.items.at(-1).text, /Remembered: “target 60 fps”/);
     const notPinned = foldEvent(base, { type: "memory_pinned", error: "nothing to remember" });
     assert.equal(notPinned.items.at(-1).tone, "warn");
+    const good = foldEvent(base, { type: "selftest_result", origin: "owner", ok: true, checks: [{ name: "a", ok: true }, { name: "b", ok: true }] });
+    assert.match(good.items.at(-1).text, /Self-test passed: all 2 brick checks/);
+    const nightly = foldEvent(base, { type: "selftest_result", origin: "daily", ok: false, checks: [{ name: "a", ok: true }, { name: "Stop frees the stuck chat", ok: false, detail: "no answer within 30s" }] });
+    assert.match(nightly.items.at(-1).text, /Tonight's self-test failed 1 of 2 checks: Stop frees the stuck chat \(no answer within 30s\)/);
+    assert.equal(nightly.items.at(-1).tone, "warn");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

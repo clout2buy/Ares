@@ -169,6 +169,24 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         tone: "warn",
       });
       break;
+    case "selftest_result": {
+      const result = e as unknown as { checks?: unknown; ok?: boolean; origin?: string };
+      const checks = Array.isArray(result.checks) ? (result.checks as Array<{ name?: string; ok?: boolean; detail?: string }>) : [];
+      const failed = checks.filter((c) => !c.ok);
+      const passed = result.ok === true;
+      const daily = result.origin === "daily";
+      items.push({
+        kind: "notice",
+        key: nextKey(),
+        text: passed
+          ? `Self-test passed: all ${checks.length} brick checks are fine on this machine.`
+          : failed.length
+            ? `${daily ? "Tonight's self-test" : "Self-test"} failed ${failed.length} of ${checks.length} checks: ${failed.map((c) => `${c.name}${c.detail ? ` (${compact(c.detail, 80)})` : ""}`).join("; ")}.`
+            : `Self-test could not run${e.error ? `: ${compact(stringify(e.error), 160)}` : "."}`,
+        tone: passed ? "dim" : "warn",
+      });
+      break;
+    }
     case "memory_pinned": {
       items.push({
         kind: "notice",

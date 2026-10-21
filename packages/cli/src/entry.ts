@@ -117,6 +117,15 @@ async function main(): Promise<void> {
       process.exit(await computerCommand(args));
       return;
     }
+    case "selftest": {
+      // Brick checks on this machine with a throwaway, offline daemon.
+      const { runSelfTest, formatSelfTest } = await import("./selfTest.js");
+      const { fileURLToPath } = await import("node:url");
+      const result = await runSelfTest(fileURLToPath(import.meta.url));
+      process.stdout.write((args.flags.has("json") ? JSON.stringify(result, null, 2) : formatSelfTest(result)) + "\n");
+      process.exit(result.ok ? 0 : 1);
+      return;
+    }
     case "godot": {
       process.exit(await godotCommand(args));
       return;

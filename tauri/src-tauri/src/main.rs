@@ -954,6 +954,8 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "ping", "stall_report",
     // "Remember this": owner-pinned curated memory.
     "memory_pin",
+    // Brick checks on this machine with a throwaway offline daemon.
+    "selftest",
     // plugins_list was the same silent-dead class below: the Engine Room tab
     // sent it via onDaemonCommand (which the routing test's regex did not scan)
     // and this list rejected it — the pane never refreshed in a packaged app.

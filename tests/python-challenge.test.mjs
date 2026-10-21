@@ -48,6 +48,6 @@ test("the skill ships complete and installs where SkillRead finds it", async () 
     assert.match(read.output.content, /never write their solution|You do not\s+write their solution/);
   } finally {
     if (previous === undefined) delete process.env.ARES_HOME; else process.env.ARES_HOME = previous;
-    rmSync(home, { recursive: true, force: true });
+    try { rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* the OS reaps temp */ }
   }
 });

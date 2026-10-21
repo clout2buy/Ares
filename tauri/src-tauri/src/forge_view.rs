@@ -140,9 +140,16 @@ pub fn show(app: &AppHandle, url: Option<String>, navigate: bool, bounds: Bounds
     Ok(())
 }
 
+/// Step aside by PARKING the view off-screen, never by hiding it. A hidden
+/// WebView2 stops rendering: requestAnimationFrame stalls and CDP screenshots
+/// hang, so an Ares call on a closed or covered Forge timed out at 15-60 s
+/// (friend's field log, 2026-10-21: "page.screenshot: Timeout 30000ms",
+/// "wait canvas" past the 60 s watchdog). Parked, the page keeps running at
+/// its size and Ares can drive it while the owner looks at something else;
+/// `show` brings it back with `set_bounds`.
 pub fn hide(app: &AppHandle) -> Result<(), String> {
     if let Some(v) = view(app) {
-        v.hide().map_err(|e| e.to_string())?;
+        v.set_position(LogicalPosition::new(-32000.0, -32000.0)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

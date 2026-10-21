@@ -49,6 +49,8 @@ export interface AgentDraft {
   chatModel: string;
   /** Its default VPS ("" = none / the only one). */
   workspaceId: string;
+  /** Its thinking effort ("" = the global dial). */
+  effort: string;
 }
 
 /** The colours the phone app offers, so an agent looks the same on both. */
@@ -64,6 +66,9 @@ export interface AgentMemoryVm {
   busy?: boolean;
 }
 
+/** Effort levels an agent can pin (the daemon's ReasoningLevel ids). */
+export const AGENT_EFFORTS: Array<[string, string]> = [["off", "Off"], ["minimal", "Minimal"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra high"], ["max", "Max"]];
+
 /** Starting points — one click fills the form; everything stays editable. */
 export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string; role: string }> = [
   { name: "Penny", emoji: "💸", color: "#4cd28a", role: "You're my finance person. Keep track of what I spend, flag anything weird or recurring I forgot about, and keep me posted when I get charged for something big." },
@@ -75,7 +80,7 @@ export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string
 ];
 
 export function blankDraft(provider: string, model: string): AgentDraft {
-  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "", chatModel: "", workspaceId: "" };
+  return { name: "", emoji: "", color: AGENT_COLORS[0]!, provider, model, instructions: "", rules: "", chatModel: "", workspaceId: "", effort: "" };
 }
 
 export function draftOf(agent: AgentVm): AgentDraft {
@@ -89,6 +94,7 @@ export function draftOf(agent: AgentVm): AgentDraft {
     rules: (agent.rules ?? []).join("\n"),
     chatModel: agent.chatModel ?? "",
     workspaceId: agent.workspaceId ?? "",
+    effort: agent.reasoningLevel ?? "",
   };
 }
 
@@ -560,6 +566,15 @@ export function AgentEditor({
             </datalist>
           </label>
         </div>
+
+        <label className="agentField">
+          <span>Effort</span>
+          <select value={draft.effort} onChange={(e) => set("effort", e.target.value)}>
+            <option value="">Same as Ares (the global dial)</option>
+            {AGENT_EFFORTS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+          </select>
+          <em className="agentFieldHint">How hard they think before answering. Higher is smarter and slower; their chats keep it when you move the global dial.</em>
+        </label>
 
         <label className="agentField">
           <span>Role — brief them like a person</span>

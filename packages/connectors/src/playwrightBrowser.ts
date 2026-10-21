@@ -467,13 +467,29 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       document.documentElement.appendChild(r); setTimeout(() => r.remove(), 560);
     };
   })()`;
+  // A hidden page (the Forge view closed, covered or the app minimized) does
+  // not draw: rAF stalls and screenshots hang. A timeout then names that cause
+  // and forbids the workaround an agent reaches for (Start-Process into the
+  // owner's own browser, 2026-10-21 field log).
+  async function explainTimeout(err: unknown): Promise<Error> {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/Timeout \d+ms exceeded/i.test(msg)) return err instanceof Error ? err : new Error(msg);
+    const vis = await Promise.race([
+      page.evaluate(() => document.visibilityState).catch(() => "unknown"),
+      new Promise<string>((r) => setTimeout(() => r("unknown"), 2_000)),
+    ]);
+    const why = vis === "hidden"
+      ? "The page is hidden (the Forge is closed or covered, or the Ares window is minimized), and a hidden page does not load or draw."
+      : "The page did not respond in time — most often the Forge is closed or covered, or the Ares window is minimized.";
+    return new Error(`${msg.split("\n")[0]} — ${why} Tell the owner in one line to open the Forge, then try again. Do NOT open it another way (no Start-Process, no other browser).`);
+  }
   async function ensureCursor(): Promise<void> {
     try { await page.evaluate(CURSOR_JS); } catch { /* page not ready — skip cosmetics */ }
   }
   async function emitFrame(): Promise<void> {
     if (!opts.onFrame) return;
     try {
-      const buf = await page.screenshot({ type: "jpeg", quality: 55 });
+      const buf = await page.screenshot({ type: "jpeg", quality: 55, timeout: 3_000 });
       opts.onFrame(Buffer.from(buf).toString("base64"));
     } catch { /* frame is best-effort */ }
   }
@@ -630,7 +646,8 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     async navigate(url) {
       await loadSavedSessions().catch(() => 0);
       // Bounded waits — a stock 30s default means every miss is a half-minute hang.
-      await page.goto(url, { timeout: 15_000, waitUntil: "domcontentloaded" });
+      try { await page.goto(url, { timeout: 15_000, waitUntil: "domcontentloaded" }); }
+      catch (err) { throw await explainTimeout(err); }
       // Visible preview/human handoff must actually surface the controllable
       // browser window. Without this, Ares announced a sign-in prompt while its
       // persistent browser sat behind the desktop shell and the Forge showed a
@@ -702,7 +719,9 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       );
     },
     async screenshot() {
-      const buffer: Buffer = await page.screenshot();
+      let buffer: Buffer;
+      try { buffer = await page.screenshot({ timeout: 10_000 }); }
+      catch (err) { throw await explainTimeout(err); }
       return { format: "png", bytes: buffer.toString("base64") };
     },
     async state() {

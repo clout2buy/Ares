@@ -4975,3 +4975,12 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 .aresosShotBtn { width: 100%; }
 
 .wnTour{margin-right:8px;background:transparent;border:1px solid currentColor;box-shadow:none}
+
+/* Native dropdown lists draw the select's background over a WHITE popup, so a
+   translucent field (rgba white 8%) opened as a blinding white list. Options
+   get a solid theme surface instead (light themes resolve to their own). */
+.ares select option,
+.ares select optgroup {
+  background-color: var(--bg-raised, #1f1f1f);
+  color: var(--text, #ececf1);
+}

@@ -917,7 +917,7 @@
 .ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .emptyAsk,
 .ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty .starters { display: none !important; }
 .ares.ares[data-style="modern"][data-surface="messages"] .chat > .empty:not(.agentHero)::after {
-  content: "Make someone to start. Text them like a person.";
+  content: "Say hi. Text them like a person.";
   display: block;
   text-align: center;
   margin-top: 28vh;

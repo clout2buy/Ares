@@ -357,6 +357,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   }
   const DEFAULT_SID = "__primary__";
   const sessions = new Map<string, DaemonEntry>();
+  /** The owner's global effort dial; an agent with its own effort overrides it in its chats. */
+  let ownerReasoning = live.reasoningLevel;
   const primaryEntry: DaemonEntry = {
     live,
     turnActive: false,
@@ -1240,6 +1242,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   const applyAgent = (entry: DaemonEntry, sid: string): void => {
     const agent = desktopAgents.agentForSession(sid);
     entry.live.tenant = agent ? { role: "owner", agent: agent.id } : (entry.live.tenant?.role === "owner" ? { role: "owner" } : entry.live.tenant);
+    // An agent's own effort (its profile) wins in its chats; none set = the
+    // owner's global dial.
+    const effort = agent?.reasoningLevel && isReasoningLevel(agent.reasoningLevel) ? agent.reasoningLevel : ownerReasoning;
+    if (effort && entry.live.reasoningLevel !== effort) {
+      entry.live.session.setReasoningLevel(effort);
+      entry.live.reasoningLevel = effort;
+    }
     // A room seat carries that room; a private chat carries the list of rooms
     // the agent sits in (so it can read them and speak there on request).
     const roomLayer = desktopRooms.isSeat(sid) ? desktopRooms.layerFor(sid) : desktopRooms.privateLayerFor(agent?.id);
@@ -2176,9 +2185,15 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // ONE handler for all three dispatch sites — validates, sets the dial on
         // EVERY open session (not just the primary, which used to miss spawned
         // chats), persists, and clears any env override so the explicit choice wins.
+        // Agents with their own effort keep it; the dial moves everyone else.
+        ownerReasoning = level;
+        const ownEffort = (sid: string) => {
+          const a = desktopAgents.agentForSession(sid);
+          return Boolean(a?.reasoningLevel && isReasoningLevel(a.reasoningLevel));
+        };
         const change = await handleReasoningCommand(
           level,
-          [...new Set([primaryEntry, ...sessions.values()])].map((e) => e.live),
+          [...new Set([primaryEntry, ...[...sessions.entries()].filter(([sid]) => !ownEffort(sid)).map(([, e]) => e)])].map((e) => e.live),
         );
         process.stdout.write(JSON.stringify({ type: "reasoning_set", level: change.level, clearedEnvOverride: change.clearedEnvOverride }) + "\n");
         continue;
@@ -2588,6 +2603,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             if (!id) throw new AgentError("agent_update requires agentId");
             const { persona, brainChanged, layerChanged } = await desktopAgents.update(id, command.agent ?? {});
             if (layerChanged) refreshAgentLayers();
+            // a new effort reaches this agent's open chats right away
+            for (const sid of persona.desktopThreads ?? []) { const entry = sessions.get(sid); if (entry) applyAgent(entry, sid); }
             if (brainChanged) {
               // Live chats of this agent move to the new brain now; idle ones
               // pick it up when they next open.

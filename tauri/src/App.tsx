@@ -3725,7 +3725,7 @@ function App() {
 
   const saveAgent = (draft: AgentDraft) => {
     setAgentError(undefined);
-    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, chatModel: draft.chatModel.trim(), workspaceId: draft.workspaceId, instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
+    const payload = { name: draft.name, emoji: draft.emoji, color: draft.color, provider: draft.provider, model: draft.model, chatModel: draft.chatModel.trim(), workspaceId: draft.workspaceId, reasoningLevel: draft.effort, instructions: draft.instructions, rules: draft.rules.split(/\r?\n/).map((r) => r.trim()).filter(Boolean) };
     const setPhotoLocal = (id: string, photo: string) =>
       setAgentPhotos((p) => {
         const n = { ...p };

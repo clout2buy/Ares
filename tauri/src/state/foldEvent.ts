@@ -625,7 +625,7 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // Verification-spine disclosures (UNVERIFIED/UNRESOLVED/GUI-UNVERIFIED)
       // are deliberately NOT surfaced here — the owner asked for them gone.
       // They remain in diagnostics and in the model's own context.
-      const visible = /^(?:Provider failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down)|retrying with a smaller recent-history window/i.test(text);
+      const visible = /^(?:Provider failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down|Memory and workspace context took over)|retrying with a smaller recent-history window/i.test(text);
       if (!visible) break;
       const tone = /failed|couldn't run|down/i.test(text) ? "warn" : "dim";
       items.push({ kind: "notice", key: nextKey(), text: compact(text, 400), tone });

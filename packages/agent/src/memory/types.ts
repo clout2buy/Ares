@@ -5,7 +5,8 @@ export interface MemoryEntry {
   category: MemoryCategory;
   workspace: string | null;
   content: string;
-  source: "manual" | "light-dreaming" | "deep-dreaming" | "rem-dreaming" | "capture-hook" | "import";
+  /** "owner-pinned": the owner said "remember this"; always kept in MEMORY.md. */
+  source: "manual" | "light-dreaming" | "deep-dreaming" | "rem-dreaming" | "capture-hook" | "import" | "owner-pinned";
   score: number;
   hits: number;
   contradicts: number;

@@ -82,6 +82,10 @@ test("desktop tells the owner where the stall report was saved", async () => {
     assert.match(ok.items.at(-1).text, /Stall report saved: C:\/Users\/x\/\.ares\/stall-reports\/r\.json/);
     const bad = foldEvent(base, { type: "stall_report_saved", error: "EACCES" });
     assert.equal(bad.items.at(-1).tone, "warn");
+    const pinned = foldEvent(base, { type: "memory_pinned", id: 4, text: "target 60 fps" });
+    assert.match(pinned.items.at(-1).text, /Remembered: “target 60 fps”/);
+    const notPinned = foldEvent(base, { type: "memory_pinned", error: "nothing to remember" });
+    assert.equal(notPinned.items.at(-1).tone, "warn");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

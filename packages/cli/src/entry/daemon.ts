@@ -67,7 +67,7 @@ import { prepareEngineBinary } from "../engineBinary.js";
 import { captureScreen } from "../screenCapture.js";
 import { ConsciousnessWatch, WATCHER_VOICE_PROMPT } from "../watch.js";
 import { recordConsciousnessObservation } from "../consciousnessContext.js";
-import { aresAgentHome, deletePersona, listPersonas, loadAgentConfig, onLifecycle, runDeepDream, runSkill, skillHubProbe, skillHubList, skillHubGet, skillHubPublish, installHubSkill, readLocalSkillFiles, writePersona } from "@ares/agent";
+import { aresAgentHome, deletePersona, listPersonas, loadAgentConfig, onLifecycle, pinOwnerMemory, runDeepDream, runSkill, skillHubProbe, skillHubList, skillHubGet, skillHubPublish, installHubSkill, readLocalSkillFiles, writePersona } from "@ares/agent";
 import { adoptPersonaByName, applyPersonaToolResult, newPersonaGate, personaForMessage, personaToWire, type PersonaGate } from "./daemon/personas.js";
 import { assembleCognitiveState } from "./daemon/cognitiveState.js";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, loadWatchers, operatorTickIntervalMs, type StandingOrder } from "@ares/operator";
@@ -3176,6 +3176,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             error: `sessions_list: ${error instanceof Error ? error.message : String(error)}`,
           }) + "\n");
         }
+        continue;
+      }
+      if (command.type === "memory_pin") {
+        // "Remember this" from the desktop: owner-pinned curated memory.
+        const text = typeof (command as { text?: unknown }).text === "string" ? (command as { text: string }).text : "";
+        void pinOwnerMemory({ text })
+          .then((pinned) => tagEmit(command.sessionId, { type: "memory_pinned", id: pinned.id, text: pinned.content }))
+          .catch((error: unknown) => tagEmit(command.sessionId, { type: "memory_pinned", error: error instanceof Error ? error.message : String(error) }));
         continue;
       }
       if (command.type === "model_catalog") {

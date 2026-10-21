@@ -1049,6 +1049,20 @@ function App() {
   const [sessionQuery, setSessionQuery] = useState("");
   const [garrisonOpen, setGarrisonOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The last text the owner highlighted in the page (not in an input). Opening
+  // the palette moves focus into its search box, which clears the selection,
+  // so "Remember selection" reads this instead.
+  const lastSelectionRef = useRef<{ text: string; at: number } | null>(null);
+  useEffect(() => {
+    const onSelection = () => {
+      const active = document.activeElement;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+      const text = window.getSelection()?.toString().trim() ?? "";
+      if (text) lastSelectionRef.current = { text, at: Date.now() };
+    };
+    document.addEventListener("selectionchange", onSelection);
+    return () => document.removeEventListener("selectionchange", onSelection);
+  }, []);
   const [modelPopOpen, setModelPopOpen] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [routingOpen, setRoutingOpen] = useState(false);
@@ -3393,6 +3407,12 @@ function App() {
     // resets the spoken buffer so the next turn starts clean.
     voiceRef.current.stop();
     resetSpokenStream();
+    // "/remember <text>": pin it into long-term memory instead of sending.
+    const remember = /^\/remember\s+([\s\S]+)$/i.exec(trimmed);
+    if (remember) {
+      daemonCmd({ type: "memory_pin", sessionId: activeRef.current, text: remember[1] });
+      return true;
+    }
     // Slash command: "/mcp" (or /connectors) opens the connector Directory
     // instead of sending a message — the one-word way in the user asked for.
     if (/^\/(mcp|connectors?)$/i.test(trimmed)) {
@@ -4132,6 +4152,16 @@ function App() {
   const paletteActions: PaletteAction[] = [
     { label: "New session", hint: "fresh Garrison session", run: newSession },
     { label: "Undo last agent change", hint: "restore the latest workspace checkpoint", run: undoLastChange },
+    {
+      label: "Remember selection",
+      hint: "pin the highlighted text into long-term memory · or type /remember …",
+      run: () => {
+        const recent = lastSelectionRef.current && Date.now() - lastSelectionRef.current.at < 120_000 ? lastSelectionRef.current.text : "";
+        const picked = window.getSelection()?.toString().trim() || recent;
+        if (picked) daemonCmd({ type: "memory_pin", sessionId: activeRef.current, text: picked });
+        else apply((s) => foldEvent(s, { type: "memory_pinned", error: "highlight some text first, or type /remember followed by what to keep" }));
+      },
+    },
     { label: forge.open ? "Close the Forge" : "Open the Forge", hint: "one live artifact and browser canvas", run: () => setForge((f) => ({ ...f, open: !f.open })) },
     { label: "Settings", hint: "provider · model · keys", run: () => setSettingsOpen(true) },
     { label: "Connectors — the Directory", hint: "/mcp · connect tools & apps", run: () => { setDirectoryOpen(true); daemonCmd({ type: "mcp_list" }); } },

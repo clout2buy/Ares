@@ -16,6 +16,7 @@ export { VIBE_RULES, vibeRulesMarkdown } from "./bootstrap/vibeRules.js";
 export { loadAgentSystemContext, composeAgentSystemPrompt, resolveAgentName, selfContextBudgetTokens, MIN_SELF_CONTEXT_TOKENS, type AgentSystemContext, type AgentContextBlock, type ComposeOptions } from "./identity/context.js";
 export { embedText, embedOptionsFromConfig, lexicalEmbedding, type EmbedOptions } from "./memory/embed.js";
 export { createMemoryStore, formatRecallReminder, type MemoryStore } from "./memory/vectorStore.js";
+export { pinOwnerMemory, PINNED_MEMORY_MAX_CHARS } from "./memory/pinned.js";
 export type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult, CanonicalMemoryInput } from "./memory/types.js";
 export { memoryEntryToCanonical } from "./memory/types.js";
 export { onLifecycle, emitLifecycle, type LifecycleEvent, type DreamPhase } from "./lifecycle/bus.js";

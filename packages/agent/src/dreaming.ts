@@ -88,14 +88,18 @@ export async function runDeepDream(opts: {
   // — a field user's index was 24 error entries against 5 real memories
   // (2026-08-06). Filtering here starves legacy noise out of the index for
   // good, because this pass REWRITES MEMORY.md wholesale.
+  // What the owner pinned is never scored, noise-gated or trimmed away.
+  const pinned = memories.filter((memory) => memory.source === "owner-pinned");
   const promoted = memories.filter((memory) =>
+    memory.source !== "owner-pinned" &&
     memory.score >= opts.config.dreaming.minScore &&
     (memory.hits >= opts.config.dreaming.minRecallCount || memory.source === "light-dreaming") &&
     !isOperationalNoise(memory.content)
   );
-  if (promoted.length > 0) {
+  if (promoted.length > 0 || pinned.length > 0) {
     const lines = ["# Memory", "", "_(Curated long-term memory. Only DEEP dreaming writes here.)_", ""];
-    for (const memory of promoted.slice(-DREAM_MEMORY_MAX_ITEMS)) {
+    const room = Math.max(0, DREAM_MEMORY_MAX_ITEMS - pinned.length);
+    for (const memory of [...pinned, ...(room > 0 ? promoted.slice(-room) : [])]) {
       lines.push(`- [${memory.category}#${memory.id}] ${compact(memory.content, DREAM_MEMORY_ITEM_CHARS)}`);
     }
     await writeFileAtomic(paths.memory, lines.join("\n") + "\n");

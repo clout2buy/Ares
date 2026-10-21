@@ -165,6 +165,17 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         tone: "warn",
       });
       break;
+    case "memory_pinned": {
+      items.push({
+        kind: "notice",
+        key: nextKey(),
+        text: typeof e.error === "string" && e.error
+          ? `Could not remember that: ${compact(e.error, 200)}`
+          : `Remembered: “${compact(typeof e.text === "string" ? e.text : "", 160)}”. It stays in Ares's long-term memory.`,
+        tone: typeof e.error === "string" && e.error ? "warn" : "dim",
+      });
+      break;
+    }
     case "stall_report_saved": {
       items.push({
         kind: "notice",

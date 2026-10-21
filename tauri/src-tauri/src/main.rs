@@ -952,6 +952,8 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "steer", "undo", "usage_stats", "webview_result",
     // Health probe: answered out of band, carries what each turn is doing.
     "ping", "stall_report",
+    // "Remember this": owner-pinned curated memory.
+    "memory_pin",
     // plugins_list was the same silent-dead class below: the Engine Room tab
     // sent it via onDaemonCommand (which the routing test's regex did not scan)
     // and this list rejected it — the pane never refreshed in a packaged app.

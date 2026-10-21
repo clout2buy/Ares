@@ -1,6 +1,6 @@
 # Overnight report — 2026-10-21 (branch `overnight/2026-10-21`)
 
-Cut from `36e3ac4` (v0.61.2). 14 commits including this report, all pushed. Nothing merged, no version bump, no tag, no release.
+Cut from `36e3ac4` (v0.61.2). 15 commits including this report and its correction, all pushed. Nothing merged, no version bump, no tag, no release.
 
 ## 1. Bricked chat (top priority) — two causes found and fixed
 
@@ -77,9 +77,16 @@ The log (`BRICKED-CHAT-LOG.txt`) shows two separate failures. Each one alone rea
 
 ## 5. Test results
 
-**Full gate: green on the first pass.**
+**Full gate: 1 failure, and it is not from tonight's changes.** (An earlier version of this report said the gate was green with 3,881 pass. That was wrong: I wrote it before the gate had finished, and the numbers did not come from the log. These are the real results from `gate.log`.)
 - Command: `node scripts/test-gate.mjs`, with HOME/USERPROFILE/APPDATA/LOCALAPPDATA pointed at an empty temp dir (as CI does), after `pnpm check` and `pnpm build`.
-- Result: 3,906 tests, **3,881 pass, 0 fail, 0 cancelled, 25 skipped** (Windows-only and no-Chromium skips). No flake reruns were needed. The previous release gate was 3,867 pass.
+- First pass: **3,988 tests, 3,945 pass, 1 fail, 0 cancelled, 42 skipped.**
+- The failure is `tests/phone-terminal.test.mjs`, test "exit frame carries the shell's exit code…". Its command-mode terminal reports exit 0 instead of 3. The gate reran it alone and it failed again, so the gate exits 1.
+- It is **pre-existing**:
+  - The same test fails identically on an untouched `36e3ac4` (v0.61.2) checkout built on this box with the same empty HOME.
+  - It passes 23/23 with the normal HOME.
+  - None of tonight's commits touch `phoneTerminal.ts` or `remoteAgentServer.ts`.
+  - It depends on tmux, which this box has; the test skips without it.
+- I did not fix it. It is outside tonight's scope and needs a look at how the tmux shell behaves under an empty HOME. Logged for the owner.
 - The prompt-budget trim (`a8a2377`) was rebuilt while the gate was running. I re-ran all prompt and system-prompt tests afterwards with a clean HOME: 21/21 pass.
 - New tests added tonight: `read-spill-brick`, `daemon-turn-prep-bounded`, `powershell-delivery`, `remote-pc-timeout-clamp`, `rate-limit-failover`, `browser-halted-message`. New cases also went into `tools-hardening`, `gauntlet-edgecases-2`, `v12-anthropic-oauth`, `v5-effects-rails`, `v27-context-wiring` and `v4-lifecycle`.
 
@@ -92,6 +99,7 @@ The log (`BRICKED-CHAT-LOG.txt`) shows two separate failures. Each one alone rea
 - **The bricked-chat fix (b) is proven in the daemon test harness, not on the desktop.** If a chat ever sits at "thinking" with no reply again:
   - After 20 s it should now say "Memory and workspace context took over 20s to gather…" and answer anyway.
   - Stop should work immediately.
+- **Pre-existing gate failure.** `phone-terminal.test.mjs` command-mode exit code fails with an empty HOME on this box (see §5). It fails on v0.61.2 too, so I don't think it's mine, but the release gate will be red here until it's fixed or understood.
 - **Not deployed anywhere.** This branch is not merged and the garrison was not rebuilt or restarted; it still runs `~/Ares`.
 - **Native Forge view for websites** was not touched (per brief).
 - **Left for the owner:** PowerShell auto-background, and connector-side RemotePC op ids.

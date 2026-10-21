@@ -47,6 +47,8 @@ test("a turn silent in preparation shows a counter and a hint before it looks fr
     assert.equal(workingHintFor("marshalling", 3), null);
     assert.match(workingHintFor("marshalling", 9), /gathering memory/);
     assert.match(workingHintFor("marshalling", 25), /Stop is available/);
+    assert.match(workingHintFor("recalling memory", 25, 0, true), /taking long/, "a named prep step still gets the hint");
+    assert.equal(workingHintFor("recalling memory", 25, 0, false), null);
     assert.match(workingHintFor("generating", 7), /first token/);
     assert.equal(workingHintFor("writing", 90), null);
     assert.equal(workingHintFor("writing", 90, 60), null, "a minute of quiet is normal");
@@ -56,6 +58,14 @@ test("a turn silent in preparation shows a counter and a hint before it looks fr
     const started = foldEvent(base, { type: "turn_start" });
     assert.equal(typeof started.lastEventAt, "number", "every event stamps the session so silence can be measured");
     assert.equal(typeof started.activityAt, "number", "the elapsed clock starts at turn_start, not at the first provider attempt");
+    assert.equal(started.preparing, true);
+    const recalling = foldEvent(started, { type: "turn_phase", phase: "memory", label: "recalling memory" });
+    assert.equal(recalling.activity, "recalling memory", "the working label names the live prep step");
+    assert.equal(recalling.activityAt, started.activityAt, "the clock is not reset by a phase change");
+    const generating = foldEvent(recalling, { type: "provider_attempt_started", attemptId: "a1" });
+    assert.equal(generating.preparing, false);
+    const late = foldEvent(generating, { type: "turn_phase", phase: "git", label: "reading git changes" });
+    assert.equal(late.activity, "generating", "a stray phase after generation starts changes nothing");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

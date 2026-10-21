@@ -146,6 +146,13 @@ test("a turn whose preparation never settles can be stopped, and the next messag
       mine.some((event) => event.type === "system_reminder_injected" && /took over \d+s to gather/.test(event.text ?? "")),
       "the owner is told context was skipped",
     );
+    assert.ok(
+      mine.some((event) => event.type === "system_reminder_injected" && /stuck checking the Forge screen/.test(event.text ?? "")),
+      "the notice names the step that hung",
+    );
+    const phases = mine.filter((event) => event.type === "turn_phase" && event.inputId === nextInputId).map((event) => event.phase);
+    assert.ok(phases.includes("memory") && phases.at(-1) === "forge", `each prep step is announced live: ${phases.join(",")}`);
+    assert.match(stderr, /exceeded \d+ms at phase forge/);
     assert.match(
       mine.filter((event) => event.type === "text_delta").map((event) => event.text ?? "").join(""),
       /NEXT-AFTER-PREP-STOP/,

@@ -105,6 +105,7 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.cancelling = false;
       session.activity = "marshalling";
       session.activityAt = Date.now();
+      session.preparing = true;
       session.authFailedTurn = undefined;
       // Clear last turn's fleet board — UNLESS it can still resume or has
       // agents still running (background fleets survive turn boundaries; a new
@@ -164,7 +165,14 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         tone: "warn",
       });
       break;
+    case "turn_phase": {
+      // Live step of turn preparation (memory, repo map, git…). The clock keeps
+      // running from turn_start so a slow step reads as slow, not as fresh.
+      if (session.busy && session.preparing && typeof e.label === "string" && e.label) session.activity = e.label;
+      break;
+    }
     case "provider_attempt_started": {
+      session.preparing = false;
       if (!e.attemptId) break;
       const prior = session.providerAttempt;
       if (prior && prior.id !== e.attemptId) {
@@ -684,6 +692,7 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       break;
     }
     case "turn_end": {
+      session.preparing = false;
       if (last?.kind === "assistant" && last.streaming) items[items.length - 1] = { ...last, streaming: false };
       const input = e.usage?.inputTokens ?? 0;
       const output = e.usage?.outputTokens ?? 0;
@@ -753,6 +762,7 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       break;
     }
     case "turn_settled":
+      session.preparing = false;
       session.busy = e.continuing === true;
       session.cancelling = false;
       session.activity = e.continuing ? "continuing queued correction" : undefined;

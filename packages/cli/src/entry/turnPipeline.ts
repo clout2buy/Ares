@@ -351,11 +351,24 @@ export async function boundedTurnPrep(
   }
 }
 
+/** The optional-context steps of turn preparation, in order. */
+export type TurnPrepPhase = "agent" | "memory" | "cross-surface" | "repo-map" | "git" | "forge";
+
+export const TURN_PREP_PHASE_LABELS: Record<TurnPrepPhase, string> = {
+  agent: "waking the agent runtime",
+  memory: "recalling memory",
+  "cross-surface": "reading recent activity on other surfaces",
+  "repo-map": "mapping the repository",
+  git: "reading git changes",
+  forge: "checking the Forge screen",
+};
+
 export async function prepareUserTurn(
   live: LiveSession,
   userMessage: string,
-  opts: { tenant?: TurnTenant } = {},
+  opts: { tenant?: TurnTenant; onPhase?: (phase: TurnPrepPhase) => void } = {},
 ): Promise<void> {
+  const phase = (p: TurnPrepPhase): void => { try { opts.onPhase?.(p); } catch { /* observers never break a turn */ } };
   const semanticMessage = semanticUserMessage(userMessage);
   const tenant = resolveTenant(live, opts.tenant);
   turnTenants.set(live, tenant);
@@ -370,11 +383,14 @@ export async function prepareUserTurn(
   // several thousand tokens of the wrong context on a prompt already at the
   // provider's ceiling.
   if (!isSubagentSession(live)) {
+    phase("agent");
     await live.agentRuntime?.beforeTurn(semanticMessage);
+    phase("memory");
     await mindBeforeTurn(live, semanticMessage, tenant);
     // "Elsewhere today": what the same owner said on other surfaces recently.
     // Gated inside (first turn, or new activity since the last injection); a
     // guest tenant gets nothing. Never throws.
+    phase("cross-surface");
     await crossSurfaceBeforeTurn(live, tenant);
   }
   const codingState = live.codingJournal.beginTurn(semanticMessage);
@@ -391,6 +407,7 @@ export async function prepareUserTurn(
       const due = !live.repositoryMapText || boundaryChanged ||
         live.repositoryMapCodingTurns - (live.repositoryMapLastTurn ?? 0) >= 6;
       if (due) {
+        phase("repo-map");
         const map = await repositoryMapReminder(live.context.workspace).catch(() => "");
         if (map) {
           live.repositoryMapText = map;
@@ -406,6 +423,7 @@ export async function prepareUserTurn(
     // the verifier only runs for edits made in the current turn.
     // Unlike the session-creation prompt, this captures the CURRENT dirty tree
     // after prior edits or external changes in a long-running task.
+    phase("git");
     const git = await loadGitContext(live.context);
     if (git) live.queueSystemReminder(`CURRENT REPOSITORY DELTA${git}`, "instructions", "git-delta");
   }

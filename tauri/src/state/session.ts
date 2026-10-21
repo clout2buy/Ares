@@ -199,6 +199,8 @@ export interface SessionVm {
   activityAt?: number;
   /** When the last daemon event of any kind reached this session. */
   lastEventAt?: number;
+  /** Between turn_start and the first provider attempt: gathering context. */
+  preparing?: boolean;
   /** Unfinished requests from before Ares last closed, waiting for the owner:
    *  Resume runs them, Discard retires them, a new message replaces them.
    *  Nothing runs until one of those happens. */
@@ -452,10 +454,10 @@ export const HOLO_SPEC_FILE = /\.holo\.json$/i;
 
 /** One quiet line under the working label when a turn has been silent long
  *  enough that the owner might think it is frozen. Pure, so it is testable. */
-export function workingHintFor(activity: string | undefined, elapsedS: number, quietS = 0): string | null {
-  if (activity === "marshalling" && elapsedS >= 8) {
+export function workingHintFor(activity: string | undefined, elapsedS: number, quietS = 0, preparing = activity === "marshalling"): string | null {
+  if (preparing && elapsedS >= 8) {
     return elapsedS >= 20
-      ? "still gathering memory and workspace context, Stop is available"
+      ? "preparing is taking long, Ares answers without it at the limit; Stop is available"
       : "gathering memory and workspace context";
   }
   if ((activity === "generating" || activity === "responding to steer") && elapsedS >= 6) {

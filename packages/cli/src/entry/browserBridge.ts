@@ -1346,6 +1346,7 @@ export function makeBrowserTool(
         if (!prints.size) return result;
         return { ...result, output: redactDeep(result.output, redact), ...(result.display ? { display: redact(result.display) } : {}) };
       } catch (err) {
+        if (err instanceof Error && err.name === "HaltedError") err.message = haltedBrowserMessage(err.message);
         if (err instanceof Error && prints.size) err.message = redact(err.message);
         throw err;
       } finally {
@@ -1358,6 +1359,17 @@ export function makeBrowserTool(
       }
     },
   });
+}
+
+/**
+ * The owner's operator kill switch (the durable HALT flag) stops every outward
+ * Browser commit. A bare "kill switch engaged" read like a flaky tool, and the
+ * model retried it 47 times in the field. Say whose switch it is, that
+ * retrying cannot help, and how the owner releases it.
+ */
+export function haltedBrowserMessage(message: string): string {
+  if (/do not retry/i.test(message)) return message;
+  return `${message}. This is the owner's operator kill switch: every outward Browser action (click, fill, opening a website) is refused until the owner releases it, so do not retry or work around it. Tell the owner; they release it with \`ares operator resume\` (or Resume in the operator controls). Pages on this machine (served project files, local dev servers) still open.`;
 }
 
 /** What the watch card calls this browser: the site it's on, else a plain name. */

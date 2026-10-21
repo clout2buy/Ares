@@ -117,6 +117,21 @@ test("rails: engaging the kill switch makes commits throw HaltedError", async ()
   assert.equal(state.committed, 0, "nothing commits while halted");
 });
 
+test("rails: a HALT file says when and why it was engaged", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ares-halt-"));
+  const killSwitch = new KillSwitch(path.join(dir, "HALT"));
+  assert.equal(await killSwitch.status(), null);
+  await killSwitch.engage("owner paused outreach");
+  const ctx = { ...makeCtx({ leash: 5 }), killSwitch };
+  const { effect } = makeEffect();
+  await assert.rejects(
+    () => runEffect(effect, ctx),
+    (e) => e instanceof HaltedError && /kill switch engaged \(since \d{4}-.*reason: owner paused outreach\)/.test(e.message),
+  );
+  await killSwitch.release();
+  assert.equal(await killSwitch.status(), null);
+});
+
 // ── 6. budget ───────────────────────────────────────────────────────────────
 
 test("rails: exceeding the daily cap denies the commit", async () => {

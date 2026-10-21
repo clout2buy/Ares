@@ -10,7 +10,7 @@
 
 import type { Budget } from "./budget.js";
 import type { Ledger } from "./ledger.js";
-import { HaltedError, type KillSwitch } from "./killSwitch.js";
+import { HaltedError, haltedErrorFor, type KillSwitch } from "./killSwitch.js";
 import type { EffectSpec, GateDecision, Irreversibility, LedgerEntry, RailsResult } from "./types.js";
 import type { ApprovalDecision, StagedApproval } from "./approval.js";
 
@@ -43,7 +43,7 @@ export async function runEffect<R>(effect: EffectSpec<R>, ctx: RailsContext): Pr
   // Kill switch first — nothing happens while halted.
   if (await ctx.killSwitch.engaged()) {
     await ctx.ledger.append(entry(effect, "halted", now()));
-    throw new HaltedError();
+    throw await haltedErrorFor(ctx.killSwitch);
   }
 
   // Idempotency: a committed key is never committed twice (survives resume).
@@ -91,7 +91,7 @@ export async function runEffect<R>(effect: EffectSpec<R>, ctx: RailsContext): Pr
   // Re-check the kill switch right before the irreversible moment (race window).
   if (await ctx.killSwitch.engaged()) {
     await ctx.ledger.append(entry(effect, "halted", now()));
-    throw new HaltedError();
+    throw await haltedErrorFor(ctx.killSwitch);
   }
 
   const result = await effect.commit();

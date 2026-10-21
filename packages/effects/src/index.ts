@@ -10,7 +10,7 @@
 export { runEffect, undoEffect, ownerLeash, LEASH_REQUIRED, type RailsContext, type OwnerLeashOptions } from "./rails.js";
 export { Ledger } from "./ledger.js";
 export { Budget, type BudgetLimits, type SpendSnapshot, type BudgetCheck } from "./budget.js";
-export { KillSwitch, HaltedError } from "./killSwitch.js";
+export { KillSwitch, HaltedError, haltedErrorFor } from "./killSwitch.js";
 export { effectsPaths, type EffectsPaths } from "./paths.js";
 export {
   evaluateAction,

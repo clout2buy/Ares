@@ -13,6 +13,13 @@ export class HaltedError extends Error {
   }
 }
 
+/** "operator halted: kill switch engaged (since <at>, reason: <reason>)". */
+export async function haltedErrorFor(killSwitch: Pick<KillSwitch, "status">): Promise<HaltedError> {
+  const status = await killSwitch.status?.().catch(() => null);
+  const detail = [status?.at ? `since ${status.at}` : "", status?.reason ? `reason: ${status.reason}` : ""].filter(Boolean).join(", ");
+  return new HaltedError(`operator halted: kill switch engaged${detail ? ` (${detail})` : ""}`);
+}
+
 export class KillSwitch {
   constructor(private readonly file: string) {}
 
@@ -27,7 +34,23 @@ export class KillSwitch {
     ks.release = async () => {
       on = false;
     };
+    ks.status = async () => (on ? {} : null);
     return ks;
+  }
+
+  /** When and why the switch was engaged, for an error the model can act on
+   *  (and stop retrying). Null when released or unreadable. */
+  async status(): Promise<{ at?: string; reason?: string } | null> {
+    if (!(await this.engaged())) return null;
+    try {
+      const parsed = JSON.parse(await fs.readFile(this.file, "utf8")) as { at?: unknown; reason?: unknown };
+      return {
+        ...(typeof parsed.at === "string" ? { at: parsed.at } : {}),
+        ...(typeof parsed.reason === "string" ? { reason: parsed.reason } : {}),
+      };
+    } catch {
+      return {};
+    }
   }
 
   async engaged(): Promise<boolean> {

@@ -3187,6 +3187,28 @@ export class QueryEngine {
               };
             }
 
+            // A rate limit is not congestion: waiting out a long Retry-After
+            // (up to 60s, four times) on a provider that has said "not now"
+            // was 76 field stream errors' worth of dead air while another
+            // configured provider sat idle. When the host says it can move
+            // the turn, hand it over instead of backing off.
+            if (
+              streamError &&
+              streamError.retriable &&
+              !modelStarted &&
+              !this.liveSignal().aborted &&
+              isRateLimitError(streamError) &&
+              (streamError.retryAfterMs === undefined || streamError.retryAfterMs > rateLimitWaitMs()) &&
+              rateLimitFailoverProbe &&
+              (await rateLimitFailoverProbe({ sessionId: this.sessionId, model: this.cfg.model }).catch(() => false))
+            ) {
+              streamError = {
+                ...streamError,
+                retriable: false,
+                message: `${streamError.message} [rate limited: handing this turn to another provider instead of waiting]`,
+              };
+            }
+
             // Transient, pre-output failure → wait and retry the same request.
             // A stall is also retriable after thinking-only output: nothing was
             // committed to the conversation, so re-issuing is safe.
@@ -5755,6 +5777,30 @@ function isCapacityError(error: { code: string; message: string }): boolean {
     text.includes("service unavailable") ||
     text.includes("http_503")
   );
+}
+
+/** A provider rate limit (HTTP 429 / rate_limit_error), as opposed to
+ *  overload (529/503), which the capacity ladder rides out. */
+export function isRateLimitError(error: { code: string; message: string }): boolean {
+  if (isCapacityError(error)) return false;
+  const text = `${error.code} ${error.message}`.toLowerCase();
+  return text.includes("http_429") || /\b429\b/.test(text) || /rate[ _-]?limit/.test(text);
+}
+
+/** A Retry-After at or under this (ARES_RATE_LIMIT_WAIT_MS, default 5s) is
+ *  cheaper to wait out than to move providers. */
+function rateLimitWaitMs(): number {
+  const n = Number(process.env.ARES_RATE_LIMIT_WAIT_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 5_000;
+}
+
+/** Host answer to "can another provider take this turn right now?", consulted
+ *  only on a rate limit. Installed once by the daemon (it owns the backup
+ *  chain and routing mode); absent = always back off, the old behaviour. */
+export type RateLimitFailoverProbe = (info: { sessionId: string; model: string }) => Promise<boolean>;
+let rateLimitFailoverProbe: RateLimitFailoverProbe | null = null;
+export function setRateLimitFailoverProbe(probe: RateLimitFailoverProbe | null): void {
+  rateLimitFailoverProbe = probe;
 }
 
 /** Retries reserved for capacity pressure. Override with ARES_CAPACITY_RETRIES. */

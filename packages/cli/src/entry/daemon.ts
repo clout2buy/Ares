@@ -28,7 +28,7 @@ const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_M
 const STUCK_TURN_CHECK_MS = 30_000;
 
 import { liveMcpTools } from "./mcpTools.js";
-import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken, MCP_CATALOG, MCP_CATEGORIES, discoverMcpAuth } from "@ares/core";
+import { authStatus, listSessions, loadSessionSnapshot, loadSessionRollout, deleteSession, renameSession, SessionNotFoundError, type Provider, classifyLane, runAnthropicLoginFlow, loadAnthropicTokens, sideQuery, sideQueryJson, QueryEngine, installGlobalCrashHandlers, EventRing, HeapGuard, readHeapSample, readHeapDiagnostics, forceCompactionGc, writeCrashLogSync, openWorkspaceSessionKernel, probeCredentialEncryption, connectMcpServer, disconnectMcpServer, setMcpServerEnabled, setMcpServerToken, connectorNameFromUrl, runOpenAILoginFlow, runKimiLoginFlow, kimiAuthStatus, fetchOllamaUsage, type OllamaUsage, fetchAnthropicUsage, fetchOllamaUsageAsProvider, resolveAnthropicAccessToken, type ProviderUsage, fetchKimiUsage, resolveKimiAccessToken, setRateLimitFailoverProbe, MCP_CATALOG, MCP_CATEGORIES, discoverMcpAuth } from "@ares/core";
 import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
@@ -411,6 +411,31 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   const isPermanentlyDeadError = (blob: string): boolean =>
     /\b402\b|\b401\b|\b403\b|insufficient.?balance|unauthorized|forbidden|invalid.?api.?key|no_auth/i.test(blob);
   sessions.set(live.session.meta.id, primaryEntry);
+  // A rate-limited turn moves to another provider instead of backing off, but
+  // only when the same ladder the failed-turn path walks would find one (see
+  // setRateLimitFailoverProbe). ARES_RATE_LIMIT_FAILOVER=0 keeps backing off.
+  setRateLimitFailoverProbe(async ({ sessionId }) => {
+    if (process.env.ARES_RATE_LIMIT_FAILOVER === "0") return false;
+    const entry = sessions.get(sessionId);
+    if (!entry) return false;
+    const current = entry.live.selection;
+    const settings = await loadUiSettings().catch(() => null);
+    if (settings?.routingMode === "auto") {
+      return (await pickHealthyFallback(current, liveDeadProviders(), { allowCrossProvider: true }).catch(() => null)) !== null;
+    }
+    if (!pinnedFailoverEnabled()) return false;
+    const decision = await decidePinnedFailover({
+      current,
+      fatal: "http_429: rate limited",
+      attempt: 2,
+      hasImages: false,
+      dead: liveDeadProviders(),
+      tried: new Set(),
+      chain: backupChain(settings),
+      resolve: (family) => selectProvider(new Map([["provider", family]])),
+    }).catch(() => null);
+    return decision?.action === "switch";
+  });
 
   // Bounded tail of what the daemon was doing right before a crash — pulled by
   // the crash handler so a coworker's silent death leaves a diagnosable trail.

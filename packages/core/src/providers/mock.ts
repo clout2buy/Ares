@@ -20,6 +20,12 @@ export class MockEchoProvider implements Provider {
     if (inputText.includes("__mock_fail_provider__")) {
       throw new Error("injected mock provider failure");
     }
+    if (inputText.includes("__mock_wedge__")) {
+      // A provider that ignores abort entirely: the turn can only end by the
+      // daemon abandoning it (force-Stop zombie release).
+      await new Promise<void>(() => {});
+      return;
+    }
     if (inputText.includes("__mock_stall__")) {
       await new Promise<void>((_, reject) => {
         req.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });

@@ -12,6 +12,19 @@ const FORCE_STOP_AFTER_MS = 12_000;
  *  app was restarted. Longer than the cancelled-turn finishTurn bound (15s):
  *  a healthy-but-slow settle must finish, not get zombified mid-write. */
 const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
+const FORCE_STOP_KILL_WAIT_MS = 5_000;
+
+/** Model catalogs and endpoint discovery: answer with what we have rather
+ *  than let a stalled socket hold the reply for minutes. */
+const CATALOG_DEADLINE_MS = 12_000;
+
+function withDeadline<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work,
+    new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); timer.unref?.(); }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 /** Daemon-side turn watchdog — a LONG backstop (15 min), the sibling of the
  *  garrison one. It resets on every event (tool_progress included), so a
@@ -22,6 +35,11 @@ const FORCE_STOP_RELEASE_GRACE_MS = 20_000;
  *  That orphan-pipe bug is fixed at the source now (ShellSupervisor group-kill);
  *  this stands behind it. 0 disables; ARES_TURN_SILENCE_MS overrides. */
 const STUCK_TURN_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_SILENCE_MS) || 900_000);
+
+/** The same watchdog with no tool running. Provider streams already give up
+ *  after 180 s without bytes, so silence this long with nothing executing is
+ *  a wedge, not work. ARES_TURN_IDLE_SILENCE_MS overrides. */
+const STUCK_TURN_IDLE_SILENCE_MS = Math.max(0, Number(process.env.ARES_TURN_IDLE_SILENCE_MS) || 420_000);
 
 /** How often the stuck-turn watchdog samples. 30 s keeps overhead trivial
  *  while adding at most 30 s of latency on top of STUCK_TURN_SILENCE_MS. */
@@ -1913,9 +1931,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // reports when it lands. This is the honest version of "force": we do
         // not claim the turn ended cleanly, we end the thing holding it and
         // say exactly that.
-        void entry.live.shellRegistry
-          .killAllForSession(entry.live.session.meta.id)
-          .catch(() => 0)
+        // The kill is raced: a taskkill that never exits must not hold the
+        // release below, or the chat stays wedged for good.
+        void Promise.race([
+          entry.live.shellRegistry.killAllForSession(entry.live.session.meta.id).catch(() => 0),
+          new Promise<string>((resolve) => setTimeout(() => resolve("kill still pending"), FORCE_STOP_KILL_WAIT_MS).unref?.()),
+        ])
           .then((killed) => {
             entry.live.session.interrupt(stalledInputId);
             tagEmit(command.sessionId, {
@@ -2972,8 +2993,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       }
       if (command.type === "model_catalog") {
         const provider = typeof command.provider === "string" ? command.provider.trim().toLowerCase() : "";
-        const models = await daemonModelCatalog(provider).catch(() => []);
-        process.stdout.write(JSON.stringify({ type: "model_catalog", provider, models }) + "\n");
+        // Detached: a catalog fetch is network-bound, and awaiting it here
+        // held every later command (every send, in every chat) behind it.
+        void withDeadline(daemonModelCatalog(provider), CATALOG_DEADLINE_MS, [] as Awaited<ReturnType<typeof daemonModelCatalog>>)
+          .catch(() => [])
+          .then((models) => process.stdout.write(JSON.stringify({ type: "model_catalog", provider, models }) + "\n"));
         continue;
       }
       if (command.type === "session_open") {
@@ -3530,11 +3554,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // (NVIDIA, Google AI Studio, most hosted APIs) can't block it.
         const base = typeof command.base === "string" ? command.base : "";
         const key = typeof command.key === "string" ? command.key : "";
-        const result = await fetchCustomOpenAiModels(base, key).catch((err) => ({
-          ok: false as const,
-          error: err instanceof Error ? err.message : String(err),
-        }));
-        process.stdout.write(JSON.stringify({ type: "custom_models", ...result }) + "\n");
+        void withDeadline(fetchCustomOpenAiModels(base, key), CATALOG_DEADLINE_MS, { ok: false as const, error: "the endpoint did not answer in time" })
+          .catch((err) => ({
+            ok: false as const,
+            error: err instanceof Error ? err.message : String(err),
+          }))
+          .then((result) => process.stdout.write(JSON.stringify({ type: "custom_models", ...result }) + "\n"));
         continue;
       }
       if (command.type === "bug_report") {
@@ -4909,7 +4934,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           stuckTurnTimer = STUCK_TURN_SILENCE_MS > 0 ? setInterval(() => {
             if (!entry.turnActive || entry.activeInputId !== inputId) return;
             const silent = Date.now() - lastTurnEventAt;
-            if (silent < STUCK_TURN_SILENCE_MS) return;
+            const limit = entry.activeToolIds.size === 0 && STUCK_TURN_IDLE_SILENCE_MS > 0
+              ? Math.min(STUCK_TURN_SILENCE_MS, STUCK_TURN_IDLE_SILENCE_MS)
+              : STUCK_TURN_SILENCE_MS;
+            if (silent < limit) return;
             console.error(
               `stuck-turn watchdog: turn ${inputId} silent for ${Math.round(silent / 1000)}s — ` +
               (entry.cancelRequested ? "escalating" : "auto-cancelling"),
@@ -5326,8 +5354,18 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           // Admission tasks never own a run lease. Drain only their parse +
           // SQLite routing fences, then decide synchronously which corrections
           // the owner consumed and which must re-enter the ordinary turn runner.
-          while (entry.pendingSteerTasks.size > 0) {
-            await Promise.allSettled([...entry.pendingSteerTasks.values()]);
+          // Bounded: the stuck-turn watchdog is already disarmed here, so an
+          // admission task that never settles would leave the chat "working".
+          const steerDrainUntil = Date.now() + 15_000;
+          while (entry.pendingSteerTasks.size > 0 && Date.now() < steerDrainUntil) {
+            await withDeadline(
+              Promise.allSettled([...entry.pendingSteerTasks.values()]).then(() => true),
+              Math.max(1, steerDrainUntil - Date.now()),
+              false,
+            );
+          }
+          if (entry.pendingSteerTasks.size > 0) {
+            console.error(`turn ${inputId}: ${entry.pendingSteerTasks.size} steer admission(s) still pending after 15s; settling the turn anyway`);
           }
           if (entry.deferredSteers.size > 0) {
             const kernel = await openWorkspaceSessionKernel(entry.live.context.workspace);

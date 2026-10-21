@@ -111,3 +111,50 @@ test("Ares does not import credentials owned by Claude Code or Crypt", async () 
   assert.equal(tokens, null);
   assert.equal(await resolveAnthropicAccessToken(), null);
 });
+
+async function writeExpiredTokens(refreshToken) {
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete process.env.ARES_ANTHROPIC_OAUTH_TOKEN;
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(process.env.ARES_HOME, { recursive: true });
+  await writeFile(path.join(process.env.ARES_HOME, "anthropic-oauth.json"), JSON.stringify({
+    accessToken: "old-access",
+    refreshToken,
+    expiresAt: Date.now() - 1_000,
+  }));
+}
+
+test("concurrent streams on an expired token share ONE refresh exchange", async () => {
+  await writeExpiredTokens("rotating-refresh");
+  let posts = 0;
+  const fetchImpl = async () => {
+    posts += 1;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "rotated", expires_in: 3600 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  const tokens = await Promise.all([
+    resolveAnthropicAccessToken(fetchImpl),
+    resolveAnthropicAccessToken(fetchImpl),
+    resolveAnthropicAccessToken(fetchImpl),
+  ]);
+  assert.deepEqual(tokens, ["fresh-access", "fresh-access", "fresh-access"]);
+  assert.equal(posts, 1, "a rotating refresh token is presented once, not once per caller");
+});
+
+test("a token endpoint that never answers fails the refresh in seconds instead of holding the turn", async () => {
+  await writeExpiredTokens("hung-refresh");
+  process.env.ARES_ANTHROPIC_REFRESH_TIMEOUT_MS = "600";
+  try {
+    // Ignores the abort signal on purpose: the deadline must not depend on it.
+    const fetchImpl = () => new Promise(() => {});
+    const started = Date.now();
+    const token = await resolveAnthropicAccessToken(fetchImpl);
+    assert.equal(token, null, "a failed refresh reads as signed-out, which the stream reports as no_auth");
+    assert.ok(Date.now() - started < 3_000, `refresh gave up after ${Date.now() - started}ms`);
+  } finally {
+    delete process.env.ARES_ANTHROPIC_REFRESH_TIMEOUT_MS;
+  }
+});

@@ -312,25 +312,81 @@ export async function clearAnthropicTokens(): Promise<void> {
   await rm(authFilePath(), { force: true }).catch(() => {});
 }
 
+/** Deadline for one token exchange (ARES_ANTHROPIC_REFRESH_TIMEOUT_MS, default 15s). */
+function refreshTimeoutMs(): number {
+  const n = Number(process.env.ARES_ANTHROPIC_REFRESH_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 500 ? Math.floor(n) : 15_000;
+}
+
+/**
+ * Single-flight, keyed by refresh token. The refresh runs at the top of every
+ * provider stream, so a turn, its compaction summarizer and a subagent can all
+ * hit an expired token at once. Each used to POST its own exchange: if the
+ * server rotates the refresh token the losers present a revoked one and the
+ * owner is "Not signed in" mid-task; and the exchange had no deadline, so a
+ * token endpoint that never answered left the turn silent until the stream
+ * stall guard gave up minutes later. Now there is one exchange per token, and
+ * it fails in seconds.
+ */
+const refreshesInFlight = new Map<string, Promise<AnthropicOAuthTokens>>();
+
 /** Refresh an expiring access token. Returns and persists the fresh tokens. */
-export async function refreshAnthropicTokens(
+export function refreshAnthropicTokens(
   tokens: AnthropicOAuthTokens,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AnthropicOAuthTokens> {
-  if (!tokens.refreshToken) throw new Error("Claude OAuth refresh token is missing.");
-  const res = await fetchImpl(TOKEN_URL, {
-    method: "POST",
+  if (!tokens.refreshToken) return Promise.reject(new Error("Claude OAuth refresh token is missing."));
+  const key = tokens.refreshToken;
+  const existing = refreshesInFlight.get(key);
+  if (existing) return existing;
+  const flight = exchangeRefreshToken(tokens, fetchImpl).finally(() => {
+    if (refreshesInFlight.get(key) === flight) refreshesInFlight.delete(key);
+  });
+  refreshesInFlight.set(key, flight);
+  return flight;
+}
+
+async function exchangeRefreshToken(
+  tokens: AnthropicOAuthTokens,
+  fetchImpl: typeof fetch,
+): Promise<AnthropicOAuthTokens> {
+  const timeoutMs = refreshTimeoutMs();
+  // Raced as well as signalled: an injected fetch that ignores the signal must
+  // not be able to hold the turn either.
+  const deadline = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const reason = new Error("token refresh timed out");
+      reason.name = "TimeoutError";
+      deadline.abort(reason);
+      reject(reason);
+    }, timeoutMs);
+  });
+  let res: Response;
+  try {
+    res = await Promise.race([expired, fetchImpl(TOKEN_URL, {
+      signal: deadline.signal,
+      method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
       "User-Agent": ANTHROPIC_OAUTH_USER_AGENT,
     },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_id: CLIENT_ID,
-      refresh_token: tokens.refreshToken,
-    }),
-  });
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_id: CLIENT_ID,
+        refresh_token: tokens.refreshToken,
+      }),
+    })]);
+  } catch (err) {
+    if (deadline.signal.aborted) {
+      throw new Error(`Claude token refresh did not answer within ${Math.round(timeoutMs / 1000)}s.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 500);
     throw new Error(`Claude token refresh failed (${res.status})${detail ? `: ${detail}` : ""}`);

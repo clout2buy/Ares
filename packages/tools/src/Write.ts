@@ -152,6 +152,14 @@ export const WriteTool = buildTool({
     let backupPath: string | undefined;
     let feedback: PostMutationFeedback | undefined;
     const mutationWorkspace = await mutationWorkspaceForPaths(ctx.workspace, [filePath]);
+    // The session's own workspace folder may not exist yet (a fresh install's
+    // "Ares Workspace", or one the owner deleted). Writing a file into it is
+    // consent to the folder: create it instead of failing with "Workspace does
+    // not exist" (23 field errors). Only the ACTIVE workspace is created; a
+    // missing external project root still fails loudly.
+    if (!existed && path.resolve(mutationWorkspace) === path.resolve(ctx.workspace)) {
+      await fs.mkdir(mutationWorkspace, { recursive: true });
+    }
     // Keep the established user-visible backup/index in addition to the
     // transaction's private rollback blob. This applies equally to an approved
     // external project; bytes are committed in that project, not copied later.

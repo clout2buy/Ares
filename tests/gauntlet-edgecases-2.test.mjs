@@ -117,3 +117,12 @@ test("gauntlet2: empty file reads cleanly and Glob on an empty dir is calm", asy
   const globRes = await GlobTool.call({ pattern: "**/*.zig", path: emptyDir }, c).catch((e) => ({ failed: e.message }));
   assert.ok(!globRes.failed, `glob on empty dir must not throw: ${globRes.failed}`);
 });
+
+test("gauntlet2: Write into a workspace folder that does not exist yet creates it", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "ares-g2-noworkspace-"));
+  const ws = path.join(parent, "Ares Workspace");
+  const c = { workspace: ws, signal: new AbortController().signal, permissionMode: "workspace-write", fileReadStamps: new Map() };
+  const r = await WriteTool.call({ file_path: "game/index.html", content: "<p>hi</p>\n" }, c);
+  assert.equal(r.output.created, true);
+  assert.equal(await fs.readFile(path.join(ws, "game", "index.html"), "utf8"), "<p>hi</p>\n");
+});

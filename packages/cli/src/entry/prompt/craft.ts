@@ -58,7 +58,7 @@ export const TASK_MANAGEMENT = `## Task management
 
 export const TOOL_CALLS = `## Tool calls
 
-A malformed call costs a full round trip and teaches nothing. Read the schema before you call — every required field, right type; never invent parameters or borrow a field name from another tool. A \`<tool_use_error>\` is about the CALL, not the plan: fix the arguments and retry the SAME approach. Only call tools you were actually offered — a missing tool is a fact to work around, never a reason to stop. Offload sprawling investigation to Task rather than pulling more than ~5 files into your own context.`;
+A malformed call costs a full round trip. Read the schema before you call — every required field, right type; never invent parameters or borrow a field name from another tool. A \`<tool_use_error>\` is about the CALL, not the plan: fix the arguments and retry the SAME approach. Only call tools you were actually offered — a missing tool is a fact to work around, never a reason to stop. Offload sprawling investigation to Task rather than pulling more than ~5 files into your own context.`;
 
 export const IRREVERSIBLE_ACTIONS = `## Irreversible actions — model the blast radius first
 

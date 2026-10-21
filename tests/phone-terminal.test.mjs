@@ -567,3 +567,20 @@ test("terminals are re-adopted by a fresh service on the same socket (garrison r
   await d.close();
   await terminal2.killAll("done");
 });
+
+test("commands that exit instantly still report their real exit code (tmux can lose the status)", { skip }, async (t) => {
+  const r = await rig(t, { createsPerMinute: 100 });
+  // tmux sometimes never records the status of a pane that dies within a few
+  // milliseconds; the wrapper's own status file must cover for it.
+  for (let i = 0; i < 12; i++) {
+    const shell = await r.create();
+    const sc = await r.open(shell).ready();
+    sc.type("exit 7\n");
+    assert.equal((await sc.waitFrame((f) => f.t === "exit")).code, 7, `interactive ${i}`);
+    await r.call("DELETE", `/gateway/terminal/sessions/${shell}`);
+    const id = await r.create({ command: "exit 3" });
+    const c = await r.open(id).ready();
+    assert.equal((await c.waitFrame((f) => f.t === "exit")).code, 3, `fast command ${i}`);
+    await r.call("DELETE", `/gateway/terminal/sessions/${id}`);
+  }
+});

@@ -267,6 +267,7 @@ interface Sess {
   /** false while the tmux session is still being created (the poll must not judge it yet). */
   ready: boolean;
   deadPolls?: number;
+  statusFile: string;
 }
 
 export interface TerminalApi {
@@ -416,6 +417,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
       exitCode: null,
       ring: new OutputRing(cfg.ring(), randomInt(2 ** 30, 2 ** 40)),
       fifo: path.join(dirs.run, `${init.id}.fifo`),
+      statusFile: path.join(dirs.run, `${init.id}.status`),
       reader: undefined,
       clients: new Set(),
       bytesIn: 0,
@@ -499,7 +501,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
           title: f.slice(8).join(sep) || `Terminal ${++titleCounter}`, createdAt: f[7] || new Date(now()).toISOString(),
         });
         s.ready = true;
-        if (f[5] === "1") { s.alive = false; s.exitCode = Number(f[6]) || 0; s.deadAtMs = now(); }
+        if (f[5] === "1") { s.alive = false; const w = f[6] === "" ? readStatusFile(s.statusFile) : NaN; s.exitCode = Number.isFinite(w) ? w : Number(f[6]) || 0; s.deadAtMs = now(); }
         else { await openPipe(s).catch((err) => log(`terminal: could not re-attach output of ${id}: ${(err as Error).message}`)); }
         log(`terminal: adopted ${id}`);
       }
@@ -540,6 +542,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     s.reader?.destroy();
     if (s.logFd !== undefined) { try { fs.closeSync(s.logFd); } catch { /* closed */ } }
     await fs.promises.unlink(s.fifo).catch(() => {});
+    await fs.promises.unlink(s.statusFile).catch(() => {});
     audit(kind === "idle" ? "idle" : "kill", `terminal:${s.id}`, { reason, bytesIn: s.bytesIn, bytesOut: s.bytesOut, ageSec: Math.round((now() - Date.parse(s.createdAt)) / 1000) });
     if (sessions.size === 0) stopTick();
   }
@@ -576,11 +579,12 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
             // tmux flags the pane dead a moment before it has reaped the child and recorded
             // the status; reading it in that window would report a failed command as exit 0.
             const statusKnown = f[2] !== "" || Number(f[3]) > 0;
-            if (!statusKnown && (s.deadPolls = (s.deadPolls ?? 0) + 1) < 8) continue;
+            const wrapped = statusKnown ? NaN : readStatusFile(s.statusFile);
+            if (!statusKnown && !Number.isFinite(wrapped) && (s.deadPolls = (s.deadPolls ?? 0) + 1) < 8) continue;
             s.alive = false;
             const status = Number(f[2]);
             const signal = Number(f[3]);
-            s.exitCode = Number.isFinite(status) && f[2] !== "" ? status : signal > 0 ? 128 + signal : 0;
+            s.exitCode = Number.isFinite(status) && f[2] !== "" ? status : signal > 0 ? 128 + signal : Number.isFinite(wrapped) ? wrapped : 0;
             s.deadAtMs = now();
             // Let the last output through the ring before the exit frame.
             setTimeout(() => {
@@ -903,8 +907,15 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     const title = cleanTitle(body["title"]) || `Terminal ${++titleCounter}`;
     const created = new Date(now()).toISOString();
     const env = Object.entries(termEnv()).map(([k, v]) => `${k}=${v}`);
-    const argv = ["/usr/bin/env", "-i", ...env, shell, "-l", ...(command ? ["-c", command] : [])];
     const s = newSess({ id, title, createdAt: created, cols, rows, cwd, pid: 0 });
+    // tmux sometimes never records the status of a pane that exits within a few
+    // milliseconds (pane_dead_status stays empty), and the poller would then
+    // report a failed command as exit 0. The wrapper writes the status itself.
+    const argv = [
+      "/usr/bin/env", "-i", ...env, "/bin/sh", "-c",
+      'f=$1; shift; "$@"; s=$?; printf %s "$s" > "$f" 2>/dev/null; exit "$s"',
+      "ares-terminal", s.statusFile, shell, "-l", ...(command ? ["-c", command] : []),
+    ];
     try {
       await fs.promises.mkdir(dirs.run, { recursive: true, mode: 0o700 });
       await fs.promises.unlink(s.fifo).catch(() => {});
@@ -1169,6 +1180,15 @@ export function processTree(rootPid: number, table: ProcRow[] = readProcTable())
   found.delete(process.pid);
   found.delete(1);
   return [...found];
+}
+
+function readStatusFile(file: string): number {
+  try {
+    const n = Number.parseInt(fs.readFileSync(file, "utf8").trim(), 10);
+    return Number.isFinite(n) && n >= 0 && n <= 255 ? n : NaN;
+  } catch {
+    return NaN;
+  }
 }
 
 async function killTree(rootPid: number): Promise<void> {

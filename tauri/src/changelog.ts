@@ -40,6 +40,17 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.61.2",
+    date: "October 2026",
+    title: "Games open",
+    tagline: "Your games and local pages open in the Forge every time, the window never freezes, and agents can't take the Forge's port.",
+    highlights: [
+      { icon: "🎮", title: "Local pages just open", blurb: "Games, files and dev servers load in the Forge through the path that already worked, and the agent plays them right there. No more 15-second timeouts.", tag: "Fixed" },
+      { icon: "🧊", title: "No frozen window", blurb: "After a failed open, Ares couldn't be dragged, minimized or closed. Forge calls now run off the main thread, so the window always answers.", tag: "Fixed" },
+      { icon: "🔌", title: "The Forge keeps its port", blurb: "If something already holds the Forge's debugging port, Ares picks a free one. Agents can't start their own Chrome anymore either.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.61.1",
     date: "October 2026",
     title: "Only the Forge",

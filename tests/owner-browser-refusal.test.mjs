@@ -21,6 +21,13 @@ test("opening a page or a browser from the shell is refused", () => {
     "rundll32 url.dll,FileProtocolHandler http://localhost:9000",
     '& "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" http://localhost:3000',
     "npm run build; Start-Process http://localhost:4173",
+    // an agent once took the Forge's DevTools port with its own Chrome
+    'Start-Process "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" -ArgumentList "--remote-debugging-port=9333"',
+    "& 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' --remote-debugging-port=9333 --user-data-dir=C:\\tmp\\p",
+    "chrome --headless --remote-debugging-port=9222",
+    "start msedge",
+    "msedge.exe",
+    "Start-Process chrome",
   ];
   for (const c of refused) {
     const r = ownerBrowserRefusal(c);

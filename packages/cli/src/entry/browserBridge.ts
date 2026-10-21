@@ -811,7 +811,27 @@ export function makeBrowserTool(
       const forge = forgeCdpUrl();
       let forgeNote: string | undefined;
       let onForge = false;
-      if (forge && !extensionAttach && i.action !== "handshake" && !claimForge(ctx?.sessionId ?? "")) {
+      // Local pages FIRST, on every build: a file, a page Ares serves, or the
+      // project's dev server opens in the Forge as a served page and is driven
+      // in place (the page driver) — the path proven live, with no native view
+      // in the loop. The native view is for real websites only. (2026-10-21: a
+      // friend's game never loaded because the desktop's native view sat
+      // hidden; the served page needs none of that machinery.)
+      const openUrl = (i.action === "open" || i.action === "preview") ? i.url : i.action === "act" && i.steps?.[0]?.action === "open" ? i.steps[0].url : undefined;
+      const localOpen = openUrl !== undefined && (isLoopbackUrl(openUrl) || !/^[a-z][a-z0-9+.-]*:\/\//i.test(openUrl));
+      const continuingServed = openUrl === undefined && !!pageRoot?.startsWith("page:") && !NOT_PAGE_DRIVEN.has(i.action);
+      // The served page has no DevTools protocol; waking the native view here
+      // would answer about a blank page instead.
+      if (openUrl === undefined && pageRoot?.startsWith("page:") && (i.action === "devtools" || i.action === "profile" || i.action === "network")) {
+        throw new Error(`${i.action} is not available for this page (it runs in the Forge as a served page, driven in place). Use console, eval and screenshot here; the Forge sensor already reports its errors and frame rate to you.`);
+      }
+      let pageBr: BrowserConnector | null = null;
+      if ((localOpen || continuingServed) && !extensionAttach) {
+        pageBr = await servedPageFor(i, ctx, emitTarget, pageRoot, context.workspace);
+      }
+      if (!pageBr && openUrl !== undefined) pageRoot = null; // a website open leaves the served page behind
+      if (pageBr) { /* the served page is the browser; the Forge view is not touched */ }
+      else if (forge && !extensionAttach && i.action !== "handshake" && !claimForge(ctx?.sessionId ?? "")) {
         if (isForgeStrategy(browser?.strategy, forge)) { await browser!.close().catch(() => undefined); browser = null; }
         forgeNote = "The Forge is in use by another chat right now, so this ran in Ares's background browser — the owner cannot see or use this page.";
       } else if (forge && !extensionAttach && i.action !== "handshake") {
@@ -832,7 +852,7 @@ export function makeBrowserTool(
       // No native Forge view (the browser preview / dev): a local page is
       // shown in the Forge and Ares drives THAT copy through its page driver
       // — never a hidden browser streamed as screenshots.
-      const pageBr = !onForge && !forge && !extensionAttach ? await servedPageFor(i, ctx, emitTarget, pageRoot, context.workspace) : null;
+      if (!pageBr && !onForge && !forge && !extensionAttach) pageBr = await servedPageFor(i, ctx, emitTarget, pageRoot, context.workspace);
       // A new page takes over; a refused one leaves the current page in place.
       if (pageBr && (i.action === "open" || i.action === "preview" || (i.action === "act" && i.steps?.[0]?.action === "open"))) pageRoot = pageBr.strategy ?? null;
       // Never a hidden browser (owner, 2026-10-20: "none should use the hidden

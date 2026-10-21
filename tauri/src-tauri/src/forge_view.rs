@@ -32,12 +32,19 @@ pub const LABEL: &str = "forge-view";
 const DEFAULT_CDP_PORT: u16 = 9333;
 
 /// Where the view's DevTools endpoint listens (Windows; see module docs).
+/// Chosen once per run: ARES_FORGE_CDP_PORT when set, else 9333 when it is
+/// free, else any free port. The view's browser cannot bind a port someone
+/// else holds and then simply has no endpoint — an agent once started its own
+/// Chrome on 9333 and the Forge was undrivable until Ares restarted.
 pub fn cdp_port() -> u16 {
-    std::env::var("ARES_FORGE_CDP_PORT")
-        .ok()
-        .and_then(|v| v.trim().parse::<u16>().ok())
-        .filter(|p| *p > 0)
-        .unwrap_or(DEFAULT_CDP_PORT)
+    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *PORT.get_or_init(|| {
+        if let Some(p) = std::env::var("ARES_FORGE_CDP_PORT").ok().and_then(|v| v.trim().parse::<u16>().ok()).filter(|p| *p > 0) {
+            return p;
+        }
+        let free = |port: u16| std::net::TcpListener::bind(("127.0.0.1", port)).ok().and_then(|l| l.local_addr().ok()).map(|a| a.port());
+        free(DEFAULT_CDP_PORT).or_else(|| free(0)).unwrap_or(DEFAULT_CDP_PORT)
+    })
 }
 
 /// The endpoint the daemon attaches to, or None where the view has none.
@@ -149,7 +156,12 @@ pub fn show(app: &AppHandle, url: Option<String>, navigate: bool, bounds: Bounds
 /// `show` brings it back with `set_bounds`.
 pub fn hide(app: &AppHandle) -> Result<(), String> {
     if let Some(v) = view(app) {
-        v.set_position(LogicalPosition::new(-32000.0, -32000.0)).map_err(|e| e.to_string())?;
+        // Just left of the window's client area: fully clipped, small numbers.
+        // -32000 overflowed the 16-bit child coordinates under DPI scaling and
+        // the view wrapped back over the window, swallowing clicks and drags.
+        let scale = v.window().scale_factor().unwrap_or(1.0);
+        let width = v.bounds().ok().map(|b| b.size.to_logical::<f64>(scale).width).unwrap_or(1024.0);
+        v.set_position(LogicalPosition::new(-(width + 64.0), 0.0)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

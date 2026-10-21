@@ -834,8 +834,11 @@ export function ownerBrowserRefusal(command: string): string | null {
       );
     }
   }
-  if (new RegExp(`(?:^|[;&|(]\\s*)(?:&\\s*)?["']?[^;&|"']*${browserExe.source}["']?\\s`, "i").test(line + " ") && pageArg.test(line)) {
-    return "Refused: that launches a browser outside the Forge. Ares shows pages ONLY in its Forge: call Browser {action:\"open\"} with the URL.";
+  // Running a browser at all — with a URL, with a DevTools port (an agent once
+  // started its own Chrome on the Forge's port and took it), or bare.
+  const runsBrowser = new RegExp(`(?:^|[;&|(]\\s*)(?:&\\s*|\\.\\s*)?(?:["'][^"']*${browserExe.source}["']|(?:[A-Za-z]:)?[^;&|"'\\s]*${browserExe.source})(?:\\s|$)`, "i");
+  if (runsBrowser.test(line) || (browserExe.test(line) && /--remote-debugging|--headless|--app=|--new-window|--user-data-dir/i.test(line))) {
+    return "Refused: that launches a browser outside the Forge. Ares shows and drives pages ONLY in its Forge (its own embedded browser): call Browser {action:\"open\"} with the URL. Never start Chrome/Edge yourself, with or without a DevTools port.";
   }
   return null;
 }

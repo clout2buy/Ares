@@ -37,13 +37,32 @@ function covered(stage: DOMRect): boolean {
 /** Where a view that is not showing lives: off-screen, at the stage's size or a
  *  usual viewport when the stage has none, so the page lays out and runs. */
 export function parkedBounds(stage: { width: number; height: number }): { x: number; y: number; w: number; h: number } {
-  return { x: -32000, y: -32000, w: stage.width > 8 ? stage.width : 1024, h: stage.height > 8 ? stage.height : 720 };
+  // Child-view coordinates are relative to the window, so just left of it is
+  // fully clipped. Small numbers on purpose: -32000 (Windows' own minimized
+  // spot) overflows the 16-bit child coordinates once DPI scaling is applied,
+  // and the view wrapped back ONTO the window — an invisible sheet over the
+  // title bar and rail (owner, 2026-10-21: "cant drag ares, cant click some
+  // things, cant minimize").
+  const w = stage.width > 8 ? stage.width : 1024;
+  const h = stage.height > 8 ? stage.height : 720;
+  return { x: -(w + 64), y: 0, w, h };
 }
 
 /** Native views open http(s) only (forge_view.rs); other targets stay framed.
  *  about:blank is the daemon waking the view before it drives it. */
 export function forgeNativeTarget(url: string): boolean {
-  return /^https?:\/\//i.test(url.trim()) || url.trim() === "about:blank";
+  const u = url.trim();
+  if (u === "about:blank") return true;
+  if (!/^https?:\/\//i.test(u)) return false;
+  // Pages on this machine (files Ares serves, the project's dev server) stay
+  // framed: the frame carries the page driver, so Ares plays them in place —
+  // the path that works on every build. The native view is for websites.
+  try {
+    const host = new URL(u).hostname.toLowerCase();
+    return !(host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1" || host.endsWith(".localhost"));
+  } catch {
+    return false;
+  }
 }
 
 /** The browser preview (`?bridge=`) has no native shell to host a child

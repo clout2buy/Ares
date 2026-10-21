@@ -2235,8 +2235,12 @@ fn ares_living_surface_ready(
 
 /// Show the Forge's native browser view over the panel (creating it on first
 /// use) and navigate it to `url` when given. See forge_view.rs.
+// async: these run on a worker thread, never the main one. A WebView2 call
+// that blocks (the view's browser wedged) then stalls one request instead of
+// the whole window (owner, 2026-10-21: after a failed open "cant drag ares,
+// cant minimize, couldn't press apply").
 #[tauri::command]
-fn ares_forge_view_show(app: tauri::AppHandle, url: Option<String>, navigate: Option<bool>, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+async fn ares_forge_view_show(app: tauri::AppHandle, url: Option<String>, navigate: Option<bool>, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
     let profile = desktop_ares_home()
         .unwrap_or_else(|| PathBuf::from(".ares-home"))
         .join("forge-browser");
@@ -2244,13 +2248,13 @@ fn ares_forge_view_show(app: tauri::AppHandle, url: Option<String>, navigate: Op
 }
 
 #[tauri::command]
-fn ares_forge_view_hide(app: tauri::AppHandle) -> Result<(), String> {
+async fn ares_forge_view_hide(app: tauri::AppHandle) -> Result<(), String> {
     forge_view::hide(&app)
 }
 
 /// back | forward | reload | stop
 #[tauri::command]
-fn ares_forge_view_control(app: tauri::AppHandle, action: String) -> Result<(), String> {
+async fn ares_forge_view_control(app: tauri::AppHandle, action: String) -> Result<(), String> {
     forge_view::control(&app, &action)
 }
 

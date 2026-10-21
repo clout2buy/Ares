@@ -22,6 +22,9 @@ function appVersion(): string {
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // The Rust side writes under src-tauri (the packaged runtime, the daemon's
+  // .ares) while the dev server runs; watching it crashed vite with EBUSY.
+  server: { watch: { ignored: ["**/src-tauri/**"] } },
   define: {
     // Single source of truth for the app version (shown in the HUD footer).
     __APP_VERSION__: JSON.stringify(appVersion()),

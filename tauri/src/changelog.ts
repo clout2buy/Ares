@@ -40,6 +40,18 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.64.0",
+    date: "October 2026",
+    title: "Challenge me",
+    tagline: "Say \"challenge me\" and Ares coaches you through building something small in Python, one step at a time, then rates what you made.",
+    highlights: [
+      { icon: "🐍", title: "Python challenges", blurb: "Fifteen small builds, from a number-guessing game to a Flask web app, each sized to your level and one step at a time.", tag: "New" },
+      { icon: "🧭", title: "Hints, not answers", blurb: "Say hint for a nudge, then a concept and a docs link, then an example. Ares never writes your solution unless you ask to see it.", tag: "New" },
+      { icon: "📚", title: "Real references", blurb: "Every step comes with the exact docs page, the import lines you need, and the file layout to create.", tag: "New" },
+      { icon: "⭐", title: "Rated like a review", blurb: "Ares runs your code, scores it out of 100, points at what you did well, and gives two fixes and a stretch goal.", tag: "New" },
+    ],
+  },
+  {
     version: "0.63.1",
     date: "October 2026",
     title: "Knows when it's stuck",

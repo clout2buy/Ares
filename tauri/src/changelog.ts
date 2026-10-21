@@ -40,6 +40,20 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.62.0",
+    date: "October 2026",
+    title: "Never stuck",
+    tagline: "Chats stop freezing after a Stop, you can see what Ares is doing while it prepares, and big files are read whole.",
+    highlights: [
+      { icon: "🧯", title: "Stop really frees a chat", blurb: "A stopped turn can no longer leave the chat waiting on it, so the next message gets an answer instead of needing another Stop.", tag: "Fixed" },
+      { icon: "⏱️", title: "Preparing has a limit", blurb: "Gathering memory and workspace context gives up after 20 seconds and Ares answers anyway, telling you which step was slow.", tag: "Fixed" },
+      { icon: "👀", title: "See what it's doing", blurb: "While it prepares, the working line names the step and counts the time, and it says so when nothing has happened for 90 seconds.", tag: "New" },
+      { icon: "📄", title: "Big files read whole", blurb: "Ares can now see all of a large file it opens, so reworking a long page or game no longer stalls.", tag: "Fixed" },
+      { icon: "🔑", title: "Sign-ins can't hang a turn", blurb: "Claude, ChatGPT and Kimi sign-in refreshes give up in seconds instead of holding every message on that model.", tag: "Safer" },
+      { icon: "🚪", title: "Removed guests stay out", blurb: "A guest you remove from a room loses access right away, every time.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.61.2",
     date: "October 2026",
     title: "Games open",

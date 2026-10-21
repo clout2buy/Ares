@@ -71,7 +71,7 @@ import { PluginHost } from "@ares/plugins";
 import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
 import { startGatewayMirror } from "./telegramWiring.js";
 import { contentFromUserInput, rewindLines, undoLines } from "./terminalLines.js";
-import { buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage } from "./turnPipeline.js";
+import { boundedTurnPrep, buildSystemPrompt, disposeLiveSession, finishTurn, gatherGitRunFacts, lastTriageRun, mindSessionEnded, prepareUserTurn, semanticUserMessage, turnPrepTimeoutMs } from "./turnPipeline.js";
 import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetworkSyncNow, onAresNetworkStatus, oricleOnSessionEvent, startAresNetworkFromSettings } from "./oricleAdapter.js";
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { AgentError, DesktopAgents } from "./daemon/agents.js";
@@ -4785,15 +4785,33 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             const wireTenant = tenantFromWire((command as { tenant?: unknown }).tenant);
             // An owner frame on an agent's chat is still that agent (its memory scope).
             const frameTenant = wireTenant?.role === "owner" && entry.live.tenant?.role === "owner" ? entry.live.tenant : wireTenant;
-            await prepareUserTurn(entry.live, semanticGoal, frameTenant ? { tenant: frameTenant } : {});
-            // The Forge's native view: what the owner has on screen, when it changed.
-            const forgeNote = await forgeScreenNote(command.sessionId ?? "").catch(() => null);
-            if (forgeNote) entry.live.queueSystemReminder(forgeNote, "hook", "forge-screen");
+            // Bounded: optional context must never hold the turn (see
+            // boundedTurnPrep). ARES_TEST_DAEMON_PREP_HANG_MS simulates a
+            // preparation step that never settles, for the daemon suite only.
+            const testPrepHangMs = Number(process.env.ARES_TEST_DAEMON_PREP_HANG_MS ?? 0);
+            const prepTimeoutMs = turnPrepTimeoutMs();
+            const prep = await boundedTurnPrep((async () => {
+              if (Number.isFinite(testPrepHangMs) && testPrepHangMs > 0) {
+                await new Promise<void>((resolve) => setTimeout(resolve, Math.min(600_000, testPrepHangMs)));
+              }
+              await prepareUserTurn(entry.live, semanticGoal, frameTenant ? { tenant: frameTenant } : {});
+              // The Forge's native view: what the owner has on screen, when it changed.
+              const forgeNote = await forgeScreenNote(command.sessionId ?? "").catch(() => null);
+              if (forgeNote) entry.live.queueSystemReminder(forgeNote, "hook", "forge-screen");
+            })(), { timeoutMs: prepTimeoutMs, cancelled: ownerCancellationPending });
+            if (prep === "timeout") {
+              console.error(`turn prep: ${inputId} preparation exceeded ${prepTimeoutMs}ms; continuing without it`);
+              tagEmit(sid, {
+                type: "system_reminder_injected",
+                source: "instructions",
+                text: `Memory and workspace context took over ${Math.round(prepTimeoutMs / 1000)}s to gather, so this reply goes ahead without them.`,
+              });
+            }
             // Room talk changes all the time: it rides this turn, not the
             // (cached) system prompt.
             const turnSid = command.sessionId ?? "";
             const lately = desktopRooms.isSeat(turnSid) ? null : desktopRooms.latelyNoteFor(desktopAgents.agentForSession(turnSid)?.id, turnSid);
-            if (lately) entry.live.queueSystemReminder(lately, "hook", "rooms-lately");
+            if (lately && !ownerCancellationPending()) entry.live.queueSystemReminder(lately, "hook", "rooms-lately");
           }
           // Personas (the HELM roster: Aegis & co.) were replaced by agents
           // (owner, 2026-10-19): Ares never auto-wears one any more. The

@@ -306,6 +306,51 @@ export function isSubagentSession(live: Pick<LiveSession, "session">): boolean {
   return /^agent_/.test(live.session.meta.id);
 }
 
+/** Ceiling on a turn's optional preparation (ARES_TURN_PREP_TIMEOUT_MS, default
+ *  20s; 0 = unbounded). See boundedTurnPrep. */
+export function turnPrepTimeoutMs(): number {
+  const raw = process.env.ARES_TURN_PREP_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return 20_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 20_000;
+}
+
+/**
+ * Race a turn's preparation (memory recall, estate, cross-surface digest, repo
+ * map, git delta, Forge screen note) against a deadline and the owner's Stop.
+ * All of it is optional context, and none of it had a deadline: a recall or
+ * memory write that never settled left the chat at `recall_surfaced` with no
+ * reply, no error and no turn end, Stop only recorded a pending cancel, and
+ * the stuck-turn watchdog was not armed yet, so every later message queued
+ * behind it (the 2026-10-21 "did u get bricked" chat). On a lost race the work
+ * keeps running detached and its failure is swallowed; the turn goes on
+ * without it. An error thrown BEFORE the deadline still propagates.
+ */
+export async function boundedTurnPrep(
+  work: Promise<unknown>,
+  opts: { timeoutMs: number; cancelled?: () => boolean; pollMs?: number },
+): Promise<"done" | "timeout" | "cancelled"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
+  const guard = new Promise<"timeout" | "cancelled">((resolve) => {
+    if (opts.timeoutMs > 0) timer = setTimeout(() => resolve("timeout"), opts.timeoutMs);
+    const cancelled = opts.cancelled;
+    if (cancelled) {
+      if (cancelled()) resolve("cancelled");
+      poll = setInterval(() => {
+        if (cancelled()) resolve("cancelled");
+      }, opts.pollMs ?? 100);
+    }
+  });
+  try {
+    return await Promise.race([work.then(() => "done" as const), guard]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (poll) clearInterval(poll);
+    work.catch(() => undefined);
+  }
+}
+
 export async function prepareUserTurn(
   live: LiveSession,
   userMessage: string,

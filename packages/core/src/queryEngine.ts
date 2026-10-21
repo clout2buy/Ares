@@ -1757,9 +1757,14 @@ export class QueryEngine {
     schema: ToolSchema,
     onSpillFailure?: (warning: string) => void,
   ): Promise<string> {
-    const full = stringifyToolOutput(output);
+    const inline = stringifyToolOutput(output);
     const budget = resolveToolResultBudget(schema);
-    if (budget === 0 || full.length <= budget) return full;
+    if (budget === 0 || inline.length <= budget) return inline;
+    // The spill is only useful if Read can page through it, and Read pages by
+    // LINE. A structured output stringified inline is one JSON line, so the
+    // file on disk (and the preview, so their line numbers agree) is the
+    // readable form instead: its text body, or pretty-printed JSON.
+    const full = spillableToolOutput(output, inline);
     try {
       const dir = path.join(this.cfg.workspace, ".ares", "tool-results", this.sessionId);
       await fs.mkdir(dir, { recursive: true });
@@ -5645,6 +5650,25 @@ function stringifyToolOutput(output: unknown): string {
     return JSON.stringify(output);
   } catch {
     return String(output);
+  }
+}
+
+/** The on-disk form of a spilled tool result: something Read can page by line.
+ *  Strings stay as they are. An object whose body is a `content`/`output`/
+ *  `stdout`/`text` string is written as a short JSON header of its other fields, then
+ *  that body with its real newlines. Anything else is pretty-printed JSON. */
+function spillableToolOutput(output: unknown, inline: string): string {
+  if (typeof output !== "object" || output === null) return inline;
+  try {
+    if (Array.isArray(output)) return JSON.stringify(output, null, 2);
+    const record = output as Record<string, unknown>;
+    const bodyKey = ["content", "output", "stdout", "text"].find((key) => typeof record[key] === "string");
+    if (!bodyKey) return JSON.stringify(record, null, 2);
+    const { [bodyKey]: body, ...rest } = record;
+    const header = Object.keys(rest).length > 0 ? `${JSON.stringify(rest)}\n--- ${bodyKey} ---\n` : "";
+    return `${header}${body as string}`;
+  } catch {
+    return inline;
   }
 }
 

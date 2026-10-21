@@ -77,6 +77,13 @@ export const ReadTool = buildTool({
     "Read bounded text, PDF pages, a directory listing, or a supported image. Text is line numbered; use offset/limit to continue large files and documents.",
   safety: "read-only",
   concurrency: "parallel-safe",
+  // Self-bounded: a page is capped at MAX_PAGE_BYTES and MAX_LINE_CHARS, so the
+  // engine must never cap it again. Under the engine's 24k default every page
+  // over 24k chars was spilled to a tool-results file as ONE line of JSON, and
+  // Read of that spill could only ever show its first MAX_LINE_CHARS, so the
+  // model could not see a 340-line file it was asked to rework and the turn
+  // went nowhere (the 2026-10-21 bricked parkour chat).
+  maxResultSizeChars: 0,
   inputZod: inputSchema,
   activityDescription: (i) => `Reading ${path.basename(i.file_path)}`,
 

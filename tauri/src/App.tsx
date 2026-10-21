@@ -4459,7 +4459,8 @@ function App() {
     return () => window.clearInterval(timer);
   }, [workingBusy]);
   const workingElapsedS = active?.activityAt ? Math.max(0, Math.floor((workingNow - active.activityAt) / 1000)) : 0;
-  const workingHint = active?.busy ? workingHintFor(active.activity, workingElapsedS) : null;
+  const quietS = active?.lastEventAt ? Math.max(0, Math.floor((workingNow - active.lastEventAt) / 1000)) : 0;
+  const workingHint = active?.busy ? workingHintFor(active.activity, workingElapsedS, quietS) : null;
 
   // In pill mode presence belongs to the DESKTOP, not inside the controller.
   // Rust owns a monitor-sized, click-through WebView so the pulse and captions

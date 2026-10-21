@@ -197,6 +197,8 @@ export interface SessionVm {
    *  from it, so a long wait for the model's first token reads as a live
    *  clock, never a frozen "GENERATING" (2026-10-15). */
   activityAt?: number;
+  /** When the last daemon event of any kind reached this session. */
+  lastEventAt?: number;
   /** Unfinished requests from before Ares last closed, waiting for the owner:
    *  Resume runs them, Discard retires them, a new message replaces them.
    *  Nothing runs until one of those happens. */
@@ -450,7 +452,7 @@ export const HOLO_SPEC_FILE = /\.holo\.json$/i;
 
 /** One quiet line under the working label when a turn has been silent long
  *  enough that the owner might think it is frozen. Pure, so it is testable. */
-export function workingHintFor(activity: string | undefined, elapsedS: number): string | null {
+export function workingHintFor(activity: string | undefined, elapsedS: number, quietS = 0): string | null {
   if (activity === "marshalling" && elapsedS >= 8) {
     return elapsedS >= 20
       ? "still gathering memory and workspace context, Stop is available"
@@ -458,6 +460,10 @@ export function workingHintFor(activity: string | undefined, elapsedS: number): 
   }
   if ((activity === "generating" || activity === "responding to steer") && elapsedS >= 6) {
     return "waiting for the model's first token";
+  }
+  if (quietS >= 90) {
+    const quiet = quietS >= 120 ? `${Math.floor(quietS / 60)}m` : `${quietS}s`;
+    return `nothing heard for ${quiet}, long tools can be silent; Stop is available`;
   }
   return null;
 }

@@ -49,8 +49,12 @@ test("a turn silent in preparation shows a counter and a hint before it looks fr
     assert.match(workingHintFor("marshalling", 25), /Stop is available/);
     assert.match(workingHintFor("generating", 7), /first token/);
     assert.equal(workingHintFor("writing", 90), null);
+    assert.equal(workingHintFor("writing", 90, 60), null, "a minute of quiet is normal");
+    assert.match(workingHintFor("running Bash", 200, 95), /nothing heard for 95s/);
+    assert.match(workingHintFor("running Bash", 400, 300), /nothing heard for 5m/);
     const base = { id: "s", title: "t", items: [], busy: false, workflowMode: "build", tokensIn: 0, cacheReadTokens: 0, tokensOut: 0, todos: [], steerQueued: 0 };
     const started = foldEvent(base, { type: "turn_start" });
+    assert.equal(typeof started.lastEventAt, "number", "every event stamps the session so silence can be measured");
     assert.equal(typeof started.activityAt, "number", "the elapsed clock starts at turn_start, not at the first provider attempt");
   } finally {
     rmSync(tmp, { recursive: true, force: true });

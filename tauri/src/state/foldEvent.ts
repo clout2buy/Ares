@@ -18,7 +18,7 @@ import { compact, stringify, draftTargetPath } from "../lib/format";
 export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
   const items = [...s.items];
   const last = items[items.length - 1];
-  const session = { ...s, items };
+  const session = { ...s, items, lastEventAt: Date.now() };
 
   const steerIndex = (inputId?: string): number => {
     if (inputId) {

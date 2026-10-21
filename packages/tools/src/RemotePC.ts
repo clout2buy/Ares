@@ -91,6 +91,15 @@ export interface RemoteAgentServerLike {
   disconnect?(pcId: string): void;
 }
 
+/** A remote wait in ms, pulled into 1000..120000. A value of 120 or less is
+ *  read as seconds (`timeout: 60` means a minute, not a 1s clamp). Absent or
+ *  not a positive number = the server default. */
+export function clampRemoteTimeoutMs(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined;
+  const ms = value <= 120 ? value * 1000 : value;
+  return Math.min(120_000, Math.max(1000, Math.round(ms)));
+}
+
 let _server: RemoteAgentServerLike | null = null;
 
 /** Injected at startup — the in-process server in the garrison, a loopback
@@ -153,14 +162,16 @@ const inputSchema = z.object({
     keys: z.string().optional().describe("key: SendKeys notation, e.g. {ENTER}, {TAB}, ^c (Ctrl+C), %{F4} (Alt+F4)."),
   }).optional().describe("control_pc: one input event to send to the remote desktop."),
   device_id: z.string().optional().describe("unpair_device / rename_device: the device id from list_devices."),
-  timeout_ms: z.coerce.number().int().min(1000).max(120_000).optional().describe("exec_on_pc: max wait in ms. Default 30000."),
+  // Clamped in call(), never refused: 47 field errors were a timeout_ms just
+  // outside 1000..120000 bouncing the whole call for one more round trip.
+  timeout_ms: z.coerce.number().optional().describe("exec_on_pc: max wait in ms (clamped to 1000-120000). Default 30000."),
   // Bash and PowerShell both name this `timeout`, so that is what gets written
   // here too — 67 times against 16 in one field session. An unknown key is
   // silently dropped by the schema, so a deliberate 120s budget became the 30s
   // default with nothing said, and the long command died looking like a flaky
   // remote. Accept the name people actually use. Coerced because it arrives as
   // a string about as often as a number.
-  timeout: z.coerce.number().int().min(1000).max(120_000).optional().describe("alias for timeout_ms."),
+  timeout: z.coerce.number().optional().describe("alias for timeout_ms."),
   remote_path: z.string().optional().describe("get_file / put_file: the absolute path ON THE REMOTE PC to read from or write to."),
   local_path: z.string().optional().describe("put_file: the file on YOUR machine to send (absolute or workspace-relative). get_file: optional destination on your machine; defaults to a downloads folder in the workspace."),
   message: z.string().optional().describe("notify_pc: short text for the popup, e.g. \"Fixed — restart when you can\"."),
@@ -424,7 +435,7 @@ export const RemotePCTool = buildTool({
 
       case "exec_on_pc": {
         try {
-          const result = await _server.exec(i.pc_id!, i.command!, i.timeout_ms ?? i.timeout, i.shell);
+          const result = await _server.exec(i.pc_id!, i.command!, clampRemoteTimeoutMs(i.timeout_ms ?? i.timeout), i.shell);
           return {
             output: { action: "exec_on_pc", ok: true, output: result.output, exitCode: result.exitCode },
             display: result.output || `(exit ${result.exitCode ?? 0})`,
@@ -513,13 +524,14 @@ export const RemotePCTool = buildTool({
 
       case "fetch_on_pc": {
         if (!_server.fetchVia) return fail("fetch_on_pc", new Error("This garrison is too old for fetch_on_pc — restart Ares to pick up the new build."));
+        const fetchTimeoutMs = clampRemoteTimeoutMs(i.timeout_ms ?? i.timeout);
         try {
           const r = await _server.fetchVia(i.pc_id!, {
             url: i.url!,
             method: i.method ?? "GET",
             ...(i.headers ? { headers: i.headers } : {}),
             ...(i.body ? { bodyBase64: Buffer.from(i.body, "utf8").toString("base64") } : {}),
-            ...((i.timeout_ms ?? i.timeout) ? { timeoutMs: (i.timeout_ms ?? i.timeout)! } : {}),
+            ...(fetchTimeoutMs !== undefined ? { timeoutMs: fetchTimeoutMs } : {}),
           });
           const raw = Buffer.from(r.dataBase64, "base64");
           const type = r.headers["Content-Type"] ?? r.headers["content-type"] ?? "";

@@ -40,6 +40,21 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.61.1",
+    date: "October 2026",
+    title: "Only the Forge",
+    tagline: "Agents open everything in the Forge's own browser, it never freezes behind a card, and they get real devtools for the page.",
+    highlights: [
+      { icon: "🧱", title: "No more frozen Forge", blurb: "A page kept loading forever if the Forge was closed, covered or the app was minimized. It runs now wherever it is and shows the moment you open the Forge.", tag: "Fixed" },
+      { icon: "🚪", title: "Never your own browser", blurb: "Agents can't pop a game or a page into your browser anymore. If the Forge can't show it, they tell you in one line.", tag: "Safer" },
+      { icon: "🔬", title: "Devtools for agents", blurb: "Errors with stack traces, failed requests, frame rate and a CPU profile of the page — so a broken or stuttering game gets diagnosed, not guessed at.", tag: "New" },
+      { icon: "🎚️", title: "Effort per agent", blurb: "Each agent's profile has an Effort setting, from Off to Max. It sticks even when you move the global dial.", tag: "New" },
+      { icon: "💬", title: "One look: Messages", blurb: "The iPhone-style Messages surface is the look now. The other themes are gone; your accent colour stays.", tag: "Polished" },
+      { icon: "⤓", title: "Download a chat", blurb: "The download button is back, in the title bar next to the Forge.", tag: "Fixed" },
+      { icon: "🕶️", title: "Readable dropdowns", blurb: "Menus no longer open as a blinding white list.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.61.0",
     date: "October 2026",
     title: "Hands on the page",

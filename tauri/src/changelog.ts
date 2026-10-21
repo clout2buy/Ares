@@ -40,7 +40,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.63.0",
+    version: "0.63.1",
     date: "October 2026",
     title: "Knows when it's stuck",
     tagline: "Ares tells you what a quiet chat is doing, offers a restart if it stops answering, and checks itself for the ways chats used to get stuck.",

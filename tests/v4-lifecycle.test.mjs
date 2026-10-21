@@ -71,6 +71,24 @@ test("V4 V4: LIGHT dreaming stages durable session signals", async () => {
   assert.match(await fs.readFile(path.join(home, "DREAMS.md"), "utf8"), /LIGHT staged/);
 });
 
+test("a light dream with nothing to stage leaves no diary line and fires no dream phase", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "ares-dream-empty-"));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "ares-dream-empty-ws-"));
+  const config = defaultAgentConfig(home);
+  const transcript = path.join(workspace, "events.jsonl");
+  await fs.writeFile(transcript, JSON.stringify({ event: { type: "turn_start", userMessage: { content: [{ type: "text", text: "ok" }] } } }) + "\n", "utf8");
+  const seen = [];
+  const off = onLifecycle((event) => seen.push(event.type));
+  try {
+    const result = await runLightDream({ home, workspace, sessionId: "sess_empty", transcriptPath: transcript, config });
+    assert.equal(result.promoted, 0);
+  } finally {
+    off();
+  }
+  assert.deepEqual(seen.filter((type) => type.startsWith("dream_phase")), []);
+  await assert.rejects(fs.readFile(path.join(home, "DREAMS.md"), "utf8"), /ENOENT/);
+});
+
 test("V4 V6: self-revise signal fires when tools errored", () => {
   const signal = beforeAgentFinalizeSignal([{ type: "tool_error", error: "boom" }]);
   assert.equal(signal.shouldRevise, true);

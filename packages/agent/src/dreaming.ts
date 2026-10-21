@@ -31,37 +31,41 @@ export async function runLightDream(opts: {
 }): Promise<DreamResult> {
   const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
-  emitLifecycle({ type: "dream_phase_started", phase: "light" });
   const now = opts.now ?? new Date();
   const events = opts.transcriptPath ? await readTextIfExists(opts.transcriptPath, 2_000_000) : "";
   // Noise-gated at the source: a pasted stack trace in a user message is
   // still a user message to extractSessionSignals, but it is not knowledge.
   const snippets = extractSessionSignals(events ?? "").filter((s) => !isOperationalNoise(s)).slice(0, 5);
+  // A session with nothing to stage leaves no trace. 490 of 620 DREAMS.md
+  // entries were "LIGHT found no durable memory candidates.", burying the 25
+  // that staged something, and each one also fired a dream phase on the bus.
+  if (snippets.length === 0) {
+    return { phase: "light", promoted: 0, pruned: 0, report: "LIGHT found no durable memory candidates." };
+  }
+  emitLifecycle({ type: "dream_phase_started", phase: "light" });
   const daily = path.join(paths.memoryDir, `${now.toISOString().slice(0, 10)}.md`);
   await mkdir(path.dirname(daily), { recursive: true });
-  if (snippets.length > 0) {
-    await appendFile(daily, [`\n## Session ${opts.sessionId}`, ...snippets.map((s) => `- ${s}`), ""].join("\n"), "utf8");
-    const store = await createMemoryStore(opts.config, home);
-    // Dream candidates must land in BOTH substrates: the v4 vector store (for the
-    // DEEP-dream promotion pass that reads store.list()) AND the v6 living memory
-    // the live turn actually recalls from. Writing only v4 left dreamed memories
-    // invisible to recall — staged into a silo the live brain never reads.
-    const living = await LivingMemoryStore.open(mindPaths(home).memoryFile).catch(() => null);
-    for (const snippet of snippets) {
-      await store.add({ category: classifySignal(snippet), workspace: opts.workspace, content: snippet, source: "light-dreaming", score: 0.55 });
-    }
-    // Episodic in v6: a dream candidate is a raw session signal; consolidation
-    // crystallizes the recurring ones into semantic. Routed through the ONE
-    // write spine ("dream" channel: ungated — consolidate() merges repeats into
-    // strength later) and flushed as a single batch. Best-effort — a dream is
-    // never broken by the living store being unavailable.
-    if (living) {
-      await new MemoryRouter(living)
-        .write("dream", snippets.map((snippet) => ({ kind: "episodic" as const, content: snippet, source: "light-dreaming", strength: 0.55 })))
-        .catch(() => undefined);
-    }
+  await appendFile(daily, [`\n## Session ${opts.sessionId}`, ...snippets.map((s) => `- ${s}`), ""].join("\n"), "utf8");
+  const store = await createMemoryStore(opts.config, home);
+  // Dream candidates must land in BOTH substrates: the v4 vector store (for the
+  // DEEP-dream promotion pass that reads store.list()) AND the v6 living memory
+  // the live turn actually recalls from. Writing only v4 left dreamed memories
+  // invisible to recall — staged into a silo the live brain never reads.
+  const living = await LivingMemoryStore.open(mindPaths(home).memoryFile).catch(() => null);
+  for (const snippet of snippets) {
+    await store.add({ category: classifySignal(snippet), workspace: opts.workspace, content: snippet, source: "light-dreaming", score: 0.55 });
   }
-  const report = snippets.length > 0 ? `LIGHT staged ${snippets.length} memory candidate(s).` : "LIGHT found no durable memory candidates.";
+  // Episodic in v6: a dream candidate is a raw session signal; consolidation
+  // crystallizes the recurring ones into semantic. Routed through the ONE
+  // write spine ("dream" channel: ungated — consolidate() merges repeats into
+  // strength later) and flushed as a single batch. Best-effort — a dream is
+  // never broken by the living store being unavailable.
+  if (living) {
+    await new MemoryRouter(living)
+      .write("dream", snippets.map((snippet) => ({ kind: "episodic" as const, content: snippet, source: "light-dreaming", strength: 0.55 })))
+      .catch(() => undefined);
+  }
+  const report = `LIGHT staged ${snippets.length} memory candidate(s).`;
   await appendDreamDiary(paths.dreamsDiary, now, report);
   emitLifecycle({ type: "dream_phase_ended", phase: "light", promoted: snippets.length, pruned: 0 });
   return { phase: "light", promoted: snippets.length, pruned: 0, report };

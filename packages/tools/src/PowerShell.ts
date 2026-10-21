@@ -19,7 +19,7 @@ import {
   shellWatchdogFor,
 } from "./_shared.js";
 import { runShell } from "./Bash.js";
-import { powerShellDialect, shellFlavorOf } from "./shellHints.js";
+import { powerShellDialect, powerShellErrorLocation, shellFlavorOf } from "./shellHints.js";
 
 const inputSchema = shellInputSchema("PowerShell command line.");
 
@@ -36,6 +36,37 @@ const POWERSHELL_TRAPS =
   "(5) stdin is null: `Read-Host`, `Get-Credential`, `pause` and confirmation prompts hang or error — pass values as arguments and add `-Confirm:$false`/`-Force`. " +
   "(6) `-ErrorAction SilentlyContinue` hides the message but the cmdlet failure still exits 1 — wrap in `try { ... -ErrorAction Stop } catch {}` when the failure is expected. " +
   "(7) A here-string's closing `'@`/`\"@` must start at column 0 on its own line.";
+
+/** -EncodedCommand carries UTF-16LE base64 (~2.7 chars per script char) and a
+ *  Windows command line tops out at 32,767 chars; past this a script goes to a
+ *  .ps1 file instead. */
+export const POWERSHELL_ENCODED_MAX_CHARS = 11_000;
+
+/**
+ * How a command reaches PowerShell. A one-line command without double quotes
+ * goes as `-Command <text>`, as it always has. Anything multi-line or holding
+ * `"` used to be mangled on the way: Node escapes `"` as `\"` for the Windows
+ * command line, which 5.1's -Command parser reads differently, and that one
+ * quoting class was the biggest share of 356 PowerShell failures. Those now go
+ * as `-EncodedCommand` (identical -Command semantics, no command-line quoting
+ * at all), or, when too long for a command line, as a UTF-8-with-BOM .ps1 run
+ * with -File (5.1 reads a BOM-less script as ANSI). ARES_PS_ENCODED=0 restores
+ * plain -Command for everything (escape hatch until this is field-proven).
+ */
+export function powerShellInvocation(
+  command: string,
+  scriptPath: string,
+): { args: string[]; script?: { path: string; content: string } } {
+  const base = ["-NoLogo", "-NoProfile", "-NonInteractive"];
+  if (process.env.ARES_PS_ENCODED === "0" || !/[\r\n"]/.test(command)) return { args: [...base, "-Command", command] };
+  if (command.length <= POWERSHELL_ENCODED_MAX_CHARS) {
+    return { args: [...base, "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")] };
+  }
+  return {
+    args: [...base, "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    script: { path: scriptPath, content: `\uFEFF${command}` },
+  };
+}
 
 export const PowerShellTool = buildTool({
   name: "PowerShell",
@@ -72,7 +103,14 @@ export const PowerShellTool = buildTool({
     const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
     const pwsh = (await which("pwsh")) ?? (await which("powershell"));
     if (!pwsh) throw new Error("Neither pwsh nor powershell found on PATH");
-    const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", i.command];
+    const captureDir = path.join(ctx.workspace, ".ares", "shell-output", ctx.sessionId);
+    const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const invocation = powerShellInvocation(i.command, path.join(captureDir, `${runId}.ps1`));
+    if (invocation.script) {
+      await fs.mkdir(captureDir, { recursive: true });
+      await fs.writeFile(invocation.script.path, invocation.script.content, "utf8");
+    }
+    const args = invocation.args;
 
     if (i.run_in_background) {
       if (!ctx.shellRegistry) {
@@ -104,9 +142,8 @@ export const PowerShellTool = buildTool({
       };
     }
 
-    const captureDir = path.join(ctx.workspace, ".ares", "shell-output", ctx.sessionId);
     await fs.mkdir(captureDir, { recursive: true });
-    const capturePath = path.join(captureDir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}.log`);
+    const capturePath = path.join(captureDir, `${runId}.log`);
     const result = await runShell(pwsh, args, cwd, i.timeout, ctx.signal, (stream, text) => {
       ctx.emitProgress?.({ kind: "shell_output", stream, text });
     }, capturePath);
@@ -125,7 +162,11 @@ export const PowerShellTool = buildTool({
     const silentHint = silent
       ? "the command exited non-zero and printed NOTHING on either stream. Usual causes: a parse error or unknown cmdlet (PowerShell 5.1 rejects `&&`, `??`, ternaries), a pipe like `| Select-Object -Last N` that dropped the error, or a script that calls `exit 1` itself. Re-run WITHOUT the trailing pipe and wrapped as `$ErrorActionPreference='Continue'; try { <command> } catch { $_ | Out-String }` so the failure is visible before you change any code."
       : "";
-    const hintLine = result.hint || silentHint ? `\nhint: ${[result.hint, silentHint].filter(Boolean).join(" ")}` : "";
+    const location = result.exitCode !== 0 || result.timedOut
+      ? powerShellErrorLocation(i.command, `${streams.stderr ?? ""}\n${streams.stdout ?? ""}`)
+      : null;
+    const hints = [location, result.hint, silentHint].filter(Boolean);
+    const hintLine = hints.length > 0 ? `\nhint: ${hints.join(" ")}` : "";
     const failure = result.timedOut
       ? `PowerShell timed out after ${i.timeout}ms${hintLine}`
       : result.exitCode === 0

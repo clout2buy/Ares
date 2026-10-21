@@ -16,8 +16,8 @@ export { checkSyntax, gateEdit, syntaxGateMode, isSyntaxCheckable, type SyntaxVe
 export { runGit, snapshotRepo, changedSince, parseNumstat, type GitResult, type RepoSnapshot } from "./gitUtil.js";
 export { GrepTool, regexInputProblem } from "./Grep.js";
 export { BashTool, runShell, bashAvailable, type BashOutput } from "./Bash.js";
-export { PowerShellTool } from "./PowerShell.js";
-export { classifyShellFailure, shellFlavorOf, powerShellDialect, type ShellFlavor } from "./shellHints.js";
+export { PowerShellTool, powerShellInvocation, POWERSHELL_ENCODED_MAX_CHARS } from "./PowerShell.js";
+export { classifyShellFailure, shellFlavorOf, powerShellDialect, powerShellErrorLocation, type ShellFlavor } from "./shellHints.js";
 export { LspTool, type LspOutput, type LspLocation, type LspSymbol } from "./LSP.js";
 export { TodoStore, makeTodoWriteTool, type TodoWriteOutput } from "./TodoWrite.js";
 export {

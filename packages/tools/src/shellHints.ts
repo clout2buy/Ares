@@ -117,3 +117,22 @@ export function classifyShellFailure(
   }
   return null;
 }
+
+/**
+ * PowerShell reports where a parse or runtime error happened as
+ * `At line:N char:M`, numbered within the script it was given. The model sees
+ * that number with no script in front of it, so it re-reads its own call and
+ * guesses. Quote the offending line back instead. Null when there is no
+ * location or the line is not in `command` (an error inside a called script).
+ */
+export function powerShellErrorLocation(command: string, output: string): string | null {
+  const at = /At line:(\d+) char:(\d+)/i.exec(output);
+  if (!at) return null;
+  const lineNo = Number(at[1]);
+  const lines = command.split(/\r?\n/);
+  if (!Number.isInteger(lineNo) || lineNo < 1 || lineNo > lines.length) return null;
+  const text = lines[lineNo - 1].trim();
+  if (!text) return null;
+  const shown = text.length > 160 ? `${text.slice(0, 157)}...` : text;
+  return `error at line ${lineNo}, char ${at[2]} of your script: \`${shown}\``;
+}

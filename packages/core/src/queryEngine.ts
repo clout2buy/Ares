@@ -3218,7 +3218,7 @@ export class QueryEngine {
               !isContextLimitError(streamError) &&
               (!modelStarted || (isStallError(streamError) && !sawCommittedOutput)) &&
               !this.liveSignal().aborted &&
-              transientRetry < (isCapacityError(streamError) ? MAX_CAPACITY_RETRIES : MAX_TRANSIENT_RETRIES)
+              transientRetry < retryBudgetFor(streamError)
             ) {
               transientRetry++;
               // Honor a server-provided reset window (Retry-After) when it's
@@ -3226,14 +3226,17 @@ export class QueryEngine {
               // retries against a 30s 429 window just fails a turn that waiting
               // would have completed. The provider already clamps it to 60s.
               const capacity = isCapacityError(streamError);
-              const retryBudget = capacity ? MAX_CAPACITY_RETRIES : MAX_TRANSIENT_RETRIES;
+              const offline = !capacity && isConnectivityError(streamError);
+              const retryBudget = retryBudgetFor(streamError);
               let waitMs = Math.max(
-                capacity ? capacityBackoffMs(transientRetry) : transientBackoffMs(transientRetry),
+                capacity || offline ? capacityBackoffMs(transientRetry) : transientBackoffMs(transientRetry),
                 streamError.retryAfterMs ?? 0,
               );
               let note = capacity
                 ? `${this.cfg.model} is overloaded upstream — retrying in ${(waitMs / 1000).toFixed(1)}s (attempt ${transientRetry}/${retryBudget}). Your message is safe.`
-                : `provider hiccup (${streamError.code}); retrying in ${(waitMs / 1000).toFixed(1)}s — attempt ${transientRetry}/${retryBudget}`;
+                : offline
+                  ? `Can't reach the model's server (${streamError.message.replace(/\s+/g, " ").slice(0, 80)}) — waiting for the connection, retrying in ${(waitMs / 1000).toFixed(1)}s (attempt ${transientRetry}/${retryBudget}). Your message is safe.`
+                  : `provider hiccup (${streamError.code}); retrying in ${(waitMs / 1000).toFixed(1)}s — attempt ${transientRetry}/${retryBudget}`;
               if (isStallError(streamError)) {
                 // Fail fast on a request that will never complete: if four
                 // attempts committed no usable output — nothing at all, or
@@ -5777,6 +5780,28 @@ function isCapacityError(error: { code: string; message: string }): boolean {
     text.includes("service unavailable") ||
     text.includes("http_503")
   );
+}
+
+/**
+ * The connection itself failed (DNS, refused, reset, "fetch failed"): usually
+ * Wi-Fi dropping or a laptop waking up. Four retries inside ~12 s lost 23
+ * turns in the field logs; a connection back within a minute should not cost
+ * the owner the message.
+ */
+export function isConnectivityError(error: { code: string; message: string }): boolean {
+  if (error.code !== "network_error" && error.code !== "stream_read_error") return false;
+  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|UND_ERR_CONNECT|socket hang up|network is unreachable|terminated/i.test(error.message);
+}
+
+const MAX_CONNECTIVITY_RETRIES = (() => {
+  const raw = Number(process.env.ARES_NETWORK_RETRIES);
+  return Number.isFinite(raw) && raw >= 0 && raw <= 20 ? Math.floor(raw) : 6;
+})();
+
+function retryBudgetFor(error: { code: string; message: string }): number {
+  if (isCapacityError(error)) return MAX_CAPACITY_RETRIES;
+  if (isConnectivityError(error)) return Math.max(MAX_TRANSIENT_RETRIES, MAX_CONNECTIVITY_RETRIES);
+  return MAX_TRANSIENT_RETRIES;
 }
 
 /** A provider rate limit (HTTP 429 / rate_limit_error), as opposed to

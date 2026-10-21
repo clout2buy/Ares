@@ -268,7 +268,7 @@ export {
   type RegisterSessionLocationInput,
   type SessionRegistryOptions,
 } from "./sessionRegistry.js";
-export { streamIdleMs, isRateLimitError, setRateLimitFailoverProbe, type RateLimitFailoverProbe } from "./queryEngine.js";
+export { streamIdleMs, isRateLimitError, isConnectivityError, setRateLimitFailoverProbe, type RateLimitFailoverProbe } from "./queryEngine.js";
 export { stripImagesForBlindModel, historyHasImages } from "./queryEngine.js";
 export {
   loadContextCeiling,

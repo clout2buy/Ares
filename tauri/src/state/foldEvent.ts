@@ -104,6 +104,7 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       session.busy = true;
       session.cancelling = false;
       session.activity = "marshalling";
+      session.activityAt = Date.now();
       session.authFailedTurn = undefined;
       // Clear last turn's fleet board — UNLESS it can still resume or has
       // agents still running (background fleets survive turn boundaries; a new

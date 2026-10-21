@@ -88,6 +88,7 @@ import {
   type SessionSummaryWire,
   sessionFromSummary,
   sessionFromHistory,
+  workingHintFor,
 } from "./state/session";
 import { foldEvent, toolKind, summarizeSteps } from "./state/foldEvent";
 import {
@@ -4458,10 +4459,7 @@ function App() {
     return () => window.clearInterval(timer);
   }, [workingBusy]);
   const workingElapsedS = active?.activityAt ? Math.max(0, Math.floor((workingNow - active.activityAt) / 1000)) : 0;
-  const workingHint =
-    active?.busy && workingElapsedS >= 6 && (active.activity === "generating" || active.activity === "responding to steer")
-      ? "waiting for the model's first token"
-      : null;
+  const workingHint = active?.busy ? workingHintFor(active.activity, workingElapsedS) : null;
 
   // In pill mode presence belongs to the DESKTOP, not inside the controller.
   // Rust owns a monitor-sized, click-through WebView so the pulse and captions

@@ -447,3 +447,17 @@ export function sessionFromHistory(id: string, rawMessages: unknown, meta: unkno
 // Artifacts tab (owner, 2026-10-15: "good markdowns").
 export const PREVIEWABLE = /\.(html?|svg|md|markdown)$/i;
 export const HOLO_SPEC_FILE = /\.holo\.json$/i;
+
+/** One quiet line under the working label when a turn has been silent long
+ *  enough that the owner might think it is frozen. Pure, so it is testable. */
+export function workingHintFor(activity: string | undefined, elapsedS: number): string | null {
+  if (activity === "marshalling" && elapsedS >= 8) {
+    return elapsedS >= 20
+      ? "still gathering memory and workspace context, Stop is available"
+      : "gathering memory and workspace context";
+  }
+  if ((activity === "generating" || activity === "responding to steer") && elapsedS >= 6) {
+    return "waiting for the model's first token";
+  }
+  return null;
+}

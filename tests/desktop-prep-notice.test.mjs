@@ -33,3 +33,26 @@ test("desktop shows the skipped-context notice and still hides plumbing reminder
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("a turn silent in preparation shows a counter and a hint before it looks frozen", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "ares-prep-hint-"));
+  try {
+    const bundle = async (name, file) => {
+      const outfile = path.join(tmp, name);
+      await esbuild({ entryPoints: [path.join(here, "..", "tauri", "src", "state", file)], bundle: true, platform: "node", format: "esm", outfile, logLevel: "silent" });
+      return import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
+    };
+    const { workingHintFor } = await bundle("session.mjs", "session.ts");
+    const { foldEvent } = await bundle("fold.mjs", "foldEvent.ts");
+    assert.equal(workingHintFor("marshalling", 3), null);
+    assert.match(workingHintFor("marshalling", 9), /gathering memory/);
+    assert.match(workingHintFor("marshalling", 25), /Stop is available/);
+    assert.match(workingHintFor("generating", 7), /first token/);
+    assert.equal(workingHintFor("writing", 90), null);
+    const base = { id: "s", title: "t", items: [], busy: false, workflowMode: "build", tokensIn: 0, cacheReadTokens: 0, tokensOut: 0, todos: [], steerQueued: 0 };
+    const started = foldEvent(base, { type: "turn_start" });
+    assert.equal(typeof started.activityAt, "number", "the elapsed clock starts at turn_start, not at the first provider attempt");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

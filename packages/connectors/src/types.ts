@@ -117,4 +117,34 @@ export interface BrowserConnector {
   waitFor?(until: { url?: string; text?: string; selector?: string; gone?: boolean }, timeoutMs: number, signal?: AbortSignal): Promise<{ met: boolean; waitedMs: number }>;
   /** Failed requests, HTTP errors and WebSocket traffic since attach. */
   network?(opts?: { limit?: number }): Promise<NetworkReport>;
+  /** DevTools in one call: uncaught errors with stacks, console errors, failed
+   *  requests, long tasks, a frame-rate sample and page metrics (heap, DOM
+   *  nodes, layouts) — what a person reads off the Console + Performance tabs. */
+  devtools?(): Promise<DevtoolsReport>;
+  /** A CPU profile over `ms`: where the page's time goes, by function. */
+  profile?(ms: number): Promise<ProfileReport>;
+}
+
+export interface DevtoolsReport {
+  /** Uncaught exceptions and unhandled rejections, newest last, with stacks. */
+  errors: Array<{ message: string; stack?: string; at: string }>;
+  /** console.error / console.warn tail. */
+  console: ConsoleEntry[];
+  failedRequests: NetworkReport["failed"];
+  httpErrors: NetworkReport["httpErrors"];
+  /** Main-thread tasks over 50 ms seen by the page (PerformanceObserver). */
+  longTasks: Array<{ ms: number; at: number }>;
+  /** rAF frames per second over a short sample (null when the page is hidden). */
+  fps: number | null;
+  metrics: { jsHeapMb?: number; domNodes?: number; layouts?: number; styleRecalcs?: number; listeners?: number; documents?: number; frames?: number };
+  url: string;
+}
+
+export interface ProfileReport {
+  sampledMs: number;
+  /** Hottest functions by self time, as a share of sampled time. */
+  top: Array<{ fn: string; where: string; selfMs: number; pct: number }>;
+  /** Share of samples in (idle), (program) and (garbage collector). */
+  idlePct: number;
+  gcPct: number;
 }

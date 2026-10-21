@@ -196,7 +196,7 @@ const gestureFields = {
   text: z.string().max(200).optional().describe("wait: until the page shows this text."),
   gone: z.boolean().optional().describe("wait: until the text/selector is GONE instead (a spinner, a sign-in form)."),
   timeoutSec: z.number().min(1).max(300).optional().describe("wait: give up after this many seconds (default 60, max 300)."),
-  ms: z.number().int().min(1).max(60_000).optional().describe("wait: just let the page run this many milliseconds (no text/selector/url) — e.g. let a game play out for 1000 ms."),
+  ms: z.number().int().min(1).max(60_000).optional().describe("wait: just let the page run this many milliseconds (no text/selector/url) — e.g. let a game play out for 1000 ms. profile: how long to sample (default 3000)."),
 };
 
 const browserStep = z
@@ -217,7 +217,7 @@ const browserStep = z
 const browserInput = z
   .object({
     action: z
-      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "explain", "model", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret", "press", "click_at", "drag", "scroll", "wait", "network"])
+      .enum(["open", "act", "handshake", "tabs", "attach", "preview", "explain", "model", "tree", "screenshot", "fill", "fill_selector", "click", "click_text", "console", "eval", "state", "close", "filmstrip", "login", "fill_secret", "press", "click_at", "drag", "scroll", "wait", "network", "devtools", "profile"])
       .describe(
         "Browser action. DOM-first web actions: open/tree/fill/click/screenshot/state/close. " +
         "PREVIEW & VERIFY (drives a VISIBLE browser with an animated cursor so the owner watches Ares test the UI): " +
@@ -230,7 +230,9 @@ const browserInput = z
         "'fill_secret' fills a secret handle (\"sec_…\", e.g. an emailed sign-in code another tool gave you) into one field by selector or label, after the owner approves. " +
         "HANDS: 'press' real keys (keys, holdMs, repeat — shortcuts, Enter, a game's ArrowRight held 600 ms); 'click_at' (holdMs = hold the button) / 'drag' / 'scroll' at exact viewport x,y from the screenshot (canvas, WebGL, maps — no DOM there). All of them (and 'wait') also work as act steps, so a whole play-through is ONE call. Real-time game in the Forge: eval `__aresFreeze(true)` once and the page stands still between your calls (your thinking costs no game time); the owner's own input releases it. " +
         "'wait' blocks until the page shows (or, gone:true, stops showing) text / selector / a url fragment — e.g. after asking the owner to sign in in the Forge. " +
-        "'network' = devtools for the page: failed requests, HTTP errors, and every WebSocket (text vs BINARY frames, last frames, close code + reason). Use it first when anything online misbehaves.",
+        "'network' = devtools for the page: failed requests, HTTP errors, and every WebSocket (text vs BINARY frames, last frames, close code + reason). Use it first when anything online misbehaves. " +
+        "'devtools' = the Console + Performance tabs in one call: uncaught errors WITH stack traces, console errors, failed requests, long tasks (>50 ms), fps and page metrics (JS heap, DOM nodes, layouts, listeners) — read it when a page is broken or slow, instead of guessing. " +
+        "'profile' = a CPU profile over `ms` (default 3000): the hottest functions by file:line and their share of time, plus idle/GC — the answer to \"why does it stutter\".",
       ),
     ...gestureFields,
     url: z.string().optional().describe("URL for open/preview (e.g. http://localhost:1420)."),
@@ -651,6 +653,8 @@ export function makeBrowserTool(
       if (i.action === "click") return i.name ? `Clicking “${i.name}”` : "Clicking a control";
       if (i.action === "click_text") return i.query ? `Clicking “${i.query}”` : "Clicking a control";
       if (i.action === "console") return "Reading the console";
+      if (i.action === "devtools") return "Reading devtools";
+      if (i.action === "profile") return "Profiling the page";
       if (i.action === "eval") return "Testing in the page";
       if (i.action === "state") return "Checking the page state";
       if (i.action === "close") return "Closing the browser";
@@ -1185,6 +1189,31 @@ export function makeBrowserTool(
         };
       }
 
+      if (i.action === "devtools") {
+        if (!br.devtools) throw new Error("devtools needs the Forge's embedded browser (not available for this page)");
+        const report = await br.devtools();
+        const notes: string[] = [];
+        if (report.errors.length) notes.push(`${report.errors.length} uncaught error(s) — fix the first one first: ${report.errors[0]!.message}`);
+        if (report.longTasks.some((t) => t.ms >= 200)) notes.push(`main thread blocked ${Math.max(...report.longTasks.map((t) => t.ms))} ms at a time — profile to see which function.`);
+        if (report.fps !== null && report.fps < 30) notes.push(`${report.fps} fps — profile it.`);
+        if ((report.metrics.domNodes ?? 0) > 5000) notes.push(`${report.metrics.domNodes} DOM nodes — the DOM itself is the cost.`);
+        const display = `devtools: ${report.errors.length} error(s), ${report.console.length} console warning/error(s), ${report.failedRequests.length} failed request(s), ${report.longTasks.length} long task(s)${report.fps !== null ? `, ${report.fps} fps` : ""}${report.metrics.jsHeapMb !== undefined ? `, heap ${report.metrics.jsHeapMb} MB` : ""}`;
+        return {
+          output: { action: i.action, status: "ok", result: report, ...(notes.length ? { note: notes.join(" ") } : {}), filmstripDir: filmstripDir(strip) },
+          display,
+        };
+      }
+
+      if (i.action === "profile") {
+        if (!br.profile) throw new Error("profile needs the Forge's embedded browser (not available for this page)");
+        const report = await br.profile(i.ms ?? 3000);
+        const head = report.top.slice(0, 3).map((t) => `${t.fn} ${t.pct}%`).join(", ");
+        return {
+          output: { action: i.action, status: "ok", result: report, filmstripDir: filmstripDir(strip) },
+          display: `profile ${report.sampledMs} ms: ${head || "nothing ran"}; idle ${report.idlePct}%, gc ${report.gcPct}%`,
+        };
+      }
+
       if (i.action === "eval") {
         if (!i.js) throw new Error("Browser eval requires js");
         if (!br.evaluate) throw new Error("eval not supported by this browser");
@@ -1337,7 +1366,7 @@ function takeoverWaitMs(): number {
 }
 
 /** Actions that only look (or, like close, act on no page content) — safe to run right after a handback, carrying the re-read notice. */
-const OBSERVE_ONLY_ACTIONS = new Set(["tabs", "tree", "screenshot", "console", "state", "filmstrip", "close"]);
+const OBSERVE_ONLY_ACTIONS = new Set(["tabs", "tree", "screenshot", "console", "state", "filmstrip", "close", "devtools", "profile"]);
 
 function isClosedBrowserError(error: unknown): boolean {
   return /target (?:page|context|browser) has been closed|browser has been closed|page has been closed/i.test(
@@ -1445,7 +1474,7 @@ function isLoopbackUrl(url: string): boolean {
 }
 
 /** Actions that need a whole browser (tabs, sign-ins, extension) or build their own page. */
-const NOT_PAGE_DRIVEN = new Set(["handshake", "tabs", "attach", "login", "fill_secret", "model", "close", "network", "filmstrip"]);
+const NOT_PAGE_DRIVEN = new Set(["handshake", "tabs", "attach", "login", "fill_secret", "model", "close", "network", "filmstrip", "devtools", "profile"]);
 
 /**
  * The page Ares should act in when there is no native Forge view: the copy of

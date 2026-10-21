@@ -207,14 +207,13 @@ export function loadPrefs(): Prefs {
     // (with the blue accent it was designed with); anything picked after this
     // migration is respected.
     const preCyber = !raw.surfaceV3;
-    const surface: SurfaceName = preCyber
-      ? "cyber"
-      : SURFACES.some((s) => s.id === raw.surface)
-        ? (raw.surface as SurfaceName)
-        : surfaceFromLegacy(raw.theme, raw.uiStyle);
-    const accent: AccentName = preCyber ? "blue" : ACCENTS.some((a) => a.id === raw.accent)
+    // One surface now: Messages (owner, 2026-10-21: "hide all other themes,
+    // mandate the messages"). Any older save lands on it, with the blue it
+    // was designed with; an accent picked ON Messages is kept.
+    const surface: SurfaceName = "messages";
+    const accent: AccentName = !preCyber && raw.surface === "messages" && ACCENTS.some((a) => a.id === raw.accent)
       ? (raw.accent as AccentName)
-      : accentFromLegacy(raw.theme);
+      : "blue";
     const routing = raw.routing && typeof raw.routing === "object" ? raw.routing : {};
     return {
       provider: raw.provider ?? fallback.provider,
@@ -266,11 +265,11 @@ export function loadPrefs(): Prefs {
       accent,
       // Derived, never authored: the surface owns the theme now. Kept in the
       // saved shape because the whole app reads prefs.theme.
-      theme: raw.surface || !themeOk ? surfaceToTheme(surface) : (raw.theme as ThemeName),
+      theme: surfaceToTheme(surface),
       // Glass-revamp migration: pre-V2 saves stored "new" as the mere DEFAULT,
       // not a choice — upgrade those to "modern" once. Forged is no longer in
       // the picker, but a save that explicitly holds it still renders it.
-      uiStyle: raw.uiStyleV2 && raw.uiStyle === "new" ? "new" : surfaceToStyle(surface),
+      uiStyle: surfaceToStyle(surface),
       uiStyleV2: true,
       surfaceV3: true,
       engine: raw.engine && typeof raw.engine === "object" ? raw.engine : {},

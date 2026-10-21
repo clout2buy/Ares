@@ -4707,6 +4707,7 @@ function App() {
           onAccount={() => { setSettingsOpen(true); setSettingsTab("account"); }}
           onSearch={() => setPaletteOpen(true)}
           onForge={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "live" }))}
+          onExport={active?.id ? () => void exportSessionLog() : undefined}
           onSettings={() => setSettingsOpen(true)}
           onMinimize={() => { void getCurrentWindow().minimize().catch(() => null); }}
           onMaximize={() => void invoke("ares_window_toggle_maximize").catch(() => null)}
@@ -12113,32 +12114,7 @@ function Settings({
                 </div>
                 <button onClick={onLaunchLivingSurface} disabled={!native}>LAUNCH ARES ↗</button>
               </div>
-              {/* Surface first, colour second — two small dials instead of a
-                  twelve-card grid. Selecting a surface derives the theme and
-                  shell it needs; the accent then re-tints whichever you chose. */}
-              <label className="fieldLabel">Surface</label>
-              <div className="surfaceRow">
-                {SURFACES.map((s) => (
-                  <button
-                    key={s.id}
-                    className="surfaceCard"
-                    data-on={draft.surface === s.id ? "1" : "0"}
-                    data-surface={s.id}
-                    onClick={() => {
-                      // Cyber's light is blue→violet; landing on it with an ember
-                      // accent would fight the surface, so it brings its accent along.
-                      const accent = s.id === "cyber" || s.id === "messages" ? "blue" : draft.accent;
-                      const next = { ...draft, surface: s.id, accent, theme: surfaceToTheme(s.id), uiStyle: surfaceToStyle(s.id) };
-                      setDraftPrefs(next);
-                      onLivePref({ surface: s.id, accent, theme: next.theme, uiStyle: next.uiStyle });
-                    }}
-                  >
-                    <span className="surfacePreview" aria-hidden="true" />
-                    <strong>{s.label}</strong>
-                    <em>{s.hint}</em>
-                  </button>
-                ))}
-              </div>
+              {/* One surface: Messages (owner, 2026-10-21: "hide all other themes, mandate the messages"). The accent still re-tints it. */}
               <label className="fieldLabel">Accent</label>
               <div className="accentRow">
                 {ACCENTS.map((a) => (

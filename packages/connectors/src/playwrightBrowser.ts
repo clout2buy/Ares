@@ -13,7 +13,7 @@
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AccessibilityNode, BrowserConnector, NetworkReport } from "./types.js";
+import type { AccessibilityNode, BrowserConnector, DevtoolsReport, NetworkReport } from "./types.js";
 import { runChallengeHandoff, type HumanCheckHandler } from "./challenge.js";
 import { savedSessionLoader } from "./savedSessions.js";
 
@@ -324,11 +324,17 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
     if (consoleBuffer.length > 600) consoleBuffer.shift();
   };
   const boundPages = new WeakSet<object>();
+  const pageErrors: DevtoolsReport["errors"] = [];
   const bindConsole = (target: any) => {
     if (!target || boundPages.has(target)) return;
     try {
       target.on("console", (m: any) => pushLog(m.type?.() ?? "log", m.text?.() ?? ""));
-      target.on("pageerror", (e: any) => pushLog("error", e?.message ?? String(e)));
+      target.on("pageerror", (e: any) => {
+        pushLog("error", e?.message ?? String(e));
+        // kept WITH the stack for devtools — from attach on, not from the first devtools call
+        pageErrors.push({ message: String(e?.message ?? e).slice(0, 400), stack: typeof e?.stack === "string" ? e.stack.split("\n").slice(0, 8).join("\n") : undefined, at: new Date().toISOString() });
+        if (pageErrors.length > 30) pageErrors.shift();
+      });
       target.on("requestfailed", (r: any) => pushLog("warn", `request failed: ${r?.url?.() ?? ""}`));
       boundPages.add(target);
     } catch {
@@ -399,6 +405,14 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
   // genuine live view. Chromium-only; on any failure we silently keep the
   // discrete emitFrame() path as the fallback. ARES_BROWSER_SCREENCAST=0 opts out.
   let screencast: { session: any; stop: () => Promise<void> } | null = null;
+  // One CDP session per page for devtools/profile (a new page after attach gets a new one).
+  let devSession: { page: any; session: any } | null = null;
+  const cdpSession = async (): Promise<any> => {
+    if (devSession && devSession.page === page) return devSession.session;
+    const session = await page.context().newCDPSession(page);
+    devSession = { page, session };
+    return session;
+  };
   const startScreencast = async (): Promise<void> => {
     if (screencast || !opts.onFrame || process.env.ARES_BROWSER_SCREENCAST === "0") return;
     try {
@@ -833,9 +847,108 @@ export async function createPlaywrightBrowser(opts: PlaywrightOptions = {}): Pro
       });
       return { failed: net.failed.slice(-limit), httpErrors: net.httpErrors.slice(-limit), sockets };
     },
+    // ── devtools: the Console + Performance tabs in one call ───────────────
+    // Owner, 2026-10-21: "development console should be available to ares for
+    // its embedded browser like dev tools? traces, it can do a lot". Errors
+    // with stacks, long tasks, fps and page metrics come straight from the
+    // page and CDP; nothing is injected until asked, then the observer stays.
+    async devtools() {
+      const cdp = await cdpSession().catch(() => null);
+      const metrics: DevtoolsReport["metrics"] = {};
+      if (cdp) {
+        try {
+          await cdp.send("Performance.enable");
+          const { metrics: list } = (await cdp.send("Performance.getMetrics")) as { metrics: Array<{ name: string; value: number }> };
+          const get = (n: string) => list.find((m) => m.name === n)?.value;
+          const heap = get("JSHeapUsedSize");
+          if (heap !== undefined) metrics.jsHeapMb = Math.round(heap / 1048576 * 10) / 10;
+          metrics.domNodes = get("Nodes");
+          metrics.layouts = get("LayoutCount");
+          metrics.styleRecalcs = get("RecalcStyleCount");
+          metrics.listeners = get("JSEventListeners");
+          metrics.documents = get("Documents");
+          metrics.frames = get("Frames");
+        } catch { /* a connector without the Performance domain */ }
+      }
+      const inPage = (await page.evaluate(DEVTOOLS_JS).catch(() => null)) as null | {
+        errors: DevtoolsReport["errors"]; longTasks: DevtoolsReport["longTasks"]; fps: number | null;
+      };
+      // Ares's own sensor traffic (/__ares/…) is not the page's problem.
+      const own = (u: string) => u.includes("/__ares/");
+      const logs = consoleBuffer.filter((e) => (e.type === "error" || e.type === "warning" || e.type === "warn") && !own(e.text)).slice(-20);
+      // Errors seen over the wire (with stacks, since attach) first; the page's
+      // own listener adds unhandled rejections and anything after a reload.
+      const seen = new Set(pageErrors.map((e) => e.message));
+      const errors = [...pageErrors, ...(inPage?.errors ?? []).filter((e) => !seen.has(e.message))].slice(-15);
+      return {
+        errors,
+        console: logs,
+        failedRequests: net.failed.filter((f) => !own(f.url)).slice(-10),
+        httpErrors: net.httpErrors.filter((f) => !own(f.url)).slice(-10),
+        longTasks: inPage?.longTasks ?? [],
+        fps: inPage?.fps ?? null,
+        metrics,
+        url: page.url(),
+      };
+    },
+    async profile(ms) {
+      const cdp = await cdpSession();
+      const span = Math.max(200, Math.min(ms, 30_000));
+      await cdp.send("Profiler.enable");
+      await cdp.send("Profiler.setSamplingInterval", { interval: 500 });
+      await cdp.send("Profiler.start");
+      await new Promise((r) => setTimeout(r, span));
+      const { profile } = (await cdp.send("Profiler.stop")) as {
+        profile: { nodes: Array<{ id: number; callFrame: { functionName: string; url: string; lineNumber: number } }>; samples: number[]; timeDeltas: number[] };
+      };
+      await cdp.send("Profiler.disable").catch(() => undefined);
+      const self = new Map<number, number>();
+      let total = 0;
+      profile.samples.forEach((id, i) => { const dt = (profile.timeDeltas[i] ?? 0) / 1000; total += dt; self.set(id, (self.get(id) ?? 0) + dt); });
+      const byFn = new Map<string, { fn: string; where: string; selfMs: number }>();
+      for (const node of profile.nodes) {
+        const t = self.get(node.id) ?? 0;
+        if (!t) continue;
+        const fn = node.callFrame.functionName || "(anonymous)";
+        const where = node.callFrame.url ? `${node.callFrame.url.replace(/^.*\//, "")}:${node.callFrame.lineNumber + 1}` : "";
+        const key = `${fn}@${where}`;
+        const cur = byFn.get(key) ?? { fn, where, selfMs: 0 };
+        cur.selfMs += t;
+        byFn.set(key, cur);
+      }
+      const pct = (fn: string) => (total ? Math.round(((byFn.get(`${fn}@`)?.selfMs ?? 0) / total) * 1000) / 10 : 0);
+      const top = [...byFn.values()]
+        .filter((e) => !/^\((idle|program|garbage collector|root)\)$/.test(e.fn))
+        .sort((a, b) => b.selfMs - a.selfMs)
+        .slice(0, 15)
+        .map((e) => ({ fn: e.fn, where: e.where, selfMs: Math.round(e.selfMs * 10) / 10, pct: total ? Math.round((e.selfMs / total) * 1000) / 10 : 0 }));
+      return { sampledMs: Math.round(total), top, idlePct: pct("(idle)"), gcPct: pct("(garbage collector)") };
+    },
     async close() {
       if (screencast) { await screencast.stop().catch(() => undefined); screencast = null; }
       await acquired.close();
     },
   };
 }
+
+/** In-page half of devtools: uncaught errors with stacks and long tasks are
+ *  recorded from the first call on (the listeners persist across calls, not
+ *  across loads); fps is a 400 ms rAF sample taken now. */
+const DEVTOOLS_JS = `(async () => {
+  const w = window;
+  if (!w.__aresDev) {
+    const d = w.__aresDev = { errors: [], longTasks: [] };
+    const push = (message, stack) => { d.errors.push({ message: String(message).slice(0, 400), stack: stack ? String(stack).split("\\n").slice(0, 8).join("\\n") : undefined, at: new Date().toISOString() }); if (d.errors.length > 30) d.errors.shift(); };
+    w.addEventListener("error", (e) => push(e.message || (e.error && e.error.message) || "error", e.error && e.error.stack));
+    w.addEventListener("unhandledrejection", (e) => { const r = e.reason; push("unhandled rejection: " + (r && r.message ? r.message : String(r)), r && r.stack); });
+    try {
+      new PerformanceObserver((list) => { for (const en of list.getEntries()) { d.longTasks.push({ ms: Math.round(en.duration), at: Math.round(en.startTime) }); if (d.longTasks.length > 40) d.longTasks.shift(); } }).observe({ type: "longtask", buffered: true });
+    } catch (e) {}
+  }
+  let fps = null;
+  if (document.visibilityState === "visible") {
+    fps = await new Promise((res) => { let n = 0; const t0 = performance.now(); const tick = () => { n++; if (performance.now() - t0 >= 400) res(Math.round(n / ((performance.now() - t0) / 1000))); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); setTimeout(() => res(n ? Math.round(n / 0.4) : 0), 900); });
+  }
+  const d = w.__aresDev;
+  return { errors: d.errors.slice(-15), longTasks: d.longTasks.slice(-15), fps };
+})()`;

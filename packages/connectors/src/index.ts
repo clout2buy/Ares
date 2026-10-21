@@ -11,6 +11,8 @@ export type {
   Screenshot,
   BrowserState,
   NetworkReport,
+  DevtoolsReport,
+  ProfileReport,
   PointerGesture,
   ConsoleEntry,
 } from "./types.js";

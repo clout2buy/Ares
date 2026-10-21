@@ -40,6 +40,21 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.63.0",
+    date: "October 2026",
+    title: "Knows when it's stuck",
+    tagline: "Ares tells you what a quiet chat is doing, offers a restart if it stops answering, and checks itself for the ways chats used to get stuck.",
+    highlights: [
+      { icon: "🩺", title: "Health light", blurb: "If Ares stops answering, you see it within half a minute with a Restart button, and a quiet chat says what it last did and how long ago.", tag: "New" },
+      { icon: "🧾", title: "Stall reports", blurb: "One click saves what a stuck chat was doing, with timestamps and no message text, so the cause can be found instead of guessed.", tag: "New" },
+      { icon: "🧠", title: "Remember this", blurb: "Type /remember followed by anything, or highlight text and pick Remember selection, and Ares keeps it in long-term memory for good.", tag: "New" },
+      { icon: "🧪", title: "Self-test", blurb: "Ares checks itself once a day for the ways chats used to get stuck and tells you if one comes back. Run it any time with /selftest.", tag: "New" },
+      { icon: "🚦", title: "Chats don't wait on each other", blurb: "Opening a slow chat no longer holds up every other chat.", tag: "Fixed" },
+      { icon: "📶", title: "Survives Wi-Fi drops", blurb: "A lost connection waits up to about a minute for the network instead of failing the message.", tag: "Fixed" },
+      { icon: "🪙", title: "Turn token warning", blurb: "Get one heads-up when a single turn has used more than your limit. Pick it in Settings.", tag: "New" },
+    ],
+  },
+  {
     version: "0.62.0",
     date: "October 2026",
     title: "Never stuck",

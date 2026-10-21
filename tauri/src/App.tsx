@@ -91,6 +91,7 @@ import {
   workingHintFor,
 } from "./state/session";
 import { foldEvent, toolKind, summarizeSteps } from "./state/foldEvent";
+import { daemonHealth, loopStuckNote, turnStatusNote, type Pong } from "./state/health";
 import {
   claimSteersForDaemonReady,
   createSteerReplayEpoch,
@@ -713,6 +714,12 @@ function App() {
   const native = useMemo(hasNativeBridge, []);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [daemon, setDaemon] = useState<DaemonState>(native ? "starting" : "running");
+  // Out-of-band health probe: the daemon answers a ping even mid-turn, so a
+  // missing pong means the daemon itself is wedged, not just a slow chat.
+  const lastPingAtRef = useRef(0);
+  const lastPongAtRef = useRef(0);
+  const [pong, setPong] = useState<Pong | null>(null);
+  const [healthNow, setHealthNow] = useState(() => Date.now());
   const [sessions, setSessions] = useState<SessionVm[]>(() => (native ? [freshSession()] : DEMO_AGENT_WORLD?.sessions ?? [demoSession()]));
   // ── desktop agents: the rail's contacts (agents.tsx, daemon/agents.ts) ──
   const [agents, setAgents] = useState<AgentVm[]>(() => (native ? [] : DEMO_AGENT_WORLD?.agents ?? []));
@@ -1696,6 +1703,20 @@ function App() {
     return () => window.clearInterval(timer);
   }, [view, native, daemon, daemonCmd]);
 
+  useEffect(() => {
+    if (!native || daemon !== "running") return;
+    const tick = () => {
+      // Keep the first unanswered ping's time so the wait accumulates.
+      if (lastPongAtRef.current >= lastPingAtRef.current) lastPingAtRef.current = Date.now();
+      daemonCmd({ type: "ping", nonce: String(Date.now()) });
+      setHealthNow(Date.now());
+    };
+    tick();
+    const ping = window.setInterval(tick, 10_000);
+    const clock = window.setInterval(() => setHealthNow(Date.now()), 5_000);
+    return () => { window.clearInterval(ping); window.clearInterval(clock); };
+  }, [native, daemon, daemonCmd]);
+
   const restartDaemon = useCallback(
     (provider?: string, model?: string) => {
       if (!native) return;
@@ -1856,7 +1877,13 @@ function App() {
 
     const handleShellEvent = (e: AresEvent): boolean => {
       switch (e.type) {
+        case "pong":
+          lastPongAtRef.current = Date.now();
+          setPong(e as unknown as Pong);
+          return true;
         case "daemon_ready":
+          lastPingAtRef.current = 0;
+          lastPongAtRef.current = 0;
           pushLog(`[garrison] ready · session ${e.sessionId ?? ""}`);
           onDaemonReady(e);
           window.dispatchEvent(new CustomEvent("ares:daemon-ready"));
@@ -4460,7 +4487,15 @@ function App() {
   }, [workingBusy]);
   const workingElapsedS = active?.activityAt ? Math.max(0, Math.floor((workingNow - active.activityAt) / 1000)) : 0;
   const quietS = active?.lastEventAt ? Math.max(0, Math.floor((workingNow - active.lastEventAt) / 1000)) : 0;
-  const workingHint = active?.busy ? workingHintFor(active.activity, workingElapsedS, quietS, active.preparing === true) : null;
+  const health = native && daemon === "running" ? daemonHealth(lastPingAtRef.current, lastPongAtRef.current, healthNow) : "ok";
+  const loopNote = loopStuckNote(pong);
+  const activeTurnStatus = active?.busy
+    ? pong?.turns.find((t) => (t.sessionId === "__primary__" ? primarySessionRef.current : t.sessionId) === active.id)
+    : undefined;
+  // The daemon's own account of a quiet turn beats a guess from the UI clock.
+  const workingHint = active?.busy
+    ? turnStatusNote(activeTurnStatus) ?? workingHintFor(active.activity, workingElapsedS, quietS, active.preparing === true)
+    : null;
 
   // In pill mode presence belongs to the DESKTOP, not inside the controller.
   // Rust owns a monitor-sized, click-through WebView so the pulse and captions
@@ -5454,6 +5489,24 @@ function App() {
 
         {active?.codingBackend ? <CodingBackendScene vm={active.codingBackend} /> : null}
 
+        {health === "unresponsive" ? (
+          <div className="recoveryBanner" role="alert">
+            <div className="recoveryBody">
+              <b>Ares isn't answering</b>
+              <span>No reply to a health check for {Math.round((healthNow - lastPingAtRef.current) / 1000)}s. Restarting keeps your chats; a turn in progress stops.</span>
+            </div>
+            <div className="recoveryActions">
+              <button className="btn primary" onClick={() => restartDaemon()}>Restart Ares</button>
+            </div>
+          </div>
+        ) : loopNote ? (
+          <div className="recoveryBanner" role="status">
+            <div className="recoveryBody">
+              <b>Other chats are waiting</b>
+              <span>{loopNote}</span>
+            </div>
+          </div>
+        ) : null}
         {active?.pendingRecovery && view !== "helm" ? (
           <div className="recoveryBanner" role="status">
             <div className="recoveryBody">

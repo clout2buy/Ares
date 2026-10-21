@@ -141,6 +141,10 @@ export class AsyncQueue<T> {
     else this.items.push(item);
   }
 
+  get size(): number {
+    return this.items.length;
+  }
+
   shift(): Promise<T | null> {
     if (this.items.length > 0) return Promise.resolve(this.items.shift()!);
     if (this.closed) return Promise.resolve(null);
@@ -173,6 +177,13 @@ export class DaemonCommandRouter {
    *  the command loop is busy streaming. Carries the command so the handler can
    *  route to the right session. */
   onInterrupt: ((command: DaemonInputCommand) => void) | null = null;
+  /** Out-of-band health probe (see pump). */
+  onPing: ((command: DaemonInputCommand) => void) | null = null;
+
+  /** Commands waiting for the command loop. */
+  get queued(): number {
+    return this.commands.size;
+  }
 
   constructor(private readonly onError: (error: string) => void) {}
 
@@ -221,6 +232,15 @@ export class DaemonCommandRouter {
         }
         if (command.type === "permission_response" || command.type === "permission") {
           this.pushPermissionResponse(command);
+        } else if (command.type === "ping") {
+          // Answered straight from the reader, like interrupt: a reply proves
+          // the process and its event loop are alive even while the command
+          // loop is busy, and the reply says what it is busy with.
+          try {
+            this.onPing?.(command);
+          } catch {
+            // a health probe must never kill the daemon
+          }
         } else if (command.type === "interrupt") {
           try {
             this.onInterrupt?.(command);

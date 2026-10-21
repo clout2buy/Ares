@@ -74,7 +74,7 @@ test("every command the UI sends is actually implemented by the daemon", () => {
   const handled = daemonHandledTypes();
   // A few are handled outside the main switch (send/steer/interrupt go through
   // the input router, permission responses through the permission channel).
-  const routedElsewhere = new Set(["send", "steer", "interrupt", "permission", "permission_response", "exit"]);
+  const routedElsewhere = new Set(["send", "steer", "interrupt", "ping", "permission", "permission_response", "exit"]);
   const unimplemented = [...ui].filter((t) => !handled.has(t) && !routedElsewhere.has(t)).sort();
   assert.deepEqual(
     unimplemented,

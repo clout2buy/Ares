@@ -462,8 +462,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // Rooms listen to a seat's own stream (what the agent said, when its turn
   // ended) — bound once the engine exists below.
   let roomsTap: ((sessionId: string, obj: Record<string, unknown>) => void) | undefined;
+  const lastEventBySession = new Map<string, { type: string; at: number }>();
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
+    if (typeof obj.type === "string") lastEventBySession.set(sessionId || DEFAULT_SID, { type: obj.type, at: Date.now() });
     if (roomsTap && sessionId && (obj.type === "message_done" || obj.type === "turn_end" || obj.type === "turn_start")) roomsTap(sessionId, obj);
     // Frames are ~100 KB of base64 each at several per second; the crash
     // ring only needs to know one arrived, not keep the pixels.
@@ -2276,10 +2278,43 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // front of any command that arrived during expired-lease reconciliation.
   await prepareDaemonStartupRecovery(primaryEntry, live.session.meta.id);
 
+  // ── Health probe ────────────────────────────────────────────────────────
+  // The desktop pings every few seconds. The pong reports what the command
+  // loop is busy with and, per running turn, the last thing that happened and
+  // how long ago, so a stuck chat names its own cause.
+  let loopBusy: { type: string; sessionId?: string; since: number } | null = null;
+  commands.onPing = (command) => {
+    const now = Date.now();
+    const turns: Array<Record<string, unknown>> = [];
+    for (const [sessionId, entry] of [[DEFAULT_SID, primaryEntry] as const, ...sessions.entries()]) {
+      if (!entry.turnActive) continue;
+      const last = lastEventBySession.get(sessionId);
+      turns.push({
+        sessionId,
+        inputId: entry.activeInputId,
+        startedMs: entry.turnStartedAt ? now - entry.turnStartedAt : undefined,
+        lastEvent: last?.type,
+        lastEventMs: last ? now - last.at : undefined,
+        activeTools: entry.activeToolIds.size,
+        stopping: entry.cancelRequested === true,
+      });
+    }
+    process.stdout.write(JSON.stringify({
+      type: "pong",
+      nonce: (command as { nonce?: unknown }).nonce,
+      at: now,
+      queued: commands.queued,
+      loop: loopBusy ? { busyWith: loopBusy.type, sessionId: loopBusy.sessionId, forMs: now - loopBusy.since } : null,
+      turns,
+    }) + "\n");
+  };
+
   try {
     while (true) {
+      loopBusy = null;
       const command = await commands.nextCommand();
       if (!command) break;
+      loopBusy = { type: command.type ?? "unknown", ...(command.sessionId ? { sessionId: command.sessionId } : {}), since: Date.now() };
       if (command.type === "exit") break;
       if (command.type === "reasoning") {
         const level = command.level?.toLowerCase();

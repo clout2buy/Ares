@@ -353,3 +353,22 @@ test("rooms: a guest install mirrors a remote room, dispatches to ITS agents onl
     server.close();
   }
 });
+
+// A revoke written in the same file-time tick as the previous save was never
+// re-read by another RoomStore (refresh compared mtime only), so the guest API
+// kept serving a room that still listed the revoked guest. Flaked the gate.
+test("rooms: a change written in the same mtime tick is still picked up by refresh", async () => {
+  const h = await home();
+  const writer = new RoomStore(h);
+  const reader = new RoomStore(h);
+  const r = room({ name: "Before" });
+  const file = path.join(h, "rooms", `${r.id}.json`);
+  const tick = Math.floor(Date.now() / 1000); // whole seconds: exact on every filesystem
+  await writer.save(r);
+  await fs.utimes(file, tick, tick);
+  await reader.load();
+  await writer.save({ ...r, name: "After" });
+  await fs.utimes(file, tick, tick); // same tick as the previous write
+  await reader.refresh();
+  assert.equal(reader.get(r.id)?.name, "After");
+});

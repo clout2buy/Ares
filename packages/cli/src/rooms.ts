@@ -349,9 +349,17 @@ export function normalizeMessage(raw: unknown): RoomMessage | null {
 
 /** Rooms and their messages on disk, with an in-memory index that re-reads a
  *  file when its mtime moves (the garrison may have written it). */
+function fileSignature(stat: { mtimeMs: number; size: number; ino: number | bigint }): string {
+  return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+}
+
 export class RoomStore {
   private readonly rooms = new Map<string, Room>();
-  private readonly mtimes = new Map<string, number>();
+  /** File signature at our last read or write. mtime alone missed writes:
+   *  file times tick coarsely, so a revoke landing in the same tick as the
+   *  previous save was never re-read. Saves rename a fresh file into place,
+   *  so the inode changes on every write. */
+  private readonly mtimes = new Map<string, string>();
   private readonly tails = new Map<string, { size: number; messages: RoomMessage[] }>();
 
   constructor(readonly home: string) {}
@@ -379,7 +387,7 @@ export class RoomStore {
     const room = normalizeRoom(JSON.parse(await fs.readFile(file, "utf8")));
     if (room && room.id === id) {
       this.rooms.set(id, room);
-      this.mtimes.set(id, stat.mtimeMs);
+      this.mtimes.set(id, fileSignature(stat));
       return room;
     }
     return undefined;
@@ -399,7 +407,7 @@ export class RoomStore {
       const stat = await fs.stat(path.join(dir, name)).catch(() => null);
       if (!stat) continue;
       const known = this.mtimes.get(id);
-      if (known === stat.mtimeMs) continue;
+      if (known === fileSignature(stat)) continue;
       const before = this.rooms.has(id);
       await this.readRoom(id).catch(() => undefined);
       (before ? out.changed : out.added).push(id);
@@ -432,7 +440,7 @@ export class RoomStore {
     await fs.rename(tmp, file);
     this.rooms.set(room.id, room);
     const stat = await fs.stat(file).catch(() => null);
-    if (stat) this.mtimes.set(room.id, stat.mtimeMs);
+    if (stat) this.mtimes.set(room.id, fileSignature(stat));
   }
 
   async remove(id: string): Promise<void> {

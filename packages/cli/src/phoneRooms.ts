@@ -293,8 +293,14 @@ export function createRoomsApi(opts: RoomsApiOptions): (req: IncomingMessage, re
           messages = await store.since(roomId, since, 200);
         }
         const latest = store.get(roomId) ?? current;
-        const seen = { ...guest, lastSeenAt: stamp() };
-        void store.save({ ...latest, guests: latest.guests.map((g) => (g.id === guest.id ? seen : g)) }).catch(() => undefined);
+        // Presence is written from a fresh read and only while the guest is
+        // still in the room: saving this request's cached copy raced the host's
+        // revoke and could bring a removed guest (and their token) back.
+        void (async () => {
+          const onDisk = await fresh(roomId);
+          if (!onDisk?.guests.some((g) => g.id === guest.id)) return;
+          await store.save({ ...onDisk, guests: onDisk.guests.map((g) => (g.id === guest.id ? { ...g, lastSeenAt: stamp() } : g)) });
+        })().catch(() => undefined);
         return json(200, { room: guestView(latest), messages, presence: presenceOf(roomId, now()) });
       }
 

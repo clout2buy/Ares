@@ -725,6 +725,8 @@ function App() {
   const [sessions, setSessions] = useState<SessionVm[]>(() => (native ? [freshSession()] : DEMO_AGENT_WORLD?.sessions ?? [demoSession()]));
   // ── desktop agents: the rail's contacts (agents.tsx, daemon/agents.ts) ──
   const [agents, setAgents] = useState<AgentVm[]>(() => (native ? [] : DEMO_AGENT_WORLD?.agents ?? []));
+  /** The daemon has answered agents_list once: until then "no agents" means "not loaded yet". */
+  const [agentsLoaded, setAgentsLoaded] = useState(!native);
   const [selectedAgentId, setSelectedAgentIdState] = useState<string>(() => {
     try { return window.localStorage.getItem("ares.agent.selected") || ARES_AGENT_ID; } catch { return ARES_AGENT_ID; }
   });
@@ -804,6 +806,9 @@ function App() {
     }
     return map;
   }, [agents, localAgentBindings]);
+  /** For send(): may this chat talk at all (an agent's chat or a room seat)? */
+  const chatHasAgentRef = useRef<(sessionId: string) => boolean>(() => true);
+  chatHasAgentRef.current = (sessionId) => Boolean(sessionAgentMap[sessionId]) || roomSeatIds.has(sessionId);
   rememberAgentFaces(agents);
   useEffect(() => {
     if (agents.length === 0) return;
@@ -1818,9 +1823,11 @@ function App() {
     }).catch(() => null);
     // populate the status bar's mission count + rail's disk-session log
     void invoke("ares_daemon_command", { command: { type: "operator_status" } }).catch(() => null);
-    void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
+    // Agents and rooms first: the daemon answers commands in order, and the
+    // chat list is the slow one — the sidebar must never wait behind it.
     void invoke("ares_daemon_command", { command: { type: "agents_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "rooms_list" } }).catch(() => null);
+    void invoke("ares_daemon_command", { command: { type: "sessions_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "directory_status" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "workspaces_list" } }).catch(() => null);
     void invoke("ares_daemon_command", { command: { type: "jobs_list" } }).catch(() => null);
@@ -2523,6 +2530,7 @@ function App() {
             const list = e.agents as AgentVm[];
             agentsCountRef.current = list.length;
             setAgents(list);
+            setAgentsLoaded(true);
             // Fetch any profile picture that is new or changed (the phone may
             // have set it); drop the ones that were removed.
             for (const a of list) {
@@ -3339,7 +3347,7 @@ function App() {
           // Agents, rooms and the people directory hydrate here too: they were
           // only requested on daemon_ready, so a refresh showed no agents and an
           // unclaimed username even though both sat on disk (owner, 2026-10-20).
-          for (const type of ["sessions_list", "agents_list", "rooms_list", "directory_status", "workspaces_list", "jobs_list", "agents_sharing", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
+          for (const type of ["agents_list", "rooms_list", "sessions_list", "directory_status", "workspaces_list", "jobs_list", "agents_sharing", "operator_status", "oauth_status", "startup_recovery_mode", "ollama_usage", "provider_usage", "pointmaps_list", "mcp_catalog"]) {
             void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
           }
           void invoke("ares_daemon_command", {
@@ -3427,6 +3435,8 @@ function App() {
       return true;
     }
     const sid = activeRef.current;
+    // No talking to Ares directly: a chat with no agent takes no messages.
+    if (!chatHasAgentRef.current(sid)) return false;
     if (
       stoppingSessionsRef.current.has(sid) ||
       sessionsRef.current.find((session) => session.id === sid)?.cancelling
@@ -4383,7 +4393,8 @@ function App() {
     openSession(sessionId);
   };
   const chatHandoff = {
-    agents: [{ id: ARES_AGENT_ID, name: "Ares" }, ...agents].filter((a) => a.id !== selectedAgentId),
+    // Never back to Ares: every chat is with an agent (owner, 2026-10-22).
+    agents: agents.filter((a) => a.id !== selectedAgentId),
     onGive: giveChat,
   };
   const olderChats = sessions.filter((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === ARES_AGENT_ID && !s.background && (s.items.length > 0 || s.title !== "New session"));
@@ -5426,29 +5437,18 @@ function App() {
                   ))}
                 </div>
               </div>
-            ) : active && active.items.length === 0 ? (
+            ) : active && active.items.length === 0 && !activeRoom && !agentsLoaded ? (
               <div className="empty">
-                <div className="emptyEmblem" aria-hidden="true">
-                  <Sigil name="helm" size={64} />
-                </div>
-                <div className="wordmark">ARES</div>
-                <p className="wordmarkSub">Name the mission. I'll plan it, build it, verify it — and show you proof.</p>
-                <h2 className="emptyAsk">Command the mission.</h2>
-                <div className="starters">
-                  {[
-                    { label: "Audit this repository", sub: "Scan · Analyze · Report", icon: "shield" as const, q: "Audit this repository and list the top risks, ranked, with the evidence for each." },
-                    { label: "Build and verify", sub: "Code · Test · Validate", icon: "forge" as const, q: "Build me a landing page, preview it, and show me a screenshot proving it renders." },
-                    { label: "Design a system", sub: "Plan · Architect · Execute", icon: "artifacts" as const, q: "Design a robot arm on the holotable." },
-                  ].map(({ label, sub, icon, q }) => (
-                    <button key={label} className="starter" onClick={() => send(q)} title={q}>
-                      <Medallion glyph={icon} size={40} />
-                      <span className="starterText">
-                        <span className="starterLabel">{label}</span>
-                        <span className="starterSub">{sub}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                <div className="wordmark">LOADING</div>
+                <p className="wordmarkSub">Bringing your agents in.</p>
+              </div>
+            ) : active && active.items.length === 0 && !activeRoom ? (
+              // Nobody talks to Ares directly (owner, 2026-10-22): with no
+              // agents yet, the only way forward is making one.
+              <div className="agentPicker">
+                <h2>Make someone to text</h2>
+                <p className="wordmarkSub">Every chat is with an agent you make: a name, a face and a job.</p>
+                <button type="button" className="agentPrimary" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}>Make my first agent</button>
               </div>
             ) : null}
             {active && active.items.length > transcriptCap ? (
@@ -5565,11 +5565,26 @@ function App() {
             </div>
           </div>
         ) : null}
+        {/* An older chat (from before agents) is read-only until an agent
+            takes it: there is no talking to Ares directly. */}
+        {view === "chat" && !activeRoom && active && !activeAgent && !roomSeatIds.has(active.id) && active.items.length > 0 && agentsLoaded ? (
+          <div className="recoveryBanner" role="status">
+            <div className="recoveryBody">
+              <b>Older chat</b>
+              <span>{agents.length > 0 ? "Hand it to an agent to keep going. It keeps everything." : "Make an agent, then hand this chat to it to keep going."}</span>
+            </div>
+            <div className="recoveryActions">
+              {agents.length > 0
+                ? agents.map((a) => <button key={a.id} className="btn ghost" onClick={() => giveChat(active.id, a.id)}>Give to {a.name}</button>)
+                : <button className="btn primary" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }}>Make an agent</button>}
+            </div>
+          </div>
+        ) : null}
         {/* Kept MOUNTED on HELM (hidden, not unmounted) — unmounting destroyed
             the draft text and pending attachments every time the view flipped. */}
         <Composer
           agentName={activeAgent?.name ?? "Ares"}
-            hidden={view === "helm" || view === "now" || view === "feed" || Boolean(activeRoom) || (!activeAgent && agents.length > 0 && (active?.items.length ?? 0) === 0)}
+            hidden={view === "helm" || view === "now" || view === "feed" || Boolean(activeRoom) || (!activeAgent && !roomSeatIds.has(active?.id ?? ""))}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
             model={liveModel}

@@ -61,8 +61,9 @@ function startDaemon(provider, model) {
     }
   });
   child.stderr.on("data", (c) => process.stderr.write(`[daemon] ${c}`));
+  const me = child;
   child.on("exit", (code) => {
-    status = { ...status, running: false };
+    if (child === me) status = { ...status, running: false };
     push({ type: "desktop_daemon_exited", code });
     process.stderr.write(`[bridge] daemon exited (${code})\n`);
   });
@@ -72,7 +73,9 @@ function startDaemon(provider, model) {
 }
 
 function stopDaemon() {
+  // kill() is async: forget the child now, or a restart sees it still alive and starts nothing.
   if (child && child.exitCode === null) child.kill();
+  child = null;
   status = { ...status, running: false };
 }
 

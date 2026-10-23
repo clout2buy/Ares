@@ -2837,11 +2837,21 @@ export async function listSessions(workspace: string, limit = 20): Promise<Sessi
   // Archived rows protect an in-progress two-phase deletion; permanent
   // tombstones continue protecting the id after final row cleanup.
   const canonicalIds = new Set(canonicalRows.map((session) => session.id));
-  const canonical = (kernel
-    ? canonicalRows
-        .filter((session) => !session.archived)
-        .map((session) => canonicalSessionSummary(workspace, kernel, session))
-    : []);
+  // Summaries are the expensive part (SQLite reads per session), and the
+  // rail only shows `limit` of them: newest first, stop once that many have
+  // earned a card. Summarizing every session ever held the daemon's command
+  // loop ~6s on launch, so agents and chats loaded late (owner, 2026-10-22).
+  const canonical: SessionSummary[] = [];
+  if (kernel) {
+    const newestFirst = canonicalRows
+      .filter((session) => !session.archived)
+      .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+    for (const session of newestFirst) {
+      if (canonical.length >= limit) break;
+      const summary = canonicalSessionSummary(workspace, kernel, session);
+      if (summary.label || summary.preview.trim()) canonical.push(summary);
+    }
+  }
 
   const root = path.join(workspace, ".ares", "sessions");
   const dirs = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -2971,7 +2981,6 @@ function canonicalSessionSummary(
   kernel: SessionKernelStore,
   session: SessionRecord,
 ): SessionSummary {
-  const messages = projectMessagesFromKernel(kernel, session.id);
   const meta = sessionMetaFromKernel(workspace, kernel, session);
   return {
     id: session.id,
@@ -2983,8 +2992,9 @@ function canonicalSessionSummary(
     // After compaction the projected history can hold no typed user text at
     // all (a recap + tool results) — the preview came back empty and the
     // husk filter hid a long, live chat from the rail. The owner's own
-    // admitted inputs are the durable record of what they typed.
-    preview: previewFromMessages(messages) || previewFromInputs(kernel.listInputs(session.id)),
+    // admitted inputs are the durable record of what they typed. They are
+    // also cheap; projecting the whole history is the fallback only.
+    preview: previewFromInputs(kernel.listInputs(session.id)) || previewFromMessages(projectMessagesFromKernel(kernel, session.id)),
     workflowMode: session.workflowMode,
     ...(session.title ? { label: session.title } : {}),
   };
@@ -2998,14 +3008,14 @@ function sessionMetaFromKernel(
   const metadata = session.metadata && typeof session.metadata === "object" && !Array.isArray(session.metadata)
     ? session.metadata as Record<string, JsonValue>
     : {};
-  const records = kernel.listMessages(session.id);
-  const recordedModel = [...records].reverse().find((message) => message.model)?.model;
+  // Every message is read only when the metadata never recorded a model.
+  const recordedModel = () => [...kernel.listMessages(session.id)].reverse().find((message) => message.model)?.model;
   const provider = typeof metadata.provider === "string" && metadata.provider.trim()
     ? metadata.provider
     : "unknown";
   const model = typeof metadata.model === "string" && metadata.model.trim()
     ? metadata.model
-    : recordedModel ?? "unknown";
+    : recordedModel() ?? "unknown";
   const createdAt = typeof metadata.createdAt === "string" && metadata.createdAt.trim()
     ? metadata.createdAt
     : new Date(session.createdAtMs).toISOString();

@@ -983,8 +983,12 @@ export class SessionKernelStore {
       const metadata = { ...current, ...patch };
       const serialized = canonicalJson(metadata);
       if (serialized === row.metadata_json) return mapSession(row);
-      this.db.prepare("UPDATE sessions SET metadata_json = ?, updated_at_ms = ? WHERE id = ?")
-        .run(serialized, now, sessionId);
+      // Metadata is bookkeeping, not activity: updated_at_ms orders the chat
+      // list by when it was last USED. Every Session construction re-stamps
+      // provider/model here, so a model switch followed by anything that
+      // opened many sessions marked 1,000 chats "just now" (owner, 2026-10-23).
+      this.db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?")
+        .run(serialized, sessionId);
       this.appendEventTx(sessionId, null, "session.metadata_updated", {
         keys: Object.keys(patch).sort(),
       }, now);

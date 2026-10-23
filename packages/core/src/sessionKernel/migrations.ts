@@ -1,7 +1,7 @@
 import type { SqliteDatabase } from "./sqlite.js";
 
 export const SESSION_KERNEL_APPLICATION_ID = 0x41524553; // "ARES"
-export const LATEST_SESSION_KERNEL_SCHEMA_VERSION = 8;
+export const LATEST_SESSION_KERNEL_SCHEMA_VERSION = 9;
 
 interface Migration {
   version: number;
@@ -384,6 +384,24 @@ const MIGRATIONS: readonly Migration[] = [
         ON session_mutations(session_id, resolved_generation, generation, observed_at_ms);
       CREATE INDEX session_mutations_tool_run_idx
         ON session_mutations(tool_run_id);
+    `,
+  },
+  {
+    // Metadata merges used to bump updated_at_ms, so sweeps that re-stamped
+    // provider/model on every session made them all look "just used" and the
+    // chat list lost its order. Pull each row back to its real last activity
+    // (newest message or admitted input). Only ever lowers the stamp, and
+    // never on archived rows: there it is the deletion barrier's time.
+    version: 9,
+    name: "repair_session_activity_times",
+    sql: `
+      UPDATE sessions
+         SET updated_at_ms = MIN(updated_at_ms, MAX(
+               created_at_ms,
+               COALESCE((SELECT MAX(m.created_at_ms) FROM messages m WHERE m.session_id = sessions.id), 0),
+               COALESCE((SELECT MAX(a.admitted_at_ms) FROM admitted_inputs a WHERE a.session_id = sessions.id), 0)
+             ))
+       WHERE archived = 0;
     `,
   },
 ];

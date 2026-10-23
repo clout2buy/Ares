@@ -68,6 +68,12 @@
 .olderChatsHead { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; border-radius: 10px; font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
 .olderChatsHead:hover { color: var(--muted); background: rgba(255, 255, 255, .04); }
 .olderChatsHead em { font-style: normal; }
+/* each older chat: [title …][when], the title gives way first */
+.olderChats .sessionMain > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.olderChats .sessionWhen { flex: none; font: 500 11px/1 var(--font, system-ui); font-style: normal; color: var(--faint); }
+/* the row's actions take no room until hover, then the date gives way to them */
+.olderChats .session:not(:hover):not([data-giving="1"]) .sessionActions { display: none; }
+.olderChats .session:hover .sessionWhen { display: none; }
 .handOverCard { display: flex; flex-direction: column; gap: 8px; margin: 4px 4px 8px; padding: 10px 12px; border-radius: 14px; background: rgba(10, 132, 255, .08); border: 1px solid rgba(10, 132, 255, .35); }
 .handOverCard strong { font-size: 13px; }
 .handOverCard p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--muted); }

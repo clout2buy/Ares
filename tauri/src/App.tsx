@@ -2841,12 +2841,13 @@ function App() {
                 return { ...existing, title: real.title, background: real.background, workflowMode: summary.workflowMode ?? existing.workflowMode };
               }
               const workflowMode = summary.workflowMode ?? existing.workflowMode;
+              const createdAt = existing.createdAt ?? summary.createdAt;
               // A rename done on disk (meta.label) should refresh the rail title.
               if (summary.label) {
                 const next = compact(summary.label, 42);
-                if (existing.title !== next || existing.workflowMode !== workflowMode) return { ...existing, title: next, workflowMode };
+                if (existing.title !== next || existing.workflowMode !== workflowMode) return { ...existing, title: next, workflowMode, createdAt };
               }
-              return existing.workflowMode === workflowMode ? existing : { ...existing, workflowMode };
+              return existing.workflowMode === workflowMode && existing.createdAt === createdAt ? existing : { ...existing, workflowMode, createdAt };
             });
             const localOnly = current.filter((session) => !disk.some((summary) => summary.id === session.id));
             return [...localOnly, ...merged];
@@ -2917,6 +2918,7 @@ function App() {
                 ...hydrated,
                 title: metaHasLabel ? hydrated.title : keepable(session.title) ?? hydrated.title,
                 updatedAt: session.updatedAt,
+                createdAt: session.createdAt,
                 workflowMode: hydrated.workflowMode ?? session.workflowMode,
               };
             }));
@@ -4397,7 +4399,7 @@ function App() {
     agents: agents.filter((a) => a.id !== selectedAgentId),
     onGive: giveChat,
   };
-  const olderChats = sessions.filter((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === ARES_AGENT_ID && !s.background && (s.items.length > 0 || s.title !== "New session"));
+  const olderChats = sessions.filter((s) => !roomSeatIds.has(s.id) && agentIdOf(s.id) === ARES_AGENT_ID && !s.background && (s.items.length > 0 || s.title !== "New session") && !MACHINE_CHAT.test(s.title));
   const agentRows: AgentRowVm[] = agents
     .filter((a) => !q || a.name.toLowerCase().includes(q) || a.id === selectedAgentId)
     .map((a) => {
@@ -5158,7 +5160,7 @@ function App() {
             {olderOpen ? (
               <nav className="sessionList">
                 {(q ? olderChats.filter((s) => s.title.toLowerCase().includes(q)) : olderChats).slice(0, 200).map((s) => (
-                  <SessionRow key={s.id} s={s} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={{ agents: agents.map((a) => ({ id: a.id, name: a.name })), onGive: giveChat }} />
+                  <SessionRow key={s.id} s={s} display={shelfTitle(s.title)} when={shelfDate(s.updatedAt ?? s.createdAt)} activeId={active?.id ?? ""} onSelect={openSession} onPin={togglePin} onRename={renameSession} onClose={closeSession} onProject={assignProject} handoff={{ agents: agents.map((a) => ({ id: a.id, name: a.name })), onGive: giveChat }} />
                 ))}
               </nav>
             ) : null}
@@ -5242,11 +5244,13 @@ function App() {
             </button>
           ) : null}
           <div>
-            <h2>{activeAgent && (!active || active.title === "New session") ? activeAgent.name : active?.title ?? "Session"}</h2>
+            {/* Like Messages: who you're texting is the headline; the chat's
+                topic (or what they're doing right now) sits under it. */}
+            <h2>{activeAgent && (prefs.surface === "messages" || !active || active.title === "New session") ? activeAgent.name : active?.title ?? "Session"}</h2>
             <span>
               {activeAgent
                 ? prefs.surface === "messages"
-                  ? active?.busy ? (active.activity && !/^(thinking|working|response committed|settling proposed actions)$/i.test(active.activity) ? active.activity : "working…") : "tap for profile"
+                  ? active?.busy ? (active.activity && !/^(thinking|working|response committed|settling proposed actions)$/i.test(active.activity) ? active.activity : "working…") : active && active.title !== "New session" ? active.title : "tap for profile"
                   : `${activeAgent.name} · ${activeAgent.provider} / ${activeAgent.model}`
                 : prefs.routingMode === "auto" ? `routing · ${liveModel}` : `${prefs.provider} / ${prefs.model}`}
               {prefs.routingMode === "auto" && routedLanes.length > 0 ? ` · ${routedLanes.length} lane${routedLanes.length === 1 ? "" : "s"}` : ""}
@@ -5511,12 +5515,16 @@ function App() {
                 ) : null}
               </div>
             ) : null}
-            {!pinned ? (
+          </div>
+          {/* Outside the scroller, in its own slot above the composer: a
+              sticky pill inside the transcript sat on top of the words. */}
+          {!pinned ? (
+            <div className="jumpDock">
               <button className="jumpLatest" onClick={jumpToLatest} title="jump to latest">
                 ↓ latest
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
           </AgentChatContext.Provider>
         )}
 
@@ -8551,8 +8559,26 @@ function ScryingBasin({ heat }: { heat: number }) {
   );
 }
 
+/** Chats the machine opened for itself (verifiers, room relays, scheduled
+ *  checks, background shells, the daily feed): never the owner's to keep on
+ *  the Older chats shelf. */
+const MACHINE_CHAT = /^(\[room |\(System:|Verify \d+ changed file|\[background shell|Background task failed|Today feed — )/;
+
+/** "[text from frankie lingling · urgent] CEO: hi" → "frankie lingling: CEO: hi". */
+function shelfTitle(title: string): string {
+  return title.replace(/^\[text from ([^\]·]+?)\s*(?:·[^\]]*)?\]\s*/, "$1: ");
+}
+
+/** When an older chat was last used, short enough to leave the title its room: "Oct 18". */
+function shelfDate(iso: string | undefined): string | undefined {
+  const t = iso ? new Date(iso) : null;
+  return t && !Number.isNaN(t.getTime()) ? t.toLocaleDateString([], { month: "short", day: "numeric" }) : undefined;
+}
+
 function SessionRow({
   s,
+  display,
+  when,
   activeId,
   pinned,
   project,
@@ -8564,6 +8590,10 @@ function SessionRow({
   handoff,
 }: {
   s: SessionVm;
+  /** Shown instead of the raw title (renaming still edits the real one). */
+  display?: string;
+  /** A short date on the right ("Oct 18"). */
+  when?: string;
   activeId: string;
   /** "Give to an agent": who can take this chat (its owner excluded). */
   handoff?: { agents: Array<Pick<AgentVm, "id" | "name" | "emoji" | "color">>; onGive: (sessionId: string, agentId: string) => void };
@@ -8655,7 +8685,8 @@ function SessionRow({
     <div className={s.id === activeId ? "session on" : "session"} data-giving={giving ? "1" : "0"}>
       <button className="sessionMain" onClick={() => onSelect(s.id)} onDoubleClick={() => setEditing(true)} title="Double-click to rename">
         <i data-busy={s.busy ? "1" : "0"} />
-        <span>{s.title}</span>
+        <span>{display ?? s.title}</span>
+        {when ? <em className="sessionWhen">{when}</em> : null}
       </button>
       <div className="sessionActions">
         <button className="rowBtn" title="Rename" onClick={() => setEditing(true)}>✎</button>

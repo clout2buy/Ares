@@ -989,9 +989,10 @@ canvas.bubbleImage { cursor: zoom-in; }
 /* steer send button */
 .send.steer { background: linear-gradient(180deg, var(--steel), #5e8480); }
 
-/* jump-to-latest pill */
+/* jump-to-latest pill: its own row above the composer, never over the words */
+.jumpDock { flex: none; display: flex; justify-content: center; padding: 6px 0 2px; }
 .jumpLatest {
-  position: sticky; bottom: 8px; align-self: center;
+  align-self: center;
   font: 600 11px/1 var(--mono); letter-spacing: 0.08em;
   padding: 8px 16px;
   border-radius: 999px;
@@ -4622,7 +4623,7 @@ button.hudPill:hover { color: var(--text); border-color: var(--text); }
 .ares[data-style="new"] .chat > .notice[data-tone="bad"] {
   animation: forgeTurnIn 560ms cubic-bezier(0.22, 1.16, 0.32, 1) both, shake 360ms ease 280ms;
 }
-.ares[data-style="new"] .chat > .jumpLatest { animation: fadeUp 200ms ease both; }
+.ares[data-style="new"] .jumpDock > .jumpLatest { animation: fadeUp 200ms ease both; }
 
 /* gateway account (Ares Account settings pane + grant toasts) */
 .gwToasts { position: fixed; right: 18px; bottom: 78px; display: flex; flex-direction: column; gap: 8px; z-index: 120; }

@@ -238,6 +238,8 @@ export interface SessionVm {
   loaded?: boolean;
   loading?: boolean;
   updatedAt?: string;
+  /** When the chat was started (from the daemon's session list). */
+  createdAt?: string;
   /** Live Conductor fleet — populated from fleet_activity progress events. */
   fleet?: FleetVm;
   /** Live delegation cut-scene — populated from coding_backend progress events
@@ -330,6 +332,7 @@ export interface SessionSummaryWire {
   id: string;
   provider?: { name?: string; model?: string };
   updatedAt?: string;
+  createdAt?: string;
   preview?: string;
   label?: string;
   workflowMode?: "plan" | "build";
@@ -354,6 +357,7 @@ export function sessionFromSummary(summary: SessionSummaryWire): SessionVm {
     todos: [],
     loaded: false,
     updatedAt: summary.updatedAt,
+    createdAt: summary.createdAt,
     turnModel: summary.provider?.model,
     turnProvider: summary.provider?.name,
     sessionModel: summary.provider?.model,

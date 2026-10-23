@@ -55,12 +55,26 @@ function fenceOf(lease: { sessionId: string; generation: number; leaseToken: str
   };
 }
 
+test("metadata merges never move a session's last-activity time", () => {
+  // Every Session construction re-stamps provider/model; that bumped
+  // updated_at_ms and scrambled the chat list's order (owner, 2026-10-23).
+  const clock = testClock();
+  const store = inMemoryStore(clock);
+  const created = store.createSession({ id: "chat", metadata: { model: "old" } });
+  clock.advance(60_000);
+  store.mergeSessionMetadata("chat", { model: "new" });
+  const after = store.requireSession("chat");
+  assert.equal((after.metadata as { model?: string }).model, "new");
+  assert.equal(after.updatedAtMs, created.updatedAtMs);
+  store.close();
+});
+
 test("WAL store persists canonical sessions, child links, and events across reopen", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "ares-session-kernel-"));
   const filename = path.join(directory, "sessions.sqlite");
   try {
     const first = await SessionKernelStore.open({ filename, Database: BetterSqlite3 });
-    assert.equal(first.schemaVersion, 8);
+    assert.equal(first.schemaVersion, 9);
     assert.equal(first.journalMode.toLowerCase(), "wal");
     const root = first.createSession({ id: "root", workspaceKey: "D:/repo", metadata: { b: 2, a: 1 } });
     const child = first.createChildSession({
@@ -191,7 +205,7 @@ test("v5 migration backfills v4 archived deletion barriers before final cleanup"
     v4.close();
 
     const upgraded = await SessionKernelStore.open({ filename, Database: BetterSqlite3 });
-    assert.equal(upgraded.schemaVersion, 8);
+    assert.equal(upgraded.schemaVersion, 9);
     const tombstone = upgraded.getSessionTombstone("archived-on-v4");
     assert.equal(tombstone?.deletionSource, "canonical");
     assert.equal(tombstone?.deletedAtMs, upgraded.requireSession("archived-on-v4").updatedAtMs);

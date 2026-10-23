@@ -422,7 +422,8 @@
 .ares.ares .chat[data-imsg="1"] .imsgFace { flex: none; display: block; width: 30px; height: 30px; margin: 0 0 1px; }
 .ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody {
   flex: 0 1 auto;
-  max-width: min(68%, 760px);
+  /* A text, not a document: ~70 characters a line even on a wide monitor. */
+  max-width: min(68%, 600px);
   gap: 6px;
 }
 .ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody > .modelBadge,

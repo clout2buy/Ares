@@ -889,7 +889,7 @@
 .ares.ares[data-style="modern"][data-surface="messages"] .titlebar { background: rgba(17, 18, 24, 0.6); }
 
 /* the "latest" jump: a small centred pill, never a full-width slab */
-.ares.ares[data-style="modern"][data-surface="messages"] .chat > .jumpLatest {
+.ares.ares[data-style="modern"][data-surface="messages"] .jumpDock > .jumpLatest {
   width: fit-content; max-width: none;
   margin: 0 auto 4px;
   align-self: center;
@@ -901,7 +901,7 @@
   border: 1px solid transparent;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 26px -12px rgba(10, 124, 255, 0.9);
 }
-.ares.ares[data-style="modern"][data-surface="messages"] .chat > .jumpLatest:hover { filter: brightness(1.08); background: linear-gradient(180deg, #3b95ff, #0a7cff); }
+.ares.ares[data-style="modern"][data-surface="messages"] .jumpDock > .jumpLatest:hover { filter: brightness(1.08); background: linear-gradient(180deg, #3b95ff, #0a7cff); }
 
 /* ── second pass (owner, 2026-10-20: "the old Ares logo is bleeding through",
    "the buttons on top right and bottom left are old") ───────────────────── */

@@ -49,6 +49,8 @@ export interface Prefs {
   surface: SurfaceName;
   /** The colour applied on top of that surface, via data-accent. */
   accent: AccentName;
+  /** Light or dark glass; "auto" follows the system (owner, 2026-10-23). */
+  glassMode?: "light" | "dark" | "auto";
   /** Interface style — "modern" = the glass-forge reskin (floating smoked-glass
    *  surfaces over a cinematic obsidian canvas, copper accent, mint success;
    *  scoped under data-style="modern" in modern.css); "new" = the Forged skin
@@ -266,6 +268,7 @@ export function loadPrefs(): Prefs {
         : undefined,
       surface,
       accent,
+      glassMode: raw.glassMode === "dark" || raw.glassMode === "auto" ? raw.glassMode : "light",
       // Derived, never authored: the surface owns the theme now. Kept in the
       // saved shape because the whole app reads prefs.theme.
       theme: surfaceToTheme(surface),

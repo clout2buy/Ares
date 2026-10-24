@@ -519,41 +519,71 @@ export function AgentEditor({
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => { void pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
           <div>
             <h3>{existing ? draft.name || existing.name : "New agent"}</h3>
-            <p>{existing ? "Their own memory, their own Forge, their own model." : "Make anyone you want: give them a name, a face and a job. They get their own memory, Forge and model, and still know what you've told Ares."}</p>
+            <p>{existing ? "Their own memory, their own Forge, their own model." : "Someone you can text. They remember your chats and can build things for you."}</p>
           </div>
           <button className="agentClose" onClick={onClose} aria-label="Close">×</button>
         </header>
 
 
+        {/* New people get one clear path (owner, 2026-10-23: "confusing for new
+            people"): pick a starting point, name them, say their job, pick a
+            look. The model is already chosen; the rest folds under More options. */}
+        {!existing ? (
+          <div className="agentStart">
+            <span className="agentStepLabel">Start from</span>
+            <div className="agentTemplates">
+              {AGENT_TEMPLATES.map((t) => (
+                <button key={t.name} className="agentTemplate" data-on={draft.instructions === t.role ? "1" : "0"} title={t.role} onClick={() => setDraft((d) => ({ ...d, name: d.name.trim() && !AGENT_TEMPLATES.some((x) => x.name === d.name.trim()) ? d.name : takenNames.includes(t.name) ? d.name : t.name, emoji: t.emoji, color: t.color, instructions: t.role }))}>
+                  <span>{t.emoji}</span>
+                  {t.name}
+                </button>
+              ))}
+            </div>
+            <em className="agentFieldHint">Tap one to fill everything in, or start blank and write your own.</em>
+          </div>
+        ) : null}
+
         <label className="agentField">
           <span>Name</span>
-          <input ref={nameRef} value={draft.name} maxLength={40} placeholder="Bob" spellCheck={false} onChange={(e) => set("name", e.target.value)} />
+          <input ref={nameRef} value={draft.name} maxLength={40} placeholder="e.g. Bob" spellCheck={false} onChange={(e) => set("name", e.target.value)} />
           {nameClash ? <em className="agentFieldErr">{draft.name.trim().toLowerCase() === "ares" ? "Ares is the default agent" : "That name is taken"}</em> : null}
         </label>
 
+        <label className="agentField">
+          <span>What's their job?</span>
+          <textarea
+            value={draft.instructions}
+            rows={4}
+            maxLength={4000}
+            placeholder="Brief them like you'd brief a person. e.g. You're my finance guy. Keep me posted when I get charged for anything over $50."
+            onChange={(e) => set("instructions", e.target.value)}
+          />
+          <em className="agentFieldHint">Plain words are fine. You can change it any time, or just tell them in chat.</em>
+        </label>
+
         <div className="agentField">
-          <span>Profile picture</span>
-          <div className="agentPhotoRow">
-            <button className="agentGhost" onClick={() => fileRef.current?.click()}>{shownPhoto ? "Choose another photo" : "Upload a photo"}</button>
-            {shownPhoto ? <button className="agentGhost" onClick={() => set("photo", "")}>Use their generated face</button> : <em>No photo: they wear their emoji (or their face, in the other looks).</em>}
-          </div>
-          {photoErr ? <em className="agentFieldErr">{photoErr}</em> : null}
-          <span className="agentSubLabel">Badge emoji (optional)</span>
-          <div className="agentEmojiGrid">
-            {AGENT_EMOJI.map((e) => (
-              <button key={e} data-on={draft.emoji === e ? "1" : "0"} onClick={() => set("emoji", draft.emoji === e ? "" : e)}>{e}</button>
-            ))}
-          </div>
+          <span>Look</span>
           <div className="agentSwatches">
             {AGENT_COLORS.map((c) => (
               <button key={c} data-on={draft.color === c ? "1" : "0"} style={{ background: c }} onClick={() => set("color", c)} aria-label={`colour ${c}`} />
             ))}
           </div>
+          <div className="agentEmojiGrid">
+            {(showIdeas ? AGENT_EMOJI : AGENT_EMOJI.slice(0, 11)).map((e) => (
+              <button key={e} data-on={draft.emoji === e ? "1" : "0"} onClick={() => set("emoji", draft.emoji === e ? "" : e)} aria-label={`badge ${e}`}>{e}</button>
+            ))}
+            <button className="agentEmojiMore" onClick={() => setShowIdeas((v) => !v)}>{showIdeas ? "Less" : "More"}</button>
+          </div>
+          <div className="agentPhotoRow">
+            <button className="agentGhost" onClick={() => fileRef.current?.click()}>{shownPhoto ? "Choose another photo" : "Upload a photo instead"}</button>
+            {shownPhoto ? <button className="agentGhost" onClick={() => set("photo", "")}>Remove photo</button> : null}
+          </div>
+          {photoErr ? <em className="agentFieldErr">{photoErr}</em> : null}
         </div>
 
         <div className="agentFieldRow">
           <label className="agentField">
-            <span>Provider</span>
+            <span>Thinks with</span>
             <select value={draft.provider} onChange={(e) => setDraft((d) => ({ ...d, provider: e.target.value, model: "" }))}>
               {[...new Set([draft.provider, ...providers])].filter(Boolean).map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
@@ -567,69 +597,46 @@ export function AgentEditor({
           </label>
         </div>
 
-        <label className="agentField">
-          <span>Effort</span>
-          <select value={draft.effort} onChange={(e) => set("effort", e.target.value)}>
-            <option value="">Same as Ares (the global dial)</option>
-            {AGENT_EFFORTS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-          </select>
-          <em className="agentFieldHint">How hard they think before answering. Higher is smarter and slower; their chats keep it when you move the global dial.</em>
-        </label>
+        <details className="agentMore" open={Boolean(existing && (draft.effort || draft.chatModel || draft.rules || draft.workspaceId))}>
+          <summary>More options</summary>
 
-        <label className="agentField">
-          <span>Role — brief them like a person</span>
-          <textarea
-            value={draft.instructions}
-            rows={5}
-            maxLength={4000}
-            placeholder="You're my finance guy. Keep me posted when I get charged for anything over $50…"
-            onChange={(e) => set("instructions", e.target.value)}
-          />
-        </label>
-
-        <label className="agentField">
-          <span>Chat model in group chats</span>
-          <input value={draft.chatModel} maxLength={160} spellCheck={false} placeholder={draft.provider === "anthropic" ? "claude-haiku-5-5 (fast default)" : `${draft.model || "same as above"}`} onChange={(e) => set("chatModel", e.target.value)} />
-          <em className="agentFieldHint">In rooms they chat on this fast model and hand real work (building, testing) to their full model above. Leave empty for the fast default.</em>
-        </label>
-
-        {workspaces.length ? (
           <label className="agentField">
-            <span>Works on (VPS)</span>
-            <select value={draft.workspaceId} onChange={(e) => set("workspaceId", e.target.value)}>
-              <option value="">{workspaces.length === 1 ? `${workspaces[0]!.label} (the only one)` : "No VPS"}</option>
-              {workspaces.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+            <span>Effort</span>
+            <select value={draft.effort} onChange={(e) => set("effort", e.target.value)}>
+              <option value="">Same as everyone (the global dial)</option>
+              {AGENT_EFFORTS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
             </select>
+            <em className="agentFieldHint">How hard they think before answering. Higher is smarter and slower.</em>
           </label>
-        ) : null}
 
-        <label className="agentField">
-          <span>Standing rules — one per line</span>
-          <textarea
-            value={draft.rules}
-            rows={3}
-            maxLength={6000}
-            placeholder={"In group chats, keep it to one line\nAlways @ the person you're answering"}
-            onChange={(e) => set("rules", e.target.value)}
-          />
-          <em className="agentFieldHint">They follow {draft.name.trim() || "them"} everywhere — every chat and every room. You can also just tell them "from now on…" and they'll save it here.</em>
-        </label>
+          <label className="agentField">
+            <span>Standing rules, one per line</span>
+            <textarea
+              value={draft.rules}
+              rows={3}
+              maxLength={6000}
+              placeholder={"In group chats, keep it to one line\nAlways @ the person you're answering"}
+              onChange={(e) => set("rules", e.target.value)}
+            />
+            <em className="agentFieldHint">{draft.name.trim() || "They"} follow these in every chat and room. Saying "from now on…" in chat adds one here.</em>
+          </label>
 
-        {!existing ? (
-          <div className="agentIdeas">
-            <button className="agentIdeasToggle" onClick={() => setShowIdeas((v) => !v)}>{showIdeas ? "▾" : "▸"} Need ideas?</button>
-            {showIdeas ? (
-              <div className="agentTemplates">
-                {AGENT_TEMPLATES.map((t) => (
-                  <button key={t.name} className="agentTemplate" title={t.role} onClick={() => setDraft((d) => ({ ...d, name: d.name.trim() || takenNames.includes(t.name) ? d.name : t.name, emoji: d.emoji || t.emoji, color: t.color, instructions: t.role }))}>
-                    <span>{t.emoji}</span>
-                    {t.name}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+          <label className="agentField">
+            <span>Model in group chats</span>
+            <input value={draft.chatModel} maxLength={160} spellCheck={false} placeholder={draft.provider === "anthropic" ? "claude-haiku-5-5 (fast default)" : `${draft.model || "same as above"}`} onChange={(e) => set("chatModel", e.target.value)} />
+            <em className="agentFieldHint">A faster model for chatting in rooms; real work still uses the one above. Leave empty for the default.</em>
+          </label>
+
+          {workspaces.length ? (
+            <label className="agentField">
+              <span>Works on (VPS)</span>
+              <select value={draft.workspaceId} onChange={(e) => set("workspaceId", e.target.value)}>
+                <option value="">{workspaces.length === 1 ? `${workspaces[0]!.label} (the only one)` : "No VPS"}</option>
+                {workspaces.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+              </select>
+            </label>
+          ) : null}
+        </details>
 
         {existing && memory ? (
           <div className="agentField agentMemory">

@@ -49,6 +49,8 @@ function startDaemon(provider, model) {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
+  // A write racing the daemon's exit raises EPIPE here; unhandled, it killed the bridge.
+  child.stdin.on("error", (err) => process.stderr.write(`[bridge] daemon stdin: ${err.code ?? err.message}\n`));
   let buf = "";
   child.stdout.on("data", (chunk) => {
     buf += chunk.toString("utf8");

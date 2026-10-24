@@ -95,6 +95,7 @@ import { aresNetworkConnect, aresNetworkDisconnect, aresNetworkStatus, aresNetwo
 import { fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel } from "@ares/core";
 import { AgentError, DesktopAgents } from "./daemon/agents.js";
 import { DesktopRooms, RoomError } from "./daemon/rooms.js";
+import { createAutoTitler } from "./daemon/autoTitle.js";
 import { DesktopDirectory, DirectoryError } from "./daemon/directory.js";
 import { setRoomsHost } from "./roomScope.js";
 import { forgeScreenNote } from "./forgeView.js";
@@ -488,6 +489,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     if (typeof obj.text === "string") out.chars = obj.text.length;
     return out;
   };
+  // Names a chat by its topic once a turn ends — bound once rooms exist below.
+  let autoTitle: ((sessionId: string) => void) | undefined;
   const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
     if (typeof obj.type === "string") {
@@ -495,6 +498,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       traceRing.record(traceOf(sessionId || DEFAULT_SID, obj));
     }
     if (roomsTap && sessionId && (obj.type === "message_done" || obj.type === "turn_end" || obj.type === "turn_start")) roomsTap(sessionId, obj);
+    if (autoTitle && sessionId && sessionId !== DEFAULT_SID && obj.type === "turn_end") autoTitle(sessionId);
     // Frames are ~100 KB of base64 each at several per second; the crash
     // ring only needs to know one arrived, not keep the pixels.
     eventRing.record({ at: Date.now(), ...(typeof payload.image === "string" ? { ...payload, image: `<${payload.image.length} chars>` } : payload) });
@@ -1321,6 +1325,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   await desktopDirectory.load().catch((error) => {
     process.stderr.write(`[ares] directory failed to load: ${error instanceof Error ? error.message : String(error)}\n`);
     return undefined;
+  });
+  autoTitle = createAutoTitler({
+    workspace: live.context.workspace,
+    ask: (system, user) => sideQuery({ provider: mainSelection.provider, model: mainSelection.model, system, user, maxOutputTokens: 40, reasoningLevel: "off", timeoutMs: 30_000 }),
+    skip: (sessionId) => desktopRooms.isSeat(sessionId),
+    emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n"),
   });
   roomsTap = (sessionId, obj) => {
     if (!desktopRooms.isSeat(sessionId)) return;
@@ -3270,6 +3280,18 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type === "background_stop" ||
         command.type === "background_resume"
       ) {
+        // Asking about a chat that was never saved is a read, not a create:
+        // the desktop asks for its blank launch card's jobs on every start,
+        // and resolveEntry used to build a session for it, leaving one empty
+        // session per launch (946 of 1,172 by 2026-10-23).
+        if (command.type === "background_list" && command.sessionId && command.sessionId !== DEFAULT_SID && !sessions.has(command.sessionId)) {
+          const onDisk = await loadSessionSnapshot(live.context.workspace, command.sessionId, { maxMessages: 1 })
+            .then(() => true, (error) => !(error instanceof SessionNotFoundError));
+          if (!onDisk) {
+            tagEmit(command.sessionId, { type: "background_jobs", jobs: [], running: 0, resumable: 0 });
+            continue;
+          }
+        }
         const entry = await resolveEntry(command.sessionId).catch(() => undefined);
         if (!entry) {
           process.stdout.write(JSON.stringify({ type: "daemon_error", error: `${command.type}: unknown session` }) + "\n");

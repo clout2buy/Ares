@@ -1,0 +1,710 @@
+/* ══ Glass — the light Liquid Glass look (owner, 2026-10-23) ════════════════
+   Replaces the dark Messages paint; every Messages behaviour stays. A cool
+   silver ground lit from the top-left, frosted see-through panes with a lit
+   top-left rim and a dark bottom-right one (that edge is what reads as
+   glass), glossy pills, the agents' own colours, and Ares orange for the
+   owner. Agreed in tauri/public/mockup-layout.html.
+
+   Scoped one class deeper than messages.css/agents.css/shell.css
+   (".ares.ares.ares") so it wins whatever order the sheets load in.
+   Photosensitive doctrine: nothing here animates brightness; the ground is
+   static light, and motion stays transform-only. */
+
+.ares.ares.ares[data-style="modern"][data-surface="messages"] {
+  --bg: #e4e6eb;
+  --bg-raised: #f4f5f7;
+  --panel: rgba(255, 255, 255, 0.55);
+  --panel-2: rgba(255, 255, 255, 0.35);
+
+  --text: #1b1c21;
+  --text-hi: #0e0f13;
+  --muted: #5a5e68;
+  --faint: #868a94;
+
+  --gold: #5a5e68;
+  --gold-hi: #0e0f13;
+  --gold-glyph: #3b3e46;
+  --line: rgba(20, 24, 34, 0.08);
+  --line-raised: rgba(20, 24, 34, 0.12);
+  --line-strong: rgba(20, 24, 34, 0.14);
+  --line-active: rgba(255, 106, 61, 0.55);
+
+  /* Ares orange is the owner's colour now (bubbles, send, primary) */
+  --ember: #ff6a3d;
+  --ember-hi: #ff9a5a;
+  --ember-text: #d9481c;
+  --ember-rim: rgba(255, 106, 61, 0.4);
+  --ember-rgb: 255, 106, 61;
+  --blood: #ff6a3d;
+  --accent: #ff6a3d;
+  --accent-hi: #ff9a5a;
+  --accent-rgb: 255, 106, 61;
+
+  --display: "Segoe UI Variable Display", -apple-system, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --font: "Segoe UI Variable Text", -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+
+  /* the glass recipe */
+  --g-fill: linear-gradient(155deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.22) 55%, rgba(255, 255, 255, 0.32) 100%);
+  --g-fill-strong: linear-gradient(155deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.55));
+  --g-blur: blur(22px) saturate(170%) brightness(1.04);
+  --g-rim: 1px solid rgba(255, 255, 255, 0.72);
+  --g-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.9),
+    inset -1px -1px 0 rgba(120, 128, 145, 0.18),
+    inset 0 0 18px rgba(255, 255, 255, 0.3),
+    0 1px 2px rgba(20, 24, 34, 0.06),
+    0 24px 48px -22px rgba(40, 48, 66, 0.35);
+  --g-orange: linear-gradient(180deg, #ffa16a 0%, #ff6a3d 60%, #f05a2c 100%);
+  /* the light-only fills, named so dark mode can swap them */
+  --g-solid: #fff;
+  --g-hover: rgba(255, 255, 255, 0.6);
+  --g-soft: rgba(255, 255, 255, 0.4);
+  --g-sunk: rgba(20, 24, 34, 0.06);
+  --g-window: linear-gradient(155deg, rgba(250, 251, 253, 0.95), rgba(234, 236, 241, 0.92));
+  --g-scrim: rgba(200, 205, 214, 0.45);
+  --g-orange-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 18px -10px rgba(255, 106, 61, 0.8);
+
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: light;
+}
+
+/* ── the ground: silver, lit from the top-left, with wide soft sweeps of
+   light for the glass to blur. Static. ─────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"]::before {
+  background:
+    linear-gradient(166deg, transparent 2%, rgba(255, 255, 255, 0.9) 14%, transparent 30%),
+    linear-gradient(166deg, transparent 44%, var(--g-hover) 54%, transparent 64%),
+    linear-gradient(166deg, transparent 66%, rgba(150, 160, 180, 0.3) 78%, transparent 92%),
+    radial-gradient(70% 60% at 12% 0%, rgba(255, 255, 255, 0.95), transparent 60%),
+    radial-gradient(60% 55% at 100% 100%, rgba(150, 158, 174, 0.45), transparent 70%),
+    linear-gradient(155deg, #f2f3f6 0%, #dde0e6 42%, #c9cdd5 100%);
+}
+
+/* ── the shell: three floating panes on the silver ───────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] {
+  padding: 0 12px 12px 88px;
+  column-gap: 12px;
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-panel="1"] { grid-template-columns: 300px minmax(0, 1fr) minmax(0, var(--forge-w, 480px)); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-rail="collapsed"] { grid-template-columns: 0 minmax(0, 1fr); column-gap: 0; }
+
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msMark:hover,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msTool:hover,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msWin button:hover { background: var(--g-hover); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msWin { border-left-color: var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msWin .msWinClose:hover { color: #fff; background: #e5484d; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msTool[data-on="1"] { color: var(--ember-text); background: rgba(255, 106, 61, 0.12); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msMarkTile { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8), 0 4px 12px -6px rgba(255, 106, 61, 0.7); }
+
+/* a frosted pane: the sidebar and the stage */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stage {
+  border-radius: 26px;
+  border: var(--g-rim);
+  background: var(--g-fill);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail { padding: 14px 10px 0; border-right: var(--g-rim); }
+/* The sidebar's frost lives on a backing layer, not the sidebar itself: a
+   pane with backdrop-filter becomes the frame for every fixed child, which
+   trapped the section strip inside the chat list. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail { position: relative; isolation: auto; backdrop-filter: none; -webkit-backdrop-filter: none; background: transparent; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail::after {
+  content: "";
+  position: absolute; inset: 0; z-index: -1;
+  border-radius: inherit;
+  background: var(--g-fill);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  pointer-events: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .olderChatsHead { font: 600 12px/1 var(--font); letter-spacing: 0; text-transform: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail::before { content: "Chats"; color: var(--text-hi); font: 700 26px/1.1 var(--display); letter-spacing: -0.03em; margin: 4px 8px 12px; }
+
+/* ── the sections: a vertical glass strip on the far left, not a capsule
+   at the bottom of the chat list ─────────────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs {
+  position: fixed;
+  left: 12px; top: 50px; bottom: 12px;
+  width: 64px;
+  margin: 0;
+  padding: 10px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: 26px;
+  border: var(--g-rim);
+  background: var(--g-fill);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs .msTabLight { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs .msTab {
+  width: 48px; height: 52px;
+  padding: 7px 0 5px;
+  border-radius: 16px;
+  color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs .msTab:hover { background: var(--g-hover); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs .msTab[data-on="1"] {
+  color: var(--text-hi);
+  background: var(--g-fill-strong);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs .msTabLabel { font-size: 10px; font-weight: 600; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs .msTabBadge { background: var(--g-orange); box-shadow: 0 0 0 2px var(--g-ring, #fff); }
+
+/* ── the chat list ──────────────────────────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railSearch {
+  margin: 0 4px 8px;
+  border-radius: 999px;
+  background: var(--g-sunk);
+  border: 1px solid transparent;
+  box-shadow: inset 0 1px 2px rgba(20, 24, 34, 0.06);
+  color: var(--text);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railSearch::placeholder { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railSearch:focus { border-color: rgba(255, 106, 61, 0.45); background: var(--g-hover); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railScroll > .railLabel { color: var(--faint); font: 600 12px/1 var(--font); letter-spacing: 0; text-transform: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railLabel .railNew,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railHelp { color: var(--text); background: var(--g-fill-strong); border: var(--g-rim); box-shadow: var(--g-shadow); }
+
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRow { border-radius: 18px; border: 1px solid transparent; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRow:hover { background: var(--g-hover); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowWrap[data-on="1"] .agentRow,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomRow[data-on="1"] {
+  background: var(--g-fill-strong);
+  border: var(--g-rim);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop strong,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomRowTop strong { color: var(--text-hi); font: 600 15px/1.25 var(--display); letter-spacing: -0.01em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowPreview,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomRowPreview { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop em,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop time { color: var(--faint); }
+/* a real portrait reads as glass-set: white ring, soft drop */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentAvatar { box-shadow: 0 0 0 2px var(--g-ring, #fff), 0 4px 12px -4px rgba(20, 24, 34, 0.35); }
+
+/* the agent's own chats: tucked under it on a thread line */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentChats {
+  margin: 2px 0 10px 30px;
+  padding: 0 0 4px 10px;
+  border-left: 2px solid rgba(255, 106, 61, 0.35);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionList > .session { margin: 0; color: var(--muted); }
+/* older skins paint row titles a fixed cream (made for dark); here they follow the row */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .session .sessionMain > span { color: inherit; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowWrap[data-on="1"] { background: var(--g-soft); border-radius: 20px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .railLabel { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionList > .session:hover { background: var(--g-hover); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .sessionList > .session.on {
+  color: var(--text-hi);
+  font-weight: 600;
+  background: var(--g-fill-strong);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentNewChat,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomNew,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .peopleBtn {
+  margin: 2px 0;
+  color: var(--ember-text);
+  border: var(--g-rim);
+  border-radius: 999px;
+  background: var(--g-fill-strong);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .olderChatsHead { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .olderChatsHead:hover { color: var(--text); background: var(--g-hover); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .session { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .session:hover { background: var(--g-hover); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .session.on { color: var(--text-hi); background: var(--g-fill-strong); box-shadow: var(--g-shadow); }
+
+/* ── the stage ──────────────────────────────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stage { overflow: hidden; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageHead {
+  margin: 10px 10px 0;
+  padding: 10px 14px;
+  border-radius: 20px;
+  border: var(--g-rim);
+  background: var(--g-fill-strong);
+  box-shadow: var(--g-shadow);
+  backdrop-filter: var(--g-blur);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageHead h2 { color: var(--text-hi); font: 700 16px/1.2 var(--display); letter-spacing: -0.02em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageHead span { color: var(--muted); font-size: 12px; }
+
+/* the owner: glossy Ares orange, right */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .turn.user:not(.agentText) .bubble {
+  color: #fff;
+  border: 1px solid rgba(255, 190, 160, 0.8);
+  background: var(--g-orange);
+  box-shadow: var(--g-orange-shadow);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+/* an agent: clear glass, left */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .turn.assistant .turnBody > .prose,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .chat[data-imsg="1"] .turn.assistant .turnBody > .prose,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .turn.user.agentText .bubble,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .typingBubble {
+  color: var(--text-hi);
+  border: var(--g-rim);
+  background: var(--g-fill-strong);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .prose a { color: var(--ember-text); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .prose strong { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .prose code { background: var(--g-sunk); color: #9a3412; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .prose pre { background: var(--g-sunk); border-color: var(--line); color: var(--text); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .typingBubble i { background: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .imsgReceipt { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .chat > .toolCard,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .chat[data-imsg="1"] > .toolCard[data-state="running"] {
+  color: var(--muted);
+  border: var(--g-rim);
+  border-radius: 999px;
+  background: var(--g-fill);
+  box-shadow: var(--g-shadow);
+}
+
+/* the message box: a floating glass capsule with a glossy orange send */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer { border: none; background: transparent; backdrop-filter: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer .composerRow {
+  border-radius: 999px;
+  border: var(--g-rim);
+  background: var(--g-fill-strong);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer textarea { color: var(--text-hi); background: transparent; border: none; box-shadow: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer textarea::placeholder { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer .sendBtn,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer button.send,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .composer .btn.primary {
+  color: #fff;
+  border: 1px solid rgba(255, 190, 160, 0.8);
+  background: var(--g-orange);
+  box-shadow: var(--g-orange-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .jumpDock > .jumpLatest { color: var(--text-hi); background: var(--g-fill-strong); border: var(--g-rim); box-shadow: var(--g-shadow); }
+
+/* ── "Who do you want to text?": the crew, as glass cards ───────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPicker h2 { color: var(--text-hi); font: 700 30px/1.1 var(--display); letter-spacing: -0.03em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPickerGrid { gap: 16px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPickerCard {
+  width: 190px;
+  padding: 22px 16px 18px;
+  border-radius: 26px;
+  border: var(--g-rim);
+  background: var(--g-fill);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+  transition: transform 0.2s ease;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPickerCard:hover { transform: translateY(-3px); background: var(--g-fill-strong); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPickerCard .agentAvatar { width: 84px !important; height: 84px !important; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPickerName { color: var(--text-hi); font: 700 17px/1.2 var(--display); letter-spacing: -0.02em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPickerRole { color: var(--muted); }
+
+/* ── buttons, banners, sheets ───────────────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .btn.primary,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPrimary {
+  color: #fff;
+  border: 1px solid rgba(255, 190, 160, 0.8);
+  border-radius: 999px;
+  background: var(--g-orange);
+  box-shadow: var(--g-orange-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .btn.ghost,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentGhost {
+  color: var(--text-hi);
+  border: var(--g-rim);
+  border-radius: 999px;
+  background: var(--g-fill-strong);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .recoveryBanner {
+  color: var(--text);
+  border: var(--g-rim);
+  border-radius: 20px;
+  background: var(--g-fill-strong);
+  box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheet,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settings,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .modal {
+  color: var(--text);
+  border: var(--g-rim);
+  background: var(--g-window);
+  backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow), 0 40px 120px -30px rgba(40, 48, 66, 0.45);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField input,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField select,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField textarea,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settings input,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settings select,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settings textarea {
+  color: var(--text-hi);
+  background: var(--g-sunk);
+  border-color: transparent;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .medallion { color: var(--gold-glyph); border-color: var(--line); }
+
+/* ── Made by your agents (the old "Artifact Vault") ─────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] { --bronze: #d9481c; --bronze-hi: #ff6a3d; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vault { padding: 26px 28px 0; gap: 18px; background: transparent; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHero { padding: 0; border: none; background: none; align-items: flex-end; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEyebrow { font: 600 13px/1 var(--font); letter-spacing: 0; text-transform: none; color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHero h2 { margin: 6px 0 4px; font: 700 34px/1.05 var(--display); letter-spacing: -0.035em; text-transform: none; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHero p { color: var(--muted); font-size: 14px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultMetric {
+  padding: 8px 14px; border-radius: 999px; border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+  display: flex; align-items: baseline; gap: 6px;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultMetric strong { font: 700 18px/1 var(--display); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultMetric span { font: 500 13px/1 var(--font); letter-spacing: 0; text-transform: none; color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead { gap: 10px; padding: 0; border: none; background: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead input {
+  flex: 1; min-width: 180px; padding: 10px 16px; border-radius: 999px; font: 500 14px var(--font); color: var(--text-hi);
+  border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead input::placeholder { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead input:focus { border-color: rgba(255, 106, 61, 0.5); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead nav { gap: 6px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead nav button {
+  padding: 8px 14px; border-radius: 999px; font: 600 13px/1 var(--font); letter-spacing: 0; text-transform: capitalize; color: var(--muted);
+  border: var(--g-rim); background: var(--g-fill); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead nav button:hover { color: var(--text-hi); background: var(--g-fill-strong); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead nav button[data-on="1"] { color: #fff; border-color: rgba(255, 190, 160, 0.8); background: var(--g-orange); box-shadow: var(--g-orange-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultHead nav em { opacity: 0.75; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultScroll { padding: 4px 2px 28px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultLabel { font: 700 15px/1 var(--display); letter-spacing: -0.01em; text-transform: none; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty {
+  margin: 30px auto 0; max-width: 460px; min-height: 0; padding: 34px 30px; border-radius: 28px; color: var(--muted);
+  border: var(--g-rim); background: var(--g-fill); backdrop-filter: var(--g-blur); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty .emptyEmblem {
+  width: 64px; height: 64px; border-radius: 20px; border: var(--g-rim); box-shadow: var(--g-shadow);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff6a3d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12 3 8 4.5v9L12 21l-8-4.5v-9z'/%3E%3Cpath d='m4 7.5 8 4.5 8-4.5M12 12v9'/%3E%3C/svg%3E") center/30px no-repeat, var(--g-fill-strong);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty .emptyEmblem::before,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty .emptyEmblem::after { content: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty strong { font: 700 19px/1.2 var(--display); letter-spacing: -0.02em; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty p { font-size: 14px; color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultEmpty .primary {
+  padding: 9px 18px; border-radius: 999px; font: 600 13px var(--font); letter-spacing: 0; text-transform: none; color: #fff;
+  border: 1px solid rgba(255, 190, 160, 0.8); background: var(--g-orange); box-shadow: var(--g-orange-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultCard { border-radius: 22px; overflow: hidden; border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultCard:hover { border-color: rgba(255, 106, 61, 0.45); box-shadow: var(--g-shadow), 0 18px 40px -18px rgba(255, 106, 61, 0.5); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultCard strong { font: 600 13px/1.3 var(--font); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultTable { gap: 6px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultRow { padding: 10px 14px; border-radius: 16px; border: var(--g-rim); background: var(--g-fill); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultRow:hover { background: var(--g-fill-strong); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultName { font: 600 13.5px/1.3 var(--font); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultLoc { font: 400 12px/1.3 var(--font); color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .vaultSession { color: var(--muted); border: var(--g-rim); background: var(--g-fill-strong); }
+
+/* ── buttons the other tabs share: Ares orange, not iMessage blue ───── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .feedPillPrimary,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .aresosPrimary,
+.ares.ares.ares[data-surface="messages"] .settingsPane .aresosPrimary {
+  color: #fff; border: 1px solid rgba(255, 190, 160, 0.8); background: var(--g-orange); box-shadow: var(--g-orange-shadow);
+}
+
+/* ── New agent / edit agent sheet ───────────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentScrim { background: var(--g-scrim); backdrop-filter: blur(6px); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheet { width: min(560px, calc(100vw - 32px)); padding: 22px 24px 18px; gap: 16px; border-radius: 30px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetHead h3 { color: var(--text-hi); font: 700 24px/1.1 var(--display); letter-spacing: -0.03em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetHead p { color: var(--muted); font-size: 14px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPhotoEdit { color: var(--ember-text); font-weight: 600; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentClose { width: 34px; height: 34px; border-radius: 50%; color: var(--muted); background: var(--g-fill-strong); border: var(--g-rim); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField > span,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentStepLabel,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentMore > summary {
+  font: 600 13px/1.2 var(--font); letter-spacing: 0; text-transform: none; color: var(--text-hi);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentFieldHint { color: var(--faint); font-size: 12.5px; font-style: normal; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField input,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField select,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField textarea {
+  padding: 10px 14px; border-radius: 14px; font: 500 14px/1.45 var(--font); color: var(--text-hi);
+  border: var(--g-rim); background: var(--g-hover); box-shadow: inset 0 1px 2px rgba(20, 24, 34, 0.06);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField input:focus,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField select:focus,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField textarea:focus { outline: none; border-color: rgba(255, 106, 61, 0.55); box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.14); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField input::placeholder,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentField textarea::placeholder { color: var(--faint); }
+
+/* "Start from": the templates as glass pills, the picked one in orange */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentStart { display: grid; gap: 8px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentTemplates { display: flex; flex-wrap: wrap; gap: 8px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentTemplate {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px;
+  font: 600 13px/1 var(--font); color: var(--text-hi); border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentTemplate:hover { background: var(--g-solid); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentTemplate[data-on="1"] { color: #fff; border-color: rgba(255, 190, 160, 0.8); background: var(--g-orange); box-shadow: var(--g-orange-shadow); }
+
+/* Look: colours, a short emoji row, photo */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSwatches { gap: 8px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSwatches button { width: 28px; height: 28px; border-radius: 50%; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 2px 6px -2px rgba(20, 24, 34, 0.35); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSwatches button[data-on="1"] { box-shadow: 0 0 0 2px var(--g-ring, #fff), 0 0 0 4px var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid { display: flex; flex-wrap: wrap; gap: 6px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid button { width: 36px; height: 36px; border-radius: 12px; font-size: 18px; border: 1px solid transparent; background: var(--g-soft); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid button:hover { background: var(--g-solid); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid button[data-on="1"] { border: var(--g-rim); background: var(--g-fill-strong); box-shadow: 0 0 0 2px rgba(255, 106, 61, 0.6); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentEmojiGrid .agentEmojiMore { width: auto; padding: 0 12px; font: 600 12.5px var(--font); color: var(--ember-text); }
+
+/* More options: one quiet fold */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentMore { display: grid; gap: 14px; padding: 12px 14px; border-radius: 18px; border: var(--g-rim); background: var(--g-soft); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentMore > summary { cursor: pointer; list-style: none; color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentMore > summary::-webkit-details-marker { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentMore > summary::before { content: "▸ "; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentMore[open] > summary::before { content: "▾ "; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetFoot { padding-top: 6px; border-top: 1px solid var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetErr { color: #c2410c; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentPhotoEdit { color: #fff; background: var(--g-orange); border: 1px solid rgba(255, 190, 160, 0.8); box-shadow: var(--g-orange-shadow); }
+
+/* ── An agent's empty chat: their card on clear glass ───────────────── */
+/* the old war-band vignette over an empty chat, and the ember floor glow */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .chat::after,
+.ares.ares.ares[data-style="modern"][data-surface="messages"]::after { display: none !important; background: none !important; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHero { padding-top: 6vh; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroGlow { opacity: 0.55; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroFace .agentAvatar { box-shadow: 0 0 0 4px var(--g-ring, #fff), 0 0 0 6px color-mix(in srgb, var(--agent) 55%, transparent), 0 24px 50px -18px color-mix(in srgb, var(--agent) 80%, transparent); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroName { color: var(--text-hi); font: 700 32px/1.1 var(--display); letter-spacing: -0.03em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroChips span {
+  font: 600 12px/1 var(--font); padding: 6px 11px; color: var(--muted);
+  border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroChips span:first-child { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroRole { color: var(--muted); font-size: 15px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroRoleEmpty button { color: var(--ember-text); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroStarters button {
+  padding: 10px 16px; font: 600 13.5px/1 var(--font); color: var(--text-hi);
+  border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroStarters button:hover { background: var(--g-solid); border-color: rgba(255, 106, 61, 0.45); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentHeroStarters button:first-child { color: #fff; border: 1px solid rgba(255, 190, 160, 0.8); background: var(--g-orange); box-shadow: var(--g-orange-shadow); }
+
+/* ── Settings: a glass window, not a black one ─────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .scrim { background: var(--g-scrim); backdrop-filter: blur(6px); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell {
+  color: var(--text);
+  border: var(--g-rim);
+  border-radius: 30px;
+  background: var(--g-window);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow), 0 40px 120px -30px rgba(40, 48, 66, 0.45);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsNav { background: var(--g-soft); border-right: 1px solid var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsBrand { background: transparent; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsBrand strong { color: var(--text-hi); font: 700 26px/1.1 var(--display); letter-spacing: -0.03em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroup { background: var(--g-hover); border: var(--g-rim); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroupLabel { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroup button { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroup button:hover { background: var(--g-hover); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroup button[data-on="1"],
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroup button.on,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .setGroup button[aria-current] { color: #fff; background: var(--g-orange); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsMain,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsPane { color: var(--text); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsPane h2,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsPane h3 { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsFooter { border-top: 1px solid var(--line); background: transparent; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsFooter .primary { color: #fff; border: 1px solid rgba(255, 190, 160, 0.8); border-radius: 999px; background: var(--g-orange); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 18px -10px rgba(255, 106, 61, 0.8); }
+
+/* Settings panes were written in the dark iPhone palette (near-white text,
+   white-on-translucent buttons). Each of those rules, flipped to glass. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.paneTitle, .settingsBrand strong, .engineInfo strong, .laneName strong, .displayModes button strong, .skillOverview > span > strong, .skillOverview > span > b) { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.paneHint, .fieldLabel, .engineInfo span, .paneEmpty, .keyGroupLabel, .laneName em, .laneAssign, .skillOverview > span) { color: var(--muted); }
+/* the safety net: bare bold/italic text that no rule above names */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .settingsPane :is(strong, b):not(:is([data-on="1"], .on, .primary, .agentPrimary, .aresosPrimary, .setTile, .peopleFace, .agentTile) *) { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .settingsPane em:not(:is([data-on="1"], .on, .primary, .agentPrimary) *) { color: var(--muted); }
+
+/* fields */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.settingsSelect, .keyInput, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select, textarea) {
+  color: var(--text-hi); background-color: var(--g-hover); border: var(--g-rim); box-shadow: inset 0 1px 2px rgba(20, 24, 34, 0.07);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(input, textarea)::placeholder { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(input, select, textarea):focus { border-color: rgba(255, 106, 61, 0.55); box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.15); }
+
+/* cards and rows */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.settingsModelCard, .modelNativeReasoning, .routeLane, .surfaceCard, .wsKey, .usageMeter) {
+  color: var(--text); border: var(--g-rim); background: var(--g-hover); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .wsKey code { color: var(--text-hi); background: var(--g-sunk); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneIcon { background: var(--g-hover); color: var(--text-hi); }
+
+/* every secondary button and chip: a glass pill with dark text */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.btn:not(.primary), .ghost, .keySignInBtn, .settingsModelBrowse, .voiceEngineRepair, .provChip, .presetChip, .keyPill) {
+  color: var(--text-hi); border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.btn:not(.primary), .ghost):hover { background: var(--g-solid); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.provChip, .presetChip)[data-on="1"],
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.primary, .aresosPrimary, .agentPrimary) {
+  color: #fff; border: 1px solid rgba(255, 190, 160, 0.8); background: var(--g-orange); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 18px -10px rgba(255, 106, 61, 0.8);
+}
+/* segmented controls (iOS style): a sunken track with a white thumb */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .segment { background: var(--g-sunk); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .segment button { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.segment button[data-on="1"], .segment button.on) { color: var(--text-hi); background: var(--g-solid); box-shadow: 0 1px 3px rgba(20, 24, 34, 0.15); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .displayModes button[data-on="1"] { background: var(--g-solid); border-color: rgba(255, 106, 61, 0.5); }
+/* any other plain button in a pane (range pickers, emoji, small toggles) */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .settingsPane button:not(:is(.primary, .aresosPrimary, .agentPrimary, [data-on="1"], .on, .setTile)) { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.settingsNav, .settingsMain) ::-webkit-scrollbar-thumb,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell ::-webkit-scrollbar-thumb { background: rgba(20, 24, 34, 0.18); }
+/* stragglers from the older shared skins */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.usageCalls, .usageTok) { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageCost { color: var(--ember-text); font-weight: 600; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .settingsPane span:not(:is([data-on="1"], .on, .primary, .agentPrimary, .aresosPrimary, .setTile, .agentTile, .agentAvatar, .peopleFace, .keyPill, .provChip, .presetChip) *):not(:is(.setTile, .agentTile, .agentAvatar, .peopleFace, .dot, .msStatus)) { color: inherit; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .settingsPane .ghost { color: var(--text-hi) !important; }
+/* the sticky title gets a frosted backing so the list scrolls under it, not through it */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsBrand {
+  position: sticky; top: -16px; z-index: 2;
+  margin: -16px -10px 4px; padding: 18px 18px 10px;
+  background: linear-gradient(180deg, var(--g-brand, rgba(247, 248, 250, 0.98)) 70%, transparent);
+}
+
+/* Routing: a lane is its header row with the picker opening BELOW it at full
+   width. Laid out as one row, the picker was squeezed into a 128px strip and
+   model names broke one letter per line. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .routeLane { flex-direction: column; align-items: stretch; padding: 4px; border-radius: 20px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .routeLane + .routeLane { margin-top: 8px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneToggle { width: 100%; padding: 10px 12px; border-radius: 16px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneToggle .laneName { flex: 1; min-width: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneBody { width: 100%; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 6px 12px 12px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneBody .segment.mini { flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 14px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneBody .modelPicker { grid-template-columns: minmax(0, 1fr); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneBody .modelSearchRow { grid-template-columns: minmax(0, 1fr) auto; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneBody .modelFilters { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .laneBody .modelList { max-height: 300px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell :is(.modelPicker, .lanePicked) :is(strong, b, button, span, em, input) { font-family: var(--font); letter-spacing: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .modelFilters button { text-transform: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .lanePicked { border-radius: 12px; }
+
+/* ── Usage: what it cost, then why ──────────────────────────────────── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageHead { display: flex; align-items: center; justify-content: space-between; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageHero { display: grid; gap: 2px; margin: 14px 0 12px; padding: 20px 22px; border-radius: 24px; border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageHero span { font: 600 13px var(--font); color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageHero strong { font: 700 44px/1.05 var(--display); letter-spacing: -0.04em; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageHero em { font: 400 12.5px var(--font); color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageStats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageCard { display: grid; gap: 2px; padding: 12px 14px; border-radius: 18px; border: var(--g-rim); background: var(--g-fill); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageCard strong { font: 700 20px/1.1 var(--display); letter-spacing: -0.02em; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageCard span { font: 500 12.5px var(--font); letter-spacing: 0; text-transform: none; color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageNote { margin: 10px 2px 0; font-size: 12.5px; line-height: 1.45; color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBlock { margin-top: 16px; padding: 14px 16px; border-radius: 22px; border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBlockHead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBlockHead b { font: 700 15px var(--display); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBlockHead em { font: 500 12px var(--font); font-style: normal; color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageChart { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: 0; border: none; border-radius: 0; background: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBar { flex: 1; height: 100%; display: flex; align-items: flex-end; background: var(--g-sunk); border-radius: 6px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBar .barIn { width: 100%; border-radius: 6px; background: linear-gradient(180deg, #ffa16a, #ff6a3d); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageBar:hover .barIn { background: linear-gradient(180deg, #ffb889, #f05a2c); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageAxis { display: flex; justify-content: space-between; margin-top: 6px; font: 500 11.5px var(--font); color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 10px 0; border: none; background: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRow + .usageRow { border-top: 1px solid var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRowText { display: grid; min-width: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRowText strong { font: 600 14px var(--font); color: var(--text-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRowText em { font: 400 12.5px var(--font); font-style: normal; color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRow .usageCost { font: 700 15px var(--display); color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageShare { grid-column: 1 / -1; height: 6px; border-radius: 999px; background: var(--g-sunk); overflow: hidden; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageShare i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ffa16a, #ff6a3d); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .usageRow .usageCost[data-unpriced="1"] { font: 500 12.5px var(--font); color: var(--faint); }
+
+/* ── Settings panes never grow wider than the window ─────────────────
+   The pane is a grid whose one column sized itself to its widest child:
+   Godot's row of tool chips stretched it to ~1,700px and every skill's toggle
+   sat off-screen, so skills could not be switched (owner, 2026-10-23). */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .settingsPane,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillList { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillRow { min-width: 0; gap: 12px; align-items: flex-start; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillInfo { flex: 1; min-width: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillInfo > div,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillInfo > strong { flex-wrap: wrap; row-gap: 6px; height: auto; min-width: 0; }
+/* the description under a skill may run two lines, never under the buttons */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillInfo > span { display: block; overflow-wrap: anywhere; }
+
+/* On/off switches: the track is sized iPhone-style (51×31) but an older rule
+   drew a 17px knob for a smaller track, so it floated top-centre. One knob,
+   sized to the track, left when off and right when on. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .toggle { position: relative; flex: none; width: 51px; height: 31px; border-radius: 999px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .toggle > i { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .toggle::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%;
+  background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  transition: transform 180ms ease;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .toggle[data-on="1"]::after { transform: translateX(20px); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .settingsShell .skillRowActions { flex: none; display: flex; align-items: center; gap: 8px; }
+
+/* ══ Dark glass (Settings → Appearance → Dark, or Auto at night) ═══════════
+   Same glass, smoked: graphite panes over a deep slate ground with the same
+   soft light sweeps, a lit rim that is fainter, and the same orange. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] {
+  --bg: #0d0f14;
+  --bg-raised: #161920;
+  --text: #e6e8ee;
+  --text-hi: #f7f8fa;
+  --muted: #a3a8b3;
+  --faint: #7a808c;
+  --gold: #a3a8b3;
+  --gold-hi: #f7f8fa;
+  --gold-glyph: #c6cad3;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-raised: rgba(255, 255, 255, 0.12);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --ember-text: #ff9a6a;
+
+  --g-fill: linear-gradient(155deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.04) 55%, rgba(255, 255, 255, 0.06) 100%);
+  --g-fill-strong: linear-gradient(155deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.07));
+  --g-blur: blur(24px) saturate(150%);
+  --g-rim: 1px solid rgba(255, 255, 255, 0.12);
+  --g-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.14),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.35),
+    inset 0 0 18px rgba(255, 255, 255, 0.03),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 24px 48px -22px rgba(0, 0, 0, 0.75);
+  --g-solid: rgba(255, 255, 255, 0.16);
+  --g-hover: rgba(255, 255, 255, 0.1);
+  --g-soft: rgba(255, 255, 255, 0.06);
+  --g-sunk: rgba(0, 0, 0, 0.25);
+  --g-window: linear-gradient(155deg, rgba(28, 31, 39, 0.96), rgba(18, 20, 26, 0.94));
+  --g-scrim: rgba(4, 5, 8, 0.55);
+  --g-brand: rgba(26, 29, 36, 0.98);
+  --g-ring: #1b1e25;
+  color-scheme: dark;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"]::before {
+  background:
+    linear-gradient(166deg, transparent 2%, rgba(150, 170, 220, 0.12) 14%, transparent 30%),
+    linear-gradient(166deg, transparent 44%, rgba(150, 170, 220, 0.07) 54%, transparent 64%),
+    linear-gradient(166deg, transparent 66%, rgba(255, 106, 61, 0.05) 78%, transparent 92%),
+    radial-gradient(70% 60% at 12% 0%, rgba(120, 140, 190, 0.22), transparent 60%),
+    linear-gradient(155deg, #171a22 0%, #0f1117 50%, #0a0b0f 100%);
+}
+/* text that was tuned for light glass */
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .prose code { color: #ffb08a; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .agentSheetErr { color: #ff9a6a; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .bubble b,
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .prose strong { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .agentFieldErr { color: #ff9a6a; }
+/* the selected chip/segment "thumb" is white on light glass; a lit smoke here */
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .settingsShell :is(.segment button[data-on="1"], .segment button.on) { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4); }

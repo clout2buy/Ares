@@ -145,6 +145,7 @@ import "./cyber.generated.css";
 import "./cyber.css";
 import "./forge.css";
 import "./messages.css";
+import "./glass.css";
 import { FeedView, NowView } from "./messagesViews";
 import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./forgePixels";
 import { ForgeNativeView, forgeNativeTarget, forgeViewControl } from "./forgeNativeView";
@@ -715,6 +716,16 @@ function App() {
   const native = useMemo(hasNativeBridge, []);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   setTurnTokenWarn(prefs.turnTokenWarn);
+  // Glass mode "auto" follows the system light/dark setting, live.
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!query) return;
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  const glass = prefs.glassMode === "dark" || (prefs.glassMode === "auto" && systemDark) ? "dark" : "light";
   const [daemon, setDaemon] = useState<DaemonState>(native ? "starting" : "running");
   // Out-of-band health probe: the daemon answers a ping even mid-turn, so a
   // missing pong means the daemon itself is wedged, not just a slow chat.
@@ -3730,6 +3741,14 @@ function App() {
       if (!first) { setAgentError(undefined); setAgentEditor({ mode: "create" }); return; }
       agentId = first;
     }
+    // One blank chat per agent: "New chat" on an agent that already has an
+    // untouched card opens that card instead of stacking another "New
+    // session" row (owner, 2026-10-23: "fix it spamming new chats").
+    const blank = sessionsRef.current.find((s) => agentIdOf(s.id) === agentId && !s.background && !roomSeatIds.has(s.id) && s.items.length === 0 && s.title === "New session" && !s.busy);
+    if (blank) {
+      openSession(blank.id);
+      return;
+    }
     const fresh = freshSession();
     if (agentId !== ARES_AGENT_ID) {
       // Bound BEFORE the first send: the daemon builds the session on the
@@ -4365,6 +4384,8 @@ function App() {
     if (roomSeatIds.has(s.id)) return false;
     const owner = agentIdOf(s.id);
     if (owner !== selectedAgentId) return false;
+    // A blank card is not a chat yet: listed only while it is the one open.
+    if (s.items.length === 0 && s.title === "New session" && s.id !== active?.id) return false;
     // An agent's chats are all real conversations, even ones it started for
     // itself (a text from another agent); plain Ares still hides background cards.
     return owner !== ARES_AGENT_ID || !s.background || s.id === active?.id;
@@ -4611,6 +4632,7 @@ function App() {
       data-flame={prefs.flameMode}
       data-style={prefs.uiStyle}
       data-surface={prefs.surface}
+      data-glass={glass}
       data-panel={forge.open ? "1" : "0"}
       data-rail={railCollapsed ? "collapsed" : "open"}
       data-dragging={forgeDragging ? "1" : "0"}
@@ -5231,7 +5253,8 @@ function App() {
         {railCollapsed ? (
           <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
         ) : null}
-        <header className="stageHead" data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "feed"}>
+        {/* No header over the "who do you want to text" picker: it belongs to no one, and showed the raw model id. */}
+        <header className="stageHead" data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || (view === "chat" && !activeAgent && !activeRoom && (active?.items.length ?? 0) === 0)}>
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
@@ -5592,7 +5615,7 @@ function App() {
             the draft text and pending attachments every time the view flipped. */}
         <Composer
           agentName={activeAgent?.name ?? "Ares"}
-            hidden={view === "helm" || view === "now" || view === "feed" || Boolean(activeRoom) || (!activeAgent && !roomSeatIds.has(active?.id ?? ""))}
+            hidden={view === "helm" || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || Boolean(activeRoom) || (!activeAgent && !roomSeatIds.has(active?.id ?? ""))}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
             model={liveModel}
@@ -7572,9 +7595,9 @@ function ArtifactsPage({
     <div className="vault">
       <header className="vaultHero">
         <div>
-          <span className="vaultEyebrow">Cross-session output</span>
-          <h2>Artifact Vault</h2>
-          <p>Everything Ares creates, discovers, and cites, organized in one durable workspace.</p>
+          <span className="vaultEyebrow">From every chat</span>
+          <h2>Made by your agents</h2>
+          <p>Everything your agents build, find and cite, in one place.</p>
         </div>
         <div className="vaultMetric" aria-label={`${total} artifacts`}>
           <strong>{total}</strong>
@@ -7583,7 +7606,7 @@ function ArtifactsPage({
       </header>
 
       <div className="vaultHead">
-        <input value={query} placeholder="Search artifacts…" spellCheck={false} onChange={(e) => setQuery(e.target.value)} />
+        <input value={query} placeholder="Search what they made…" spellCheck={false} onChange={(e) => setQuery(e.target.value)} />
         <nav aria-label="Artifact filters">
           {(
             [
@@ -7604,9 +7627,9 @@ function ArtifactsPage({
         {total === 0 ? (
           <div className="vaultEmpty">
             <div className="emptyEmblem" aria-hidden="true" />
-            <strong>The vault is ready.</strong>
-            <p>Images Ares finds, previewable files it writes, and links it cites will appear here automatically.</p>
-            <button className="primary tiny" onClick={onReturn}>Return to session</button>
+            <strong>Nothing made yet.</strong>
+            <p>Images your agents find, files they write and links they cite show up here on their own.</p>
+            <button className="primary tiny" onClick={onReturn}>Back to chats</button>
           </div>
         ) : visibleTotal === 0 ? (
           <div className="vaultEmpty compact">
@@ -11460,7 +11483,8 @@ const SETTINGS_GROUPS: Array<{ label: string; tabs: SettingsTab[] }> = [
   { label: "Agents & models", tabs: ["model", "routing", "workspaces", "scheduled", "permissions", "keys"] },
   { label: "Look & sound", tabs: ["appearance", "voice"] },
   { label: "Abilities", tabs: ["skills", "plugins", "mind"] },
-  { label: "Ares", tabs: ["usage", "consciousness", "advanced", "updates", "about"] },
+  // Consciousness is off the list (owner, 2026-10-23: "remove consciousness").
+  { label: "Ares", tabs: ["usage", "advanced", "updates", "about"] },
 ];
 const SETTINGS_TILES: Record<SettingsTab, { icon: string; bg: string }> = {
   account: { icon: "@", bg: "#0a84ff" },
@@ -12245,6 +12269,22 @@ function Settings({
           {tab === "appearance" ? (
             <div className="settingsPane">
               <h3 className="paneTitle">Appearance</h3>
+              <label className="fieldLabel">Mode</label>
+              <div className="segment glassModes">
+                {([["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    data-on={(draft.glassMode ?? "light") === id ? "1" : "0"}
+                    onClick={() => {
+                      setDraftPrefs({ ...draft, glassMode: id });
+                      onLivePref({ glassMode: id });
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="paneHint">Auto follows your computer: light by day, dark at night if Windows is set that way.</p>
               <div className="livingLaunchCard">
                 <div className="livingLaunchSignal"><i /><i /><i /></div>
                 <div className="livingLaunchCopy">
@@ -13524,56 +13564,59 @@ function UsagePane({ usage, onDaemonCommand, native }: { usage: UsageStats | nul
         <div className="paneEmpty">{native ? "Loading usage…" : "Usage history needs the daemon."}</div>
       ) : (
         <>
-          <div className="usageStats">
-            <div className="usageCard"><span>Sessions</span><strong>{usage.sessions}</strong></div>
-            <div className="usageCard"><span>API calls</span><strong>{usage.apiCalls}</strong></div>
-            <div className="usageCard" title="Input the models had not seen before. This is what you pay full price for."><span>New input</span><strong>{fmtTokens(Math.max(0, usage.tokensIn - usage.cacheReadTokens))}</strong></div>
-            <div className="usageCard" title="What the models wrote."><span>Written</span><strong>{fmtTokens(usage.tokensOut)}</strong></div>
-            <div className="usageCard" title="Every call re-reads the conversation. Cached re-reads are served at a fraction of the price, so this big number is not a cost."><span>Re-read from cache</span><strong>{fmtTokens(usage.cacheReadTokens)}</strong></div>
-            <div className="usageCard"><span>Est. spend</span><strong>{fmtSpend(usage)}</strong></div>
+          {/* One question first: what did it cost. Everything else supports it
+              (owner, 2026-10-23: "usage looks trash"). */}
+          <div className="usageHero">
+            <span>Spent in the last {range} days</span>
+            <strong>{fmtSpend(usage)}</strong>
+            <em>an estimate from each provider's list prices</em>
           </div>
-          {(usage.providers ?? []).length > 0 ? (
-            <>
-              <label className="fieldLabel">By provider</label>
-              <div className="usageTable">
-                {(usage.providers ?? []).map((p) => (
-                  <div key={p.provider} className="usageRow">
-                    <span className="usageModel">{p.provider}</span>
-                    <span className="usageCalls">{p.calls} calls</span>
-                    <span className="usageTok" title={`${fmtTokens(p.cacheReadTokens)} more re-read from cache`}>↑{fmtTokens(Math.max(0, p.tokensIn - p.cacheReadTokens))} new ↓{fmtTokens(p.tokensOut)}</span>
-                    <span className="usageCost">{p.costUsd !== undefined ? `≈$${p.costUsd.toFixed(2)}` : "—"}</span>
-                  </div>
-                ))}
-              </div>
-            </>
+          <div className="usageStats">
+            <div className="usageCard"><strong>{usage.sessions.toLocaleString()}</strong><span>chats</span></div>
+            <div className="usageCard"><strong>{usage.apiCalls.toLocaleString()}</strong><span>model calls</span></div>
+            <div className="usageCard" title="Input the models had not seen before. This is what you pay full price for."><strong>{fmtTokens(Math.max(0, usage.tokensIn - usage.cacheReadTokens))}</strong><span>tokens read</span></div>
+            <div className="usageCard" title="What the models wrote."><strong>{fmtTokens(usage.tokensOut)}</strong><span>tokens written</span></div>
+          </div>
+          {usage.cacheReadTokens > 0 ? (
+            <p className="usageNote">Plus {fmtTokens(usage.cacheReadTokens)} re-read from cache. Every call re-reads the conversation; cached re-reads cost a fraction, so they barely move the total.</p>
           ) : null}
           {usage.daily.length > 0 ? (
-            <>
-              <label className="fieldLabel">Daily tokens</label>
+            <div className="usageBlock">
+              <div className="usageBlockHead"><b>Tokens per day</b><em>busiest: {fmtTokens(maxDay)}</em></div>
               <div className="usageChart">
                 {usage.daily.map((d) => (
-                  <div key={d.date} className="usageBar" title={`${d.date}: ↑${fmtTokens(d.in)} ↓${fmtTokens(d.out)}`}>
-                    <span className="barIn" style={{ height: `${((d.in + d.out) / maxDay) * 100}%` }} />
+                  <div key={d.date} className="usageBar" title={`${d.date}: ${fmtTokens(d.in)} read · ${fmtTokens(d.out)} written`}>
+                    <span className="barIn" style={{ height: `${Math.max(2, ((d.in + d.out) / maxDay) * 100)}%` }} />
                   </div>
                 ))}
               </div>
-            </>
+              <div className="usageAxis"><span>{usage.daily[0]!.date.slice(5)}</span><span>{usage.daily.at(-1)!.date.slice(5)}</span></div>
+            </div>
           ) : null}
-          {usage.models.length > 0 ? (
-            <>
-              <label className="fieldLabel">Top models</label>
-              <div className="usageTable">
-                {usage.models.slice(0, 8).map((m) => (
-                  <div key={`${m.provider ?? ""}/${m.model}`} className="usageRow">
-                    <span className="usageModel">{m.model}{m.provider ? <em className="usageProv"> {m.provider}</em> : null}</span>
-                    <span className="usageCalls">{m.calls} calls</span>
-                    <span className="usageTok" title={`${fmtTokens(m.cacheReadTokens)} more re-read from cache`}>↑{fmtTokens(Math.max(0, m.tokensIn - m.cacheReadTokens))} new ↓{fmtTokens(m.tokensOut)}</span>
-                    <span className="usageCost">{m.costUsd !== undefined ? `≈$${m.costUsd.toFixed(2)}` : "—"}</span>
+          {(() => {
+            const share = (cost: number | undefined, tokens: number, all: Array<{ cost?: number; tokens: number }>) => {
+              const costs = all.map((x) => x.cost ?? 0);
+              const totalCost = costs.reduce((a, b) => a + b, 0);
+              if (totalCost > 0) return ((cost ?? 0) / totalCost) * 100;
+              const totalTok = all.reduce((a, x) => a + x.tokens, 0) || 1;
+              return (tokens / totalTok) * 100;
+            };
+            const providers = (usage.providers ?? []).map((p) => ({ key: p.provider, name: p.provider, sub: `${p.calls.toLocaleString()} calls`, cost: p.costUsd, tokens: Math.max(0, p.tokensIn - p.cacheReadTokens) + p.tokensOut }));
+            const models = usage.models.slice(0, 8).map((m) => ({ key: `${m.provider ?? ""}/${m.model}`, name: m.model, sub: `${m.provider ? `${m.provider} · ` : ""}${m.calls.toLocaleString()} calls`, cost: m.costUsd, tokens: Math.max(0, m.tokensIn - m.cacheReadTokens) + m.tokensOut }));
+            const block = (title: string, rows: typeof providers) => rows.length === 0 ? null : (
+              <div className="usageBlock">
+                <div className="usageBlockHead"><b>{title}</b></div>
+                {rows.map((r) => (
+                  <div key={r.key} className="usageRow">
+                    <div className="usageRowText"><strong>{r.name}</strong><em>{r.sub} · {fmtTokens(r.tokens)} tokens</em></div>
+                    <span className="usageCost" data-unpriced={r.cost === undefined ? "1" : "0"} title={r.cost === undefined ? "No list price for this one (a subscription, a local model, or a price Ares doesn't know), so it isn't in the total." : undefined}>{r.cost !== undefined ? `$${r.cost.toFixed(2)}` : "no price"}</span>
+                    <div className="usageShare"><i style={{ width: `${Math.max(1.5, share(r.cost, r.tokens, rows))}%` }} /></div>
                   </div>
                 ))}
               </div>
-            </>
-          ) : null}
+            );
+            return <>{block("By provider", providers)}{block("Top models", models)}</>;
+          })()}
         </>
       )}
     </div>

@@ -583,6 +583,10 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
     case "tool_end":
     case "tool_error": {
       if (e.type === "tool_end") {
+        const ideas = (e.output as { avatarIdeas?: unknown; agentId?: unknown } | undefined);
+        if (ideas && Array.isArray(ideas.avatarIdeas) && ideas.avatarIdeas.length) {
+          items.push({ kind: "avatarIdeas", key: nextKey(), agentId: String(ideas.agentId ?? "ares"), options: ideas.avatarIdeas as Array<{ n: number; idea: string; path: string }> });
+        }
         for (const f of e.touchedFiles ?? []) {
           if ((PREVIEWABLE.test(f) || HOLO_SPEC_FILE.test(f)) && !items.some((it) => it.kind === "artifact" && it.path === f)) {
             items.push({ kind: "artifact", key: nextKey(), path: f, label: f.split(/[\\/]/).pop() ?? f });

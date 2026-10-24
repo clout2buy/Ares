@@ -264,7 +264,7 @@ export { SpotifyTool, type SpotifyOutput } from "./Spotify.js";
 export { TrackTool, type TrackOutput } from "./Track.js";
 export { TrackingStore, trackingPath, overdueTrackingBlock, normalizeDueAt, TRACKING_KINDS, TRACKING_CLOSED_WINDOW_MS, type TrackingItem, type TrackingKind, type TrackingStatus } from "./tracking.js";
 export { PlacesTool, makeThrottle, clearPlacesCache, nominatimSearchUrl, nominatimReverseUrl, overpassQuery, googleTextSearchBody, mapsLink, geocode, reverseGeocode, searchPlaces, PLACES_USER_AGENT, type Place, type PlacesOutput } from "./Places.js";
-export { ImagineTool, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, normalizeImageProvider, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
+export { ImagineTool, openaiImage, geminiImage, openrouterImage, setImagineSpeech, findImageData, parsePodcastScript, stripId3, chunkText, veoSeconds, mediaSlug, normalizeImageProvider, type ImagineOutput, type ImagineSpeech } from "./Imagine.js";
 // Universal connectors: any OpenAPI service, MQTT, inbound webhooks.
 export { ApiTool, type ApiOutput } from "./OpenApi.js";
 export { MqttTool, previewPayload, publishNeedsOwnerDecision, type MqttOutput } from "./Mqtt.js";

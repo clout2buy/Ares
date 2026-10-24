@@ -158,7 +158,7 @@ import { WorkspacesPane, type WorkspaceVm } from "./workspacesPane";
 import { IPhonePane, ProfilePane, ProfileSheet, ScheduledList, ScheduledPane, SharingPanel, type JobVm, type SharingVm } from "./aresMore";
 import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
 import { RoomCreateSheet, RoomInviteSheet, RoomJoinSheet, RoomList, RoomView, type RoomMessageVm, type RoomRowVm, type RoomVm, type RoomsMeVm } from "./rooms";
-import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentPhotoContext, AvatarStyleContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
+import { type AgentMemoryVm, ARES_AGENT_ID, AgentChatContext, AgentComposerMeta, AgentPhotoContext, AgentPosesContext, AgentClipsContext, AvatarStyleContext, AgentAvatar, AgentDock, AgentEditor, AgentHero, AgentList, agentFaceByName, blankDraft, draftOf, parseAgentText, rememberAgentFaces, type AgentDraft, type AgentRowVm, type AgentVm } from "./agents";
 
 // The app version, injected by Vite's `define`. Guarded with typeof so that even
 // if the build ever fails to substitute the token (which white-screened the app
@@ -712,6 +712,34 @@ function BubbleImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
+/** An agent's proposed new faces: tap one and it goes live (the App's
+ *  "ares:avatar-pick" listener sets it and tells the agent). */
+function AvatarIdeasCard({ item }: { item: Extract<Item, { kind: "avatarIdeas" }> }) {
+  const [picked, setPicked] = useState<number | null>(null);
+  return (
+    <div className="turn avatarIdeasTurn">
+      <div className="avatarIdeas" data-picked={picked ? "1" : "0"}>
+        {item.options.map((o) => (
+          <button
+            key={o.n}
+            className="avatarIdea"
+            data-on={picked === o.n ? "1" : "0"}
+            disabled={picked !== null}
+            title={o.idea}
+            onClick={() => {
+              setPicked(o.n);
+              window.dispatchEvent(new CustomEvent("ares:avatar-pick", { detail: { agentId: item.agentId, path: o.path, n: o.n } }));
+            }}
+          >
+            <img src={convertFileSrc(o.path)} alt={o.idea} loading="lazy" draggable={false} />
+          </button>
+        ))}
+      </div>
+      <p className="avatarIdeasHint">{picked ? `Option ${picked} is your new look` : "Tap the one you like"}</p>
+    </div>
+  );
+}
+
 function App() {
   const native = useMemo(hasNativeBridge, []);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
@@ -760,6 +788,8 @@ function App() {
   const [agentUnread, setAgentUnread] = useState<string[]>([]);
   /** Profile pictures by agent id (data: URLs), fetched when a version changes. */
   const [agentPhotos, setAgentPhotos] = useState<Record<string, string>>({});
+  const [agentPoses, setAgentPoses] = useState<Record<string, Record<string, string>>>({});
+  const [agentClips, setAgentClips] = useState<Record<string, Record<string, string>>>({});
   const agentPhotoVersions = useRef<Record<string, string>>({});
   // ─── Rooms: group chats of people + agents (rooms.tsx, daemon/rooms.ts) ──
   const [rooms, setRooms] = useState<RoomVm[]>([]);
@@ -2617,12 +2647,44 @@ function App() {
           if (id) daemonCmd({ type: "agent_memory", agentId: id });
           return true;
         }
+        case "agent_avatar_clips": {
+          // the living clips landed: real motion replaces the frame loops
+          const id = String(e.agentId ?? "");
+          const clips = (e as { clips?: unknown }).clips;
+          const version = (e as { version?: unknown }).version;
+          if (id && clips && typeof clips === "object" && (!version || agentPhotoVersions.current[id] === String(version))) setAgentClips((p) => ({ ...p, [id]: clips as Record<string, string> }));
+          return true;
+        }
+        case "agent_avatar_poses": {
+          // a new picture's pose frames finished rendering: it comes alive
+          const id = String(e.agentId ?? "");
+          const poses = (e as { poses?: unknown }).poses;
+          const version = (e as { version?: unknown }).version;
+          if (id && poses && typeof poses === "object" && (!version || agentPhotoVersions.current[id] === String(version))) setAgentPoses((p) => ({ ...p, [id]: poses as Record<string, string> }));
+          return true;
+        }
         case "agent_avatar": {
           const id = String(e.agentId ?? "");
           const image = typeof (e as { image?: unknown }).image === "string" ? String((e as { image?: unknown }).image) : "";
           if (!id) return true;
           const version = (e as { version?: unknown }).version;
           if (version) agentPhotoVersions.current[id] = String(version);
+          const clips = (e as { clips?: unknown }).clips;
+          setAgentClips((p) => {
+            if (image && clips && typeof clips === "object") return { ...p, [id]: clips as Record<string, string> };
+            if (!(id in p)) return p;
+            const n = { ...p };
+            delete n[id];
+            return n;
+          });
+          const poses = (e as { poses?: unknown }).poses;
+          setAgentPoses((p) => {
+            if (image && poses && typeof poses === "object") return { ...p, [id]: poses as Record<string, string> };
+            if (!(id in p)) return p;
+            const n = { ...p };
+            delete n[id];
+            return n;
+          });
           setAgentPhotos((p) => {
             if (image) return p[id] === image ? p : { ...p, [id]: image };
             if (!(id in p)) return p;
@@ -3565,6 +3627,31 @@ function App() {
   // Conversation mode auto-sends the recognized transcript through the same path.
   sendRef.current = send;
 
+  // An avatar option was tapped: picking is the approval. Set it, then tell
+  // the agent so it can answer in character.
+  useEffect(() => {
+    const onPick = (ev: Event) => {
+      const { agentId, path, n } = (ev as CustomEvent<{ agentId: string; path: string; n: number }>).detail;
+      void (async () => {
+        try {
+          const blob = await (await fetch(convertFileSrc(path))).blob();
+          const image = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          await daemonCmd({ type: "agent_avatar_set", agentId, image });
+          sendRef.current?.(`I picked option ${n} — it's your face now.`);
+        } catch (err) {
+          console.warn("[ares] avatar pick failed", err);
+        }
+      })();
+    };
+    window.addEventListener("ares:avatar-pick", onPick);
+    return () => window.removeEventListener("ares:avatar-pick", onPick);
+  }, []);
+
   /** Steer: queue a message mid-turn; the daemon folds it in at a safe boundary. */
   const steer = useCallback((text: string, images?: string[]) => {
     const trimmed = text.trim();
@@ -4147,22 +4234,44 @@ function App() {
 
   const onForgeGrip = (down: React.PointerEvent) => {
     down.preventDefault();
+    // Capture the pointer: without it, crossing the page preview (an iframe)
+    // handed it the moves and the drag froze or dropped (owner, 2026-10-24).
+    const grip = down.currentTarget as HTMLElement;
+    try { grip.setPointerCapture(down.pointerId); } catch { /* old engine: window listeners still run */ }
     setForgeDragging(true);
     const startX = down.clientX;
     const startW = forgeWidth;
+    // While dragging, write the width straight onto the root once per frame
+    // and keep React out of it: a state update per pointer move re-rendered
+    // the whole app and dropped frames (owner, 2026-10-24). The final width
+    // is committed to state on release.
+    const root = grip.closest(".ares") as HTMLElement | null;
+    let width = startW;
+    let frame = 0;
     const move = (e: PointerEvent) => {
       // Cap by what actually fits (never past the chat's min width) instead of a
       // flat 62% of the window, so dragging wide can't occlude the chat.
-      const w = Math.min(Math.max(startW + (startX - e.clientX), 340), maxForgeFor(window.innerWidth));
-      setForgeWidth(w);
+      width = Math.min(Math.max(startW + (startX - e.clientX), 340), maxForgeFor(window.innerWidth));
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0;
+        root?.style.setProperty("--forge-w", `${width}px`);
+      });
     };
     const up = () => {
+      if (frame) cancelAnimationFrame(frame);
+      root?.style.setProperty("--forge-w", `${width}px`);
+      setForgeWidth(width);
       setForgeDragging(false);
+      try { grip.releasePointerCapture(down.pointerId); } catch { /* already released */ }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      grip.removeEventListener("lostpointercapture", up);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    grip.addEventListener("lostpointercapture", up);
   };
 
   // ── command palette (Ctrl+K) ──────────────────────────────────────────────
@@ -4623,6 +4732,8 @@ function App() {
   return (
     <StyleCtx.Provider value={prefs.uiStyle}>
     <AgentPhotoContext.Provider value={agentPhotos}>
+    <AgentPosesContext.Provider value={agentPoses}>
+    <AgentClipsContext.Provider value={agentClips}>
     <AvatarStyleContext.Provider value={prefs.surface === "messages" ? "tile" : "face"}>
     <div
       className="ares"
@@ -5254,7 +5365,7 @@ function App() {
           <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
         ) : null}
         {/* No header over the "who do you want to text" picker: it belongs to no one, and showed the raw model id. */}
-        <header className="stageHead" data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || (view === "chat" && !activeAgent && !activeRoom && (active?.items.length ?? 0) === 0)}>
+        <header className="stageHead" data-busy={active?.busy ? "1" : "0"} data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || (view === "chat" && !activeAgent && !activeRoom && (active?.items.length ?? 0) === 0)}>
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
@@ -5263,7 +5374,7 @@ function App() {
           <div className="stageHeadAgent">
           {activeAgent ? (
             <button className="stageAgent" onClick={() => { setAgentError(undefined); setAgentEditor({ mode: "edit", id: activeAgent.id }); }} title={`${activeAgent.name}'s profile`}>
-              <AgentAvatar agent={activeAgent} size={34} busy={active?.busy} />
+              <AgentAvatar agent={activeAgent} size={34} busy={active?.busy} activity={active?.activity} />
             </button>
           ) : null}
           <div>
@@ -5643,6 +5754,14 @@ function App() {
             onModelChip={() => setModelPopOpen(true)}
             onRoutingChip={() => setRoutingOpen(true)}
             slashActions={slashActions}
+            footer={activeAgent ? (
+              <AgentComposerMeta
+                agent={activeAgent}
+                providers={PROVIDERS.filter((p) => p !== "mock" && p !== "moa")}
+                requestCatalog={requestAgentCatalog}
+                onChange={(patch) => daemonCmd({ type: "agent_update", agentId: activeAgent.id, agent: patch })}
+              />
+            ) : null}
         />
 
         <footer className="statusBar">
@@ -6662,6 +6781,8 @@ function App() {
       ) : null}
     </div>
     </AvatarStyleContext.Provider>
+    </AgentClipsContext.Provider>
+    </AgentPosesContext.Provider>
     </AgentPhotoContext.Provider>
     </StyleCtx.Provider>
   );
@@ -9232,6 +9353,7 @@ const Composer = React.memo(function Composer({
   onModelChip,
   onRoutingChip,
   slashActions,
+  footer,
 }: {
   /** display:none instead of unmount — preserves the draft across view flips. */
   hidden?: boolean;
@@ -9256,6 +9378,8 @@ const Composer = React.memo(function Composer({
   onModelChip: () => void;
   onRoutingChip: () => void;
   slashActions: SlashAction[];
+  /** Under the input bar: the agent's model and effort. */
+  footer?: React.ReactNode;
 }) {
   const [text, setText] = useState("");
   // "/" command menu: visible while the draft is a bare slash prefix.
@@ -9723,6 +9847,7 @@ const Composer = React.memo(function Composer({
           </button>
         )}
       </div>
+      {footer}
       {/* new-style only: a slim pulse line whose amplitude rides tokens/sec.
           Renders null in legacy mode / at rest / under reduced motion. */}
       <TokenFlowStrip busy={busy} />
@@ -10058,7 +10183,7 @@ const ItemView = React.memo(function ItemView({
           <strong>{item.label}</strong>
           <em>{holo ? "hologram spec — open on the holotable" : "artifact forged — open in the panel"}</em>
         </span>
-        <span className="artifactGo">{holo ? "Open" : "Preview"}</span>
+        <span className="artifactGo">Open</span>
       </button>
     );
   }
@@ -10312,6 +10437,7 @@ const ItemView = React.memo(function ItemView({
       </div>
     );
   }
+  if (item.kind === "avatarIdeas") return <AvatarIdeasCard item={item} />;
   return (
     <div className="notice" data-tone={item.tone}>
       {item.text}
@@ -10398,12 +10524,14 @@ function BackgroundPanel({
   return (
     <div className="bgPanel" data-open={open ? "1" : "0"}>
       <button className="bgHead" onClick={() => setOpen(!open)}>
-        <span className="bgTitle">BACKGROUND</span>
+        <i className="bgDot" data-running={running.length ? "1" : "0"} aria-hidden="true" />
+        <span className="bgTitle">Background</span>
         <span className="bgCount">
           {running.length ? `${running.length} running` : ""}
           {running.length && resumable.length ? " · " : ""}
-          {resumable.length ? `${resumable.length} suspended` : ""}
+          {resumable.length ? `${resumable.length} paused` : ""}
         </span>
+        <span className="bgChevron" aria-hidden="true">{open ? "▴" : "▾"}</span>
       </button>
       {open ? (
         <ul>
@@ -10411,7 +10539,7 @@ function BackgroundPanel({
             <li key={job.id} data-status={job.status} data-suspended={job.suspended ? "1" : "0"}>
               <span className="bgDesc" title={job.command}>{job.description || job.command}</span>
               <span className="bgState">
-                {job.suspended ? job.stoppedReason || "suspended" : "running"}
+                {job.suspended ? (/previous ares/i.test(job.stoppedReason ?? "") ? "from last session" : job.stoppedReason || "paused") : "running"}
               </span>
               {job.status === "running" ? (
                 <button className="bgAct" onClick={() => onStop(job.id)}>Stop</button>
@@ -10835,37 +10963,31 @@ function Backdrop({ pointMap }: { pointMap: PointMapSpec | null }) {
 }
 
 const BOOT_LOG = [
-  "MOUNTING THE GARRISON",
-  "BINDING TOOL ARSENAL",
-  "RAISING THE FORGE",
-  "OPENING THE GATES",
+  "Waking your agents",
+  "Loading tools",
+  "Opening the Forge",
+  "Ready",
 ];
 
+/** The launch splash (owner, 2026-10-24): light glass with the flame logo.
+ *  It eases in and fades out; the old one ended in a bright bloom, which
+ *  broke the photosensitive doctrine (nothing flashes). */
 function Boot() {
   const [logIdx, setLogIdx] = useState(0);
   const [exiting, setExiting] = useState(false);
   useEffect(() => {
     const t = window.setInterval(() => setLogIdx((i) => Math.min(i + 1, BOOT_LOG.length - 1)), 320);
-    // Forge-bloom exit just before the parent unmounts — the splash blooms hot
-    // and dissolves into the live shell instead of vanishing instantly.
+    // fade out just before the parent unmounts, into the live shell
     const ex = window.setTimeout(() => setExiting(true), 1820);
     return () => { window.clearInterval(t); window.clearTimeout(ex); };
   }, []);
   return (
-    <div className="boot" data-exit={exiting ? "1" : "0"}>
-      <div className="bootHero" aria-hidden="true" />
-      <div className="bootVignette" aria-hidden="true" />
-      <div className="bootEmbers" aria-hidden="true" />
+    <div className="boot bootGlass" data-exit={exiting ? "1" : "0"}>
       <div className="bootCore">
-        <div className="bootEmblem" aria-hidden="true">
-          <span className="bootRing bootRing1" />
-          <span className="bootRing bootRing2" />
-          <span className="bootSigil" />
-        </div>
-        <div className="bootWord">ARES</div>
-        <div className="bootSub">THE BATTLE-TESTED AGENT</div>
+        <img className="bootLogo" src="/ares-logo.png" alt="" draggable={false} />
+        <div className="bootWord">Ares</div>
         <div className="bootBar"><i style={{ width: `${((logIdx + 1) / BOOT_LOG.length) * 100}%` }} /></div>
-        <div className="bootStatus" key={logIdx}>{BOOT_LOG[logIdx]}</div>
+        <div className="bootStatus">{BOOT_LOG[logIdx]}</div>
       </div>
     </div>
   );

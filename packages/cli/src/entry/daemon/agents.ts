@@ -21,6 +21,7 @@
 // carries on. A pair is capped per window so two agents can never ping-pong
 // forever on the owner's tokens.
 
+import { readClips, readPoses, renderClips, renderPoses } from "../avatarPoses.js";
 import { randomUUID } from "node:crypto";
 import {
   DESKTOP_THREADS_MAX,
@@ -186,11 +187,13 @@ export class DesktopAgents {
 
   /** An agent's picture as a data: URL (null when it has none). "ares" is the
    *  default agent's own picture. */
-  async avatarData(id: string): Promise<{ version: string; image: string } | null> {
+  async avatarData(id: string): Promise<{ version: string; image: string; poses?: Record<string, string>; clips?: Record<string, string> } | null> {
     if (id !== "ares" && !this.store.get(id)) return null;
     const hit = await this.avatars.read(id);
     if (!hit) return null;
-    return { version: hit.meta.version, image: `data:${hit.meta.contentType};base64,${hit.bytes.toString("base64")}` };
+    const poses = await readPoses(id, hit.meta.version).catch(() => null);
+    const clips = await readClips(id, hit.meta.version).catch(() => null);
+    return { version: hit.meta.version, image: `data:${hit.meta.contentType};base64,${hit.bytes.toString("base64")}`, ...(poses ? { poses } : {}), ...(clips ? { clips } : {}) };
   }
 
   /** Set (bytes) or clear (null) a picture. JPEG/PNG/WebP only, sniffed from
@@ -211,7 +214,22 @@ export class DesktopAgents {
       }
     }
     this.emitChanged();
-    return this.avatars.version(id);
+    const version = this.avatars.version(id);
+    if (image !== null && version) {
+      // the still is live now; its pose frames (blink, look, think, work,
+      // create) render in the background and arrive as their own event
+      const bytes = typeof image === "string" ? Buffer.from(image.replace(/^data:[^,]*;base64,/, ""), "base64") : image;
+      // then its living clips (real motion per state), which need the frames
+      void renderPoses(id, version, bytes)
+        .then(async (poses) => {
+          if (!poses || this.avatars.version(id) !== version) return;
+          this.deps.emit({ type: "agent_avatar_poses", agentId: id, version, poses });
+          const clips = await renderClips(id, version, bytes);
+          if (clips && this.avatars.version(id) === version) this.deps.emit({ type: "agent_avatar_clips", agentId: id, version, clips });
+        })
+        .catch((error) => this.deps.emit({ type: "agent_avatar_poses_failed", agentId: id, error: String((error as Error)?.message ?? error).slice(0, 300) }));
+    }
+    return version;
   }
 
   get(id: string): Persona | undefined {

@@ -40,6 +40,21 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.65.0",
+    date: "October 2026",
+    title: "Living avatars",
+    tagline: "Agents come alive: a 3D flame buddy by default, faces they design themselves, and real motion while they think, work and create. Plus the glass Forge.",
+    highlights: [
+      { icon: "🔥", title: "Meet the flame guy", blurb: "Every agent without a photo is a little 3D ember in its own colour. He breathes, blinks and looks around, and types, thinks or tinkers while the agent works.", tag: "New" },
+      { icon: "🎨", title: "Agents design their own face", blurb: "Ask an agent to change its avatar. It renders four options right in the chat; tap the one you like and it goes live everywhere, iPhone included.", tag: "New" },
+      { icon: "🎬", title: "Avatars that move", blurb: "A new face gets its own poses and short looping clips in the background, so it blinks, glances, and acts out what it's doing. Smooth fades, nothing flashes.", tag: "New" },
+      { icon: "🔥", title: "A new look", blurb: "A new flame logo for the app icon and the strip, and a calm light-glass launch screen.", tag: "New" },
+      { icon: "🪟", title: "Glass everywhere", blurb: "The Forge is a glass browser, the chat header is a big floating face, and the model, provider and effort pickers sit under the message box.", tag: "Polished" },
+      { icon: "🎚️", title: "Your accent, everywhere", blurb: "The accent you pick in Settings now colours the whole glass look, not just a few spots.", tag: "Fixed" },
+      { icon: "↔️", title: "Smooth Forge resizing", blurb: "Dragging the Forge's edge works with the sidebar collapsed, never drops mid-drag over a page, and no longer stutters.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.64.0",
     date: "October 2026",
     title: "Challenge me",

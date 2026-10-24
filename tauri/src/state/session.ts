@@ -166,6 +166,8 @@ export type Item =
   /** A Connect card: a service Ares needs (auth expired) or suggests. */
   | { kind: "connect"; key: string; id: string; name: string; url: string; auth: string; reason: string; why: "expired" | "suggest"; state?: "idle" | "connecting" | "connected" | "failed"; error?: string }
   | { kind: "artifact"; key: string; path: string; label: string }
+  /** An agent's proposed new faces (Agents avatar_ideas): the owner taps one to make it live. */
+  | { kind: "avatarIdeas"; key: string; agentId: string; options: Array<{ n: number; idea: string; path: string }> }
   | { kind: "diff"; key: string; files: string[]; diff: string; truncated: boolean }
   | { kind: "subagent"; key: string; id: string; name: string; description: string; status: "running" | "completed" | "failed" | "cancelled"; summary?: string };
 

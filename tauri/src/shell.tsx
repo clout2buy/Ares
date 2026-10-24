@@ -21,7 +21,7 @@ const PATHS: Record<IconName, ReactNode> = {
   grid: <><rect x="4" y="4" width="7" height="7" rx="2" /><rect x="13" y="4" width="7" height="7" rx="2" /><rect x="4" y="13" width="7" height="7" rx="2" /><rect x="13" y="13" width="7" height="7" rx="2" /></>,
   devices: <><rect x="3" y="4.5" width="18" height="12" rx="2.2" /><path d="M9 20h6M12 16.5V20" /></>,
   search: <><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></>,
-  forge: <><path d="M12 3.5 19.5 7.7v8.6L12 20.5l-7.5-4.2V7.7L12 3.5Z" /><path d="m4.8 7.9 7.2 4.1 7.2-4.1M12 12v8.3" /></>,
+  forge: <><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5M12 3.5C9.6 5.8 8.4 8.6 8.4 12s1.2 6.2 3.6 8.5" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6" /></>,
   minimize: <path d="M6 12h12" />,
   maximize: <rect x="6.5" y="6.5" width="11" height="11" rx="2" />,
@@ -86,10 +86,10 @@ export function MsgTitlebar({
       <div className="msDrag" />
       <div className="msTools" onMouseDown={stop}>
         <button className="msTool" onClick={onSearch} title="Search and commands (Ctrl+K)" aria-label="Search"><Icon name="search" size={19} /></button>
-        <button className="msTool" data-on={forgeOpen ? "1" : "0"} onClick={onForge} title={forgeOpen ? "Close the Forge" : "Open the Forge"} aria-label="Forge"><Icon name="forge" size={19} filled={forgeOpen} /></button>
         <button className="msTool" onClick={onExport} disabled={!onExport} title="Download this chat (chat + tool calls + errors) as a text file" aria-label="Download chat"><Icon name="download" size={19} /></button>
         <button className="msTool" onClick={onSettings} title="Settings" aria-label="Settings"><Icon name="settings" size={19} /></button>
       </div>
+      <button className="msForge" data-on={forgeOpen ? "1" : "0"} onMouseDown={stop} onClick={onForge} title={forgeOpen ? "Close the Forge" : "Open the Forge"} aria-label="Forge"><Icon name="forge" size={16} /></button>
       {native ? (
         <div className="msWin" onMouseDown={stop}>
           <button onClick={onMinimize} title="Minimize" aria-label="Minimize"><Icon name="minimize" size={16} /></button>

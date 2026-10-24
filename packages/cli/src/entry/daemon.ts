@@ -2930,13 +2930,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           } else if (kind === "agent_avatar") {
             const id = cleanCommandId(command.agentId) ?? "ares";
             const hit = await desktopAgents.avatarData(id);
-            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null, poses: hit?.poses ?? null, clips: hit?.clips ?? null }) + "\n");
           } else if (kind === "agent_avatar_set") {
             const id = cleanCommandId(command.agentId) ?? "ares";
             const image = typeof command.image === "string" && command.image ? command.image : null;
             const version = await desktopAgents.setAvatar(id, image);
             const hit = version ? await desktopAgents.avatarData(id) : null;
-            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null }) + "\n");
+            process.stdout.write(JSON.stringify({ type: "agent_avatar", agentId: id, version: hit?.version ?? null, image: hit?.image ?? null, poses: hit?.poses ?? null, clips: hit?.clips ?? null }) + "\n");
           } else {
             const sid = cleanCommandId(command.sessionId);
             if (!sid || sid === DEFAULT_SID) throw new AgentError("agent_bind requires a chat sessionId");

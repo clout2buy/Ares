@@ -11,10 +11,11 @@ import path from "node:path";
 import { z } from "zod";
 import { buildTool } from "@ares/tools";
 import { agentsHost, type AgentCard } from "./agentScope.js";
+import { generateAvatarIdeas } from "./avatarIdeas.js";
 
 const input = z
   .object({
-    action: z.enum(["list", "text", "create", "avatar", "hand_memory", "export_memory", "rule", "lesson"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, hand memories to an agent, export an agent's memory to files, add/remove one of your standing rules, or save/drop a lesson you learned"),
+    action: z.enum(["list", "text", "create", "avatar", "avatar_ideas", "hand_memory", "export_memory", "rule", "lesson"]).describe("list the owner's agents, text one of them, create a new agent, set YOUR OWN profile picture, propose new profile pictures for the owner to pick from, hand memories to an agent, export an agent's memory to files, add/remove one of your standing rules, or save/drop a lesson you learned"),
     to: z.string().min(1).max(60).optional().describe("text: the agent's name (or id)"),
     message: z.string().min(1).max(4000).optional().describe("text: what to say — write it like a text to a colleague, with everything they need"),
     urgent: z.boolean().optional().describe("text: true only when it cannot wait for their current work to finish"),
@@ -29,6 +30,7 @@ const input = z
     add_lesson: z.string().min(1).max(240).optional().describe("lesson: one short, reusable lesson from a job (what worked, what failed, what these people like) — it rides in every chat and room you sit in, so you do better next time. Not a diary entry."),
     remove_lesson: z.string().min(1).max(240).optional().describe("lesson: drop the lesson that contains this text (it turned out wrong)"),
     learned_in: z.string().min(1).max(80).optional().describe("lesson: where you learned it, e.g. 'room Neon Brawl'"),
+    ideas: z.array(z.string().min(3).max(300)).min(1).max(4).optional().describe("avatar_ideas: 4 short, different character ideas for YOUR new face, each a creature or object with personality that fits who you are (e.g. 'a sleepy croissant with tiny arms', 'a fox in a hoodie holding a lantern'). The house style (3D plush figurine, front-facing, full body) is added for you — describe only the character."),
     image: z.string().min(1).max(1024).optional().describe("avatar: path to a square JPEG/PNG/WebP (≤2 MB) you made — e.g. a Forge render or a screenshot of a portrait you drew. It becomes your face in the sidebar, in chats and on the owner's iPhone."),
   })
   .strict();
@@ -42,7 +44,7 @@ export function makeAgentsTool() {
       "The owner's personal agents (the desktop sidebar contacts — each has its own role, memory, Forge and model). " +
       "list shows who exists; text sends one of them a message (fire-and-acknowledge: it lands in their chat now, and their reply arrives later as a new message in yours — do not wait or poll for it); " +
       "hand_memory copies what you remember (from Ares's chat: the owner's main memory; from an agent: its own) into the agent named in to — all of it, or just what is about a topic — when the owner asks to give an agent memory or history; export_memory writes an agent's own memories to Markdown + JSON files (from Ares's chat, name the agent in to). " +
-      "create makes a new agent when the owner asks for one or a job clearly needs its own specialist; avatar sets your own profile picture from an image file you made (do it when the owner asks you to pick or make a pic). Agents cannot delete agents — only the owner can.",
+      "create makes a new agent when the owner asks for one or a job clearly needs its own specialist; avatar_ideas renders 4 options for your new face on the owner's GPU and shows them in the chat; the owner taps the one they like and it goes live (do this when the owner asks you to change or make your avatar, then wait for their pick). avatar sets your own profile picture from an image file directly (use it when the owner sends you a picture to become your face). Agents cannot delete agents — only the owner can.",
     safety: "workspace-write",
     concurrency: "exclusive",
     inputZod: input,
@@ -89,6 +91,15 @@ export function makeAgentsTool() {
       if (i.action === "export_memory") {
         const out = await host.exportMemory(from, i.to);
         return { output: { ok: true, ...out }, display: `exported ${out.count} of ${out.agent.name}'s memories to ${out.markdown}` };
+      }
+      if (i.action === "avatar_ideas") {
+        if (!i.ideas?.length) throw new Error("avatar_ideas needs ideas (up to 4 short character ideas)");
+        const self = host.list(from).self;
+        const made = await generateAvatarIdeas(self?.id ?? "ares", i.ideas);
+        return {
+          output: { ok: true, avatarIdeas: made.options, agentId: self?.id ?? "ares" },
+          display: `${made.options.length} avatar options ready in ${made.seconds}s, shown in the chat. The owner taps one to make it live; wait for their pick.`,
+        };
       }
       if (i.action === "avatar") {
         if (!i.image) throw new Error("avatar needs image (a file path)");

@@ -11,7 +11,7 @@
 // a team's state is visible without asking, and every agent of yours has a
 // pause/mute/recall that nobody else can touch.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AgentAvatar, AgentFace, type AgentVm } from "./agents";
+import { AgentAvatar, AgentBuddy, type AgentVm } from "./agents";
 import "./rooms.css";
 
 export interface RoomMemberVm {
@@ -137,7 +137,7 @@ export function MemberAvatar({ member, agents, size = 30, busy, photo }: { membe
   if (member.kind === "agent") {
     return (
       <span className="roomFace roomFaceAgent" data-busy={busy ? "1" : "0"} style={{ width: size, height: size, ["--agent" as string]: color }} title={member.name}>
-        {member.emoji ? <span className="roomFaceEmoji" style={{ fontSize: size * 0.52 }}>{member.emoji}</span> : <AgentFace seed={`${member.home}:${member.id}`} color={color} busy={busy} />}
+        <AgentBuddy seed={`${member.home}:${member.id}`} color={color} busy={busy} />
       </span>
     );
   }

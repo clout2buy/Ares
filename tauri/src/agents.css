@@ -688,3 +688,37 @@
 .agentMenu .agentMenuDanger { color: #ff6b6b; }
 .agentMenu .agentMenuDanger:hover { background: rgba(255, 92, 92, .14); }
 .agentDeleteBtn { color: #ff6b6b !important; border-color: rgba(255, 92, 92, .35) !important; }
+
+/* the ember buddy. Idle: it breathes from its base, blinks, and every so
+   often glances left, then right. Working: it sways, its eyes read back and
+   forth, and sparks rise. Transform-only; nothing flashes. */
+.agentBuddy .buddyBody { transform-box: view-box; animation: buddyBreathe 4.2s ease-in-out infinite; animation-delay: var(--blink-delay, 0s); }
+.agentBuddy .buddyShadow { transform-box: view-box; animation: buddyShadow 4.2s ease-in-out infinite; animation-delay: var(--blink-delay, 0s); }
+.agentBuddy .buddyFace { transform-box: view-box; animation: buddyGlance 9s ease-in-out infinite; animation-delay: var(--look-delay, 0s); }
+.agentBuddy .buddySparks circle { transform-box: fill-box; transform-origin: center; animation: buddySpark 3.6s ease-in infinite; }
+.agentBuddy .buddySparks circle:nth-child(2) { animation-delay: 1.2s; }
+.agentBuddy .buddySparks circle:nth-child(3) { animation-delay: 2.4s; }
+.agentBuddy[data-busy="1"] .buddyBody { animation: buddySway 2.4s ease-in-out infinite; }
+.agentBuddy[data-busy="1"] .buddyFace { animation: buddyRead 1.8s ease-in-out infinite; }
+.agentBuddy[data-busy="1"] .agentFaceEyes { animation: none; }
+.agentBuddy[data-busy="1"] .buddySparks circle { animation-duration: 1.8s; }
+@keyframes buddyBreathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.022, 0.975); } }
+@keyframes buddyShadow { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(1.04); } }
+@keyframes buddyGlance { 0%, 30%, 100% { transform: translate(0, 0); } 36%, 46% { transform: translate(-3.2px, -0.4px); } 52%, 62% { transform: translate(3.2px, -0.4px); } 68% { transform: translate(0, 0); } }
+@keyframes buddySway { 0%, 100% { transform: rotate(-3deg) scale(1, 1); } 50% { transform: rotate(3deg) scale(1.02, 0.98); } }
+@keyframes buddyRead { 0%, 100% { transform: translate(-2.6px, 1.4px); } 50% { transform: translate(2.6px, 1.4px); } }
+@keyframes buddySpark { 0% { transform: translateY(6px) scale(0); } 25% { transform: translateY(0) scale(1); } 100% { transform: translateY(-16px) scale(0); } }
+@media (prefers-reduced-motion: reduce) { .agentBuddy :is(.buddyBody, .buddyShadow, .buddyFace, .buddySparks circle) { animation: none !important; } }
+
+/* a posed photo: every frame stacked in place; only the current one shows */
+.posedPhoto { position: absolute; inset: 0; }
+/* the new frame dissolves in over the last one, which stays solid beneath it,
+   so a change reads as motion and nothing dims mid-fade */
+.posedPhoto img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; z-index: 0; transition: none; }
+.posedPhoto img[data-prev="1"] { opacity: 1; z-index: 1; }
+.posedPhoto img[data-on="1"] { opacity: 1; z-index: 2; transition: opacity var(--fade, 300ms) ease-in-out; }
+/* generated avatars are full-body figures; frame the head and shoulders in the circle, like Muse's */
+.posedPhoto img { transform: scale(1.5); transform-origin: 50% 24%; }
+/* a living clip sits over the frames and fades in once it can play */
+.posedPhoto .posedClip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scale(1.5); transform-origin: 50% 24%; z-index: 3; opacity: 0; transition: opacity 400ms ease-in-out; pointer-events: none; }
+.posedPhoto[data-clip="1"] .posedClip { opacity: 1; }

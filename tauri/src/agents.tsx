@@ -8,6 +8,8 @@
 // bound to anyone, so nothing made before agents existed moves.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import "./agents.css";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { playRig, POSE_SCRIPTS, poseStateOf, type PoseName, type RigState } from "./avatarRig";
 
 export const ARES_AGENT_ID = "ares";
 
@@ -110,6 +112,14 @@ export function parseAgentText(text: string): { from: string; urgent: boolean; b
  *  every avatar, memoized transcript rows included, repaints when one lands. */
 export const AgentPhotoContext = createContext<Record<string, string>>({});
 
+/** Pose frames by agent id (file paths, rendered by the daemon after a new
+ *  picture is set): what the base animation script plays for that avatar. */
+export const AgentPosesContext = createContext<Record<string, Partial<Record<PoseName, string>>>>({});
+
+/** Living clips by agent id: one seamless video loop per state (idle,
+ *  thinking, working, creating), rendered once per picture by the daemon. */
+export const AgentClipsContext = createContext<Record<string, Partial<Record<string, string>>>>({});
+
 /** The agent whose chat is on screen (null = plain Ares): the transcript
  *  renders iMessage-style, with this agent's face beside its replies. */
 export const AgentChatContext = createContext<AgentVm | null>(null);
@@ -200,6 +210,214 @@ export function AgentFace({ seed, color, busy }: { seed: string; color: string; 
   );
 }
 
+/**
+ * The agent's buddy (owner, 2026-10-24): an Ares ember, our own mascot next to
+ * Grok's ball, Muse's plush and Dots' blobs. It is a small flame in the
+ * agent's colour, lit by SVG lighting filters so it reads as a soft 3D model
+ * rather than a flat drawing, with a warm core and glossy eyes. Its build,
+ * eyes, brows, mouth and the odd extra (blush, specs, a stray spark) come from
+ * the seed, so each agent always looks like itself.
+ * Idle it breathes, blinks and glances left and right; working, it sways and
+ * its eyes read back and forth while sparks rise. Motion is transform-only and
+ * nothing changes brightness (photosensitive doctrine).
+ */
+export function AgentBuddy({ seed, color, busy }: { seed: string; color: string; busy?: boolean }) {
+  const h = hashOf(seed);
+  // FNV's low bits barely move between similar names; scramble before picking
+  let h2 = hashOf(`${seed}~`);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 0x45d9f3b);
+  h2 = (Math.imul(h2 ^ (h2 >>> 16), 0x45d9f3b) ^ (h2 >>> 16)) >>> 0;
+  const sx = 0.92 + (h % 4) * 0.05; // slim .. chubby
+  const tipY = 6 + ((h >>> 2) % 4) * 3.5; // tall flame .. short
+  const tipX = 56 + ((h >>> 4) % 3) * 3; // how far the tip curls over
+  const tongue = 26 + ((h >>> 6) % 4) * 5; // the side flame: tall .. just a shoulder
+  const flip = ((h >>> 9) & 1) === 1 ? -1 : 1; // which side it curls to
+  const eyes = h2 % 6; // 0 tall ovals · 1 shiny rounds · 2 happy arcs · 3 sleepy · 4 small dots · 5 wink
+  const brows = (h2 >>> 3) % 5; // 0 none · 1 determined · 2 raised · 3 worried · 4 none
+  const mouth = (h2 >>> 6) % 6; // 0 none · 1 smile · 2 o · 3 smirk · 4 fang grin · 5 cat
+  const blush = ((h2 >>> 9) & 1) === 1;
+  const specs = (h2 >>> 10) % 6 === 0;
+  const sparks = (h2 >>> 13) % 3 === 0;
+  const blinkDelay = ((h >>> 15) % 50) / 10;
+  const lookDelay = ((h2 >>> 16) % 60) / 10;
+  const id = `e${h.toString(36)}`;
+  const ink = "#15131c";
+  const bottom = 86;
+  const w = 28 * sx;
+  // one flame, drawn curling right and mirrored by `flip`: a round belly, a
+  // small tongue off one shoulder, and the main tip curling over the top
+  const body = `M50 ${bottom}C31 ${bottom} 22 75 22 61C22 49 25 ${tongue + 9} 29 ${tongue}C32 ${tongue + 8} 35 42 40 44C39 32 47 ${tipY + 12} ${tipX} ${tipY}C${tipX - 3} ${tipY + 13} 78 36 78 58C78 75 69 ${bottom} 50 ${bottom}Z`;
+  const shape = `translate(50 0) scale(${flip * sx} 1) translate(-50 0)`;
+  const ey = 61;
+  const gap = 9.5 + (sx - 0.92) * 8;
+  const glossy = (cx: number, rx: number, ry: number) => (
+    <g>
+      <ellipse cx={cx} cy={ey} rx={rx} ry={ry} fill={`url(#${id}e)`} />
+      <ellipse cx={cx + rx * 0.3} cy={ey - ry * 0.42} rx={rx * 0.34} ry={ry * 0.26} fill="#fff" opacity=".9" />
+    </g>
+  );
+  const eye = (cx: number, side: -1 | 1) => {
+    if (eyes === 5 && side === 1) return <path d={`M${cx - 4.4} ${ey + 0.5}Q${cx} ${ey - 4} ${cx + 4.4} ${ey + 0.5}`} stroke={ink} strokeWidth="3" fill="none" strokeLinecap="round" />;
+    switch (eyes) {
+      case 0: return glossy(cx, 3.8, 6.4);
+      case 1: case 5: return glossy(cx, 5.2, 5.6);
+      case 2: return <path d={`M${cx - 4.6} ${ey + 1.6}Q${cx} ${ey - 4.4} ${cx + 4.6} ${ey + 1.6}`} stroke={ink} strokeWidth="3.2" fill="none" strokeLinecap="round" />;
+      case 3: return <path d={`M${cx - 4.8} ${ey - 1}h9.6a4.8 4.8 0 0 1-9.6 0Z`} fill={ink} />;
+      default: return glossy(cx, 3.1, 3.4);
+    }
+  };
+  const brow = (cx: number, side: -1 | 1) => {
+    const y = ey - (eyes === 0 ? 10.5 : 9);
+    if (brows === 1) return <path d={`M${cx - 4 * side} ${y - 1.6}L${cx + 4 * side} ${y + 1.2}`} />;
+    if (brows === 2) return <path d={`M${cx - 4} ${y}Q${cx} ${y - 3.2} ${cx + 4} ${y}`} />;
+    if (brows === 3) return <path d={`M${cx - 4 * side} ${y + 1.2}L${cx + 4 * side} ${y - 1.6}`} />;
+    return null;
+  };
+  const my = ey + 9;
+  const mouthEl =
+    mouth === 1 ? <path d={`M46 ${my - 1}Q50 ${my + 3} 54 ${my - 1}`} stroke={ink} strokeWidth="2.2" fill="none" strokeLinecap="round" />
+      : mouth === 2 ? <ellipse cx="50" cy={my} rx="2.3" ry="2.6" fill={ink} />
+        : mouth === 3 ? <path d={`M46.5 ${my}Q51 ${my + 2} 54.5 ${my - 2}`} stroke={ink} strokeWidth="2.2" fill="none" strokeLinecap="round" />
+          : mouth === 4 ? <g><path d={`M45 ${my - 1.5}H55Q54 ${my + 4} 50 ${my + 4}Q46 ${my + 4} 45 ${my - 1.5}Z`} fill={ink} /><path d={`M47 ${my - 1.5}l1 2.4 1-2.4Z`} fill="#fff" /></g>
+            : mouth === 5 ? <path d={`M46 ${my - 1}Q48 ${my + 2} 50 ${my - 1}Q52 ${my + 2} 54 ${my - 1}`} stroke={ink} strokeWidth="2" fill="none" strokeLinecap="round" />
+              : null;
+  return (
+    <svg viewBox="9 6 82 82" className="agentFace agentBuddy" data-busy={busy ? "1" : "0"} aria-hidden="true" style={{ ["--blink-delay" as string]: `${blinkDelay}s`, ["--look-delay" as string]: `${lookDelay}s` }}>
+      <defs>
+        <linearGradient id={`${id}g`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" style={{ stopColor: `color-mix(in srgb, ${color} 12%, #fbfbfd)` }} />
+          <stop offset="100%" style={{ stopColor: `color-mix(in srgb, ${color} 30%, #e9ebf0)` }} />
+        </linearGradient>
+        <radialGradient id={`${id}b`} cx="40%" cy="45%" r="70%">
+          <stop offset="0%" style={{ stopColor: `color-mix(in srgb, ${color} 72%, white)` }} />
+          <stop offset="60%" stopColor={color} />
+          <stop offset="100%" style={{ stopColor: `color-mix(in srgb, ${color} 75%, black)` }} />
+        </radialGradient>
+        <radialGradient id={`${id}c`} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#fff3d6" stopOpacity=".7" />
+          <stop offset="100%" stopColor="#fff3d6" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient id={`${id}e`} cx="40%" cy="35%" r="75%">
+          <stop offset="0%" stopColor="#3a3548" />
+          <stop offset="100%" stopColor="#0d0b12" />
+        </radialGradient>
+        {/* the 3D: a blurred height map of the body, lit from the top left */}
+        <filter id={`${id}p`} x="-10%" y="-10%" width="120%" height="120%" colorInterpolationFilters="sRGB">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="hgt" />
+          <feDiffuseLighting in="hgt" surfaceScale="7" diffuseConstant="1.15" lightingColor="#fff" result="dif">
+            <feDistantLight azimuth="235" elevation="48" />
+          </feDiffuseLighting>
+          <feComposite in="dif" in2="SourceAlpha" operator="in" result="difIn" />
+          <feBlend in="SourceGraphic" in2="difIn" mode="multiply" result="shaded" />
+          <feSpecularLighting in="hgt" surfaceScale="7" specularConstant=".85" specularExponent="22" lightingColor="#fff" result="spc">
+            <fePointLight x="30" y="18" z="70" />
+          </feSpecularLighting>
+          <feComposite in="spc" in2="SourceAlpha" operator="in" result="spcIn" />
+          <feComposite in="shaded" in2="spcIn" operator="arithmetic" k1="0" k2="1" k3=".75" k4="0" />
+        </filter>
+      </defs>
+      <rect x="0" y="0" width="100" height="100" fill={`url(#${id}g)`} />
+      <ellipse className="buddyShadow" cx="50" cy={bottom + 3} rx={w * 0.7} ry="3" fill="#14161e" opacity=".18" style={{ transformOrigin: `50px ${bottom + 3}px` }} />
+      <g className="buddyBody" style={{ transformOrigin: `50px ${bottom}px` }}>
+        <g filter={`url(#${id}p)`}>
+          <path d={body} fill={`url(#${id}b)`} transform={shape} />
+        </g>
+        <ellipse cx="50" cy="73" rx={w * 0.55} ry="10" fill={`url(#${id}c)`} />
+        <g className="buddyFace">
+          <g className="agentFaceEyes">
+            <g className="agentFaceLids" style={{ transformOrigin: `50px ${ey}px` }}>{eye(50 - gap, -1)}{eye(50 + gap, 1)}</g>
+          </g>
+          {brows % 4 ? <g stroke={ink} strokeWidth="2" strokeLinecap="round" fill="none">{brow(50 - gap, -1)}{brow(50 + gap, 1)}</g> : null}
+          {specs ? <g fill="none" stroke={ink} strokeWidth="1.6" opacity=".85"><circle cx={50 - gap} cy={ey} r="7.6" /><circle cx={50 + gap} cy={ey} r="7.6" /><path d={`M${50 - gap + 7.6} ${ey - 1}Q50 ${ey - 3} ${50 + gap - 7.6} ${ey - 1}`} /></g> : null}
+          {blush ? <g fill="#ff6b8a" opacity=".4"><ellipse cx={50 - gap - 5.5} cy={ey + 6.5} rx="3.8" ry="2.3" /><ellipse cx={50 + gap + 5.5} cy={ey + 6.5} rx="3.8" ry="2.3" /></g> : null}
+          {mouthEl ? <g className="agentFaceMouth" style={{ transformOrigin: `50px ${my}px` }}>{mouthEl}</g> : null}
+        </g>
+      </g>
+      {sparks || busy ? (
+        <g className="buddySparks" style={{ fill: `color-mix(in srgb, ${color} 40%, #ffd27a)` }}>
+          <circle cx={flip > 0 ? 76 : 24} cy="40" r="1.8" />
+          <circle cx={flip > 0 ? 70 : 30} cy="30" r="1.3" />
+          <circle cx={flip > 0 ? 80 : 20} cy="24" r="1" />
+        </g>
+      ) : null}
+    </svg>
+  );
+}
+
+/** A file the daemon made (a path on disk) or one shipped with the app ("/…"). */
+const assetUrl = (p: string) => (p.startsWith("/") && !p.startsWith("//") && !/^\/[a-z]:/i.test(p) ? p : convertFileSrc(p));
+
+/** The default flame guy (owner, 2026-10-24): one 3D ember mascot whose pose
+ *  frames and living clips ship with the app (public/buddy). Every agent
+ *  without a photo plays it, tinted to its own colour. */
+const BASE_POSES: Partial<Record<PoseName, string>> = Object.fromEntries(
+  (["blink", "look_left", "look_right", "thinking", "thinking_b", "working", "working_b", "creating", "creating_b"] as PoseName[]).map((p) => [p, `/buddy/${p}.jpg`]),
+);
+const BASE_CLIPS: Partial<Record<string, string>> = Object.fromEntries(["idle", "thinking", "working", "creating"].map((s) => [s, `/buddy/clip_${s}.mp4`]));
+/** Rotate the flame's orange (about 24deg of hue) to the agent's colour. */
+function hueShift(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return 0;
+  const n = parseInt(m[1]!, 16);
+  const r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (!d) return 0;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return Math.round(h * 60 - 24);
+}
+
+/** A photo that comes alive: the base pose script plays the avatar's own
+ *  frames (blink, glances, chin-tap, typing, shaping), stacked and swapped in
+ *  place, with the gentle tier-0 breath underneath. Frames missing for a pose
+ *  hold the still. */
+function PosedPhoto({ src, poses, clips, busy, activity, hue }: { src: string; poses: Partial<Record<PoseName, string>>; clips?: Partial<Record<string, string>>; busy?: boolean; activity?: string; hue?: number }) {
+  const stage = useRef<HTMLDivElement | null>(null);
+  const state = poseStateOf(busy, activity);
+  const [frame, setFrame] = useState<{ on: PoseName; prev: PoseName; fade: number }>({ on: "rest", prev: "rest", fade: 0 });
+  const urls = useMemo(() => {
+    const out: Partial<Record<PoseName, string>> = { rest: src };
+    for (const [k, v] of Object.entries(poses)) if (v) out[k as PoseName] = assetUrl(v);
+    return out;
+  }, [src, poses]);
+  useEffect(() => (stage.current ? playRig(stage.current, busy ? "working" : "idle") : undefined), [busy]);
+  useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const script = POSE_SCRIPTS[state];
+    let i = 0;
+    let timer = 0;
+    const step = () => {
+      const [name, ms, fade] = script[i % script.length]!;
+      const next = urls[name] ? name : "rest";
+      setFrame((f) => (f.on === next ? f : { on: next, prev: f.on, fade }));
+      i += 1;
+      timer = window.setTimeout(step, ms);
+    };
+    step();
+    return () => window.clearTimeout(timer);
+  }, [state, urls]);
+  // the state's living clip, once it has loaded, plays over the frames
+  const clip = clips?.[state];
+  const clipUrl = useMemo(() => (clip ? assetUrl(clip) : undefined), [clip]);
+  const [clipReady, setClipReady] = useState<string | undefined>(undefined);
+  const still = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  return (
+    <div ref={stage} className="posedPhoto" data-clip={clipUrl && clipReady === clipUrl ? "1" : "0"} style={{ ["--fade" as string]: `${frame.fade}ms`, ...(hue ? { filter: `hue-rotate(${hue}deg)` } : {}) }}>
+      {clipUrl && !still ? <video key={clipUrl} className="posedClip" src={clipUrl} muted loop autoPlay playsInline preload="auto" onCanPlay={() => setClipReady(clipUrl)} /> : null}
+      {(Object.entries(urls) as Array<[PoseName, string]>).map(([name, url]) => (
+        <img key={name} src={url} alt="" draggable={false} data-on={name === frame.on ? "1" : "0"} data-prev={name === frame.prev && name !== frame.on ? "1" : "0"} />
+      ))}
+    </div>
+  );
+}
+
+/** A photo that moves: the rig's tier-0 clip for `state` plays on the whole
+ *  picture (see avatarRig.ts). */
+function RiggedPhoto({ src, state }: { src: string; state: RigState }) {
+  const ref = useRef<HTMLImageElement | null>(null);
+  useEffect(() => (ref.current ? playRig(ref.current, state) : undefined), [state]);
+  return <img ref={ref} src={src} alt="" draggable={false} />;
+}
+
 /** One agent's profile picture: their photo when they have one, otherwise
  *  their living face. Ares wears the house mark. A busy agent gets a slow
  *  orbiting ring; an agent's emoji (from the phone) rides as a corner badge. */
@@ -210,6 +428,7 @@ export function AgentAvatar({
   unread,
   title,
   photo,
+  activity,
 }: {
   agent: Pick<AgentVm, "id" | "name" | "emoji" | "color"> | null;
   size?: number;
@@ -218,29 +437,16 @@ export function AgentAvatar({
   title?: string;
   /** Override the stored photo (the editor's live preview); "" forces none. */
   photo?: string;
+  /** The live activity line, which picks the pose loop (thinking, working, creating). */
+  activity?: string;
 }) {
   const photos = useContext(AgentPhotoContext);
-  const avatarStyle = useContext(AvatarStyleContext);
+  const allPoses = useContext(AgentPosesContext);
+  const allClips = useContext(AgentClipsContext);
   const isAres = !agent || agent.id === ARES_AGENT_ID;
   const id = agent?.id ?? ARES_AGENT_ID;
   const color = isAres ? "#c8794a" : agent!.color ?? AGENT_COLORS[0]!;
   const src = photo !== undefined ? photo : photos[id];
-  const badge = !isAres && agent!.emoji && size >= 36 ? agent!.emoji : null;
-  if (avatarStyle === "tile" && !isAres && !src) {
-    const words = agent!.name.trim().split(/\s+/).filter(Boolean);
-    const initial = words.length > 1 ? (words[0]![0]! + words[words.length - 1]![0]!).toUpperCase() : (words[0]?.[0] ?? "?").toUpperCase();
-    return (
-      <span
-        className="agentAvatar agentTile"
-        data-busy={busy ? "1" : "0"}
-        title={title ?? agent!.name}
-        style={{ width: size, height: size, ["--agent" as string]: color }}
-      >
-        {agent!.emoji ? <span className="agentTileEmoji" style={{ fontSize: Math.round(size * 0.5) }}>{agent!.emoji}</span> : <span className="agentTileInitial" style={{ fontSize: Math.round(size * 0.42) }}>{initial}</span>}
-        {unread ? <i className="agentUnread" aria-label="new messages" /> : null}
-      </span>
-    );
-  }
   return (
     <span
       className="agentAvatar"
@@ -252,17 +458,16 @@ export function AgentAvatar({
     >
       <span className="agentAvatarClip">
         {src ? (
-          <img src={src} alt="" draggable={false} />
+          photo === undefined && allPoses[id] ? <PosedPhoto src={src} poses={allPoses[id]!} clips={allClips[id]} busy={busy} activity={activity} /> : <RiggedPhoto src={src} state={busy ? "working" : "idle"} />
         ) : isAres ? (
           <svg viewBox="0 0 24 24" aria-hidden="true" className="agentAresMark">
             <path d="M12 2.5 20 7v10l-8 4.5L4 17V7Z" fill="none" stroke="currentColor" strokeWidth="1.5" />
             <path d="M12 6.5 16.5 9v6L12 17.5 7.5 15V9Z" fill="currentColor" opacity=".9" />
           </svg>
         ) : (
-          <AgentFace seed={agent!.name.trim().toLowerCase() || agent!.id} color={color} busy={busy} />
+          <PosedPhoto src="/buddy/rest.jpg" poses={BASE_POSES} clips={BASE_CLIPS} busy={busy} activity={activity} hue={hueShift(color)} />
         )}
       </span>
-      {badge && !src ? <span className="agentBadge" style={{ fontSize: Math.max(10, Math.round(size * 0.3)) }}>{badge}</span> : null}
       {unread ? <i className="agentUnread" aria-label="new messages" /> : null}
     </span>
   );
@@ -693,6 +898,100 @@ export function AgentEditor({
 }
 
 /** An empty chat with an agent: their card, front and centre. */
+/** Under the input bar: this agent's provider, model and effort, changeable
+ *  in place. Each pick saves to the agent (same as editing it), so it sticks.
+ *  A new provider only saves together with one of its models: picking it
+ *  opens that provider's model list, and closing without a pick keeps both. */
+export function AgentComposerMeta({
+  agent,
+  providers,
+  requestCatalog,
+  onChange,
+}: {
+  agent: AgentVm;
+  providers: string[];
+  requestCatalog: (provider: string) => void;
+  onChange: (patch: { provider?: string; model?: string; reasoningLevel?: string }) => void;
+}) {
+  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const provider = pendingProvider ?? agent.provider;
+  const [models, setModels] = useState<string[]>([]);
+  useEffect(() => {
+    setModels([]);
+    const onCatalog = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ provider?: string; models?: Array<{ id?: string }> }>).detail;
+      if (detail?.provider !== provider) return;
+      setModels((detail.models ?? []).map((m) => String(m.id ?? "")).filter(Boolean));
+    };
+    window.addEventListener("ares:model-catalog", onCatalog);
+    if (provider) requestCatalog(provider);
+    return () => window.removeEventListener("ares:model-catalog", onCatalog);
+  }, [provider, requestCatalog]);
+  const options = pendingProvider ? models : [...new Set([agent.model, ...models])].filter(Boolean);
+  const effort = agent.reasoningLevel ?? "";
+  const efforts: Array<[string, string]> = [["", "Default"], ...AGENT_EFFORTS];
+  const providerList = [...new Set([agent.provider, ...providers])].filter(Boolean);
+  const [open, setOpenState] = useState<"provider" | "model" | "effort" | null>(null);
+  const setOpen = (next: typeof open | ((o: typeof open) => typeof open)) => {
+    setOpenState((o) => {
+      const value = typeof next === "function" ? next(o) : next;
+      if (value !== "model") setPendingProvider(null);
+      return value;
+    });
+  };
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(null); };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("pointerdown", onDown); window.removeEventListener("keydown", onKey); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const pickProvider = (p: string) => {
+    if (p === agent.provider) { setOpen(null); return; }
+    setOpenState("model");
+    setPendingProvider(p);
+  };
+  const pickModel = (m: string) => {
+    onChange(pendingProvider ? { provider: pendingProvider, model: m } : { model: m });
+    setOpen(null);
+  };
+  const rows: Array<[string, string]> = open === "provider" ? providerList.map((p): [string, string] => [p, p])
+    : open === "model" ? options.map((m): [string, string] => [m, m])
+    : efforts;
+  return (
+    <div className="composerMeta" ref={boxRef}>
+      <button type="button" className="composerPick" data-open={open === "provider" ? "1" : "0"} onClick={() => setOpen((o) => (o === "provider" ? null : "provider"))} title={`Where ${agent.name}'s model runs`}>
+        <span>provider</span>{agent.provider || "—"}
+      </button>
+      <i className="composerMetaDot" aria-hidden="true" />
+      <button type="button" className="composerPick" data-open={open === "model" ? "1" : "0"} onClick={() => setOpen((o) => (o === "model" ? null : "model"))} title={`${agent.name}'s model (${agent.provider})`}>
+        <span>model</span>{agent.model || "—"}
+      </button>
+      <i className="composerMetaDot" aria-hidden="true" />
+      <button type="button" className="composerPick" data-open={open === "effort" ? "1" : "0"} onClick={() => setOpen((o) => (o === "effort" ? null : "effort"))} title={`How hard ${agent.name} thinks before answering`}>
+        <span>effort</span>{efforts.find(([v]) => v === effort)?.[1] ?? effort}
+      </button>
+      {open ? (
+        <div className="composerMenu" role="listbox" data-kind={open}>
+          {open === "model" && pendingProvider ? <div className="composerMenuHead">Pick a {pendingProvider} model</div> : null}
+          {open === "model" && rows.length === 0 ? <div className="composerMenuHead">Loading models…</div> : null}
+          {rows.map(([v, label]) => {
+            const on = open === "provider" ? v === agent.provider : open === "model" ? !pendingProvider && v === agent.model : v === effort;
+            return (
+              <button type="button" role="option" aria-selected={on} key={v || "default"} data-on={on ? "1" : "0"} onClick={() => (open === "provider" ? pickProvider(v) : open === "model" ? pickModel(v) : (onChange({ reasoningLevel: v }), setOpen(null)))}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AgentHero({
   agent,
   others,

@@ -5839,14 +5839,14 @@ function App() {
             })()}
             <div className="forgeTabs" role="tablist">
               <button role="tab" data-on={forge.tab === "live" ? "1" : "0"} data-live={forge.tab !== "live" && liveTarget ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "live" }))}><PixelIcon name="live" size={10} palette={forge.tab === "live" ? "blue" : "dim"} />Live</button>
-              <button role="tab" data-on={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "preview" }))}><PixelIcon name="artifacts" size={10} palette={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "blue" : "dim"} />Artifacts</button>
+              <button role="tab" data-on={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "preview" }))}><PixelIcon name="artifacts" size={10} palette={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "blue" : "dim"} />Files</button>
               <button role="tab" data-on={forge.tab === "background" ? "1" : "0"} onClick={() => { setForge((f) => ({ ...f, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); }}>Background</button>
             </div>
             <span className="forgeSurfaceState" data-live={forge.tab === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"}>
               {forge.tab === "live" ? (embeddedActive ? "interactive canvas" : liveTarget ? "browser canvas" : "canvas ready") : forge.tab === "holo" ? "spatial artifact" : forge.artifact ? forge.artifact.label : "artifact canvas"}
             </span>
-            <button className="ghost" onClick={requestForgeClose}>
-              Close
+            <button className="ghost forgeClose" onClick={requestForgeClose} title="Close the Forge" aria-label="Close the Forge">
+              ✕
             </button>
           </header>
 
@@ -5902,8 +5902,8 @@ function App() {
                   <div className="forgeCube"><i /><i /><i /><i /><i /><i /></div>
                   <PixelIcon name="artifacts" size={30} palette="gold" className="forgeLoadingSigil" />
                 </div>
-                <div className="forgeIdleTitle">Artifacts · nothing forged yet</div>
-                <p className="forgeIdleLead">HTML, SVG, markdown and holotable files Ares writes land here the moment they exist, rendered — documents as documents, pages as pages.</p>
+                <div className="forgeIdleTitle">No files yet</div>
+                <p className="forgeIdleLead">Pages, documents and pictures your agents make open here the moment they exist.</p>
                 <div className="forgeIdleReadout"><span>watch <b>armed</b></span><span>render <b>ready</b></span></div>
               </div>
             )
@@ -5940,7 +5940,7 @@ function App() {
               <form className="liveToolbar" onSubmit={(e) => { e.preventDefault(); const url = launchableUrl(liveUrl); if (url) { setLiveTarget({ url, title: "Manual preview", at: Date.now() }); setLiveUrl(url); setLiveRevision((n) => n + 1); } }}>
                 <i className={embeddedActive || liveTarget ? "liveDot" : "idleDot"} />
                 <input aria-label="Preview URL" value={liveUrl} onChange={(e) => setLiveUrl(e.target.value)} placeholder="localhost:3000 or https://…" />
-                <button type="submit">Launch</button>
+                <button type="submit" className="liveGo">Open</button>
                 {native && liveTarget && forgeNativeTarget(liveTarget.url) ? (
                   <>
                     <button type="button" onClick={() => forgeViewControl("back")} aria-label="Back">←</button>
@@ -5948,7 +5948,7 @@ function App() {
                   </>
                 ) : null}
                 <button type="button" onClick={() => setLiveRevision((n) => n + 1)} disabled={!liveTarget}>↻</button>
-                {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })}>Open separate copy ↗</button> : null}
+                {native && liveTarget && /^https?:/i.test(liveTarget.url) ? <button type="button" onClick={() => void invoke("ares_open_url", { url: liveTarget.url })} title="Open a separate copy in your browser" aria-label="Open a separate copy">↗</button> : null}
               </form>
               {/* The HUD: one row of pills that says, at a glance, what the
                   stage is showing and how the page is doing — state, title,
@@ -6199,13 +6199,13 @@ function App() {
                     <div className="forgeCube"><i /><i /><i /><i /><i /><i /></div>
                     <Medallion glyph="forge" size={44} tone="ember" className="forgeLoadingSigil" />
                   </div>
-                  <div className="forgeIdleTitle">The Forge · standing by</div>
-                  <p className="forgeIdleLead">Ask Ares to open something, or paste any link above. It runs here live: click, type and sign in, and Ares works in the same page.</p>
+                  <div className="forgeIdleTitle">Nothing open yet</div>
+                  <p className="forgeIdleLead">Ask your agent to open a game or a page, or paste a link above. It runs here live: you can click, type and sign in, and your agent works in the same page.</p>
                   <ul className="forgeIdleAbilities">
-                    <li><PixelIcon name="host" size={14} palette="gold" /><b>Hosts</b>your folder so modules, import maps and assets resolve</li>
-                    <li><PixelIcon name="watch" size={14} palette="green" /><b>Watches</b>exceptions, failed loads, warnings, frame rate — live</li>
-                    <li><PixelIcon name="reload" size={14} palette="blue" /><b>Reloads</b>itself the moment Ares edits a served file</li>
-                    <li><PixelIcon name="rescue" size={14} palette="ember" /><b>Rescues</b>bare imports like <code>three</code> with an import map</li>
+                    <li><PixelIcon name="host" size={14} palette="gold" /><b>Serves</b>your project folder, so its files and imports load</li>
+                    <li><PixelIcon name="watch" size={14} palette="green" /><b>Watches</b>errors, failed loads and frame rate as it runs</li>
+                    <li><PixelIcon name="reload" size={14} palette="blue" /><b>Reloads</b>by itself when your agent edits a file</li>
+                    <li><PixelIcon name="rescue" size={14} palette="ember" /><b>Fixes</b>missing imports like <code>three</code> for you</li>
                   </ul>
                   <div className="forgeIdleReadout"><span>sensor <b>armed</b></span><span>host <b>ready</b></span><span>stage <b>idle</b></span></div>
                 </div>

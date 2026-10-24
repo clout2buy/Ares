@@ -708,3 +708,311 @@
 .ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .agentFieldErr { color: #ff9a6a; }
 /* the selected chip/segment "thumb" is white on light glass; a lit smoke here */
 .ares.ares.ares[data-style="modern"][data-surface="messages"][data-glass="dark"] .settingsShell :is(.segment button[data-on="1"], .segment button.on) { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4); }
+
+/* ══ The Forge: a glass browser (owner picked style 1 of mockup-forge.html,
+   2026-10-23). One frosted pane beside the chat: Live / Files / Background
+   in a segment with a round close, a glass address pill with an orange
+   Open, the page on a rounded stage, and the page health as a quiet line
+   under it. The old holo console (pixel rim, corner brackets, scan sweep,
+   orbiting cube, pixel resolve) is off here; nothing flashes. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; margin-left: 0;
+  border-radius: 26px;
+  border: var(--g-rim);
+  background: var(--g-fill);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+  color: var(--text);
+  font-family: var(--font);
+  overflow: hidden;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge :is(.forgeRimCanvas, .forgePixelCanvas, .forgeStageFx, .forgeOrbital),
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header > strong,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header > .forgeSurfaceState,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdle > canvas { display: none !important; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeGrip { background: transparent; }
+
+/* header: segment + round close */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 0; height: auto; padding: 0; margin: 0;
+  border: 0; background: none; box-shadow: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header::after,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header::before { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs {
+  display: flex; gap: 2px; padding: 3px; margin: 0;
+  border: 0; border-radius: 999px; background: var(--g-sunk);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button {
+  position: relative; display: inline-flex; align-items: center; gap: 0;
+  height: auto; padding: 6px 14px; border: 0; border-radius: 999px;
+  background: none; box-shadow: none;
+  font: 600 12.5px/1.2 var(--font); letter-spacing: 0; text-transform: none;
+  color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button::before,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button::after { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button .pxi { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button:hover { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button[data-on="1"] { color: var(--text-hi); background: var(--g-solid); box-shadow: 0 1px 3px rgba(20, 24, 34, 0.15); }
+/* a page is running on Live while you look at another tab */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button[data-live="1"]::after {
+  content: ""; display: block; position: absolute; top: 5px; right: 6px;
+  width: 6px; height: 6px; border-radius: 50%; background: #2fbf6e; animation: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header > .forgeClose {
+  margin-left: auto; width: 30px; height: 30px; padding: 0; flex: none;
+  display: grid; place-items: center; border-radius: 50%;
+  border: 0; background: none; box-shadow: none;
+  font: 600 13px/1 var(--font); letter-spacing: 0; text-transform: none; color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header > .forgeClose:hover { color: var(--text-hi); background: var(--g-hover); box-shadow: none; border: 0; }
+
+/* bodies sit straight on the pane */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeBody {
+  flex: 1 1 auto; min-height: 0; gap: 10px;
+  background: transparent; animation: none; overflow: hidden;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeBody.liveBrowser { display: flex; flex-direction: column; }
+
+/* the address pill */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge :is(.liveToolbar, .forgeToolbar, .sandboxBar) {
+  display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+  padding: 5px 5px 5px 14px; margin: 0; min-height: 0;
+  border: var(--g-rim); border-radius: 999px;
+  background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+  color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveToolbar input {
+  flex: 1; min-width: 0; height: 28px; padding: 0;
+  border: 0; background: none; box-shadow: none; outline: none;
+  font: 600 13px/1 var(--font); letter-spacing: 0; color: var(--text-hi);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveToolbar input::placeholder { color: var(--faint); font-weight: 500; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveToolbar :is(.liveDot, .idleDot) {
+  width: 8px; height: 8px; flex: none; border-radius: 50%; animation: none;
+  background: #c4c7cd; box-shadow: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveToolbar .liveDot { background: #2fbf6e; box-shadow: 0 0 0 3px rgba(47, 191, 110, 0.22); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge :is(.liveToolbar, .forgeToolbar, .sandboxBar) button {
+  height: 30px; min-width: 30px; padding: 0 12px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border: 0; border-radius: 999px; background: none; box-shadow: none;
+  font: 600 12.5px/1 var(--font); letter-spacing: 0; text-transform: none; color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge :is(.liveToolbar, .forgeToolbar, .sandboxBar) button:hover:not(:disabled) { color: var(--text-hi); background: var(--g-hover); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge :is(.liveToolbar, .forgeToolbar, .sandboxBar) button:disabled { opacity: 0.4; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveToolbar button.liveGo,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .sandboxBar button.primary {
+  order: 9; padding: 0 16px; color: #fff;
+  border: 1px solid rgba(255, 190, 160, 0.8); background: var(--g-orange);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 18px -10px rgba(255, 106, 61, 0.8);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveToolbar button.liveGo:hover:not(:disabled) { color: #fff; background: var(--g-orange); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeMeta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/1 var(--font); letter-spacing: 0; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge :is(.forgeMeta, .forgeToolbar button) .pxi { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .sandboxBar > span:first-child { flex: 1; font-size: 12.5px; }
+
+/* the stage: the page on a rounded sheet */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveStage {
+  flex: 1 1 auto; min-height: 0; padding: 0;
+  border: 0; border-radius: 20px; overflow: hidden;
+  background: var(--g-solid);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6), 0 18px 40px -18px rgba(40, 48, 66, 0.5);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveStage.embed[data-on="0"] { flex: none; box-shadow: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveStage iframe { border: 0; border-radius: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeBody > iframe { border: 0; border-radius: 20px; background: #fff; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6), 0 18px 40px -18px rgba(40, 48, 66, 0.5); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveStage.engineFeed,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .liveStage.externalTarget { background: #15161b; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .engineFeedBar { background: rgba(20, 22, 30, 0.55); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .engineFeedBar button { border-radius: 999px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeDoc {
+  padding: 20px 22px; border-radius: 20px; overflow: auto;
+  background: var(--g-solid); color: var(--text);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6), 0 18px 40px -18px rgba(40, 48, 66, 0.5);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .sandboxCode { border: 0; border-radius: 16px; background: var(--g-sunk); color: var(--text); font-family: var(--mono); }
+/* loading: a calm sheet with the address, no rings */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeLoading { background: var(--g-solid); color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeLoading :is(.forgeLoadingRings, .forgeLoadingBar) { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeLoading .forgeLoadingText { font: 600 14px/1.3 var(--display); letter-spacing: 0; text-transform: none; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeLoading .forgeLoadingUrl { font: 500 12.5px/1.3 var(--font); letter-spacing: 0; color: var(--muted); }
+
+/* health line under the page (state, title, fps, errors, load) */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeBody.liveBrowser > .forgeHud { order: 5; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeBody.liveBrowser > .forgeTicker { order: 6; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeBody.liveBrowser > .forgeDrawer { order: 7; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud {
+  display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow: hidden;
+  padding: 0 4px; margin: 0; border: 0; background: none; box-shadow: none;
+  font: 500 12.5px/1.2 var(--font); letter-spacing: 0; color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudPill {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  height: auto; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  font: inherit; letter-spacing: 0; text-transform: none; color: inherit; animation: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudPill + .hudPill::before { content: "·"; margin-right: 6px; color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudPill .pxi { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudState { text-transform: capitalize; font-weight: 600; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudState::after { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudState::before {
+  content: ""; width: 8px; height: 8px; margin: 0 2px 0 0; border-radius: 50%; background: #c4c7cd; flex: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudState[data-state="live"]::before { background: #2fbf6e; box-shadow: 0 0 0 3px rgba(47, 191, 110, 0.22); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudState[data-state="loading"]::before { background: #ff9a5a; box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.2); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudTitle { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudFps[data-tone="warn"],
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudWarn { color: #b7791f; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudFps[data-tone="bad"],
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudErr { color: #d93636; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud button.hudPill { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud .hudSpark { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTicker {
+  margin: -4px 0 0; padding: 0 4px; border: 0; background: none; box-shadow: none;
+  font: 500 12px/1.3 var(--font); letter-spacing: 0; color: var(--faint);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTicker span { animation: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeDrawer {
+  margin: 0; border: var(--g-rim); border-radius: 18px;
+  background: var(--g-fill-strong); box-shadow: var(--g-shadow); color: var(--text);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeDrawer strong { color: var(--text-hi); font-family: var(--font); letter-spacing: 0; text-transform: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeDrawer li { font-family: var(--mono); font-size: 12px; color: #b42318; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeDrawerHead span { color: var(--muted); }
+
+/* idle: one calm card on the pane */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdle {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  padding: 28px 24px; overflow: auto; text-align: center;
+  border: 0; border-radius: 20px; background: var(--g-soft); box-shadow: inset 0 0 0 1px var(--line);
+  animation: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleTitle { font: 700 19px/1.2 var(--display); letter-spacing: 0; text-transform: none; color: var(--text-hi); text-shadow: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleLead { max-width: 380px; margin: 0; font: 400 13.5px/1.5 var(--font); color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; width: min(100%, 400px); margin: 6px 0 0; padding: 4px 14px;
+  list-style: none; text-align: left;
+  border: var(--g-rim); border-radius: 18px; background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities li {
+  display: block; padding: 10px 0; margin: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  font: 400 13px/1.4 var(--font); color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities li + li { border-top: 1px solid var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities li::before { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities li .pxi { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities li b { display: inline; margin-right: 5px; font: 600 13px/1.4 var(--font); letter-spacing: 0; text-transform: none; color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleAbilities code { padding: 1px 5px; border-radius: 5px; background: var(--g-sunk); color: var(--text-hi); font-size: 12px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeIdleReadout { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge::before { display: none; }
+/* nothing on the stage: the idle card says it, so no health line */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeHud[data-state="idle"] { display: none; }
+/* the old tabs pulsed while a page ran; here a still green dot says it */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button { animation: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button[data-live="1"]::after { inset: 5px 6px auto auto; box-shadow: none; }
+
+/* Chat list collapsed: only the list goes away. The base sheet slid and
+   faded the whole rail, which took the section strip (a child of the rail)
+   with it and left an empty gutter. Keep the rail in place, hide everything
+   in it but the strip, and dress the floating faces and the reveal button
+   in the same glass. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-rail="collapsed"] .rail { transform: none; opacity: 1; width: 0; padding: 0; border: 0; pointer-events: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-rail="collapsed"] .rail::after { display: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-rail="collapsed"] .rail > :not(.msTabs) { visibility: hidden; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-rail="collapsed"] .rail > .msTabs { visibility: visible; pointer-events: auto; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentDock[data-floating="1"],
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railReveal {
+  border: var(--g-rim);
+  background: var(--g-fill-strong);
+  backdrop-filter: var(--g-blur);
+  -webkit-backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow);
+  color: var(--muted);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .railReveal:hover { color: var(--text-hi); background: var(--g-solid); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentDot[data-on="1"] { box-shadow: 0 0 0 2px var(--g-ring, #fff), 0 0 0 4px var(--ember); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentDotNew { color: var(--ember-text); background: var(--g-sunk); }
+
+/* The strip carries the app's own controls too (owner, 2026-10-23): the
+   Ares mark and spend sit at its top, search / Forge / download / settings
+   at its foot, so the strip is never an empty column and the title bar is
+   just the drag area and the window buttons. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs { padding-top: 84px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark {
+  position: fixed; z-index: 40;
+  left: 12px; top: 50px; width: 64px; height: 78px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  padding: 0; border-radius: 26px 26px 0 0; background: none;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark:hover { background: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark .msMarkTile { width: 34px; height: 34px; border-radius: 11px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark .msStatus { position: absolute; top: 14px; right: 13px; margin: 0; box-shadow: 0 0 0 2px var(--g-ring, #fff); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark em { font: 600 11px/1 var(--font); font-style: normal; color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msTools {
+  position: fixed; z-index: 40;
+  left: 12px; bottom: 22px; width: 64px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding-top: 10px;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msTools::before {
+  content: ""; position: absolute; top: 0; left: 14px; right: 14px; height: 1px; background: var(--line);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msTool { width: 44px; height: 40px; border-radius: 14px; display: grid; place-items: center; }
+
+/* No title-bar gap (owner, 2026-10-24): the top row is a 12px drag band,
+   every pane starts 12px from the top, and the window buttons are three
+   small dots at the head of the strip (close, minimise, maximise). */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] { grid-template-rows: 12px minmax(0, 1fr); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar { height: 12px; min-height: 0; padding: 0; overflow: visible; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msDrag { height: 12px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail { margin-top: 12px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs { top: 12px; padding-top: 112px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark { top: 44px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin {
+  position: fixed; z-index: 41;
+  left: 12px; top: 24px; width: 64px; height: 14px;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  margin: 0; padding: 0; border: 0;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin button {
+  width: 13px; height: 13px; min-width: 0; padding: 0; border-radius: 50%;
+  display: grid; place-items: center; color: transparent;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin button svg { width: 8px; height: 8px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin:hover button { color: rgba(0, 0, 0, 0.55); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin .msWinClose { order: -1; background: #ff5f57; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin button:nth-child(1) { background: #febc2e; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin button:nth-child(2) { background: #28c840; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin button:hover,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin .msWinClose:hover { filter: brightness(0.92); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin .msWinClose:hover { background: #ff5f57; }
+/* the dots live top-right (owner, 2026-10-24), close outermost; the pane
+   underneath them leaves room in its top bar */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs { padding-top: 84px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark { top: 18px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin { left: auto; right: 26px; top: 26px; width: auto; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin .msWinClose { order: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-panel="1"] .forge > header { padding-right: 70px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"]:not([data-panel="1"]) .stage > .stageHead { padding-right: 84px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-panel="1"] .forge > header { padding-right: 58px; flex-wrap: nowrap; gap: 6px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs { min-width: 0; flex: 0 1 auto; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs button { padding: 6px 10px; white-space: nowrap; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge > header > .forgeClose { width: 26px; height: 26px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .forge .forgeTabs { flex-wrap: nowrap; }
+/* the dots sit ABOVE the panes, in a slim top band (owner, 2026-10-24):
+   the band is 30px, every pane starts under it, nothing makes room inside */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] { grid-template-rows: 30px minmax(0, 1fr); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msDrag { height: 30px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail { margin-top: 30px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .rail .msTabs { top: 30px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msMark { top: 36px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .titlebar.msTitlebar .msWin { right: 16px; top: 8px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"][data-panel="1"] .forge > header { padding-right: 0; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"]:not([data-panel="1"]) .stage > .stageHead { padding-right: revert-layer; }

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { rmTemp } from "./_rmTemp.mjs";
 import { fileURLToPath } from "node:url";
 
 import { openWorkspaceSessionKernel } from "../packages/core/dist/index.js";
@@ -199,7 +200,7 @@ test("Stop owns the exact deferred successor across the post-turn handoff", { ti
     assert.equal(kernel.getInput(nextInputId)?.state, "consumed");
   } finally {
     kernel?.close();
-    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmTemp(workspace);
+    rmTemp(home);
   }
 });

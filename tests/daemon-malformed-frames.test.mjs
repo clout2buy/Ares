@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { rmTemp } from "./_rmTemp.mjs";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -103,7 +104,7 @@ test("malformed frames, primary delete and back-to-back sends never kill or wedg
     try { write({ type: "exit" }); } catch { /* already gone */ }
     await new Promise((r) => setTimeout(r, 800));
     if (child.exitCode === null) child.kill();
-    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmTemp(workspace);
+    rmTemp(home);
   }
 });

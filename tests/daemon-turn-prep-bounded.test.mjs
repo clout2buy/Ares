@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { rmTemp } from "./_rmTemp.mjs";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -162,7 +163,7 @@ test("a turn whose preparation never settles can be stopped, and the next messag
     // Windows releases a just-exited process's directory handles a beat after
     // `exit` fires; a bare rmSync here hit EBUSY twice in a row on the v0.66
     // release gate (the assertions had all passed). Retry is the cure.
-    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmTemp(workspace);
+    rmTemp(home);
   }
 });

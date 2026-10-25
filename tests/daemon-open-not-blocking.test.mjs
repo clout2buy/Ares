@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { rmTemp } from "./_rmTemp.mjs";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,8 +56,8 @@ test("a slow chat load does not hold other chats, and a send to the slow chat wa
     try { write({ type: "exit" }); } catch {}
     await new Promise((r) => setTimeout(r, 500));
     if (child.exitCode === null) child.kill();
-    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmTemp(workspace);
+    rmTemp(home);
   }
   assert.ok(at.fast - at.ready < 4_000, `the other chat answered in ${at.fast - at.ready}ms, not behind the 6s load`);
   assert.ok(at.slow - at.ready >= 5_500, "the slow chat's own send waited for its load");

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { rmTemp } from "./_rmTemp.mjs";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -20,7 +21,7 @@ const cliEntry = path.join(here, "..", "packages", "cli", "dist", "entry.js");
 async function removeTemp(dir) {
   for (let attempt = 0; attempt < 15; attempt++) {
     try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+      rmTemp(dir);
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 200));

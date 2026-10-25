@@ -15,6 +15,7 @@
 // against a temp ARES_HOME; nothing touches the real ~/.ares.
 
 import test from "node:test";
+import { rmTemp } from "./_rmTemp.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -92,7 +93,7 @@ test("attach detaches cleanly when stdin is closed instead of crashing", async (
   const home = makeAresHome();
   t.after(() => {
     server.close();
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    fs.rmTemp(home);
   });
 
   const result = await runAttach(port, home);

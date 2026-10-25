@@ -248,8 +248,13 @@ export class AnthropicProvider implements Provider {
         // default — the owner gets an answer, not a 400 read as "an anthropic
         // error" on DeepSeek. The desktop clamps the dial too; this is the
         // backstop for whatever it missed.
+        // A thinking PASSBACK 400 is the next branch's, not this one: it also
+        // says "thinking" and carries invalid_request_error, but its cure is
+        // stripping the history's thinking blocks, which this branch does not
+        // do (v0.66.0 release gate caught the overlap).
         if (
           !effortRetried &&
+          !/passed back/i.test(errText) &&
           /effort|thinking|reasoning/i.test(errText) &&
           /not supported|unsupported|invalid|does not support|unknown|unexpected|not a valid/i.test(errText) &&
           (body.output_config !== undefined || body.thinking !== undefined)

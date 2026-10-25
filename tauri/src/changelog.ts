@@ -40,7 +40,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.66.2",
+    version: "0.66.3",
     date: "October 2026",
     title: "Ares for people",
     tagline: "No more guessing: Ares sets itself up with you, each agent has one brain that stays put, and the settings are in plain words.",

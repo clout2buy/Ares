@@ -159,7 +159,10 @@ test("a turn whose preparation never settles can be stopped, and the next messag
       "the message after the hung turn got its reply",
     );
   } finally {
-    rmSync(workspace, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    // Windows releases a just-exited process's directory handles a beat after
+    // `exit` fires; a bare rmSync here hit EBUSY twice in a row on the v0.66
+    // release gate (the assertions had all passed). Retry is the cure.
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });

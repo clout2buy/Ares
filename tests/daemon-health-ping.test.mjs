@@ -56,8 +56,8 @@ test("a ping mid-turn gets a pong describing the stuck turn, and a stall report 
     try { write({ type: "exit" }); } catch {}
     await new Promise((r) => setTimeout(r, 800));
     if (child.exitCode === null) child.kill();
-    rmSync(workspace, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
   assert.equal(pong.nonce, "n1");
   const turn = pong.turns.find((t) => t.sessionId === "stuck-chat");
@@ -93,6 +93,6 @@ test("desktop health: a missing pong reads as unresponsive, and quiet turns expl
     assert.equal(h.loopStuckNote({ at: 0, queued: 0, loop: { busyWith: "send", forMs: 5_000 }, turns: [] }), null);
     assert.match(h.loopStuckNote({ at: 0, queued: 3, loop: { busyWith: "session_open", forMs: 31_000 }, turns: [] }), /"session_open" for 31s; 3 requests waiting/);
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });

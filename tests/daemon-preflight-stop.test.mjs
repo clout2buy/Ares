@@ -214,7 +214,7 @@ test("Stop during daemon pre-admission skips optional preflight and the next exa
     assert.equal(kernel.getInput(nextInputId)?.state, "consumed");
   } finally {
     kernel?.close();
-    rmSync(workspace, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });

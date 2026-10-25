@@ -20,7 +20,7 @@ const cliEntry = path.join(here, "..", "packages", "cli", "dist", "entry.js");
 async function removeTemp(dir) {
   for (let attempt = 0; attempt < 15; attempt++) {
     try {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 200));

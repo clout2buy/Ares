@@ -103,7 +103,7 @@ test("malformed frames, primary delete and back-to-back sends never kill or wedg
     try { write({ type: "exit" }); } catch { /* already gone */ }
     await new Promise((r) => setTimeout(r, 800));
     if (child.exitCode === null) child.kill();
-    rmSync(workspace, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });

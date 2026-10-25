@@ -250,8 +250,8 @@ test("daemon permission denial cancels the exact owner and the immediate next me
     );
   } finally {
     kernel?.close();
-    rmSync(workspace, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
-    rmSync(outside, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });

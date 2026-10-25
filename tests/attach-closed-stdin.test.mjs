@@ -92,7 +92,7 @@ test("attach detaches cleanly when stdin is closed instead of crashing", async (
   const home = makeAresHome();
   t.after(() => {
     server.close();
-    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   });
 
   const result = await runAttach(port, home);

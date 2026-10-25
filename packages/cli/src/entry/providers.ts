@@ -370,6 +370,25 @@ export function effortLadderFor(
   return undefined; // unknown — let the client fall back
 }
 
+/** Clamp a saved effort to the nearest rung this model really honours, so a
+ *  level pinned for one model survives a switch to another (Opus "medium" →
+ *  Kimi high/max) instead of 400-ing the provider every turn. Ladder unknown
+ *  or empty = the level passes through untouched. */
+export function clampEffortToModel(provider: string, modelId: string, level: string): string {
+  const ladder = effortLadderFor(provider, modelId);
+  if (!ladder || ladder.length === 0 || ladder.includes(level)) return level;
+  const order = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  const want = order.indexOf(level);
+  if (want < 0) return ladder[0]!;
+  let best = ladder[0]!;
+  let bestGap = Number.POSITIVE_INFINITY;
+  for (const rung of ladder) {
+    const gap = Math.abs(order.indexOf(rung) - want);
+    if (gap < bestGap) { bestGap = gap; best = rung; }
+  }
+  return best;
+}
+
 /** Public entry: discovery + the effort ladder stamped onto every row. */
 export async function daemonModelCatalog(provider: string): Promise<DaemonModelOption[]> {
   const rows = await daemonModelCatalogRaw(provider);

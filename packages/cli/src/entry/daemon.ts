@@ -83,7 +83,7 @@ import { garrisonCommand } from "./garrisonCmd.js";
 import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { fileURLToPath } from "node:url";
 import { cleanCommandId } from "./permissions.js";
-import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, type ProviderSelection } from "./providers.js";
+import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, clampEffortToModel, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliVersion, transitionPermissionMode } from "./runtime.js";
 import { LiveSession, chatContextBudget, contextControls, primeContextCeilings, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { PluginHost } from "@ares/plugins";
@@ -340,6 +340,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
      * They flush synchronously from that owner's input_admitted observer, after
      * its FIFO reservation is guaranteed to win. */
     preparingSteers: Map<string, { text: string; sessionId?: string }>;
+    /** Ordinary sends that arrived while the owner turn was still preparing
+     * (before its input crossed SQLite admission). Turned into steers, they
+     * flushed into an engine that was idle, the queue yielded to a correction
+     * nobody owned, and the FIRST turn settled on a 60s timeout with no reply
+     * — two quick sends wedged the chat. They are the next turns instead:
+     * re-entered through the command loop, in order, when this turn settles. */
+    queuedSends: DaemonInputCommand[];
     /** Truthful live boundary for steering. A provider attempt can be superseded
      * immediately; an executing tool must settle before its correction lands. */
     steeringPhase: "idle" | "preparing" | "generation" | "action" | "boundary" | "settling";
@@ -389,6 +396,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     deferredSteers: new Map(),
     settledSteerInputIds: new Set(),
     preparingSteers: new Map(),
+    queuedSends: [],
     steeringPhase: "idle",
     activeToolIds: new Set(),
     startupRecoveryQueue: [],
@@ -553,6 +561,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     entry.pendingSteerInputIds.size === 0 &&
     entry.pendingSteerTasks.size === 0 &&
     entry.preparingSteers.size === 0 &&
+    entry.queuedSends.length === 0 &&
     entry.deferredSteers.size === 0 &&
     entry.activeToolIds.size === 0 &&
     entry.steeringPhase === "idle" &&
@@ -1361,7 +1370,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     entry.live.tenant = agent ? { role: "owner", agent: agent.id } : (entry.live.tenant?.role === "owner" ? { role: "owner" } : entry.live.tenant);
     // An agent's own effort (its profile) wins in its chats; none set = the
     // owner's global dial.
-    const effort = agent?.reasoningLevel && isReasoningLevel(agent.reasoningLevel) ? agent.reasoningLevel : ownerReasoning;
+    // Clamped to a rung the agent's CURRENT model honours: a level saved for
+    // one model must never reach another model's wire as a 400.
+    const wanted = agent?.reasoningLevel && isReasoningLevel(agent.reasoningLevel) ? agent.reasoningLevel : ownerReasoning;
+    const clamped = wanted ? clampEffortToModel(entry.live.selection.provider.name, entry.live.selection.model, wanted) : wanted;
+    const effort = isReasoningLevel(clamped) ? clamped : wanted;
     if (effort && entry.live.reasoningLevel !== effort) {
       entry.live.session.setReasoningLevel(effort);
       entry.live.reasoningLevel = effort;
@@ -1493,6 +1506,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       deferredSteers: new Map(),
       settledSteerInputIds: new Set(),
       preparingSteers: new Map(),
+      queuedSends: [],
       steeringPhase: "idle",
       activeToolIds: new Set(),
       startupRecoveryQueue: [],
@@ -2168,6 +2182,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       });
     }
     entry.preparingSteers.clear();
+    // Stop means stop: a send queued behind this turn must not start behind
+    // the owner's back once the turn it waited for is gone.
+    for (const queued of entry.queuedSends.splice(0)) {
+      tagEmit(queued.sessionId, {
+        type: "input_rejected",
+        inputId: queued.inputId,
+        reason: "turn_cancelling",
+        retryable: true,
+      });
+    }
     for (const steerInputId of entry.pendingSteerInputIds) {
       entry.live.session.interrupt(steerInputId);
     }
@@ -2452,10 +2476,24 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       loopBusy = null;
       const command = await commands.nextCommand();
       if (!command) break;
+      // Every handler below reads sessionId as a string (map keys, snapshot
+      // paths, event tags). A number or object here reached resolveEntry and
+      // threw out of the loop — the desktop lost every session to one typo'd
+      // frame. Reject it on the wire instead; `undefined` still means primary.
+      if (command.sessionId !== undefined && (typeof command.sessionId !== "string" || !command.sessionId.trim() || command.sessionId.length > 1_024 || command.sessionId.includes("\0"))) {
+        process.stdout.write(JSON.stringify({ type: "daemon_error", error: `${command.type}: sessionId must be a non-empty string of at most 1024 characters` }) + "\n");
+        continue;
+      }
       loopBusy = { type: command.type ?? "unknown", ...(command.sessionId ? { sessionId: command.sessionId } : {}), since: Date.now() };
       if (command.type === "exit") break;
+      // One guard around the whole dispatch (the body is intentionally not
+      // re-indented): a handler that throws on a malformed field used to end
+      // this loop and with it the daemon. Turn runners detach into their own
+      // guarded closures, so this only ever catches synchronous dispatch and
+      // the awaits a handler does inline — a bad frame costs one daemon_error.
+      try {
       if (command.type === "reasoning") {
-        const level = command.level?.toLowerCase();
+        const level = typeof command.level === "string" ? command.level.toLowerCase() : undefined;
         if (!isReasoningLevel(level)) {
           process.stdout.write(JSON.stringify({ type: "daemon_error", error: `reasoning requires level: ${REASONING_LEVELS.join("|")}` }) + "\n");
           continue;
@@ -2746,6 +2784,46 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             ),
           });
           entry.live.selection = selection;
+          // WHOSE model did the owner just change? (field log 2026-10-25: a
+          // DeepSeek agent chat pinned to deepseek, then re-pinned to the
+          // Settings default — ollama — 13 times in one session, because
+          // every switch rewrote the daemon default AND the desktop replayed
+          // that default back onto the agent's chat. Three pickers, one
+          // model, endless ping-pong.)
+          //   • an agent's chat → it is the AGENT's brain now (saved on the
+          //     profile, so every chat of that agent follows), and the
+          //     owner's default for new agents is untouched;
+          //   • the primary lane → the default new agents start with;
+          //   • any other plain chat → that chat only.
+          const switchedAgent = command.sessionId && command.sessionId !== DEFAULT_SID ? desktopAgents.agentForSession(command.sessionId) : undefined;
+          if (switchedAgent) {
+            const { persona } = await desktopAgents.update(switchedAgent.id, { provider, model });
+            process.stdout.write(JSON.stringify({ type: "agent_updated", agent: desktopAgents.wire(persona) }) + "\n");
+            for (const sid of persona.desktopThreads ?? []) {
+              if (sid === command.sessionId) continue;
+              const other = sessions.get(sid);
+              if (other) await moveToAgentBrain(other, sid);
+            }
+            tagEmit(command.sessionId, {
+              type: "model_switched",
+              provider: providerFamilyForSelection(selection),
+              model: selection.model,
+              previousProvider: providerFamilyForSelection(previous),
+              previousModel: previous.model,
+              agentId: switchedAgent.id,
+            });
+            continue;
+          }
+          if (command.sessionId && command.sessionId !== DEFAULT_SID) {
+            tagEmit(command.sessionId, {
+              type: "model_switched",
+              provider: providerFamilyForSelection(selection),
+              model: selection.model,
+              previousProvider: providerFamilyForSelection(previous),
+              previousModel: previous.model,
+            });
+            continue;
+          }
           mainSelection = selection;
           mainProviderFamily = providerFamilyForSelection(selection);
           const settings = await loadUiSettings();
@@ -3880,6 +3958,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           process.stdout.write(JSON.stringify({ type: "daemon_error", error: "session_delete requires id" }) + "\n");
           continue;
         }
+        // The primary is the session every untagged send resolves to. The
+        // guard below only skipped its in-memory dispose; deleteSession still
+        // removed it from disk, the UI got ok:true, and every later send died
+        // with "Session does not exist" until the daemon was restarted.
+        if (id === primaryEntry.live.session.meta.id) {
+          process.stdout.write(JSON.stringify({
+            type: "session_deleted",
+            id,
+            ok: false,
+            error: "the primary session cannot be deleted while the daemon runs on it",
+          }) + "\n");
+          continue;
+        }
         try {
           // Drop any live in-memory entry so a deleted session can't resurrect,
           // then remove it from disk. The primary session is never deleted.
@@ -4301,6 +4392,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         })
           .then((file) => {
             tagEmit(sid, { type: "openai_login_done", ok: true, email: file.profile.email ?? null, plan: file.profile.planType ?? null });
+            // A fresh ChatGPT session is a usable key: the first-run setup
+            // moves on the moment it lands (Claude already did this).
+            process.stdout.write(JSON.stringify({ type: "provider_key_set", provider: "openai", hasKey: true }) + "\n");
           })
           .catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -4333,6 +4427,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         })
           .then(() => {
             tagEmit(sid, { type: "kimi_login_done", ok: true, detail: "subscription" });
+            process.stdout.write(JSON.stringify({ type: "provider_key_set", provider: "kimi", hasKey: true }) + "\n");
           })
           .catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -4753,7 +4848,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type = "send";
         command.goal = text.trim();
       }
-      if (command.type !== "send" || !command.goal) {
+      // `!command.goal` let a truthy non-string (goal: 5) through to
+      // semanticUserMessage, where `.replace` threw and killed the daemon.
+      if (command.type !== "send" || typeof command.goal !== "string" || !command.goal) {
         tagEmit(command.sessionId, { type: "daemon_error", error: "expected {type:\"send\", goal:string}" });
         continue;
       }
@@ -4902,7 +4999,22 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           continue;
         }
         if (entry.steeringPhase === "preparing") {
-          bufferPreparingSteer(entry, command.sessionId, goal.trim(), inputId);
+          if (idleSteer) {
+            // An explicit steer keeps its correction semantics.
+            bufferPreparingSteer(entry, command.sessionId, goal.trim(), inputId);
+            continue;
+          }
+          // A plain send this early is the NEXT turn, not a correction to one
+          // the engine has not even admitted yet (see DaemonEntry.queuedSends).
+          // The command re-enters the loop untouched so routing, personas and
+          // recovery bookkeeping see the owner's original frame.
+          entry.queuedSends.push({ ...command, inputId });
+          tagEmit(command.sessionId, {
+            type: "input_queued",
+            inputId,
+            reason: "turn_preparing",
+            position: entry.queuedSends.length,
+          });
           continue;
         }
         if (entry.steeringPhase === "settling") {
@@ -4931,6 +5043,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       }
       const inheritedHandoffCancellation = successorHandoff?.cancelRequested === true;
       const inputDelivery = canonicalInput?.delivery ?? (idleSteer ? "steer" : "queue");
+      // An agent's chat runs on the agent's brain, whatever any picker did
+      // to this session in between (the 2026-10-25 ping-pong log: deepseek
+      // agent, ollama turns). Self-heal here, at the one door every turn
+      // walks through, and remind the model who it is on every turn — a
+      // role and rules that only live at the bottom of a 14k system prompt
+      // read as "background", not as facts (owner: "assigned roles and
+      // rules don't really seem to be facts").
+      if (command.sessionId && command.sessionId !== DEFAULT_SID) {
+        const turnAgent = desktopAgents.agentForSession(command.sessionId);
+        if (turnAgent) {
+          await moveToAgentBrain(entry, command.sessionId).catch(() => undefined);
+          const rules = (turnAgent.rules ?? []).map((r) => `- ${r}`).join("\n");
+          entry.live.queueSystemReminder(
+            `You are ${turnAgent.name}. Your role: ${turnAgent.instructions.trim().replace(/\s+/g, " ").slice(0, 600) || "a general assistant"}.${rules ? `\nYour standing rules — these are facts about you, not suggestions, and they hold for this whole reply:\n${rules}` : ""}`,
+            "instructions",
+            "agent-identity",
+          );
+        }
+      }
       entry.turnActive = true;
       entry.activeInputId = inputId;
       // The fence for "background work THIS turn started" — what a Stop takes
@@ -5783,6 +5914,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               inputId: deferred.inputId,
             });
           }
+          // Sends that arrived before this turn's admission run next, in the
+          // order they were typed, behind any correction the owner consumed.
+          const queuedSends = entry.queuedSends.splice(0);
+          for (const queued of queuedSends) commands.enqueue(queued);
           try {
             await scheduleNextStartupRecovery(entry);
           } catch (recoveryErr) {
@@ -5796,7 +5931,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           tagEmit(command.sessionId, {
             type: "turn_settled",
             inputId,
-            continuing: settlementRecoveryScheduled || deferredCommands.length > 0 || Boolean(entry.startupRecoveryInputId),
+            continuing: settlementRecoveryScheduled || deferredCommands.length > 0 || queuedSends.length > 0 || Boolean(entry.startupRecoveryInputId),
           });
           // Event-first autonomy, finally with a producer. A settled turn is the
           // moment the operator should look again — the workspace just changed
@@ -5814,6 +5949,15 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // this unreachable, but a detached rejection here used to be silent.
         console.error(`turn runner escaped its guards: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       });
+      } catch (dispatchErr) {
+        const detail = dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr);
+        console.error(`command ${command.type} failed: ${dispatchErr instanceof Error ? dispatchErr.stack ?? detail : detail}`);
+        tagEmit(command.sessionId, {
+          type: "daemon_error",
+          error: `${command.type}: ${detail}`,
+          ...(typeof command.inputId === "string" ? { inputId: command.inputId } : {}),
+        });
+      }
     }
   } finally {
     setExtensionBrowserBridge(null);

@@ -22,6 +22,7 @@ export {
   type MemoryOverviewGroups,
   type OverviewOptions,
   type MemoryEditResult,
+  type MemoryLoadReport,
 } from "./memory/store.js";
 export { textSimilarity, isLowSignalUtterance, normalizeUtterance } from "./memory/similarity.js";
 export {
@@ -37,7 +38,7 @@ export {
   type RouterStoreLike,
   type SkipReason,
 } from "./memory/router.js";
-export { withConsolidationLock, type ConsolidationLockOptions } from "./memory/consolidationLock.js";
+export { withConsolidationLock, withFileLock, type ConsolidationLockOptions, type FileLockOptions } from "./memory/consolidationLock.js";
 export { isOperationalNoise } from "./memory/noise.js";
 export { diagnoseMemory, type MemoryDoctorReport, type DuplicateMemoryGroup } from "./memory/doctor.js";
 export { recall, type RecallResult, type RecallOptions, type RecallVectors } from "./memory/recall.js";

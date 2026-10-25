@@ -698,7 +698,10 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // Verification-spine disclosures (UNVERIFIED/UNRESOLVED/GUI-UNVERIFIED)
       // are deliberately NOT surfaced here — the owner asked for them gone.
       // They remain in diagnostics and in the model's own context.
-      const visible = /^(?:Provider failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down|Memory and workspace context took over|Can't reach the model's server)|retrying with a smaller recent-history window/i.test(text);
+      // "Pinned provider … failed" and "stayed overloaded" were missing here,
+      // so a pinned DeepSeek chat whose turn died showed NOTHING — the owner
+      // sent "Continue" four times into silence (field log 2026-10-25).
+      const visible = /^(?:Provider failed|Pinned provider|Pinned \S+ failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down|Memory and workspace context took over|Can't reach the model's server|The \S+ API key was rejected)|stayed overloaded through every retry|is overloaded upstream|retrying with a smaller recent-history window/i.test(text);
       if (!visible) break;
       const tone = /failed|couldn't run|down/i.test(text) ? "warn" : "dim";
       items.push({ kind: "notice", key: nextKey(), text: compact(text, 400), tone });
@@ -779,11 +782,17 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // An auth-class failure with NO model output ate the user's message for
       // nothing — hand it back to the composer so fixing the key is the only
       // thing standing between them and a resend (no retyping).
-      if (e.status === "failed" && session.authFailedTurn) {
+      // Any failed turn with NO model output ate the user's message — never
+      // silently. (Field log 2026-10-25: four "Continue"s in a row into a
+      // chat whose turns were dying with nothing on screen.) The message goes
+      // back to the draft and a notice says so; an auth death says what to fix.
+      if (e.status === "failed") {
         const lastUserIdx = items.reduce((found, it, i) => (it.kind === "user" ? i : found), -1);
-        const producedOutput = lastUserIdx >= 0 && items.slice(lastUserIdx + 1).some(
+        const after = lastUserIdx >= 0 ? items.slice(lastUserIdx + 1) : [];
+        const producedOutput = after.some(
           (it) => (it.kind === "assistant" && it.text.trim().length > 0) || it.kind === "tools",
         );
+        const explained = after.some((it) => it.kind === "notice" && it.tone === "bad");
         const lastUser = lastUserIdx >= 0 ? (items[lastUserIdx] as Extract<Item, { kind: "user" }>) : null;
         if (lastUser?.inputId && !producedOutput && (lastUser.text.trim() || lastUser.images?.length)) {
           const queued = session.recoverableDrafts ?? [];
@@ -796,7 +805,11 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
             items.push({
               kind: "notice",
               key: nextKey(),
-              text: "That send failed on authentication before the model saw it — your message is back in the draft. Fix the key or sign-in, then press send.",
+              text: session.authFailedTurn
+                ? "That send failed on authentication before the model saw it — your message is back in the draft. Fix the key or sign-in, then press send."
+                : explained
+                  ? "That one didn't go through — your message is back in the draft. Press send to try again."
+                  : "That one didn't go through: the model never answered. Your message is back in the draft — press send to try again, or pick another model under the input bar.",
               tone: "warn",
             });
           }

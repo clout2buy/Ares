@@ -126,8 +126,13 @@ export async function mindCommand(args: ParsedArgs): Promise<number> {
       return 2;
     }
     // Under the consolidation lock: an edit racing consolidate()'s whole-file
-    // rewrite in another process would be silently clobbered otherwise.
-    const result = await withConsolidationLock(memoryFile, () => store.edit(id, text));
+    // rewrite in another process would be silently clobbered otherwise. The
+    // store is re-opened INSIDE the lock — the one opened above predates it
+    // and could carry a stale view of whatever the lock holder just wrote (#24).
+    const result = await withConsolidationLock(memoryFile, async () => {
+      const fresh = await MemoryStore.open(memoryFile);
+      return fresh.edit(id, text);
+    });
     if (result === undefined) {
       const held = store.get(id) !== undefined;
       process.stderr.write(
@@ -169,7 +174,11 @@ export async function mindCommand(args: ParsedArgs): Promise<number> {
   }
 
   if (subcommand === "consolidate") {
-    const report = await withConsolidationLock(memoryFile, () => store.consolidate());
+    // Same rule as edit: open inside the lock, never consolidate a pre-lock snapshot.
+    const report = await withConsolidationLock(memoryFile, async () => {
+      const fresh = await MemoryStore.open(memoryFile);
+      return fresh.consolidate();
+    });
     if (!report) {
       process.stdout.write(notice("Mind", ["consolidation skipped — another Ares process holds the consolidation lock"], "warn"));
       return 0;

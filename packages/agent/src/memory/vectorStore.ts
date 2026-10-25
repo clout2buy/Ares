@@ -1,7 +1,7 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { expandHomePath, type AresAgentConfig } from "../config.js";
-import { readTextIfExists, writeFileAtomic } from "../files.js";
+import { writeFileAtomic } from "../files.js";
 import { lexicalEmbedding } from "./embed.js";
 import type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult } from "./types.js";
 
@@ -48,6 +48,10 @@ async function tryCreateSqliteStore(file: string, config: AresAgentConfig): Prom
 }
 
 class JsonMemoryStore implements MemoryStore {
+  /** Why the last read failed (anything but "no file yet"). While set, write()
+   *  refuses: overwriting a file we could not read is how memories vanish (#25). */
+  private unreadable: string | undefined;
+
   constructor(
     private readonly file: string,
     private readonly config: AresAgentConfig,
@@ -119,18 +123,44 @@ class JsonMemoryStore implements MemoryStore {
     await this.write(entries);
   }
 
+  /**
+   * ONLY a missing file is an empty store. A read error (EACCES, EISDIR, a
+   * flaky drive) or a parse error used to come back as [] too — and the next
+   * add() wrote that [] over the real file. Those now return [] for reading
+   * but arm `unreadable`, which makes every write refuse until a read succeeds.
+   */
   private async read(): Promise<MemoryEntry[]> {
-    const raw = await readTextIfExists(this.file, 20_000_000);
-    if (!raw) return [];
+    let raw: string;
+    try {
+      raw = await readFile(this.file, "utf8");
+    } catch (err) {
+      if ((err as { code?: unknown }).code === "ENOENT") {
+        this.unreadable = undefined;
+        return [];
+      }
+      this.unreadable = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[memory] ${this.file} unreadable — store is READ-ONLY until fixed: ${this.unreadable}\n`);
+      return [];
+    }
+    if (raw.trim() === "") {
+      this.unreadable = undefined;
+      return [];
+    }
     try {
       const parsed = JSON.parse(raw) as { memories?: MemoryEntry[] };
+      this.unreadable = undefined;
       return (parsed.memories ?? []).map(normalizeEntry).filter(Boolean) as MemoryEntry[];
-    } catch {
+    } catch (err) {
+      this.unreadable = `invalid JSON: ${err instanceof Error ? err.message : String(err)}`;
+      process.stderr.write(`[memory] ${this.file} unreadable — store is READ-ONLY until fixed: ${this.unreadable}\n`);
       return [];
     }
   }
 
   private async write(entries: readonly MemoryEntry[]): Promise<void> {
+    if (this.unreadable !== undefined) {
+      throw new Error(`refusing to write memory: ${this.file} could not be read (${this.unreadable})`);
+    }
     await mkdir(path.dirname(this.file), { recursive: true });
     await writeFileAtomic(this.file, JSON.stringify({ version: 1, memories: entries }, null, 2) + "\n");
   }

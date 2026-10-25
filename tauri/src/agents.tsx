@@ -10,6 +10,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import "./agents.css";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { playRig, POSE_SCRIPTS, poseStateOf, type PoseName, type RigState } from "./avatarRig";
+import { EFFORT_META, effectiveEffort, effortLevelsFor, type ReasoningLevel } from "./state/session";
 
 export const ARES_AGENT_ID = "ares";
 
@@ -68,8 +69,23 @@ export interface AgentMemoryVm {
   busy?: boolean;
 }
 
-/** Effort levels an agent can pin (the daemon's ReasoningLevel ids). */
-export const AGENT_EFFORTS: Array<[string, string]> = [["off", "Off"], ["minimal", "Minimal"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra high"], ["max", "Max"]];
+/** The effort rungs THIS model really honours, as [id, label] rows — the
+ *  ladder the daemon discovered for it, never a fixed list. Empty = the model
+ *  does no extended thinking, so no effort control is shown at all. (A fixed
+ *  off→max list here let people pin rungs their model rejects: a 400 from the
+ *  provider every turn, read as "an anthropic error on DeepSeek".) */
+export function agentEffortRows(provider: string, model: string): Array<[string, string]> {
+  if (!provider || !model) return [];
+  return effortLevelsFor(provider, model).map((level): [string, string] => [level, EFFORT_META[level].label]);
+}
+
+/** The label for a saved effort on this model: the rung it will actually run
+ *  at ("" = the model's own default). */
+export function agentEffortLabel(provider: string, model: string, saved: string): string {
+  if (!saved) return "Default";
+  const level = effectiveEffort(provider, model, saved as ReasoningLevel);
+  return EFFORT_META[level]?.label ?? saved;
+}
 
 /** Starting points — one click fills the form; everything stays editable. */
 export const AGENT_TEMPLATES: Array<{ name: string; emoji: string; color: string; role: string }> = [
@@ -805,14 +821,16 @@ export function AgentEditor({
         <details className="agentMore" open={Boolean(existing && (draft.effort || draft.chatModel || draft.rules || draft.workspaceId))}>
           <summary>More options</summary>
 
-          <label className="agentField">
-            <span>Effort</span>
-            <select value={draft.effort} onChange={(e) => set("effort", e.target.value)}>
-              <option value="">Same as everyone (the global dial)</option>
-              {AGENT_EFFORTS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-            </select>
-            <em className="agentFieldHint">How hard they think before answering. Higher is smarter and slower.</em>
-          </label>
+          {agentEffortRows(draft.provider, draft.model).length > 0 ? (
+            <label className="agentField">
+              <span>Effort</span>
+              <select value={draft.effort} onChange={(e) => set("effort", e.target.value)}>
+                <option value="">Default (the model decides)</option>
+                {agentEffortRows(draft.provider, draft.model).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+              </select>
+              <em className="agentFieldHint">How hard they think before answering. Higher is smarter and slower.</em>
+            </label>
+          ) : null}
 
           <label className="agentField">
             <span>Standing rules, one per line</span>
@@ -929,7 +947,8 @@ export function AgentComposerMeta({
   }, [provider, requestCatalog]);
   const options = pendingProvider ? models : [...new Set([agent.model, ...models])].filter(Boolean);
   const effort = agent.reasoningLevel ?? "";
-  const efforts: Array<[string, string]> = [["", "Default"], ...AGENT_EFFORTS];
+  const ladder = agentEffortRows(agent.provider, agent.model);
+  const efforts: Array<[string, string]> = [["", "Default"], ...ladder];
   const providerList = [...new Set([agent.provider, ...providers])].filter(Boolean);
   const [open, setOpenState] = useState<"provider" | "model" | "effort" | null>(null);
   const setOpen = (next: typeof open | ((o: typeof open) => typeof open)) => {
@@ -970,10 +989,14 @@ export function AgentComposerMeta({
       <button type="button" className="composerPick" data-open={open === "model" ? "1" : "0"} onClick={() => setOpen((o) => (o === "model" ? null : "model"))} title={`${agent.name}'s model (${agent.provider})`}>
         <span>model</span>{agent.model || "—"}
       </button>
-      <i className="composerMetaDot" aria-hidden="true" />
-      <button type="button" className="composerPick" data-open={open === "effort" ? "1" : "0"} onClick={() => setOpen((o) => (o === "effort" ? null : "effort"))} title={`How hard ${agent.name} thinks before answering`}>
-        <span>effort</span>{efforts.find(([v]) => v === effort)?.[1] ?? effort}
-      </button>
+      {ladder.length > 0 ? (
+        <>
+          <i className="composerMetaDot" aria-hidden="true" />
+          <button type="button" className="composerPick" data-open={open === "effort" ? "1" : "0"} onClick={() => setOpen((o) => (o === "effort" ? null : "effort"))} title={`How hard ${agent.name} thinks before answering`}>
+            <span>effort</span>{agentEffortLabel(agent.provider, agent.model, effort)}
+          </button>
+        </>
+      ) : null}
       {open ? (
         <div className="composerMenu" role="listbox" data-kind={open}>
           {open === "model" && pendingProvider ? <div className="composerMenuHead">Pick a {pendingProvider} model</div> : null}

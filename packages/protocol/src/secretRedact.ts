@@ -20,7 +20,14 @@ const SECRET_PATTERNS: RegExp[] = [
   /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g,
   // Standalone JWTs and other long, multi-segment dotted bearer-style tokens.
   // Requiring three substantial segments avoids ordinary versions and hosts.
-  /\b[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]{6,}){2,}\b/g,
+  //
+  // The segments are fenced with lookarounds, NOT \b, and bounded. `-` is a
+  // non-word character, so with \b every hyphen inside a long base64url run was
+  // a fresh start position and each one re-scanned the rest of the run: a 400KB
+  // tool-error blob took 14s and froze the daemon's event loop (issue #28). The
+  // lookbehind only lets a match begin where a run begins, so each run is walked
+  // once; the segment cap bounds the backtrack when no dot follows.
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{6,4096}(?:\.[A-Za-z0-9_-]{6,4096}){2,}(?![A-Za-z0-9_-])/g,
   // HTTP Authorization headers. Bound the token to its real character set so
   // trailing JSON punctuation is not consumed and serialization stays valid.
   /\b(?:Proxy-)?Authorization\s*:\s*Basic\s+[A-Za-z0-9+/=]{8,}/gi,
@@ -49,12 +56,27 @@ const UNQUOTED_SECRET_FIELD =
   /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|client[_-]?secret|private[_-]?key|secret|password|passphrase|authorization|credential|cookie)\b["']?\s*[:=]\s*)([A-Za-z0-9._~+/=-]{6,})/gi;
 
 /**
+ * The most text one call will scan. The callers are synchronous logging paths
+ * (frictionLog, crashLog, reliabilityTriage) that hand over whole tool-error
+ * blobs uncapped; every pattern above is linear now, but a ceiling keeps a
+ * multi-megabyte paste from ever owning the event loop again. Anything past it
+ * is dropped with a marker rather than passed through unscanned - a truncated
+ * log is cheap, a leaked key is not.
+ */
+export const MAX_REDACT_CHARS = 2 * 1024 * 1024;
+
+/**
  * Replace anything that looks like a credential in `text` with `[REDACTED]`.
- * Safe to call on arbitrary/untrusted strings - never throws.
+ * Safe to call on arbitrary/untrusted strings - never throws. Input beyond
+ * MAX_REDACT_CHARS is cut, never returned unredacted.
  */
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
+  if (out.length > MAX_REDACT_CHARS) {
+    const dropped = out.length - MAX_REDACT_CHARS;
+    out = `${out.slice(0, MAX_REDACT_CHARS)}\n…[${dropped} more chars dropped: too large to redact]`;
+  }
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, "[REDACTED]");
   }

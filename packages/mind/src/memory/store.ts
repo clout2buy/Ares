@@ -15,6 +15,7 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { writeFileAtomic } from "../io.js";
 import { mindPaths } from "../paths.js";
+import { withFileLock } from "./consolidationLock.js";
 import { currentStrength, livenessScore, reinforce, weaken } from "./strength.js";
 import { recall, type RecallOptions, type RecallResult } from "./recall.js";
 import { contentHash, type EmbedIndex, type Embedder } from "./embedIndex.js";
@@ -142,12 +143,141 @@ export function nodesInScope<N extends { scope?: string }>(nodes: readonly N[], 
 
 const scopedNodes = nodesInScope<MemoryNode>;
 
+/** What the loader could and could not make of the file — surfaced so a
+ *  doctor/CLI can say "3 lines were unreadable" instead of silently thinning. */
+export interface MemoryLoadReport {
+  /** Lines that were not a memory record (invalid JSON, `null`, `{}`, `"x"`...).
+   *  Skipped on load and counted; the lines around them load normally. */
+  malformed: number;
+  /** Lines from a newer schema than this binary understands (held verbatim). */
+  newerSchema: number;
+  /** Set when the file exists but could not be read at all (EACCES, EISDIR, a
+   *  flaky drive). The store opens EMPTY and refuses every persist. */
+  unreadable?: string;
+}
+
+/** The on-disk file, parsed: live nodes, pass-through lines, what was fixed. */
+interface LoadedFile {
+  nodes: Map<string, MemoryNode>;
+  quarantined: string[];
+  /** Something was backfilled/sanitized and the file deserves a rewrite. */
+  repaired: boolean;
+  report: MemoryLoadReport;
+  /** Identity of the bytes we read — refresh() compares against this. */
+  stamp: FileStamp | undefined;
+}
+
+interface FileStamp {
+  mtimeMs: number;
+  size: number;
+}
+
+/** A record is a memory node only if it has the string id we key by — `null`,
+ *  `{}`, `"x"` and `[1]` all parse as JSON yet are not nodes. The old loader
+ *  threw on `parsed.v` for these and the throw escaped to open()'s catch-all,
+ *  which then persisted the half-loaded map over the file (#25). */
+function isNodeRecord(value: unknown): value is MemoryNode & { v?: unknown } {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && typeof (value as { id?: unknown }).id === "string";
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
+}
+
+async function statStamp(file: string): Promise<FileStamp | undefined> {
+  try {
+    const st = await fs.stat(file);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse the memory file. ONLY a missing file is "no memory yet". Any other
+ * read failure marks the result unreadable (and the store refuses to write —
+ * overwriting a file we could not read is how memories vanished in the field,
+ * #25). Line by line: a malformed line is skipped and counted, and loading
+ * CONTINUES to the next line — one bad byte must never cost the lines after it.
+ */
+async function loadFile(file: string): Promise<LoadedFile> {
+  const nodes = new Map<string, MemoryNode>();
+  const quarantined: string[] = [];
+  const report: MemoryLoadReport = { malformed: 0, newerSchema: 0 };
+  let repaired = false;
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (err) {
+    if (!isEnoent(err)) {
+      report.unreadable = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[mind] memory file unreadable — store is READ-ONLY until fixed: ${file}: ${report.unreadable}\n`);
+    }
+    return { nodes, quarantined, repaired, report, stamp: undefined };
+  }
+  const stamp = await statStamp(file);
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      parsed = undefined;
+    }
+    if (!isNodeRecord(parsed)) {
+      // Not a node (half-written line from a crash, or valid-but-foreign JSON).
+      // Skip it, count it, keep going — the lines after it are still memory.
+      // Not carried forward: a torn line is never recoverable, and the v8
+      // doctrine is that every line of a persisted file parses.
+      report.malformed++;
+      continue;
+    }
+    // A record from a NEWER schema than we understand: never load it (we'd
+    // mangle fields we don't know), never drop it. Hold it verbatim so the
+    // next persist() rewrites it untouched — non-destructive forward-compat.
+    if (typeof parsed.v === "number" && parsed.v > MEMORY_SCHEMA_VERSION) {
+      report.newerSchema++;
+      quarantined.push(trimmed);
+      continue;
+    }
+    // Missing `v` = the pre-versioned shape → backfill to version 1.
+    const versioned = typeof parsed.v === "number" ? (parsed as MemoryNode) : { ...(parsed as MemoryNode), v: MEMORY_SCHEMA_VERSION };
+    repaired ||= versioned.v !== parsed.v;
+    const node = sanitizeNode(versioned);
+    repaired ||= node.content !== parsed.content;
+    nodes.set(node.id, node);
+  }
+  const ids = new Set(nodes.keys());
+  for (const [id, node] of nodes) {
+    const links = [...new Set(node.links ?? [])].filter((link) => link !== id && ids.has(link));
+    if (!Array.isArray(node.links) || links.length !== node.links.length) {
+      nodes.set(id, { ...node, links });
+      repaired = true;
+    }
+  }
+  return { nodes, quarantined, repaired, report, stamp };
+}
+
 export class MemoryStore {
   /** V4 semantic seeds: optional embedder + sidecar index. Absent → classic store. */
   private embedder?: Embedder;
   private embedIndex?: EmbedIndex;
   /** Serializes background embedding refreshes; errors never escape the chain. */
   private embedQueue: Promise<void> = Promise.resolve();
+  /** Serializes persist()/refresh() on this instance so two overlapping writes
+   *  never interleave their merge steps. */
+  private writeQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * The file as THIS instance last saw it (serialized per id), plus its stat
+   * stamp. persist() is a three-way merge of base ↔ disk ↔ memory: a node we
+   * did not change takes whatever is on disk now, so a sibling process's
+   * writes since our open() survive ours (#24, #23). An empty base = we have
+   * never read the file (in-memory store, or the file did not exist).
+   */
+  private base: Map<string, string>;
+  private baseQuarantined: Set<string>;
+  private stamp: FileStamp | undefined;
 
   private constructor(
     private readonly file: string,
@@ -157,60 +287,100 @@ export class MemoryStore {
      * understand. Held verbatim and re-written on every persist() so an older
      * Ares can never silently destroy memory a newer one wrote.
      */
-    private readonly quarantined: string[] = [],
-  ) {}
+    private quarantined: string[] = [],
+    /** What open() could and could not read. See {@link MemoryLoadReport}. */
+    readonly loadReport: MemoryLoadReport = { malformed: 0, newerSchema: 0 },
+    stamp?: FileStamp,
+  ) {
+    this.base = snapshot(nodes);
+    this.baseQuarantined = new Set(quarantined);
+    this.stamp = stamp;
+  }
 
   /** Open (or create) a memory store at a root dir/file — the pluggable home. */
   static async open(root?: string): Promise<MemoryStore> {
     const file = root ? resolveFile(root) : mindPaths().memoryFile;
-    const nodes = new Map<string, MemoryNode>();
-    const quarantined: string[] = [];
-    let repaired = false;
-    try {
-      const raw = await fs.readFile(file, "utf8");
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let parsed: MemoryNode;
-        try {
-          parsed = JSON.parse(trimmed) as MemoryNode;
-        } catch {
-          // Genuinely corrupt (half-written / invalid JSON): skip — don't crash.
-          continue;
-        }
-        // A record from a NEWER schema than we understand: never load it (we'd
-        // mangle fields we don't know), never drop it. Hold it verbatim so the
-        // next persist() rewrites it untouched — non-destructive forward-compat.
-        if (typeof parsed.v === "number" && parsed.v > MEMORY_SCHEMA_VERSION) {
-          quarantined.push(trimmed);
-          continue;
-        }
-        // Missing `v` = the pre-versioned shape → backfill to version 1.
-        const versioned = typeof parsed.v === "number" ? parsed : { ...parsed, v: MEMORY_SCHEMA_VERSION };
-        repaired ||= versioned.v !== parsed.v;
-        const node = sanitizeNode(versioned);
-        repaired ||= node.content !== parsed.content;
-        nodes.set(node.id, node);
-      }
-    } catch {
-      // no memory yet
-    }
-    const ids = new Set(nodes.keys());
-    for (const [id, node] of nodes) {
-      const links = [...new Set(node.links)].filter((link) => link !== id && ids.has(link));
-      if (links.length !== node.links.length) {
-        nodes.set(id, { ...node, links });
-        repaired = true;
-      }
-    }
-    const store = new MemoryStore(file, nodes, quarantined);
-    if (repaired) await store.persist();
+    const loaded = await loadFile(file);
+    const store = new MemoryStore(file, loaded.nodes, loaded.quarantined, loaded.report, loaded.stamp);
+    // A repair rewrite is a write like any other: it goes through the merge
+    // and is refused when the file was unreadable.
+    if (loaded.repaired && !loaded.report.unreadable) await store.persist();
     return store;
   }
 
   /** In-memory store (no file) — for tests and ephemeral runs. */
   static memory(): MemoryStore {
     return new MemoryStore("", new Map());
+  }
+
+  /** True when open() could not read an existing file: every persist() throws. */
+  get readOnly(): boolean {
+    return this.loadReport.unreadable !== undefined;
+  }
+
+  /**
+   * Pick up what other processes wrote since we last touched the file. Cheap
+   * (one stat) when nothing changed. A long-lived holder — the Mnemosyne
+   * server keeps ONE store open for its whole life (#23) — calls this before
+   * serving, so a recall reflects the CLI add that landed a minute ago instead
+   * of the snapshot from boot. Nodes this instance has changed in memory and
+   * not yet persisted keep their in-memory version.
+   */
+  async refresh(): Promise<boolean> {
+    if (!this.file || this.readOnly) return false;
+    const current = await statStamp(this.file);
+    if (sameStamp(current, this.stamp)) return false;
+    await this.enqueue(async () => {
+      const disk = await loadFile(this.file);
+      if (disk.report.unreadable) return;
+      this.mergeFromDisk(disk);
+      this.stamp = disk.stamp;
+    });
+    return true;
+  }
+
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.writeQueue.catch(() => undefined).then(work);
+    this.writeQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Fold the on-disk state into memory. Per id:
+   *   - changed by us since base (added/edited)  → ours wins
+   *   - removed by us since base                 → stays removed (a deliberate
+   *     forget()/prune beats a sibling's incidental reinforce of the same node)
+   *   - untouched by us                          → disk's version (or gone, if
+   *     disk dropped it)
+   *   - unknown to us and to base                → a sibling's new node, kept
+   * Then base := disk, so the next merge measures our changes from here.
+   */
+  private mergeFromDisk(disk: LoadedFile): void {
+    const removedByUs = new Set<string>();
+    for (const id of this.base.keys()) if (!this.nodes.has(id)) removedByUs.add(id);
+    for (const [id, node] of disk.nodes) {
+      if (removedByUs.has(id)) continue;
+      const ours = this.nodes.get(id);
+      const baseLine = this.base.get(id);
+      const changedByUs = ours !== undefined && JSON.stringify(ours) !== baseLine;
+      if (changedByUs) continue;
+      this.nodes.set(id, node);
+    }
+    for (const id of [...this.nodes.keys()]) {
+      if (disk.nodes.has(id)) continue;
+      const baseLine = this.base.get(id);
+      if (baseLine === undefined) continue; // ours, new
+      const ours = this.nodes.get(id);
+      if (ours !== undefined && JSON.stringify(ours) !== baseLine) continue; // ours, edited — keep
+      this.nodes.delete(id); // a sibling forgot it, and we did not touch it
+    }
+    // Pass-through lines: union, minus the ones a sibling already dropped and
+    // we never produced ourselves.
+    const keep = new Set<string>(disk.quarantined);
+    for (const line of this.quarantined) if (!this.baseQuarantined.has(line)) keep.add(line);
+    this.quarantined = [...keep];
+    this.base = snapshot(disk.nodes);
+    this.baseQuarantined = new Set(disk.quarantined);
   }
 
   all(): MemoryNode[] {
@@ -567,6 +737,11 @@ export class MemoryStore {
     const now = opts.now ?? new Date();
     const pool = scopedNodes(this.all(), opts.scope);
     const results = recall(cue, pool, await this.withCueVectors(cue, opts));
+    // Nothing surfaced → nothing to reinforce → nothing to write. A 0-hit
+    // recall used to rewrite the whole file from this instance's snapshot;
+    // from a server that opened the store at boot that erased every memory
+    // written since (#23). No hit, no touch.
+    if (results.length === 0) return results;
     for (const r of results) {
       const current = this.nodes.get(r.node.id);
       if (current) this.nodes.set(current.id, reinforce(current, now));
@@ -711,19 +886,53 @@ export class MemoryStore {
     return { insights, beliefs, updated };
   }
 
-  private async persist(): Promise<void> {
-    if (!this.file) return;
-    // Active nodes first, then any quarantined newer-schema lines verbatim — so
-    // a round-trip through an older binary never destroys forward-version data.
-    const lines = [...this.all().map((n) => JSON.stringify(n)), ...this.quarantined];
-    await writeFileAtomic(this.file, lines.length ? lines.join("\n") + "\n" : "");
+  /**
+   * Write the store: read-modify-write under the cross-process file lock.
+   * Every mutator used to rewrite the whole file from its own map, so two
+   * processes writing in the same second kept only the later one (#24) and a
+   * long-lived snapshot wiped everything newer on its first write (#23). Now:
+   * take the lock, re-read the file, merge (see mergeFromDisk), write, release.
+   * Refused outright when open() could not read the file — we will not
+   * overwrite what we never saw (#25).
+   */
+  private persist(): Promise<void> {
+    if (!this.file) return Promise.resolve();
+    if (this.readOnly) {
+      return Promise.reject(new Error(`refusing to write memory: ${this.file} could not be read at open (${this.loadReport.unreadable})`));
+    }
+    return this.enqueue(() =>
+      withFileLock(this.file, async () => {
+        const disk = await loadFile(this.file);
+        if (disk.report.unreadable) {
+          throw new Error(`refusing to write memory: ${this.file} became unreadable (${disk.report.unreadable})`);
+        }
+        this.mergeFromDisk(disk);
+        // Active nodes first, then pass-through lines verbatim — so a round-trip
+        // through an older binary never destroys forward-version data.
+        const lines = [...this.all().map((n) => JSON.stringify(n)), ...this.quarantined];
+        await writeFileAtomic(this.file, lines.length ? lines.join("\n") + "\n" : "");
+        this.base = snapshot(this.nodes);
+        this.baseQuarantined = new Set(this.quarantined);
+        this.stamp = await statStamp(this.file);
+      }),
+    );
   }
 
+  /**
+   * Merge exact-content duplicates WITHIN a tenant scope. The key carries the
+   * scope: content alone merged a guest's node into the owner's (an isolation
+   * break — the guest's activations and tags then rode on an owner memory) and
+   * vice versa (#26). The keeper is the node that carries the most standing:
+   * a confirmed hypothesis over a candidate, settled knowledge (semantic) over
+   * an episode, then the strongest — so a merge never demotes what the store
+   * already trusted most.
+   */
   private mergeDuplicateContent(now: Date): number {
     const byContent = new Map<string, MemoryNode[]>();
     for (const node of this.all()) {
-      const key = normalizeForDedup(node.content);
-      if (!key) continue;
+      const normalized = normalizeForDedup(node.content);
+      if (!normalized) continue;
+      const key = `${node.scope ?? ""}\u0000${normalized}`;
       const bucket = byContent.get(key) ?? [];
       bucket.push(node);
       byContent.set(key, bucket);
@@ -733,6 +942,10 @@ export class MemoryStore {
     for (const group of byContent.values()) {
       if (group.length < 2) continue;
       const sorted = [...group].sort((a, b) => {
+        const statusDelta = statusRank(b) - statusRank(a);
+        if (statusDelta !== 0) return statusDelta;
+        const kindDelta = kindRank(b) - kindRank(a);
+        if (kindDelta !== 0) return kindDelta;
         const strengthDelta = currentStrength(b, now) - currentStrength(a, now);
         if (strengthDelta !== 0) return strengthDelta;
         return b.activations - a.activations;
@@ -838,6 +1051,37 @@ function ageDays(at: string, now: Date): number {
 
 function normalizeForDedup(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Dedupe keeper precedence by Crucible status: confirmed > ordinary > candidate > archived. */
+function statusRank(node: MemoryNode): number {
+  switch (node.status) {
+    case "confirmed": return 3;
+    case undefined: return 2;
+    case "candidate": return 1;
+    default: return 0; // archived
+  }
+}
+
+/** Dedupe keeper precedence by kind: knowledge outranks a skill pointer outranks an episode. */
+function kindRank(node: MemoryNode): number {
+  switch (node.kind) {
+    case "semantic": return 2;
+    case "procedural": return 1;
+    default: return 0;
+  }
+}
+
+/** Per-id serialized view of a node map — the merge's "what did we last see". */
+function snapshot(nodes: ReadonlyMap<string, MemoryNode>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [id, node] of nodes) out.set(id, JSON.stringify(node));
+  return out;
+}
+
+function sameStamp(a: FileStamp | undefined, b: FileStamp | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.mtimeMs === b.mtimeMs && a.size === b.size;
 }
 
 

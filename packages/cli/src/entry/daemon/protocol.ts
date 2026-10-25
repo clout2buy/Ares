@@ -223,13 +223,22 @@ export class DaemonCommandRouter {
     try {
       for await (const line of rl) {
         if (!line.trim()) continue;
-        let command: DaemonInputCommand;
+        let parsed: unknown;
         try {
-          command = JSON.parse(line) as DaemonInputCommand;
+          parsed = JSON.parse(line);
         } catch {
           this.onError("invalid JSON command");
           continue;
         }
+        // A bare `null` line used to be dereferenced right here (`null.type`)
+        // and took the whole daemon — every open session — down with it. Any
+        // frame that is not an object with a string type is a protocol error
+        // answered on the wire, never a reason to exit.
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || typeof (parsed as { type?: unknown }).type !== "string") {
+          this.onError("command must be a JSON object with a string \"type\"");
+          continue;
+        }
+        const command = parsed as DaemonInputCommand;
         if (command.type === "permission_response" || command.type === "permission") {
           this.pushPermissionResponse(command);
         } else if (command.type === "ping" || command.type === "stall_report") {

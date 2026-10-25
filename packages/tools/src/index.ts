@@ -187,6 +187,7 @@ export { StripeTool, type StripeOutput } from "./Stripe.js";
 export { EmailTool, type EmailOutput } from "./Email.js";
 export { RequestUserActionTool, type RequestUserActionOutput } from "./RequestUserAction.js";
 export { SetUiEffectTool, type SetUiEffectOutput } from "./SetUiEffect.js";
+export { ChangeSettingTool, CHANGEABLE_SETTINGS, type ChangeSettingOutput, type ChangeableSetting } from "./ChangeSetting.js";
 export {
   makeEnterPlanModeTool,
   makeUpdatePlanDraftTool,
@@ -380,6 +381,7 @@ import { StripeTool } from "./Stripe.js";
 import { EmailTool } from "./Email.js";
 import { RequestUserActionTool } from "./RequestUserAction.js";
 import { SetUiEffectTool } from "./SetUiEffect.js";
+import { ChangeSettingTool } from "./ChangeSetting.js";
 import { WeatherTool } from "./Weather.js";
 import { RemindTool } from "./Remind.js";
 import { TelegramTool } from "./Telegram.js";
@@ -441,6 +443,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       EmailTool,
       RequestUserActionTool,
       SetUiEffectTool,
+      ChangeSettingTool,
       WeatherTool,
       RemindTool,
       TelegramTool,
@@ -485,6 +488,7 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       EmailTool,
       RequestUserActionTool,
       SetUiEffectTool,
+      ChangeSettingTool,
       WeatherTool,
       RemindTool,
       TelegramTool,

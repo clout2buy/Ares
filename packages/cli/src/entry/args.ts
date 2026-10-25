@@ -8,7 +8,11 @@ export interface ParsedArgs {
 export function parseArgs(argv: string[]): ParsedArgs {
   let command = "launcher";
   let rest = argv;
-  if (argv[0] === "--help" || argv[0] === "-h") {
+  // `--help` and `--version` are commands in flag clothing. Any other leading
+  // `--flag` used to leave the command at "launcher" — so `ares --version`
+  // mounted the Ink deck and, without a TTY, died in a React stack trace
+  // (issue #14).
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "--version") {
     command = argv[0];
     rest = argv.slice(1);
   } else if (argv[0] && !argv[0].startsWith("--")) {

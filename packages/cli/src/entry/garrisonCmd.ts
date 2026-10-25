@@ -12,6 +12,7 @@ import {
   loadSessionRollout,
   openWorkspaceSessionKernel,
   runReliabilityTriage,
+  workspaceSessionKernelPath,
   setConnectBroker,
   setProviderSignInHost,
   writeCrashLogSync,
@@ -48,6 +49,7 @@ import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { createApprovalsApi } from "../phoneApprovals.js";
 import { LiveActivityDriver, LiveActivityRegistry, createLiveActivityApi, createWidgetNudger } from "../phoneLiveActivity.js";
 import { startFamilyReplies } from "./familyWiring.js";
+import { expireDeadOwnerLeases, retireExhaustedOrphans } from "./garrisonRecovery.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
 import { ConnectHub } from "../connectHub.js";
 import { BrowserWatchHub, setBrowserWatchHub } from "../browserWatch.js";
@@ -126,14 +128,50 @@ export async function loadCanonicalGarrisonVerificationDebt(
       .filter((session) => !session.archived)
       .map(async (session) => [
         session.id,
-        await loadChildVerificationDebt(
+        garrisonVerificationDebt(
           kernel,
-          session.workspaceKey ?? defaultWorkspace,
           session.id,
+          await loadChildVerificationDebt(
+            kernel,
+            session.workspaceKey ?? defaultWorkspace,
+            session.id,
+          ),
         ),
       ] as const),
   );
   return new Map(entries);
+}
+
+/** No verification debt without something to verify. */
+const GARRISON_NO_DEBT: ChildVerificationDebt = { required: false, touchedFiles: [], scopeComplete: true };
+
+/**
+ * A crash mid-turn leaves sessions.work_outcome = 'pending' (admission sets
+ * it) or 'unverified' (lease expiry rewrites pending). The shared loader reads
+ * either as "unverified code changes exist" and forces verification with an
+ * empty file list, and nothing a chat-only session can do ever clears it:
+ * every later turn ended needs_verification and re-ran the provider behind a
+ * "coding changes remain" reminder — forever, across reboots, doubling cost.
+ * The mutation ledger is the canonical record of what was touched: a crash
+ * outcome with no unresolved mutation row is a scar, not debt. 'blocked' is
+ * different — a verifier wrote it on purpose — and stays fail-closed even
+ * with no recoverable scope.
+ */
+export function garrisonVerificationDebt(
+  kernel: SessionKernelStore,
+  sessionId: string,
+  loaded: ChildVerificationDebt,
+): ChildVerificationDebt {
+  if (!loaded.required || loaded.touchedFiles.length > 0) return loaded;
+  return redOutcomeOwesVerification(kernel, sessionId) ? loaded : GARRISON_NO_DEBT;
+}
+
+/** The rule above on the raw session row, for the factory's fallback. */
+function redOutcomeOwesVerification(kernel: SessionKernelStore, sessionId: string): boolean {
+  const outcome = kernel.getSession(sessionId)?.workOutcome;
+  if (outcome === "blocked") return true;
+  if (outcome !== "pending" && outcome !== "unverified") return false;
+  return kernel.listUnresolvedSessionMutations(sessionId).length > 0;
 }
 
 /**
@@ -226,6 +264,18 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   const sessionTodoStores = new Map<string, TodoStore>();
   const garrisonReadStamps = new Map<string, FileReadStamp>();
   const sessionKernel = await openWorkspaceSessionKernel(context.workspace);
+  // Crash recovery runs BEFORE any Core Session exists: the constructor
+  // schedules the orphan replay, so a dead holder's lease must already be
+  // expired and an exhausted input already retired by then (garrisonRecovery.ts).
+  const recoveryLog = (line: string) =>
+    process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "recovery", line } }) + "\n");
+  try {
+    await expireDeadOwnerLeases(sessionKernel, { kernelPath: workspaceSessionKernelPath(context.workspace), log: recoveryLog });
+    retireExhaustedOrphans(sessionKernel, { log: recoveryLog });
+  } catch (error) {
+    // The old behaviour (wait the TTL out, replay unbounded) is still a boot.
+    recoveryLog(`crash-recovery sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const verifiedSessions = new Map<string, VerifiedGarrisonCoreSession>();
   let composeGarrisonSystemPrompt = (mode: AresRuntimeState["permissionMode"]) =>
     buildSystemPrompt(mode, context);
@@ -406,8 +456,10 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
           }
         : req.requestPermission;
       const durable = sessionKernel.getSession(req.sessionId);
+      // Same rule as garrisonVerificationDebt: a crash outcome only owes
+      // verification when the mutation ledger says something was touched.
       const persistedDebt = canonicalVerificationDebt.get(req.sessionId) ?? (
-        durable && (durable.workOutcome === "pending" || durable.workOutcome === "unverified" || durable.workOutcome === "blocked")
+        durable && redOutcomeOwesVerification(sessionKernel, req.sessionId)
           ? { required: true, touchedFiles: [], scopeComplete: false }
           : undefined
       );
@@ -760,6 +812,13 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     scheduler,
     approvals,
     port: requestedPort,
+    // The factory above runs every non-persona session on the live selection,
+    // whatever provider the frame named. Say so at the door instead of
+    // answering "anthropic" with a mock-echo session (issue #19).
+    providers: () => {
+      const family = providerFamilyForSelection(selection);
+      return [...new Set([family, selection.provider.name])];
+    },
     status: () => ({
       telegram: telegramBridge ? "online" : "off",
       remotePcs: remoteAgentServer?.listPcs().length ?? 0,
@@ -1197,9 +1256,19 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       setRemoteAgentServer(null);
       void aresNetworkHostStop();
       approvals.dispose();
-      const cancelVerifiers = Promise.all(
+      // A clean stop used to leave every running session's lease in the
+      // kernel; the next boot then waited the TTL out before its first turn
+      // (the same ~30s stall a crash causes). Interrupt what is running and
+      // stop renewing, so the row is expired by the time the successor looks.
+      const releaseLeases = Promise.all(
+        [...verifiedSessions.values()].map(async (verified) => {
+          try { verified.session.interrupt(); } catch { /* already idle */ }
+          await verified.session.releaseRunLease("garrison shutting down").catch(() => undefined);
+        }),
+      );
+      const cancelVerifiers = releaseLeases.then(() => Promise.all(
         [...verifiedSessions.values()].map((verified) => verified.dispose()),
-      ).finally(() => verifiedSessions.clear());
+      )).finally(() => verifiedSessions.clear());
       void Promise.all([sessions.flush(), cancelVerifiers])
         .then(() => server.close())
         .catch(() => undefined)

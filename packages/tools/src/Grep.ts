@@ -74,6 +74,8 @@ export interface GrepOutput {
   engine: "ripgrep" | "native";
   /** The search hit its wall-clock cap; results are partial. */
   timedOut?: boolean;
+  /** ripgrep matched but also reported errors (unreadable files); results may be partial. */
+  warning?: string;
   /** Repository rules newly applicable to the searched paths. */
   repositoryInstructions?: string;
 }
@@ -202,7 +204,12 @@ export const GrepTool = buildTool({
         : output.mode === "count"
         ? `${output.totalMatches} match(es) for /${i.pattern}/`
         : `${output.totalMatches} line(s) matched /${i.pattern}/`;
-    return { output, display: output.timedOut ? `${summary} (search timed out - partial results)` : summary };
+    const display = output.timedOut
+      ? `${summary} (search timed out - partial results)`
+      : output.warning
+      ? `${summary} (ripgrep reported errors - results may be partial)\n${output.warning}`
+      : summary;
+    return { output, display };
   },
 });
 
@@ -232,7 +239,7 @@ async function tryRipgrep(
   }
   args.push("-e", i.pattern, ...roots);
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const child = spawn(rgPath, args, { signal });
     let timedOut = false;
     let capped = false;
@@ -296,15 +303,37 @@ async function tryRipgrep(
       }
     });
 
+    // rg's own complaint. Its exit code is the only honest signal: 0 = matched,
+    // 1 = searched clean and found nothing, 2 = an error. Ignoring stderr made
+    // an invalid pattern (`foo\qbar`, `Array\<string\>` — the JS validator
+    // accepts escapes Rust rejects) come back as a tidy "0 matches", which the
+    // model reads as "the symbol is not in this repo" (issue #35).
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < 4000) stderr += chunk;
+    });
+
     child.on("error", () => {
       clearTimeout(timer);
       resolve(null);
     });
-    child.on("close", () => {
+    child.on("close", (code) => {
       clearTimeout(timer);
       const out = buildOutput(i, matches, files, counts, total, "ripgrep");
       if (timedOut) out.timedOut = true;
       if (timedOut || capped) out.truncated = true;
+      // A kill we issued ourselves (cap/timeout) is not an rg error.
+      if (!timedOut && !capped && code !== null && code !== 0 && code !== 1) {
+        const detail = stderr.trim().split("\n").filter(Boolean).slice(0, 5).join("\n") || `exit ${code}`;
+        if (total === 0) {
+          reject(toolError(`Grep: ripgrep failed (exit ${code}) — this is an error, not an empty result:\n${detail}`));
+          return;
+        }
+        // rg exits 2 when any file could not be read even though others
+        // matched; those results are real, so keep them and say what was skipped.
+        out.warning = detail;
+      }
       resolve(out);
     });
   });

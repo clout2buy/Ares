@@ -696,11 +696,13 @@ export class SessionManager {
         session.engine.appendUserMessageContent(content);
         events = session.engine.streamTurn();
       }
+      let sawTurnEnd = false;
       for await (const event of events) {
         lastEventAt = Date.now();
         if (event.type === "input_admitted" && session.mirroredAdmissionIds.delete(event.inputId)) {
           continue;
         }
+        if (event.type === "turn_end") sawTurnEnd = true;
         if (event.type === "turn_end" && event.status === "failed") {
           this.retireFailedInput(session, inputId);
           if (legacyPrint !== undefined) session.seenInputs.delete(inputId);
@@ -720,6 +722,24 @@ export class SessionManager {
           }
         }
         this.fanOut(session, event);
+      }
+      // A retried inputId whose turn already settled (the documented recovery
+      // path after an ambiguous disconnect) returns from Core Session with no
+      // events at all: the client got send.ack and then silence, forever. The
+      // history already holds the real turn, so nothing is written — but the
+      // retry still needs its terminal frame, or the phone spins on it.
+      if (!sawTurnEnd && session.coreSession && this.sessionKernel) {
+        const settled = this.sessionKernel.getInput(inputId);
+        if (settled && (settled.state === "consumed" || settled.state === "cancelled")) {
+          const end: TurnEvent = {
+            type: "turn_end",
+            status: settled.state === "consumed" ? "completed" : "interrupted",
+            workStatus: "not_applicable",
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: Date.now() - turnStartedAt,
+          };
+          this.fanOut(session, end);
+        }
       }
     } catch (error) {
       // A turn that threw did not happen: its retry must run, not be swallowed.

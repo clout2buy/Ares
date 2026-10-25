@@ -761,10 +761,14 @@ export async function disposeLiveSession(live: LiveSession): Promise<void> {
 export async function mindSessionEnded(): Promise<void> {
   try {
     const memoryFile = cliRuntimeContext().mind.memoryFile;
-    const store = await MemoryStore.open(memoryFile);
     // sleep: forget the trivial, crystallize recurring themes — skipped when
     // another Ares process (daemon/garrison) holds the consolidation lock.
-    await withConsolidationLock(memoryFile, () => store.consolidate());
+    // The store opens INSIDE the lock: opened before it, the snapshot predated
+    // whatever the lock holder was writing and consolidate() wrote it back (#24).
+    await withConsolidationLock(memoryFile, async () => {
+      const store = await MemoryStore.open(memoryFile);
+      return store.consolidate();
+    });
   } catch {
     // never fatal
   }

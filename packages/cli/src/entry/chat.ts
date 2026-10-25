@@ -67,6 +67,17 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
 }
 
 export async function launcherCommand(args: ParsedArgs): Promise<number> {
+  // The deck is Ink; Ink puts stdin in raw mode and throws from inside React
+  // when it can't ("Raw mode is not supported on the current process.stdin"),
+  // which is what bare `ares` printed under cron, CI and `ares | tee`
+  // (issue #14). chatCommand already guards the same way and falls back to
+  // line mode; the deck has no line mode, so say what to run instead.
+  if (!stdin.isTTY || !stdout.isTTY) {
+    process.stderr.write(
+      "error: the launch deck needs an interactive terminal. Run `ares chat` for the prompt, `ares daemon --json` for automation, or `ares help`.\n",
+    );
+    return 2;
+  }
   const context = cliRuntimeContext();
   const settings = await loadUiSettings();
   const action = await runInkLauncher({

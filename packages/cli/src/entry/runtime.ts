@@ -214,6 +214,7 @@ export async function printHelp(): Promise<void> {
       "  ares triage [scan|list]      Cluster local failures into a durable, human-gated reliability queue.",
       "  ares triage show <id>        Inspect redacted evidence and source pointers for one finding.",
       "  ares help                   Print this help.",
+      "  ares version | --version | -v   Print the version and exit.",
       "",
       "Env vars:",
       "  ARES_OPENAI_OAUTH_TOKEN     ChatGPT OAuth access token (bypass file login).",

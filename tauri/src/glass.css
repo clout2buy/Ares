@@ -1305,3 +1305,29 @@
 .ares.ares.ares[data-glass="dark"] .boot.bootGlass .bootStatus { color: #9aa0ab; }
 .ares.ares.ares[data-glass="dark"] .boot.bootGlass .bootBar { background: rgba(255, 255, 255, 0.1); }
 @media (prefers-reduced-motion: reduce) { .ares.ares.ares .boot.bootGlass, .ares.ares.ares .boot.bootGlass * { animation: none !important; } }
+
+/* ── Model browser + reasoning popover: the same glass as every other pane.
+   They are `.palette`s, which kept the old raised-dark skin (var(--bg-raised))
+   while the glass surface only re-skinned their rail — a dark grid of cards
+   inside a light window read as "inverted colours" (owner, 2026-10-25). ── */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .paletteScrim { background: var(--g-scrim); backdrop-filter: blur(6px); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .palette {
+  color: var(--text);
+  border: var(--g-rim);
+  border-radius: 24px;
+  background: var(--g-window);
+  backdrop-filter: var(--g-blur);
+  box-shadow: var(--g-shadow), 0 40px 120px -30px rgba(40, 48, 66, 0.45);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .palette > input { color: var(--text-hi); border-bottom-color: var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .palette :is(strong, b) { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlRail { background: rgba(255, 255, 255, 0.28); border-right-color: var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlMain { background: transparent; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] :is(.mdlCard, .mdlQuickChip, .mdlProv[data-on="1"], .autoRoutePick) { background: var(--g-solid); border-color: var(--line); color: var(--text); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlCard[data-on="1"] { border-color: var(--g-acc); background: rgba(var(--g-acc-rgb), 0.08); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlCard:hover { border-color: rgba(var(--g-acc-rgb), 0.55); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] :is(.mdlCardDesc, .mdlChip, .mdlHeroBody em, .mdlProvBody em, .mdlCardName em, .mdlCount, .mdlRailTitle) { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlChip { border-color: var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] :is(.mdlHero .ghost, .modelSearch input, .modelSearch, .mdlControls select, .mdlControls button) { color: var(--text); background: var(--g-hover); border-color: var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlHero, .ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlRail { border-color: var(--line); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .palette.reasoningPop { background: var(--g-window); border-color: var(--line); box-shadow: var(--g-shadow); }

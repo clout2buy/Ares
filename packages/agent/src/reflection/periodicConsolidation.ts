@@ -85,20 +85,28 @@ export function periodicConsolidationPass(opts: PeriodicConsolidationOptions): R
     if (now.getTime() - rec.lastAt < everyMs) return skip("cadence");
     rec.inFlight = true;
     try {
-      const store = await openStore(opts.memoryFile);
-      const count = store.count();
-      // First eligible tick has no baseline: a store below the growth floor is
-      // not worth a rewrite, anything larger consolidates (idempotent, cheap).
-      const grown = rec.lastKept === undefined ? count : count - rec.lastKept;
-      if (grown < minNew) {
-        // Quiet stores still advance the cadence anchor — otherwise every
-        // subsequent tick re-opens the file until something changes.
-        rec.lastAt = now.getTime();
-        rec.lastKept ??= count;
-        return skip("quiet");
-      }
-      const report: ConsolidationReport | undefined = await lock(opts.memoryFile, () => store.consolidate({ now }));
-      if (!report) return skip("locked");
+      // The store opens INSIDE the lock. Opened before it, the snapshot could
+      // predate a sibling's in-flight write and consolidate() would persist
+      // that stale view over it (#24). The growth gate runs in there too —
+      // it needs the count, and the count needs the open.
+      const outcome = await lock(opts.memoryFile, async (): Promise<ConsolidationReport | "quiet"> => {
+        const store = await openStore(opts.memoryFile);
+        const count = store.count();
+        // First eligible tick has no baseline: a store below the growth floor is
+        // not worth a rewrite, anything larger consolidates (idempotent, cheap).
+        const grown = rec.lastKept === undefined ? count : count - rec.lastKept;
+        if (grown < minNew) {
+          // Quiet stores still advance the cadence anchor — otherwise every
+          // subsequent tick re-opens the file until something changes.
+          rec.lastAt = now.getTime();
+          rec.lastKept ??= count;
+          return "quiet";
+        }
+        return store.consolidate({ now });
+      });
+      if (!outcome) return skip("locked");
+      if (outcome === "quiet") return skip("quiet");
+      const report = outcome;
       rec.lastAt = now.getTime();
       rec.lastKept = report.kept;
       const directives = [

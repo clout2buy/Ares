@@ -14,6 +14,7 @@
 // the option, then ARES_GARRISON_PORT, then 7421. Tests pass port 0 and read
 // the bound port from start()'s return value.
 
+import { statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { ApprovalVerb, StagedApproval } from "@ares/effects";
@@ -78,6 +79,11 @@ export interface GarrisonServerOptions {
   status?: () => Record<string, unknown>;
   /** Phone Hands: where device.* frames go. Absent = the frames are refused. */
   devices?: DeviceBridge;
+  /** Provider names a session.create may ask for. The host's factory runs
+   *  every non-persona session on ITS live selection, so a name outside this
+   *  set would be silently ignored — the client thought it got anthropic and
+   *  the audit trail says mock. Absent = any string is accepted (legacy). */
+  providers?: () => readonly string[];
 }
 
 interface ClientConn {
@@ -333,6 +339,41 @@ export class GarrisonServer {
         return;
       }
       case "session.create": {
+        // Type-check at the door like every other frame: an object workspace
+        // leaked Node's ERR_INVALID_ARG_TYPE text, and a path that is not a
+        // directory produced a session that said "created" and then failed its
+        // first send with a raw mkdir errno (ENOTDIR / EACCES) — a zombie in
+        // sessions.list for every client. A typo'd workspace must never become
+        // a fresh directory full of .ares state either.
+        for (const field of ["provider", "model", "workspace"] as const) {
+          const value = frame[field];
+          if (value !== undefined && typeof value !== "string") {
+            this.enqueueError(client, `session.create: ${field} must be a string`);
+            return;
+          }
+        }
+        if (typeof frame.workspace === "string") {
+          let isDirectory = false;
+          try {
+            isDirectory = statSync(frame.workspace).isDirectory();
+          } catch {
+            // missing or unreadable: not a directory either way
+          }
+          if (!isDirectory) {
+            this.enqueueError(client, `session.create: workspace is not a directory: ${frame.workspace}`);
+            return;
+          }
+        }
+        if (typeof frame.provider === "string" && this.opts.providers) {
+          const known = this.opts.providers();
+          if (!known.includes(frame.provider)) {
+            this.enqueueError(
+              client,
+              `session.create: provider "${frame.provider}" is not available on this garrison (running ${known.join(", ") || "none"}); omit provider to use it`,
+            );
+            return;
+          }
+        }
         try {
           const session = sessions.create({
             provider: frame.provider,

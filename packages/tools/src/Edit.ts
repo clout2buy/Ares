@@ -587,7 +587,7 @@ function normalizedReplace(
   // matches unicode spaces); homoglyphFold handles the rest.
   const canon = (line: string): string => homoglyphFold(line).trim().replace(/\s+/g, " ");
   const contentLines = content.split("\n");
-  const oldLines = oldString.split("\n");
+  const { oldLines, newLines } = editLines(oldString, newString);
   // Drop pure-blank edge lines from the needle (models pad blocks with them).
   while (oldLines.length > 0 && oldLines[0].trim() === "") oldLines.shift();
   while (oldLines.length > 0 && oldLines[oldLines.length - 1].trim() === "") oldLines.pop();
@@ -625,7 +625,7 @@ function normalizedReplace(
     else if (d !== delta) return { kind: "none" };
   }
   const shift = delta ?? 0;
-  const reindented = newString.split("\n").map((line) => {
+  const reindented = newLines.map((line) => {
     if (line.trim() === "") return line;
     if (shift > 0) return " ".repeat(shift) + line;
     if (shift < 0) {
@@ -671,7 +671,7 @@ function anchorReplace(
   newString: string,
 ): { kind: "replaced"; text: string } | { kind: "ambiguous"; lines: number[] } | { kind: "none" } {
   const contentLines = content.split("\n");
-  const oldLines = oldString.split("\n");
+  const { oldLines, newLines } = editLines(oldString, newString);
 
   // Significant = non-blank, with interior whitespace normalized to single
   // spaces and edges trimmed. Two lines that differ only in indentation or run
@@ -727,10 +727,30 @@ function anchorReplace(
   const { start, end } = verified[0];
   const updated = [
     ...contentLines.slice(0, start),
-    ...newString.split("\n"),
+    ...newLines,
     ...contentLines.slice(end + 1),
   ];
   return { kind: "replaced", text: updated.join("\n") };
+}
+
+/**
+ * Split old_string/new_string into the line arrays the fuzzy tiers (2-4) work
+ * on. Those tiers splice LINES, and the join puts a "\n" back after the last
+ * replaced line, so a trailing newline on the strings must not also become a
+ * trailing "" element: old="x\ny\n" new="X\ny\n" against "x  \ny\nz\n" used to
+ * drop the needle's "" (anchor/normalized ignore blank edges) but keep the
+ * replacement's, planting a blank line between y and z (issue #35). The
+ * terminator is dropped from BOTH when old_string ends with one; when only
+ * new_string does, the extra line is what exact matching would produce too.
+ */
+function editLines(oldString: string, newString: string): { oldLines: string[]; newLines: string[] } {
+  const oldLines = oldString.split("\n");
+  const newLines = newString.split("\n");
+  if (oldString.endsWith("\n")) {
+    oldLines.pop();
+    if (newString.endsWith("\n")) newLines.pop();
+  }
+  return { oldLines, newLines };
 }
 
 function fuzzyLineReplace(
@@ -739,7 +759,9 @@ function fuzzyLineReplace(
   newString: string,
 ): { kind: "replaced"; text: string } | { kind: "ambiguous"; matches: number } | { kind: "none" } {
   const contentLines = content.split("\n");
-  const oldLines = oldString.split("\n").map(stripTrailingWs);
+  const split = editLines(oldString, newString);
+  const oldLines = split.oldLines.map(stripTrailingWs);
+  const newLines = split.newLines;
   if (oldLines.length === 0 || (oldLines.length === 1 && oldLines[0] === "")) return { kind: "none" };
 
   let matchIndex = -1;
@@ -762,7 +784,7 @@ function fuzzyLineReplace(
 
   const updated = [
     ...contentLines.slice(0, matchIndex),
-    ...newString.split("\n"),
+    ...newLines,
     ...contentLines.slice(matchIndex + oldLines.length),
   ];
   return { kind: "replaced", text: updated.join("\n") };

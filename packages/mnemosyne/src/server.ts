@@ -180,6 +180,11 @@ export class MnemosyneServer {
       this.send(socket, { type: "error", message: "store not open", re: frame.req });
       return;
     }
+    // This server opened the store ONCE at boot and used to serve (and, on a
+    // recall, persist) that snapshot for its whole life — so a recall wiped
+    // every memory the CLI or daemon had written since (#23). One stat per
+    // frame keeps the snapshot current; persist() merges besides.
+    await store.refresh();
     switch (frame.type) {
       case "hello":
         this.send(socket, { type: "ok", re: frame.req });

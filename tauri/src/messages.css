@@ -1298,3 +1298,8 @@
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentChats .railLabel { margin: 6px 0 2px 10px; }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentNewChat { margin: 4px 0 0; background: none; border: none; box-shadow: none; color: var(--accent); justify-content: flex-start; }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentNewChat:hover { background: rgba(255, 255, 255, 0.06); }
+
+/* ── Settings: "More" folds the long tail until opened ──────────────── */
+.ares.ares[data-surface="messages"] .setGroupFold { width: 100%; display: flex; justify-content: space-between; align-items: center; border: none; background: transparent; cursor: pointer; text-align: left; }
+.ares.ares[data-surface="messages"] .setGroupFold:hover { color: var(--text); }
+.ares.ares[data-surface="messages"] .setGroup[data-folded="1"] { margin-bottom: 4px; }

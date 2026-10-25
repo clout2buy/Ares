@@ -153,6 +153,7 @@ import { CyberField } from "./cyberField";
 import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
 import { Tutorial, markTutorialSeen, tutorialSeen } from "./tutorial";
+import { SETUP_BRAIN, SETUP_SKIP_KEY, SetupChat, setupSkipped } from "./setup";
 import { MsgTabBar, MsgTitlebar, type MsgTab } from "./shell";
 import { WorkspacesPane, type WorkspaceVm } from "./workspacesPane";
 import { IPhonePane, ProfilePane, ProfileSheet, ScheduledList, ScheduledPane, SharingPanel, type JobVm, type SharingVm } from "./aresMore";
@@ -484,70 +485,6 @@ function noUsableKeys(keyStatus: Record<string, boolean>): boolean {
   return known.length > 0 && known.every((v) => !v);
 }
 
-/** "I'll use local Ollama" is a real decision, not a per-launch dismissal:
- *  remember it so the gate never re-prompts a local-first user on every boot.
- *  (Adding a key / signing in closes the gate through keyStatus instead.) */
-const FIRSTRUN_CHOICE_KEY = "ares.firstRun.choice";
-
-function FirstRunGate({
-  active,
-  onOpenKeys,
-  onConnectAres,
-}: {
-  active: boolean;
-  onOpenKeys: () => void;
-  onConnectAres: () => void;
-}): React.ReactElement | null {
-  const [dismissed, setDismissed] = useState(false);
-  // Re-arm if keys disappear again (e.g. the user clears them mid-session) —
-  // but never for a user who durably chose the local-Ollama path.
-  useEffect(() => {
-    if (!active) setDismissed(false);
-  }, [active]);
-  let chosenLocal = false;
-  try {
-    chosenLocal = window.localStorage.getItem(FIRSTRUN_CHOICE_KEY) === "local-ollama";
-  } catch { /* storage unavailable — fall back to per-launch behavior */ }
-  if (!active || dismissed || chosenLocal) return null;
-  const chooseLocal = () => {
-    try {
-      window.localStorage.setItem(FIRSTRUN_CHOICE_KEY, "local-ollama");
-    } catch { /* storage unavailable */ }
-    setDismissed(true);
-  };
-  return (
-    <div className="scrim center" role="dialog" aria-modal="true" aria-labelledby="frgTitle">
-      <div className="wnCard frgCard" tabIndex={-1} onClick={(e) => e.stopPropagation()}>
-        <div className="wnGlow" aria-hidden="true" />
-        <div className="wnMark" aria-hidden="true" />
-        <header className="wnHead">
-          <div className="wnKicker">
-            <span className="wnSpark" aria-hidden="true">✦</span>
-            Welcome to Ares
-          </div>
-          <h2 id="frgTitle" className="wnTitle">One quick step to begin</h2>
-          <p className="wnTagline">
-            Ares needs a way to think. Connect your Ares account for models with zero setup —
-            or bring your own: add a provider key (Anthropic, OpenAI, OpenRouter, DeepSeek, or
-            any OpenAI-compatible endpoint), or point it at a local Ollama. About a minute.
-          </p>
-        </header>
-        <footer className="wnFoot">
-          <button className="wnOlderToggle" onClick={chooseLocal}>
-            I'll use local Ollama
-          </button>
-          <button className="wnGhost" onClick={onOpenKeys}>
-            Add an API key
-          </button>
-          {/* The zero-setup path: one account, models included. Made primary. */}
-          <button className="wnGo" onClick={onConnectAres} autoFocus>
-            Connect Ares account
-          </button>
-        </footer>
-      </div>
-    </div>
-  );
-}
 
 // ─── App ───────────────────────────────────────────────────────────────────
 
@@ -774,6 +711,12 @@ function App() {
   // agents you make. Older chats (never bound to an agent) stay on a shelf,
   // every one of them hand-able to an agent with its whole history.
   const [tutorialOpen, setTutorialOpen] = useState<boolean>(() => !tutorialSeen());
+  // First-run setup chat: "skip" is remembered; "running" keeps it up through
+  // the name + first-agent steps after a key has already landed.
+  const [setupSkip, setSetupSkip] = useState<boolean>(() => setupSkipped());
+  const [setupRunning, setSetupRunning] = useState(false);
+  // `?setup=1` shows the setup chat on a configured machine (to see it / demo it).
+  const forceSetup = useMemo(() => { try { return new URLSearchParams(window.location.search).has("setup"); } catch { return false; } }, []);
   // The "seen" flag lives in this webview's storage, which a new origin (dev
   // build, reinstall, browser preview) starts without — so it popped up for an
   // owner with agents already made. Having agents means you've been through it.
@@ -847,6 +790,8 @@ function App() {
     }
     return map;
   }, [agents, localAgentBindings]);
+  const sessionAgentMapRef = useRef(sessionAgentMap);
+  sessionAgentMapRef.current = sessionAgentMap;
   /** For send(): may this chat talk at all (an agent's chat or a room seat)? */
   const chatHasAgentRef = useRef<(sessionId: string) => boolean>(() => true);
   chatHasAgentRef.current = (sessionId) => Boolean(sessionAgentMap[sessionId]) || roomSeatIds.has(sessionId);
@@ -1112,6 +1057,9 @@ function App() {
     return () => document.removeEventListener("selectionchange", onSelection);
   }, []);
   const [modelPopOpen, setModelPopOpen] = useState(false);
+  // Opened from Settings → "New agents start with": a pick changes the
+  // DEFAULT, even while an agent's chat is open behind the panel.
+  const [modelPopForDefault, setModelPopForDefault] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [routingOpen, setRoutingOpen] = useState(false);
   const [cronOpen, setCronOpen] = useState(false);
@@ -1180,6 +1128,10 @@ function App() {
   // card that happens to be active when they arrive.
   const primarySessionRef = useRef(sessions[0]?.id ?? "");
   const prefsRef = useRef(prefs);
+  const keyStatusRef = useRef(keyStatus);
+  keyStatusRef.current = keyStatus;
+  const permissionsRef = useRef(permissions);
+  permissionsRef.current = permissions;
   const restartAttempts = useRef(0);
   const pendingGoal = useRef<{
     goal: string;
@@ -2095,7 +2047,13 @@ function App() {
           if (e.ok) {
             setAnthropicAuth({ open: true, status: "done" });
             window.setTimeout(() => {
-              daemonCmd({ type: "model_switch", provider: prefsRef.current.provider, model: prefsRef.current.model, sessionId: activeRef.current });
+              // The brain follows the sign-in when the current one has no way
+              // to run (a fresh install sits on Ollama): signing in to Claude
+              // and staying on an unreachable Ollama was the first-message
+              // failure every new user hit.
+              const cur = prefsRef.current;
+              const brain = cur.provider === "anthropic" || keyStatusRef.current[cur.provider] ? { provider: cur.provider, model: cur.model } : SETUP_BRAIN.anthropic;
+              daemonCmd({ type: "model_switch", ...brain, sessionId: activeRef.current });
               setAnthropicAuth({ open: false, status: "idle" });
             }, 1400);
           } else {
@@ -2116,6 +2074,10 @@ function App() {
           const oe = e as { ok?: unknown; email?: unknown; plan?: unknown; error?: unknown };
           setOpenaiAuth({ signingIn: false, connected: oe.ok === true, email: typeof oe.email === "string" ? oe.email : null, plan: typeof oe.plan === "string" ? oe.plan : null });
           pushGatewayToast(oe.ok ? `🟢 ChatGPT connected${oe.plan ? ` — ${String(oe.plan)} plan` : ""}. GPT models use your subscription.` : `ChatGPT sign-in failed: ${oe.error ? stringify(oe.error) : "unknown"}`);
+          if (oe.ok === true) {
+            const cur = prefsRef.current;
+            if (cur.provider !== "openai" && !keyStatusRef.current[cur.provider]) daemonCmd({ type: "model_switch", ...SETUP_BRAIN.openai, sessionId: activeRef.current });
+          }
           return true;
         }
         case "openai_auth_status": {
@@ -3378,6 +3340,60 @@ function App() {
         setPrefs(p);
         savePrefs(p);
       }
+      // "Say it and Ares changes it": the ChangeSetting tool's whole
+      // implementation, same shape as SetUiEffect. Each case goes through the
+      // exact handler the Settings panel uses, so chat and panel never drift.
+      if (buffered.event.type === "tool_start" && buffered.event.name === "ChangeSetting") {
+        const raw = (buffered.event.input ?? {}) as { setting?: unknown; value?: unknown };
+        const value = typeof raw.value === "string" ? raw.value.trim() : "";
+        const on = /^(on|yes|true|1|enable|enabled)$/i.test(value);
+        const off = /^(off|no|false|0|disable|disabled|never)$/i.test(value);
+        const agentId = sid ? sessionAgentMapRef.current[sid] : undefined;
+        switch (raw.setting) {
+          case "ask_before_acting": {
+            if (!on && !off) break;
+            const cur = permissionsRef.current;
+            const next: PermSettings = off
+              ? { ...cur, mode: "free", sensitive: true, fleetsInherit: true }
+              : { ...cur, mode: "guarded", sensitive: false };
+            setPermissions(next);
+            daemonCmd({ type: "set_permissions", permissions: next });
+            break;
+          }
+          case "model": {
+            const m = /^([a-z0-9_-]+)\/(.+)$/i.exec(value);
+            if (!m || !agentId || agentId === ARES_AGENT_ID) break;
+            daemonCmd({ type: "agent_update", agentId, agent: { provider: m[1]!.toLowerCase(), model: m[2]!.trim() } });
+            break;
+          }
+          case "effort": {
+            if (!agentId || agentId === ARES_AGENT_ID) break;
+            const level = /^default$/i.test(value) ? "" : value.toLowerCase();
+            if (level && !(REASONING_LEVELS as string[]).includes(level)) break;
+            daemonCmd({ type: "agent_update", agentId, agent: { reasoningLevel: level } });
+            break;
+          }
+          case "voice": {
+            if (!on && !off) break;
+            const p: Prefs = { ...prefsRef.current, voiceEnabled: on };
+            setPrefs(p); savePrefs(p);
+            if (off) { setConvoMode(false); voiceRef.current.stop(); }
+            break;
+          }
+          case "effects": {
+            if (value !== "glow" && value !== "minimal" && value !== "off") break;
+            const p: Prefs = { ...prefsRef.current, flameMode: value };
+            setPrefs(p); savePrefs(p);
+            break;
+          }
+          case "name": {
+            if (value) daemonCmd({ type: "directory_profile", profile: { displayName: value.slice(0, 40) } });
+            break;
+          }
+          default:
+            break;
+        }
+      }
       const fold = (s: SessionVm) => {
         const next = foldEvent(s, buffered.event);
         if (next.title === "New session") {
@@ -4013,9 +4029,11 @@ function App() {
       }).catch(() => null);
       await invoke("ares_daemon_command", { command: { type: "engine_config", config: next.engine } }).catch(() => null);
       await invoke("ares_set_reasoning", { level: next.reasoning }).catch(() => null);
+      // "New agents start with": the daemon's DEFAULT lane, never the chat
+      // that happens to be open — an agent's chat keeps the agent's brain.
       if (next.provider !== prefs.provider || next.model !== prefs.model) {
         await invoke("ares_daemon_command", {
-          command: { type: "model_switch", provider: next.provider, model: next.model, sessionId: activeRef.current },
+          command: { type: "model_switch", provider: next.provider, model: next.model },
         }).catch(() => null);
       }
     };
@@ -4314,8 +4332,8 @@ function App() {
     { label: "Connectors — the Directory", hint: "/mcp · connect tools & apps", run: () => { setDirectoryOpen(true); daemonCmd({ type: "mcp_list" }); } },
     { label: "Switch model", hint: `current: ${prefs.routingMode === "auto" ? "routing (auto)" : prefs.model}`, run: () => setModelPopOpen(true) },
     { label: "Routing — the war table", hint: "per-lane model assignments", run: () => setRoutingOpen(true) },
-    { label: "Garrison: restart", hint: "bounce the daemon", run: () => { restartAttempts.current = 0; restartDaemon(); } },
-    { label: "Garrison: panel", hint: "status + live log", run: () => setGarrisonOpen(true) },
+    { label: "Engine: restart", hint: "restart the Ares engine (daemon)", run: () => { restartAttempts.current = 0; restartDaemon(); } },
+    { label: "Engine: panel", hint: "engine status + live log", run: () => setGarrisonOpen(true) },
     ...sessions.map((s) => ({ label: `Jump: ${s.title}`, hint: "session", run: () => openSession(s.id) })),
   ];
 
@@ -4842,15 +4860,25 @@ function App() {
       <UpdateBanner />
       <WhatsNew />
       <ForgeIntro />
-      <FirstRunGate
-        active={native && daemon !== "starting" && noUsableKeys(keyStatus)}
-        onOpenKeys={() => {
-          setSettingsTab("keys");
-          setSettingsOpen(true);
+      <SetupChat
+        active={native && daemon !== "starting" && !setupSkip && (noUsableKeys(keyStatus) || setupRunning || forceSetup)}
+        keyStatus={keyStatus}
+        signingIn={anthropicAuth.open ? "anthropic" : openaiAuth.signingIn ? "openai" : null}
+        onSignIn={(p) => { setSetupRunning(true); (p === "anthropic" ? startAnthropicSignIn : startOpenaiSignIn)(); }}
+        onOpenKeys={() => { setSetupRunning(true); setSettingsTab("keys"); setSettingsOpen(true); }}
+        onOpenAres={() => { setSetupRunning(true); setSettingsTab("account"); setSettingsOpen(true); }}
+        onName={(displayName) => daemonCmd({ type: "directory_profile", profile: { displayName } })}
+        onFirstAgent={(a) => {
+          markTutorialSeen();
+          setTutorialOpen(false);
+          daemonCmd({ type: "model_switch", provider: a.provider, model: a.model, sessionId: activeRef.current });
+          daemonCmd({ type: "agent_create", agent: { name: a.name, emoji: a.emoji, color: a.color, provider: a.provider, model: a.model, chatModel: "", workspaceId: "", reasoningLevel: "", instructions: a.role, rules: [] } });
+          setSetupRunning(false);
         }}
-        onConnectAres={() => {
-          setSettingsTab("account");
-          setSettingsOpen(true);
+        onSkip={() => {
+          try { window.localStorage.setItem(SETUP_SKIP_KEY, "skipped"); } catch { /* storage unavailable */ }
+          setSetupSkip(true);
+          setSetupRunning(false);
         }}
       />
       <Backdrop pointMap={prefs.surface === "cyber" && !prefs.pointMapOff ? activePointMap : null} />
@@ -5771,8 +5799,8 @@ function App() {
                 moment a title changed with state: in auto-routing the MODEL
                 segment's title contains the word "routing", so the rule meant
                 to hide the route chip hid the model instead. */}
-            <button className="statusSeg" data-seg="garrison" onClick={() => setGarrisonOpen(true)} title="Garrison panel — status, log, restart">
-              <i className="dot" data-state={daemon} /><b>garrison</b><span>{daemon}</span>
+            <button className="statusSeg" data-seg="garrison" onClick={() => setGarrisonOpen(true)} title="Engine panel — status, log, restart">
+              <i className="dot" data-state={daemon} /><b>engine</b><span>{daemon}</span>
             </button>
             {/* The agent's own computer (docs/AGENT-COMPUTER-DESIGN.md).
                 Click TOGGLES where Ares may work — same interaction the perms
@@ -5930,7 +5958,7 @@ function App() {
           </span>
           <div className="statusGroup statusActions">
             {native && daemon !== "running" && daemon !== "starting" ? (
-              <button className="statusIcon" onClick={() => { restartAttempts.current = 0; restartDaemon(); }} title="Restart the Garrison" aria-label="Restart">⟳</button>
+              <button className="statusIcon" onClick={() => { restartAttempts.current = 0; restartDaemon(); }} title="Restart the engine" aria-label="Restart">⟳</button>
             ) : null}
             <button className="statusIcon" onClick={() => void exportSessionLog()} title="Export this session (chat + tool calls + errors) to a file" aria-label="Export session">⤓</button>
             <button className="statusIcon" onClick={() => setReportOpen(true)} disabled={!active?.id} title="Report a bug — upload this chat so the owner can diagnose it" aria-label="Report a bug">
@@ -6487,7 +6515,7 @@ function App() {
           onPreviewVoice={(id) => voiceRef.current.preview(id)}
           voiceEngine={voiceEngine}
           onRepairVoice={repairVoice}
-          onOpenModelBrowser={() => setModelPopOpen(true)}
+          onOpenModelBrowser={() => { setModelPopForDefault(true); setModelPopOpen(true); }}
           extraSlots={{
             profile: (
               <ProfilePane
@@ -6619,9 +6647,10 @@ function App() {
             setOllamaPulls((prev) => ({ ...prev, [model]: { pct: null, status: "starting…" } }));
             daemonCmd({ type: "ollama_pull", model });
           }}
-          onClose={() => setModelPopOpen(false)}
+          onClose={() => { setModelPopOpen(false); setModelPopForDefault(false); }}
           onPickAuto={() => {
             setModelPopOpen(false);
+            setModelPopForDefault(false);
             // Toggle: if auto is already on, clicking the card turns it OFF (back
             // to the manual main model) — previously there was no way to disable.
             const enabled = prefs.routingMode !== "auto";
@@ -6645,18 +6674,25 @@ function App() {
           }}
           onPick={(provider, model) => {
             setModelPopOpen(false);
+            const forDefault = modelPopForDefault;
+            setModelPopForDefault(false);
             const key = `${provider}/${model}`;
             const recentModels = [key, ...(prefs.recentModels ?? []).filter((k) => k !== key)].slice(0, 6);
-            const next = { ...prefs, provider, model, routingMode: "manual" as const, recentModels };
+            // Picked while talking to an agent: that is the AGENT's brain now,
+            // saved on its profile (same thing the agent editor does). The
+            // owner's default for new agents stays as it was. Opened from
+            // Settings, it is the default — the open chat is not touched.
+            const forAgent = Boolean(activeAgent) && !forDefault;
+            const next = forAgent ? { ...prefs, recentModels } : { ...prefs, provider, model, routingMode: "manual" as const, recentModels };
             setPrefs(next);
             savePrefs(next);
             // Immediately show the picked model in the footer/composer. The next
             // turn's route_resolved event overwrites this with whatever actually
             // ran (failover-aware), but until then the readout must match the pick.
-            apply((s) => ({ ...s, sessionModel: model, turnModel: model, turnProvider: provider, turnLane: undefined }));
+            if (!forDefault) apply((s) => ({ ...s, sessionModel: model, turnModel: model, turnProvider: provider, turnLane: undefined }));
             if (native) {
               if (daemon === "running") {
-                void invoke("ares_daemon_command", { command: { type: "model_switch", provider, model, sessionId: activeRef.current } }).catch((err) => {
+                void invoke("ares_daemon_command", { command: { type: "model_switch", provider, model, ...(forDefault ? {} : { sessionId: activeRef.current }) } }).catch((err) => {
                   apply((s) => foldEvent(s, { type: "desktop_error", text: `model switch failed: ${String(err)}` }));
                 });
               } else {
@@ -6890,7 +6926,7 @@ function RoutingPanel({
       <div className="palette routingPop" onClick={(e) => e.stopPropagation()}>
         <div className="routingHead">
           <div>
-            <strong>The War Table</strong>
+            <strong>Who answers what</strong>
             <span>Assign a model to each kind of work. Any assignment turns on auto-routing; unset lanes use your main model ({prefs.model}).</span>
           </div>
           <button className="ghost popClose" onClick={onClose}>Close</button>
@@ -10409,13 +10445,24 @@ const ItemView = React.memo(function ItemView({
     );
   }
   if (item.kind === "permission") {
+    // Plain words, not tool names: a new person reading "Bash wants to act"
+    // has no idea whether "yes" is safe. Same buckets the daemon's
+    // permissionPolicy uses, so the card and the settings agree.
+    const t = item.toolName.toLowerCase();
+    const hay = `${item.toolName} ${item.reason ?? ""}`;
+    const what = /credential|password|secret|token|payment|pay\b|purchase|checkout|email|send|delete|destroy|rm -rf|format|computer|control/i.test(hay) && !/write|edit/.test(t)
+      ? "do something sensitive"
+      : /write|edit|patch|forge|findandedit|codemode|apply/.test(t) ? "change a file on your computer"
+      : /bash|powershell|shell|kill|exec|command/.test(t) ? "run a command on your computer"
+      : /web|browser|fetch|search|http|crawl|download/.test(t) ? "use the web"
+      : "do this";
     return (
       <div className="gate" data-decided={item.decided ? "1" : "0"} aria-busy={item.submitting ? "true" : undefined}>
         <div className="gateTop">
           <Medallion glyph="shield" size={34} tone="ember" />
           <div className="gateBody">
-            <strong>Approval needed</strong>
-            <span className="gateReason">{item.toolName} wants to act</span>
+            <strong>Can I {what}?</strong>
+            <span className="gateReason">Here is exactly what would happen:</span>
           </div>
           {item.decided
             ? <em className="gateDecided">{item.decided.replace(/_/gu, " ")}</em>
@@ -10429,9 +10476,9 @@ const ItemView = React.memo(function ItemView({
         <code className="gateTarget">{item.reason || "wants to act"}</code>
         {item.decided ? null : (
           <div className="gateActions">
-            <button className="gateAllow" disabled={!!item.submitting} onClick={() => onPermission(item.id, "allow_once")}>Allow once</button>
-            <button className="gateAlways" disabled={!!item.submitting} onClick={() => onPermission(item.id, "allow_always")}>Always</button>
-            <button className="gateDeny" disabled={!!item.submitting} onClick={() => onPermission(item.id, "deny")}>Deny</button>
+            <button className="gateAllow" disabled={!!item.submitting} onClick={() => onPermission(item.id, "allow_once")}>Yes, this once</button>
+            <button className="gateAlways" disabled={!!item.submitting} onClick={() => onPermission(item.id, "allow_always")} title="Stop asking about this kind of action">Yes, and don't ask again</button>
+            <button className="gateDeny" disabled={!!item.submitting} onClick={() => onPermission(item.id, "deny")}>No</button>
           </div>
         )}
       </div>
@@ -11600,13 +11647,15 @@ interface UsageStats {
 }
 
 /** The iPhone app's Settings: grouped rows, each with a coloured icon tile. */
-const SETTINGS_GROUPS: Array<{ label: string; tabs: SettingsTab[] }> = [
+// Four groups a new user can read; everything else lives under "More",
+// folded until opened (owner, 2026-10-25: "19 tabs — nobody knows which one
+// matters"). Nothing is removed, only tucked away.
+const SETTINGS_GROUPS: Array<{ label: string; tabs: SettingsTab[]; folded?: boolean }> = [
   { label: "You", tabs: ["profile", "account", "iphone"] },
-  { label: "Agents & models", tabs: ["model", "routing", "workspaces", "scheduled", "permissions", "keys"] },
+  { label: "Agents", tabs: ["model", "permissions", "scheduled"] },
   { label: "Look & sound", tabs: ["appearance", "voice"] },
-  { label: "Abilities", tabs: ["skills", "plugins", "mind"] },
   // Consciousness is off the list (owner, 2026-10-23: "remove consciousness").
-  { label: "Ares", tabs: ["usage", "advanced", "updates", "about"] },
+  { label: "More", folded: true, tabs: ["mind", "skills", "usage", "workspaces", "routing", "keys", "plugins", "advanced", "updates", "about"] },
 ];
 const SETTINGS_TILES: Record<SettingsTab, { icon: string; bg: string }> = {
   account: { icon: "@", bg: "#0a84ff" },
@@ -11630,22 +11679,22 @@ const SETTINGS_TILES: Record<SettingsTab, { icon: string; bg: string }> = {
   about: { icon: "i", bg: "#636366" },
 };
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; glyph: string }> = [
-  { id: "model", label: "Model", glyph: "task" },
+  { id: "model", label: "New agents start with", glyph: "task" },
   { id: "account", label: "Ares Account", glyph: "dot" },
-  { id: "routing", label: "Routing", glyph: "search" },
-  { id: "workspaces", label: "Workspaces (VPS)", glyph: "shell" },
+  { id: "routing", label: "Who answers what", glyph: "search" },
+  { id: "workspaces", label: "Remote computers", glyph: "shell" },
   { id: "profile", label: "Your profile", glyph: "dot" },
   { id: "iphone", label: "iPhone", glyph: "dot" },
   { id: "scheduled", label: "Scheduled", glyph: "task" },
   { id: "appearance", label: "Appearance", glyph: "edit" },
   { id: "voice", label: "Voice", glyph: "dot" },
   { id: "skills", label: "Skills & Tools", glyph: "file" },
-  { id: "plugins", label: "Engine Room", glyph: "shell" },
-  { id: "mind", label: "Mind", glyph: "dot" },
+  { id: "plugins", label: "Engine", glyph: "shell" },
+  { id: "mind", label: "Memory", glyph: "dot" },
   { id: "usage", label: "Usage", glyph: "web" },
-  { id: "keys", label: "API Keys", glyph: "shell" },
+  { id: "keys", label: "API keys", glyph: "shell" },
   { id: "consciousness", label: "Consciousness", glyph: "dot" },
-  { id: "permissions", label: "Permissions", glyph: "shell" },
+  { id: "permissions", label: "What Ares may do", glyph: "shell" },
   { id: "advanced", label: "Advanced", glyph: "dot" },
   { id: "updates", label: "What's New", glyph: "dot" },
   { id: "about", label: "About", glyph: "dot" },
@@ -12231,6 +12280,11 @@ function Settings({
   onLaunchLivingSurface: () => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "model");
+  // "More" opens by itself when the panel lands on one of its tabs (a deep
+  // link from a chip), and otherwise does exactly what its chevron says —
+  // keeping it forced open while a More tab was selected made it impossible
+  // to fold again.
+  const [moreOpen, setMoreOpen] = useState(() => SETTINGS_GROUPS.some((g) => g.folded && g.tabs.includes(initialTab ?? "model")));
   const [draft, setDraftPrefs] = useState<Prefs>(prefs);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [skillQuery, setSkillQuery] = useState("");
@@ -12279,9 +12333,13 @@ function Settings({
             <strong>Settings</strong>
           </div>
           {SETTINGS_GROUPS.map((g) => (
-            <div key={g.label} className="setGroup">
-              <div className="setGroupLabel">{g.label}</div>
-              {g.tabs.map((id) => {
+            <div key={g.label} className="setGroup" data-folded={g.folded && !moreOpen ? "1" : "0"}>
+              {g.folded ? (
+                <button type="button" className="setGroupLabel setGroupFold" onClick={() => setMoreOpen((v) => !v)} aria-expanded={moreOpen}>
+                  {g.label} <span aria-hidden="true">{moreOpen ? "▾" : "▸"}</span>
+                </button>
+              ) : <div className="setGroupLabel">{g.label}</div>}
+              {g.folded && !moreOpen ? null : g.tabs.map((id) => {
                 const t = SETTINGS_TABS.find((x) => x.id === id);
                 if (!t) return null;
                 const tile = SETTINGS_TILES[id];
@@ -12323,9 +12381,9 @@ function Settings({
                 <option value="auto">Resume it automatically when the session opens</option>
                 <option value="never">Discard it</option>
               </select>
-              <h3 className="paneTitle">Model</h3>
-              <p className="paneHint">The main model for new sessions. Hot-swap the active chat from the composer.</p>
-              <label className="fieldLabel">Current model</label>
+              <h3 className="paneTitle">New agents start with</h3>
+              <p className="paneHint">The brain a new agent gets. Each agent keeps its own — change it under the message box in their chat.</p>
+              <label className="fieldLabel">Default model</label>
               <button className="settingsModelCard" onClick={onOpenModelBrowser} title="Open the full model browser">
                 <ProviderLogo brand={brandKey({ id: prefs.model, group: prefs.provider })} className="settingsModelLogo" />
                 <span className="settingsModelBody">
@@ -12692,12 +12750,12 @@ function Settings({
 
           {tab === "permissions" ? (
             <div className="settingsPane">
-              <h3 className="paneTitle">Permissions</h3>
-              <p className="paneHint">Decide what Ares does on its own vs. what it asks you first. Applies on the next turn.</p>
+              <h3 className="paneTitle">What Ares may do</h3>
+              <p className="paneHint">What your agents do on their own, and what they ask you first. You can also just tell an agent "stop asking me before running commands".</p>
               <div className="engineRow">
                 <div className="engineInfo">
-                  <strong>Act freely (no prompts)</strong>
-                  <span>Ares acts on everything without asking — files, commands, web, even sensitive actions. Off = guarded (sensitive asks).</span>
+                  <strong>Never ask me</strong>
+                  <span>Agents do everything without checking — files, commands, the web, even payments and deleting things. Off = they ask before anything sensitive.</span>
                 </div>
                 <button className="toggle" data-on={permissions.mode === "free" ? "1" : "0"}
                   onClick={() => onPermissions({ ...permissions, mode: permissions.mode === "free" ? "guarded" : "free" })}>
@@ -12706,10 +12764,10 @@ function Settings({
               </div>
               {(["fileWrite", "shell", "network", "sensitive"] as const).map((cat) => {
                 const meta = {
-                  fileWrite: ["Auto-approve file writes", "Create/edit files without asking."],
-                  shell: ["Auto-approve shell commands", "Run terminal commands without asking."],
-                  network: ["Auto-approve web & network", "Fetch pages and call the web without asking."],
-                  sensitive: ["Auto-approve sensitive actions", "Credentials, payments, email, destructive, computer control. Off by default — these ask."],
+                  fileWrite: ["Change files without asking", "Create and edit files on your computer."],
+                  shell: ["Run commands without asking", "Run things in the terminal (install, build, scripts)."],
+                  network: ["Use the web without asking", "Open pages, search, call online services."],
+                  sensitive: ["Sensitive things without asking", "Passwords, payments, sending email, deleting, controlling your mouse and keyboard. Off = always asks."],
                 }[cat];
                 const on = permissions.mode === "free" ? true : permissions[cat];
                 return (
@@ -12727,8 +12785,8 @@ function Settings({
               })}
               <div className="engineRow">
                 <div className="engineInfo">
-                  <strong>Fleets inherit my permissions</strong>
-                  <span>Background agents (ULTRA fleets) act on what you've allowed. Off = fleets can only read, never act.</span>
+                  <strong>Helpers get the same permissions</strong>
+                  <span>Background helpers an agent spins up act on what you've allowed above. Off = helpers can only read, never act.</span>
                 </div>
                 <button className="toggle" data-on={permissions.fleetsInherit ? "1" : "0"}
                   onClick={() => onPermissions({ ...permissions, fleetsInherit: !permissions.fleetsInherit })}>
@@ -13329,7 +13387,7 @@ function AnthropicSignIn({
         <div className="authModalMark" aria-hidden="true" />
         <h3>Sign in with Claude</h3>
         {status === "done" ? (
-          <p className="authOk">✓ Signed in — reconnecting the Garrison…</p>
+          <p className="authOk">✓ Signed in — reconnecting…</p>
         ) : status === "error" ? (
           <>
             <p className="authErr">{error ?? "Sign-in failed."}</p>

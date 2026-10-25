@@ -40,6 +40,23 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.66.0",
+    date: "October 2026",
+    title: "Ares for people",
+    tagline: "No more guessing: Ares sets itself up with you, each agent has one brain that stays put, and the settings are in plain words.",
+    highlights: [
+      { icon: "💬", title: "Setup is a chat", blurb: "First run, Ares asks what you already pay for — Claude, ChatGPT or neither — signs you in, asks your name and helps you pick a first agent. No API keys to find.", tag: "New" },
+      { icon: "🧠", title: "One brain per agent", blurb: "Pick a model under the message box and that agent keeps it. Settings only decides what new agents start with. Agents no longer flip back to a different model on their own.", tag: "Fixed" },
+      { icon: "🎚️", title: "Effort that fits the model", blurb: "The effort menu only shows levels the chosen model actually has, so a saved setting can never break a reply.", tag: "Fixed" },
+      { icon: "🗣️", title: "Just say it", blurb: "\"Stop asking me before running commands\", \"switch to Sonnet\", \"turn voice off\", \"call me Sam\" — say it in chat and Ares changes the setting for you.", tag: "New" },
+      { icon: "🧭", title: "Settings in plain words", blurb: "Four groups instead of a wall of tabs: You, Agents, Look & sound, and More folded away. \"What Ares may do\" instead of permissions, \"Engine\" instead of garrison.", tag: "Polished" },
+      { icon: "✋", title: "A clearer ask", blurb: "When Ares needs permission it asks \"Can I run a command on your computer?\" with Yes once / Yes, don't ask again / No.", tag: "Polished" },
+      { icon: "🧾", title: "Roles and rules that stick", blurb: "An agent's role and standing rules are restated to it on every message, so it stays in character and keeps its rules.", tag: "Fixed" },
+      { icon: "📣", title: "No more silent failures", blurb: "If a message dies before the model answers, Ares tells you and puts your message back in the box instead of leaving you to send \"Continue\" into nothing.", tag: "Fixed" },
+      { icon: "🛠️", title: "Fifteen bugs fixed", blurb: "Credential vault, secret redaction, Edit and Grep edge cases, engine crash recovery, memory durability and more from the GitHub issue list.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.65.0",
     date: "October 2026",
     title: "Living avatars",

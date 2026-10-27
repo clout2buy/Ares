@@ -286,6 +286,11 @@ export interface BackgroundJobVm {
   /** Can be relaunched exactly as it was — only ever on an explicit ask. */
   resumable?: boolean;
   sessionId?: string;
+  pid?: number | null;
+  /** Found running after a foreground command and taken into ownership. */
+  adopted?: boolean;
+  /** The command that launched an adopted process. */
+  launchedBy?: string;
 }
 
 /** The Ares network card: a hosted Oricle estate this instance syncs with. */

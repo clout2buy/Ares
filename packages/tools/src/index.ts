@@ -129,7 +129,20 @@ export {
   ShellRegistry,
   type ShellSnapshot,
   type ShellLaunchOptions,
+  type AdoptProcessOptions,
 } from "./ShellRegistry.js";
+export {
+  adoptLeftovers,
+  describeAdopted,
+  findSurvivors,
+  listProcessesSince,
+  mayDetachProcesses,
+  parsePsRows,
+  parseWindowsRows,
+  pickSurvivors,
+  type ProcessRow,
+  type SurvivorTree,
+} from "./ProcessOwner.js";
 export { makeBashOutputTool, type BashOutputResult } from "./BashOutput.js";
 export { makeKillShellTool, type KillShellOutput } from "./KillShell.js";
 export { makeBackgroundTasksTool, type BackgroundTasksOutput } from "./BackgroundTasks.js";

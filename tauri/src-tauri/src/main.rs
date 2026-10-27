@@ -970,7 +970,7 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "cognitive_state", "persona_adopt", "persona_delete", "persona_style",
     "persona_write", "roster_list", "workflow_mode",
     // Background jobs: what is running, stop one, resume a suspended one.
-    "background_list", "background_stop", "background_resume",
+    "background_list", "background_stop", "background_resume", "background_stop_all",
     // Startup recovery (ask-first): open a session to surface unfinished work,
     // Resume / Discard it, read or set the mode. Ollama Cloud account usage.
     "session_open", "startup_recovery_resume", "startup_recovery_discard",

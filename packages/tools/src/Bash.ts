@@ -20,6 +20,8 @@ import {
   shellWatchdogFor,
 } from "./_shared.js";
 import { classifyShellFailure, shellFlavorOf, type ShellFlavor } from "./shellHints.js";
+import { adoptLeftovers, describeAdopted, mayDetachProcesses } from "./ProcessOwner.js";
+import type { ShellRegistry } from "./ShellRegistry.js";
 import { looksLikeTestCommand, summarizeTestOutput, testSummaryMinChars } from "./testSummary.js";
 
 const MAX_OUTPUT_CHARS = 30_000;
@@ -43,6 +45,12 @@ export interface BashOutput {
   captureError?: string;
   /** Which interpreter ran the command (bash / powershell 5.1 / pwsh 7+ / cmd). */
   shell: ShellFlavor;
+  /** The shell's pid (host-internal: ProcessOwner looks for what it left behind). */
+  rootPid?: number;
+  /** The run had to be force-settled because a child kept the pipe open. */
+  forcedSettle?: boolean;
+  /** Processes this command left running, now owned by the session. */
+  leftRunning?: Array<{ shell_id: string; pid: number | null; description: string }>;
   /** One-line actionable diagnosis from classifyShellFailure when the run
    *  failed and a known signature appeared in the output tail. */
   hint?: string;
@@ -65,7 +73,8 @@ export interface BashBackgroundOutput {
 export const BashTool = buildTool({
   name: "Bash",
   description:
-    "Run a bash/POSIX command. By default runs foreground until completion. Set run_in_background=true to launch it in the background — the tool returns a shell_id immediately; use BashOutput to poll new output and KillShell to terminate. On Windows, prefer PowerShell unless POSIX shell syntax is specifically required. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — unquoted spaced paths break the shell; this matters most when launching a detached/new-window process where you must include the path yourself.",
+    "Run a bash/POSIX command. By default runs foreground until completion. Set run_in_background=true to launch it in the background — the tool returns a shell_id immediately; use BashOutput to poll new output and KillShell to terminate. On Windows, prefer PowerShell unless POSIX shell syntax is specifically required. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — unquoted spaced paths break the shell; this matters most when launching a detached/new-window process where you must include the path yourself." +
+    ' You MAY start servers and backends to try things — Rust, Go, Java, .NET, Python, Node, Electron, anything: use run_in_background=true so Ares tracks the process and shows it to the owner; a process that a foreground command leaves running is found and tracked too (the result names it with a shell_id). Stop what you started with KillShell when you are done — anything still running is stopped when this chat closes or Ares exits.',
   safety: "workspace-write",
   concurrency: "exclusive",
   // Self-capping, but the ENGINE keeps its own deadline derived from the
@@ -137,11 +146,13 @@ export const BashTool = buildTool({
     const captureDir = path.join(ctx.workspace, ".ares", "shell-output", ctx.sessionId);
     await fs.mkdir(captureDir, { recursive: true });
     const capturePath = path.join(captureDir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}.log`);
+    const startedAtMs = Date.now();
     const result = await runShell(bash, ["-lc", i.command], cwd, i.timeout, ctx.signal, (stream, text) => {
       ctx.emitProgress?.({ kind: "shell_output", stream, text });
     }, capturePath);
     const output: BashOutput | BashBackgroundOutput = result;
     await collapseTestOutput(result, i.command, capturePath);
+    await ownLeftovers(ctx, result, { command: i.command, cwd, startedAtMs });
     if (isReadOnlyShellCommand(i.command)) {
       const rules = await shellInstructionsAfterRun(ctx, i.command, i.cwd, i.target_paths);
       if (rules) result.repositoryInstructions = rules;
@@ -163,6 +174,39 @@ export const BashTool = buildTool({
     };
   },
 });
+
+/**
+ * What did this foreground command leave running? Anything found is adopted
+ * into the session's registry (shown, stoppable, taken down with the chat)
+ * and named in the result so the model knows. Runs the process listing only
+ * when the command looked like it could detach, timed out, or had to be
+ * force-settled behind a surviving child — the common command pays nothing.
+ */
+export async function ownLeftovers(
+  ctx: { shellRegistry?: ShellRegistry; sessionId?: string; toolUseId?: string },
+  result: BashOutput,
+  run: { command: string; cwd: string; startedAtMs: number },
+): Promise<void> {
+  const rootPid = result.rootPid;
+  delete result.rootPid;
+  const forced = result.forcedSettle === true;
+  delete result.forcedSettle;
+  if (!ctx.shellRegistry || process.env.ARES_ADOPT_LEFTOVERS === "0") return;
+  if (!(forced || result.timedOut || mayDetachProcesses(run.command))) return;
+  const adopted = await adoptLeftovers({
+    registry: ctx.shellRegistry,
+    rootPid,
+    startedAtMs: run.startedAtMs,
+    command: run.command,
+    cwd: run.cwd,
+    sessionId: ctx.sessionId,
+    invocationKey: ctx.toolUseId,
+  });
+  const note = describeAdopted(adopted);
+  if (!note) return;
+  result.leftRunning = adopted.map((job) => ({ shell_id: job.id, pid: job.pid ?? null, description: job.description }));
+  result.hint = result.hint ? `${result.hint} ${note}` : note;
+}
 
 /** Replace a huge test/build log with its digest, keeping the full text in a file. */
 async function collapseTestOutput(result: BashOutput, command: string, capturePath: string): Promise<void> {
@@ -409,6 +453,8 @@ export async function runShell(
           timedOut,
           truncated,
           shell,
+          ...(child.pid ? { rootPid: child.pid } : {}),
+          ...(forcedReason ? { forcedSettle: true } : {}),
           ...(hint ? { hint } : {}),
           ...(truncated && capturePath && !captureFailed ? { fullOutputPath: capturePath } : {}),
           ...(captureFailureMessage ? { captureError: captureFailureMessage } : {}),

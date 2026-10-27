@@ -66,6 +66,26 @@ export interface ShellSnapshot {
   resumable?: boolean;
   /** Lineage when this job is a relaunch of an earlier one. */
   resumedFrom?: string;
+  /** Not launched by the registry: a process a FOREGROUND command left
+   *  running, found afterwards and taken into ownership (ProcessOwner). */
+  adopted?: boolean;
+  /** The command that launched an adopted process. */
+  launchedBy?: string;
+}
+
+export interface AdoptProcessOptions {
+  /** The root of a live process tree the session now owns. */
+  pid: number;
+  /** Executable name, for the label. */
+  name: string;
+  /** Its full command line, when the platform had it. */
+  commandLine?: string;
+  cwd: string;
+  /** The tool command that launched it. */
+  launchedBy: string;
+  sessionId?: string;
+  /** The launching tool call; one adoption per (call, pid). */
+  invocationKey?: string;
 }
 
 export interface ShellRegistryDurability {
@@ -75,7 +95,11 @@ export interface ShellRegistryDurability {
 
 interface ShellState {
   id: string;
-  child: ChildProcess;
+  /** Absent for an adopted process — there is no handle, only a pid. */
+  child?: ChildProcess;
+  pid?: number;
+  adopted?: boolean;
+  launchedBy?: string;
   description: string;
   command: string;
   cwd: string;
@@ -170,7 +194,17 @@ export class ShellRegistry {
         .map((job) => this.reconcileDurableJob(job))
         .map((job) => durableSnapshot(job, true));
     }
-    return [...this.shells.values()].map(snapshot);
+    return [...this.shells.values()].map((state) => snapshot(this.reconcileAdopted(state)));
+  }
+
+  /** An adopted process has no exit event — its liveness is observed. */
+  private reconcileAdopted(state: ShellState): ShellState {
+    if (state.adopted && state.status === "running" && state.pid && !processAlive(state.pid)) {
+      state.status = "exited";
+      state.finishedAt = new Date().toISOString();
+      state.events.emit("end");
+    }
+    return state;
   }
 
   has(id: string, sessionId?: string): boolean {
@@ -185,7 +219,71 @@ export class ShellRegistry {
       return durableSnapshot(this.reconcileDurableJob(job), true);
     }
     const state = this.shells.get(id);
-    return state ? snapshot(state) : undefined;
+    return state ? snapshot(this.reconcileAdopted(state)) : undefined;
+  }
+
+  /**
+   * Take ownership of a process tree a foreground command left behind.
+   *
+   * Field origin (2026-10-26): Rust services ran for days on a coworker's
+   * machine, launched by agent shell commands that exited and left them —
+   * invisible to the Background panel because only `run_in_background` jobs
+   * were ever registered, and unstoppable because nothing owned them. An
+   * adopted job is a running job like any other: listed, stoppable, taken
+   * down with the session. It is NOT resumable (nothing holds a launch
+   * request that would start exactly it again), and its exit writes no
+   * completion input — there is no captured output to hand the model.
+   */
+  async adopt(opts: AdoptProcessOptions): Promise<ShellSnapshot> {
+    if (!processAlive(opts.pid)) throw new Error(`cannot adopt pid ${opts.pid}: it is not running`);
+    const description = adoptedDescription(opts);
+    if (this.durability && opts.sessionId) {
+      this.registerSession(opts.sessionId);
+      const invocationKey = `${opts.invocationKey ?? `adopt_${Date.now().toString(36)}`}:pid${opts.pid}`;
+      const id = stableJobId("ad", opts.sessionId, invocationKey);
+      const prior = this.durability.kernel.getBackgroundJob(id);
+      if (prior) return durableSnapshot(this.reconcileDurableJob(prior), true);
+      const request = {
+        version: 1,
+        adopted: true,
+        pid: opts.pid,
+        program: opts.name,
+        args: [],
+        cwd: opts.cwd,
+        description,
+        launchedBy: opts.launchedBy.slice(0, 500),
+        ...(opts.commandLine ? { commandLine: opts.commandLine.slice(0, 1_000) } : {}),
+      } satisfies JsonValue;
+      this.durability.kernel.createBackgroundJob({
+        id,
+        sessionId: opts.sessionId,
+        invocationKey,
+        kind: "shell",
+        description,
+        request,
+      });
+      const running = this.durability.kernel.markBackgroundJobRunning(id, { pid: opts.pid, heartbeatAtMs: Date.now() });
+      return durableSnapshot(running, false);
+    }
+    const id = `ad_${(++this.counter).toString(36)}_${Date.now().toString(36)}`;
+    const state: ShellState = {
+      id,
+      pid: opts.pid,
+      adopted: true,
+      launchedBy: opts.launchedBy,
+      description,
+      command: opts.commandLine || opts.name,
+      cwd: opts.cwd,
+      status: "running",
+      exitCode: null,
+      startedAt: new Date().toISOString(),
+      buffer: [],
+      totalChars: 0,
+      cursors: new Map(),
+      events: new EventEmitter(),
+    };
+    this.shells.set(id, state);
+    return snapshot(state);
   }
 
   async spawn(opts: ShellLaunchOptions): Promise<ShellSnapshot> {
@@ -429,9 +527,13 @@ export class ShellRegistry {
   async kill(id: string, reason: "user" | "timeout" = "user", sessionId?: string): Promise<boolean> {
     if (this.durability && sessionId) return this.killDurable(id, reason, sessionId);
     const state = this.shells.get(id);
-    if (!state || state.status !== "running") return false;
+    if (!state || this.reconcileAdopted(state).status !== "running") return false;
     void reason;
-    const confirmed = await killProcessTree(state.child.pid, () => state.child.kill());
+    const pid = state.child?.pid ?? state.pid;
+    const confirmed = await killProcessTree(pid, () => {
+      if (state.child) return state.child.kill();
+      try { if (pid) process.kill(pid, "SIGTERM"); return true; } catch { return false; }
+    });
     if (confirmed && state.status === "running") {
       state.status = "killed";
       state.finishedAt = new Date().toISOString();
@@ -451,6 +553,12 @@ export class ShellRegistry {
    * to break that: it does not pretend the turn finished cleanly, and the
    * caller is expected to disclose that side effects may be incomplete.
    */
+  /** "Stop all": every running job this session owns — launched or adopted.
+   *  The one-click answer to "what did the agent leave running?". */
+  async stopAllForSession(sessionId: string): Promise<number> {
+    return this.killAllForSession(sessionId);
+  }
+
   async killAllForSession(sessionId: string): Promise<number> {
     let killed = 0;
     if (this.durability && sessionId) {
@@ -511,7 +619,7 @@ export class ShellRegistry {
       for (const [id, state] of this.shells) {
         if (state.status !== "running") continue;
         if (opts.since !== undefined && Date.parse(state.startedAt) < opts.since) continue;
-        if (await this.kill(id, "user")) suspended.push({ ...snapshot(state), suspended: true, stoppedReason: opts.reason, resumable: true });
+        if (await this.kill(id, "user")) suspended.push({ ...snapshot(state), suspended: true, stoppedReason: opts.reason, resumable: !state.adopted });
       }
       return suspended;
     }
@@ -528,13 +636,15 @@ export class ShellRegistry {
         const stopped = await this.stopJobProcess(job);
         // Record it even when the process was already gone: the point is that
         // the RECORD stops reading "running" and starts reading "resumable".
+        // An ADOPTED process is stopped for good: nothing holds a launch
+        // request that would bring back exactly it.
         const settled = this.settleShellJob(
           this.durability.kernel.getBackgroundJob(job.id) ?? job,
           "cancelled",
           null,
           null,
           job.outputBytes,
-          { suspended: true, resumable: true, stoppedReason: opts.reason, processStopped: stopped },
+          { suspended: true, resumable: !isAdoptedJob(job), stoppedReason: opts.reason, processStopped: stopped },
           { completion: false },
         );
         suspended.push(durableSnapshot(settled, true));
@@ -584,7 +694,7 @@ export class ShellRegistry {
           null,
           null,
           job.outputBytes,
-          { suspended: true, resumable: true, stoppedReason: opts.reason, processStopped: stopped },
+          { suspended: true, resumable: !isAdoptedJob(job), stoppedReason: opts.reason, processStopped: stopped },
           { completion: false },
         );
         suspended.push(durableSnapshot(settled, true));
@@ -619,6 +729,7 @@ export class ShellRegistry {
       throw toolError(`unknown background job: ${id}`);
     }
     const request = jobRequest(job);
+    if (request.adopted === true) throw toolError(`background job ${id} cannot be resumed: it was adopted, not launched — run the command that started it again`);
     const program = typeof request.program === "string" ? request.program : "";
     const cwd = typeof request.cwd === "string" ? request.cwd : "";
     if (!program || !cwd) throw toolError(`background job ${id} cannot be resumed: its launch request is incomplete`);
@@ -664,6 +775,17 @@ export class ShellRegistry {
       try { process.kill(pid, "SIGTERM"); return true; } catch { return false; }
     });
     if (!sent) return false;
+    if (isAdoptedJob(job)) {
+      const adoptedDeadline = Date.now() + 5_000;
+      while (Date.now() < adoptedDeadline) {
+        if (!processAlive(pid)) {
+          this.settleShellJob(job, "cancelled", null, null, job.outputBytes, { adopted: true, stoppedReason: reason === "timeout" ? "timed out" : "stopped" }, { completion: false });
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return false;
+    }
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -714,6 +836,14 @@ export class ShellRegistry {
 
   private reconcileDurableJob(job: BackgroundJobRecord): BackgroundJobRecord {
     if (!this.durability || isTerminalJob(job)) return job;
+    if (isAdoptedJob(job)) {
+      // No supervisor, no state file: the pid IS the truth. Gone = exited on
+      // its own (a completion, not an orphaning — nothing was lost).
+      if (job.status === "running" && job.pid && !processAlive(job.pid)) {
+        return this.settleShellJob(job, "completed", null, null, job.outputBytes, { adopted: true }, { completion: false });
+      }
+      return job;
+    }
     const state = readSupervisorState(job);
     const outputBytes = job.outputPath && existsSync(job.outputPath) ? statSync(job.outputPath).size : job.outputBytes;
     if (!state) {
@@ -771,7 +901,7 @@ export class ShellRegistry {
     extra: Record<string, JsonValue> = {},
     opts: { completion?: boolean } = {},
   ): BackgroundJobRecord {
-    const tail = readTail(job.outputPath, 16_000);
+    const tail = isAdoptedJob(job) ? "" : readTail(job.outputPath, 16_000);
     const text = [
       `[background shell ${job.id} ${status}${exitCode === null ? "" : ` (exit ${exitCode})`}]`,
       tail ? `Latest output:\n${tail}` : "No output was captured.",
@@ -813,7 +943,20 @@ function snapshot(state: ShellState): ShellSnapshot {
     startedAt: state.startedAt,
     finishedAt: state.finishedAt,
     totalChars: state.totalChars,
+    pid: state.child?.pid ?? state.pid ?? null,
+    ...(state.adopted ? { adopted: true } : {}),
+    ...(state.launchedBy ? { launchedBy: state.launchedBy } : {}),
   };
+}
+
+function isAdoptedJob(job: BackgroundJobRecord): boolean {
+  return jobRequest(job).adopted === true;
+}
+
+function adoptedDescription(opts: AdoptProcessOptions): string {
+  const exe = opts.name.replace(/\\/g, "/").split("/").pop()?.replace(/\.exe$/i, "") || "process";
+  const launch = opts.launchedBy.trim().replace(/\s+/g, " ");
+  return `${exe} — left running by: ${launch.length > 60 ? `${launch.slice(0, 57)}…` : launch}`;
 }
 
 /** A job's launch request as a plain record — the shape everything reads. */
@@ -834,6 +977,7 @@ function durableSnapshot(job: BackgroundJobRecord, recovered: boolean): ShellSna
   const result = jobResult(job);
   const program = typeof request.program === "string" ? request.program : "shell";
   const args = Array.isArray(request.args) ? request.args.filter((value): value is string => typeof value === "string") : [];
+  const adopted = request.adopted === true;
   const status: ShellSnapshot["status"] = job.status === "completed"
     ? "exited"
     : job.status === "cancelled"
@@ -846,8 +990,10 @@ function durableSnapshot(job: BackgroundJobRecord, recovered: boolean): ShellSna
   return {
     id: job.id,
     description: job.description,
-    command: `${program} ${args.join(" ")}`,
+    command: adopted && typeof request.commandLine === "string" && request.commandLine ? request.commandLine : `${program} ${args.join(" ")}`.trim(),
     cwd: typeof request.cwd === "string" ? request.cwd : "",
+    ...(adopted ? { adopted: true } : {}),
+    ...(adopted && typeof request.launchedBy === "string" ? { launchedBy: request.launchedBy } : {}),
     status,
     exitCode: job.exitCode,
     startedAt: new Date(job.startedAtMs ?? job.createdAtMs).toISOString(),
@@ -862,7 +1008,7 @@ function durableSnapshot(job: BackgroundJobRecord, recovered: boolean): ShellSna
     // Resumable = we stopped it on the host's behalf and still hold everything
     // needed to run it again. A job that finished on its own is not "resumable"
     // — re-running it is a new decision, not a continuation.
-    ...(result.resumable === true && typeof request.program === "string" ? { resumable: true } : {}),
+    ...(result.resumable === true && !adopted && typeof request.program === "string" ? { resumable: true } : {}),
     ...(typeof request.resumedFrom === "string" ? { resumedFrom: request.resumedFrom } : {}),
   };
 }
